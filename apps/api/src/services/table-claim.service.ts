@@ -91,7 +91,7 @@ function notAvailable(): HttpError {
  * late-payment refund) on an intent of the order (its current one, or tied by order id) or of one of its parts, an
  * intent already marked (partially) refunded, and a POS refund with money.
  */
-function orderRefunded(tenantId: TenantId) {
+export function orderRefunded(tenantId: TenantId) {
   // Plain `orders.` names: drizzle renders a column unqualified in a
   // single-table query, which would bind to the inner table here.
   return sql`(
@@ -129,7 +129,7 @@ function orderRefunded(tenantId: TenantId) {
  * SQL condition: the order was rung up on a training device (`pos_orders`
  * stamp, legend-2lp.8). Training sales earn no points, claim included.
  */
-function orderTraining(tenantId: TenantId) {
+export function orderTraining(tenantId: TenantId) {
   return sql`EXISTS (
     SELECT 1 FROM pos_orders t
     WHERE t.tenant_id = ${tenantId}

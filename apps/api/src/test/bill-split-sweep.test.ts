@@ -42,7 +42,6 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
-import { redeemSplitClaimTx } from "../services/bill-split.service.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
 import {
@@ -54,6 +53,7 @@ import { confirmPayment } from "../services/payment.service.ts";
 import { sweepUnpaidQrOrders } from "../services/qr-order-consumers.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
+import { getSplitClaimByToken } from "../services/bill-split.service.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -497,11 +497,9 @@ describe("Split bill sweep (legend-ms3, ORD-06)", () => {
     }
     for (const token of tokens) {
       for (const now of [new Date(), at]) {
-        expect(
-          await withTenant(db, context, (tx) =>
-            redeemSplitClaimTx(tx, context, token, now),
-          ),
-        ).toBeNull();
+        await expect(
+          getSplitClaimByToken(context, token, now),
+        ).rejects.toMatchObject({ code: "NOT_FOUND" });
       }
     }
   });

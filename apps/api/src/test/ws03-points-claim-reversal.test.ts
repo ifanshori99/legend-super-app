@@ -199,6 +199,60 @@ describe("legend-n1mp F1: void/refund takes back table-claim points", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
+  // legend-udu47: the refund of a split order takes back each part's claim by
+  // share, and a later refund or void never takes back more than was claimed.
+  it("refunds of a split order take back each part once: two halves, a third refund and a void add nothing", async () => {
+    const world = await createWorld();
+    await seedProgram(world.tenantId, { earnSpendIdr: 1000 });
+    const a = await seedMember(world.tenantId);
+    const b = await seedMember(world.tenantId);
+    const orderUlid = await guestOrder(world);
+    const [splitA, splitB] = await seedSplits(world, orderUlid);
+    await claim(world, a.id, splitA, 20);
+    await claim(world, b.id, splitB, 30);
+
+    const refund = (grossSalesIdr: number) =>
+      orderRefundedEvent(world, {
+        orderUlid,
+        outletId: world.outletA,
+        refundId: randomUUID(),
+        grossSalesIdr,
+      });
+    const first = refund(50_000);
+    await deliver(world, first);
+    expect(await balanceOf(world.tenantId, a.id)).toBe(10);
+    expect(await balanceOf(world.tenantId, b.id)).toBe(15);
+
+    // The same refund again: a replay.
+    await deliver(world, first);
+    expect(await balanceOf(world.tenantId, a.id)).toBe(10);
+    expect(await balanceOf(world.tenantId, b.id)).toBe(15);
+
+    // The other half: everything is back, nothing more than what was claimed.
+    await deliver(world, refund(50_000));
+    expect(await balanceOf(world.tenantId, a.id)).toBe(0);
+    expect(await balanceOf(world.tenantId, b.id)).toBe(0);
+
+    // A further refund and a void find nothing left to take back.
+    await deliver(world, refund(50_000));
+    await deliver(
+      world,
+      orderVoidedEvent(world, {
+        orderUlid,
+        outletId: world.outletA,
+        voidId: randomUUID(),
+        voidedFinalOrder: true,
+      }),
+    );
+    for (const member of [a, b]) {
+      expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+      const rows = await ledgerOf(world.tenantId, member.id);
+      expect(
+        reverseRows(rows).reduce((sum, row) => sum + Number(row.points), 0),
+      ).toBe(-Number(rows.find((row) => row.type === "earn")!.points));
+    }
+  });
+
   it("a partial refund of a tax-inclusive order reverses its share of the spend before tax and service", async () => {
     const world = await createWorld();
     await seedProgram(world.tenantId, { earnSpendIdr: 1000 });
