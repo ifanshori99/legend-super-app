@@ -65,7 +65,12 @@ import {
   currentStaffPinPepperVersion,
   staffPinPepper,
 } from "./device-pin-pepper.ts";
-import { hrisAuditEntry, loadHrisAccess, notFound } from "./hris-access.ts";
+import {
+  auditOutletFor,
+  hrisAuditEntry,
+  loadHrisAccess,
+  notFound,
+} from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -92,6 +97,10 @@ export type PayslipPinOtpSender = {
     context: ScopedTenantContext,
     message: {
       readonly employeeId: string;
+      /** The outlet the message is sent under: the home outlet when the caller's scope reaches it, else the first outlet it does reach. */
+      readonly outletId: string;
+      /** The reset challenge row id; the delivery reference (idempotency). */
+      readonly challengeId: string;
       readonly phoneE164: string;
       readonly code: string;
     },
@@ -685,6 +694,8 @@ export async function requestPayslipPinResetOtp(
         try {
           await sender.send(context, {
             employeeId: self.employeeId,
+            outletId: auditOutletFor(context, self.homeOutletId),
+            challengeId: id,
             phoneE164: phone,
             code,
           });

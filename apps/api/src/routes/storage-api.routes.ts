@@ -9,6 +9,8 @@ import { requireTrustedOrigin } from "../middleware/origin";
 import { NoopMalwareScanner } from "../services/core-image";
 import { createCoreStorageRouterWithAccess } from "../services/core-storage-access";
 import { uploadEdgeSelfie } from "../services/edge-selfie.service";
+import type { MessagingProvider } from "@starter/shared/adapters";
+import { createPayslipPinWhatsappSender } from "../services/payslip-pin-whatsapp-sender";
 import type { StorageRuntime } from "../services/core-storage-runtime";
 import type * as schema from "../db/schema";
 import { createEdgeSelfieReceiveRouter } from "./edge-selfie-receive.routes";
@@ -47,8 +49,10 @@ export const HRIS_SIGNED_SEGMENTS: ReadonlySet<string> = new Set([
 export function createStorageApiRouter(options: {
   runtime: StorageRuntime | null;
   database: NodePgDatabase<typeof schema>;
+  /** Sends the payslip PIN reset code by WhatsApp (legend-qih2m). Null: that reset answers 503. */
+  messaging?: MessagingProvider | null;
 }): Router {
-  const { runtime, database } = options;
+  const { runtime, database, messaging = null } = options;
   const router = Router();
   router.use(noStore);
 
@@ -140,10 +144,14 @@ export function createStorageApiRouter(options: {
   // Employee payslips and the payslip PIN (legend-2ap3). The router guards
   // only its own paths (/me/payslips, /me/payslip-pin,
   // /employees/:id/payslip-pin), so other /hris requests pass straight on.
-  // No WhatsApp code sender is wired yet: the OTP reset answers 503.
+  // The OTP reset sends its code through the messaging provider (legend-qih2m);
+  // without one it answers 503.
   router.use(
     "/hris",
-    createHrisPayslipRouter({ fileSigner: runtime?.hrisDocumentSigner }),
+    createHrisPayslipRouter({
+      fileSigner: runtime?.hrisDocumentSigner,
+      otpSender: messaging ? createPayslipPinWhatsappSender(messaging) : null,
+    }),
   );
 
   const hris = Router();
