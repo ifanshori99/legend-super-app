@@ -1044,3 +1044,13 @@ Langkah berikut CTO baru:
 - 20:58 Pilot Fable (disetujui founder: Fable 5.2 medium saja). A/B buta brief 387 atas 8f0b4630 (w5by9 sebelum perbaikan review). A: architect subagent Opus xhigh (workflow sekarang). B: architect subagent Fable medium. Kunci jawaban: laporan G1amj (HIGH restore ke grant yang di-refund, MEDIUM restore vs redeem sesudahnya, LOW kelebihan reverse tidak dipindah). Ukur: temuan cocok, positif palsu, waktu, token. Slot thread 8/8, jadi subagent.
 - 21:05 Hasil pilot 387. A Opus xhigh: 4m46s, 75,8k token, 20 tool; temukan HIGH (=HIGH+LOW asli), lewatkan MEDIUM; 1 temuan baru di luar diff. B Fable medium: 2m39s, 45,4k token, 12 tool; temukan HIGH yang sama (=HIGH+LOW asli), lewatkan MEDIUM; 1 temuan baru pra-ada. Tanpa positif palsu keduanya. Biaya API setara: Fable ~90,8k token-Opus-ekuivalen (harga 2x), sekitar 20% lebih mahal. Kuota: Fable 7d tetap 0%, 5h #1 naik 95->98% (Fable tampaknya memotong 5h biasa). Satu sampel, belum cukup. Kartu baru dari temuan ekstra.
 - 21:28 Rapikan bd (G7rfr): ready 24 ditutup + 5 review; review 316 ditutup, 30 tetap review. Kandidat batch48b: ptn11 11bf4249, jmsdx be9ce98d, u7g9w 2c7957bf, kxoyf 397928f1, split-claim-hide 81efe255, cpq2 d3dc89d2, w5by9 d735d8b7, duitku-codex-fix 1b301b15 (tunggu Codex), 8s992 54b76963, fe-small-tests 11811e3f, u37u3 (tunggu review UI founder), claim-race/r77pq (G8go1 berjalan). Basi perlu rebase: tenant-config-export 1405f190 (34c), print-agent cb385ab2 (46p). Pelajaran: cek git log --all untuk id kartu sebelum start thread.
+
+## Serah terima CTO 10 Nov malam (sesi G15u9 sudah compact 2x, kuota habis)
+- G8j5g u37u3 resolved; page review founder Q1 (Setuju/Minta ubah) sudah tampil, jawaban belum. Setelah jawab: masuk batch48b (4c87a3bc).
+- G8hj0 oldg selesai (6f300150, ws/ws01-staff-access, review sonnet bersih), resolved. 2aqp tertahan: kartu BE baru "outlets di /api/me/access" dibuat, lalu 2aqp.
+- G0muc: parkir, menunggu baseline coverage run. Cek chat-nya.
+- G8go1 r77pq: menunggu approval di layar. Pesan pola zsh belum terkirim (request-id 2b4a36ec-f79e-499f-8426-554860e6f232).
+- Berjalan: G3hrs merge train batch48a, G1kpy b0l9/1v1g, G7yd3 rebase 34c/46p.
+- Founder belum jawab: seed policy shareholder_version (1 rekomendasi / 2).
+- Pilot Fable sampel 2 (brief 388) belum jalan; cron hilang bila sesi berganti. Buat ulang cron push '17 * * * *' dan retro.
+- Langkah berikut sesi CTO baru: ghostex coordinator create --agent claude --model 'opus[1m]' --effort xhigh, brief dari bagian ini.
