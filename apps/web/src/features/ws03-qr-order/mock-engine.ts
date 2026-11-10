@@ -747,6 +747,7 @@ export function createEngine(
       roundingIdr: q.rounding.adjustmentIdr,
       totalIdr: q.totalIdr,
       pricesIncludeTaxAndService: q.pricesIncludeTaxAndService,
+      swapReplacementIdr: idr(0),
       status: payFirst ? "awaiting_payment" : "sent",
       items,
       createdAt: iso(now),

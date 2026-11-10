@@ -33,7 +33,7 @@ import { maskAuditChanges } from "@starter/shared/audit";
 // session (contract planQrOrderPlacement).
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import {
   assertOutletInScope,
   businessDateOf,
@@ -112,7 +112,7 @@ import {
   type CartLineModifierSnapshot,
 } from "../db/schema/qr-order.ts";
 import { customerProfiles } from "../db/schema/crm-member.ts"; // legend-111j
-import { orderIssueCharges } from "../db/schema/kds-issues.ts";
+import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts"; // orderIssues: legend-pc51h
 import { withTenant } from "../db/tenant.ts";
 import {
   forwardQrOrderToEdge,
@@ -781,10 +781,53 @@ async function orderItemsOf(
   return byOrder;
 }
 
+/**
+ * legend-pc51h: the lines a kitchen swap added (`order_issues.
+ * replacement_order_item_id`) per order. Their price difference is settled
+ * outside the order (apology voucher or `order_issue_charges`), so the order
+ * money stays frozen and `orderDto` reports those lines as a recovery
+ * adjustment instead of part of the subtotal.
+ */
+async function swapReplacementIdsOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderIds: readonly string[],
+): Promise<Map<string, Set<string>>> {
+  const byOrder = new Map<string, Set<string>>();
+  if (orderIds.length === 0) return byOrder;
+  const rows = await tx
+    .select({
+      orderId: orderIssues.orderId,
+      replacementId: orderIssues.replacementOrderItemId,
+    })
+    .from(orderIssues)
+    .where(
+      and(
+        eq(orderIssues.tenantId, context.tenant.tenantId),
+        inArray(orderIssues.orderId, [...orderIds]),
+        isNotNull(orderIssues.replacementOrderItemId),
+      ),
+    );
+  for (const row of rows) {
+    if (row.replacementId === null) continue;
+    const set = byOrder.get(row.orderId) ?? new Set<string>();
+    set.add(row.replacementId);
+    byOrder.set(row.orderId, set);
+  }
+  return byOrder;
+}
+
 export function orderDto(
   row: OrderRow,
   items: readonly OrderItemRow[],
+  swapReplacementIds: ReadonlySet<string> = new Set(),
 ): QrOrder {
+  // Sale value of the swap lines: the original line keeps the sale value in
+  // the subtotal (the replacement is only a kitchen line, its difference is
+  // billed or credited elsewhere), so the replacements are taken back out.
+  const swapReplacementIdr = items
+    .filter((item) => swapReplacementIds.has(item.id))
+    .reduce((sum, item) => sum + item.lineTotalIdr, 0);
   return qrOrderSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -801,6 +844,7 @@ export function orderDto(
     roundingIdr: row.roundingIdr,
     totalIdr: row.totalIdr,
     pricesIncludeTaxAndService: row.pricesIncludeTax,
+    swapReplacementIdr,
     status: row.status,
     items: items.map((item) => ({
       id: item.id,
@@ -850,12 +894,12 @@ async function orderDtos(
   context: ScopedTenantContext,
   rows: readonly OrderRow[],
 ): Promise<QrOrder[]> {
-  const items = await orderItemsOf(
-    tx,
-    context,
-    rows.map((row) => row.id),
+  const ids = rows.map((row) => row.id);
+  const items = await orderItemsOf(tx, context, ids);
+  const swaps = await swapReplacementIdsOf(tx, context, ids);
+  return rows.map((row) =>
+    orderDto(row, items.get(row.id) ?? [], swaps.get(row.id)),
   );
-  return rows.map((row) => orderDto(row, items.get(row.id) ?? []));
 }
 
 // ---- Pricing the cart ---------------------------------------------------------------
@@ -2410,7 +2454,8 @@ export async function voidUnpaidQrOrderTx(
   assertOutletInScope(context.outletScope, order.outletId);
   if (order.status === "voided") {
     const items = await orderItemsOf(tx, context, [order.id]);
-    return orderDto(order, items.get(order.id) ?? []);
+    const swaps = await swapReplacementIdsOf(tx, context, [order.id]);
+    return orderDto(order, items.get(order.id) ?? [], swaps.get(order.id));
   }
   if (order.status !== "awaiting_payment")
     throw new CoreError(
@@ -2476,7 +2521,8 @@ export async function voidUnpaidQrOrderTx(
     now,
   );
   const items = await orderItemsOf(tx, context, [order.id]);
-  return orderDto(voided, items.get(order.id) ?? []);
+  const swaps = await swapReplacementIdsOf(tx, context, [order.id]);
+  return orderDto(voided, items.get(order.id) ?? [], swaps.get(order.id));
 }
 
 // ---- Shared with order-recovery.service.ts -------------------------------------------------------
