@@ -1737,6 +1737,10 @@ export const id = {
   },
   area: {
     reachable: "Area kerja Anda",
+    outletPicker: "Outlet",
+    noOutletTitle: "Belum ada outlet",
+    noOutletHint:
+      "Akun Anda belum ditugaskan ke outlet. Hubungi pemilik/manajer.",
     public: {
       name: "Beranda",
       emptyTitle: "Beranda brand belum diisi",

@@ -13,10 +13,12 @@ import {
   roleTemplate,
   stationIdSchema,
   type MyAccessView,
+  type MyOutlet,
   type PermissionCode,
   type RoleTemplateKey,
   type StationId,
 } from "@starter/shared/access";
+import { cafeLegendFixtures } from "@starter/shared/core";
 import { cafeLegendMenuFixtures } from "@starter/shared/menu";
 
 export type AreaAccess = {
@@ -35,6 +37,12 @@ export type AreaAccess = {
    */
   readonly stations: readonly StationId[];
   /**
+   * Outlets assigned to the account, from GET /api/me/access (legend-2aqp).
+   * The staff shell builds its outlet context and picker from this list. Empty
+   * = no outlet (fail closed).
+   */
+  readonly outlets: readonly MyOutlet[];
+  /**
    * Set when this session is a Super Admin support session (Better Auth
    * impersonation) with a grant, from GET /api/me/access. Presentation only;
    * the API refuses writes under a read_only grant.
@@ -51,6 +59,7 @@ export const ANONYMOUS_ACCESS: AreaAccess = Object.freeze({
   mfaRequired: false,
   mfaVerified: false,
   stations: Object.freeze([]) as readonly StationId[],
+  outlets: Object.freeze([]) as readonly MyOutlet[],
 });
 
 /**
@@ -68,6 +77,7 @@ export function accessFromSession(
     mfaRequired: true,
     mfaVerified: false,
     stations: [],
+    outlets: [],
   };
 }
 
@@ -79,6 +89,7 @@ export function accessFromView(view: MyAccessView): AreaAccess {
     mfaRequired: view.mfaRequired,
     mfaVerified: view.mfaVerified,
     stations: view.stations,
+    outlets: view.outlets,
     supportSession: view.supportSession,
   };
 }
@@ -140,6 +151,19 @@ function mockStationsFor(role: RoleTemplateKey): readonly StationId[] {
     : MOCK_STATIONS;
 }
 
+/**
+ * Mock outlet reach: the first Cafe Legend fixture outlet (BDG-01), the same
+ * one lib/mock/tenant-context.ts runs the shells on.
+ */
+const MOCK_OUTLETS: readonly MyOutlet[] = cafeLegendFixtures.outlets
+  .slice(0, 1)
+  .map((outlet) => ({
+    id: outlet.id,
+    name: outlet.name,
+    timeZone: outlet.timeZone,
+    businessDayCutoff: outlet.businessDayCutoff,
+  }));
+
 export function accessForMockRole(role: MockRole): AreaAccess {
   if (role === "none") return ANONYMOUS_ACCESS;
   if (role === "all")
@@ -150,6 +174,7 @@ export function accessForMockRole(role: MockRole): AreaAccess {
       mfaVerified: true,
       roleLabel: undefined,
       stations: MOCK_STATIONS,
+      outlets: MOCK_OUTLETS,
     };
   const template = roleTemplate(role);
   return {
@@ -159,5 +184,6 @@ export function accessForMockRole(role: MockRole): AreaAccess {
     mfaVerified: true,
     roleLabel: template.defaultName,
     stations: mockStationsFor(role),
+    outlets: MOCK_OUTLETS,
   };
 }

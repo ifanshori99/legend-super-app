@@ -11,7 +11,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useOnline } from "@/lib/use-online";
 import type { TableLiveStatus } from "@starter/shared/qr-order";
-import { useFloorBoard, useOutlets, useRefreshBoard } from "../hooks";
+import { useTenantContext } from "@/lib/tenant-context";
+import { useFloorBoard, useRefreshBoard } from "../hooks";
 import {
   boardCounts,
   filterBoard,
@@ -53,13 +54,20 @@ function BoardSkeleton() {
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh board, so a
+ * zone tab or selected table of the previous outlet cannot hide this one's.
+ */
 export function FloorBoardPage({ canManage }: { canManage: boolean }) {
+  const { outlet } = useTenantContext();
+  return <FloorBoardContent key={outlet?.id ?? "none"} canManage={canManage} />;
+}
+
+function FloorBoardContent({ canManage }: { canManage: boolean }) {
   const t = useT();
   const online = useOnline();
-  const outlets = useOutlets();
-  const outlet =
-    outlets.data?.data.find((item) => item.status === "active") ??
-    outlets.data?.data[0];
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
   const board = useFloorBoard(outlet?.id);
   const refresh = useRefreshBoard();
   const [zoneId, setZoneId] = React.useState<string>(ALL_ZONES);
@@ -73,10 +81,9 @@ export function FloorBoardPage({ canManage }: { canManage: boolean }) {
     return () => window.clearInterval(timer);
   }, []);
 
-  if (outlets.isPending || (outlet && board.isPending))
-    return <BoardSkeleton />;
+  if (outlet && board.isPending) return <BoardSkeleton />;
 
-  if (outlets.error || board.error)
+  if (board.error)
     return (
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
         <PageHeading />
@@ -84,7 +91,6 @@ export function FloorBoardPage({ canManage }: { canManage: boolean }) {
           title={t("floor.error.title")}
           description={t("floor.error.hint")}
           onRetry={() => {
-            void outlets.refetch();
             void board.refetch();
           }}
         />
@@ -126,12 +132,7 @@ export function FloorBoardPage({ canManage }: { canManage: boolean }) {
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <PageHeading
-          outlet={t("floor.outletContext", {
-            name: outlet.name,
-            code: outlet.code,
-          })}
-        />
+        <PageHeading outlet={outlet.name} />
         <div className="flex flex-wrap items-center gap-3">
           <p
             className="text-sm text-muted-foreground tabular"

@@ -23,6 +23,7 @@ const defs = await import(`${base}/definitions.ts`);
 const guard = await import(`${base}/guard.ts`);
 const accessLib = await import(`${base}/access.ts`);
 const nav = await import(`${base}/nav.ts`);
+const outletSel = await import(`${base}/outlet-selection.ts`);
 const i18n = await import("../packages/shared/src/i18n/index.ts");
 const rbac = await import("../packages/shared/src/access/index.ts");
 
@@ -349,6 +350,7 @@ describe("FE-AREA-09 resolveAreaAccess reads the access view, fails closed", () 
     mfaRequired: false,
     mfaVerified: false,
     stations: ["11111111-1111-4111-8111-111111111111"],
+    outlets: [],
     supportSession: null,
     ...extra,
   });
@@ -417,5 +419,84 @@ describe("FE-AREA-09 resolveAreaAccess reads the access view, fails closed", () 
       assert.equal(access.permissions.length, 0);
       assert.equal(access.mfaRequired, true);
     }
+  });
+});
+
+// legend-2aqp: the staff outlet context comes from the assigned outlets.
+describe("FE-AREA-10 outlet selection from the session outlets", () => {
+  const session = { user: { id: "u1" } };
+  const make = (n, name) => ({
+    id: `00000000-0000-4000-8000-00000000000${n}`,
+    name,
+    timeZone: "Asia/Jakarta",
+    businessDayCutoff: "04:00",
+  });
+  const a = make(1, "Bandung");
+  const b = make(2, "Bandung 2");
+  const fakeStorage = (initial = null) => {
+    let value = initial;
+    return {
+      getItem: () => value,
+      setItem: (_key, next) => {
+        value = next;
+      },
+    };
+  };
+
+  test("0 outlets: no selection, choice none", () => {
+    assert.equal(outletSel.outletChoice([]), "none");
+    assert.equal(outletSel.resolveSelectedOutlet([], a.id), null);
+    assert.equal(outletSel.resolveSelectedOutlet([], null), null);
+  });
+
+  test("1 outlet: selected without a picker, saved id ignored", () => {
+    assert.equal(outletSel.outletChoice([a]), "single");
+    assert.equal(outletSel.resolveSelectedOutlet([a], null), a);
+    assert.equal(outletSel.resolveSelectedOutlet([a], b.id), a);
+  });
+
+  test("2+ outlets: picker, saved pick wins, invalid falls back to first", () => {
+    assert.equal(outletSel.outletChoice([a, b]), "multiple");
+    assert.equal(outletSel.resolveSelectedOutlet([a, b], b.id), b);
+    assert.equal(outletSel.resolveSelectedOutlet([a, b], null), a);
+    assert.equal(outletSel.resolveSelectedOutlet([a, b], "gone"), a);
+    assert.equal(outletSel.resolveSelectedOutlet([a, b], undefined), a);
+  });
+
+  test("saved pick round-trips; blocked storage never throws", () => {
+    const storage = fakeStorage();
+    assert.equal(outletSel.readSavedOutletId(storage), null);
+    outletSel.saveOutletId(b.id, storage);
+    assert.equal(outletSel.readSavedOutletId(storage), b.id);
+    const blocked = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    assert.equal(outletSel.readSavedOutletId(blocked), null);
+    assert.doesNotThrow(() => outletSel.saveOutletId(a.id, blocked));
+    assert.equal(outletSel.readSavedOutletId(null), null);
+  });
+
+  test("outlets come from the access view; failures and anonymous have none", async () => {
+    const view = {
+      permissions: ["kds.ticket.process"],
+      mfaRequired: false,
+      mfaVerified: false,
+      stations: [],
+      outlets: [a, b],
+      supportSession: null,
+    };
+    const access = await accessLib.resolveAreaAccess(session, async () => view);
+    assert.deepEqual(access.outlets, [a, b]);
+    const failed = await accessLib.resolveAreaAccess(session, async () => {
+      throw new Error("down");
+    });
+    assert.deepEqual(failed.outlets, []);
+    assert.deepEqual(accessLib.ANONYMOUS_ACCESS.outlets, []);
+    assert.equal(accessLib.accessForMockRole("all").outlets.length, 1);
   });
 });
