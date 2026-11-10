@@ -679,6 +679,89 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     expect(result.points).toBe(100);
     expect(Date.parse(result.earliestExpiresAt!)).toBe(inDays(10).getTime());
   });
+
+  it("LOY-07 a full restore of a redeem that spanned two grants, with a later redeem in between: T1 expires 50 on A, T2 expires 100 on B", async () => {
+    const { world, member } = await expiryWorld();
+    const a = await earn(world, member.id, 100, D1); // A
+    const b = await earn(world, member.id, 100, D2); // B
+    const r1 = await redeem(world, member.id, 150); // R1
+    await redeem(world, member.id, 50); // R2
+    await restore(world, member.id, r1.entry.id, 150);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(150);
+
+    expect(await runExpiry(world, member.id, T1)).toBe(50);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(100);
+    expect(await runExpiry(world, member.id, T2)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+
+    const rows = await expireRows(world.tenantId, member.id);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      points: "-50",
+      reverses_entry_id: a.entry.id,
+    });
+    expect(rows[1]).toMatchObject({
+      points: "-100",
+      reverses_entry_id: b.entry.id,
+    });
+  });
+
+  it("LOY-07 an order refund of the redeemed grant, then a restore: nothing expires at D2, the later grant expires whole at D3", async () => {
+    const { world, member } = await expiryWorld();
+    const a = await earn(world, member.id, 100, D2); // A
+    const used = await redeem(world, member.id, 100); // R uses A
+    const b = await earn(world, member.id, 100, D3); // B
+    // The refund of A's order reverses A's 100 points (a `reverse` row).
+    await post(world, member.id, {
+      type: "reverse",
+      points: -100,
+      sourceType: "refund",
+      sourceId: randomUUID(),
+      reversesEntryId: a.entry.id,
+    });
+    await restore(world, member.id, used.entry.id, 100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(100);
+
+    expect(await runExpiry(world, member.id, T2)).toBe(0);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(100);
+
+    expect(await runExpiry(world, member.id, T3)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    const rows = await expireRows(world.tenantId, member.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      points: "-100",
+      reverses_entry_id: b.entry.id,
+    });
+  });
+
+  it("LOY-07 an order refund of the redeemed grant, then a partial restore: nothing expires at D2, the later grant expires whole at D3", async () => {
+    const { world, member } = await expiryWorld();
+    const a = await earn(world, member.id, 100, D2); // A
+    const used = await redeem(world, member.id, 60); // R uses 60 of A
+    const b = await earn(world, member.id, 100, D3); // B
+    await post(world, member.id, {
+      type: "reverse",
+      points: -100,
+      sourceType: "refund",
+      sourceId: randomUUID(),
+      reversesEntryId: a.entry.id,
+    });
+    await restore(world, member.id, used.entry.id, 60);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(100);
+
+    expect(await runExpiry(world, member.id, T2)).toBe(0);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(100);
+
+    expect(await runExpiry(world, member.id, T3)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    const rows = await expireRows(world.tenantId, member.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      points: "-100",
+      reverses_entry_id: b.entry.id,
+    });
+  });
 });
 
 // ---- birthday bonus ---------------------------------------------------------------

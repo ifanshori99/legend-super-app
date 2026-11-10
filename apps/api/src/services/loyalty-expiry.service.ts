@@ -68,10 +68,22 @@ type GrantState = {
 };
 
 /** One grant during the replay; `expiresAt` null never expires. */
-type Lot = { id: string; expiresAt: Date | null; left: number };
+type Lot = {
+  id: string;
+  expiresAt: Date | null;
+  left: number;
+  /** Replay position of the grant row. */
+  seq: number;
+};
 
-/** Points one consuming row took from one lot. */
-type Allocation = { lot: Lot; points: number };
+/** Points one consuming row (`owner` = its allocation list) took from one lot. */
+type Allocation = {
+  lot: Lot;
+  points: number;
+  owner: Allocation[];
+  /** Replay position of the consuming row. */
+  seq: number;
+};
 
 /** FIFO order: earliest `expires_at` first (no expiry last), then id. */
 function fifoOrder(a: Lot, b: Lot): number {
@@ -89,7 +101,9 @@ function fifoOrder(a: Lot, b: Lot): number {
  * that redemption gives the points back to those grants, latest-expiring
  * first. A reversal or expire row takes from its own grant; what it takes
  * beyond that grant's live points came out of the balance, so it consumes the
- * other live grants FIFO.
+ * other live grants FIFO, and redemptions charged to the reversed grant move
+ * to the grants that paid. After each restore, `settle` moves claims of rows
+ * posted after a refilled grant off later-expiring grants onto it.
  */
 async function loadGrantStates(
   tx: Tx,
@@ -118,10 +132,26 @@ async function loadGrantStates(
   const fifo: Lot[] = [];
   /** What each consuming row took, in the order it took it. */
   const taken = new Map<string, Allocation[]>();
+  /** Allocations still charged to each lot. */
+  const claims = new Map<Lot, Allocation[]>();
   const expireRows = new Map<string, number>();
 
-  const consume = (points: number): Allocation[] => {
-    const allocations: Allocation[] = [];
+  const charge = (
+    owner: Allocation[],
+    lot: Lot,
+    points: number,
+    seq: number,
+  ): void => {
+    const allocation: Allocation = { lot, points, owner, seq };
+    owner.push(allocation);
+    const list = claims.get(lot);
+    if (list === undefined) claims.set(lot, [allocation]);
+    else list.push(allocation);
+  };
+
+  /** Takes `points` from the live lots FIFO; returns what came from where. */
+  const consume = (points: number): { lot: Lot; points: number }[] => {
+    const parts: { lot: Lot; points: number }[] = [];
     let rest = points;
     for (const lot of fifo) {
       if (rest <= 0) break;
@@ -129,18 +159,73 @@ async function loadGrantStates(
       if (take <= 0) continue;
       lot.left -= take;
       rest -= take;
-      allocations.push({ lot, points: take });
+      parts.push({ lot, points: take });
     }
-    return allocations;
+    return parts;
   };
 
-  const takeFromGrant = (lot: Lot, points: number): void => {
+  /**
+   * A reversal or expire row of `lot`. What the lot no longer holds was
+   * consumed by redemptions; the excess comes out of the other live lots, and
+   * those redemptions are now charged there (latest claim first), so a later
+   * restore gives the points back to the lots that really paid.
+   */
+  const takeFromGrant = (lot: Lot, points: number, seq: number): void => {
     const own = Math.min(lot.left, points);
     lot.left -= own;
-    consume(points - own);
+    const parts = consume(points - own);
+    const onLot = claims.get(lot) ?? [];
+    for (let index = onLot.length - 1; index >= 0; index--) {
+      const claim = onLot[index]!;
+      for (const part of parts) {
+        if (claim.points <= 0) break;
+        const move = Math.min(claim.points, part.points);
+        if (move <= 0) continue;
+        claim.points -= move;
+        part.points -= move;
+        charge(claim.owner, part.lot, move, claim.seq);
+      }
+    }
+    // The rest of the excess is this row's own claim, so `settle` can move it
+    // onto a lot a later restore refills.
+    const excess: Allocation[] = [];
+    for (const part of parts)
+      if (part.points > 0) charge(excess, part.lot, part.points, seq);
   };
 
-  for (const row of rows) {
+  const expiryTime = (lot: Lot): number =>
+    lot.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY;
+
+  /**
+   * After a restore refilled a lot: redemptions posted after that lot and
+   * charged to a later-expiring lot move onto it (latest-expiring lot first),
+   * so the member keeps the points that expire last, as plain FIFO would.
+   */
+  const settle = (): void => {
+    for (let early = 0; early < fifo.length; early++) {
+      const lot = fifo[early]!;
+      for (let late = fifo.length - 1; late > early && lot.left > 0; late--) {
+        const other = fifo[late]!;
+        if (expiryTime(other) <= expiryTime(lot)) break;
+        const onOther = claims.get(other) ?? [];
+        for (
+          let index = onOther.length - 1;
+          index >= 0 && lot.left > 0;
+          index--
+        ) {
+          const claim = onOther[index]!;
+          if (claim.points <= 0 || claim.seq < lot.seq) continue;
+          const move = Math.min(claim.points, lot.left);
+          claim.points -= move;
+          other.left += move;
+          lot.left -= move;
+          charge(claim.owner, lot, move, claim.seq);
+        }
+      }
+    }
+  };
+
+  for (const [seq, row] of rows.entries()) {
     const isGrant =
       (row.type === "earn" ||
         row.type === "bonus" ||
@@ -151,6 +236,7 @@ async function loadGrantStates(
         id: row.id,
         expiresAt: row.expiresAt,
         left: row.points,
+        seq,
       };
       lots.set(row.id, lot);
       const at = fifo.findIndex((other) => fifoOrder(lot, other) < 0);
@@ -166,8 +252,13 @@ async function loadGrantStates(
       );
     if (row.points < 0) {
       const points = -row.points;
-      if (target !== undefined) takeFromGrant(target, points);
-      else taken.set(row.id, consume(points));
+      if (target !== undefined) takeFromGrant(target, points, seq);
+      else {
+        const owner: Allocation[] = [];
+        for (const part of consume(points))
+          charge(owner, part.lot, part.points, seq);
+        taken.set(row.id, owner);
+      }
       continue;
     }
     // A restore: the points go back where the reversed row took them from.
@@ -182,6 +273,7 @@ async function loadGrantStates(
       allocation.lot.left += back;
       rest -= back;
     }
+    settle();
   }
 
   return fifo
