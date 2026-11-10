@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import express, { type Request } from "express";
 import cors from "cors";
 import helmet from "helmet";
+import type { MessagingProvider } from "@starter/shared/adapters";
 import { pinoHttp } from "pino-http";
 import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
 import { env, trustProxySetting } from "./config/env";
@@ -177,6 +178,7 @@ export function createApp({
     db,
     consoleLikeLog(defaultLogger),
   ),
+  messagingProvider = null,
 }: {
   logger?: Logger;
   /** Test seam; production reads EDGE_MODE (legend-2pi route split). */
@@ -189,6 +191,8 @@ export function createApp({
   loginChallengeRateLimit?: Partial<LoginChallengeRateLimitOptions>;
   /** Test seam; production reads STORAGE_* (null: uploads answer 503, legend-dzh9q). */
   storageRuntime?: StorageRuntime | null;
+  /** WhatsApp sender for the payslip PIN reset code (legend-qih2m). No production provider is wired yet: null answers 503. */
+  messagingProvider?: MessagingProvider | null;
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
@@ -433,7 +437,11 @@ export function createApp({
   // Object storage consumers (core-storage router, attendance selfie URLs).
   app.use(
     "/api",
-    createStorageApiRouter({ runtime: storageRuntime, database: db }),
+    createStorageApiRouter({
+      runtime: storageRuntime,
+      database: db,
+      messaging: messagingProvider,
+    }),
   );
   app.use("/api", apiRouter);
 

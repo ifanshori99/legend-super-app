@@ -3123,3 +3123,13 @@ Langkah berikut CTO baru:
 - 23:39 Codex #3 pulih (founder reset). Mulai Codex: G9rwc review profit share approval (405, xhigh), G6g14 review ulang Duitku (406, xhigh), G6zvt mockup PIN slip gaji ilzrj (407). Sisa antre untuk Codex #2 00:41: w5by9, vfj7z, HRIS attendance, Wi-Fi edge, WS-08 B. Claude: qih2m brief 408.
 - 23:42 Codex 406 Duitku ulang: 3 P1 + 2 P2 (374 #3 #4 belum tertutup). Kartu legend-s0u8c P0, brief 409 (opus, desain kunci uang). Duitku tidak boleh rilis sebelum ini. G2i7n pti5r: desain architect disetujui (ledger promo tidak disentuh). Aturan paralel engineer diperketat (subagent).
 - 23:43 Codex 405 profit share: P1 backfill 0239 penerima lama, P2 audit approval.decided -> legend-9t04v brief 410 (sonnet; keputusan CTO: riwayat tepercaya atau NULL + rekonsiliasi Owner). G0q0o snhxw selesai a9d5aa09 (versi kunci hanya naik ke target; 18 merah di basis; risiko DoS sesi app diterima). G1yp2 outlet followups selesai (wpgfu 1f67882c, gmcmr d9d4919c, 5lsn5 5f7f85bd). Ketiganya resolved, batch48d. Aturan paralel engineer diperketat: Explore+test-writer giliran pertama, kerja saat menunggu heavy, gagal-dulu unit bukan e2e.
+
+## legend-qih2m: adapter WhatsApp kode reset PIN slip gaji (11 Nov 2026, cabang `ws/qih2m-payslip-otp`, dari `ws/hris-pii-pin` 8305fdc3)
+
+- Sudah: `payslip-pin-whatsapp-sender.ts` menyambungkan port `PayslipPinOtpSender` ke `MessagingProvider.send` (teks OTP berbahasa Indonesia, referensi `payslip-pin-otp:<challengeId>`, nomor hanya angka, tanpa log, error provider dibuang). `createApp({ messagingProvider })` mengalir ke `createStorageApiRouter({ messaging })` dan `createHrisPayslipRouter({ otpSender })`; tanpa provider reset-otp tetap 503. Port bertambah `outletId` dan `challengeId`.
+- Keputusan architect (K, xhigh): satu temuan nyata. Pesan dikirim di bawah `auditOutletFor(context, homeOutletId)`, bukan langsung outlet asal, supaya pegawai yang perannya ada di outlet lain tidak selalu dapat 503. Test gagal-dulu terbukti (503, seharusnya 200).
+- Bukti: 48 dari 48 test terarah hijau SEBELUM perbaikan architect; typecheck api bersih sesudahnya; `db:generate` kosong; prettier bersih.
+- Setelah Mac restart (layanan akun pulih): tiga berkas test dijalankan ulang sesudah perbaikan architect, 49 dari 49 hijau termasuk test "outlet peran beda dari outlet asal". Cabang di-push.
+- Langkah berikut: review merge train. Adapter Kirim outbound produksi: kartu terpisah legend-w8dfz.
+- Risiko: belum ada `MessagingProvider` produksi di repo (server.ts tidak mengirim provider), jadi produksi tetap 503 sampai adapter Kirim outbound dibuat (kartu terpisah bila diinginkan). `MessageRequest` hanya teks, tanpa tipe template.
+- Ukuran: 6 subagent (2 Explore, 3 test-writer, 1 architect), puncak 2 bersamaan.
