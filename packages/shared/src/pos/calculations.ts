@@ -17,9 +17,11 @@ import {
 import type { Idr } from "../core/index.ts";
 import type { PaymentMethod } from "../payment/index.ts";
 import { PosError } from "./errors.ts";
+import { IDR_CASH_DENOMINATIONS } from "./schemas.ts";
 import type {
   BlindCashCount,
   PosShift,
+  PosShiftWithFigures,
   PosTender,
   TenderBucket,
 } from "./schemas.ts";
@@ -195,9 +197,17 @@ export function blindCountTotalIdr(counts: readonly BlindCashCount[]): Idr {
   if (counts.length === 0)
     throw new RangeError("A blind count needs at least one denomination");
   let total = 0n;
+  const seen = new Set<number>();
   for (const row of counts) {
-    if (!Number.isSafeInteger(row.denominationIdr) || row.denominationIdr <= 0)
+    if (
+      !(IDR_CASH_DENOMINATIONS as readonly number[]).includes(
+        row.denominationIdr,
+      )
+    )
       throw new RangeError(`Invalid denomination: ${row.denominationIdr}`);
+    if (seen.has(row.denominationIdr))
+      throw new RangeError(`Duplicate denomination: ${row.denominationIdr}`);
+    seen.add(row.denominationIdr);
     if (!Number.isSafeInteger(row.quantity) || row.quantity < 0)
       throw new RangeError(`Invalid note count: ${row.quantity}`);
     total += BigInt(row.denominationIdr) * BigInt(row.quantity);
@@ -226,6 +236,14 @@ export function assertCashMovementAllowed(
 
 export type CloseShiftInput = {
   readonly counts: readonly BlindCashCount[];
+  /** The stored count submission (`pos_shift_counts`) the close uses. */
+  readonly countId: string;
+  /**
+   * Cash held for supervisor review at count time (left out of expected).
+   * The note rule judges counted − expected + held, as if nothing were held,
+   * so a held item never shows itself through the note (legend-utqr).
+   */
+  readonly heldCashOutIdr?: number;
   readonly varianceNote: string | null;
   readonly approvedBy: string;
   readonly approvalRequestId: string;
@@ -240,12 +258,18 @@ export type CloseShiftInput = {
  * selisih memiliki penjelasan dan persetujuan"). The result is the stored row;
  * after this the variance is locked.
  */
-export function closeShift(shift: PosShift, input: CloseShiftInput): PosShift {
+export function closeShift(
+  shift: PosShiftWithFigures,
+  input: CloseShiftInput,
+): PosShiftWithFigures {
   if (shift.status === "closed") throw new PosError("SHIFT_ALREADY_CLOSED");
   const countedIdr = blindCountTotalIdr(input.counts);
   const expectedIdr = shiftExpectedCashIdr(shift);
   const varianceIdr = shiftVarianceIdr(countedIdr, expectedIdr);
-  if (varianceIdr !== 0 && (input.varianceNote ?? "").trim().length === 0)
+  if (
+    varianceIdr + (input.heldCashOutIdr ?? 0) !== 0 &&
+    (input.varianceNote ?? "").trim().length === 0
+  )
     throw new PosError("SHIFT_VARIANCE_NOTE_REQUIRED");
   return {
     ...shift,
@@ -258,6 +282,7 @@ export function closeShift(shift: PosShift, input: CloseShiftInput): PosShift {
     approvalRequestId: input.approvalRequestId,
     approvedAt: input.approvedAt,
     closedAt: input.closedAt,
+    countId: input.countId as PosShift["countId"],
   };
 }
 

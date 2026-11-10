@@ -568,8 +568,13 @@ describe("legend-kwxj accounting core", () => {
     const entry = await withTenant(db, context, (tx) =>
       postJournalFromRuleInTransaction(tx, context, {
         eventName: "order.paid",
+        // The order.paid rule contract (auto-journals, legend-9pz9) carries
+        // every money bucket, including the intent-backed gateway tenders and
+        // the reservation deposit applied (both customer_deposit).
         amounts: {
           paidCashIdr: 88_000,
+          paidGatewayIntentIdr: 0,
+          paidDepositIdr: 0,
           paidGatewayIdr: 0,
           paidEdcIdr: 0,
           paidPointsIdr: 0,
@@ -592,6 +597,33 @@ describe("legend-kwxj accounting core", () => {
     expect(entry.lines).toHaveLength(2);
     expect(entry.lines[0]?.accountId).toBe(cash.id);
     expect(entry.lines[1]?.accountId).toBe(revenue.id);
+
+    // The amount set is exact: a caller still on the pre-deposit key set is
+    // refused, never posted with the missing buckets read as zero.
+    await expect(
+      withTenant(db, context, (tx) =>
+        postJournalFromRuleInTransaction(tx, context, {
+          eventName: "order.paid",
+          amounts: {
+            paidCashIdr: 88_000,
+            paidGatewayIdr: 0,
+            paidEdcIdr: 0,
+            paidPointsIdr: 0,
+            discountIdr: 0,
+            grossSalesIdr: 88_000,
+            serviceChargeIdr: 0,
+            pbjtIdr: 0,
+            roundingIdr: 0,
+          },
+          legalEntityId: entity,
+          outletId,
+          entryDate: "2026-11-02",
+          sourceId: randomUUID(),
+          postedBy: userIdSchema.parse(userId),
+          idempotencyKey: `order.paid:${randomUUID()}`,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "POSTING_AMOUNTS_MISMATCH" });
   });
 
   it("TEN-03 requires authentication and accounting.journal.view; TEN-02 keeps tenant from the session", async () => {

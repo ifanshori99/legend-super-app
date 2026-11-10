@@ -701,6 +701,80 @@ test("WS-14 domain events are catalogued and validate their payloads", () => {
     true,
   );
 
+  // Notification events (legend-lvx2): reminders, completion, prep list.
+  const completedRun = f.checklistRuns.find(
+    (run) => run.status === "completed",
+  );
+  const schedule = f.maintenanceSchedules[0];
+  const prepList = f.prepLists[0];
+  const notificationEnvelopes = [
+    {
+      name: "checklist.completed",
+      aggregateType: "checklist",
+      payload: {
+        runId: completedRun.id,
+        templateId: completedRun.templateId,
+        shiftDate: completedRun.shiftDate,
+        assignedTo: completedRun.assignedTo,
+        dueAt: completedRun.dueAt,
+        completedAt: completedRun.completedAt,
+      },
+    },
+    {
+      name: "checklist.reminded",
+      aggregateType: "checklist",
+      payload: {
+        runId: completedRun.id,
+        templateId: completedRun.templateId,
+        shiftDate: completedRun.shiftDate,
+        assignedTo: completedRun.assignedTo,
+        dueAt: completedRun.dueAt,
+        remindedAt: "2026-10-31T08:45:00.000Z",
+      },
+    },
+    {
+      name: "equipment_service.reminded",
+      aggregateType: "equipment_service",
+      payload: {
+        scheduleId: schedule.id,
+        equipmentId: schedule.equipmentId,
+        nextDueAt: schedule.nextDueAt,
+        vendorId: schedule.vendorId,
+        remindedAt: "2026-10-31T01:00:00.000Z",
+      },
+    },
+    {
+      name: "prep_list.created",
+      aggregateType: "prep_list",
+      payload: {
+        prepListId: prepList.id,
+        prepDate: prepList.prepDate,
+        lineCount: prepList.lines.length,
+        generatedFromForecastId: prepList.generatedFromForecastId,
+        generatedAt: prepList.generatedAt,
+      },
+    },
+  ].map((event) => ({
+    ...events.eventFixture,
+    ...event,
+    payloadSchemaRef: `${event.name}.v1`,
+  }));
+  for (const envelope of notificationEnvelopes) {
+    assert.equal(
+      operations.operationsEventSchema.safeParse(envelope).success,
+      true,
+      envelope.name,
+    );
+    assert.equal(
+      operations.operationsEventSchema.safeParse({
+        ...envelope,
+        payload: { ...envelope.payload, extra: true },
+      }).success,
+      false,
+      `${envelope.name} rejects extra keys`,
+    );
+  }
+
   // A payload from another event and a foreign event name are both rejected.
   assert.equal(
     operations.operationsEventSchema.safeParse({

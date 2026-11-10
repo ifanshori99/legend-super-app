@@ -1,13 +1,13 @@
 # Frontend standard (TanStack Start web app)
 
-The web app has no database or auth server of its own. It renders pages, talks to the Express API, and keeps API data in TanStack Query. The Notes page is the reference.
+The web app has no database or auth server of its own. It renders pages, talks to the Express API, and keeps API data in TanStack Query. Each feature folder follows the same layers; the examples below use `<resource>` as a placeholder name.
 
 ```text
 component
-  → custom hook            features/notes/hooks.ts      useNotes, useCreateNote, …
-  → query options / keys   features/notes/queries.ts    notesKeys, notesListQuery
-  → endpoint function      features/notes/api.ts        listNotes, createNote, …
-  → apiFetch               lib/api/client.ts            base URL, cookies, ApiError
+  → custom hook            features/<resource>/hooks.ts      useX, useCreateX, …
+  → query options / keys   features/<resource>/queries.ts    xKeys, xListQuery
+  → endpoint function      features/<resource>/api.ts        listX, createX, …
+  → apiFetch               lib/api/client.ts                 base URL, cookies, ApiError
   → Express API
 ```
 
@@ -15,8 +15,8 @@ component
 
 - **Browser client** — `lib/auth-client.ts` creates the Better Auth client for `VITE_API_URL` with `credentials: "include"` and the admin plugin (sharing `@starter/shared/permissions`). Sign-in, sign-up, and sign-out forms call it directly, then `router.invalidate()` re-runs the route guards.
 - **Server middleware** — `lib/auth.middleware.ts` defines `authMiddleware`, a TanStack Start server function middleware. On the web server it reads the visitor's session from the API by forwarding their cookie (`lib/session.server.ts`) and puts it on `context.session`. `requireAuthMiddleware` additionally rejects anonymous calls — attach it to any server function you add that must not run signed out.
-- **Session in routes** — `routes/__root.tsx` calls `getSessionFn()` in `beforeLoad` and shares `{ session }` as router context. `_protected.tsx` redirects to `/sign-in` without one; `_auth.tsx` redirects signed-in visitors to `/` (`siteConfig.homePath`).
-- **Roles in the UI** — `roleHasPermission(session.user.role, { notes: ["read-any"] })` from `@starter/shared/permissions` hides links and, in a page's `beforeLoad`, throws `notFound()`. The API re-checks every request; never treat a UI check as authorization.
+- **Session in routes** — `routes/__root.tsx` calls `getSessionFn()` in `beforeLoad` and shares `{ session }` as router context. the area layouts (`routes/_<area>.tsx`, see "Where to put a new screen") redirect to `/sign-in` without one; `_auth.tsx` redirects signed-in visitors to the app home (`siteConfig.appHomePath`, `/member`), and so do sign-up and sign-in; `/` (`siteConfig.homePath`) stays the public brand website.
+- **Roles in the UI** — `roleHasPermission(session.user.role, { <resource>: ["<action>"] })` from `@starter/shared/permissions` hides links and, in a page's `beforeLoad`, throws `notFound()`. The API re-checks every request; never treat a UI check as authorization.
 
 The session cookie belongs to the API host. The web server receives it because cookies ignore ports (`localhost`) or because production sets `COOKIE_DOMAIN` to a parent domain of both apps.
 
@@ -32,59 +32,59 @@ Non-2xx responses throw `ApiError(status, code, message, details)` built from th
 ## Query options and keys
 
 ```ts
-export const notesKeys = {
-  all: ["notes"] as const,
-  lists: () => [...notesKeys.all, "list"] as const,
-  list: (params: ListNotesInput) => [...notesKeys.lists(), params] as const,
-  detail: (id: string) => [...notesKeys.all, "detail", id] as const,
+export const xKeys = {
+  all: ["x"] as const,
+  lists: () => [...xKeys.all, "list"] as const,
+  list: (params: ListXInput) => [...xKeys.lists(), params] as const,
+  detail: (id: string) => [...xKeys.all, "detail", id] as const,
 };
 
-export function notesListQuery(params = { limit: 20, offset: 0 }) {
+export function xListQuery(params = { limit: 20, offset: 0 }) {
   return queryOptions({
-    queryKey: notesKeys.list(params),
-    queryFn: ({ signal }) => listNotes(params, signal),
+    queryKey: xKeys.list(params),
+    queryFn: ({ signal }) => listX(params, signal),
   });
 }
 ```
 
-Hierarchical keys make invalidation precise: `notesKeys.lists()` refreshes every page of the list; `notesKeys.all` refreshes everything about notes.
+Hierarchical keys make invalidation precise: `xKeys.lists()` refreshes every page of the list; `xKeys.all` refreshes everything about the resource.
 
 ## Custom hooks
 
 Components never call `apiFetch` or `useQuery` directly; they use the feature's hooks, which own cache updates:
 
 ```ts
-export function useNotes(params?: ListNotesInput) {
-  return useSuspenseQuery(notesListQuery(params));
+export function useX(params?: ListXInput) {
+  return useSuspenseQuery(xListQuery(params));
 }
 
-export function useCreateNote() {
+export function useCreateX() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: createNote,
-    onSuccess: (note) => {
-      queryClient.setQueryData(notesKeys.detail(note.id), note);
-      return queryClient.invalidateQueries({ queryKey: notesKeys.lists() });
+    mutationFn: createX,
+    onSuccess: (item) => {
+      queryClient.setQueryData(xKeys.detail(item.id), item);
+      return queryClient.invalidateQueries({ queryKey: xKeys.lists() });
     },
   });
 }
 ```
 
-`useDeleteNote` shows an optimistic update: it removes the note from every cached page immediately, restores the snapshot if the API refuses, and refetches afterwards. Mutation errors are `ApiError`s; `errorMessage()` in `note-form.tsx` turns them (including field `details`) into readable text.
+A delete hook can use an optimistic update: remove the item from every cached page immediately, restore the snapshot if the API refuses, and refetch afterwards. Mutation errors are `ApiError`s; a small helper in the feature's form component can turn them (including field `details`) into readable text.
 
 ## Server rendering with data
 
 ```ts
-export const Route = createFileRoute("/_protected/notes")({
+export const Route = createFileRoute("/_<area>/<url-with-dots>")({
   validateSearch: z.object({
     offset: z.coerce.number().int().min(0).max(1_000_000).catch(0).default(0),
   }),
   loaderDeps: ({ search }) => ({ offset: search.offset }),
   loader: ({ context, deps }) =>
     context.queryClient.ensureQueryData(
-      notesListQuery({ limit: 20, offset: deps.offset }),
+      xListQuery({ limit: 20, offset: deps.offset }),
     ),
-  component: NotesPage, // calls useNotes({ limit: 20, offset })
+  component: XPage, // calls useX({ limit: 20, offset })
 });
 ```
 
@@ -98,11 +98,11 @@ Files ending in `.server.ts` (`session.server.ts`, `logger.server.ts`, `api/upst
 
 ## Add a feature's UI
 
-1. `features/<resource>/api.ts`: one typed function per endpoint using `@starter/shared` types. Encode values placed in a path (`` `/api/notes/${encodeURIComponent(id)}` ``): during SSR the call carries the visitor's cookie, and an unencoded `../` from a URL parameter would reach a different API route.
+1. `features/<resource>/api.ts`: one typed function per endpoint using `@starter/shared` types. Encode values placed in a path (`` `/api/<resource>/${encodeURIComponent(id)}` ``): during SSR the call carries the visitor's cookie, and an unencoded `../` from a URL parameter would reach a different API route.
 2. `features/<resource>/queries.ts`: keys and `queryOptions`.
 3. `features/<resource>/hooks.ts`: `useX` (suspense), mutations with cache updates.
 4. Components under `features/<resource>/components/`, reusing `components/ui`.
-5. A page under `routes/_protected/` whose loader ensures the query; `roleHasPermission` in `beforeLoad` for cross-account pages.
+5. A page under its area's route folder (`routes/_<area>/`, see "Where to put a new screen") whose loader ensures the query; `roleHasPermission` in `beforeLoad` for cross-account pages.
 6. A Playwright test in `e2e/` for the main flow, then `pnpm test:e2e`.
 
 ### Forms
@@ -254,7 +254,7 @@ export const createOutlet = (body) =>
 - Arguments are typed from the contract: `{ params, query, body }`, only the parts the endpoint declares; the input argument is required exactly when a part is required. A 204 endpoint resolves `undefined`.
 - Input is parsed with the endpoint's schemas **before** the request (defaults applied, `ApiError` `VALIDATION_ERROR` with `details` on failure). The response is parsed in development and mock mode; a drift fails loudly as `ApiError` `RESPONSE_SHAPE_INVALID` (502).
 - `endpointQueryKey(endpoint, input)` is `[endpoint.id, input]`: hierarchical enough for `invalidateQueries({ queryKey: [endpoint.id] })`.
-- Hand-written `apiFetch<T>(path, …)` (the Notes pattern) keeps working, in mock mode too, as long as a mock exists for the path.
+- Hand-written `apiFetch<T>(path, …)` keeps working, in mock mode too, as long as a mock exists for the path.
 
 ### 3. Mock mode
 

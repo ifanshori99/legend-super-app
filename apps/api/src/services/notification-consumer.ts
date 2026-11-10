@@ -5,12 +5,14 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import { notificationCreated } from "@starter/shared/notification";
 import {
   deliveryAttempts,
   notificationOutbox,
   notifications,
 } from "../db/schema/notification.ts";
 import type { consumeOutbox } from "./core-outbox.ts";
+import { appendNotificationEvent } from "./notification-events.ts";
 import {
   buildNotificationBatch,
   type NotificationRecipient,
@@ -67,6 +69,19 @@ export function createNotificationConsumer(
         .onConflictDoNothing()
         .returning({ id: notifications.id });
       if (!created.length) continue;
+      // Same transaction as the row: replay (conflict above) emits nothing.
+      await appendNotificationEvent(tx, context, notificationCreated, {
+        aggregateId: notification.id,
+        outletId: event.outletId,
+        actorUserId: null,
+        payload: {
+          notificationId: notification.id,
+          userId: notification.userId,
+          category: notification.category,
+          realtime: plan.realtime,
+        },
+        now,
+      });
       for (const channel of plan.channels) {
         await tx.insert(deliveryAttempts).values({
           tenantId: event.tenantId,

@@ -115,7 +115,7 @@ describe("TEN-03 access storage tenant isolation", () => {
     await expect(
       owner.query(
         `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, assigned_by, valid_from, valid_until)
-       VALUES ($1, $2, $3, 'tenant', $2, now(), now())`,
+       VALUES ($1, $2, $3, 'tenant', $2, now(), now() - interval '1 second')`,
         [tenantB, person, roleB],
       ),
     ).rejects.toMatchObject({ code: "23514" });

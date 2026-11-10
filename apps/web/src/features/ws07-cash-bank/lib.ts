@@ -33,6 +33,7 @@ import {
   type ReconciliationRef,
   type UndepositedCashAlert,
 } from "@starter/shared/accounting";
+import { createUlid } from "@starter/shared/core";
 import { formatNumber } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
 
@@ -287,7 +288,20 @@ export function defaultCsvMapping(): BankCsvMapping {
 // ---- CSV: import preview --------------------------------------------------
 
 export type ImportRowErrorCode =
-  "columns" | "date" | "amount" | "debit_credit" | "description" | "reference";
+  | "columns"
+  | "date"
+  | "amount"
+  | "debit_credit"
+  | "description"
+  | "reference"
+  | "dedupe_key";
+
+/**
+ * The server refuses a row whose normalised dedupe key is longer than this
+ * (parseStatementCsv); the preview applies the same limit so a row it shows as
+ * ready is never refused on import.
+ */
+export const MAX_DEDUPE_KEY_LENGTH = 400;
 
 export const IMPORT_ROW_ERROR_KEYS: Record<ImportRowErrorCode, MessageKey> = {
   columns: "accounting.cash.import.preview.errorColumns",
@@ -296,6 +310,7 @@ export const IMPORT_ROW_ERROR_KEYS: Record<ImportRowErrorCode, MessageKey> = {
   debit_credit: "accounting.cash.import.preview.errorDebitCredit",
   description: "accounting.cash.import.preview.errorDescription",
   reference: "accounting.cash.import.preview.errorReference",
+  dedupe_key: "accounting.cash.import.preview.errorDedupeKey",
 };
 
 export type ImportRowStatus = "ready" | "duplicate" | "error";
@@ -521,6 +536,12 @@ export function buildImportPreview(
       externalRef,
       occurrence,
     });
+    if (dedupeKey.length > MAX_DEDUPE_KEY_LENGTH) {
+      preview.push(
+        errorRow(rowNumber, description, "dedupe_key", postedOn, amountIdr),
+      );
+      continue;
+    }
     preview.push({
       rowNumber,
       postedOn,
@@ -537,6 +558,36 @@ export function buildImportPreview(
     readyCount: preview.filter((row) => row.status === "ready").length,
     duplicateCount: preview.filter((row) => row.status === "duplicate").length,
     errorCount: preview.filter((row) => row.status === "error").length,
+  };
+}
+
+// ---- Idempotency key per dialog -------------------------------------------
+
+/**
+ * Idempotency keys for the life of a dialog, one per request body. A resend
+ * of the same body after a failed or slow attempt carries the same key, so
+ * the server replays instead of opening a second case. A changed body (for
+ * example another PIC) gets its own key, because the server refuses a key
+ * reused for a different request; going back to an earlier body reuses its
+ * key, since that request may already have reached the server. `reset`
+ * (success) forgets every key; the next dialog starts a new session.
+ */
+export function createIdempotencyKeySession(
+  newKey: () => string = createUlid,
+): { current: (fingerprint?: string) => string; reset: () => void } {
+  const keys = new Map<string, string>();
+  return {
+    current: (fingerprint = "") => {
+      let key = keys.get(fingerprint);
+      if (key === undefined) {
+        key = newKey();
+        keys.set(fingerprint, key);
+      }
+      return key;
+    },
+    reset: () => {
+      keys.clear();
+    },
   };
 }
 
@@ -622,13 +673,6 @@ export function reconciliationCaseActions(
 
 // ---- Matching (ACC-04) ----------------------------------------------------
 
-/**
- * Tenant matching window. The contract exposes `matchingPolicy` as tenant data
- * but has no endpoint that serves it yet, so the screens use the sample
- * tenant's value (2 days) until the finance API adds the policy read.
- */
-export const MATCHING_POLICY: MatchingPolicy = { dateToleranceDays: 2 };
-
 export function candidateKey(ref: ReconciliationRef): string {
   return `${ref.type}:${ref.id}`;
 }
@@ -684,7 +728,7 @@ export function matchCandidates(
 export function suggestMatch(
   line: Pick<BankStatementLine, "amountIdr" | "postedOn">,
   candidates: readonly MatchCandidate[],
-  policy: MatchingPolicy = MATCHING_POLICY,
+  policy: MatchingPolicy,
 ): MatchOutcome {
   return findStatementMatch(line, candidates, policy);
 }
@@ -833,6 +877,7 @@ export function totalDeposits(
 export function matchErrorKey(code: string): MessageKey {
   switch (code) {
     case "STATEMENT_LINE_ALREADY_MATCHED":
+    case "CONFLICT":
       return "accounting.cash.match.error.alreadyMatched";
     case "MATCH_AMOUNT_MISMATCH":
       return "accounting.cash.match.error.amountMismatch";
@@ -842,6 +887,22 @@ export function matchErrorKey(code: string): MessageKey {
       return "accounting.cash.match.error.notFound";
     default:
       return "accounting.cash.match.error.failed";
+  }
+}
+
+/** True when the server refused the CSV because a cell cannot be read. */
+export function isStatementValueInvalid(code: string): boolean {
+  return code === "STATEMENT_VALUE_INVALID";
+}
+
+/** Import refusal → the fallback sentence when the server gives no row detail. */
+export function importErrorKey(code: string): MessageKey {
+  switch (code) {
+    case "STATEMENT_LINE_ALREADY_MATCHED":
+    case "CONFLICT":
+      return "accounting.cash.import.error.conflict";
+    default:
+      return "accounting.cash.import.failed";
   }
 }
 

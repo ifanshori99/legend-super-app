@@ -7,6 +7,7 @@
 // menu.availability.toggle are absent for view-only roles and present for a
 // manager, while the list/detail stays readable.
 import { expect, test, type Page } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 const ROLE_COOKIE = "legend-mock-role";
 const base = process.env.LEGEND_MOCK_WEB_URL ?? "";
@@ -32,9 +33,7 @@ async function clickUntil(
   action: () => Promise<void>,
   assertion: () => Promise<void>,
 ) {
-  await page.waitForFunction(() =>
-    Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
-  );
+  await waitForHydration(page);
   await expect(async () => {
     await action();
     await assertion();

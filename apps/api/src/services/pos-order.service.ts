@@ -61,7 +61,7 @@ import {
 } from "@starter/shared/pos";
 import { resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
-import { tableSessions } from "../db/schema/index.ts";
+import { devices, tableSessions } from "../db/schema/index.ts";
 import {
   orderEvents,
   posApprovalPolicies,
@@ -70,7 +70,13 @@ import {
   posOrderTenders,
 } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { reservationDepositAllocations } from "../db/schema/reservation.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
+import {
+  cancelKitchenItemsForVoidedLines,
+  routeFiredItemsToKitchen,
+} from "./kds.service.ts";
 import {
   releaseMenuItemDailyLimit,
   reserveMenuItemDailyLimit,
@@ -117,9 +123,20 @@ import {
   type OrderRow,
   type PosCaller,
 } from "./pos-order-support.ts";
+import { allocatePickupCall } from "./pickup.service.ts";
+import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
 import { recordTaxSnapshots } from "./tax.service.ts";
+import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
+import { voidPendingQrisTenders } from "./pos-order-payment.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
+import {
+  evaluatePacingIfStale,
+  isLinePaused,
+  readPausedMenuLines,
+} from "./kds-pacing.service.ts";
+import { orderRevenueSplit } from "./order-revenue.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 
 type CreateInput = z.output<typeof createPosOrderEndpoint.body>;
 type SubmitInput = z.output<typeof submitEndpoint.body>;
@@ -172,6 +189,10 @@ export async function mutatePosOrder<T>(
           input.outletId,
           input.orderId,
         );
+        await assertBusinessDayOpen(tx, context, {
+          outletId: input.outletId,
+          businessDates: [locked.order.businessDate],
+        });
         assertExpectedVersion(locked.pos, caller.expectedVersion);
         return run(tx, locked);
       },
@@ -314,18 +335,6 @@ export async function getPosOrder(
       detail: await orderDetail(tx, context, locked),
       version: locked.pos.version,
     };
-  });
-}
-
-/** The current order version, for the `ETag` header after a write. */
-export async function posOrderVersion(
-  context: ScopedTenantContext,
-  outletId: OutletId,
-  orderId: string,
-): Promise<number> {
-  return withTenant(db, context, async (tx) => {
-    const locked = await readPosOrder(tx, context, outletId, orderId);
-    return locked.pos.version;
   });
 }
 
@@ -516,6 +525,13 @@ export async function createPosOrder(
       "VALIDATION_ERROR",
       "Pesanan ojek online tidak makan di tempat.",
     );
+  // legend-6u81: the default service charge covers dine-in reservations, so a
+  // reservation order must be dine-in; takeaway and delivery carry no service.
+  if (input.channel === "reservation" && input.serviceType !== "dine_in")
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Pesanan reservasi hanya untuk makan di tempat.",
+    );
   const tableSessionId = input.tableSessionId ?? null;
   if (tableSessionId !== null && input.serviceType !== "dine_in")
     throw new CoreError(
@@ -528,6 +544,8 @@ export async function createPosOrder(
       "Captain order dicatat untuk sesi meja yang sedang berjalan.",
     );
 
+  // Refresh stale auto-pause state outside any tx; never throws.
+  await evaluatePacingIfStale(context, outletId, now);
   return withTenant(db, context, (tx) =>
     posIdempotent(
       tx,
@@ -594,6 +612,10 @@ export async function createPosOrder(
         }
 
         const businessDate = businessDateFor(outlet, now);
+        await assertBusinessDayOpen(tx, context, {
+          outletId,
+          businessDates: [businessDate],
+        });
         const channel = posPriceChannel(input.channel, input.serviceType);
         const catalogue = await loadPosCatalogue(tx, context, {
           brandId: outlet.brandId,
@@ -604,8 +626,23 @@ export async function createPosOrder(
           itemIds: input.items.map((line) => line.menuItemId),
           now,
         });
+        // KDS-05: lines the kitchen paused for this channel (station at capacity).
+        const pausedLines = await readPausedMenuLines(
+          tx,
+          context,
+          outletId,
+          channel,
+          now,
+        );
         const orderId = createUlid(now.getTime());
         const resolved = input.items.map((line, index) => {
+          if (
+            isLinePaused(pausedLines, line.menuItemId, line.variantId ?? null)
+          )
+            throw new CoreError(
+              "CONFLICT",
+              `KDS-05: menu baris ${index + 1} sedang dijeda untuk kanal ini.`,
+            );
           const item = catalogue.get(line.menuItemId);
           const resolution = resolveLine(item, {
             menuItemId: line.menuItemId,
@@ -701,6 +738,22 @@ export async function createPosOrder(
           })
           .returning();
         if (!order) throw new Error("Order insert returned no row");
+        // Training stamp: the device's mode at creation, fixed for the order's life.
+        let isTraining = false;
+        if (caller.deviceId) {
+          const [device] = await tx
+            .select({ trainingMode: devices.trainingMode })
+            .from(devices)
+            .where(
+              and(
+                eq(devices.tenantId, tenantId),
+                eq(devices.outletId, outlet.id as OutletId),
+                eq(devices.id, caller.deviceId),
+              ),
+            )
+            .limit(1);
+          isTraining = device?.trainingMode ?? false;
+        }
         await tx.insert(posOrders).values({
           orderId,
           tenantId,
@@ -710,34 +763,53 @@ export async function createPosOrder(
           deviceId: caller.deviceId,
           cashierId: caller.userId,
           holdItems: input.holdItems ?? false,
+          isTraining,
           createdAt: now,
           updatedAt: now,
         });
-        await tx.insert(orderItems).values(
+        // HPP per line at sale time (legend-u4js6); NULL = unknown.
+        const costSnapshots = await computeLineCostSnapshots(
+          tx,
+          context,
+          outlet.id as OutletId,
           resolved.map((entry) => ({
-            id: entry.id,
-            tenantId,
-            outletId: outlet.id as OutletId,
-            orderId,
             menuItemId: entry.line.menuItemId,
             variantId: entry.line.variantId ?? null,
-            name: entry.priced.name,
-            quantity: entry.line.quantity,
-            unitPriceIdr: entry.priced.unitPriceIdr,
-            modifiersTotalIdr: entry.priced.modifiersTotalIdr,
-            lineTotalIdr: idr(
-              (entry.priced.unitPriceIdr + entry.priced.modifiersTotalIdr) *
-                entry.line.quantity,
+            modifierIds: entry.priced.modifiers.map(
+              (modifier) => modifier.modifierId,
             ),
-            modifiers: entry.priced.modifiers,
-            note: entry.line.note ?? null,
-            course: entry.line.course ?? entry.item.course,
-            fireStatus: "held" as const,
-            status: "queued" as const,
-            reservedBusinessDate: businessDate,
-            createdAt: now,
-            updatedAt: now,
+            quantity: entry.line.quantity,
           })),
+        );
+        await tx.insert(orderItems).values(
+          resolved.map((entry, index) => {
+            const costSnapshot = costSnapshots[index] ?? null;
+            return {
+              id: entry.id,
+              tenantId,
+              outletId: outlet.id as OutletId,
+              orderId,
+              menuItemId: entry.line.menuItemId,
+              variantId: entry.line.variantId ?? null,
+              name: entry.priced.name,
+              quantity: entry.line.quantity,
+              unitPriceIdr: entry.priced.unitPriceIdr,
+              modifiersTotalIdr: entry.priced.modifiersTotalIdr,
+              lineTotalIdr: idr(
+                (entry.priced.unitPriceIdr + entry.priced.modifiersTotalIdr) *
+                  entry.line.quantity,
+              ),
+              modifiers: entry.priced.modifiers,
+              note: entry.line.note ?? null,
+              course: entry.line.course ?? entry.item.course,
+              fireStatus: "held" as const,
+              status: "queued" as const,
+              reservedBusinessDate: businessDate,
+              costSnapshotIdr: costSnapshot === null ? null : idr(costSnapshot),
+              createdAt: now,
+              updatedAt: now,
+            };
+          }),
         );
         await tx.insert(posOrderItems).values(
           resolved.map((entry) => ({
@@ -784,6 +856,14 @@ export async function createPosOrder(
           },
           now,
         );
+        // Takeaway and own-delivery orders get their daily call number in the
+        // same transaction (legend-ggpoe); dine-in has none. A training device
+        // must not take numbers off the real wall.
+        if (
+          !isTraining &&
+          (input.serviceType === "takeaway" || input.serviceType === "delivery")
+        )
+          await allocatePickupCall(tx, context, orderId);
         return freshDetail(tx, context, outletId, orderId);
       },
     ),
@@ -848,6 +928,26 @@ async function fireLines(
         eq(posOrderItems.tenantId, tenantId),
         inArray(posOrderItems.itemId, ids),
       ),
+    );
+  // A sale must never fail because the outlet has no KDS station for an
+  // item's type: such lines are fired without a kitchen ticket and audited
+  // (`kitchen_ticket.unrouted`), the other lines still get theirs.
+  const routed = await routeFiredItemsToKitchen(tx, context, {
+    outletId: order.outletId,
+    orderId: order.id,
+    itemIds: ids,
+    actor: { userId: caller.userId, deviceId: caller.deviceId ?? null },
+    now,
+    onUnresolved: "skip",
+  });
+  if (routed.unroutedItemIds.length > 0)
+    logger.warn(
+      {
+        orderId: order.id,
+        outletId: order.outletId,
+        unroutedCount: routed.unroutedItemIds.length,
+      },
+      "POS fire: items have no KDS station and were fired without a ticket",
     );
   let current = order;
   if (order.status === "awaiting_payment") {
@@ -1052,7 +1152,7 @@ export async function completePosOrder(
   outletId: OutletId,
   orderId: string,
   input: CompleteInput,
-  now = new Date(),
+  requestedAt = new Date(),
 ): Promise<PosOrderDetail> {
   const { idempotencyKey, ...request } = input;
   return mutatePosOrder(
@@ -1086,14 +1186,47 @@ export async function completePosOrder(
       const paid = captured.reduce((sum, tender) => sum + tender.amountIdr, 0);
       if (paid + order.depositAppliedIdr !== order.totalIdr)
         throw new PosError("TENDER_TOTAL_MISMATCH");
-      // Decision (contract gap): order.paid has no deposit bucket, so a sale
-      // part-paid by a reservation deposit cannot post a balanced journal.
-      // Fail closed until the contract carries the deposit (follow-up bead).
-      if (order.depositAppliedIdr > 0)
-        throw new CoreError(
-          "CONFLICT",
-          "Tagihan dengan deposit reservasi belum dapat diselesaikan di POS.",
-        );
+      // legend-em6p: lock the intents this sale draws on (DP allocations of
+      // the table session, captured gateway tenders) after the orders and
+      // pos_orders rows mutatePosOrder holds, then take the completion time
+      // under that lock so it follows commit order against refunds and
+      // forfeits on the same intents (payment-refund-fact-time.ts).
+      const intentIds = new Set<string>();
+      if (order.tableSessionId !== null) {
+        const allocations = await tx
+          .select({
+            paymentIntentId: reservationDepositAllocations.paymentIntentId,
+          })
+          .from(reservationDepositAllocations)
+          .where(
+            and(
+              eq(reservationDepositAllocations.tenantId, tenantId),
+              eq(
+                reservationDepositAllocations.tableSessionId,
+                order.tableSessionId,
+              ),
+            ),
+          );
+        for (const row of allocations) intentIds.add(row.paymentIntentId);
+      }
+      for (const tender of captured)
+        if (tender.paymentIntentId !== null)
+          intentIds.add(tender.paymentIntentId);
+      const now = await lockIntentsForFact(
+        tx,
+        tenantId,
+        intentIds,
+        requestedAt,
+      );
+      // legend-b0au: a pending QRIS tender is voided and its WS-05 link
+      // cancelled in this transaction (no new intent, pending intents
+      // expired); a payment the gateway still lands later is refunded by
+      // handlePosPaymentPaid. Any other authorized tender is voided as before.
+      await voidPendingQrisTenders(tx, context, {
+        orderId: order.id,
+        now,
+        caller,
+      });
       await tx
         .update(posOrderTenders)
         .set({ status: "voided", resolvedAt: now, updatedAt: now })
@@ -1135,16 +1268,16 @@ export async function completePosOrder(
         businessDate: order.businessDate,
         channel: order.channel,
         serviceType: order.serviceType,
-        grossSalesIdr: order.subtotalIdr,
-        discountIdr: order.discountIdr,
-        serviceChargeIdr: order.serviceChargeIdr,
-        pbjtIdr: order.taxIdr,
-        roundingIdr: order.roundingIdr,
-        totalIdr: order.totalIdr,
+        // legend-kej3: the split checks the row's tax-mode identity (fails
+        // closed); gross sales exclude the service charge and tax an
+        // inclusive order's subtotal already contains (legend-zmc2).
+        ...orderRevenueSplit(order),
         paidCashIdr: bucket("cash"),
         paidGatewayIdr: bucket("gateway"),
         paidEdcIdr: bucket("edc"),
         paidPointsIdr: bucket("points"),
+        // legend-9pz9: the DP applied to the sale (Dr customer_deposit).
+        paidDepositIdr: order.depositAppliedIdr,
         tenders: captured.map((tender) => ({
           method: tender.method,
           amountIdr: tender.amountIdr,
@@ -1154,15 +1287,18 @@ export async function completePosOrder(
         deviceId: pos.deviceId,
         paidAt: now.toISOString(),
       };
-      // A fully discounted sale (staff meal, comp) settles nothing: order.paid
-      // requires a positive total and a tender, so only the log records it.
-      if (order.totalIdr > 0)
-        await appendPosEvent(tx, context, "order.paid", {
-          order,
-          payload: paidPayload,
-          caller,
-          now,
-        });
+      // Every completed sale emits order.paid. A sale fully covered by the
+      // reservation DP (legend-9pz9) carries empty tenders, so the deposit
+      // leaves customer_deposit into the sale. A fully discounted sale (staff
+      // meal, comp; legend-fbms) carries total 0 and empty tenders: recipe
+      // deduction still runs once (`sale:order:<id>`), and WS-07 ignores an
+      // all-zero payload.
+      await appendPosEvent(tx, context, "order.paid", {
+        order,
+        payload: paidPayload,
+        caller,
+        now,
+      });
       await appendOrderEvent(tx, context, {
         order,
         type: "order.paid",
@@ -1212,7 +1348,9 @@ async function voidLines(
     reasonNote: string;
     voidedBy: string;
     approvedBy: string;
-    approvalRequestId: string;
+    /** legend-0gy1: the consumed override and its WS-01 chain id (null for a PIN). */
+    overrideId: string;
+    approvalRequestId: string | null;
     now: Date;
   },
 ): Promise<number> {
@@ -1252,6 +1390,7 @@ async function voidLines(
         voidedAt: input.now,
         voidReasonNote: input.reasonNote,
         voidApprovalRequestId: input.approvalRequestId,
+        voidOverrideId: input.overrideId,
         updatedAt: input.now,
       })
       .where(
@@ -1263,6 +1402,15 @@ async function voidLines(
           ),
         ),
       );
+  if (voided.length > 0)
+    await cancelKitchenItemsForVoidedLines(tx, context, {
+      outletId: order.outletId,
+      orderId: order.id,
+      itemIds: voided.map((item) => item.id),
+      reason: input.reason,
+      actor: { userId: input.voidedBy, deviceId: null },
+      now: input.now,
+    });
   return voided.length;
 }
 
@@ -1302,7 +1450,7 @@ export async function voidPosOrder(
           "CONFLICT",
           "Pesanan sudah dibayar sebagian; selesaikan lalu koreksi dengan void/refund tertaut.",
         );
-      await consumeApproval(tx, context, {
+      const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "order_void",
         outletId,
@@ -1311,8 +1459,9 @@ export async function voidPosOrder(
         objectId: order.id,
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        overrideId: input.overrideId,
         minValueIdr: order.totalIdr,
+        now,
       });
       const outlet = await loadOutlet(tx, context, outletId);
       const lineCount = await voidLines(tx, context, order, {
@@ -1321,8 +1470,21 @@ export async function voidPosOrder(
         reasonNote: input.reasonNote,
         voidedBy: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         now,
+      });
+      // legend-b0au: a pending QRIS tender is voided and its WS-05 link
+      // cancelled in this transaction (no new intent, pending intents
+      // expired); a payment the gateway still lands later is refunded by
+      // handlePosPaymentPaid. Any other authorized tender is voided as before.
+      await voidPendingQrisTenders(tx, context, {
+        orderId: order.id,
+        now,
+        caller,
+        // Money already in for the pending QRIS: wait for its confirmation
+        // rather than void the order and refund it.
+        refuseWhenPaid: true,
       });
       await tx
         .update(posOrderTenders)
@@ -1351,13 +1513,18 @@ export async function voidPosOrder(
           allLines: true,
           releaseDeposit: true,
         });
-      } catch {
+      } catch (error) {
+        // Only a contract refusal (e.g. a discount no longer fitting the
+        // frozen lines) keeps the stored money; a SQL error has already
+        // aborted the transaction and must surface (legend-94qt).
+        if (!(error instanceof PosError)) throw error;
         priced = order;
       }
       await bumpPos(tx, context, pos, now, {
         voidReasonNote: input.reasonNote,
         voidApprovedBy: input.approvedBy,
-        voidApprovalRequestId: input.approvalRequestId,
+        voidApprovalRequestId: override.approvalRequestId,
+        voidOverrideId: override.id,
       });
       const [voided] = await tx
         .update(orders)
@@ -1379,7 +1546,8 @@ export async function voidPosOrder(
         reason: input.reason,
         reasonNote: input.reasonNote,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         voidedFinalOrder: false,
         voidId: null,
         receiptNumber: null,
@@ -1416,7 +1584,8 @@ export async function voidPosOrder(
             itemCount: lineCount,
             reason: input.reason,
             approvedBy: input.approvedBy,
-            approvalRequestId: input.approvalRequestId,
+            approvalRequestId: override.approvalRequestId,
+            overrideId: override.id,
           },
           reason: input.reasonNote,
         },
@@ -1476,7 +1645,7 @@ export async function voidPosOrderItem(
           "CONFLICT",
           "Lepas promo/voucher dulu sebelum mem-void item.",
         );
-      await consumeApproval(tx, context, {
+      const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "item_void",
         outletId,
@@ -1485,8 +1654,9 @@ export async function voidPosOrderItem(
         objectId: itemId,
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        overrideId: input.overrideId,
         minValueIdr: target.item.lineTotalIdr,
+        now,
       });
       await voidLines(tx, context, order, {
         itemIds: [itemId],
@@ -1494,7 +1664,8 @@ export async function voidPosOrderItem(
         reasonNote: input.reasonNote,
         voidedBy: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         now,
       });
       const outlet = await loadOutlet(tx, context, outletId);
@@ -1514,7 +1685,8 @@ export async function voidPosOrderItem(
           wasFired: target.item.fireStatus === "fired",
           reason: input.reason,
           approvedBy: input.approvedBy,
-          approvalRequestId: input.approvalRequestId,
+          approvalRequestId: override.approvalRequestId,
+          overrideId: override.id,
           totalIdr: repriced.totalIdr,
         },
         caller,
@@ -1535,7 +1707,8 @@ export async function voidPosOrderItem(
             status: "voided",
             reason: input.reason,
             approvedBy: input.approvedBy,
-            approvalRequestId: input.approvalRequestId,
+            approvalRequestId: override.approvalRequestId,
+            overrideId: override.id,
             totalIdr: repriced.totalIdr,
           },
           reason: input.reasonNote,

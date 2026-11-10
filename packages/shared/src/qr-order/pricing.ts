@@ -9,6 +9,13 @@
 // tagihan, termasuk pembulatan." All splits use core's largest-remainder
 // helpers (allocateIdr / splitIdrEvenly), so parts sum exactly.
 //
+// Inclusive prices (tax_settings / rule `priceIncludesTax`, legend-49pw): menu
+// prices already contain service charge and tax. Service and tax are then
+// backed out of each rule's net exactly like WS-05 `calculateTax` does (base =
+// net / ((1 + s)(1 + t)) when service is in the tax base, else net / (1 + s +
+// t); service on the base; tax takes the remainder), and the total stays
+// net + rounding. Lines remain the gross menu prices.
+//
 // Calculation order (matches orders.subtotal/discount/service_charge/tax/
 // rounding/total in §6.C and PRD F11):
 //   1. line subtotal = (unit price + modifiers) x quantity
@@ -27,6 +34,7 @@ import {
   addIdr,
   allocateIdr,
   applyBasisPoints,
+  divideRounded,
   idr,
   multiplyIdr,
   roundToIncrement,
@@ -35,6 +43,7 @@ import {
   sumIdr,
 } from "../core/index.ts";
 import type { Idr, RoundingMode } from "../core/index.ts";
+import { orderNetSubtotalIdr } from "../tax/net-subtotal.ts";
 import { orderQuoteSchema } from "./schemas.ts";
 import type { BillSplitMethod, OrderQuote } from "./schemas.ts";
 
@@ -49,13 +58,21 @@ export type QuoteTaxRule = {
 
 /** Zone + tax configuration snapshot the server uses for one quote. Menu
  * prices are exclusive of tax and service charge (owner decision 2026-11-01);
- * the quote adds both on top, so the guest sees them at checkout. */
+ * the quote adds both on top, so the guest sees them at checkout, unless the
+ * tenant opted into inclusive prices (`pricesIncludeTaxAndService`). */
 export type QuoteConfig = {
   serviceChargeBp: number;
   taxRules: readonly QuoteTaxRule[];
   roundingIncrementIdr: number;
   roundingMode: RoundingMode;
   minimumSpendIdr: Idr;
+  /** Menu prices contain service charge and tax; back them out. Default false. */
+  pricesIncludeTaxAndService?: boolean;
+  /** Rounding of the backed-out base; defaults to `roundingMode`. */
+  inclusiveBaseRoundingMode?: RoundingMode;
+  /** Rounding of the service charge (WS-05 `serviceRoundingMode`); defaults to
+   * `roundingMode`, which still rounds tax. */
+  serviceRoundingMode?: RoundingMode;
 };
 
 /** A cart line after the server resolved its channel price and modifiers. */
@@ -116,6 +133,53 @@ function lineSubtotal(line: QuoteLineInput): Idr {
   );
 }
 
+const BP = 10_000n;
+
+/**
+ * One tax group of an inclusive quote: split `net` (all-in) into base, service
+ * and tax. Mirrors `computeGroup` in tax/calculate.ts so the quote equals what
+ * POS and WS-05 compute for the same lines. `rule` null = a line without tax.
+ */
+function backOutGroup(
+  net: Idr,
+  serviceBp: number,
+  rule: QuoteTaxRule | null,
+  config: QuoteConfig,
+): { service: Idr; tax: Idr; taxBase: Idr } {
+  const n = BigInt(net);
+  const s = BigInt(serviceBp);
+  const t = BigInt(rule?.rateBp ?? 0);
+  const inService = rule?.appliesTo === "net_plus_service";
+  const denominator = inService ? (BP + s) * (BP + t) : BP * (BP + s + t);
+  const base = idr(
+    Number(
+      divideRounded(
+        n * BP * BP,
+        denominator,
+        config.inclusiveBaseRoundingMode ?? config.roundingMode,
+      ),
+    ),
+  );
+  if (rule === null || t === 0n)
+    return { service: subtractIdr(net, base), tax: idr(0), taxBase: base };
+  let service = applyBasisPoints(
+    base,
+    serviceBp,
+    config.serviceRoundingMode ?? config.roundingMode,
+  );
+  let tax = subtractIdr(subtractIdr(net, base), service);
+  if (tax < 0) {
+    // Only reachable for a few rupiah; keep every part non-negative.
+    service = idr(service + tax);
+    tax = idr(0);
+  }
+  return {
+    service,
+    tax,
+    taxBase: inService ? addIdr(base, service) : base,
+  };
+}
+
 export function computeQuote(input: {
   sessionId: string;
   cartVersion: number;
@@ -160,12 +224,6 @@ export function computeQuote(input: {
       : allocateIdr(discountTotal, subtotals);
   const netSubtotal = subtractIdr(subtotal, discountTotal);
 
-  const serviceCharge = applyBasisPoints(
-    netSubtotal,
-    config.serviceChargeBp,
-    config.roundingMode,
-  );
-
   const rulesById = new Map(
     config.taxRules.map((rule) => [rule.id, rule] as const),
   );
@@ -183,29 +241,85 @@ export function computeQuote(input: {
         ),
     ),
   );
-  // The service charge enters the tax base proportionally to each rule's net,
-  // so the shares still sum to the service charge exactly.
-  const serviceShares =
-    serviceCharge === 0 || config.taxRules.length === 0
-      ? config.taxRules.map(() => idr(0))
-      : allocateIdr(serviceCharge, ruleNets);
 
-  const taxLines = config.taxRules.map((rule, index) => {
-    const base =
-      rule.appliesTo === "net_plus_service"
-        ? addIdr(ruleNets[index], serviceShares[index])
-        : ruleNets[index];
-    return {
+  const inclusive = config.pricesIncludeTaxAndService === true;
+  let serviceCharge: Idr;
+  let serviceBase: Idr;
+  let taxLines: {
+    taxRuleId: string;
+    name: string;
+    rateBp: number;
+    baseIdr: Idr;
+    amountIdr: Idr;
+  }[];
+  if (inclusive) {
+    const groups = config.taxRules.map((rule, index) =>
+      backOutGroup(ruleNets[index], config.serviceChargeBp, rule, config),
+    );
+    // Lines without a tax rule still carry the service charge.
+    const untaxedNet = sumIdr(
+      input.lines
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => line.taxRuleId === null)
+        .map(({ index }) =>
+          subtractIdr(subtotals[index], lineDiscounts[index]),
+        ),
+    );
+    const untaxed = backOutGroup(
+      untaxedNet,
+      config.serviceChargeBp,
+      null,
+      config,
+    );
+    serviceCharge = addIdr(
+      sumIdr(groups.map((group) => group.service)),
+      untaxed.service,
+    );
+    taxLines = config.taxRules.map((rule, index) => ({
       taxRuleId: rule.id,
       name: rule.name,
       rateBp: rule.rateBp,
-      baseIdr: base,
-      amountIdr: applyBasisPoints(base, rule.rateBp, config.roundingMode),
-    };
-  });
+      baseIdr: groups[index].taxBase,
+      amountIdr: groups[index].tax,
+    }));
+    // The service base is what the service charge was taken on: net - parts.
+    serviceBase = subtractIdr(
+      netSubtotal,
+      addIdr(serviceCharge, sumIdr(groups.map((group) => group.tax))),
+    );
+  } else {
+    serviceCharge = applyBasisPoints(
+      netSubtotal,
+      config.serviceChargeBp,
+      config.serviceRoundingMode ?? config.roundingMode,
+    );
+    serviceBase = netSubtotal;
+    // The service charge enters the tax base proportionally to each rule's
+    // net, so the shares still sum to the service charge exactly.
+    const serviceShares =
+      serviceCharge === 0 || config.taxRules.length === 0
+        ? config.taxRules.map(() => idr(0))
+        : allocateIdr(serviceCharge, ruleNets);
+    taxLines = config.taxRules.map((rule, index) => {
+      const base =
+        rule.appliesTo === "net_plus_service"
+          ? addIdr(ruleNets[index], serviceShares[index])
+          : ruleNets[index];
+      return {
+        taxRuleId: rule.id,
+        name: rule.name,
+        rateBp: rule.rateBp,
+        baseIdr: base,
+        amountIdr: applyBasisPoints(base, rule.rateBp, config.roundingMode),
+      };
+    });
+  }
   const taxTotal = sumIdr(taxLines.map((line) => line.amountIdr));
 
-  const beforeRounding = addIdr(addIdr(netSubtotal, serviceCharge), taxTotal);
+  // Inclusive: service and tax are parts of the net, never added to it.
+  const beforeRounding = inclusive
+    ? netSubtotal
+    : addIdr(addIdr(netSubtotal, serviceCharge), taxTotal);
   const rounded = roundToIncrement(
     beforeRounding,
     config.roundingIncrementIdr,
@@ -230,9 +344,10 @@ export function computeQuote(input: {
     subtotalIdr: subtotal,
     discountLines: discounts,
     discountIdr: discountTotal,
+    pricesIncludeTaxAndService: inclusive,
     serviceCharge: {
       rateBp: config.serviceChargeBp,
-      baseIdr: netSubtotal,
+      baseIdr: serviceBase,
       amountIdr: serviceCharge,
     },
     taxLines,
@@ -247,7 +362,19 @@ export function computeQuote(input: {
     priceChanges: input.priceChanges ?? [],
     minimumSpend: {
       requiredIdr: config.minimumSpendIdr,
-      shortfallIdr: idr(Math.max(0, config.minimumSpendIdr - netSubtotal)),
+      // Q53 (legend-v9fh): before tax and service charge, also when inclusive.
+      shortfallIdr: idr(
+        Math.max(
+          0,
+          config.minimumSpendIdr -
+            orderNetSubtotalIdr({
+              subtotalIdr: netSubtotal,
+              serviceChargeIdr: serviceCharge,
+              taxIdr: taxTotal,
+              pricesIncludeTax: inclusive,
+            }),
+        ),
+      ),
     },
     servingEstimate: input.servingEstimate ?? null,
     computedAt: input.computedAt,

@@ -53,11 +53,15 @@ export type StockMovedEventPayload = z.infer<
   typeof stockMovedEventPayloadSchema
 >;
 
-/** Raised when `quantity` is below `parMin`; `parMin` is the effective par. */
+/**
+ * Raised when `quantity` is below `parMin`; `parMin` is the effective par.
+ * `quantity` is null while an open blind stock count covers the pair: the
+ * balance would leak the system quantity to the counter (legend-r2zv).
+ */
 export const stockCriticalEventPayloadSchema = z.strictObject({
   inventoryItemId: inventoryItemIdSchema,
   locationId: stockLocationIdSchema,
-  quantity: decimal4Schema,
+  quantity: decimal4Schema.nullable(),
   parMin: decimal4Schema,
   detectedAt: isoDateTimeSchema,
 });

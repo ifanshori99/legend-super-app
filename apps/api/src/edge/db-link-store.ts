@@ -14,24 +14,42 @@ import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertTrustedScopedContext,
+  CoreError,
   createUlid,
+  outletIdSchema,
+  tenantIdSchema,
   ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { conflictResolution } from "@starter/shared/edge";
 import {
   eventEnvelopeSchema,
   type EventEnvelope,
   type SyncDirection,
 } from "@starter/shared/events";
 import type * as schema from "../db/schema/index.ts";
-import type { EdgeEventKind } from "../db/schema/edge-node.ts";
+import type {
+  EdgeConflictResolution,
+  EdgeEventKind,
+} from "../db/schema/edge-node.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  notifyEdgeSyncConflictRecorded,
+  type NewEdgeSyncConflict,
+} from "../services/edge-sync-conflict-alert.ts";
 import { lockSyncCursor, type EdgeTx } from "../services/edge-queue.service.ts";
-import { decideInbound } from "./conflict.ts";
-import type { LinkStore, QueuedEdgeEvent } from "./link-peer.ts";
+import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
+import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
+import {
+  LinkProtocolError,
+  type LinkStore,
+  type QueuedEdgeEvent,
+} from "./link-peer.ts";
 import { oppositeDirection } from "./protocol.ts";
 import {
   classifyEdgeEvent,
+  EdgeEventUnclassifiedError,
   edgeEventApplier,
   type EdgeApplyMeta,
   type EdgeEventApplier,
@@ -46,22 +64,37 @@ export type DbLinkStoreOptions = {
   context: ScopedTenantContext;
   node: { tenantId: string; outletId: string; edgeNodeId: string };
   outboundDirection: SyncDirection;
+  /** Sending edge database's instance id (cloud side); null = unknown. */
+  edgeInstanceId?: string | null;
   /** Test seams; production uses the installed ports. */
   applier?: EdgeEventApplier<EdgeTx>;
+  /** Must return a kind; null/throw refuses the batch (ports.ts, fail closed). */
   classify?: EdgeEventClassifier;
 };
 
-async function defaultLastSequence(
+/**
+ * A receipt counts as held when the event was applied, or when it was refused
+ * as a conflict and a supervisor later replayed it successfully
+ * (edge_sync_conflict_resolutions outcome 'applied', legend-wqc6). Without the
+ * second branch the next sequence after a replayed one would be a gap again.
+ */
+const heldReceipt = (receipt: string) =>
+  sql.raw(
+    `(${receipt}.outcome = 'applied' OR (${receipt}.outcome = 'conflict' AND EXISTS (SELECT 1 FROM edge_sync_conflicts c JOIN edge_sync_conflict_resolutions r ON r.tenant_id = c.tenant_id AND r.conflict_id = c.id AND r.outcome = 'applied' WHERE c.tenant_id = ${receipt}.tenant_id AND c.edge_node_id = ${receipt}.edge_node_id AND c.direction = ${receipt}.direction AND c.event_id = ${receipt}.event_id)))`,
+  );
+
+/** Highest aggregate sequence this side holds for the event's aggregate. */
+export async function defaultLastSequence(
   tx: EdgeTx,
   edgeNodeId: string,
   direction: SyncDirection,
   kind: EdgeEventKind,
-  event: EventEnvelope,
+  event: Pick<EventEnvelope, "aggregateType" | "aggregateId">,
 ): Promise<number> {
   if (kind === "master_data") {
     // Cloud wins: only what the cloud already sent counts.
     const result = await tx.execute(
-      sql`SELECT COALESCE(MAX(aggregate_sequence), 0) AS last FROM edge_inbound_events WHERE edge_node_id = ${edgeNodeId}::uuid AND direction = ${direction} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId} AND outcome = 'applied'`,
+      sql`SELECT COALESCE(MAX(i.aggregate_sequence), 0) AS last FROM edge_inbound_events i WHERE i.edge_node_id = ${edgeNodeId}::uuid AND i.direction = ${direction} AND i.aggregate_type = ${event.aggregateType} AND i.aggregate_id = ${event.aggregateId} AND ${heldReceipt("i")}`,
     );
     return Number(result.rows[0]?.last ?? 0);
   }
@@ -69,11 +102,48 @@ async function defaultLastSequence(
   // (sent down) continues on the edge (sent up), so both directions count.
   const result = await tx.execute(
     sql`SELECT GREATEST(
-      (SELECT COALESCE(MAX(aggregate_sequence), 0) FROM edge_inbound_events WHERE edge_node_id = ${edgeNodeId}::uuid AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId} AND outcome = 'applied'),
+      (SELECT COALESCE(MAX(i.aggregate_sequence), 0) FROM edge_inbound_events i WHERE i.edge_node_id = ${edgeNodeId}::uuid AND i.aggregate_type = ${event.aggregateType} AND i.aggregate_id = ${event.aggregateId} AND ${heldReceipt("i")}),
       (SELECT COALESCE(MAX(aggregate_sequence), 0) FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId})
     ) AS last`,
   );
   return Number(result.rows[0]?.last ?? 0);
+}
+
+/**
+ * A refusal by the domain itself: a CoreError or HttpError that is a client
+ * error (4xx). Rate limits and timeouts are transient, so they are not.
+ */
+export function isDomainRefusal(error: unknown): boolean {
+  const status =
+    error instanceof CoreError || error instanceof HttpError
+      ? error.status
+      : null;
+  return (
+    status !== null &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 408 &&
+    status !== 429
+  );
+}
+
+/**
+ * Runs the applier in a savepoint. Returns null when it applied, or the
+ * refusal text (max 500 characters) after rolling the savepoint back.
+ */
+async function applyOrRefuse(
+  tx: EdgeTx,
+  applier: EdgeEventApplier<EdgeTx>,
+  event: EventEnvelope,
+  meta: EdgeApplyMeta,
+): Promise<string | null> {
+  try {
+    await tx.transaction((savepoint) => applier.apply(savepoint, event, meta));
+    return null;
+  } catch (error) {
+    if (!isDomainRefusal(error)) throw error;
+    return (error as Error).message.slice(0, 500);
+  }
 }
 
 export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
@@ -85,38 +155,208 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
   const run = <T>(work: (tx: EdgeTx) => Promise<T>) =>
     withTenant(database, context, work);
 
+  /** The sending edge database (cloud side); null = unknown (old edge). */
+  const peerInstance = options.edgeInstanceId ?? null;
+
+  /**
+   * legend-nd3cu: the link speaks the peer instance's own numbering, which is
+   * the stored cursor minus `peer_seq_offset` (0 unless a rebuilt edge
+   * database rebased the row). A row already taken over by another instance
+   * refuses this link: it is a stale connection of a superseded database.
+   */
+  async function peerNumbering(tx: EdgeTx, direction: SyncDirection) {
+    const result = await tx.execute(
+      sql`SELECT next_out_seq, acked_out_seq, received_in_seq, peer_instance_id, peer_seq_offset FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
+    );
+    const row = result.rows[0];
+    const instance = (row?.peer_instance_id as string | null) ?? null;
+    // A row bound to an edge instance serves only that instance: another
+    // one is a stale connection of a superseded database, and a link with no
+    // instance (older edge release) would misread the offset.
+    if (instance !== null && instance !== peerInstance)
+      throw new LinkProtocolError(
+        "Link cursor belongs to another edge instance",
+      );
+    return {
+      offset: Number(row?.peer_seq_offset ?? 0),
+      next_out_seq: Number(row?.next_out_seq ?? 0),
+      acked_out_seq: Number(row?.acked_out_seq ?? 0),
+      received_in_seq: Number(row?.received_in_seq ?? 0),
+    };
+  }
+
   async function cursorValue(
     column: "next_out_seq" | "acked_out_seq" | "received_in_seq",
     direction: SyncDirection,
   ) {
     return run(async (tx) => {
-      const result = await tx.execute(
-        sql`SELECT next_out_seq, acked_out_seq, received_in_seq FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
-      );
-      return Number(result.rows[0]?.[column] ?? 0);
+      const row = await peerNumbering(tx, direction);
+      return row[column] - row.offset;
     });
   }
 
+  /**
+   * legend-nd3cu: binds both cursor rows of the node to the peer instance on
+   * this link, from the peer's hello cursor (link-peer `onPeerHello`).
+   * - Same instance: nothing. No instance stored yet (fresh node, or an edge
+   *   upgraded in place): adopt it, numbering unchanged.
+   * - Same instance or none stored, but a hello cursor below our acknowledged
+   *   cloud_to_edge cursor: the database went back in time (restore or
+   *   clone, legend-a9iby). Refuse, change nothing. Only seen when the peer
+   *   had acknowledged events newer than its backup (docs/deployment.md).
+   * - Another instance and cursor 0: a rebuilt database that received nothing
+   *   yet. Rebase both directions so its numbering starts at what the cloud
+   *   holds: inbound at the received cursor (our hello acknowledges nothing
+   *   it has not seen applied; resent events are dropped by their event id),
+   *   outbound at the acknowledged cursor (pending events are still sent).
+   * - Another instance with a cursor: a restored or cloned database speaking
+   *   a numbering we no longer hold. Refuse the link, change nothing (fail
+   *   closed; the runbook enrolls it as a new node).
+   */
+  async function bindPeer(peerCursor: number) {
+    if (peerInstance === null) return;
+    const instance = peerInstance;
+    await run(async (tx) => {
+      const directions: SyncDirection[] = ["edge_to_cloud", "cloud_to_edge"];
+      const plans: { direction: SyncDirection; offset: number | null }[] = [];
+      for (const direction of directions) {
+        const cursor = await lockSyncCursor(tx, node, direction);
+        const result = await tx.execute(
+          sql`SELECT peer_instance_id, peer_seq_offset FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
+        );
+        const stored =
+          (result.rows[0]?.peer_instance_id as string | null) ?? null;
+        // legend-a9iby: the peer acknowledges only what it applied durably,
+        // so its hello cursor never falls below our acknowledged cursor (in
+        // its numbering) unless its database went back in time. A restore or
+        // clone keeps the instance id, so without this check it would resume,
+        // and once its own queue passes our inbound cursor it would take that
+        // cursor as an ack for events it created after the restore and never
+        // sent. Refuse before anything is written.
+        if (
+          direction === outbound &&
+          (stored === instance || stored === null) &&
+          peerCursor <
+            cursor.acked_out_seq - Number(result.rows[0]?.peer_seq_offset ?? 0)
+        )
+          throw new LinkProtocolError(
+            "Edge database is older than the cloud's link cursor (restored or cloned); refusing to resume",
+          );
+        if (stored === instance) continue;
+        if (stored !== null && peerCursor !== 0)
+          throw new LinkProtocolError(
+            "Edge database instance changed with a cursor; refusing to resume",
+          );
+        // Adopting binds the row for good, so never for a link onHello is
+        // about to refuse: a hello cursor beyond our queue (offset 0 here).
+        if (
+          stored === null &&
+          direction === outbound &&
+          peerCursor > cursor.next_out_seq
+        )
+          throw new LinkProtocolError(
+            "Peer cursor is ahead of this side's queue; refusing to resume",
+          );
+        plans.push({
+          direction,
+          offset:
+            stored === null
+              ? null
+              : direction === inbound
+                ? cursor.received_in_seq
+                : cursor.acked_out_seq,
+        });
+      }
+      for (const { direction, offset } of plans)
+        await tx.execute(
+          offset === null
+            ? sql`UPDATE sync_cursors SET peer_instance_id = ${instance}::uuid, updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`
+            : sql`UPDATE sync_cursors SET peer_instance_id = ${instance}::uuid, peer_seq_offset = ${offset}, updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
+        );
+    });
+  }
+
+  /**
+   * Supervisor alert for a conflict this call just recorded. It runs in a
+   * savepoint and never fails the batch: a missing alert must not stop the
+   * sync (the conflict row is the durable evidence).
+   */
+  async function alertNewConflict(tx: EdgeTx, conflict: NewEdgeSyncConflict) {
+    try {
+      await tx.transaction((savepoint) =>
+        notifyEdgeSyncConflictRecorded(savepoint, context, conflict),
+      );
+    } catch {
+      // Intentionally silent: no payload or ids in logs (ports.ts rule).
+    }
+  }
+
+  /** Records a conflict (idempotent) and alerts only when it is NEW. */
+  async function recordConflict(
+    tx: EdgeTx,
+    input: {
+      event: EventEnvelope;
+      eventUuid: string;
+      kind: EdgeEventKind;
+      reason: EdgeConflictReason;
+      resolution: EdgeConflictResolution;
+      lastSequence: number;
+      detail: string | null;
+    },
+  ) {
+    const { event } = input;
+    const conflictId = createUlid();
+    // legend-kyie: the stored event is readable through the conflict detail
+    // API, so pin hash material is stripped first.
+    const inserted = await tx.execute(
+      sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, detail, event) VALUES (${ulidToUuid(conflictId)}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${input.eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${input.kind}, ${input.reason}, ${input.resolution}, ${input.lastSequence}, ${input.detail}, ${JSON.stringify(redactEdgeEnvelopeSecrets(event))}::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
+    );
+    // Cloud side only (the edge database has no staff to alert), and only
+    // when this call really inserted the row (legend-wqc6).
+    if (inbound === "edge_to_cloud" && inserted.rows.length > 0)
+      await alertNewConflict(tx, {
+        id: conflictId,
+        tenantId: tenantIdSchema.parse(node.tenantId),
+        outletId: outletIdSchema.parse(node.outletId),
+        edgeNodeId: nodeId,
+        aggregateType: event.aggregateType,
+        reason: input.reason,
+      });
+  }
+
+  // Only the cloud side of a link that names its edge instance settles
+  // numbering from the peer's hello; without the hook the peer keeps its
+  // original order (old edges, and the edge side, so one side always sends
+  // its hello first).
+  const resume: Pick<LinkStore, "onPeerHello"> =
+    peerInstance === null || outbound !== "cloud_to_edge"
+      ? {}
+      : { onPeerHello: bindPeer };
+
   return {
+    ...resume,
     outboundHead: () => cursorValue("next_out_seq", outbound),
     lastAckedOutbound: () => cursorValue("acked_out_seq", outbound),
     lastReceivedInbound: () => cursorValue("received_in_seq", inbound),
 
     async readOutbound(afterSeq, limit) {
       return run(async (tx) => {
+        const { offset } = await peerNumbering(tx, outbound);
         const result = await tx.execute(
-          sql`SELECT link_seq, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${afterSeq} ORDER BY link_seq LIMIT ${limit}`,
+          sql`SELECT link_seq, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${afterSeq + offset} ORDER BY link_seq LIMIT ${limit}`,
         );
         return result.rows.map((row): QueuedEdgeEvent => ({
-          linkSeq: Number(row.link_seq),
+          linkSeq: Number(row.link_seq) - offset,
           event: eventEnvelopeSchema.parse(row.event),
         }));
       });
     },
 
-    async ackOutbound(uptoSeq) {
+    async ackOutbound(peerUptoSeq) {
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, outbound);
+        const { offset } = await peerNumbering(tx, outbound);
+        const uptoSeq = peerUptoSeq + offset;
         if (uptoSeq > cursor.next_out_seq)
           throw new Error("Acknowledgement beyond the queued sequence");
         if (uptoSeq <= cursor.acked_out_seq) return;
@@ -138,10 +378,17 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
     async applyInbound({ fromSeq, toSeq, events }) {
       const applier: EdgeEventApplier<EdgeTx> =
         options.applier ?? edgeEventApplier(inbound);
-      const classify = options.classify ?? classifyEdgeEvent;
+      const classifyOption = options.classify;
+      const classify = (event: EventEnvelope): EdgeEventKind => {
+        if (!classifyOption) return classifyEdgeEvent(event, inbound);
+        const kind = classifyOption(event, inbound);
+        if (!kind) throw new EdgeEventUnclassifiedError(event.aggregateType);
+        return kind;
+      };
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, inbound);
-        if (cursor.received_in_seq !== fromSeq)
+        const { offset } = await peerNumbering(tx, inbound);
+        if (cursor.received_in_seq !== fromSeq + offset)
           throw new Error("Inbound cursor moved; batch refused");
         let lastEventId: string | null = null;
         for (const { linkSeq, event } of events) {
@@ -151,12 +398,28 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
           )
             throw new Error("Inbound event outside the node scope");
           const eventUuid = ulidToUuid(event.id);
-          const seen = await tx.execute(
-            sql`SELECT 1 FROM edge_inbound_events WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND event_id = ${eventUuid}::uuid`,
-          );
+          // edge_to_cloud: primary and standby of one outlet may both send the
+          // same event id (the standby took over with the primary's outbox,
+          // legend-wg5t), so "received" is tenant-wide and read from the
+          // edge_received_events registry. It is a separate table (PK tenant,
+          // event) instead of a unique index on edge_inbound_events because old
+          // data already holds receipts for one event on two nodes, which
+          // would fail such an index. The registry insert below has no ON
+          // CONFLICT on purpose: a concurrent duplicate fails the PK, the
+          // batch rolls back and the retry skips the event. cloud_to_edge
+          // stays per node (each edge node has its own database).
+          const seen =
+            inbound === "edge_to_cloud"
+              ? await tx.execute(
+                  sql`SELECT 1 FROM edge_received_events WHERE tenant_id = ${node.tenantId}::uuid AND event_id = ${eventUuid}::uuid`,
+                )
+              : await tx.execute(
+                  sql`SELECT 1 FROM edge_inbound_events WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND event_id = ${eventUuid}::uuid`,
+                );
           const kind = classify(event);
           const meta: EdgeApplyMeta = {
             edgeNodeId: nodeId,
+            edgeInstanceId: options.edgeInstanceId ?? null,
             direction: inbound,
             kind,
             context,
@@ -166,6 +429,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
             {
               aggregateType: event.aggregateType,
               aggregateId: event.aggregateId,
+              sequence: event.sequence,
             },
             meta,
           );
@@ -187,26 +451,54 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
             continue;
           let outcome: "applied" | "superseded" | "conflict";
           if (decision.action === "apply") {
-            await applier.apply(tx, event, meta);
-            outcome = "applied";
+            // Savepoint: a domain refusal (CoreError / 4xx) must not roll
+            // back the whole batch and stall the node's sync forever
+            // (legend-wqc6). It becomes a conflict a supervisor can review;
+            // anything else (unwired applier, unclassified event, database
+            // failure) still aborts the batch so the sender keeps it queued.
+            const refusal = await applyOrRefuse(tx, applier, event, meta);
+            if (refusal === null) {
+              outcome = "applied";
+            } else {
+              outcome = "conflict";
+              await recordConflict(tx, {
+                event,
+                eventUuid,
+                kind,
+                reason: "applier_refused",
+                resolution: conflictResolution(kind),
+                lastSequence,
+                detail: refusal,
+              });
+            }
           } else if (decision.action === "skip") {
             outcome = "superseded";
           } else {
             outcome = "conflict";
-            await tx.execute(
-              sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, event) VALUES (${ulidToUuid(createUlid())}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${decision.reason}, ${decision.resolution}, ${lastSequence}, ${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING`,
-            );
+            await recordConflict(tx, {
+              event,
+              eventUuid,
+              kind,
+              reason: decision.reason,
+              resolution: decision.resolution,
+              lastSequence,
+              detail: null,
+            });
           }
+          if (inbound === "edge_to_cloud")
+            await tx.execute(
+              sql`INSERT INTO edge_received_events (tenant_id, outlet_id, event_id, first_edge_node_id) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${eventUuid}::uuid, ${nodeId}::uuid)`,
+            );
           await tx.execute(
-            sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${outcome})`,
+            sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${outcome})`,
           );
         }
         await tx.execute(
-          sql`UPDATE sync_cursors SET received_in_seq = ${toSeq}, last_event_id = COALESCE(${lastEventId ? ulidToUuid(lastEventId) : null}::uuid, last_event_id), updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound}`,
+          sql`UPDATE sync_cursors SET received_in_seq = ${toSeq + offset}, last_event_id = COALESCE(${lastEventId ? ulidToUuid(lastEventId) : null}::uuid, last_event_id), updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound}`,
         );
         if (inbound === "edge_to_cloud")
           await tx.execute(
-            sql`UPDATE edge_nodes SET last_sync_cursor = ${String(toSeq)}, updated_at = now() WHERE id = ${nodeId}::uuid`,
+            sql`UPDATE edge_nodes SET last_sync_cursor = ${String(toSeq + offset)}, updated_at = now() WHERE id = ${nodeId}::uuid`,
           );
       });
     },

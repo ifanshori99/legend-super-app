@@ -4,13 +4,20 @@ import { createApp } from "../app";
 import { createLogger } from "../lib/logger";
 import { agent, originHeader, signUp } from "./helpers";
 
-// Make one service fail unexpectedly, with a message that must never leak.
-vi.mock("../services/notes.service", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../services/notes.service")>()),
-  listNotes: vi.fn(async () => {
-    throw new Error("boom: postgres://user:secret@db/app");
-  }),
-}));
+// Make one authenticated route fail unexpectedly, with a message that must
+// never leak. `guard.fail` is only switched on by the 500 test below.
+const guard = vi.hoisted(() => ({ fail: false }));
+vi.mock("../middleware/tenant", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("../middleware/tenant")>();
+  return {
+    ...original,
+    requireTenantContext: ((req, res, next) => {
+      if (guard.fail) throw new Error("boom: postgres://user:secret@db/app");
+      return original.requireTenantContext(req, res, next);
+    }) satisfies typeof original.requireTenantContext,
+  };
+});
 
 function capture() {
   const lines: Record<string, unknown>[] = [];
@@ -36,7 +43,7 @@ describe("Server logging", () => {
       .post("/api/auth/sign-in/email")
       .set(originHeader)
       .send({ email, password: "Test-password-123!" });
-    await client.get("/api/notes/00000000-0000-4000-8000-000000000000");
+    await client.get("/api/platform/packages");
 
     const output = JSON.stringify(lines);
     expect(output).not.toContain("Test-password-123!");
@@ -50,10 +57,11 @@ describe("Server logging", () => {
     expect(signIn).toMatchObject({ level: 30, service: "api" });
     expect(signIn?.reqId).toEqual(expect.any(String));
 
-    const notFound = lines.find((line) =>
-      String(line.msg).startsWith("GET /api/notes/00000000"),
+    // A signed-in user outside platform_admins gets 403: a 4xx logs as warn.
+    const refused = lines.find((line) =>
+      String(line.msg).startsWith("GET /api/platform/packages"),
     );
-    expect(notFound).toMatchObject({ level: 40, userId: expect.any(String) });
+    expect(refused).toMatchObject({ level: 40, userId: expect.any(String) });
   });
 
   it("logs unexpected errors once with a stack while the client gets a generic 500", async () => {
@@ -61,9 +69,15 @@ describe("Server logging", () => {
     const client = agent(createApp({ logger }));
     await signUp(client);
 
-    const response = await client
-      .get("/api/notes")
-      .set("X-Request-Id", "trace-500");
+    guard.fail = true;
+    let response;
+    try {
+      response = await client
+        .get("/api/me/access")
+        .set("X-Request-Id", "trace-500");
+    } finally {
+      guard.fail = false;
+    }
     expect(response.status).toBe(500);
     expect(response.body).toEqual({
       error: {
@@ -78,7 +92,7 @@ describe("Server logging", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({
       reqId: "trace-500",
-      msg: "GET /api/notes 500",
+      msg: "GET /api/me/access 500",
     });
     expect((errors[0].err as { stack: string }).stack).toContain("boom");
   });

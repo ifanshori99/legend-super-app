@@ -31,6 +31,7 @@ import {
 } from "./ids.ts";
 import type { EmployeeId } from "./ids.ts";
 import { maskedPiiValueSchema } from "./pii.ts";
+import { taxSchemeSchema } from "./payroll/components.ts";
 
 const name = z.string().min(1).max(150);
 const code = z.string().min(1).max(30);
@@ -152,7 +153,7 @@ export type PtkpStatus = z.infer<typeof ptkpStatusSchema>;
  * Employee master data. Contains no PII: encrypted personal fields are in
  * `employeePiiSchema`, served separately (HR-03).
  */
-const employeeShape = {
+export const employeeShape = {
   ...row,
   id: employeeIdSchema,
   /** Login account; null for an employee who never signs in (PRD F30 opt-in). */
@@ -315,6 +316,12 @@ export const employmentContractSchema = z
     id: employmentContractIdSchema,
     employeeId: employeeIdSchema,
     type: employmentTypeSchema,
+    /**
+     * PPh 21 scheme of the agreement (gross / gross_up / net). A period with
+     * no taxable line of its own (employer BPJS in an unpaid month) follows
+     * it (pph21.ts `contractTaxScheme`, bead legend-rhq5).
+     */
+    taxScheme: taxSchemeSchema,
     startDate: businessDateSchema,
     endDate: businessDateSchema.nullable(),
     renewedFromId: employmentContractIdSchema.nullable(),

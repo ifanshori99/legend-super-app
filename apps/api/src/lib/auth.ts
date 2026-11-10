@@ -1,19 +1,249 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import {
+  APIError,
+  createAuthMiddleware,
+  getSessionFromCtx,
+} from "better-auth/api";
 import { admin } from "better-auth/plugins";
+import { createHmac } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
 import {
   ac,
   ADMIN_ROLES,
   DEFAULT_ROLE,
   roles,
 } from "@starter/shared/permissions";
+import { normalizeEmail } from "@starter/shared/identity";
 import { siteConfig } from "@starter/shared/site";
 import { env } from "../config/env";
 import { db } from "../db";
 import * as schema from "../db/schema";
+import type { SessionAuthMethod } from "../db/schema/session";
+import {
+  assertImpersonationAllowed,
+  IMPERSONATION_SESSION_MAX_SECONDS,
+  ImpersonationRefused,
+  impersonationSessionEnd,
+  isPlatformAdmin,
+  recordImpersonationEnded,
+  recordImpersonationStarted,
+  type ImpersonationEndCause,
+  type ImpersonationMatch,
+} from "../services/platform-support.service";
+import { contactDigestSecret, emailDigest } from "./identity-digest";
 import { logger } from "./logger";
+import { sealSecret } from "./secrets";
 
 const authLog = logger.child({ module: "better-auth" });
+
+/*
+ * Impersonation policy (TEN-04, legend-rzirp). Better Auth's admin plugin lets
+ * any user with the `impersonate` permission act as anyone. Here it also needs
+ * a support_access_grants row:
+ *
+ *   - the caller is an active platform admin with a grant that is active now
+ *     in a tenant where the target holds a role (assertImpersonationAllowed);
+ *   - the target is not the caller and not a platform admin;
+ *   - an impersonated session cannot start another impersonation;
+ *   - the session lasts at most IMPERSONATION_SESSION_MAX_SECONDS (60 min)
+ *     and never outlives the grant behind it (legend-npkpz);
+ *   - start and end write a sensitive audit row in each matched tenant.
+ *
+ * The check runs twice: hooks.before (gives a clean 403 before the endpoint
+ * runs) and databaseHooks.session.create.before (the authoritative check on
+ * the session row itself, whatever path created it). The start audit fails
+ * closed (the session row is deleted); the end audit never blocks an exit.
+ * MFA is not bypassed by a grant (legend-cg071).
+ *
+ * Admin plugin lockdown (legend-imdzn). The plugin also serves list-users,
+ * set-user-password, set-role, update-user, remove-user, ban-user,
+ * create-user and session revocation to any `admin` role, across every
+ * tenant, with no grant, approval or audit, and a revoked platform admin
+ * keeps `user.role = admin`. hooks.before therefore refuses every /admin/*
+ * route (403 ADMIN_ENDPOINT_DISABLED) except the ones the product uses:
+ *
+ *   - impersonate-user: active platform_admins row checked first, then the
+ *     grant policy above;
+ *   - stop-impersonating: leaving is never blocked (the endpoint itself
+ *     refuses a session that is not impersonated);
+ *   - has-permission: server calls only (requirePermission calls
+ *     auth.api.userHasPermission without a request); over HTTP it is refused.
+ *
+ * Better Auth 1.7 runs hooks.before for auth.api.* calls as well, so a server
+ * call to another admin endpoint is refused too. The admin role in
+ * @starter/shared/permissions keeps only `user: ["impersonate"]` to match.
+ */
+function refuse(error: unknown): never {
+  if (error instanceof ImpersonationRefused)
+    throw new APIError("FORBIDDEN", {
+      code: error.code,
+      message: error.message,
+    });
+  throw error;
+}
+
+function endCause(
+  path: string | undefined,
+  expiresAt: Date,
+  now: Date,
+): ImpersonationEndCause {
+  if (path === "/admin/stop-impersonating") return "stopped";
+  if (path === "/sign-out") return "signed_out";
+  return expiresAt <= now ? "expired" : "revoked";
+}
+
+/*
+ * Sign-in method on the session row (legend-k2l, design ws08 M2 "Sign-in
+ * method gate"). The identity gate (middleware/identity.ts) only treats a
+ * `password` session as a management session, so a WhatsApp, email-link or
+ * Google session never reaches staff routes, whatever roles the user holds.
+ *
+ * The value is decided here, from the Better Auth endpoint that is minting the
+ * session, never from client input (`input: false` on the field below):
+ *
+ *   - a password route (sign-in, sign-up, change and reset password) and
+ *     impersonation (support keeps today's behaviour) -> `password`;
+ *   - the OAuth callback (/callback/:id, /oauth2/callback/:providerId) and the
+ *     idToken sign-in (/sign-in/social) -> `google`;
+ *   - any other Better Auth endpoint -> `legacy` (customer rights only);
+ *   - no endpoint context at all: the session came from our own
+ *     `createCustomerSession` (WhatsApp, email link), which passes the method
+ *     and the cross-device flag in the row; keep them, else `legacy`.
+ *
+ * Better Auth hands the hook `ctx = null` for internalAdapter calls made
+ * outside an endpoint (with-hooks.ts `tryGetCurrentAuthEndpointContext`), which
+ * is exactly the createCustomerSession case. Inside an endpoint
+ * `authCrossDevice` is always false: only the email link can be opened on
+ * another device, and that route runs outside Better Auth.
+ */
+const PASSWORD_SESSION_PATHS = new Set([
+  "/sign-in/email",
+  "/sign-up/email",
+  "/change-password",
+  "/reset-password",
+  "/admin/impersonate-user",
+]);
+
+const SESSION_AUTH_METHODS: readonly SessionAuthMethod[] = [
+  "password",
+  "whatsapp",
+  "email_magic_link",
+  "google",
+  "legacy",
+];
+
+function sessionAuthMethodFor(
+  path: string | undefined,
+  passed: unknown,
+): SessionAuthMethod {
+  if (path === undefined)
+    return SESSION_AUTH_METHODS.find((method) => method === passed) ?? "legacy";
+  if (PASSWORD_SESSION_PATHS.has(path)) return "password";
+  // legend-k2l review F6: `/sign-in/social` is the idToken sign-in (no
+  // redirect, no callback). Google is the only social provider configured.
+  if (
+    path === "/sign-in/social" ||
+    path.startsWith("/callback/") ||
+    path.startsWith("/oauth2/callback")
+  )
+    return "google";
+  return "legacy";
+}
+
+/*
+ * Google sign-in (legend-k2l, AUTH-05). A Google account may only sign in to,
+ * or link to, a user whose email Google verified, and never to a WhatsApp-only
+ * placeholder user (`<number>@wa.invalid`, created by the WhatsApp login): an
+ * attacker must not be able to take over a number by owning a lookalike
+ * Google address. The google provider's `mapProfileToUser` (provider side:
+ * the profile Google returned) and `databaseHooks.account.create.before` (the
+ * row side: the matched user's own address) refuse it.
+ *
+ * `user.validateUserInfo` is deliberately NOT used: once it is configured,
+ * Better Auth's `internalAdapter.createUser` demands an endpoint context and a
+ * validation source from every caller, so our own trusted callers outside an
+ * endpoint (the WhatsApp placeholder user, the email-link user) would fail with
+ * "User validation requires an endpoint context". Both guards here run only on
+ * the Google callback path, and `account.create.before` returns at once for any
+ * other provider.
+ */
+function isInvalidEmail(email: unknown): boolean {
+  return (
+    typeof email !== "string" || email.trim().toLowerCase().endsWith(".invalid")
+  );
+}
+
+/** Keyed digest of a Google `sub`; same secret family as the contact digests. */
+function googleSubjectDigest(sub: string): string {
+  return createHmac("sha256", contactDigestSecret())
+    .update(`google\u0000${sub}`, "utf8")
+    .digest("hex");
+}
+
+/**
+ * Records the `google` and `email` identities of a user whose Google account
+ * was just created or linked (AUTH-05). A value another user already owns is
+ * logged and never moved: moving identities is the merge service's job.
+ */
+async function recordGoogleIdentities(account: {
+  userId: string;
+  accountId: string;
+}): Promise<void> {
+  const [row] = await db
+    .select({ email: schema.user.email })
+    .from(schema.user)
+    .where(eq(schema.user.id, account.userId))
+    .limit(1);
+  const email = normalizeEmail(row?.email);
+  const now = new Date();
+  const googleHash = googleSubjectDigest(account.accountId);
+  const candidates: {
+    type: "google" | "email";
+    valueHash: string;
+    valueEncrypted: string | null;
+    providerSubject: string | null;
+  }[] = [
+    {
+      type: "google",
+      valueHash: googleHash,
+      valueEncrypted: null,
+      providerSubject: account.accountId,
+    },
+  ];
+  if (email !== null && !isInvalidEmail(email)) {
+    const emailHash = await emailDigest(email);
+    candidates.push({
+      type: "email",
+      valueHash: emailHash,
+      valueEncrypted: sealSecret(email, `user_identity:email:${emailHash}`),
+      providerSubject: null,
+    });
+  }
+  for (const candidate of candidates) {
+    const inserted = await db
+      .insert(schema.userIdentities)
+      .values({ userId: account.userId, verifiedAt: now, ...candidate })
+      .onConflictDoNothing()
+      .returning({ id: schema.userIdentities.id });
+    if (inserted.length > 0) continue;
+    const [owner] = await db
+      .select({ userId: schema.userIdentities.userId })
+      .from(schema.userIdentities)
+      .where(
+        and(
+          eq(schema.userIdentities.type, candidate.type),
+          eq(schema.userIdentities.valueHash, candidate.valueHash),
+        ),
+      )
+      .limit(1);
+    if (owner && owner.userId !== account.userId)
+      authLog.warn(
+        { type: candidate.type, userId: account.userId },
+        "legend-k2l: identity already belongs to another user; not moved",
+      );
+  }
+}
 
 // Set by app.ts from Express's req.ip on every request (see TRUST_PROXY).
 export const CLIENT_IP_HEADER = "x-starter-client-ip";
@@ -28,6 +258,250 @@ export const auth = betterAuth({
   // mutations from any origin not listed here.
   trustedOrigins: env.trustedOrigins,
   database: drizzleAdapter(db, { provider: "pg", schema }),
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      if (!ctx.path.startsWith("/admin/")) return;
+      if (ctx.path === "/admin/stop-impersonating") return;
+      if (ctx.path === "/admin/has-permission" && !ctx.request) return;
+      if (ctx.path !== "/admin/impersonate-user")
+        throw new APIError("FORBIDDEN", {
+          code: "ADMIN_ENDPOINT_DISABLED",
+          message: "This admin endpoint is not available.",
+        });
+      const current = await getSessionFromCtx(ctx);
+      // No session: the endpoint answers 401 itself.
+      if (!current) return;
+      if (current.session.impersonatedBy)
+        throw new APIError("FORBIDDEN", {
+          code: "IMPERSONATION_NOT_ALLOWED",
+          message: "An impersonated session cannot impersonate another user.",
+        });
+      // Registry first, whatever the body: a revoked admin keeps user.role.
+      if (!(await isPlatformAdmin(current.user.id)))
+        throw new APIError("FORBIDDEN", {
+          code: "SUPPORT_ACCESS_REQUIRED",
+          message:
+            "Only a platform admin with an active support access can impersonate.",
+        });
+      const targetUserId = (ctx.body as { userId?: unknown } | undefined)
+        ?.userId;
+      // A missing userId is left to the endpoint's own 400. Any other value
+      // is checked the way the endpoint will read it: its schema coerces
+      // userId with z.coerce.string(), so ["<id>"] reaches it as "<id>".
+      if (targetUserId === undefined || targetUserId === null) return;
+      try {
+        await assertImpersonationAllowed({
+          adminUserId: current.user.id,
+          targetUserId: String(targetUserId),
+          now: new Date(),
+        });
+      } catch (error) {
+        refuse(error);
+      }
+    }),
+  },
+  databaseHooks: {
+    account: {
+      create: {
+        before: async (account) => {
+          if (account.providerId !== "google") return;
+          const [row] = await db
+            .select({
+              email: schema.user.email,
+              emailVerified: schema.user.emailVerified,
+            })
+            .from(schema.user)
+            .where(eq(schema.user.id, account.userId))
+            .limit(1);
+          // Never link a Google account to a WhatsApp-only placeholder user.
+          if (!row || isInvalidEmail(row.email))
+            throw new APIError("FORBIDDEN", {
+              code: "google_email_not_usable",
+              message: "Google cannot be linked to this account.",
+            });
+          // Pre-registration takeover: a self-signed-up password account that
+          // never verified its email may be an attacker who pre-registered the
+          // victim's address. Linking the victim's Google account would hand
+          // the attacker's password a verified account, so refuse while the
+          // email is unverified and a credential (password) account exists.
+          //
+          // Exception: a user holding a role assignment in any tenant is staff
+          // an owner provisioned, so the owner already bound the account to
+          // its person (design ws08 M2: staff may use member sign-in
+          // methods). Fail-closed: anything but an explicit `true` refuses.
+          // `role_assignments` forces row level security per tenant, so the
+          // SECURITY DEFINER function of migration 0204 answers across tenants.
+          if (!row.emailVerified) {
+            const [credential] = await db
+              .select({ id: schema.account.id })
+              .from(schema.account)
+              .where(
+                and(
+                  eq(schema.account.userId, account.userId),
+                  eq(schema.account.providerId, "credential"),
+                ),
+              )
+              .limit(1);
+            if (credential) {
+              const roleCheck = await db.execute(
+                sql`SELECT app.user_has_role_assignment(${account.userId}) AS has_role`,
+              );
+              if (roleCheck.rows[0]?.has_role !== true)
+                throw new APIError("FORBIDDEN", {
+                  code: "google_email_not_usable",
+                  message: "Google cannot be linked to this account.",
+                });
+            }
+          }
+        },
+        after: async (account) => {
+          if (account.providerId !== "google") return;
+          try {
+            await recordGoogleIdentities(account);
+          } catch (error) {
+            // A missing identity row is repairable; failing here would turn a
+            // finished Google sign-in into a 500 and retries never reach this
+            // hook again (the account row exists).
+            authLog.error(
+              { err: error, userId: account.userId },
+              "legend-k2l: failed to record google identities",
+            );
+          }
+        },
+      },
+    },
+    session: {
+      create: {
+        before: async (session, ctx) => {
+          // legend-k2l: the method is decided here (see sessionAuthMethodFor).
+          const authMethod = sessionAuthMethodFor(
+            ctx?.path,
+            (session as { authMethod?: unknown }).authMethod,
+          );
+          const authCrossDevice =
+            ctx?.path === undefined &&
+            (session as { authCrossDevice?: unknown }).authCrossDevice === true;
+          const adminUserId = session.impersonatedBy;
+          if (typeof adminUserId !== "string" || !adminUserId)
+            return { data: { ...session, authMethod, authCrossDevice } };
+          const now = new Date();
+          let matches: ImpersonationMatch[];
+          try {
+            matches = await assertImpersonationAllowed({
+              adminUserId,
+              targetUserId: session.userId,
+              now,
+            });
+          } catch (error) {
+            refuse(error);
+          }
+          return {
+            data: {
+              ...session,
+              authMethod,
+              authCrossDevice,
+              expiresAt: impersonationSessionEnd({
+                requested: session.expiresAt,
+                matches,
+                now,
+              }),
+            },
+          };
+        },
+        after: async (session) => {
+          const adminUserId = session.impersonatedBy;
+          if (typeof adminUserId !== "string" || !adminUserId) return;
+          const now = new Date();
+          try {
+            const matches = await assertImpersonationAllowed({
+              adminUserId,
+              targetUserId: session.userId,
+              now,
+            });
+            await recordImpersonationStarted({
+              adminUserId,
+              targetUserId: session.userId,
+              sessionId: session.id,
+              sessionExpiresAt: session.expiresAt,
+              matches,
+              now,
+            });
+          } catch (error) {
+            // Fail closed: no start audit, no session. A failed delete is
+            // logged and the original refusal still propagates.
+            try {
+              await db
+                .delete(schema.session)
+                .where(eq(schema.session.id, session.id));
+            } catch (deleteError) {
+              authLog.error(
+                { err: deleteError, sessionId: session.id },
+                "failed to delete an unaudited impersonation session",
+              );
+            }
+            refuse(error);
+          }
+        },
+      },
+      delete: {
+        after: async (session, ctx) => {
+          const adminUserId = session.impersonatedBy;
+          if (typeof adminUserId !== "string" || !adminUserId) return;
+          const now = new Date();
+          try {
+            await recordImpersonationEnded({
+              adminUserId,
+              targetUserId: session.userId,
+              sessionId: session.id,
+              sessionCreatedAt: session.createdAt,
+              cause: endCause(ctx?.path, session.expiresAt, now),
+              now,
+            });
+          } catch (error) {
+            // Never block an exit; the failure is logged for follow-up.
+            authLog.error(
+              { err: error, sessionId: session.id },
+              "failed to audit impersonation end",
+            );
+          }
+        },
+      },
+    },
+  },
+  // Google sign-in (legend-k2l, AUTH-05): only when both credentials are set.
+  // `prompt: select_account` lets a shared phone pick the right Google account.
+  // Accounts link by email only for Google (a trusted provider), and the guards
+  // above refuse an unverified or `.invalid` address on the Google path only.
+  ...(env.googleEnabled
+    ? {
+        socialProviders: {
+          google: {
+            clientId: env.GOOGLE_CLIENT_ID as string,
+            clientSecret: env.GOOGLE_CLIENT_SECRET as string,
+            prompt: "select_account" as const,
+            // Runs only inside the Google callback, so it never touches
+            // internal callers (see the guard comment above).
+            mapProfileToUser: (profile: {
+              email?: string | null;
+              email_verified?: boolean;
+            }) => {
+              if (
+                profile.email_verified !== true ||
+                isInvalidEmail(profile.email)
+              )
+                throw new APIError("FORBIDDEN", {
+                  code: "google_email_not_usable",
+                  message: "Google did not return a verified email address.",
+                });
+              return {};
+            },
+          },
+        },
+      }
+    : {}),
+  account: {
+    accountLinking: { enabled: true, trustedProviders: ["google"] },
+  },
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 8,
@@ -53,6 +527,28 @@ export const auth = betterAuth({
     // Better Auth slides the expiry only after updateAge; setting it equal to
     // the lifetime keeps a customer session at its 90-day end.
     updateAge: 90 * 24 * 60 * 60,
+    // With updateAge equal to the lifetime Better Auth would only refresh a
+    // session in the very millisecond it expires, and a client that drops the
+    // dont_remember cookie could use that to push an impersonated session
+    // 90 days out (legend-rzirp review). Nothing else relies on the refresh.
+    disableSessionRefresh: true,
+    // legend-k2l: how the session was opened. `input: false` so the client can
+    // never choose it; the session create hook sets it and the drizzle adapter
+    // only writes fields declared here.
+    additionalFields: {
+      authMethod: {
+        type: "string",
+        required: false,
+        input: false,
+        defaultValue: "legacy",
+      },
+      authCrossDevice: {
+        type: "boolean",
+        required: false,
+        input: false,
+        defaultValue: false,
+      },
+    },
   },
   advanced: {
     cookiePrefix: siteConfig.id,
@@ -93,6 +589,7 @@ export const auth = betterAuth({
       roles,
       defaultRole: DEFAULT_ROLE,
       adminRoles: ADMIN_ROLES,
+      impersonationSessionDuration: IMPERSONATION_SESSION_MAX_SECONDS,
     }),
   ],
 });

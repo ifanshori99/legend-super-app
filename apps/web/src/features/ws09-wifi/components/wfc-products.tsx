@@ -8,7 +8,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { SubscriptionPlan } from "@starter/shared/facility";
+import type { PublicSubscriptionPlan } from "@starter/shared/facility";
 import { useWfcPlans } from "../hooks";
 
 function ProductRow({ name, hint }: { name: string; hint: string }) {
@@ -20,7 +20,7 @@ function ProductRow({ name, hint }: { name: string; hint: string }) {
   );
 }
 
-function PlanRow({ plan }: { plan: SubscriptionPlan }) {
+function PlanRow({ plan }: { plan: PublicSubscriptionPlan }) {
   const t = useT();
   return (
     <li className="flex items-start justify-between gap-4 px-4 py-3">

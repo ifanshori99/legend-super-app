@@ -52,7 +52,9 @@ import { ApiError } from "@/lib/api/errors";
 import { useCreateProduct, useUpdateProduct } from "../hooks.ts";
 import {
   menuItemLabel,
+  parseCreateDraft,
   parseInteger,
+  parseUpdateDraft,
   productTypeLabel,
   shortId,
   zodFieldErrors,
@@ -116,7 +118,11 @@ export function ProductsTab({
 
   function toggle(product: FacilityProduct, isActive: boolean) {
     updateProduct.mutate(
-      { productId: product.id, body: { isActive } },
+      {
+        productId: product.id,
+        body: { isActive },
+        expectedUpdatedAt: product.updatedAt,
+      },
       {
         onSuccess: () =>
           toast({
@@ -461,7 +467,7 @@ function ProductDialog({
     if (priceIdr === null || sessionCount === null) return;
 
     if (product) {
-      const parsed = updateFacilityProductSchema.safeParse({
+      const parsed = parseUpdateDraft(updateFacilityProductSchema, {
         name: trimmed,
         priceIdr,
         sessions: sessionCount,
@@ -477,7 +483,11 @@ function ProductDialog({
         return;
       }
       updateProduct.mutate(
-        { productId: product.id, body: parsed.data },
+        {
+          productId: product.id,
+          body: parsed.data,
+          expectedUpdatedAt: product.updatedAt,
+        },
         {
           onSuccess: () => {
             toast({
@@ -497,7 +507,7 @@ function ProductDialog({
       return;
     }
 
-    const parsed = createFacilityProductSchema.safeParse({
+    const parsed = parseCreateDraft(createFacilityProductSchema, {
       facilityId,
       name: trimmed,
       type,

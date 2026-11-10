@@ -42,6 +42,7 @@ import type {
   AccountType,
   FiscalPeriodStatus,
   JournalSourceType,
+  PeriodReopenRequestStatus,
   PostingAccountRole,
   ReportGroup,
 } from "@starter/shared/accounting";
@@ -256,6 +257,12 @@ export const journalEntries = pgTable(
     requestFingerprint: varchar("request_fingerprint", {
       length: 64,
     }).notNull(),
+    /**
+     * Business date an auto-journal fact really happened on, set only when the
+     * natural period was closed and the entry rolled to the first open day
+     * (`entry_date`). Null for every on-time entry.
+     */
+    lateAdjustmentFrom: businessDate("late_adjustment_from"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -292,7 +299,11 @@ export const journalEntries = pgTable(
     }),
     check(
       "journal_entries_source_type_check",
-      sql`${table.sourceType} IN ('sale', 'refund', 'gateway_settlement', 'edc_settlement', 'cogs', 'stock_adjustment', 'purchase', 'supplier_invoice', 'supplier_payment', 'production', 'payroll', 'loyalty', 'depreciation', 'asset_acquisition', 'asset_disposal', 'asset_revaluation', 'dividend', 'cash_deposit', 'cashier_shift', 'opening_balance', 'manual', 'recurring', 'reversal')`,
+      sql`${table.sourceType} IN ('sale', 'refund', 'gateway_settlement', 'edc_settlement', 'cogs', 'stock_adjustment', 'purchase', 'supplier_invoice', 'supplier_payment', 'production', 'payroll', 'loyalty', 'depreciation', 'asset_acquisition', 'asset_disposal', 'asset_revaluation', 'dividend', 'cash_deposit', 'cashier_shift', 'opening_balance', 'manual', 'recurring', 'reversal', 'customer_deposit', 'purchase_return', 'petty_purchase')`,
+    ),
+    check(
+      "journal_entries_late_adjustment_check",
+      sql`${table.lateAdjustmentFrom} IS NULL OR ${table.lateAdjustmentFrom} < ${table.entryDate}`,
     ),
     // Contract/journal.ts: reversalOf is set exactly when sourceType is reversal.
     check(
@@ -389,9 +400,182 @@ export const journalLines = pgTable(
   ],
 );
 
+/**
+ * `fiscal_period_snapshots` (T): cumulative trial balance taken when a period
+ * closes (legend-72we). Append-only; `version` is the period version the close
+ * produced, so a re-close after a reopen adds a new snapshot.
+ */
+export const fiscalPeriodSnapshots = pgTable(
+  "fiscal_period_snapshots",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    legalEntityId: uuid("legal_entity_id").notNull(),
+    fiscalPeriodId: uuid("fiscal_period_id").notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    version: integer("version").notNull(),
+    /** Retry key of the close call; null for closes made without one. */
+    idempotencyKey: varchar("idempotency_key", { length: 100 }),
+    takenBy: text("taken_by").notNull(),
+    takenAt: timestamp("taken_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("fiscal_period_snapshots_tenant_period_version_key").on(
+      table.tenantId,
+      table.fiscalPeriodId,
+      table.version,
+    ),
+    unique("fiscal_period_snapshots_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    uniqueIndex("fiscal_period_snapshots_idempotency_key")
+      .on(table.tenantId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} IS NOT NULL`),
+    foreignKey({
+      name: "fiscal_period_snapshots_legal_entity_fk",
+      columns: [table.tenantId, table.legalEntityId],
+      foreignColumns: [legalEntities.tenantId, legalEntities.id],
+    }),
+    foreignKey({
+      name: "fiscal_period_snapshots_fiscal_period_fk",
+      columns: [table.tenantId, table.fiscalPeriodId],
+      foreignColumns: [fiscalPeriods.tenantId, fiscalPeriods.id],
+    }),
+    check(
+      "fiscal_period_snapshots_period_check",
+      sql`${table.period} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+    check("fiscal_period_snapshots_version_check", sql`${table.version} >= 1`),
+  ],
+);
+
+/** `fiscal_period_snapshot_lines` (T): one row per account with activity. */
+export const fiscalPeriodSnapshotLines = pgTable(
+  "fiscal_period_snapshot_lines",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    snapshotId: uuid("snapshot_id").notNull(),
+    accountId: uuid("account_id").notNull(),
+    debitIdr: idrColumn("debit_idr")
+      .notNull()
+      .default(sql`0`),
+    creditIdr: idrColumn("credit_idr")
+      .notNull()
+      .default(sql`0`),
+  },
+  (table) => [
+    unique("fiscal_period_snapshot_lines_snapshot_account_key").on(
+      table.snapshotId,
+      table.accountId,
+    ),
+    foreignKey({
+      name: "fiscal_period_snapshot_lines_snapshot_fk",
+      columns: [table.tenantId, table.snapshotId],
+      foreignColumns: [
+        fiscalPeriodSnapshots.tenantId,
+        fiscalPeriodSnapshots.id,
+      ],
+    }),
+    foreignKey({
+      name: "fiscal_period_snapshot_lines_account_fk",
+      columns: [table.tenantId, table.accountId],
+      foreignColumns: [chartOfAccounts.tenantId, chartOfAccounts.id],
+    }),
+    check(
+      "fiscal_period_snapshot_lines_amounts_check",
+      sql`${table.debitIdr} >= 0 AND ${table.creditIdr} >= 0`,
+    ),
+  ],
+);
+
+/**
+ * `period_reopen_requests` (T): four-eyes request to reopen a closed period
+ * (legend-72we). At most one pending request per period.
+ */
+export const periodReopenRequests = pgTable(
+  "period_reopen_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    legalEntityId: uuid("legal_entity_id").notNull(),
+    fiscalPeriodId: uuid("fiscal_period_id").notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: varchar("status", { length: 10 })
+      .$type<PeriodReopenRequestStatus>()
+      .notNull()
+      .default("pending"),
+    requestedBy: text("requested_by").notNull(),
+    requestedAt: timestamp("requested_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    decidedBy: text("decided_by"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    decisionNote: varchar("decision_note", { length: 500 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("period_reopen_requests_tenant_id_key").on(table.tenantId, table.id),
+    uniqueIndex("period_reopen_requests_pending_key")
+      .on(table.tenantId, table.fiscalPeriodId)
+      .where(sql`${table.status} = 'pending'`),
+    foreignKey({
+      name: "period_reopen_requests_legal_entity_fk",
+      columns: [table.tenantId, table.legalEntityId],
+      foreignColumns: [legalEntities.tenantId, legalEntities.id],
+    }),
+    foreignKey({
+      name: "period_reopen_requests_fiscal_period_fk",
+      columns: [table.tenantId, table.fiscalPeriodId],
+      foreignColumns: [fiscalPeriods.tenantId, fiscalPeriods.id],
+    }),
+    check(
+      "period_reopen_requests_period_check",
+      sql`${table.period} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+    check(
+      "period_reopen_requests_status_check",
+      sql`${table.status} IN ('pending', 'approved', 'rejected', 'cancelled')`,
+    ),
+    check(
+      "period_reopen_requests_reason_check",
+      sql`length(btrim(${table.reason})) > 0`,
+    ),
+    check(
+      "period_reopen_requests_decided_check",
+      sql`(${table.status} IN ('approved', 'rejected')) = (${table.decidedBy} IS NOT NULL AND ${table.decidedAt} IS NOT NULL)`,
+    ),
+    index("period_reopen_requests_entity_idx").on(
+      table.tenantId,
+      table.legalEntityId,
+      table.requestedAt.desc(),
+    ),
+  ],
+);
+
 /** Parent lookup used by the account service (same entity chart). */
 export type ChartOfAccountsRow = typeof chartOfAccounts.$inferSelect;
 /** Used by the posting service to build an entry. */
 export type JournalEntryRow = typeof journalEntries.$inferSelect;
 export type JournalLineRow = typeof journalLines.$inferSelect;
 export type FiscalPeriodRow = typeof fiscalPeriods.$inferSelect;
+export type FiscalPeriodSnapshotRow = typeof fiscalPeriodSnapshots.$inferSelect;
+export type FiscalPeriodSnapshotLineRow =
+  typeof fiscalPeriodSnapshotLines.$inferSelect;
+export type PeriodReopenRequestRow = typeof periodReopenRequests.$inferSelect;

@@ -872,6 +872,50 @@ test("TEN-09 config readiness, platform-only permission and endpoints", () => {
   assert.equal(platform.platformErrorHttpStatus.CONFIG_IMPORT_FAILED, 422);
 });
 
+test("legend-t57t resolveHost prefers the verified claim over unverified rows of other tenants", () => {
+  const tenantStatus = () => "active";
+  const verified = fx.domains.find(
+    (row) => row.verifiedAt !== null && row.kind === "custom",
+  );
+  const intruder = {
+    ...verified,
+    id: "d0a10000-0000-4000-8000-0000000000aa",
+    tenantId: fx.suspendedTenant.id,
+    verifiedAt: null,
+    verification: platform.domainVerificationRecord(verified.hostname, "t"),
+  };
+  for (const rows of [
+    [intruder, verified],
+    [verified, intruder],
+  ]) {
+    const hit = platform.resolveHost(verified.hostname, rows, tenantStatus);
+    assert.equal(hit.ok, true);
+    assert.equal(hit.tenantId, verified.tenantId);
+  }
+  assert.deepEqual(
+    platform.resolveHost(verified.hostname, [intruder], tenantStatus),
+    { ok: false, reason: "unverified" },
+  );
+});
+
+test("legend-t57t reserved hostnames and verification record", () => {
+  const base = ["platform.example", "app.example.com"];
+  assert.equal(platform.isReservedHostname("platform.example", base), true);
+  assert.equal(
+    platform.isReservedHostname("Kopi.Platform.Example", base),
+    true,
+  );
+  assert.equal(platform.isReservedHostname("a.b.app.example.com", base), true);
+  assert.equal(platform.isReservedHostname("notplatform.example", base), false);
+  assert.equal(platform.isReservedHostname("example.com", base), false);
+  assert.equal(platform.isReservedHostname("platform.example", []), false);
+  assert.deepEqual(platform.domainVerificationRecord("pesan.toko.id", "abc"), {
+    type: "TXT",
+    name: "_legend-verification.pesan.toko.id",
+    value: "legend-domain-verification=abc",
+  });
+});
+
 test("TEN-02 hostnames resolve to the tenant only when verified and active", () => {
   const tenantStatus = (id) =>
     [fx.tenant, fx.suspendedTenant].find((t) => t.id === id)?.status;
@@ -962,9 +1006,18 @@ test("TEN-02 device token is opaque, versioned and strictly parsed", () => {
     tenantId: fx.tenant.id,
     brandId: fx.brand.id,
     deviceId: fx.brand.id,
+    issuedAt: 1_700_000_000,
     expiresAt: 1_800_000_000,
   };
   platform.deviceTokenPayloadSchema.parse(payload);
+  // legend-165: issuedAt is compared with the registry's token floor.
+  assert.equal(
+    platform.deviceTokenPayloadSchema.safeParse({
+      ...payload,
+      issuedAt: undefined,
+    }).success,
+    false,
+  );
   assert.equal(
     platform.deviceTokenPayloadSchema.safeParse({ ...payload, version: 2 })
       .success,
@@ -1162,4 +1215,182 @@ test("TEN-04 invalid support access intent fails closed", () => {
       now: fx.now,
     }),
   );
+});
+
+// Read-write support access needs tenant owner approval (founder Q37,
+// legend-c9kbk). Assumption: the 30-minute cap and the 24-hour approval
+// window are the contract values; ids are plain UUIDs at runtime.
+const writeReason =
+  "Memperbaiki konfigurasi pajak yang salah atas permintaan owner tenant.";
+const requestedAt = "2026-11-01T04:00:00.000Z";
+const requestId = "5ac0000b-0000-4000-8000-000000000001";
+const ownerUserId = "0a0e0000-0000-4000-8000-000000000001";
+
+function pendingRequest(overrides = {}) {
+  return {
+    id: requestId,
+    tenantId: fx.tenant.id,
+    superAdminUserId: fx.superAdmin.id,
+    reason: writeReason,
+    accessMode: "read_write",
+    durationMinutes: 30,
+    mfaVerifiedAt: "2026-11-01T03:59:30.000Z",
+    requestedAt,
+    approvalExpiresAt: "2026-11-02T04:00:00.000Z",
+    status: "pending",
+    decidedAt: null,
+    decidedBy: null,
+    grantId: null,
+    ownerNotifiedAt: null,
+    ...overrides,
+  };
+}
+
+test("legend-c9kbk write access request accepts only 15 or 30 minutes and defaults to 30", () => {
+  const base = { reason: writeReason, mfaCode: "123456" };
+  const schema = platform.requestSupportWriteAccessInputSchema;
+  for (const durationMinutes of [15, 30])
+    assert.equal(
+      schema.parse({ ...base, durationMinutes }).durationMinutes,
+      durationMinutes,
+    );
+  for (const durationMinutes of [60, 120])
+    assert.equal(
+      schema.safeParse({ ...base, durationMinutes }).success,
+      false,
+      `${durationMinutes} minutes is above the read-write cap`,
+    );
+  assert.equal(schema.parse(base).durationMinutes, 30);
+});
+
+test("legend-c9kbk write access request rejects unknown keys and a malformed MFA code", () => {
+  const base = { reason: writeReason, durationMinutes: 15 };
+  const schema = platform.requestSupportWriteAccessInputSchema;
+  assert.equal(schema.safeParse({ ...base, mfaCode: "123456" }).success, true);
+  assert.equal(
+    schema.safeParse({ ...base, mfaCode: "123456", accessMode: "read_only" })
+      .success,
+    false,
+  );
+  for (const mfaCode of ["12345", "1234567", "12345a", ""])
+    assert.equal(
+      schema.safeParse({ ...base, mfaCode }).success,
+      false,
+      `mfaCode "${mfaCode}"`,
+    );
+  assert.equal(schema.safeParse(base).success, false);
+});
+
+test("legend-c9kbk support access request refines pending, approved and the 24h window", () => {
+  const schema = platform.supportAccessRequestSchema;
+  schema.parse(pendingRequest());
+  // Approved with a grant parses (positive control for the refines below).
+  schema.parse(
+    pendingRequest({
+      status: "approved",
+      decidedAt: "2026-11-01T05:00:00.000Z",
+      decidedBy: ownerUserId,
+      grantId: fx.supportGrants[0].id,
+    }),
+  );
+  assert.equal(
+    schema.safeParse(pendingRequest({ decidedAt: "2026-11-01T05:00:00.000Z" }))
+      .success,
+    false,
+    "pending with decidedAt",
+  );
+  assert.equal(
+    schema.safeParse(
+      pendingRequest({
+        status: "approved",
+        decidedAt: "2026-11-01T05:00:00.000Z",
+        decidedBy: ownerUserId,
+        grantId: null,
+      }),
+    ).success,
+    false,
+    "approved without grantId",
+  );
+  for (const approvalExpiresAt of [
+    "2026-11-02T03:59:59.000Z",
+    "2026-11-02T04:00:01.000Z",
+    requestedAt,
+  ])
+    assert.equal(
+      schema.safeParse(pendingRequest({ approvalExpiresAt })).success,
+      false,
+      `approvalExpiresAt ${approvalExpiresAt}`,
+    );
+});
+
+test("legend-c9kbk deciding a support access request takes no body", () => {
+  const schema = platform.decideSupportAccessRequestInputSchema;
+  assert.equal(schema.safeParse({}).success, true);
+  assert.equal(schema.safeParse({ reason: "setuju" }).success, false);
+  assert.equal(schema.safeParse({ anything: 1 }).success, false);
+});
+
+test("legend-c9kbk support_access.requested event payload parses", () => {
+  const payload = {
+    requestId,
+    superAdminUserId: fx.superAdmin.id,
+    reason: writeReason,
+    durationMinutes: 30,
+    approvalExpiresAt: "2026-11-02T04:00:00.000Z",
+  };
+  const schema = platform.platformEvents["support_access.requested"];
+  schema.payloadSchema.parse(payload);
+  assert.equal(
+    schema.payloadSchema.safeParse({ ...payload, durationMinutes: 60 }).success,
+    false,
+  );
+  schema.envelopeSchema.parse({
+    id: "01JBR0000000000000000000A2",
+    tenantId: fx.tenant.id,
+    outletId: null,
+    name: "support_access.requested",
+    version: 1,
+    aggregateType: "support_access",
+    aggregateId: requestId,
+    sequence: 1,
+    occurredAt: requestedAt,
+    actor: { type: "user", id: fx.superAdmin.id },
+    idempotencyKey: `support_access:${requestId}:requested`,
+    payloadSchemaRef: "support_access.requested.v1",
+    payload,
+  });
+});
+
+test("legend-c9kbk owner approval endpoints and the platform request endpoint exist", () => {
+  const expected = [
+    [
+      platform.orgEndpoints.listSupportAccessRequests,
+      "GET",
+      "/api/org/support-access/requests",
+    ],
+    [
+      platform.orgEndpoints.approveSupportAccessRequest,
+      "POST",
+      "/api/org/support-access/requests/:requestId/approve",
+    ],
+    [
+      platform.orgEndpoints.rejectSupportAccessRequest,
+      "POST",
+      "/api/org/support-access/requests/:requestId/reject",
+    ],
+    [
+      platform.platformEndpoints.requestSupportWriteAccess,
+      "POST",
+      "/api/platform/tenants/:tenantId/support-access-requests",
+    ],
+  ];
+  for (const [endpoint, method, path] of expected) {
+    assert.ok(endpoint, path);
+    assert.equal(endpoint.method, method, path);
+    assert.equal(endpoint.path, path);
+  }
+  platform.orgEndpoints.listSupportAccessRequests.response.parse({
+    data: [pendingRequest()],
+    meta: { limit: 25, nextCursor: null },
+  });
 });

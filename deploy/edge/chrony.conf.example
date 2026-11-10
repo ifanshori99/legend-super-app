@@ -1,0 +1,15 @@
+# Example chrony configuration for an outlet edge host (legend-svy91).
+# The edge and the staff phones must agree within one 30 s QR window, so the
+# clock must stay disciplined. Replace the placeholder pool with your own.
+pool 2.pool.ntp.org iburst maxsources 4
+
+# Step the clock in the first three updates if it is more than 1 s off, so a
+# host that boots with a stale clock does not wait for a slow slew.
+makestep 1.0 3
+
+# Keep the hardware clock in sync and remember the drift across reboots.
+rtcsync
+driftfile /var/lib/chrony/drift
+
+# Do not answer NTP queries from the network; this host is only a client.
+port 0

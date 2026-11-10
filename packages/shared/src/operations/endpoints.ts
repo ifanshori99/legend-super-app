@@ -48,6 +48,7 @@ import {
   equipmentIdSchema,
   equipmentSchema,
   equipmentStatusSchema,
+  maintenanceScheduleIdSchema,
   maintenanceScheduleSchema,
   maintenanceTicketIdSchema,
   maintenanceTicketSchema,
@@ -275,6 +276,14 @@ export const createMaintenanceScheduleInputSchema = clientInputSchema({
   intervalDays: z.number().int().positive().max(3650),
   nextDueAt: isoDateTimeSchema,
   vendorId: supplierIdSchema.nullable().optional(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/** WS-14: a finished service moves the due date one interval forward. */
+export const completeMaintenanceScheduleInputSchema = clientInputSchema({
+  /** When the service was done; the next due date counts from the later of
+   * this and the server clock. */
+  completedAt: isoDateTimeSchema.optional(),
   idempotencyKey: idempotencyKeySchema,
 });
 
@@ -530,6 +539,14 @@ export const createMaintenanceSchedule = defineEndpoint({
   response: dataResponseSchema(maintenanceScheduleSchema),
 });
 
+export const completeMaintenanceSchedule = defineEndpoint({
+  method: "POST",
+  path: "/api/operations/maintenance-schedules/:scheduleId/complete",
+  params: z.strictObject({ scheduleId: maintenanceScheduleIdSchema }),
+  body: completeMaintenanceScheduleInputSchema,
+  response: dataResponseSchema(maintenanceScheduleSchema),
+});
+
 export const createMaintenanceTicket = defineEndpoint({
   method: "POST",
   path: "/api/operations/maintenance-tickets",
@@ -590,6 +607,7 @@ export const operationsEndpoints = [
   updateEquipment,
   postEquipmentTransition,
   createMaintenanceSchedule,
+  completeMaintenanceSchedule,
   createMaintenanceTicket,
   postMaintenanceTicketTransition,
   createShiftHandover,

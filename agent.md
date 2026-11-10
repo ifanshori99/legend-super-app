@@ -6,4 +6,4 @@ On a first app-building prompt, read [.agents/skills/starter-setup/SKILL.md](.ag
 
 Database operations and troubleshooting: [.agents/skills/dev-database/SKILL.md](.agents/skills/dev-database/SKILL.md).
 
-Backend features use Express routes with `requireAuth`, shared zod validators, services for all queries, and separate Drizzle table files ([docs/backend.md](docs/backend.md)). Frontend data goes through `apiFetch`, query options, and custom TanStack Query hooks ([docs/frontend.md](docs/frontend.md)). Follow the Notes example end to end.
+Backend features use Express routes with `requireAuth`, shared zod validators, services for all queries, and separate Drizzle table files ([docs/backend.md](docs/backend.md)). Frontend data goes through `apiFetch`, query options, and custom TanStack Query hooks ([docs/frontend.md](docs/frontend.md)). Follow those standards end to end.

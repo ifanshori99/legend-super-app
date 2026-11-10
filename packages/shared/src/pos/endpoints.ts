@@ -23,16 +23,19 @@ import {
   uuidSchema,
   idempotencyKeySchema,
 } from "../core/index.ts";
+import { posOverrideIdSchema } from "../access/override.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import { tableSessionIdSchema } from "../qr-order/schemas.ts";
 import {
   cashMovementTypeSchema,
   closeBusinessDayInputSchema,
   closePosShiftInputSchema,
+  forceClosePosShiftInputSchema,
   customerDisplayPairingSchema,
   customerDisplayStateSchema,
   discountReasonSchema,
   endOfDayRecapSchema,
+  endOfDayRecapViewSchema,
   invoiceDocumentSchema,
   openPosShiftInputSchema,
   orderChannelSchema,
@@ -51,7 +54,10 @@ import {
   posOrderSummarySchema,
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
+  posRefundItemSchema,
   posRefundSchema,
+  posShiftCountReceiptSchema,
+  posShiftCountSchema,
   posShiftIdSchema,
   posShiftReportSchema,
   posShiftSchema,
@@ -65,6 +71,7 @@ import {
   recordCashMovementInputSchema,
   refundReasonSchema,
   serviceTypeSchema,
+  submitPosShiftCountInputSchema,
   voidReasonSchema,
 } from "./schemas.ts";
 
@@ -87,9 +94,21 @@ const receiptParams = z.strictObject({
   receiptId: posReceiptIdSchema,
 });
 
+/**
+ * legend-63l6: optimistic-concurrency guard. `expectedVersion` is the `version`
+ * of the order response, equivalent to `If-Match: "v"`. The route uses
+ * `expectedVersion ?? If-Match`; both given and different is 412
+ * PRECONDITION_FAILED. Both absent means no version check, so legacy clients
+ * keep working and `expectedStatus` still guards the transition.
+ */
+const expectedVersion = {
+  expectedVersion: z.number().int().nonnegative().safe().optional(),
+};
+
 /** Stale-screen guard: the caller states the status it believes the order has. */
 const expectedStatus = {
   expectedStatus: posOrderStatusSchema,
+  ...expectedVersion,
   idempotencyKey: idempotencyKeySchema,
 };
 
@@ -199,7 +218,7 @@ export const voidPosOrder = defineEndpoint({
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema,
     ...expectedStatus,
   }),
   response: dataResponseSchema(posOrderDetailSchema),
@@ -214,7 +233,8 @@ export const voidPosOrderItem = defineEndpoint({
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema,
+    ...expectedVersion,
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posOrderDetailSchema),
@@ -232,6 +252,29 @@ export const listPosOrderEvents = defineEndpoint({
 // ---- Payment panel --------------------------------------------------------
 
 /**
+ * EDC-04 (legend-m4fv): a payment keyed on the terminal by hand while the EDC
+ * agent is down. The bank reference is what the terminal slip prints (an RRN,
+ * 6-24 letters/digits). Any value holding a 13-19 digit run looks like a card number (PAN) and
+ * is refused, so a cashier cannot park a card number in the ledger.
+ */
+export const posStandaloneEdcSchema = z
+  .object({
+    terminalId: uuidSchema,
+    bankRef: z
+      .string()
+      .regex(/^[A-Za-z0-9-]{6,24}$/, "Nomor referensi bank tidak valid.")
+      .refine((value) => !/\d{13,19}/.test(value.replaceAll("-", "")), {
+        message: "Nomor referensi bank tidak boleh menyerupai nomor kartu.",
+      }),
+    approvalCode: z
+      .string()
+      .regex(/^[A-Za-z0-9]{1,12}$/, "Kode persetujuan tidak valid.")
+      .optional(),
+    overrideId: posOverrideIdSchema,
+  })
+  .strict();
+
+/**
  * Add one tender. The body has no amount: cash sends what the customer handed
  * over (`receivedIdr`) and the API applies `min(received, remaining)` and
  * computes change; every other method settles the remaining balance. Payment
@@ -246,6 +289,8 @@ export const addPosTender = defineEndpoint({
     receivedIdr: z.number().int().positive().optional(),
     reference: z.string().min(1).max(100).nullable().optional(),
     edcTransactionId: uuidSchema.nullable().optional(),
+    /** EDC-04: standalone terminal payment; exclusive with edcTransactionId. */
+    standalone: posStandaloneEdcSchema.optional(),
     pointsUsed: z
       .number()
       .int()
@@ -254,16 +299,31 @@ export const addPosTender = defineEndpoint({
       .nullable()
       .optional(),
     ...expectedStatus,
-  }).refine(
-    (value) =>
-      value.method === "cash"
-        ? value.receivedIdr !== undefined
-        : value.receivedIdr === undefined,
-    {
-      message: "Only a cash tender sends receivedIdr",
-      path: ["receivedIdr"],
-    },
-  ),
+  })
+    .refine(
+      (value) =>
+        value.method === "cash"
+          ? value.receivedIdr !== undefined
+          : value.receivedIdr === undefined,
+      {
+        message: "Only a cash tender sends receivedIdr",
+        path: ["receivedIdr"],
+      },
+    )
+    .refine((value) => !(value.standalone && value.edcTransactionId), {
+      message: "A standalone EDC payment has no edcTransactionId",
+      path: ["standalone"],
+    })
+    .refine(
+      (value) =>
+        !value.standalone ||
+        value.method === "edc_card" ||
+        value.method === "edc_qris",
+      {
+        message: "Only an EDC tender can be standalone",
+        path: ["standalone"],
+      },
+    ),
   response: dataResponseSchema(posTenderResultSchema),
 });
 
@@ -286,7 +346,8 @@ export const applyPosDiscount = defineEndpoint({
     reason: discountReasonSchema,
     reasonNote: z.string().min(4).max(500).nullable().optional(),
     approvedBy: userIdSchema.optional(),
-    approvalRequestId: uuidSchema.optional(),
+    overrideId: posOverrideIdSchema.optional(),
+    ...expectedVersion,
     idempotencyKey: idempotencyKeySchema,
   })
     .refine(
@@ -303,11 +364,10 @@ export const applyPosDiscount = defineEndpoint({
     )
     .refine(
       (value) =>
-        (value.approvedBy === undefined) ===
-        (value.approvalRequestId === undefined),
+        (value.approvedBy === undefined) === (value.overrideId === undefined),
       {
-        message: "Approval carries both the approver and the request id",
-        path: ["approvalRequestId"],
+        message: "Approval carries both the approver and the override id",
+        path: ["overrideId"],
       },
     )
     .refine(
@@ -333,7 +393,7 @@ export const voidPosOrderCorrection = defineEndpoint({
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema,
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posVoidSchema),
@@ -343,6 +403,9 @@ export const voidPosOrderCorrection = defineEndpoint({
  * POS-02/POS-04: refund against a paid sale. The cashier states how much to
  * refund; the API validates it against what is still refundable and splits it
  * back over the original tender methods (`refundAllocation`).
+ * A promo order must say which `items` come back: the API then works out what
+ * is really due (the promo may be kept pro rata or withdrawn) and may pay less
+ * than `amountIdr`. Refund never restores stock (only a void does).
  */
 export const refundPosOrder = defineEndpoint({
   method: "POST",
@@ -350,12 +413,19 @@ export const refundPosOrder = defineEndpoint({
   params: orderParams,
   body: clientInputSchema({
     amountIdr: z.number().int().positive(),
+    items: z.array(posRefundItemSchema).min(1).max(100).optional(),
     reason: refundReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema,
     idempotencyKey: idempotencyKeySchema,
-  }),
+  }).refine(
+    (value) =>
+      value.items === undefined ||
+      new Set(value.items.map((item) => item.itemId)).size ===
+        value.items.length,
+    { message: "Each refunded item may appear once", path: ["items"] },
+  ),
   response: dataResponseSchema(posRefundSchema),
 });
 
@@ -368,7 +438,10 @@ export const removePosDiscount = defineEndpoint({
     orderId: orderIdSchema,
     discountId: posDiscountIdSchema,
   }),
-  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  body: clientInputSchema({
+    ...expectedVersion,
+    idempotencyKey: idempotencyKeySchema,
+  }),
   response: dataResponseSchema(posOrderDetailSchema),
 });
 
@@ -410,12 +483,38 @@ export const getPosShift = defineEndpoint({
   response: dataResponseSchema(posShiftReportSchema),
 });
 
-/** POS-03: blind count + supervisor approval; the variance is locked after. */
+/** POS-03: a blind count submission (cashier); the answer is blind too. */
+export const submitPosShiftCount = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/counts",
+  params: shiftParams,
+  body: submitPosShiftCountInputSchema,
+  response: dataResponseSchema(posShiftCountReceiptSchema),
+});
+
+/** Supervisor view of every count submission of the shift. */
+export const listPosShiftCounts = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/counts",
+  params: shiftParams,
+  response: dataResponseSchema(z.array(posShiftCountSchema)),
+});
+
+/** POS-03: close with a stored count + supervisor approval; variance locked. */
 export const closePosShift = defineEndpoint({
   method: "POST",
   path: "/api/outlets/:outletId/pos/shifts/:shiftId/close",
   params: shiftParams,
   body: closePosShiftInputSchema,
+  response: dataResponseSchema(posShiftSchema),
+});
+
+/** U9: a supervisor force closes a shift after the cashier's recount limit. */
+export const forceClosePosShift = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/force-close",
+  params: shiftParams,
+  body: forceClosePosShiftInputSchema,
   response: dataResponseSchema(posShiftSchema),
 });
 
@@ -446,7 +545,7 @@ export const getEndOfDayRecap = defineEndpoint({
   path: "/api/outlets/:outletId/pos/day",
   params: outletParams,
   query: z.strictObject({ businessDate: businessDateSchema }),
-  response: dataResponseSchema(endOfDayRecapSchema),
+  response: dataResponseSchema(endOfDayRecapViewSchema),
 });
 
 /** Close the day: recap, optional stock deduction, sync to accounting. */

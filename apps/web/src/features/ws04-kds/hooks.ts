@@ -13,12 +13,12 @@ import {
 import {
   boardQuery,
   kdsKeys,
-  menuStationsQuery,
+  stationLabelsQuery,
   stationsQuery,
 } from "./queries.ts";
 
 export const useStations = () => useQuery(stationsQuery());
-export const useMenuStations = () => useQuery(menuStationsQuery());
+export const useStationLabels = () => useQuery(stationLabelsQuery());
 export const useBoard = (id: StationConfig["stationId"]) =>
   useQuery(boardQuery(id));
 export function useKdsActions() {

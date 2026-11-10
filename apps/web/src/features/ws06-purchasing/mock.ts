@@ -257,10 +257,12 @@ registerMock(createPurchaseOrder, ({ body }) =>
         source: body.source,
         createdBy: requester,
         createdAt: time,
+        updatedAt: time,
         approvedBy: null,
         approvedAt: null,
         sentAt: null,
         sentTo: null,
+        emailDeliveryStatus: null,
         closedAt: null,
         note: body.note ?? null,
         ...totals,
@@ -290,6 +292,7 @@ registerMock(postPurchaseOrderTransition, ({ params, body }) =>
     detail.purchaseOrder = purchaseOrderSchema.parse({
       ...detail.purchaseOrder,
       status,
+      updatedAt: now(),
       ...(body.action === "approve"
         ? { approvedBy: approver, approvedAt: now() }
         : {}),
@@ -315,7 +318,12 @@ registerMock(sendPurchaseOrder, ({ params, body }) =>
       ...detail.purchaseOrder,
       status,
       sentAt: now(),
+      updatedAt: now(),
       sentTo: body.email ?? null,
+      emailDeliveryStatus:
+        body.channel === "email"
+          ? "sent"
+          : detail.purchaseOrder.emailDeliveryStatus,
     });
     savePrintOrder(detail);
     return {

@@ -15,6 +15,7 @@ import {
   cashBankKeys,
   cashDepositsQuery,
   bankAccountsQuery,
+  financePolicyQuery,
   gatewaySettlementsQuery,
   matchJournalsQuery,
   reconciliationCaseQuery,
@@ -28,6 +29,10 @@ import {
 } from "./queries";
 
 // ---- Queries --------------------------------------------------------------
+
+export function useFinancePolicy() {
+  return useQuery(financePolicyQuery());
+}
 
 export function useBankAccounts(legalEntityId: string | undefined) {
   return useQuery(bankAccountsQuery(legalEntityId));

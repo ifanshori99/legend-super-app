@@ -8,6 +8,7 @@ export const kdsMessages = {
   tickets: "Tiket",
   order: "Pesanan {id}",
   orderCode: "Pesanan",
+  table: "Meja {label}",
   start: "Mulai",
   bump: "Selesai",
   startItem: "Mulai item",
@@ -40,6 +41,14 @@ export const kdsMessages = {
     ready: "Siap",
     served: "Diantar",
     voided: "Dibatalkan",
+  },
+  channel: {
+    dine_in: "Makan di tempat",
+    takeaway: "Bawa pulang",
+    gofood: "GoFood",
+    grabfood: "GrabFood",
+    shopeefood: "ShopeeFood",
+    reservation: "Reservasi",
   },
   status: {
     new: "Baru",

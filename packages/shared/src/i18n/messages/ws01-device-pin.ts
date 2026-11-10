@@ -84,6 +84,8 @@ export const devicePinMessages = {
       refund: "Refund",
       cash_drawer_open: "Buka laci tanpa transaksi",
       price_correction: "Koreksi harga",
+      cash_shift_close: "Tutup shift kasir",
+      edc_standalone: "Pembayaran EDC standalone",
     },
     valueLabel: "Nilai terdampak",
     valueHint: "Rupiah penuh. Isi 0 bila tidak ada nilai.",

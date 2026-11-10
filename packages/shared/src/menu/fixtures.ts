@@ -42,9 +42,10 @@ const stations = groups.map(([name], i) => ({
   ...base(200 + i),
   outletId: outlets[0].id,
   name,
-  type: ["coffee_bar", "beverage_bar", "hot_kitchen", "pastry"][i],
+  type: (["coffee_bar", "beverage_bar", "hot_kitchen", "pastry"] as const)[i],
   printerDeviceId: null,
   targetSeconds: 600,
+  updatedAt: "2026-01-01T00:00:00.000Z",
 }));
 const items: MenuItem[] = groups.flatMap(([, names], group) =>
   names.split("|").map((name, i) => ({
@@ -55,6 +56,7 @@ const items: MenuItem[] = groups.flatMap(([, names], group) =>
     description: `Pilihan ${name} khas Cafe Legend`,
     type: "single" as const,
     stationId: stations[group].id,
+    stationType: stations[group].type,
     course: group < 2 ? "drink" : group === 2 ? "main" : "dessert",
     recipeId: null,
     taxRuleId: null,
@@ -97,6 +99,11 @@ export const cafeLegendMenuFixtures = menuFixtureSchema.parse({
       recipeId: null,
       stationId: stations[0].id,
     },
+  ],
+  // Two drinks carry the sugar-level group (the back-office demo link).
+  itemModifierGroups: [
+    { itemId: items[0].id, groupId: id(4100), sortOrder: 0 },
+    { itemId: items[4].id, groupId: id(4100), sortOrder: 0 },
   ],
   combos: [
     {
@@ -157,6 +164,7 @@ export const legacyPhotoMissingItem: MenuItem = menuItemSchema.parse({
   description: "Item lama tanpa foto dari sebelum aturan Q23.",
   type: "single",
   stationId: stations[0].id,
+  stationType: stations[0].type,
   course: "drink",
   recipeId: null,
   taxRuleId: null,

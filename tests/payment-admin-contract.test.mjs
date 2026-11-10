@@ -207,11 +207,13 @@ test("EDC-06 / PAY-04 derived amounts are checked by the schema", () => {
     }).success,
     false,
   );
+  // legend-knev: a bill may carry several funds, so one fund is only bounded
+  // by what arrived; the per-bill sum is enforced server side.
   const [fund] = admin.cafeLegendPaymentAdminFixtures.unallocatedFunds;
   assert.equal(
     admin.unallocatedFundViewSchema.safeParse({
       ...fund,
-      amountIdr: fund.amountIdr + 1,
+      amountIdr: fund.paidAmountIdr + 1,
     }).success,
     false,
   );

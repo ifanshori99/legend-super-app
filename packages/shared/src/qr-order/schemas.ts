@@ -37,14 +37,29 @@ import {
 } from "../core/index.ts";
 import type { Idr } from "../core/index.ts";
 import type { PaymentStatus } from "../payment/index.ts";
+import { orderNetSubtotalIdr } from "../tax/net-subtotal.ts";
 // Reuse the merged kitchen contract (legend-acz) for the order id and the
 // `order_issues` vocabularies instead of redefining them (AGENT_PLAYBOOK §2).
 import {
   orderIdSchema,
   orderIssueTypeSchema,
+  orderIssueReasonSchema,
   orderIssueResolutionSchema,
+  orderIssueStatusSchema,
+  orderIssueSchema,
+  ORDER_ISSUE_STATUSES,
 } from "../kitchen/schemas.ts";
-export { orderIdSchema, orderIssueTypeSchema, orderIssueResolutionSchema };
+import type { OrderIssue } from "../kitchen/schemas.ts";
+export {
+  orderIdSchema,
+  orderIssueTypeSchema,
+  orderIssueReasonSchema,
+  orderIssueResolutionSchema,
+  orderIssueStatusSchema,
+  orderIssueSchema,
+  ORDER_ISSUE_STATUSES,
+};
+export type { OrderIssue };
 
 const name = z.string().min(1).max(150);
 const note = z.string().max(200);
@@ -63,6 +78,7 @@ const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
 export const floorZoneIdSchema = uuidIdSchema<"FloorZoneId">();
 export const tableIdSchema = uuidIdSchema<"TableId">();
 export const tableSessionIdSchema = uuidIdSchema<"TableSessionId">();
+export const tableLinkGroupIdSchema = uuidIdSchema<"TableLinkGroupId">();
 export const sessionParticipantIdSchema =
   uuidIdSchema<"SessionParticipantId">();
 export const cartLineIdSchema = uuidIdSchema<"CartLineId">();
@@ -705,6 +721,13 @@ export const orderQuoteSchema = z
     subtotalIdr: nonnegativeIdr,
     discountLines: z.array(discountLineSchema),
     discountIdr: nonnegativeIdr,
+    /**
+     * Inclusive prices (legend-49pw): the menu prices already contain service
+     * charge and tax. Lines stay gross, `serviceCharge` and `taxLines` are the
+     * included breakdown (parts of the total, not added to it), and
+     * total = subtotal - discount + rounding.
+     */
+    pricesIncludeTaxAndService: z.boolean().default(false),
     serviceCharge: serviceChargeLineSchema,
     taxLines: z.array(taxLineSchema),
     taxIdr: nonnegativeIdr,
@@ -756,20 +779,41 @@ export const orderQuoteSchema = z
         line.lineTotalIdr !== line.lineSubtotalIdr - line.discountIdr,
       );
     const netSubtotal = quote.subtotalIdr - quote.discountIdr;
-    add(
-      ["totalIdr"],
-      "totalIdr must equal subtotal - discount + service + tax + rounding",
-      quote.totalIdr !==
-        netSubtotal +
-          quote.serviceCharge.amountIdr +
-          quote.taxIdr +
-          quote.rounding.adjustmentIdr,
-    );
+    if (quote.pricesIncludeTaxAndService) {
+      add(
+        ["totalIdr"],
+        "inclusive totalIdr must equal subtotal - discount + rounding",
+        quote.totalIdr !== netSubtotal + quote.rounding.adjustmentIdr,
+      );
+      add(
+        ["serviceCharge", "amountIdr"],
+        "included service charge and tax cannot exceed the net subtotal",
+        quote.serviceCharge.amountIdr + quote.taxIdr > netSubtotal,
+      );
+    } else
+      add(
+        ["totalIdr"],
+        "totalIdr must equal subtotal - discount + service + tax + rounding",
+        quote.totalIdr !==
+          netSubtotal +
+            quote.serviceCharge.amountIdr +
+            quote.taxIdr +
+            quote.rounding.adjustmentIdr,
+      );
     add(
       ["minimumSpend", "shortfallIdr"],
       "shortfallIdr must be the missing amount up to the zone minimum spend",
       quote.minimumSpend.shortfallIdr !==
-        Math.max(0, quote.minimumSpend.requiredIdr - netSubtotal),
+        Math.max(
+          0,
+          quote.minimumSpend.requiredIdr -
+            orderNetSubtotalIdr({
+              subtotalIdr: netSubtotal,
+              serviceChargeIdr: quote.serviceCharge.amountIdr,
+              taxIdr: quote.taxIdr,
+              pricesIncludeTax: quote.pricesIncludeTaxAndService,
+            }),
+        ),
     );
   });
 export type OrderQuote = z.infer<typeof orderQuoteSchema>;
@@ -875,19 +919,37 @@ export const qrOrderSchema = z
     taxIdr: nonnegativeIdr,
     roundingIdr: idrSchema,
     totalIdr: nonnegativeIdr,
+    /**
+     * Inclusive prices (harga nett, legend-zmc2), as on the quote: subtotal is
+     * the gross item sum, service and tax are the parts backed out of it, and
+     * total = subtotal - discount + rounding.
+     */
+    pricesIncludeTaxAndService: z.boolean().default(false),
     status: qrOrderStatusSchema,
     items: z.array(qrOrderItemSchema),
     createdAt: isoDateTimeSchema,
     placedAt: isoDateTimeSchema,
   })
   .superRefine((order, ctx) => {
-    if (
+    const netSubtotal = order.subtotalIdr - order.discountIdr;
+    if (order.pricesIncludeTaxAndService) {
+      if (order.totalIdr !== netSubtotal + order.roundingIdr)
+        ctx.addIssue({
+          code: "custom",
+          path: ["totalIdr"],
+          message:
+            "inclusive totalIdr must equal subtotal - discount + rounding",
+        });
+      if (order.serviceChargeIdr + order.taxIdr > netSubtotal)
+        ctx.addIssue({
+          code: "custom",
+          path: ["serviceChargeIdr"],
+          message:
+            "included service charge and tax cannot exceed the net subtotal",
+        });
+    } else if (
       order.totalIdr !==
-      order.subtotalIdr -
-        order.discountIdr +
-        order.serviceChargeIdr +
-        order.taxIdr +
-        order.roundingIdr
+      netSubtotal + order.serviceChargeIdr + order.taxIdr + order.roundingIdr
     )
       ctx.addIssue({
         code: "custom",
@@ -1018,7 +1080,9 @@ export const placeOrderResultSchema = z
           result.quote.serviceCharge.amountIdr ||
         result.order.taxIdr !== result.quote.taxIdr ||
         result.order.roundingIdr !== result.quote.rounding.adjustmentIdr ||
-        result.order.totalIdr !== result.quote.totalIdr,
+        result.order.totalIdr !== result.quote.totalIdr ||
+        result.order.pricesIncludeTaxAndService !==
+          result.quote.pricesIncludeTaxAndService,
     );
   });
 export type PlaceOrderResult = z.infer<typeof placeOrderResultSchema>;
@@ -1255,6 +1319,11 @@ export const serviceRequestSchema = z
     createdAt: isoDateTimeSchema,
     acknowledgedAt: isoDateTimeSchema.nullable(),
     resolvedAt: isoDateTimeSchema.nullable(),
+    /**
+     * Staff who resolved it; may differ from `assignedTo`. Absent on rows
+     * written before the column existed.
+     */
+    resolvedBy: userIdSchema.nullable().optional(),
   })
   .superRefine((request, ctx) => {
     const add = (
@@ -1387,82 +1456,26 @@ export type CustomerOrderIssueResolution = z.infer<
   typeof customerOrderIssueResolutionSchema
 >;
 
-export const ORDER_ISSUE_STATUSES = ["open", "resolved", "cancelled"] as const;
-export const orderIssueStatusSchema = z.enum(ORDER_ISSUE_STATUSES);
 export type OrderIssueStatus = z.infer<typeof orderIssueStatusSchema>;
 
-export const orderIssueSchema = z
-  .strictObject({
-    id: orderIssueIdSchema,
-    ...scope,
-    orderId: orderIdSchema,
-    orderItemId: orderItemIdSchema,
-    type: orderIssueTypeSchema,
-    reason: z.string().min(1).max(500),
-    resolution: orderIssueResolutionSchema.nullable(),
-    replacementItemId: uuidSchema.nullable(),
-    voucherId: apologyVoucherIdSchema.nullable(),
-    /** Positive: the guest pays the difference; negative: the guest is credited. */
-    priceDifferenceIdr: idrSchema.nullable(),
-    /** Theoretical cost of the failed or comped item, for evaluation (U20). */
-    costIdr: nonnegativeIdr,
-    /** Set for a manual refund; ORD-09 requires a supervisor. */
-    approvedBy: userIdSchema.nullable(),
-    status: orderIssueStatusSchema,
-    reportedBy: userIdSchema.nullable(),
-    createdAt: isoDateTimeSchema,
-    resolvedAt: isoDateTimeSchema.nullable(),
-  })
-  .superRefine((issue, ctx) => {
-    const add = (
-      path: (string | number)[],
-      message: string,
-      invalid: boolean,
-    ) => {
-      if (invalid) ctx.addIssue({ code: "custom", path, message });
-    };
-    add(
-      ["resolution"],
-      "An open issue has no resolution yet",
-      issue.status === "open" && issue.resolution !== null,
-    );
-    add(
-      ["resolvedAt"],
-      "A resolved issue needs a resolution and resolvedAt",
-      issue.status === "resolved" &&
-        (issue.resolution === null || issue.resolvedAt === null),
-    );
-    add(
-      ["resolvedAt"],
-      "A cancelled issue is not resolved",
-      issue.status === "cancelled" && issue.resolvedAt !== null,
-    );
-    add(
-      ["replacementItemId"],
-      "A swap needs the replacement menu item",
-      issue.resolution === "swap" && issue.replacementItemId === null,
-    );
-    add(
-      ["voucherId"],
-      "A voucher resolution needs the apology voucher",
-      issue.resolution === "voucher" && issue.voucherId === null,
-    );
-    add(
-      ["approvedBy"],
-      "ORD-09: a manual refund needs supervisor approval",
-      issue.resolution === "manual_refund" && issue.approvedBy === null,
-    );
-    add(
-      ["reason"],
-      "ORD-09: a manual refund needs a written reason of at least 10 characters",
-      issue.resolution === "manual_refund" && issue.reason.trim().length < 10,
-    );
-  });
-export type OrderIssue = z.infer<typeof orderIssueSchema>;
+// legend-d60m: `orderIssueSchema` is the single `order_issues` record, owned by
+// the kitchen contract and re-exported above. The QR recovery lifecycle
+// (status, resolvedAt, replacementItemId, priceDifferenceIdr) lives on it.
+
+/**
+ * remake and comp need the staff member (`employeeId`), which this input does
+ * not carry: guest-facing recovery reports only unfulfillable or complaint.
+ */
+export const QR_ORDER_ISSUE_INPUT_TYPES = [
+  "unfulfillable",
+  "complaint",
+] as const;
 
 export const createOrderIssueInputSchema = clientInputSchema({
-  type: orderIssueTypeSchema,
-  reason: z.string().min(1).max(500),
+  type: z.enum(QR_ORDER_ISSUE_INPUT_TYPES),
+  reason: orderIssueReasonSchema,
+  /** Written reason; stored as `order_issues.reasonNote`. */
+  reasonNote: z.string().min(1).max(500),
 });
 
 export const customerOrderIssueChoiceInputSchema = clientInputSchema({
@@ -1675,6 +1688,12 @@ export const tableSessionViewSchema = z
     quote: orderQuoteSchema.nullable(),
     orders: z.array(qrOrderSchema),
     openServiceRequests: z.array(serviceRequestSchema),
+    /**
+     * False while the outlet has an edge node whose cloud link is down: the
+     * guest page shows the waiter notice and disables ordering (WS-02,
+     * PRD "Pesanan Pelanggan dari Cloud"). Defaults to true (no edge).
+     */
+    orderingAvailable: z.boolean().default(true),
   })
   .superRefine((view, ctx) => {
     const add = (
@@ -1807,10 +1826,18 @@ export const tableSessionSummarySchema = z.strictObject({
 });
 export type TableSessionSummary = z.infer<typeof tableSessionSummarySchema>;
 
+/** Service-only link: 2+ tables grouped, bills stay separate. */
+export const tableLinkGroupRefSchema = z.strictObject({
+  id: tableLinkGroupIdSchema,
+  tableIds: z.array(tableIdSchema).min(2),
+});
+export type TableLinkGroupRef = z.infer<typeof tableLinkGroupRefSchema>;
+
 export const tableLiveStatusSchema = z
   .strictObject({
     table: tableSchema,
     session: tableSessionSummarySchema.nullable(),
+    linkGroup: tableLinkGroupRefSchema.nullable().optional(),
     openServiceRequestCount: z.number().int().nonnegative(),
     outstandingIdr: nonnegativeIdr,
   })
@@ -1840,6 +1867,7 @@ export const closeTableSessionInputSchema = clientInputSchema({
 export type FloorZoneId = z.infer<typeof floorZoneIdSchema>;
 export type TableId = z.infer<typeof tableIdSchema>;
 export type TableSessionId = z.infer<typeof tableSessionIdSchema>;
+export type TableLinkGroupId = z.infer<typeof tableLinkGroupIdSchema>;
 export type SessionParticipantId = z.infer<typeof sessionParticipantIdSchema>;
 export type CartLineId = z.infer<typeof cartLineIdSchema>;
 export type BillSplitId = z.infer<typeof billSplitIdSchema>;

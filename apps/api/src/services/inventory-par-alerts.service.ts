@@ -67,6 +67,10 @@ import {
   type CursorPage,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import {
+  blindCountHiddenFilter,
+  hiddenBlindPairs,
+} from "./inventory-count.visibility.ts";
 import type { AlertEvaluationResult } from "./inventory-expiry.service.ts";
 
 // ---- Response contract (proposed for packages/shared/src/inventory) -------
@@ -211,6 +215,7 @@ async function appendStockCriticalEvent(
   tx: Tx,
   context: ScopedTenantContext,
   alert: AlertRow,
+  quantityWithheld: boolean,
 ): Promise<void> {
   const occurredAt = alert.raisedAt.toISOString();
   const event = inventoryEvents["stock.critical"].envelopeSchema.parse({
@@ -232,7 +237,8 @@ async function appendStockCriticalEvent(
     payload: {
       inventoryItemId: alert.inventoryItemId,
       locationId: alert.locationId,
-      quantity: alert.quantity,
+      // An open blind count of this pair must not learn the balance (r2zv).
+      quantity: quantityWithheld ? null : alert.quantity,
       parMin: alert.parMin,
       detectedAt: occurredAt,
     },
@@ -300,6 +306,7 @@ export async function evaluateParAlertsInTransaction(
 
   let raised = 0;
   let resolved = 0;
+  let blindPairs: Set<string> | null = null;
   for (const [key, position] of positions) {
     const critical =
       position.par !== null &&
@@ -325,7 +332,13 @@ export async function evaluateParAlertsInTransaction(
       // A concurrent evaluation that already opened it wins; no second event.
       if (alert) {
         raised += 1;
-        await appendStockCriticalEvent(tx, context, alert);
+        blindPairs ??= await hiddenBlindPairs(tx, outletId);
+        await appendStockCriticalEvent(
+          tx,
+          context,
+          alert,
+          blindPairs.has(pairKey(alert.locationId, alert.inventoryItemId)),
+        );
       }
     }
     if (!critical && existing) {
@@ -397,9 +410,11 @@ export async function listStockAlerts(
       "inventory.stock.view",
       query.outletId,
     );
+    // Open blind counts hide their pairs from everyone (stock opname T1).
     const filters: SQL[] = [
       eq(inventoryStockAlerts.outletId, query.outletId),
       isNull(inventoryStockAlerts.resolvedAt),
+      blindCountHiddenFilter(inventoryStockAlerts),
     ];
     if (query.kind) filters.push(eq(inventoryStockAlerts.kind, query.kind));
     if (query.locationId)

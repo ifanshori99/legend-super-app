@@ -1,7 +1,7 @@
 // Design System Platform showcase (WS-00). Renders every token, component,
 // state, both color modes, all three densities, and the app shells.
 // ?density=hangat|kontras|padat and ?tenant=base|cafe-legend are linkable.
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, notFound } from "@tanstack/react-router";
 import { z } from "zod";
 import {
   DENSITIES,
@@ -24,6 +24,7 @@ import {
   ShapeSection,
   TypographySection,
 } from "@/components/design-system/token-sections";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { TenantThemeStyle } from "@/lib/theme";
 
 // Tenant Themes available to preview. Configs come from data, never from a
@@ -38,11 +39,13 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute("/design-system")({
   validateSearch: searchSchema,
+  // Developer showcase: it names the platform, so a production build serves it
+  // on no tenant domain (TEN-08). The mock-mode build keeps it for e2e.
+  beforeLoad: () => {
+    if (import.meta.env.PROD && !API_MOCK) throw notFound();
+  },
   head: () => ({
-    meta: [
-      { title: "Design System — Legend Super App" },
-      { name: "robots", content: "noindex" },
-    ],
+    meta: [{ title: "Design System" }, { name: "robots", content: "noindex" }],
   }),
   component: DesignSystemPage,
 });

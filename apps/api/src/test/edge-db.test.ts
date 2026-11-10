@@ -400,8 +400,11 @@ describe("EDG-01 offline queue and Postgres link store", () => {
       context: node!.context,
       node: node!.scope,
       outboundDirection: "edge_to_cloud" as const,
+      // The default classifier fails closed (legend-wg5t); install one so
+      // this test still reaches the unwired applier.
+      classify: () => "transaction_event" as const,
     };
-    const refusing = createDbLinkStore(base); // default port: fail closed
+    const refusing = createDbLinkStore(base); // default applier: fail closed
     const aggregate = randomUUID();
     const one = orderEvent(outletA, aggregate, 1);
     const two = orderEvent(outletA, aggregate, 2);
@@ -471,5 +474,42 @@ describe("EDG-01 offline queue and Postgres link store", () => {
       ),
     );
     expect(hidden.rows).toEqual([]);
+  });
+
+  it("legend-o839h puts the sending edge instance id in the apply meta (null when unknown)", async () => {
+    const node = await authenticateEdgeCredential(primaryCredential);
+    const instanceId = randomUUID();
+    const metas: (string | null | undefined)[] = [];
+    const make = (edgeInstanceId?: string | null) =>
+      createDbLinkStore({
+        database: db,
+        context: node!.context,
+        node: node!.scope,
+        outboundDirection: "edge_to_cloud",
+        edgeInstanceId,
+        classify: () => "transaction_event" as const,
+        applier: {
+          async apply(_tx, _event, meta) {
+            metas.push(meta.edgeInstanceId);
+          },
+        },
+      });
+    const aggregate = randomUUID();
+    const first = await make(instanceId).lastReceivedInbound();
+    await make(instanceId).applyInbound({
+      fromSeq: first,
+      toSeq: first + 1,
+      events: [
+        { linkSeq: first + 1, event: orderEvent(outletA, aggregate, 1) },
+      ],
+    });
+    await make().applyInbound({
+      fromSeq: first + 1,
+      toSeq: first + 2,
+      events: [
+        { linkSeq: first + 2, event: orderEvent(outletA, aggregate, 2) },
+      ],
+    });
+    expect(metas).toEqual([instanceId, null]);
   });
 });

@@ -51,6 +51,7 @@ import type {
   PtkpStatus,
 } from "@starter/shared/hris";
 import type { UserId } from "@starter/shared/core";
+import type { TaxScheme } from "@starter/shared/hris/payroll";
 import { businessDate, decimal4Column, tenantIdColumn } from "../columns.ts";
 import { legalEntities, outlets, tenants } from "./platform-org.ts";
 import { coreStorageObjects } from "./core-storage.ts";
@@ -332,6 +333,14 @@ export const employmentContracts = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     employeeId: uuid("employee_id").notNull(),
     type: varchar("type", { length: 20 }).$type<EmploymentType>().notNull(),
+    /**
+     * PPh 21 scheme of the agreement (bead legend-rhq5): pay with no line of
+     * its own (employer BPJS in an unpaid month) follows it. Rows older than
+     * migration 0103 were backfilled to 'gross'; new rows must state it.
+     */
+    taxScheme: varchar("tax_scheme", { length: 20 })
+      .$type<TaxScheme>()
+      .notNull(),
     startDate: businessDate("start_date").notNull(),
     endDate: businessDate("end_date"),
     renewedFromId: uuid("renewed_from_id"),
@@ -380,6 +389,10 @@ export const employmentContracts = pgTable(
     check(
       "employment_contracts_type_check",
       sql`${table.type} IN ('pkwtt', 'pkwt', 'daily', 'intern')`,
+    ),
+    check(
+      "employment_contracts_tax_scheme_check",
+      sql`${table.taxScheme} IN ('gross', 'gross_up', 'net')`,
     ),
     check(
       "employment_contracts_status_check",

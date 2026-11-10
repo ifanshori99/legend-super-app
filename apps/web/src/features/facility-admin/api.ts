@@ -18,6 +18,7 @@ import {
   updateFacilityAddon,
   updateFacilityArea,
   updateFacilityProduct,
+  updateFacilityUnitConfig,
   updateSubscriptionPlan,
 } from "@starter/shared/facility";
 import { listInventoryItems } from "@starter/shared/inventory";
@@ -27,18 +28,30 @@ import { callEndpoint } from "@/lib/api/endpoint.ts";
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
-export type UpdateFacilityBody = Body<typeof updateFacilityEndpoint>;
-export type CreateAreaBody = Body<typeof createFacilityArea>;
-export type UpdateAreaBody = Body<typeof updateFacilityArea>;
-export type CreateUnitBody = Body<typeof createFacilityUnit>;
-export type CreateProductBody = Body<typeof createFacilityProduct>;
-export type UpdateProductBody = Body<typeof updateFacilityProduct>;
-export type CreateAddonBody = Body<typeof createFacilityAddon>;
-export type UpdateAddonBody = Body<typeof updateFacilityAddon>;
-export type PutEntitlementRuleBody = Body<typeof putEntitlementRule>;
-export type CreatePlanBody = Body<typeof createSubscriptionPlanEndpoint>;
-export type UpdatePlanBody = Body<typeof updateSubscriptionPlan>;
-export type PutWifiPolicyBody = Body<typeof putWifiPolicyEndpoint>;
+// Bodies as the screens build them: the optimistic-lock stamp
+// (`expectedUpdatedAt`) and the create key (`idempotencyKey`) are added here
+// by hooks.ts, never by a form (bead legend-6jms).
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
+type Draft<E extends AnyEndpoint> = DistributiveOmit<
+  Body<E>,
+  "expectedUpdatedAt" | "idempotencyKey"
+>;
+
+export type UpdateFacilityBody = Draft<typeof updateFacilityEndpoint>;
+export type CreateAreaBody = Draft<typeof createFacilityArea>;
+export type UpdateAreaBody = Draft<typeof updateFacilityArea>;
+export type CreateUnitBody = Draft<typeof createFacilityUnit>;
+export type UpdateUnitConfigBody = Draft<typeof updateFacilityUnitConfig>;
+export type CreateProductBody = Draft<typeof createFacilityProduct>;
+export type UpdateProductBody = Draft<typeof updateFacilityProduct>;
+export type CreateAddonBody = Draft<typeof createFacilityAddon>;
+export type UpdateAddonBody = Draft<typeof updateFacilityAddon>;
+export type PutEntitlementRuleBody = Draft<typeof putEntitlementRule>;
+export type CreatePlanBody = Draft<typeof createSubscriptionPlanEndpoint>;
+export type UpdatePlanBody = Draft<typeof updateSubscriptionPlan>;
+export type PutWifiPolicyBody = Draft<typeof putWifiPolicyEndpoint>;
 export type FacilitiesQuery = Query<typeof listFacilities>;
 
 // ---- Reads ---------------------------------------------------------------
@@ -81,97 +94,153 @@ export async function fetchInventoryItems(signal?: AbortSignal) {
 
 // ---- Facility, areas and units ------------------------------------------
 
+/** `expectedUpdatedAt`: the row's `updatedAt` the editor last read (409 if stale). */
 export async function updateFacility(
   facilityId: string,
   body: UpdateFacilityBody,
+  expectedUpdatedAt: string,
 ) {
   const response = await callEndpoint(updateFacilityEndpoint, {
     params: { facilityId },
-    body,
+    body: { ...body, expectedUpdatedAt },
   });
   return response.data;
 }
 
-export async function createArea(body: CreateAreaBody) {
-  const response = await callEndpoint(createFacilityArea, { body });
+/** `idempotencyKey`: one per create attempt; a replay returns the first row. */
+export async function createArea(body: CreateAreaBody, idempotencyKey: string) {
+  const response = await callEndpoint(createFacilityArea, {
+    body: { ...body, idempotencyKey },
+  });
   return response.data;
 }
 
-export async function updateArea(areaId: string, body: UpdateAreaBody) {
+export async function updateArea(
+  areaId: string,
+  body: UpdateAreaBody,
+  expectedUpdatedAt: string,
+) {
   const response = await callEndpoint(updateFacilityArea, {
     params: { areaId },
-    body,
+    body: { ...body, expectedUpdatedAt },
   });
   return response.data;
 }
 
-export async function createUnit(body: CreateUnitBody) {
-  const response = await callEndpoint(createFacilityUnit, { body });
+export async function createUnit(body: CreateUnitBody, idempotencyKey: string) {
+  const response = await callEndpoint(createFacilityUnit, {
+    body: { ...body, idempotencyKey },
+  });
+  return response.data;
+}
+
+export async function updateUnitConfig(
+  unitId: string,
+  body: UpdateUnitConfigBody,
+  expectedUpdatedAt: string,
+) {
+  const response = await callEndpoint(updateFacilityUnitConfig, {
+    params: { unitId },
+    body: { ...body, expectedUpdatedAt },
+  });
   return response.data;
 }
 
 // ---- Products, add-ons, rules -------------------------------------------
 
-export async function createProduct(body: CreateProductBody) {
-  const response = await callEndpoint(createFacilityProduct, { body });
+export async function createProduct(
+  body: CreateProductBody,
+  idempotencyKey: string,
+) {
+  const response = await callEndpoint(createFacilityProduct, {
+    body: { ...body, idempotencyKey },
+  });
   return response.data;
 }
 
 export async function updateProduct(
   productId: string,
   body: UpdateProductBody,
+  expectedUpdatedAt: string,
 ) {
   const response = await callEndpoint(updateFacilityProduct, {
     params: { productId },
-    body,
+    body: { ...body, expectedUpdatedAt },
   });
   return response.data;
 }
 
-export async function createAddon(body: CreateAddonBody) {
-  const response = await callEndpoint(createFacilityAddon, { body });
+export async function createAddon(
+  body: CreateAddonBody,
+  idempotencyKey: string,
+) {
+  const response = await callEndpoint(createFacilityAddon, {
+    body: { ...body, idempotencyKey },
+  });
   return response.data;
 }
 
-export async function updateAddon(addonId: string, body: UpdateAddonBody) {
+export async function updateAddon(
+  addonId: string,
+  body: UpdateAddonBody,
+  expectedUpdatedAt: string,
+) {
   const response = await callEndpoint(updateFacilityAddon, {
     params: { addonId },
-    body,
+    body: { ...body, expectedUpdatedAt },
   });
   return response.data;
 }
 
-/** PUT replaces the whole rule: the condition is required and fixed per type. */
-export async function putRule(ruleId: string, body: PutEntitlementRuleBody) {
+/**
+ * PUT replaces the whole rule: the condition is required and fixed per type.
+ * `expectedUpdatedAt` is null only when the rule does not exist yet.
+ */
+export async function putRule(
+  ruleId: string,
+  body: PutEntitlementRuleBody,
+  expectedUpdatedAt: string | null,
+) {
   const response = await callEndpoint(putEntitlementRule, {
     params: { ruleId },
-    body,
+    body: { ...body, expectedUpdatedAt },
   });
   return response.data;
 }
 
 // ---- Subscriptions and Wi-Fi --------------------------------------------
 
-export async function createPlan(body: CreatePlanBody) {
+export async function createPlan(body: CreatePlanBody, idempotencyKey: string) {
   const response = await callEndpoint(createSubscriptionPlanEndpoint, {
-    body,
+    body: { ...body, idempotencyKey },
   });
   return response.data;
 }
 
-export async function updatePlan(planId: string, body: UpdatePlanBody) {
+export async function updatePlan(
+  planId: string,
+  body: UpdatePlanBody,
+  expectedUpdatedAt: string,
+) {
   const response = await callEndpoint(updateSubscriptionPlan, {
     params: { planId },
-    body,
+    body: { ...body, expectedUpdatedAt },
   });
   return response.data;
 }
 
-/** PUT replaces the zone policy; it applies on the next request (FAC-14). */
-export async function putWifiPolicy(policyId: string, body: PutWifiPolicyBody) {
+/**
+ * PUT replaces the zone policy; it applies on the next request (FAC-14).
+ * `expectedUpdatedAt` is null only when the policy does not exist yet.
+ */
+export async function putWifiPolicy(
+  policyId: string,
+  body: PutWifiPolicyBody,
+  expectedUpdatedAt: string | null,
+) {
   const response = await callEndpoint(putWifiPolicyEndpoint, {
     params: { policyId },
-    body,
+    body: { ...body, expectedUpdatedAt },
   });
   return response.data;
 }

@@ -29,6 +29,7 @@ import {
   CoreError,
   encodeCursor,
   idr,
+  outletIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -57,6 +58,7 @@ import {
   comboComponents,
   combos,
   coreStorageObjects,
+  devices,
   itemAvailability,
   itemVariants,
   menuCategories,
@@ -94,7 +96,11 @@ import {
   type MenuMediaUrls,
   type Tx,
 } from "./menu-internals";
-import { assertStationPermission, permittedStationIds } from "./station-access";
+import {
+  assertStationPermission,
+  permittedStationIds,
+  stationScopeCondition,
+} from "./station-access";
 
 export type { MenuMediaUrls } from "./menu-internals";
 
@@ -120,6 +126,7 @@ function toStation(row: typeof stations.$inferSelect): Station {
     type: row.type,
     printerDeviceId: row.printerDeviceId,
     targetSeconds: row.targetSeconds,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -136,6 +143,7 @@ function toMenuItem(
     description: row.description,
     type: row.type,
     stationId: row.stationId,
+    stationType: row.stationType,
     course: row.course,
     recipeId: row.recipeId,
     taxRuleId: row.taxRuleId,
@@ -443,7 +451,10 @@ export async function deleteCategory(
   });
 }
 
-/** Display order (PRD §8 "urutan tampil"): the full ordered id list. */
+/**
+ * Display order (PRD §8 "urutan tampil"): id at index i gets sortOrder i.
+ * Ids outside the list keep their sortOrder; unchanged rows emit no event.
+ */
 export async function reorderCategories(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -529,8 +540,7 @@ export async function listStations(
       MENU_VIEW_PERMISSION,
       now,
     );
-    if (stationIds.length === 0)
-      return { data: [], meta: { limit: query.limit, nextCursor: null } };
+    // An empty reach becomes `false` in the filter: no rows (fail closed).
     const rows = await tx
       .select()
       .from(stations)
@@ -538,7 +548,7 @@ export async function listStations(
         and(
           eq(stations.tenantId, context.tenant.tenantId),
           isNull(stations.deletedAt),
-          inArray(stations.id, stationIds),
+          stationScopeCondition(stations.id, stationIds),
           scope.kind === "outlets"
             ? inArray(stations.outletId, [...scope.outletIds])
             : undefined,
@@ -551,6 +561,41 @@ export async function listStations(
       .limit(query.limit + 1);
     return pageOf(rows, query.limit, (row) => [row.name, row.id], toStation);
   });
+}
+
+/**
+ * legend-e087: a station's printer must be an active printer device of the
+ * station's own outlet and tenant. Unknown, other-outlet, other-tenant,
+ * non-printer and revoked all give the same error (no existence oracle).
+ */
+async function assertStationPrinter(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  printerDeviceId: string,
+): Promise<void> {
+  const [row] = await tx
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.tenantId, context.tenant.tenantId),
+        eq(devices.outletId, outletIdSchema.parse(outletId)),
+        eq(devices.id, printerDeviceId),
+        eq(devices.type, "printer"),
+        eq(devices.status, "active"),
+        isNull(devices.revokedAt),
+      ),
+    )
+    // Share lock: a concurrent revoke waits for this transaction, so it cannot
+    // slip between the check and the station write.
+    .for("share");
+  if (!row)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Printer tidak valid untuk outlet ini.",
+    );
 }
 
 export async function createStation(
@@ -575,6 +620,8 @@ export async function createStation(
       outletId,
       now,
     );
+    if (input.printerDeviceId)
+      await assertStationPrinter(tx, context, outletId, input.printerDeviceId);
     const [row] = await tx
       .insert(stations)
       .values({
@@ -625,9 +672,28 @@ export async function updateStation(
     type?: string;
     printerDeviceId?: string | null;
     targetSeconds?: number | null;
+    expectedUpdatedAt?: string;
   },
   now = new Date(),
 ): Promise<Station> {
+  // legend-4xai (Codex 159): a printer change from a stale form must not win
+  // over a newer one, so any printerDeviceId (null included) needs the
+  // station version the form was loaded at.
+  if (input.printerDeviceId !== undefined && !input.expectedUpdatedAt)
+    throw new HttpError(
+      400,
+      "VALIDATION_ERROR",
+      "expectedUpdatedAt wajib dikirim bersama printerDeviceId.",
+    );
+  const expectedAt = input.expectedUpdatedAt
+    ? new Date(input.expectedUpdatedAt)
+    : null;
+  const stale = () =>
+    new HttpError(
+      409,
+      "CONFLICT",
+      "Stasiun sudah diubah orang lain. Muat ulang lalu coba lagi.",
+    );
   return withTenant(db, context, async (tx) => {
     const existing = await requireStation(tx, context, stationId);
     // Station-bound config (target time, printer binding): the caller must
@@ -641,14 +707,52 @@ export async function updateStation(
       existing.id,
       now,
     );
+    // Early stale check before any other validation: a stale form that
+    // still names a since-revoked printer gets 409, not 422. The
+    // conditional WHERE below stays the real guard.
+    if (expectedAt && existing.updatedAt.getTime() !== expectedAt.getTime())
+      throw stale();
+    // Name and type decide which station of the outlet KDS routing picks
+    // (first active station of a type, by name): changing them moves tickets
+    // between stations, so it is outlet configuration, not this station's
+    // own (legend-cot3). A station-scoped grant keeps target time and printer.
+    // Only a real change is written: a form echoing the stored values (the
+    // web form trims the name) needs no outlet grant, and an echo can never
+    // overwrite a concurrent rename by an outlet manager.
+    const nameChanged =
+      input.name !== undefined && input.name.trim() !== existing.name.trim();
+    const typeChanged =
+      input.type !== undefined && input.type !== existing.type;
+    if (nameChanged || typeChanged)
+      await assertOutletPermission(
+        tx,
+        context,
+        actorUserId,
+        MENU_ITEM_PERMISSION,
+        existing.outletId,
+        now,
+      );
+    // legend-e087: only a changed, non-null printer is validated and written
+    // (null counts as a value). An echo of the stored value (e.g. revoked
+    // since) must not block saving target time, and can never overwrite a
+    // concurrent change of the printer by a manager.
+    const printerChanged =
+      input.printerDeviceId !== undefined &&
+      (input.printerDeviceId?.toLowerCase() ?? null) !==
+        (existing.printerDeviceId?.toLowerCase() ?? null);
+    if (printerChanged && input.printerDeviceId)
+      await assertStationPrinter(
+        tx,
+        context,
+        existing.outletId,
+        input.printerDeviceId,
+      );
     const [row] = await tx
       .update(stations)
       .set({
-        ...(input.name !== undefined ? { name: input.name } : {}),
-        ...(input.type !== undefined ? { type: input.type } : {}),
-        ...(input.printerDeviceId !== undefined
-          ? { printerDeviceId: input.printerDeviceId }
-          : {}),
+        ...(nameChanged ? { name: input.name } : {}),
+        ...(typeChanged ? { type: input.type } : {}),
+        ...(printerChanged ? { printerDeviceId: input.printerDeviceId } : {}),
         ...(input.targetSeconds !== undefined
           ? { targetSeconds: input.targetSeconds }
           : {}),
@@ -658,9 +762,17 @@ export async function updateStation(
         and(
           eq(stations.tenantId, context.tenant.tenantId),
           eq(stations.id, stationId),
+          // The real guard: the row's own version, re-checked by Postgres
+          // after any row lock wait. Column has microseconds, JS has ms.
+          ...(expectedAt
+            ? [
+                sql`date_trunc('milliseconds', ${stations.updatedAt}) = ${expectedAt.toISOString()}::timestamptz`,
+              ]
+            : []),
         ),
       )
       .returning();
+    if (!row) throw stale();
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -680,14 +792,24 @@ export async function deleteStation(
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const existing = await requireStation(tx, context, stationId);
-    // Station-bound config record: same station target as updateStation
-    // (legend-fsb7).
+    // Station target first, so another or unknown station answers the same
+    // station denial as updateStation (legend-fsb7). Removing a station also
+    // changes KDS routing for the whole outlet, so it needs the outlet
+    // permission too, like createStation (legend-cot3).
     await assertStationPermission(
       tx,
       context,
       actorUserId,
       MENU_ITEM_PERMISSION,
       existing.id,
+      now,
+    );
+    await assertOutletPermission(
+      tx,
+      context,
+      actorUserId,
+      MENU_ITEM_PERMISSION,
+      existing.outletId,
       now,
     );
     const [usedItem] = await tx
@@ -885,9 +1007,9 @@ async function requireStationOfBrand(
   context: ScopedTenantContext,
   stationId: string,
   brandId: string,
-): Promise<void> {
+): Promise<string> {
   const [row] = await tx
-    .select({ id: stations.id, brandId: outlets.brandId })
+    .select({ id: stations.id, brandId: outlets.brandId, type: stations.type })
     .from(stations)
     .innerJoin(
       outlets,
@@ -910,6 +1032,7 @@ async function requireStationOfBrand(
       "VALIDATION_ERROR",
       "Stasiun berada di brand lain.",
     );
+  return row.type;
 }
 
 /** Q23: an item without a photo can never be active (published). */
@@ -1017,6 +1140,7 @@ export async function createItem(
     description: string;
     type: "single" | "combo";
     stationId?: string | null;
+    stationType?: MenuItemAdmin["stationType"];
     course?: string | null;
     recipeId?: string | null;
     taxRuleId?: string | null;
@@ -1040,8 +1164,9 @@ export async function createItem(
       now,
     );
     await requireCategory(tx, context, input.categoryId, brandId);
-    if (input.stationId)
-      await requireStationOfBrand(tx, context, input.stationId, brandId);
+    const stationTypeOfStation = input.stationId
+      ? await requireStationOfBrand(tx, context, input.stationId, brandId)
+      : null;
     if (input.mediaId) await requireMedia(tx, context, input.mediaId);
     // Q23: every item needs a photo. Creating one as active without a photo is
     // the publish action and is refused; without `isActive` it is a draft.
@@ -1059,6 +1184,7 @@ export async function createItem(
         description: input.description,
         type: input.type,
         stationId: input.stationId ?? null,
+        stationType: input.stationType ?? stationTypeOfStation,
         course: input.course ?? null,
         recipeId: input.recipeId ?? null,
         taxRuleId: input.taxRuleId ?? null,
@@ -1104,6 +1230,7 @@ export async function updateItem(
     description?: string;
     type?: "single" | "combo";
     stationId?: string | null;
+    stationType?: MenuItemAdmin["stationType"];
     course?: string | null;
     recipeId?: string | null;
     taxRuleId?: string | null;
@@ -1128,13 +1255,15 @@ export async function updateItem(
     );
     if (input.categoryId !== undefined)
       await requireCategory(tx, context, input.categoryId, existing.brandId);
-    if (input.stationId !== undefined && input.stationId !== null)
-      await requireStationOfBrand(
-        tx,
-        context,
-        input.stationId,
-        existing.brandId,
-      );
+    const stationTypeOfStation =
+      input.stationId !== undefined && input.stationId !== null
+        ? await requireStationOfBrand(
+            tx,
+            context,
+            input.stationId,
+            existing.brandId,
+          )
+        : null;
     if (input.mediaId !== undefined && input.mediaId !== null)
       await requireMedia(tx, context, input.mediaId);
     // Q23: activation and photo removal are the two writes that could publish
@@ -1167,6 +1296,16 @@ export async function updateItem(
         ...(input.stationId !== undefined
           ? { stationId: input.stationId }
           : {}),
+        // An explicit type wins; otherwise a new station carries its type, and
+        // clearing the station clears the type too (a stale type would keep
+        // routing the item by type after the owner unassigned the station).
+        ...(input.stationType !== undefined
+          ? { stationType: input.stationType }
+          : stationTypeOfStation !== null
+            ? { stationType: stationTypeOfStation }
+            : input.stationId === null
+              ? { stationType: null }
+              : {}),
         ...(input.course !== undefined ? { course: input.course } : {}),
         ...(input.recipeId !== undefined ? { recipeId: input.recipeId } : {}),
         ...(input.taxRuleId !== undefined
@@ -1287,7 +1426,10 @@ export async function deleteItem(
   });
 }
 
-/** Display order inside one category: the full ordered id list. */
+/**
+ * Display order inside one category: id at index i gets sortOrder i. Ids
+ * outside the list keep their sortOrder; unchanged rows emit no event.
+ */
 export async function reorderItems(
   context: ScopedTenantContext,
   actorUserId: string,

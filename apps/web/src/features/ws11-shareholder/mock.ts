@@ -12,15 +12,19 @@
 // runtime. Loaded in Node by tests/ws11-shareholder.test.mjs: bare package
 // imports and relative `.ts` paths only, no `@/` alias.
 import {
+  buildProfitShareEstimate,
   cafeLegendAccountingFixtures,
+  createShareholderDocumentSignedUrl,
   getMyProfitShare,
   listShareholderDocuments,
 } from "@starter/shared/accounting";
+import { idr as wholeRupiah } from "@starter/shared/core";
 import {
   cafeLegendDashboardFixtures,
   dashboardLayoutSchema,
   reportByCode,
   reportMetricByCode,
+  ownerBoardGeneratedAt,
   reportResultSchema,
   SHAREHOLDER_DASHBOARD_TILES,
   type ReportResult,
@@ -29,6 +33,8 @@ import {
   metricDefinitionRefSchema,
   type MetricValue,
 } from "@starter/shared/metrics";
+import { ownerMonthIncomes } from "../ws11-owner-dashboard/insights-mock.ts";
+import { ApiError } from "../../lib/api/errors.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMockDashboard } from "../../lib/mock/handlers/dashboards.ts";
@@ -44,18 +50,23 @@ import {
 } from "./board.ts";
 
 const outletId = cafeLegendDashboardFixtures.ownerLayout.availableOutlets[0]!;
-const generatedAt = "2026-11-05T05:00:00.000Z";
+// The same instant and business day as the owner board and the management
+// home (legend-zc3g): every WS-11 screen describes 1 November 2026.
+const generatedAt = ownerBoardGeneratedAt;
+const businessDate = cafeLegendDashboardFixtures.businessDate;
 
 export const shareholderLayoutFixture = dashboardLayoutSchema.parse({
   dashboard: "shareholder",
   title: "Dashboard Shareholder",
-  businessDate: "2026-11-05",
+  businessDate,
   availableOutlets: [outletId],
   tiles: SHAREHOLDER_DASHBOARD_TILES,
   generatedAt,
   monitoringPeriod: {
-    startDate: "2026-11-01",
-    endDate: "2026-11-05",
+    // Month to date: the running accounting period is an MTD estimate, never
+    // a projection of the full month (legend-zc3g).
+    startDate: `${businessDate.slice(0, 7)}-01`,
+    endDate: businessDate,
     bucket: "total",
     status: "open",
     accountingPeriodClosed: false,
@@ -100,18 +111,37 @@ const closedMonth: Record<string, MetricValue> = {
 };
 // Year to date (Jan..Oct, closed months only): only the income statement runs
 // over it, so it carries only income-statement figures (net - COGS = gross).
+// It is January..July (below) plus the closed months the owner insights
+// already serve (August..October), so YTD and the owner's monthly figures
+// reconcile by construction (legend-zc3g).
+const JAN_JUL = {
+  netSales: 2_305_000_000,
+  cogs: 786_059_600,
+  netProfit: 722_600_000,
+} as const;
+const closedOwnerMonths = ownerMonthIncomes.filter((month) => month.closed);
+const sumOwner = (
+  pick: (month: (typeof closedOwnerMonths)[number]) => number,
+) => closedOwnerMonths.reduce((sum, month) => sum + pick(month), 0);
+const ytdNetSales = JAN_JUL.netSales + sumOwner((month) => month.netSales);
+const ytdCogs = JAN_JUL.cogs + sumOwner((month) => month.cogs);
 const yearToDate: Record<string, MetricValue> = {
-  net_sales: idr(3_642_000_000),
-  cogs: idr(1_231_000_000),
-  gross_profit: idr(2_411_000_000),
-  net_profit: idr(1_226_000_000),
+  net_sales: idr(ytdNetSales),
+  cogs: idr(ytdCogs),
+  gross_profit: idr(ytdNetSales - ytdCogs),
+  net_profit: idr(JAN_JUL.netProfit + sumOwner((month) => month.netProfit)),
 };
-// Same estimated net profit as the accounting estimate (Rp 120.000.000).
+// The running period is month to date and an estimate. It is the owner
+// insights' running month (the same income statement, same period), so the
+// owner board and the shareholder board show one number for it.
+const runningMonth = ownerMonthIncomes.find((month) => !month.closed);
+if (runningMonth === undefined)
+  throw new Error("Owner insights have no running month.");
 const runningFigures: Record<string, MetricValue> = {
-  net_sales: idr(268_000_000),
-  gross_profit: idr(178_000_000),
-  net_profit: idr(120_000_000),
-  cogs: idr(90_000_000),
+  net_sales: idr(runningMonth.netSales),
+  gross_profit: idr(runningMonth.grossProfit),
+  net_profit: idr(runningMonth.netProfit),
+  cogs: idr(runningMonth.cogs),
 };
 
 function ref(code: string) {
@@ -149,11 +179,18 @@ function run(
       status: official ? "closed" : "open",
       accountingPeriodClosed: official,
     },
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outletId] },
     definitions: report.metrics.map(ref),
+    availability: report.metrics.map((metricCode) => ({
+      metricCode,
+      status: "available",
+    })),
     groupBy: [],
     rows: [
       {
+        bucketStart: period.startDate,
+        bucketEnd: period.endDate,
         dimensions: [],
         values: report.metrics.map((metricCode) => ({
           metricCode,
@@ -164,6 +201,7 @@ function run(
     ],
     generatedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 
@@ -182,7 +220,8 @@ for (const input of shareholderRunInputs(layout)) {
     closed.startDate !== startDate;
   // Another feature (owner insights, report viewer) already serves this key:
   // one question has one answer (DASH-02), so yield instead of redefining it.
-  if (hasMockReportRun(input.reportCode, [], input.period)) continue;
+  if (hasMockReportRun(input.reportCode, [], input.period, input.outletIds))
+    continue;
   runs[`${input.reportCode}|${startDate}|${endDate}`] = run(
     input.reportCode,
     input.period,
@@ -201,19 +240,41 @@ const emptyProfitShare = {
   estimates: [],
 };
 
+// The accounting fixture's November estimate (Rp120.000.000) is a whole-month
+// figure; the running period is month to date, so the personal estimate is
+// rebuilt from the same MTD net profit as the running income statement above
+// (legend-zc3g): one estimate, one number.
+const myProfitShare = {
+  ...accounting.myProfitShare,
+  estimates: accounting.myProfitShare.estimates.map((estimate) =>
+    buildProfitShareEstimate({
+      profitEntity: {
+        id: estimate.profitEntityId,
+        name: estimate.profitEntityName,
+      },
+      period: estimate.period,
+      shareBp: estimate.shareBp,
+      estimatedNetProfitIdr: wholeRupiah(runningMonth.netProfit),
+      asOf: generatedAt,
+    }),
+  ),
+};
+
 // F35: only this shareholder's own rows (SH-01).
 registerMock(getMyProfitShare, ({ scenario }) => ({
-  data: scenario === "empty" ? emptyProfitShare : accounting.myProfitShare,
+  data: scenario === "empty" ? emptyProfitShare : myProfitShare,
 }));
 
 // F35 documents: the API returns what shareholders may see; unpublished and
 // management-only fixtures are filtered here like the server would (SH-02).
+const isShareholderDocument = (doc: (typeof accounting.documents)[number]) =>
+  doc.visibility === "shareholders" && doc.publishedAt !== null;
+
 registerMock(listShareholderDocuments, ({ query, scenario }) =>
   paginateFixture(
     accounting.documents.filter(
       (doc) =>
-        doc.visibility === "shareholders" &&
-        doc.publishedAt !== null &&
+        isShareholderDocument(doc) &&
         (query.profitEntityId === undefined ||
           doc.profitEntityId === query.profitEntityId) &&
         (query.kind === undefined || doc.kind === query.kind),
@@ -223,3 +284,20 @@ registerMock(listShareholderDocuments, ({ query, scenario }) =>
     scenario,
   ),
 );
+
+// F35 download (legend-135u): a signed URL only for a document the list above
+// shows; anything else is "not found", like the server (SH-01, SH-02). The URL
+// is a stand-in that lives 300 s, like the real one.
+registerMock(createShareholderDocumentSignedUrl, ({ params }) => {
+  const doc = accounting.documents.find(
+    (row) => row.id === params.shareholderDocumentId,
+  );
+  if (!doc || !isShareholderDocument(doc))
+    throw new ApiError(404, "NOT_FOUND", "Dokumen tidak ditemukan.");
+  return {
+    data: {
+      url: `https://files.mock.legend.test/${doc.id}.pdf?expires=300`,
+      expiresAt: new Date(Date.parse(generatedAt) + 300_000).toISOString(),
+    },
+  };
+});

@@ -68,6 +68,8 @@ import {
   requestFingerprint,
   zonedInstant,
 } from "./reservation-plan.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { sessionDepositCredit } from "./reservation-deposit-credit.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
 import { openStaffSeatedSession } from "./table-session.service.ts";
 
@@ -448,6 +450,21 @@ async function closeReservation(
       };
     let row = await lockReservation(tx, context, outletId, reservationId);
     row = await reconcileDeposit(tx, context, row, now);
+    // legend-em6p: the DP intent is locked after the reservation row
+    // (reservations -> payment_intents) and the close time taken under it, so
+    // a forfeit's closed_at follows commit order against refunds and sales on
+    // the same intent. After reconcileDeposit: it may only now link a DP the
+    // gateway already settled. `now` still drives the policy and no-show-due
+    // checks.
+    const closedAt =
+      row.depositPaymentId === null
+        ? now
+        : await lockIntentsForFact(
+            tx,
+            context.tenant.tenantId,
+            [row.depositPaymentId],
+            now,
+          );
     assertReservationTransition(row.status, kind);
     // RSV-03: always the snapshot taken at booking, never the live policy.
     const policy = reservationPolicySnapshotSchema.parse(row.policySnapshot);
@@ -478,7 +495,7 @@ async function closeReservation(
       .update(reservations)
       .set({
         status: kind,
-        closedAt: now,
+        closedAt,
         closeReason,
         closedBy: actorUserId,
         depositRefundIdr: idr(outcome.refundIdr),
@@ -604,20 +621,15 @@ export function markReservationNoShow(
   );
 }
 
-/** Convenience for the bill module: the DP credit on a table session (RSV-02). */
+/**
+ * Convenience for the bill module: the DP credit on a table session (RSV-02).
+ * legend-e7zj: what each allocation's DP intent still holds, so a WS-05 refund
+ * filed after seating lowers it (reservation-deposit-credit.ts).
+ */
 export async function depositCreditForSession(
   tx: Tx,
   tenantId: TenantId,
   tableSessionId: string,
 ): Promise<number> {
-  const rows = await tx
-    .select({ amount: reservationDepositAllocations.amountIdr })
-    .from(reservationDepositAllocations)
-    .where(
-      and(
-        eq(reservationDepositAllocations.tenantId, tenantId),
-        eq(reservationDepositAllocations.tableSessionId, tableSessionId),
-      ),
-    );
-  return rows.reduce((sum, row) => sum + row.amount, 0);
+  return sessionDepositCredit(tx, tenantId, tableSessionId);
 }

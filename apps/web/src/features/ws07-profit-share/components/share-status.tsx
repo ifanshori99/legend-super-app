@@ -83,15 +83,20 @@ export function RunStatusBadge({ status }: { status: DistributionRunStatus }) {
 
 export function PaymentStatusBadge({
   status,
+  autoSettled = false,
 }: {
   status: DistributionLinePaymentStatus;
+  /** Zero line settled by carry on approval: no payment was made. */
+  autoSettled?: boolean;
 }) {
   const t = useT();
   const { tone, icon: Icon } = PAYMENT[status];
   return (
-    <Badge tone={tone}>
+    <Badge tone={autoSettled && status === "paid" ? "neutral" : tone}>
       <Icon aria-hidden="true" />
-      {t(PAYMENT_STATUS_KEYS[status])}
+      {autoSettled && status === "paid"
+        ? t("accounting.share.paymentStatus.autoSettled")
+        : t(PAYMENT_STATUS_KEYS[status])}
     </Badge>
   );
 }

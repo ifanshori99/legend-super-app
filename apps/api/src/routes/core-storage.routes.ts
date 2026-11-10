@@ -24,15 +24,20 @@ type Database = Parameters<typeof uploadStorage>[0];
 type ResolveRequest = (request: Request) => Promise<{
   context: ScopedTenantContext;
   authorize: UploadDependencies["authorize"];
+  actorUserId: string;
 }>;
 
 /** The caller supplies a server-side identity/scope and authorization resolver.
- * No router is mounted until the application has a real resolver and providers. */
+ * The real resolver is services/core-storage-access.ts. No router is mounted
+ * until an object storage provider exists (legend-7nv1). */
 export function createStorageRouter(options: {
   database: Database;
   storage: UploadDependencies["storage"];
   scanner: UploadDependencies["scanner"];
   resolveRequest: ResolveRequest;
+  /** Replaces `uploadStorage`. The edge passes the sealing upload here
+   * (services/edge-selfie.service.ts); the cloud leaves it unset. */
+  upload?: typeof uploadStorage;
 }) {
   const router = Router();
   router.use(requireAuth, requireTrustedOrigin);
@@ -41,8 +46,8 @@ export function createStorageRouter(options: {
     limits: {
       fileSize: 10 * 1024 * 1024,
       files: 1,
-      fields: 2,
-      parts: 3,
+      fields: 3,
+      parts: 4,
       fieldSize: 256,
     },
   }).single("file");
@@ -84,7 +89,7 @@ export function createStorageRouter(options: {
         throw new HttpError(422, "VALIDATION_ERROR", "A file is required.");
       const resolved = await options.resolveRequest(req);
       assertTrustedScopedContext(resolved.context);
-      const data = await uploadStorage(
+      const data = await (options.upload ?? uploadStorage)(
         options.database,
         resolved.context,
         metadata,
@@ -93,6 +98,7 @@ export function createStorageRouter(options: {
           storage: options.storage,
           scanner: options.scanner,
           authorize: resolved.authorize,
+          actorUserId: resolved.actorUserId,
         },
       );
       res.status(201).json({ data: storageObjectSchema.parse(data) });

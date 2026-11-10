@@ -9,8 +9,19 @@
 // Creating a brand/outlet here is how TEN-06 holds at the tenant level: the
 // panel/tenant-admin API writes rows, no deploy.
 
-import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, or, sql, type SQL } from "drizzle-orm";
+import { randomBytes, randomUUID } from "node:crypto";
+import { resolveTxt } from "node:dns/promises";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type * as schema from "../db/schema";
 import {
@@ -36,28 +47,42 @@ import {
 import {
   brandSchema,
   legalEntitySchema,
+  outletRestoreStatusSchema,
   outletSchema,
-  tenantDomainSchema,
   canTransitionOutlet,
+  isReservedHostname,
 } from "@starter/shared/platform";
 import {
   assertOutletInScope,
   createUlid,
   decodeCursor,
   encodeCursor,
+  outletIdSchema,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { db } from "../db";
 import {
   brands,
+  itemAvailability,
   legalEntities,
+  menuItems,
   outlets,
   tenantDomains,
   tenants,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
+import { provisionStandardChart } from "./accounting-provisioning.service";
 import { recordAudit } from "./core-audit";
+import {
+  provisionOutletStockLocations,
+  provisionStandardUoms,
+} from "./inventory-provisioning.service";
+import { toTenantDomain } from "./org-resolve.service";
+import { provisionDefaultServiceChargeRule } from "./tax-provisioning.service";
+import { env } from "../config/env";
 import { HttpError } from "../lib/http-error";
+import { assertTenantMedia } from "./tenant-media";
 import { blindIndex, sealSecret } from "../lib/secrets";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -69,6 +94,24 @@ function uniqueViolation(error: unknown, depth = 0): boolean {
   const candidate = error as { code?: unknown; cause?: unknown };
   return (
     candidate.code === "23505" || uniqueViolation(candidate.cause, depth + 1)
+  );
+}
+
+/** Unique violation of one named constraint or index. */
+function uniqueViolationOn(
+  error: unknown,
+  constraint: string,
+  depth = 0,
+): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  return (
+    (candidate.code === "23505" && candidate.constraint === constraint) ||
+    uniqueViolationOn(candidate.cause, constraint, depth + 1)
   );
 }
 
@@ -102,7 +145,7 @@ function toBrand(
   });
 }
 
-function toOutlet(row: typeof outlets.$inferSelect): Outlet {
+export function toOutlet(row: typeof outlets.$inferSelect): Outlet {
   return outletSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -133,19 +176,6 @@ function toLegalEntity(row: typeof legalEntities.$inferSelect): LegalEntity {
     // Bank accounts are the accounting contract's rows keyed by this entity
     // (WS-07 bead); until that table exists a new entity has none.
     bankAccountIds: [],
-    createdAt: row.createdAt.toISOString(),
-  });
-}
-
-function toDomain(row: typeof tenantDomains.$inferSelect): TenantDomain {
-  return tenantDomainSchema.parse({
-    id: row.id,
-    tenantId: row.tenantId,
-    brandId: row.brandId,
-    hostname: row.hostname,
-    kind: row.kind,
-    tlsStatus: row.tlsStatus,
-    verifiedAt: row.verifiedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
   });
 }
@@ -211,6 +241,13 @@ export async function createBrand(
   input: CreateBrandInput,
 ): Promise<Brand> {
   return withTenant(db, context, async (tx) => {
+    // legend-ja7i7 (TEN-10): the logo must be in this tenant's media library.
+    await assertTenantMedia(
+      tx,
+      context.tenant.tenantId,
+      input.logoMediaId,
+      "Logo",
+    );
     try {
       const [row] = await tx
         .insert(brands)
@@ -236,6 +273,13 @@ export async function updateBrand(
   input: UpdateBrandInput,
 ): Promise<Brand> {
   return withTenant(db, context, async (tx) => {
+    // legend-ja7i7 (TEN-10): same rule as createBrand; null clears the logo.
+    await assertTenantMedia(
+      tx,
+      context.tenant.tenantId,
+      input.logoMediaId,
+      "Logo",
+    );
     const changes = {
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.logoMediaId === undefined
@@ -294,6 +338,7 @@ export async function createLegalEntity(
 ): Promise<LegalEntity> {
   const id = randomUUID();
   return withTenant(db, context, async (tx) => {
+    let inserted: typeof legalEntities.$inferSelect;
     try {
       const [row] = await tx
         .insert(legalEntities)
@@ -306,7 +351,7 @@ export async function createLegalEntity(
           address: input.address,
         })
         .returning();
-      return toLegalEntity(row);
+      inserted = row;
     } catch (error) {
       if (uniqueViolation(error))
         throw new HttpError(
@@ -316,6 +361,11 @@ export async function createLegalEntity(
         );
       throw error;
     }
+    // Outside the NPWP catch, same transaction: a provisioning failure rolls
+    // the entity back instead of being read as a duplicate NPWP (PRD v1.7
+    // §3.19, legend-a7x7).
+    await provisionStandardChart(tx, context, inserted.id, null);
+    return toLegalEntity(inserted);
   });
 }
 
@@ -427,10 +477,12 @@ function assertOutletWritable(
 export async function createOutlet(
   context: ScopedTenantContext,
   input: CreateOutletInput,
+  actorUserId: string | null = null,
 ): Promise<Outlet> {
   return withTenant(db, context, async (tx) => {
     await requireBrand(tx, input.brandId);
     await requireLegalEntity(tx, input.legalEntityId);
+    let inserted: typeof outlets.$inferSelect;
     const [count] = await tx
       .select({ value: sql<number>`count(*)::int` })
       .from(outlets);
@@ -466,12 +518,55 @@ export async function createOutlet(
           openingHours: input.openingHours,
         })
         .returning();
-      return toOutlet(row);
+      inserted = row;
+      // legend-2nb9: a new outlet starts with an availability row for every
+      // existing item of its brand, so its 86 screen lists them on day one
+      // (the item-create path seeds only the outlets that exist then).
+      const items = await tx
+        .select({ id: menuItems.id })
+        .from(menuItems)
+        .where(
+          and(
+            eq(menuItems.tenantId, context.tenant.tenantId),
+            eq(menuItems.brandId, input.brandId),
+            isNull(menuItems.deletedAt),
+          ),
+        );
+      if (items.length > 0) {
+        const now = new Date();
+        await tx
+          .insert(itemAvailability)
+          .values(
+            items.map((item) => ({
+              tenantId: context.tenant.tenantId,
+              outletId: row.id,
+              menuItemId: item.id,
+              schedule: [],
+              status: "available" as const,
+              createdAt: now,
+              updatedAt: now,
+            })),
+          )
+          .onConflictDoNothing();
+      }
     } catch (error) {
       if (uniqueViolation(error))
         throw new HttpError(409, "CONFLICT", "That outlet code is taken.");
       throw error;
     }
+    // Same transaction (PRD v1.7 §3.19, §16 Lokasi Stok, legend-4ryw): older
+    // tenants without UOMs get them here too; both calls are idempotent.
+    await provisionStandardUoms(tx, context, null);
+    await provisionOutletStockLocations(tx, context, inserted.id, null);
+    // Default 5% dine-in service charge for this outlet only (legend-2qz7, Q25).
+    const actor = userIdSchema.safeParse(actorUserId);
+    await provisionDefaultServiceChargeRule(
+      tx,
+      context,
+      actor.success ? actor.data : null,
+      outletIdSchema.parse(inserted.id),
+    );
+    return toOutlet(inserted);
   });
 }
 
@@ -571,9 +666,17 @@ export async function setOutletStatus(
     if (current.status === input.status) return toOutlet(current);
     if (!canTransitionOutlet(current.status, input.status))
       throw new PlatformError("INVALID_TRANSITION");
+    // Q40 (legend-umzos): closing starts the 30-day platform restore window.
+    const closing =
+      input.status === "closed"
+        ? {
+            closedAt: new Date(),
+            statusBeforeClose: outletRestoreStatusSchema.parse(current.status),
+          }
+        : {};
     const [row] = await tx
       .update(outlets)
-      .set({ status: input.status })
+      .set({ status: input.status, ...closing })
       .where(eq(outlets.id, outletId))
       .returning();
     return toOutlet(row);
@@ -590,7 +693,7 @@ export async function listDomains(
     return {
       data: rows
         .sort((a, b) => a.hostname.localeCompare(b.hostname))
-        .map(toDomain),
+        .map(toTenantDomain),
     };
   });
 }
@@ -599,6 +702,8 @@ export async function addDomain(
   context: ScopedTenantContext,
   input: AddDomainInput,
 ): Promise<TenantDomain> {
+  if (isReservedHostname(input.hostname, env.reservedDomains))
+    throw new PlatformError("DOMAIN_RESERVED");
   return withTenant(db, context, async (tx) => {
     await requireBrand(tx, input.brandId);
     try {
@@ -609,11 +714,86 @@ export async function addDomain(
           brandId: input.brandId,
           hostname: input.hostname,
           kind: "custom",
+          verificationToken: randomBytes(32).toString("hex"),
         })
         .returning();
-      return toDomain(row);
+      return toTenantDomain(row);
     } catch (error) {
-      if (uniqueViolation(error)) throw new PlatformError("DOMAIN_TAKEN");
+      if (uniqueViolationOn(error, "tenant_domains_tenant_hostname_key"))
+        throw new PlatformError("DOMAIN_TAKEN");
+      throw error;
+    }
+  });
+}
+
+/** Reads the TXT records at a name; each record is its chunk list. */
+export type DomainTxtResolver = (name: string) => Promise<string[][]>;
+
+let txtResolver: DomainTxtResolver = resolveTxt;
+
+/** Test seam: replace the DNS lookup; `null` restores the real resolver. */
+export function setDomainTxtResolver(resolver: DomainTxtResolver | null): void {
+  txtResolver = resolver ?? resolveTxt;
+}
+
+/** True when a TXT record at the verification name carries the exact value.
+ * Any lookup failure (ENODATA, ENOTFOUND, ESERVFAIL, timeout) is "not proven". */
+async function txtProvesOwnership(record: {
+  name: string;
+  value: string;
+}): Promise<boolean> {
+  try {
+    const records = await txtResolver(record.name);
+    return records.some((chunks) => chunks.join("") === record.value);
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyDomain(
+  context: ScopedTenantContext,
+  domainId: string,
+): Promise<TenantDomain> {
+  // Reads through the caller's own transaction, so the race path below never
+  // asks the pool for a second connection while holding one.
+  const loadIn = async (tx: Tx) => {
+    const [row] = await tx
+      .select()
+      .from(tenantDomains)
+      .where(
+        and(
+          eq(tenantDomains.id, domainId),
+          eq(tenantDomains.tenantId, context.tenant.tenantId),
+        ),
+      )
+      .limit(1);
+    if (!row) throw new HttpError(404, "NOT_FOUND", "Domain not found.");
+    return row;
+  };
+  const current = await withTenant(db, context, loadIn);
+  if (current.verifiedAt !== null) return toTenantDomain(current);
+  const record = toTenantDomain(current).verification;
+  // The lookup runs outside the transaction: DNS can be slow.
+  if (record === null || !(await txtProvesOwnership(record)))
+    throw new PlatformError("DOMAIN_VERIFICATION_FAILED");
+  return withTenant(db, context, async (tx) => {
+    try {
+      const [row] = await tx
+        .update(tenantDomains)
+        .set({ verifiedAt: sql`now()` })
+        .where(
+          and(
+            eq(tenantDomains.id, domainId),
+            eq(tenantDomains.tenantId, context.tenant.tenantId),
+            isNull(tenantDomains.verifiedAt),
+          ),
+        )
+        .returning();
+      // Verified by a concurrent request in the meantime: return it as is.
+      return toTenantDomain(row ?? (await loadIn(tx)));
+    } catch (error) {
+      if (uniqueViolationOn(error, "tenant_domains_verified_hostname_key"))
+        throw new PlatformError("DOMAIN_TAKEN");
       throw error;
     }
   });

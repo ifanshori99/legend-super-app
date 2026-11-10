@@ -4,7 +4,8 @@
 // features/ws07-accounting/mock.ts, PATCH /api/org/outlets/:outletId by
 // features/ws01-org/mock.ts. No API, no database:
 //   pnpm test:e2e:mock e2e/legend-1mi5.mock.spec.ts
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 // The screen must use the outlet clock, never the device clock: a device in
 // New York still shows the Asia/Jakarta business date below.
@@ -12,18 +13,6 @@ test.use({ timezoneId: "America/New_York" });
 
 const CUTOFF = "04:00";
 const EDITED_CUTOFF = "03:30";
-
-/** Server HTML paints before React hydrates; a click needs the router up. */
-async function waitForHydration(page: Page): Promise<void> {
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        (window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__,
-      ),
-    undefined,
-    { timeout: 60_000 },
-  );
-}
 
 /** Q39: local date of (instant − cutoff) in the outlet time zone. */
 function expectedBusinessDate(

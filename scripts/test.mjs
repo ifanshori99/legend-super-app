@@ -4,6 +4,12 @@ import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pnpmCommand, root } from "./lib.mjs";
 import { provisionAppRole } from "./provision-app-role.mjs";
+import {
+  legacySweepMinutes,
+  ownerLabelValue,
+  removeProject,
+  sweepStaleTestResources,
+} from "./test-sweep.mjs";
 
 // Runs tests against a disposable PostgreSQL server that exists only for this
 // run. The development database is never touched.
@@ -20,7 +26,13 @@ export const TEST_WEB_URL = "http://localhost:3101";
 const project = `starter-pg-test-${randomBytes(8).toString("hex")}`;
 const password = randomBytes(24).toString("hex");
 const dockerArgs = ["compose", "-p", project, "-f", "compose.test.yaml"];
-const env = { ...process.env, STARTER_TEST_PASSWORD: password };
+const env = {
+  ...process.env,
+  STARTER_TEST_PASSWORD: password,
+  // Marks this run's containers and network so a later run can sweep them if
+  // this process is killed without cleaning up (legend-yw90).
+  STARTER_TEST_OWNER: ownerLabelValue(),
+};
 // Settings for real deployments must not leak into a test run.
 for (const key of ["COOKIE_DOMAIN", "TRUSTED_ORIGINS", "API_INTERNAL_URL"])
   delete env[key];
@@ -30,8 +42,8 @@ function interrupt() {
   interrupted = true;
   active?.kill("SIGTERM");
 }
-process.once("SIGINT", interrupt);
-process.once("SIGTERM", interrupt);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+  process.once(signal, interrupt);
 
 async function run(command, args, childEnv = env, capture = false) {
   if (interrupted) throw new Error("Tests interrupted.");
@@ -58,6 +70,16 @@ async function run(command, args, childEnv = env, capture = false) {
     });
   });
 }
+
+// Remove what earlier killed runs left behind. Labeled projects are touched only
+// when their owning process is gone, so runs of other agents stay alive.
+// Unlabeled ones (by hand, older script) go once older than 30 minutes.
+const swept = sweepStaleTestResources({
+  legacyOlderThanMin: legacySweepMinutes(),
+  log: console.error,
+});
+for (const item of swept.removed)
+  console.log(`Removed leftover test resource: ${item}`);
 
 try {
   console.log(
@@ -166,7 +188,7 @@ try {
     [...dockerArgs, "down", "--volumes", "--remove-orphans"],
     { cwd: root, env, stdio: "inherit" },
   );
-  if (result.error || result.status !== 0) {
+  if ((result.error || result.status !== 0) && !removeProject(project)) {
     console.error(
       `Test cleanup failed. Remove the disposable Docker Compose project ${project} after checking Docker.`,
     );

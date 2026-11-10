@@ -1,0 +1,23 @@
+# Map brief 272 s2 bullets 2-4 (worktree ws11-shared-2)
+Paths rel to worktree. NOTE: F11 card legend-flb8f comments unreadable via bd; asks taken from brief line 11.
+
+## (a) net_sales splits
+- Sales source: apps/api/src/services/metric-sources/sales.ts:488 netSalesSplits=reader("net_sales",[channel,hour,employee,day_of_week,menu_item,menu_category]); :532 splitsOf. menu_category split already declared (rows built ~:297/350/419 via group()). payment_method NOT in net_sales reader.
+- Missing: add "payment_method" to :488 dims + rows in salesRows (:254; payment_method groups exist at :369/:401 for other metrics). Reader at :488 is sole net_sales owner.
+- F4 material: metric-sources/payments-tax.ts:53 allocateByWeight(amount:number, weights:readonly number[]):number[] (largest remainder, BigInt, sum exact). Header :5-16 says unregistered. netSalesByMethodReader in same file (~:100-170) = tender weights per order (tenders amount, QR intent_method, PAYMENT_METHOD_UNASSIGNED), net = orderRevenueSplit gross-discount. Weights: order tenders (payments), not lines.
+- menu_category weights: order lines (already in sales.ts salesRows).
+- Reports: packages/shared/src/dashboard/catalog.ts:438 menu.category_sales (net_sales,menu_sold_qty by menu_category); :456 payments.methods (transaction_count,net_sales by payment_method).
+- Smallest change: import allocateByWeight + tender query into sales.ts, add payment_method to netSalesSplits, ensure total row = sum; remove "unavailable" note payments-tax.ts:15. Single owner: don't register payments-tax reader.
+- Failing-first: apps/api/src/test/ms-sales.test.ts (new case net_sales payment_method sums to total; menu_category) ; ms-payments-tax.test.ts:479 allocateByWeight exists; metrics-engine/runtime tests for payments.methods availability.
+
+## (b) F11
+- managerRole: tile field exists packages/shared/src/dashboard/dashboards.ts:169; filter in dashboardTilesFor :994-1001 (param managerRole). Query schema dashboardQuerySchema dashboards.ts:294 has ONLY outletIds; values query tile-values.ts:58; queue rows query tile-values.ts:299. Route routes/dashboards.routes.ts:139-146 (GET /:dashboard) calls admit()->admittedTiles(dashboard,permissions) (:84-92), no role passed. Change: add managerRole: managementRoleSchema.optional() to dashboardQuerySchema (and values query tile-values.ts:58), pass to admittedTiles/dashboardTilesFor; permission check on role if needed.
+- availability+reason per tile/queue: layout tile schema dashboards.ts:271 (dashboardTileSchema), values tile schema tile-values.ts (dashboardTileValuesSchema, payload :170), queue payload queueRowsPayload tile-values.ts:~275 (fields queue, rows, hasMore, generatedAt). No availability/reason field. Server already computes unavailable: dashboard-run.service.ts:471-477 (evaluated.availability, status "unavailable" -> null value); builder.ts:317 has availability schema for reports (reuse shape). Change: add availability: enum available|unavailable + reason nullable to values tile and queueRowsPayload; fill in dashboard-run.service.ts ~:471 and getDashboardQueueRows.
+- single outletIds: ALREADY DONE routes/dashboards.routes.ts:48-55 queryOf wraps string; used at :98,:110,:124,:139. Test dashboards-api.test.ts:453,601. Verify only; maybe no work.
+- Tests: apps/api/src/test/dashboards-api.test.ts (failing-first); tests/ws11-dashboard-decisions.test.mjs, tests/ws11-owner-dashboard.test.mjs for contract.
+
+## (c) mock
+- sales_target cell: apps/web/src/features/ws11-reports/mock-families/sales.ts:15 EXISTS (derived salesTarget ratio 1.05). MISSING in apps/web/src/features/ws11-report-builder/mock-preview.ts cellFor (:84-118; default returns null, no sales_target / target_achievement_pct); also MOCK_PREVIEW_METRIC_CODES :~122. Change: add case "sales_target": idr(Math.round(atoms.net*1.05)) (match derived.salesTarget) + target_achievement_pct, add to codes list. DASH-02 parity test compares both mocks.
+- day_of_week: mock-preview.ts:15-16,:71 weekdaySplit computed locally; mock-day-model.ts has weekdayIndex :103 but splitSpecFor :259 lacks day_of_week. Change: move weekdaySplit into mock-day-model.ts splitSpecFor (handle key==="day_of_week") and drop :71 branch.
+- Reports: mock-families/sales.ts:50 SALES_REPORTS (10 codes); :66 SALES_VIEWER_ONLY_REPORTS = sales.target, sales.by_day, sales.by_category already exist, reportsByPrefix :73 only. Brief wants them in SALES_REPORTS (also consumed mock.ts:410,484 buildSalesRuns builder comparison). Change: move the 3 into SALES_REPORTS once builder mock serves sales_target+day_of_week+menu_category; delete viewer-only list.
+- Tests: tests/ws11-report-day-model.test.mjs, tests/ws11-report-builder.test.mjs, tests/ws11-reports.test.mjs (node --test).

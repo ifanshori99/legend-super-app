@@ -1,0 +1,66 @@
+# WS-08 slices (brief 99)
+
+Repo/worktree: `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/ws08-site`, branch `ws/ws08-site` (from milestone/m1 30a31a3c). Card text: `bd show <id> --json`. Code map: `docs/briefs/sub-ws08-explore.md` (+ explorer notes below).
+
+## Shared rules (all slices)
+
+- Follow AGENTS.md: thin routes → services, strict zod in `packages/shared`, `requireAuth` + `requireTrustedOrigin` + `requirePermission`, tenant RLS (`tenant_id NOT NULL` + enforced RLS policy, unique keys include tenant_id). Throw `HttpError`.
+- TEN-08 whitelabel: no platform/starter name ("Express TanStack Postgres", "Legend Super App", platform brand) in any response or page served on a tenant domain. Brand name comes from the tenant's `brands` row only.
+- Customer data = personal data (tier K): no raw phone/email in logs, hashes keyed (HMAC), tenant isolation tests required.
+- Edit ONLY files of your slice. Need another file: stop and report.
+- Do NOT edit `e2e/acceptance/`, `e2e/visual/`, or another slice's files. Do not commit; the agent commits.
+- Heavy commands (build, playwright, docker build, full `pnpm check`) only via `heavy <cmd>`. Do not kill other sessions' processes (no pkill vitest/node).
+- Run only affected tests: `LEGEND_TEST_FILES="src/test/a.test.ts src/test/b.test.ts" node scripts/test.mjs unit` from the worktree root (sets DB env, migrates a disposable DB, seeds `src/db/seed-dev-tenant.ts`; bare vitest fails on missing DATABASE_URL; `~/.claude/scripts/colima-up` if Docker is down). Shared: `pnpm --filter @starter/shared exec vitest run <file>` if tests exist. RAM rule (9 Nov): tsc/typecheck, lint, full suites and `pnpm check` ONLY via `heavy <cmd>`; between steps run targeted `vitest run <path>` only (no heavy needed). Prefer leaving typecheck to the agent's gate.
+- Migrations: `pnpm db:generate` (inspect SQL; RLS goes in a `*.custom.sql` like neighbours). Latest on base is 0090. Slices in isolated worktrees also generate 0091; the agent renumbers at merge.
+- Report: files changed, tests run + result, open questions. Max 40 lines.
+
+## S1 — legend-qgr6: `GET /api/public/site` (main worktree, migration 0091)
+
+Contract exists: `packages/shared/src/website/{endpoints,schemas,fixtures}.ts` (`getPublicSite`, `publicSiteSchema`). Route file `apps/api/src/routes/public-site.routes.ts` (only `/menu`). Web caller `apps/web/src/features/ws08-website/*`, page `routes/_public/index.tsx`.
+Gap: brand tagline/description, hero/gallery images, highlights, structured address (outlets.address is free text), geo, contact, seo have no storage.
+Design (decided):
+
+- New tenant table `brand_websites` (schema file `apps/api/src/db/schema/website.ts`, export in index): tenant_id, brand_id (unique per tenant+brand), outlet_id (the featured outlet), `content` jsonb validated by a new strict `brandWebsiteContentSchema` in `packages/shared/src/website/schemas.ts` (tagline, description, heroImages min1, gallery, highlights, address, geo nullable, contact, seo, googleBusinessUrl nullable — reuse existing sub-schemas), `published_at` nullable, `updated_at`. RLS custom SQL like neighbours.
+- `GET /api/public/site` (tenant from host, same as `/menu`): assemble publicSiteSchema from brand row (name/slug), content row, outlet (code, name, openingHours from `outlets.opening_hours`), active public promotions (reuse promo service read if a clean one exists, else empty array + note), featured menu items (reuse `guest-menu.service` items; Q23 photo rule applies), `acceptsReservations` = active `reservation_policies` row for that outlet, `memberLoginUrl` relative `/member`. Parse the result with `publicSiteSchema` before sending.
+- No row or `published_at` null → 404 `{code:"PUBLIC_SITE_NOT_PUBLISHED"}` (HttpError). Never leak another tenant's row (tenant from host + RLS).
+- Staff edit endpoints: `GET/PUT /api/website/brands/:brandId/content` behind an EXISTING permission that already governs brand/theme settings (find it in `packages/shared/src/access/permissions.ts`; do not add a permission). Add both to the website contract endpoints. PUT validates with `brandWebsiteContentSchema`, `publish: boolean`. Audit like neighbouring admin writes.
+- Dev seed: if there is a dev/demo seed script for Cafe Legend, add a published content row there.
+- Cache header: `Cache-Control: public, max-age=60` only when published.
+  Files: website schema file + index export, migration, `public-site.routes.ts`, new `services/public-site.service.ts`, new `routes/website-admin.routes.ts` + register in `routes/index.ts`, `packages/shared/src/website/{schemas,endpoints}.ts`, seed file. Tests: S8 writes them; you may add a service unit test `src/test/public-site-service.test.ts`.
+
+## S2 — legend-o9fc + legend-a8up: CRM contract (shared only)
+
+Files: `packages/shared/src/crm/loyalty.ts`, `packages/shared/src/crm/promo.ts` (only the `sha256HexSchema`/`whatsappHash` lines), new `packages/shared/src/crm/customer-hash.ts` (+ export), FE mock `apps/web/src/features/ws08-crm-360/mock.ts` only if types break.
+
+- o9fc: CRM `whatsappHash` = same keyed digest as reservation `hashGuestContact` (`packages/shared/src/reservation/schemas.ts:82` → `whatsAppNumberDigest`; API helper `apps/api/src/lib/identity-digest.ts:79`). Fix the doc/describe text and schema (hex length of the HMAC), export one shared helper name for CRM so a reservation contactHash equals customer_profiles.whatsapp_hash for the same number. Do not move API-only code into shared if it needs Node crypto; document where the server computes it. No DB table exists yet (customer_profiles = legend-111j) — contract only.
+- a8up: add program-level `referral` (enabled, referrerPoints, refereePoints, qualifying first paid order, max referrals per customer per month) and `antiFraud` (dailyPointCapPerCustomer, employeeSelfServeBan boolean) to the loyalty program schema + update endpoint input; defaults documented; strict zod; FE fixtures/mocks typecheck.
+
+## S3 — legend-gbkw: resend reservation DP link (main worktree)
+
+Files: `packages/shared/src/reservation/{endpoints,schemas}.ts` (add endpoint + response), `apps/api/src/routes/reservation.routes.ts` (staff section 123-221), `apps/api/src/services/reservation-deposit-resend.ts` (new), desk FE `apps/web/src/features/ws08-reservation/{api,queries,hooks}.ts` + the desk component that shows a pending_deposit booking (add one "Kirim ulang tautan DP" action using existing UI primitives; copy Bahasa Indonesia).
+
+- `POST /api/outlets/:outletId/reservations/:reservationId/deposit-link`, permission `reservation.manage`, outlet scope check, idempotency key header like `reservation.routes.ts`. Only for status `pending_deposit` and before the frozen policy window ends; reuse the stored sealed link if still valid (`createdFrom` unseal, `reservation-booking.ts:314`), else re-mint via `reservationDepositPort().openDeposit` and store. Return `reservationDepositLinkSchema`. Audit event. Tests: `src/test/reservation-deposit-resend-db.test.ts` (new): happy path, wrong status 409, other tenant/outlet 404, link reuse vs re-mint.
+
+## S4 — legend-u0q8: reservation policy admin endpoints (ISOLATED worktree)
+
+Files: `packages/shared/src/reservation/{endpoints,schemas}.ts` (policy admin input/output), new `apps/api/src/routes/reservation-policy.routes.ts` (+ register in routes/index.ts), new `apps/api/src/services/reservation-policy.service.ts`, test `src/test/reservation-policy-api.test.ts`.
+
+- `GET /api/outlets/:outletId/reservation-policy` (active + history), `PUT` creates a new version and deactivates the old (never mutate a row bookings already froze — check how bookings reference `reservation_policies` at `reservation-booking.ts:106`). Permission: existing `reservation.manage` unless a stricter existing one fits (owner/manager); check role grants and report which roles get it. Outlet scope, tenant RLS, audit. Replace raw `INSERT INTO reservation_policies` in tests only where trivially swappable (optional).
+
+## S5 — legend-nloi + legend-jh27: promo idempotency + outlet allowlist (ISOLATED worktree)
+
+Files: `apps/api/src/routes/crm-promo.routes.ts`, `apps/api/src/services/crm-promo*.ts` (not `crm-promo-refund.ts`), `apps/api/src/db/schema/crm-promo.ts`, migration, `packages/shared/src/crm/promo.ts` (endpoint/input parts; leave `whatsappHash` lines to S2), tests `crm-promo-api.test.ts` / new `crm-promo-idempotency-db.test.ts`.
+
+- nloi: `Idempotency-Key` on createPromotion + issueVoucher (pattern `idempotencyKeyOf` in `routes/device-pin.routes.ts:47`, `idempotencyKeySchema` from `@starter/shared/core`). Same key + same body → same result, same key + different body → 409. Store keyed per tenant (unique incl. tenant_id).
+- jh27: promotion `outletScope: "all_except" | "only"` (default all_except = current opt-out via `promotion_outlets.enabled=false`); "only" means the promo runs only at outlets with an enabled row. Update `crm-promo-outlets.ts` resolution + contract + tests.
+
+## S6 — legend-q1e0 + legend-9be7: promo recompute inside refund tx (K, money)
+
+Files: `apps/api/src/services/payment-refund.service.ts`, `apps/api/src/services/order-promo-refund.ts` (only if a signature tweak is needed), refund tests `src/test/payment-refund-promo-db.test.ts` (new).
+
+- Inject `orderPromoPartialRefundPort` (NOT bare `promoPartialRefundPort`) and call recompute inside the same DB tx as a PARTIAL refund. If the port cannot run (throws / unavailable) the partial refund is refused (no money moves). `refundDueIdr = max(0, refunded - withdrawn)` (Q41). Full refunds: check what the port expects. Idempotent on refund retry.
+- 9be7 second half (refunded_paid_idr vs actual payout when discount is spread pro rata) is an owner decision: do not implement; describe the exact gap with numbers in your report.
+
+## S8 — test-writer for S1 (main worktree)
+
+Write `apps/api/src/test/public-site-api.test.ts` from this spec (S1 design above) and PRD §3 item 24 "Website Publik per Brand" (`../../../PRD_Legend_Super_App_v1.7.md` line 835): published site on tenant host returns 200 and parses `publicSiteSchema`; brand name from tenant brand; body contains no platform/starter name; unpublished/missing → 404 `PUBLIC_SITE_NOT_PUBLISHED`; tenant A host never returns tenant B content; outlet opening hours come from `outlets`; featured items exclude photo-less items; staff PUT requires permission (401/403) and validates content; PUT with publish=true makes GET return 200. Seed directly via SQL/drizzle using the table described in S1 (`brand_websites`, `content` jsonb). Look at `guest-menu-api.test.ts` for host-based tenant setup. Tests may fail until S1 lands; that is expected — do not edit S1 files.

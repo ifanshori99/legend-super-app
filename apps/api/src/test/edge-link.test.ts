@@ -28,7 +28,10 @@ import {
   type QueuedEdgeEvent,
 } from "../edge/link-peer.ts";
 import { createEdgeLinkClient, reconnectDelayMs } from "../edge/link-client.ts";
-import { createEdgeLinkServer } from "../edge/link-server.ts";
+import {
+  createEdgeLinkServer,
+  type EdgeLinkIdentity,
+} from "../edge/link-server.ts";
 import { classifyApiPath, edgeRouteGuard } from "../edge/mode.ts";
 import { decodeFrame, oppositeDirection } from "../edge/protocol.ts";
 import type { EdgeEventKind } from "../db/schema/edge-node.ts";
@@ -720,6 +723,48 @@ describe("EDG-01 WebSocket link (real ws, in-memory stores)", () => {
     await settle(() => client.state().refused);
     expect(client.state().cloudLink).toBe("disconnected");
     await client.stop();
+    await linkServer.close();
+  });
+
+  it("legend-o839h sends the instance id header and the cloud carries it on the identity; missing or invalid means null", async () => {
+    const { token } = mintEdgeCredential(scope);
+    const seen: (string | null | undefined)[] = [];
+    server = createServer();
+    const linkServer = createEdgeLinkServer<EdgeLinkIdentity>(server, {
+      version: "cloud",
+      authenticate: async (presented) =>
+        presented === token ? { scope } : null,
+      isActive: async () => true,
+      storeFor: (identity) => {
+        seen.push(identity.edgeInstanceId);
+        return new MemoryStore("cloud_to_edge");
+      },
+    });
+    await new Promise<void>((resolve) =>
+      server!.listen(0, "127.0.0.1", resolve),
+    );
+    const port = (server.address() as AddressInfo).port;
+    const url = `ws://127.0.0.1:${port}/api/edge-link`;
+    const connect = async (instanceId?: string | null) => {
+      const client = createEdgeLinkClient({
+        url,
+        credential: token,
+        instanceId,
+        scope,
+        store: new MemoryStore("edge_to_cloud"),
+        version: "edge",
+      });
+      await settle(() => client.state().cloudLink === "connected");
+      expect(client.state().refused).toBe(false);
+      await client.stop();
+      await settle(() => !linkServer.isConnected(scope.edgeNodeId));
+    };
+
+    const instance = randomUUID();
+    await connect(instance);
+    await connect(); // old edge: no header
+    await connect("not-a-uuid"); // malformed: connection still accepted
+    expect(seen).toEqual([instance, null, null]);
     await linkServer.close();
   });
 

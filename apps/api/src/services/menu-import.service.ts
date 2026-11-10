@@ -49,6 +49,7 @@ import {
   stations,
 } from "../db/schema/menu.ts";
 import { menuImportJobs } from "../db/schema/menu-import.ts";
+import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -169,6 +170,7 @@ type Resolved = {
     rowNumber: number;
     existingItemId: string | null;
     stationId: string;
+    stationType: string;
   }[];
 };
 
@@ -231,7 +233,7 @@ async function resolveImport(
     );
   const categoryByName = new Map(categories.map((c) => [norm(c.name), c.id]));
   const stationRows = await tx
-    .select({ id: stations.id, name: stations.name })
+    .select({ id: stations.id, name: stations.name, type: stations.type })
     .from(stations)
     .where(
       and(
@@ -240,7 +242,9 @@ async function resolveImport(
         isNull(stations.deletedAt),
       ),
     );
-  const stationByName = new Map(stationRows.map((s) => [norm(s.name), s.id]));
+  const stationByName = new Map(
+    stationRows.map((s) => [norm(s.name), { id: s.id, type: s.type }]),
+  );
   const existing = await tx
     .select({
       id: menuItems.id,
@@ -273,7 +277,8 @@ async function resolveImport(
     const row = parsedRow.data;
     let action: ImportRowReport["action"] = "error";
     if (row && errors.length === 0) {
-      const stationId = stationByName.get(norm(row.station));
+      const station = stationByName.get(norm(row.station));
+      const stationId = station?.id;
       const existingId =
         itemByKey.get(importKey(row.category, row.name)) ?? null;
       if (!stationId)
@@ -288,7 +293,7 @@ async function resolveImport(
           code: "DUPLICATE_EXISTING",
           message: "Item dengan kategori dan nama yang sama sudah ada.",
         });
-      if (errors.length === 0 && stationId) {
+      if (errors.length === 0 && station) {
         action = existingId ? "update" : "create";
         if (existingId) toUpdate += 1;
         else toCreate += 1;
@@ -298,7 +303,8 @@ async function resolveImport(
           row,
           rowNumber: parsedRow.rowNumber,
           existingItemId: existingId,
-          stationId,
+          stationId: station.id,
+          stationType: station.type,
         });
       }
     }
@@ -403,6 +409,8 @@ export async function commitMenuImport(
   now = new Date(),
 ): Promise<ImportCommitResult> {
   assertTrustedScopedContext(context);
+  // Data import guard (legend-v4ld): classify the upload before any write.
+  guardDataImport("menu-import.commit");
   const key = idempotencyKeySchema.parse(idempotencyKey);
   const channel = input.channel ?? "dine_in";
   const onDuplicate = input.onDuplicate ?? "reject";
@@ -540,6 +548,7 @@ export async function commitMenuImport(
           .set({
             description: row.description,
             stationId: entry.stationId,
+            stationType: entry.stationType,
             course: row.course === "" ? null : row.course,
             labels: row.labels,
             allergens: row.allergens,
@@ -577,6 +586,7 @@ export async function commitMenuImport(
             description: row.description,
             type: row.type,
             stationId: entry.stationId,
+            stationType: entry.stationType,
             course: row.course === "" ? null : row.course,
             labels: row.labels,
             allergens: row.allergens,

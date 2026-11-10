@@ -145,6 +145,7 @@ export const employeeMasterMessages = {
         start: "Mulai",
         end: "Berakhir",
         reminder: "Pengingat",
+        taxScheme: "Skema PPh 21",
         status: "Status",
         salary: "Gaji (tersamar)",
       },

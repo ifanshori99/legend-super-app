@@ -4,7 +4,7 @@
 // visitor may open (their page guard's permission), grouped by the scope the
 // setting applies to.
 import { Link, useRouteContext } from "@tanstack/react-router";
-import { ChevronRight, Settings, Store } from "lucide-react";
+import { ChevronRight, HandCoins, Settings, Store } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { CardShell, CardShellBody } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/feedback-state";
@@ -24,6 +24,18 @@ const OUTLET_SETTINGS_ITEM: HubItem = {
   nameKey: "auditSettings.hub.groups.outlet",
   hintKey: "auditSettings.hub.groups.outletHint",
   anyPermission: ["org.structure.manage"],
+};
+
+// Open-bill policy (bead legend-2zb5), same arrangement. Its page guard is
+// `floor.open_bill_policy.manage`; keep this in step with the route.
+const OPEN_BILL_ITEM: HubItem = {
+  key: "openBillPolicy",
+  scope: "outlet",
+  to: "/kelola/pengaturan/open-bill",
+  icon: HandCoins,
+  nameKey: "openBillPolicy.hub.name",
+  hintKey: "openBillPolicy.hub.hint",
+  anyPermission: ["floor.open_bill_policy.manage"],
 };
 
 const GROUP_KEYS = {
@@ -49,7 +61,7 @@ export function SettingsHubPage() {
   };
   // Fail closed: no access context means no permission-gated cards.
   const groups = groupAvailable(
-    [...HUB_ITEMS, OUTLET_SETTINGS_ITEM],
+    [...HUB_ITEMS, OUTLET_SETTINGS_ITEM, OPEN_BILL_ITEM],
     available,
     access?.permissions ?? [],
   );

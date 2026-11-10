@@ -217,11 +217,14 @@ export function requireStationScopePermission(
         now: new Date(),
         permission,
       });
-      if (reach !== null) {
+      if (reach?.kind === "tenant") {
         context = establishScopedTenantContext(tenant, reach);
       } else {
-        // Station-only grant: the stations it reaches are the outlets the
-        // service may read, and the service narrows to those stations.
+        // Union of the outlet/brand reach and the outlets of the stations a
+        // station grant reaches (legend-cy2e): outlet A + station B must
+        // reach both outlets, not A alone. The context stays outlet-wide, so
+        // the service narrows to `permittedStationIds` (station B only, not
+        // the other stations of outlet B).
         const stations = stationReachOf({
           principal,
           roles: data.roles,
@@ -230,15 +233,16 @@ export function requireStationScopePermission(
           permission,
         });
         const outletIds = [
-          ...new Set(
-            stations.flatMap((stationId) => {
+          ...new Set([
+            ...(reach?.outletIds ?? []).map((id) => id.toLowerCase()),
+            ...stations.flatMap((stationId) => {
               const station = data.org.stations.find(
                 (row) => row.id.toLowerCase() === stationId.toLowerCase(),
               );
-              return station ? [station.outletId] : [];
+              return station ? [station.outletId.toLowerCase()] : [];
             }),
-          ),
-        ];
+          ]),
+        ].map((id) => outletIdSchema.parse(id));
         if (outletIds.length > 0)
           context = establishScopedTenantContext(tenant, {
             kind: "outlets",

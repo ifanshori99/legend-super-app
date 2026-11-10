@@ -10,6 +10,17 @@
 //                         when the node is registered on the cloud
 //   EDGE_NODE_ROLE        primary | standby (default primary)
 //   EDGE_NODE_VERSION     image version reported in heartbeats (default dev)
+//   EDGE_DEVICE_SYNC_INTERVAL_SECONDS
+//                         how often the edge pulls the device registry from
+//                         the cloud (10..3600, default 60; legend-2lp.7)
+//   EDGE_PEOPLE_SYNC_INTERVAL_SECONDS
+//                         how often the edge pulls the people snapshot (users,
+//                         roles, employees, shifts) from the cloud
+//                         (10..3600, default 60)
+//   EDGE_DEVICE_SYNC_STALE_SECONDS
+//                         the replica counts as stale after this long without
+//                         a successful pull (60..86400, default 900, at least
+//                         twice the interval)
 import { z } from "zod";
 import { deploymentEnvShape } from "@starter/shared/env";
 import { parseEdgeCredential } from "./credential.ts";
@@ -28,6 +39,24 @@ const schema = z
       .max(255)
       .regex(/^[\w.+-]+$/)
       .default("dev"),
+    EDGE_DEVICE_SYNC_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(10)
+      .max(3600)
+      .default(60),
+    EDGE_PEOPLE_SYNC_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(10)
+      .max(3600)
+      .default(60),
+    EDGE_DEVICE_SYNC_STALE_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(86_400)
+      .default(900),
   })
   .superRefine((values, ctx) => {
     if (!values.EDGE_MODE) return;
@@ -55,6 +84,16 @@ const schema = z
         path: ["EDGE_CLOUD_URL"],
         message: `Set EDGE_CLOUD_URL to wss://<cloud host>${LINK_PATH} (ws:// only in development).`,
       });
+    if (
+      values.EDGE_DEVICE_SYNC_STALE_SECONDS <
+      2 * values.EDGE_DEVICE_SYNC_INTERVAL_SECONDS
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["EDGE_DEVICE_SYNC_STALE_SECONDS"],
+        message:
+          "Set EDGE_DEVICE_SYNC_STALE_SECONDS to at least twice EDGE_DEVICE_SYNC_INTERVAL_SECONDS.",
+      });
     if (!parseEdgeCredential(values.EDGE_NODE_CREDENTIAL))
       ctx.addIssue({
         code: "custom",
@@ -72,6 +111,9 @@ export type EdgeRuntimeConfig =
       credential: string;
       role: "primary" | "standby";
       version: string;
+      deviceSyncIntervalMs: number;
+      deviceSyncStaleAfterMs: number;
+      peopleSyncIntervalMs: number;
     };
 
 export function parseEdgeRuntimeConfig(
@@ -96,6 +138,9 @@ export function parseEdgeRuntimeConfig(
       credential: values.EDGE_NODE_CREDENTIAL as string,
       role: values.EDGE_NODE_ROLE,
       version: values.EDGE_NODE_VERSION,
+      deviceSyncIntervalMs: values.EDGE_DEVICE_SYNC_INTERVAL_SECONDS * 1000,
+      deviceSyncStaleAfterMs: values.EDGE_DEVICE_SYNC_STALE_SECONDS * 1000,
+      peopleSyncIntervalMs: values.EDGE_PEOPLE_SYNC_INTERVAL_SECONDS * 1000,
     },
   };
 }

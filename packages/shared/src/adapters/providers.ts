@@ -41,8 +41,16 @@ export const storageLookupSchema = z.strictObject({
   key: storageKeySchema,
   visibility: z.enum(["public", "private"]).optional(),
 });
+/** Header-safe download name: no quotes, separators, whitespace, CR/LF or non-ASCII. */
+export const storageDownloadFileNameSchema = z
+  .string()
+  .min(1)
+  .max(150)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Unsafe download file name");
 export const storageSignedLookupSchema = storageLookupSchema.extend({
   expiresInSeconds: z.number().int().min(1).max(3600),
+  /** When set, the signed response carries `Content-Disposition: attachment`. */
+  downloadFileName: storageDownloadFileNameSchema.optional(),
 });
 
 /** PRD §5 payment cycle: pending -> paid | expired | failed -> refunded;
@@ -248,6 +256,8 @@ export interface PaymentProvider {
     input: PaymentRefundRequest,
   ): Promise<PaymentResult>;
 }
+/** Cloud-side boundary used by fakes and agent RPC fixtures. The edge EDC agent
+ * and per-bank ECR adapters use `EdcProvider` from `@starter/shared/edc`. */
 export interface EdcProvider {
   transact(context: ScopedTenantContext, input: EdcRequest): Promise<EdcResult>;
   /** Only a pending transaction. */
@@ -260,6 +270,21 @@ export interface EdcProvider {
     input: ScopedReference,
   ): Promise<EdcResult>;
 }
+/** Venue Wi-Fi controller boundary (edge Wi-Fi agent, bead legend-hsk).
+ * - `reference` is one grant. The same reference with the same request replays;
+ *   a different request fails `IDEMPOTENCY_KEY_REUSED`; a revoked reference
+ *   never authorizes again (`authorized: false`).
+ * - A new `authorize` for a `deviceId` that already holds a grant replaces that
+ *   device's rate and duration without a gap (RADIUS CoA or a controller API
+ *   update). The adapter must guarantee this: a speed change never cuts the
+ *   device.
+ * - `revoke` of a reference that was superseded on its device is a no-op for
+ *   the device.
+ * - `durationSeconds` lapsing at the controller is a cut. Callers renew before
+ *   it lapses.
+ * - `walledGarden` is the pre-auth allowlist (hosts). Adapters that can set it
+ *   at the controller also implement the optional `WifiWalledGardenSync`
+ *   capability (`@starter/shared/edge`). */
 export interface WifiProvider {
   authorize(
     context: ScopedTenantContext,

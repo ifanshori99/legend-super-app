@@ -32,6 +32,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -237,11 +238,23 @@ export const opsChecklistRuns = pgTable(
     missedAt: timestamp("missed_at", { withTimezone: true }),
     /** OPS-01 delivery evidence: when the supervisor alert was queued. */
     alertedAt: timestamp("alerted_at", { withTimezone: true }),
+    /**
+     * F45 (legend-5v69): true when the worker created the run from the
+     * template schedule (per shift/role), false for a run created by hand.
+     * Server-internal; not part of the contract run shape.
+     */
+    scheduled: boolean("scheduled").notNull().default(false),
     createdAt,
     updatedAt,
   },
   (table) => [
     unique("ops_checklist_runs_tenant_id_id_key").on(table.tenantId, table.id),
+    // F45 (legend-5v69): the scheduler creates at most one run per template
+    // and shift date, so a repeated or overlapping worker tick inserts
+    // nothing twice. Manual runs stay unrestricted.
+    uniqueIndex("ops_checklist_runs_scheduled_key")
+      .on(table.tenantId, table.templateId, table.shiftDate)
+      .where(sql`${table.scheduled}`),
     unique("ops_checklist_runs_tenant_outlet_id_key").on(
       table.tenantId,
       table.outletId,
@@ -540,6 +553,10 @@ export const maintenanceSchedules = pgTable(
     nextDueAt: timestamp("next_due_at", { withTimezone: true }).notNull(),
     /** Service vendor; a purchasing supplier (legend-uy1e). */
     vendorId: uuid("vendor_id"),
+    /** The `next_due_at` the last service reminder was queued for. The sweep
+     * reminds once per due date: completing a service moves `next_due_at`,
+     * which re-arms the reminder (OPS-04). */
+    remindedForDueAt: timestamp("reminded_for_due_at", { withTimezone: true }),
     createdAt,
     updatedAt,
   },

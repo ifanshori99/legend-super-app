@@ -25,9 +25,11 @@ import {
   cashDepositSchema,
   createBankAccount,
   createCashDeposit,
+  DEFAULT_FINANCE_POLICY,
   daysBetween,
   excludeStatementLine,
   findStatementMatch,
+  getFinancePolicy,
   getReconciliationCase,
   getReconciliationSummary,
   importBankStatement,
@@ -350,6 +352,10 @@ function releaseDepositsForLine(line: BankStatementLine): void {
     });
   }
 }
+
+// ---- Finance policy -------------------------------------------------------
+
+register(getFinancePolicy, () => ({ data: DEFAULT_FINANCE_POLICY }));
 
 // ---- Bank accounts --------------------------------------------------------
 

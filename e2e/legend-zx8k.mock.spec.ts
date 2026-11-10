@@ -1,4 +1,4 @@
-// Facility & WFC report hub and the six facility report screens (WS-09 FE, bead
+// Facility & WFC report hub and the eleven facility report screens (WS-09 FE, bead
 // legend-zx8k; PRD v1.7 §3 F25 "Laporan" and "Pengukuran WFC"). Runs against
 // the FE mock runtime (VITE_API_MOCK=true): catalog definitions, dense tables
 // and charts come from the shared fixtures through the generic report viewer —
@@ -59,9 +59,14 @@ const FACILITY_REPORTS = [
   "Langganan fasilitas",
   "Wi-Fi tamu",
   "Konversi fasilitas ke F&B",
+  "Kelebihan waktu fasilitas",
+  "Waktu pembersihan",
+  "Insiden fasilitas",
+  "Pendapatan per produk fasilitas",
+  "Utilisasi unit per jam",
 ] as const;
 
-test("ZX8K-01 the facility report hub lists the six facility and WFC reports", async ({
+test("ZX8K-01 the facility report hub lists the eleven facility and WFC reports", async ({
   page,
 }) => {
   await openRoute(page, "/kelola/fasilitas/laporan?mock=normal");
@@ -96,14 +101,15 @@ test("ZX8K-02 the revenue report renders its dense table and a chart", async ({
   await expect(
     page.getByRole("columnheader", { name: "Pendapatan shower room" }),
   ).toBeVisible();
+  // Opens split by facility (bead legend-vhgt): booths sit under the unit split.
   await expect(
-    page.getByRole("cell", { name: "Area Pria · P1" }),
+    page.getByRole("cell", { name: "Shower Room Legend" }),
   ).toBeVisible();
   await expect(page.getByRole("list", { name: /Grafik batang/ })).toBeVisible();
   await expect(page.getByText(/1\.350\.000/).first()).toBeVisible();
 });
 
-test("ZX8K-03 splitting the revenue report by facility and outlet works", async ({
+test("ZX8K-03 splitting the revenue report by facility, unit and outlet works", async ({
   page,
 }) => {
   await openReport(
@@ -111,7 +117,15 @@ test("ZX8K-03 splitting the revenue report by facility and outlet works", async 
     "/reports/facility/revenue?mock=normal",
     "Pendapatan fasilitas",
   );
-  // The report opens split by facility: four booths across two areas.
+  // The report opens split by facility: the shower room and the WFC zone.
+  for (const facility of ["Shower Room Legend", "Zona WFC Legend"])
+    await expect(page.getByRole("cell", { name: facility })).toBeVisible();
+
+  // Switch to unit (bead legend-vhgt): the four booths across two areas.
+  await page.getByRole("combobox", { name: "Pecah menurut" }).click();
+  await page.getByRole("option", { name: "Unit", exact: true }).click();
+  await expect(page).toHaveURL(/groupBy=unit/);
+  await expect(page.getByRole("columnheader", { name: "Unit" })).toBeVisible();
   for (const booth of [
     "Area Pria · P1",
     "Area Pria · P2",
@@ -128,11 +142,11 @@ test("ZX8K-03 splitting the revenue report by facility and outlet works", async 
   ).toBeVisible();
   await expect(page).toHaveURL(/groupBy=outlet/);
 
-  // Back to facility: the four booth rows return.
+  // Back to facility: the two facility rows return.
   await page.getByRole("combobox", { name: "Pecah menurut" }).click();
   await page.getByRole("option", { name: "Fasilitas", exact: true }).click();
   await expect(
-    page.getByRole("cell", { name: "Area Pria · P1" }),
+    page.getByRole("cell", { name: "Shower Room Legend" }),
   ).toBeVisible();
   await expect(page).toHaveURL(/groupBy=facility/);
 });
@@ -159,6 +173,44 @@ test("ZX8K-04 the RevPASH and shower utilization routes render", async ({
   await expect(
     page.getByRole("columnheader", { name: "Utilisasi shower room" }),
   ).toBeVisible();
+  // Opens split by facility; the booth rows sit under the unit split.
+  await expect(
+    page.getByRole("cell", { name: "Shower Room Legend" }),
+  ).toBeVisible();
+  await openReport(
+    page,
+    "/reports/facility/occupancy?mock=normal&groupBy=unit",
+    "Utilisasi shower room",
+  );
+  await expect(
+    page.getByRole("cell", { name: "Area Wanita · W2" }),
+  ).toBeVisible();
+});
+
+test("ZX8K-06 the five operations reports render their default split", async ({
+  page,
+}) => {
+  // [route, heading, a cell of the default split]: overtime, cleaning,
+  // incidents and product revenue open by facility, unit utilization by unit.
+  const reports = [
+    ["overtime", "Kelebihan waktu fasilitas", "Shower Room Legend"],
+    ["cleaning-time", "Waktu pembersihan", "Zona WFC Legend"],
+    ["incidents", "Insiden fasilitas", "Shower Room Legend"],
+    ["product-revenue", "Pendapatan per produk fasilitas", "Zona WFC Legend"],
+    ["unit-utilization", "Utilisasi unit per jam", "Area Pria · P1"],
+  ] as const;
+  for (const [route, heading, cell] of reports) {
+    await openReport(page, `/reports/facility/${route}?mock=normal`, heading);
+    await expect(page.getByRole("cell", { name: cell })).toBeVisible();
+  }
+
+  // The unit split lists all six units, WFC seats included (bead legend-vhgt).
+  await openReport(
+    page,
+    "/reports/facility/overtime?mock=normal&groupBy=unit",
+    "Kelebihan waktu fasilitas",
+  );
+  await expect(page.getByRole("cell", { name: "Zona WFC · S2" })).toBeVisible();
   await expect(
     page.getByRole("cell", { name: "Area Wanita · W2" }),
   ).toBeVisible();
@@ -199,7 +251,7 @@ for (const width of [390, 1440]) {
 
       await openReport(
         page,
-        "/reports/facility/revenue?mock=normal",
+        "/reports/facility/revenue?mock=normal&groupBy=unit",
         "Pendapatan fasilitas",
       );
       await expect(

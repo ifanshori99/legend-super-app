@@ -11,6 +11,9 @@
 //   mandatory corrective action (OPS-02).
 // - equipment.broken: a maintenance ticket marked equipment broken; consumers
 //   disable the mapped menu items (OPS-04).
+// - checklist.completed / checklist.reminded / equipment_service.reminded /
+//   prep_list.created: daily-ops notifications (legend-lvx2); consumers get
+//   the ids and times they need without another read.
 
 import {
   businessDateSchema,
@@ -26,6 +29,7 @@ import {
   inventoryItemIdSchema,
   stockBatchIdSchema,
 } from "../inventory/schemas.ts";
+import { supplierIdSchema } from "../inventory/purchasing/schemas.ts";
 import {
   equipmentIdSchema,
   maintenanceTicketIdSchema,
@@ -33,7 +37,9 @@ import {
   opsChecklistItemIdSchema,
   opsChecklistRunIdSchema,
   opsChecklistTemplateIdSchema,
+  maintenanceScheduleIdSchema,
   prepLabelIdSchema,
+  prepListIdSchema,
   temperatureLogIdSchema,
 } from "./schemas.ts";
 
@@ -43,6 +49,10 @@ export const operationsEventNames = [
   "temperature.out_of_range",
   "equipment.broken",
   "prep_label.expired",
+  "checklist.completed",
+  "checklist.reminded",
+  "equipment_service.reminded",
+  "prep_list.created",
 ] as const;
 export type OperationsEventName = (typeof operationsEventNames)[number];
 
@@ -113,6 +123,58 @@ export type PrepLabelExpiredEventPayload = z.infer<
   typeof prepLabelExpiredEventPayloadSchema
 >;
 
+/** A run was finished without a failed item. A run with at least one failed
+ * item already emits `checklist.failed` instead, so this never fires for it. */
+export const checklistCompletedEventPayloadSchema = z.strictObject({
+  runId: opsChecklistRunIdSchema,
+  templateId: opsChecklistTemplateIdSchema,
+  shiftDate: businessDateSchema,
+  assignedTo: userIdSchema,
+  dueAt: isoDateTimeSchema,
+  completedAt: isoDateTimeSchema,
+});
+export type ChecklistCompletedEventPayload = z.infer<
+  typeof checklistCompletedEventPayloadSchema
+>;
+
+/** A run is still open shortly before its deadline; reminds the assignee. */
+export const checklistRemindedEventPayloadSchema = z.strictObject({
+  runId: opsChecklistRunIdSchema,
+  templateId: opsChecklistTemplateIdSchema,
+  shiftDate: businessDateSchema,
+  assignedTo: userIdSchema,
+  dueAt: isoDateTimeSchema,
+  remindedAt: isoDateTimeSchema,
+});
+export type ChecklistRemindedEventPayload = z.infer<
+  typeof checklistRemindedEventPayloadSchema
+>;
+
+/** OPS-04: a maintenance schedule is coming due; `vendorId` is the purchasing
+ * supplier to call, null when none is set. */
+export const equipmentServiceRemindedEventPayloadSchema = z.strictObject({
+  scheduleId: maintenanceScheduleIdSchema,
+  equipmentId: equipmentIdSchema,
+  nextDueAt: isoDateTimeSchema,
+  vendorId: supplierIdSchema.nullable(),
+  remindedAt: isoDateTimeSchema,
+});
+export type EquipmentServiceRemindedEventPayload = z.infer<
+  typeof equipmentServiceRemindedEventPayloadSchema
+>;
+
+/** A prep list was generated for a day; `lineCount` saves the notifier a read. */
+export const prepListCreatedEventPayloadSchema = z.strictObject({
+  prepListId: prepListIdSchema,
+  prepDate: businessDateSchema,
+  lineCount: z.number().int().min(1),
+  generatedFromForecastId: uuidSchema.nullable(),
+  generatedAt: isoDateTimeSchema,
+});
+export type PrepListCreatedEventPayload = z.infer<
+  typeof prepListCreatedEventPayloadSchema
+>;
+
 /** Payload schema per event name, for the outbox writer and consumers. */
 export const operationsEventPayloadSchemas = {
   "checklist.missed": checklistMissedEventPayloadSchema,
@@ -120,6 +182,10 @@ export const operationsEventPayloadSchemas = {
   "temperature.out_of_range": temperatureOutOfRangeEventPayloadSchema,
   "equipment.broken": equipmentBrokenEventPayloadSchema,
   "prep_label.expired": prepLabelExpiredEventPayloadSchema,
+  "checklist.completed": checklistCompletedEventPayloadSchema,
+  "checklist.reminded": checklistRemindedEventPayloadSchema,
+  "equipment_service.reminded": equipmentServiceRemindedEventPayloadSchema,
+  "prep_list.created": prepListCreatedEventPayloadSchema,
 } as const;
 
 /**

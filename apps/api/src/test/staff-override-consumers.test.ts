@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import {
   createPosOverrideSchema,
+  posOverrideRecordedEvent,
   type PosOverrideView,
 } from "@starter/shared/access/override";
 import {
@@ -26,6 +27,7 @@ import {
 } from "@starter/shared/events";
 import { approvalResolvedEvent } from "@starter/shared/identity";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { setStaffPin } from "../services/device-pin.service.ts";
 import { setAuditWriter, type AuditEntry } from "../services/audit-writer.ts";
 import { decideApprovalRequest } from "../services/platform-approval.service.ts";
 import { handleApprovalResolved } from "../services/staff-override-consumers.ts";
@@ -40,7 +42,11 @@ const owner = new Pool({
 });
 const audits: AuditEntry[] = [];
 const createdUserIds: string[] = [];
-const ACTIONS = ["void"];
+// Cashiers that own a shift row: a shift is history (POS-03, no delete), so
+// these users stay behind, like in the pos-shift suites.
+const shiftUserIds: string[] = [];
+const PIN = "582914";
+const ACTIONS = ["void", "cash_shift_close"];
 let savedPolicies: Record<string, unknown>[] = [];
 
 const tenant: TenantContext = establishTenantContext({
@@ -63,13 +69,17 @@ async function roleIdOf(templateKey: string): Promise<string> {
   return rows[0].id;
 }
 
-async function createUser(templateKey: string, outletId = bandung) {
+async function createUser(
+  templateKey: string,
+  outletId = bandung,
+  bucket: string[] = createdUserIds,
+) {
   const id = randomUUID();
   await owner.query(
     `INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)`,
     [id, `Staf ${templateKey}`, `${id}@example.test`],
   );
-  createdUserIds.push(id);
+  bucket.push(id);
   // Backdated: the container clock may drift from the Node clock.
   await owner.query(
     `INSERT INTO role_assignments
@@ -213,6 +223,12 @@ beforeAll(async () => {
      VALUES ($1, 'void', NULL, $2, 1)`,
     [tenantId, await roleIdOf("supervisor")],
   );
+  // Same for closing a shift (legend-o0w6): one supervisor level, no amount.
+  await owner.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+     VALUES ($1, 'cash_shift_close', NULL, $2, 1)`,
+    [tenantId, await roleIdOf("supervisor")],
+  );
 });
 
 afterEach(() => {
@@ -223,11 +239,11 @@ afterAll(async () => {
   setAuditWriter(null);
   await owner.query(
     `DELETE FROM pos_overrides WHERE tenant_id = $1 AND requested_by = ANY($2::text[])`,
-    [tenantId, createdUserIds],
+    [tenantId, [...createdUserIds, ...shiftUserIds]],
   );
   await owner.query(
     `DELETE FROM approval_requests WHERE tenant_id = $1 AND requested_by = ANY($2::text[])`,
-    [tenantId, createdUserIds],
+    [tenantId, [...createdUserIds, ...shiftUserIds]],
   );
   await owner.query(
     `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = ANY($2::text[])`,
@@ -249,8 +265,12 @@ afterAll(async () => {
     );
   await owner.query(
     "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
-    [tenantId, createdUserIds],
+    [tenantId, [...createdUserIds, ...shiftUserIds]],
   );
+  // staff_pins reference the user: delete the pins first (FK 23503 otherwise).
+  await owner.query(`DELETE FROM staff_pins WHERE user_id = ANY($1::text[])`, [
+    createdUserIds,
+  ]);
   await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
     createdUserIds,
   ]);
@@ -447,5 +467,279 @@ describe("legend-obh5 approval.resolved consumer (sourceModule pos_override)", (
       status: "approved",
       approved_by: supervisor,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// legend-o0w6: the recorded-override outbox event must not carry the blind
+// count's variance. For `cash_shift_close` the override's value is
+// |counted - expected| of the cashier's blind count, a secret from the cashier
+// (POS-03). The event rides the `cloud-sync` outbox towards edge/devices, so
+// it carries `valueIdr: null` there; the supervisor-only audit and the
+// override row keep the real value.
+//
+// Assumptions (the brief leaves them open): other actions keep their value in
+// the event. This suite never runs the worker, so it cannot show routing: that
+// "reaches no device" is proven only by the transport routing tests in
+// worker-transport.test.ts. Here the event is checked to sit on `cloud-sync`
+// with `valueIdr: null`.
+// ---------------------------------------------------------------------------
+
+/** variance = 70_000 - 100_000, so the secret value is |variance| = 30_000. */
+const BLIND_VARIANCE_ABS_IDR = 30_000;
+
+/** An open shift with one blind count by a fresh cashier; returns both ids. */
+async function cashierWithBlindCount() {
+  const cashier = await createUser("cashier", bandung, shiftUserIds);
+  const shiftId = randomUUID();
+  await owner.query(
+    `INSERT INTO pos_shifts
+       (id, tenant_id, outlet_id, device_id, cashier_id, business_date, status,
+        opened_at, opening_float_idr, open_key, open_fingerprint)
+     VALUES ($1, $2, $3, $4, $5, current_date, 'open', now(), 100000, $6, $7)`,
+    [
+      shiftId,
+      tenantId,
+      bandung,
+      randomUUID(),
+      cashier,
+      randomUUID(),
+      "a".repeat(64),
+    ],
+  );
+  const countId = randomUUID();
+  await owner.query(
+    `INSERT INTO pos_shift_counts
+       (id, tenant_id, outlet_id, shift_id, sequence, counts, counts_fingerprint,
+        counted_idr, expected_idr, variance_idr, submitted_by, submitted_at,
+        idempotency_key, request_fingerprint)
+     VALUES ($1, $2, $3, $4, 1, '[]'::jsonb, $5, 70000, 100000, -30000, $6, now(), $7, $5)`,
+    [
+      countId,
+      tenantId,
+      bandung,
+      shiftId,
+      "b".repeat(64),
+      cashier,
+      randomUUID(),
+    ],
+  );
+  return { cashier, countId };
+}
+
+function shiftCloseInput(countId: string, approval: Record<string, unknown>) {
+  return createPosOverrideSchema.parse({
+    outletId: bandung,
+    action: "cash_shift_close",
+    // Ignored by the service for this action: the cashier cannot know it.
+    valueIdr: 0,
+    reason: "Hitung kas akhir shift",
+    objectType: "pos_shift_count",
+    objectId: countId,
+    approval,
+  });
+}
+
+/** Every outbox row of one override, with its destination and full envelope. */
+async function recordedOutboxRows(overrideId: string) {
+  const { rows } = await owner.query<{
+    destination: string;
+    event: unknown;
+  }>(
+    `SELECT destination, event FROM domain_event_outbox
+     WHERE tenant_id = $1 AND aggregate_type = 'pos_override' AND aggregate_id = $2
+       AND event->>'name' = 'pos_override.recorded'`,
+    [tenantId, ulidToUuid(overrideId)],
+  );
+  return rows;
+}
+
+async function overrideValueInRow(overrideId: string) {
+  const { rows } = await owner.query<{ value_idr: string }>(
+    "SELECT value_idr FROM pos_overrides WHERE id = $1",
+    [ulidToUuid(overrideId)],
+  );
+  return Number(rows[0]?.value_idr);
+}
+
+function recordedAudit(overrideId: string) {
+  return audits.find(
+    (row) =>
+      row.action === "pos_override.recorded" && row.objectId === overrideId,
+  );
+}
+
+async function expectBlindValueStripped(overrideId: string) {
+  const outbox = await recordedOutboxRows(overrideId);
+  expect(outbox).toHaveLength(1);
+  expect(outbox[0]?.destination).toBe("cloud-sync");
+  const envelope = posOverrideRecordedEvent.envelopeSchema.parse(
+    outbox[0]?.event,
+  );
+  expect(envelope.payload.action).toBe("cash_shift_close");
+  expect(envelope.payload.valueIdr).toBeNull();
+  // The supervisor-only records keep the real variance.
+  expect(await overrideValueInRow(overrideId)).toBe(BLIND_VARIANCE_ABS_IDR);
+  expect(recordedAudit(overrideId)).toMatchObject({
+    after: { action: "cash_shift_close", valueIdr: BLIND_VARIANCE_ABS_IDR },
+  });
+}
+
+describe("legend-o0w6 pos_override.recorded event keeps the blind count variance out", () => {
+  it("legend-o0w6 a PIN-approved shift close records the event with valueIdr null; audit and override row keep the variance", async () => {
+    const { cashier, countId } = await cashierWithBlindCount();
+    const supervisor = await createUser("supervisor");
+    await setStaffPin(
+      tenant,
+      supervisor,
+      { outletId: bandung, userId: supervisor },
+      { pin: PIN },
+    );
+    const { override } = await createPosOverride(
+      tenant,
+      cashier,
+      shiftCloseInput(countId, {
+        method: "supervisor_pin",
+        approverUserId: supervisor,
+        pin: PIN,
+      }),
+      { idempotencyKey: null },
+    );
+    expect(override.status).toBe("approved");
+    // The cashier's own view already hides it (existing behaviour).
+    expect(override.valueIdr).toBeNull();
+    await expectBlindValueStripped(override.id);
+  });
+
+  it("legend-o0w6 a phone-approved shift close records the event with valueIdr null; audit and override row keep the variance", async () => {
+    const { cashier, countId } = await cashierWithBlindCount();
+    const supervisor = await createUser("supervisor");
+    const { override: pending } = await createPosOverride(
+      tenant,
+      cashier,
+      shiftCloseInput(countId, { method: "supervisor_phone" }),
+      { idempotencyKey: null },
+    );
+    await approve(supervisor, pending.approvalRequestId!);
+    await handleApprovalResolved(
+      workerContext,
+      await resolvedEventOf(pending.approvalRequestId!),
+    );
+    expect(await overrideRow(pending.id)).toMatchObject({
+      status: "approved",
+      approved_by: supervisor,
+    });
+    await expectBlindValueStripped(pending.id);
+  });
+
+  it("legend-o0w6 another action (void) keeps its value in the event, for PIN and phone", async () => {
+    const cashier = await createUser("cashier");
+    const supervisor = await createUser("supervisor");
+    await setStaffPin(
+      tenant,
+      supervisor,
+      { outletId: bandung, userId: supervisor },
+      { pin: PIN },
+    );
+    const { override: byPin } = await createPosOverride(
+      tenant,
+      cashier,
+      createPosOverrideSchema.parse({
+        outletId: bandung,
+        action: "void",
+        valueIdr: 45_000,
+        reason: "Tamu membatalkan menu sebelum dimasak.",
+        objectType: "order",
+        objectId: randomUUID(),
+        approval: {
+          method: "supervisor_pin",
+          approverUserId: supervisor,
+          pin: PIN,
+        },
+      }),
+      { idempotencyKey: null },
+    );
+    const pending = await phoneOverride(cashier);
+    await approve(supervisor, pending.approvalRequestId!);
+    await handleApprovalResolved(
+      workerContext,
+      await resolvedEventOf(pending.approvalRequestId!),
+    );
+    for (const id of [byPin.id, pending.id]) {
+      const outbox = await recordedOutboxRows(id);
+      expect(outbox).toHaveLength(1);
+      const envelope = posOverrideRecordedEvent.envelopeSchema.parse(
+        outbox[0]?.event,
+      );
+      expect(envelope.payload).toMatchObject({
+        action: "void",
+        valueIdr: 45_000,
+      });
+      expect(recordedAudit(id)).toMatchObject({
+        after: { action: "void", valueIdr: 45_000 },
+      });
+    }
+  });
+});
+
+describe("legend-o0w6 posOverrideRecordedEvent payload schema", () => {
+  const payload = (action: string, valueIdr: number | null) => ({
+    overrideId: createUlid(),
+    action,
+    method: "supervisor_pin",
+    requestedBy: randomUUID(),
+    approvedBy: randomUUID(),
+    valueIdr,
+    objectType: "order",
+    objectId: randomUUID(),
+    approvalRequestId: null,
+  });
+  const parse = (action: string, valueIdr: number | null) =>
+    posOverrideRecordedEvent.payloadSchema.safeParse(payload(action, valueIdr));
+
+  it("legend-o0w6 cash_shift_close with a number is rejected, zero included; null is accepted", () => {
+    const withNumber = parse("cash_shift_close", 30_000);
+    expect(withNumber.success).toBe(false);
+    expect(
+      withNumber.success ? [] : withNumber.error.issues.map((i) => i.path),
+    ).toContainEqual(["valueIdr"]);
+    expect(parse("cash_shift_close", 0).success).toBe(false);
+    expect(parse("cash_shift_close", null).success).toBe(true);
+  });
+
+  it("legend-o0w6 other actions with a number are still accepted", () => {
+    for (const action of ["void", "discount", "refund", "edc_standalone"])
+      expect(parse(action, 45_000).success, action).toBe(true);
+  });
+
+  // Assumption: cloud ingest (edge/db-link-store.ts) validates with the generic
+  // `eventEnvelopeSchema`, which does not know per-event payload rules. So a
+  // pre-deploy envelope (cash_shift_close with a number) must still be
+  // accepted there, while the domain-specific schema rejects it.
+  it("legend-o0w6 a pre-deploy cash_shift_close envelope with valueIdr 5000 passes the generic envelope schema but not the domain one", () => {
+    const envelope = {
+      id: createUlid(),
+      tenantId,
+      outletId: bandung,
+      name: "pos_override.recorded",
+      version: 1,
+      aggregateType: "pos_override",
+      aggregateId: createUlid(),
+      sequence: 1,
+      occurredAt: new Date().toISOString(),
+      actor: { type: "user", id: randomUUID() },
+      deviceId: null,
+      idempotencyKey: `pre-deploy-${randomUUID()}`,
+      payloadSchemaRef: "pos_override.recorded.v1",
+      payload: payload("cash_shift_close", 5_000),
+    };
+    const generic = eventEnvelopeSchema.safeParse(envelope);
+    expect(
+      generic.success,
+      generic.success ? "" : JSON.stringify(generic.error.issues),
+    ).toBe(true);
+    expect(
+      posOverrideRecordedEvent.envelopeSchema.safeParse(envelope).success,
+    ).toBe(false);
   });
 });

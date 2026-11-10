@@ -9,13 +9,36 @@
 
 import { eq } from "drizzle-orm";
 import type { HostResolution } from "@starter/shared/platform";
+import type { TenantDomain } from "@starter/shared/platform";
 import {
+  domainVerificationRecord,
   normalizeHostname,
   resolveHost,
   tenantDomainSchema,
 } from "@starter/shared/platform";
 import { db } from "../db";
 import { tenantDomains, tenants } from "../db/schema";
+
+/** `tenant_domains` row -> contract DTO. The TXT record to publish is shown
+ * only while the row is unverified and has a token. */
+export function toTenantDomain(
+  row: typeof tenantDomains.$inferSelect,
+): TenantDomain {
+  return tenantDomainSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    brandId: row.brandId,
+    hostname: row.hostname,
+    kind: row.kind,
+    tlsStatus: row.tlsStatus,
+    verifiedAt: row.verifiedAt?.toISOString() ?? null,
+    verification:
+      row.verifiedAt === null && row.verificationToken !== null
+        ? domainVerificationRecord(row.hostname, row.verificationToken)
+        : null,
+    createdAt: row.createdAt.toISOString(),
+  });
+}
 
 export async function resolveHostname(host: string): Promise<HostResolution> {
   const hostname = normalizeHostname(host);
@@ -28,18 +51,7 @@ export async function resolveHostname(host: string): Promise<HostResolution> {
     .from(tenantDomains)
     .innerJoin(tenants, eq(tenants.id, tenantDomains.tenantId))
     .where(eq(tenantDomains.hostname, hostname));
-  const domains = rows.map((row) =>
-    tenantDomainSchema.parse({
-      id: row.domain.id,
-      tenantId: row.domain.tenantId,
-      brandId: row.domain.brandId,
-      hostname: row.domain.hostname,
-      kind: row.domain.kind,
-      tlsStatus: row.domain.tlsStatus,
-      verifiedAt: row.domain.verifiedAt?.toISOString() ?? null,
-      createdAt: row.domain.createdAt.toISOString(),
-    }),
-  );
+  const domains = rows.map((row) => toTenantDomain(row.domain));
   const statuses = new Map(
     rows.map((row) => [row.domain.tenantId, row.tenantStatus] as const),
   );

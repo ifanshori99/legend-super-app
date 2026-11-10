@@ -305,7 +305,8 @@ function snapshotOf(
   });
 }
 
-const linkAad = (tenantId: string, reservationId: string) =>
+/** Sealing context (AAD) of a stored DP link; shared with reservation-deposit-resend.ts. */
+export const linkAad = (tenantId: string, reservationId: string) =>
   `reservation-deposit:${tenantId}:${reservationId}`;
 
 function createdFrom(
@@ -388,14 +389,17 @@ async function attachDeposit(
       now,
     });
   } catch (error) {
-    await withTenant(db, context, async (tx) => {
+    const keepBooking = await withTenant(db, context, async (tx) => {
       const locked = await lockReservation(
         tx,
         context,
         outletId,
         reservationId,
       );
-      if (locked.status !== "pending_deposit") return;
+      if (locked.status !== "pending_deposit") return false;
+      // A staff resend stored a payable link while this attempt was failing:
+      // the booking is still collectable, so it is neither cancelled nor released.
+      if (locked.depositPaymentLinkId !== null) return true;
       await tx
         .update(reservations)
         .set({
@@ -428,7 +432,9 @@ async function attachDeposit(
           policyVersion: snapshot.version,
         },
       });
+      return false;
     });
+    if (keepBooking) return buildCreated(context, outletId, reservationId);
     throw error;
   }
   return withTenant(db, context, async (tx) => {
@@ -537,7 +543,7 @@ export async function createReservation(
           policy.depositRequirement === "required" &&
           policy.depositAmountIdr > 0
         )
-          await reservationDepositPort().assertReady(context);
+          await reservationDepositPort().assertReady(context, outletId);
         const reservedFor = new Date(input.reservedFor);
         const duration = input.durationMinutes ?? policy.defaultDurationMinutes;
         if (reservedFor <= now)

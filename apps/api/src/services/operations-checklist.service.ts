@@ -662,6 +662,18 @@ export async function createChecklistRun(
       input.templateId,
       input.outletId,
     );
+    // OPS-01: the run's shift must match the template schedule when both set.
+    const scheduledShiftId = template.schedule.shiftTemplateId ?? null;
+    if (
+      input.shiftTemplateId &&
+      scheduledShiftId &&
+      input.shiftTemplateId !== scheduledShiftId
+    )
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "Shift tidak sesuai jadwal template",
+      );
     await assertAssigneeInOutlet(
       tx,
       context.tenant.tenantId,
@@ -697,7 +709,7 @@ export async function createChecklistRun(
         templateVersion: snapshot.templateVersion,
         items: snapshot.items,
         shiftDate: input.shiftDate,
-        shiftTemplateId: input.shiftTemplateId ?? null,
+        shiftTemplateId: input.shiftTemplateId ?? scheduledShiftId,
         assignedTo: input.assignedTo,
         dueAt,
         completedAt: null,

@@ -23,6 +23,7 @@ import {
   settingsFields,
   taxCalculationInputSchema,
   taxCalculationResultSchema,
+  taxChannelSchema,
   taxPeriodSchema,
   taxRuleFields,
   taxRuleIdSchema,
@@ -61,6 +62,34 @@ export const listTaxRules = defineEndpoint({
   path: "/api/tax/rules",
   query: listQuery,
   response: cursorPageSchema(taxRuleSchema),
+});
+
+const taxRuleConflictSideSchema = z.strictObject({
+  id: taxRuleIdSchema,
+  code: ruleCodeSchema,
+  version: z.number().int().positive().safe(),
+  outletId: outletIdSchema.nullable(),
+});
+/** Two published rules that tie in `resolveTaxRule` (legend-de3b). */
+export const taxRuleConflictSchema = z.strictObject({
+  ruleA: taxRuleConflictSideSchema,
+  ruleB: taxRuleConflictSideSchema,
+  /** Null = tenant-wide view. */
+  outletId: outletIdSchema.nullable(),
+  channel: taxChannelSchema,
+  regionCode: z.string().nullable(),
+  level: z.enum(["item", "category", "itemClass"]),
+  key: z.string(),
+  effectiveDate: businessDateSchema,
+});
+export type TaxRuleConflict = z.infer<typeof taxRuleConflictSchema>;
+
+/** Lists existing published ties so the owner can switch one rule off. */
+export const listTaxRuleConflicts = defineEndpoint({
+  method: "GET",
+  path: "/api/tax/rules/conflicts",
+  query: z.strictObject({ outletId: outletIdSchema.optional() }),
+  response: z.strictObject({ conflicts: z.array(taxRuleConflictSchema) }),
 });
 export const createTaxRule = defineEndpoint({
   method: "POST",
@@ -170,6 +199,7 @@ export const getPbjtMonthlyRecap = defineEndpoint({
 
 export const taxEndpoints = [
   listTaxRules,
+  listTaxRuleConflicts,
   createTaxRule,
   updateTaxRule,
   publishTaxRule,

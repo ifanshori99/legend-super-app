@@ -1,5 +1,5 @@
 import { createAccessControl } from "better-auth/plugins/access";
-import { adminAc, defaultStatements } from "better-auth/plugins/admin/access";
+import { defaultStatements } from "better-auth/plugins/admin/access";
 
 // Shared by the API (authoritative checks) and the web app (UI-only checks).
 // Keep this file free of secrets and server-only imports.
@@ -9,9 +9,11 @@ import { adminAc, defaultStatements } from "better-auth/plugins/admin/access";
 // Name actions for what they let someone do to *other people's* rows: owners
 // already reach their own data through the session, so a role only has to grant
 // the extra reach. Add a resource here first, then give roles a subset below.
+// These are Better Auth `user.role` permissions only. Tenant and outlet access
+// uses the Legend catalog (@starter/shared/access), and cross-account platform
+// routes also check the platform_admins registry.
 export const statement = {
   ...defaultStatements,
-  notes: ["read-any", "delete-any"],
   // Panel Platform (PRD §3 F4, Super Admin). Codes mirror the platform.*
   // entries of the Legend permission catalog (@starter/shared/access).
   platform: [
@@ -37,11 +39,12 @@ export const ac = createAccessControl(statement);
 // A role is a subset of the statement. Keep `user` deliberately empty: the
 // signed-in default should be able to do nothing beyond its own records.
 export const roles = {
-  user: ac.newRole({ notes: [] }),
-  admin: ac.newRole({
-    ...adminAc.statements,
-    notes: ["read-any", "delete-any"],
-  }),
+  user: ac.newRole({}),
+  // Platform admin: only the Better Auth admin action the product uses
+  // (impersonation, behind a support grant). The plugin's other user and
+  // session management endpoints are refused in apps/api/src/lib/auth.ts
+  // (legend-imdzn), and this role no longer grants them either.
+  admin: ac.newRole({ user: ["impersonate"] }),
 } as const;
 
 export type AppRole = keyof typeof roles;
@@ -51,7 +54,7 @@ export type AppRole = keyof typeof roles;
 export const DEFAULT_ROLE = "user" satisfies AppRole;
 export const ADMIN_ROLES = ["admin"] satisfies AppRole[];
 
-// The shape accepted by permission checks, e.g. { notes: ["read-any"] }.
+// The shape accepted by permission checks, e.g. { user: ["impersonate"] }.
 export type Permissions = Partial<{
   [Resource in keyof typeof statement]: (typeof statement)[Resource][number][];
 }>;

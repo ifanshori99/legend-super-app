@@ -42,6 +42,7 @@ import {
   priceListSchema,
   scheduleSchema,
   stationSchema,
+  stationTypeSchema,
   variantSchema,
   channelSchema,
 } from "./schemas.ts";
@@ -93,6 +94,12 @@ export const menuImageUploadInputSchema = clientInputSchema({
     .regex(/^[A-Za-z0-9+/]+={0,2}$/, "Data gambar harus base64"),
   width: z.number().int().positive().max(4096),
   height: z.number().int().positive().max(4096),
+  /**
+   * Outlet that hosts the stored object (media is outlet-level storage, TEN-02).
+   * Optional: missing means the caller's first reachable outlet. An outlet the
+   * caller does not reach is refused with 403.
+   */
+  outletId: uuidSchema.optional(),
 });
 export const menuImageSchema = z.strictObject({
   mediaId: uuidSchema,
@@ -119,7 +126,13 @@ export const updateCategoryInputSchema = clientInputSchema({
   sortOrder: z.number().int().nonnegative().optional(),
 });
 
-/** Display order (PRD §8 "urutan tampil"): the full ordered id list. */
+/**
+ * Display order (PRD §8 "urutan tampil"). `orderedIds` is the position list:
+ * the id at index i gets `sortOrder = i`. Ids must all exist and share one
+ * parent (one brand for categories, one category for items), else 404 / 422.
+ * Rows not in the list keep their sortOrder, so send the full sibling list to
+ * get a dense order. Rows already at their index are not written (no event).
+ */
 export const reorderInputSchema = clientInputSchema({
   orderedIds: z.array(uuidSchema).min(1).max(500),
 });
@@ -158,19 +171,13 @@ export const reorderCategories = defineEndpoint({
   body: reorderInputSchema,
 });
 
+export { stationTypeSchema };
+
 // ---- Stations (outlet scoped, routing) ------------------------------------
 
 export const stationListQuerySchema = cursorPageQuerySchema.extend({
   outletId: outletIdSchema.optional(),
 });
-
-export const stationTypeSchema = z.enum([
-  "coffee_bar",
-  "beverage_bar",
-  "hot_kitchen",
-  "cold_kitchen",
-  "pastry",
-]);
 
 export const createStationInputSchema = clientInputSchema({
   outletId: outletIdSchema.optional(),
@@ -185,6 +192,9 @@ export const updateStationInputSchema = clientInputSchema({
   type: stationTypeSchema.optional(),
   printerDeviceId: uuidSchema.nullable().optional(),
   targetSeconds: z.number().int().positive().max(86_400).nullable().optional(),
+  // legend-4xai: the station's `updatedAt` as the form loaded it. Required
+  // with `printerDeviceId`; a newer change makes the write a 409.
+  expectedUpdatedAt: isoDateTimeSchema.optional(),
 });
 
 export const listStations = defineEndpoint({
@@ -241,6 +251,7 @@ export const createItemInputSchema = clientInputSchema({
   description: z.string().max(1000).default(""),
   type: z.enum(["single", "combo"]).default("single"),
   stationId: uuidSchema.nullable().optional(),
+  stationType: stationTypeSchema.nullable().optional(),
   course: z.string().max(20).nullable().optional(),
   recipeId: uuidSchema.nullable().optional(),
   taxRuleId: uuidSchema.nullable().optional(),
@@ -263,6 +274,7 @@ export const updateItemInputSchema = clientInputSchema({
   description: z.string().max(1000).optional(),
   type: z.enum(["single", "combo"]).optional(),
   stationId: uuidSchema.nullable().optional(),
+  stationType: stationTypeSchema.nullable().optional(),
   course: z.string().max(20).nullable().optional(),
   recipeId: uuidSchema.nullable().optional(),
   taxRuleId: uuidSchema.nullable().optional(),

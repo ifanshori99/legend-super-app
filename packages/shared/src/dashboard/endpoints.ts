@@ -41,6 +41,15 @@ import {
   dashboardQuerySchema,
 } from "./dashboards.ts";
 import {
+  dashboardFacilityScopeQuerySchema,
+  dashboardFacilityScopeSchema,
+  dashboardQueueRowsQuerySchema,
+  dashboardQueueRowsSchema,
+  dashboardRowQueueSchema,
+  dashboardValuesQuerySchema,
+  dashboardValuesSchema,
+} from "./tile-values.ts";
+import {
   reportExportIdSchema,
   reportScheduleIdSchema,
   savedReportIdSchema,
@@ -66,6 +75,35 @@ export const getDashboardEndpoint = defineEndpoint({
   params: z.strictObject({ dashboard: dashboardKindSchema }),
   query: dashboardQuerySchema,
   response: dataResponseSchema(dashboardLayoutSchema),
+});
+
+/**
+ * Metric tile values for one dashboard: value, target and previous-period
+ * comparison per tile, with `finality` on every figure (legend-v3pt, I2).
+ */
+export const getDashboardValuesEndpoint = defineEndpoint({
+  method: "GET",
+  path: "/api/dashboards/:dashboardCode/values",
+  params: z.strictObject({ dashboardCode: dashboardKindSchema }),
+  query: dashboardValuesQuerySchema,
+  response: dataResponseSchema(dashboardValuesSchema),
+});
+
+/** Rows behind a queue tile (legend-kx94). */
+export const getDashboardQueueRowsEndpoint = defineEndpoint({
+  method: "GET",
+  path: "/api/dashboards/queues/:queue/rows",
+  params: z.strictObject({ queue: dashboardRowQueueSchema }),
+  query: dashboardQueueRowsQuerySchema,
+  response: dataResponseSchema(dashboardQueueRowsSchema),
+});
+
+/** Facility ids per outlet, so the shower tile can read units (legend-kx94). */
+export const getDashboardFacilityScopeEndpoint = defineEndpoint({
+  method: "GET",
+  path: "/api/dashboards/queues/facility-scope",
+  query: dashboardFacilityScopeQuerySchema,
+  response: dataResponseSchema(dashboardFacilityScopeSchema),
 });
 
 export const runReportEndpoint = defineEndpoint({
@@ -151,6 +189,9 @@ export const DASHBOARD_ENDPOINTS = {
   listReports: listReportsEndpoint,
   getReport: getReportEndpoint,
   getDashboard: getDashboardEndpoint,
+  getDashboardValues: getDashboardValuesEndpoint,
+  getDashboardQueueRows: getDashboardQueueRowsEndpoint,
+  getDashboardFacilityScope: getDashboardFacilityScopeEndpoint,
   runReport: runReportEndpoint,
   previewReportBuilder: previewReportBuilderEndpoint,
   listSavedReports: listSavedReportsEndpoint,

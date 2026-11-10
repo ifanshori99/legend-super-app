@@ -3,7 +3,8 @@
 // Payloads carry no secrets, no NPWP, no credential values (integration
 // events name the changed fields only).
 //
-// - `support_access.granted` drives the tenant-admin notification and the
+// - `support_access.requested` asks the tenant owner to approve a read_write
+//   session (legend-c9kbk); `support_access.granted` drives the tenant-admin notification and the
 //   audit row (TEN-04); `support_access.ended` closes it (expiry or early end).
 // - `usage_limit.reached` is the R18 alert at 80% and the stop at 100%.
 // - `tenant.status_changed` lets consumers stop serving a suspended tenant
@@ -16,6 +17,7 @@ import {
   userIdSchema,
   z,
 } from "../core/index.ts";
+import { roleAssignmentIdSchema } from "../access/ids.ts";
 import { defineDomainEvent } from "../events/define.ts";
 import type { DomainEventDefinition } from "../events/define.ts";
 import {
@@ -23,6 +25,7 @@ import {
   configTemplateIdSchema,
   legalEntityIdSchema,
   supportAccessGrantIdSchema,
+  supportAccessRequestIdSchema,
   tenantDomainIdSchema,
   tenantIntegrationIdSchema,
   tenantThemeIdSchema,
@@ -117,6 +120,13 @@ export const PLATFORM_EVENT_PAYLOADS = {
     version: z.number().int().positive(),
     previousThemeId: tenantThemeIdSchema.nullable(),
   }),
+  "support_access.requested": z.strictObject({
+    requestId: supportAccessRequestIdSchema,
+    superAdminUserId: userIdSchema,
+    reason,
+    durationMinutes: z.union([z.literal(15), z.literal(30)]),
+    approvalExpiresAt: isoDateTimeSchema,
+  }),
   "support_access.granted": z.strictObject({
     grantId: supportAccessGrantIdSchema,
     superAdminUserId: userIdSchema,
@@ -133,6 +143,18 @@ export const PLATFORM_EVENT_PAYLOADS = {
       "ended_by_super_admin",
       "revoked_by_tenant_admin",
     ]),
+  }),
+  // legend-fmpgz (Q46): a Super Admin appointed or replaced a tenant Owner.
+  // The payload names assignments, not recipients: the notification consumer
+  // reads the new and the replaced Owner from those rows (the replaced one has
+  // already ended by then), and every active Owner from the tenant itself.
+  "tenant_owner.changed": z.strictObject({
+    kind: z.enum(["assigned", "replaced"]),
+    actorUserId: userIdSchema,
+    reason,
+    changedAt: isoDateTimeSchema,
+    newAssignmentId: roleAssignmentIdSchema,
+    replacedAssignmentId: roleAssignmentIdSchema.nullable(),
   }),
   "config_import.completed": z.strictObject({
     importId: configImportIdSchema,

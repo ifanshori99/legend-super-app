@@ -8,6 +8,7 @@ import {
   orderEtasEndpoint,
   orderIssuesEndpoint,
   paymentEndpoint,
+  paymentOptionsEndpoint,
   pointClaimEndpoint,
   requestQuote,
   reviewEligibilityEndpoint,
@@ -85,10 +86,19 @@ export const paymentQuery = (sessionId: string, paymentId: string) =>
     ...endpointQueryOptions(paymentEndpoint, {
       params: { sessionId, paymentId },
     }),
+    // Keeps asking while no answer arrived yet (a failed first poll too).
     refetchInterval: (query) => {
-      const status = query.state.data?.data.status;
-      return status === "pending" ? 2000 : false;
+      const data = query.state.data;
+      if (data === undefined) return 2000;
+      return data.data.status === "pending" ? 2000 : false;
     },
+  });
+
+/** Online methods the guest may use now; the VA bank list comes from the provider. */
+export const paymentOptionsQuery = (sessionId: string) =>
+  queryOptions({
+    ...endpointQueryOptions(paymentOptionsEndpoint, { params: { sessionId } }),
+    staleTime: 60_000,
   });
 
 export const sessionKey = (sessionId: string) =>

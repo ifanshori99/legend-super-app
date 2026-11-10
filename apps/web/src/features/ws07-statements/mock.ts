@@ -53,6 +53,7 @@ import {
   periodReopenRequestSchema,
   rejectPeriodReopen,
   requestPeriodReopen,
+  statementBasisFields,
   type AccountId,
   type CashFlowStatement,
   type DrillDownLine,
@@ -166,6 +167,13 @@ function replacePeriod(next: FiscalPeriod): void {
   current.periods[index] = fiscalPeriodSchema.parse(next);
 }
 
+/** Fiscal periods of one entity, the basis input of every statement. */
+function entityPeriods(legalEntityId: string): readonly FiscalPeriod[] {
+  return state
+    .get()
+    .periods.filter((period) => period.legalEntityId === legalEntityId);
+}
+
 /** `?mock=empty` serves a ledger with no lines, which every builder turns into zero rows. */
 function ledgerLines(scenario: string): readonly LedgerLine[] {
   return scenario === "empty" ? [] : fixtures.ledgerLines;
@@ -179,6 +187,7 @@ register(getTrialBalance, ({ query, scenario }) => ({
     ledgerLines(scenario),
     query.legalEntityId,
     query.asOf,
+    entityPeriods(query.legalEntityId),
   ),
 }));
 
@@ -186,6 +195,7 @@ register(getBalanceSheet, ({ query, scenario }) => ({
   data: buildBalanceSheet(accounts, ledgerLines(scenario), {
     legalEntityId: query.legalEntityId,
     asOf: query.asOf,
+    periods: entityPeriods(query.legalEntityId),
   }),
 }));
 
@@ -196,6 +206,7 @@ register(getProfitAndLoss, ({ query, scenario }) => ({
     legalEntityId: query.legalEntityId,
     from: query.from,
     to: query.to,
+    periods: entityPeriods(query.legalEntityId),
     ...(query.outletId ? { outletId: query.outletId } : {}),
   }),
 }));
@@ -210,12 +221,17 @@ register(getMultiEntityProfitAndLoss, ({ query, scenario }) => {
       legalEntityId: entityId,
       from: query.from,
       to: query.to,
+      periods: entityPeriods(entityId),
     }),
   ];
   return {
     data: {
       from: query.from,
       to: query.to,
+      basis: entities.every((entity) => entity.basis === "closed_snapshot")
+        ? ("closed_snapshot" as const)
+        : ("live" as const),
+      periodKeys: entities[0]!.periodKeys,
       entities,
       combinedNetProfitIdr:
         entities.length === 1
@@ -226,6 +242,15 @@ register(getMultiEntityProfitAndLoss, ({ query, scenario }) => {
 });
 
 // ---- Cash flow (no shared builder; mock plays the API) --------------------
+
+/** Basis fields of the cash flow and equity changes: both are cumulative. */
+function basisFields(from: string, to: string) {
+  return statementBasisFields(entityPeriods(entityId), {
+    from,
+    to,
+    cumulative: true,
+  });
+}
 
 type CashFlowActivity = CashFlowStatement["sections"][number]["activity"];
 
@@ -280,6 +305,7 @@ function buildCashFlow(
       legalEntityId: entityId,
       from,
       to,
+      ...basisFields(from, to),
       method: "direct",
       sections: CASH_FLOW_ACTIVITIES.map((activity) => ({
         activity,
@@ -335,6 +361,7 @@ function buildCashFlow(
     legalEntityId: entityId,
     from,
     to,
+    ...basisFields(from, to),
     method: "direct",
     sections: CASH_FLOW_ACTIVITIES.map((activity) => {
       const rows = [];
@@ -377,6 +404,7 @@ function buildEquityChanges(
       legalEntityId: entityId,
       from,
       to,
+      ...basisFields(from, to),
       rows: [],
     });
 
@@ -443,7 +471,13 @@ function buildEquityChanges(
     closingIdr: asIdr(runningEarnings + periodProfit),
   });
 
-  return equityChangesSchema.parse({ legalEntityId: entityId, from, to, rows });
+  return equityChangesSchema.parse({
+    legalEntityId: entityId,
+    from,
+    to,
+    ...basisFields(from, to),
+    rows,
+  });
 }
 
 register(getEquityChanges, ({ query, scenario }) => ({

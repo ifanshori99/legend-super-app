@@ -149,15 +149,22 @@ describe("role templates (PRD §3.7 table)", () => {
     assert.deepEqual(template("waiter").optionalPermissions, [
       "pos.payment.accept",
     ]);
-    // Barista / Cook: KDS of the assigned station only.
+    // Barista / Cook: KDS of the assigned station only. ai.ask is the one
+    // exception: every staff role may ask the assistant (TL-10, AI-06).
     assert.deepEqual(template("barista_cook").allowedScopeTypes, ["station"]);
     assert.ok(
-      template("barista_cook").permissions.every((c) => c.startsWith("kds.")),
+      template("barista_cook").permissions.every(
+        (c) => c.startsWith("kds.") || c === "ai.ask",
+      ),
     );
     // Attendant Fasilitas: facility module only, no payment unless allowed.
+    // Plus ai.ask for all staff (TL-10, AI-06).
     assert.ok(
       template("facility_attendant").permissions.every(
-        (c) => c.startsWith("facility.") || c === "ops.checklist.complete",
+        (c) =>
+          c.startsWith("facility.") ||
+          c === "ops.checklist.complete" ||
+          c === "ai.ask",
       ),
     );
     assert.deepEqual(tagged("facility_attendant", "payment"), []);
@@ -1145,6 +1152,233 @@ describe("AUTH-06 role grants: tenant top authority vs delegated permissions", (
   });
 });
 
+// legend-7vsby: the owner template may only be granted by a real tenant Owner.
+// Assumption: "real Owner" = an active, tenant-scoped assignment of a role whose
+// templateKey is "owner" in the grantor's own tenant. Holding the same
+// permissions through a custom role is not enough.
+describe("legend-7vsby owner template grant", () => {
+  const tenantScope = { type: "tenant", id: null };
+  const templateRole = (key) => {
+    const role = fx.roles.find((r) => r.templateKey === key);
+    return { ...role, level: "tenant" };
+  };
+  const ownerPermissions = access.roleTemplate("owner").permissions;
+  const customRoleId = "6a2d4f80-1c3e-4b5a-9d7f-0000000000d1";
+  const day = 24 * 60 * 60 * 1000;
+  const earlier = new Date(fx.now.getTime() - 30 * day).toISOString();
+  // A custom role (no template key) holding every Owner permission.
+  const customAllOwner = {
+    id: customRoleId,
+    permissions: [...ownerPermissions],
+    mfaRequired: true,
+    templateKey: null,
+  };
+  const assignmentFor = (userKey, roleIdValue, overrides = {}) => ({
+    ...fx.assignments.find((row) => row.userId === fx.users.finance.id),
+    id: `6a2d4f80-1c3e-4b5a-9d7f-${String(
+      Math.floor(Math.random() * 1e12),
+    ).padStart(12, "0")}`,
+    userId: fx.users[userKey].id,
+    roleId: roleIdValue,
+    scope: tenantScope,
+    validFrom: earlier,
+    validUntil: null,
+    ...overrides,
+  });
+  const customAssignment = (userKey = "hr") =>
+    assignmentFor(userKey, customRoleId);
+  const ownerAssignment = (userKey, overrides = {}) =>
+    assignmentFor(userKey, roleId("owner"), overrides);
+  const grantAs = (userKey, assignments, overrides = {}) =>
+    access.assertCanGrantRole({
+      grantor: {
+        tenantId: fx.tenantId,
+        userId: fx.users[userKey].id,
+        assignments,
+      },
+      grantorRoles: [...fx.roleGrants, customAllOwner],
+      grantorMfaVerified: true,
+      grantorReauthenticatedAt: new Date(fx.now.getTime() - 60_000),
+      granteeUserId: fx.users.employee.id,
+      role: templateRole("owner"),
+      scope: tenantScope,
+      org: fx.org,
+      now: fx.now,
+      ...overrides,
+    });
+
+  test("fixture premise: the custom role holds every Owner permission", () => {
+    assert.ok(ownerPermissions.includes("access.role.assign"));
+    assert.equal(templateRole("owner").templateKey, "owner");
+  });
+
+  test("legend-7vsby custom role with every Owner permission cannot grant the owner template", () => {
+    throwsCode(
+      () => grantAs("hr", [customAssignment("hr")]),
+      "PERMISSION_DENIED",
+    );
+    assert.equal(
+      new access.AccessError("PERMISSION_DENIED").status,
+      403,
+      "PERMISSION_DENIED maps to HTTP 403",
+    );
+  });
+
+  test("legend-7vsby a brand-scoped owner assignment is not enough", () => {
+    const brandOwner = ownerAssignment("hr", {
+      scope: { type: "brand", id: fx.brandId },
+    });
+    throwsCode(
+      () => grantAs("hr", [brandOwner, customAssignment("hr")]),
+      "PERMISSION_DENIED",
+    );
+  });
+
+  test("legend-7vsby an expired owner assignment is not enough", () => {
+    const expired = ownerAssignment("hr", {
+      validFrom: earlier,
+      validUntil: new Date(fx.now.getTime() - day).toISOString(),
+    });
+    throwsCode(
+      () => grantAs("hr", [expired, customAssignment("hr")]),
+      "PERMISSION_DENIED",
+    );
+    // Not yet started is not active either.
+    const future = ownerAssignment("hr", {
+      validFrom: new Date(fx.now.getTime() + day).toISOString(),
+    });
+    throwsCode(
+      () => grantAs("hr", [future, customAssignment("hr")]),
+      "PERMISSION_DENIED",
+    );
+  });
+
+  test("legend-7vsby an owner assignment from another tenant is not enough", () => {
+    const foreign = ownerAssignment("hr", {
+      tenantId: "6a2d4f80-1c3e-4b5a-9d7f-0000000000ee",
+    });
+    throwsCode(
+      () => grantAs("hr", [foreign, customAssignment("hr")]),
+      "PERMISSION_DENIED",
+    );
+  });
+
+  test("legend-7vsby another user's owner assignment does not count", () => {
+    throwsCode(
+      () => grantAs("hr", [ownerAssignment("owner"), customAssignment("hr")]),
+      "PERMISSION_DENIED",
+    );
+  });
+
+  test("legend-7vsby Admin Tenant still cannot grant the owner template", () => {
+    throwsCode(
+      () => grantAs("tenantAdmin", fx.assignments),
+      "PERMISSION_DENIED",
+    );
+  });
+
+  test("legend-7vsby a real tenant Owner can grant the owner template", () => {
+    assert.ok(grantAs("owner", fx.assignments));
+    // An open-ended or still-running owner assignment counts.
+    const running = ownerAssignment("hr", {
+      validUntil: new Date(fx.now.getTime() + day).toISOString(),
+    });
+    assert.ok(grantAs("hr", [running]));
+  });
+
+  test("legend-7vsby a real Owner still needs MFA and a fresh re-auth", () => {
+    throwsCode(
+      () => grantAs("owner", fx.assignments, { grantorMfaVerified: false }),
+      "MFA_REQUIRED",
+    );
+    throwsCode(
+      () =>
+        grantAs("owner", fx.assignments, {
+          grantorReauthenticatedAt: new Date(fx.now.getTime() - 6 * 60_000),
+        }),
+      "REAUTH_REQUIRED",
+    );
+  });
+
+  test("legend-7vsby other grants are unchanged", () => {
+    const finance = templateRole("finance");
+    assert.ok(grantAs("tenantAdmin", fx.assignments, { role: finance }));
+    assert.ok(grantAs("owner", fx.assignments, { role: finance }));
+    // The custom all-Owner-permissions role may still delegate what it holds.
+    assert.ok(
+      grantAs("hr", [customAssignment("hr")], { role: finance }),
+      "custom role holding every Finance permission can still grant Finance",
+    );
+    // Self-grant stays refused for an Owner granting the owner template.
+    throwsCode(
+      () =>
+        grantAs("owner", fx.assignments, {
+          granteeUserId: fx.users.owner.id,
+        }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+  });
+
+  test("legend-7vsby OWNER_TEMPLATE_ONLY_PERMISSIONS lists pos.receipt.writeoff", () => {
+    assert.deepEqual(
+      [...access.OWNER_TEMPLATE_ONLY_PERMISSIONS],
+      ["pos.receipt.writeoff"],
+    );
+  });
+
+  test("legend-7vsby custom roles cannot contain an owner-only permission (422)", () => {
+    throwsCode(
+      () => access.normalizeCustomRolePermissions(["pos.receipt.writeoff"]),
+      "PERMISSION_OWNER_ONLY",
+    );
+    throwsCode(
+      () =>
+        access.normalizeCustomRolePermissions([
+          "access.role.view",
+          "pos.receipt.writeoff",
+        ]),
+      "PERMISSION_OWNER_ONLY",
+    );
+    try {
+      access.normalizeCustomRolePermissions(["pos.receipt.writeoff"]);
+      assert.fail("expected AccessError");
+    } catch (error) {
+      assert.ok(error instanceof access.AccessError);
+      assert.equal(error.status, 422);
+    }
+    // Ordinary lists and unknown codes behave as before.
+    assert.deepEqual(
+      access.normalizeCustomRolePermissions(["access.role.view"]).permissions,
+      ["access.role.view"],
+    );
+    throwsCode(
+      () => access.normalizeCustomRolePermissions(["not.a.permission"]),
+      "PERMISSION_NOT_IN_CATALOG",
+    );
+  });
+
+  test("legend-7vsby withoutOwnerOnlyPermissions strips owner-only codes and keeps the rest in order", () => {
+    assert.equal(typeof access.withoutOwnerOnlyPermissions, "function");
+    assert.deepEqual(
+      access.withoutOwnerOnlyPermissions([
+        "access.role.view",
+        "pos.receipt.writeoff",
+        "access.role.assign",
+      ]),
+      ["access.role.view", "access.role.assign"],
+    );
+    assert.deepEqual(access.withoutOwnerOnlyPermissions([]), []);
+    assert.deepEqual(
+      access.withoutOwnerOnlyPermissions(["pos.receipt.writeoff"]),
+      [],
+    );
+  });
+
+  test("legend-7vsby the Owner template itself still holds the owner-only permission", () => {
+    assert.ok(ownerPermissions.includes("pos.receipt.writeoff"));
+  });
+});
+
 describe("legend-t4y7 GET /api/me/access contract", () => {
   test("returns effective permission codes plus the AUTH-05 flags", () => {
     assert.equal(access.getMyAccess.id, "GET /api/me/access");
@@ -1153,6 +1387,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaRequired: true,
       mfaVerified: false,
       stations: [],
+      supportSession: null,
     });
     assert.deepEqual(view.permissions, [
       "org.structure.manage",
@@ -1165,6 +1400,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaRequired: false,
       mfaVerified: true,
       stations: [station("bar_kopi")],
+      supportSession: null,
     });
     assert.deepEqual(withStation.stations, [station("bar_kopi")]);
     // Platform codes are never part of a tenant view.
@@ -1174,6 +1410,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         mfaRequired: true,
         mfaVerified: true,
         stations: [],
+        supportSession: null,
       }).success,
       false,
     );
@@ -1182,6 +1419,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         permissions: [],
         mfaRequired: false,
         stations: [],
+        supportSession: null,
       }).success,
       false,
     );
@@ -1203,5 +1441,95 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         definition.name.split(".")[0],
       );
     }
+  });
+});
+
+test("legend-9v9t: AI tool access does not widen report permissions beyond the PRD table", () => {
+  for (const key of ["kitchen_lead", "marketing"])
+    assert.ok(
+      !access.roleTemplate(key).permissions.includes("report.sales.view"),
+      `${key} must not hold report.sales.view`,
+    );
+  assert.ok(
+    !access
+      .roleTemplate("kitchen_lead")
+      .permissions.includes("inventory.cost.view"),
+    "kitchen_lead must not hold inventory.cost.view (MFA-sensitive)",
+  );
+  assert.ok(
+    !access
+      .roleTemplate("shareholder")
+      .permissions.includes("report.financial.view"),
+    "shareholder must not hold report.financial.view",
+  );
+});
+
+describe("legend-7vsby owner-only codes outside the Owner template", () => {
+  test("no template other than owner carries an Owner-only permission", () => {
+    for (const template of access.ROLE_TEMPLATES) {
+      if (template.key === "owner") continue;
+      for (const code of access.OWNER_TEMPLATE_ONLY_PERMISSIONS)
+        assert.ok(
+          !template.permissions.includes(code) &&
+            !template.optionalPermissions.includes(code),
+          `${template.key} must not carry ${code}`,
+        );
+    }
+  });
+
+  test("rolePermissionsAsGranted keeps Owner-only codes only on the owner template", () => {
+    const codes = ["pos.receipt.writeoff", "access.role.view"];
+    assert.deepEqual(access.rolePermissionsAsGranted("owner", codes), codes);
+    assert.deepEqual(access.rolePermissionsAsGranted(null, codes), [
+      "access.role.view",
+    ]);
+    assert.deepEqual(access.rolePermissionsAsGranted("tenant_admin", codes), [
+      "access.role.view",
+    ]);
+  });
+});
+
+describe("self.loan.request (legend-e3k9)", () => {
+  test("kasbon self-service has its own self-service permission", () => {
+    assert.ok(access.isPermissionCode("self.loan.request"));
+    assert.ok(access.permissionHasTag("self.loan.request", "self"));
+  });
+
+  test("the employee template holds it, management templates do not (self.* is employee-only)", () => {
+    assert.ok(template("employee").permissions.includes("self.loan.request"));
+    assert.ok(!template("owner").permissions.includes("self.loan.request"));
+    assert.ok(
+      !template("tenant_admin").permissions.includes("self.loan.request"),
+    );
+    // Approving a kasbon stays a separate, HR-side permission.
+    assert.ok(!template("employee").permissions.includes("hr.loan.approve"));
+  });
+});
+
+describe("hr.announcement.manage (legend-poxk)", () => {
+  test("announcements have their own manage permission, apart from SOP", () => {
+    assert.ok(access.isPermissionCode("hr.announcement.manage"));
+    assert.ok(access.isPermissionCode("hr.sop.manage"));
+  });
+
+  test("HR-side templates hold it; kitchen_lead keeps SOP but cannot manage announcements", () => {
+    // Same holders as hr.sop.manage minus kitchen_lead (tenant_admin has neither).
+    for (const key of ["owner", "general_manager", "hr"])
+      assert.ok(
+        template(key).permissions.includes("hr.announcement.manage"),
+        key,
+      );
+    assert.ok(template("kitchen_lead").permissions.includes("hr.sop.manage"));
+    // Still reads the announcement feed (no regression from the split).
+    assert.ok(template("kitchen_lead").permissions.includes("self.sop.read"));
+    assert.ok(
+      !template("kitchen_lead").permissions.includes("hr.announcement.manage"),
+    );
+    assert.ok(
+      !template("tenant_admin").permissions.includes("hr.announcement.manage"),
+    );
+    assert.ok(
+      !template("employee").permissions.includes("hr.announcement.manage"),
+    );
   });
 });

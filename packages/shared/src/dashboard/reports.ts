@@ -96,14 +96,17 @@ export function reportRouteForCode(code: ReportCode | string): string {
 }
 
 /**
- * Dimension keys whose rows or filters single out a person (DASH-04; PRD §3.7
- * shareholder limit "tanpa data pribadi pelanggan atau karyawan"). `employee`
- * is the only person-level key in CORE_METRIC_DIMENSIONS; `customer_tier` is a
- * segment, not a person. Splitting or filtering any report by one of these
+ * Identity splits: dimension keys whose rows or filters single out a person
+ * (DASH-04; PRD §3.7 shareholder limit "tanpa data pribadi pelanggan atau
+ * karyawan"). One constant for the builder, the export gate and the
+ * shareholder guard: an employee, a customer or a member. `customer_tier` is
+ * a segment, not a person. Splitting or filtering any report by one of these
  * makes its output personal data, whatever the report itself is flagged.
  */
 export const PERSONAL_DATA_DIMENSIONS: readonly string[] = Object.freeze([
   "employee",
+  "customer",
+  "member",
 ]);
 
 /** True when a group-by or filter singles out a person (DASH-04). */

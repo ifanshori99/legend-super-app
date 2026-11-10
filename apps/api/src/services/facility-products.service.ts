@@ -34,6 +34,11 @@ import {
   type updateSubscriptionPlanSchema,
 } from "@starter/shared/facility";
 import type { TaxRuleId } from "@starter/shared/tax";
+import {
+  assertConfigFresh,
+  createOnce,
+  lockConfigRow,
+} from "./facility-config-guard.ts";
 import { db } from "../db/index.ts";
 import {
   entitlementRules,
@@ -161,6 +166,7 @@ export function toProduct(row: ProductRow): FacilityProduct {
     maxPerDay: row.maxPerDay,
     menuItemId: row.menuItemId,
     isActive: row.isActive,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -175,6 +181,7 @@ export function toAddon(row: AddonRow): FacilityAddon {
     inventoryItemId: row.inventoryItemId,
     isEnabled: row.isEnabled,
     sortOrder: row.sortOrder,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -189,6 +196,7 @@ export function toEntitlementRule(row: RuleRow): EntitlementRule {
     sessions: row.sessions,
     validity: row.validity,
     isEnabled: row.isEnabled,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -205,6 +213,7 @@ export function toSubscriptionPlan(row: PlanRow): SubscriptionPlan {
     maxPerDay: row.maxPerDay,
     providerPlanId: row.providerPlanId,
     isActive: row.isActive,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -307,39 +316,55 @@ export async function createFacilityProduct(
       CONFIG_PERMISSION,
       facility.outletId,
     );
-    await assertTaxRuleRef(tx, context, facility.outletId, input.taxRuleId);
-    await assertMenuItemRef(tx, context, input.menuItemId);
-    const [row] = await tx
-      .insert(facilityProducts)
-      .values({
-        tenantId: context.tenant.tenantId,
-        outletId: facility.outletId,
-        facilityId: facility.id,
-        name: input.name,
-        type: input.type,
-        priceIdr: input.priceIdr,
-        taxRuleId: input.taxRuleId ?? null,
-        sessions: input.sessions,
-        maxPerDay: input.maxPerDay ?? null,
-        menuItemId: input.menuItemId ?? null,
-        isActive: input.isActive ?? true,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    await auditFacility(tx, context, actor, now, {
-      action: "facility_product.created",
-      objectType: "facility_product",
-      objectId: row.id,
-      outletId: row.outletId,
-      before: null,
-      after: {
-        id: row.id,
-        facilityId: row.facilityId,
-        type: row.type,
+    const { idempotencyKey, ...payload } = input;
+    return createOnce(tx, context, {
+      idempotencyKey,
+      payload,
+      outletId: facility.outletId,
+      resultTable: "facility_products",
+      label: "Produk",
+      load: async (id) => loadProduct(tx, context, id),
+      map: toProduct,
+      create: async () => {
+        await assertTaxRuleRef(tx, context, facility.outletId, input.taxRuleId);
+        await assertMenuItemRef(tx, context, input.menuItemId);
+        const [row] = await tx
+          .insert(facilityProducts)
+          .values({
+            tenantId: context.tenant.tenantId,
+            outletId: facility.outletId,
+            facilityId: facility.id,
+            name: input.name,
+            type: input.type,
+            priceIdr: input.priceIdr,
+            taxRuleId: input.taxRuleId ?? null,
+            sessions: input.sessions,
+            maxPerDay: input.maxPerDay ?? null,
+            menuItemId: input.menuItemId ?? null,
+            isActive: input.isActive ?? true,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        await auditFacility(tx, context, actor, now, {
+          action: "facility_product.created",
+          objectType: "facility_product",
+          objectId: row.id,
+          outletId: row.outletId,
+          before: null,
+          after: {
+            id: row.id,
+            facilityId: row.facilityId,
+            type: row.type,
+            priceIdr: row.priceIdr,
+            quota: row.sessions,
+            maxPerDay: row.maxPerDay,
+            isActive: row.isActive,
+          },
+        });
+        return row;
       },
     });
-    return toProduct(row);
   });
 }
 
@@ -352,14 +377,17 @@ export async function updateFacilityProduct(
 ): Promise<FacilityProduct> {
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
-    const existing = await loadProduct(tx, context, productId);
+    const found = await loadProduct(tx, context, productId);
     await assertFacilityPermission(
       tx,
       context,
       actor,
       CONFIG_PERMISSION,
-      existing.outletId,
+      found.outletId,
     );
+    await lockConfigRow(tx, "facility_products", context, productId);
+    const existing = await loadProduct(tx, context, productId);
+    assertConfigFresh(existing.updatedAt, input.expectedUpdatedAt);
     await assertTaxRuleRef(tx, context, existing.outletId, input.taxRuleId);
     await assertMenuItemRef(tx, context, input.menuItemId);
     const [row] = await tx
@@ -392,11 +420,19 @@ export async function updateFacilityProduct(
         id: existing.id,
         facilityId: existing.facilityId,
         type: existing.type,
+        priceIdr: existing.priceIdr,
+        quota: existing.sessions,
+        maxPerDay: existing.maxPerDay,
+        isActive: existing.isActive,
       },
       after: {
         id: row.id,
         facilityId: row.facilityId,
         type: row.type,
+        priceIdr: row.priceIdr,
+        quota: row.sessions,
+        maxPerDay: row.maxPerDay,
+        isActive: row.isActive,
       },
     });
     return toProduct(row);
@@ -421,36 +457,50 @@ export async function createFacilityAddon(
       CONFIG_PERMISSION,
       facility.outletId,
     );
-    const [row] = await guardingInventoryItem(() =>
-      tx
-        .insert(facilityAddons)
-        .values({
-          tenantId: context.tenant.tenantId,
-          outletId: facility.outletId,
-          facilityId: facility.id,
-          name: input.name,
-          priceIdr: input.priceIdr,
-          inventoryItemId: input.inventoryItemId ?? null,
-          isEnabled: input.isEnabled ?? true,
-          sortOrder: input.sortOrder ?? 0,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning(),
-    );
-    await auditFacility(tx, context, actor, now, {
-      action: "facility_addon.created",
-      objectType: "facility_addon",
-      objectId: row.id,
-      outletId: row.outletId,
-      before: null,
-      after: {
-        id: row.id,
-        facilityId: row.facilityId,
-        sortOrder: row.sortOrder,
+    const { idempotencyKey, ...payload } = input;
+    return createOnce(tx, context, {
+      idempotencyKey,
+      payload,
+      outletId: facility.outletId,
+      resultTable: "facility_addons",
+      label: "Add-on",
+      load: async (id) => loadAddon(tx, context, id),
+      map: toAddon,
+      create: async () => {
+        const [row] = await guardingInventoryItem(() =>
+          tx
+            .insert(facilityAddons)
+            .values({
+              tenantId: context.tenant.tenantId,
+              outletId: facility.outletId,
+              facilityId: facility.id,
+              name: input.name,
+              priceIdr: input.priceIdr,
+              inventoryItemId: input.inventoryItemId ?? null,
+              isEnabled: input.isEnabled ?? true,
+              sortOrder: input.sortOrder ?? 0,
+              createdAt: now,
+              updatedAt: now,
+            })
+            .returning(),
+        );
+        await auditFacility(tx, context, actor, now, {
+          action: "facility_addon.created",
+          objectType: "facility_addon",
+          objectId: row.id,
+          outletId: row.outletId,
+          before: null,
+          after: {
+            id: row.id,
+            facilityId: row.facilityId,
+            sortOrder: row.sortOrder,
+            priceIdr: row.priceIdr,
+            isEnabled: row.isEnabled,
+          },
+        });
+        return row;
       },
     });
-    return toAddon(row);
   });
 }
 
@@ -463,14 +513,17 @@ export async function updateFacilityAddon(
 ): Promise<FacilityAddon> {
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
-    const existing = await loadAddon(tx, context, addonId);
+    const found = await loadAddon(tx, context, addonId);
     await assertFacilityPermission(
       tx,
       context,
       actor,
       CONFIG_PERMISSION,
-      existing.outletId,
+      found.outletId,
     );
+    await lockConfigRow(tx, "facility_addons", context, addonId);
+    const existing = await loadAddon(tx, context, addonId);
+    assertConfigFresh(existing.updatedAt, input.expectedUpdatedAt);
     const [row] = await guardingInventoryItem(() =>
       tx
         .update(facilityAddons)
@@ -497,8 +550,18 @@ export async function updateFacilityAddon(
       objectType: "facility_addon",
       objectId: row.id,
       outletId: row.outletId,
-      before: { id: existing.id, sortOrder: existing.sortOrder },
-      after: { id: row.id, sortOrder: row.sortOrder },
+      before: {
+        id: existing.id,
+        sortOrder: existing.sortOrder,
+        priceIdr: existing.priceIdr,
+        isEnabled: existing.isEnabled,
+      },
+      after: {
+        id: row.id,
+        sortOrder: row.sortOrder,
+        priceIdr: row.priceIdr,
+        isEnabled: row.isEnabled,
+      },
     });
     return toAddon(row);
   });
@@ -549,6 +612,7 @@ export async function putEntitlementRule(
         CONFIG_PERMISSION,
         existing.outletId,
       );
+    assertConfigFresh(existing?.updatedAt ?? null, input.expectedUpdatedAt);
     if (input.type === "package")
       await assertMenuItemRef(tx, context, input.condition.menuItemId);
     const values = {
@@ -589,17 +653,26 @@ export async function putEntitlementRule(
       objectType: "entitlement_rule",
       objectId: row.id,
       outletId: row.outletId,
-      before: existing
-        ? {
-            id: existing.id,
-            facilityId: existing.facilityId,
-            type: existing.type,
-          }
-        : null,
-      after: { id: row.id, facilityId: row.facilityId, type: row.type },
+      before: existing ? ruleAuditValues(existing) : null,
+      after: ruleAuditValues(row),
     });
     return toEntitlementRule(row);
   });
+}
+
+/** Quota and threshold of a rule, kept readable in the audit (old + new). */
+function ruleAuditValues(row: RuleRow): Record<string, unknown> {
+  const condition = row.condition as { minSpendIdr?: number };
+  return {
+    id: row.id,
+    facilityId: row.facilityId,
+    type: row.type,
+    quota: row.sessions,
+    isEnabled: row.isEnabled,
+    ...(condition.minSpendIdr !== undefined && {
+      minSpendIdr: condition.minSpendIdr,
+    }),
+  };
 }
 
 // ---- Subscription plans ----------------------------------------------------
@@ -620,33 +693,58 @@ export async function createSubscriptionPlan(
       CONFIG_PERMISSION,
       facility.outletId,
     );
-    const [row] = await tx
-      .insert(facilitySubscriptionPlans)
-      .values({
-        tenantId: context.tenant.tenantId,
-        outletId: facility.outletId,
-        facilityId: facility.id,
-        name: input.name,
-        priceIdr: input.priceIdr,
-        quotaPerPeriod: input.quotaPerPeriod,
-        interval: input.interval,
-        maxPerDay: input.maxPerDay ?? null,
-        providerPlanId: input.providerPlanId ?? null,
-        isActive: input.isActive ?? true,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    await auditFacility(tx, context, actor, now, {
-      action: "facility_subscription_plan.created",
-      objectType: "facility_subscription_plan",
-      objectId: row.id,
-      outletId: row.outletId,
-      before: null,
-      after: { id: row.id, facilityId: row.facilityId },
+    const { idempotencyKey, ...payload } = input;
+    return createOnce(tx, context, {
+      idempotencyKey,
+      payload,
+      outletId: facility.outletId,
+      resultTable: "facility_subscription_plans",
+      label: "Paket langganan",
+      load: async (id) => loadSubscriptionPlan(tx, context, id),
+      map: toSubscriptionPlan,
+      create: async () => {
+        const [row] = await tx
+          .insert(facilitySubscriptionPlans)
+          .values({
+            tenantId: context.tenant.tenantId,
+            outletId: facility.outletId,
+            facilityId: facility.id,
+            name: input.name,
+            priceIdr: input.priceIdr,
+            quotaPerPeriod: input.quotaPerPeriod,
+            interval: input.interval,
+            maxPerDay: input.maxPerDay ?? null,
+            providerPlanId: input.providerPlanId ?? null,
+            isActive: input.isActive ?? true,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        await auditFacility(tx, context, actor, now, {
+          action: "facility_subscription_plan.created",
+          objectType: "facility_subscription_plan",
+          objectId: row.id,
+          outletId: row.outletId,
+          before: null,
+          after: planAuditValues(row),
+        });
+        return row;
+      },
     });
-    return toSubscriptionPlan(row);
   });
+}
+
+/** Price and quota of a plan, kept readable in the audit (old + new). */
+function planAuditValues(row: PlanRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    facilityId: row.facilityId,
+    priceIdr: row.priceIdr,
+    quotaPerPeriod: row.quotaPerPeriod,
+    interval: row.interval,
+    maxPerDay: row.maxPerDay,
+    isActive: row.isActive,
+  };
 }
 
 export async function updateSubscriptionPlan(
@@ -658,14 +756,17 @@ export async function updateSubscriptionPlan(
 ): Promise<SubscriptionPlan> {
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
-    const existing = await loadSubscriptionPlan(tx, context, planId);
+    const found = await loadSubscriptionPlan(tx, context, planId);
     await assertFacilityPermission(
       tx,
       context,
       actor,
       CONFIG_PERMISSION,
-      existing.outletId,
+      found.outletId,
     );
+    await lockConfigRow(tx, "facility_subscription_plans", context, planId);
+    const existing = await loadSubscriptionPlan(tx, context, planId);
+    assertConfigFresh(existing.updatedAt, input.expectedUpdatedAt);
     const [row] = await tx
       .update(facilitySubscriptionPlans)
       .set({
@@ -694,8 +795,8 @@ export async function updateSubscriptionPlan(
       objectType: "facility_subscription_plan",
       objectId: row.id,
       outletId: row.outletId,
-      before: { id: existing.id, facilityId: existing.facilityId },
-      after: { id: row.id, facilityId: row.facilityId },
+      before: planAuditValues(existing),
+      after: planAuditValues(row),
     });
     return toSubscriptionPlan(row);
   });

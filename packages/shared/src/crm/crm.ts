@@ -23,6 +23,7 @@ import {
   loyaltyTierSchema,
   missionProgressSchema,
   missionSchema,
+  redemptionCodeSchema,
 } from "./loyalty.ts";
 import type {
   CustomerConsent,
@@ -379,7 +380,10 @@ export const feedbackSchema = z
     rating: z.number().int().min(1).max(5).nullable(),
     comment: z.string().max(2000).nullable(),
     status: feedbackStatusSchema,
-    handledBy: uuidSchema.nullable(),
+    /** Better Auth user id (text, not a uuid); aligned with the user table (legend-ts50). */
+    handledBy: z.string().min(1).max(64).nullable(),
+    /** Staff note on how the item was handled (legend-ts50). */
+    handledNote: z.string().max(2000).nullable().default(null),
     createdAt: isoDateTimeSchema,
     resolvedAt: isoDateTimeSchema.nullable(),
   })
@@ -496,6 +500,14 @@ export const customer360Schema = z.strictObject({
   favoriteItems: z.array(customerFavoriteItemSchema),
   recentFeedback: z.array(feedbackSchema),
   activeVouchers: z.array(voucherDtoSchema),
+  /**
+   * WhatsApp number (legend-ts50). Masked (maskWhatsAppNumber: first 4 and last 3 digits) unless the caller
+   * holds crm.customer.pii.read; every full reveal is audited. Optional so
+   * older fixtures stay valid.
+   */
+  whatsapp: z
+    .strictObject({ number: z.string().nullable(), masked: z.boolean() })
+    .optional(),
 });
 export type Customer360 = z.infer<typeof customer360Schema>;
 
@@ -523,6 +535,8 @@ export type MemberOverview = z.infer<typeof memberOverviewSchema>;
 export const missionWithProgressSchema = z.strictObject({
   mission: missionSchema,
   progress: missionProgressSchema.nullable(),
+  // legend-m4p5
+  voucherCode: redemptionCodeSchema.nullable(),
 });
 export type MissionWithProgress = z.infer<typeof missionWithProgressSchema>;
 

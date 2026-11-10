@@ -210,6 +210,7 @@ export type RowActions = {
   mergeTables: boolean;
   moveItems: boolean;
   splitBill: boolean;
+  convertOpenBill: boolean;
 };
 
 /** Which buttons the action sheet offers for one row (guards stay server-side). */
@@ -229,6 +230,7 @@ export function rowActions(row: TableLiveStatus): RowActions {
     mergeTables: running,
     moveItems: running && session !== null && session.billTotalIdr > 0,
     splitBill: running && session !== null && session.billTotalIdr > 0,
+    convertOpenBill: running && session?.paymentMode === "pay_first",
   };
 }
 

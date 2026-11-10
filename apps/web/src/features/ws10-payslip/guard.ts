@@ -4,8 +4,7 @@
 // API re-checks everything, so this only hides what a visitor cannot use.
 //
 // PRD §3 F30/F31 names `self.payslip.view` and `self.reimbursement.request`;
-// the PRD is silent on a self loan permission, so kasbon reuses the area's
-// `self.profile.view` (see the bead report).
+// kasbon uses `self.loan.request` (legend-e3k9).
 import { notFound } from "@tanstack/react-router";
 import type { PermissionCode } from "@starter/shared/access";
 import type { AreaAccess } from "@/lib/areas/access";

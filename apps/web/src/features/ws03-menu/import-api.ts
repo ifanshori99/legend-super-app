@@ -3,6 +3,7 @@
 // CSV template, and the sequential commit. Parsing and validation stay pure
 // in ./import-lib.ts; this file is the only place that writes.
 import { queryOptions } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api/client";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import {
@@ -14,6 +15,8 @@ import {
   listStations,
   setPriceListItems as setPriceListItemsEndpoint,
   type Category,
+  MENU_IMPORT_MAX_FILE_BYTES,
+  type MenuImportReport,
   type MenuImportRow,
   type PriceList,
   type Station,
@@ -31,6 +34,59 @@ import {
 import { businessDateToday } from "./lib";
 
 export const IMPORT_TEMPLATE_FILENAME = "template-impor-menu.csv";
+
+/** File picker filter: the server parses both CSV and XLSX. */
+export const IMPORT_SERVER_ACCEPT =
+  ".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  // Chunked: spreading a whole megabyte into fromCharCode overflows the stack.
+  for (let i = 0; i < bytes.length; i += 0x8000)
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+/** The picked file is over the server's size limit; nothing was sent. */
+export class ImportFileTooLargeError extends Error {
+  constructor() {
+    super("Import file is over the size limit.");
+    this.name = "ImportFileTooLargeError";
+  }
+}
+
+/**
+ * The server's own text, only when it is a `MENU_IMPORT_*` refusal (always
+ * Indonesian). Network, auth and generic errors return null so the screen
+ * shows its Indonesian fallback instead of an English transport message.
+ */
+export function importServerMessage(error: unknown): string | null {
+  return error instanceof ApiError && error.code.startsWith("MENU_IMPORT_")
+    ? error.message
+    : null;
+}
+
+/**
+ * XLSX (and CSV) through the existing server import (legend-az32): send the
+ * file as base64 and read the per-row report back. `validate` writes nothing;
+ * `preview` also returns each normalised row. Throws
+ * `ImportFileTooLargeError` before reading a file over 1 MB, and `ApiError` on
+ * a whole-file refusal (413, 415, 422 MENU_IMPORT_*).
+ */
+export async function analyzeImportOnServer(
+  file: File,
+  mode: "validate" | "preview" = "preview",
+  signal?: AbortSignal,
+): Promise<MenuImportReport> {
+  if (file.size > MENU_IMPORT_MAX_FILE_BYTES)
+    throw new ImportFileTooLargeError();
+  const dataBase64 = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
+  const result = await apiFetch<{ data: MenuImportReport }>(
+    `/api/menu/import/${mode}`,
+    { method: "POST", body: { fileName: file.name, dataBase64 }, signal },
+  );
+  return result.data;
+}
 
 export type ImportReferences = {
   categories: Category[];

@@ -1,0 +1,550 @@
+// Edge master-data sync, edge side (bead legend-9ppw; PRD v1.7 §3 F5 "Server
+// Lokal"). Edge `stock.moved` events name stock locations (and post to the
+// chart of accounts), and the cloud rejects ids it does not know. So the edge
+// copies these masters from the cloud with ids identical to the cloud's:
+// `uoms` (tenant-wide), `stock_locations` (its outlet only), and
+// `chart_of_accounts` + `account_mappings` (its outlet's legal entity only).
+//
+// - Full snapshot, no cursor: uoms and stock_locations carry no updated_at.
+//   GET /api/edge-sync/bootstrap/masters returns `{ snapshot, signature }`.
+// - The signature is checked over the snapshot exactly as received (same
+//   integrity-only trust as the bootstrap bundle: see bootstrap.ts; authenticity
+//   comes from TLS), then its shape, then its tenant/outlet vs the credential.
+// - Apply = one transaction under the node's own tenant context, serialised per
+//   outlet by `pg_advisory_xact_lock`. Cloud wins: every row is upserted by
+//   `id`. A local row with the same natural key (uoms tenant+code, accounts
+//   tenant+entity+code) but another id is never overwritten or re-keyed: the
+//   whole apply aborts with LOCAL_CONFLICT (ids must never fork), nothing is
+//   written.
+// - A local chart_of_accounts id of the outlet's entity that the snapshot does
+//   not list, but whose code the snapshot holds under another id, is a fork:
+//   the standard template provisioned locally before the import
+//   (legend-usa4b), or accounts a local migration inserted under random ids
+//   (0147, legend-ht6fu). The cloud never hard-deletes accounts, so the cloud's
+//   row replaces it: its mappings are deleted, the in-snapshot local accounts
+//   that have it as parent are detached (parent_id null; the upsert below sets
+//   the cloud parent), then the fork is deleted, all before the natural-key
+//   pre-check. A local id outside the snapshot whose code the snapshot does not
+//   hold (an empty chart included) is never deleted: a replayed older signed
+//   snapshot (the signature carries no version) may simply predate it. That,
+//   and a fork that a foreign key still names (journal line, budget, period
+//   snapshot), abort the apply with LOCAL_CONFLICT, nothing is written. A
+//   replacement logs its count and the legal entity id at info, nothing else.
+// - uoms, stock_locations and chart_of_accounts rows missing from the snapshot
+//   are never deleted locally when referenced: ledger and stock rows reference
+//   them by foreign key (chart_of_accounts: see the fork rule above). A
+//   deactivated location or account arrives as `isActive: false`.
+//   account_mappings are the exception: the cloud's set per legal entity is
+//   authoritative, so local mappings whose role is not in the snapshot are
+//   deleted (nothing references a mapping row).
+// - A mapping whose role this build does not know (a newer cloud, legend-dhbt1)
+//   is dropped before the apply: logged (role names and count only) and
+//   counted as `droppedMappings`. The rest of the snapshot is applied, and the
+//   mapping replacement above works on the known roles only.
+// - The natural-key pre-check assumes uom and account codes are immutable on
+//   the cloud (a renamed code would look like a local fork). Stock locations
+//   have no natural key, so a location created locally under another id is not
+//   detected (known gap).
+// - Data import guard (legend-8izz): every master write goes through
+//   `guardDataImport("edge.bootstrap")`, the same deployment policy as the
+//   bootstrap bundle (real data only in production). `syncEdgeMasters` checks
+//   it before the cloud fetch and the apply checks it again before its first
+//   write, so no caller (boot, loop, direct apply) can skip it. A refusal is
+//   EdgeMasterSyncError("DATA_IMPORT_BLOCKED"); nothing is written.
+//
+// Never put the credential or SQL parameters in an error: codes only.
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+import {
+  EDGE_MASTER_SNAPSHOT_PATH,
+  edgeMasterSnapshotSchema,
+  partitionEdgeMasterMappings,
+  type EdgeMasterSnapshot,
+} from "@starter/shared/edge/master-sync";
+import { guardDataImport } from "../config/data-import.ts";
+import { db } from "../db/index.ts";
+import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
+import { stockLocations, uoms } from "../db/schema/inventory.ts";
+import { outlets } from "../db/schema/platform-org.ts";
+import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
+import { edgeBootstrapSignatureMatches } from "../services/edge-bootstrap.service.ts";
+import { edgeNodeContext } from "../services/edge-node.service.ts";
+import {
+  lockChartOfAccounts,
+  lockOutletStockLocations,
+} from "../services/tenant-config-locks.ts";
+import type { EdgeBootstrapConfig, EdgeBootstrapOptions } from "./bootstrap.ts";
+import { cloudGetJson, EdgeCloudHttpError } from "./cloud-http.ts";
+import { parseEdgeCredential } from "./credential.ts";
+
+type Claims = NonNullable<ReturnType<typeof parseEdgeCredential>>;
+type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
+
+const MIN_SYNC_INTERVAL_MS = 60_000;
+
+export type EdgeMasterSyncCounts = {
+  uoms: number;
+  stockLocations: number;
+  accounts: number;
+  /** Mappings applied (known roles). */
+  mappings: number;
+  /** Mappings dropped because this build does not know their role. */
+  droppedMappings: number;
+};
+
+/**
+ * code: EDGE_NODE_CREDENTIAL, CLOUD_<code>, BAD_RESPONSE, BAD_SIGNATURE,
+ * BAD_SNAPSHOT, SCOPE_MISMATCH, DATA_IMPORT_BLOCKED, LOCAL_CONFLICT or
+ * LOCAL_WRITE.
+ */
+export class EdgeMasterSyncError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(`Edge master sync failed (${code})`);
+    this.name = "EdgeMasterSyncError";
+    this.code = code;
+  }
+}
+
+/**
+ * The masters are rows of the node's own deployment, like the bootstrap
+ * bundle, so they share its registered import source and policy. The guard's
+ * message is dropped: report a code only.
+ */
+function guardMasterImport(): void {
+  try {
+    guardDataImport("edge.bootstrap");
+  } catch {
+    throw new EdgeMasterSyncError("DATA_IMPORT_BLOCKED");
+  }
+}
+
+function sameId(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/** Cloud fetch + signature + shape + scope check. Nothing is written. */
+export async function fetchVerifiedMasterSnapshot(
+  config: EdgeBootstrapConfig,
+  options: EdgeBootstrapOptions = {},
+): Promise<EdgeMasterSnapshot> {
+  const claims = parseEdgeCredential(config.credential);
+  if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+  let body: unknown;
+  try {
+    body = await cloudGetJson({
+      cloudUrl: config.cloudUrl,
+      credential: config.credential,
+      path: EDGE_MASTER_SNAPSHOT_PATH,
+      fetchImpl: options.fetchImpl,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
+  } catch (error) {
+    throw new EdgeMasterSyncError(
+      error instanceof EdgeCloudHttpError
+        ? `CLOUD_${error.code}`
+        : "CLOUD_REQUEST",
+    );
+  }
+  if (body === null || typeof body !== "object")
+    throw new EdgeMasterSyncError("BAD_RESPONSE");
+  const { snapshot, signature } = body as {
+    snapshot?: unknown;
+    signature?: unknown;
+  };
+  if (!edgeBootstrapSignatureMatches(snapshot, signature, claims.hash))
+    throw new EdgeMasterSyncError("BAD_SIGNATURE");
+  const parsed = edgeMasterSnapshotSchema.safeParse(snapshot);
+  if (!parsed.success) throw new EdgeMasterSyncError("BAD_SNAPSHOT");
+  assertScope(claims, parsed.data);
+  return parsed.data;
+}
+
+function assertScope(claims: Claims, snapshot: EdgeMasterSnapshot): void {
+  if (
+    !sameId(snapshot.tenantId, claims.tenantId) ||
+    !sameId(snapshot.outletId, claims.outletId)
+  )
+    throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+}
+
+type Account = EdgeMasterSnapshot["chartOfAccounts"][number];
+
+/** SQLSTATE 23503, also when drizzle wraps the driver error as `cause`. */
+function isForeignKeyViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "23503" ||
+    isForeignKeyViolation(candidate.cause, depth + 1)
+  );
+}
+
+/** Parents before children. A cycle or a missing parent is a bad snapshot. */
+function parentsFirst(accounts: readonly Account[]): Account[] {
+  const placed = new Set<string>();
+  const ordered: Account[] = [];
+  let pending = [...accounts];
+  while (pending.length > 0) {
+    const next: Account[] = [];
+    for (const account of pending) {
+      if (account.parentId === null || placed.has(account.parentId)) {
+        ordered.push(account);
+        placed.add(account.id);
+      } else next.push(account);
+    }
+    if (next.length === pending.length)
+      throw new EdgeMasterSyncError("BAD_SNAPSHOT");
+    pending = next;
+  }
+  return ordered;
+}
+
+/**
+ * Upserts the snapshot (cloud wins, by id) inside the caller's tenant
+ * transaction and returns the row counts. Throws EdgeMasterSyncError only; the
+ * caller owns the transaction, so any throw rolls everything back. See the
+ * header for the conflict and delete rules.
+ */
+export async function applyEdgeMasterSnapshotInTransaction(
+  tx: Tx,
+  claims: Claims,
+  snapshot: EdgeMasterSnapshot,
+): Promise<EdgeMasterSyncCounts> {
+  guardMasterImport();
+  assertScope(claims, snapshot);
+  const accounts = parentsFirst(snapshot.chartOfAccounts);
+  const { tenantId, outletId, legalEntityId } = snapshot;
+  // Unknown roles (a newer cloud) are dropped, not fatal: see the header.
+  const { known: mappings, unknownRoles } = partitionEdgeMasterMappings(
+    snapshot.accountMappings,
+  );
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`edge-master-sync:${tenantId}:${outletId}`}, 0))`,
+  );
+  // Chart of accounts of the snapshot's legal entity (the only one this apply
+  // writes CoA and mappings for; the outlet check below proves it is the
+  // outlet's own). Shared with the provisioning backfill and the owner's chart
+  // writers (legend-usa4b), taken before the natural-key precheck and every
+  // write so the backfill can never see the chart empty while this import is
+  // about to commit, and mix the template into a cloud chart.
+  // The outlet's stock locations are written here too, so the location lock
+  // is shared with the default-location provisioning the same way.
+  // Lock order: `edge-master-sync` (above) first, then CoA, then stock
+  // locations, as documented in services/tenant-config-locks.ts. No other path
+  // takes `edge-master-sync`, so neither lock is held while waiting for it.
+  await lockChartOfAccounts(tx, tenantId, legalEntityId);
+  await lockOutletStockLocations(tx, tenantId, outletId);
+
+  const [outlet] = await tx
+    .select({ legalEntityId: outlets.legalEntityId })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+    .limit(1);
+  if (!outlet || !sameId(outlet.legalEntityId, legalEntityId))
+    throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+
+  // A local account id outside the snapshot is replaced only when the snapshot
+  // holds its code under another id (a fork, see the header). Any other
+  // outside id is refused before any write: it may be a real cloud account
+  // that a replayed older snapshot predates. Replacement, inside a savepoint:
+  // delete the forked accounts' mappings, detach the in-snapshot local
+  // children of a fork (parent_id null; the upsert below sets the cloud
+  // parent), then delete the forks in ONE statement (the foreign keys are NO
+  // ACTION and checked at statement end, so a forked parent and its forked
+  // children go together). A foreign key violation means ledger, budget or
+  // period snapshot rows still name a fork, so nothing is written and the
+  // apply is refused.
+  const snapshotAccountIds = new Set(
+    accounts.map((row) => row.id.toLowerCase()),
+  );
+  const snapshotCodes = new Set(accounts.map((row) => row.code));
+  const localAccounts = await tx
+    .select({ id: chartOfAccounts.id, code: chartOfAccounts.code })
+    .from(chartOfAccounts)
+    .where(
+      and(
+        eq(chartOfAccounts.tenantId, tenantId),
+        eq(chartOfAccounts.legalEntityId, legalEntityId),
+      ),
+    );
+  const outside = localAccounts.filter(
+    (row) => !snapshotAccountIds.has(row.id.toLowerCase()),
+  );
+  if (outside.some((row) => !snapshotCodes.has(row.code)))
+    throw new EdgeMasterSyncError("LOCAL_CONFLICT");
+  const forkedIds = outside.map((row) => row.id);
+  if (forkedIds.length > 0) {
+    try {
+      await tx.transaction(async (savepoint) => {
+        await savepoint
+          .delete(accountMappings)
+          .where(
+            and(
+              eq(accountMappings.tenantId, tenantId),
+              eq(accountMappings.legalEntityId, legalEntityId),
+              inArray(accountMappings.accountId, forkedIds),
+            ),
+          );
+        await savepoint
+          .update(chartOfAccounts)
+          .set({ parentId: null })
+          .where(
+            and(
+              eq(chartOfAccounts.tenantId, tenantId),
+              eq(chartOfAccounts.legalEntityId, legalEntityId),
+              inArray(chartOfAccounts.parentId, forkedIds),
+              notInArray(chartOfAccounts.id, forkedIds),
+            ),
+          );
+        await savepoint
+          .delete(chartOfAccounts)
+          .where(
+            and(
+              eq(chartOfAccounts.tenantId, tenantId),
+              eq(chartOfAccounts.legalEntityId, legalEntityId),
+              inArray(chartOfAccounts.id, forkedIds),
+            ),
+          );
+      });
+    } catch (error) {
+      if (isForeignKeyViolation(error))
+        throw new EdgeMasterSyncError("LOCAL_CONFLICT");
+      throw error;
+    }
+    logger.info(
+      { legalEntityId, replacedForks: forkedIds.length },
+      "Edge master sync replaced forked chart accounts",
+    );
+  }
+
+  // Natural-key collisions under another id: refuse, never fork ids.
+  if (snapshot.uoms.length > 0) {
+    const local = await tx
+      .select({ id: uoms.id, code: uoms.code })
+      .from(uoms)
+      .where(
+        and(
+          eq(uoms.tenantId, tenantId),
+          inArray(
+            uoms.code,
+            snapshot.uoms.map((row) => row.code),
+          ),
+        ),
+      );
+    const byCode = new Map(local.map((row) => [row.code, row.id]));
+    for (const row of snapshot.uoms) {
+      const existing = byCode.get(row.code);
+      if (existing !== undefined && !sameId(existing, row.id))
+        throw new EdgeMasterSyncError("LOCAL_CONFLICT");
+    }
+  }
+  if (accounts.length > 0) {
+    const local = await tx
+      .select({ id: chartOfAccounts.id, code: chartOfAccounts.code })
+      .from(chartOfAccounts)
+      .where(
+        and(
+          eq(chartOfAccounts.tenantId, tenantId),
+          eq(chartOfAccounts.legalEntityId, legalEntityId),
+          inArray(
+            chartOfAccounts.code,
+            accounts.map((row) => row.code),
+          ),
+        ),
+      );
+    const byCode = new Map(local.map((row) => [row.code, row.id]));
+    for (const row of accounts) {
+      const existing = byCode.get(row.code);
+      if (existing !== undefined && !sameId(existing, row.id))
+        throw new EdgeMasterSyncError("LOCAL_CONFLICT");
+    }
+  }
+
+  for (const row of snapshot.uoms) {
+    await tx
+      .insert(uoms)
+      .values({ ...row, createdAt: new Date(row.createdAt) })
+      .onConflictDoUpdate({
+        target: uoms.id,
+        set: { code: row.code, name: row.name },
+      });
+  }
+  for (const row of snapshot.stockLocations) {
+    const written = await tx
+      .insert(stockLocations)
+      .values({ ...row, createdAt: new Date(row.createdAt) })
+      .onConflictDoUpdate({
+        target: stockLocations.id,
+        set: { name: row.name, type: row.type, isActive: row.isActive },
+        setWhere: and(
+          eq(stockLocations.tenantId, tenantId),
+          eq(stockLocations.outletId, outletId),
+        ),
+      })
+      .returning({ id: stockLocations.id });
+    if (written.length === 0) throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+  }
+  for (const row of accounts) {
+    const written = await tx
+      .insert(chartOfAccounts)
+      .values({
+        ...row,
+        createdAt: new Date(row.createdAt),
+        updatedAt: new Date(row.updatedAt),
+      })
+      .onConflictDoUpdate({
+        target: chartOfAccounts.id,
+        set: {
+          code: row.code,
+          name: row.name,
+          type: row.type,
+          reportGroup: row.reportGroup,
+          parentId: row.parentId,
+          isActive: row.isActive,
+          updatedAt: new Date(row.updatedAt),
+        },
+        setWhere: and(
+          eq(chartOfAccounts.tenantId, tenantId),
+          eq(chartOfAccounts.legalEntityId, legalEntityId),
+        ),
+      })
+      .returning({ id: chartOfAccounts.id });
+    if (written.length === 0) throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+  }
+  for (const row of mappings) {
+    await tx
+      .insert(accountMappings)
+      .values(row)
+      .onConflictDoUpdate({
+        target: [
+          accountMappings.tenantId,
+          accountMappings.legalEntityId,
+          accountMappings.role,
+        ],
+        set: { accountId: row.accountId },
+      });
+  }
+  // The cloud's mapping set (known roles) replaces the local one (see the
+  // header). An empty set means no role is kept.
+  const keptRoles = mappings.map((row) => row.role);
+  await tx
+    .delete(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        keptRoles.length > 0
+          ? notInArray(accountMappings.role, keptRoles)
+          : undefined,
+      ),
+    );
+  // Logged before the caller commits: a later rollback still leaves this line.
+  // Repeats on every sync while the cloud is ahead (bounded: 200 x 40 chars).
+  if (unknownRoles.length > 0)
+    logger.warn(
+      { droppedMappings: unknownRoles.length, droppedRoles: unknownRoles },
+      "Edge master sync dropped mappings with roles this build does not know",
+    );
+  return {
+    uoms: snapshot.uoms.length,
+    stockLocations: snapshot.stockLocations.length,
+    accounts: accounts.length,
+    mappings: mappings.length,
+    droppedMappings: unknownRoles.length,
+  };
+}
+
+/**
+ * Upserts the snapshot into the local database in its own transaction. Driver
+ * errors become LOCAL_WRITE. See the header for the conflict and delete rules.
+ */
+export async function applyEdgeMasterSnapshot(
+  claims: Claims,
+  snapshot: EdgeMasterSnapshot,
+): Promise<EdgeMasterSyncCounts> {
+  assertScope(claims, snapshot);
+  try {
+    return await withTenant(db, edgeNodeContext(claims), (tx) =>
+      applyEdgeMasterSnapshotInTransaction(tx, claims, snapshot),
+    );
+  } catch (error) {
+    if (error instanceof EdgeMasterSyncError) throw error;
+    // Driver errors can carry SQL parameters: report a code only.
+    throw new EdgeMasterSyncError("LOCAL_WRITE");
+  }
+}
+
+/** Fetch, verify and apply the cloud's masters once. */
+export async function syncEdgeMasters(
+  config: EdgeBootstrapConfig,
+  options: EdgeBootstrapOptions = {},
+): Promise<EdgeMasterSyncCounts> {
+  const claims = parseEdgeCredential(config.credential);
+  if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+  guardMasterImport();
+  const snapshot = await fetchVerifiedMasterSnapshot(config, options);
+  return applyEdgeMasterSnapshot(claims, snapshot);
+}
+
+/**
+ * Periodic `syncEdgeMasters`. No immediate run (bootstrap already syncs). The
+ * timer is unref'd, a tick is skipped while a run is in flight, and `stop`
+ * aborts that run's request and waits for it. `intervalMs` must be finite and
+ * >= 60 s (RangeError at start). Errors go to `onError`; the loop keeps going.
+ */
+export function startEdgeMasterSyncLoop(input: {
+  config: EdgeBootstrapConfig;
+  intervalMs: number;
+  onError?: (error: unknown) => void;
+  options?: EdgeBootstrapOptions;
+}): { stop(): Promise<void> } {
+  if (
+    !Number.isFinite(input.intervalMs) ||
+    input.intervalMs < MIN_SYNC_INTERVAL_MS
+  )
+    throw new RangeError(
+      `Edge master sync interval must be a finite number >= ${MIN_SYNC_INTERVAL_MS} ms`,
+    );
+  const abort = new AbortController();
+  let inFlight: Promise<void> | null = null;
+  let stopped = false;
+
+  const tick = () => {
+    if (stopped || inFlight) return;
+    const run = syncEdgeMasters(input.config, {
+      ...input.options,
+      signal: abort.signal,
+    })
+      .then((counts) => {
+        logger.debug({ ...counts }, "Edge master sync applied");
+      })
+      .catch((error: unknown) => {
+        // stop() aborts an in-flight fetch: a normal shutdown, not an error.
+        if (stopped) return;
+        try {
+          input.onError?.(error);
+        } catch {
+          // A broken logger must not stop the schedule.
+        }
+      })
+      .finally(() => {
+        if (inFlight === run) inFlight = null;
+      });
+    inFlight = run;
+  };
+
+  const timer = setInterval(tick, input.intervalMs);
+  timer.unref();
+
+  return {
+    async stop() {
+      stopped = true;
+      abort.abort();
+      clearInterval(timer);
+      if (inFlight) await inFlight;
+    },
+  };
+}

@@ -12,41 +12,98 @@
 //   query or a header the client chose (TEN-02).
 // - Records are the hash-only `staffPinEdgeRecordSchema`: hash, salt, scrypt
 //   cost, pepper version and lock state. Never the pin, never the pepper.
-// - Keyset paging on (updated_at, id), opaque cursor. `since` is the edge's
-//   stored watermark; the edge follows `meta.nextCursor` while it is non-null,
-//   applies each page durably, then stores `meta.watermark` (EDG-02: the
-//   checkpoint advances only after durable, idempotent application).
-// - Settle window: rows updated in the last STAFF_PIN_SYNC_SETTLE_MS are held
-//   back, so a transaction that took its `updated_at` before a concurrent one
-//   but commits after it is not skipped by an already-advanced watermark.
-//   Residual risk: a writer whose commit lags its `updated_at` by more than the
-//   window (follow-up: a commit-ordered sync version column).
+// - Keyset paging on (sync_xid, id), opaque cursor
+//   `[spin2, epoch, sync_xid, id]`. `sync_xid` is the id of the transaction
+//   that last wrote the row (column default on insert, trigger on update;
+//   migration 0151). A row is exported only when its `sync_xid` is below
+//   `pg_snapshot_xmin(pg_current_snapshot())`: every older transaction has
+//   finished, so a watermark can never pass a writer that commits late. No
+//   clock and no settle window are involved, the order is the commit horizon.
+//   `since` is the edge's stored watermark; the edge follows `meta.nextCursor`
+//   while it is non-null, applies each page durably, then stores
+//   `meta.watermark` (EDG-02: the checkpoint advances only after durable,
+//   idempotent application).
+// - Restarts (a full resync from the beginning, idempotent on the edge): a
+//   `spin1` cursor (the old (updated_at, id) one), a `spin2` cursor without
+//   an epoch (the first 3-key form), a cursor whose epoch differs from this
+//   database's, and a cursor whose xid is not yet assigned here
+//   (`>= pg_snapshot_xmax(pg_current_snapshot())`, "from the future").
+//   Transaction ids are only ordered within one database history: a
+//   point-in-time restore or an async standby promoted after losing commits
+//   hands out xids again that the edge already passed, and the export would
+//   skip those writes forever. The epoch is
+//   `pg_control_system().system_identifier` (changes on initdb, so on a
+//   dump/restore into a new cluster) + ":" + `pg_control_checkpoint().
+//   timeline_id` (changes on PITR and promotion, once the first checkpoint
+//   on the new timeline is written; until then the future-xid check is the
+//   guard) + ":" + `pg_postmaster_start_time()` in microseconds (review K
+//   round 2): a restore from a disk or managed snapshot that ends in crash
+//   recovery keeps the identifier and the timeline but always starts a new
+//   postmaster. A promotion starts a new postmaster too, so it changes the
+//   epoch at once, also before the first checkpoint of the new timeline
+//   (an immediate failover). The cost is one idempotent full resync per outlet after any
+//   database restart. All three functions are executable by PUBLIC, so the
+//   restricted app role reads them.
+// - Runbook, dump/restore: restored rows keep their old `sync_xid`, which may
+//   lie above the new cluster's counter and stay invisible to the export
+//   until the counter passes it. After such a restore, restamp every row with
+//   an UPDATE that touches each one (e.g. `UPDATE staff_pins SET
+//   sync_xid = sync_xid`, run with FORCE RLS lifted as in migration 0141); the
+//   trigger stamps the current xid.
+// - Runbook, durability: the cloud database must run with
+//   `synchronous_commit = on` and `fsync = on`. A commit that was exported and
+//   then lost in a crash would hand its xid out again, and the edge, already
+//   past it, would skip the new write.
+// - Long transactions (infra, review K F3): an open write transaction
+//   anywhere in the cluster holds `pg_snapshot_xmin` back, so it delays the
+//   export (never loses a row) until it ends. Set
+//   `idle_in_transaction_session_timeout` for the app and worker roles and
+//   alert when the export horizon lags (legend-4z2ch, ops).
+// - Each record carries `pinGenerationAt`, the exact microsecond order key of
+//   the pin generation (`staff_pins.pin_generation_at`, legend-kyie).
 //
-// Pepper provisioning (out of band, never in this payload). The edge verifies
-// offline with `record + pepper`. The pepper is installed on the edge box by
-// the operator, through the deployment's secret store, as the environment
-// variable STAFF_PIN_PEPPER — the same value the cloud uses, so
-// `staffPinPepper(tenantId)` (HKDF per tenant, device-pin-pepper.ts) derives
-// the same per-tenant pepper there. It is never sent over HTTP, logged,
-// audited, put in an event or in this response. Rotation follows
-// docs/deployment.md "Staff device pins" (bump the pepper version, staff set
-// new pins; old rows stop verifying on the edge as on the cloud). Follow-up:
-// provision only the tenant-derived pepper to an edge box instead of the root
-// secret, so a stolen edge box cannot derive other tenants' peppers.
+// Pepper provisioning (legend-ideif). The edge verifies offline with
+// `record + pepper`, but it never holds the root STAFF_PIN_PEPPER (the edge
+// refuses to boot with it, config/env.ts). When the edge asks with
+// `peppers=<highest version it holds>` the cloud answers `meta.peppers`: the
+// peppers it derived for THE CREDENTIAL'S TENANT, for every version above that
+// one (`staffPinPeppersForEdge`, device-pin-pepper.ts), base64, over TLS and
+// `Cache-Control: private, no-store`. The edge seals them in its own database
+// (edge/staff-pin-pepper-store.ts). A stolen edge box thus yields one
+// tenant's peppers, never the root and never another tenant's. The values are
+// never logged, audited, put in an event or in any other response. Rotation
+// (raise STAFF_PIN_PEPPER_CURRENT_VERSION on the cloud, docs/deployment.md
+// "Staff device pins"): the next pull delivers the new version; pins hashed
+// under an older version keep verifying until their owner sets a new pin.
 //
-// Apply (edge, `applyStaffPinRecords`): idempotent, version monotonic, cloud
-// wins. Runs on the edge's own database, on the outlet-scoped context of the
-// edge node. One transaction for the whole page, so a failure applies nothing
-// and the watermark does not move. On the edge copy `created_at` holds the
-// cloud version (`updatedAt`) of the pin generation currently stored, and
-// `updated_at` the cloud version of the last lock-state write (or a newer
-// local attempt):
-// - unknown (outlet, user)        -> insert;
-// - other hash material (a reset) -> replace when the record is newer than the
-//   stored generation (`created_at`). A newer local failed attempt cannot
-//   block a cloud reset; an older generation replayed late never wins;
-// - same hash material            -> copy lock state when the record is newer
-//   than `updated_at`; equal or older is a replay and changes nothing.
+// Apply (edge, `applyStaffPinRecords`): idempotent, cloud wins. Runs on the
+// edge's own database, on the outlet-scoped context of the edge node. One
+// transaction for the whole page, so a failure applies nothing and the
+// watermark does not move. Generations are ordered by the generation key
+// (`pinGenerationAt`) only, never by a clock of this node: the cloud `updatedAt`
+// is a cloud clock and the local `created_at` / `updated_at` may come from an
+// edge clock that ran behind, so comparing them let an older cloud row (e.g. an
+// attempt bump of the old pin) replace a newer pin set on the edge.
+// - unknown (outlet, user)        -> insert; the record key is stored as
+//   `pin_generation_at` and `pin_set_at`;
+// - other hash material (a reset) -> replace when `record key >= local key`
+//   (a tie goes to the cloud, the same rule as the cloud's own set); a newer
+//   local failed attempt cannot block a cloud reset, an older generation
+//   replayed late never wins;
+// - same hash material            -> raise the counter / lock to the record's
+//   only when the record is above the last cloud values this edge received
+//   (`cloud_failed_attempts`, `cloud_locked_until`; legend-7vv8h: a full
+//   resync replays old values the edge may have cleared), never lower it, keep
+//   the later key; nothing to change writes nothing. "Moved" is the cloud
+//   `attempt_revision` when the record and the stored baseline both carry one
+//   (legend-r11j7: a counter 3 -> 0 -> 3 between two pulls has the same value
+//   but a new revision), the counter value otherwise.
+// Every insert, replace and merge also raises `cloud_generation_at` to the
+// record key (the highest cloud key this edge has seen). The next edge set is
+// stamped `GREATEST(edge now, LEAST(key, GREATEST(edge now,
+// cloud_generation_at) + 5 min) + 1 ms)` (device-pin.service.ts), so it lands
+// after the cloud generation it replaced even when the edge clock runs far
+// behind a recent cloud reset, and the cloud adopts it.
 // No audit or outbox from apply: it mirrors cloud state, and an event here
 // would echo back to the cloud.
 
@@ -68,12 +125,16 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.ts";
 import { staffPins } from "../db/schema/device-pin.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
+import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
+import { withoutSecretErrorDetail } from "../edge/envelope-secrets.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { staffPinPeppersForEdge } from "./device-pin-pepper.ts";
 import { outletContext } from "./device-pin-support.ts";
 
 // ------------------------------------------------------- edge credential port
@@ -147,8 +208,6 @@ export async function verifyEdgeCredential(
 
 // ------------------------------------------------------------------- export
 
-/** Rows younger than this are held back (see "Settle window" above). */
-export const STAFF_PIN_SYNC_SETTLE_MS = 5_000;
 export const STAFF_PIN_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
 
 export const staffPinSyncQuerySchema = z.strictObject({
@@ -159,6 +218,16 @@ export const staffPinSyncQuerySchema = z.strictObject({
     .min(1)
     .max(PAGE_LIMIT_MAX)
     .default(STAFF_PIN_SYNC_LIMIT_DEFAULT),
+  // legend-r11j7: opt-in. An edge on the code before the revision parses the
+  // page with a strict record schema and refuses any record that carries
+  // `attemptRevision`, and the cloud is released first (docs/deployment.md),
+  // so the cloud only sends it to an edge that asks. A new edge always asks,
+  // so it needs a cloud that knows this flag (cloud first, as documented).
+  revision: z.literal("1").optional(),
+  // legend-ideif: opt-in as well (an older edge parses `meta` strictly). The
+  // highest pepper version the edge holds (0 = none); the cloud answers with
+  // the tenant's derived peppers above it.
+  peppers: z.coerce.number().int().min(0).max(1000).optional(),
 });
 export type StaffPinSyncQuery = z.infer<typeof staffPinSyncQuerySchema>;
 
@@ -170,63 +239,101 @@ export const staffPinSyncPageSchema = z.strictObject({
     nextCursor: cursorSchema.nullable(),
     /** Store after applying the page; null = nothing replicated yet. */
     watermark: cursorSchema.nullable(),
+    /** Only when asked (`peppers=`): the tenant's derived peppers, base64 of 32 bytes. */
+    peppers: z
+      .array(
+        z.strictObject({
+          version: z.number().int().min(1).max(1000),
+          pepper: z.string().length(44),
+        }),
+      )
+      .optional(),
   }),
 });
 export type StaffPinSyncPage = z.infer<typeof staffPinSyncPageSchema>;
 
-const CURSOR_TAG = "spin1";
-const VERSION_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+const CURSOR_TAG = "spin2";
+/** The old (updated_at, id) cursor: restarts from the beginning (see header). */
+const LEGACY_CURSOR_TAG = "spin1";
+const XID_PATTERN = /^\d{1,20}$/;
+const XID8_MAX = 18446744073709551615n;
+/** A decimal xid8: 20 digits can exceed 64 bits, and the cast would fail. */
+function isXid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    XID_PATTERN.test(value) &&
+    BigInt(value) <= XID8_MAX
+  );
+}
+/** `<system_identifier>:<timeline_id>:<postmaster start, µs>` (see header). */
+const EPOCH_PATTERN = /^\d{1,20}:\d{1,10}:\d{1,20}$/;
 
-type Watermark = { readonly version: string; readonly id: string };
+type Watermark = {
+  readonly epoch: string;
+  readonly xid: string;
+  readonly id: string;
+};
 
+function invalidCursor(): never {
+  throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
+}
+
+/**
+ * The stored watermark, or null to restart from the beginning (no cursor, a
+ * `spin1` cursor, or a 3-key `spin2` cursor from before the epoch existed).
+ * A malformed cursor is a validation error. The epoch and the "from the
+ * future" checks need the database and run in `listStaffPinRecordsSince`.
+ */
 function parseWatermark(cursor: string | undefined): Watermark | null {
   if (cursor === undefined) return null;
   let keys: unknown[];
   try {
     keys = decodeCursor(cursor);
   } catch {
-    throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
+    invalidCursor();
   }
-  const [tag, version, id, extra] = keys;
+  const [tag] = keys;
+  if (tag === LEGACY_CURSOR_TAG) return null;
+  if (tag !== CURSOR_TAG) invalidCursor();
+  if (keys.length === 3) {
+    const [, xid, id] = keys;
+    if (!isXid(xid) || !uuidSchema.safeParse(id).success) invalidCursor();
+    // No epoch: it cannot be proven to come from this database history.
+    return null;
+  }
+  const [, epoch, xid, id, extra] = keys;
   if (
-    tag !== CURSOR_TAG ||
-    typeof version !== "string" ||
-    !VERSION_PATTERN.test(version) ||
+    keys.length !== 4 ||
+    typeof epoch !== "string" ||
+    !EPOCH_PATTERN.test(epoch) ||
+    !isXid(xid) ||
     !uuidSchema.safeParse(id).success ||
     extra !== undefined
   )
-    throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
-  return { version, id: String(id) };
+    invalidCursor();
+  return { epoch, xid, id: String(id) };
 }
 
 function encodeWatermark(mark: Watermark): string {
-  return encodeCursor([CURSOR_TAG, mark.version, mark.id]);
+  return encodeCursor([CURSOR_TAG, mark.epoch, mark.xid, mark.id]);
 }
 
-/** Exact (microsecond, UTC) text of `updated_at`: the keyset version. */
-const versionOf = sql<string>`to_char(${staffPins.updatedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
-
-export type ListStaffPinRecordsOptions = {
-  readonly now?: Date;
-  /** Override the settle window (tests); never negative. */
-  readonly settleMs?: number;
-};
+/** Exact (microsecond, UTC) ISO text of a timestamptz column. */
+const microsecondText = (column: typeof staffPins.pinGenerationAt) =>
+  sql<string>`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
 /**
  * One page of the edge node's outlet staff pins changed after `since`, in
- * (updated_at, id) order. Tenant and outlet come only from `node`.
+ * commit order ((sync_xid, id)), only rows every older transaction of which
+ * has finished. Tenant and outlet come only from `node`.
  */
 export async function listStaffPinRecordsSince(
   node: VerifiedEdgeNode,
   query: StaffPinSyncQuery,
-  options: ListStaffPinRecordsOptions = {},
 ): Promise<StaffPinSyncPage> {
   const verified = verifiedEdgeNodeSchema.parse(node);
-  const { limit } = staffPinSyncQuerySchema.parse(query);
-  const since = parseWatermark(query.since);
-  const now = options.now ?? new Date();
-  const settleMs = Math.max(0, options.settleMs ?? STAFF_PIN_SYNC_SETTLE_MS);
-  const cutoff = new Date(now.getTime() - settleMs);
+  const { limit, revision, peppers } = staffPinSyncQuerySchema.parse(query);
+  const stored = parseWatermark(query.since);
   const tenant = establishTenantContext({
     tenantId: verified.tenantId,
     brandId: null,
@@ -234,7 +341,7 @@ export async function listStaffPinRecordsSince(
   });
   const context = outletContext(tenant, verified.outletId);
 
-  const rows = await withTenant(db, context, async (tx) => {
+  const { rows, epoch, since } = await withTenant(db, context, async (tx) => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
       .select({ status: tenants.status })
@@ -260,30 +367,51 @@ export async function listStaffPinRecordsSince(
         "FORBIDDEN",
         "Edge node tidak dapat menyinkronkan outlet ini.",
       );
-    return tx
-      .select({ row: staffPins, version: versionOf })
+    // The database epoch, and whether the stored xid is not yet assigned
+    // here (a cursor "from the future"). Either mismatch means the cursor
+    // comes from another database history (restore, promoted standby), whose
+    // xids may be reused: restart from the beginning (see header).
+    const horizon = await tx.execute<{ epoch: string; future: boolean }>(
+      sql`SELECT (SELECT system_identifier::text FROM pg_control_system()) || ':' ||
+                 (SELECT timeline_id::text FROM pg_control_checkpoint()) || ':' ||
+                 ((extract(epoch FROM pg_postmaster_start_time()) * 1000000)::bigint)::text AS epoch,
+                 ${stored === null ? sql`false` : sql`${stored.xid}::xid8 >= pg_snapshot_xmax(pg_current_snapshot())`} AS future`,
+    );
+    const current = horizon.rows[0]!;
+    const since =
+      stored !== null && stored.epoch === current.epoch && !current.future
+        ? stored
+        : null;
+    const found = await tx
+      .select({
+        row: staffPins,
+        xid: sql<string>`${staffPins.syncXid}::text`,
+        generation: microsecondText(staffPins.pinGenerationAt),
+      })
       .from(staffPins)
       .where(
         and(
           eq(staffPins.tenantId, verified.tenantId),
           eq(staffPins.outletId, verified.outletId),
-          lte(staffPins.updatedAt, cutoff),
+          // Every writer older than this snapshot has finished (see header).
+          sql`${staffPins.syncXid} < pg_snapshot_xmin(pg_current_snapshot())`,
           since === null
             ? undefined
-            : sql`(${staffPins.updatedAt}, ${staffPins.id}) > (${since.version}::timestamptz, ${since.id}::uuid)`,
+            : sql`(${staffPins.syncXid}, ${staffPins.id}) > (${since.xid}::xid8, ${since.id}::uuid)`,
         ),
       )
-      .orderBy(asc(staffPins.updatedAt), asc(staffPins.id))
+      .orderBy(asc(staffPins.syncXid), asc(staffPins.id))
       .limit(limit + 1);
+    return { rows: found, epoch: current.epoch, since };
   });
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);
   const lastMark = last
-    ? encodeWatermark({ version: last.version, id: last.row.id })
+    ? encodeWatermark({ epoch, xid: last.xid, id: last.row.id })
     : null;
   return staffPinSyncPageSchema.parse({
-    data: page.map(({ row }) =>
+    data: page.map(({ row, generation }) =>
       staffPinEdgeRecordSchema.parse({
         id: row.id,
         tenantId: row.tenantId,
@@ -297,12 +425,23 @@ export async function listStaffPinRecordsSince(
         failedAttempts: row.failedAttempts,
         lockedUntil: row.lockedUntil?.toISOString() ?? null,
         updatedAt: row.updatedAt.toISOString(),
+        pinGenerationAt: generation,
+        // legend-r11j7: only for an edge that asked (`revision=1`).
+        ...(revision === "1"
+          ? { attemptRevision: Number(row.attemptRevision) }
+          : {}),
       }),
     ),
     meta: {
       limit,
       nextCursor: rows.length > limit ? lastMark : null,
-      watermark: lastMark ?? query.since ?? null,
+      // A legacy, foreign-epoch or future cursor is not carried over: the
+      // edge restarts from the beginning.
+      watermark: lastMark ?? (since === null ? null : encodeWatermark(since)),
+      // The tenant is the verified credential's, never the query's.
+      ...(peppers !== undefined
+        ? { peppers: staffPinPeppersForEdge(verified.tenantId, peppers) }
+        : {}),
     },
   });
 }
@@ -312,6 +451,12 @@ export async function listStaffPinRecordsSince(
 export type StaffPinApplyResult = {
   readonly applied: number;
   readonly skipped: number;
+  /**
+   * Records skipped because their `user` row is not on this database yet (the
+   * people snapshot has not delivered it). The caller keeps its watermark so
+   * the next cycle retries them. Present only when at least one was skipped.
+   */
+  readonly missingUsers?: number;
 };
 
 type LocalRow = typeof staffPins.$inferSelect;
@@ -332,14 +477,23 @@ function refuse(message: string): never {
 }
 
 /**
- * Edge side: ingests one page of cloud records (idempotent, version monotonic,
- * cloud wins; see the header). Every record must be of `context`'s tenant and
+ * Edge side: ingests one page of cloud records (idempotent, ordered by the
+ * generation key, cloud wins; see the header). Every record must be of `context`'s tenant and
  * inside its outlet scope; one bad record refuses the whole page.
  */
 export async function applyStaffPinRecords(
   context: ScopedTenantContext,
   records: readonly unknown[],
+  database: Parameters<typeof withTenant>[0] = db,
 ): Promise<StaffPinApplyResult> {
+  // legend-oark: the cloud is the source of these records and never ingests
+  // them. Same rule as pos-receipt.service.ts: the runtime flag, or the static
+  // EDGE_MODE setting during the boot window.
+  if (!getEdgeRuntimeState().edgeMode && process.env.EDGE_MODE !== "true")
+    throw new CoreError(
+      "FORBIDDEN",
+      "Staff pin records are applied on an edge node only.",
+    );
   const tenantId = context.tenant.tenantId.toLowerCase();
   const parsed: StaffPinEdgeRecord[] = records.map((raw) => {
     const result = staffPinEdgeRecordSchema.safeParse(raw);
@@ -358,21 +512,39 @@ export async function applyStaffPinRecords(
     seen.add(key);
     seen.add(id);
   }
-  const ordered = [...parsed].sort(
-    (a, b) =>
-      Date.parse(a.updatedAt) - Date.parse(b.updatedAt) ||
-      a.id.localeCompare(b.id),
-  );
+  // Same order on every node, so two concurrent pages lock users the same way.
+  const ordered = [...parsed].sort((a, b) => a.id.localeCompare(b.id));
 
-  return withTenant(db, context, async (tx) => {
+  return withTenant(database, context, async (tx) => {
     let applied = 0;
+    let missingUsers = 0;
     for (const record of ordered) {
+      // The user arrives with the people snapshot, which can lag this pull. A
+      // record without its user would fail the foreign key and refuse the
+      // whole page: skip it and let the caller retry it next cycle.
+      const [owner] = await tx
+        .select({ id: user.id })
+        .from(user)
+        .where(eq(user.id, record.userId));
+      if (!owner) {
+        missingUsers += 1;
+        continue;
+      }
       const version = new Date(record.updatedAt);
+      // Exact microsecond key, compared and stored by the database: a JS Date
+      // would cut it to milliseconds and turn a tie into a false "newer".
+      const key = sql`${record.pinGenerationAt}::timestamptz`;
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-pin-sync:${tenantId}:${record.outletId}:${record.userId}`.toLowerCase()}, 0))`,
       );
-      const [local] = await tx
-        .select()
+      const [found] = await tx
+        .select({
+          row: staffPins,
+          // 1 = the record key is later, 0 = equal, -1 = earlier.
+          keyOrder: sql<number>`CASE WHEN ${key} > ${staffPins.pinGenerationAt} THEN 1 WHEN ${key} = ${staffPins.pinGenerationAt} THEN 0 ELSE -1 END`,
+          // The record key is above the last cloud key this edge stored.
+          cloudKeyLater: sql<boolean>`${staffPins.cloudGenerationAt} IS NULL OR ${key} > ${staffPins.cloudGenerationAt}`,
+        })
         .from(staffPins)
         .where(
           and(
@@ -382,6 +554,7 @@ export async function applyStaffPinRecords(
           ),
         )
         .for("update");
+      const local = found?.row;
       const material = {
         pinHash: record.pinHash,
         pinSalt: record.salt,
@@ -408,43 +581,141 @@ export async function applyStaffPinRecords(
             "CONFLICT",
             "Staff pin record id is used by another staff pin.",
           );
-        await tx.insert(staffPins).values({
-          id: record.id,
-          tenantId: record.tenantId,
-          outletId: record.outletId,
-          userId: record.userId,
-          ...material,
-          // The record does not carry who set it; the owner is the closest
-          // non-secret, existing user reference.
-          setBy: record.userId,
-          createdAt: version,
-          updatedAt: version,
-        });
+        // A failed write can quote the hash and salt in a driver error
+        // (legend-kyie round 3 R3): rethrown without them.
+        await withoutSecretErrorDetail("Staff pin sync write failed", () =>
+          tx.insert(staffPins).values({
+            id: record.id,
+            tenantId: record.tenantId,
+            outletId: record.outletId,
+            userId: record.userId,
+            ...material,
+            // The record does not carry who set it; the owner is the closest
+            // non-secret, existing user reference.
+            setBy: record.userId,
+            // The cloud key orders this generation; the edge's own next set
+            // is stamped after it (see header).
+            pinGenerationAt: key,
+            pinSetAt: key,
+            cloudGenerationAt: key,
+            cloudFailedAttempts: record.failedAttempts,
+            cloudLockedUntil: material.lockedUntil,
+            cloudAttemptRevision: record.attemptRevision ?? null,
+            createdAt: version,
+            updatedAt: version,
+          }),
+        );
         applied += 1;
         continue;
       }
       if (!sameMaterial(local, record)) {
-        // A pin set or reset on the cloud: newer generation wins.
-        if (version.getTime() <= local.createdAt.getTime()) continue;
-        await tx
-          .update(staffPins)
-          .set({ ...material, createdAt: version, updatedAt: version })
-          .where(eq(staffPins.id, local.id));
+        // A pin set or reset on the cloud: a tie or a later key wins. An
+        // earlier key is an older generation replayed late.
+        if (found!.keyOrder < 0) continue;
+        await withoutSecretErrorDetail("Staff pin sync write failed", () =>
+          tx
+            .update(staffPins)
+            .set({
+              ...material,
+              pinGenerationAt: key,
+              pinSetAt: key,
+              cloudGenerationAt: sql`GREATEST(${staffPins.cloudGenerationAt}, ${key})`,
+              // The record's lock state is also the new local one (material),
+              // so it is the baseline of the next same-material merge.
+              cloudFailedAttempts: record.failedAttempts,
+              cloudLockedUntil: material.lockedUntil,
+              cloudAttemptRevision: record.attemptRevision ?? null,
+              updatedAt: version,
+            })
+            .where(eq(staffPins.id, local.id)),
+        );
         applied += 1;
         continue;
       }
-      // Same pin generation: lock state, newest version wins.
-      if (version.getTime() <= local.updatedAt.getTime()) continue;
+      // Same pin material: merge the lock state whatever the clocks say, so
+      // it never weakens the edge (legend-kyie review K F2): the cloud
+      // adopting an edge pin writes a cleared counter, and copying that back
+      // would briefly unlock the edge. Nothing on the cloud clears a lock while
+      // keeping the hash (a reset brings new material, handled above). A
+      // correct PIN entered on the cloud does clear the cloud counter with the
+      // same hash; the edge keeps its higher counter (accepted: it never
+      // weakens the edge, at worst it locks one guess earlier).
+      // The merge only follows the cloud's own movement (legend-7vv8h): the
+      // cloud epoch changes on every cloud restart and the edge then replays
+      // the full export, so a record whose counter or lock equals the last
+      // one this edge received (`cloud_failed_attempts`,
+      // `cloud_locked_until`) is a replay, not a new failure. Without that,
+      // GREATEST against the raw cloud values restored a counter or lock the
+      // edge had already cleared (a correct PIN, AUTH-06). "Differs", not
+      // "above": the cloud counter can go down too (a correct PIN on the
+      // cloud resets it to 0), so a new cloud failure may sit below the
+      // stored baseline and must still count. The raise is still only taken
+      // when it is above the local value. A null baseline (a row from before
+      // the columns existed, or a new pin) treats the record as new. The
+      // record's values always become the new baseline.
+      // The value alone cannot see a cloud counter that went 3 -> 0 -> 3
+      // between two pulls (legend-r11j7): the record equals the baseline and
+      // was dropped as a replay. The cloud `attempt_revision` moves on every
+      // counter or hash change (not a lock-only one), so when both sides carry one, the
+      // revision decides whether the counter moved; a replay (cloud restart
+      // resync) keeps the same revision and still changes nothing. Without a
+      // revision on either side (older cloud export, or the first pull after
+      // the upgrade: null baseline) the value comparison above applies once,
+      // and the revision is stored as the baseline (a record without one
+      // stores null: the baseline revision is unknown again). The raise still needs
+      // the record above the local counter, the lock logic stays by value.
+      const revisionKnown =
+        record.attemptRevision !== undefined &&
+        local.cloudAttemptRevision !== null;
+      const counterMoved = revisionKnown
+        ? record.attemptRevision !== Number(local.cloudAttemptRevision)
+        : record.failedAttempts !== (local.cloudFailedAttempts ?? -1);
+      const recordLock = material.lockedUntil;
+      const counterRaised =
+        counterMoved && record.failedAttempts > local.failedAttempts;
+      const lockRaised =
+        recordLock !== null &&
+        (local.cloudLockedUntil === null ||
+          recordLock.getTime() !== local.cloudLockedUntil.getTime()) &&
+        (local.lockedUntil === null ||
+          recordLock.getTime() > local.lockedUntil.getTime());
+      const baselineMoved =
+        (record.attemptRevision ?? null) !==
+          (local.cloudAttemptRevision === null
+            ? null
+            : Number(local.cloudAttemptRevision)) ||
+        local.cloudFailedAttempts !== record.failedAttempts ||
+        (local.cloudLockedUntil?.getTime() ?? null) !==
+          (recordLock?.getTime() ?? null);
+      const changed =
+        found!.keyOrder > 0 ||
+        found!.cloudKeyLater ||
+        counterRaised ||
+        lockRaised;
+      if (!changed && !baselineMoved) continue;
       await tx
         .update(staffPins)
         .set({
-          failedAttempts: material.failedAttempts,
-          lockedUntil: material.lockedUntil,
-          updatedAt: version,
+          ...(counterRaised ? { failedAttempts: record.failedAttempts } : {}),
+          ...(lockRaised ? { lockedUntil: recordLock } : {}),
+          cloudFailedAttempts: record.failedAttempts,
+          cloudLockedUntil: recordLock,
+          // A record without a revision leaves the baseline revision unknown
+          // (null), as on the insert and replace paths: keeping the old one
+          // would compare the next record against a stale revision.
+          cloudAttemptRevision: record.attemptRevision ?? null,
+          pinGenerationAt: sql`GREATEST(${staffPins.pinGenerationAt}, ${key})`,
+          cloudGenerationAt: sql`GREATEST(${staffPins.cloudGenerationAt}, ${key})`,
         })
         .where(eq(staffPins.id, local.id));
+      // A baseline-only write changes nothing the edge acts on: not "applied".
+      if (!changed) continue;
       applied += 1;
     }
-    return { applied, skipped: ordered.length - applied };
+    return {
+      applied,
+      skipped: ordered.length - applied,
+      ...(missingUsers > 0 ? { missingUsers } : {}),
+    };
   });
 }

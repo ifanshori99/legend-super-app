@@ -53,7 +53,7 @@ function scheduleSummary(
   return t("reportBuilder.schedule.summary", {
     when,
     format: t(`reportBuilder.schedule.formats.${schedule.format}`),
-    count: schedule.recipients.length,
+    count: schedule.recipientUserIds.length,
   });
 }
 
@@ -78,7 +78,7 @@ function ScheduleRow({
           dayOfWeek: schedule.dayOfWeek,
           dayOfMonth: schedule.dayOfMonth,
           format: schedule.format,
-          recipients: schedule.recipients,
+          recipientUserIds: schedule.recipientUserIds,
           isEnabled,
         },
       },

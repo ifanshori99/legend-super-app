@@ -25,15 +25,42 @@ import type {
 /** Online methods the guest screen offers (PRD §3.13 "Metode DOIT"). */
 export type OnlinePaymentMethod = "qris" | "va" | "bank_transfer";
 
+/**
+ * Every online method a gateway may offer. Founder rule (8 Nov 2026): the
+ * customer web takes QRIS, VA, e-wallet and card (plus pay at the cashier); POS
+ * adds EDC. DOIT serves QRIS, VA and bank transfer at release (e-wallets pay
+ * through QRIS); a gateway that adds direct e-wallet or card implements the
+ * same port and reports them from `methods()`, so no caller contract changes.
+ */
+export type GatewayPaymentMethod = OnlinePaymentMethod | "ewallet" | "card";
+
+/** One method as the provider reports it (PRD: "Daftar metode aktif diambil
+ * dari endpoint DOIT, bukan ditulis tetap di kode"). */
+export type GatewayMethodAvailability = {
+  readonly method: GatewayPaymentMethod;
+  readonly enabled: boolean;
+  readonly channels: readonly PaymentChannel[];
+};
+
 export type GatewayHealth = {
   readonly status: PaymentGatewayStatus;
+  /** `unconfigured`: the outlet has no usable gateway account (never set up).
+   * It reads as `down` for the guest, but it is not an outage, so it opens no
+   * failover incident and alerts nobody. */
+  readonly reason?: "unconfigured";
 };
 
 export type GatewayIntentRequest = {
   readonly context: ScopedTenantContext;
+  /** Outlet of the bill. A tenant-scoped caller (guest QR order) carries no
+   * outlet in its context, so the adapter picks that outlet's own credentials
+   * from here; absent, it falls back to the context's single outlet. */
+  readonly outletId?: string;
   readonly provider: string;
   readonly intentId: string;
-  readonly method: OnlinePaymentMethod;
+  /** A gateway refuses (CoreError VALIDATION_ERROR) a method it does not
+   * report as enabled from `methods()`. */
+  readonly method: GatewayPaymentMethod;
   readonly channelCode: string | null;
   /** Server-priced amount (PAY-01). */
   readonly amountIdr: number;
@@ -46,6 +73,10 @@ export type GatewayIntent = {
   readonly instructions: PaymentInstructions;
   /** The provider may shorten the lifetime (QRIS is about 10 minutes). */
   readonly expiresAt: string;
+  /** Integration row whose credentials created the payment; stored on the
+   * intent so status checks and webhooks use the same account later. Absent
+   * for a gateway without per-tenant integrations. */
+  readonly integrationId?: string | null;
 };
 
 export type GatewayPaymentStatus = {
@@ -53,22 +84,84 @@ export type GatewayPaymentStatus = {
   readonly providerRef: string;
   /** Amount the provider settled, when it reports one. */
   readonly amountIdr: number | null;
+  /** Provider time of the payment (ISO), when it reports one. A poll that
+   * finds the payment after the code lapsed records this time, not the poll
+   * time, so a payment made before expiry is never flagged late. Optional so
+   * test doubles written before it stay valid; absent means "not reported". */
+  readonly paidAt?: string | null;
+};
+
+/** A code that was replaced by another one on the same bill. */
+export type GatewayCancelRequest = {
+  readonly intentId: string;
+  /** Provider of the intent (`payment_intents.provider`). */
+  readonly provider: string;
+  readonly providerRef: string;
+  readonly outletId: string;
 };
 
 export interface PaymentGatewayPort {
   /** Provider code of the configured gateway (PRD default: DOIT). */
   readonly provider: string;
-  health(context: ScopedTenantContext): Promise<GatewayHealth>;
+  /** `outletId`: outlet of the bill, so a per-outlet adapter (m1 DOIT) picks
+   * that outlet's credentials; an adapter without outlets ignores it. */
+  health(
+    context: ScopedTenantContext,
+    outletId?: string,
+  ): Promise<GatewayHealth>;
   createIntent(input: GatewayIntentRequest): Promise<GatewayIntent>;
   getStatus(input: {
     context: ScopedTenantContext;
+    /** Outlet of the bill the payment belongs to (see GatewayIntentRequest). */
+    outletId?: string;
+    /** Integration that created the payment (`GatewayIntent.integrationId`).
+     * When given it wins over the outlet resolution, even if that row has
+     * been disabled since (money already in flight). */
+    integrationId?: string | null;
     providerRef: string;
+    /** When given, the adapter refuses (as a gateway error) a provider
+     * payment that was not created for this intent. */
+    intentId?: string;
   }): Promise<GatewayPaymentStatus>;
   /** Banks/channels for `va` and `bank_transfer`; empty for `qris`. */
   channels(
     context: ScopedTenantContext,
     method: OnlinePaymentMethod,
+    outletId?: string,
   ): Promise<PaymentChannel[]>;
+  /** Active methods from the provider's own endpoint. Optional so test
+   * doubles written before it stay valid; a missing method means "use
+   * `channels()` per online method". */
+  methods?(
+    context: ScopedTenantContext,
+    outletId?: string,
+  ): Promise<readonly GatewayMethodAvailability[]>;
+  /**
+   * Best effort: closes a superseded code at the provider so it stops taking
+   * money (a VA lives 3 hours). Optional; a code paid anyway is still settled
+   * by its verified webhook and its money returned (qr-order-consumers.ts).
+   */
+  cancel?(
+    context: ScopedTenantContext,
+    intent: GatewayCancelRequest,
+  ): Promise<void>;
+  /** Credential check for the admin "test connection" button (sub-302 D16).
+   * Works on a `draft` integration. Never returns secrets or raw provider
+   * bodies. Optional: a gateway without it answers NOT_SUPPORTED. */
+  testConnection?(
+    context: ScopedTenantContext,
+    integrationId: string,
+  ): Promise<
+    | {
+        readonly ok: true;
+        readonly methods: readonly GatewayMethodAvailability[];
+      }
+    | {
+        readonly ok: false;
+        readonly code:
+          "GATEWAY_AUTH_FAILED" | "GATEWAY_UNREACHABLE" | "GATEWAY_REJECTED";
+      }
+  >;
 }
 
 /**
@@ -79,7 +172,7 @@ export interface PaymentGatewayPort {
 export const unconfiguredPaymentGateway: PaymentGatewayPort = {
   provider: "unconfigured",
   async health() {
-    return { status: "down" };
+    return { status: "down", reason: "unconfigured" };
   },
   async createIntent() {
     throw new CoreError(
@@ -98,17 +191,55 @@ export const unconfiguredPaymentGateway: PaymentGatewayPort = {
   },
 };
 
-let gateway: PaymentGatewayPort = unconfiguredPaymentGateway;
+/** Registered adapters by provider code (sub-302 D1). */
+const registry = new Map<string, PaymentGatewayPort>();
+/** Test-only singleton mode (D2): `setPaymentGateway` makes one port answer
+ * for every provider, as the old singleton did. */
+let legacyPort: PaymentGatewayPort | null = null;
 
-/**
- * Installed by the API bootstrap (or a test) with a configured adapter. Never
- * install an adapter that skips verification: `confirmPayment` expects the
- * caller to have verified the evidence already.
- */
-export function setPaymentGateway(next: PaymentGatewayPort | null): void {
-  gateway = next ?? unconfiguredPaymentGateway;
+/** True while a test installed a port through `setPaymentGateway`. */
+export function paymentGatewayLegacyMode(): boolean {
+  return legacyPort !== null;
 }
 
-export function paymentGateway(): PaymentGatewayPort {
-  return gateway;
+/**
+ * Installed by the API bootstrap with one configured adapter per provider.
+ * Adds or replaces `port.provider` and leaves legacy mode. Never install an
+ * adapter that skips verification: `confirmPayment` expects the caller to have
+ * verified the evidence already.
+ */
+export function registerPaymentGateway(port: PaymentGatewayPort): void {
+  legacyPort = null;
+  registry.set(port.provider, port);
+}
+
+/** Adapter of `provider`; fails closed (`unconfiguredPaymentGateway`) when none
+ * is registered. */
+export function paymentGatewayFor(provider: string): PaymentGatewayPort {
+  if (legacyPort) return legacyPort;
+  return registry.get(provider) ?? unconfiguredPaymentGateway;
+}
+
+export function registeredGatewayProviders(): readonly string[] {
+  if (legacyPort) return [legacyPort.provider];
+  return [...registry.keys()];
+}
+
+/** Tests: drop every adapter and leave legacy mode. */
+export function resetPaymentGateways(): void {
+  registry.clear();
+  legacyPort = null;
+}
+
+/**
+ * Test-only shim (sub-302 D2): clears the registry, registers `next` and turns
+ * on legacy mode, where `paymentGatewayFor(anything)` returns `next`. `null`
+ * resets. Production code (`server.ts`, `worker-main.ts`) must call
+ * `registerPaymentGateway`, never this.
+ */
+export function setPaymentGateway(next: PaymentGatewayPort | null): void {
+  resetPaymentGateways();
+  if (!next) return;
+  registry.set(next.provider, next);
+  legacyPort = next;
 }

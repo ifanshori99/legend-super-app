@@ -16,6 +16,8 @@
 import { randomUUID } from "node:crypto";
 import {
   AccessError,
+  DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES,
+  DEFAULT_REFUND_APPROVAL_POLICIES,
   approvalPolicyChangedEvent,
   approvalMatrixSchema,
   approvalPolicySchema,
@@ -28,6 +30,8 @@ import {
   isRoleTemplateKey,
   normalizeCustomRolePermissions,
   ROLE_TEMPLATES,
+  rolePermissionsAsGranted,
+  withoutOwnerOnlyPermissions,
   roleCreatedEvent,
   roleAssignmentEndedEvent,
   roleAssignmentGrantedEvent,
@@ -74,8 +78,10 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { SYSTEM_ACCOUNT_ID } from "../lib/system-account";
 import { recordAudit } from "./audit-writer";
 import { appendOutbox } from "./core-outbox";
+import { SYSTEM_ACTOR_ID, type HrisActor } from "./hris-access";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -105,7 +111,9 @@ function toRole(row: RoleRow): Role {
     name: row.name,
     isTemplate: row.isTemplate,
     templateKey: row.templateKey,
-    permissions: row.permissions,
+    // legend-7vsby: Owner-only codes left in an old custom role are not shown,
+    // so the editor never sends them back (they would be refused).
+    permissions: rolePermissionsAsGranted(row.templateKey, row.permissions),
     mfaRequired: row.mfaRequired,
     allowedScopeTypes: row.allowedScopeTypes,
     createdAt: row.createdAt.toISOString(),
@@ -191,7 +199,7 @@ async function nextSequence(
 }
 
 /** Append one catalogued access event inside the caller's transaction. */
-async function appendAccessEvent(
+export async function appendAccessEvent(
   tx: Tx,
   context: ScopedTenantContext,
   definition: {
@@ -203,7 +211,8 @@ async function appendAccessEvent(
   },
   input: {
     aggregateId: string;
-    actorUserId: string;
+    /** A string is a user id; `{type:"system"}` is a scheduled job. */
+    actorUserId: string | HrisActor;
     payload: Record<string, unknown>;
     now: Date;
   },
@@ -224,7 +233,10 @@ async function appendAccessEvent(
     aggregateId: input.aggregateId,
     sequence,
     occurredAt: input.now.toISOString(),
-    actor: { type: "user", id: input.actorUserId },
+    actor:
+      typeof input.actorUserId === "string"
+        ? { type: "user", id: input.actorUserId }
+        : input.actorUserId,
     deviceId: null,
     idempotencyKey: `${definition.name}:${input.aggregateId}:${sequence}`.slice(
       0,
@@ -285,6 +297,75 @@ export async function seedTenantRoleTemplates(
     .insert(roles)
     .values(values)
     .onConflictDoNothing({ target: [roles.tenantId, roles.templateKey] });
+  // AIG-03 (legend-zw9r): AI and MCP actions only propose, the matrix decides;
+  // with no policy the approval service fails closed. Default: one level, the
+  // outlet manager (same as migration 0089 for existing tenants). Only fills
+  // actions the tenant has no policy for.
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT r.tenant_id, a.action_type, NULL, r.id, 1, true
+    FROM roles r
+    CROSS JOIN (VALUES ('ai_action'), ('mcp_action')) AS a(action_type)
+    WHERE r.tenant_id = ${tenantId}
+      AND r.is_template
+      AND r.template_key = 'outlet_manager'
+      AND NOT EXISTS (
+        SELECT 1 FROM approval_policies p
+        WHERE p.tenant_id = r.tenant_id AND p.action_type = a.action_type
+      )
+  `);
+  // legend-zi9o: refund needs the supervisor's approval (PRD §3.6, D14), so a
+  // refund below every tier must not skip the inbox. Default matrix from Rp0
+  // (DEFAULT_REFUND_APPROVAL_POLICIES; same row as migration 0134): one
+  // supervisor level-1 row at floor 0. Only when the tenant has no refund row
+  // and a supervisor template role exists (the join yields nothing otherwise).
+  const refundValues = sql.join(
+    DEFAULT_REFUND_APPROVAL_POLICIES.map(
+      (row) =>
+        sql`(${row.thresholdIdr}::bigint, ${row.level}::int, ${row.roleTemplateKey}::text)`,
+    ),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT ${tenantId}::uuid, 'refund', d.threshold_idr, r.id, d.level, true
+    FROM (VALUES ${refundValues}) AS d(threshold_idr, level, template_key)
+    JOIN roles r
+      ON r.tenant_id = ${tenantId}::uuid
+     AND r.is_template
+     AND r.template_key = d.template_key
+    WHERE NOT EXISTS (
+      SELECT 1 FROM approval_policies p
+      WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'refund'
+    )
+  `);
+  // legend-ccpn: every shift close needs one approval (Q28, PRD §3.10), PIN at
+  // the cashier is enough. Default matrix from Rp0
+  // (DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES; same rows as the data
+  // migration): level 1 for supervisor, outlet manager and general manager,
+  // the templates that hold shift.cash.approve_close. All rows land in one
+  // statement, only when the tenant has no cash_shift_close row; a template
+  // role that does not exist adds no row.
+  const cashShiftCloseValues = sql.join(
+    DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map(
+      (row) =>
+        sql`(${row.thresholdIdr}::bigint, ${row.level}::int, ${row.roleTemplateKey}::text)`,
+    ),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT ${tenantId}::uuid, 'cash_shift_close', d.threshold_idr, r.id, d.level, true
+    FROM (VALUES ${cashShiftCloseValues}) AS d(threshold_idr, level, template_key)
+    JOIN roles r
+      ON r.tenant_id = ${tenantId}::uuid
+     AND r.is_template
+     AND r.template_key = d.template_key
+    WHERE NOT EXISTS (
+      SELECT 1 FROM approval_policies p
+      WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'cash_shift_close'
+    )
+  `);
 }
 
 export function roleTemplateValues(tenantId: string) {
@@ -384,19 +465,10 @@ export async function updateCustomRole(
     /** Last successful re-authentication of the editor, or null (no bypass). */
     reauthenticatedAt: Date | null;
     mfaVerified: boolean;
-    now?: Date;
   },
 ): Promise<Role> {
   const { actorUserId } = options;
-  const now = options.now ?? new Date();
   return withTenant(db, context, async (tx) => {
-    await assertTenantPermission(
-      tx,
-      context,
-      actorUserId,
-      "access.role.manage",
-      now,
-    );
     const [current] = await tx
       .select()
       .from(roles)
@@ -405,6 +477,19 @@ export async function updateCustomRole(
       )
       .limit(1)
       .for("update");
+    // legend-tegsk: "now" is read AFTER the role row lock. An editor ended
+    // while this call waited for another editor's lock would otherwise still
+    // look active at a clock read taken before the wait. The permission check
+    // runs before the 404 so an unauthorized caller learns nothing about the
+    // role.
+    const now = new Date();
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.role.manage",
+      now,
+    );
     if (!current) throw new HttpError(404, "NOT_FOUND", "Role not found.");
     if (current.isTemplate)
       throw new HttpError(
@@ -412,9 +497,11 @@ export async function updateCustomRole(
         "VALIDATION_ERROR",
         "Template roles are fixed; create a custom role instead.",
       );
+    // legend-7vsby: any edit drops Owner-only codes stored before the rule;
+    // the removal shows in the event and the audit entry.
     const nextPermissions =
       input.permissions === undefined
-        ? current.permissions
+        ? withoutOwnerOnlyPermissions(current.permissions)
         : normalizeCustomRolePermissions(input.permissions, {
             mfaRequested: input.mfaRequired,
           }).permissions;
@@ -613,11 +700,17 @@ export async function grantRoleAssignment(
     /** Last successful re-authentication of the grantor, or null (denied). */
     reauthenticatedAt: Date | null;
     mfaVerified: boolean;
-    now?: Date;
   },
 ): Promise<RoleAssignment> {
-  const now = options.now ?? new Date();
   return withTenant(db, context, async (tx) => {
+    // legend-8ajy4: the same per-tenant lock as endRoleAssignment and the
+    // platform Owner path, taken first, and "now" read after it. A grantor
+    // whose assignment another caller ended while this one waited is then
+    // seen as ended (READ COMMITTED re-reads below) and cannot still grant.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
+    );
+    const now = new Date();
     const [roleRow] = await tx
       .select()
       .from(roles)
@@ -630,12 +723,26 @@ export async function grantRoleAssignment(
       .limit(1);
     if (!roleRow) throw new HttpError(404, "NOT_FOUND", "Role not found.");
     const [grantee] = await tx
-      .select({ id: user.id })
+      .select({ id: user.id, banned: user.banned, banExpires: user.banExpires })
       .from(user)
       .where(eq(user.id, input.userId))
       .limit(1);
     if (!grantee)
       throw new HttpError(422, "VALIDATION_ERROR", "Unknown user account.");
+    // legend-2dnh: the reserved system account (approval requester of refunds the
+    // system creates) and an account under an active ban (no expiry, or one still
+    // ahead) never receive a role. Migration 0144 enforces the same rule in the
+    // database for every other path.
+    const banActive =
+      grantee.banned === true &&
+      (grantee.banExpires === null ||
+        grantee.banExpires.getTime() > Date.now());
+    if (grantee.id === SYSTEM_ACCOUNT_ID || banActive)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "This account cannot be given a role.",
+      );
     const data = await loadTenantAccessInTransaction(
       tx,
       context,
@@ -660,7 +767,9 @@ export async function grantRoleAssignment(
       granteeUserId: input.userId,
       role: {
         id: roleIdSchema.parse(roleRow.id),
-        permissions: roleRow.permissions,
+        // Same read rule as toRole (legend-7vsby): Owner-only codes left in
+        // an old custom role are not part of what this grant delegates.
+        permissions: rolePermissionsAsGranted(templateKey, roleRow.permissions),
         mfaRequired: roleRow.mfaRequired,
         templateKey,
         level: template?.level ?? "tenant",
@@ -740,7 +849,7 @@ export async function grantRoleAssignment(
  * Owner assignment protection (coordinator decision C6, bead legend-vbws;
  * PRD §3.7 "Owner / Direksi — Seluruh tenant sesuai cakupan"). Only an active
  * tenant Owner may end another Owner's assignment, and the tenant must keep at
- * least one active tenant-scoped Owner: two Owners cannot remove each other,
+ * least one active, open-ended tenant-scoped Owner: two Owners cannot remove each other,
  * and nobody can lock a tenant out of its top authority.
  */
 async function assertCanEndOwnerAssignment(
@@ -762,7 +871,11 @@ async function assertCanEndOwnerAssignment(
     .limit(1);
   if (targetRole?.templateKey !== "owner") return;
   const activeOwners = await tx
-    .select({ id: roleAssignments.id, userId: roleAssignments.userId })
+    .select({
+      id: roleAssignments.id,
+      userId: roleAssignments.userId,
+      validUntil: roleAssignments.validUntil,
+    })
     .from(roleAssignments)
     .innerJoin(
       roles,
@@ -800,9 +913,16 @@ async function assertCanEndOwnerAssignment(
   const targetActive =
     target.validFrom.getTime() <= now.getTime() &&
     (target.validUntil === null || now.getTime() < target.validUntil.getTime());
+  // legend-qr1uv: only an open-ended Owner (valid_until null) counts as the
+  // Owner that remains. A temporary Owner is still an Owner for authority
+  // above, but it expires by itself and would leave the tenant Owner-less;
+  // after legend-7vsby only a Super Admin could recover that. Same rule as
+  // the platform Owner path (platform-tenant-owner.service.ts).
   if (
     targetActive &&
-    activeOwners.filter((row) => row.id !== target.id).length === 0
+    activeOwners.filter(
+      (row) => row.id !== target.id && row.validUntil === null,
+    ).length === 0
   )
     throw new HttpError(
       409,
@@ -816,23 +936,30 @@ export async function endRoleAssignment(
   assignmentId: string,
   input: EndRoleAssignmentInput,
   actorUserId: string,
-  now = new Date(),
 ): Promise<RoleAssignment> {
   return withTenant(db, context, async (tx) => {
+    // One lock per tenant for every "end assignment", taken BEFORE any row
+    // lock: two Owners ending each other's assignment would otherwise each
+    // hold their target row and wait for the other's in the Owner check
+    // (deadlock → 40P01 → 500). The second caller now waits here and
+    // re-reads the Owner set after the first commits (READ COMMITTED).
+    // The platform Owner path (platform-tenant-owner.service.ts) and
+    // grantRoleAssignment (legend-8ajy4) take the same lock; the key keeps
+    // its "-end" name so all three stay in step.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
+    );
+    // legend-qr1uv: "now" is read AFTER the lock. A clock read before it is
+    // earlier than the valid_until the previous holder committed, so an Owner
+    // ended while this call waited would still look active, and two Owners
+    // could end each other. The permission check uses the same instant.
+    const now = new Date();
     await assertTenantPermission(
       tx,
       context,
       actorUserId,
       "access.role.assign",
       now,
-    );
-    // One lock per tenant for every "end assignment", taken BEFORE any row
-    // lock: two Owners ending each other's assignment would otherwise each
-    // hold their target row and wait for the other's in the Owner check
-    // (deadlock → 40P01 → 500). The second caller now waits here and
-    // re-reads the Owner set after the first commits (READ COMMITTED).
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
     );
     const [current] = await tx
       .select()
@@ -1053,4 +1180,145 @@ export async function replaceApprovalMatrix(
     );
     return { data: after };
   });
+}
+
+// ------------------------------------------------- offboarding (legend-ovxw)
+
+export type OffboardingRoleEndResult = { endedAssignmentIds: string[] };
+
+/**
+ * Ends every active or future role assignment of `userId` in this tenant,
+ * inside the caller's tenant transaction, for exit clearance
+ * (`hris-offboarding.service.ts`; docs/DECISIONS.md "WS-10 lifecycle" §2).
+ * The caller has already authorised the offboarding with tenant-wide
+ * `hr.employee.manage`, so `context` is tenant scoped (access events are
+ * tenant-wide and the outbox refuses them under an outlet scope).
+ *
+ * Takes the same tenant advisory lock as `endRoleAssignment`, before any row
+ * lock, so it serialises with grants and other ends. `now` must be read by the
+ * caller AFTER that lock is held (legend-qr1uv); the lock is re-entrant, so a
+ * caller that took it first keeps one instant for the whole clearance.
+ * Refuses (409, nothing written) an employee who holds an Owner assignment:
+ * the Owner is replaced through the access flow first, never by HR. A
+ * tenant-scoped assignment needs `canAssignRoles` (the caller holds
+ * `access.role.assign` tenant-wide), else 409: HR alone cannot strip a
+ * company-level role. An active row ends at `now`; a future-dated row ends at
+ * its own `valid_from`, an empty window that never grants (`valid_until` is
+ * exclusive). Each ended row gets the `role_assignment.ended` event and audit
+ * row, like `endRoleAssignment`. Already ended rows are skipped, so a rerun
+ * ends nothing.
+ */
+export async function endUserRoleAssignmentsForOffboardingInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  userId: string,
+  actor: HrisActor | string,
+  reason: string,
+  canAssignRoles: boolean,
+  now: Date,
+): Promise<OffboardingRoleEndResult> {
+  if (context.outletScope.kind !== "tenant")
+    throw new Error("offboarding role end needs a tenant-scoped context");
+  const resolved: HrisActor =
+    typeof actor === "string" ? { type: "user", id: actor } : actor;
+  // A system run records the nil UUID wherever a "who" column needs a value.
+  const actorUserId = resolved.type === "user" ? resolved.id : SYSTEM_ACTOR_ID;
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
+  );
+  const open = await tx
+    .select({
+      assignment: roleAssignments,
+      templateKey: roles.templateKey,
+    })
+    .from(roleAssignments)
+    .innerJoin(
+      roles,
+      and(
+        eq(roles.tenantId, roleAssignments.tenantId),
+        eq(roles.id, roleAssignments.roleId),
+      ),
+    )
+    .where(
+      and(
+        eq(roleAssignments.tenantId, context.tenant.tenantId),
+        eq(roleAssignments.userId, userId),
+        or(
+          isNull(roleAssignments.validUntil),
+          gt(roleAssignments.validUntil, now),
+        ),
+      ),
+    )
+    .orderBy(asc(roleAssignments.id))
+    .for("update", { of: roleAssignments });
+  if (open.some((row) => row.templateKey === "owner"))
+    throw new HttpError(
+      409,
+      "OFFBOARDING_OWNER",
+      "Karyawan ini masih Owner. Ganti Owner lewat pengaturan akses dulu.",
+    );
+  if (
+    !canAssignRoles &&
+    open.some((row) => row.assignment.scopeType === "tenant")
+  )
+    throw new HttpError(
+      409,
+      "OFFBOARDING_ADMIN_ROLE",
+      "Karyawan ini punya peran tingkat perusahaan. Minta admin akses mencabutnya.",
+    );
+  const endedAssignmentIds: string[] = [];
+  for (const { assignment: current } of open) {
+    // A future-dated row ends at its own start: an empty window. Copied in
+    // SQL, because valid_from keeps microseconds a JS Date would drop.
+    const future = current.validFrom.getTime() > now.getTime();
+    const [row] = await tx
+      .update(roleAssignments)
+      .set({
+        validUntil: future ? sql`${roleAssignments.validFrom}` : now,
+      })
+      .where(
+        and(
+          eq(roleAssignments.tenantId, context.tenant.tenantId),
+          eq(roleAssignments.id, current.id),
+        ),
+      )
+      .returning();
+    const validUntil = row.validUntil ?? now;
+    await appendAccessEvent(tx, context, roleAssignmentEndedEvent, {
+      aggregateId: row.id,
+      actorUserId: resolved,
+      now,
+      payload: {
+        assignmentId: row.id,
+        userId: row.userId,
+        roleId: row.roleId,
+        validUntil: validUntil.toISOString(),
+        endedBy: actorUserId,
+        reason,
+      },
+    });
+    await recordAudit(
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: resolved.type,
+        actorId: resolved.type === "user" ? resolved.id : null,
+        deviceId: null,
+        action: "role_assignment.ended",
+        objectType: "role_assignment",
+        objectId: row.id,
+        reason,
+        before: {
+          userId: row.userId,
+          roleId: row.roleId,
+          validUntil: current.validUntil?.toISOString() ?? null,
+        },
+        after: { validUntil: validUntil.toISOString() },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    endedAssignmentIds.push(row.id);
+  }
+  return { endedAssignmentIds };
 }

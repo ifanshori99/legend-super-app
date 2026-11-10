@@ -31,6 +31,8 @@ export const qrCartMessages = {
     soldOut: "Habis",
     soldOutLine:
       "Menu ini baru saja habis dan akan dikeluarkan saat checkout. Hapus sekarang atau pilih menu lain.",
+    soldOutLineUntil:
+      "Menu ini belum tersedia dan akan dikeluarkan saat checkout. Hapus sekarang atau pilih menu lain.",
     subtotal: "Subtotal menu",
     subtotalHint: "Belum termasuk pajak dan service charge.",
     checkout: "Lanjut ke checkout",
@@ -123,6 +125,8 @@ export const qrCartMessages = {
         "Pesanan belum mencapai minimum belanja zona ini. Tambah menu lalu coba lagi.",
       closed: "Sesi meja sudah berakhir. Buka sesi baru untuk memesan.",
       cartEmpty: "Semua menu di keranjang habis. Pilih menu lain.",
+      dayClosed:
+        "Outlet sudah tutup untuk hari ini. Pesanan belum bisa dibuat, silakan hubungi staf.",
     },
   },
   pay: {

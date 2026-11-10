@@ -26,7 +26,6 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertOutletInScope,
   assertTrustedScopedContext,
-  idr,
   toIsoDateTime,
   z,
   type TenantId,
@@ -38,11 +37,13 @@ import {
   type PushProvider,
 } from "@starter/shared/adapters";
 import type { EventEnvelope } from "@starter/shared/events";
+import { facilityIncidentRaisedEvent } from "@starter/shared/facility";
 import {
   approvalRequestedEvent,
   approvalResolvedEvent,
 } from "@starter/shared/identity";
 import {
+  defaultNotificationPolicy,
   notificationPolicySchema,
   notificationPreferenceSchema,
   type NotificationCategory,
@@ -50,14 +51,24 @@ import {
   type NotificationPreference,
   type Reachability,
 } from "@starter/shared/notification";
+import { shiftCancelled, shiftPublished } from "@starter/shared/hris";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
+import { PLATFORM_EVENT_PAYLOADS } from "@starter/shared/platform";
+import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
+import {
+  paymentRefundEscalatedPayloadSchema,
+  type RefundEscalationReason,
+} from "@starter/shared/payment";
 import type * as schema from "../db/schema/index.ts";
+import { aiDailySummaries } from "../db/schema/ai-insights.ts";
 import {
   notificationPolicies,
   notificationPreferences,
   pushSubscriptions,
   whatsappReservations,
 } from "../db/schema/notification.ts";
+import { facilityIncidents } from "../db/schema/facility.ts";
+import { employees } from "../db/schema/hris.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets } from "../db/schema/platform-org.ts";
@@ -76,6 +87,8 @@ const DEFAULT_TIME_ZONE = "Asia/Jakarta";
 const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 const BREVO_TIMEOUT_MS = 10_000;
 const SETTINGS_MANAGE_PERMISSION = "org.settings.manage";
+const SUPPORT_ACCESS_APPROVE_PERMISSION = "org.support_access.approve";
+const FACILITY_BOOTH_OPERATE_PERMISSION = "facility.booth.operate";
 const OPS_ALERT_TEMPLATE_KEYS = ["supervisor", "outlet_manager"];
 
 /** Channels whose provider is configured; a disabled channel is never planned. */
@@ -112,32 +125,17 @@ async function loadPolicy(
     .select()
     .from(notificationPolicies)
     .where(eq(notificationPolicies.tenantId, tenantId));
-  return notificationPolicySchema.parse(
-    row
-      ? {
-          tenantId,
-          webPushEnabled: row.webPushEnabled,
-          emailEnabled: row.emailEnabled,
-          whatsapp: row.whatsapp,
-          maxAttempts: row.maxAttempts,
-          retryBackoffSeconds: row.retryBackoffSeconds,
-          updatedAt: toIsoDateTime(row.updatedAt),
-        }
-      : {
-          tenantId,
-          webPushEnabled: true,
-          emailEnabled: false,
-          whatsapp: {
-            enabled: false,
-            allowedCategories: [],
-            monthlyCap: 0,
-            costPerMessageIdr: idr(0),
-          },
-          maxAttempts: 3,
-          retryBackoffSeconds: [30, 120],
-          updatedAt: toIsoDateTime(now),
-        },
-  );
+  return row
+    ? notificationPolicySchema.parse({
+        tenantId,
+        webPushEnabled: row.webPushEnabled,
+        emailEnabled: row.emailEnabled,
+        whatsapp: row.whatsapp,
+        maxAttempts: row.maxAttempts,
+        retryBackoffSeconds: row.retryBackoffSeconds,
+        updatedAt: toIsoDateTime(row.updatedAt),
+      })
+    : defaultNotificationPolicy(tenantId, now);
 }
 
 async function loadRecipientState(
@@ -477,6 +475,27 @@ async function supportAccessRule(
   };
 }
 
+/** legend-c9kbk: a read_write request pages only those who can decide it:
+ * tenant-wide owner-template holders of `org.support_access.approve` (the
+ * service refuses anyone else). */
+async function supportAccessRequestedRule(input: RuleInput): Promise<Rule> {
+  const approvers = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.templateKey} = 'owner' AND ${roles.permissions} @> ${JSON.stringify([SUPPORT_ACCESS_APPROVE_PERMISSION])}::jsonb`,
+    { kind: "tenant" },
+  );
+  return {
+    userIds: approvers,
+    content: {
+      category: "security",
+      title: "Permintaan akses dukungan",
+      body: "Tim dukungan meminta akses ubah data sementara. Setujui atau tolak dalam 24 jam.",
+      link: null,
+    },
+  };
+}
+
 async function checklistRule(
   input: RuleInput,
   name: "checklist.missed" | "checklist.failed",
@@ -520,6 +539,374 @@ async function checklistRule(
   };
 }
 
+/** OPS-04: a maintenance schedule is coming due. Same audience as the
+ * checklist alerts: active supervisor and outlet-manager holders whose scope
+ * covers the outlet, owners (tenant-wide) when nobody holds those roles. */
+async function equipmentServiceRemindedRule(input: RuleInput): Promise<Rule> {
+  operationsEventPayloadSchemas["equipment_service.reminded"].parse(
+    input.event.payload,
+  );
+  if (!input.event.outletId)
+    throw new Error("Equipment service notification requires an outlet");
+  const audience = await audienceOf(input.tx, input.event);
+  const supervisors = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, OPS_ALERT_TEMPLATE_KEYS as never[]),
+    audience,
+  );
+  const userIds =
+    supervisors.length > 0
+      ? supervisors
+      : await activeAssignees(
+          input.tx,
+          input.tenantId,
+          eq(roles.templateKey, "owner"),
+          { kind: "tenant" },
+        );
+  return {
+    userIds,
+    content: {
+      category: "schedule_update",
+      title: "Servis peralatan segera jatuh tempo",
+      body: "Ada peralatan outlet yang jadwal servisnya jatuh tempo dalam 7 hari. Hubungi vendor servis.",
+      link: null,
+    },
+  };
+}
+
+/** FAC-08: the staff on duty answer the emergency button. No on-duty source
+ * exists yet, so the audience is active holders of `facility.booth.operate`
+ * whose scope covers the incident's outlet. The `emergency` category is the
+ * urgent lane: it bypasses quiet hours. Nobody holds it: owners take it. */
+async function facilityIncidentRaisedRule(input: RuleInput): Promise<Rule> {
+  const payload = facilityIncidentRaisedEvent.payloadSchema.parse(
+    input.event.payload,
+  );
+  if (!input.event.outletId)
+    throw new Error("Facility incident notification requires an outlet");
+  const [row] = await input.tx
+    .select({
+      outletId: facilityIncidents.outletId,
+      respondedAt: facilityIncidents.respondedAt,
+    })
+    .from(facilityIncidents)
+    .where(
+      and(
+        eq(facilityIncidents.tenantId, input.tenantId),
+        eq(facilityIncidents.id, payload.incidentId),
+      ),
+    );
+  if (!row) throw new Error("Facility incident not found for notification");
+  if (row.outletId !== input.event.outletId)
+    throw new Error("Facility incident outlet does not match the event");
+  const content: Content = {
+    category: "emergency",
+    title: "Tombol darurat ditekan",
+    body: "Ada tombol darurat fasilitas yang ditekan di outlet Anda. Segera tanggapi.",
+    link: null,
+  };
+  // A delayed event for an incident someone already answered pages nobody.
+  if (row.respondedAt !== null) return { userIds: [], content };
+  const audience = await audienceOf(input.tx, input.event);
+  const operators = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.permissions} @> ${JSON.stringify([FACILITY_BOOTH_OPERATE_PERMISSION])}::jsonb`,
+    audience,
+  );
+  const userIds =
+    operators.length > 0
+      ? operators
+      : await activeAssignees(
+          input.tx,
+          input.tenantId,
+          eq(roles.templateKey, "owner"),
+          { kind: "tenant" },
+        );
+  return { userIds, content };
+}
+
+// ---- AI insights (WS-12 wave 3: AI-09 anomaly, AI-10 daily summary) --------
+
+const ANOMALY_LABELS: Record<string, string> = {
+  void: "Void",
+  discount: "Diskon",
+  refund: "Refund",
+  waste: "Waste",
+};
+const rupiah = (value: number) =>
+  `Rp${new Intl.NumberFormat("id-ID").format(value)}`;
+
+/** Active holders of one permission code (through any role row) whose
+ * assignment scope covers the event's outlet. */
+async function permissionHolders(
+  input: RuleInput,
+  permission: string,
+): Promise<string[]> {
+  return activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.permissions} @> ${JSON.stringify([permission])}::jsonb`,
+    await audienceOf(input.tx, input.event),
+  );
+}
+
+async function aiAnomalyRule(input: RuleInput): Promise<Rule> {
+  const payload = AI_EVENT_PAYLOAD_SCHEMAS["ai_insight.anomaly_detected"].parse(
+    input.event.payload,
+  );
+  if (input.event.outletId !== payload.outletId)
+    throw new Error("Anomaly notification outlet mismatch");
+  const label = ANOMALY_LABELS[payload.kind] ?? payload.kind;
+  return {
+    userIds: await permissionHolders(input, "report.operational.view"),
+    content: {
+      category: "operational_anomaly",
+      title: `Anomali ${label.toLowerCase()} ${payload.businessDate}`,
+      body:
+        `${label} ${payload.businessDate}: ${rupiah(payload.observedIdr)}, ` +
+        `rata-rata 28 hari ${rupiah(payload.baselineIdr)} ` +
+        `(tingkat ${payload.severity === "high" ? "tinggi" : "perlu dicek"}).`,
+      link: null,
+    },
+  };
+}
+
+async function aiDailySummaryRule(input: RuleInput): Promise<Rule> {
+  const payload = AI_EVENT_PAYLOAD_SCHEMAS[
+    "ai_insight.daily_summary_ready"
+  ].parse(input.event.payload);
+  if (input.event.outletId !== payload.outletId)
+    throw new Error("Daily summary notification outlet mismatch");
+  const [row] = await input.tx
+    .select({ text: aiDailySummaries.text })
+    .from(aiDailySummaries)
+    .where(
+      and(
+        eq(aiDailySummaries.tenantId, input.tenantId),
+        eq(aiDailySummaries.id, payload.summaryId),
+      ),
+    );
+  if (!row) throw new Error("Daily summary not found");
+  return {
+    userIds: await permissionHolders(input, "report.sales.view"),
+    content: {
+      category: "daily_summary",
+      title: `Ringkasan harian ${payload.businessDate}`,
+      body: row.text.slice(0, 1000),
+      link: null,
+    },
+  };
+}
+
+function refundEscalatedBody(reason: RefundEscalationReason): string {
+  switch (reason) {
+    case "pending_unapproved":
+      return "Ada refund yang belum diproses dan sudah melewati batas waktu tunggu. Mohon ditinjau.";
+    case "provider_pending":
+      return "Ada refund yang sudah disetujui tetapi pengembalian dananya belum selesai di penyedia pembayaran. Mohon ditinjau.";
+    case "payout_stalled":
+      return "Ada refund yang sudah disetujui tetapi pembayarannya tertahan dan perlu ditangani manual. Mohon ditinjau.";
+    default: {
+      const unreachable: never = reason;
+      return unreachable;
+    }
+  }
+}
+
+/** A refund waited past its tenant threshold: outlet managers (their outlet)
+ * and finance (tenant-wide) decide. Body carries no amount or customer data. */
+async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
+  const payload = paymentRefundEscalatedPayloadSchema.parse(
+    input.event.payload,
+  );
+  const audience = await audienceOf(input.tx, input.event);
+  const managers = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, ["outlet_manager"] as never[]),
+    audience,
+  );
+  const finance = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, ["finance"] as never[]),
+    { kind: "tenant" },
+  );
+  const handlers = [...new Set([...managers, ...finance])].sort();
+  // Nobody to escalate to: the owners (tenant-wide) take the alert instead.
+  const userIds =
+    handlers.length > 0
+      ? handlers
+      : await activeAssignees(
+          input.tx,
+          input.tenantId,
+          eq(roles.templateKey, "owner"),
+          { kind: "tenant" },
+        );
+  return {
+    userIds,
+    content: {
+      category: "approval_request",
+      title: "Refund menunggu terlalu lama",
+      body: refundEscalatedBody(payload.reason),
+      link: null,
+    },
+  };
+}
+
+const OWNER_CHANGE_TIME = new Intl.DateTimeFormat("id-ID", {
+  timeZone: "Asia/Jakarta",
+  dateStyle: "long",
+  timeStyle: "short",
+});
+
+const OWNER_CHANGE_REASON_MAX = 300;
+const NOTIFICATION_BODY_MAX = 1000;
+
+/** Name first; the email only when it is a real one (WhatsApp invites get a
+ * `@wa.invalid` placeholder). */
+function accountLabel(account: { name: string; email: string }): string {
+  const name = account.name.trim();
+  if (account.email.endsWith("@wa.invalid")) return name || "akun baru";
+  return name ? `${name} (${account.email})` : account.email;
+}
+
+/** legend-fmpgz (Q46): a platform Super Admin appointed or replaced an Owner.
+ * Recipients come from database rows only: every active tenant Owner plus the
+ * replaced Owner (read from the replaced assignment row; it has ended by now).
+ * Owners that ended earlier are not told. */
+async function tenantOwnerChangedRule(input: RuleInput): Promise<Rule> {
+  const payload = PLATFORM_EVENT_PAYLOADS["tenant_owner.changed"].parse(
+    input.event.payload,
+  );
+  const wanted: string[] = [payload.newAssignmentId];
+  if (payload.replacedAssignmentId !== null)
+    wanted.push(payload.replacedAssignmentId);
+  const rows = await input.tx
+    .select({
+      id: roleAssignments.id,
+      userId: roleAssignments.userId,
+      name: user.name,
+      email: user.email,
+    })
+    .from(roleAssignments)
+    .innerJoin(
+      roles,
+      and(
+        eq(roles.tenantId, roleAssignments.tenantId),
+        eq(roles.id, roleAssignments.roleId),
+      ),
+    )
+    .innerJoin(user, eq(user.id, roleAssignments.userId))
+    .where(
+      and(
+        eq(roleAssignments.tenantId, input.tenantId),
+        inArray(roleAssignments.id, wanted),
+        eq(roles.templateKey, "owner"),
+        eq(roleAssignments.scopeType, "tenant"),
+      ),
+    );
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const created = byId.get(payload.newAssignmentId);
+  if (!created) throw new Error("Owner assignment not found for notification");
+  const replaced =
+    payload.replacedAssignmentId === null
+      ? null
+      : (byId.get(payload.replacedAssignmentId) ?? null);
+  if (payload.replacedAssignmentId !== null && !replaced)
+    throw new Error("Replaced Owner assignment not found for notification");
+  const [actor] = await input.tx
+    .select({ name: user.name })
+    .from(user)
+    .where(eq(user.id, payload.actorUserId));
+  // Staff identity stays a name only, like the support access notices.
+  const actorLabel = actor?.name.trim() ? actor.name.trim() : "tim platform";
+  const when = `${OWNER_CHANGE_TIME.format(new Date(payload.changedAt))} WIB`;
+  const what = replaced
+    ? `mengganti Owner ${accountLabel(replaced)} dengan ${accountLabel(created)}`
+    : `menunjuk ${accountLabel(created)} sebagai Owner`;
+  // Owners appointed after this change (or before a replay) are not told.
+  const owners = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    required(
+      and(
+        eq(roles.templateKey, "owner"),
+        lte(roleAssignments.validFrom, new Date(payload.changedAt)),
+      ),
+    ),
+    { kind: "tenant" },
+  );
+  const body = `Super Admin platform ${actorLabel} ${what} pada ${when}. Alasan: ${payload.reason.slice(0, OWNER_CHANGE_REASON_MAX)}`;
+  return {
+    userIds: replaced ? [...owners, replaced.userId] : owners,
+    content: {
+      category: "security",
+      title: replaced
+        ? "Owner diganti oleh platform"
+        : "Owner baru ditunjuk oleh platform",
+      body:
+        body.length > NOTIFICATION_BODY_MAX
+          ? `${body.slice(0, NOTIFICATION_BODY_MAX - 1)}…`
+          : body,
+      link: null,
+    },
+  };
+}
+
+/** F26 "Notifikasi Jadwal": the employee who owns a published (or swapped)
+ * shift hears about it. Ids only in the event; the name never leaves the DB. */
+async function shiftPublishedRule(input: RuleInput): Promise<Rule> {
+  const payload = shiftPublished.payloadSchema.parse(input.event.payload);
+  const [row] = await input.tx
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, input.tenantId),
+        eq(employees.id, payload.employeeId),
+      ),
+    );
+  return {
+    userIds: row?.userId ? [row.userId] : [],
+    content: {
+      category: "schedule_update",
+      title: "Jadwal shift diperbarui",
+      body: `Jadwal shift kamu untuk ${payload.businessDate} sudah tersedia atau berubah. Buka Jadwal untuk melihat jamnya.`,
+      link: null,
+    },
+  };
+}
+
+/** F26: the employee who no longer works a shift hears it too, whether the
+ * manager cancelled it or an approved swap/cover moved it to someone else. */
+async function shiftCancelledRule(input: RuleInput): Promise<Rule> {
+  const payload = shiftCancelled.payloadSchema.parse(input.event.payload);
+  const [row] = await input.tx
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, input.tenantId),
+        eq(employees.id, payload.employeeId),
+      ),
+    );
+  const swapped = payload.cause === "swapped_away";
+  return {
+    userIds: row?.userId ? [row.userId] : [],
+    content: {
+      category: "schedule_update",
+      title: swapped ? "Shift kamu dialihkan" : "Shift dibatalkan",
+      body: swapped
+        ? `Shift kamu untuk ${payload.businessDate} dialihkan lewat tukar atau gantikan shift. Kamu tidak perlu masuk di shift itu.`
+        : `Shift kamu untuk ${payload.businessDate} dibatalkan. Kamu tidak perlu masuk di shift itu.`,
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -530,9 +917,27 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return supportAccessRule(input, false);
     case "support_access.ended":
       return supportAccessRule(input, true);
+    case "support_access.requested":
+      return supportAccessRequestedRule(input);
     case "checklist.missed":
     case "checklist.failed":
       return checklistRule(input, input.event.name);
+    case "equipment_service.reminded":
+      return equipmentServiceRemindedRule(input);
+    case "shift.published":
+      return shiftPublishedRule(input);
+    case "shift.cancelled":
+      return shiftCancelledRule(input);
+    case "facility_incident.raised":
+      return facilityIncidentRaisedRule(input);
+    case "ai_insight.anomaly_detected":
+      return aiAnomalyRule(input);
+    case "ai_insight.daily_summary_ready":
+      return aiDailySummaryRule(input);
+    case "payment.refund_escalated":
+      return refundEscalatedRule(input);
+    case "tenant_owner.changed":
+      return tenantOwnerChangedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }

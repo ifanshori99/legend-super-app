@@ -40,6 +40,7 @@ import {
   depreciationRunSchema,
   disposalResultIdr,
   disposeFixedAssetInputSchema,
+  fixedAssetDerivedFields,
   fixedAssetSchema,
   nextPeriod,
   periodBounds,
@@ -64,6 +65,7 @@ import {
 } from "@starter/shared/core";
 import { db } from "../db";
 import {
+  assetCategories,
   depreciationRuns,
   fixedAssetDepreciations,
   fixedAssetRevaluations,
@@ -89,6 +91,7 @@ import {
   outletVisible,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
+import { requireAssetCategory } from "./accounting-asset-categories.service.ts";
 import { requireLegalEntity, requireOutlet } from "./accounting-shared.ts";
 import { appendOutbox } from "./core-outbox.ts";
 
@@ -179,15 +182,41 @@ export function revaluationPlan(
 
 // ------------------------------------------------------------- mapping
 
-export function toFixedAsset(row: FixedAssetRow): FixedAsset {
+/** Read-side fields that are not stored on the asset row. */
+export type FixedAssetSummary = Pick<
+  FixedAsset,
+  | "categoryName"
+  | "originalCostIdr"
+  | "revaluationSurplusIdr"
+  | "revaluationLossIdr"
+>;
+
+/** Summary of an asset that has never been revalued and has no category. */
+const plainSummary = (row: FixedAssetRow): FixedAssetSummary => ({
+  categoryName: null,
+  originalCostIdr: row.costIdr,
+  revaluationSurplusIdr: 0 as Idr,
+  revaluationLossIdr: 0 as Idr,
+});
+
+export function toFixedAsset(
+  row: FixedAssetRow,
+  summary: FixedAssetSummary = plainSummary(row),
+): FixedAsset {
   return fixedAssetSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
     legalEntityId: row.legalEntityId,
     outletId: row.outletId,
+    code: row.code,
+    categoryId: row.categoryId,
+    categoryName: summary.categoryName,
     name: row.name,
     acquiredOn: row.acquiredOn,
     costIdr: row.costIdr,
+    originalCostIdr: summary.originalCostIdr,
+    revaluationSurplusIdr: summary.revaluationSurplusIdr,
+    revaluationLossIdr: summary.revaluationLossIdr,
     residualValueIdr: row.residualValueIdr,
     usefulLifeMonths: row.usefulLifeMonths,
     method: row.method,
@@ -197,7 +226,87 @@ export function toFixedAsset(row: FixedAssetRow): FixedAsset {
     status: row.status,
     disposedOn: row.disposedOn,
     disposalProceedsIdr: row.disposalProceedsIdr,
+    ...fixedAssetDerivedFields(row),
   });
+}
+
+/**
+ * Hydrates asset rows with category name and revaluation summary using two
+ * set-based queries for the whole batch (no per-asset lookups).
+ *
+ * The surplus is not stored: each `fixed_asset_revaluations` row carries a
+ * delta = new carrying − (previous cost − previous accumulated); surplus is the
+ * sum of positive deltas, loss the sum of |negative| deltas. A revaluation
+ * restates `cost_idr` (elimination method), so `originalCostIdr` is the
+ * previous cost of the earliest revaluation.
+ */
+async function hydrateAssets(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  rows: readonly FixedAssetRow[],
+): Promise<FixedAsset[]> {
+  if (rows.length === 0) return [];
+  const categoryIds = [
+    ...new Set(
+      rows.flatMap((row) => (row.categoryId === null ? [] : [row.categoryId])),
+    ),
+  ];
+  const categories =
+    categoryIds.length === 0
+      ? []
+      : await tx
+          .select({ id: assetCategories.id, name: assetCategories.name })
+          .from(assetCategories)
+          .where(
+            and(
+              eq(assetCategories.tenantId, tenantId),
+              inArray(assetCategories.id, categoryIds),
+            ),
+          );
+  const names = new Map(categories.map((row) => [row.id, row.name]));
+  const delta = sql`${fixedAssetRevaluations.newCarryingAmountIdr} - (${fixedAssetRevaluations.previousCostIdr} - ${fixedAssetRevaluations.previousAccumulatedIdr})`;
+  const summaries = await tx
+    .select({
+      fixedAssetId: fixedAssetRevaluations.fixedAssetId,
+      originalCost: sql<string>`(array_agg(${fixedAssetRevaluations.previousCostIdr} ORDER BY ${fixedAssetRevaluations.revaluedOn}, ${fixedAssetRevaluations.createdAt}, ${fixedAssetRevaluations.id}))[1]`,
+      surplus: sql<string>`coalesce(sum(greatest(${delta}, 0)), 0)`,
+      loss: sql<string>`coalesce(sum(greatest(-(${delta}), 0)), 0)`,
+    })
+    .from(fixedAssetRevaluations)
+    .where(
+      and(
+        eq(fixedAssetRevaluations.tenantId, tenantId),
+        inArray(
+          fixedAssetRevaluations.fixedAssetId,
+          rows.map((row) => row.id),
+        ),
+      ),
+    )
+    .groupBy(fixedAssetRevaluations.fixedAssetId);
+  const byAsset = new Map(summaries.map((row) => [row.fixedAssetId, row]));
+  return rows.map((row) => {
+    const revaluation = byAsset.get(row.id);
+    return toFixedAsset(row, {
+      categoryName:
+        row.categoryId === null ? null : (names.get(row.categoryId) ?? null),
+      originalCostIdr: (revaluation
+        ? Number(revaluation.originalCost)
+        : row.costIdr) as Idr,
+      revaluationSurplusIdr: Number(revaluation?.surplus ?? 0) as Idr,
+      revaluationLossIdr: Number(revaluation?.loss ?? 0) as Idr,
+    });
+  });
+}
+
+/** One hydrated asset (writes return the same shape as reads). */
+async function hydrateAsset(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  row: FixedAssetRow,
+): Promise<FixedAsset> {
+  const [asset] = await hydrateAssets(tx, tenantId, [row]);
+  if (!asset) throw new Error("Fixed asset hydration returned no row.");
+  return asset;
 }
 
 function toRun(
@@ -448,6 +557,46 @@ function assertNotFuture(date: string, today: string, what: string): void {
   if (date > today) throw invalid(`${what} cannot be in the future.`);
 }
 
+/**
+ * The register code of a new asset, under an advisory lock per tenant + entity
+ * so concurrent registrations neither collide nor surface a unique violation:
+ * a supplied code must be free in the entity (409), an empty one becomes the
+ * next `FA-nnnnn` after the highest generated-style code of the entity.
+ */
+async function resolveAssetCode(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+  supplied: string | undefined,
+): Promise<string> {
+  await advisoryLock(tx, `fa-code:${tenantId}:${legalEntityId}`);
+  const inEntity = and(
+    eq(fixedAssets.tenantId, tenantId),
+    eq(fixedAssets.legalEntityId, legalEntityId),
+  );
+  if (supplied) {
+    const [taken] = await tx
+      .select({ id: fixedAssets.id })
+      .from(fixedAssets)
+      .where(and(inEntity, eq(fixedAssets.code, supplied)))
+      .limit(1);
+    if (taken)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        `Asset code ${supplied} is already used in this legal entity.`,
+      );
+    return supplied;
+  }
+  const [last] = await tx
+    .select({
+      max: sql<number | null>`max(substring(${fixedAssets.code} from 4)::int)`,
+    })
+    .from(fixedAssets)
+    .where(and(inEntity, sql`${fixedAssets.code} ~ '^FA-[0-9]{1,9}$'`));
+  return `FA-${String((last?.max ?? 0) + 1).padStart(5, "0")}`;
+}
+
 // ------------------------------------------------------------------ reads
 
 export async function listFixedAssets(
@@ -470,7 +619,7 @@ export async function listFixedAssets(
       .from(fixedAssets)
       .where(and(...filters))
       .orderBy(asc(fixedAssets.acquiredOn), asc(fixedAssets.id));
-    return { data: rows.map(toFixedAsset) };
+    return { data: await hydrateAssets(tx, tenantId, rows) };
   });
 }
 
@@ -491,7 +640,7 @@ export async function getFixedAsset(
       .limit(1);
     if (!row || !outletVisible(context, row.outletId))
       throw new HttpError(404, "NOT_FOUND", "Fixed asset not found.");
-    const asset = toFixedAsset(row);
+    const asset = await hydrateAsset(tx, context.tenant.tenantId, row);
     return { asset, schedule: straightLineSchedule(asset) };
   });
 }
@@ -575,6 +724,15 @@ export async function createFixedAsset(
         await requireLegalEntity(tx, tenantId, input.legalEntityId);
         if (input.outletId !== null)
           await requireOutlet(tx, tenantId, input.outletId);
+        const categoryId = input.categoryId ?? null;
+        if (categoryId !== null)
+          await requireAssetCategory(tx, tenantId, categoryId);
+        const code = await resolveAssetCode(
+          tx,
+          tenantId,
+          input.legalEntityId,
+          input.code,
+        );
         const id = newId();
         let acquisitionJournalEntryId: string | null = null;
         if (input.sourceDocumentId !== null) {
@@ -602,6 +760,8 @@ export async function createFixedAsset(
             tenantId,
             legalEntityId: input.legalEntityId,
             outletId: input.outletId,
+            code,
+            categoryId,
             name: input.name,
             acquiredOn: input.acquiredOn,
             costIdr: input.costIdr,
@@ -615,7 +775,7 @@ export async function createFixedAsset(
           })
           .returning();
         if (!row) throw new Error("Fixed asset insert returned no row.");
-        const asset = toFixedAsset(row);
+        const asset = await hydrateAsset(tx, tenantId, row);
         await auditApFa(tx, context, {
           actorId,
           action: "accounting.fixed_asset.created",
@@ -624,6 +784,7 @@ export async function createFixedAsset(
           outletId: input.outletId,
           before: null,
           after: {
+            code: asset.code,
             costIdr: asset.costIdr,
             residualValueIdr: asset.residualValueIdr,
             usefulLifeMonths: asset.usefulLifeMonths,
@@ -742,7 +903,7 @@ export async function disposeFixedAsset(
             journalEntryId: entry.id,
           },
         });
-        return toFixedAsset(row);
+        return hydrateAsset(tx, tenantId, row);
       },
     ),
   );
@@ -862,7 +1023,7 @@ export async function revalueFixedAsset(
             journalEntryId: entry.id,
           },
         });
-        return toFixedAsset(row);
+        return hydrateAsset(tx, tenantId, row);
       },
     ),
   );

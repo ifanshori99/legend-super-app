@@ -161,6 +161,23 @@ test("POS-06: an offline device continues its own gapless run without duplicates
   assert.equal(new Set([first.number, second.number, "CLB-P1-000001"]).size, 3);
 });
 
+test("POS-06: cloud receipt prefix is fixed and edge refusals have their own codes", () => {
+  assert.equal(pos.CLOUD_RECEIPT_PREFIX, "C");
+  assert.equal(
+    pos.formatReceiptNumber(pos.CLOUD_RECEIPT_PREFIX, 1),
+    "C-000001",
+  );
+  for (const code of [
+    "RECEIPT_DEVICE_REQUIRED",
+    "RECEIPT_SEQUENCE_NOT_PROVISIONED",
+    "RECEIPT_VOID_UNMATCHED",
+    "RECEIPT_DEVICE_ON_EDGE",
+  ]) {
+    assert.equal(pos.POS_ERROR_CODES.includes(code), true);
+    assert.equal(new pos.PosError(code).code, code);
+  }
+});
+
 test("POS-04: final orders are immutable and corrections are linked records", () => {
   // The explicit status machine has no path out of completed or voided.
   assert.equal(pos.transitionPosOrder("draft", "submit"), "awaiting_payment");
@@ -276,8 +293,30 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
   // The client submits denominations only: no expected/counted/variance field
   // can be sent, because the object is strict.
   const counts = [{ denominationIdr: 100_000, quantity: 5 }];
+  const validCount = { counts, idempotencyKey: "count-shift-eve-0001" };
+  assert.equal(
+    pos.submitPosShiftCountInputSchema.safeParse(validCount).success,
+    true,
+  );
+  for (const forbidden of ["expectedIdr", "countedIdr", "varianceIdr"]) {
+    assert.equal(
+      pos.submitPosShiftCountInputSchema.safeParse({
+        ...validCount,
+        [forbidden]: 0,
+      }).success,
+      false,
+      `${forbidden} is never client input (POS-03)`,
+    );
+  }
+  assert.equal(
+    pos.submitPosShiftCountInputSchema.safeParse({ ...validCount, counts: [] })
+      .success,
+    false,
+  );
+
+  // The close names a stored count; the numbers can no longer ride along.
   const validClose = {
-    counts,
+    countId: P.shiftCounts.morningSecond,
     varianceNote: null,
     approvedBy: P.staff.supervisor,
     approvalRequestId: P.approvals.shiftClose,
@@ -287,23 +326,164 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
     pos.closePosShiftInputSchema.safeParse(validClose).success,
     true,
   );
-  for (const forbidden of ["expectedIdr", "countedIdr", "varianceIdr"]) {
+  for (const forbidden of [
+    "expectedIdr",
+    "countedIdr",
+    "varianceIdr",
+    "counts",
+  ]) {
     assert.equal(
       pos.closePosShiftInputSchema.safeParse({
         ...validClose,
-        [forbidden]: 0,
+        [forbidden]: forbidden === "counts" ? counts : 0,
       }).success,
       false,
-      `${forbidden} is never client input (POS-03)`,
+      `${forbidden} is never close input (POS-03)`,
+    );
+  }
+  assert.equal(
+    pos.closePosShiftInputSchema.safeParse({ ...validClose, countId: "x" })
+      .success,
+    false,
+  );
+
+  // legend-6c0: the close names the PIN override by its ULID, or by a uuid in
+  // any shape (the stored `ulidToUuid` form is not an RFC uuid).
+  const pinOverrideUlid = "01JD5Z8X3K9Q2M7R4T6V8W0YAB";
+  const nonRfcUuid = "019b3c5e-0000-0000-0000-00000000abcd";
+  for (const id of [pinOverrideUlid, nonRfcUuid]) {
+    assert.equal(
+      pos.closePosShiftInputSchema.safeParse({
+        ...validClose,
+        approvalRequestId: id,
+      }).success,
+      true,
+      `close accepts ${id}`,
     );
   }
   assert.equal(
     pos.closePosShiftInputSchema.safeParse({
       ...validClose,
+      approvalRequestId: "abc",
+    }).success,
+    false,
+  );
+
+  // U9 force close, step two: it names the supervisor's forced count (step one
+  // is the normal count submission); the numbers can no longer ride along.
+  const validForce = {
+    countId: P.shiftCounts.morningSecond,
+    note: "Kasir gagal hitung 3 kali",
+    approvedBy: P.staff.supervisor,
+    approvalRequestId: P.approvals.shiftClose,
+    idempotencyKey: "force-close-0001",
+  };
+  assert.equal(
+    pos.forceClosePosShiftInputSchema.safeParse(validForce).success,
+    true,
+  );
+  for (const id of [pinOverrideUlid, nonRfcUuid])
+    assert.equal(
+      pos.forceClosePosShiftInputSchema.safeParse({
+        ...validForce,
+        approvalRequestId: id,
+      }).success,
+      true,
+      `force close accepts ${id}`,
+    );
+  assert.equal(
+    pos.forceClosePosShiftInputSchema.safeParse({
+      ...validForce,
+      approvalRequestId: "abc",
+    }).success,
+    false,
+  );
+  for (const [label, patch] of [
+    ["a short note", { note: "terlalu" }],
+    ["no count", { countId: undefined }],
+    ["no witness", { approvedBy: undefined }],
+    ["no approval", { approvalRequestId: undefined }],
+    ["a counted total", { countedIdr: 0 }],
+    ["denominations", { counts }],
+    ["a system variance", { varianceIdr: 0 }],
+  ]) {
+    assert.equal(
+      pos.forceClosePosShiftInputSchema.safeParse({ ...validForce, ...patch })
+        .success,
+      false,
+      `force close refuses ${label}`,
+    );
+  }
+  assert.equal(pos.forceClosePosShift.method, "POST");
+  assert.equal(
+    pos.forceClosePosShift.path,
+    "/api/outlets/:outletId/pos/shifts/:shiftId/force-close",
+  );
+
+  // The blind receipt carries no expected figure and no variance.
+  const receipt = {
+    id: P.shiftCounts.morningSecond,
+    shiftId: P.shifts.morning,
+    sequence: 2,
+    countedIdr: 530_100,
+    noteRequired: true,
+    submittedAt: "2026-11-01T09:55:00.000Z",
+  };
+  assert.equal(pos.posShiftCountReceiptSchema.safeParse(receipt).success, true);
+  for (const leak of ["expectedIdr", "varianceIdr"]) {
+    assert.equal(
+      pos.posShiftCountReceiptSchema.safeParse({ ...receipt, [leak]: 0 })
+        .success,
+      false,
+      `${leak} never reaches the cashier`,
+    );
+  }
+  // Supervisor view: variance is counted − expected.
+  assert.equal(parsed.shiftCounts.length, 2);
+  assert.equal(
+    pos.posShiftCountSchema.safeParse({
+      ...parsed.shiftCounts[1],
+      varianceIdr: 0,
+    }).success,
+    true,
+    "schema shape only; the DB check enforces variance = counted − expected",
+  );
+  assert.equal(
+    pos.posShiftCountSchema.safeParse({
+      ...parsed.shiftCounts[1],
       counts: [],
     }).success,
     false,
   );
+  assert.equal(
+    pos.posShiftCountSchema.safeParse({
+      ...parsed.shiftCounts[1],
+      counts: [
+        { denominationIdr: 50_000, quantity: 1 },
+        { denominationIdr: 50_000, quantity: 2 },
+      ],
+    }).success,
+    false,
+  );
+  assert.equal(parsed.shifts[0].countId, parsed.shiftCounts[1].id);
+  assert.equal(parsed.shifts[1].countId, null);
+  assert.equal(
+    pos.posShiftSchema.safeParse({ ...parsed.shifts[0], countId: null })
+      .success,
+    false,
+    "a closed shift names the count it used",
+  );
+  assert.equal(
+    pos.posShiftSchema.safeParse({
+      ...parsed.shifts[1],
+      countId: P.shiftCounts.morningFirst,
+    }).success,
+    false,
+    "an open shift has no count",
+  );
+  assert.equal(pos.posErrorHttpStatus.SHIFT_COUNT_STALE, 409);
+  assert.equal(pos.posErrorHttpStatus.SHIFT_COUNT_SUPERSEDED, 409);
+  assert.equal(pos.posErrorHttpStatus.SHIFT_COUNT_LIMIT, 409);
 
   assert.equal(
     pos.blindCountTotalIdr([
@@ -314,6 +494,40 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
     503_000,
   );
   assert.throws(() => pos.blindCountTotalIdr([]), RangeError);
+
+  // Q8: the count is per Rupiah denomination, each at most once.
+  assert.equal(pos.IDR_CASH_DENOMINATIONS.length, 10);
+  assert.equal(
+    pos.submitPosShiftCountInputSchema.safeParse({
+      ...validCount,
+      counts: [{ denominationIdr: 75_000, quantity: 1 }],
+    }).success,
+    false,
+    "75.000 is not a note",
+  );
+  assert.equal(
+    pos.submitPosShiftCountInputSchema.safeParse({
+      ...validCount,
+      counts: [
+        { denominationIdr: 50_000, quantity: 1 },
+        { denominationIdr: 50_000, quantity: 2 },
+      ],
+    }).success,
+    false,
+    "a denomination is counted once",
+  );
+  assert.throws(
+    () => pos.blindCountTotalIdr([{ denominationIdr: 75_000, quantity: 1 }]),
+    RangeError,
+  );
+  assert.throws(
+    () =>
+      pos.blindCountTotalIdr([
+        { denominationIdr: 50_000, quantity: 1 },
+        { denominationIdr: 50_000, quantity: 2 },
+      ]),
+    RangeError,
+  );
 
   // The closed morning shift: expected comes from the drawer maths, never from
   // the cashier, and the difference is explained and approved.
@@ -332,6 +546,7 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
   const openShift = parsed.shifts[1];
   const closedNow = pos.closeShift(openShift, {
     counts,
+    countId: P.shiftCounts.morningFirst,
     varianceNote: null,
     approvedBy: P.staff.supervisor,
     approvalRequestId: P.approvals.shiftClose,
@@ -348,6 +563,7 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
     () =>
       pos.closeShift(closedNow, {
         counts,
+        countId: P.shiftCounts.morningFirst,
         varianceNote: null,
         approvedBy: P.staff.supervisor,
         approvalRequestId: P.approvals.shiftClose,
@@ -366,6 +582,7 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
     () =>
       pos.closeShift(openShift, {
         counts: [{ denominationIdr: 100_000, quantity: 4 }],
+        countId: P.shiftCounts.morningFirst,
         varianceNote: null,
         approvedBy: P.staff.supervisor,
         approvalRequestId: P.approvals.shiftClose,
@@ -619,6 +836,27 @@ test("F8 tenders: cash change, multi-tender coverage and refund allocation are s
     false,
     "tenders never exceed the bill",
   );
+  // legend-9pz9: the applied DP settles part of the bill. A completed sale
+  // fully covered by the DP has no tender; DP plus full tenders overpays.
+  const completed = parsed.orderDetails[0];
+  assert.equal(pos.posOrderDetailSchema.parse(completed).depositAppliedIdr, 0);
+  pos.posOrderDetailSchema.parse({
+    ...completed,
+    depositAppliedIdr: completed.totalIdr,
+    tenders: [],
+  });
+  for (const [label, order] of [
+    ["DP plus full tenders", { ...completed, depositAppliedIdr: 1_000 }],
+    [
+      "DP above the total",
+      { ...completed, depositAppliedIdr: completed.totalIdr + 1, tenders: [] },
+    ],
+  ])
+    assert.equal(
+      pos.posOrderDetailSchema.safeParse(order).success,
+      false,
+      label,
+    );
 
   // Every fixture tender is complete and captured once.
   for (const order of parsed.orders) {
@@ -659,6 +897,16 @@ test("F8 tenders: cash change, multi-tender coverage and refund allocation are s
     false,
     "only a cash tender sends receivedIdr",
   );
+});
+
+test("order item DTO: costSnapshotIdr is nullable (HPP not exposed) and never negative", () => {
+  // HPP is finance data (inventory.cost.view): the POS order DTO sends null.
+  const item = parsed.orderItems[0];
+  const withCost = (costSnapshotIdr) =>
+    pos.posOrderItemSchema.safeParse({ ...item, costSnapshotIdr });
+  const ok = withCost(null);
+  assert.equal(ok.success, true, JSON.stringify(ok.error?.issues));
+  assert.equal(withCost(-1).success, false, "negative HPP is rejected");
 });
 
 test("F8 hold & fire: items start held and are fired by item or course", () => {
@@ -772,11 +1020,24 @@ test("POS-07: e-receipt and kuitansi carry outlet name, address, items, tax and 
     pos.receiptDocumentSchema.safeParse({
       ...receiptDoc,
       taxLines: [],
-      taxIdr: 0,
-      totalIdr: 109_180,
     }).success,
     false,
-    "the tax line is printed (POS-07)",
+    "a taxed order prints its tax line (POS-07)",
+  );
+  // Founder decision Q4 (legend-93a): a tax-free order prints with no tax row.
+  assert.equal(
+    pos.receiptDocumentSchema.safeParse({
+      ...receiptDoc,
+      taxLines: [],
+      taxIdr: 0,
+      totalIdr: 109_180,
+      tenders: [
+        receiptDoc.tenders[0],
+        { ...receiptDoc.tenders[1], amountIdr: 99_180 },
+      ],
+    }).success,
+    true,
+    "a tax-free order prints without a tax row",
   );
   assert.equal(
     pos.receiptDocumentSchema.safeParse({
@@ -882,6 +1143,58 @@ test("F8 events: POS event names are registered on the WS-04 catalog line", () =
     }).success,
     false,
   );
+  // legend-9pz9: the reservation DP applied to the sale is its own amount,
+  // not a tender. Absent means 0 (an older payload), so tenders = totalIdr.
+  assert.equal(
+    pos.posEvents["order.paid"].envelopeSchema.parse(envelope).payload
+      .paidDepositIdr,
+    0,
+  );
+  // Part-paid by DP: the tenders settle totalIdr - paidDepositIdr.
+  const partDp = {
+    ...envelope.payload,
+    paidDepositIdr: 50_000,
+    paidCashIdr: 60_100,
+    tenders: [
+      { method: "points", amountIdr: 10_000 },
+      { method: "cash", amountIdr: 60_100 },
+    ],
+  };
+  pos.posEventSchema.parse({ ...envelope, payload: partDp });
+  // A DP that covers the whole total leaves no tender and still parses.
+  pos.posEventSchema.parse({
+    ...envelope,
+    payload: {
+      ...envelope.payload,
+      paidDepositIdr: 120_100,
+      paidCashIdr: 0,
+      paidPointsIdr: 0,
+      tenders: [],
+    },
+  });
+  for (const [label, payload] of [
+    // DP is not counted on top of tenders that already cover the total.
+    [
+      "DP on top of full tenders",
+      { ...envelope.payload, paidDepositIdr: 50_000 },
+    ],
+    ["DP above the total", { ...envelope.payload, paidDepositIdr: 120_101 }],
+    ["negative DP", { ...partDp, paidDepositIdr: -1 }],
+    [
+      "no tender and no DP",
+      {
+        ...envelope.payload,
+        paidCashIdr: 0,
+        paidPointsIdr: 0,
+        tenders: [],
+      },
+    ],
+  ])
+    assert.equal(
+      pos.posEventSchema.safeParse({ ...envelope, payload }).success,
+      false,
+      label,
+    );
   assert.equal(
     pos.posEventSchema.safeParse({ ...envelope, name: "kitchen_ticket.bumped" })
       .success,
@@ -1028,7 +1341,17 @@ test("F8 endpoints: paths, params and responses stay in step with the fixtures",
     movements: parsed.cashMovements,
     receiptGaps: [],
   });
+  respond(pos.submitPosShiftCount, {
+    id: parsed.shiftCounts[1].id,
+    shiftId: parsed.shiftCounts[1].shiftId,
+    sequence: parsed.shiftCounts[1].sequence,
+    countedIdr: parsed.shiftCounts[1].countedIdr,
+    noteRequired: true,
+    submittedAt: parsed.shiftCounts[1].submittedAt,
+  });
+  respond(pos.listPosShiftCounts, parsed.shiftCounts);
   respond(pos.closePosShift, parsed.shifts[0]);
+  respond(pos.forceClosePosShift, parsed.shifts[0]);
   respond(pos.recordPosCashMovement, parsed.cashMovements[0]);
   pos.listPosCashMovements.response.parse({
     data: parsed.cashMovements,
@@ -1319,6 +1642,8 @@ test("POS-04 order.paid and order.refunded payloads post balanced WS-07 journals
     pbjtIdr: 10_920,
     roundingIdr: -20,
     paidCashIdr: 110_100,
+    paidGatewayIntentIdr: 0,
+    paidDepositIdr: 0,
     paidGatewayIdr: 0,
     paidEdcIdr: 0,
     paidPointsIdr: 10_000,
@@ -1351,6 +1676,7 @@ test("POS-04 order.refunded rejects a revenue split that does not equal the refu
     reasonNote: "Pelanggan komplain",
     approvedBy: fixtureRefund.approvedBy,
     approvalRequestId: fixtureRefund.approvalRequestId,
+    overrideId: fixtureRefund.overrideId,
     grossSalesIdr: 52_000,
     discountIdr: 0,
     serviceChargeIdr: 2_600,

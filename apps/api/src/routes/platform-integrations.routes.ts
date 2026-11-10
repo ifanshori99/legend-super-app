@@ -1,7 +1,8 @@
 // Integrations store + quota/cost usage routes (PRD v1.7 §3 F4 "Integrasi per
 // Tenant", "Kuota & Plafon"; TEN-06, PAY-06). Contract:
 // @starter/shared/platform endpoints.ts (orgEndpoints.listIntegrations,
-// upsertIntegration, setIntegrationStatus, getUsage;
+// upsertIntegration, setIntegrationStatus, getUsage; the gateway
+// `POST /integrations/:integrationId/test` is declared here only);
 // platformEndpoints.getTenantUsage).
 //
 // Guards are attached per route, not with router.use(), so mounting these
@@ -33,13 +34,21 @@ import {
   getScopedTenantContext,
   requireTenantPermission,
 } from "../middleware/permissions.ts";
-import { requirePlatformAdmin } from "../middleware/platform-admin.ts";
+import {
+  requirePlatformAdmin,
+  requirePlatformAuth,
+} from "../middleware/platform-admin.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   listIntegrations,
   setIntegrationStatus,
   upsertIntegration,
 } from "../services/platform-integration.service.ts";
+import { testGatewayConnection } from "../services/payment-gateway-connection.service.ts";
+import {
+  getLoginReplySettings,
+  updateLoginReplySettings,
+} from "../services/wa-login-reply-settings.service.ts";
 import {
   getOrgUsage,
   getTenantUsageForPlatform,
@@ -108,6 +117,22 @@ orgIntegrationsRouter.post(
   },
 );
 
+orgIntegrationsRouter.post(
+  "/integrations/:integrationId/test",
+  ...tenantGuard,
+  manageIntegrations,
+  async (req, res) => {
+    const { integrationId } = integrationParams.parse(req.params);
+    res.json({
+      data: await testGatewayConnection(
+        getScopedTenantContext(req),
+        integrationId,
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
+
 orgIntegrationsRouter.get(
   "/usage",
   ...tenantGuard,
@@ -117,11 +142,46 @@ orgIntegrationsRouter.get(
   },
 );
 
+// AUTH-03: WhatsApp login replies are opt-in per tenant (default off).
+const loginReplySettingsBody = z.strictObject({
+  enabled: z.boolean(),
+  freeMonthlyQuota: z.number().int().min(0).max(1000).optional(),
+});
+
+orgIntegrationsRouter.get(
+  "/whatsapp/login-replies",
+  ...tenantGuard,
+  viewUsage,
+  async (req, res) => {
+    res.json({
+      data: await getLoginReplySettings(getScopedTenantContext(req)),
+    });
+  },
+);
+
+orgIntegrationsRouter.put(
+  "/whatsapp/login-replies",
+  ...tenantGuard,
+  viewUsage,
+  jsonBody,
+  async (req, res) => {
+    const input = loginReplySettingsBody.parse(req.body);
+    res.json({
+      data: await updateLoginReplySettings(
+        getScopedTenantContext(req),
+        input,
+        new Date(),
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
+
 // ------------------------------------------------------------ Panel Platform
 
 const platformGuard: RequestHandler[] = [
   noStore,
-  requireAuth,
+  requirePlatformAuth,
   requireTrustedOrigin,
   requirePlatformAdmin,
   requireSessionMfa(),

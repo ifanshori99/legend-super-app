@@ -1,6 +1,7 @@
 // Mock mode handlers for the QR order journey (VITE_API_MOCK=true). All logic
 // lives in mock-engine.ts; this file only binds it to the contract endpoints.
-// Cookie `legend-mock-guest=1` makes the point claim ask the guest to sign in.
+// Cookie `legend-mock-guest=1` makes the point claim ask the guest to sign in;
+// `legend-mock-va=down` turns Virtual Account off in the payment options.
 // The engine snapshots itself (guest state + the shared floor state) into
 // sessionStorage after every call, so a reload (or a second tab opened at the
 // table) keeps the joined session, its cart and the floor board's view of it.
@@ -16,6 +17,7 @@ import {
   createServiceRequest,
   createSessionSplits,
   getGuestPayment,
+  getGuestPaymentOptions,
   getMenuSuggestions,
   getOrderEtas,
   getPointClaim,
@@ -107,6 +109,14 @@ function isGuest(): boolean {
   );
 }
 
+/** Cookie `legend-mock-va=down`: the gateway reports VA as unavailable. */
+function vaDown(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    /(?:^|;\s*)legend-mock-va=down/.test(document.cookie)
+  );
+}
+
 handle(getQrMenu, ({ params, scenario }) => {
   const menu = store().menuFor(params.qrToken);
   if (scenario === "empty")
@@ -159,6 +169,12 @@ handle(listSessionOrderIssues, ({ params, scenario }) => ({
 }));
 handle(chooseOrderIssueResolution, ({ params, body }) => ({
   data: store().chooseResolution(params.orderIssueId, body),
+}));
+handle(getGuestPaymentOptions, ({ params, scenario }) => ({
+  data: store().paymentOptions(params.sessionId, {
+    vaDown: vaDown(),
+    emptyBanks: scenario === "empty",
+  }),
 }));
 handle(createGuestPayment, ({ params, body }) => ({
   data: store().startPayment(params.sessionId, body),

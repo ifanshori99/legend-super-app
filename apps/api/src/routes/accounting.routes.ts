@@ -6,13 +6,19 @@
 
 import { Router, type Request } from "express";
 import {
+  approvePeriodReopen,
+  closeFiscalPeriod,
   createAccount,
   getJournal,
+  getPeriodSnapshot,
   listAccountMappings,
   listAccounts,
   listFiscalPeriods,
   listJournals,
+  listPeriodReopenRequests,
+  rejectPeriodReopen,
   replaceAccountMappings,
+  requestPeriodReopen,
   reverseJournal,
   updateAccount,
 } from "@starter/shared/accounting";
@@ -37,6 +43,14 @@ import {
   listJournals as listJournalsService,
   reverseJournal as reverseJournalService,
 } from "../services/accounting-journal.service";
+import {
+  approvePeriodReopen as approvePeriodReopenService,
+  closeFiscalPeriod as closeFiscalPeriodService,
+  getPeriodSnapshot as getPeriodSnapshotService,
+  listPeriodReopenRequests as listPeriodReopenRequestsService,
+  rejectPeriodReopen as rejectPeriodReopenService,
+  requestPeriodReopen as requestPeriodReopenService,
+} from "../services/accounting-period-close.service";
 import { listFiscalPeriods as listFiscalPeriodsService } from "../services/accounting-period.service";
 
 export const accountingRouter = Router();
@@ -47,6 +61,12 @@ accountingRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 // view code and one post code for the whole accounting domain (§3.16 F16).
 const view = requireTenantPermission("accounting.journal.view");
 const post = requireTenantPermission("accounting.journal.post");
+// Close and reopen request share one code; approve/reject is a separate code so
+// the approver can differ from the requester and closer (ACC-02).
+const closePeriod = requireTenantPermission("accounting.period.close");
+const approveReopen = requireTenantPermission(
+  "accounting.period_reopen.approve",
+);
 
 const BASE = "/api/accounting";
 const route = (path: string) => path.slice(BASE.length) || "/";
@@ -168,5 +188,98 @@ accountingRouter.get(route(listFiscalPeriods.path), view, async (req, res) => {
   );
 });
 
-// Close/reopen with snapshot and approval is bead legend-xm30; this bead owns
-// the fiscal period table, its list endpoint and the posting guard (ACC-02).
+accountingRouter.post(
+  route(closeFiscalPeriod.path),
+  closePeriod,
+  jsonBody,
+  async (req, res) => {
+    const { fiscalPeriodId } = closeFiscalPeriod.params.parse(req.params);
+    const input = closeFiscalPeriod.body.parse(req.body);
+    res.json({
+      data: await closeFiscalPeriodService(
+        getScopedTenantContext(req),
+        fiscalPeriodId,
+        input,
+        actorId(req),
+      ),
+    });
+  },
+);
+
+accountingRouter.get(route(getPeriodSnapshot.path), view, async (req, res) => {
+  const { fiscalPeriodId } = getPeriodSnapshot.params.parse(req.params);
+  res.json({
+    data: await getPeriodSnapshotService(
+      getScopedTenantContext(req),
+      fiscalPeriodId,
+    ),
+  });
+});
+
+accountingRouter.post(
+  route(requestPeriodReopen.path),
+  closePeriod,
+  jsonBody,
+  async (req, res) => {
+    const { fiscalPeriodId } = requestPeriodReopen.params.parse(req.params);
+    const input = requestPeriodReopen.body.parse(req.body);
+    res.status(201).json({
+      data: await requestPeriodReopenService(
+        getScopedTenantContext(req),
+        fiscalPeriodId,
+        input,
+        actorId(req),
+      ),
+    });
+  },
+);
+
+accountingRouter.get(
+  route(listPeriodReopenRequests.path),
+  view,
+  async (req, res) => {
+    const { legalEntityId } = listPeriodReopenRequests.params.parse(req.params);
+    res.json(
+      await listPeriodReopenRequestsService(
+        getScopedTenantContext(req),
+        legalEntityId,
+      ),
+    );
+  },
+);
+
+accountingRouter.post(
+  route(approvePeriodReopen.path),
+  approveReopen,
+  jsonBody,
+  async (req, res) => {
+    const { requestId } = approvePeriodReopen.params.parse(req.params);
+    const input = approvePeriodReopen.body.parse(req.body);
+    res.json({
+      data: await approvePeriodReopenService(
+        getScopedTenantContext(req),
+        requestId,
+        input,
+        actorId(req),
+      ),
+    });
+  },
+);
+
+accountingRouter.post(
+  route(rejectPeriodReopen.path),
+  approveReopen,
+  jsonBody,
+  async (req, res) => {
+    const { requestId } = rejectPeriodReopen.params.parse(req.params);
+    const input = rejectPeriodReopen.body.parse(req.body);
+    res.json({
+      data: await rejectPeriodReopenService(
+        getScopedTenantContext(req),
+        requestId,
+        input,
+        actorId(req),
+      ),
+    });
+  },
+);

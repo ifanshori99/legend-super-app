@@ -5,13 +5,23 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
 import { env, trustProxySetting } from "./config/env";
-import { pool } from "./db";
+import { db, pool } from "./db";
 import { auth, CLIENT_IP_HEADER } from "./lib/auth";
-import { logger as defaultLogger, type Logger } from "./lib/logger";
+import {
+  logger as defaultLogger,
+  serializeError,
+  type Logger,
+} from "./lib/logger";
 import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
+import { guardImpersonatedAuthRoutes } from "./middleware/support-session";
+import {
+  loginChallengeRateLimit,
+  type LoginChallengeRateLimitOptions,
+} from "./middleware/login-challenge-rate-limit";
 import {
   PUBLIC_RATE_LIMIT_PATHS,
+  guestSessionRateLimit,
   publicRateLimit,
   type PublicRateLimitOptions,
 } from "./middleware/public-rate-limit";
@@ -19,6 +29,17 @@ import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
+import { createStorageApiRouter } from "./routes/storage-api.routes";
+import {
+  consoleLikeLog,
+  createStorageRuntimeFromEnv,
+  type StorageRuntime,
+} from "./services/core-storage-runtime";
+import { mcpOAuthRouter, mcpRouter } from "./routes/mcp.routes";
+import { auditEventsRouter } from "./routes/audit-events.routes";
+import { createMetricsRouter } from "./routes/metrics.routes";
+import { createDashboardsRouter } from "./routes/dashboards.routes";
+import { createReportsRouter } from "./routes/reports.routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { orderPromoPort } from "./services/order-promo";
@@ -30,11 +51,33 @@ import {
 import { qrOrderSettlementLookup } from "./services/qr-order.service";
 import { setTableSessionSettlementLookup } from "./services/table-session.service";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
+import { deliveryWebhookRouter } from "./routes/delivery-webhook.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
+import { createPaymentWebhookRouter } from "./routes/payment-webhook.routes";
+import { createEdgeBootstrapRateLimit } from "./routes/edge-bootstrap.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
-import { setPosOrderPromoPort } from "./services/pos-order-ports.ts";
+import {
+  setPosEdcTenderPort,
+  setPosOrderPromoPort,
+  setPosReceiptPort,
+  setPosShiftLookup,
+} from "./services/pos-order-ports.ts";
+import { edcTenderSettlement } from "./services/pos-edc-tender.ts";
+import {
+  createPosReceiptPort,
+  receiptGapsForDevice,
+  receiptGapsForOutletFast,
+} from "./services/pos-receipt.service.ts";
+import {
+  setPosOutletReceiptGapsPort,
+  setPosReceiptGapsPort,
+} from "./services/pos-shift-ports.ts";
+import { findOpenShiftId } from "./services/pos-shift.service.ts";
+import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { recipeBomSource } from "./services/recipe-bom.service.ts";
+import { installKdsServingEstimate } from "./services/kds-estimate.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -43,24 +86,79 @@ setAuditWriter(coreAuditWriter);
 // WS-03 QR order wiring (legend-e2x/souz): promo engine port + ORD-10 settlement.
 setQrOrderPromoPort(orderPromoPort);
 setQrOrderDepositCreditLookup(depositCreditForSession);
+// WS-04 order pacing (legend-gyc, KDS-05): queue-aware serving estimate.
+installKdsServingEstimate();
 setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // WS-04 POS order wiring (legend-kk7): the same promo engine port as QR. The
 // reservation deposit credit is shared through the QR port above. Receipt
-// numbering (legend-93a), cashier shift (legend-6c0), EDC (legend-m0k) and
-// points tenders keep their fail-closed defaults (pos-order-ports.ts) until
-// those beads land.
+// numbering (legend-93a) is wired below; cashier shift (legend-6c0) and EDC
+// (legend-dahk) are wired below too. Points tenders keep their fail-closed
+// default (pos-order-ports.ts) until that bead lands.
 setPosOrderPromoPort(orderPromoPort);
+setPosReceiptPort(createPosReceiptPort());
+// POS-06 (legend-ain0): the real gap lookup, so Tutup Hari refuses with
+// RECEIPT_SEQUENCE_GAP and the shift report lists the missing numbers. Before
+// this the port kept its "no gaps" default and the contract never fired.
+setPosReceiptGapsPort(receiptGapsForDevice);
+// legend-6b0ld: Tutup Hari also checks every run of the outlet (retired runs,
+// cloud sequence), not only devices with activity that business date.
+setPosOutletReceiptGapsPort((tx, context, { outletId }) =>
+  receiptGapsForOutletFast(tx, context, outletId),
+);
+// WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
+setPosShiftLookup(findOpenShiftId);
+// WS-04 EDC tender (legend-dahk): settles only against an approved ledger sale
+// of the EDC agent. Points tenders keep their fail-closed default.
+setPosEdcTenderPort(edcTenderSettlement);
+// INV-02 (legend-db6): production orders and menu waste read recipes from the BOM engine.
+setInventoryRecipeSource(recipeBomSource);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
+// A search value with a run of 6+ digits (spaces, "+" and "-" ignored) is
+// likely a phone number, e.g. GET /api/customers?q=081234567890: personal data.
+const PHONE_LIKE_VALUE = /\d{6,}/;
+// ISO dates/timestamps (from=2026-11-10) are filters, not numbers: keep them in the log.
+const ISO_DATE_VALUE = /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.+Z-]*)?$/;
+const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
+const ABSOLUTE_FORM_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
+
+// The e-receipt token in the path is a bearer credential too (bead legend-93a).
+const PUBLIC_RECEIPT_PATH = /^(\/api\/public\/receipts\/)[^/?]+(\/pdf)?/i;
+
+function isMalformedPath(path: string) {
+  try {
+    decodeURIComponent(path);
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
-  const [path, query] = url.split("?", 2);
+  // A client may send an absolute-form request target (RFC 9112 3.2.2), so
+  // drop scheme and authority first: the path regexes anchor at the path.
+  const target = url.replace(ABSOLUTE_FORM_URL, "") || "/";
+  const queryStart = target.indexOf("?");
+  const rawPath = queryStart === -1 ? target : target.slice(0, queryStart);
+  const query = queryStart === -1 ? "" : target.slice(queryStart + 1);
+  // A malformed percent-encoding makes the router reject the request (400);
+  // the path may carry a credential in a param, so never log any of it.
+  if (isMalformedPath(rawPath)) return "[malformed-url]";
+  // The purchase order share token is a path segment: bearer credential.
+  const path = rawPath
+    .replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]")
+    .replace(PUBLIC_RECEIPT_PATH, "$1[redacted]…");
   if (!query) return path;
   const params = new URLSearchParams(query);
-  for (const key of params.keys())
-    if (SENSITIVE_QUERY.test(key)) params.set(key, "[redacted]");
+  for (const [key, value] of [...params.entries()])
+    if (
+      SENSITIVE_QUERY.test(key) ||
+      (!ISO_DATE_VALUE.test(value) &&
+        PHONE_LIKE_VALUE.test(value.replace(/[\s+-]/g, "")))
+    )
+      params.set(key, "[redacted]");
   return `${path}?${params.toString()}`;
 }
 
@@ -72,7 +170,13 @@ export function createApp({
   logger = defaultLogger,
   whatsappWebhookSecrets,
   publicRateLimit: publicRateLimitOptions,
+  loginChallengeRateLimit: loginChallengeRateLimitOptions,
   edgeMode = env.EDGE_MODE,
+  storageRuntime = createStorageRuntimeFromEnv(
+    process.env,
+    db,
+    consoleLikeLog(defaultLogger),
+  ),
 }: {
   logger?: Logger;
   /** Test seam; production reads EDGE_MODE (legend-2pi route split). */
@@ -81,6 +185,10 @@ export function createApp({
   whatsappWebhookSecrets?: readonly string[];
   /** Test seam; production reads PUBLIC_RATE_LIMIT_* (see config/env.ts). */
   publicRateLimit?: Partial<PublicRateLimitOptions>;
+  /** Test seam; production uses the LOGIN_* defaults (legend-fc0f2). */
+  loginChallengeRateLimit?: Partial<LoginChallengeRateLimitOptions>;
+  /** Test seam; production reads STORAGE_* (null: uploads answer 503, legend-dzh9q). */
+  storageRuntime?: StorageRuntime | null;
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
@@ -109,6 +217,9 @@ export function createApp({
       genReqId: (req) => req.id,
       // The logger's mixin already adds reqId/userId; keep the request object small.
       serializers: {
+        // pino-http replaces the logger's err serializer on req.log/res.log
+        // and the access log: keep database row values out there too.
+        err: serializeError,
         req: (req) => ({
           method: req.method,
           url: safeUrl(req.originalUrl ?? req.url),
@@ -146,6 +257,7 @@ export function createApp({
         "Content-Type",
         "Authorization",
         "Idempotency-Key",
+        "X-Reservation-Link-Token",
         "X-Request-Id",
       ],
       exposedHeaders: ["X-Request-Id", "Location"],
@@ -189,6 +301,20 @@ export function createApp({
       : null;
   };
 
+  // legend-fc0f2: the endpoints are public and write to the database, so they
+  // get their own per-IP and per-browser limiter. It runs before the
+  // impersonation guard (which looks the session up when a cookie is present)
+  // and the tenant resolver, so a flood is answered 429 without a DB query.
+  app.use(
+    "/api/auth/login-challenges",
+    loginChallengeRateLimit(loginChallengeRateLimitOptions),
+  );
+  // An impersonated (support) session may only call the allowlisted
+  // /api/auth paths. The guard covers the login-challenge router,
+  // identityAuthRouter and Better Auth below, and reads headers only (never
+  // the body).
+  app.use("/api/auth", guardImpersonatedAuthRoutes);
+
   // WhatsApp reverse-OTP sign-in (WS-01, AUTH-01/04) is public, so it has no
   // session. It must run before Better Auth's catch-all because the identity
   // contract puts it under
@@ -222,6 +348,17 @@ export function createApp({
     "/api/webhooks/whatsapp",
     createWhatsAppWebhookRouter({ secrets: whatsappWebhookSecrets }),
   );
+  // Delivery platform webhooks (GoFood, GrabFood, ShopeeFood; legend-5bn3):
+  // same server-to-server rules, signature per platform.
+  app.use("/api/webhooks/delivery", deliveryWebhookRouter);
+  // Payment provider webhooks: tenant in the URL, signature per tenant secret.
+  app.use("/api/webhooks/payments", createPaymentWebhookRouter());
+
+  // Edge bootstrap limiter (legend-uznb, Codex 119): before tenant resolution
+  // so a flood from one IP is refused before the tenant-domain query. Keys
+  // need no tenant (client IP, credential digest, edge node id parsed from the
+  // bearer). The router skips its own copy for a request counted here.
+  app.use("/api/edge-sync/bootstrap", createEdgeBootstrapRateLimit());
 
   // Tenant resolution (TEN-02). In every deployment a registered, verified
   // domain of an active tenant or a signed device token names the tenant; the
@@ -246,6 +383,27 @@ export function createApp({
         : undefined,
     }),
   );
+  // MCP server (WS-12, legend-xkbt). `/mcp` is authenticated by its bearer
+  // token alone (the token names the tenant, MCP-01). The OAuth endpoints and
+  // discovery documents live outside `/api` (RFC 8414/9728) and resolve the
+  // tenant like `/api` does: registered domain, or in development with
+  // synthetic data the first seeded tenant (no session needed: discovery and
+  // dynamic registration are anonymous).
+  app.use("/mcp", mcpRouter);
+  app.use(
+    [
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-protected-resource",
+      "/oauth",
+    ],
+    tenantContext({
+      required: false,
+      resolveDomain,
+      verifyCredential: deviceTenantCredential,
+      fallback: developmentSyntheticTenant ? firstSyntheticTenant : undefined,
+    }),
+  );
+  app.use(mcpOAuthRouter);
   // The public, session-free reads (guest QR scan and menu, brand website and
   // its menu, SSR brand context, customer payment links) have no session to
   // bound them, so one in-memory limiter caps them per client IP and per
@@ -254,6 +412,23 @@ export function createApp({
   // prefixes: health, Better Auth, provider webhooks and the TLS ask keep their
   // own budgets, and a limiter window can never fail a probe (legend-wd4b).
   app.use(PUBLIC_RATE_LIMIT_PATHS, publicRateLimit(publicRateLimitOptions));
+  // Guest table-session routes (cart, quote, bill, payments, polls): the same
+  // per-IP/tenant limiter, sized for a venue NAT plus a per-session bucket.
+  // The staff confirm/close routes on this prefix are skipped inside.
+  app.use("/api/table-sessions", guestSessionRateLimit(publicRateLimitOptions));
+  // Audit log viewer (legend-zbzr): GET /api/audit/events.
+  app.use("/api/audit", auditEventsRouter);
+  // Metric query runtime (legend-cdta): GET /api/metrics/query.
+  app.use("/api/metrics", createMetricsRouter());
+  // Report catalog, run and builder preview (legend-5wzoc): /api/reports.
+  app.use("/api/reports", createReportsRouter());
+  // Dashboard layout, tile values (batch) and queue rows (legend-flb8f).
+  app.use("/api/dashboards", createDashboardsRouter());
+  // Object storage consumers (core-storage router, attendance selfie URLs).
+  app.use(
+    "/api",
+    createStorageApiRouter({ runtime: storageRuntime, database: db }),
+  );
   app.use("/api", apiRouter);
 
   app.use(notFound);

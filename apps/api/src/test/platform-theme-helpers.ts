@@ -60,8 +60,39 @@ export async function createTestTenant(label: string): Promise<TestTenant> {
 }
 
 /** Best-effort cleanup as the migration owner (append-only tables may refuse). */
+/** A stored object in a new outlet of the tenant (media library row). */
+export async function storedMedia(t: TestTenant): Promise<string> {
+  const legalEntityId = randomUUID();
+  const outletId = randomUUID();
+  const mediaId = randomUUID();
+  await owner.query(
+    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Logo', false)",
+    [legalEntityId, t.tenantId],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+     VALUES ($1, $2, $3, $4, $5, 'Outlet Logo', 'Jl. Logo', '{}')`,
+    [
+      outletId,
+      t.tenantId,
+      t.brandId,
+      legalEntityId,
+      `LOGO-${outletId.slice(0, 8).toUpperCase()}`,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+     VALUES ($1, $2, $3, 'document', $4, 'image/webp', 1024)`,
+    [t.tenantId, outletId, mediaId, `legend-iiqx/${mediaId}.webp`],
+  );
+  return mediaId;
+}
+
 export async function removeTestTenant(t: TestTenant): Promise<void> {
   const statements: [string, unknown[]][] = [
+    ["DELETE FROM core_storage_objects WHERE tenant_id = $1", [t.tenantId]],
+    ["DELETE FROM outlets WHERE tenant_id = $1", [t.tenantId]],
+    ["DELETE FROM legal_entities WHERE tenant_id = $1", [t.tenantId]],
     ["DELETE FROM consents WHERE tenant_id = $1", [t.tenantId]],
     ["DELETE FROM text_overrides WHERE tenant_id = $1", [t.tenantId]],
     ["UPDATE brands SET theme_id = NULL WHERE tenant_id = $1", [t.tenantId]],

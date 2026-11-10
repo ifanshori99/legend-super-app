@@ -59,6 +59,9 @@ import {
   loginChallengeViewSchema,
   loginResultSchema,
   magicLinkRequestedSchema,
+  // legend-k2l
+  magicLinkVerifiedSchema,
+  magicLinkVerifyBodySchema,
   mfaEnrollmentSchema,
   mfaFactorSchema,
   mfaVerificationResultSchema,
@@ -82,6 +85,15 @@ export const requestMagicLink = defineEndpoint({
   path: "/api/auth/login-challenges/email",
   body: createMagicLinkChallengeSchema,
   response: dataResponseSchema(magicLinkRequestedSchema),
+});
+
+// legend-k2l: the clicked email link opens a page that posts the token from its
+// URL fragment; the API sets the session cookie and answers with the user id.
+export const verifyMagicLinkEmail = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/login-challenges/email/verify",
+  body: magicLinkVerifyBodySchema,
+  response: dataResponseSchema(magicLinkVerifiedSchema),
 });
 
 /** The requesting browser polls; the session appears once the message lands. */

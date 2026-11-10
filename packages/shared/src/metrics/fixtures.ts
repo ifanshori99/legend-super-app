@@ -37,15 +37,15 @@ const definitionInputs = [
   {
     id: "dce874d4-b0a0-4403-b0e3-50b202a52076",
     code: "net_sales",
-    version: 1,
+    version: 2,
     name: "Penjualan bersih",
     description:
-      "Nilai penjualan setelah diskon, refund, dan comp, dari pesanan yang sudah dibayar.",
+      "Saldo bagian pendapatan di buku besar (kredit dikurangi debit), sudah dikurangi akun kontra diskon, refund, dan comp.",
     ownerModule: "pos",
     formula: {
       formulaRef: "pos.net_sales",
       expression:
-        "sum(order.paid.amount_idr) - sum(refund.amount_idr) - sum(comp.amount_idr)",
+        "sum(journal_lines.credit_idr - journal_lines.debit_idr) where chart_of_accounts.report_group = 'revenue'",
       inputs: [],
     },
     unit: "idr",
@@ -158,15 +158,16 @@ const definitionInputs = [
   {
     id: "212e7b30-18ae-47f0-b6b1-cd5fe103802c",
     code: "food_cost_pct",
-    version: 1,
+    version: 2,
     name: "Food cost %",
     description:
-      "HPP bahan dibagi penjualan bersih; resmi setelah periode akuntansi ditutup.",
+      "HPP di buku besar dibagi penjualan bersih; resmi setelah periode akuntansi ditutup.",
     ownerModule: "inventory",
     formula: {
       formulaRef: "inventory.food_cost_pct",
-      expression: "sum(stock.cost_idr) / net_sales * 100",
-      inputs: ["net_sales"],
+      expression:
+        "sum(journal_lines.debit_idr - journal_lines.credit_idr) where chart_of_accounts.report_group = 'cogs' / net_sales * 100",
+      inputs: ["cogs", "net_sales"],
     },
     unit: "percent",
     aggregation: "ratio",
@@ -185,15 +186,15 @@ const definitionInputs = [
   {
     id: "90437aa2-128d-415b-ac80-59cb03ea5ec2",
     code: "labor_cost_pct",
-    version: 1,
+    version: 2,
     name: "Labor cost %",
     description:
-      "Biaya tenaga kerja dibagi penjualan bersih; resmi setelah periode akuntansi ditutup.",
+      "Beban gaji dan BPJS perusahaan di buku besar dibagi penjualan bersih; resmi setelah periode akuntansi ditutup. Gaji dicatat di tingkat badan usaha, jadi untuk satu outlet nilainya kosong.",
     ownerModule: "payroll",
     formula: {
       formulaRef: "payroll.labor_cost_pct",
       expression:
-        "sum(payroll_run.gross_idr + bpjs_employer_idr) / net_sales * 100",
+        "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role in ('salary_expense', 'bpjs_expense') incl. child accounts / net_sales * 100",
       inputs: ["net_sales"],
     },
     unit: "percent",
@@ -213,15 +214,16 @@ const definitionInputs = [
   {
     id: "79b9ca9c-2622-4c78-b197-d68e0b46b48b",
     code: "prime_cost_pct",
-    version: 1,
+    version: 2,
     name: "Prime cost %",
     description:
       "Food cost % ditambah labor cost %; dasar margin operasional harian.",
     ownerModule: "accounting",
     formula: {
       formulaRef: "accounting.prime_cost_pct",
-      expression: "food_cost_pct + labor_cost_pct",
-      inputs: ["food_cost_pct", "labor_cost_pct"],
+      expression:
+        "(sum(journal_lines.debit_idr - journal_lines.credit_idr) where chart_of_accounts.report_group = 'cogs' or account_mappings.role in ('salary_expense', 'bpjs_expense') incl. child accounts) / net_sales * 100",
+      inputs: ["cogs", "net_sales"],
     },
     unit: "percent",
     aggregation: "ratio",
@@ -241,7 +243,7 @@ const definitionInputs = [
     id: "51bef82a-99b3-4a0f-9191-71938e788f8d",
     code: "table_turnover",
     version: 1,
-    name: "Table turnover",
+    name: "Perputaran meja",
     description: "Rata-rata berapa kali satu meja dipakai ulang per hari.",
     ownerModule: "pos",
     formula: {
@@ -332,7 +334,7 @@ const definitionInputs = [
     },
     unit: "idr",
     aggregation: "sum",
-    dimensions: ["outlet", "facility"],
+    dimensions: ["outlet", "facility", "unit"],
     grain: "day",
     officiality: "live",
     sourceReport: {
@@ -373,14 +375,15 @@ const definitionInputs = [
   {
     id: "104ed679-71b2-492f-a83b-266e4b94ad16",
     code: "net_profit",
-    version: 1,
+    version: 2,
     name: "Laba bersih",
     description:
       "Laba bersih akuntansi periode; hanya resmi setelah periode ditutup (SH-02).",
     ownerModule: "accounting",
     formula: {
       formulaRef: "accounting.net_profit",
-      expression: "sum(journal.profit_idr)",
+      expression:
+        "sum(journal_lines.credit_idr - journal_lines.debit_idr) where chart_of_accounts.report_group in ('revenue', 'other_income', 'cogs', 'operating_expense', 'other_expense')",
       inputs: [],
     },
     unit: "idr",
@@ -451,13 +454,14 @@ const definitionInputs = [
   {
     id: "6808467f-6b4b-4e98-ac71-7ed828586833",
     code: "waste_cost",
-    version: 1,
+    version: 2,
     name: "Biaya waste",
     description: "Nilai bahan rusak, tumpah, atau kedaluwarsa pada periode.",
     ownerModule: "inventory",
     formula: {
       formulaRef: "inventory.waste_cost",
-      expression: "sum(stock_ledger.waste_cost_idr)",
+      expression:
+        "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'waste_expense' incl. child accounts",
       inputs: [],
     },
     unit: "idr",
@@ -522,14 +526,18 @@ export const openDayPeriod = metricPeriodSchema.parse({
   accountingPeriodClosed: false,
 });
 
+// Figures per day are the report viewer's day model (net sales of one business
+// day, features/ws11-reports/mock-day-model.ts), so a metric point and the
+// report cell for the same outlet and day are one number (I4,
+// tests/ws11-fixture-reconcile.test.mjs).
 const netSalesDailyPoints = [
-  ["2026-10-25", 21_450_000],
-  ["2026-10-26", 13_780_000],
-  ["2026-10-27", 14_120_000],
-  ["2026-10-28", 15_930_000],
-  ["2026-10-29", 16_450_000],
-  ["2026-10-30", 18_720_000],
-  ["2026-10-31", 24_310_000],
+  ["2026-10-25", 7_420_000],
+  ["2026-10-26", 5_787_600],
+  ["2026-10-27", 6_084_400],
+  ["2026-10-28", 6_307_000],
+  ["2026-10-29", 6_678_000],
+  ["2026-10-30", 8_533_000],
+  ["2026-10-31", 9_646_000],
 ].map(([date, valueIdr]) =>
   metricPointSchema.parse({
     bucketStart: date,
@@ -555,10 +563,10 @@ export const metricDailyRows = [
     metricDate: "2026-10-31",
     metricCode: "net_sales",
     dimension: null,
-    value: { unit: "idr", valueIdr: 24_310_000 },
+    value: { unit: "idr", valueIdr: 9_646_000 },
     finality: "final",
     definitionId: "dce874d4-b0a0-4403-b0e3-50b202a52076",
-    definitionVersion: 1,
+    definitionVersion: 2,
     updatedAt: "2026-11-01T00:05:00.000Z",
   },
   {
@@ -566,11 +574,12 @@ export const metricDailyRows = [
     outletId: cafeLegendFixtures.outlets[0].id,
     metricDate: "2026-10-31",
     metricCode: "net_sales",
-    dimension: { key: "channel", value: "qr_order" },
-    value: { unit: "idr", valueIdr: 8_120_000 },
+    dimension: { key: "channel", value: "qr" },
+    // QR share of the same day: 4.150.000 / 7.420.000 of 9.646.000.
+    value: { unit: "idr", valueIdr: 5_395_000 },
     finality: "final",
     definitionId: "dce874d4-b0a0-4403-b0e3-50b202a52076",
-    definitionVersion: 1,
+    definitionVersion: 2,
     updatedAt: "2026-11-01T00:05:00.000Z",
   },
 ].map((row) => metricDailyRowSchema.parse(row));
@@ -584,29 +593,33 @@ export const metricQueryRequestFixture = metricQueryRequestSchema.parse({
   requireFinal: true,
 });
 
+// October is the closed month every WS-11 screen shows (report viewer,
+// shareholder board, owner income statement): net sales Rp412.800.000, 8.222
+// guests, food cost 33,7%. September is the owner insights' month (net sales
+// Rp476.000.000, food cost 32,8%).
 const netSalesOctober: MetricValue = metricValueSchema.parse({
   unit: "idr",
-  valueIdr: 124_760_000,
+  valueIdr: 412_800_000,
 });
 const netSalesSeptember: MetricValue = metricValueSchema.parse({
   unit: "idr",
-  valueIdr: 109_200_000,
+  valueIdr: 476_000_000,
 });
 const paxOctober: MetricValue = metricValueSchema.parse({
   unit: "count",
-  value: 1_306,
+  value: 8_222,
 });
 const paxSeptember: MetricValue = metricValueSchema.parse({
   unit: "count",
-  value: 1_184,
+  value: 9_480,
 });
 const foodCostOctober: MetricValue = metricValueSchema.parse({
   unit: "percent",
-  value: "31.4200",
+  value: "33.7000",
 });
 const foodCostSeptember: MetricValue = metricValueSchema.parse({
   unit: "percent",
-  value: "32.1500",
+  value: "32.8000",
 });
 
 export const queryResponseFixture = metricQueryResponseSchema.parse({
@@ -620,6 +633,11 @@ export const queryResponseFixture = metricQueryResponseSchema.parse({
       definitionRef(metricDefinitionByCode.net_sales),
       definitionRef(metricDefinitionByCode.pax),
       definitionRef(metricDefinitionByCode.food_cost_pct),
+    ],
+    availability: [
+      { metricCode: "net_sales", status: "available" },
+      { metricCode: "pax", status: "available" },
+      { metricCode: "food_cost_pct", status: "available" },
     ],
     series: [
       {
@@ -677,6 +695,7 @@ export const estimateQueryResponseFixture = metricQueryResponseSchema.parse({
     period: openDayPeriod,
     outletFilter: { kind: "all" },
     definitions: [definitionRef(metricDefinitionByCode.net_sales)],
+    availability: [{ metricCode: "net_sales", status: "available" }],
     series: [
       {
         metricCode: "net_sales",

@@ -15,14 +15,16 @@ import {
   edgeNodeFixture,
   edgeNodeSchema,
   edgeStatusSchema,
+  enrollDevice,
   getEdgeStatus,
+  issueDeviceToken,
   listEdgeDevices,
   listPrintJobs,
   printJobFixtures,
   printJobSchema,
   reprintPrintJob,
   retryPrintJob,
-  setDeviceTrainingMode,
+  setOutletDeviceTrainingMode,
   transitionPrintJob,
   type CloudLink,
   type Device,
@@ -30,6 +32,7 @@ import {
 } from "@starter/shared/edge";
 import { createUlid, CoreError } from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
+import { newIdempotencyKey } from "@/lib/idempotency";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
@@ -73,6 +76,11 @@ const devices = createMockStore<Device[]>(() =>
     }),
   ),
 );
+
+/** Lets ws02-devices' revoke mock see devices enrolled in this session. */
+export function findMockDevice(deviceId: string): Device | undefined {
+  return devices.get().find((item) => item.id === deviceId);
+}
 
 const jobs = createMockStore<PrintJob[]>(() => {
   const offsets: Record<string, number> = {
@@ -242,7 +250,7 @@ registerMock(listEdgeDevices, ({ query, scenario }) =>
   ),
 );
 
-registerMock(setDeviceTrainingMode, ({ params, body }) => {
+registerMock(setOutletDeviceTrainingMode, ({ params, body }) => {
   const device = devices.get().find((item) => item.id === params.deviceId);
   if (!device)
     throw new ApiError(404, "NOT_FOUND", "Perangkat tidak ditemukan.");
@@ -251,6 +259,52 @@ registerMock(setDeviceTrainingMode, ({ params, body }) => {
     devices.get().map((item) => (item.id === device.id ? updated : item)),
   );
   return { data: updated };
+});
+
+/** A well-formed but fake `dv1` token; mock mode never signs anything. */
+function mockDeviceToken(): string {
+  const part = (length: number) =>
+    createUlid()
+      .repeat(Math.ceil(length / 26))
+      .slice(0, length);
+  return `dv1.${part(60)}.${part(43)}`;
+}
+
+/** Enroll replay: same key → the first answer, like the API (EDG-03). */
+const enrolled = createMockStore(
+  () => new Map<string, { data: { device: Device; token: string } }>(),
+);
+
+registerMock(enrollDevice, ({ body }) => {
+  const replay = enrolled.get().get(body.idempotencyKey);
+  if (replay) return replay;
+  const template = deviceFixtures[0];
+  const device: Device = deviceSchema.parse({
+    ...template,
+    id: newIdempotencyKey(),
+    outletId: body.outletId,
+    type: body.type,
+    stationId: body.stationId ?? null,
+    label: body.label,
+    capabilities: [],
+    lastSeenAt: null,
+    revokedAt: null,
+    status: "active",
+    trainingMode: false,
+  });
+  devices.set([...devices.get(), device]);
+  const reply = { data: { device, token: mockDeviceToken() } };
+  enrolled.get().set(body.idempotencyKey, reply);
+  return reply;
+});
+
+registerMock(issueDeviceToken, ({ params }) => {
+  const device = devices.get().find((item) => item.id === params.deviceId);
+  if (!device)
+    throw new ApiError(404, "NOT_FOUND", "Perangkat tidak ditemukan.");
+  if (device.status === "revoked")
+    throw new ApiError(409, "CONFLICT", "Perangkat sudah dicabut.");
+  return { data: { device, token: mockDeviceToken() } };
 });
 
 // Dev-only control, same idea as window.__legendMock in lib/mock/control.ts.

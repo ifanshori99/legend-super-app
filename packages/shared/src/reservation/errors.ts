@@ -22,6 +22,20 @@ export const reservationErrorHttpStatus = {
   WAITLIST_TRANSITION_INVALID: 409,
   /** The guest is already on today's waitlist at this outlet. */
   WAITLIST_DUPLICATE_ENTRY: 409,
+  /** Guest link is malformed, unknown, expired or revoked; never says which. */
+  RESERVATION_LINK_INVALID: 404,
+  /** The guest already has a reschedule request waiting for staff. */
+  RESERVATION_RESCHEDULE_PENDING: 409,
+  /** The requested new time is not allowed for this reservation. */
+  RESERVATION_RESCHEDULE_INVALID: 422,
+  /** Staff DP link resend: the booking no longer waits for its DP. */
+  RESERVATION_DEPOSIT_NOT_PENDING: 409,
+  /** Staff DP link resend: the frozen payment window has ended (or is under a minute). */
+  RESERVATION_DEPOSIT_WINDOW_CLOSED: 409,
+  /** Staff DP link resend: the guest has a payment open on the previous link. */
+  RESERVATION_DEPOSIT_PAYMENT_PENDING: 409,
+  /** Staff DP link resend: a replayed request whose link is no longer payable. */
+  RESERVATION_DEPOSIT_LINK_EXPIRED: 409,
 } as const satisfies Record<string, number>;
 
 export type ReservationErrorCode = keyof typeof reservationErrorHttpStatus;
@@ -50,6 +64,18 @@ export const reservationErrorMessages: Record<ReservationErrorCode, string> = {
     "Status daftar tunggu tidak dapat diubah ke tahap tersebut.",
   WAITLIST_DUPLICATE_ENTRY:
     "Tamu ini sudah terdaftar di daftar tunggu hari ini.",
+  RESERVATION_LINK_INVALID: "Tautan reservasi tidak berlaku.",
+  RESERVATION_RESCHEDULE_PENDING:
+    "Permintaan jadwal ulang sebelumnya masih diproses.",
+  RESERVATION_RESCHEDULE_INVALID:
+    "Jadwal baru tidak dapat diminta untuk reservasi ini.",
+  RESERVATION_DEPOSIT_NOT_PENDING:
+    "Tautan DP hanya bisa dikirim ulang untuk reservasi yang menunggu DP.",
+  RESERVATION_DEPOSIT_WINDOW_CLOSED: "Batas waktu pembayaran DP sudah lewat.",
+  RESERVATION_DEPOSIT_PAYMENT_PENDING:
+    "Tamu sedang membayar DP lewat tautan sebelumnya. Tunggu pembayaran selesai.",
+  RESERVATION_DEPOSIT_LINK_EXPIRED:
+    "Tautan DP sudah tidak berlaku. Kirim ulang dengan permintaan baru.",
 };
 
 /**

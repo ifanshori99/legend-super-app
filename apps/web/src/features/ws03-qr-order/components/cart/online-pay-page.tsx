@@ -1,9 +1,8 @@
-// Virtual Account and card screens of "Keranjang & bayar" (legend-2re1). The
-// table contract has no VA number or card payment, so both are demo flows that
-// the checkout only opens in mock mode: the order is placed and held, the page
-// shows a demo VA number (derived from the order number, never from a gateway)
-// or the card hand-off (card data is typed on the provider's page, never here).
-// Success is shown only once the server says the order left awaiting_payment.
+// Virtual Account screen of "Keranjang & bayar" (legend-3160). The bank list
+// comes from the payment options (provider channels, never hard-coded); the
+// guest picks a bank, the server opens a VA for the order and the page polls
+// it. Success is shown only once the gateway confirms (ORD-02): the payment
+// turns paid, or the order leaves awaiting_payment.
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import {
@@ -12,20 +11,25 @@ import {
   Clock,
   Copy,
   RefreshCw,
-  ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
 import { RadioGroup } from "radix-ui";
 import { cn } from "cn";
-import type { QrOrder } from "@starter/shared/qr-order";
+import type { GuestPaymentOption, QrOrder } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
-import { API_MOCK } from "@/lib/api/mock-flag";
+import { ApiError } from "@/lib/api/errors";
 import { useTableJourney } from "../../context";
-import { useRefreshSession } from "../../hooks";
+import {
+  useGuestPayment,
+  useGuestPaymentOptions,
+  useRefreshSession,
+  useStartPayment,
+} from "../../hooks";
+import { idempotencyKey } from "../../lib/ids.ts";
 import { Notice } from "../notice";
 import {
   QrFooter,
@@ -36,41 +40,86 @@ import {
 import { SessionEnded } from "../session-states";
 import { PaymentSuccess } from "./payment-success";
 
-export type OnlinePayMethod = "va" | "kartu";
+export type OnlinePayMethod = "va";
 
-// Demo list only. The prefix makes each bank's sample number look different.
-const BANKS = [
-  { id: "bca", prefix: "1390", label: "qrGlass.pay.va.bankBca" },
-  { id: "bni", prefix: "8808", label: "qrGlass.pay.va.bankBni" },
-  { id: "bri", prefix: "2620", label: "qrGlass.pay.va.bankBri" },
-  { id: "mandiri", prefix: "8890", label: "qrGlass.pay.va.bankMandiri" },
-] as const;
-type BankId = (typeof BANKS)[number]["id"];
+// One idempotency key per order and bank, kept for the tab (sessionStorage)
+// before the request goes out, so a retry after a lost response, a repeat
+// tap or a refresh returns the same VA; only a 4xx refusal drops it. Another bank, or "Buat VA baru", takes a new key; the server supersedes
+// the older VA. `active`: the VA is on screen, so a refresh reopens it ("Ganti
+// bank" clears it but keeps the key for the same bank).
+type VaChoice = { bankCode: string; key: string; active: boolean };
+const choiceStorageKey = (orderId: string) => `legend-qr-va:${orderId}`;
+const memoryChoices = new Map<string, VaChoice>();
 
-const DEMO_WINDOW_MS = 24 * 60 * 60 * 1000;
+function readChoice(orderId: string): VaChoice | null {
+  try {
+    const raw = window.sessionStorage.getItem(choiceStorageKey(orderId));
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<VaChoice>;
+      if (typeof parsed.bankCode === "string" && typeof parsed.key === "string")
+        return {
+          bankCode: parsed.bankCode,
+          key: parsed.key,
+          active: parsed.active === true,
+        };
+    }
+  } catch {
+    // Storage blocked (private mode, in-app browser): fall back to memory.
+  }
+  return memoryChoices.get(orderId) ?? null;
+}
 
-/** 16 digits: bank prefix + the order number's digits, zero-padded. */
-function demoVaNumber(prefix: string, orderNumber: string) {
-  const digits = orderNumber.replace(/\D/g, "").padStart(12, "0").slice(-12);
-  return `${prefix}${digits}`;
+function writeChoice(orderId: string, choice: VaChoice | null) {
+  if (choice) memoryChoices.set(orderId, choice);
+  else memoryChoices.delete(orderId);
+  try {
+    if (choice)
+      window.sessionStorage.setItem(
+        choiceStorageKey(orderId),
+        JSON.stringify(choice),
+      );
+    else window.sessionStorage.removeItem(choiceStorageKey(orderId));
+  } catch {
+    // Memory copy above still covers this visit.
+  }
+}
+
+/** The saved key for the same bank, else a fresh one. */
+function vaKey(orderId: string, bankCode: string, renew: boolean): string {
+  const saved = readChoice(orderId);
+  if (!renew && saved?.bankCode === bankCode) return saved.key;
+  return idempotencyKey("va");
+}
+
+function setActive(orderId: string, active: boolean) {
+  const saved = readChoice(orderId);
+  if (saved) writeChoice(orderId, { ...saved, active });
 }
 
 const groupBy4 = (value: string) => value.match(/.{1,4}/g)?.join(" ") ?? value;
 
-/** "23:59:41"; null until mounted so server and browser markup agree. */
-function useCountdown(windowMs: number): string | null {
+/**
+ * "23:59:41" to `expiresAt` and whether it ran out; null until mounted so
+ * server and browser markup agree.
+ */
+function useCountdown(
+  expiresAt: string,
+): { label: string; done: boolean } | null {
   const [remainingMs, setRemainingMs] = useState<number | null>(null);
   useEffect(() => {
-    const endsAt = Date.now() + windowMs;
+    const endsAt = Date.parse(expiresAt);
     const tick = () => setRemainingMs(Math.max(0, endsAt - Date.now()));
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [windowMs]);
+  }, [expiresAt]);
   if (remainingMs === null) return null;
   const total = Math.ceil(remainingMs / 1000);
   const part = (n: number) => String(n).padStart(2, "0");
-  return `${part(Math.floor(total / 3600))}:${part(Math.floor((total % 3600) / 60))}:${part(total % 60)}`;
+  return {
+    label: `${part(Math.floor(total / 3600))}:${part(Math.floor((total % 3600) / 60))}:${part(total % 60)}`,
+    done: total === 0,
+  };
 }
 
 function CopyButton({ value }: { value: string }) {
@@ -150,38 +199,260 @@ function PillHeader({
   );
 }
 
-function VaBody({
-  order,
+function startErrorText(t: ReturnType<typeof useT>, error: unknown) {
+  if (error instanceof ApiError) {
+    if (error.status === 409) return t("qrGlass.pay.va.errorConflict");
+    if (error.status === 422) return t("qrGlass.pay.va.errorBank");
+  }
+  return t("qrGlass.pay.va.errorNetwork");
+}
+
+function unavailableText(
+  t: ReturnType<typeof useT>,
+  option: GuestPaymentOption | undefined,
+) {
+  switch (option?.unavailableReason) {
+    case "gateway_down":
+      return t("qrGlass.pay.va.unavailableGatewayDown");
+    case "no_channels":
+      return t("qrGlass.pay.va.unavailableNoChannels");
+    default:
+      return t("qrGlass.pay.va.unavailableRoutingDisabled");
+  }
+}
+
+function ToCheckoutLink({ qrToken }: { qrToken: string }) {
+  const t = useT();
+  return (
+    <Link
+      to="/t/$token/checkout"
+      params={{ token: qrToken }}
+      className={`${qrTextLink} min-h-11 justify-self-center`}
+    >
+      {t("qrGlass.pay.va.changeMethod")}
+    </Link>
+  );
+}
+
+const steps = [
+  "qrGlass.pay.va.step1",
+  "qrGlass.pay.va.step2",
+  "qrGlass.pay.va.step3",
+  "qrGlass.pay.va.step4",
+  "qrGlass.pay.va.step5",
+] as const;
+
+/** Bank list from the payment options; the guest picks one, then creates the VA. */
+function BankPicker({
+  sessionId,
   qrToken,
-  onCheck,
+  bank,
+  onBank,
+  onCreate,
+  creating,
+  error,
 }: {
-  order: QrOrder;
+  sessionId: string;
   qrToken: string;
-  onCheck: () => Promise<unknown>;
+  bank: string | null;
+  onBank: (bankCode: string) => void;
+  onCreate: () => void;
+  creating: boolean;
+  error: unknown;
 }) {
   const t = useT();
-  const [bank, setBank] = useState<BankId>("bca");
-  const [check, setCheck] = useState<"idle" | "busy" | "waiting" | "failed">(
-    "idle",
-  );
-  const countdown = useCountdown(DEMO_WINDOW_MS);
-  const selected = BANKS.find((item) => item.id === bank) ?? BANKS[0];
-  const vaNumber = demoVaNumber(selected.prefix, order.number);
-  const steps = [
-    t("qrGlass.pay.va.step1"),
-    t("qrGlass.pay.va.step2"),
-    t("qrGlass.pay.va.step3"),
-    t("qrGlass.pay.va.step4"),
-    t("qrGlass.pay.va.step5"),
-  ];
+  const options = useGuestPaymentOptions(sessionId);
 
-  const checkPayment = () => {
-    setCheck("busy");
-    onCheck().then(
-      () => setCheck("waiting"),
-      () => setCheck("failed"),
+  if (options.isError)
+    return (
+      <ErrorState
+        title={t("qrGlass.pay.va.optionsErrorTitle")}
+        description={t("qrGlass.pay.va.optionsErrorHint")}
+        onRetry={() => void options.refetch()}
+      />
     );
+  if (!options.data)
+    return (
+      <div aria-busy="true" className="grid gap-4">
+        <span className="sr-only">{t("qrGlass.pay.va.loading")}</span>
+        <Skeleton className="h-9 w-48 rounded-full" />
+        <Skeleton className="h-16 w-3/4" />
+        <Skeleton className="h-56 w-full rounded-qr-media" />
+      </div>
+    );
+
+  const va = options.data.data.methods.find((item) => item.method === "va");
+  if (!va?.enabled || va.banks.length === 0)
+    return (
+      <EmptyState
+        icon={TriangleAlert}
+        title={t("qrGlass.pay.va.unavailableTitle")}
+        description={unavailableText(t, va)}
+        action={
+          <Button asChild>
+            <Link to="/t/$token/checkout" params={{ token: qrToken }}>
+              {t("qrGlass.pay.va.toCheckout")}
+            </Link>
+          </Button>
+        }
+      />
+    );
+
+  return (
+    <>
+      <PillHeader
+        pill={t("qrGlass.pay.va.pill")}
+        heading={t("qrGlass.pay.va.heading")}
+        saved={t("qrGlass.pay.va.saved")}
+      />
+
+      <section className="grid gap-3 rounded-qr-media bg-card p-5 shadow-raised">
+        <fieldset className="grid min-w-0 gap-2">
+          <legend id="va-bank-legend" className="mb-1 text-sm font-semibold">
+            {t("qrGlass.pay.va.bankLegend")}
+          </legend>
+          <p className="text-sm text-muted-foreground">
+            {t("qrGlass.pay.va.bankHint")}
+          </p>
+          <RadioGroup.Root
+            value={bank ?? ""}
+            onValueChange={onBank}
+            disabled={creating}
+            aria-labelledby="va-bank-legend"
+            className="grid gap-2"
+          >
+            {va.banks.map((item) => (
+              <RadioGroup.Item
+                key={item.code}
+                value={item.code}
+                className={cn(
+                  "group flex min-h-12 items-center gap-3 rounded-xl border border-border bg-card px-4 text-left font-semibold pressable",
+                  "hover:bg-qr-selection focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+                  "data-[state=checked]:border-primary data-[state=checked]:bg-qr-selection data-[state=checked]:ring-1 data-[state=checked]:ring-primary",
+                  "disabled:opacity-60",
+                )}
+              >
+                <span className="min-w-0 flex-1">{item.name}</span>
+                <span
+                  aria-hidden="true"
+                  className="grid size-6 shrink-0 place-items-center rounded-full border-2 border-input group-data-[state=checked]:border-primary"
+                >
+                  <RadioGroup.Indicator className="size-3 rounded-full bg-primary" />
+                </span>
+              </RadioGroup.Item>
+            ))}
+          </RadioGroup.Root>
+        </fieldset>
+      </section>
+
+      {error ? <Notice tone="danger" title={startErrorText(t, error)} /> : null}
+
+      <QrFooter>
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-center text-sm empty:hidden"
+        >
+          {creating ? t("qrGlass.pay.va.creating") : null}
+        </p>
+        <Button
+          type="button"
+          disabled={bank === null}
+          loading={creating}
+          onClick={onCreate}
+        >
+          {t("qrGlass.pay.va.create")}
+        </Button>
+        <ToCheckoutLink qrToken={qrToken} />
+      </QrFooter>
+    </>
+  );
+}
+
+/** The live VA: number, bank, amount, deadline; polls until it settles. */
+function VaDetails({
+  qrToken,
+  payment,
+  statusFailed,
+  onRetryStatus,
+  onRenew,
+  renewing,
+  renewError,
+  onChangeBank,
+}: {
+  qrToken: string;
+  payment: {
+    status: string;
+    amountIdr: number;
+    vaNumber: string | null;
+    bankName: string | null;
+    expiresAt: string;
   };
+  statusFailed: boolean;
+  onRetryStatus: () => void;
+  onRenew: () => void;
+  renewing: boolean;
+  renewError: unknown;
+  onChangeBank: () => void;
+}) {
+  const t = useT();
+  const countdown = useCountdown(payment.expiresAt);
+  const vaNumber = payment.vaNumber ?? "";
+  // Only the server says a VA expired; the device clock may be off. At
+  // 00:00:00 the page asks again and shows that it is checking.
+  const expired = payment.status === "expired";
+  const failed = payment.status === "failed";
+  const checking = countdown?.done === true && payment.status === "pending";
+  // A pending VA without a number cannot be paid: offer a new one.
+  const missing = !expired && !failed && payment.vaNumber === null;
+  useEffect(() => {
+    if (checking) onRetryStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checking]);
+
+  const changeBank = (
+    <Button
+      type="button"
+      variant="outline"
+      disabled={renewing}
+      onClick={onChangeBank}
+    >
+      {t("qrGlass.pay.va.changeBank")}
+    </Button>
+  );
+
+  if (expired || failed || missing)
+    return (
+      <>
+        <Notice
+          tone={missing ? "danger" : "warning"}
+          title={
+            expired
+              ? t("qrGlass.pay.va.expiredTitle")
+              : failed
+                ? t("qrGlass.pay.va.failedTitle")
+                : t("qrGlass.pay.va.missingTitle")
+          }
+        >
+          {expired
+            ? t("qrGlass.pay.va.expiredHint")
+            : failed
+              ? t("qrGlass.pay.va.failedHint")
+              : t("qrGlass.pay.va.missingHint")}
+        </Notice>
+        {renewError ? (
+          <Notice tone="danger" title={startErrorText(t, renewError)} />
+        ) : null}
+        <QrFooter>
+          <Button type="button" loading={renewing} onClick={onRenew}>
+            {t("qrGlass.pay.va.renew")}
+            <RefreshCw aria-hidden="true" />
+          </Button>
+          {changeBank}
+          <ToCheckoutLink qrToken={qrToken} />
+        </QrFooter>
+      </>
+    );
 
   return (
     <>
@@ -192,40 +463,9 @@ function VaBody({
       />
 
       <section className="grid gap-4 rounded-qr-media bg-card p-5 shadow-raised">
-        <fieldset className="grid min-w-0 gap-2">
-          <legend className="mb-2 text-sm font-semibold">
-            {t("qrGlass.pay.va.bankLegend")}
-          </legend>
-          <RadioGroup.Root
-            value={bank}
-            onValueChange={(next) => setBank(next as BankId)}
-            aria-label={t("qrGlass.pay.va.bankLegend")}
-            className="flex flex-wrap gap-2"
-          >
-            {BANKS.map((item) => (
-              <RadioGroup.Item
-                key={item.id}
-                value={item.id}
-                className={cn(
-                  "inline-flex min-h-11 min-w-16 items-center justify-center gap-1.5 rounded-full border border-input bg-card px-4 font-semibold pressable",
-                  "hover:bg-qr-selection focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-                  "data-[state=checked]:border-primary data-[state=checked]:bg-qr-selection data-[state=checked]:ring-1 data-[state=checked]:ring-primary",
-                )}
-              >
-                <RadioGroup.Indicator>
-                  <Check className="size-4" aria-hidden="true" />
-                </RadioGroup.Indicator>
-                {t(item.label)}
-              </RadioGroup.Item>
-            ))}
-          </RadioGroup.Root>
-        </fieldset>
-
-        <hr className="border-t border-dashed border-input" />
-
         <div className="grid gap-1">
           <p className="text-sm text-muted-foreground">
-            {t("qrGlass.pay.va.bankName", { bank: t(selected.label) })} ·{" "}
+            {payment.bankName ? `${payment.bankName} · ` : null}
             {t("qrGlass.pay.va.numberLabel")}
           </p>
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
@@ -236,151 +476,223 @@ function VaBody({
           </div>
         </div>
 
+        <hr className="border-t border-dashed border-input" />
+
         <div className="flex items-baseline justify-between gap-3">
           <span>{t("qrGlass.pay.va.amountLabel")}</span>
           <Money
-            amount={order.totalIdr}
+            amount={payment.amountIdr}
             size="xl"
             className="text-2xl font-bold"
           />
         </div>
 
         <div className="grid justify-items-start gap-1">
-          {countdown && (
-            <p className="inline-flex items-center gap-2 rounded-full bg-qr-selection px-3 py-1.5 text-sm">
-              <Clock className="size-4 shrink-0" aria-hidden="true" />
-              <span className="font-medium tabular">
-                {t("qrGlass.pay.va.timeLeft", { time: countdown })}
-              </span>
-            </p>
-          )}
+          {/* Reserves the pill's height so the page does not jump on mount. */}
+          <div className="min-h-8">
+            {countdown && (
+              <p className="inline-flex items-center gap-2 rounded-full bg-qr-selection px-3 py-1.5 text-sm">
+                <Clock className="size-4 shrink-0" aria-hidden="true" />
+                <span className="font-medium tabular">
+                  {t("qrGlass.pay.va.timeLeft", { time: countdown.label })}
+                </span>
+              </p>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             {t("qrGlass.pay.va.timeNote")}
           </p>
         </div>
       </section>
 
-      <ol
-        aria-label={t("qrGlass.pay.va.stepsLabel")}
-        className="grid gap-3 px-1"
-      >
-        {steps.map((step, index) => (
-          <li key={step} className="flex items-start gap-3">
-            <span
-              aria-hidden="true"
-              className="mt-0.5 inline-grid size-7 shrink-0 place-items-center rounded-full bg-qr-selection text-sm font-semibold tabular"
-            >
-              {index + 1}
-            </span>
-            <p className="text-lg leading-7">{step}</p>
-          </li>
-        ))}
-      </ol>
-
-      <Notice tone="info" title={t("qrGlass.pay.va.demoNoticeTitle")}>
-        {t("qrGlass.pay.va.demoNoticeBody")}
-      </Notice>
+      {checking ? (
+        <Notice tone="warning" title={t("qrGlass.pay.va.checkingTitle")}>
+          {t("qrGlass.pay.va.checkingHint")}
+        </Notice>
+      ) : (
+        <ol
+          aria-label={t("qrGlass.pay.va.stepsLabel")}
+          className="grid gap-3 px-1"
+        >
+          {steps.map((step, index) => (
+            <li key={step} className="flex items-start gap-3">
+              <span
+                aria-hidden="true"
+                className="mt-0.5 inline-grid size-7 shrink-0 place-items-center rounded-full bg-qr-selection text-sm font-semibold tabular"
+              >
+                {index + 1}
+              </span>
+              <p className="text-lg leading-7">{t(step)}</p>
+            </li>
+          ))}
+        </ol>
+      )}
 
       <QrFooter>
         <p
           role="status"
           aria-live="polite"
-          className="text-center text-sm empty:hidden"
+          className={cn(
+            "text-center text-sm",
+            statusFailed ? "text-danger" : "text-muted-foreground",
+          )}
         >
-          {check === "busy"
-            ? t("qrGlass.pay.va.checking")
-            : check === "waiting"
-              ? t("qrGlass.pay.va.stillWaiting")
-              : check === "failed"
-                ? t("qrGlass.pay.va.checkFailed")
-                : null}
+          {statusFailed
+            ? t("qrGlass.pay.va.statusFailed")
+            : t("qrGlass.pay.va.autoUpdate")}
         </p>
-        <Button
-          type="button"
-          aria-busy={check === "busy"}
-          disabled={check === "busy"}
-          onClick={checkPayment}
-        >
-          {t("qrGlass.pay.va.check")}
-          <RefreshCw
-            aria-hidden="true"
-            className={check === "busy" ? "animate-spin" : undefined}
-          />
-        </Button>
-        <Link
-          to="/t/$token/checkout"
-          params={{ token: qrToken }}
-          className={`${qrTextLink} min-h-11 justify-self-center`}
-        >
-          {t("qrGlass.pay.va.changeMethod")}
-        </Link>
+        {statusFailed && (
+          <Button type="button" onClick={onRetryStatus}>
+            {t("qrGlass.pay.va.statusRetry")}
+            <RefreshCw aria-hidden="true" />
+          </Button>
+        )}
+        {changeBank}
+        <ToCheckoutLink qrToken={qrToken} />
       </QrFooter>
     </>
   );
 }
 
-function CardBody({ order, qrToken }: { order: QrOrder; qrToken: string }) {
+/**
+ * Bank list, then the VA it opens. Watches only the payment this page just
+ * created: after a bank switch the old id reads `expired`.
+ */
+function VaFlow({
+  order,
+  qrToken,
+  sessionId,
+  method,
+  shell,
+}: {
+  order: QrOrder;
+  qrToken: string;
+  sessionId: string;
+  method: OnlinePayMethod;
+  shell: (children: ReactNode) => ReactNode;
+}) {
   const t = useT();
-  const [tapped, setTapped] = useState(false);
-  return (
-    <>
-      <PillHeader
-        pill={t("qrGlass.pay.card.pill")}
-        heading={t("qrGlass.pay.card.heading")}
-        saved={t("qrGlass.pay.card.saved")}
+  const refresh = useRefreshSession(sessionId);
+  const start = useStartPayment(sessionId);
+  const options = useGuestPaymentOptions(sessionId);
+  // Read once: the page only renders in the browser (the guest session
+  // lives in browser storage), so this never differs from the server markup.
+  const [initial] = useState(() =>
+    typeof window === "undefined" ? null : readChoice(order.id),
+  );
+  const [bank, setBank] = useState<string | null>(initial?.bankCode ?? null);
+  const [reopening, setReopening] = useState(initial?.active === true);
+  const [paymentId, setPaymentId] = useState<string | null>(null);
+  const polled = useGuestPayment(sessionId, paymentId);
+  const created = start.data?.data;
+  const payment =
+    polled.data?.data ?? (created?.id === paymentId ? created : undefined);
+  const status = payment?.status;
+
+  const create = (bankCode: string, renew = false) => {
+    const key = vaKey(order.id, bankCode, renew);
+    const saved = readChoice(order.id);
+    if (saved?.key !== key)
+      writeChoice(order.id, { bankCode, key, active: false });
+    start.mutate(
+      {
+        target: { kind: "order", orderId: order.id },
+        method: "va",
+        bankCode,
+        idempotencyKey: key,
+      },
+      {
+        onSuccess: (result) => {
+          setActive(order.id, true);
+          setBank(bankCode);
+          setPaymentId(result.data.id);
+        },
+        onError: (error) => {
+          if (!(error instanceof ApiError) || error.status >= 500) return;
+          // A refused key must not come back on the next tap or refresh.
+          writeChoice(order.id, null);
+          // 409: the order is no longer waiting (paid elsewhere, voided):
+          // reload so the page shows where it went.
+          if (error.status === 409) void refresh();
+          // 422: the bank left the provider list; show the fresh list.
+          if (error.status === 422) {
+            setBank(null);
+            void options.refetch();
+          }
+        },
+        onSettled: () => setReopening(false),
+      },
+    );
+  };
+
+  // A refresh or a return visit reopens the VA on screen before (same key, same VA).
+  useEffect(() => {
+    if (initial?.active) create(initial.bankCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Once paid, the order/bill/claim screens must show the new state.
+  useEffect(() => {
+    if (status !== "paid") return;
+    writeChoice(order.id, null);
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  if (payment?.status === "paid")
+    return (
+      <PaymentSuccess
+        order={order}
+        amountIdr={payment.amountIdr}
+        method="va"
+        returnTo={`/t/${encodeURIComponent(qrToken)}/bayar/${encodeURIComponent(order.id)}?metode=${method}`}
       />
+    );
 
-      <section className="grid gap-4 rounded-qr-media bg-card p-5 shadow-raised">
-        <div className="flex items-baseline justify-between gap-3">
-          <span>{t("qrGlass.pay.card.totalLabel")}</span>
-          <Money
-            amount={order.totalIdr}
-            size="xl"
-            className="text-2xl font-bold"
-          />
-        </div>
-        <hr className="border-t border-dashed border-input" />
-        <div className="flex items-start gap-3">
-          <ShieldCheck
-            className="mt-1 size-5 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <div className="grid gap-2">
-            <p className="text-lg leading-7">
-              {t("qrGlass.pay.card.secureNote")}
-            </p>
-            <p className="text-lg leading-7 text-muted-foreground">
-              {t("qrGlass.pay.card.threeDs")}
-            </p>
-          </div>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          {t("qrGlass.pay.card.networksLabel")}:{" "}
-          <span className="font-semibold text-foreground">
-            {t("qrGlass.pay.card.networks")}
-          </span>
-        </p>
-      </section>
+  if (payment)
+    return shell(
+      <VaDetails
+        qrToken={qrToken}
+        payment={payment}
+        statusFailed={polled.isError}
+        onRetryStatus={() => void polled.refetch()}
+        onRenew={() => create(payment.bankCode ?? bank ?? "", true)}
+        renewing={start.isPending}
+        renewError={start.error}
+        onChangeBank={() => {
+          // An ended VA must not be replayed when the same bank is picked again.
+          if (payment.status === "expired" || payment.status === "failed")
+            writeChoice(order.id, null);
+          else setActive(order.id, false);
+          start.reset();
+          setPaymentId(null);
+        }}
+      />,
+    );
 
-      {tapped && (
-        <Notice tone="info" title={t("qrGlass.pay.card.demoUnavailableTitle")}>
-          {t("qrGlass.pay.card.demoUnavailableBody")}
-        </Notice>
-      )}
+  if (reopening)
+    return shell(
+      <div aria-busy="true" className="grid gap-4">
+        <span className="sr-only">{t("qrGlass.pay.va.creating")}</span>
+        <Skeleton className="h-9 w-48 rounded-full" />
+        <Skeleton className="h-16 w-3/4" />
+        <Skeleton className="h-64 w-full rounded-qr-media" />
+        <Skeleton className="h-32 w-full" />
+      </div>,
+    );
 
-      <QrFooter>
-        <Button type="button" onClick={() => setTapped(true)}>
-          {t("qrGlass.pay.card.continue")}
-        </Button>
-        <Link
-          to="/t/$token/checkout"
-          params={{ token: qrToken }}
-          className={`${qrTextLink} min-h-11 justify-self-center`}
-        >
-          {t("qrGlass.pay.card.changeMethod")}
-        </Link>
-      </QrFooter>
-    </>
+  return shell(
+    <BankPicker
+      sessionId={sessionId}
+      qrToken={qrToken}
+      bank={bank}
+      onBank={setBank}
+      onCreate={() => {
+        if (bank !== null) create(bank);
+      }}
+      creating={start.isPending}
+      error={start.error}
+    />,
   );
 }
 
@@ -396,8 +708,7 @@ export function OnlinePayPage({
     useTableJourney();
   const refresh = useRefreshSession(sessionId);
 
-  const title =
-    method === "va" ? t("qrGlass.pay.va.title") : t("qrGlass.pay.card.title");
+  const title = t("qrGlass.pay.va.title");
   const back = (
     <Link
       to="/t/$token/checkout"
@@ -405,11 +716,7 @@ export function OnlinePayPage({
       className={qrRoundIcon}
     >
       <ChevronLeft aria-hidden="true" />
-      <span className="sr-only">
-        {method === "va"
-          ? t("qrGlass.pay.va.back")
-          : t("qrGlass.pay.card.back")}
-      </span>
+      <span className="sr-only">{t("qrGlass.pay.va.back")}</span>
     </Link>
   );
 
@@ -421,23 +728,6 @@ export function OnlinePayPage({
     </div>
   );
 
-  // The table contract has no VA / card payment: outside mock mode this page
-  // (bookmark, shared link, stale tab) must never show a demo VA number.
-  if (!API_MOCK)
-    return shell(
-      <EmptyState
-        icon={TriangleAlert}
-        title={t("qrGlass.pay.online.unavailableTitle")}
-        description={t("qrGlass.pay.online.unavailableHint")}
-        action={
-          <Button asChild>
-            <Link to="/t/$token/checkout" params={{ token: qrToken }}>
-              {t("qrGlass.pay.online.toCheckout")}
-            </Link>
-          </Button>
-        }
-      />,
-    );
   if (ended) return <SessionEnded />;
   if (!guest || sessionId === null)
     return shell(
@@ -511,19 +801,18 @@ export function OnlinePayPage({
       <PaymentSuccess
         order={order}
         amountIdr={order.totalIdr}
-        method={method === "va" ? "va" : "card"}
+        method="va"
         returnTo={`/t/${encodeURIComponent(qrToken)}/bayar/${encodeURIComponent(orderId)}?metode=${method}`}
       />
     );
 
   return (
-    <div className="grid gap-4 lg:mx-auto lg:w-full lg:max-w-xl">
-      <QrTopBar title={title} leading={back} />
-      {method === "va" ? (
-        <VaBody order={order} qrToken={qrToken} onCheck={() => refresh()} />
-      ) : (
-        <CardBody order={order} qrToken={qrToken} />
-      )}
-    </div>
+    <VaFlow
+      order={order}
+      qrToken={qrToken}
+      sessionId={sessionId}
+      method={method}
+      shell={shell}
+    />
   );
 }

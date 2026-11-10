@@ -139,10 +139,16 @@ export function MenuPage({
   const pax = view?.session.pax ?? guest?.pax ?? null;
   const joined = guest !== null;
   const canOrder = menu.orderingOpen && !ended;
+  const taxNote =
+    menu.pricing.taxPriceMode === "mixed"
+      ? t("qrGlass.menu.pricingNoteMixed")
+      : menu.pricing.pricesIncludeTaxAndService
+        ? t("qrGlass.menu.pricingNoteInclusive")
+        : t("qrGlass.menu.pricingNote");
   const pricingNote =
     menu.zone.minimumSpendIdr > 0
-      ? `${t("qrGlass.menu.pricingNote")} ${t("qrMenu.pricing.minimumSpend", { amount: formatRupiah(menu.zone.minimumSpendIdr) })}`
-      : t("qrGlass.menu.pricingNote");
+      ? `${taxNote} ${t("qrMenu.pricing.minimumSpend", { amount: formatRupiah(menu.zone.minimumSpendIdr) })}`
+      : taxNote;
 
   // What the table cart holds per item; a card steps in place only when the
   // item sits on exactly one line.

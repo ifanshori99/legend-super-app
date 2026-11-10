@@ -14,6 +14,7 @@ import {
   listNotifications,
   markNotificationRead,
   notificationSchema,
+  defaultNotificationPolicy,
   notificationPolicySchema,
   notificationPreferenceSchema,
   notificationTemplateSchema,
@@ -23,10 +24,18 @@ import {
   removePushSubscription,
   updateNotificationPolicy,
   listNotificationTemplates,
+  notificationRead,
+  notificationPreferenceUpdated,
+  notificationCategorySchema,
 } from "@starter/shared/notification";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import {
+  appendNotificationEvent,
+  appendNotificationEventsBatch,
+} from "./notification-events.ts";
 import type {
   NotificationOperation,
   NotificationServicePort,
@@ -71,6 +80,36 @@ function asNotification(row: Record<string, unknown>) {
     dedupeKey: row.dedupe_key,
   });
 }
+/** JSONB stores object keys in its own order, so compare with sorted keys. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object")
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
+}
+
+/** One `notification.read` per unread -> read transition (PRD §3.15). */
+function readEventInput(
+  userId: string,
+  row: Record<string, unknown>,
+  now: Date,
+) {
+  return {
+    aggregateId: uuidToUlid(String(row.id)),
+    outletId: row.outlet_id === null ? null : String(row.outlet_id),
+    actorUserId: userId,
+    payload: {
+      notificationId: uuidToUlid(String(row.id)),
+      userId,
+      category: String(row.category),
+    },
+    now,
+  };
+}
+
 /** All reads and writes use recipient identity and scoped RLS within one transaction. */
 export function createNotificationService(
   database: Database,
@@ -140,16 +179,40 @@ export function createNotificationService(
             const { notificationId } = markNotificationRead.params.parse(
               input.params,
             );
-            const result = await tx.execute(
-              sql`UPDATE notifications SET read_at = COALESCE(read_at, now()) WHERE user_id = ${userId}::uuid AND ${outletFilter} AND id = ${ulidToUuid(notificationId)}::uuid RETURNING *`,
+            // Lock the row first: only the unread -> read transition emits an
+            // event, so a repeated or concurrent markRead never doubles it.
+            const current = await tx.execute(
+              sql`SELECT * FROM notifications WHERE user_id = ${userId}::uuid AND ${outletFilter} AND id = ${ulidToUuid(notificationId)}::uuid FOR UPDATE`,
             );
-            if (!result.rows[0])
+            const existing = current.rows[0];
+            if (!existing)
               throw new HttpError(404, "NOT_FOUND", "Notification not found.");
-            return { data: asNotification(result.rows[0]) };
+            if (existing.read_at !== null)
+              return { data: asNotification(existing) };
+            const result = await tx.execute(
+              sql`UPDATE notifications SET read_at = now() WHERE id = ${ulidToUuid(notificationId)}::uuid AND read_at IS NULL RETURNING *`,
+            );
+            const row = result.rows[0] ?? existing;
+            await appendNotificationEvent(
+              tx,
+              context,
+              notificationRead,
+              readEventInput(userId, row, new Date()),
+            );
+            return { data: asNotification(row) };
           }
           case "markAllRead": {
             const result = await tx.execute(
-              sql`UPDATE notifications SET read_at = now() WHERE user_id = ${userId}::uuid AND ${outletFilter} AND read_at IS NULL RETURNING id`,
+              sql`UPDATE notifications SET read_at = now() WHERE user_id = ${userId}::uuid AND ${outletFilter} AND read_at IS NULL RETURNING id, outlet_id, category`,
+            );
+            // Rows are locked by the UPDATE above, so one batched sequence
+            // read is race-free (see appendNotificationEventsBatch).
+            const now = new Date();
+            await appendNotificationEventsBatch(
+              tx,
+              context,
+              notificationRead,
+              result.rows.map((row) => readEventInput(userId, row, now)),
             );
             return { data: { updated: result.rows.length } };
           }
@@ -159,32 +222,20 @@ export function createNotificationService(
             );
             const row = result.rows[0];
             return {
-              data: notificationPolicySchema.parse(
-                row
-                  ? {
-                      tenantId: row.tenant_id,
-                      webPushEnabled: row.web_push_enabled,
-                      emailEnabled: row.email_enabled,
-                      whatsapp: row.whatsapp,
-                      maxAttempts: row.max_attempts,
-                      retryBackoffSeconds: row.retry_backoff_seconds,
-                      updatedAt: isoTimestamp(row.updated_at),
-                    }
-                  : {
-                      tenantId: context.tenant.tenantId,
-                      webPushEnabled: true,
-                      emailEnabled: true,
-                      whatsapp: {
-                        enabled: false,
-                        allowedCategories: [],
-                        monthlyCap: 0,
-                        costPerMessageIdr: 0,
-                      },
-                      maxAttempts: 5,
-                      retryBackoffSeconds: [30, 120, 600, 3600],
-                      updatedAt: new Date().toISOString(),
-                    },
-              ),
+              data: row
+                ? notificationPolicySchema.parse({
+                    tenantId: row.tenant_id,
+                    webPushEnabled: row.web_push_enabled,
+                    emailEnabled: row.email_enabled,
+                    whatsapp: row.whatsapp,
+                    maxAttempts: row.max_attempts,
+                    retryBackoffSeconds: row.retry_backoff_seconds,
+                    updatedAt: isoTimestamp(row.updated_at),
+                  })
+                : defaultNotificationPolicy(
+                    context.tenant.tenantId,
+                    new Date(),
+                  ),
             };
           }
           case "updatePolicy": {
@@ -230,8 +281,60 @@ export function createNotificationService(
           }
           case "updatePreferences": {
             const body = updateNotificationPreferences.body.parse(input.body);
+            // Lock any existing row so the diff in the event matches what this
+            // transaction replaces.
+            const before = await tx.execute(
+              sql`SELECT categories, quiet_hours FROM notification_preferences WHERE user_id=${userId}::uuid FOR UPDATE`,
+            );
+            const prev = before.rows[0];
             const result = await tx.execute(
               sql`INSERT INTO notification_preferences (tenant_id,user_id,categories,quiet_hours,time_zone) VALUES (${context.tenant.tenantId}::uuid,${userId}::uuid,${JSON.stringify(body.categories)}::jsonb,${body.quietHours === null ? null : JSON.stringify(body.quietHours)}::jsonb,${body.timeZone}) ON CONFLICT (tenant_id,user_id) DO UPDATE SET categories=EXCLUDED.categories,quiet_hours=EXCLUDED.quiet_hours,time_zone=EXCLUDED.time_zone,updated_at=now() RETURNING updated_at`,
+            );
+            const now = new Date();
+            const oldCategories = (prev?.categories ?? {}) as Record<
+              string,
+              unknown
+            >;
+            const newCategories = body.categories as Record<string, unknown>;
+            const changedCategories = [
+              ...new Set([
+                ...Object.keys(oldCategories),
+                ...Object.keys(newCategories),
+              ]),
+            ]
+              .filter(
+                (key) =>
+                  // A stored key that is no longer a category cannot be in
+                  // the strict event payload.
+                  notificationCategorySchema.safeParse(key).success &&
+                  canonicalJson(oldCategories[key] ?? null) !==
+                    canonicalJson(newCategories[key] ?? null),
+              )
+              .sort();
+            // A preference is the user's own tenant-level record, not outlet
+            // data: its event is tenant-wide (aggregate outlet stays null for
+            // every caller), so an outlet-scoped user can still save it. Only
+            // the append uses the tenant-wide context; the user's own row is
+            // what was changed above.
+            await appendNotificationEvent(
+              tx,
+              establishScopedTenantContext(context.tenant, {
+                kind: "tenant",
+              }),
+              notificationPreferenceUpdated,
+              {
+                aggregateId: userId,
+                outletId: null,
+                actorUserId: userId,
+                payload: {
+                  userId,
+                  changedCategories,
+                  quietHoursChanged:
+                    canonicalJson(prev?.quiet_hours ?? null) !==
+                    canonicalJson(body.quietHours),
+                },
+                now,
+              },
             );
             return {
               data: notificationPreferenceSchema.parse({

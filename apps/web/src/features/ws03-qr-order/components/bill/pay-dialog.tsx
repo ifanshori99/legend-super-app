@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { RadioGroup } from "radix-ui";
-import { CircleAlert, QrCode, Wallet } from "lucide-react";
+import { CircleAlert, QrCode } from "lucide-react";
 import { cn } from "cn";
 import type {
   GuestPaymentMethod,
@@ -29,12 +29,6 @@ const METHODS = [
     icon: QrCode,
     label: "qrOrders.bill.methodQris",
     hint: "qrOrders.bill.methodQrisHint",
-  },
-  {
-    value: "ewallet",
-    icon: Wallet,
-    label: "qrOrders.bill.methodEwallet",
-    hint: "qrOrders.bill.methodEwalletHint",
   },
 ] as const;
 

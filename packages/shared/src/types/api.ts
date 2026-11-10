@@ -14,13 +14,3 @@ export type PageMeta = { limit: number; offset: number; hasMore: boolean };
 export type Paginated<T> = { data: T[]; meta: PageMeta };
 
 export type DataResponse<T> = { data: T };
-
-export type NoteDto = {
-  id: string;
-  title: string;
-  content: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type AdminNoteDto = NoteDto & { ownerName: string; ownerEmail: string };

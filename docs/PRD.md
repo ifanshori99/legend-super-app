@@ -4,7 +4,7 @@
 
 **Nama Proyek:** Legend Super App — Sistem Operasional Terpadu untuk Cafe Legend
 
-**Versi Dokumen:** 1.7 · 30 Oktober 2026 · Arsitektur dibuat general untuk dijual ke cafe lain: Design System Platform dua lapis (Base Theme dan Tenant Theme), aturan tanpa kode khusus tenant, whitelabel, kamus istilah, dan template tenant dari konfigurasi Legend; memuat keputusan final D1–D44 dan register risiko R01–R27.
+**Versi Dokumen:** 1.8 · 9 November 2026 · Akses support read-write memerlukan persetujuan owner tenant (F4, TEN-04, Q37/Q38). Arsitektur dibuat general untuk dijual ke cafe lain: Design System Platform dua lapis (Base Theme dan Tenant Theme), aturan tanpa kode khusus tenant, whitelabel, kamus istilah, dan template tenant dari konfigurasi Legend; memuat keputusan final D1–D44 dan register risiko R01–R27.
 
 **Pemilik Platform:** PT Sultan Solusi Nusantara. Cafe Legend (selanjutnya Legend) adalah tenant pertama dan untuk sementara juga dioperasikan oleh PT Sultan Solusi Nusantara. Operator cafe atau restoran lain dapat memakai platform yang sama sebagai tenant berbayar (whitelabel).
 
@@ -220,7 +220,7 @@ Membangun **satu platform multi-tenant** yang untuk setiap tenant menyediakan en
 - **SSR:** halaman publik dan menu QR wajib SSR agar cepat di ponsel dan dapat diindeks mesin pencari.
 - **Mode deployment:** satu codebase mendukung mode dedicated dan shared. Legend berjalan di deployment shared milik PT Sultan Solusi Nusantara di region Jakarta, ditambah edge node di outlet.
 - **WhatsApp:** memakai WhatsApp Business Platform (Cloud API) resmi. Setiap tenant dapat memakai nomor dan display name sendiri; Legend memakai nomor khusus dengan display name "Legend". Gateway WhatsApp tidak resmi tidak dipakai.
-- **Payment gateway:** diakses melalui adapter multi-gateway yang dikonfigurasi di Super Admin dan per tenant. Saat rilis hanya DOIT yang aktif, untuk QRIS, Virtual Account, dan transfer bank yang dikonfirmasi lewat mutasi rekening. Kartu fisik dan QRIS di kasir juga dapat dilayani EDC bank yang terintegrasi melalui ECR (lihat batasan EDC), sedangkan e-wallet dibayar melalui QRIS. Integrasi Duitku (kartu kredit online, e-wallet langsung, paylater) dikerjakan pada P1 tanpa mengubah modul lain. Kredensial merchant dimiliki dan disimpan per tenant.
+- **Payment gateway:** diakses melalui adapter multi-gateway yang dikonfigurasi di Super Admin dan per tenant. Saat rilis hanya DOIT yang aktif, untuk QRIS dan Virtual Account. Tidak ada transfer bank. Di kasir: tunai, kartu debit dan kredit melalui EDC bank yang terintegrasi melalui ECR (lihat batasan EDC), serta QRIS; e-wallet dibayar melalui QRIS. Kartu kredit online dilayani Duitku pada P1 (pascarilis) tanpa mengubah modul lain; e-wallet langsung dan paylater juga pascarilis. Kredensial merchant dimiliki dan disimpan per tenant.
 - **Akun dan badan usaha:** seluruh akun pihak ketiga (WhatsApp, DOIT, ojek online, email, domain, dan infrastruktur) atas nama PT Sultan Solusi Nusantara. Untuk sementara Cafe Legend juga dioperasikan oleh PT Sultan Solusi Nusantara, sehingga dana penjualan dicairkan ke rekening PT Sultan. Sistem tetap memisahkan pembukuan per badan usaha dan per outlet sejak awal, sehingga bila kelak Legend dialihkan ke badan usaha lain, cukup didaftarkan sebagai badan usaha baru di sistem dan di DOIT (fitur badan usaha dengan KYC dan rekening pencairan sendiri) tanpa migrasi data.
 - **EDC dan ECR:** EDC disediakan oleh beberapa bank sekaligus atas nama PT Sultan Solusi Nusantara. Setiap bank wajib menyetujui fasilitas ECR (Electronic Cash Register) dan memberikan spesifikasi integrasinya; model EDC harus mendukung ECR melalui LAN atau koneksi lokal lain yang dapat diakses edge node. Integrasi per bank dibangun sebagai implementasi adapter `EdcProvider`. Dana kartu dan QRIS melalui EDC disettle langsung oleh bank masing-masing, terpisah dari settlement DOIT.
 - **Wi-Fi:** perangkat Wi-Fi (controller dan access point) wajib mendukung captive portal eksternal, otorisasi per perangkat melalui RADIUS atau API controller, pembatasan bandwidth per pengguna, dan walled garden ke domain pemesanan. Vendor dipilih paling lambat 2 November 2026.
@@ -254,9 +254,10 @@ Membangun **satu platform multi-tenant** yang untuk setiap tenant menyediakan en
 | D8 | Jadwal (sementara) | Seluruh P0 aktif 25 Desember 2026; mockup disetujui 2 November; feature-complete 30 November; code freeze 6 Desember; soft opening 18–22 Desember; go/no-go 23 Desember |
 | D9 | Feature flag | Modul yang belum lulus uji disembunyikan tanpa menunda pembukaan |
 | D10 | Mode bayar | Default bayar di muka; open bill dapat diaktifkan per zona atau tipe meja |
-| D11 | Payment gateway | Adapter multi-gateway yang dikonfigurasi di Super Admin; saat rilis hanya DOIT (QRIS, Virtual Account, transfer bank via mutasi) untuk pembayaran online; Duitku pada P1 |
+| D11 | Payment gateway | Adapter multi-gateway yang dikonfigurasi di Super Admin; saat rilis hanya DOIT (QRIS dan Virtual Account) untuk pembayaran online; tanpa transfer bank; kartu online via Duitku pada P1 |
 | D12 | Ojek online | GoFood, GrabFood, dan ShopeeFood disiapkan sejak awal; aktivasi mengikuti persetujuan mitra; sementara pesanan diinput manual di POS |
 | D13 | Pajak | Dapat dikonfigurasi di Super Admin dan Admin tenant; default PBJT 10% sesuai Perda Kota Bandung No. 1 Tahun 2024; service charge per zona; aturan pajak dapat dibedakan per item |
+| D14 | Metode bayar rilis pertama (keputusan founder 2026-11-09) | Online: QRIS dan Virtual Account via DOIT, tanpa transfer bank; kartu online via Duitku pada P1. Kasir: tunai, EDC (kartu debit/kredit), dan QRIS; e-wallet dibayar lewat QRIS; paylater dan e-wallet langsung pascarilis |
 | D14 | Akses staf | Staf outlet masuk dengan PIN pribadi; void, diskon besar, dan refund wajib PIN supervisor |
 | D15 | Login pelanggan | Email (magic link), Google OAuth, dan WhatsApp reverse OTP yang diinisiasi pelanggan; sistem tidak membalas pesan di WhatsApp |
 | D16 | Identitas pelanggan | Nomor WhatsApp terverifikasi menjadi kunci identitas dan syarat memperoleh poin serta akses fasilitas |
@@ -338,7 +339,7 @@ Aturan pengelolaan:
 | R03 | Review manusia menjadi hambatan | Review manusia hanya untuk kode sensitif (uang, autentikasi, isolasi, izin AI dan MCP); kode lain lulus CI dan review otomatis | Antrean review lebih dari 24 jam | Reviewer kedua yang ditunjuk sejak awal; jadwal review harian tetap | Lead Engineer |
 | R04 | Repositori 119connect belum dapat diakses agent | Akses diberikan sebelum WS-00 dimulai | Inventarisasi modul gagal di awal WS-00 | Modul dibangun dari spesifikasi PRD; estimasi tambahan 2–3 hari pada WS-00 dan WS-01 | Owner |
 | R05 | Verifikasi Meta dan nomor WhatsApp tertunda | Diajukan 28 Oktober dengan dokumen lengkap; display name sesuai brand | Status verifikasi dipantau setiap hari | Login email dan Google tetap tersedia; penautan WhatsApp untuk poin diaktifkan menyusul tanpa perubahan kode | Owner |
-| R06 | KYC atau aktivasi live DOIT tertunda | Diajukan 28 Oktober; checklist onboarding DOIT diselesaikan di sandbox sejak WS-05 dimulai | Status per metode (QRIS, VA, transfer) dipantau setiap hari | Tunai, kartu, dan QRIS melalui EDC bank yang terintegrasi; QRIS statis bank dengan konfirmasi manual kasir sebagai cadangan terakhir | Owner |
+| R06 | KYC atau aktivasi live DOIT tertunda | Diajukan 28 Oktober; checklist onboarding DOIT diselesaikan di sandbox sejak WS-05 dimulai | Status per metode (QRIS, VA) dipantau setiap hari | Tunai, kartu, dan QRIS melalui EDC bank yang terintegrasi; QRIS statis bank dengan konfirmasi manual kasir sebagai cadangan terakhir | Owner |
 | R07 | Gangguan DOIT saat operasional (satu gateway online) | Monitoring status DOIT dan webhook; idempotensi dan pengecekan status terjadwal | Alert bila tingkat kegagalan pembayaran lebih dari 5% dalam 10 menit atau webhook tertunda | Halaman pelanggan otomatis mengarahkan ke pembayaran di kasir (tunai, atau kartu dan QRIS melalui EDC bank); integrasi Duitku pada P1 sebagai gateway kedua | Lead Engineer |
 | R08 | Kemitraan ojek online tertunda | Diajukan 28 Oktober | Status pengajuan dipantau setiap minggu | Pesanan ojek online diinput manual di POS dengan kanal dan harga yang benar | Owner |
 | R09 | Internet outlet terputus saat ramai | Dua ISP berbeda (fiber utama dan cadangan) ditambah modem 4G; edge node offline-first | Monitoring koneksi per jalur dengan alert ke supervisor | POS, KDS, cetak, absensi, dan smart lock tetap berjalan melalui edge node; waiter memakai captain order | Lead Engineer |
@@ -440,7 +441,7 @@ Mockup dikerjakan paralel dengan WS-00. Persiapan non-kode dikerjakan manusia da
 **2. Persiapan Infrastruktur, Akun & Hardware** — Pekerjaan non-kode yang menjadi jalur kritis jadwal.
 - **Domain & Cloud [P0]** — Domain Legend dan domain platform, server cloud region Jakarta, object storage, serta CDN.
 - **WhatsApp Business Platform [P0]** — Verifikasi Meta Business, pendaftaran nomor khusus dengan display name "Legend", dan metode pembayaran di Billing Hub untuk mengantisipasi pesan berbayar.
-- **Payment Gateway [P0]** — Pendaftaran dan KYC DOIT atas nama PT Sultan Solusi Nusantara, uji sandbox, penyelesaian checklist onboarding hingga live, serta aktivasi QRIS, Virtual Account, transfer bank via mutasi rekening, dan tagihan berulang.
+- **Payment Gateway [P0]** — Pendaftaran dan KYC DOIT atas nama PT Sultan Solusi Nusantara, uji sandbox, penyelesaian checklist onboarding hingga live, serta aktivasi QRIS, Virtual Account, dan tagihan berulang.
 - **Smart Lock [P0]** — Pemilihan vendor dan model yang memenuhi syarat offline (lihat Batasan), uji kompatibilitas dengan edge node, dan pemesanan unit.
 - **Ojek Online [P0]** — Pengajuan sebagai mitra atau pengguna integrasi GoFood, GrabFood, dan ShopeeFood.
 - **Email [P0]** — Penyedia email transaksional beserta SPF, DKIM, dan DMARC.
@@ -483,13 +484,15 @@ Workstream WS-00 s.d. WS-05.
 
 **4. Multi-Tenant & Super Admin** — Satu platform untuk banyak operator dengan data terisolasi.
 - **Hierarki Organisasi [P0]** — **Tenant** (perusahaan pengguna platform) → **Brand** (misalnya Cafe Legend) → **Outlet** (lokasi fisik). Satu tenant dapat memiliki beberapa brand dan outlet, serta beberapa badan usaha (legal entity) dengan NPWP dan status PKP masing-masing.
+
+  Super Admin dapat memulihkan tenant berstatus `archived` ke status sebelumnya (`active` atau `suspended`), dan outlet berstatus `closed` ke status sebelumnya (`preopening` atau `active`), dalam 30 hari sejak transisi, dengan alasan wajib yang tercatat di audit log (TEN-04). Sesudah 30 hari status menjadi final. Data lama yang tidak memiliki waktu transisi dianggap final. Saat outlet dipulihkan, perangkat edge yang belum dicabut dapat tersambung kembali tanpa daftar ulang karena kredensial tidak dicabut saat tutup, tetapi layanan edge di perangkat itu harus dijalankan ulang karena edge berhenti mencoba setelah ditolak; nomor struk melanjutkan urutan yang sama. Aturan ini mengikuti keputusan founder Q40.
 - **Isolasi Data [P0]** — Seluruh data tenant memiliki `tenant_id` dan dilindungi RLS serta pemeriksaan di service layer. Data operasional juga membawa `outlet_id` agar role per outlet hanya melihat outletnya.
 - **Domain [P0]** — Custom domain per brand dan subdomain default di domain platform, dengan TLS otomatis.
 - **Feature Flag & Paket [P0]** — Modul POS, QR Order, KDS, Inventori, Akuntansi, Loyalty, CRM, Reservasi, Ojek Online, HRIS, Payroll, Dashboard Shareholder, Tanya AI, dan MCP dapat diaktifkan per tenant sesuai paket.
 - **Kuota & Plafon [P0]** — Jumlah outlet, jumlah karyawan aktif (default Legend minimal 30 dan dapat diubah), jumlah perangkat, kuota AI, serta plafon biaya WhatsApp dan AI per bulan.
 - **Integrasi per Tenant [P0]** — Kredensial gateway pembayaran, nomor WhatsApp, email pengirim, dan akun ojek online disimpan terenkripsi per tenant atau per outlet, dikelola melalui halaman Integrasi.
 - **Super Admin [P0]** — Role tingkat platform yang dipegang Ilham dan satu akun cadangan break-glass, keduanya wajib MFA. Super Admin membuat dan menonaktifkan tenant, mengatur paket, feature flag, kuota, gateway yang tersedia, dan plafon, melihat kesehatan sistem dan audit lintas tenant, serta menunjuk admin pertama tenant.
-- **Support Access [P0]** — Data pribadi dan keuangan tenant hanya dapat dibuka Super Admin melalui sesi berjangka (default 60 menit) dengan alasan wajib, read-only secara default, tercatat di audit log, dan memicu notifikasi ke admin tenant.
+- **Support Access [P0]** — Data pribadi dan keuangan tenant hanya dapat dibuka Super Admin melalui sesi berjangka (default 60 menit) dengan alasan wajib, read-only secara default, tercatat di audit log, dan memicu notifikasi ke admin tenant. Akses read-write hanya aktif setelah disetujui owner tenant (Q37): owner harus sudah melewati 2FA, Super Admin tidak dapat menyetujui permintaannya sendiri, dan permintaan kedaluwarsa bila tidak diputuskan dalam 24 jam. Jendela akses dihitung sejak disetujui. Durasi 15, 30, 60, atau 120 menit dengan default 60; read-write maksimal 30 menit (Q38). Sesi hasil impersonasi tetap dibatasi 60 menit. Setiap transisi (diminta, disetujui, ditolak, kedaluwarsa) tercatat di audit log dan owner mendapat notifikasi. Akses read-only tidak berubah. Layar persetujuan owner dikerjakan pada kartu terpisah.
 - **Tanpa Kode Khusus Tenant [P0]** — Seluruh kebutuhan tenant, termasuk Cafe Legend, dipenuhi melalui pengaturan, feature flag, atau data konfigurasi. Kode tidak boleh berisi percabangan berdasarkan ID, nama, atau domain tenant tertentu; aturan ini diperiksa otomatis di CI.
 - **Whitelabel [P0]** — Pelanggan dan karyawan hanya melihat brand tenant: nama, logo, domain, nomor WhatsApp, email pengirim, struk, dokumen, dan notifikasi. Nama platform hanya tampil di Panel Platform.
 - **Teks & Kamus Istilah [P0]** — Seluruh teks antarmuka diambil dari katalog teks, bukan ditulis langsung di kode. Tenant dapat mengganti istilah tertentu (misalnya nama tier, nama stasiun, "Zona WFC", atau "Shower Room") melalui kamus istilah. Pada rilis awal kamus diisi untuk Legend oleh Super Admin; editornya di panel tenant menyusul pada P1.
@@ -501,7 +504,7 @@ Workstream WS-00 s.d. WS-05.
 | TEN-01 | Pengguna tenant A tidak dapat membaca, mencari, mengunduh, menerima notifikasi, atau memanggil tool AI dan MCP yang berisi data tenant B, termasuk melalui API langsung, cache, file, embedding, dan token MCP (diuji otomatis di CI) |
 | TEN-02 | Query tanpa konteks tenant ditolak oleh RLS; tenant ditentukan dari domain atau token, bukan dari parameter klien |
 | TEN-03 | Role dengan cakupan outlet hanya melihat data outlet yang ditugaskan, termasuk dalam laporan, ekspor, Tanya AI, dan MCP |
-| TEN-04 | Super Admin tidak dapat membuka data pribadi atau keuangan tenant tanpa support access aktif; setiap sesi tercatat dan terlihat oleh admin tenant |
+| TEN-04 | Super Admin tidak dapat membuka data pribadi atau keuangan tenant tanpa support access aktif; akses read-write hanya aktif setelah disetujui owner tenant; setiap sesi dan setiap transisi permintaan tercatat dan terlihat oleh admin tenant |
 | TEN-05 | Modul yang dimatikan melalui feature flag tidak dapat diakses lewat UI, API, Tanya AI, maupun MCP |
 | TEN-06 | Tenant, brand, dan outlet baru dapat dibuat dari panel tanpa redeploy |
 | TEN-07 | Pemeriksaan CI gagal bila kode berisi percabangan berdasarkan ID, nama, atau domain tenant tertentu |
@@ -677,7 +680,7 @@ Workstream WS-00 s.d. WS-05.
 
 **13. Orkestrasi Pembayaran** — Satu antarmuka untuk banyak gateway.
 - **Adapter Gateway [P0]** — Interface `PaymentProvider` dengan implementasi **DOIT** saat rilis. Implementasi **Duitku** menyusul pada P1 tanpa perubahan modul lain. Super Admin mengaktifkan gateway yang tersedia; admin tenant memasukkan kredensial dan memilih routing.
-- **Metode DOIT [P0]** — QRIS dinamis (seluruh bank dan e-wallet), Virtual Account per bank, dan transfer bank ke rekening sendiri yang dikonfirmasi otomatis melalui mutasi rekening dengan kode unik. Daftar metode aktif diambil dari endpoint DOIT, bukan ditulis tetap di kode.
+- **Metode DOIT [P0]** — QRIS dinamis (seluruh bank dan e-wallet) dan Virtual Account per bank. Transfer bank tidak masuk rilis pertama. Daftar metode aktif diambil dari endpoint DOIT, bukan ditulis tetap di kode.
 - **Routing per Metode [P0]** — Default Legend: seluruh metode online melalui DOIT. Routing dapat diubah per tenant atau outlet tanpa redeploy setelah gateway lain tersedia.
 - **Failover [P0]** — Selama hanya DOIT yang aktif, kegagalan gateway membuat halaman pelanggan mengarahkan pembayaran ke kasir (tunai atau EDC) dan memberi tahu supervisor. Setelah gateway kedua aktif, transaksi baru otomatis dialihkan ke gateway cadangan yang mendukung metode tersebut.
 - **Siklus Pembayaran [P0]** — Payment intent dibuat server dengan nominal dari server, idempotency key unik, masa berlaku, dan status `pending` → `paid` / `expired` / `failed` → `refunded`. Pembayaran yang lunas setelah kedaluwarsa diterima dan ditandai untuk ditindaklanjuti.
@@ -1117,7 +1120,7 @@ Dikerjakan setelah operasional stabil. Spesifikasi rinci disusun dan disetujui s
 - **Pre-order Pickup Online [P1]** — Pemesanan dari luar cafe untuk diambil.
 - **Menu Bahasa Inggris [P1]** — Terjemahan menu dan ruang pelanggan.
 - **QR Order Lokal Saat Offline [P1]** — Menu QR disajikan langsung dari edge node melalui Wi-Fi tamu saat internet putus.
-- **Integrasi Duitku [P1]** — Adapter `PaymentProvider` kedua untuk kartu kredit online, e-wallet langsung, dan paylater, sekaligus sebagai failover gateway.
+- **Integrasi Duitku [P1]** — Adapter `PaymentProvider` kedua untuk kartu kredit online, sekaligus sebagai failover gateway. E-wallet langsung dan paylater pascarilis, terpisah dari rilis pertama.
 - **DOIT Platform (Sub-merchant) [P1]** — Settlement per tenant dan komisi platform otomatis.
 - **Pengalihan Badan Usaha Legend [P1]** — Bila diputuskan, Legend didaftarkan sebagai badan usaha tersendiri di sistem dan di DOIT dengan KYC dan rekening pencairan sendiri.
 - **Pencairan Payroll Otomatis [P1]** — Transfer gaji melalui gateway.
@@ -1548,7 +1551,7 @@ Berikut tabel-tabel yang dibutuhkan beserta kolom penting, tipe data, dan keguna
 | id | UUID (PK) | Identitas tenant |
 | slug / name | VARCHAR(60) / VARCHAR(150) | Kode unik dan nama perusahaan |
 | plan | VARCHAR(30) | Paket langganan |
-| status | VARCHAR(20) | `active` / `suspended` / `archived` |
+| status | VARCHAR(20) | `active` / `suspended` / `archived` (archived dapat dipulihkan dalam 30 hari, Q40) |
 | deployment_mode | VARCHAR(20) | `dedicated` / `shared` |
 | feature_flags | JSONB | Modul aktif |
 | limits | JSONB | Kuota outlet, karyawan, perangkat, AI, dan plafon biaya WhatsApp serta AI |
@@ -1580,6 +1583,7 @@ Berikut tabel-tabel yang dibutuhkan beserta kolom penting, tipe data, dan keguna
 | `payment_routes` (T) | outlet_id, method, primary_provider, fallback_provider | Routing gateway per metode |
 | `platform_admins` (global) | user_id, is_break_glass, granted_at, revoked_at | Super Admin |
 | `support_access_grants` (global) | tenant_id, super_admin_user_id, reason, access_mode, expires_at, tenant_admin_notified_at | Akses dukungan berjangka |
+| `support_access_requests` (T) | tenant_id, super_admin_user_id, reason, access_mode (`read_write`), duration_minutes, status (`pending`/`approved`/`rejected`/`expired`), decided_by, grant_id, approval_expires_at | Permintaan read-write yang menunggu persetujuan owner tenant; grant dibuat saat disetujui |
 | `edge_nodes` (T) | outlet_id, role (`primary`/`standby`), version, last_heartbeat_at, last_sync_cursor | Registri edge node |
 | `devices` (T, E) | outlet_id, type (`pos`/`kds`/`waiter_phone`/`printer`/`display`/`smart_lock`/`panic_button`), station_id, label, last_seen_at, revoked_at | Registri perangkat outlet |
 | `regions` (global) | code, name, type, parent_id | Wilayah administrasi |

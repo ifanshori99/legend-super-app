@@ -4,9 +4,10 @@
 // platform-org-db.test.ts.
 import { randomUUID } from "node:crypto";
 import express from "express";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
+import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import {
   DEVICE_TOKEN_HEADER,
   cafeLegendPlatformFixtures,
@@ -25,14 +26,49 @@ const VERIFIED_HOST = "pesan.cafelegend.example";
 /** Seeded custom domain whose DNS ownership check has not passed. */
 const UNVERIFIED_HOST = "wfc.cafelegend.example";
 
+/** A seeded Cafe Legend outlet: the registered devices of the seeded tenant live here. */
+const seededOutletId = cafeLegendAccessFixtures.outletIds.bandung;
+
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 2,
 });
 
+/** Device ids registered in the seeded tenant; removed again in afterAll. */
+const seededDeviceIds: string[] = [];
+
 afterAll(async () => {
+  if (seededDeviceIds.length > 0)
+    await asTenant(tenantId, (client) =>
+      client.query("DELETE FROM devices WHERE id = ANY($1::uuid[])", [
+        seededDeviceIds,
+      ]),
+    );
   await owner.end();
 });
+
+/** Migration owner with the tenant settings (RLS is forced on tenant tables). */
+async function asTenant<T>(
+  forTenantId: string,
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [forTenantId],
+    );
+    const result = await run(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 function slug(prefix: string) {
   return `${prefix}-${randomUUID().replaceAll("-", "").slice(0, 16)}`;
@@ -71,10 +107,42 @@ async function createTenantPair(
      VALUES ($1, $2, $3, $4, $5, 'active', now())`,
     [domainId, pairTenantId, pairBrandId, hostname, kind],
   );
-  return { tenantId: pairTenantId, brandId: pairBrandId, domainId, hostname };
+  // A registered device needs an outlet of its own tenant (devices FK).
+  const pairOutletId = randomUUID();
+  await asTenant(pairTenantId, async (client) => {
+    const entityId = randomUUID();
+    await client.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Uji', false)`,
+      [entityId, pairTenantId],
+    );
+    await client.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       VALUES ($1, $2, $3, $4, 'U-01', 'Outlet Uji', 'Jl. Uji', 'Asia/Jakarta',
+               '{"mon":{"opens":"08:00","closes":"22:00"}}', 'active')`,
+      [pairOutletId, pairTenantId, pairBrandId, entityId],
+    );
+  });
+  return {
+    tenantId: pairTenantId,
+    brandId: pairBrandId,
+    outletId: pairOutletId,
+    domainId,
+    hostname,
+  };
 }
 
 async function dropTenantPair(pair: { tenantId: string; domainId: string }) {
+  await asTenant(pair.tenantId, async (client) => {
+    await client.query("DELETE FROM devices WHERE tenant_id = $1", [
+      pair.tenantId,
+    ]);
+    await client.query("DELETE FROM outlets WHERE tenant_id = $1", [
+      pair.tenantId,
+    ]);
+    await client.query("DELETE FROM legal_entities WHERE tenant_id = $1", [
+      pair.tenantId,
+    ]);
+  });
   await owner.query("DELETE FROM tenant_domains WHERE id = $1", [
     pair.domainId,
   ]);
@@ -82,20 +150,62 @@ async function dropTenantPair(pair: { tenantId: string; domainId: string }) {
   await owner.query("DELETE FROM tenants WHERE id = $1", [pair.tenantId]);
 }
 
-function deviceToken(
-  overrides: Partial<Parameters<typeof signDeviceToken>[0]> = {},
-  expiresAt?: number,
+/**
+ * A token for a device that is in the registry (F5, legend-165): a device row
+ * of the tenant, active, with `token_issued_at` at or before the token's
+ * `issuedAt`. `registry` bends the row; `token` bends the signed payload.
+ */
+async function registeredDeviceToken(
+  options: {
+    tenantId?: string;
+    brandId?: string | null;
+    outletId?: string;
+    /** Seconds the token is issued before now (default 0). */
+    issuedAgoSeconds?: number;
+    /** Seconds the registry floor is in the future of the token (rotation). */
+    floorAfterTokenSeconds?: number;
+    revoked?: boolean;
+    expiresAt?: number;
+  } = {},
 ) {
-  return signDeviceToken(
-    {
-      version: 1,
-      tenantId,
-      brandId,
-      deviceId: randomUUID(),
-      ...overrides,
-    },
-    expiresAt,
-  );
+  const forTenantId = options.tenantId ?? tenantId;
+  const deviceId = randomUUID();
+  const issuedAt =
+    Math.floor(Date.now() / 1000) - (options.issuedAgoSeconds ?? 0);
+  const floor = issuedAt + (options.floorAfterTokenSeconds ?? 0);
+  await asTenant(forTenantId, async (client) => {
+    await client.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+       VALUES ($1, $2, $3, 'pos', 'Kasir uji', $4)`,
+      [
+        deviceId,
+        forTenantId,
+        options.outletId ?? seededOutletId,
+        new Date(floor * 1000),
+      ],
+    );
+    if (options.revoked)
+      await client.query(
+        `UPDATE devices SET status = 'revoked', revoked_at = now(), revoked_by = 'uji', revoke_reason = 'Hilang' WHERE id = $1`,
+        [deviceId],
+      );
+  });
+  if (forTenantId === tenantId) seededDeviceIds.push(deviceId);
+  return {
+    deviceId,
+    token: signDeviceToken(
+      {
+        version: 1,
+        tenantId: forTenantId as never,
+        brandId: (options.brandId === undefined
+          ? brandId
+          : options.brandId) as never,
+        deviceId,
+        issuedAt,
+      },
+      options.expiresAt,
+    ),
+  };
 }
 
 describe("TEN-02 tenant resolution from the request host or a device token", () => {
@@ -162,15 +272,46 @@ describe("TEN-02 tenant resolution from the request host or a device token", () 
     const response = await request(app)
       .get("/api/tenant/context")
       .set("Host", "localhost")
-      .set(DEVICE_TOKEN_HEADER, deviceToken());
+      .set(DEVICE_TOKEN_HEADER, (await registeredDeviceToken()).token);
     expect(response.status).toBe(200);
     expect(response.body.data.brand.id).toBe(brandId);
   });
 
   it("TEN-02 refuses an expired or tampered device token", async () => {
-    const expired = deviceToken({}, Math.floor(Date.now() / 1000) - 60);
-    const tampered = `${deviceToken().slice(0, -2)}xx`;
+    const expired = (
+      await registeredDeviceToken({
+        expiresAt: Math.floor(Date.now() / 1000) - 60,
+      })
+    ).token;
+    const tampered = `${(await registeredDeviceToken()).token.slice(0, -2)}xx`;
     for (const token of [expired, tampered, "dv1.bogus.signature"]) {
+      const response = await request(app)
+        .get("/api/tenant/context")
+        .set("Host", "localhost")
+        .set(DEVICE_TOKEN_HEADER, token);
+      expect(response.status, token).toBe(404);
+      expect(response.body.error.code).toBe("TENANT_NOT_FOUND");
+    }
+  });
+
+  it("F5 EDG-03 refuses a validly signed token whose device is unknown, revoked or rotated out", async () => {
+    // Signed by the server key but never enrolled: no registry row.
+    const unknown = signDeviceToken({
+      version: 1,
+      tenantId,
+      brandId,
+      deviceId: randomUUID(),
+      issuedAt: Math.floor(Date.now() / 1000),
+    });
+    const revoked = (await registeredDeviceToken({ revoked: true })).token;
+    // The registry floor is newer than the token: a reissue replaced it.
+    const rotated = (
+      await registeredDeviceToken({
+        issuedAgoSeconds: 60,
+        floorAfterTokenSeconds: 30,
+      })
+    ).token;
+    for (const token of [unknown, revoked, rotated]) {
       const response = await request(app)
         .get("/api/tenant/context")
         .set("Host", "localhost")
@@ -188,7 +329,13 @@ describe("TEN-02 tenant resolution from the request host or a device token", () 
         .set("Host", VERIFIED_HOST)
         .set(
           DEVICE_TOKEN_HEADER,
-          deviceToken({ tenantId: other.tenantId, brandId: other.brandId }),
+          (
+            await registeredDeviceToken({
+              tenantId: other.tenantId,
+              brandId: other.brandId,
+              outletId: other.outletId,
+            })
+          ).token,
         );
       expect(response.status).toBe(403);
       expect(response.body.error.code).toBe("TENANT_MISMATCH");
@@ -211,7 +358,13 @@ describe("TEN-02 tenant resolution from the request host or a device token", () 
         .set("Host", "localhost")
         .set(
           DEVICE_TOKEN_HEADER,
-          deviceToken({ tenantId: other.tenantId, brandId: other.brandId }),
+          (
+            await registeredDeviceToken({
+              tenantId: other.tenantId,
+              brandId: other.brandId,
+              outletId: other.outletId,
+            })
+          ).token,
         );
       expect(tokenResponse.status).toBe(404);
     } finally {

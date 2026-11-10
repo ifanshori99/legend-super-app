@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import * as sample from "../packages/shared/src/qr-order/sample.ts";
 import * as domain from "../apps/web/src/features/ws03-qr-order/domain.ts";
 
 const bill = qr.qrOrderFixtures.sessionBills[0];
@@ -211,7 +212,7 @@ describe("failed-item recovery and review (ORD-08)", () => {
   });
 
   test("ORD-08 the guest issue view carries no cost and no refund option", () => {
-    const issue = qr.guestOrderIssueFixtures[0];
+    const issue = sample.guestOrderIssueFixtures[0];
     assert.equal("costIdr" in issue, false);
     assert.deepEqual(Object.keys(issue.options).sort(), ["swap", "voucher"]);
   });
@@ -235,5 +236,22 @@ describe("failed-item recovery and review (ORD-08)", () => {
     assert.equal(domain.promptsGoogleReview(3), false);
     assert.equal(domain.promptsGoogleReview(4), true);
     assert.equal(domain.promptsGoogleReview(5), true);
+  });
+});
+
+describe("minimum spend basis is before tax (legend-v9fh, owner decision Q53)", () => {
+  test("inclusive: service and tax inside the subtotal do not count toward the minimum", () => {
+    // Gross 100.000 with 4.329 service + 9.091 tax inside: pre-tax 86.580.
+    assert.equal(
+      domain.minimumSpendShortfall(100_000, 100_000, 0, 13_420),
+      13_420,
+    );
+    assert.equal(domain.minimumSpendShortfall(86_580, 100_000, 0, 13_420), 0);
+    assert.equal(domain.minimumSpendShortfall(86_581, 100_000, 0, 13_420), 1);
+  });
+
+  test("exclusive: no included charges, unchanged", () => {
+    assert.equal(domain.minimumSpendShortfall(100_000, 100_000, 0), 0);
+    assert.equal(domain.minimumSpendShortfall(100_000, 100_000, 0, 0), 0);
   });
 });

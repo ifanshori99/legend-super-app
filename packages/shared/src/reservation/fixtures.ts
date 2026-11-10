@@ -15,7 +15,7 @@
 
 import { cafeLegendFixtures, idr, z } from "../core/index.ts";
 import { cafeLegendMenuFixtures } from "../menu/index.ts";
-import { cafeLegendQrOrderFixtures } from "../qr-order/index.ts";
+import { cafeLegendQrOrderFixtures } from "../qr-order/fixtures.ts";
 import { cafeLegendCrmFixtures } from "../crm/index.ts";
 import { reservationEndsAt } from "./machines.ts";
 import { reservationEventSchema } from "./events.ts";

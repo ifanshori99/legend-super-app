@@ -25,6 +25,8 @@ export const qrGlassCartMessages = {
     subtotal: "Subtotal",
     itemCount: "{count} item",
     taxNote: "Belum termasuk pajak dan service.",
+    taxNoteMixed: "Pajak dan service dihitung saat checkout.",
+    taxNoteInclusive: "Sudah termasuk pajak dan service.",
     open: "Lihat keranjang",
     openCart: "Atur di keranjang",
     openCartAria: "Atur {name} di keranjang",

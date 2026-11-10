@@ -1,0 +1,826 @@
+// Per-order bill splits (bead legend-ms3; docs/briefs/sub-split-bill-design.md
+// D1, D3, D4; PRD ORD-06). A pay-first order waiting for payment is cut into
+// 2+ parts (equal, by item or by person); each part is paid through its own
+// payment intent (qr-order-payment.ts). A re-split voids the live set and
+// inserts a new one under a fresh `split_set_id`.
+//
+// - Scope (D1): one order, the session's single `awaiting_payment` order. The
+//   server finds it; the guest names no order.
+// - Rounding (D3): `splitBill` cuts the order total (tax, service charge and
+//   rounding included) and `assertSplitsSumToTotal` guards the insert.
+// - Lock order: session -> order -> bill_splits -> payment link.
+// - A paid part issues a one-time claim token (`sc_...`), shown to the payer
+//   for 24 hours. The raw token is sealed; its SHA-256 is the lookup key.
+//   Redeeming has no public route yet (waits legend-111j).
+
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  gt,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
+import {
+  assertOutletInScope,
+  CoreError,
+  toIsoDateTime,
+  ulidToUuid,
+  uuidToUlid,
+  type Idr,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  assertSplitsSumToTotal,
+  billSplitSchema,
+  sessionBillSchema,
+  sessionSplitsResultSchema,
+  splitBill,
+  splitClaimSchema,
+  type BillSplit,
+  type CreateSplitsInput,
+  type SessionSplitsResult,
+  type SplitClaim,
+} from "@starter/shared/qr-order";
+import { db } from "../db/index.ts";
+import {
+  billSplits,
+  paymentIntents,
+  paymentLinks,
+  sessionParticipants,
+} from "../db/schema/index.ts";
+import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
+import { openSecret, sealSecret } from "../lib/secrets.ts";
+import type { Tx } from "./menu-internals.ts";
+import { LATE_PAYMENT_GRACE_MS } from "./qr-order-consumers.ts";
+import {
+  getSessionBill,
+  lockGuestSessionForPayment,
+  qrOrderIdempotent,
+  type QrOrderRow,
+} from "./qr-order.service.ts";
+
+export type BillSplitRow = typeof billSplits.$inferSelect;
+
+/** A claim token lives 24 hours after the part is paid. */
+const CLAIM_TTL_MS = 24 * 60 * 60_000;
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function claimAad(tenantId: string, splitId: string): string {
+  return `bill-split-claim:${tenantId}:${splitId}`;
+}
+
+function unprocessable(code: string, message: string): HttpError {
+  return new HttpError(422, code, message);
+}
+
+// ---- DTO ------------------------------------------------------------------
+
+export function splitRowToDto(row: BillSplitRow): BillSplit {
+  return billSplitSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    tableSessionId: row.tableSessionId,
+    orderId: row.orderId,
+    method: row.method,
+    shareIndex: row.shareIndex,
+    amountIdr: row.amountIdr,
+    status: row.status,
+    label: row.label,
+    itemIds: row.itemIds.map((id) => uuidToUlid(id)),
+    participantId: row.participantId,
+    createdAt: toIsoDateTime(row.createdAt),
+  });
+}
+
+// ---- Reads and locks ---------------------------------------------------------------
+
+/** Live (non-voided) parts of an order, lowest share index first. */
+export async function listLiveSplitsTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<BillSplitRow[]> {
+  return tx
+    .select()
+    .from(billSplits)
+    .where(
+      and(
+        eq(billSplits.tenantId, context.tenant.tenantId),
+        eq(billSplits.orderId, orderId),
+        ne(billSplits.status, "voided"),
+      ),
+    )
+    .orderBy(asc(billSplits.shareIndex));
+}
+
+/** One part of the session, locked FOR UPDATE; 404 when it is not in it. */
+export async function lockSplitPartTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+  splitId: string,
+): Promise<BillSplitRow> {
+  const [row] = await tx
+    .select()
+    .from(billSplits)
+    .where(
+      and(
+        eq(billSplits.tenantId, context.tenant.tenantId),
+        eq(billSplits.id, splitId),
+        eq(billSplits.tableSessionId, sessionId),
+      ),
+    )
+    // NO KEY UPDATE, not UPDATE: the part's intent is inserted by
+    // createSplitPartIntent on another connection, and its FK check takes KEY
+    // SHARE on this row; FOR UPDATE would block that insert while this
+    // transaction waits on it (self-deadlock).
+    .for("no key update");
+  if (!row) throw new CoreError("NOT_FOUND", "Bagian tagihan tidak ditemukan.");
+  assertOutletInScope(context.outletScope, row.outletId);
+  return row;
+}
+
+/** The session's live parts as DTOs (GET /bill fills `splits` with them). */
+export async function listSessionSplitDtosTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+): Promise<BillSplit[]> {
+  const rows = await tx
+    .select()
+    .from(billSplits)
+    .where(
+      and(
+        eq(billSplits.tenantId, context.tenant.tenantId),
+        eq(billSplits.tableSessionId, sessionId),
+        ne(billSplits.status, "voided"),
+      ),
+    )
+    .orderBy(asc(billSplits.createdAt), asc(billSplits.shareIndex));
+  return rows.map(splitRowToDto);
+}
+
+// ---- Guards -------------------------------------------------------------------------
+
+/**
+ * A code that may still take money. Any `pending` code, whatever its expiry:
+ * a lapsed one stays pending until reconciliation hears the gateway's final
+ * answer, and it may turn out paid (payment.service.ts `supersedePending`). And
+ * a superseded (`expired`) code the gateway received, until its own expiry plus
+ * the late-payment grace: the gateway cancel is best effort.
+ */
+function liveCodeWhere(now: Date) {
+  return or(
+    eq(paymentIntents.status, "pending"),
+    and(
+      eq(paymentIntents.status, "expired"),
+      isNotNull(paymentIntents.providerRef),
+      gt(
+        paymentIntents.expiresAt,
+        new Date(now.getTime() - LATE_PAYMENT_GRACE_MS),
+      ),
+    ),
+  );
+}
+
+/**
+ * The split can change only while no money moved: 409 `SPLIT_LOCKED` when a
+ * live part is paid, the order's link took money, or a code on the link is
+ * still open (pending, or expired with a provider ref the gateway may still
+ * accept; both until their expiry plus the late-payment grace).
+ * Locks the live parts so a concurrent webhook settles before or after us.
+ */
+export async function assertSplitMutableTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: QrOrderRow,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const live = await tx
+    .select({ status: billSplits.status })
+    .from(billSplits)
+    .where(
+      and(
+        eq(billSplits.tenantId, tenantId),
+        eq(billSplits.orderId, order.id),
+        ne(billSplits.status, "voided"),
+      ),
+    )
+    .for("no key update");
+  const locked = (message: string) =>
+    new HttpError(409, "SPLIT_LOCKED", message);
+  if (live.some((part) => part.status === "paid"))
+    throw locked("Ada bagian yang sudah dibayar; pembagian tidak bisa diubah.");
+  if (order.paymentLinkId === null) return;
+  const [link] = await tx
+    .select({ paidIdr: paymentLinks.paidIdr })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, tenantId),
+        eq(paymentLinks.id, order.paymentLinkId),
+      ),
+    );
+  if (link && link.paidIdr > 0)
+    throw locked("Pesanan ini sudah menerima pembayaran.");
+  const open = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, order.paymentLinkId),
+        liveCodeWhere(now),
+      ),
+    )
+    .limit(1);
+  if (open.length > 0)
+    throw locked("Ada kode pembayaran yang masih aktif; tunggu sampai habis.");
+}
+
+/**
+ * The part's newest live code (`liveCodeWhere`): an intent with
+ * `bill_split_id = partId` that may still take money. null when there is none.
+ */
+export async function partLiveCodeTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  partId: string,
+  now: Date,
+): Promise<{
+  id: string;
+  method: string;
+  channelCode: string | null;
+  status: string;
+} | null> {
+  const [code] = await tx
+    .select({
+      id: paymentIntents.id,
+      method: paymentIntents.method,
+      channelCode: paymentIntents.channelCode,
+      status: paymentIntents.status,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.billSplitId, partId),
+        liveCodeWhere(now),
+      ),
+    )
+    .orderBy(desc(paymentIntents.createdAt))
+    .limit(1);
+  return code ?? null;
+}
+
+// ---- Create -------------------------------------------------------------------------
+
+/**
+ * POST /api/table-sessions/:sessionId/splits. Cuts the session's one
+ * `awaiting_payment` order into parts and voids the live set it replaces.
+ * The stored idempotent answer is the new set id; the bill and the parts are
+ * read after commit, so a replay shows the parts as they are now.
+ */
+export async function createSessionSplits(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  input: CreateSplitsInput,
+  now = new Date(),
+): Promise<SessionSplitsResult> {
+  const tenantId = context.tenant.tenantId;
+  const stored = await withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "share",
+    );
+    const { idempotencyKey, ...request } = input;
+    return qrOrderIdempotent<{ splitSetId: string }>(
+      tx,
+      context,
+      { sessionId: session.id, outletId: session.outletId },
+      idempotencyKey,
+      "split.create",
+      request,
+      async () => {
+        // D1: the session's single order waiting for payment.
+        const awaiting = await tx
+          .select()
+          .from(orders)
+          .where(
+            and(
+              eq(orders.tenantId, tenantId),
+              eq(orders.tableSessionId, session.id),
+              eq(orders.status, "awaiting_payment"),
+            ),
+          )
+          .orderBy(asc(orders.id))
+          .for("update");
+        if (awaiting.length === 0)
+          throw unprocessable(
+            "NOTHING_TO_SPLIT",
+            "Tidak ada pesanan yang menunggu pembayaran untuk dibagi.",
+          );
+        if (awaiting.length > 1)
+          throw new CoreError(
+            "CONFLICT",
+            "Ada lebih dari satu pesanan yang menunggu pembayaran.",
+          );
+        const order = awaiting[0];
+        if (order.depositAppliedIdr > 0)
+          throw unprocessable(
+            "VALIDATION_ERROR",
+            "Pesanan dengan deposit reservasi belum bisa dibagi.",
+          );
+        await assertSplitMutableTx(tx, context, order, now);
+        if (order.paymentLinkId !== null) {
+          const [link] = await tx
+            .select({
+              totalIdr: paymentLinks.totalIdr,
+              paidIdr: paymentLinks.paidIdr,
+            })
+            .from(paymentLinks)
+            .where(
+              and(
+                eq(paymentLinks.tenantId, tenantId),
+                eq(paymentLinks.id, order.paymentLinkId),
+              ),
+            );
+          if (link && (link.totalIdr !== order.totalIdr || link.paidIdr !== 0))
+            throw new CoreError(
+              "CONFLICT",
+              "Tagihan pesanan ini berubah; muat ulang lalu coba lagi.",
+            );
+        }
+
+        const items = await tx
+          .select({
+            id: orderItems.id,
+            lineTotalIdr: orderItems.lineTotalIdr,
+          })
+          .from(orderItems)
+          .where(
+            and(
+              eq(orderItems.tenantId, tenantId),
+              eq(orderItems.orderId, order.id),
+              ne(orderItems.status, "voided"),
+            ),
+          );
+        await assertParticipantsInSession(tx, context, session.id, input);
+
+        const drafts = draftParts(
+          input,
+          order.totalIdr,
+          items.map((item) => ({
+            orderItemId: item.id,
+            lineTotalIdr: item.lineTotalIdr,
+          })),
+        );
+
+        await voidLiveSplitsTx(tx, context, order.id, now);
+        const splitSetId = randomUUID();
+        await tx.insert(billSplits).values(
+          drafts.map((draft) => ({
+            tenantId,
+            outletId: order.outletId,
+            tableSessionId: session.id,
+            orderId: order.id,
+            splitSetId,
+            method: draft.method,
+            shareIndex: draft.shareIndex,
+            amountIdr: draft.amountIdr,
+            label: draft.label,
+            itemIds: draft.itemIds.map((id) => ulidToUuid(id)),
+            participantId: draft.participantId,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        );
+        await tx
+          .update(orders)
+          .set({ paymentIntentId: null, updatedAt: now })
+          .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)));
+        return { splitSetId };
+      },
+    );
+  });
+
+  const bill = await getSessionBill(context, credential, sessionId, now);
+  return withTenant(db, context, async (tx) => {
+    const created = await tx
+      .select()
+      .from(billSplits)
+      .where(
+        and(
+          eq(billSplits.tenantId, tenantId),
+          eq(billSplits.splitSetId, stored.splitSetId),
+          eq(billSplits.tableSessionId, sessionId),
+        ),
+      )
+      .orderBy(asc(billSplits.shareIndex));
+    const live = await listSessionSplitDtosTx(tx, context, sessionId);
+    return sessionSplitsResultSchema.parse({
+      bill: sessionBillSchema.parse({ ...bill, splits: live }),
+      splits: created.map(splitRowToDto),
+    });
+  });
+}
+
+/** D3: `splitBill` on the order total; any bad input or a zero part is 422. */
+function draftParts(
+  input: CreateSplitsInput,
+  totalIdr: Idr,
+  lines: { orderItemId: string; lineTotalIdr: Idr }[],
+) {
+  const fail = () =>
+    unprocessable(
+      "VALIDATION_ERROR",
+      "Pembagian tidak valid: setiap item harus masuk tepat satu bagian dan tiap bagian harus lebih dari nol.",
+    );
+  try {
+    const drafts =
+      input.method === "equal"
+        ? splitBill({ method: "equal", totalIdr, parts: input.parts })
+        : input.method === "by_person"
+          ? splitBill({
+              method: "by_person",
+              totalIdr,
+              participantIds: input.participantIds,
+            })
+          : splitBill({
+              method: "by_item",
+              totalIdr,
+              lines,
+              assignments: input.assignments,
+            });
+    if (drafts.some((draft) => draft.amountIdr <= 0)) throw fail();
+    assertSplitsSumToTotal(drafts, totalIdr);
+    return drafts;
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (error instanceof RangeError) throw fail();
+    throw error;
+  }
+}
+
+/** Named participants must belong to this session (the FK checks tenant only). */
+async function assertParticipantsInSession(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+  input: CreateSplitsInput,
+): Promise<void> {
+  const ids =
+    input.method === "by_person"
+      ? input.participantIds
+      : input.method === "by_item"
+        ? input.assignments.flatMap((assignment) =>
+            assignment.participantId ? [assignment.participantId] : [],
+          )
+        : [];
+  const unique = [...new Set<string>(ids)];
+  if (unique.length === 0) return;
+  const found = await tx
+    .select({ id: sessionParticipants.id })
+    .from(sessionParticipants)
+    .where(
+      and(
+        eq(sessionParticipants.tenantId, context.tenant.tenantId),
+        eq(sessionParticipants.tableSessionId, sessionId),
+        inArray(sessionParticipants.id, unique),
+      ),
+    );
+  if (found.length !== unique.length)
+    throw unprocessable(
+      "VALIDATION_ERROR",
+      "Peserta tidak ada di sesi meja ini.",
+    );
+}
+
+// ---- Void ---------------------------------------------------------------------------
+
+/** Pending parts of the order become voided; paid parts stay. Returns the count. */
+export async function voidLiveSplitsTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  now: Date,
+): Promise<number> {
+  const voided = await tx
+    .update(billSplits)
+    .set({ status: "voided", voidedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(billSplits.tenantId, context.tenant.tenantId),
+        eq(billSplits.orderId, orderId),
+        eq(billSplits.status, "pending"),
+      ),
+    )
+    .returning({ id: billSplits.id });
+  return voided.length;
+}
+
+/**
+ * A voided order: its paid parts' unredeemed claims end now. Returns the
+ * count. Run with `voidLiveSplitsTx` when the order is voided.
+ */
+export async function expireSplitClaimsTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  now: Date,
+): Promise<number> {
+  const expired = await tx
+    .update(billSplits)
+    .set({ claimExpiresAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(billSplits.tenantId, context.tenant.tenantId),
+        eq(billSplits.orderId, orderId),
+        eq(billSplits.status, "paid"),
+        isNull(billSplits.claimRedeemedAt),
+        gt(billSplits.claimExpiresAt, now),
+      ),
+    )
+    .returning({ id: billSplits.id });
+  return expired.length;
+}
+
+// ---- Paid and claim -------------------------------------------------------------------
+
+/**
+ * What the paid intent put toward the bill: the money its provider evidence
+ * brought in, less the part booked as unallocated funds. Same rule as
+ * qr-order-consumers `allocatedIdrByIntent`, for one intent.
+ */
+async function allocatedIdrOfIntent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentId: string,
+): Promise<number> {
+  const result = await tx.execute<{ allocated: string }>(sql`
+    SELECT (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+                       WHERE e.tenant_id = ${context.tenant.tenantId}
+                         AND e.payment_intent_id = ${intentId}), 0)
+          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
+                       WHERE f.tenant_id = ${context.tenant.tenantId}
+                         AND f.payment_intent_id = ${intentId}), 0))::text AS allocated`);
+  return Number(result.rows[0]?.allocated ?? 0);
+}
+
+/**
+ * Marks the part a paid intent covers as paid and issues its claim token.
+ * `no_split`: the intent is not for a part, or nothing was marked (the intent
+ * is not paid, or its allocation is below the part). `already`: the part is
+ * no longer pending (replay, or voided). Replay safe: the UPDATE only moves
+ * a `pending` part.
+ */
+export async function markSplitPartPaidTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { intentId: string; now: Date },
+): Promise<"no_split" | "marked" | "already"> {
+  const tenantId = context.tenant.tenantId;
+  const [intent] = await tx
+    .select({
+      billSplitId: paymentIntents.billSplitId,
+      status: paymentIntents.status,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, input.intentId),
+      ),
+    );
+  if (!intent || intent.billSplitId === null) return "no_split";
+  const [part] = await tx
+    .select()
+    .from(billSplits)
+    .where(
+      and(
+        eq(billSplits.tenantId, tenantId),
+        eq(billSplits.id, intent.billSplitId),
+      ),
+    )
+    .for("no key update");
+  if (!part) return "no_split";
+  if (part.status !== "pending") {
+    // Another intent already paid the part, or it was voided: no refund
+    // logic here, only a trace (identifiers only).
+    if (
+      intent.status === "paid" &&
+      (part.status === "voided" || part.paymentIntentId !== input.intentId)
+    )
+      logger.warn(
+        {
+          billSplitId: part.id,
+          intentId: input.intentId,
+          partStatus: part.status,
+          paidByIntentId: part.paymentIntentId,
+        },
+        "Bill split: an intent settled for a part already paid by another intent or voided",
+      );
+    return "already";
+  }
+  if (intent.status !== "paid") return "no_split";
+  const allocated = await allocatedIdrOfIntent(tx, context, input.intentId);
+  if (allocated < part.amountIdr) return "no_split";
+
+  const raw = `sc_${randomBytes(32).toString("base64url")}`;
+  const marked = await tx
+    .update(billSplits)
+    .set({
+      status: "paid",
+      paymentIntentId: input.intentId,
+      paidAt: input.now,
+      claimTokenHash: sha256(raw),
+      claimTokenSealed: sealSecret(raw, claimAad(tenantId, part.id)),
+      claimExpiresAt: new Date(input.now.getTime() + CLAIM_TTL_MS),
+      updatedAt: input.now,
+    })
+    .where(
+      and(
+        eq(billSplits.tenantId, tenantId),
+        eq(billSplits.id, part.id),
+        eq(billSplits.status, "pending"),
+      ),
+    )
+    .returning({ id: billSplits.id });
+  return marked.length > 0 ? "marked" : "already";
+}
+
+/**
+ * GET .../splits/:splitId/claim. `unavailable` until the part is paid;
+ * `available` shows the token for 24 hours; `claimed` once redeemed;
+ * `expired` after the deadline.
+ */
+export async function getSplitClaim(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  splitId: string,
+  now = new Date(),
+): Promise<SplitClaim> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "none",
+    );
+    const [part] = await tx
+      .select()
+      .from(billSplits)
+      .where(
+        and(
+          eq(billSplits.tenantId, tenantId),
+          eq(billSplits.id, splitId),
+          eq(billSplits.tableSessionId, session.id),
+        ),
+      );
+    if (!part)
+      throw new CoreError("NOT_FOUND", "Bagian tagihan tidak ditemukan.");
+    const claim = (
+      status: SplitClaim["status"],
+      claimToken: string | null,
+      claimableUntil: Date | null,
+    ) =>
+      splitClaimSchema.parse({
+        billSplitId: part.id,
+        status,
+        claimToken,
+        claimableUntil: claimableUntil ? toIsoDateTime(claimableUntil) : null,
+      });
+    if (
+      part.status !== "paid" ||
+      part.claimTokenSealed === null ||
+      part.claimExpiresAt === null
+    )
+      return claim("unavailable", null, null);
+    if (part.claimRedeemedAt !== null) return claim("claimed", null, null);
+    if (part.claimExpiresAt.getTime() <= now.getTime())
+      return claim("expired", null, null);
+    return claim(
+      "available",
+      openSecret(part.claimTokenSealed, claimAad(tenantId, part.id)),
+      part.claimExpiresAt,
+    );
+  });
+}
+
+/**
+ * legend-ia54l (founder Q75): the guest opens the claim code from the phone
+ * for 24 hours after the part is paid, also after the table is closed. The
+ * proof is the claim token itself (printed on the receipt), not the table
+ * session, so a closed session does not block it. Reads one part only and
+ * returns the same four fields as `getSplitClaim`: no other guest's part, no
+ * order data. Unknown, used, expired or voided: the same NOT_FOUND, so the
+ * route is no oracle.
+ */
+export async function getSplitClaimByToken(
+  context: ScopedTenantContext,
+  rawToken: string,
+  now = new Date(),
+): Promise<SplitClaim> {
+  const tenantId = context.tenant.tenantId;
+  const notFound = () =>
+    new CoreError("NOT_FOUND", "Kode klaim tidak ditemukan atau sudah habis.");
+  return withTenant(db, context, async (tx) => {
+    const [part] = await tx
+      .select({
+        id: billSplits.id,
+        sealed: billSplits.claimTokenSealed,
+        expiresAt: billSplits.claimExpiresAt,
+        orderStatus: orders.status,
+      })
+      .from(billSplits)
+      .innerJoin(
+        orders,
+        and(
+          eq(orders.tenantId, billSplits.tenantId),
+          eq(orders.id, billSplits.orderId),
+        ),
+      )
+      .where(
+        and(
+          eq(billSplits.tenantId, tenantId),
+          eq(billSplits.claimTokenHash, sha256(rawToken)),
+          eq(billSplits.status, "paid"),
+          isNull(billSplits.claimRedeemedAt),
+          gt(billSplits.claimExpiresAt, now),
+        ),
+      );
+    if (!part || part.sealed === null || part.expiresAt === null)
+      throw notFound();
+    if (part.orderStatus === "voided") throw notFound();
+    return splitClaimSchema.parse({
+      billSplitId: part.id,
+      status: "available",
+      claimToken: openSecret(part.sealed, claimAad(tenantId, part.id)),
+      claimableUntil: toIsoDateTime(part.expiresAt),
+    });
+  });
+}
+
+/**
+ * Redeems a claim token once. null: unknown, already used, expired, the part
+ * not paid, or the order voided. No
+ * public route yet (waits legend-111j); the caller owns the transaction.
+ */
+export async function redeemSplitClaimTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  rawToken: string,
+  now: Date,
+): Promise<{ billSplitId: string } | null> {
+  const [redeemed] = await tx
+    .update(billSplits)
+    .set({ claimRedeemedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(billSplits.tenantId, context.tenant.tenantId),
+        eq(billSplits.claimTokenHash, sha256(rawToken)),
+        eq(billSplits.status, "paid"),
+        isNull(billSplits.claimRedeemedAt),
+        gt(billSplits.claimExpiresAt, now),
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(orders)
+            .where(
+              and(
+                eq(orders.tenantId, billSplits.tenantId),
+                eq(orders.id, billSplits.orderId),
+                eq(orders.status, "voided"),
+              ),
+            ),
+        ),
+      ),
+    )
+    .returning({ id: billSplits.id });
+  return redeemed ? { billSplitId: redeemed.id } : null;
+}

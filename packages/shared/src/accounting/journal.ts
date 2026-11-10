@@ -46,6 +46,7 @@ import { nextPeriod, periodKeySchema } from "./period-key.ts";
 export const JOURNAL_SOURCE_TYPES = [
   "sale",
   "refund",
+  "customer_deposit",
   "gateway_settlement",
   "edc_settlement",
   "cogs",
@@ -53,6 +54,8 @@ export const JOURNAL_SOURCE_TYPES = [
   "purchase",
   "supplier_invoice",
   "supplier_payment",
+  "purchase_return",
+  "petty_purchase",
   "production",
   "payroll",
   "loyalty",
@@ -315,8 +318,15 @@ export const manualJournalSchema = z
     if ((row.status === "rejected") !== (row.rejectionReason !== null))
       issue("rejectionReason", "rejectionReason is set exactly when rejected");
     const decided = row.status === "posted" || row.status === "rejected";
-    if (decided !== (row.decidedBy !== null && row.decidedAt !== null))
-      issue("decidedBy", "decidedBy/decidedAt are set exactly when decided");
+    if (decided !== (row.decidedAt !== null))
+      issue("decidedAt", "decidedAt is set exactly when decided");
+    // A rejection may come from the system (approval chain expired or
+    // cancelled, §3 F7 "batas waktu"): decidedBy stays null then. A posted
+    // journal always records its human approver.
+    if (row.status === "posted" && row.decidedBy === null)
+      issue("decidedBy", "A posted journal records its approver");
+    if (!decided && row.decidedBy !== null)
+      issue("decidedBy", "decidedBy is set only when decided");
     if (row.decidedBy !== null && row.decidedBy === row.requestedBy)
       issue("decidedBy", "Approver must differ from requester (AUTH-06)");
   });

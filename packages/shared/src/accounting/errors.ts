@@ -80,6 +80,8 @@ export const accountingErrorHttpStatus = {
   DISTRIBUTION_LINE_ALREADY_PAID: 409,
   /** An adjustment must target an approved or paid run and carry a reason (SH-04). */
   ADJUSTMENT_TARGET_INVALID: 422,
+  /** Every shareholder's paid gross is already given back: nothing left for a claw-back to absorb (founder rule Q83). */
+  ADJUSTMENT_EXCEEDS_PAID: 422,
 } as const satisfies Record<string, number>;
 
 export type AccountingErrorCode = keyof typeof accountingErrorHttpStatus;
@@ -141,6 +143,8 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
     "Pembayaran untuk pemegang saham ini sudah dicatat.",
   ADJUSTMENT_TARGET_INVALID:
     "Penyesuaian hanya untuk distribusi yang sudah disetujui dan wajib beralasan.",
+  ADJUSTMENT_EXCEEDS_PAID:
+    "Pengembalian melebihi jumlah yang sudah dibayarkan kepada pemegang saham.",
 };
 
 export class AccountingError extends Error {

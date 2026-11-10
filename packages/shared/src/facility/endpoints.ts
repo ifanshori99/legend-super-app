@@ -33,12 +33,14 @@ import {
   facilitySubscriptionViewSchema,
   facilityUnitBoardRowSchema,
   facilityUnitSchema,
+  entitlementLedgerEntrySchema,
   entitlementRuleSchema,
   subscriptionInvoiceSchema,
   subscriptionPlanSchema,
   wifiPolicySchema,
   wifiQuotaViewSchema,
   wifiSessionSchema,
+  facilityListItemSchema,
 } from "./schemas.ts";
 import {
   bookAccessTicketSchema,
@@ -48,8 +50,11 @@ import {
   createFacilityAddonSchema,
   createFacilityAreaSchema,
   createFacilityProductSchema,
+  createFacilitySchema,
   createFacilityUnitSchema,
   createSubscriptionPlanSchema,
+  customerEntitlementsParamsSchema,
+  customerEntitlementsQuerySchema,
   facilityConfigQuerySchema,
   facilityUnitsQuerySchema,
   joinFacilityQueueSchema,
@@ -61,6 +66,7 @@ import {
   raiseFacilityIncidentSchema,
   refreshWifiQuotaSchema,
   respondFacilityIncidentSchema,
+  staffIssueEntitlementSchema,
   staffSellTicketSchema,
   startCleaningTaskSchema,
   startSubscriptionSchema,
@@ -70,6 +76,7 @@ import {
   updateFacilityAreaSchema,
   updateFacilityProductSchema,
   updateFacilitySchema,
+  updateFacilityUnitConfigSchema,
   updateFacilityUnitSchema,
   updateSubscriptionPlanSchema,
   updateSubscriptionSchema,
@@ -89,6 +96,11 @@ import {
   facilityUnitIdSchema,
   subscriptionPlanIdSchema,
 } from "./ids.ts";
+import {
+  currentEntitlementsSchema,
+  facilityCustomerEndpoints,
+  publicSubscriptionPlanSchema,
+} from "./customer.ts";
 
 const ticketIdParams = z.strictObject({ ticketId: accessTicketIdSchema });
 const unitIdParams = z.strictObject({ unitId: facilityUnitIdSchema });
@@ -190,7 +202,7 @@ export const listSubscriptionPlans = defineEndpoint({
   path: "/api/facility/subscription-plans",
   query: z.strictObject({ facilityId: facilityIdSchema }),
   response: dataResponseSchema(
-    z.strictObject({ plans: z.array(subscriptionPlanSchema) }),
+    z.strictObject({ plans: z.array(publicSubscriptionPlanSchema) }),
   ),
 });
 
@@ -351,7 +363,7 @@ export const listFacilities = defineEndpoint({
   method: "GET",
   path: "/api/facility/facilities",
   query: cursorPageQuerySchema,
-  response: cursorPageSchema(facilitySchema),
+  response: cursorPageSchema(facilityListItemSchema),
 });
 
 export const getFacilityConfig = defineEndpoint({
@@ -359,6 +371,14 @@ export const getFacilityConfig = defineEndpoint({
   path: "/api/facility/config",
   query: facilityConfigQuerySchema,
   response: dataResponseSchema(facilityConfigSchema),
+});
+
+/** Creates a facility of an outlet, so no data needs seeding by SQL (legend-nngz). */
+export const createFacility = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/facilities",
+  body: createFacilitySchema,
+  response: dataResponseSchema(facilitySchema),
 });
 
 export const updateFacility = defineEndpoint({
@@ -389,6 +409,15 @@ export const createFacilityUnit = defineEndpoint({
   method: "POST",
   path: "/api/facility/units",
   body: createFacilityUnitSchema,
+  response: dataResponseSchema(facilityUnitSchema),
+});
+
+/** Edits how a unit is configured; `PATCH /units/:unitId` only moves its state. */
+export const updateFacilityUnitConfig = defineEndpoint({
+  method: "PATCH",
+  path: "/api/facility/units/:unitId/config",
+  params: unitIdParams,
+  body: updateFacilityUnitConfigSchema,
   response: dataResponseSchema(facilityUnitSchema),
 });
 
@@ -455,6 +484,30 @@ export const putWifiPolicy = defineEndpoint({
   response: dataResponseSchema(wifiPolicySchema),
 });
 
+// ---- Staff: entitlements (legend-fjk5, FAC-04) ------------------------------
+
+/** Staff read of a customer's balance and redeemable grants at a facility. */
+export const getCustomerEntitlements = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/customers/:customerProfileId/entitlements",
+  params: customerEntitlementsParamsSchema,
+  query: customerEntitlementsQuerySchema,
+  response: dataResponseSchema(currentEntitlementsSchema),
+});
+
+/** `duplicate` = the same `requestId` was already issued (idempotent retry). */
+export const staffIssuedEntitlementSchema = z.strictObject({
+  status: z.enum(["issued", "duplicate"]),
+  entry: entitlementLedgerEntrySchema,
+});
+
+export const staffIssueEntitlement = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/entitlements/staff-issue",
+  body: staffIssueEntitlementSchema,
+  response: dataResponseSchema(staffIssuedEntitlementSchema),
+});
+
 /** Every facility endpoint, for the mock runtime and future route generation. */
 export const facilityEndpoints = [
   getFacilityAvailability,
@@ -485,10 +538,12 @@ export const facilityEndpoints = [
   endWifiSession,
   listFacilities,
   getFacilityConfig,
+  createFacility,
   updateFacility,
   createFacilityArea,
   updateFacilityArea,
   createFacilityUnit,
+  updateFacilityUnitConfig,
   createFacilityProduct,
   updateFacilityProduct,
   createFacilityAddon,
@@ -497,4 +552,7 @@ export const facilityEndpoints = [
   createSubscriptionPlanEndpoint,
   updateSubscriptionPlan,
   putWifiPolicy,
+  getCustomerEntitlements,
+  staffIssueEntitlement,
+  ...facilityCustomerEndpoints,
 ] as const;

@@ -5,6 +5,7 @@
 //
 //   pnpm test:e2e:mock e2e/legend-zueb.mock.spec.ts
 import { expect, test, type Page } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 import { captureScreenshot } from "./screenshots.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL;
@@ -21,18 +22,9 @@ const COLD_START_TIMEOUT_MS = 30_000;
 /** CL-1001 Rizky Pratama, the fixture employee with full PII and a contract. */
 const EMPLOYEE_ID = "00000000-0000-4000-8000-000000001001";
 
-/** Waits for hydration: a server-rendered button is clickable before it has
- * handlers, and a click that lands too early is silently lost. */
-async function waitForApp(page: Page) {
-  await page.waitForFunction(() =>
-    Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
-  );
-  await page.waitForTimeout(300);
-}
-
 async function openDirectory(page: Page, timeout?: number) {
   await page.goto("/kelola/karyawan?mock=normal");
-  await waitForApp(page);
+  await waitForHydration(page);
   // The management topbar owns the page h1 (DESIGN.md §5).
   await expect(
     page.getByRole("heading", { level: 1, name: "Karyawan" }),
@@ -41,7 +33,7 @@ async function openDirectory(page: Page, timeout?: number) {
 
 async function openProfile(page: Page, timeout?: number) {
   await page.goto(`/kelola/karyawan/${EMPLOYEE_ID}?mock=normal`);
-  await waitForApp(page);
+  await waitForHydration(page);
   await expect(
     page.getByRole("heading", { name: "Profil karyawan" }),
   ).toBeVisible({ timeout });
@@ -125,7 +117,7 @@ test("HR-03 a role without hr.employee.view sees the locked profile, not PII", a
     ]);
 
   await page.goto(`/kelola/karyawan/${EMPLOYEE_ID}?mock=normal`);
-  await waitForApp(page);
+  await waitForHydration(page);
 
   await expect(page.getByText("Profil karyawan terkunci")).toBeVisible();
   await expect(page.getByText("Data pribadi (HR-03)")).toHaveCount(0);
@@ -170,7 +162,7 @@ test("HR-03 organisation chart renders units, positions and headcount", async ({
   page,
 }) => {
   await page.goto("/kelola/organisasi?mock=normal");
-  await waitForApp(page);
+  await waitForHydration(page);
 
   await expect(
     page.getByRole("heading", { level: 1, name: "Struktur Organisasi" }),
@@ -190,7 +182,7 @@ test("HR-03 organisation chart renders units, positions and headcount", async ({
 
 test("HR-03 directory empty state is honest", async ({ page }) => {
   await page.goto("/kelola/karyawan?mock=empty");
-  await waitForApp(page);
+  await waitForHydration(page);
   await expect(page.getByText("Belum ada karyawan")).toBeVisible();
   await captureScreenshot(page, "legend-zueb/directory-390-empty.png");
 });

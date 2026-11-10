@@ -68,11 +68,31 @@ export const tenants = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    /**
+     * Q40 (legend-umzos): when the tenant was archived. Starts the 30-day
+     * restore window. NULL on legacy rows, which stay final.
+     */
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    /**
+     * Q40 (legend-umzos): status to return to on restore. Set together with
+     * `archived_at`, cleared together on restore.
+     */
+    statusBeforeArchive: varchar("status_before_archive", {
+      length: 20,
+    }).$type<"active" | "suspended">(),
   },
   (table) => [
     check(
       "tenants_status_check",
       sql`${table.status} IN ('active', 'suspended', 'archived')`,
+    ),
+    check(
+      "tenants_status_before_archive_check",
+      sql`${table.statusBeforeArchive} IS NULL OR ${table.statusBeforeArchive} IN ('active', 'suspended')`,
+    ),
+    check(
+      "tenants_archive_record_check",
+      sql`(${table.archivedAt} IS NULL) = (${table.statusBeforeArchive} IS NULL)`,
     ),
     check(
       "tenants_deployment_mode_check",
@@ -221,6 +241,18 @@ export const outlets = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    /**
+     * Q40 (legend-umzos): when the outlet was closed. Starts the 30-day
+     * restore window. NULL on legacy rows, which stay final.
+     */
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    /**
+     * Q40 (legend-umzos): status to return to on restore. Set together with
+     * `closed_at`, cleared together on restore.
+     */
+    statusBeforeClose: varchar("status_before_close", {
+      length: 20,
+    }).$type<"preopening" | "active">(),
   },
   (table) => [
     unique("outlets_tenant_code_key").on(table.tenantId, table.code),
@@ -249,6 +281,14 @@ export const outlets = pgTable(
     check(
       "outlets_status_check",
       sql`${table.status} IN ('preopening', 'active', 'closed')`,
+    ),
+    check(
+      "outlets_status_before_close_check",
+      sql`${table.statusBeforeClose} IS NULL OR ${table.statusBeforeClose} IN ('preopening', 'active')`,
+    ),
+    check(
+      "outlets_close_record_check",
+      sql`(${table.closedAt} IS NULL) = (${table.statusBeforeClose} IS NULL)`,
     ),
   ],
 );

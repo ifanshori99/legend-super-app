@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   cafeLegendPlatformFixtures,
   requestSupportAccessInputSchema,
+  requestSupportWriteAccessInputSchema,
   type RequestSupportAccessInput,
 } from "@starter/shared/platform";
 import {
@@ -21,11 +22,13 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app.ts";
 import {
+  approveSupportAccessRequest,
   assertSupportAccess,
   endSupportAccess,
   expireDueSupportAccessGrants,
   listSupportAccess,
   requestSupportAccess,
+  requestSupportWriteAccess,
   SUPPORT_ACCESS_WRITE_MAX_MINUTES,
 } from "../services/platform-support.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
@@ -44,6 +47,7 @@ const appRole = new Pool({
   max: 1,
 });
 const admins: string[] = [];
+const tenantOwners = new Map<string, string>();
 
 const REASON = "Menelusuri keluhan pelanggan atas transaksi ganda di tenant.";
 
@@ -86,6 +90,72 @@ async function open(
     mfaVerifiedAt: now.toISOString(),
     now,
   });
+}
+
+/**
+ * A real owner of the throwaway tenant: a signed-up user holding an owner
+ * template role there (a copy of the seeded tenant's owner role). One owner
+ * per tenant, created on first use.
+ */
+async function tenantOwnerOf(tenantId: string): Promise<string> {
+  const existing = tenantOwners.get(tenantId);
+  if (existing) return existing;
+  const client = agent(app);
+  await signUp(client, "Pemilik Tenant Dukungan");
+  const userId = (await client.get("/api/auth/get-session")).body.user
+    .id as string;
+  const roleId = randomUUID();
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     SELECT $1, $2, name, is_template, template_key, permissions, mfa_required, allowed_scope_types
+       FROM roles WHERE tenant_id = $3 AND template_key = 'owner'`,
+    [roleId, tenantId, seededTenantId],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by, assigned_at)
+     VALUES ($1, $2, $3, 'tenant', now() - interval '1 day', $2, now() - interval '1 day')`,
+    // The tenant's Owner predates every support window of the test (c9kbk
+    // independence, with the legend-w1due grace margin after a window ends).
+    [tenantId, userId, roleId],
+  );
+  tenantOwners.set(tenantId, userId);
+  return userId;
+}
+
+/**
+ * read_write support access needs the tenant owner's approval (legend-c9kbk,
+ * founder Q37/Q38): the Super Admin files a request, a real owner of the
+ * tenant approves it, and approval creates the grant. Returns the grant row.
+ * Assumption: the approval service takes the tenant context, the approving
+ * owner's user id and the request id.
+ */
+async function openWrite(
+  tenantId: string,
+  actorUserId: string,
+  durationMinutes: number = SUPPORT_ACCESS_WRITE_MAX_MINUTES,
+  now: Date = new Date(),
+) {
+  const request = await requestSupportWriteAccess({
+    tenantId,
+    actorUserId,
+    request: requestSupportWriteAccessInputSchema.parse({
+      reason: REASON,
+      mfaCode: "123456",
+      durationMinutes,
+    }),
+    mfaVerifiedAt: now.toISOString(),
+    now,
+  });
+  const approved = await approveSupportAccessRequest(
+    contextOf(tenantId),
+    { userId: await tenantOwnerOf(tenantId) },
+    request.id,
+    now,
+  );
+  expect(approved.status).toBe("approved");
+  expect(approved.grantId).toBeTruthy();
+  return { id: approved.grantId as string };
 }
 
 async function auditRows(tenantId: string, action: string, objectId?: string) {
@@ -132,9 +202,20 @@ afterAll(async () => {
     [[tenantA, tenantB]],
   );
   await owner.query(
+    "DELETE FROM support_access_requests WHERE tenant_id = ANY($1::uuid[])",
+    [[tenantA, tenantB]],
+  );
+  await owner.query(
     "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
     [admins],
   );
+  await owner.query(
+    "DELETE FROM role_assignments WHERE tenant_id = ANY($1::uuid[])",
+    [[tenantA, tenantB]],
+  );
+  await owner.query("DELETE FROM roles WHERE tenant_id = ANY($1::uuid[])", [
+    [tenantA, tenantB],
+  ]);
   await owner.end();
   await appRole.end();
 });
@@ -273,10 +354,7 @@ describe("TEN-04 support access sessions", () => {
     ).rejects.toMatchObject({ code: "SUPPORT_ACCESS_READ_ONLY" });
     await endSupportAccess({ grantId: readOnly.id, actorUserId: admin });
 
-    const write = await open(tenantA, admin, {
-      accessMode: "read_write",
-      durationMinutes: SUPPORT_ACCESS_WRITE_MAX_MINUTES,
-    });
+    const write = await openWrite(tenantA, admin);
     await expect(
       assertSupportAccess({
         tenantId: tenantA,
@@ -286,6 +364,38 @@ describe("TEN-04 support access sessions", () => {
       }),
     ).resolves.toMatchObject({ id: write.id, accessMode: "read_write" });
     await endSupportAccess({ grantId: write.id, actorUserId: admin });
+  });
+
+  it("TEN-04 POST support-access with accessMode read_write is refused with 409 SUPPORT_ACCESS_OWNER_APPROVAL_REQUIRED and opens no grant", async () => {
+    // legend-c9kbk: a Super Admin cannot open write access directly, only
+    // request it for the tenant owner to approve.
+    const client = agent(app);
+    const email = await signUp(client, "Super Admin Tulis Langsung");
+    const userId = (await client.get("/api/auth/get-session")).body.user
+      .id as string;
+    await owner.query("INSERT INTO platform_admins (user_id) VALUES ($1)", [
+      userId,
+    ]);
+    admins.push(userId);
+    await verifySessionMfa(email);
+    const response = await client
+      .post(`/api/platform/tenants/${tenantA}/support-access`)
+      .set(originHeader)
+      .send({
+        reason: REASON,
+        accessMode: "read_write",
+        durationMinutes: SUPPORT_ACCESS_WRITE_MAX_MINUTES,
+        mfaCode: "123456",
+      });
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe(
+      "SUPPORT_ACCESS_OWNER_APPROVAL_REQUIRED",
+    );
+    const rows = await owner.query(
+      "SELECT 1 FROM support_access_grants WHERE super_admin_user_id = $1",
+      [userId],
+    );
+    expect(rows.rowCount).toBe(0);
   });
 
   it("TEN-04 blocks personal and financial reads without an active grant", async () => {

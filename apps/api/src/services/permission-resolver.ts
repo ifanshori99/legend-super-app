@@ -21,6 +21,7 @@
 // station-bound service re-asserts the station from this same snapshot
 // (legend-fsb7).
 
+import { requestMayUseStaffRoles } from "../lib/request-context";
 import {
   PERMISSION_CODES,
   roleAssignmentSchema,
@@ -31,6 +32,7 @@ import {
   outletReachOf,
   stationReachOf,
   userRequiresMfa,
+  rolePermissionsAsGranted,
   type AccessTarget,
   type OrgIndex,
   type PermissionCode,
@@ -71,7 +73,7 @@ export type TenantAccessData = {
 type AssignmentRow = typeof roleAssignments.$inferSelect;
 type RoleRow = typeof roles.$inferSelect;
 
-function toAssignment(row: AssignmentRow): RoleAssignment {
+export function toAssignment(row: AssignmentRow): RoleAssignment {
   return roleAssignmentSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -91,7 +93,9 @@ function toAssignment(row: AssignmentRow): RoleAssignment {
 export function toRoleGrant(row: RoleRow): RoleGrantRow {
   return {
     id: roleIdSchema.parse(row.id),
-    permissions: row.permissions,
+    // legend-7vsby: a custom role stored before the Owner-only rule may still
+    // carry an Owner-template-only code; it grants nothing.
+    permissions: rolePermissionsAsGranted(row.templateKey, row.permissions),
     mfaRequired: row.mfaRequired,
     templateKey: row.templateKey,
     allowedScopeTypes: row.allowedScopeTypes,
@@ -112,15 +116,20 @@ export async function loadTenantAccessInTransaction(
   // One query at a time on the tenant transaction: pg serialises concurrent
   // queries on a single client anyway, and its deprecation warning would
   // otherwise fire on every request.
-  const assignmentRows = await tx
-    .select()
-    .from(roleAssignments)
-    .where(
-      and(
-        eq(roleAssignments.tenantId, context.tenant.tenantId),
-        eq(roleAssignments.userId, userId),
-      ),
-    );
+  // legend-k2l (design ws08 M2 "Sign-in method gate"): a caller whose session
+  // did not sign in with the password holds no staff assignment on this
+  // request, so every tenant, outlet and station guard answers 403.
+  const assignmentRows = !requestMayUseStaffRoles(userId)
+    ? []
+    : await tx
+        .select()
+        .from(roleAssignments)
+        .where(
+          and(
+            eq(roleAssignments.tenantId, context.tenant.tenantId),
+            eq(roleAssignments.userId, userId),
+          ),
+        );
   const roleRows = await tx
     .select()
     .from(roles)
@@ -248,6 +257,20 @@ export type AccessSnapshot = {
     target: AccessTarget,
   ) => boolean;
   /**
+   * `allows` restricted to the caller's active assignments of one role
+   * template. A role-specific grant (e.g. an AI tool's `minRoles` override)
+   * must be checked here, so an assignment of another role at another target
+   * cannot satisfy it (kitchen_lead@A + cashier@B never reads B as
+   * kitchen_lead).
+   */
+  readonly allowsVia: (
+    templateKey: string,
+    permission: PermissionCode,
+    target: AccessTarget,
+  ) => boolean;
+  /** Catalog-ordered codes held through active assignments of one template. */
+  readonly permissionsVia: (templateKey: string) => readonly PermissionCode[];
+  /**
    * The server-minted context for a permitted action, or null. Its outlet
    * reach is what `withTenant` installs as app.outlet_ids for RLS (TEN-03).
    * A station target is the one exception to outlet reach: a station-scoped
@@ -287,6 +310,7 @@ export function resolveAccessSnapshot(
   );
   const permissions = new Set<PermissionCode>();
   const templateKeys = new Set<string>();
+  const permissionsByTemplate = new Map<string, Set<PermissionCode>>();
   for (const assignment of input.assignments) {
     if (
       assignment.tenantId.toLowerCase() !==
@@ -298,7 +322,14 @@ export function resolveAccessSnapshot(
     const role = roleById.get(assignment.roleId.toLowerCase());
     if (!role) continue;
     for (const permission of role.permissions) permissions.add(permission);
-    if (role.templateKey !== null) templateKeys.add(role.templateKey);
+    if (role.templateKey !== null) {
+      templateKeys.add(role.templateKey);
+      const byTemplate =
+        permissionsByTemplate.get(role.templateKey) ??
+        new Set<PermissionCode>();
+      for (const permission of role.permissions) byTemplate.add(permission);
+      permissionsByTemplate.set(role.templateKey, byTemplate);
+    }
   }
   const effective = PERMISSION_CODES.filter((code) => permissions.has(code));
 
@@ -316,6 +347,34 @@ export function resolveAccessSnapshot(
       surface: "pos",
       mfaVerified: false,
     }).allowed;
+
+  // Same decision over only the assignments whose role carries `templateKey`.
+  const allowsVia = (
+    templateKey: string,
+    permission: PermissionCode,
+    target: AccessTarget,
+  ) => {
+    const assignments = input.assignments.filter(
+      (assignment) =>
+        roleById.get(assignment.roleId.toLowerCase())?.templateKey ===
+        templateKey,
+    );
+    if (assignments.length === 0) return false;
+    return authorize({
+      principal: { ...principal, assignments },
+      roles: input.roles,
+      org: input.org,
+      permission,
+      target,
+      now: input.now,
+      surface: "pos",
+      mfaVerified: false,
+    }).allowed;
+  };
+  const permissionsVia = (templateKey: string): PermissionCode[] => {
+    const held = permissionsByTemplate.get(templateKey);
+    return held ? PERMISSION_CODES.filter((code) => held.has(code)) : [];
+  };
 
   const contextFor = (
     permission: PermissionCode,
@@ -366,6 +425,8 @@ export function resolveAccessSnapshot(
     mfaVerified: input.mfaVerified,
     templateKeys: [...templateKeys],
     allows,
+    allowsVia,
+    permissionsVia,
     contextFor,
     stationsFor,
   };

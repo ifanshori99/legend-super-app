@@ -10,6 +10,7 @@ import { createWs03Engine } from "../apps/web/src/lib/mock/ws03/engine.ts";
 import { clearMocks, registerMock } from "../apps/web/src/lib/mock/registry.ts";
 import * as api from "../packages/shared/src/api/index.ts";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import * as sample from "../packages/shared/src/qr-order/sample.ts";
 
 function fresh() {
   const now = 1_700_000_000_000;
@@ -24,7 +25,7 @@ const sessionIdOf = (engine, token) =>
 
 test("legend-jzud a QR scan is one session for the guest engine and the floor board", () => {
   const { floor, engine } = fresh();
-  const sessionId = sessionIdOf(engine, qr.qrTokenFixtures.freeTable);
+  const sessionId = sessionIdOf(engine, sample.qrTokenFixtures.freeTable);
 
   // The guest opened a session that did not exist in the fixtures...
   assert.equal(engine.view(sessionId).session.status, "open");
@@ -38,7 +39,9 @@ test("legend-jzud a QR scan is one session for the guest engine and the floor bo
   assert.equal(row.table.status, "occupied");
 
   // A staff confirmation through the board is what the guest sees next.
-  const openBill = floor.sessionOf(sessionIdOf(engine, qr.qrTokenFixtures.wfc));
+  const openBill = floor.sessionOf(
+    sessionIdOf(engine, sample.qrTokenFixtures.wfc),
+  );
   assert.equal(openBill.status, "pending_confirmation");
   floor.confirmOpenBillSession(openBill.id);
   assert.equal(engine.view(openBill.id).session.status, "open");
@@ -70,7 +73,7 @@ test("legend-jzud the guest bill and the board bill are the same bill", () => {
 
 test("legend-jzud a closed session leaves the guest engine (ORD-04)", () => {
   const { floor, engine } = fresh();
-  const sessionId = sessionIdOf(engine, qr.qrTokenFixtures.freeTable);
+  const sessionId = sessionIdOf(engine, sample.qrTokenFixtures.freeTable);
   floor.closeTableSession(sessionId, {
     tableCleaned: true,
     waiterConfirmedEmpty: true,

@@ -1,0 +1,1 @@
+ALTER TABLE "staff_pins" ADD COLUMN "generation_edge_instance_id" uuid;

@@ -480,16 +480,49 @@ export type DerivedStockBalance = {
 };
 
 /**
- * INV-01 / PRD §16 "saldo diturunkan dari ledger": folds every row, ordered by
- * `occurredAt` then ULID id (deterministic for rows in the same millisecond),
- * into one balance per location/item. The API may use this for rebuilds and
- * tests; the database keeps the materialized `stock_balances` for reads.
+ * A ledger row with its insertion sequence (`stock_ledger.posting_seq`,
+ * legend-bsw9): the order the database accepted the posting, which for one
+ * (location, item) is the order the live moving average was applied.
  */
+export type PostedStockLedgerEntry = StockLedgerEntry & {
+  postingSeq: number;
+};
+
+/**
+ * INV-01 / PRD §16 "saldo diturunkan dari ledger": folds every row into one
+ * balance per location/item.
+ *
+ * - `"posting"` (the API rebuild, legend-bsw9): by insertion sequence, the same
+ *   order live posting applied the moving average in, so a rebuild equals the
+ *   live balance even when a caller posted a past `occurredAt` (EOD sale
+ *   deduction, stock opname, import).
+ * - `"occurred_at"` (default; mock data without a sequence): by `occurredAt`
+ *   then ULID id (deterministic for rows in the same millisecond).
+ *
+ * The API may use this for rebuilds and tests; the database keeps the
+ * materialized `stock_balances` for reads.
+ */
+export function foldStockLedger(
+  entries: readonly PostedStockLedgerEntry[],
+  mode: RoundingMode,
+  order: "posting",
+): DerivedStockBalance[];
 export function foldStockLedger(
   entries: readonly StockLedgerEntry[],
   mode: RoundingMode,
+  order?: "occurred_at",
+): DerivedStockBalance[];
+export function foldStockLedger(
+  entries: readonly (StockLedgerEntry & { postingSeq?: number })[],
+  mode: RoundingMode,
+  order: "posting" | "occurred_at" = "occurred_at",
 ): DerivedStockBalance[] {
   const ordered = [...entries].sort((left, right) => {
+    if (order === "posting") {
+      if (left.postingSeq === undefined || right.postingSeq === undefined)
+        throw new Error("foldStockLedger: posting order needs postingSeq");
+      return left.postingSeq - right.postingSeq;
+    }
     const leftTime = Date.parse(left.occurredAt);
     const rightTime = Date.parse(right.occurredAt);
     if (leftTime !== rightTime) return leftTime - rightTime;
@@ -685,9 +718,11 @@ export const stockCountActionSchema = z.enum([
 export type StockCountAction = z.infer<typeof stockCountActionSchema>;
 
 /**
- * A count session. `blind` hides `systemQty` from the counter (UI/API
- * responsibility); the approver sees the variance. A posted count has written
- * its `adjustment` ledger rows (INV-01, INV-03).
+ * A count session. `blind` hides `systemQty` from the counter; the API
+ * enforces it (counters use the sheet endpoints, which never carry system
+ * quantity, cost or variance; full detail of a blind count is approver-only
+ * and only once submitted). The approver sees the variance. A posted count has
+ * written its `adjustment` ledger rows (INV-01, INV-03).
  */
 export const stockCountSchema = z
   .strictObject({
@@ -751,6 +786,27 @@ export const stockCountDetailSchema = z.strictObject({
   lines: z.array(stockCountLineSchema),
 });
 export type StockCountDetail = z.infer<typeof stockCountDetailSchema>;
+
+/**
+ * Counter-facing line (blind count): no system quantity, unit cost or
+ * variance, so nothing about expected stock can reach the counter.
+ */
+export const stockCountSheetLineSchema = z.strictObject({
+  id: stockCountLineIdSchema,
+  tenantId: tenantIdSchema,
+  stockCountId: stockCountIdSchema,
+  inventoryItemId: inventoryItemIdSchema,
+  countedQty: decimal4Schema.nullable(),
+  countedBy: userIdSchema.nullable(),
+  countedAt: isoDateTimeSchema.nullable(),
+});
+export type StockCountSheetLine = z.infer<typeof stockCountSheetLineSchema>;
+
+export const stockCountSheetSchema = z.strictObject({
+  count: stockCountSchema,
+  lines: z.array(stockCountSheetLineSchema),
+});
+export type StockCountSheet = z.infer<typeof stockCountSheetSchema>;
 
 const STOCK_COUNT_TRANSITIONS: Record<
   StockCountStatus,

@@ -5,32 +5,96 @@
 //     (EDGE_MODE=false) it is a no-op. On the edge it runs the boot guards
 //     (edge settings valid, local migrations applied, the node's own row
 //     present and active), then opens the persistent link to the cloud with
-//     reconnect + backoff, and keeps the cloud link state for
-//     /api/edge/status. The edge's local PostgreSQL is migrated by the same
+//     reconnect + backoff, keeps the cloud link state for /api/edge/status,
+//     and starts the periodic device-registry pull (legend-2lp.7; EDG-02:
+//     revocations reach the edge only through this pull, so a stale replica
+//     is reported in /api/edge/status and /api/edge/health, never hidden). The edge's local PostgreSQL is migrated by the same
 //     migrator as the cloud (`node dist/migrate.js` / `pnpm db:migrate` with
 //     DATABASE_URL pointing at the local database) before the API starts.
 //   - `registerEdgeLink(server)` on the cloud only: accepts edge links on
-//     /api/edge-link. Refuses to run with EDGE_MODE=true.
+//     /api/edge-link. Refuses to run with EDGE_MODE=true. It LISTENs on
+//     EDGE_NODE_REVOKED_CHANNEL so a revocation on another API instance closes
+//     this instance's link at once (legend-x3lv).
+//
+// Both prune acknowledged queue rows every hour (legend-x3lv,
+// `pruneAckedEdgeQueue`).
 //
 // Errors from the link are logged by name/code only: driver errors can carry
 // SQL parameters (event payloads), and the credential must never be logged.
-import type { Server } from "node:http";
-import type { Pool } from "pg";
+import type { IncomingMessage, Server } from "node:http";
+import type { Pool, PoolClient } from "pg";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { parseEdgeHardeningEnv } from "@starter/shared/env";
+import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
+import type { ReceiptRunRefusalReport } from "@starter/shared/edge";
 import { db, pool } from "../db/index.ts";
 import { env } from "../config/env.ts";
 import { logger } from "../lib/logger.ts";
 import {
   authenticateEdgeCredential,
+  EDGE_NODE_REVOKED_CHANNEL,
   ensureLocalEdgeNode,
   isEdgeNodeActive,
   onEdgeNodeRevoked,
   recordEdgeHeartbeat,
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
-import { EDGE_LINK_WAKE_CHANNEL } from "../services/edge-queue.service.ts";
+import {
+  isDeviceSyncCursorError,
+  pullDeviceRegistry,
+} from "../services/edge-device-sync.ts";
+import {
+  loadDeviceRegistryCheckpoint,
+  loadStaffPinCheckpoint,
+  saveDeviceRegistryCheckpoint,
+  saveStaffPinCheckpoint,
+} from "../services/edge-device-sync-store.ts";
+import {
+  EDGE_LINK_WAKE_CHANNEL,
+  EDGE_QUEUE_PRUNE_INTERVAL_MS,
+  pruneAckedEdgeQueue,
+} from "../services/edge-queue.service.ts";
+import { bootstrapEdgeNodeIfNeeded } from "./bootstrap.ts";
+import {
+  registerEdgeDeferredFallback,
+  registerPosDeferredEdgeApplier,
+} from "./deferred-event-applier.ts";
+import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
+import { registerAttendanceLoggedEdgeApplier } from "./attendance-logged-applier.ts";
+import { registerWifiQuotaEdgeApplier } from "./wifi-quota-applier.ts";
+import {
+  startWifiQuotaQueueWorker,
+  type WifiQuotaWorkerHandle,
+} from "./wifi-quota-queue-worker.ts";
+import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
+import { registerAccessEdgeApplier } from "./access-applier.ts";
+import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
+import {
+  WIFI_RECONCILE_INTERVAL_MS,
+  createWifiAgent,
+  type WifiAgent,
+} from "../services/edge-wifi-agent.service.ts";
+import { purgeExpiredWifiGrants } from "../services/edge-wifi-retention.service.ts";
+import {
+  createDeviceRecordsFetcher,
+  createStaffPinRecordsFetcher,
+  EdgeCloudHttpError,
+} from "./cloud-http.ts";
+import { createStaffPinPull } from "./staff-pin-pull.ts";
+import {
+  activateEdgePepperRegistry,
+  edgeStaffPinPepperContiguous,
+  installEdgeStaffPinPeppers,
+} from "./staff-pin-pepper-registry.ts";
+import {
+  deriveEdgePepperSealKey,
+  loadEdgePeppers,
+  saveEdgePeppers,
+} from "./staff-pin-pepper-store.ts";
+import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
+import { startEdgeMasterSyncLoop } from "./master-sync.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
 import {
@@ -38,7 +102,19 @@ import {
   type EdgeLinkClientState,
 } from "./link-client.ts";
 import type { LinkScope } from "./link-peer.ts";
-import { createEdgeLinkServer } from "./link-server.ts";
+import { LINK_CLOSE } from "./protocol.ts";
+import { recordUploaderRejection } from "./selfie-health.ts";
+import { startEdgeSelfieSweep } from "./selfie-retention.ts";
+import { createEdgeSelfieUploader } from "./selfie-uploader.ts";
+import { createEdgeLinkServer, type EdgeLinkIdentity } from "./link-server.ts";
+import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
+import { createDefaultWifiProvider } from "./wifi/registry.ts";
+import {
+  createDeviceRegistryPuller,
+  pullWithCursorRecovery,
+  type DeviceRegistryPuller,
+  type DeviceRegistrySyncState,
+} from "./device-registry-puller.ts";
 
 /** Tables the edge runtime needs; missing ones mean migrations did not run. */
 export const EDGE_REQUIRED_TABLES = [
@@ -49,10 +125,44 @@ export const EDGE_REQUIRED_TABLES = [
   "edge_outbound_queue",
   "edge_inbound_events",
   "edge_sync_conflicts",
+  "edge_pull_checkpoints",
+  "wifi_device_grants",
+  "wifi_quota_apply_queue",
+  // legend-hwn02: the edge QR display reads the day keys; a missing table must
+  // refuse boot (assertEdgeSchemaReady) instead of failing each request.
+  "edge_attendance_qr_keys",
 ] as const;
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */
 const SWEEP_INTERVAL_MS = 5_000;
+
+/** The cloud answered 400 to the first request of a pull (its cursor). */
+class StoredCursorRefusedError extends Error {
+  constructor() {
+    super("The cloud refused the stored device-registry cursor");
+    this.name = "StoredCursorRefusedError";
+  }
+}
+
+/**
+ * The stored device-registry cursor was refused: malformed on the edge, or a
+ * 400 on the pull's first request. A bad record is not a cursor problem and
+ * is not retried from the start.
+ */
+function isRejectedCursor(error: unknown): boolean {
+  return (
+    error instanceof StoredCursorRefusedError || isDeviceSyncCursorError(error)
+  );
+}
+
+/** Longest wait between device-registry pulls while the cloud is failing. */
+const MIN_MAX_PULL_BACKOFF_MS = 300_000;
+// How long boot waits for the first people snapshot before it carries on (the
+// pull keeps running in the background; an offline node never blocks boot).
+const BOOT_PEOPLE_SNAPSHOT_WAIT_MS = 10_000;
+
+// legend-6xcy: how often the edge re-pulls the cloud masters.
+const EDGE_MASTER_SYNC_INTERVAL_MS = 5 * 60_000;
 
 export class EdgeBootError extends Error {
   constructor(message: string) {
@@ -86,6 +196,13 @@ export function getEdgeRuntimeState(): EdgeRuntimeState {
   return state;
 }
 
+let registryPuller: DeviceRegistryPuller | null = null;
+
+/** Device-registry pull state (edge only); null on the cloud or before boot. */
+export function getDeviceRegistrySyncState(): DeviceRegistrySyncState | null {
+  return registryPuller?.getState() ?? null;
+}
+
 /** Test seam: install a runtime state without starting a link. */
 export function setEdgeRuntimeStateForTests(next: EdgeRuntimeState): void {
   state = next;
@@ -104,10 +221,14 @@ const wakeSchema = z.strictObject({
   edgeNodeId: z.uuid(),
 });
 
-/** LISTEN for queue wakeups (ids only). Hints: the sweep covers misses. */
-async function listenEdgeLinkWakeups(
+/**
+ * LISTEN on one channel, reconnecting after a connection error. `onPayload`
+ * gets the raw payload; notifications are hints, so callers keep a fallback.
+ */
+async function listenPgChannel(
   source: Pool,
-  onWake: (signal: z.infer<typeof wakeSchema>) => void,
+  channel: string,
+  onPayload: (payload: string) => void,
 ): Promise<() => Promise<void>> {
   let closed = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
@@ -128,14 +249,8 @@ async function listenEdgeLinkWakeups(
     }
     let released = false;
     const onNotification = (message: { channel: string; payload?: string }) => {
-      if (message.channel !== EDGE_LINK_WAKE_CHANNEL || !message.payload)
-        return;
-      try {
-        const signal = wakeSchema.safeParse(JSON.parse(message.payload));
-        if (signal.success) onWake(signal.data);
-      } catch {
-        /* Invalid hint: ignored. */
-      }
+      if (message.channel !== channel || !message.payload) return;
+      onPayload(message.payload);
     };
     const release = (destroy: boolean) => {
       if (released) return;
@@ -149,7 +264,7 @@ async function listenEdgeLinkWakeups(
     });
     client.on("notification", onNotification);
     try {
-      await client.query(`LISTEN ${EDGE_LINK_WAKE_CHANNEL}`);
+      await client.query(`LISTEN ${channel}`);
     } catch (error) {
       release(true);
       throw error;
@@ -157,7 +272,7 @@ async function listenEdgeLinkWakeups(
     cleanup = async () => {
       if (released) return;
       try {
-        await client.query(`UNLISTEN ${EDGE_LINK_WAKE_CHANNEL}`);
+        await client.query(`UNLISTEN ${channel}`);
       } finally {
         release(false);
       }
@@ -169,6 +284,63 @@ async function listenEdgeLinkWakeups(
     if (retry) clearTimeout(retry);
     await cleanup?.();
   };
+}
+
+/** LISTEN for queue wakeups (ids only). Hints: the sweep covers misses. */
+function listenEdgeLinkWakeups(
+  source: Pool,
+  onWake: (signal: z.infer<typeof wakeSchema>) => void,
+): Promise<() => Promise<void>> {
+  return listenPgChannel(source, EDGE_LINK_WAKE_CHANNEL, (payload) => {
+    try {
+      const signal = wakeSchema.safeParse(JSON.parse(payload));
+      if (signal.success) onWake(signal.data);
+    } catch {
+      /* Invalid hint: ignored. */
+    }
+  });
+}
+
+/**
+ * LISTEN for revocations from any API instance (legend-x3lv). The payload is
+ * the node id; the periodic re-check covers a missed notification.
+ */
+function listenEdgeNodeRevocations(
+  source: Pool,
+  onRevoked: (edgeNodeId: string) => void,
+): Promise<() => Promise<void>> {
+  return listenPgChannel(source, EDGE_NODE_REVOKED_CHANNEL, (payload) => {
+    const id = z.uuid().safeParse(payload);
+    if (id.success) onRevoked(id.data);
+  });
+}
+
+/**
+ * Hourly prune of acknowledged queue rows (legend-x3lv). Never overlaps
+ * itself; failures are logged by name only and retried next hour.
+ */
+function startAckedQueuePrune(retentionDays: number): () => void {
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    pruneAckedEdgeQueue({ retentionDays })
+      .then((result) => {
+        if (result.failedTenants > 0)
+          logger.warn(
+            { failedTenants: result.failedTenants },
+            "Edge queue prune failed for some tenants",
+          );
+      })
+      .catch((error: unknown) =>
+        logger.warn(safeError(error), "Edge queue prune failed"),
+      )
+      .finally(() => {
+        running = false;
+      });
+  }, EDGE_QUEUE_PRUNE_INTERVAL_MS);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 /** Boot guard: the local database carries the edge schema. */
@@ -183,6 +355,273 @@ export async function assertEdgeSchemaReady(): Promise<void> {
 }
 
 export type EdgeRuntimeHandle = { stop(): Promise<void> };
+
+export type WifiAgentHandle = { stop(): Promise<void> };
+
+/** Expired Wi-Fi grants are purged this often while the agent holds its lock. */
+export const WIFI_RETENTION_INTERVAL_MS = 3_600_000;
+
+/** Default lock retry backoff: 1 s, doubling, capped at 30 s. */
+export function defaultWifiLockRetryDelayMs(attempt: number): number {
+  return Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
+}
+
+/**
+ * Wi-Fi agent (bead legend-hsk, plan section 5). Primary node only: a standby
+ * never talks to the venue controller. Starts nothing, and installs nothing
+ * (the port stays fail-closed, 503), when there is no provider for this
+ * environment. One owner per outlet: a session-level advisory lock on a
+ * dedicated connection, like the EDC agent. While another process owns the
+ * lock, or the connection could not be opened, the agent is not installed and
+ * the acquisition is retried with backoff (an exiting process frees the lock
+ * for us); if the connection dies later the lock is gone, the agent is
+ * uninstalled and the acquisition starts over. Without that retry a node would
+ * stop renewing grants for good and cut every guest within hours. stop() ends
+ * the retries cleanly. The errors are logged by name/code only.
+ */
+export async function startWifiAgent(options: {
+  context: ScopedTenantContext;
+  scope: LinkScope;
+  role: "primary" | "standby";
+  /** Defaults to `NODE_ENV === "production"` (as the provider registry). */
+  production?: boolean;
+  /** Defaults to WIFI_RECONCILE_INTERVAL_MS. */
+  intervalMs?: number;
+  /** Defaults to WIFI_RETENTION_INTERVAL_MS. */
+  retentionIntervalMs?: number;
+  /** Test seam: use this agent instead of building one from the registry. */
+  agent?: WifiAgent;
+  /** Test seam: replaces purgeExpiredWifiGrants. */
+  purge?: (context: ScopedTenantContext, now: Date) => Promise<number>;
+  /** Test seam: delay before retry number `attempt` (0-based), in ms. */
+  retryDelayMs?: (attempt: number) => number;
+  /** Test seam: the dedicated lock connection. Defaults to `pool.connect()`. */
+  connect?: () => Promise<PoolClient>;
+}): Promise<WifiAgentHandle | null> {
+  if (options.role !== "primary") return null;
+  const { context, scope } = options;
+  const production =
+    options.production ?? process.env.NODE_ENV === "production";
+  let agent = options.agent;
+  if (!agent) {
+    const provider = createDefaultWifiProvider({
+      simulator: !production,
+      production,
+    });
+    if (provider === null) {
+      logger.warn("No Wi-Fi controller adapter registered: Wi-Fi agent off");
+      return null;
+    }
+    agent = createWifiAgent({
+      provider,
+      contextFor: (outletId) => {
+        if (outletId !== scope.outletId)
+          throw new EdgeBootError("The Wi-Fi agent serves its own outlet only");
+        return establishScopedTenantContext(context.tenant, {
+          kind: "outlets",
+          outletIds: [outletIdSchema.parse(outletId)],
+        });
+      },
+    });
+  }
+  const active = agent;
+  const lockName = `wifi-agent:${scope.tenantId}:${scope.outletId}`;
+  const connect = options.connect ?? (() => pool.connect());
+  const retryDelayMs = options.retryDelayMs ?? defaultWifiLockRetryDelayMs;
+  const uninstall = () => {
+    if (wifiEnforcement() === active) installWifiAgent(null);
+  };
+
+  type Owned = {
+    client: PoolClient;
+    timer?: ReturnType<typeof setInterval>;
+    purgeTimer?: ReturnType<typeof setInterval>;
+    inflight: Promise<void>;
+    purgeInflight: Promise<void>;
+    released: boolean;
+    ended: boolean;
+    lost(): void;
+  };
+  let stopped = false;
+  let owned: Owned | null = null;
+  let acquiring: Promise<void> = Promise.resolve();
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let attempt = 0;
+  let loggedBusy = false;
+
+  const scheduleRetry = () => {
+    if (stopped || retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      acquiring = acquire();
+    }, retryDelayMs(attempt++));
+    retryTimer.unref();
+  };
+
+  const release = (session: Owned, destroy: boolean) => {
+    if (session.released) return;
+    session.released = true;
+    session.client.removeListener("error", session.lost);
+    session.client.removeListener("end", session.lost);
+    session.client.release(destroy);
+  };
+
+  async function acquire(): Promise<void> {
+    if (stopped) return;
+    let client: PoolClient;
+    try {
+      client = await connect();
+    } catch (error) {
+      logger.warn(
+        safeError(error),
+        "Wi-Fi agent could not open its connection",
+      );
+      scheduleRetry();
+      return;
+    }
+    const session: Owned = {
+      client,
+      inflight: Promise.resolve(),
+      purgeInflight: Promise.resolve(),
+      released: false,
+      ended: false,
+      lost: () => {
+        if (session.ended) return;
+        session.ended = true;
+        if (session.timer) clearInterval(session.timer);
+        if (session.purgeTimer) clearInterval(session.purgeTimer);
+        if (owned === session) owned = null;
+        uninstall();
+        release(session, true);
+        if (stopped) return;
+        logger.error(
+          "Wi-Fi agent lost its database connection: agent uninstalled, retrying",
+        );
+        attempt = 0;
+        scheduleRetry();
+      },
+    };
+    client.on("error", session.lost);
+    client.on("end", session.lost);
+    try {
+      const result = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
+        [lockName],
+      );
+      if (result.rows[0]?.locked !== true) {
+        if (!loggedBusy)
+          logger.warn("Another process owns the Wi-Fi agent of this outlet");
+        loggedBusy = true;
+        session.ended = true;
+        release(session, false);
+        scheduleRetry();
+        return;
+      }
+    } catch (error) {
+      logger.warn(safeError(error), "Wi-Fi agent could not take its lock");
+      session.ended = true;
+      release(session, true);
+      scheduleRetry();
+      return;
+    }
+    if (session.ended) return;
+    if (stopped) {
+      // stop() ran while the lock was being taken: give it back at once.
+      session.ended = true;
+      try {
+        await client.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+          [lockName],
+        );
+        release(session, false);
+      } catch {
+        release(session, true);
+      }
+      return;
+    }
+    loggedBusy = false;
+    attempt = 0;
+    owned = session;
+    installWifiAgent(active);
+    let busy = false;
+    session.timer = setInterval(() => {
+      if (busy || stopped || session.ended) return;
+      busy = true;
+      session.inflight = active
+        .reconcile(context, outletIdSchema.parse(scope.outletId))
+        .then(
+          () => undefined,
+          (error: unknown) =>
+            logger.warn(safeError(error), "Wi-Fi reconcile failed"),
+        )
+        .finally(() => {
+          busy = false;
+        });
+    }, options.intervalMs ?? WIFI_RECONCILE_INTERVAL_MS);
+    session.timer.unref();
+    const purge =
+      options.purge ??
+      ((purgeContext: ScopedTenantContext, at: Date) =>
+        purgeExpiredWifiGrants(db, purgeContext, at));
+    let purging = false;
+    const runPurge = () => {
+      if (purging || stopped || session.ended) return;
+      purging = true;
+      session.purgeInflight = purge(context, new Date())
+        .then(
+          (count) => {
+            if (count > 0)
+              logger.info({ count }, "Expired Wi-Fi grants purged");
+          },
+          (error: unknown) =>
+            logger.warn(safeError(error), "Wi-Fi grant purge failed"),
+        )
+        .finally(() => {
+          purging = false;
+        });
+    };
+    // One purge right after the lock is taken (a node that restarts often
+    // would otherwise never reach the first hourly tick), then on the interval.
+    runPurge();
+    session.purgeTimer = setInterval(
+      runPurge,
+      options.retentionIntervalMs ?? WIFI_RETENTION_INTERVAL_MS,
+    );
+    session.purgeTimer.unref();
+  }
+
+  acquiring = acquire();
+  await acquiring;
+  return {
+    async stop() {
+      if (stopped) return;
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = undefined;
+      await acquiring;
+      const session = owned as Owned | null;
+      owned = null;
+      if (!session) return;
+      session.ended = true;
+      if (session.timer) clearInterval(session.timer);
+      if (session.purgeTimer) clearInterval(session.purgeTimer);
+      uninstall();
+      await session.inflight;
+      await session.purgeInflight;
+      let broken = false;
+      try {
+        await session.client.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+          [lockName],
+        );
+      } catch {
+        // Destroying the connection drops the session lock all the same.
+        broken = true;
+      }
+      release(session, broken);
+    },
+  };
+}
 
 /**
  * Call once at API start. Cloud: no-op. Edge: boot guards, then the link.
@@ -200,9 +639,22 @@ export async function startEdgeRuntime(
   const config = parsed.config;
   if (!config.edgeMode) {
     state = { edgeMode: false, identity: null, link: disconnected };
+    registryPuller = null;
     return { stop: async () => {} };
   }
+  // legend-ideif: the root pepper must never be on an edge box (a stolen box
+  // would derive every tenant's pepper). config/env.ts refuses it too; this
+  // guard covers a `source` that is not process.env. Names only, no value.
+  if (source.STAFF_PIN_PEPPER !== undefined && source.STAFF_PIN_PEPPER !== "")
+    throw new EdgeBootError(
+      "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the tenant pepper over the sync.",
+    );
   await assertEdgeSchemaReady();
+  // legend-s4r6: cloud -> edge appliers, before the link can deliver.
+  registerQrOrderEdgeApplier();
+  registerWifiQuotaEdgeApplier();
+  // Section D (legend-khu5): first boot provisions the node from its bundle.
+  await bootstrapEdgeNodeIfNeeded(config);
   let local: Awaited<ReturnType<typeof ensureLocalEdgeNode>>;
   try {
     local = await ensureLocalEdgeNode(config.credential, {
@@ -218,9 +670,30 @@ export async function startEdgeRuntime(
   }
   const identity = { context: local.context, scope: local.scope };
   state = { edgeMode: true, identity, link: disconnected };
+  // legend-ideif: from here on pin hashing uses only the tenant peppers the
+  // cloud sent (none yet = fail closed). Restore the sealed ones from the
+  // database so a restart verifies pins offline; rows sealed under a rotated
+  // credential do not open and are fetched again on the next sync.
+  const pepperSealKey = deriveEdgePepperSealKey(
+    config.credential.split(".")[4] ?? "",
+  );
+  activateEdgePepperRegistry(local.scope.tenantId);
+  installEdgeStaffPinPeppers(
+    local.scope.tenantId,
+    [
+      ...(
+        await loadEdgePeppers(
+          local.context,
+          local.scope.edgeNodeId,
+          pepperSealKey,
+        )
+      ).entries(),
+    ].map(([version, pepper]) => ({ version, pepper })),
+  );
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
+    instanceId: local.instanceId,
     scope: local.scope,
     version: config.version,
     store: createDbLinkStore({
@@ -240,17 +713,280 @@ export async function startEdgeRuntime(
         );
     },
     onError: (error) => logger.warn(safeError(error), "Edge link error"),
+    // A protocol refusal (1008) carries a fixed reason from the link code, no
+    // payload; it tells the operator why the link keeps dropping (legend-a9iby:
+    // a restored or cloned database). See docs/deployment.md, item 5.
+    onClose: (code, reason) => {
+      if (code === LINK_CLOSE.protocol)
+        logger.warn(
+          { code, reason: reason.slice(0, 123) },
+          "Edge link refused by protocol",
+        );
+    },
   });
   const stopWakeups = await listenEdgeLinkWakeups(pool, (signal) => {
     if (signal.edgeNodeId === local.scope.edgeNodeId) client.notify();
   });
   const sweep = setInterval(() => client.notify(), SWEEP_INTERVAL_MS);
   sweep.unref();
+  const stopPrune = startAckedQueuePrune(
+    parseEdgeHardeningEnv(source).EDGE_QUEUE_ACKED_RETENTION_DAYS,
+  );
+  const fetchDeviceRecords = createDeviceRecordsFetcher({
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+    edgeInstanceId: local.instanceId,
+  });
+  // legend-hfq3z: clash refusals of the previous pull, reported on the next.
+  let receiptRunRefusals: ReceiptRunRefusalReport = new Map();
+  const puller = createDeviceRegistryPuller({
+    pull: (since, signal) =>
+      pullWithCursorRecovery(
+        async (from) => {
+          let first = true;
+          const result = await pullDeviceRegistry({
+            context: local.context,
+            // S-K1 (legend-3yqy): a standby never applies receipt sequences.
+            role: config.role,
+            // legend-zsdd: the sequences this database may number.
+            binding: {
+              edgeNodeId: local.scope.edgeNodeId,
+              edgeInstanceId: local.instanceId,
+            },
+            since: from,
+            refusals: receiptRunRefusals,
+            fetchPage: async (cursor, receiptRuns, refusals) => {
+              const isFirst = first;
+              first = false;
+              try {
+                return await fetchDeviceRecords(
+                  cursor,
+                  signal,
+                  receiptRuns,
+                  refusals,
+                );
+              } catch (error) {
+                if (
+                  isFirst &&
+                  error instanceof EdgeCloudHttpError &&
+                  error.code === "HTTP_400"
+                )
+                  throw new StoredCursorRefusedError();
+                throw error;
+              }
+            },
+          });
+          receiptRunRefusals = result.receiptRunRefusals;
+          return result;
+        },
+        since,
+        isRejectedCursor,
+        () =>
+          logger.warn(
+            "Edge device registry cursor refused; pulling from the start",
+          ),
+      ),
+    load: () =>
+      loadDeviceRegistryCheckpoint(local.context, local.scope.edgeNodeId),
+    save: (input) =>
+      saveDeviceRegistryCheckpoint(
+        local.context,
+        local.scope.edgeNodeId,
+        input,
+      ),
+    intervalMs: config.deviceSyncIntervalMs,
+    staleAfterMs: config.deviceSyncStaleAfterMs,
+    maxBackoffMs: Math.max(
+      config.deviceSyncIntervalMs,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onStaleChange: (stale) => {
+      if (stale)
+        logger.error(
+          "Edge device registry replica is stale; device revocations may be missing",
+        );
+      else logger.info("Edge device registry replica is fresh again");
+    },
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge device registry pull failed"),
+  });
+  registryPuller = puller;
+  // Not awaited: boot never waits for, or fails on, the cloud.
+  puller.start();
+  // People snapshot (users, roles, employees, shifts; design
+  // hris-edge-replication.md 3.1). Started BEFORE the staff PIN pull: a PIN
+  // record needs its user row. A standby pulls too. Boot waits a bounded time
+  // for the first pull so the PINs find their users; offline, it moves on.
+  const peoplePuller = createPeopleSnapshotPuller({
+    config: { cloudUrl: config.cloudUrl, credential: config.credential },
+    intervalMs: config.peopleSyncIntervalMs,
+    staleAfterMs: Math.max(
+      config.deviceSyncStaleAfterMs,
+      2 * config.peopleSyncIntervalMs,
+    ),
+    maxBackoffMs: Math.max(
+      config.peopleSyncIntervalMs,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onStaleChange: (stale) => {
+      if (stale)
+        logger.error(
+          "Edge people snapshot is stale; staff changes may be missing",
+        );
+      else logger.info("Edge people snapshot is fresh again");
+    },
+    // Code only: the snapshot holds personal data.
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge people snapshot pull failed"),
+  });
+  peoplePuller.start();
+  let bootWait: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    peoplePuller.runOnce(),
+    new Promise<void>((resolve) => {
+      bootWait = setTimeout(resolve, BOOT_PEOPLE_SNAPSHOT_WAIT_MS);
+      bootWait.unref();
+    }),
+  ]);
+  clearTimeout(bootWait);
+  // legend-yvhw8: staff PINs down-sync. Same schedule, backoff and staleness
+  // as the registry, its own checkpoint. A standby pulls too: it needs the
+  // PINs to take over for a failed primary. Stale PINs are not fatal (the
+  // edge keeps verifying the last ones), so staleness is logged, not acted on.
+  const pinPuller = createDeviceRegistryPuller({
+    pull: createStaffPinPull({
+      context: local.context,
+      fetchPage: createStaffPinRecordsFetcher({
+        cloudUrl: config.cloudUrl,
+        credential: config.credential,
+        pepperHave: edgeStaffPinPepperContiguous,
+      }),
+      onPeppers: async (peppers) => {
+        const decoded = peppers.map(({ version, pepper }) => ({
+          version,
+          pepper: Buffer.from(pepper, "base64"),
+        }));
+        // Sealed in the database first, then live: a crash in between only
+        // costs one more delivery.
+        await saveEdgePeppers(
+          local.context,
+          local.scope.edgeNodeId,
+          pepperSealKey,
+          decoded,
+        );
+        installEdgeStaffPinPeppers(local.scope.tenantId, decoded);
+        logger.info(
+          { versions: decoded.map((entry) => entry.version) },
+          "Edge staff pin peppers updated",
+        );
+      },
+      onRestart: () =>
+        logger.warn("Edge staff pin cursor refused; pulling from the start"),
+    }),
+    load: () => loadStaffPinCheckpoint(local.context, local.scope.edgeNodeId),
+    save: (input) =>
+      saveStaffPinCheckpoint(local.context, local.scope.edgeNodeId, input),
+    intervalMs: config.deviceSyncIntervalMs,
+    staleAfterMs: config.deviceSyncStaleAfterMs,
+    maxBackoffMs: Math.max(
+      config.deviceSyncIntervalMs,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onStaleChange: (stale) => {
+      if (stale)
+        logger.error(
+          "Edge staff pin replica is stale; PIN resets may be missing",
+        );
+      else logger.info("Edge staff pin replica is fresh again");
+    },
+    // Class only: a record (hash, salt) must never reach a log line.
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge staff pin pull failed"),
+  });
+  pinPuller.start();
+  // legend-hubzo: sealed selfies go up to the cloud, one file at a time. Both
+  // roles run it: a node with no rows is idle, and the cloud answers 200 for a
+  // file it already holds. Failures are logged by class only; a selfie never
+  // reaches a log line.
+  const selfieUploader = createEdgeSelfieUploader({
+    context: local.context,
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+    intervalMs: env.EDGE_SELFIE_UPLOAD_INTERVAL_MS,
+    maxBackoffMs: Math.max(
+      env.EDGE_SELFIE_UPLOAD_INTERVAL_MS,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onRejected: () => recordUploaderRejection(),
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge selfie upload failed"),
+  });
+  selfieUploader.start();
+  const selfieSweep = startEdgeSelfieSweep({
+    context: local.context,
+    dir: env.EDGE_SELFIE_DIR,
+    maxAgeDays: env.EDGE_SELFIE_MAX_AGE_DAYS,
+  });
+  // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
+  // accounts. No tick at start: a fresh bootstrap (or missing masters) syncs at
+  // boot, a restarted node first refreshes one interval later. A failure is logged by class only and the loop keeps
+  // its schedule.
+  const masterSync = startEdgeMasterSyncLoop({
+    config,
+    intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge master sync failed"),
+  });
+  // legend-zclb: one-shot, not awaited. A failure is logged by class only
+  // (the error can quote hash material) and never stops the runtime.
+  resendMateriallessStaffPinSets(local.context.tenant, local.scope.outletId)
+    .then(({ resent }) => {
+      if (resent > 0)
+        logger.info({ resent }, "Edge staff pin sets re-sent with material");
+    })
+    .catch((error) =>
+      logger.warn(safeError(error), "Edge staff pin re-send failed"),
+    );
+  let wifi: WifiAgentHandle | null = null;
+  try {
+    wifi = await startWifiAgent({
+      context: local.context,
+      scope: local.scope,
+      role: config.role,
+    });
+  } catch (error) {
+    // A Wi-Fi problem must not take down POS or the link: the port stays
+    // fail-closed (503) and the cause is logged by name/code only.
+    logger.error(safeError(error), "Wi-Fi agent failed to start");
+  }
+  // legend-oeqme: pushes the queued cloud quota changes to the controller,
+  // outside the link receive transaction. Every role prunes the queue; only
+  // the primary drains it, like the agent: a standby never talks to the
+  // controller.
+  const wifiQuotaWorker: WifiQuotaWorkerHandle = startWifiQuotaQueueWorker({
+    context: local.context,
+    edgeNodeId: local.scope.edgeNodeId,
+    drain: config.role === "primary",
+  });
   return {
     async stop() {
       clearInterval(sweep);
-      await stopWakeups();
-      await client.stop();
+      await wifiQuotaWorker.stop();
+      await wifi?.stop();
+      stopPrune();
+      // Torn down together: a pull stuck in a slow local write must not hold
+      // the link and the wakeup listener open during shutdown.
+      await Promise.all([
+        puller.stop(),
+        peoplePuller.stop(),
+        pinPuller.stop(),
+        masterSync.stop(),
+        selfieUploader.stop(),
+        selfieSweep.stop(),
+        stopWakeups(),
+        client.stop(),
+      ]);
+      if (registryPuller === puller) registryPuller = null;
       state = { ...state, link: disconnected };
     },
   };
@@ -265,19 +1001,43 @@ export type EdgeLinkHandle = {
 /** Cloud only: accept edge links on /api/edge-link. */
 export async function registerEdgeLink(
   server: Server,
+  options: {
+    /** Client address for the upgrade rate limit (TRUST_PROXY-aware). */
+    clientAddress?: (request: IncomingMessage) => string;
+  } = {},
 ): Promise<EdgeLinkHandle> {
   if (env.EDGE_MODE)
     throw new EdgeBootError("registerEdgeLink runs on the cloud only");
+  // legend-s4r6: edge -> cloud appliers, before any edge can connect.
+  registerStockMovedEdgeApplier();
+  // legend-wh71: offline attendance.logged (WS-10) recorded idempotently.
+  registerAttendanceLoggedEdgeApplier();
+  // legend-9fhs: POS (WS-04) events parked in edge_deferred_events (no stall).
+  registerPosDeferredEdgeApplier();
+  // legend-kyie: pos_override.* / staff_pin.* applied (and parked ones drained).
+  registerAccessEdgeApplier();
+  // Last: anything still unregistered is parked as unclassified, not a stall.
+  registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;
-  const linkServer = createEdgeLinkServer<AuthenticatedEdgeNode>(server, {
+  const hardening = parseEdgeHardeningEnv(process.env);
+  // The server adds the `x-edge-instance` header value (legend-o839h).
+  const linkServer = createEdgeLinkServer<
+    AuthenticatedEdgeNode & EdgeLinkIdentity
+  >(server, {
     version,
-    authenticate: authenticateEdgeCredential,
-    isActive: isEdgeNodeActive,
+    clientAddress: options.clientAddress,
+    authFailureLimit: {
+      limit: hardening.EDGE_LINK_AUTH_FAILURE_LIMIT,
+      windowMs: hardening.EDGE_LINK_AUTH_FAILURE_WINDOW_SECONDS * 1000,
+    },
+    authenticate: (token) => authenticateEdgeCredential(token),
+    isActive: (identity) => isEdgeNodeActive(identity),
     storeFor: (identity) =>
       createDbLinkStore({
         database: db,
         context: identity.context,
         node: identity.scope,
+        edgeInstanceId: identity.edgeInstanceId,
         outboundDirection: "cloud_to_edge",
       }),
     onHeartbeat: (identity, frame) =>
@@ -296,18 +1056,25 @@ export async function registerEdgeLink(
   const offRevoked = onEdgeNodeRevoked((edgeNodeId) =>
     linkServer.disconnect(edgeNodeId),
   );
+  const stopRevocations = await listenEdgeNodeRevocations(pool, (edgeNodeId) =>
+    linkServer.disconnect(edgeNodeId),
+  );
   const stopWakeups = await listenEdgeLinkWakeups(pool, (signal) =>
     linkServer.notify(signal.edgeNodeId),
   );
   const sweep = setInterval(() => linkServer.notifyAll(), SWEEP_INTERVAL_MS);
   sweep.unref();
+  const stopPrune = startAckedQueuePrune(
+    hardening.EDGE_QUEUE_ACKED_RETENTION_DAYS,
+  );
   return {
     notify: (edgeNodeId) => linkServer.notify(edgeNodeId),
     isConnected: (edgeNodeId) => linkServer.isConnected(edgeNodeId),
     async close() {
       clearInterval(sweep);
+      stopPrune();
       offRevoked();
-      await stopWakeups();
+      await Promise.all([stopRevocations(), stopWakeups()]);
       await linkServer.close();
     },
   };

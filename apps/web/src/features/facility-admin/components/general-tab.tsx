@@ -25,6 +25,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import {
+  isStaleStampStatus,
+  shouldRefillAfterConflict,
+} from "../admin-conflict.ts";
 import { useUpdateFacility } from "../hooks.ts";
 import {
   clockMinutes,
@@ -33,11 +37,12 @@ import {
   facilityTypeLabel,
   hoursToRows,
   parseInteger,
+  parseUpdateDraft,
   resolutionLabel,
   rowsToHours,
   summarizeOperatingHours,
-  zodFieldErrors,
   type DayRow,
+  zodFieldErrors,
 } from "../lib.ts";
 import { ConfigSection } from "./config-section";
 import { FormError } from "./form-error";
@@ -103,11 +108,31 @@ export function GeneralTab({
   const [values, setValues] = React.useState<GeneralValues>(() =>
     initialValues(facility),
   );
+  // The stamp of the row the form was filled from, not of the latest refetch:
+  // a refetch swaps `facility` while the form keeps the old values, so saving
+  // with the new stamp would overwrite another admin's edit. Advances only
+  // after our own save, or after a conflict once the refetch brought a newer
+  // row (see the conflict reset below).
+  const [stamp, setStamp] = React.useState(facility.updatedAt);
+  const [conflictPending, setConflictPending] = React.useState(false);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [hoursErrors, setHoursErrors] = React.useState<Record<number, string>>(
     {},
   );
   const [formError, setFormError] = React.useState<string>();
+
+  // After a 412 the hook refetches the config. Once the refetched row
+  // differs from the one the form was filled from, refill the form and take
+  // its stamp, or every retry would send the old stamp and fail again. Plain
+  // refetches never get here, so unsaved edits survive them. Set during render
+  // (React's "adjust state when a prop changes" pattern), not in an effect.
+  if (shouldRefillAfterConflict(conflictPending, facility.updatedAt, stamp)) {
+    setConflictPending(false);
+    setValues(initialValues(facility));
+    setStamp(facility.updatedAt);
+    setErrors({});
+    setHoursErrors({});
+  }
 
   const update = (patch: Partial<GeneralValues>) =>
     setValues((current) => ({ ...current, ...patch }));
@@ -300,7 +325,7 @@ export function GeneralTab({
         noShowResolution: values.noShowResolution,
       },
     };
-    const parsed = updateFacilitySchema.safeParse(candidate);
+    const parsed = parseUpdateDraft(updateFacilitySchema, candidate);
     if (!parsed.success) {
       setErrors((current) => ({
         ...current,
@@ -312,16 +337,27 @@ export function GeneralTab({
       return;
     }
 
-    updateFacility.mutate(parsed.data, {
-      onSuccess: () =>
-        toast({ title: t("facilityAdmin.general.saved"), tone: "success" }),
-      onError: (error) =>
-        setFormError(
-          error instanceof ApiError
-            ? error.message
-            : t("facilityAdmin.general.saveFailed"),
-        ),
-    });
+    setConflictPending(false);
+    updateFacility.mutate(
+      { body: parsed.data, expectedUpdatedAt: stamp },
+      {
+        onSuccess: (saved) => {
+          setStamp(saved.updatedAt);
+          toast({ title: t("facilityAdmin.general.saved"), tone: "success" });
+        },
+        onError: (error) => {
+          // Only a stale stamp (412) means another admin saved first. A 409
+          // is a refused change, so the typed values stay for a retry.
+          if (error instanceof ApiError && isStaleStampStatus(error.status))
+            setConflictPending(true);
+          setFormError(
+            error instanceof ApiError
+              ? error.message
+              : t("facilityAdmin.general.saveFailed"),
+          );
+        },
+      },
+    );
   }
 
   const hoursSummary = summarizeOperatingHours(

@@ -35,6 +35,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -70,6 +71,12 @@ export const userIdentities = pgTable(
     // account platform-wide and a second account must merge (k2l).
     unique("user_identities_type_value_key").on(table.type, table.valueHash),
     index("user_identities_user_idx").on(table.userId),
+    // legend-k2l: one WhatsApp number per account. A second number never
+    // links silently; the merge flow (identity-merge.service.ts) or support
+    // decides, so this index is the last line behind the service checks.
+    uniqueIndex("user_identities_one_whatsapp_per_user")
+      .on(table.userId)
+      .where(sql`${table.type} = 'whatsapp'`),
     check(
       "user_identities_type_check",
       sql`${table.type} IN ('whatsapp', 'email', 'google')`,
@@ -117,6 +124,13 @@ export const loginChallenges = pgTable(
     /** Better Auth session handed to the polling browser, at most once. */
     sessionId: text("session_id"),
     sessionIssuedAt: timestamp("session_issued_at", { withTimezone: true }),
+    /**
+     * legend-k2l: the address of an `email_magic_link` challenge, sealed with
+     * `sealSecret(email, "login_challenge:email:<id>")`. The 43-char token
+     * cannot carry the email and `matched_user_id` stays null until the link
+     * is verified, so the address lives here. Null for every other channel.
+     */
+    emailEncrypted: text("email_encrypted"),
     /** Keyed client-IP digest for the AUTH-04 per-IP limit. */
     ipHash: varchar("ip_hash", { length: 64 }),
     userAgent: varchar("user_agent", { length: 255 }),
@@ -142,6 +156,11 @@ export const loginChallenges = pgTable(
     check(
       "login_challenges_status_check",
       sql`${table.status} IN ('pending', 'completed', 'expired', 'cancelled')`,
+    ),
+    // legend-k2l: only a magic-link challenge carries a sealed address.
+    check(
+      "login_challenges_email_encrypted_check",
+      sql`(${table.channel} = 'email_magic_link') = (${table.emailEncrypted} IS NOT NULL)`,
     ),
     check(
       "login_challenges_brand_needs_tenant_check",

@@ -51,6 +51,7 @@ import { logger } from "../lib/logger.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import { RESERVATION_SYSTEM_ACTOR } from "./reservation-deposit-payment.ts";
 import { auditReservation, type Tx } from "./reservation-core.ts";
@@ -117,7 +118,7 @@ async function createSystemRefundRequest(
       const { cap, reserved } = await refundableBalance(tx, intent);
       if (reserved + BigInt(input.amountIdr) > cap)
         throw refundFailure("Refund exceeds available paid amount.");
-      const [row] = await tx
+      const [inserted] = await tx
         .insert(paymentRefunds)
         .values({
           tenantId: intent.tenantId,
@@ -129,7 +130,8 @@ async function createSystemRefundRequest(
           requestedBy: RESERVATION_SYSTEM_ACTOR,
         })
         .returning();
-      if (!row) throw new Error("Refund insert returned no row");
+      if (!inserted) throw new Error("Refund insert returned no row");
+      const row = await openRefundChainSafely(tx, context, inserted, input.now);
       await recordAudit(
         tx,
         context,

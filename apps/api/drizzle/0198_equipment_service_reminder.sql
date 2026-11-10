@@ -1,0 +1,1 @@
+ALTER TABLE "maintenance_schedules" ADD COLUMN "reminded_for_due_at" timestamp with time zone;

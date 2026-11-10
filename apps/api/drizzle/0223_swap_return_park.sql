@@ -1,0 +1,4 @@
+ALTER TABLE "recipe_deductions" DROP CONSTRAINT "recipe_deductions_reversal_failed_check";--> statement-breakpoint
+ALTER TABLE "recipe_deductions" DROP CONSTRAINT "recipe_deductions_reversal_reason_check";--> statement-breakpoint
+ALTER TABLE "recipe_deductions" ADD CONSTRAINT "recipe_deductions_reversal_failed_check" CHECK ("recipe_deductions"."reversal_failed_at" IS NULL OR "recipe_deductions"."status" <> 'reversed');--> statement-breakpoint
+ALTER TABLE "recipe_deductions" ADD CONSTRAINT "recipe_deductions_reversal_reason_check" CHECK ("recipe_deductions"."reversal_reason" IS NULL OR "recipe_deductions"."reversal_reason" IN ('void', 'swap'));

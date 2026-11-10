@@ -1,8 +1,8 @@
 // Menu bulk import screen (bead legend-b6r; PRD v1.7 §3 F8, §8 "Impor
-// Massal"). Template download, CSV preview with per-row validation, then an
-// explicit commit that creates drafts and appends their prices. CSV only:
-// XLSX parsing is deferred to bead legend-az32, so the picker offers .csv and
-// an .xlsx picked anyway gets a "save as CSV" message, never a fake preview.
+// Massal"). Template download, CSV/XLSX preview with per-row validation, then
+// an explicit commit that creates drafts and appends their prices. CSV is
+// parsed in the browser; XLSX is sent to the server import (bead legend-az32)
+// and its report feeds the same preview and commit.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -30,8 +30,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useOnline } from "@/lib/use-online";
+import {
+  MENU_IMPORT_MAX_FILE_BYTES,
+  type MenuImportReport,
+} from "@starter/shared/menu";
 import { useRefreshMenu } from "../hooks";
 import {
+  analysisFromServerReport,
   analyzeImport,
   pickImportPriceList,
   type ImportAnalysis,
@@ -39,14 +44,18 @@ import {
   type ImportIssue,
 } from "../import-lib";
 import {
+  analyzeImportOnServer,
   commitImport,
+  ImportFileTooLargeError,
+  importServerMessage,
+  IMPORT_SERVER_ACCEPT,
   downloadImportTemplate,
   importReferencesQuery,
   type ImportCommitOutcome,
 } from "../import-api";
 import { businessDateToday, formatBusinessDate } from "../lib";
 
-type FileError = "xlsx" | "unsupported" | "unreadable";
+type FileError = "unsupported" | "unreadable" | "server" | "tooLarge";
 
 function issueMessage(
   t: ReturnType<typeof useT>,
@@ -380,10 +389,19 @@ export function MenuImportPage() {
   const references = useQuery(importReferencesQuery);
   const refreshMenu = useRefreshMenu();
   const inputRef = React.useRef<HTMLInputElement>(null);
+  // Each pick (or reset) aborts the one before it, so a slow earlier XLSX can
+  // never land its rows under a later file's name.
+  const pickRef = React.useRef<AbortController | null>(null);
 
   const [fileName, setFileName] = React.useState<string | null>(null);
   const [fileText, setFileText] = React.useState<string | null>(null);
+  const [serverReport, setServerReport] =
+    React.useState<MenuImportReport | null>(null);
   const [fileError, setFileError] = React.useState<FileError | null>(null);
+  // The server's own (Indonesian) refusal text for an XLSX it could not read.
+  const [fileErrorMessage, setFileErrorMessage] = React.useState<string | null>(
+    null,
+  );
   const [reading, setReading] = React.useState(false);
   const [committing, setCommitting] = React.useState(false);
   const [progress, setProgress] = React.useState<{
@@ -394,16 +412,16 @@ export function MenuImportPage() {
     null,
   );
 
-  const analysis = React.useMemo(
-    () =>
-      fileText === null || references.data === undefined
-        ? null
-        : analyzeImport(fileText, {
-            categories: references.data.categories,
-            stations: references.data.stations,
-          }),
-    [fileText, references.data],
-  );
+  const analysis = React.useMemo(() => {
+    if (references.data === undefined) return null;
+    const reference = {
+      categories: references.data.categories,
+      stations: references.data.stations,
+    };
+    if (serverReport !== null)
+      return analysisFromServerReport(serverReport, reference);
+    return fileText === null ? null : analyzeImport(fileText, reference);
+  }, [fileText, serverReport, references.data]);
 
   const priceList = references.data
     ? pickImportPriceList(references.data.priceLists, businessDateToday())
@@ -411,16 +429,43 @@ export function MenuImportPage() {
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
+    pickRef.current?.abort();
+    const pick = new AbortController();
+    pickRef.current = pick;
+    setReading(false);
     setFileName(file.name);
     setFileText(null);
+    setServerReport(null);
     setFileError(null);
+    setFileErrorMessage(null);
     setProgress(null);
     setOutcome(null);
+    // One limit for both formats: the server refuses anything larger anyway.
+    if (file.size > MENU_IMPORT_MAX_FILE_BYTES) {
+      setFileError("tooLarge");
+      return;
+    }
     const extension = file.name.split(".").pop()?.toLocaleLowerCase("id-ID");
-    // No XLSX parser exists in the app and no dependency may be added: say so
-    // and ask for a CSV instead of showing a fabricated preview.
+    // XLSX is parsed by the server (no spreadsheet dependency in the app).
     if (extension === "xlsx") {
-      setFileError("xlsx");
+      setReading(true);
+      try {
+        const report = await analyzeImportOnServer(
+          file,
+          "preview",
+          pick.signal,
+        );
+        if (!pick.signal.aborted) setServerReport(report);
+      } catch (error) {
+        if (pick.signal.aborted) return;
+        if (error instanceof ImportFileTooLargeError) setFileError("tooLarge");
+        else {
+          setFileError("server");
+          setFileErrorMessage(importServerMessage(error));
+        }
+      } finally {
+        if (!pick.signal.aborted) setReading(false);
+      }
       return;
     }
     if (extension !== "csv") {
@@ -429,18 +474,23 @@ export function MenuImportPage() {
     }
     setReading(true);
     try {
-      setFileText(await file.text());
+      const text = await file.text();
+      if (!pick.signal.aborted) setFileText(text);
     } catch {
-      setFileError("unreadable");
+      if (!pick.signal.aborted) setFileError("unreadable");
     } finally {
-      setReading(false);
+      if (!pick.signal.aborted) setReading(false);
     }
   }
 
   function resetFile() {
+    pickRef.current?.abort();
+    setReading(false);
     setFileName(null);
     setFileText(null);
+    setServerReport(null);
     setFileError(null);
+    setFileErrorMessage(null);
     setProgress(null);
     setOutcome(null);
     if (inputRef.current) inputRef.current.value = "";
@@ -523,7 +573,7 @@ export function MenuImportPage() {
             <input
               ref={inputRef}
               type="file"
-              accept=".csv,text/csv"
+              accept={IMPORT_SERVER_ACCEPT}
               className="sr-only"
               tabIndex={-1}
               aria-label={t("menuImport.import.uploadLabel")}
@@ -561,13 +611,17 @@ export function MenuImportPage() {
               className="rounded-container bg-danger-subtle p-card text-sm leading-5 font-medium text-danger"
               role="alert"
             >
-              {t(
-                fileError === "xlsx"
-                  ? "menuImport.import.xlsxUnsupported"
-                  : fileError === "unsupported"
-                    ? "menuImport.import.unsupportedType"
-                    : "menuImport.import.unreadable",
-              )}
+              {fileError === "server" && fileErrorMessage
+                ? fileErrorMessage
+                : t(
+                    fileError === "server"
+                      ? "menuImport.import.serverFailed"
+                      : fileError === "tooLarge"
+                        ? "menuImport.import.tooLarge"
+                        : fileError === "unsupported"
+                          ? "menuImport.import.unsupportedType"
+                          : "menuImport.import.unreadable",
+                  )}
             </p>
           )}
           {analysis && analysis.fileIssues.length > 0 && (

@@ -1,7 +1,7 @@
 // "Keranjang & bayar": the shared cart and checkout on one page (legend-2re1,
 // mockup final-a-checkout-mobile; PRD §3 F10 "Mode Bayar", "Estimasi Waktu
-// Saji", "Login Opsional"). Pay-first: place the order, then pay by QRIS or
-// e-wallet, or hold it for the cashier (founder Q3); the kitchen sees it only
+// Saji", "Login Opsional"). Pay-first: place the order, then pay by QRIS
+// or hold it for the cashier (founder Q3); the kitchen sees it only
 // after payment is confirmed (ORD-02). Open bill: the order goes straight to
 // the kitchen and is paid at the end. Menu prices exclude tax and service
 // charge, so the breakdown shows both (owner rule, ORD-03).
@@ -17,6 +17,7 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { WaiterOrderNotice } from "@/features/ws02-edge/components/waiter-order-notice";
 import { useTableJourney } from "../../context";
 import { orderHasPaidShare } from "../../domain.ts";
 import {
@@ -28,6 +29,7 @@ import {
   useStartPayment,
 } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
+import { formatAvailableFrom } from "../../lib/item-options.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
 import {
   QrFooter,
@@ -58,6 +60,8 @@ function errorText(t: ReturnType<typeof useT>, error: unknown): string {
       return t("qrCart.checkout.error.closed");
     case "CART_EMPTY":
       return t("qrCart.checkout.error.cartEmpty");
+    case "BUSINESS_DAY_ALREADY_CLOSED":
+      return t("qrCart.checkout.error.dayClosed");
     default:
       return t("qrCart.checkout.error.generic");
   }
@@ -220,17 +224,16 @@ export function CheckoutPage() {
       search: { item: itemId },
     });
 
-  // Pay an order that is already placed: gateway for QRIS / e-wallet, the
-  // cashier code screen for "Bayar di kasir", the demo VA / card screen
-  // (mock mode only: the picker disables them with the real API, and that
-  // screen itself shows "not available" there, so neither ever reaches
-  // useStartPayment, whose contract takes only QRIS / e-wallet).
+  // Pay an order that is already placed: gateway for QRIS, the
+  // cashier code screen for "Bayar di kasir", the VA screen for Virtual
+  // Account (it lists the provider's banks and opens the VA itself, since
+  // the VA needs a bank before useStartPayment can run).
   const payOrder = (orderId: OrderId, fresh = false) => {
-    if (method === "va" || method === "card") {
+    if (method === "va") {
       void navigate({
         to: "/t/$token/bayar/$orderId",
         params: { token: qrToken, orderId },
-        search: { metode: method === "va" ? "va" : "kartu" },
+        search: { metode: "va" },
       });
       return;
     }
@@ -391,7 +394,13 @@ export function CheckoutPage() {
   const payable = plainQuote?.totalIdr ?? null;
   const shortfall = quote.minimumSpend.shortfallIdr;
   const busy = place.isPending || start.isPending;
+  // WS-02: the outlet's edge link is down (the view says so, or the order was
+  // just refused with EDGE_LINK_DOWN): the guest asks a waiter instead.
+  const orderingAvailable =
+    view.orderingAvailable !== false &&
+    !(place.error instanceof ApiError && place.error.code === "EDGE_LINK_DOWN");
   const blocked =
+    !orderingAvailable ||
     shortfall > 0 ||
     quote.lines.length === 0 ||
     awaitingConfirmation ||
@@ -400,8 +409,19 @@ export function CheckoutPage() {
     (payFirst && payable === null);
   const names = quote.removedLines.map((line) => line.name).join(", ");
   const soldOutIds = new Set(
-    menu.items.filter((item) => item.status === "sold_out").map((i) => i.id),
+    menu.items.filter((item) => item.status !== "available").map((i) => i.id),
   );
+  const availableLabelFor = (menuItemId: string): string | null => {
+    const item = menu.items.find((entry) => entry.id === menuItemId);
+    const time =
+      item?.status === "unavailable_until" && item.availableFrom
+        ? formatAvailableFrom(
+            item.availableFrom,
+            menu.outlet.timeZone ?? "Asia/Jakarta",
+          )
+        : null;
+    return time ? t("qrGlass.menu.card.availableFrom", { time }) : null;
+  };
   const lineBusy = change.isPending || remove.isPending;
   const lineFailure = change.error ?? remove.error;
   const onLineError = (error: unknown) =>
@@ -450,7 +470,8 @@ export function CheckoutPage() {
         : null;
   const action = (
     <div className="grid gap-3">
-      {place.isError && (
+      {!orderingAvailable && <WaiterOrderNotice />}
+      {place.isError && orderingAvailable && (
         <Notice tone="danger" title={errorText(t, place.error)} />
       )}
       {payFailure}
@@ -554,6 +575,7 @@ export function CheckoutPage() {
                     ?.photoUrl ?? null
                 }
                 soldOut={soldOutIds.has(line.menuItemId)}
+                availableLabel={availableLabelFor(line.menuItemId)}
                 mine={
                   line.addedByParticipantId === null || participantId === null
                     ? null

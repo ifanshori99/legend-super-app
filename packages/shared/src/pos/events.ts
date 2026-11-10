@@ -16,8 +16,9 @@
 // `order.paid` and `order.refunded` carry exactly the amount keys the already
 // merged WS-07 posting rules read (`paidCashIdr`, `paidGatewayIdr`,
 // `paidEdcIdr`, `paidPointsIdr`, `discountIdr`, `grossSalesIdr`,
-// `serviceChargeIdr`, `pbjtIdr`, `roundingIdr`; refunds: `refundCashIdr`,
-// `refundGatewayIdr`, `refundEdcIdr`), so a sale posts once and balances.
+// `serviceChargeIdr`, `pbjtIdr`, `roundingIdr`, `paidDepositIdr`; refunds:
+// `refundCashIdr`, `refundGatewayIdr`, `refundEdcIdr`), so a sale posts once
+// and balances.
 // `cashier_shift.closed` carries the signed `differenceIdr` its rule needs.
 //
 // PRD v1.7: §3 F8 (Shift Kasir, Tutup Hari), §5 "Model event untuk
@@ -25,6 +26,7 @@
 
 import {
   z,
+  idr,
   idrSchema,
   outletIdSchema,
   uuidIdSchema,
@@ -33,6 +35,7 @@ import {
   businessDateSchema,
   isoDateTimeSchema,
 } from "../core/index.ts";
+import { posOverrideIdSchema } from "../access/override.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
@@ -47,6 +50,7 @@ import {
   refundReasonSchema,
   serviceTypeSchema,
   voidReasonSchema,
+  storedApprovalIdSchema,
 } from "./schemas.ts";
 
 const deviceIdSchema = uuidSchema;
@@ -108,13 +112,28 @@ export const orderPaidPayloadSchema = z
     /** PBJT (or the configured tax) for this sale. */
     pbjtIdr: nonnegativeIdr,
     roundingIdr: idrSchema,
-    totalIdr: positiveIdr,
+    /**
+     * legend-fbms: zero for a fully discounted sale (staff meal, comp). The
+     * event still fires so recipe deduction runs; WS-07 ignores an all-zero
+     * payload and still posts a discount/sales pair.
+     */
+    totalIdr: nonnegativeIdr,
     /** Tender buckets: exactly the amount keys of the WS-07 posting rule. */
     paidCashIdr: nonnegativeIdr,
     paidGatewayIdr: nonnegativeIdr,
     paidEdcIdr: nonnegativeIdr,
     paidPointsIdr: nonnegativeIdr,
-    tenders: z.array(tenderLineSchema).min(1),
+    /**
+     * legend-9pz9: the reservation DP applied to this sale (the order's
+     * `depositAppliedIdr`). Not a tender: the tenders settle the rest.
+     */
+    paidDepositIdr: nonnegativeIdr.default(idr(0)),
+    /**
+     * Empty only when nothing is left to settle: the DP covers the whole
+     * total, or the total is 0 (legend-fbms). The sum check below
+     * (tenders = totalIdr - paidDepositIdr) refuses any other empty list.
+     */
+    tenders: z.array(tenderLineSchema),
     shiftId: posShiftIdSchema.nullable(),
     cashierId: userIdSchema.nullable(),
     deviceId: deviceIdSchema.nullable(),
@@ -138,11 +157,17 @@ export const orderPaidPayloadSchema = z
       (sum, line) => sum + Number(line.amountIdr),
       0,
     );
-    if (paid !== Number(payload.totalIdr))
+    if (Number(payload.paidDepositIdr) > Number(payload.totalIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["paidDepositIdr"],
+        message: "paidDepositIdr must not exceed totalIdr",
+      });
+    else if (paid !== Number(payload.totalIdr) - Number(payload.paidDepositIdr))
       ctx.addIssue({
         code: "custom",
         path: ["tenders"],
-        message: "Captured tenders must equal totalIdr",
+        message: "Captured tenders must equal totalIdr - paidDepositIdr",
       });
     for (const [key, bucket] of [
       ["paidCashIdr", "cash"],
@@ -172,8 +197,19 @@ export const orderVoidedPayloadSchema = z
     amountIdr: nonnegativeIdr,
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
-    approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    /**
+     * The supervisor who approved the void. Null only for a system void with
+     * no human approver: a delivery platform cancel (legend-5bn3), where
+     * `overrideId` and `approvalRequestId` are null too.
+     */
+    approvedBy: userIdSchema.nullable(),
+    /**
+     * legend-0gy1: the consumed `pos_overrides` row; the proof of approval.
+     * Null only on events written before the override id was recorded.
+     */
+    overrideId: posOverrideIdSchema.nullable(),
+    /** WS-01 chain id of a phone approval; null for a supervisor PIN. */
+    approvalRequestId: uuidSchema.nullable(),
     /** True when a completed sale is being corrected by a linked void. */
     voidedFinalOrder: z.boolean(),
     voidId: posVoidIdSchema.nullable(),
@@ -208,7 +244,8 @@ export const orderRefundedPayloadSchema = z
     reason: refundReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema.nullable(),
+    approvalRequestId: uuidSchema.nullable(),
     /** Refund buckets: the amount keys of the refund posting rule. */
     grossSalesIdr: nonnegativeIdr,
     discountIdr: nonnegativeIdr,
@@ -293,22 +330,36 @@ export const cashierShiftClosedPayloadSchema = z
     expectedIdr: nonnegativeIdr,
     /** The blind count the cashier submitted. */
     countedIdr: nonnegativeIdr,
-    /** counted − expected: the signed amount the WS-07 rule books. */
+    /**
+     * counted − expected + heldCashOutIdr: the signed amount the WS-07 rule
+     * books (stored as pos_shifts.difference_idr). Held cash outs and drops
+     * expire at the close with their cash still in the drawer and are not in
+     * it (legend-y9bf); held refund and void cash is (legend-utqr). Equals
+     * the stored shift variance when no refund or void is held.
+     */
     differenceIdr: idrSchema,
+    /**
+     * Cash of the held refunds and voids, left out of expected and booked by
+     * their own events (0 if absent). Since legend-y9bf it excludes held cash
+     * outs and drops; events stored before it carried the whole held sum.
+     */
+    heldCashOutIdr: nonnegativeIdr.optional(),
     varianceNote: z.string().min(4).max(500).nullable(),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    approvalRequestId: storedApprovalIdSchema,
     closedAt: isoDateTimeSchema,
   })
   .superRefine((payload, ctx) => {
     if (
       Number(payload.differenceIdr) !==
-      Number(payload.countedIdr) - Number(payload.expectedIdr)
+      Number(payload.countedIdr) -
+        Number(payload.expectedIdr) +
+        Number(payload.heldCashOutIdr ?? 0)
     )
       ctx.addIssue({
         code: "custom",
         path: ["differenceIdr"],
-        message: "differenceIdr must equal counted − expected",
+        message: "differenceIdr must equal counted − expected + held",
       });
     if (Number(payload.differenceIdr) !== 0 && payload.varianceNote === null)
       ctx.addIssue({

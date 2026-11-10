@@ -134,6 +134,7 @@ export const reservationMessages = {
       noShow: "Tandai tidak datang",
       preOrder: "Pilih paket",
       changePreOrder: "Ganti paket",
+      resendDeposit: "Kirim ulang tautan DP",
       close: "Tutup",
       seatWithTable: "Dudukkan di meja {codes}",
     },
@@ -180,6 +181,12 @@ export const reservationMessages = {
     error: "Tamu gagal didudukkan. Coba lagi.",
     unpaid: "DP reservasi belum dibayar.",
     transitionError: "Reservasi ini belum bisa didudukkan.",
+  },
+  depositLink: {
+    label: "Tautan pembayaran DP",
+    copy: "Salin tautan",
+    copied: "Tautan DP disalin.",
+    expires: "Berlaku sampai {time}",
   },
   cancel: {
     title: "Batalkan reservasi",
@@ -295,6 +302,14 @@ export const reservationMessages = {
     RESERVATION_SLOT_UNAVAILABLE:
       "Tidak ada meja yang tersedia pada tanggal dan jam tersebut.",
     RESERVATION_NOT_FOUND: "Reservasi tidak ditemukan.",
+    RESERVATION_DEPOSIT_NOT_PENDING:
+      "Tautan DP hanya bisa dikirim ulang untuk reservasi yang menunggu DP.",
+    RESERVATION_DEPOSIT_WINDOW_CLOSED:
+      "Batas waktu pembayaran DP sudah lewat. Tautan baru tidak bisa dibuat.",
+    RESERVATION_DEPOSIT_PAYMENT_PENDING:
+      "Tamu sedang membayar DP lewat tautan sebelumnya. Tunggu pembayaran selesai.",
+    RESERVATION_DEPOSIT_LINK_EXPIRED:
+      "Tautan DP sudah tidak berlaku. Kirim ulang tautan dari awal.",
     WAITLIST_TRANSITION_INVALID:
       "Status daftar tunggu tidak dapat diubah ke tahap tersebut.",
     WAITLIST_ENTRY_NOT_FOUND: "Pendaftaran daftar tunggu tidak ditemukan.",

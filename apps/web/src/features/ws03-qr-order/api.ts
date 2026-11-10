@@ -9,6 +9,7 @@ import {
   createServiceRequest,
   createSessionSplits,
   getGuestPayment,
+  getGuestPaymentOptions,
   getMenuSuggestions,
   getOrderEtas,
   getPointClaim,
@@ -41,6 +42,7 @@ export const reviewEligibilityEndpoint = getReviewEligibility;
 export const orderIssuesEndpoint = listSessionOrderIssues;
 export const pointClaimEndpoint = getPointClaim;
 export const paymentEndpoint = getGuestPayment;
+export const paymentOptionsEndpoint = getGuestPaymentOptions;
 export const orderEtasEndpoint = getOrderEtas;
 
 export const scanTable = (input: {
@@ -148,6 +150,8 @@ export const startPayment = (
   input: {
     target: GuestPaymentTarget;
     method: GuestPaymentMethod;
+    /** Required for `va` (a code from the payment options); none for QRIS. */
+    bankCode?: string;
     idempotencyKey: string;
   },
 ) => callEndpoint(createGuestPayment, { params: { sessionId }, body: input });

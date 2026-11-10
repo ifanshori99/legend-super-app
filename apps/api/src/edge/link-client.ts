@@ -15,7 +15,14 @@ import {
   type LinkScope,
   type LinkStore,
 } from "./link-peer.ts";
-import { LINK_CLOSE, LINK_MAX_FRAME_BYTES, encodeFrame } from "./protocol.ts";
+import {
+  LINK_CLOSE,
+  LINK_INSTANCE_HEADER,
+  LINK_MAX_FRAME_BYTES,
+  LINK_REFUSED_CREDENTIAL,
+  LINK_REFUSED_HEADER,
+  encodeFrame,
+} from "./protocol.ts";
 
 export const RECONNECT_BASE_MS = 1_000;
 export const RECONNECT_MAX_MS = 30_000;
@@ -44,11 +51,19 @@ export type EdgeLinkClientOptions = {
   /** wss://<cloud>/api/edge-link */
   url: string;
   credential: string;
+  /** This edge database's instance id, sent as `x-edge-instance`. */
+  instanceId?: string | null;
   scope: LinkScope;
   store: LinkStore;
   version: string;
   onState?: (state: EdgeLinkClientState) => void;
   onError?: (error: unknown) => void;
+  /**
+   * The link closed with this code and reason (legend-a9iby): the reason of a
+   * 1008 refusal is the only place an operator learns why the cloud refuses
+   * this database, so the runtime logs it.
+   */
+  onClose?: (code: number, reason: string) => void;
   /** Test seams. */
   random?: () => number;
   ackTimeoutMs?: number;
@@ -91,7 +106,12 @@ export function createEdgeLinkClient(
   function connect() {
     if (stopped) return;
     const ws = new WebSocket(options.url, {
-      headers: { authorization: `Bearer ${options.credential}` },
+      headers: {
+        authorization: `Bearer ${options.credential}`,
+        ...(options.instanceId
+          ? { [LINK_INSTANCE_HEADER]: options.instanceId }
+          : {}),
+      },
       maxPayload: LINK_MAX_FRAME_BYTES,
       handshakeTimeout: 10_000,
     });
@@ -139,16 +159,23 @@ export function createEdgeLinkClient(
       }
       linkPeer.receive(data.toString());
     });
-    // A refused upgrade (401/403) arrives as an unexpected response.
+    // A refused upgrade (401/403) arrives as an unexpected response. Only the
+    // cloud's explicit credential-refusal header is final: a bare 401/403 can
+    // come from a WAF or proxy in front of the cloud, and a 429 or 503 is
+    // transient, so those back off and retry (legend-wg5t #6, #8a).
     ws.on("unexpected-response", (_request, response) => {
-      if (response.statusCode === 401 || response.statusCode === 403)
+      if (
+        (response.statusCode === 401 || response.statusCode === 403) &&
+        response.headers[LINK_REFUSED_HEADER] === LINK_REFUSED_CREDENTIAL
+      )
         setState({ refused: true });
       ws.terminate();
     });
     ws.on("error", (error) => {
       options.onError?.(new Error(`Edge link socket error: ${error.message}`));
     });
-    ws.on("close", (code) => {
+    ws.on("close", (code, reason) => {
+      options.onClose?.(code, reason.toString("utf8"));
       linkPeer.stop();
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = undefined;

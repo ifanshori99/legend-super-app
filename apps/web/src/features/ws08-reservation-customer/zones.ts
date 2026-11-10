@@ -5,7 +5,7 @@
 // active zones so the zone-dependent policy (private-room minimum spend and the
 // 48-hour cancellation window, RSV-03) is visible in the demo, marked by the
 // page's "Contoh data" badge.
-import { cafeLegendQrOrderFixtures } from "@starter/shared/qr-order";
+import { cafeLegendQrOrderFixtures } from "@starter/shared/qr-order/sample";
 import { API_MOCK } from "@/lib/api/mock-flag.ts";
 
 export type ZoneOption = { id: string; name: string };

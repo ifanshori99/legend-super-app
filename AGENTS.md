@@ -49,15 +49,15 @@ packages/shared validators (zod), permissions (RBAC), API DTO types, site identi
 **API (`apps/api/src`)**
 
 - `app.ts` builds the Express app (middleware order matters — read the comments); `server.ts` listens and shuts down gracefully. `pnpm dev` restarts the API on every change (`tsx watch`, including `packages/shared` and `.env.local`).
-- `routes/*.routes.ts`: thin HTTP handlers. Mount `requireAuth` then `requireTrustedOrigin` on each router; add `requirePermission(...)` for cross-account endpoints; use `jsonBody` on POST/PATCH. Register routers in `routes/index.ts`.
-- `services/*.service.ts`: all application logic and Drizzle queries. Receive the verified user ID as an argument; filter ownership in SQL. Name cross-account functions with an `Any` suffix and call them only behind `requirePermission`.
+- `routes/*.routes.ts`: thin HTTP handlers. Mount `requireAuth` then `requireTrustedOrigin` on each router; use `jsonBody` on POST/PATCH. Tenant and outlet routes add `requireTenantPermission` or `requireOutletPermission`; platform routes add `requirePlatformAdmin` and `requireSessionMfa()` (see `routes/platform.routes.ts`). Register routers in `routes/index.ts`.
+- `services/*.service.ts`: all application logic and Drizzle queries. Receive the verified user ID as an argument; filter ownership in SQL. Name cross-account functions with an `Any` suffix and call them only behind the route guards above.
 - `db/schema/<table>.ts` (export from `db/schema/index.ts`), `drizzle/` (committed migrations), `db/index.ts` (shared pool).
 - `lib/auth.ts` (Better Auth server), `lib/logger.ts` (pino), `lib/request-context.ts` (AsyncLocalStorage reqId/userId), `middleware/` (auth, origin, body, errors).
 - Express 5 forwards rejected promises to the error handler: throw `HttpError` or let Zod throw; never `res.status(500)` by hand.
 
 **Web (`apps/web/src`)**
 
-- `routes/`: TanStack Start file routes. `_auth/` = sign-in/up, `_protected/` = signed-in screens (the layout's `beforeLoad` redirects anonymous visitors). Pages render on the server first, then hydrate; any component may use hooks. `routeTree.gen.ts` is generated and committed.
+- `routes/`: TanStack Start file routes. `_auth/` = sign-in/up; route areas (`_customer/`, `_kelola/`, `_platform/`, …, defined in `lib/areas/definitions.ts`) hold the app screens, and each area layout's `beforeLoad` applies its guard. Pages render on the server first, then hydrate; any component may use hooks. `routeTree.gen.ts` is generated and committed.
 - `lib/auth-client.ts`: Better Auth browser client pointed at the API origin with `credentials: "include"`.
 - `lib/auth.middleware.ts` + `lib/session.ts`: server function middleware that reads the visitor's session from the API by forwarding their cookie; the root route stores it in router context.
 - `lib/api/client.ts`: `apiFetch` + `ApiError`. Isomorphic: in the browser it calls `VITE_API_URL` with cookies; during SSR it calls `API_INTERNAL_URL` forwarding the cookie and request ID.
@@ -73,7 +73,7 @@ Authenticate at every API boundary: `requireAuth` answers JSON 401. The web app'
 
 The browser calls the API cross-origin with cookies. CORS and Better Auth `trustedOrigins` allow exactly `WEB_URL` (plus `TRUSTED_ORIGINS`). Every cookie-authenticated mutation, including DELETE, must pass `requireTrustedOrigin`. Session cookies reach the web server because both apps share a host locally (cookies ignore ports) and a parent `COOKIE_DOMAIN` in production — keep `BETTER_AUTH_URL`, `WEB_URL`, and `VITE_API_URL` consistent (`pnpm run doctor` checks).
 
-Authorize separately from authentication when a feature reaches past the caller's own rows. Declare the resource and actions in `packages/shared/src/permissions.ts`, guard the API route with `requirePermission`, and guard the page with `roleHasPermission(session.user.role, …)` in `beforeLoad` (throw `notFound()`). Roles come from `user.role`, which signup cannot set; use `pnpm role:set <email> <role>`. Hiding UI is never the access check.
+Authorize separately from authentication when a feature reaches past the caller's own rows. Platform-level cross-account routes use `requireAuth, requireTrustedOrigin, requirePlatformAdmin, requireSessionMfa()`. `requirePermission` alone is not enough there: a platform admin removed from `platform_admins` keeps `user.role`. Tenant and outlet routes use `requireTenantPermission` or `requireOutletPermission`. Roles come from `user.role`, which signup cannot set; use `pnpm role:set <email> <role>`. Guard web pages by role with `roleHasPermission(session.user.role, …)` in `beforeLoad` (throw `notFound()`); that is presentation only. Hiding UI is never the access check.
 
 Keep secrets server-side; only `VITE_*` values reach the browser, and `VITE_API_URL` is the only one. Validate new API settings in `apps/api/src/config/env.ts`. Never log cookies, passwords, tokens, or connection strings — the pino loggers redact the common fields; do not log request bodies. Encode IDs placed in API paths with `encodeURIComponent`.
 
@@ -81,18 +81,20 @@ Request bodies are capped at 100 kB, including Better Auth's (`limitAuthBody`). 
 
 ## Adding a resource end to end
 
-Follow the Notes example (`docs/backend.md`, `docs/frontend.md`):
+Follow the patterns in `docs/backend.md` and `docs/frontend.md`; `apps/api/src/routes/floor.routes.ts` is a complete tenant router:
 
 1. Table: `apps/api/src/db/schema/<table>.ts`, export from `index.ts`, `pnpm db:generate`, inspect the SQL, `pnpm db:migrate`. Commit SQL and `drizzle/meta` together. Never rewrite applied migrations or reset to fix errors.
 2. Contract: strict zod schemas in `packages/shared/src/validators/<resource>.ts` and DTO types in `packages/shared/src/types/api.ts`; add the subpath to `packages/shared/package.json` `exports`.
 3. API: `services/<resource>.service.ts`, `routes/<resource>.routes.ts`, register in `routes/index.ts`; tests in `apps/api/src/test/`.
-4. Web: `features/<resource>/{api,queries,hooks}.ts`, components, and a page under `routes/_protected/` with a loader that ensures the query.
+4. Web: `features/<resource>/{api,queries,hooks}.ts`, components, and a page under its area's route folder (`routes/_<area>/`, see `docs/frontend.md` "Where to put a new screen") with a loader that ensures the query.
 
 Use PostgreSQL `pgTable`/boolean/timestamp-with-time-zone columns and asynchronous queries. Never substitute SQLite syntax or disable TLS verification.
 
 ## Verify and hand off
 
 Run `pnpm check` (lint, typecheck, API + root tests on disposable PostgreSQL) and `pnpm build` for substantive changes. For auth/routing/session/CORS changes also run `pnpm test:e2e` (production builds + Playwright). For setup or Compose changes run `pnpm test:setup`. Add tests for real behavior and data isolation. Review the UI at narrow and wide widths when changing layout. The starter placeholder page and `e2e/starter.spec.ts` are gone (bead legend-fbu); new screens go in a route area, see `docs/frontend.md` "Where to put a new screen".
+
+In a git worktree (`.worktrees/<name>`), run `pnpm worktree:setup` (or `node scripts/worktree-setup.mjs` before any install) once after creating it. It runs an offline `pnpm install`, replaces a `node_modules` symlink to the main checkout, copies `.claude/settings.local.json`, and checks that `@starter/shared` resolves to this worktree's `packages/shared`. Never symlink `node_modules` from another checkout: `pnpm check` and `pnpm build` refuse to run when links leave the checkout (`scripts/check-workspace-links.mjs`, bead legend-meki).
 
 Report the result, how to use it, checks run, and any remaining limitation. Keep dashboard-specific, chatbot-specific, billing, and provider-specific features in derivatives unless the user asks to add them to this base. Do not deploy, purchase services, or choose an AI provider just because this is an AI-friendly starter.
 

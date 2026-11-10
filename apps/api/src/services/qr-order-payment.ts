@@ -10,13 +10,20 @@
 //   the applied reservation deposit, computed by the server (PAY-01, ORD-03).
 //   Two guests paying the same order serialize on the order row: the second
 //   one receives the same live intent instead of a second one.
-// - `deliverQrOrderPaymentEvent` consumes WS-05 `payment.paid` (appended only
-//   by `confirmPayment` after verified evidence, PAY-02) from the outbox and
-//   fires the order to the kitchen. Nothing else can fire a pay-first order,
-//   so no item reaches the KDS before a verified payment (ORD-02).
+// - Methods are QRIS and VA (legend-3160, CTO decision 9 Nov). A VA names a
+//   bank from the gateway's channel list (`getGuestPaymentOptions`); picking
+//   another method or bank opens a new intent, which supersedes the pending
+//   one on the same WS-05 link (createIntent: one live code per bill).
+// - WS-05 `payment.paid` (appended only by `confirmPayment` after verified
+//   evidence, PAY-02) is consumed from the outbox by
+//   `deliverOrderPaymentEvent` (order-payment-consumers), which fires the
+//   order through `handleQrOrderPaymentPaid`. `deliverQrOrderPaymentEvent` is
+//   a thin compatibility delegate to the same handler, kept for tests.
+//   Nothing else can fire a pay-first order, so no item reaches the KDS
+//   before a verified payment (ORD-02).
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   CoreError,
   uuidSchema,
@@ -27,22 +34,41 @@ import type { CustomerPaymentIntent } from "@starter/shared/payment";
 import {
   createGuestPaymentInputSchema,
   guestPaymentSchema,
+  guestPaymentTargetSchema,
+  guestPaymentOptionsSchema,
+  tableSessionTokenExpiresAt,
   type GuestPayment,
+  type GuestPaymentMethod,
+  type GuestPaymentOptions,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
+import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
-import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
+import { paymentIntents } from "../db/schema/index.ts";
+import { billSplits } from "../db/schema/bill-splits.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
+import { paymentGatewayFor } from "./payment-gateway.ts";
+import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
+import { resolveRoutingRule } from "./payment-routing.service.ts";
+import {
+  assertSplitMutableTx,
+  listLiveSplitsTx,
+  lockSplitPartTx,
+  partLiveCodeTx,
+  voidLiveSplitsTx,
+} from "./bill-split.service.ts";
 import {
   createIntent,
   createPaymentLink,
+  createSplitPartIntent,
   getIntentView,
 } from "./payment.service.ts";
+import { handleQrOrderPaymentPaid } from "./qr-order-consumers.ts";
 import {
-  fireQrOrder,
   loadQrZoneOfSession,
   lockGuestSessionForPayment,
   qrOrderIdempotent,
@@ -60,19 +86,24 @@ function linkSealAad(tenantId: string, orderId: string): string {
 
 function guestPaymentDto(
   intent: CustomerPaymentIntent,
-  orderId: string,
+  target: z.input<typeof guestPaymentTargetSchema>,
 ): GuestPayment {
+  const { instructions } = intent;
+  // Only QRIS and VA intents are opened for a QR order.
+  if (instructions.method !== "qris" && instructions.method !== "va")
+    throw new Error("QR order payment has an unsupported method");
+  const va = instructions.method === "va" ? instructions : null;
   return guestPaymentSchema.parse({
     id: intent.id,
-    target: { kind: "order", orderId },
-    method: "qris",
+    target,
+    method: instructions.method,
     amountIdr: intent.amountIdr,
     status: intent.status,
-    qrisPayload:
-      intent.instructions.method === "qris"
-        ? intent.instructions.qrPayload
-        : null,
+    qrisPayload: instructions.method === "qris" ? instructions.qrPayload : null,
     redirectUrl: null,
+    vaNumber: va?.virtualAccountNumber ?? null,
+    bankCode: va?.channelCode ?? null,
+    bankName: va?.channelName ?? null,
     expiresAt: intent.expiresAt,
     paidAt: intent.status === "paid" ? intent.paidAt : null,
   });
@@ -112,6 +143,7 @@ function linkToken(context: ScopedTenantContext, order: QrOrderRow): string {
  * Step 1: the order's WS-05 bill, opened once. The link is created through
  * `createPaymentLink` (its own transaction) while this transaction holds the
  * order row, so concurrent payers never open two bills for one order.
+ * Returns the session's outlet (the gateway picks that outlet's account).
  */
 async function ensurePaymentLink(
   context: ScopedTenantContext,
@@ -119,8 +151,8 @@ async function ensurePaymentLink(
   sessionId: string,
   orderId: string,
   now: Date,
-): Promise<void> {
-  await withTenant(db, context, async (tx) => {
+): Promise<string> {
+  return withTenant(db, context, async (tx) => {
     const session = await lockGuestSessionForPayment(
       tx,
       context,
@@ -137,7 +169,7 @@ async function ensurePaymentLink(
           ? "Pesanan ini sudah dibatalkan."
           : "Pesanan ini tidak menunggu pembayaran.",
       );
-    if (order.paymentLinkId !== null) return;
+    if (order.paymentLinkId !== null) return session.outletId;
     const { tableCode } = await loadQrZoneOfSession(tx, context, session);
     const payable = order.totalIdr - order.depositAppliedIdr;
     // The deposit is shown as a reduction of the bill: the link's total is
@@ -149,7 +181,10 @@ async function ensurePaymentLink(
         reference: order.number,
         tableLabel: tableCode,
         pax: session.pax,
-        subtotalIdr: order.subtotalIdr,
+        // legend-zmc2: an inclusive order's subtotal already contains the
+        // service charge and tax; the link adds them, so it gets the subtotal
+        // without them (same total, payment_links_total_check holds).
+        subtotalIdr: orderNetSubtotalIdr(order),
         discountIdr: order.discountIdr + order.depositAppliedIdr,
         serviceChargeIdr: order.serviceChargeIdr,
         taxIdr: order.taxIdr,
@@ -176,14 +211,114 @@ async function ensurePaymentLink(
           eq(orders.id, order.id),
         ),
       );
+    return session.outletId;
   });
 }
 
+/** True when the live intent is the method and bank the guest asks for. */
+function sameChoice(
+  intent: CustomerPaymentIntent,
+  method: GuestPaymentMethod,
+  bankCode: string | null,
+): boolean {
+  if (intent.instructions.method !== method) return false;
+  return (
+    intent.instructions.method !== "va" ||
+    intent.instructions.channelCode === bankCode
+  );
+}
+
 /**
- * POST /api/table-sessions/:sessionId/payments (contract guest.ts). Only the
- * pay-first `order` target with QRIS is live: split shares belong to
- * legend-ms3, the open-bill `bill` target to the bill settlement bead, and the
- * WS-05 gateway offers no e-wallet intent yet.
+ * A VA bank must be one the gateway lists right now (PRD §3.13 "Metode DOIT":
+ * the list comes from the provider, never from the client).
+ */
+async function assertVaBank(
+  context: ScopedTenantContext,
+  bankCode: string,
+  outletId: string,
+): Promise<void> {
+  // The gateway the VA rule routes to now (fallback when the primary is down).
+  const routing = await withTenant(db, context, (tx) =>
+    resolveRoutingRule(tx, context, outletId, "va"),
+  );
+  const selected = await selectGatewayForNewIntent(context, outletId, routing);
+  const port = selected.provider
+    ? selected.port
+    : paymentGatewayFor(routing.provider);
+  const banks = await port.channels(context, "va", outletId);
+  if (!banks.some((bank) => bank.code === bankCode))
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Bank virtual account ini tidak tersedia; pilih bank lain.",
+    );
+}
+
+/**
+ * GET /api/table-sessions/:sessionId/payment-options (contract guest.ts).
+ * QRIS and VA with the outlet's routing and the gateway's health; VA lists
+ * the banks the gateway offers and is off when it offers none.
+ */
+export async function getGuestPaymentOptions(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  now = new Date(),
+): Promise<GuestPaymentOptions> {
+  const routed = await withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "none",
+    );
+    const rules = [];
+    for (const method of ["qris", "va"] as const) {
+      const rule = await resolveRoutingRule(
+        tx,
+        context,
+        session.outletId,
+        method,
+      );
+      rules.push({ method, routing: rule });
+    }
+    return { outletId: session.outletId, rules };
+  });
+  const methods = [];
+  for (const entry of routed.rules) {
+    const selected = await selectGatewayForNewIntent(
+      context,
+      routed.outletId,
+      entry.routing,
+    );
+    const gatewayUsable = selected.provider !== null;
+    const banks =
+      entry.method === "va" && entry.routing.enabled && selected.provider
+        ? await selected.port.channels(context, "va", routed.outletId)
+        : [];
+    const configured = entry.method === "qris" || banks.length > 0;
+    const enabled = entry.routing.enabled && gatewayUsable && configured;
+    methods.push({
+      method: entry.method,
+      enabled,
+      unavailableReason: enabled
+        ? null
+        : !entry.routing.enabled
+          ? ("routing_disabled" as const)
+          : !gatewayUsable
+            ? ("gateway_down" as const)
+            : ("no_channels" as const),
+      banks,
+    });
+  }
+  return guestPaymentOptionsSchema.parse({ methods });
+}
+
+/**
+ * POST /api/table-sessions/:sessionId/payments (contract guest.ts). The
+ * pay-first `order` and the split `split` targets are live, with QRIS or VA:
+ * the open-bill `bill` target belongs to the bill settlement bead.
  */
 export async function createGuestPayment(
   context: ScopedTenantContext,
@@ -193,18 +328,40 @@ export async function createGuestPayment(
   now = new Date(),
 ): Promise<GuestPayment> {
   const parsed = createGuestPaymentInputSchema.parse(input);
-  if (parsed.target.kind !== "order")
+  if (parsed.target.kind === "bill")
     throw new CoreError(
       "VALIDATION_ERROR",
-      "Pembayaran bagian atau tagihan open bill belum tersedia di sini.",
+      "Pembayaran tagihan open bill belum tersedia di sini.",
     );
-  if (parsed.method !== "qris")
-    throw new CoreError(
-      "VALIDATION_ERROR",
-      "Metode pembayaran ini belum tersedia; pilih QRIS.",
-    );
-  const orderId = parsed.target.orderId;
-  await ensurePaymentLink(context, credential, sessionId, orderId, now);
+  const bankCode = parsed.method === "va" ? (parsed.bankCode ?? null) : null;
+  // A split share pays into its order's bill: find the order first.
+  const target = parsed.target;
+  const splitId = target.kind === "split" ? target.billSplitId : null;
+  const orderId =
+    target.kind === "order"
+      ? target.orderId
+      : await withTenant(db, context, async (tx) => {
+          const session = await lockGuestSessionForPayment(
+            tx,
+            context,
+            credential,
+            sessionId,
+            now,
+            "share",
+          );
+          return (
+            await lockSplitPartTx(tx, context, session.id, target.billSplitId)
+          ).orderId;
+        });
+  const outletId = await ensurePaymentLink(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    now,
+  );
+  // Checked after the session lock so the outlet's own channel list decides.
+  if (bankCode !== null) await assertVaBank(context, bankCode, outletId);
   return withTenant(db, context, async (tx) => {
     const session = await lockGuestSessionForPayment(
       tx,
@@ -224,13 +381,108 @@ export async function createGuestPayment(
       request,
       async () => {
         const order = await lockSessionOrder(tx, context, session.id, orderId);
+        // Lock order: session -> order -> bill_splits -> link.
+        const part =
+          splitId === null
+            ? null
+            : await lockSplitPartTx(tx, context, session.id, splitId);
+        if (part !== null && part.status === "voided")
+          throw new CoreError("CONFLICT", "Bagian tagihan ini sudah diganti.");
+        const token = linkToken(context, order);
+        if (part !== null && part.status === "paid") {
+          if (part.paymentIntentId === null)
+            throw new Error("Paid split part has no payment intent");
+          return guestPaymentDto(
+            await getIntentView(context, token, part.paymentIntentId, now),
+            { kind: "split", billSplitId: part.id },
+          );
+        }
         if (order.status !== "awaiting_payment")
           throw new CoreError(
             "CONFLICT",
             "Pesanan ini tidak menunggu pembayaran.",
           );
-        const token = linkToken(context, order);
-        // One live code per order: a second payer gets the pending intent.
+        if (part !== null) {
+          // One payable code per part: the same method and bank returns the
+          // pending intent; another choice waits until the old code is dead
+          // (expired and past the late-payment grace), so two codes of one
+          // part can never both be paid.
+          if (part.paymentIntentId !== null) {
+            const current = await getIntentView(
+              context,
+              token,
+              part.paymentIntentId,
+              now,
+            );
+            if (
+              current.status === "paid" ||
+              (current.status === "pending" &&
+                sameChoice(current, parsed.method, bankCode))
+            )
+              return guestPaymentDto(current, {
+                kind: "split",
+                billSplitId: part.id,
+              });
+          }
+          const live = await partLiveCodeTx(tx, context, part.id, now);
+          if (live !== null) {
+            if (
+              live.status === "pending" &&
+              live.method === parsed.method &&
+              (parsed.method !== "va" || live.channelCode === bankCode)
+            )
+              return guestPaymentDto(
+                await getIntentView(context, token, live.id, now),
+                { kind: "split", billSplitId: part.id },
+              );
+            throw new HttpError(
+              409,
+              "SPLIT_CODE_ACTIVE",
+              "Kode pembayaran bagian ini masih berlaku; selesaikan atau tunggu sampai berakhir.",
+            );
+          }
+          const intent = await createSplitPartIntent(
+            context,
+            token,
+            {
+              method: parsed.method,
+              channelCode: bankCode,
+              idempotencyKey: `qrs-${createHash("sha256")
+                .update(`${order.id}:${part.id}:${idempotencyKey}`)
+                .digest("hex")
+                .slice(0, 48)}`,
+              expiresAt: tableSessionTokenExpiresAt({
+                openedAt: session.openedAt.toISOString(),
+                closedAt: session.closedAt?.toISOString() ?? null,
+              }),
+            },
+            { billSplitId: part.id, amountIdr: part.amountIdr },
+            now,
+          );
+          // Never `orders.paymentIntentId`: that is the whole-order code.
+          await tx
+            .update(billSplits)
+            .set({ paymentIntentId: intent.id, updatedAt: now })
+            .where(
+              and(
+                eq(billSplits.tenantId, context.tenant.tenantId),
+                eq(billSplits.id, part.id),
+              ),
+            );
+          return guestPaymentDto(intent, {
+            kind: "split",
+            billSplitId: part.id,
+          });
+        }
+        // Paying the whole order replaces a split that nobody has paid or
+        // started paying (assertSplitMutableTx throws SPLIT_LOCKED otherwise).
+        if ((await listLiveSplitsTx(tx, context, order.id)).length > 0) {
+          await assertSplitMutableTx(tx, context, order, now);
+          await voidLiveSplitsTx(tx, context, order.id, now);
+        }
+        // One live code per order: a second payer asking for the same
+        // method and bank gets the pending intent; another method or bank
+        // opens a new one, which supersedes it (createIntent).
         if (order.paymentIntentId !== null) {
           const current = await getIntentView(
             context,
@@ -238,8 +490,15 @@ export async function createGuestPayment(
             order.paymentIntentId,
             now,
           );
-          if (current.status === "pending" || current.status === "paid")
-            return guestPaymentDto(current, order.id);
+          if (
+            current.status === "paid" ||
+            (current.status === "pending" &&
+              sameChoice(current, parsed.method, bankCode))
+          )
+            return guestPaymentDto(current, {
+              kind: "order",
+              orderId: order.id,
+            });
         }
         // The WS-05 key is unique per tenant; derive it from the order so a
         // guest key can never collide with another session's payment.
@@ -247,12 +506,18 @@ export async function createGuestPayment(
           context,
           token,
           {
-            method: "qris",
-            channelCode: null,
+            method: parsed.method,
+            channelCode: bankCode,
             idempotencyKey: `qro-${createHash("sha256")
               .update(`${order.id}:${idempotencyKey}`)
               .digest("hex")
               .slice(0, 48)}`,
+            // A code never outlives the guest's session credential; WS-05
+            // caps it at the method default (VA 180 minutes).
+            expiresAt: tableSessionTokenExpiresAt({
+              openedAt: session.openedAt.toISOString(),
+              closedAt: session.closedAt?.toISOString() ?? null,
+            }),
           },
           now,
         );
@@ -265,7 +530,7 @@ export async function createGuestPayment(
               eq(orders.id, order.id),
             ),
           );
-        return guestPaymentDto(intent, order.id);
+        return guestPaymentDto(intent, { kind: "order", orderId: order.id });
       },
     );
   });
@@ -289,38 +554,58 @@ export async function getGuestPayment(
       now,
       "none",
     );
-    const [order] = await tx
-      .select()
-      .from(orders)
+    // Through the intent's bill, not `orders.paymentIntentId`: a code the
+    // guest switched away from (superseded) still answers with its status.
+    const [intent] = await tx
+      .select({
+        paymentLinkId: paymentIntents.paymentLinkId,
+        billSplitId: paymentIntents.billSplitId,
+      })
+      .from(paymentIntents)
       .where(
         and(
-          eq(orders.tenantId, context.tenant.tenantId),
-          eq(orders.tableSessionId, session.id),
-          eq(orders.paymentIntentId, intentId),
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
         ),
       );
+    const [order] = intent
+      ? await tx
+          .select()
+          .from(orders)
+          .where(
+            and(
+              eq(orders.tenantId, context.tenant.tenantId),
+              eq(orders.tableSessionId, session.id),
+              eq(orders.paymentLinkId, intent.paymentLinkId),
+            ),
+          )
+      : [];
     if (!order || order.paymentLinkTokenSealed === null)
       throw new CoreError("NOT_FOUND", "Pembayaran tidak ditemukan.");
-    return { orderId: order.id, token: linkToken(context, order) };
+    return {
+      target: (intent?.billSplitId
+        ? { kind: "split", billSplitId: intent.billSplitId }
+        : { kind: "order", orderId: order.id }) as z.input<
+        typeof guestPaymentTargetSchema
+      >,
+      token: linkToken(context, order),
+    };
   });
   const intent = await getIntentView(context, found.token, intentId, now);
-  return guestPaymentDto(intent, found.orderId);
+  return guestPaymentDto(intent, found.target);
 }
 
 // ---- Kitchen fire on verified payment (ORD-02) --------------------------------------
 
-const paidPayloadSchema = z.looseObject({
-  paymentLinkId: uuidSchema,
-  intentId: uuidSchema,
-});
-
 /**
- * Outbox consumer for WS-05 `payment.paid`. Runs in the consumption
+ * Entry point for WS-05 `payment.paid` of a QR order. Delegates to
+ * `handleQrOrderPaymentPaid` (qr-order-consumers.ts), the consumer that
+ * `deliverOrderPaymentEvent` routes QR bills to, so there is one decision
+ * path: the fire is re-read from the locked rows (link total equals the quote
+ * amount due, link fully paid, a `paid` intent, IDR) and a replay or a late
+ * payment on a voided order changes nothing here. Runs in the consumption
  * transaction (core-outbox.ts `consumeOutbox`), so the fire commits with the
- * consumed offset. Idempotent: an order already sent or voided is left as it
- * is, and a replayed event changes nothing. The decision is re-read from the
- * locked rows, never from the event alone: the link must be fully covered by
- * verified money and a `paid` intent must exist on it.
+ * consumed offset. Returns true only when this call fired the order.
  */
 export async function deliverQrOrderPaymentEvent(
   context: ScopedTenantContext,
@@ -329,45 +614,5 @@ export async function deliverQrOrderPaymentEvent(
   tx: Tx,
   now = new Date(),
 ): Promise<boolean> {
-  if (event.name !== "payment.paid") return false;
-  const payload = paidPayloadSchema.safeParse(event.payload);
-  if (!payload.success) return false;
-  const tenantId = context.tenant.tenantId;
-  const [order] = await tx
-    .select()
-    .from(orders)
-    .where(
-      and(
-        eq(orders.tenantId, tenantId),
-        eq(orders.paymentLinkId, payload.data.paymentLinkId),
-      ),
-    )
-    .for("update");
-  // Not a QR order's bill, or already fired / voided (late payment is held as
-  // unallocated funds by WS-05, PAY-04).
-  if (!order || order.status !== "awaiting_payment") return false;
-  const [link] = await tx
-    .select({ paidIdr: paymentLinks.paidIdr, totalIdr: paymentLinks.totalIdr })
-    .from(paymentLinks)
-    .where(
-      and(
-        eq(paymentLinks.tenantId, tenantId),
-        eq(paymentLinks.id, payload.data.paymentLinkId),
-      ),
-    );
-  if (!link || link.paidIdr < link.totalIdr) return false;
-  const [paid] = await tx
-    .select({ id: paymentIntents.id })
-    .from(paymentIntents)
-    .where(
-      and(
-        eq(paymentIntents.tenantId, tenantId),
-        eq(paymentIntents.paymentLinkId, payload.data.paymentLinkId),
-        inArray(paymentIntents.status, ["paid"]),
-      ),
-    )
-    .limit(1);
-  if (!paid) return false;
-  await fireQrOrder(tx, context, order, { now, reason: "verified_payment" });
-  return true;
+  return (await handleQrOrderPaymentPaid(context, event, tx, now)) === "fired";
 }

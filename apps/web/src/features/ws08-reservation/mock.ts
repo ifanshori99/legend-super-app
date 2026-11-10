@@ -34,6 +34,7 @@ import {
   reservationPreOrderSchema,
   reservationSchema,
   reservationEndsAt,
+  resendReservationDepositLink,
   reservationTableSlotSchema,
   resolveWaitlistEntry,
   seatReservation,
@@ -463,6 +464,21 @@ registerMock(callWaitlistEntry, ({ params }) => {
   });
   waitlist.set(waitlist.get().map((row) => (row.id === next.id ? next : row)));
   return { data: next };
+});
+
+registerMock(resendReservationDepositLink, ({ params }) => {
+  requireOutlet(params.outletId);
+  const current = findReservation(params.reservationId);
+  if (current.status !== "pending_deposit")
+    fail("RESERVATION_TRANSITION_INVALID");
+  return {
+    data: {
+      paymentLinkId: mintId(),
+      amountIdr: current.depositIdr,
+      paymentPath: `/bayar/mock-${current.id}`,
+      expiresAt: new Date(nowMs() + 60 * 60_000).toISOString(),
+    },
+  };
 });
 
 registerMock(resolveWaitlistEntry, ({ params, body }) => {

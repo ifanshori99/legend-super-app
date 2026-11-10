@@ -8,7 +8,11 @@
 // quotes, CRLF/LF, comma or semicolon delimiter, BOM, and `;`-separated
 // label/allergen lists inside one cell.
 import { importRowSchema, menuItemVisibleToGuests } from "@starter/shared/menu";
-import type { MenuImportRow, PriceList } from "@starter/shared/menu";
+import type {
+  MenuImportReport,
+  MenuImportRow,
+  PriceList,
+} from "@starter/shared/menu";
 
 /** The nine template columns, in template order (`importRowSchema`). */
 export const IMPORT_COLUMNS = [
@@ -35,7 +39,9 @@ export type ImportIssueCode =
   | "tooManyLabels"
   | "tooManyAllergens"
   | "unknownCategory"
-  | "unknownStation";
+  | "unknownStation"
+  /** A message the server produced for an XLSX row (already Indonesian). */
+  | "serverRow";
 
 export type ImportIssue = {
   field: ImportColumn;
@@ -489,6 +495,63 @@ export function analyzeImport(
   return {
     delimiter,
     fileIssues,
+    rows,
+    counts: { total: rows.length, valid, invalid: rows.length - valid },
+  };
+}
+
+/**
+ * XLSX (and CSV) analysed by the server (legend-az32) → the same analysis the
+ * CSV path produces. Rows the server accepted are re-validated here against
+ * the back office's categories and stations, so the commit step gets resolved
+ * ids exactly as for a CSV; rows the server refused keep its messages.
+ */
+export function analysisFromServerReport(
+  report: MenuImportReport,
+  reference: ImportReference = EMPTY_REFERENCE,
+): ImportAnalysis {
+  const positions = {} as Record<ImportColumn, number>;
+  IMPORT_COLUMNS.forEach((column, index) => {
+    positions[column] = index;
+  });
+  const categories = indexByName(reference.categories);
+  const stations = indexByName(reference.stations);
+  const rows: ImportRowResult[] = report.rows.map((serverRow) => {
+    const result = serverRow.data
+      ? validateRow(
+          {
+            cells: importRowToCells(serverRow.data),
+            line: serverRow.rowNumber,
+          },
+          positions,
+          categories,
+          stations,
+        )
+      : ({
+          rowNumber: serverRow.rowNumber,
+          raw: Object.fromEntries(
+            IMPORT_COLUMNS.map((column) => [column, ""]),
+          ) as ImportRowRaw,
+          parsed: { labels: [], allergens: [], course: null },
+          issues: [],
+          valid: false,
+        } satisfies ImportRowResult);
+    for (const error of serverRow.errors)
+      result.issues.push({
+        field: (IMPORT_COLUMNS as readonly string[]).includes(error.field)
+          ? (error.field as ImportColumn)
+          : "name",
+        code: "serverRow",
+        params: { message: error.message },
+      });
+    result.rowNumber = serverRow.rowNumber;
+    result.valid = result.issues.length === 0;
+    return result;
+  });
+  const valid = rows.filter((row) => row.valid).length;
+  return {
+    delimiter: ",",
+    fileIssues: rows.length === 0 ? [{ code: "emptyFile" }] : [],
     rows,
     counts: { total: rows.length, valid, invalid: rows.length - valid },
   };

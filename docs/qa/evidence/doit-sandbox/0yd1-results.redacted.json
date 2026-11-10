@@ -1,0 +1,492 @@
+{
+  "note": "legend-0yd1 DOIT sandbox 2026-11-09, environment test. No Authorization, no signature, no client IP, no QR content.",
+  "api_calls": [
+    {
+      "step": "p1-create",
+      "request": "POST /v1/payments idem=legend-sbx-p1-1794203279",
+      "request_body": "{\"amount\":10000,\"rail\":\"qris\",\"reference\":\"legend-sbx-p1-1794203279\",\"expires_in\":86400}",
+      "http_status": "201",
+      "response": {
+        "id": "pay_3N-1K5igG03DWXKD",
+        "status": "pending",
+        "amount": 10000,
+        "rail": "qris",
+        "reference": "legend-sbx-p1-1794203279",
+        "customer": "[redacted]",
+        "qr_content": "[redacted]",
+        "va_number": null,
+        "va_bank": null,
+        "payment_url": null,
+        "flags": [],
+        "fee_amount": 0,
+        "fee_payer": "merchant",
+        "total_amount": 10000,
+        "hosted_url": "[redacted]",
+        "return_url": null,
+        "provider": "mock",
+        "provider_ref": "MOCK-CF4A7777B33E",
+        "environment": "test",
+        "expires_at": "2026-11-10T05:48:00.610Z",
+        "paid_at": null,
+        "metadata": null,
+        "created_at": "2026-11-09T05:48:00.611Z"
+      }
+    },
+    {
+      "step": "p1-create-replay",
+      "request": "POST /v1/payments idem=legend-sbx-p1-1794203279",
+      "request_body": "{\"amount\":10000,\"rail\":\"qris\",\"reference\":\"legend-sbx-p1-1794203279\",\"expires_in\":86400}",
+      "http_status": "200",
+      "response": {
+        "id": "pay_3N-1K5igG03DWXKD",
+        "status": "pending",
+        "amount": 10000,
+        "rail": "qris",
+        "reference": "legend-sbx-p1-1794203279",
+        "customer": "[redacted]",
+        "qr_content": "[redacted]",
+        "va_number": null,
+        "va_bank": null,
+        "payment_url": null,
+        "flags": [],
+        "fee_amount": 0,
+        "fee_payer": "merchant",
+        "total_amount": 10000,
+        "hosted_url": "[redacted]",
+        "return_url": null,
+        "provider": "mock",
+        "provider_ref": "MOCK-CF4A7777B33E",
+        "environment": "test",
+        "expires_at": "2026-11-10T05:48:00.610Z",
+        "paid_at": null,
+        "metadata": null,
+        "created_at": "2026-11-09T05:48:00.611Z"
+      }
+    },
+    {
+      "step": "p3-refund-unpaid",
+      "request": "POST /v1/payments/pay_vlGaBy7CaxMsKxqF/refunds idem=refund:00000000-0000-4000-8000-179420327900",
+      "request_body": "{\"amount\":1000,\"reason\":\"legend sandbox probe unpaid\"}",
+      "http_status": "409",
+      "response": {
+        "error": {
+          "code": "payment_not_refundable",
+          "message": "Refund hanya untuk status paid; status sekarang pending.",
+          "doc_url": "https://doit.id/docs/#err-payment_not_refundable"
+        }
+      }
+    },
+    {
+      "step": "p1-status",
+      "request": "GET /v1/payments/pay_3N-1K5igG03DWXKD idem=none",
+      "request_body": "none",
+      "http_status": "200",
+      "response": {
+        "id": "pay_3N-1K5igG03DWXKD",
+        "status": "pending",
+        "amount": 10000,
+        "rail": "qris",
+        "reference": "legend-sbx-p1-1794203279",
+        "customer": "[redacted]",
+        "qr_content": "[redacted]",
+        "va_number": null,
+        "va_bank": null,
+        "payment_url": null,
+        "flags": [],
+        "fee_amount": 0,
+        "fee_payer": "merchant",
+        "total_amount": 10000,
+        "hosted_url": "[redacted]",
+        "return_url": null,
+        "provider": "mock",
+        "provider_ref": "MOCK-CF4A7777B33E",
+        "environment": "test",
+        "expires_at": "2026-11-10T05:48:00.610Z",
+        "paid_at": null,
+        "metadata": null,
+        "created_at": "2026-11-09T05:48:00.611Z",
+        "proofs": []
+      }
+    },
+    {
+      "step": "paid-pay_3N-1K5igG03DWXKD",
+      "request": "GET /v1/payments/pay_3N-1K5igG03DWXKD idem=none",
+      "request_body": "none",
+      "http_status": "200",
+      "response": {
+        "id": "pay_3N-1K5igG03DWXKD",
+        "status": "paid",
+        "amount": 10000,
+        "rail": "qris",
+        "reference": "legend-sbx-p1-1794203279",
+        "customer": "[redacted]",
+        "qr_content": "[redacted]",
+        "va_number": null,
+        "va_bank": null,
+        "payment_url": null,
+        "flags": [],
+        "fee_amount": 0,
+        "fee_payer": "merchant",
+        "total_amount": 10000,
+        "hosted_url": "[redacted]",
+        "return_url": null,
+        "provider": "mock",
+        "provider_ref": "MOCK-CF4A7777B33E",
+        "environment": "test",
+        "expires_at": "2026-11-10T05:48:00.610Z",
+        "paid_at": "2026-11-09T06:46:57.915Z",
+        "metadata": null,
+        "created_at": "2026-11-09T05:48:00.611Z",
+        "proofs": []
+      }
+    },
+    {
+      "step": "r1-partial",
+      "request": "POST /v1/payments/pay_3N-1K5igG03DWXKD/refunds idem=refund:3875dc37-1d21-435b-a92b-10a45a193770",
+      "request_body": "{\"amount\":4000,\"reason\":\"legend sandbox partial\"}",
+      "http_status": "201",
+      "response": {
+        "id": "rf_xSwCLQjjw53PsuAT",
+        "payment_id": "pay_3N-1K5igG03DWXKD",
+        "amount": 4000,
+        "status": "succeeded",
+        "reason": "legend sandbox partial"
+      }
+    },
+    {
+      "step": "r1-partial-replay",
+      "request": "POST /v1/payments/pay_3N-1K5igG03DWXKD/refunds idem=refund:3875dc37-1d21-435b-a92b-10a45a193770",
+      "request_body": "{\"amount\":4000,\"reason\":\"legend sandbox partial\"}",
+      "http_status": "200",
+      "response": {
+        "id": "rf_xSwCLQjjw53PsuAT",
+        "payment_id": "pay_3N-1K5igG03DWXKD",
+        "idempotency_key": "refund:3875dc37-1d21-435b-a92b-10a45a193770",
+        "amount": "4000",
+        "reason": "legend sandbox partial",
+        "status": "succeeded",
+        "provider_ref": "MOCKRF-E9C54AD2A908",
+        "created_at": "2026-11-09T06:47:58.334Z"
+      }
+    },
+    {
+      "step": "r1-partial-keyreuse",
+      "request": "POST /v1/payments/pay_3N-1K5igG03DWXKD/refunds idem=refund:3875dc37-1d21-435b-a92b-10a45a193770",
+      "request_body": "{\"amount\":3000,\"reason\":\"legend sandbox partial\"}",
+      "http_status": "200",
+      "response": {
+        "id": "rf_xSwCLQjjw53PsuAT",
+        "payment_id": "pay_3N-1K5igG03DWXKD",
+        "idempotency_key": "refund:3875dc37-1d21-435b-a92b-10a45a193770",
+        "amount": "4000",
+        "reason": "legend sandbox partial",
+        "status": "succeeded",
+        "provider_ref": "MOCKRF-E9C54AD2A908",
+        "created_at": "2026-11-09T06:47:58.334Z"
+      }
+    },
+    {
+      "step": "p1-after-partial",
+      "request": "GET /v1/payments/pay_3N-1K5igG03DWXKD idem=none",
+      "request_body": "none",
+      "http_status": "200",
+      "response": {
+        "id": "pay_3N-1K5igG03DWXKD",
+        "status": "paid",
+        "amount": 10000,
+        "rail": "qris",
+        "reference": "legend-sbx-p1-1794203279",
+        "customer": "[redacted]",
+        "qr_content": "[redacted]",
+        "va_number": null,
+        "va_bank": null,
+        "payment_url": null,
+        "flags": [],
+        "fee_amount": 0,
+        "fee_payer": "merchant",
+        "total_amount": 10000,
+        "hosted_url": "[redacted]",
+        "return_url": null,
+        "provider": "mock",
+        "provider_ref": "MOCK-CF4A7777B33E",
+        "environment": "test",
+        "expires_at": "2026-11-10T05:48:00.610Z",
+        "paid_at": "2026-11-09T06:46:57.915Z",
+        "metadata": null,
+        "created_at": "2026-11-09T05:48:00.611Z",
+        "proofs": []
+      }
+    },
+    {
+      "step": "r1-rest",
+      "request": "POST /v1/payments/pay_3N-1K5igG03DWXKD/refunds idem=refund:808ad36b-df05-44fe-aec3-1ba7ab128949",
+      "request_body": "{\"amount\":6000,\"reason\":\"legend sandbox rest\"}",
+      "http_status": "201",
+      "response": {
+        "id": "rf_KX4X8bUh0GRhAFXv",
+        "payment_id": "pay_3N-1K5igG03DWXKD",
+        "amount": 6000,
+        "status": "succeeded",
+        "reason": "legend sandbox rest"
+      }
+    },
+    {
+      "step": "p1-after-full",
+      "request": "GET /v1/payments/pay_3N-1K5igG03DWXKD idem=none",
+      "request_body": "none",
+      "http_status": "200",
+      "response": {
+        "id": "pay_3N-1K5igG03DWXKD",
+        "status": "paid",
+        "amount": 10000,
+        "rail": "qris",
+        "reference": "legend-sbx-p1-1794203279",
+        "customer": "[redacted]",
+        "qr_content": "[redacted]",
+        "va_number": null,
+        "va_bank": null,
+        "payment_url": null,
+        "flags": [],
+        "fee_amount": 0,
+        "fee_payer": "merchant",
+        "total_amount": 10000,
+        "hosted_url": "[redacted]",
+        "return_url": null,
+        "provider": "mock",
+        "provider_ref": "MOCK-CF4A7777B33E",
+        "environment": "test",
+        "expires_at": "2026-11-10T05:48:00.610Z",
+        "paid_at": "2026-11-09T06:46:57.915Z",
+        "metadata": null,
+        "created_at": "2026-11-09T05:48:00.611Z",
+        "proofs": []
+      }
+    },
+    {
+      "step": "r2-full",
+      "request": "POST /v1/payments/pay_k5xyzGW_UZgCwbDh/refunds idem=refund:ca3c4ee2-5817-48df-9d5e-9485949b9565",
+      "request_body": "{\"amount\":15000,\"reason\":\"legend sandbox full\"}",
+      "http_status": "201",
+      "response": {
+        "id": "rf_KZsCzUOHaZ4Y-ZVf",
+        "payment_id": "pay_k5xyzGW_UZgCwbDh",
+        "amount": 15000,
+        "status": "succeeded",
+        "reason": "legend sandbox full"
+      }
+    },
+    {
+      "step": "p2-after-full",
+      "request": "GET /v1/payments/pay_k5xyzGW_UZgCwbDh idem=none",
+      "request_body": "none",
+      "http_status": "200",
+      "response": {
+        "id": "pay_k5xyzGW_UZgCwbDh",
+        "status": "refunded",
+        "amount": 15000,
+        "rail": "qris",
+        "reference": "legend-sbx-p2-1794203279",
+        "customer": "[redacted]",
+        "qr_content": "[redacted]",
+        "va_number": null,
+        "va_bank": null,
+        "payment_url": null,
+        "flags": [],
+        "fee_amount": 0,
+        "fee_payer": "merchant",
+        "total_amount": 15000,
+        "hosted_url": "[redacted]",
+        "return_url": null,
+        "provider": "mock",
+        "provider_ref": "MOCK-C4B8E411CEA8",
+        "environment": "test",
+        "expires_at": "2026-11-10T05:48:00.722Z",
+        "paid_at": "2026-11-09T06:47:07.089Z",
+        "metadata": null,
+        "created_at": "2026-11-09T05:48:00.723Z",
+        "proofs": []
+      }
+    },
+    {
+      "step": "r2-over",
+      "request": "POST /v1/payments/pay_k5xyzGW_UZgCwbDh/refunds idem=refund:61cf3fa3-8e8b-4478-bb5e-ae1a7b045554",
+      "request_body": "{\"amount\":1000,\"reason\":\"legend sandbox over\"}",
+      "http_status": "409",
+      "response": {
+        "error": {
+          "code": "payment_not_refundable",
+          "message": "Refund hanya untuk status paid; status sekarang refunded.",
+          "doc_url": "https://doit.id/docs/#err-payment_not_refundable"
+        }
+      }
+    },
+    {
+      "step": "r1-over",
+      "request": "POST /v1/payments/pay_3N-1K5igG03DWXKD/refunds idem=refund:f8f41423-2a41-4400-a98b-25dfd148a701",
+      "request_body": "{\"amount\":20000,\"reason\":\"legend sandbox too big\"}",
+      "http_status": "400",
+      "response": {
+        "error": {
+          "code": "invalid_refund_amount",
+          "message": "amount refund maksimal 10000.",
+          "doc_url": "https://doit.id/docs/#err-invalid_refund_amount"
+        }
+      }
+    },
+    {
+      "step": "r1-cumulative-over",
+      "request": "POST /v1/payments/pay_3N-1K5igG03DWXKD/refunds idem=refund:1c82455a-bc2a-421e-a446-b39f4bfa3adb",
+      "request_body": "{\"amount\":1000,\"reason\":\"legend sandbox cumulative check\"}",
+      "http_status": "201",
+      "response": {
+        "id": "rf_BnU0wg5alDusYHka",
+        "payment_id": "pay_3N-1K5igG03DWXKD",
+        "amount": 1000,
+        "status": "succeeded",
+        "reason": "legend sandbox cumulative check"
+      }
+    },
+    {
+      "step": "r1-capture",
+      "request": "POST /v1/payments/pay_3N-1K5igG03DWXKD/refunds idem=refund:0178a99d-da46-4ac1-8332-4b0f901d5fa8",
+      "request_body": "{\"amount\":500,\"reason\":\"legend sandbox capture\"}",
+      "http_status": "201",
+      "response": {
+        "id": "rf_bAuCUEzQ19ZcgtbN",
+        "payment_id": "pay_3N-1K5igG03DWXKD",
+        "amount": 500,
+        "status": "succeeded",
+        "reason": "legend sandbox capture"
+      }
+    }
+  ],
+  "refund_webhooks_raw": [
+    {
+      "url": "/api/webhooks/payments/doit/0b6f1c2e-7d4a-4c1e-9a3b-2f5d8e1a4c70",
+      "header_names": [
+        "accept-encoding",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "paybridge-signature",
+        "x-doit-attempt",
+        "x-doit-delivery",
+        "x-forwarded-proto"
+      ],
+      "x-doit-attempt": "1",
+      "body": {
+        "id": "evt__kQPcmsFKlBexJDj",
+        "data": {
+          "amount": 500,
+          "refund_id": "rf_bAuCUEzQ19ZcgtbN",
+          "payment_id": "pay_3N-1K5igG03DWXKD"
+        },
+        "type": "refund.succeeded",
+        "created_at": "2026-11-09T06:49:05.541Z"
+      }
+    },
+    {
+      "url": "/api/webhooks/payments/doit/0b6f1c2e-7d4a-4c1e-9a3b-2f5d8e1a4c70",
+      "header_names": [
+        "accept-encoding",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "paybridge-signature",
+        "x-doit-attempt",
+        "x-doit-delivery",
+        "x-forwarded-proto"
+      ],
+      "x-doit-attempt": "2",
+      "body": {
+        "id": "evt_VYbaSKlvUiY73i4A",
+        "data": {
+          "amount": 4000,
+          "refund_id": "rf_xSwCLQjjw53PsuAT",
+          "payment_id": "pay_3N-1K5igG03DWXKD"
+        },
+        "type": "refund.succeeded",
+        "created_at": "2026-11-09T06:47:58.341Z"
+      }
+    },
+    {
+      "url": "/api/webhooks/payments/doit/0b6f1c2e-7d4a-4c1e-9a3b-2f5d8e1a4c70",
+      "header_names": [
+        "accept-encoding",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "paybridge-signature",
+        "x-doit-attempt",
+        "x-doit-delivery",
+        "x-forwarded-proto"
+      ],
+      "x-doit-attempt": "2",
+      "body": {
+        "id": "evt_xAKsFZYFwZd7PLcA",
+        "data": {
+          "amount": 15000,
+          "refund_id": "rf_KZsCzUOHaZ4Y-ZVf",
+          "payment_id": "pay_k5xyzGW_UZgCwbDh"
+        },
+        "type": "refund.succeeded",
+        "created_at": "2026-11-09T06:48:11.049Z"
+      }
+    },
+    {
+      "url": "/api/webhooks/payments/doit/0b6f1c2e-7d4a-4c1e-9a3b-2f5d8e1a4c70",
+      "header_names": [
+        "accept-encoding",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "paybridge-signature",
+        "x-doit-attempt",
+        "x-doit-delivery",
+        "x-forwarded-proto"
+      ],
+      "x-doit-attempt": "2",
+      "body": {
+        "id": "evt_cuoECbE5VdX8M0i_",
+        "data": {
+          "amount": 6000,
+          "refund_id": "rf_KX4X8bUh0GRhAFXv",
+          "payment_id": "pay_3N-1K5igG03DWXKD"
+        },
+        "type": "refund.succeeded",
+        "created_at": "2026-11-09T06:48:10.832Z"
+      }
+    }
+  ],
+  "e2e_matched_webhook": {
+    "date": "2026-11-09",
+    "api_commit": "ff4dac27",
+    "payment": "pay_3N-1K5igG03DWXKD",
+    "why_not_pay_k5xyzGW_UZgCwbDh": "already fully refunded at DOIT (409 payment_not_refundable)",
+    "legend_refund_id": "946d3e48-5bde-467a-b751-0ead9cc247f1",
+    "amount_idr": 1000,
+    "payout": {
+      "path": "runRefundPayout (real DOIT adapter)",
+      "status": "completed",
+      "provider_ref": "rf_UptAadAvh77BHLEh",
+      "payout_attempts": 1,
+      "last_payout_error": null
+    },
+    "webhook": {
+      "event_id": "evt_iReTbPK6LlKCPhaf",
+      "event_type": "refund.succeeded",
+      "signature_valid": true,
+      "status": "processed",
+      "last_error_code": null,
+      "provider_ref": "rf_UptAadAvh77BHLEh",
+      "matched_to_legend_intent": true,
+      "received_after_payout_s": 1.6
+    },
+    "intent_status_after": "partially_refunded",
+    "note": "Approval written directly (dev DB has no approval_policies, approveRefund -> APPROVAL_POLICY_MISSING); approval-matrix path not exercised here."
+  }
+}

@@ -13,7 +13,8 @@ import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { MediaPlate } from "@/components/ui/media-plate";
 import { Money } from "@/components/ui/money";
-import { hasPriceRange } from "../lib/item-options.ts";
+import { useTableJourney } from "../context";
+import { formatAvailableFrom, hasPriceRange } from "../lib/item-options.ts";
 import { QrStepper, qrRoundIcon } from "./glass/qr-primitives";
 
 export function labelText(t: ReturnType<typeof useT>, label: string): string {
@@ -60,7 +61,20 @@ export function ItemCard({
   stepBusy?: boolean;
 }) {
   const t = useT();
-  const soldOut = item.status === "sold_out";
+  const { menu } = useTableJourney();
+  // Not orderable now: 86 / daily limit (`sold_out`) or outside its schedule
+  // until a later window today (`unavailable_until`, legend-nx3f).
+  const soldOut = item.status !== "available";
+  const availableTime =
+    item.status === "unavailable_until" && item.availableFrom
+      ? formatAvailableFrom(
+          item.availableFrom,
+          menu?.outlet.timeZone ?? "Asia/Jakarta",
+        )
+      : null;
+  const availableLabel = availableTime
+    ? t("qrGlass.menu.card.availableFrom", { time: availableTime })
+    : null;
   const quick = isQuickAddable(item);
   const inCart = cart && cart.quantity > 0 ? cart : null;
   const steppable = !soldOut && orderingOpen && inCart?.line && onStep;
@@ -159,9 +173,14 @@ export function ItemCard({
             type="button"
             onClick={() => onOpen(item)}
             aria-label={
-              soldOut
-                ? t("qrMenu.card.soldOutAria", { name: item.name })
-                : t("qrMenu.card.viewAria", { name: item.name })
+              availableTime
+                ? t("qrGlass.menu.card.availableFromAria", {
+                    name: item.name,
+                    time: availableTime,
+                  })
+                : soldOut
+                  ? t("qrMenu.card.soldOutAria", { name: item.name })
+                  : t("qrMenu.card.viewAria", { name: item.name })
             }
             className="rounded-xs text-left after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
@@ -172,7 +191,7 @@ export function ItemCard({
           <div className="flex flex-wrap gap-1.5">
             {soldOut && (
               <Badge tone="neutral">
-                {t("qrGlass.menu.card.soldOutLabel")}
+                {availableLabel ?? t("qrGlass.menu.card.soldOutLabel")}
               </Badge>
             )}
             {chips.map((chip) => (

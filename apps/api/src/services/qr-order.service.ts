@@ -40,6 +40,7 @@ import {
   CoreError,
   createUlid,
   idr,
+  outletIdSchema,
   toIsoDateTime,
   ulidToUuid,
   uuidSchema,
@@ -50,6 +51,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { defineDomainEvent } from "@starter/shared/events";
+import { PosError } from "@starter/shared/pos";
 import {
   addCartLineInputSchema,
   cartLineSchema,
@@ -58,6 +60,9 @@ import {
   placeOrderInputSchema,
   placeOrderResultSchema,
   planQrOrderPlacement,
+  QR_ORDER_PRICING_MODE_MIXED,
+  qrOrderErrorHttpStatus,
+  qrOrderErrorMessages,
   qrOrderEvents,
   qrOrderSchema,
   quoteInputSchema,
@@ -68,6 +73,8 @@ import {
   tableSessionViewSchema,
   transitionTableSession,
   updateCartLineInputSchema,
+  EDGE_LINK_DOWN,
+  QR_OUTLET_CLOSED_MESSAGE,
   type Cart,
   type CartLine,
   type CartMutationResult,
@@ -80,7 +87,12 @@ import {
   type TableSessionStatus,
   type TableSessionView,
 } from "@starter/shared/qr-order";
-import { TaxError } from "@starter/shared/tax";
+import {
+  calculateTax,
+  orderNetSubtotalIdr,
+  TaxError,
+  type TaxCalculationInput,
+} from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import {
   domainEventOutbox,
@@ -99,32 +111,55 @@ import {
   tableSessionCarts,
   type CartLineModifierSnapshot,
 } from "../db/schema/qr-order.ts";
+import { customerProfiles } from "../db/schema/crm-member.ts"; // legend-111j
 import { withTenant } from "../db/tenant.ts";
+import {
+  forwardQrOrderToEdge,
+  getOutletEdgeLinkState,
+} from "../edge/qr-order-forwarding.ts";
 import { HttpError } from "../lib/http-error.ts";
+import {
+  assertOpenBillWithinLimit,
+  OpenBillLimitExceeded,
+  refuseOpenBillBreach,
+} from "./open-bill-control.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { zoneOrderingOpen } from "./guest-menu.service.ts";
+import {
+  evaluatePacingIfStale,
+  readPausedMenuLines,
+} from "./kds-pacing.service.ts";
+import { routeFiredItemsToKitchen } from "./kds.service.ts";
 import {
   releaseMenuItemDailyLimit,
   reserveMenuItemDailyLimit,
 } from "./menu-availability.ts";
 import type { Tx } from "./menu-internals.ts";
 import type { OrderPromoInput, OrderPromoQuote } from "./order-promo-port.ts";
+import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
+import { isBusinessDayClosed } from "./pos-cash-guard.ts";
 import {
   depositCreditFor,
+  lockSessionDeposit,
   qrOrderOpenServiceRequests,
   qrOrderPromoPort,
   qrOrderServingEstimatePort,
 } from "./qr-order-ports.ts";
+import { listSessionSplitDtosTx } from "./bill-split.service.ts";
+import { appendQrOrderPaid } from "./qr-order-paid.ts";
 import {
   buildQuote,
   loadCatalogue,
   loadTaxConfig,
+  QR_PRICE_CHANNEL,
   resolveLine,
+  selectServiceChargeRules,
   type CatalogueItem,
   type PriceChangeDraft,
   type PricedQuoteLine,
+  type QrTaxConfig,
   type QuoteBuild,
   type RemovedLineDraft,
 } from "./qr-order-pricing.ts";
@@ -270,6 +305,40 @@ async function guestSession(
     throw unauthorized("ORD-04: sesi meja sudah ditutup; pindai QR meja lagi.");
   assertOutletInScope(context.outletScope, row.outletId);
   return row;
+}
+
+/**
+ * Refresh stale auto-pause state BEFORE the order transaction opens, so the
+ * in-tx `readPausedMenuLines` stays a plain read. The session's outlet is only
+ * known from the session row, so a short read-only tx resolves it first. Never
+ * throws: a bad credential or session surfaces from the real transaction.
+ */
+async function refreshPacingForSession(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  if (credential.length < 20 || credential.length > 256) return;
+  let outletId: string | undefined;
+  try {
+    const [found] = await withTenant(db, context, (tx) =>
+      tx
+        .select({ id: tableSessions.id, outletId: tableSessions.outletId })
+        .from(tableSessions)
+        .where(
+          and(
+            eq(tableSessions.tenantId, context.tenant.tenantId),
+            eq(tableSessions.sessionTokenHash, sha256(credential)),
+          ),
+        ),
+    );
+    if (found?.id === sessionId) outletId = found.outletId;
+  } catch {
+    return;
+  }
+  if (outletId === undefined) return;
+  await evaluatePacingIfStale(context, outletId as OutletId, now);
 }
 
 async function loadOutlet(
@@ -730,6 +799,7 @@ export function orderDto(
     taxIdr: row.taxIdr,
     roundingIdr: row.roundingIdr,
     totalIdr: row.totalIdr,
+    pricesIncludeTaxAndService: row.pricesIncludeTax,
     status: row.status,
     items: items.map((item) => ({
       id: item.id,
@@ -816,10 +886,18 @@ async function priceCartLines(
     itemIds: lines.map((line) => line.menuItemId),
     now,
   });
+  const paused = await readPausedMenuLines(
+    tx,
+    context,
+    outlet.id as OutletId,
+    QR_PRICE_CHANNEL,
+    now,
+  );
   const result: PricedCart = { sellable: [], removed: [], priceChanges: [] };
   for (const row of lines) {
     const item = catalogue.get(row.menuItemId);
     const resolution = resolveLine(item, {
+      paused,
       menuItemId: row.menuItemId,
       variantId: row.variantId,
       quantity: row.quantity,
@@ -871,6 +949,7 @@ function promoInput(
   lines: readonly PricedQuoteLine[],
   code: string | null,
   now: Date,
+  minSpendSubtotalIdr?: Idr,
 ): OrderPromoInput {
   return {
     outletId: outlet.id as OrderPromoInput["outletId"],
@@ -884,7 +963,68 @@ function promoInput(
     customer: null,
     voucherCode: code,
     at: now,
+    ...(minSpendSubtotalIdr === undefined ? {} : { minSpendSubtotalIdr }),
   };
+}
+
+/**
+ * Promo `min_spend` basis at an inclusive outlet (legend-u5tkd, Q53): the
+ * pre-promo bill before service charge and tax, which the gross line sum
+ * already contains. The same engine call as `buildQuote` with no discount, so
+ * quote and redeem send one value. Undefined for an exclusive cart (and a
+ * mixed one, which `buildQuote` refuses): the engine then keeps the subtotal.
+ */
+function promoMinSpendBasis(input: {
+  context: ScopedTenantContext;
+  outlet: OutletRow;
+  zone: ZoneRow;
+  lines: readonly PricedQuoteLine[];
+  taxConfig: QrTaxConfig;
+  now: Date;
+}): Idr | undefined {
+  const subtotals = input.lines.map(lineTotal);
+  const subtotal = subtotals.reduce((sum, value) => sum + value, 0);
+  const tax = calculateTax(
+    {
+      outletId: input.outlet.id as OutletId,
+      businessDate: businessDateFor(input.outlet, input.now),
+      channel: QR_PRICE_CHANNEL,
+      zoneId: input.zone.id,
+      regionCode: null,
+      lines: input.lines.map((line, index) => ({
+        lineId: line.cartLineId,
+        itemId: line.menuItemId,
+        categoryId: line.categoryId,
+        itemClass: "food_beverage" as const,
+        grossIdr: idr(subtotals[index]),
+        discountIdr: idr(0),
+        components: [],
+      })),
+      orderDiscountIdr: idr(0),
+    } as TaxCalculationInput,
+    {
+      taxRules: input.taxConfig.taxRules,
+      serviceChargeRules: selectServiceChargeRules(
+        input.zone,
+        input.context,
+        input.taxConfig.serviceChargeRules,
+      ),
+      settings: input.taxConfig.settings,
+    },
+  );
+  const inclusiveRules = tax.taxes.filter(
+    (summary) => summary.priceIncludesTax,
+  );
+  if (inclusiveRules.length === 0 || inclusiveRules.length < tax.taxes.length)
+    return undefined;
+  return idr(
+    orderNetSubtotalIdr({
+      subtotalIdr: subtotal,
+      serviceChargeIdr: tax.serviceChargeIdr,
+      taxIdr: tax.taxIdr,
+      pricesIncludeTax: true,
+    }),
+  );
 }
 
 async function quoteFor(
@@ -900,20 +1040,45 @@ async function quoteFor(
     promoCode: string | null;
     now: Date;
   },
-): Promise<QuoteBuild & { promo: OrderPromoQuote | null }> {
+): Promise<
+  QuoteBuild & {
+    promo: OrderPromoQuote | null;
+    /** The inclusive pre-tax promo min spend basis (redeem sends it again). */
+    minSpendSubtotalIdr: Idr | undefined;
+  }
+> {
   const lines = input.priced.sellable.map((entry) => entry.priced);
+  // Tax config first: the promo engine measures `min_spend` before tax and
+  // service charge, which an inclusive outlet only knows from the tax rules.
+  const taxConfig =
+    lines.length === 0
+      ? null
+      : await loadTaxConfig(tx, context, input.outlet.id);
+  const minSpendSubtotalIdr =
+    taxConfig === null
+      ? undefined
+      : promoMinSpendBasis({
+          context,
+          outlet: input.outlet,
+          zone: input.zone,
+          lines,
+          taxConfig,
+          now: input.now,
+        });
   const promo =
     lines.length === 0
       ? null
       : await qrOrderPromoPort().quote(
           tx,
           context,
-          promoInput(input.outlet, lines, input.promoCode, input.now),
+          promoInput(
+            input.outlet,
+            lines,
+            input.promoCode,
+            input.now,
+            minSpendSubtotalIdr,
+          ),
         );
-  const taxConfig =
-    lines.length === 0
-      ? null
-      : await loadTaxConfig(tx, context, input.outlet.id);
   const estimate =
     lines.length === 0
       ? null
@@ -942,7 +1107,7 @@ async function quoteFor(
     servingEstimate: estimate,
     now: input.now,
   });
-  return { ...build, promo };
+  return { ...build, promo, minSpendSubtotalIdr };
 }
 
 // ---- Session view ---------------------------------------------------------------------
@@ -954,6 +1119,7 @@ export async function getTableSessionView(
   sessionId: string,
   now = new Date(),
 ): Promise<TableSessionView> {
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1001,6 +1167,14 @@ export async function getTableSessionView(
       }
     }
     const orderRows = await sessionOrders(tx, context, session.id);
+    // WS-02: an outlet with an edge node whose link is down cannot take QR
+    // orders; the guest page shows the waiter notice instead.
+    const edge = await getOutletEdgeLinkState(
+      tx,
+      context,
+      session.outletId,
+      now,
+    );
     return tableSessionViewSchema.parse({
       session: await sessionDto(tx, session),
       cart: cartDto(session, cart, lines),
@@ -1011,6 +1185,7 @@ export async function getTableSessionView(
         context,
         session.id,
       ),
+      orderingAvailable: !(edge.hasEdge && !edge.linkUp),
     });
   });
 }
@@ -1038,6 +1213,7 @@ export async function addCartLine(
   now = new Date(),
 ): Promise<CartMutationResult> {
   const parsed = addCartLineInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1072,7 +1248,15 @@ export async function addCartLine(
           itemIds: [parsed.menuItemId],
           now,
         });
+        const paused = await readPausedMenuLines(
+          tx,
+          context,
+          outlet.id as OutletId,
+          QR_PRICE_CHANNEL,
+          now,
+        );
         const resolution = resolveLine(catalogue.get(parsed.menuItemId), {
+          paused,
           menuItemId: parsed.menuItemId,
           variantId: parsed.variantId ?? null,
           quantity: parsed.quantity,
@@ -1132,6 +1316,7 @@ export async function updateCartLine(
   now = new Date(),
 ): Promise<CartMutationResult> {
   const parsed = updateCartLineInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1179,7 +1364,15 @@ export async function updateCartLine(
             itemIds: [current.menuItemId],
             now,
           });
+          const paused = await readPausedMenuLines(
+            tx,
+            context,
+            outlet.id as OutletId,
+            QR_PRICE_CHANNEL,
+            now,
+          );
           const resolution = resolveLine(catalogue.get(current.menuItemId), {
+            paused,
             menuItemId: current.menuItemId,
             variantId: current.variantId,
             quantity,
@@ -1308,6 +1501,7 @@ export async function quoteTableSession(
   now = new Date(),
 ): Promise<OrderQuote> {
   const parsed = quoteInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1367,19 +1561,37 @@ export async function fireQrOrder(
   tx: Tx,
   context: ScopedTenantContext,
   order: OrderRow,
-  input: { now: Date; reason: "open_bill" | "verified_payment" | "deposit" },
+  input: {
+    now: Date;
+    reason: "open_bill" | "verified_payment" | "deposit";
+    /**
+     * legend-9pz9: the intent whose payment fired the order. Pinned on the
+     * row, since a superseded payment code may have paid instead of the
+     * current one. Null (or absent) when nothing was left to pay.
+     */
+    paidIntentId?: string | null;
+  },
 ): Promise<OrderRow> {
+  const paidIntentId = input.paidIntentId ?? null;
   const [fired] = await tx
     .update(orders)
-    .set({ status: "sent", firedAt: input.now, updatedAt: input.now })
+    .set({
+      status: "sent",
+      firedAt: input.now,
+      updatedAt: input.now,
+      ...(paidIntentId === null ? {} : { paymentIntentId: paidIntentId }),
+    })
     .where(
       and(
         eq(orders.tenantId, context.tenant.tenantId),
         eq(orders.id, order.id),
+        eq(orders.status, "awaiting_payment"),
       ),
     )
     .returning();
-  if (!fired) throw new Error("Order fire returned no row");
+  if (!fired) {
+    throw new Error("Order is not awaiting payment; not fired again");
+  }
   const items = await tx
     .update(orderItems)
     .set({ fireStatus: "fired", updatedAt: input.now })
@@ -1391,6 +1603,15 @@ export async function fireQrOrder(
       ),
     )
     .returning({ id: orderItems.id });
+  await routeFiredItemsToKitchen(tx, context, {
+    outletId: order.outletId,
+    orderId: order.id,
+    itemIds: items.map((item) => item.id),
+    actor: null,
+    now: input.now,
+    // Never fail a paid or placed guest order on a missing station.
+    onUnresolved: "skip",
+  });
   if (order.taxResult)
     await recordTaxSnapshots(tx, context, {
       sourceType: "order",
@@ -1401,6 +1622,13 @@ export async function fireQrOrder(
     });
   if (order.tableSessionId === null)
     throw new Error("A QR order always belongs to a table session");
+  // A pay-first sale is made here, with its money verified: WS-07 books it
+  // from order.paid at `fired_at` (legend-9pz9). An open bill is paid later.
+  if (input.reason === "verified_payment" || input.reason === "deposit")
+    await appendQrOrderPaid(tx, context, fired, {
+      now: input.now,
+      paidIntentId,
+    });
   await appendEvent(tx, context, qrOrderEvents["order.placed"], {
     aggregateId: order.id,
     outletId: order.outletId,
@@ -1447,8 +1675,12 @@ export async function placeQrOrder(
   sessionId: string,
   input: PlaceOrderInput,
   now = new Date(),
+  // legend-111j: Better Auth user id of the signed-in guest, when the request
+  // carries a member session. Guests are not users, so null by default.
+  memberUserId: string | null = null,
 ): Promise<PlaceOrderResult> {
   const parsed = placeOrderInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   const outcome = await withTenant(
     db,
     context,
@@ -1475,7 +1707,14 @@ export async function placeQrOrder(
           "order.place",
           request,
           async () => {
-            const placed = await checkout(tx, context, session, parsed, now);
+            const placed = await checkout(
+              tx,
+              context,
+              session,
+              parsed,
+              now,
+              memberUserId,
+            );
             if (placed.kind === "all_sold_out")
               throw new AllSoldOut(placed.names);
             return placed.result;
@@ -1488,7 +1727,13 @@ export async function placeQrOrder(
         throw error;
       }
     },
-  );
+  ).catch(async (error: unknown) => {
+    // The checkout transaction rolled back (stock released); the breach is
+    // recorded in a fresh one, then answered 409 (ORD-10 / F43).
+    if (error instanceof OpenBillLimitExceeded)
+      return refuseOpenBillBreach(context, error);
+    throw error;
+  });
   if (outcome.kind === "all_sold_out")
     throw new CoreError(
       "CONFLICT",
@@ -1510,6 +1755,7 @@ async function checkout(
   session: SessionRow,
   input: PlaceOrderInput,
   now: Date,
+  memberUserId: string | null = null,
 ): Promise<
   | { kind: "placed"; result: PlaceOrderResult }
   | { kind: "all_sold_out"; names: string[] }
@@ -1545,7 +1791,32 @@ async function checkout(
       "CONFLICT",
       "Zona ini sedang di luar jam pemesanan; menu tetap bisa dilihat.",
     );
+  // WS-02: an outlet with an edge node whose link is down refuses the order
+  // before anything is reserved or inserted (the guest asks a waiter). The
+  // throw rolls the whole transaction back.
+  const edge = await getOutletEdgeLinkState(tx, context, session.outletId, now);
+  if (edge.hasEdge && !edge.linkUp)
+    throw new HttpError(
+      qrOrderErrorHttpStatus[EDGE_LINK_DOWN],
+      EDGE_LINK_DOWN,
+      qrOrderErrorMessages[EDGE_LINK_DOWN],
+    );
   const businessDate = businessDateFor(outlet, now);
+  // Tutup Hari (bead legend-2o1b): an order on an already-closed business day
+  // is refused before anything is priced or reserved. The shared day lock is
+  // held to transaction end, so closePosDay (exclusive, same key) cannot slip
+  // in between this check and the insert. Lock order: session row ->
+  // idempotency advisory lock -> cart row -> day lock (shared); closePosDay
+  // takes no row locks, so there is no cycle. This runs inside the idempotent
+  // body, so a replay of an already-placed order returns the stored result
+  // without reaching the guard.
+  if (
+    await isBusinessDayClosed(tx, context, {
+      outletId: outletIdSchema.parse(outlet.id),
+      businessDates: [businessDate],
+    })
+  )
+    throw new PosError("BUSINESS_DAY_ALREADY_CLOSED", QR_OUTLET_CLOSED_MESSAGE);
   const priced = await priceCartLines(tx, context, outlet, lines, now);
 
   // ORD-05: reserve each line's daily stock inside this transaction. A line
@@ -1603,29 +1874,65 @@ async function checkout(
   });
   if (built.tax === null) throw new Error("A non-empty order has a tax result");
   const quote = built.quote;
+  // legend-zmc2: one session, one pricing mode. The quote already refuses a
+  // cart mixing inclusive and exclusive rules; an order may not mix with the
+  // session's earlier non-voided orders either (the bill has one formula).
+  const [otherMode] = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableSessionId, session.id),
+        ne(orders.status, "voided"),
+        ne(orders.pricesIncludeTax, quote.pricesIncludeTaxAndService),
+      ),
+    )
+    .limit(1);
+  if (otherMode)
+    throw new HttpError(
+      qrOrderErrorHttpStatus.QR_ORDER_PRICING_MODE_MIXED,
+      QR_ORDER_PRICING_MODE_MIXED,
+      qrOrderErrorMessages.QR_ORDER_PRICING_MODE_MIXED,
+    );
+  // ORD-10 / F43: an open-bill order may not push the session over its limit.
+  await assertOpenBillWithinLimit(tx, context, {
+    sessionId: session.id,
+    outletId: session.outletId,
+    tableId: session.tableId,
+    zoneId: zone.id,
+    paymentMode: session.paymentMode,
+    cartVersion: cart.version,
+    orderTotalIdr: quote.totalIdr,
+    now,
+  });
 
   const orderId = createUlid(now.getTime());
   const payFirst = plan.kitchenFire === "held_for_payment";
   // Reservation DP credit (WS-08), floored at 0 and never above this order.
+  // legend-94qt: the order row is inserted with no deposit; the credit is
+  // applied below, AFTER the promotion redeem, so this checkout takes the promo
+  // locks before the session deposit lock (the POS order: discount -> redeem
+  // -> reprice -> deposit).
   let depositApplied = 0;
-  if (payFirst) {
-    const credit = await depositCreditFor(tx, tenantId, session.id);
-    const [used] = await tx
-      .select({
-        used: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
-      })
-      .from(orders)
+  // legend-111j: a signed-in member with an active profile in this tenant is
+  // attached to their own order (`pwa_session`, attached_by NULL).
+  let memberProfileId: string | null = null;
+  if (memberUserId !== null) {
+    const [profile] = await tx
+      .select({ id: customerProfiles.id })
+      .from(customerProfiles)
       .where(
         and(
-          eq(orders.tenantId, tenantId),
-          eq(orders.tableSessionId, session.id),
-          ne(orders.status, "voided"),
+          eq(customerProfiles.tenantId, tenantId),
+          eq(customerProfiles.userId, memberUserId),
+          eq(customerProfiles.membershipStatus, "active"),
         ),
-      );
-    const remaining = Math.max(0, credit - Number(used?.used ?? 0));
-    depositApplied = Math.min(remaining, quote.totalIdr);
+      )
+      .limit(1);
+    memberProfileId = profile?.id ?? null;
   }
-  const [order] = await tx
+  let [order] = await tx
     .insert(orders)
     .values({
       id: orderId,
@@ -1635,7 +1942,10 @@ async function checkout(
       channel: "qr",
       serviceType: "dine_in",
       tableSessionId: session.id,
-      customerProfileId: null,
+      customerProfileId: memberProfileId,
+      customerAttachedBy: null,
+      customerAttachedVia: memberProfileId === null ? null : "pwa_session",
+      customerAttachedAt: memberProfileId === null ? null : now,
       paymentMode: session.paymentMode,
       subtotalIdr: quote.subtotalIdr,
       discountIdr: quote.discountIdr,
@@ -1643,7 +1953,10 @@ async function checkout(
       taxIdr: quote.taxIdr,
       roundingIdr: quote.rounding.adjustmentIdr,
       totalIdr: quote.totalIdr,
-      depositAppliedIdr: idr(depositApplied),
+      // legend-zmc2: subtotal stays the gross line sum; service and tax are
+      // the parts backed out of it (orders_total_check branches on this).
+      pricesIncludeTax: quote.pricesIncludeTaxAndService,
+      depositAppliedIdr: idr(0),
       status: payFirst ? "awaiting_payment" : "sent",
       businessDate,
       taxResult: built.tax,
@@ -1659,8 +1972,21 @@ async function checkout(
   const quoteLines = new Map<string, OrderQuote["lines"][number]>(
     quote.lines.map((line) => [line.cartLineId, line]),
   );
+  // legend-u4js6: freeze each line's cost (HPP) at the moment of sale.
+  const costSnapshots = await computeLineCostSnapshots(
+    tx,
+    context,
+    session.outletId,
+    reserved.map((entry) => ({
+      menuItemId: entry.row.menuItemId,
+      variantId: entry.row.variantId,
+      modifierIds: entry.modifiers.map((modifier) => modifier.modifierId),
+      quantity: entry.row.quantity,
+    })),
+  );
   const itemRows = reserved.map((entry, index) => {
     const line = quoteLines.get(entry.row.id);
+    const costSnapshot = costSnapshots[index] ?? null;
     if (!line) throw new Error("Quoted line missing for a reserved cart line");
     return {
       id: createUlid(now.getTime() + index),
@@ -1674,6 +2000,7 @@ async function checkout(
       unitPriceIdr: line.unitPriceIdr,
       modifiersTotalIdr: line.modifiersTotalIdr,
       lineTotalIdr: line.lineSubtotalIdr,
+      costSnapshotIdr: costSnapshot === null ? null : idr(costSnapshot),
       modifiers: entry.modifiers,
       note: entry.row.note,
       course: entry.item.course,
@@ -1695,6 +2022,7 @@ async function checkout(
         reserved.map((entry) => entry.priced),
         cart.promoCode,
         now,
+        built.minSpendSubtotalIdr,
       ),
       orderId,
       actorUserId: null,
@@ -1705,6 +2033,41 @@ async function checkout(
         "CONFLICT",
         "Promo berubah saat checkout; minta penawaran harga ulang.",
       );
+  }
+
+  if (payFirst) {
+    const credit = await depositCreditFor(tx, tenantId, session.id);
+    if (credit > 0) {
+      // legend-94qt: global lock order promo -> deposit (see
+      // `lockSessionDeposit`). Same session deposit lock as the POS reprice,
+      // taken after the promo redeem above and right before the used sum.
+      await lockSessionDeposit(tx, tenantId, session.id);
+      const [used] = await tx
+        .select({
+          used: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
+        })
+        .from(orders)
+        .where(
+          and(
+            eq(orders.tenantId, tenantId),
+            eq(orders.tableSessionId, session.id),
+            ne(orders.status, "voided"),
+            ne(orders.id, orderId),
+          ),
+        );
+      const remaining = Math.max(0, credit - Number(used?.used ?? 0));
+      depositApplied = Math.min(remaining, quote.totalIdr);
+      if (depositApplied > 0) {
+        const [withDeposit] = await tx
+          .update(orders)
+          .set({ depositAppliedIdr: idr(depositApplied) })
+          .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+          .returning();
+        if (!withDeposit)
+          throw new Error("Order deposit update returned no row");
+        order = withDeposit;
+      }
+    }
   }
 
   // The whole cart is consumed: ordered lines became the order, sold-out
@@ -1762,6 +2125,15 @@ async function checkout(
   let finalOrder = order;
   let kitchenFire: "fired" | "held_for_payment" = plan.kitchenFire;
   if (!payFirst) {
+    // Open bill: items were inserted `fired`; route them to the stations.
+    await routeFiredItemsToKitchen(tx, context, {
+      outletId: outlet.id,
+      orderId,
+      itemIds: itemRows.map((row) => row.id),
+      actor: null,
+      now,
+      onUnresolved: "skip",
+    });
     // Open bill: fired now; the sale is recorded for PBJT at once.
     await recordTaxSnapshots(tx, context, {
       sourceType: "order",
@@ -1776,6 +2148,7 @@ async function checkout(
     finalOrder = await fireQrOrder(tx, context, order, {
       now,
       reason: "deposit",
+      paidIntentId: null,
     });
     kitchenFire = "fired";
   }
@@ -1803,6 +2176,25 @@ async function checkout(
     },
     now,
   );
+
+  // WS-02: queue the placed order for the outlet's edge node in this same
+  // transaction (it is rolled back together with the order). Order and lines
+  // are re-read so the edge sees the state after a possible fire.
+  if (edge.hasEdge && edge.edgeNodeId !== null) {
+    const forwardedItems = await tx
+      .select()
+      .from(orderItems)
+      .where(
+        and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)),
+      )
+      .orderBy(asc(orderItems.id));
+    await forwardQrOrderToEdge(tx, context, {
+      edgeNodeId: edge.edgeNodeId,
+      order: finalOrder,
+      items: forwardedItems,
+      now,
+    });
+  }
 
   const items = await orderItemsOf(tx, context, [orderId]);
   const result = placeOrderResultSchema.parse({
@@ -1892,7 +2284,7 @@ export async function getSessionBill(
           settlement.billTotalIdr - settlement.paidIdr,
         ),
       },
-      splits: [],
+      splits: await listSessionSplitDtosTx(tx, context, session.id),
       computedAt: toIsoDateTime(now),
     });
   });
@@ -2034,6 +2426,51 @@ export async function voidUnpaidQrOrderTx(
   );
   const items = await orderItemsOf(tx, context, [order.id]);
   return orderDto(voided, items.get(order.id) ?? []);
+}
+
+// ---- Shared with order-recovery.service.ts -------------------------------------------------------
+
+/** A menu item a guest can be moved to: plain price, no variant or required choice. */
+export type OutletMenuPrice = {
+  menuItemId: string;
+  name: string;
+  unitPriceIdr: number;
+};
+
+/**
+ * Current dine-in price of `menuItemIds` at one outlet, through the same
+ * catalogue the cart uses (ORD-05). Only items a single tap can order come
+ * back: sellable, no variants and no required modifier group. Anything else
+ * is missing from the map.
+ */
+export async function priceMenuItemForOutlet(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  menuItemIds: readonly string[],
+  now: Date,
+): Promise<Map<string, OutletMenuPrice>> {
+  const outlet = await loadOutlet(tx, context, outletId);
+  const catalogue = await loadCatalogue(tx, context, {
+    brandId: outlet.brandId,
+    outletId: outlet.id as OutletId,
+    timeZone: outlet.timezone,
+    businessDate: businessDateFor(outlet, now),
+    itemIds: menuItemIds,
+    now,
+  });
+  const priced = new Map<string, OutletMenuPrice>();
+  for (const [menuItemId, item] of catalogue) {
+    if (!item.sellable || item.plainPriceIdr === null) continue;
+    if (item.variants.size > 0) continue;
+    if (item.groups.some((group) => group.minSelect > 0)) continue;
+    priced.set(menuItemId, {
+      menuItemId,
+      name: item.name,
+      unitPriceIdr: item.plainPriceIdr,
+    });
+  }
+  return priced;
 }
 
 // ---- Shared with qr-order-payment.ts ------------------------------------------------------------

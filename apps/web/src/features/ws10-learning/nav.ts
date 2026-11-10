@@ -39,7 +39,7 @@ const nav: AreaNavEntry[] = [
     icon: Megaphone,
     order: 45,
     group: "team",
-    anyPermission: ["hr.sop.manage"],
+    anyPermission: ["hr.announcement.manage"],
   },
 ];
 

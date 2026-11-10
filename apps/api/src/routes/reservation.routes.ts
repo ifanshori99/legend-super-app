@@ -30,6 +30,7 @@ import {
   getReservationAvailability as availabilityEndpoint,
   listReservations as listEndpoint,
   markReservationNoShow as noShowEndpoint,
+  resendReservationDepositLink as resendDepositLinkEndpoint,
   seatReservation as seatEndpoint,
 } from "@starter/shared/reservation";
 import { HttpError } from "../lib/http-error.ts";
@@ -50,6 +51,7 @@ import {
   createReservation,
   getAvailability,
 } from "../services/reservation-booking.ts";
+import { resendReservationDepositLink } from "../services/reservation-deposit-resend.ts";
 import {
   cancelReservation,
   getReservation,
@@ -212,6 +214,29 @@ reservationRouter.post(
         outletId,
         reservationId,
         cancelEndpoint.body.parse(body),
+        key,
+      ),
+    });
+  },
+);
+
+reservationRouter.post(
+  "/outlets/:outletId/reservations/:reservationId/deposit-link",
+  ...staff,
+  jsonBody,
+  manage,
+  async (req, res) => {
+    const { outletId, reservationId } = resendDepositLinkEndpoint.params.parse(
+      req.params,
+    );
+    const { key, body } = takeIdempotencyKey(req);
+    resendDepositLinkEndpoint.body.parse(body);
+    res.json({
+      data: await resendReservationDepositLink(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        outletId,
+        reservationId,
         key,
       ),
     });

@@ -45,6 +45,8 @@ import {
   outletIdSchema,
   ulidSchema,
   userIdSchema,
+  uuidSchema,
+  type Idr,
   type ScopedTenantContext,
   type TenantContext,
   type TenantId,
@@ -54,7 +56,10 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { approvalRequests } from "../db/schema/platform-approval";
 import { posOverrides } from "../db/schema/device-pin";
+import { posShiftCounts, posShifts } from "../db/schema/pos-shift";
+import { SHIFT_COUNT_OBJECT_TYPE } from "./pos-shift-support";
 import { withTenant } from "../db/tenant";
+import { getEdgeRuntimeState } from "../edge/runtime";
 import { recordAudit } from "./audit-writer";
 import { assertPinAttemptOk, attemptStaffPin } from "./device-pin.service";
 import {
@@ -70,8 +75,8 @@ import {
   type Tx,
 } from "./permission-resolver";
 import {
-  getApprovalChainOutcome,
   openApprovalRequest,
+  resolveApprovalChainOutcome,
 } from "./platform-approval.service";
 
 type Row = typeof posOverrides.$inferSelect;
@@ -91,7 +96,16 @@ function notFound(): CoreError {
   return new CoreError("NOT_FOUND", "Override tidak ditemukan.");
 }
 
-function toView(row: Row): PosOverrideView {
+/**
+ * `viewerId` is the caller; omitted for the in-process consumer. A blind
+ * cash count (`cash_shift_close`) hides its value (the |variance|) from the
+ * requester, so the cashier never learns the expected cash.
+ */
+function toView(row: Row, viewerId?: string): PosOverrideView {
+  const hideValue =
+    row.action === "cash_shift_close" &&
+    viewerId !== undefined &&
+    viewerId.toLowerCase() === row.requestedBy.toLowerCase();
   return posOverrideViewSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -103,7 +117,7 @@ function toView(row: Row): PosOverrideView {
     approvedBy: row.approvedBy,
     reasonCode: row.reasonCode,
     reason: row.reason,
-    valueIdr: row.valueIdr,
+    valueIdr: hideValue ? null : row.valueIdr,
     objectType: row.objectType,
     objectId: row.objectId,
     approvalRequestId: row.approvalRequestId,
@@ -189,6 +203,50 @@ async function findReplay(
   return existing;
 }
 
+/**
+ * True on an edge node (same rule as device-pin.service.ts and
+ * pos-receipt.service.ts): the runtime flag, or the static `EDGE_MODE`
+ * setting during the boot window.
+ */
+function isEdgeProcess(): boolean {
+  return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
+}
+
+type ShiftCloseFigures = {
+  readonly expectedIdr: Idr;
+  readonly countedIdr: Idr;
+  readonly varianceIdr: Idr;
+};
+
+/**
+ * The figures of the count a `cash_shift_close` override names (legend-7iti),
+ * for the audit row. Null when the count row is gone: the audit then lacks the
+ * figures but the approval is not stranded (the count is validated when the
+ * override is created, and counts are never deleted).
+ */
+async function shiftCloseFigures(
+  tx: Tx,
+  row: Row,
+): Promise<ShiftCloseFigures | null> {
+  const countId = uuidSchema.safeParse(row.objectId);
+  if (!countId.success) return null;
+  const [count] = await tx
+    .select({
+      expectedIdr: posShiftCounts.expectedIdr,
+      countedIdr: posShiftCounts.countedIdr,
+      varianceIdr: posShiftCounts.varianceIdr,
+    })
+    .from(posShiftCounts)
+    .where(
+      and(
+        eq(posShiftCounts.tenantId, row.tenantId),
+        eq(posShiftCounts.outletId, row.outletId),
+        eq(posShiftCounts.id, countId.data),
+      ),
+    );
+  return count ?? null;
+}
+
 /** AUTH-06 record: audit (requester, approver, reason, value, outlet) + outbox event. */
 async function recordApprovedOverride(
   tx: Tx,
@@ -199,6 +257,8 @@ async function recordApprovedOverride(
 ): Promise<void> {
   if (row.approvedBy === null)
     throw new Error("approved override without approver");
+  const figures =
+    row.action === "cash_shift_close" ? await shiftCloseFigures(tx, row) : null;
   await appendDevicePinEvent(tx, context, posOverrideRecordedEvent, {
     aggregateId: row.id,
     outletId: row.outletId,
@@ -211,10 +271,21 @@ async function recordApprovedOverride(
       method: row.method,
       requestedBy: row.requestedBy,
       approvedBy: row.approvedBy,
-      valueIdr: row.valueIdr,
+      // Blind-count variance must not leave the audit (legend-o0w6).
+      valueIdr: row.action === "cash_shift_close" ? null : row.valueIdr,
       objectType: row.objectType,
       objectId: row.objectId,
       approvalRequestId: row.approvalRequestId,
+      // legend-kyie: the cloud writes the audit row of an edge override.
+      reasonCode: row.reasonCode,
+      reason: row.reason,
+      // legend-7iti: the cloud writes the audit row of an edge override and
+      // cannot read the count, so the figures travel with the event. Edge
+      // process only: the event flows edge -> cloud and never to a device, but
+      // the cloud's own event stays free of them (blind count, legend-o0w6).
+      ...(figures !== null && isEdgeProcess()
+        ? { shiftCloseVariance: figures }
+        : {}),
     },
   });
   await recordAudit(
@@ -239,6 +310,8 @@ async function recordApprovedOverride(
         objectType: row.objectType,
         objectId: row.objectId,
         approvalRequestId: row.approvalRequestId,
+        // Same shape as the cloud audit of an edge override (applyPosOverrideRecorded).
+        ...(figures ?? {}),
       },
       sensitiveAccess: false,
     },
@@ -253,6 +326,70 @@ export type CreatePosOverrideOptions = {
   readonly deviceId?: string | null;
   readonly now?: Date;
 };
+
+/**
+ * The value of a `cash_shift_close` override: |variance| of the count
+ * submission it names, which must be the latest count of an open shift,
+ * submitted by the requester (the shift's cashier).
+ */
+async function shiftCloseApprovalValue(
+  context: ScopedTenantContext,
+  requestedBy: string,
+  input: CreatePosOverrideInput,
+): Promise<Idr> {
+  const refused = () =>
+    new CoreError(
+      "VALIDATION_ERROR",
+      "Persetujuan tutup shift harus menunjuk hitungan kas terakhir dari shift yang masih terbuka.",
+    );
+  if (input.objectType !== SHIFT_COUNT_OBJECT_TYPE) throw refused();
+  const countId = uuidSchema.safeParse(input.objectId);
+  if (!countId.success) throw refused();
+  return withTenant(db, context, async (tx) => {
+    const [count] = await tx
+      .select({
+        shiftId: posShiftCounts.shiftId,
+        sequence: posShiftCounts.sequence,
+        varianceIdr: posShiftCounts.varianceIdr,
+        submittedBy: posShiftCounts.submittedBy,
+        shiftStatus: posShifts.status,
+      })
+      .from(posShiftCounts)
+      .innerJoin(
+        posShifts,
+        and(
+          eq(posShifts.tenantId, posShiftCounts.tenantId),
+          eq(posShifts.id, posShiftCounts.shiftId),
+        ),
+      )
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, context.tenant.tenantId),
+          eq(posShiftCounts.outletId, input.outletId),
+          eq(posShiftCounts.id, countId.data),
+        ),
+      );
+    if (
+      !count ||
+      count.shiftStatus !== "open" ||
+      count.submittedBy.toLowerCase() !== requestedBy.toLowerCase()
+    )
+      throw refused();
+    const [latest] = await tx
+      .select({ sequence: posShiftCounts.sequence })
+      .from(posShiftCounts)
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, context.tenant.tenantId),
+          eq(posShiftCounts.shiftId, count.shiftId),
+        ),
+      )
+      .orderBy(desc(posShiftCounts.sequence))
+      .limit(1);
+    if (latest?.sequence !== count.sequence) throw refused();
+    return Math.abs(Number(count.varianceIdr)) as Idr;
+  });
+}
 
 /**
  * POST /api/pos-overrides, and the in-process entry point for the POS order
@@ -276,6 +413,32 @@ export async function createPosOverride(
     );
   if (!Number.isSafeInteger(input.valueIdr) || input.valueIdr < 0)
     throw new CoreError("VALIDATION_ERROR", "Nilai override tidak valid.");
+  // legend-m4fv, EDC-04: a standalone EDC payment is approved by a supervisor
+  // PIN on this device (no phone approval), for a real amount on one POS order.
+  if (
+    input.action === "edc_standalone" &&
+    (input.approval.method !== "supervisor_pin" ||
+      input.valueIdr <= 0 ||
+      input.objectType !== "pos_order")
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Pembayaran EDC standalone butuh PIN supervisor di perangkat ini, nominal lebih dari 0, dan nomor pesanan.",
+    );
+  // legend-6c0 round 2: a shift-close approval is worth the server's variance
+  // of the blind count it names. The cashier counts blind and cannot know
+  // it, so the submitted value is ignored for this action and the close
+  // (pos-shift.service.ts) checks the approval against the real value. The
+  // phone chain does not route by it (see amountIdr below): the value stays in
+  // the payload for approvers only.
+  const valueIdr =
+    input.action === "cash_shift_close"
+      ? await shiftCloseApprovalValue(
+          outletContext(tenant, outletId),
+          requestedBy,
+          input,
+        )
+      : input.valueIdr;
   const reasonCode = input.reasonCode?.trim() || null;
   const approval = input.approval;
   const approverUserId =
@@ -296,7 +459,7 @@ export async function createPosOverride(
     requestedBy: requestedBy.toLowerCase(),
     outletId: outletId.toLowerCase(),
     action: input.action,
-    valueIdr: input.valueIdr,
+    valueIdr: valueIdr,
     reason,
     reasonCode,
     objectType: input.objectType,
@@ -318,7 +481,8 @@ export async function createPosOverride(
         key,
         requestFingerprint,
       );
-      if (replay) return { override: toView(replay), replayed: true };
+      if (replay)
+        return { override: toView(replay, requestedBy), replayed: true };
       await assertRequesterMember(
         tx,
         tenant,
@@ -333,14 +497,17 @@ export async function createPosOverride(
         actionType: input.action,
         objectType: APPROVAL_OBJECT_TYPE,
         objectId: id,
-        amountIdr: input.valueIdr,
+        // A shift close routes without an amount (every tier applies, so the
+        // top tier decides). The route and the answer to the cashier must not
+        // depend on the variance, or repeated counts would reveal it.
+        amountIdr: input.action === "cash_shift_close" ? null : valueIdr,
         outletId,
         requestedBy,
         source: "user",
         requestReason: reason,
         payload: {
           action: input.action,
-          valueIdr: input.valueIdr,
+          valueIdr: valueIdr,
           objectType: input.objectType,
           objectId: input.objectId,
           reasonCode,
@@ -348,8 +515,9 @@ export async function createPosOverride(
         now,
       });
       // An override always needs an approver (AUTH-06). If the matrix asks
-      // for none at this value there is nobody to route it to: refuse rather
-      // than record an override without an approver.
+      // for none there is nobody to route it to: refuse rather than record an
+      // override without an approver. A shift close has no amount, so this
+      // never depends on its variance; it only fires without a matching policy.
       if (!opened.required)
         throw new CoreError(
           "PRECONDITION_FAILED",
@@ -368,7 +536,7 @@ export async function createPosOverride(
           approvedBy: null,
           reasonCode,
           reason,
-          valueIdr: input.valueIdr,
+          valueIdr: valueIdr,
           objectType: input.objectType,
           objectId: input.objectId,
           approvalRequestId: opened.chainId,
@@ -403,7 +571,7 @@ export async function createPosOverride(
         },
         { tx, context },
       );
-      return { override: toView(row), replayed: false };
+      return { override: toView(row, requestedBy), replayed: false };
     });
 
   // supervisor_pin ----------------------------------------------------------
@@ -446,7 +614,7 @@ export async function createPosOverride(
       );
     return null;
   });
-  if (replay) return { override: toView(replay), replayed: true };
+  if (replay) return { override: toView(replay, requestedBy), replayed: true };
 
   // 2. The approver's pin: counted and committed on its own (§3 F6 lock).
   assertPinAttemptOk(
@@ -471,7 +639,7 @@ export async function createPosOverride(
       key,
       requestFingerprint,
     );
-    if (raced) return { override: toView(raced), replayed: true };
+    if (raced) return { override: toView(raced, requestedBy), replayed: true };
     // Re-check on this transaction's snapshot: a role ended meanwhile fails closed.
     if (
       !(await holdsOverridePermission(
@@ -498,7 +666,7 @@ export async function createPosOverride(
         approvedBy: approverUserId,
         reasonCode,
         reason,
-        valueIdr: input.valueIdr,
+        valueIdr: valueIdr,
         objectType: input.objectType,
         objectId: input.objectId,
         approvalRequestId: null,
@@ -510,7 +678,7 @@ export async function createPosOverride(
       .returning();
     if (!row) throw new Error("pos override insert returned no row");
     await recordApprovedOverride(tx, context, row, deviceId, now);
-    return { override: toView(row), replayed: false };
+    return { override: toView(row, requestedBy), replayed: false };
   });
 }
 
@@ -531,9 +699,13 @@ async function settlePending(
 ): Promise<Row> {
   if (row.status !== "pending" || row.approvalRequestId === null) return row;
   const chainId = row.approvalRequestId;
-  let outcome = await getApprovalChainOutcome(tx, {
+  // Locks the chain head and applies the deadline atomically (§3 F7 "batas
+  // waktu", fail closed): an inbox decision already in flight commits first
+  // and wins. Read the last level only afterwards so `decidedBy` is fresh.
+  const outcome = await resolveApprovalChainOutcome(tx, context, {
     chainId,
     sourceModule: POS_OVERRIDE_SOURCE_MODULE,
+    now,
   });
   const levels = await tx
     .select({
@@ -553,10 +725,6 @@ async function settlePending(
     .orderBy(desc(approvalRequests.level));
   const last = levels[0];
   if (!last) throw notFound();
-  // Past the deadline the action stays blocked even before the sweep runs
-  // (§3 F7 "batas waktu", fail closed).
-  if (outcome === "pending" && last.deadlineAt.getTime() <= now.getTime())
-    outcome = "expired";
   if (outcome === "pending") return row;
 
   let status: PosOverrideStatus = outcome === "approved" ? "approved" : outcome;
@@ -660,6 +828,7 @@ export async function getPosOverride(
         row,
         now,
       ),
+      actorId,
     );
   });
 }

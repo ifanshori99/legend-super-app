@@ -37,12 +37,12 @@ async function openImport(page: Page) {
     page.getByRole("heading", { name: "Impor massal menu" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Pilih file CSV" }),
+    page.getByRole("button", { name: "Pilih file CSV atau XLSX" }),
   ).toBeVisible();
-  // XLSX is deferred (legend-az32): the picker offers CSV only.
+  // XLSX is parsed by the server (legend-az32): the picker offers both.
   await expect(page.locator('input[type="file"]')).toHaveAttribute(
     "accept",
-    ".csv,text/csv",
+    /\.xlsx/,
   );
 }
 
@@ -286,10 +286,12 @@ test("F8 printable menu renders categories, prices and large print", async ({
   ).toBeDisabled();
 });
 
-test("F8 XLSX upload asks for a CSV instead of faking a preview", async ({
+test("F8 XLSX goes to the server import and a refused file shows an error, no preview", async ({
   page,
 }) => {
   await openImport(page);
+  // Mock mode has no server import handler, so the request is refused; the
+  // page must say so instead of faking a preview.
   await retry(async () => {
     await page.locator('input[type="file"]').setInputFiles({
       name: "menu.xlsx",
@@ -297,16 +299,11 @@ test("F8 XLSX upload asks for a CSV instead of faking a preview", async ({
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       buffer: Buffer.from("PK\u0003\u0004", "utf8"),
     });
-    await expect(
-      page.getByText(/File XLSX belum bisa dibaca langsung/),
-    ).toBeVisible({ timeout: 1000 });
+    await expect(page.getByRole("alert")).toBeVisible({ timeout: 1000 });
   });
   await expect(
-    page.getByText(/File XLSX belum bisa dibaca langsung/),
-  ).toBeVisible();
-  await expect(
-    page.getByText(/Simpan sebagai \/ Unduh sebagai CSV/),
-  ).toBeVisible();
+    page.getByRole("heading", { name: "Pratinjau validasi" }),
+  ).toHaveCount(0);
   // No preview or commit is offered for an unparsed file.
   await expect(
     page.getByRole("button", { name: /Impor \d+ baris/ }),

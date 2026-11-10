@@ -1,0 +1,38 @@
+# Sub-brief 91: WS-13 alur A–Z (potongan subagent)
+
+Worktree: `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/e2e-az` (cabang `ws/e2e-az` dari `milestone/m1`). Kerja HANYA di worktree ini. Jangan commit (agent yang commit).
+
+## Sumber kebenaran
+
+`docs/PRD.md` (alur §4 baris ~1140–1320, tabel "Kriteria penerimaan" per modul). Tes menguji perilaku yang dijanjikan PRD, bukan yang kebetulan dilakukan kode. Bila kode menyimpang dari PRD: biarkan tes gagal (`it.fails` dilarang), catat di laporan sebagai calon bug P1 dengan langkah reproduksi.
+
+## Bentuk tes
+
+- Tes integrasi Vitest di `apps/api/src/test/e2e-az/<file>.test.ts`: app Express asli (`createApp()` + supertest), Postgres sekali pakai, seed `cafeLegend*Fixtures`. Satu file = satu alur, ditulis sebagai cerita berurutan (aktor → aksi → hasil), bukan unit test.
+- Pola acuan: `apps/api/src/test/payment-api.test.ts` (signUp, assign role template lewat pool owner, `FakeGateway` DOIT via `setPaymentGateway`), `apps/api/src/test/pos-order.test.ts`, `apps/api/src/test/helpers.ts`, `floor-test-helpers.ts`.
+- ID kriteria (mis. `POS-03`, `TEN-08`) wajib ada di judul `describe`/`it` agar `scripts/ci/traceability.mjs` menghitungnya. Awali judul describe dengan `Alur <huruf>`.
+- Fitur belum di m1: tulis skenario lengkap sekarang (langkah + assert sesuai PRD, sebisanya dengan endpoint yang direncanakan cabang itu: lihat `git diff milestone/m1...<cabang> --stat` dan file route di cabang via `git show <cabang>:<path>`), bungkus `describeUntilMerged("<cabang>", ...)` / `itUntilMerged` dari `./pending-branch.ts`. Jangan ubah `pending-branch.ts`.
+- Pembayaran rilis: QRIS, VA, kartu (EDC), tunai, EDC. Tidak ada transfer bank. Kartu online lewat gateway = P1 (PRD baris 223) → tulis sebagai skip `[PENDING-DECISION card-online]`, jangan dianggap gagal.
+- Data tes unik per file (email acak, outlet dari fixture), bersihkan di `afterAll`. Tes harus bisa jalan berulang.
+
+## Menjalankan (wajib lewat heavy)
+
+`LEGEND_TEST_FILES="src/test/e2e-az/<file>.test.ts" heavy pnpm test` dari root worktree. Output panjang: saring (`2>&1 | tail -60`). Jangan jalankan seluruh suite. Jangan start dev server.
+
+## Potongan (berkas tidak bertumpuk)
+
+| #   | Berkas                                                  | Alur / kriteria                                                                                                                                                                                                                                                                                                                                                           | Cabang belum merge                                                                                                       |
+| --- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `az-a-qr-order-pay.test.ts`                             | A, Y: scan QR → sesi meja → pesan → payment link → intent QRIS dan VA (FakeGateway doit) → konfirmasi → order ke dapur; item gagal (Y). ORD-01/02/03/06/08, PAY-02/03/04                                                                                                                                                                                                  | webhook DOIT asli + polling: `ws/doit-provider`                                                                          |
+| 2   | `az-e-cashier-shift.test.ts`                            | E, W: buka shift + kas awal → order POS → tender tunai (kembalian) → tender EDC → void/diskon di atas ambang butuh PIN supervisor + alasan → refund → tutup shift blind count → selisih → approve. POS-01..07, EDC-01..07                                                                                                                                                 | shift: `ws/pos-shift`; EDC agent/ECR: `ws/edc-framework`; approval refund: `ws/refund-approval`; struk: `ws/pos-receipt` |
+| 3   | `az-d-kds.test.ts`                                      | D: order dipecah per stasiun → start → done → expo → runner delivered; void tampil di POS; KDS mati → cetak. KDS-01..07, ORD-02                                                                                                                                                                                                                                           | `ws/kds` (cek dulu apa yang sudah ada di m1)                                                                             |
+| 4   | `az-j-opname-journal.test.ts`                           | J: buka sesi hitung → hitung blind → selisih rupiah → approver ≠ penghitung → jurnal otomatis seimbang di GL. INV-01/03, ACC-01                                                                                                                                                                                                                                           | jembatan GL: `ws/inventory-gl`                                                                                           |
+| 5   | `az-k-payroll-leave.test.ts`                            | K + cuti: ajukan cuti → approve/tolak HR → saldo; payroll: kunci absensi → simulasi → approve HR → approve kedua Finance/Owner → kunci → jurnal + slip. PAYR-01..05, HR-01/03                                                                                                                                                                                             | PPh21/BPJS: `ws/payroll-pph21-tests`                                                                                     |
+| 6   | `az-h-reservation.test.ts`                              | H: tamu pilih tanggal/jam/jumlah/zona → lihat kebijakan DP → bayar DP via payment link (FakeGateway) → konfirmasi + meja terkunci → host buka sesi → DP teralokasi ke tagihan. RSV-01/02/03                                                                                                                                                                               | —                                                                                                                        |
+| 7   | `az-r-whitelabel.test.ts` + `e2e/az-whitelabel.spec.ts` | R, TEN-08: tenant context publik, halaman pelanggan & karyawan, email/notifikasi, struk, PDF tidak memuat nama/logo/link platform (nama platform: lihat `starter.config.json`/`packages/shared/src/site.ts`); hanya Platform Panel. Playwright spec memakai build produksi (`playwright.config.ts`, port 4101/3101), memindai teks + `img[src]`/`a[href]`/`<title>`/meta. | struk: `ws/pos-receipt`; export config: `ws/tenant-config-export`                                                        |
+
+Potongan 7: spec Playwright jangan dijalankan oleh subagent (agent menjalankannya sekali lewat `heavy pnpm test:e2e`). Cukup `pnpm --filter @starter/web exec tsc --noEmit -p ../../tsconfig.json` atau typecheck setara.
+
+## Bukti selesai (laporan subagent, ≤ 300 kata)
+
+Berkas dibuat; jumlah tes lulus / gagal / skip dari run `heavy`; tiap gagal: langkah, harapan PRD (baris), hasil nyata, dugaan file:line penyebab; daftar `PENDING-BRANCH` yang ditulis.

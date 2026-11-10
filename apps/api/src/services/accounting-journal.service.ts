@@ -122,6 +122,8 @@ export type PostJournalInput = {
   readonly postedBy: UserId | null;
   readonly idempotencyKey: string;
   readonly expectedPeriodVersion?: number | null;
+  /** Business date the fact really happened on, when it posts into a later open period. */
+  readonly lateAdjustmentFrom?: string | null;
 };
 
 /** A module posts its event through a catalogued posting rule (contract). */
@@ -138,6 +140,7 @@ export type PostFromRuleInput = {
   readonly idempotencyKey: string;
   readonly costCenter?: string | null;
   readonly expectedPeriodVersion?: number | null;
+  readonly lateAdjustmentFrom?: string | null;
 };
 
 type ParsedPost = PostJournalInput & {
@@ -176,6 +179,10 @@ function parsePostInput(input: PostJournalInput): ParsedPost {
     description,
     lines,
     idempotencyKey: idempotencyKeySchema.parse(input.idempotencyKey),
+    lateAdjustmentFrom:
+      input.lateAdjustmentFrom == null
+        ? null
+        : businessDateSchema.parse(input.lateAdjustmentFrom),
   };
 }
 
@@ -333,6 +340,7 @@ function postFingerprint(parsed: ParsedPost): string {
     sourceId: parsed.sourceId,
     description: parsed.description,
     lines: parsed.lines,
+    lateAdjustmentFrom: parsed.lateAdjustmentFrom,
   });
 }
 
@@ -363,6 +371,30 @@ async function chartForEntity(
       isActive: row.isActive,
     }),
   );
+}
+
+/**
+ * Refuses lines whose account is missing, inactive, a header account or of
+ * another legal entity, before a request (manual / recurring journal) reaches
+ * approval. `postJournalInTransaction` re-checks at posting time.
+ */
+export async function assertJournalLinesPostable(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  legalEntityId: string,
+  lines: readonly { readonly accountId: string }[],
+): Promise<void> {
+  const chart = await chartForEntity(
+    tx,
+    context.tenant.tenantId,
+    legalEntityId,
+  );
+  for (const line of lines)
+    assertAccountPostable(
+      line.accountId as AccountId,
+      legalEntityId as LegalEntityId,
+      chart,
+    );
 }
 
 /** Appends journal.posted in the caller's transaction (transactional outbox). */
@@ -467,6 +499,7 @@ export async function postJournalInTransaction(
       postedAt: now,
       idempotencyKey: parsed.idempotencyKey,
       requestFingerprint: fingerprint,
+      lateAdjustmentFrom: parsed.lateAdjustmentFrom ?? null,
     })
     .onConflictDoNothing({
       target: [journalEntries.tenantId, journalEntries.idempotencyKey],
@@ -563,6 +596,7 @@ export async function postJournalFromRuleInTransaction(
       postedBy: input.postedBy,
       idempotencyKey: input.idempotencyKey,
       expectedPeriodVersion: input.expectedPeriodVersion,
+      lateAdjustmentFrom: input.lateAdjustmentFrom ?? null,
     },
     now,
   );
@@ -819,6 +853,17 @@ export async function getJournal(
   });
 }
 
+/** Inputs of one reversal: the manual endpoint and the auto-journal void share it. */
+export type ReverseJournalTxInput = {
+  readonly entryDate: BusinessDate;
+  readonly reason: string;
+  readonly idempotencyKey: string;
+  /** Business date the voided fact really happened on, when the reversal posts into a later open period. */
+  readonly lateAdjustmentFrom?: string | null;
+  /** Null records a system reversal (auto-journal void). */
+  readonly postedBy: UserId | null;
+};
+
 /**
  * ACC-01: the only correction path for a posted entry. Posts the mirrored
  * entry in an open period, at most once, and never reverses a reversal.
@@ -832,125 +877,153 @@ export async function reverseJournal(
 ): Promise<JournalEntry> {
   const request = reverseJournalInputSchema.parse(input);
   assertTrustedScopedContext(context);
-  return withTenant(db, context, async (tx) => {
-    const [row] = await tx
-      .select()
-      .from(journalEntries)
-      .where(
-        and(
-          eq(journalEntries.tenantId, context.tenant.tenantId),
-          eq(journalEntries.id, entryId),
-        ),
-      )
-      .limit(1)
-      .for("update");
-    if (!row || !(await visibleToScope(tx, context, row)))
-      throw new HttpError(404, "NOT_FOUND", "Journal entry not found.");
-    const lines = await entryLines(tx, context.tenant.tenantId, entryId);
-    // The request fingerprint covers the target entry, the reversal date and
-    // the reason, so a reused key with another correction is refused.
-    const fingerprint = journalRequestFingerprint({
+  return withTenant(db, context, (tx) =>
+    reverseJournalInTransaction(
+      tx,
+      context,
+      entryId,
+      { ...request, lateAdjustmentFrom: null, postedBy: actorId },
+      now,
+    ),
+  );
+}
+
+/**
+ * Reversal inside the caller's tenant transaction. Idempotent on
+ * `idempotencyKey`; fails closed on a closed period, a double reversal or a
+ * reversal of a reversal.
+ */
+export async function reverseJournalInTransaction(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  entryId: string,
+  input: ReverseJournalTxInput,
+  now = new Date(),
+): Promise<JournalEntry> {
+  assertTrustedScopedContext(context);
+  const lateAdjustmentFrom =
+    input.lateAdjustmentFrom == null
+      ? null
+      : businessDateSchema.parse(input.lateAdjustmentFrom);
+  const [row] = await tx
+    .select()
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, context.tenant.tenantId),
+        eq(journalEntries.id, entryId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!row || !(await visibleToScope(tx, context, row)))
+    throw new HttpError(404, "NOT_FOUND", "Journal entry not found.");
+  const lines = await entryLines(tx, context.tenant.tenantId, entryId);
+  // The request fingerprint covers the target entry, the reversal date and
+  // the reason, so a reused key with another correction is refused.
+  const fingerprint = journalRequestFingerprint({
+    legalEntityId: row.legalEntityId,
+    outletId: row.outletId,
+    entryDate: input.entryDate,
+    sourceType: "reversal",
+    sourceId: entryId,
+    description: input.reason,
+    lines: lines.map(toLine),
+    lateAdjustmentFrom,
+  });
+  const replayed = await findByIdempotency(
+    tx,
+    context.tenant.tenantId,
+    input.idempotencyKey,
+  );
+  if (replayed) return assertReplayMatches(replayed, fingerprint);
+  const [reversal] = await tx
+    .select({ id: journalEntries.id })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, context.tenant.tenantId),
+        eq(journalEntries.reversalOf, entryId),
+      ),
+    )
+    .limit(1);
+  assertReversible(row, reversal?.id ?? null);
+  const reversalLines = buildReversalLines(
+    {
+      lines: lines.map(toLine),
+      reversalOf: row.reversalOf as JournalEntry["reversalOf"],
+    },
+    reversal?.id ?? null,
+  );
+  assertPostingScope(context, row.outletId, reversalLines);
+  const totalIdr = assertJournalBalanced(reversalLines);
+  const period = await assertPeriodOpenForPosting(tx, context, {
+    legalEntityId: row.legalEntityId,
+    entryDate: input.entryDate,
+  });
+  const [reversalRow] = await tx
+    .insert(journalEntries)
+    .values({
+      tenantId: context.tenant.tenantId,
       legalEntityId: row.legalEntityId,
       outletId: row.outletId,
-      entryDate: request.entryDate,
+      entryDate: input.entryDate,
+      fiscalPeriodId: period.id,
       sourceType: "reversal",
-      sourceId: entryId,
-      description: request.reason,
-      lines: lines.map(toLine),
-    });
-    const replayed = await findByIdempotency(
+      sourceId: null,
+      description: input.reason,
+      reversalOf: entryId,
+      postedBy: input.postedBy,
+      postedAt: now,
+      idempotencyKey: input.idempotencyKey,
+      requestFingerprint: fingerprint,
+      lateAdjustmentFrom,
+    })
+    .onConflictDoNothing()
+    .returning();
+  if (!reversalRow) {
+    const concurrent = await findByIdempotency(
       tx,
       context.tenant.tenantId,
-      request.idempotencyKey,
+      input.idempotencyKey,
     );
-    if (replayed) return assertReplayMatches(replayed, fingerprint);
-    const [reversal] = await tx
-      .select({ id: journalEntries.id })
-      .from(journalEntries)
-      .where(
-        and(
-          eq(journalEntries.tenantId, context.tenant.tenantId),
-          eq(journalEntries.reversalOf, entryId),
-        ),
-      )
-      .limit(1);
-    assertReversible(row, reversal?.id ?? null);
-    const reversalLines = buildReversalLines(
-      {
-        lines: lines.map(toLine),
-        reversalOf: row.reversalOf as JournalEntry["reversalOf"],
-      },
-      reversal?.id ?? null,
-    );
-    assertPostingScope(context, row.outletId, reversalLines);
-    const totalIdr = assertJournalBalanced(reversalLines);
-    const period = await assertPeriodOpenForPosting(tx, context, {
-      legalEntityId: row.legalEntityId,
-      entryDate: request.entryDate,
-    });
-    const [reversalRow] = await tx
-      .insert(journalEntries)
-      .values({
+    if (concurrent) return assertReplayMatches(concurrent, fingerprint);
+    throw new AccountingError("JOURNAL_ALREADY_REVERSED");
+  }
+  const lineRows = await tx
+    .insert(journalLines)
+    .values(
+      reversalLines.map((line, index) => ({
         tenantId: context.tenant.tenantId,
-        legalEntityId: row.legalEntityId,
-        outletId: row.outletId,
-        entryDate: request.entryDate,
-        fiscalPeriodId: period.id,
-        sourceType: "reversal",
-        sourceId: null,
-        description: request.reason,
-        reversalOf: entryId,
-        postedBy: actorId,
-        postedAt: now,
-        idempotencyKey: request.idempotencyKey,
-        requestFingerprint: fingerprint,
-      })
-      .onConflictDoNothing()
-      .returning();
-    if (!reversalRow) {
-      const concurrent = await findByIdempotency(
-        tx,
-        context.tenant.tenantId,
-        request.idempotencyKey,
-      );
-      if (concurrent) return assertReplayMatches(concurrent, fingerprint);
-      throw new AccountingError("JOURNAL_ALREADY_REVERSED");
-    }
-    const lineRows = await tx
-      .insert(journalLines)
-      .values(
-        reversalLines.map((line, index) => ({
-          tenantId: context.tenant.tenantId,
-          entryId: reversalRow.id,
-          accountId: line.accountId,
-          lineNo: index + 1,
-          debitIdr: line.debitIdr,
-          creditIdr: line.creditIdr,
-          outletId: line.outletId,
-          costCenter: line.costCenter,
-        })),
-      )
-      .returning();
-    const entry = toEntry(reversalRow, lineRows);
-    await appendJournalPosted(tx, context, entry, totalIdr, now);
-    await auditAccountingChange(tx, context, {
-      actorId,
-      action: "accounting.journal.reversed",
-      objectType: "journal_entry",
-      objectId: entryId,
-      outletId: row.outletId,
-      reason: request.reason,
-      before: {
-        entryDate: row.entryDate,
-        sourceType: row.sourceType,
-        reversalEntryId: null,
-      },
-      after: {
-        entryDate: entry.entryDate,
-        sourceType: entry.sourceType,
-        reversalEntryId: entry.id,
-      },
-    });
-    return entry;
+        entryId: reversalRow.id,
+        accountId: line.accountId,
+        lineNo: index + 1,
+        debitIdr: line.debitIdr,
+        creditIdr: line.creditIdr,
+        outletId: line.outletId,
+        costCenter: line.costCenter,
+      })),
+    )
+    .returning();
+  const entry = toEntry(reversalRow, lineRows);
+  await appendJournalPosted(tx, context, entry, totalIdr, now);
+  await auditAccountingChange(tx, context, {
+    actorId: input.postedBy,
+    action: "accounting.journal.reversed",
+    objectType: "journal_entry",
+    objectId: entryId,
+    outletId: row.outletId,
+    reason: input.reason,
+    before: {
+      entryDate: row.entryDate,
+      sourceType: row.sourceType,
+      reversalEntryId: null,
+    },
+    after: {
+      entryDate: entry.entryDate,
+      sourceType: entry.sourceType,
+      reversalEntryId: entry.id,
+    },
   });
+  return entry;
 }

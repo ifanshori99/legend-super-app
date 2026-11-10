@@ -41,6 +41,14 @@ export const PURCHASING_ERROR_CODES = [
   "PETTY_PURCHASE_LIMIT_EXCEEDED",
   /** The three-way match input does not describe one order (unknown line). */
   "THREE_WAY_MATCH_INVALID_INPUT",
+  /** A write needs an active supplier (catalog price, PO on an inactive one). */
+  "SUPPLIER_INACTIVE",
+  /** Another supplier in the tenant has the same name (case-insensitive). */
+  "SUPPLIER_NAME_TAKEN",
+  /** Send was asked for a PO that is not approved, sent or partially received. */
+  "PURCHASE_ORDER_NOT_SENDABLE",
+  /** Replay of a send whose share link is expired, revoked or missing. */
+  "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
 ] as const;
 
 export const purchasingErrorCodeSchema = z.enum(PURCHASING_ERROR_CODES);
@@ -56,3 +64,78 @@ export class PurchasingError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * HTTP status per purchasing code (docs/plan/contracts.md, "Inventory and
+ * purchasing error statuses"). A `Record` over the code union: a new code
+ * without a status fails the typecheck.
+ */
+export const purchasingErrorHttpStatus = {
+  PURCHASE_REQUEST_INVALID_TRANSITION: 409,
+  PURCHASE_REQUEST_NOT_PENDING_APPROVAL: 409,
+  PURCHASE_REQUEST_SELF_APPROVAL: 409,
+  PURCHASE_ORDER_INVALID_TRANSITION: 409,
+  PURCHASE_ORDER_NOT_PENDING_APPROVAL: 409,
+  PURCHASE_ORDER_SELF_APPROVAL: 409,
+  PURCHASE_ORDER_LINE_MISMATCH: 422,
+  PURCHASE_ORDER_OVER_RECEIPT: 409,
+  SUPPLIER_INVOICE_NOT_MATCHED: 409,
+  SUPPLIER_INVOICE_NOT_PAYABLE: 409,
+  SUPPLIER_INVOICE_OVERPAYMENT: 409,
+  SUPPLIER_PAYMENT_INVALID_TRANSITION: 409,
+  SUPPLIER_PAYMENT_NOT_PENDING_APPROVAL: 409,
+  SUPPLIER_PAYMENT_SELF_APPROVAL: 409,
+  PURCHASE_RETURN_EXCEEDS_RECEIPT: 409,
+  PETTY_PURCHASE_LIMIT_EXCEEDED: 409,
+  THREE_WAY_MATCH_INVALID_INPUT: 422,
+  SUPPLIER_INACTIVE: 409,
+  SUPPLIER_NAME_TAKEN: 409,
+  PURCHASE_ORDER_NOT_SENDABLE: 409,
+  PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE: 409,
+} as const satisfies Record<PurchasingErrorCode, number>;
+
+/**
+ * Safe Indonesian fallback message per code. Fixed text: the thrown
+ * `PurchasingError.message` carries ids and amounts and never reaches a client.
+ */
+export const purchasingErrorMessages: Record<PurchasingErrorCode, string> = {
+  PURCHASE_REQUEST_INVALID_TRANSITION:
+    "Aksi ini tidak dapat dilakukan pada status permintaan pembelian saat ini.",
+  PURCHASE_REQUEST_NOT_PENDING_APPROVAL:
+    "Permintaan pembelian belum diajukan untuk persetujuan.",
+  PURCHASE_REQUEST_SELF_APPROVAL:
+    "Pemohon tidak dapat menyetujui permintaan pembeliannya sendiri.",
+  PURCHASE_ORDER_INVALID_TRANSITION:
+    "Aksi ini tidak dapat dilakukan pada status pesanan pembelian saat ini.",
+  PURCHASE_ORDER_NOT_PENDING_APPROVAL:
+    "Pesanan pembelian belum diajukan untuk persetujuan.",
+  PURCHASE_ORDER_SELF_APPROVAL:
+    "Pembuat tidak dapat menyetujui pesanan pembeliannya sendiri.",
+  PURCHASE_ORDER_LINE_MISMATCH:
+    "Baris penerimaan tidak sesuai dengan pesanan pembelian.",
+  PURCHASE_ORDER_OVER_RECEIPT:
+    "Jumlah penerimaan melebihi jumlah yang dipesan.",
+  SUPPLIER_INVOICE_NOT_MATCHED:
+    "Faktur pemasok belum lolos pencocokan tiga arah.",
+  SUPPLIER_INVOICE_NOT_PAYABLE: "Faktur pemasok tidak memiliki sisa tagihan.",
+  SUPPLIER_INVOICE_OVERPAYMENT:
+    "Jumlah pembayaran melebihi sisa tagihan faktur.",
+  SUPPLIER_PAYMENT_INVALID_TRANSITION:
+    "Aksi ini tidak dapat dilakukan pada status pembayaran pemasok saat ini.",
+  SUPPLIER_PAYMENT_NOT_PENDING_APPROVAL:
+    "Pembayaran pemasok belum diajukan untuk persetujuan.",
+  SUPPLIER_PAYMENT_SELF_APPROVAL:
+    "Pemohon tidak dapat menyetujui pembayaran pemasoknya sendiri.",
+  PURCHASE_RETURN_EXCEEDS_RECEIPT:
+    "Jumlah retur melebihi jumlah yang sudah diterima.",
+  PETTY_PURCHASE_LIMIT_EXCEEDED:
+    "Pembelian sederhana melebihi batas nominal outlet.",
+  THREE_WAY_MATCH_INVALID_INPUT:
+    "Data pencocokan tiga arah tidak sesuai dengan satu pesanan.",
+  SUPPLIER_INACTIVE: "Pemasok tidak aktif.",
+  SUPPLIER_NAME_TAKEN: "Pemasok dengan nama itu sudah ada.",
+  PURCHASE_ORDER_NOT_SENDABLE:
+    "Pesanan pembelian pada status ini tidak dapat dikirim.",
+  PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE:
+    "Tautan berbagi tidak tersedia. Kirim ulang dengan kunci idempotensi baru.",
+};

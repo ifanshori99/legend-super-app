@@ -72,3 +72,15 @@ Photographer and source page per file:
 `cappuccino.jpg`, `es-kopi-susu.jpg`, `mie-kuah.jpg`, `nasi-goreng.jpg` and
 `teh-melati.jpg` replaced the first uncredited samples of legend-h16t, so every
 photo in the folder has a recorded photographer.
+
+## Noto Sans subset (purchase order PDF)
+
+`apps/api/assets/fonts/NotoSans-Regular-subset.ttf` and
+`NotoSans-Bold-subset.ttf` are subsets of Noto Sans v2.015 (notofonts
+latin-greek-cyrillic release `NotoSans-v2.015`), copyright 2022 The Noto Project
+Authors, licensed under the SIL Open Font License 1.1. The license text is in
+`apps/api/assets/fonts/OFL.txt`. The renderer in
+`apps/api/src/services/purchasing-po-pdf.ts` embeds them in generated PDFs
+(bead legend-uokb). The subsets keep Basic Latin, Latin-1, Latin Extended A/B
+and Additional, Greek, Cyrillic, combining marks, common punctuation and
+currency signs. Rebuild commands are in `apps/api/assets/fonts/README.md`.

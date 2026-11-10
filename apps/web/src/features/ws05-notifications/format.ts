@@ -2,18 +2,21 @@ import {
   BellRing,
   CalendarClock,
   CalendarDays,
+  ChefHat,
   ClipboardCheck,
   CookingPot,
   CreditCard,
   FileText,
   PackageX,
   Printer,
+  RefreshCwOff,
   ReceiptText,
   Scale,
   ShieldAlert,
   Siren,
   Sun,
   Timer,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
@@ -36,6 +39,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   stock_critical: PackageX,
   approval_request: ClipboardCheck,
   printer_offline: Printer,
+  edge_sync_conflict: RefreshCwOff,
   cash_variance: Scale,
   emergency: Siren,
   security: ShieldAlert,
@@ -46,6 +50,9 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   schedule_update: CalendarDays,
   payslip: FileText,
   daily_summary: Sun,
+  operational_anomaly: TriangleAlert,
+  payment_failover: TriangleAlert,
+  kitchen_alert: ChefHat,
 };
 
 export function categoryLabelKey(category: NotificationCategory): MessageKey {

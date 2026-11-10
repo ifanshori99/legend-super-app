@@ -42,6 +42,7 @@ import {
   type HrisViewer,
 } from "@starter/shared/hris";
 import type { z } from "@starter/shared/core";
+import type { TaxScheme } from "@starter/shared/hris/payroll";
 import { db } from "../db/index.ts";
 import {
   employeeDocuments,
@@ -58,6 +59,7 @@ import {
   sealHrisPii,
 } from "../lib/hris-pii.ts";
 import { recordAudit } from "./core-audit.ts";
+import { linkStorageObjectSource } from "./core-storage.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   HRIS_MANAGE_CODE,
@@ -89,6 +91,9 @@ type Page<T> = {
 export type HrisFileSigner = (
   context: ScopedTenantContext,
   storageObjectId: string,
+  /** The caller's tenant transaction, when it has one: sign inside it instead
+   * of opening another pooled connection. */
+  tx?: Tx,
 ) => Promise<string | null>;
 export const noHrisFileSigner: HrisFileSigner = async () => null;
 
@@ -174,6 +179,7 @@ async function toContract(
     tenantId: row.tenantId,
     employeeId: row.employeeId,
     type: row.type,
+    taxScheme: row.taxScheme,
     startDate: row.startDate,
     endDate: row.endDate,
     renewedFromId: row.renewedFromId,
@@ -447,7 +453,11 @@ async function managedEmployee(
   employeeId: string,
 ) {
   const [employee] = await tx
-    .select({ id: employees.id, homeOutletId: employees.homeOutletId })
+    .select({
+      id: employees.id,
+      homeOutletId: employees.homeOutletId,
+      userId: employees.userId,
+    })
     .from(employees)
     .where(
       and(
@@ -465,6 +475,8 @@ async function managedEmployee(
 export type CreateEmploymentContractInput = {
   readonly employeeId: string;
   readonly type: EmploymentType;
+  /** PPh 21 scheme of the agreement; required, never defaulted (legend-rhq5). */
+  readonly taxScheme: TaxScheme;
   readonly startDate: string;
   readonly endDate: string | null;
   readonly renewedFromId: string | null;
@@ -489,6 +501,7 @@ export async function createEmploymentContract(
     tenantId: context.tenant.tenantId,
     employeeId: input.employeeId,
     type: input.type,
+    taxScheme: input.taxScheme,
     startDate: input.startDate,
     endDate: input.endDate,
     renewedFromId: input.renewedFromId,
@@ -516,6 +529,7 @@ export async function createEmploymentContract(
         tenantId: context.tenant.tenantId,
         employeeId: employee.id,
         type: input.type,
+        taxScheme: input.taxScheme,
         startDate: input.startDate,
         endDate: input.endDate,
         renewedFromId: input.renewedFromId,
@@ -537,6 +551,17 @@ export async function createEmploymentContract(
       })
       .returning();
     if (!row) throw new Error("Contract insert returned no row");
+    // The signed file belongs to the contract; the employee may read their own.
+    if (input.fileObjectId !== null)
+      await linkStorageObjectSource(tx, {
+        tenantId: context.tenant.tenantId,
+        objectId: input.fileObjectId,
+        sourceKind: "employment_contract",
+        sourceId: row.id,
+        actorUserId: access.actorUserId,
+        outletId: employee.homeOutletId,
+        ...(employee.userId === null ? {} : { ownerUserId: employee.userId }),
+      });
     await recordAudit(
       tx,
       context,
@@ -547,6 +572,7 @@ export async function createEmploymentContract(
         objectId: row.id,
         after: {
           type: row.type,
+          taxScheme: row.taxScheme,
           status: row.status,
           changedFields: salary === null ? [] : ["salarySnapshot"],
         },
@@ -603,6 +629,16 @@ export async function createEmployeeDocument(
       })
       .returning();
     if (!row) throw new Error("Document insert returned no row");
+    // The file belongs to the document; the employee may read their own.
+    await linkStorageObjectSource(tx, {
+      tenantId: context.tenant.tenantId,
+      objectId: input.storageObjectId,
+      sourceKind: "employee_document",
+      sourceId: row.id,
+      actorUserId: access.actorUserId,
+      outletId: employee.homeOutletId,
+      ...(employee.userId === null ? {} : { ownerUserId: employee.userId }),
+    });
     await recordAudit(
       tx,
       context,

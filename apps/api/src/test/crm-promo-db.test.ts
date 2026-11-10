@@ -27,7 +27,8 @@ import {
   releasePromotions,
   type RedeemPromotionsInput,
 } from "../services/crm-promo-engine";
-import { recomputeAfterPartialRefund } from "../services/crm-promo-refund";
+import { orderPromoPartialRefundPort } from "../services/order-promo-refund";
+import { seedProfile } from "./member-loyalty-helpers";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
@@ -637,11 +638,13 @@ describe("Idempotent redeem and release on void", () => {
 
   it("a customer-bound voucher is refused for another customer", async () => {
     const voucherCode = code();
+    // legend-m4p5: vouchers.customer_profile_id now references a real profile.
+    const holder = await seedProfile(tenantId);
     await seedVoucher({
       code: voucherCode,
       promotionId: null,
       valueIdr: 5_000,
-      customerProfileId: randomUUID(),
+      customerProfileId: holder.id,
     });
     await expect(
       redeem(
@@ -665,10 +668,14 @@ describe("§3.21 ROI Promo inputs", () => {
     await redeem(voided);
     await release(voided.orderId);
     // Owner Q41: refund one of the two portions; the promotion still applies.
+    // Founder rule (9 Nov 2026): the refunded portion gives back its price
+    // minus its pro-rata share of the discount (25k - 2.5k), and that share
+    // goes back to the promotion (cost 10k + 2.5k). The order port (the one
+    // the refund module injects) lowers the redemption line by that share.
     const scoped = outletScope(outletA);
     expect(
       await withTenant(db, scoped, (tx) =>
-        recomputeAfterPartialRefund(tx, scoped, {
+        orderPromoPartialRefundPort.recomputeAfterPartialRefund(tx, scoped, {
           orderId: partial.orderId,
           keptLines: [priced(item, 25_000)],
           reason: "Refund sebagian: satu porsi batal",
@@ -680,7 +687,8 @@ describe("§3.21 ROI Promo inputs", () => {
       adjusted: true,
       refundedSubtotalIdr: 25_000,
       withdrawnDiscountIdr: 0,
-      refundDueIdr: 25_000,
+      refundDueIdr: 22_500,
+      totalDiscountIdr: 2_500,
     });
     // A Marketing user with promo.manage over the tenant reads the report.
     const marketer = randomUUID();
@@ -700,10 +708,10 @@ describe("§3.21 ROI Promo inputs", () => {
       ).toEqual({
         promotionId,
         transactions: 2,
-        discountCostIdr: 15_000,
-        revenueIdr: 110_000,
-        netMarginIdr: 95_000,
-        roiBp: 63_333,
+        discountCostIdr: 12_500,
+        revenueIdr: 112_500,
+        netMarginIdr: 100_000,
+        roiBp: 80_000,
       });
     } finally {
       await owner.query("DELETE FROM role_assignments WHERE user_id = $1", [

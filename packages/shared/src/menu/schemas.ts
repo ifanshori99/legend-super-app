@@ -29,7 +29,15 @@ export const stationSchema = z.strictObject({
   type: z.string().min(1).max(20),
   printerDeviceId: uuidSchema.nullable(),
   targetSeconds: z.number().int().positive().nullable(),
+  updatedAt: isoDateTimeSchema,
 });
+export const stationTypeSchema = z.enum([
+  "coffee_bar",
+  "beverage_bar",
+  "hot_kitchen",
+  "cold_kitchen",
+  "pastry",
+]);
 export const menuItemSchema = z.strictObject({
   ...scope,
   brandId: brandIdSchema,
@@ -38,6 +46,13 @@ export const menuItemSchema = z.strictObject({
   description: z.string(),
   type: z.enum(["single", "combo"]),
   stationId: uuidSchema.nullable(),
+  /**
+   * Brand-level station TYPE; each outlet resolves it to its own station of
+   * that type, and `stationId` is only an override inside its outlet
+   * (legend-s2dh). Optional in the DTO so older payloads and mocks still
+   * parse; the API always sends it.
+   */
+  stationType: stationTypeSchema.nullable().optional(),
   course: z.string().max(20).nullable(),
   recipeId: uuidSchema.nullable(),
   taxRuleId: uuidSchema.nullable(),
@@ -71,6 +86,16 @@ export const modifierSchema = z.strictObject({
   priceIdr: price,
   recipeId: uuidSchema.nullable(),
   stationId: uuidSchema.nullable(),
+});
+/**
+ * Item ↔ modifier group link: one row of `menu_item_modifier_groups`. The
+ * table has no id of its own; (itemId, groupId) is unique and `sortOrder` is
+ * the display position inside the item (0-based, dense after every write).
+ */
+export const itemModifierGroupLinkSchema = z.strictObject({
+  itemId: uuidSchema,
+  groupId: uuidSchema,
+  sortOrder: z.number().int().nonnegative(),
 });
 export const comboComponentSchema = z.strictObject({
   menuItemId: uuidSchema,
@@ -161,6 +186,7 @@ export const menuFixtureSchema = z.strictObject({
   variants: z.array(variantSchema),
   modifierGroups: z.array(modifierGroupSchema),
   modifiers: z.array(modifierSchema),
+  itemModifierGroups: z.array(itemModifierGroupLinkSchema),
   combos: z.array(comboSchema),
   priceLists: z.array(priceListSchema),
   priceListItems: z.array(priceListItemSchema),
@@ -186,6 +212,7 @@ export type MenuItem = z.infer<typeof menuItemSchema>;
 export type Variant = z.infer<typeof variantSchema>;
 export type ModifierGroup = z.infer<typeof modifierGroupSchema>;
 export type Modifier = z.infer<typeof modifierSchema>;
+export type ItemModifierGroupLink = z.infer<typeof itemModifierGroupLinkSchema>;
 export type Combo = z.infer<typeof comboSchema>;
 export type PriceList = z.infer<typeof priceListSchema>;
 export type PriceListItem = z.infer<typeof priceListItemSchema>;

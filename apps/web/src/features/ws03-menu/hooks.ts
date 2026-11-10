@@ -18,6 +18,9 @@ import {
 } from "@starter/shared/menu";
 import * as api from "./api";
 import {
+  allCategoriesQuery,
+  allItemsQuery,
+  allPriceListsQuery,
   availabilityQuery,
   categoriesQuery,
   combosQuery,
@@ -82,6 +85,19 @@ export function useRefreshMenu() {
 
 export function useItems(query: QueryOf<typeof listItems>) {
   return useQuery(itemsQuery(query));
+}
+
+/** Every page of the menu (printable sheet); `useItems` reads one page. */
+export function useAllItems(query: QueryOf<typeof listItems>) {
+  return useQuery(allItemsQuery(query));
+}
+
+export function useAllCategories(query: QueryOf<typeof listCategories>) {
+  return useQuery(allCategoriesQuery(query));
+}
+
+export function useAllPriceLists(query: QueryOf<typeof listPriceLists>) {
+  return useQuery(allPriceListsQuery(query));
 }
 
 export function useItem(itemId: string | undefined) {
