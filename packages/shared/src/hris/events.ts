@@ -14,6 +14,7 @@ import {
   isoDateTimeSchema,
   businessDateSchema,
   decimal4Schema,
+  uuidSchema,
 } from "../core/index.ts";
 import { defineDomainEvent } from "../events/define.ts";
 import {
@@ -27,6 +28,7 @@ import {
 } from "./ids.ts";
 import {
   attendanceMethodSchema,
+  attendanceStoredFlagReasonSchema,
   attendanceTypeSchema,
   attendanceValiditySchema,
 } from "./attendance.ts";
@@ -43,6 +45,15 @@ export const attendanceLogged = defineDomainEvent({
     occurredAt: isoDateTimeSchema,
     validity: attendanceValiditySchema,
     shiftAssignmentId: shiftAssignmentIdSchema.nullable(),
+    /** v2 (edge): sealed selfie object id; absent on v1 payloads. */
+    selfieObjectId: uuidSchema.nullable().optional(),
+    /** v2 (edge): reasons the edge attached; the cloud unions them with its own. */
+    edgeFlagReasons: z
+      .array(attendanceStoredFlagReasonSchema)
+      .max(10)
+      .optional(),
+    /** v2 (edge): outlet device that recorded the clock. */
+    edgeDeviceId: z.string().min(1).max(100).nullable().optional(),
   }),
 });
 

@@ -92,10 +92,15 @@ import {
 } from "../db/schema/hris-attendance.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { env } from "../config/env.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { EDGE_SEALED_KEY_PREFIX } from "../edge/selfie-paths.ts";
+import { enqueueEdgeSelfieUpload } from "../edge/selfie-queue.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { linkStorageObjectSource } from "./core-storage.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { linkEdgeSelfie } from "./edge-selfie-link.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -111,10 +116,14 @@ import {
 import {
   computeWorkTiming,
   geofenceDistance,
-  qrTokenForWindow,
-  qrWindowOf,
-  validateQr,
 } from "./hris-attendance-logic.ts";
+import {
+  edgeTableQrKeySource,
+  issueQrToken,
+  seedQrKeySource,
+  validateQr,
+  type QrKeySource,
+} from "./hris-attendance-qr.ts";
 import {
   noHrisFileSigner,
   type HrisFileSigner,
@@ -359,7 +368,28 @@ async function presentLog(
 ): Promise<AttendanceLog> {
   if (row.photoKey === null || !canSee)
     return toAttendanceLog(row, null, isOwn);
-  const url = await signer(context, row.photoKey, tx);
+  // legend-0wvoz: an edge event can name any selfie id, and the cloud applier
+  // cannot see an object of another outlet. Never sign an object that is
+  // linked to another log, or unlinked at another outlet than this log's.
+  const [photoObject] = await tx
+    .select({
+      sourceId: coreStorageObjects.sourceId,
+      outletId: coreStorageObjects.outletId,
+    })
+    .from(coreStorageObjects)
+    .where(
+      and(
+        eq(coreStorageObjects.tenantId, row.tenantId),
+        eq(coreStorageObjects.id, row.photoKey),
+      ),
+    )
+    .limit(1);
+  const foreignPhoto =
+    photoObject !== undefined &&
+    (photoObject.sourceId === null
+      ? photoObject.outletId !== row.outletId
+      : photoObject.sourceId !== ulidToUuid(row.id));
+  const url = foreignPhoto ? null : await signer(context, row.photoKey, tx);
   if (url !== null)
     await recordAudit(
       tx,
@@ -402,7 +432,43 @@ export type RecordAttendanceInput = {
   qrToken: string | null;
   clientEventId: string;
   offline: boolean;
+  /**
+   * Flag reasons an edge attached to an offline event (attendance.logged v2);
+   * stored unioned with the cloud's own reasons.
+   */
+  edgeFlagReasons?: readonly AttendanceStoredFlagReason[];
 };
+
+/**
+ * True on an edge node. The server answers before `startEdgeRuntime` flips
+ * `edgeMode`, so the static `EDGE_MODE` setting counts too: an edge in its boot
+ * window must never act as the cloud and create a QR seed (same fix as
+ * legend-3yqy, pos-receipt.service.ts).
+ */
+function isEdgeMode(): boolean {
+  return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
+}
+
+/**
+ * Where QR day keys come from. The cloud derives them from the outlet seed; an
+ * edge reads the keys the cloud sent (it never holds a seed).
+ */
+function qrKeySourceFor(tx: Tx, edgeMode = isEdgeMode()): QrKeySource {
+  if (edgeMode) return edgeTableQrKeySource(tx);
+  return seedQrKeySource(async (tenantId, outletId) => {
+    const [secret] = await tx
+      .select({ seed: attendanceQrSecrets.seed })
+      .from(attendanceQrSecrets)
+      .where(
+        and(
+          eq(attendanceQrSecrets.tenantId, tenantId as TenantId),
+          eq(attendanceQrSecrets.outletId, outletId),
+        ),
+      )
+      .limit(1);
+    return secret?.seed ?? null;
+  });
+}
 
 async function findLogByClientEvent(
   tx: Tx,
@@ -498,7 +564,27 @@ export async function recordAttendanceLog(
   scope: AttendanceScope,
   input: RecordAttendanceInput,
 ): Promise<LogRow> {
-  return (await storeAttendanceLog(tx, scope, input)).row;
+  const { row, created } = await storeAttendanceLog(tx, scope, input);
+  // An edge selfie (photo_key = the sealed object id) is linked to the new log
+  // once; a replay changes nothing. A link that cannot be made clears photo_key
+  // and flags the log `selfie_unlinked` (linkEdgeSelfie), so read the row again.
+  if (!created || !input.offline || input.photoKey === null) return row;
+  const outcome = await linkEdgeSelfie(tx, {
+    tenantId: scope.tenantId,
+    objectId: input.photoKey,
+  });
+  if (outcome !== "unlinked") return row;
+  const [relinked] = await tx
+    .select()
+    .from(attendanceLogs)
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, scope.tenantId),
+        eq(attendanceLogs.id, row.id),
+      ),
+    )
+    .limit(1);
+  return relinked ?? row;
 }
 
 /**
@@ -544,7 +630,41 @@ async function storeAttendanceLog(
     // Edge replay: the event carries none of the evidence the edge vetted
     // (device, QR, selfie, geofence), so it cannot be verified here. Store it
     // flagged for review; the client time is checked below.
-    decision = { validity: "flagged", reasons: ["offline_unverified"] };
+    const reasons: AttendanceStoredFlagReason[] = ["offline_unverified"];
+    for (const reason of input.edgeFlagReasons ?? [])
+      if (!reasons.includes(reason)) reasons.push(reason);
+    // Decided at occurredAt, not now. The employee table keeps no status
+    // history, so the join and end dates (outlet-local day of occurredAt) say
+    // whether the employee was employed then; only a status without an end
+    // date to judge by (suspended, or ended with no end date) falls back to the
+    // current status. An inactive employee is flagged for review, never
+    // rejected (the edge already recorded the clock).
+    const [employee] = await tx
+      .select({
+        status: employees.status,
+        joinDate: employees.joinDate,
+        endDate: employees.endDate,
+      })
+      .from(employees)
+      .where(
+        and(
+          eq(employees.tenantId, tenantId),
+          eq(employees.id, input.employeeId),
+        ),
+      )
+      .limit(1);
+    if (employee && !reasons.includes("employee_inactive")) {
+      const day = localDateOf(input.occurredAt, outlet.timezone);
+      const ended =
+        employee.status === "resigned" || employee.status === "terminated";
+      const inactive =
+        day < employee.joinDate ||
+        (employee.endDate !== null && day > employee.endDate) ||
+        employee.status === "suspended" ||
+        (ended && employee.endDate === null);
+      if (inactive) reasons.push("employee_inactive");
+    }
+    decision = { validity: "flagged", reasons };
   } else {
     if (input.method === "selfie_geo" && input.location !== null) {
       const distance = geofenceDistance(input.location, outlet.geofence);
@@ -568,19 +688,17 @@ async function storeAttendanceLog(
     }
     let qrValid = false;
     if (input.method === "rotating_qr" && input.qrToken !== null) {
-      const [secret] = await tx
-        .select({ seed: attendanceQrSecrets.seed })
-        .from(attendanceQrSecrets)
-        .where(
-          and(
-            eq(attendanceQrSecrets.tenantId, tenantId),
-            eq(attendanceQrSecrets.outletId, outletId),
-          ),
-        )
-        .limit(1);
-      qrValid =
-        secret !== undefined &&
-        validateQr(secret.seed, input.qrToken, effectiveAt.getTime());
+      // An edge never validates a QR itself (design §3.2, T4: it rejects
+      // rotating_qr before this point): fail closed.
+      qrValid = isEdgeMode()
+        ? false
+        : await validateQr(
+            qrKeySourceFor(tx, false),
+            tenantId,
+            outletId,
+            input.qrToken,
+            effectiveAt.getTime(),
+          );
     }
     const evaluated = evaluateAttendanceSubmission({
       policy,
@@ -743,6 +861,12 @@ export async function clockAttendance(
 ): Promise<ClockResult> {
   if (body.method === "manual_correction")
     throw validation("Metode koreksi manual tidak bisa dipakai untuk absen.");
+  // outlet_device is made only by the outlet attendance screen on an edge
+  // (design 2, 3.4). Its checks (device token, PIN session) are legend-j6cyb;
+  // until they exist nobody may claim the method, or a phone could skip the
+  // geofence, device and QR checks.
+  if (body.method === "outlet_device")
+    throw validation("Metode layar outlet belum tersedia untuk absen.");
   // Phase 1: who is clocking and where. The outlet is not known until the
   // shift is, and the write below needs a context scoped to it.
   const target = await withTenant(db, context, async (tx) => {
@@ -833,7 +957,7 @@ export async function clockAttendance(
       created &&
       row.photoKey !== null &&
       row.photoKey === body.photoUploadRef
-    )
+    ) {
       await linkStorageObjectSource(tx, {
         tenantId,
         objectId: row.photoKey,
@@ -842,6 +966,27 @@ export async function clockAttendance(
         actorUserId,
         outletId: row.outletId,
       });
+      // An edge-sealed selfie lives on the edge disk: queue it for the cloud
+      // in the same transaction as the log.
+      const [stored] = await tx
+        .select({ objectKey: coreStorageObjects.objectKey })
+        .from(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.id, row.photoKey),
+          ),
+        )
+        .limit(1);
+      if (stored?.objectKey.startsWith(EDGE_SEALED_KEY_PREFIX))
+        await enqueueEdgeSelfieUpload(tx, {
+          tenantId,
+          outletId: row.outletId,
+          attendanceLogId: ulidToUuid(row.id),
+          objectKey: stored.objectKey,
+          dir: env.EDGE_SELFIE_DIR,
+        });
+    }
     return { log: await present(row), flagReasons: storedReasons(row) };
   });
 }
@@ -963,52 +1108,71 @@ async function assertManagesOutlet(
   if (!outlet) throw notFound("Outlet");
 }
 
+/** Cloud only: creates the outlet seed on first use (no-op when it exists). */
+async function ensureQrSeed(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: string,
+): Promise<void> {
+  const [existing] = await tx
+    .select({ id: attendanceQrSecrets.id })
+    .from(attendanceQrSecrets)
+    .where(
+      and(
+        eq(attendanceQrSecrets.tenantId, tenantId),
+        eq(attendanceQrSecrets.outletId, outletId),
+      ),
+    )
+    .limit(1);
+  if (existing) return;
+  await tx
+    .insert(attendanceQrSecrets)
+    .values({ tenantId, outletId, seed: randomBytes(32) })
+    .onConflictDoNothing({
+      target: [attendanceQrSecrets.tenantId, attendanceQrSecrets.outletId],
+    });
+}
+
+/** Test seams for the QR endpoints; production code passes nothing. */
+export interface AttendanceQrOptions {
+  /** Force edge or cloud behaviour (default: the runtime state). */
+  edgeMode?: boolean;
+  /** Replace the key source (default: seed on the cloud, edge key table on an edge). */
+  keySource?: QrKeySource;
+}
+
 /**
  * GET /api/hris/attendance/qr — the outlet display polls the token of the
- * current 30 s window. Needs `hr.attendance.manage` at the outlet; an employee
- * must never be able to read it. The first read creates the outlet seed.
+ * current 30 s window (v2, daily key). Needs `hr.attendance.manage` at the
+ * outlet; an employee must never be able to read it. On the cloud the first
+ * read creates the outlet seed. On an edge there is no seed and no lazy
+ * generation: no key for today means 503 `QR_KEY_UNAVAILABLE`.
  */
 export async function getAttendanceQr(
   context: ScopedTenantContext,
   actorUserId: string,
   query: GetQrQuery,
   now = new Date(),
+  options: AttendanceQrOptions = {},
 ): Promise<AttendanceQrToken> {
+  const edgeMode = options.edgeMode ?? isEdgeMode();
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     await assertManagesOutlet(tx, context, access, query.outletId);
     const tenantId = context.tenant.tenantId;
-    const select = () =>
-      tx
-        .select({ seed: attendanceQrSecrets.seed })
-        .from(attendanceQrSecrets)
-        .where(
-          and(
-            eq(attendanceQrSecrets.tenantId, tenantId),
-            eq(attendanceQrSecrets.outletId, query.outletId),
-          ),
-        )
-        .limit(1);
-    let [secret] = await select();
-    if (!secret) {
-      await tx
-        .insert(attendanceQrSecrets)
-        .values({
-          tenantId,
-          outletId: query.outletId,
-          seed: randomBytes(32),
-        })
-        .onConflictDoNothing({
-          target: [attendanceQrSecrets.tenantId, attendanceQrSecrets.outletId],
-        });
-      [secret] = await select();
-    }
-    if (!secret) throw new Error("Attendance QR secret missing after insert");
-    const window = qrWindowOf(now.getTime());
+    // Cloud only: the first read creates the outlet seed. Never on an edge.
+    if (!edgeMode) await ensureQrSeed(tx, tenantId, query.outletId);
+    const source = options.keySource ?? qrKeySourceFor(tx, edgeMode);
+    const { token, window } = await issueQrToken(
+      source,
+      tenantId,
+      query.outletId,
+      now.getTime(),
+    );
     const issuedAt = window * ATTENDANCE_QR_ROTATION_SECONDS * 1_000;
     return attendanceQrTokenSchema.parse({
       outletId: query.outletId,
-      token: qrTokenForWindow(secret.seed, window),
+      token,
       issuedAt: new Date(issuedAt).toISOString(),
       expiresAt: new Date(
         issuedAt + ATTENDANCE_QR_ROTATION_SECONDS * 1_000,
@@ -1019,15 +1183,24 @@ export async function getAttendanceQr(
 }
 
 /**
- * POST /api/hris/attendance/qr/rotate — replaces the outlet seed; the QR on
- * the display and every printed copy stop validating at once. Audited.
+ * POST /api/hris/attendance/qr/rotate — replaces the outlet seed, which changes
+ * every day key at once; the QR on the display and every printed copy stop
+ * validating. Audited. Cloud only: on an edge it throws before touching the
+ * table (the edge holds no seed).
  */
 export async function rotateAttendanceQrSecret(
   context: ScopedTenantContext,
   actorUserId: string,
   body: RotateQrBody,
   now = new Date(),
+  options: Pick<AttendanceQrOptions, "edgeMode"> = {},
 ): Promise<AttendanceQrRotation> {
+  if (options.edgeMode ?? isEdgeMode())
+    throw new HttpError(
+      404,
+      "CLOUD_ONLY_ROUTE",
+      "The QR key can only be rotated on the cloud.",
+    );
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     await assertManagesOutlet(tx, context, access, body.outletId);

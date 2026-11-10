@@ -38,9 +38,25 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ulidToUuid } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { outletIdSchema, ulidToUuid } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import {
+  getAttendanceQr,
+  rotateAttendanceQrSecret,
+} from "../services/hris-attendance.service.ts";
+import {
+  deriveQrDayKeys,
+  qrDayIndexOfWindow,
+  validateQr,
+  seedQrKeySource,
+  type QrKeySource,
+} from "../services/hris-attendance-qr.ts";
+import { qrWindowOf } from "../services/hris-attendance-logic.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
 const app = createApp();
@@ -338,6 +354,7 @@ let geoFlagOutlet: string;
 let deviceOutlet: string;
 let qrOutlet: string;
 let qrRotateOutlet: string;
+let qrEdgeOutlet: string;
 let shiftOutlet: string;
 let ownOutlet: string;
 
@@ -352,6 +369,7 @@ beforeAll(async () => {
   deviceOutlet = await seedOutlet("perangkat");
   qrOutlet = await seedOutlet("qr");
   qrRotateOutlet = await seedOutlet("qr rotasi");
+  qrEdgeOutlet = await seedOutlet("qr edge");
   shiftOutlet = await seedOutlet("shift");
   ownOutlet = await seedOutlet("data sendiri");
   const outlets = [
@@ -360,6 +378,7 @@ beforeAll(async () => {
     deviceOutlet,
     qrOutlet,
     qrRotateOutlet,
+    qrEdgeOutlet,
     shiftOutlet,
     ownOutlet,
   ];
@@ -397,6 +416,7 @@ beforeAll(async () => {
   await setPolicy(admin, deviceOutlet, { requireDeviceBinding: true });
   await setPolicy(admin, qrOutlet);
   await setPolicy(admin, qrRotateOutlet);
+  await setPolicy(admin, qrEdgeOutlet);
   await setPolicy(admin, shiftOutlet, {
     geofenceRadiusM: 500,
   });
@@ -768,6 +788,169 @@ describe("rotating QR", () => {
   });
 });
 
+describe("T3 QR v2 in EDGE_MODE (card C4, legend-cku1m)", () => {
+  const context = () =>
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenant.id as never,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(qrEdgeOutlet)] },
+    );
+  const secretRows = async () =>
+    asTenant(async (client) => {
+      const { rows } = await client.query(
+        "SELECT 1 FROM attendance_qr_secrets WHERE tenant_id = $1 AND outlet_id = $2",
+        [tenant.id, qrEdgeOutlet],
+      );
+      return rows.length;
+    });
+  const noKeys: QrKeySource = { dayKey: async () => null };
+
+  it("the edge display with no key answers 503 QR_KEY_UNAVAILABLE and creates no seed", async () => {
+    await expect(
+      getAttendanceQr(
+        context(),
+        mgrUserId,
+        { outletId: outletIdSchema.parse(qrEdgeOutlet) },
+        new Date(),
+        { edgeMode: true, keySource: noKeys },
+      ),
+    ).rejects.toMatchObject({ status: 503, code: "QR_KEY_UNAVAILABLE" });
+    expect(await secretRows()).toBe(0);
+  });
+
+  it("the edge display with the real edge source (no key table row) also leaves attendance_qr_secrets empty", async () => {
+    // Without C1's table the raw read fails; with it the read is empty. Either
+    // way no seed may be created.
+    await getAttendanceQr(
+      context(),
+      mgrUserId,
+      { outletId: outletIdSchema.parse(qrEdgeOutlet) },
+      new Date(),
+      { edgeMode: true },
+    ).catch(() => undefined);
+    expect(await secretRows()).toBe(0);
+  });
+
+  it("rotateAttendanceQrSecret throws on an edge and writes nothing", async () => {
+    await expect(
+      rotateAttendanceQrSecret(
+        context(),
+        mgrUserId,
+        {
+          outletId: outletIdSchema.parse(qrEdgeOutlet),
+          idempotencyKey: key(),
+        },
+        new Date(),
+        { edgeMode: true },
+      ),
+    ).rejects.toBeInstanceOf(Error);
+    expect(await secretRows()).toBe(0);
+  });
+
+  it("EDGE_MODE=true in the process but runtime state not yet flipped (boot window) still counts as an edge", async () => {
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      const outletId = outletIdSchema.parse(qrEdgeOutlet);
+      const shown = await getAttendanceQr(
+        context(),
+        mgrUserId,
+        { outletId },
+        new Date(),
+      ).catch((error: unknown) => error);
+      expect(shown).toBeInstanceOf(Error);
+      await expect(
+        rotateAttendanceQrSecret(context(), mgrUserId, {
+          outletId,
+          idempotencyKey: key(),
+        }),
+      ).rejects.toBeInstanceOf(Error);
+      expect(await secretRows()).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
+  });
+
+  it("an edge never validates a QR clock-in itself (fails closed)", async () => {
+    // Design §3.2/T4: the edge rejects rotating_qr before this point; if a call
+    // gets here anyway, a token that is valid on the cloud must not count.
+    const staff = await newStaff(qrEdgeOutlet);
+    const shown = await mgr.get(
+      `/api/hris/attendance/qr?outletId=${qrEdgeOutlet}`,
+    );
+    expect(shown.status, JSON.stringify(shown.body)).toBe(200);
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      const response = await clock(staff.client, {
+        method: "rotating_qr",
+        location: null,
+        qrToken: shown.body.data.token,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(JSON.stringify(response.body)).toContain("qr_token_invalid");
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
+  });
+
+  it("a token an edge shows (day key only) is accepted by the cloud clock-in", async () => {
+    // Cloud creates the seed on first read; derive what the snapshot would send.
+    const first = await mgr.get(
+      `/api/hris/attendance/qr?outletId=${qrEdgeOutlet}`,
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const { rows } = await asTenant((client) =>
+      client.query(
+        "SELECT seed FROM attendance_qr_secrets WHERE tenant_id = $1 AND outlet_id = $2",
+        [tenant.id, qrEdgeOutlet],
+      ),
+    );
+    const seed = rows[0].seed as Buffer;
+    const now = new Date();
+    const day = qrDayIndexOfWindow(qrWindowOf(now.getTime()));
+    const keys = new Map(
+      deriveQrDayKeys(seed, tenant.id, qrEdgeOutlet, day - 1, 5).map(
+        (entry) => [entry.dayIndex, entry.key] as const,
+      ),
+    );
+    const edge: QrKeySource = {
+      dayKey: async (_t, _o, d) => keys.get(d) ?? null,
+    };
+    const shown = await getAttendanceQr(
+      context(),
+      mgrUserId,
+      { outletId: outletIdSchema.parse(qrEdgeOutlet) },
+      now,
+      { edgeMode: true, keySource: edge },
+    );
+    expect(shown.token.startsWith("2.")).toBe(true);
+    expect(shown.token).toBe(first.body.data.token);
+    const cloud = seedQrKeySource(async () => seed);
+    expect(
+      await validateQr(
+        cloud,
+        tenant.id,
+        qrEdgeOutlet,
+        shown.token,
+        now.getTime(),
+      ),
+    ).toBe(true);
+    const staff = await newStaff(qrEdgeOutlet);
+    const response = await clock(staff.client, {
+      method: "rotating_qr",
+      location: null,
+      qrToken: shown.token,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+  });
+});
+
 // ---- late, early leave and overtime against the shift ------------------------
 
 describe("shift timing", () => {
@@ -863,6 +1046,15 @@ describe("manual correction method", () => {
   it("[F25] the clock endpoint refuses method manual_correction 422 and stores no log", async () => {
     const staff = await newStaff(ownOutlet, "Staf Koreksi Palsu");
     const response = await clock(staff.client, { method: "manual_correction" });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await storedLogs(staff.employeeId)).toHaveLength(0);
+  });
+});
+
+describe("outlet_device method (legend-hwn02)", () => {
+  it("[F25] the clock endpoint refuses method outlet_device 422 until the edge path exists and stores no log", async () => {
+    const staff = await newStaff(ownOutlet, "Staf Layar Outlet Palsu");
+    const response = await clock(staff.client, { method: "outlet_device" });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
     expect(await storedLogs(staff.employeeId)).toHaveLength(0);
   });

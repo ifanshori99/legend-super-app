@@ -15,6 +15,7 @@ import type {
   AttendanceCorrectionStatus,
   AttendanceFlagReason,
   AttendanceLog,
+  AttendanceMethod,
   AttendanceType,
   AttendanceValidity,
   ShiftAssignment,
@@ -141,9 +142,7 @@ export function typeTitleKey(type: AttendanceType): MessageKey {
   return `hris.attendance.typeTitle.${type}`;
 }
 
-export function methodLabelKey(
-  method: "selfie_geo" | "rotating_qr" | "manual_correction",
-): MessageKey {
+export function methodLabelKey(method: AttendanceMethod): MessageKey {
   return `hris.method.${method}`;
 }
 
@@ -212,7 +211,7 @@ export function correctionStatusKey(
 export function possibleCauses(
   validity: AttendanceValidity,
   submitted: {
-    method: "selfie_geo" | "rotating_qr" | "manual_correction";
+    method: AttendanceMethod;
     selfie: boolean;
   },
 ): AttendanceFlagReason[] {
