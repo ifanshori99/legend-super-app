@@ -304,7 +304,7 @@ function byTieBreak(a: string, b: string): [string, string] {
 async function seedMemberProfile(
   tenantId: string,
   userId: string,
-  options: { whatsappHash?: string | null } = {},
+  options: { whatsappHash?: string | null; status?: string } = {},
 ) {
   const id = randomUUID();
   const whatsappHash = options.whatsappHash ?? null;
@@ -318,7 +318,7 @@ async function seedMemberProfile(
         tenantId,
         userId,
         whatsappHash,
-        whatsappHash ? "active" : "pending_verification",
+        options.status ?? (whatsappHash ? "active" : "pending_verification"),
         whatsappHash ? "2026-01-02T00:00:00Z" : null,
       ],
     ),
@@ -745,6 +745,61 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
       expect(await claimedFor(v.userId)).toBe(claimedBefore + 1);
     });
 
+    it("V survives with U's data: V's completed but unclaimed challenges are cancelled in every tenant, claimed and foreign ones stay", async () => {
+      const v = await whatsAppOnlyAccount();
+      const u = await signedInAccount();
+      const bystander = await signedInAccount();
+      await makeOlder(v, u);
+      await toGoogleAccount(u.userId);
+      const second = await createWorld();
+      const seedChallenge = async (
+        tenantId: string,
+        matchedUserId: string,
+        issued: boolean,
+      ) => {
+        const id = randomUUID();
+        await owner.query(
+          `INSERT INTO login_challenges
+             (id, tenant_id, channel, code_hash, browser_binding_hash, matched_user_id,
+              status, expires_at, completed_at, session_issued_at)
+           VALUES ($1, $2, 'whatsapp_inbound', $3, $4, $5, 'completed',
+                   now() + interval '1 hour', now(), $6)`,
+          [
+            id,
+            tenantId,
+            hex64(),
+            hex64(),
+            matchedUserId,
+            issued ? new Date() : null,
+          ],
+        );
+        return id;
+      };
+      const sameTenant = await seedChallenge(TENANT_A, v.userId, false);
+      const otherTenant = await seedChallenge(second.tenantId, v.userId, false);
+      const claimed = await seedChallenge(second.tenantId, v.userId, true);
+      const foreign = await seedChallenge(
+        second.tenantId,
+        bystander.userId,
+        false,
+      );
+      const statusOf = async (id: string) =>
+        (
+          await owner.query<{ status: string }>(
+            "SELECT status FROM login_challenges WHERE id = $1",
+            [id],
+          )
+        ).rows[0]!.status;
+
+      const { delivered } = await link(u.client);
+      expect(delivered.body.data.completed).toBe(1);
+
+      expect(await statusOf(sameTenant)).toBe("cancelled");
+      expect(await statusOf(otherTenant)).toBe("cancelled");
+      expect(await statusOf(claimed)).toBe("completed");
+      expect(await statusOf(foreign)).toBe("completed");
+    });
+
     it("breaks an age tie with the smaller id, in either direction", async () => {
       const v = await whatsAppOnlyAccount();
       const u = await signedInAccount();
@@ -1019,7 +1074,11 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
       const u = await signedInAccount();
       await makeOlder(v, u);
       await toGoogleAccount(u.userId);
-      await seedMemberProfile(TENANT_A, v.userId, { whatsappHash: hex64() });
+      // V's profile holds a consent, so it is not empty either: both have content.
+      const vProfile = await seedMemberProfile(TENANT_A, v.userId, {
+        whatsappHash: hex64(),
+      });
+      await seedConsent(TENANT_A, vProfile, { purpose: "loyalty" });
       const uProfile = await seedMemberProfile(TENANT_A, u.userId);
       // A profile of U in another tenant that alone could be moved: the refusal
       // must leave it untouched too.
@@ -1052,9 +1111,11 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
       const u = await signedInAccount();
       await makeOlder(v, u);
       await toGoogleAccount(u.userId);
-      await seedMemberProfile(world.tenantId, v.userId, {
+      // V's profile holds a consent, so it is not empty either: both have content.
+      const vProfile = await seedMemberProfile(world.tenantId, v.userId, {
         whatsappHash: hex64(),
       });
+      await seedConsent(world.tenantId, vProfile, { purpose: "loyalty" });
       const uProfile = await seedMemberProfile(world.tenantId, u.userId);
       await seedOrder(world.tenantId, {
         outletId: world.outletA,
@@ -1067,17 +1128,139 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
       );
     });
 
-    it("refuses when both accounts have a profile and the absorbed V's holds a WhatsApp number", async () => {
+    it("refuses when both accounts have a profile, the absorbed V's holds a WhatsApp number and the survivor U's holds a consent", async () => {
       const v = await whatsAppOnlyAccount();
       const u = await signedInAccount();
       await makeOlder(u, v);
       const vProfile = await seedMemberProfile(TENANT_A, v.userId, {
         whatsappHash: hex64(),
       });
-      await seedMemberProfile(TENANT_A, u.userId);
+      const uProfile = await seedMemberProfile(TENANT_A, u.userId);
+      await seedConsent(TENANT_A, uProfile, {
+        purpose: "loyalty",
+        decision: "granted",
+        policyVersion: "2026-01",
+      });
 
       await expectProfileConflict(v, u);
       expect((await profileRow(TENANT_A, vProfile)).user_id).toBe(v.userId);
+      expect(await profileRow(TENANT_A, uProfile)).toMatchObject({
+        user_id: u.userId,
+        membership_status: "pending_verification",
+        merged_into_profile_id: null,
+      });
+    });
+
+    it("survivor U's profile is empty and absorbed V's holds points: V's profile follows U, U's is closed into it, the ledger is untouched", async () => {
+      const v = await whatsAppOnlyAccount();
+      const u = await signedInAccount();
+      await makeOlder(u, v);
+      const uProfile = await seedMemberProfile(world.tenantId, u.userId);
+      const vProfile = await seedMemberProfile(world.tenantId, v.userId, {
+        whatsappHash: hex64(),
+      });
+      await grantPoints(world.tenantId, vProfile, 80);
+      const ledgerBefore = await ledgerOf(world.tenantId, vProfile);
+      expect(ledgerBefore).toHaveLength(1);
+
+      const { delivered } = await link(u.client);
+      expect(delivered.body.data.completed).toBe(1);
+
+      expect(await profileRow(world.tenantId, uProfile)).toMatchObject({
+        membership_status: "closed",
+        user_id: null,
+        merged_into_profile_id: vProfile,
+      });
+      const kept = await profileRow(world.tenantId, vProfile);
+      expect(kept.user_id).toBe(u.userId);
+      expect(kept.membership_status).not.toBe("closed");
+      // Ledger: same rows on V's profile, none on the closed one.
+      expect(await ledgerOf(world.tenantId, vProfile)).toEqual(ledgerBefore);
+      expect(await ledgerOf(world.tenantId, uProfile)).toHaveLength(0);
+
+      const [row] = await merges();
+      expect(row!.profile_moves).toEqual([
+        {
+          tenantId: world.tenantId,
+          profileId: uProfile,
+          action: "survivor_closed_into_absorbed",
+        },
+      ]);
+    });
+
+    it("refuses when the survivor U's profile is empty but suspended: closing it would drop the suspension", async () => {
+      const v = await whatsAppOnlyAccount();
+      const u = await signedInAccount();
+      await makeOlder(u, v);
+      const uProfile = await seedMemberProfile(world.tenantId, u.userId, {
+        whatsappHash: hex64(),
+        status: "suspended",
+      });
+      const vProfile = await seedMemberProfile(world.tenantId, v.userId, {
+        whatsappHash: hex64(),
+      });
+      await grantPoints(world.tenantId, vProfile, 40);
+
+      await expectProfileConflict(v, u);
+      expect(await profileRow(world.tenantId, uProfile)).toMatchObject({
+        user_id: u.userId,
+        membership_status: "suspended",
+        merged_into_profile_id: null,
+      });
+      expect((await profileRow(world.tenantId, vProfile)).user_id).toBe(
+        v.userId,
+      );
+    });
+
+    it("an empty survivor profile with a WhatsApp number and active status still counts as empty, and the number does not collide", async () => {
+      const v = await whatsAppOnlyAccount();
+      const u = await signedInAccount();
+      await makeOlder(u, v);
+      // U's profile holds the very number V proves: onWhatsAppVerified later
+      // sets that hash on V's profile, so U's must be out of the unique index.
+      const uProfile = await seedMemberProfile(TENANT_A, u.userId, {
+        whatsappHash: await whatsAppDigest(SENDER),
+      });
+      const vProfile = await seedMemberProfile(TENANT_A, v.userId, {
+        whatsappHash: hex64(),
+      });
+
+      const { delivered } = await link(u.client);
+      expect(delivered.body.data.completed).toBe(1);
+
+      expect(await profileRow(TENANT_A, uProfile)).toMatchObject({
+        membership_status: "closed",
+        user_id: null,
+        merged_into_profile_id: vProfile,
+      });
+      // V's profile carries a number, so it has content; hash only is enough.
+      const kept = await profileRow(TENANT_A, vProfile);
+      expect(kept.user_id).toBe(u.userId);
+      expect(kept.whatsapp_hash).toBe(await whatsAppDigest(SENDER));
+    });
+
+    it("refuses, writing nothing, when both profiles hold points", async () => {
+      const v = await whatsAppOnlyAccount();
+      const u = await signedInAccount();
+      await makeOlder(u, v);
+      const uProfile = await seedMemberProfile(world.tenantId, u.userId);
+      const vProfile = await seedMemberProfile(world.tenantId, v.userId, {
+        whatsappHash: hex64(),
+      });
+      await grantPoints(world.tenantId, uProfile, 30);
+      await grantPoints(world.tenantId, vProfile, 80);
+
+      await expectProfileConflict(v, u);
+      expect(await profileRow(world.tenantId, uProfile)).toMatchObject({
+        user_id: u.userId,
+        membership_status: "pending_verification",
+        merged_into_profile_id: null,
+      });
+      expect((await profileRow(world.tenantId, vProfile)).user_id).toBe(
+        v.userId,
+      );
+      expect(await ledgerOf(world.tenantId, uProfile)).toHaveLength(1);
+      expect(await ledgerOf(world.tenantId, vProfile)).toHaveLength(1);
     });
 
     it("a plain link calls onWhatsAppVerified: a pending profile becomes active when loyalty consent is on", async () => {

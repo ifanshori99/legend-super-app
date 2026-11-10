@@ -208,7 +208,13 @@ session is re-issued to the survivor (see 4).
    `(tenant_id, S)`, `merged_into_profile_id` = S's profile), and A's latest
    consent decisions are re-recorded onto S's profile with
    `recordMemberConsentInTx` (source `member_pwa`, same policy version; a
-   grant of an outdated version is not carried over). Anything else refuses
+   grant of an outdated version is not carried over). If A's profile is not
+   empty but S's is truly empty (the same row scan, plus no `consents` row;
+   S's hash and status do not count, S usually holds the number), S's profile
+   is closed the same way (`merged_into_profile_id` = A's profile) and A's
+   profile is repointed to S (action `survivor_closed_into_absorbed` in
+   `identity_merges.profile_moves`). Anything else (both have content, or S's
+   profile is closed) refuses
    with `IDENTITY_MERGE_NEEDS_SUPPORT` (`profile_conflict`). After the merge
    `onWhatsAppVerified` runs for the survivor, so a `pending_verification`
    profile of the signed-in tenant becomes `active` when loyalty consent is on.

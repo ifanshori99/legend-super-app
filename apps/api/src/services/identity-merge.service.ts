@@ -87,7 +87,15 @@ export type MergeOutcome =
 export type ProfileMove = {
   tenantId: string;
   profileId: string;
-  action: "moved_to_survivor" | "closed_into_survivor";
+  /**
+   * `profileId` is the profile this action touches: the one repointed
+   * (`moved_to_survivor`) or the one closed (`closed_into_survivor` closes the
+   * absorbed account's, `survivor_closed_into_absorbed` the survivor's).
+   */
+  action:
+    | "moved_to_survivor"
+    | "closed_into_survivor"
+    | "survivor_closed_into_absorbed";
 };
 
 export type MergeInput = {
@@ -165,30 +173,16 @@ async function profilesOfUser(
 const UNMAPPED_PROFILE_TABLES = ["feedback", "referrals"] as const;
 
 /**
- * True when the profile can be closed without losing anything: no WhatsApp
- * hash, still `pending_verification`, and no row in any table that points at a
- * profile through `customer_profile_id` (point_ledger, reward_redemptions,
- * vouchers, orders, customer_visits, mission_progress, and any later one).
- * Runs under the profile's tenant (`inTenant`).
+ * True when no table holds a row for the profile: nothing in any table that
+ * points at a profile through `customer_profile_id` (point_ledger,
+ * reward_redemptions, vouchers, orders, customer_visits, mission_progress, and
+ * any later one), and none of the `UNMAPPED_PROFILE_TABLES` exists (fail
+ * closed). Runs under the profile's tenant (`inTenant`).
  */
-async function profileIsEmpty(
+async function profileHasNoRows(
   tx: Transaction,
   profileId: string,
 ): Promise<boolean> {
-  const [profile] = await tx
-    .select({
-      status: customerProfiles.membershipStatus,
-      whatsappHash: customerProfiles.whatsappHash,
-    })
-    .from(customerProfiles)
-    .where(eq(customerProfiles.id, profileId));
-  if (
-    !profile ||
-    profile.status !== "pending_verification" ||
-    profile.whatsappHash !== null
-  )
-    return false;
-
   for (const table of UNMAPPED_PROFILE_TABLES) {
     const exists = await tx.execute(
       sql`SELECT to_regclass(${`public.${table}`}) IS NOT NULL AS present`,
@@ -212,6 +206,61 @@ async function profileIsEmpty(
     if (found.rows[0]?.present !== false) return false;
   }
   return true;
+}
+
+/**
+ * True when the absorbed profile can be closed without losing anything: no
+ * WhatsApp hash, still `pending_verification`, and no row anywhere
+ * (`profileHasNoRows`). Runs under the profile's tenant (`inTenant`).
+ */
+async function profileIsEmpty(
+  tx: Transaction,
+  profileId: string,
+): Promise<boolean> {
+  const [profile] = await tx
+    .select({
+      status: customerProfiles.membershipStatus,
+      whatsappHash: customerProfiles.whatsappHash,
+    })
+    .from(customerProfiles)
+    .where(eq(customerProfiles.id, profileId));
+  if (
+    !profile ||
+    profile.status !== "pending_verification" ||
+    profile.whatsappHash !== null
+  )
+    return false;
+  return profileHasNoRows(tx, profileId);
+}
+
+/**
+ * True when the survivor's profile can be closed without losing anything: no
+ * row anywhere (`profileHasNoRows`) and no consent decision. Unlike the
+ * absorbed profile, its WhatsApp hash and status do not matter: the survivor
+ * holds the number (or its owner just proved it), so an active profile with a
+ * hash is the usual case. Runs under the profile's tenant (`inTenant`).
+ */
+async function survivorProfileIsEmpty(
+  tx: Transaction,
+  tenantId: string,
+  profileId: string,
+): Promise<boolean> {
+  // A suspension is a moderation decision: closing the profile would drop it.
+  const [profile] = await tx
+    .select({ status: customerProfiles.membershipStatus })
+    .from(customerProfiles)
+    .where(eq(customerProfiles.id, profileId));
+  if (!profile || profile.status === "suspended" || profile.status === "closed")
+    return false;
+  const [consent] = await tx
+    .select({ seq: consents.seq })
+    .from(consents)
+    .where(
+      and(eq(consents.tenantId, tenantId), eq(consents.subjectId, profileId)),
+    )
+    .limit(1);
+  if (consent) return false;
+  return profileHasNoRows(tx, profileId);
 }
 
 /**
@@ -298,8 +347,15 @@ async function carryConsents(
  *   (`membership_status = 'closed'`, `user_id = NULL`, `merged_into_profile_id`
  *   = S's profile) and A's latest consent decisions are re-recorded on S's
  *   profile (`carryConsents`);
- * - anything else: `refused` (`profile_conflict`), the caller refuses the whole
- *   merge with `IDENTITY_MERGE_NEEDS_SUPPORT`.
+ * - both have one, A's has content and S's is truly empty
+ *   (`survivorProfileIsEmpty`: no row anywhere, no consent; hash and status do
+ *   not count): S's profile is closed (`membership_status = 'closed'`,
+ *   `user_id = NULL`, `merged_into_profile_id` = A's profile) and A's profile
+ *   is repointed to S, so the history follows the account that stays. Action
+ *   `survivor_closed_into_absorbed`;
+ * - anything else (both have content, or S's profile is closed): `refused`
+ *   (`profile_conflict`), the caller refuses the whole merge with
+ *   `IDENTITY_MERGE_NEEDS_SUPPORT`.
  * The point ledger is append-only and keys on `customer_profile_id`, which
  * survives every case: no ledger row is ever written, updated or deleted here.
  */
@@ -318,7 +374,10 @@ export async function moveMemberProfiles(
     ]),
   );
 
-  const plan: (ProfileMove & { survivorProfileId: string | null })[] = [];
+  const plan: (ProfileMove & {
+    survivorProfileId: string | null;
+    absorbedProfileId?: string;
+  })[] = [];
   for (const absorbed of absorbedProfiles) {
     const survivorProfile = survivorProfiles.get(absorbed.tenantId) ?? null;
     // A closed survivor profile cannot take consent or history (review F2).
@@ -337,12 +396,25 @@ export async function moveMemberProfiles(
     const empty = await inTenant(tx, absorbed.tenantId, () =>
       profileIsEmpty(tx, absorbed.profileId),
     );
-    if (!empty) return { kind: "refused", reason: "profile_conflict" };
+    if (empty) {
+      plan.push({
+        tenantId: absorbed.tenantId,
+        profileId: absorbed.profileId,
+        action: "closed_into_survivor",
+        survivorProfileId,
+      });
+      continue;
+    }
+    const survivorEmpty = await inTenant(tx, absorbed.tenantId, () =>
+      survivorProfileIsEmpty(tx, absorbed.tenantId, survivorProfileId),
+    );
+    if (!survivorEmpty) return { kind: "refused", reason: "profile_conflict" };
     plan.push({
       tenantId: absorbed.tenantId,
-      profileId: absorbed.profileId,
-      action: "closed_into_survivor",
+      profileId: survivorProfileId,
+      action: "survivor_closed_into_absorbed",
       survivorProfileId,
+      absorbedProfileId: absorbed.profileId,
     });
   }
 
@@ -354,6 +426,30 @@ export async function moveMemberProfiles(
           .update(customerProfiles)
           .set({ userId: input.survivorUserId, updatedAt: input.now })
           .where(eq(customerProfiles.id, step.profileId));
+        return;
+      }
+      if (
+        step.action === "survivor_closed_into_absorbed" &&
+        step.absorbedProfileId
+      ) {
+        await withProfileLock(tx, step.tenantId, step.survivorProfileId);
+        await withProfileLock(tx, step.tenantId, step.absorbedProfileId);
+        // Close first, then repoint: the one-profile-per-user index never sees
+        // two live profiles of the survivor. The closed row leaves the
+        // WhatsApp-number unique index too, before onWhatsAppVerified runs.
+        await tx
+          .update(customerProfiles)
+          .set({
+            membershipStatus: "closed",
+            userId: null,
+            mergedIntoProfileId: step.absorbedProfileId,
+            updatedAt: input.now,
+          })
+          .where(eq(customerProfiles.id, step.survivorProfileId));
+        await tx
+          .update(customerProfiles)
+          .set({ userId: input.survivorUserId, updatedAt: input.now })
+          .where(eq(customerProfiles.id, step.absorbedProfileId));
         return;
       }
       await withProfileLock(tx, step.tenantId, step.survivorProfileId);
@@ -604,7 +700,8 @@ export async function mergeAbsorbedIntoSurvivor(
     // A session V held before (an earlier owner of a recycled number) must not
     // read that data: only the session the poll hands out after the merge is
     // valid. Completed but unclaimed WhatsApp challenges of V are cancelled for
-    // the same reason (this tenant's rows; the transaction runs in one tenant).
+    // the same reason. `login_challenges` is global (no row level security), so
+    // the update reaches every tenant's rows.
     await tx.delete(session).where(eq(session.userId, survivorUserId));
     await tx
       .update(loginChallenges)
