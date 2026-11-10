@@ -1790,3 +1790,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Statistik gelombang (sesi 0ca3521e, 11:01 sampai 13:31 UTC): biaya total 5966k (utama sonnet 4272k, subagent opus 982k, sonnet 656k, haiku 55k), 13 subagent, 1 compact. `parallel-report` tidak bisa dijalankan: folder sesi worktree tidak ada.
 - Batas memori: container Postgres tes dibatasi 512 MiB, puncak terukur 447 MiB di run 3; Colima 3 GiB (bebas sekitar 1 GiB saat suite jalan). Tidak ada crash di run 2 dan 3.
 - Langkah berikut: founder gate sebelum merge ke main; kartu untuk flake `member-signin` dan `menu-print-db` di full run.
+
+## legend-u37u3 tombol sinkron platform (ui-engineer, cabang `ws/u37u3-platform-sync`)
+
+- Sudah: lencana retrying/needs_action (dari 7134de77, di-cherry-pick) ditambah tombol Kirim ulang dan Tandai sudah ditangani (Q58, API legend-eyqvo di m1). Kirim ulang sekali per tekan; Tandai memakai konfirmasi dengan catatan opsional. Tombol status terkunci saat aksi sinkron berjalan; 409 DELIVERY_SYNC_NOT_PENDING jadi toast. Screenshot di `docs/design/screenshots/u37u3/`.
+- Bukti: typecheck web + eslint bersih, e2e mock `legend-u37u3` 15/15.
+- Celah: belum diuji terhadap API nyata; fokus setelah sukses tidak dipindah; target sentuh 44 px belum dicek pada emulasi touch.
