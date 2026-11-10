@@ -139,6 +139,7 @@ let staff2Client: Client; // another employee
 let staff2Employee: string;
 let outletStaffClient: Client; // self.loan.request at outlet scope only
 let noEmployeeClient: Client; // self right but no employee row
+let profileOnlyEmployee: string;
 let profileOnlyClient: Client; // self.profile.view + employee row, no self.loan.request
 let isolated: IsolatedTenant;
 let isolatedHr: Client;
@@ -233,7 +234,11 @@ beforeAll(async () => {
   const profileOnly = await signedInClient("Loan profile-only API");
   await grantRole(tenant.id, profileOnly.userId, ["self.profile.view"]);
   profileOnlyClient = profileOnly.client;
-  await seedEmployee(tenant.id, outletId, profileOnly.userId);
+  profileOnlyEmployee = await seedEmployee(
+    tenant.id,
+    outletId,
+    profileOnly.userId,
+  );
 
   const noEmployee = await signedInClient("Loan no employee API");
   await grantRole(tenant.id, noEmployee.userId, ["self.loan.request"]);
@@ -369,6 +374,13 @@ describe("kasbon API: request (self-service)", () => {
       .send(newLoan());
     expect(denied.status).toBe(403);
     expect((await profileOnlyClient.get(ME)).status).toBe(403);
+    const written = await asTenant((db) =>
+      db.query(
+        "SELECT count(*)::int AS n FROM employee_loans WHERE employee_id = $1",
+        [profileOnlyEmployee],
+      ),
+    );
+    expect(written.rows[0].n).toBe(0);
     // the request-only staff account still works and sees only its own loans
     const own = await request(staffClient);
     const list = await staffClient.get(ME);
