@@ -37,6 +37,7 @@ import {
   type EdgeLinkHandle,
   type EdgeRuntimeHandle,
 } from "./edge/runtime.ts";
+import { startEdgePrintAgent } from "./edge/print/runtime.ts";
 
 const app = createApp();
 // WS-05 payment gateway (legend-b9i): DOIT, fails closed without credentials.
@@ -141,11 +142,16 @@ const stopKdsWakeups = listenKdsWakeups(pool, kdsRealtime.dispatch).catch(
 // /api/edge-link; an edge node runs its boot guards and opens the link to the
 // cloud. A misconfigured or unprovisioned edge node refuses to keep running.
 let edgeRuntime: EdgeRuntimeHandle | null = null;
+// Print Agent (legend-46p, PRD §3 F5, EDG-05): edge mode only, bound to the
+// node's own tenant + outlet once the edge runtime has its identity.
+let printAgent: { stop(): Promise<void> } | null = null;
 let edgeLink: EdgeLinkHandle | null = null;
 const edgeReady = (async () => {
   try {
-    if (env.EDGE_MODE) edgeRuntime = await startEdgeRuntime();
-    else
+    if (env.EDGE_MODE) {
+      edgeRuntime = await startEdgeRuntime();
+      printAgent = startEdgePrintAgent();
+    } else
       edgeLink = await registerEdgeLink(server, {
         // Upgrade rate limit per real client, not per proxy (legend-wg5t).
         clientAddress: expressClientAddress(app),
@@ -200,6 +206,7 @@ async function shutdown(signal: string) {
     await stopKdsWakeups
   )();
   await edgeReady.catch(() => {});
+  await printAgent?.stop();
   await edgeRuntime?.stop();
   await edgeLink?.close();
   server.closeIdleConnections();

@@ -74,6 +74,7 @@ export * from "./edge-deferred-event";
 export * from "./edge-node";
 export * from "./edge-hris";
 export * from "./edge-sync-conflict";
+export * from "./edge-print";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
 // TEN-09 tenant config templates + import runs (legend-34c).

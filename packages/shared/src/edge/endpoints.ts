@@ -30,6 +30,7 @@ import {
   edgeNodeSchema,
   printJobSchema,
   printJobStatusSchema,
+  printerStatusViewSchema,
 } from "./schemas.ts";
 
 const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
@@ -118,6 +119,13 @@ export const retryPrintJob = defineEndpoint({
   params: printJobParams,
   body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
   response: dataResponseSchema(printJobSchema),
+});
+
+/** Thermal printers of the outlet with their heartbeat status (F5, EDG-05). */
+export const listEdgePrinters = defineEndpoint({
+  method: "GET",
+  path: "/api/edge/printers",
+  response: dataResponseSchema(z.array(printerStatusViewSchema)),
 });
 
 export const deviceListQuerySchema = cursorPageQuerySchema.extend({

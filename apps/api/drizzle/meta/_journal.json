@@ -1611,6 +1611,20 @@
       "when": 1794324000000,
       "tag": "0243_tenant_config_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "7",
+      "when": 1794325000000,
+      "tag": "0244_edge_print",
+      "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "7",
+      "when": 1794326000000,
+      "tag": "0245_edge_print_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -111,6 +111,7 @@ import { hrisAttendanceCorrectionRouter } from "./hris-attendance-correction.rou
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
+import { edgePrintRouter } from "./edge-print.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
@@ -407,6 +408,7 @@ apiRouter.use("/ai", aiInsightsRouter);
 apiRouter.use("/edge/devices", edgeDeviceRouter);
 // Wi-Fi agent grants + staff revoke + walled garden (legend-hsk), also before /edge.
 apiRouter.use("/edge/wifi", edgeWifiRouter);
+apiRouter.use("/edge", edgePrintRouter);
 apiRouter.use("/edge", edgeRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
