@@ -224,3 +224,20 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0234, urut merge. `when
 - Perubahan kode di luar nomor: `device-pin.service.ts` dan `device-pin.routes.ts` (pepper per outlet, reset dan rehash dari jmsdx digabung dengan bukti versi PIN dan cek outlet kasir aktif dari u7g9w/aruta), `packages/shared/src/qr-order/guest.ts` (`payerSecret` bersama `requireBankForVaOnly`), `qr-order.service.ts` (satu impor `orderIssueCharges` dan `orderIssues`), `app.ts` (CORS membawa `X-Acting-Staff`, `X-Device-Token`, `X-Pin-Proof`).
 - Test dan docs yang bergantung nomor: `shareholder-version-policy-seed.test.ts` (idx 241, `when` 1794322000000), `data-import-registry.test.ts` (entri baru untuk 0217, 0239, 0241), komentar di `seed-dev-tenant.ts`, `access.service.ts`, `approval.ts`, `qr-order.ts`.
 - Lint dibersihkan setelah merge: impor tak terpakai di `open-bill.routes.ts` dan `order-recovery-charge-pos.ts`, tipe `any` di `order-issue-charge-cash-migration.test.ts`, variabel tak terpakai di `tests/ws07-profit-share-carry.test.mjs`.
+
+## Tambahan batch48c (penomoran ulang 0242 sampai 0246)
+
+Nomor sementara dari cabang dinomori ulang rapat sesudah 0241, urut merge. `when` naik 1000000 per migrasi mulai 1794323000000; snapshot dibuat ulang dari skema gabungan dengan `scripts/migration-renumber.mjs` (`node scripts/migration-renumber.mjs check --from-idx 242`). `db:generate` kosong sesudah tiap merge.
+
+| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
+|---|---|---|---|---|
+| 0242 | `0242_tenant_config_templates` | 0259 | ws/tenant-config-export | 1794323000000 |
+| 0243 | `0243_tenant_config_rls` | 0260 | ws/tenant-config-export | 1794324000000 |
+| 0244 | `0244_edge_print` | 0261 | ws/print-agent | 1794325000000 |
+| 0245 | `0245_edge_print_rls` | 0262 | ws/print-agent | 1794326000000 |
+| 0246 | `0246_payslip_pins` | 0257 | ws/hris-pii-pin | 1794327000000 |
+
+- Tanpa migrasi baru: ws/fe-small-tests, ws/u37u3-platform-sync, ws/fe-badge-theme, ws/ws01-staff-access, ws/ebt9f-me-outlets, ws/outlet-context-rollout, ws/duitku-codex-fix, ws/s5jup-duitku, ws/refund-recovery-fix.
+- **SQL diubah oleh merge train (temuan architect):** 0244 memindahkan lima FK ke `outlets` dan 0246 memindahkan dua FK ke `employees` ke dalam `CREATE TABLE` (pola 1, `docs/plan/contracts.md`); tanpa itu migrasi gagal untuk pemilik tanpa BYPASSRLS (`tenant context is required`). 0245 menambah `REVOKE DELETE, TRUNCATE` pada `edge_print_alerts` dan `edge_print_jobs` (kode tidak pernah menghapus baris di sana). Komentar penomoran di `0245` dan `edge-print.custom.sql` diperbarui.
+- **Perubahan kode karena tabrakan semantik:** PIN slip gaji (hris-pii-pin) ditulis terhadap `staffPinPepper(tenant, version)` lama; di batch48b pepper menjadi per outlet. Slip gaji milik karyawan, bukan outlet, jadi `device-pin-pepper.ts` mendapat `payslipPinPepper(tenant, version)` (per tenant, label HKDF sendiri `legend:payslip-pin-pepper:v{n}:{tenant}`, hanya di cloud) dan `payslip-pin.service.ts` memakainya. PIN slip gaji belum pernah disimpan di database bersama.
+- **PERTANYAAN TERBUKA untuk CTO:** `packages/shared/src/platform/config-codecs.ts` (legend-tct8) dan `configSectionItemSchemas` di `config.ts` (tenant-config-export) menggambarkan item roles, approval_policies, dan chart_of_accounts dalam dua bentuk (cabang ekspor memakai diskriminator `kind`, codec tidak). Sementara itu `configBundleSchema` menjalankan pemeriksaan codec hanya untuk bagian yang itemnya tanpa `kind`; bagian dengan `kind` diperiksa oleh skema ketat di batas server. Satu bentuk perlu dipilih.
