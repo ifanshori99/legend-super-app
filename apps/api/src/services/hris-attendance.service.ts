@@ -91,8 +91,10 @@ import {
   attendancePolicies,
   attendanceQrSecrets,
 } from "../db/schema/hris-attendance.ts";
+import type { DeviceType } from "../db/schema/device.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { EDGE_SELFIE_ERROR_CODES } from "@starter/shared/edge";
 import { env } from "../config/env.ts";
 import { loadEdgePeopleSyncState } from "../edge/people-snapshot-apply.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
@@ -908,14 +910,13 @@ export async function clockAttendance(
   const edgeMode = isEdgeMode();
   if (body.method === "outlet_device" && !edgeMode)
     throw validation("Metode layar outlet belum tersedia untuk absen.");
-  // The edge cannot check a geofence or a rotating QR (design 3.4 step 5): a
-  // request from an outlet device (it carries a device token) must use
-  // outlet_device. Without a token the old fail-closed path below still
-  // applies (hris-attendance-clock.test.ts: edge QR stays qr_token_invalid).
-  if (edgeMode && deviceToken !== null && body.method !== "outlet_device")
+  // The edge cannot check a geofence, a device binding or a rotating QR
+  // (design 3.4 step 5): in edge mode every method but outlet_device is 400,
+  // with or without a device token.
+  if (edgeMode && body.method !== "outlet_device")
     throw new HttpError(
       400,
-      "VALIDATION_ERROR",
+      EDGE_SELFIE_ERROR_CODES.ATTENDANCE_METHOD_NOT_ON_EDGE,
       "Metode ini hanya bisa dipakai lewat server cloud.",
     );
   const edgeClock =
@@ -994,12 +995,7 @@ export async function clockAttendance(
         tenantId,
         target.outletId,
       );
-      if (policy.requireSelfie)
-        throw new HttpError(
-          422,
-          "ATTENDANCE_REJECTED",
-          "Absensi ditolak: selfie_missing. Ambil selfie lalu kirim ulang.",
-        );
+      if (policy.requireSelfie) throw new EdgeSelfieMissingError();
     }
     if (body.photoUploadRef !== null)
       await assertSelfieUsable(
@@ -1075,6 +1071,20 @@ export async function clockAttendance(
   });
 }
 
+/** Device types that may clock on the edge (the outlet attendance screen). */
+const EDGE_CLOCK_DEVICE_TYPES: readonly DeviceType[] = ["pos", "display"];
+
+/**
+ * The edge refused an outlet_device clock because the policy needs a selfie
+ * and none came. The route answers it with the cloud rejection body.
+ */
+export class EdgeSelfieMissingError extends Error {
+  constructor() {
+    super("Absensi ditolak: selfie_missing. Ambil selfie lalu kirim ulang.");
+    this.name = "EdgeSelfieMissingError";
+  }
+}
+
 /** The roster copy counts as stale after this long without a cloud check. */
 const EDGE_ROSTER_STALE_MS = 24 * 60 * 60_000;
 
@@ -1098,6 +1108,10 @@ async function resolveEdgeClockDevice(
     nodeOutletId === undefined ? {} : { outletId: nodeOutletId },
   );
   if (device === null) throw forbidden();
+  // Only the outlet attendance screen (a pos or display device) may clock,
+  // and never one in training mode.
+  if (!EDGE_CLOCK_DEVICE_TYPES.includes(device.type) || device.trainingMode)
+    throw forbidden();
   const state = await loadEdgePeopleSyncState({
     claims: { tenantId, outletId: device.outletId } as Parameters<
       typeof loadEdgePeopleSyncState

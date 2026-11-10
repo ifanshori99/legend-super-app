@@ -66,7 +66,11 @@ import { signDeviceToken } from "../lib/device-token.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
-import { enrollDevice, revokeDevice } from "../services/device.service.ts";
+import {
+  enrollDevice,
+  revokeDevice,
+  setDeviceTrainingMode,
+} from "../services/device.service.ts";
 import { uploadEdgeSelfie } from "../services/edge-selfie.service.ts";
 import { rotateAttendanceQrSecret } from "../services/hris-attendance.service.ts";
 import { withEdgeModeEnv } from "./edge-mode-env.ts";
@@ -611,6 +615,54 @@ describe("T4.1 outlet device token (EDG-03)", () => {
   });
 });
 
+describe("T4.1b only pos and display devices may clock", () => {
+  const enrollAndClock = async (
+    type: "pos" | "display" | "kds" | "printer" | "waiter_phone",
+    training: boolean,
+  ) => {
+    const staff = await newStaff(`Staf Perangkat ${type}`);
+    const objectId = await sealedSelfie(staff.userId);
+    const enrolled = await enrollDevice(outletScope(outletId), actor, {
+      outletId,
+      type,
+      label: `Layar ${type} ${randomUUID().slice(0, 6)}`,
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    });
+    if (training)
+      await setDeviceTrainingMode(outletScope(outletId), actor, {
+        deviceId: enrolled.device.id,
+        trainingMode: true,
+      });
+    const response = await clockOnEdge(
+      staff.client,
+      clockBody({ photoUploadRef: objectId }),
+      enrolled.token,
+    );
+    return { staff, response };
+  };
+
+  it("a display device clocks in", async () => {
+    const { response } = await enrollAndClock("display", false);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+  });
+
+  it.each(["kds", "printer", "waiter_phone"] as const)(
+    "a %s device: 403 and nothing stored",
+    async (type) => {
+      const { staff, response } = await enrollAndClock(type, false);
+      expect(response.status, JSON.stringify(response.body)).toBe(403);
+      await nothingStored(staff.employeeId);
+    },
+  );
+
+  it("a pos device in training mode: 403 and nothing stored", async () => {
+    const { staff, response } = await enrollAndClock("pos", true);
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    await nothingStored(staff.employeeId);
+  });
+});
+
 describe("T4.2 employee and permission", () => {
   it("an onboarding employee may clock", async () => {
     const staff = await newStaff("Staf Onboarding", { status: "onboarding" });
@@ -655,7 +707,11 @@ describe("T4.3 selfie is required", () => {
       clockBody({ photoUploadRef: null }),
     );
     expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(JSON.stringify(response.body)).toContain("selfie_missing");
+    // Same body as the cloud rejection (hris-attendance.routes.ts).
+    expect(response.body.error.code).toBe("ATTENDANCE_REJECTED");
+    expect(response.body.error.details).toEqual([
+      { field: "reasons", message: "selfie_missing" },
+    ]);
     await nothingStored(staff.employeeId);
   });
 });
@@ -707,6 +763,7 @@ describe("T4.4 no geofence, device binding or QR on the edge", () => {
       }),
     );
     expect(response.status, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error.code).toBe("ATTENDANCE_METHOD_NOT_ON_EDGE");
     await nothingStored(staff.employeeId);
   });
 
@@ -722,6 +779,24 @@ describe("T4.4 no geofence, device binding or QR on the edge", () => {
       }),
     );
     expect(response.status, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error.code).toBe("ATTENDANCE_METHOD_NOT_ON_EDGE");
+    await nothingStored(staff.employeeId);
+  });
+
+  it("selfie_geo without any device token on the edge: 400 too", async () => {
+    const staff = await newStaff("Staf Selfie Geo Tanpa Token");
+    const objectId = await sealedSelfie(staff.userId);
+    const response = await clockOnEdge(
+      staff.client,
+      clockBody({
+        method: "selfie_geo",
+        photoUploadRef: objectId,
+        location: { ...CENTER, accuracyM: 5 },
+      }),
+      null,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error.code).toBe("ATTENDANCE_METHOD_NOT_ON_EDGE");
     await nothingStored(staff.employeeId);
   });
 });
