@@ -345,6 +345,13 @@ BEGIN
        AND (to_jsonb(NEW) - 'statement_file_key') = (to_jsonb(OLD) - 'statement_file_key') THEN
       RETURN NEW;
     END IF;
+    -- Reconcile an unverified recipient once, nothing else changing.
+    IF OLD.recipient_unverified = true AND OLD.recipient_user_id IS NULL
+       AND NEW.recipient_unverified = false
+       AND (to_jsonb(NEW) - ARRAY['recipient_user_id', 'recipient_unverified'])
+         = (to_jsonb(OLD) - ARRAY['recipient_user_id', 'recipient_unverified']) THEN
+      RETURN NEW;
+    END IF;
     IF to_jsonb(NEW) = to_jsonb(OLD) THEN
       RETURN NEW;
     END IF;

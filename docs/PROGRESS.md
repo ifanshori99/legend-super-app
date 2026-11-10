@@ -2101,3 +2101,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - m1 dimajukan fast-forward 46352cd5 -> edacffd2 lalu direfresh dengan commit docs ini; push ke origin tanpa force. Worktree 12 cabang yang sudah digabung dihapus (cabang lokal yang `git branch -d` tolak dibiarkan).
 - Keputusan Q8 (CTO): bentuk `kind` dari tenant-config-export jadi bentuk tunggal, codec ikut; kartu `legend-5cwrq` (P2). Jembatan `hasKind` di `configBundleSchema` tetap sampai kartu itu selesai.
 - Pemakaian: sesi ini 8827k biaya*, 19 subagent, compact 2. parallel-report tidak menemukan sesi di jendela `--since 20:00` (folder proyek berbeda), tidak dicatat per agent.
+## ps-405 (legend-9t04v, 11 Nov 2026): temuan Codex 405 profit share
+- Sudah: 0239 tidak lagi menyalin login saat migrasi ke laporan lama. Semua baris lama yang SUDAH dibayar ditandai `recipient_unverified`, penerima tetap NULL, tidak terbaca login mana pun. Owner merekonsiliasi lewat `GET/POST /api/tenant/profit-share/recipient-reconciliation` (audit `profit_share.recipient_reconciled`). Audit `approval.decided` kini memuat `status`, `level`, `actionType`.
+- Bukti: 4 file test (reconcile, sole-owner-self-approval, data-import-registry, recipient-version) 83 lulus; test audit gagal-dulu terbukti (baris dikembalikan: 1 gagal); typecheck, prettier (ts), eslint, `db:generate` kosong: hijau.
+- Perhatian rilis: 0239 diedit di tempat; DB dev/test yang sudah menerapkan 0239 harus di-reset.

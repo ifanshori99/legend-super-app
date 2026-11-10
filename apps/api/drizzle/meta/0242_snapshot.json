@@ -59774,6 +59774,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "recipient_unverified": {
+          "name": "recipient_unverified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "position": {
           "name": "position",
           "type": "integer",
@@ -59820,6 +59827,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "distribution_lines_recipient_unverified_idx": {
+          "name": "distribution_lines_recipient_unverified_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"distribution_lines\".\"recipient_unverified\"",
           "concurrently": false,
           "method": "btree",
           "with": {}

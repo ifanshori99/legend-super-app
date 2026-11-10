@@ -28,4 +28,5 @@ export * from "./events.ts";
 export * from "./profit-share-events.ts";
 export * from "./endpoints.ts";
 export * from "./profit-share-endpoints.ts";
+export * from "./profit-share-recipient-reconcile.ts";
 export * from "./fixtures.ts";
