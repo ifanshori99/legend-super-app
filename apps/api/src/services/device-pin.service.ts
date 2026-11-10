@@ -62,6 +62,7 @@ import {
   outletContext,
   outletTarget,
 } from "./device-pin-support";
+import { revokeActingStaffForStaff } from "./pos-acting-staff-revoke";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -308,6 +309,12 @@ export async function setStaffPin(
               .returning(written),
     );
     if (!row) throw new Error("staff pin write returned no row");
+    // legend-aruta: a new PIN ends every acting-cashier token of this member.
+    await revokeActingStaffForStaff(tx, tenant, {
+      outletId,
+      staffUserId: userId,
+      reason: "pin_reset",
+    });
 
     // legend-kyie: only an edge node sends the hash material, so the cloud
     // can adopt a pin set on the edge. The cloud never does (its pins reach

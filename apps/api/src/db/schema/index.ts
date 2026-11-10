@@ -90,6 +90,8 @@ export * from "./kds-pacing";
 export * from "./purchasing";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
 export * from "./pos-shift";
+// Acting cashier token per POS device (legend-aruta).
+export * from "./pos-acting-staff";
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
 export * from "./payroll-pph21-policy";
 // WS-10 payroll core tables (legend-gfcr).

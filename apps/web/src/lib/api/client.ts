@@ -2,6 +2,10 @@ import { createIsomorphicFn } from "@tanstack/react-start";
 import { API_URL } from "@/lib/env";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { bearerHeaderFor } from "@/lib/api/credentials";
+import {
+  actingStaffHeaderFor,
+  handleActingStaffRejection,
+} from "@/lib/api/acting-staff";
 import type { ApiErrorBody } from "@starter/shared/types";
 import {
   apiBaseUrl,
@@ -83,6 +87,8 @@ export async function apiFetch<T>(
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...bearerHeaderFor(path),
+        // Browser only, POS paths only (see acting-staff.ts).
+        ...actingStaffHeaderFor(path),
         ...headers,
         // Per-call headers are allow-listed (contracts.md "Typed web client &
         // idempotency headers"): only Idempotency-Key is forwarded, so no
@@ -105,6 +111,7 @@ export async function apiFetch<T>(
   if (!response.ok) {
     onFailure(path, { status: response.status });
     const error = payload?.error;
+    if (error?.code) handleActingStaffRejection(error.code);
     throw new ApiError(
       response.status,
       error?.code ?? "HTTP_ERROR",

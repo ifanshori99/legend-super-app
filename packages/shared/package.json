@@ -39,6 +39,7 @@
     "./facility": "./src/facility/index.ts",
     "./accounting": "./src/accounting/index.ts",
     "./pos": "./src/pos/index.ts",
+    "./pos/acting-staff": "./src/pos/acting-staff.ts",
     "./identity": "./src/identity/index.ts",
     "./reservation": "./src/reservation/index.ts",
     "./delivery": "./src/delivery/index.ts",

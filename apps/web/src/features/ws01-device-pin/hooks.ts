@@ -4,7 +4,9 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import type { VerifyStaffPinInput } from "@starter/shared/identity";
 import {
   createApprovalRequestCall,
+  endPosSessionCall,
   getApprovalRequestCall,
+  startPosSessionCall,
   verifyStaffPinCall,
 } from "./api.ts";
 
@@ -16,6 +18,23 @@ export function useVerifyStaffPin() {
     mutationFn: (input: VerifyStaffPinInput) => verifyStaffPinCall(input),
     gcTime: 0,
   });
+}
+
+/**
+ * POS switch: verify the PIN and become the device's active cashier
+ * (POST /api/staff-pins/pos-session). Replaces useVerifyStaffPin on the POS
+ * switch screen; never call both for one PIN.
+ */
+export function useStartPosSession() {
+  return useMutation({
+    mutationFn: (input: VerifyStaffPinInput) => startPosSessionCall(input),
+    gcTime: 0,
+  });
+}
+
+/** Ends the active cashier on this device (POST .../pos-session/end). */
+export function useEndPosSession() {
+  return useMutation({ mutationFn: endPosSessionCall });
 }
 
 export function useCreateApprovalRequest() {

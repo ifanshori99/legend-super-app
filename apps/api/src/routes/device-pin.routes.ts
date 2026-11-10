@@ -29,7 +29,10 @@ import {
   staffPinParamsSchema,
 } from "@starter/shared/identity";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { verifyDeviceToken } from "../lib/device-token";
+import { HttpError } from "../lib/http-error";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireBackOfficeSurface } from "../middleware/identity-surface";
@@ -108,13 +111,29 @@ staffPinRouter.put(
 
 export const posOverrideRouter = Router();
 
-posOverrideRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+posOverrideRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+);
 
 posOverrideRouter.post("/", jsonBody, async (req, res) => {
   const input = createPosOverrideSchema.parse(req.body);
+  // The route has no :outletId, so resolveActingStaff could not compare the
+  // token's outlet: do it against the body.
+  if (
+    req.actingStaff &&
+    req.actingStaff.outletId.toLowerCase() !== input.outletId.toLowerCase()
+  )
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+      "Kasir aktif bukan untuk outlet ini.",
+    );
   const { override, replayed } = await createPosOverride(
     getTenantContext(req),
-    getAuth(req).user.id,
+    actorOf(req),
     input,
     { idempotencyKey: idempotencyKeyOf(req) },
   );
@@ -128,7 +147,7 @@ posOverrideRouter.get("/:overrideId", async (req, res) => {
   res.json({
     data: await getPosOverride(
       getTenantContext(req),
-      getAuth(req).user.id,
+      actorOf(req),
       overrideId,
     ),
   });

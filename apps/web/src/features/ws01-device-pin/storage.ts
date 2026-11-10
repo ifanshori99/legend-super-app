@@ -2,10 +2,19 @@
 // the PIN lock window (so a reload does not reset it) and the active staff
 // member. Storage can be blocked; every access is guarded.
 import { useMemo, useSyncExternalStore } from "react";
+import { ACTIVE_STAFF_STORAGE_KEY } from "@/lib/api/acting-staff";
+
+// The POS "active cashier" token lives in lib/api/acting-staff.ts (the API
+// client reads it); re-exported so POS beads import it from this feature.
+export {
+  clearActingStaffToken,
+  readActingStaffToken,
+  writeActingStaffToken,
+} from "@/lib/api/acting-staff";
 
 const ROSTER_KEY = "legend-device-roster";
 const LOCK_KEY = "legend-device-pin-lock";
-const ACTIVE_KEY = "legend-device-active-staff";
+const ACTIVE_KEY = ACTIVE_STAFF_STORAGE_KEY;
 
 export type RosterEntry = { userId: string; displayName: string };
 export type PinLockState = {

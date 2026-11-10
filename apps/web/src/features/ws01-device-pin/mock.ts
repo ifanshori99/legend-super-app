@@ -18,9 +18,11 @@ import {
   type ApprovalRequest,
   type User,
 } from "@starter/shared/identity";
+import { ACTING_STAFF_TTL_MS } from "@starter/shared/pos/acting-staff";
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import { endPosSession, startPosSession } from "./api.ts";
 import { seedRosterIfEmpty } from "./storage.ts";
 
 const cashier = fx.usersByKey.cashier;
@@ -33,8 +35,8 @@ const PINS: Record<string, User> = {
 const attempts = createMockStore(() => resetStaffPinAttempts());
 const requests = createMockStore(() => new Map<string, ApprovalRequest>());
 
-registerMock(verifyStaffPin, ({ body }) => {
-  const now = new Date();
+/** The PIN rules shared by /verify and /pos-session: lockout, then the PIN table. */
+function checkPin(body: { pin: string }, now: Date): User {
   const state = attempts.get();
   if (
     state.lockedUntil !== null &&
@@ -50,6 +52,12 @@ registerMock(verifyStaffPin, ({ body }) => {
       throw new ApiError(423, "PIN_LOCKED", "PIN terkunci.");
     throw new ApiError(401, "PIN_INVALID", "PIN salah.");
   }
+  return user;
+}
+
+registerMock(verifyStaffPin, ({ body }) => {
+  const now = new Date();
+  const user = checkPin(body, now);
   return {
     data: {
       user,
@@ -58,6 +66,22 @@ registerMock(verifyStaffPin, ({ body }) => {
     },
   };
 });
+
+// POS switch: same PIN rules, plus the acting-staff token the real API issues.
+registerMock(startPosSession, ({ body }) => {
+  const now = new Date();
+  const user = checkPin(body, now);
+  return {
+    data: {
+      token: `pas_mock_${crypto.randomUUID()}`,
+      expiresAt: new Date(now.getTime() + ACTING_STAFF_TTL_MS).toISOString(),
+      staff: { id: user.id, displayName: user.displayName },
+      outletId: fx.outletIds.bandung,
+    },
+  };
+});
+
+registerMock(endPosSession, () => undefined);
 
 registerMock(createApprovalRequest, ({ body }) => {
   const now = Date.now();

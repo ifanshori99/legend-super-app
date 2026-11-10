@@ -1,11 +1,11 @@
-// POS cashier switch by PIN (bead legend-aruta). Claim: the switch is
-// client-only. /api/staff-pins/verify answers {user, outletId, verifiedAt} and
-// nothing server-side remembers it, so POS writes after the switch are still
-// recorded for the SESSION user A, not for cashier B who typed the PIN.
-// Device requests = A's session cookie + origin + Host + signed X-Device-Token;
-// verify carries only the device token and {userId, pin}. Nothing in its answer
-// can be sent back on POS calls, so no real switch can be expressed beyond
-// "verify, then keep calling". Test 1 is RED until the server binds the switch.
+// POS cashier switch by PIN (bead legend-aruta). Claim: the switch used to be
+// client-only, so POS writes after it were still recorded for the SESSION user
+// A, not for cashier B who typed the PIN. Now B's PIN buys a server-side
+// "acting cashier" token (POST /api/staff-pins/pos-session) that the device
+// sends as X-Acting-Staff on POS calls; shift, order, tender and audit actor
+// must then be B. Without a real token the switch cannot be expressed, so test
+// 1 is RED until the server binds the switch.
+// Device requests = A's session cookie + origin + Host + signed X-Device-Token.
 // Fixtures follow pos-order-approval.test.ts (isolated tenant, real app, RLS DB).
 
 import { randomUUID } from "node:crypto";
@@ -93,20 +93,27 @@ const deviceToken = () =>
     deviceId: device,
   });
 
-/** The device keeps calling with the session cookie it was logged in with. */
-function posCall(path: string, body: Record<string, unknown>) {
+/** The device keeps calling with A's session cookie plus the acting-cashier token. */
+function posCall(
+  path: string,
+  body: Record<string, unknown>,
+  actingToken: string,
+) {
   return memberA.client
     .post(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/${path}`)
     .set(headers)
     .set(originHeader)
     .set(DEVICE_TOKEN_HEADER, deviceToken())
+    .set("X-Acting-Staff", actingToken)
     .send({ idempotencyKey: randomUUID(), ...body });
 }
 
-/** The cashier types a PIN on the device tile (device token only). */
-function verifyPin(userId: string, pin: string) {
-  return agent(app)
-    .post("/api/staff-pins/verify")
+/** The cashier types a PIN on the device tile; the session user's login asks the server to switch. */
+function switchCashier(userId: string, pin: string) {
+  return memberA.client
+    .post("/api/staff-pins/pos-session")
+    .set(headers)
+    .set(originHeader)
     .set(DEVICE_TOKEN_HEADER, deviceToken())
     .send({ userId, pin });
 }
@@ -184,31 +191,38 @@ afterAll(async () => {
 
 describe("POS cashier switch by PIN (legend-aruta)", () => {
   it("after B verifies a PIN on the device, shift, order and tender are recorded for B, not for session user A", async () => {
-    const switched = await verifyPin(memberB.userId, PIN);
-    expect(switched.status, JSON.stringify(switched.body)).toBe(200);
+    const switched = await switchCashier(memberB.userId, PIN);
+    expect(switched.status, JSON.stringify(switched.body)).toBe(201);
+    const acting = switched.body.data.token as string;
 
-    const shift = await posCall("shifts", { openingFloatIdr: 100_000 });
+    const shift = await posCall("shifts", { openingFloatIdr: 100_000 }, acting);
     expect(shift.status, JSON.stringify(shift.body)).toBe(201);
-    const created = await posCall("orders", {
-      channel: "pos",
-      serviceType: "takeaway",
-      items: [{ menuItemId: kopi, quantity: 1, modifierIds: [] }],
-    });
+    const created = await posCall(
+      "orders",
+      {
+        channel: "pos",
+        serviceType: "takeaway",
+        items: [{ menuItemId: kopi, quantity: 1, modifierIds: [] }],
+      },
+      acting,
+    );
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const orderId = created.body.data.id as string;
     let status = created.body.data.status as string;
     if (status === "draft") {
-      const submitted = await posCall(`orders/${orderId}/submit`, {
-        expectedStatus: status,
-      });
+      const submitted = await posCall(
+        `orders/${orderId}/submit`,
+        { expectedStatus: status },
+        acting,
+      );
       expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
       status = submitted.body.data.status as string;
     }
-    const paid = await posCall(`orders/${orderId}/tenders`, {
-      method: "cash",
-      receivedIdr: 100_000,
-      expectedStatus: status,
-    });
+    const paid = await posCall(
+      `orders/${orderId}/tenders`,
+      { method: "cash", receivedIdr: 100_000, expectedStatus: status },
+      acting,
+    );
     expect(paid.status, JSON.stringify(paid.body)).toBe(201);
 
     const orderUuid = ulidToUuid(orderId);
@@ -239,7 +253,7 @@ describe("POS cashier switch by PIN (legend-aruta)", () => {
   it("a wrong PIN is refused and changes nothing: same session user, no shift, no order", async () => {
     const shiftsBefore = await count("pos_shifts");
     const ordersBefore = await count("orders");
-    const wrong = await verifyPin(memberC.userId, WRONG);
+    const wrong = await switchCashier(memberC.userId, WRONG);
     expect(wrong.status).toBe(401);
     expect(wrong.body.error.code).toBe("PIN_INVALID");
     const session = await memberA.client.get("/api/auth/get-session");

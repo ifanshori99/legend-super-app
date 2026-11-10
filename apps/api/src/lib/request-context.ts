@@ -13,10 +13,20 @@ export type RequestSupport = {
   reason: string;
 };
 
+// Set by the acting-staff middleware (middleware/acting-staff.ts) when a POS
+// request carries a valid X-Acting-Staff token: the staff member who is the
+// actor, on the login session of `sessionUserId`.
+export type RequestActingStaff = {
+  staffUserId: string;
+  sessionUserId: string;
+  tokenId: string;
+};
+
 type RequestContext = {
   reqId: string;
   userId?: string;
   support?: RequestSupport;
+  actingStaff?: RequestActingStaff;
 };
 
 const storage = new AsyncLocalStorage<RequestContext>();
@@ -42,6 +52,17 @@ export function setRequestSupport(value: RequestSupport) {
 // to the platform admin, not the impersonated tenant user.
 export function getRequestSupport() {
   return storage.getStore()?.support;
+}
+
+export function setRequestActingStaff(value: RequestActingStaff) {
+  const store = storage.getStore();
+  if (store) store.actingStaff = value;
+}
+
+// Read by recordAudit so a row written as the acting staff member also names
+// the login session owner and the token (DECISIONS: kasir aktif per perangkat).
+export function getRequestActingStaff() {
+  return storage.getStore()?.actingStaff;
 }
 
 const SAFE_REQUEST_ID = /^[\w-]{1,128}$/;

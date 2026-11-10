@@ -30,7 +30,9 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
-import { getAuth } from "./auth";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
+import { HttpError } from "../lib/http-error";
+import { actorOf, hasActingStaffHeader } from "./acting-staff";
 import { sessionMfaVerifiedAt } from "../lib/mfa";
 import { getTenantContext } from "./tenant";
 import {
@@ -74,8 +76,19 @@ export function getStationScope(req: Request): StationScope {
 export async function loadRequestAccess(req: Request): Promise<AccessSnapshot> {
   const cached = snapshots.get(req);
   if (cached) return cached;
+  // Fail closed: a router that never mounted resolveActingStaff must not
+  // silently fall back to the session owner's permissions for a request that
+  // asked to act as someone else.
+  if (hasActingStaffHeader(req) && !req.actingStaff)
+    throw new HttpError(
+      400,
+      ACTING_STAFF_ERROR_CODES.UNSUPPORTED,
+      "Kasir aktif belum didukung untuk endpoint ini.",
+    );
   const tenant = getTenantContext(req);
-  const userId = getAuth(req).user.id;
+  // The permission subject is the acting cashier when one resolved (see
+  // middleware/acting-staff.ts), else the session owner.
+  const userId = actorOf(req);
   const data = await loadTenantAccess(
     establishScopedTenantContext(tenant, { kind: "tenant" }),
     userId,
@@ -87,8 +100,11 @@ export async function loadRequestAccess(req: Request): Promise<AccessSnapshot> {
     // The session's verified second factor (lib/mfa.ts, bead legend-6xf).
     // Never the per-request `mfaCode` check: that consumes a TOTP step and is
     // reserved for TEN-04 support access. The web guard reads the same flag
-    // through /api/me/access.
-    mfaVerified: (await sessionMfaVerifiedAt(req)) !== null,
+    // through /api/me/access. An acting cashier never inherits the session
+    // owner's verified second factor.
+    mfaVerified: req.actingStaff
+      ? false
+      : (await sessionMfaVerifiedAt(req)) !== null,
     now: new Date(),
   });
   snapshots.set(req, snapshot);
@@ -163,7 +179,7 @@ export function requireMenuPermission(
       const reach = outletReachOf({
         principal: {
           tenantId: tenant.tenantId,
-          userId: userIdSchema.parse(getAuth(req).user.id),
+          userId: userIdSchema.parse(actorOf(req)),
           assignments: data.assignments,
         },
         roles: data.roles,
@@ -207,7 +223,7 @@ export function requireStationScopePermission(
         throw new Error("requireStationScopePermission() without access data");
       const principal = {
         tenantId: tenant.tenantId,
-        userId: userIdSchema.parse(getAuth(req).user.id),
+        userId: userIdSchema.parse(actorOf(req)),
         assignments: data.assignments,
       } as const;
       const reach = outletReachOf({

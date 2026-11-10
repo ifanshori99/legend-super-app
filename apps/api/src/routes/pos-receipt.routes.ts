@@ -28,7 +28,8 @@ import {
   issuePosReceipt,
 } from "@starter/shared/pos";
 import type { PermissionCode } from "@starter/shared/access";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
+import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -44,7 +45,12 @@ import * as delivery from "../services/pos-receipt-delivery.service.ts";
 export const posReceiptRouter = Router({ mergeParams: true });
 export const publicReceiptRouter = Router();
 
-posReceiptRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+posReceiptRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+);
 
 const outletOf = (req: Request) => String(req.params.outletId ?? "");
 const can = (permission: PermissionCode) =>
@@ -67,7 +73,7 @@ const invoicePdfParams = z.strictObject({
 const publicTokenParams = z.strictObject({ token: z.string().min(1).max(200) });
 
 function caller(req: Request) {
-  return { userId: userIdSchema.parse(getAuth(req).user.id) };
+  return { userId: userIdSchema.parse(actorOf(req)) };
 }
 
 function sendPdf(res: Response, file: delivery.PdfFile): void {
