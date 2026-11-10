@@ -29,14 +29,19 @@ import {
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import type { SystemRefundActor } from "@starter/shared/payment/admin";
-import { orderIssueManualRefundApprovedPayloadSchema } from "@starter/shared/qr-order";
+import {
+  orderIssueManualRefundApprovedPayloadSchema,
+  qrOrderEvents,
+} from "@starter/shared/qr-order";
 import { auditLogs } from "../db/schema/core-audit.ts";
+import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
 import { paymentAdminIdempotency } from "../db/schema/payment-admin.ts";
 import { posOrders } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
+import { appendOutbox } from "./core-outbox.ts";
 import { OrderRevenueMismatch } from "./order-revenue.ts";
 import { recoveryRefundSplit } from "./order-recovery-refund-amount.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
@@ -72,6 +77,9 @@ const AUDIT_SAFE_FIELDS = [
   "blockedReason",
   "failureReason",
 ];
+
+const REVERSAL_EVENT = "order_issue.refund_reversal_requested";
+const REVERSAL_DESTINATION = "cloud-sync";
 
 export const orderRecoveryRefundKey = (orderIssueId: string) =>
   `order-recovery-refund:${orderIssueId}`;
@@ -293,7 +301,12 @@ export async function deliverOrderRecoveryRefundEvent(
   }
 
   // What other issues of this order already gave back: per issue the largest
-  // refund, whatever its status (a failed one may be retried by hand).
+  // refund, whatever its status (a failed one may be retried by hand). An
+  // issue whose refund was rejected gave nothing back: rejection is final and
+  // its journal is reversed, so the sale holds that money again (same rule as
+  // qrSaleInUseOfIntent). Today a second settled issue on the same line is
+  // refused (order_issues_resolved_item_once_idx), so this only matters once a
+  // line can be reported again after a rejection.
   const releasedResult = await tx.execute(sql`
     SELECT coalesce(sum(m.amt), 0)::text AS released FROM (
       SELECT max(r.amount_idr) AS amt
@@ -303,7 +316,10 @@ export async function deliverOrderRecoveryRefundEvent(
        WHERE r.tenant_id = ${tenantId}
          AND i.order_id = ${orderUuid}::uuid
          AND r.order_issue_id <> ${issue.id}::uuid
-       GROUP BY r.order_issue_id) m
+       GROUP BY r.order_issue_id
+      HAVING NOT coalesce(
+        bool_or(r.status = 'failed' AND r.failure_reason = 'rejected'),
+        false)) m
   `);
   let releasedIdr = Number(String(releasedResult.rows[0]?.released ?? "0"));
   if (!payFirst) {
@@ -508,14 +524,112 @@ async function fileRecoveryRefund(
 }
 
 /**
+ * legend-94q2l: a `rejected` QR pay-first refund asks the journal to be
+ * reversed: `order_issue.refund_reversal_requested`, once per issue, only when
+ * an `order.refunded` event of the issue (`payload.refundId` = issue id)
+ * exists. An open bill refund has none: nothing to reverse, no event. Local
+ * twin of `appendRecoveryEvent` (order-recovery.service.ts).
+ * Returns whether this call appended the event.
+ */
+async function requestRecoveryRefundReversal(
+  tx: Tx,
+  context: ScopedTenantContext,
+  failedRefund: typeof paymentRefunds.$inferSelect,
+  issueId: string,
+  now: Date,
+): Promise<boolean> {
+  const tenantId = failedRefund.tenantId;
+  const [refunded] = await tx
+    .select({ id: domainEventOutbox.id })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.aggregateType, "order"),
+        sql`${domainEventOutbox.event}->>'name' = 'order.refunded'`,
+        sql`${domainEventOutbox.event}->'payload'->>'refundId' = ${issueId}`,
+      ),
+    )
+    .limit(1);
+  if (!refunded) return false;
+  const [issue] = await tx
+    .select({ orderId: orderIssues.orderId, outletId: orderIssues.outletId })
+    .from(orderIssues)
+    .where(
+      and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issueId)),
+    );
+  if (!issue) return false;
+  const [sent] = await tx
+    .select({ id: domainEventOutbox.id })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.aggregateType, "order_issue"),
+        eq(domainEventOutbox.aggregateId, issueId),
+        sql`${domainEventOutbox.event}->>'name' = ${REVERSAL_EVENT}`,
+      ),
+    )
+    .limit(1);
+  if (sent) return false;
+  const definition = qrOrderEvents[REVERSAL_EVENT];
+  const [last] = await tx
+    .select({
+      last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, REVERSAL_DESTINATION),
+        eq(domainEventOutbox.aggregateType, definition.entry.aggregateType),
+        eq(domainEventOutbox.aggregateId, issueId),
+      ),
+    );
+  const sequence = Number(last?.last ?? 0) + 1;
+  const event = definition.envelopeSchema.parse({
+    id: createUlid(now.getTime()),
+    tenantId,
+    outletId: issue.outletId,
+    name: definition.name,
+    version: definition.version,
+    aggregateType: definition.entry.aggregateType,
+    aggregateId: issueId,
+    sequence,
+    occurredAt: toIsoDateTime(now),
+    actor: { type: "system" },
+    deviceId: null,
+    idempotencyKey: `${definition.name}:${issueId}:${sequence}`.slice(0, 100),
+    payloadSchemaRef: definition.payloadSchemaRef,
+    payload: {
+      orderId: issue.orderId,
+      orderIssueId: issueId,
+      refundId: failedRefund.id,
+      amountIdr: failedRefund.amountIdr,
+      rejectedAt: toIsoDateTime(now),
+    },
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(now.getTime()),
+    event,
+    destination: REVERSAL_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
+  return true;
+}
+
+/**
  * legend-94q2l: a `system:recovery` refund that ended `failed` is filed again
  * (`failRefund`, payment-refund.service.ts, lazy import: import cycle), so a
  * guest owed money for a failed item is not left with a dead request. Only for
  * the failures that say nothing about the money itself:
  * - `approval_expired` and `approver_unauthorized` file a new request for the
  *   same amount;
- * - `rejected` is a human decision: not re-filed, audited
- *   (`order_issue.refund_rejected`); what happens next is a business decision;
+ * - `rejected` is final: not re-filed, audited (`order_issue.refund_rejected`);
+ *   a QR pay-first refund (it has an `order.refunded`) also appends
+ *   `order_issue.refund_reversal_requested` once, which reverses its journal,
+ *   and the sale holds the money again (`qrSaleInUseOfIntent`);
  * - `provider_declined` (the money may already have left: a re-file would pay
  *   twice), `cap_exceeded` and `source_document` need a person: not re-filed,
  *   audited `order_issue.refund_refile_blocked` (`failure_needs_person`);
@@ -580,6 +694,13 @@ export async function refileRecoveryRefundAfterFailure(
         failureReason,
       },
       "Refund item gagal ditolak, tidak diajukan ulang",
+    );
+    await requestRecoveryRefundReversal(
+      tx,
+      context,
+      failedRefund,
+      issueId,
+      now,
     );
     return;
   }

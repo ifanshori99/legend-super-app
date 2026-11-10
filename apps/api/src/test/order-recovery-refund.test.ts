@@ -1199,8 +1199,9 @@ describe("legend-94q2l T3 refund system:recovery yang gagal dibuka ulang (R1)", 
       await idempotencyByKey(`order-recovery-refund:${issueId}:${first.id}`),
     ).toHaveLength(0);
     expect(await orderRefundedEvents(order.id)).toHaveLength(1);
-    // The reservation is released: the sale hold is the only thing left.
-    expect(await holdOf(intentId)).toEqual({ cap: ROTI_WANTED, reserved: 0 });
+    // Rejection is final (CTO 10 Nov): the sale holds the money again, so
+    // nothing is refundable and nothing is reserved.
+    expect(await holdOf(intentId)).toEqual({ cap: 0, reserved: 0 });
   });
 
   it("gagal kedua kali: dibuka ulang lagi dengan kunci berbeda, tetap satu refund hidup dan satu order.refunded", async () => {

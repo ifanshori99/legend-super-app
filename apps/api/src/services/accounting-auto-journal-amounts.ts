@@ -33,7 +33,9 @@
 // at their own moment (accounting-auto-journal-guards.ts), never against
 // current state, so the verdict does not depend on event delivery order.
 // order.voided is only stored and keyed here; the consumer rebuilds its fact
-// in accounting-auto-journal-void.ts.
+// in accounting-auto-journal-void.ts. order_issue.refund_reversal_requested
+// (legend-94q2l, a rejected recovery refund) is the same: its fact is rebuilt
+// in accounting-auto-journal-recovery-refund.ts.
 //
 // Slice 3 (legend-9pz9, legend-kej3, legend-fbms): a QR pay-first order (no
 // pos_orders row) emits order.paid when it fires. It has no tenders: what
@@ -94,6 +96,7 @@ export const AUTO_JOURNAL_EVENTS = [
   "order.paid",
   "order.refunded",
   "order.voided",
+  "order_issue.refund_reversal_requested",
   "payment.paid",
   "payment.funds_unallocated",
   "payment.refunded",
@@ -204,6 +207,20 @@ export const orderVoidedStoredSchema = z.object({
   amountIdr: idr,
   voidedFinalOrder: z.boolean(),
   voidedAt: time,
+});
+
+/**
+ * order_issue.refund_reversal_requested as the consumer stores it (legend-94q2l):
+ * the payment module rejected the refund of a failed order item, so the
+ * `aj:order-refund:<orderIssueId>` journal is reversed. The outlet is the
+ * event envelope outlet.
+ */
+export const orderIssueRefundReversalStoredSchema = z.object({
+  orderId: id,
+  orderIssueId: z.string().uuid(),
+  refundId: z.string().uuid(),
+  amountIdr: idr.refine((value) => value > 0),
+  rejectedAt: time,
 });
 
 const paymentPaidSchema = z.object({
@@ -320,6 +337,14 @@ export function storedEventOf(event: {
       const payload = orderVoidedStoredSchema.parse(event.payload);
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
+    case "order_issue.refund_reversal_requested": {
+      const payload = orderIssueRefundReversalStoredSchema.parse(event.payload);
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      return { ...base, outletId: event.outletId, occurredAt, payload };
+    }
     case "payment.paid":
     case "payment.funds_unallocated":
     case "payment.refunded": {
@@ -407,6 +432,8 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:order-refund:${String(p.refundId)}`);
     case "order.voided":
       return boundedKey(`aj:sale-void:${String(p.orderId)}`);
+    case "order_issue.refund_reversal_requested":
+      return boundedKey(`aj:order-refund-reversal:${String(p.orderIssueId)}`);
     case "payment.paid":
       return receiptKeyOf(String(p.intentId));
     case "payment.funds_unallocated":
@@ -1030,6 +1057,10 @@ export async function autoJournalFactOf(
     }
     case "order.voided":
       throw new Error("order.voided is handled by voidFactOf");
+    case "order_issue.refund_reversal_requested":
+      throw new Error(
+        "order_issue.refund_reversal_requested is handled by recoveryRefundFactOf",
+      );
     case "payment.paid": {
       const p = paymentPaidSchema.parse(stored.payload);
       if (p.receivedIdr <= 0) return null;

@@ -12,7 +12,7 @@
 // `order.paid` is owned and defined by WS-04 (bead legend-4yp); QR consumers
 // use that definition, this module does not redefine its payload.
 
-import { z, idrSchema } from "../core/index.ts";
+import { z, idrSchema, isoDateTimeSchema } from "../core/index.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import {
@@ -173,6 +173,20 @@ export const orderIssueManualRefundApprovedPayloadSchema = z.strictObject({
   reason: z.string().min(10).max(500),
 });
 
+/**
+ * legend-94q2l: the refund opened for a failed item was rejected for good
+ * (`rejected`), so its `order.refunded` journal is reversed. Appended once per
+ * issue, only when an `order.refunded` event of that issue exists.
+ */
+export const orderIssueRefundReversalRequestedPayloadSchema = z.strictObject({
+  orderId: orderIdSchema,
+  orderIssueId: orderIssueIdSchema,
+  /** The rejected `payment_refunds` row. */
+  refundId: z.string().uuid(),
+  amountIdr: idrSchema.refine((value) => value > 0),
+  rejectedAt: isoDateTimeSchema,
+});
+
 export const serviceRequestCreatedPayloadSchema = z.strictObject({
   serviceRequestId: serviceRequestIdSchema,
   sessionId: tableSessionIdSchema,
@@ -206,6 +220,7 @@ export const qrOrderEventNames = [
   "item.failed",
   "order_issue.resolved",
   "order_issue.manual_refund_approved",
+  "order_issue.refund_reversal_requested",
   "service_request.created",
   "service_request.overdue",
   "table.status_changed",
@@ -231,6 +246,8 @@ export const qrOrderEventPayloads: Record<
   "order_issue.resolved": orderIssueResolvedPayloadSchema,
   "order_issue.manual_refund_approved":
     orderIssueManualRefundApprovedPayloadSchema,
+  "order_issue.refund_reversal_requested":
+    orderIssueRefundReversalRequestedPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,
   "service_request.overdue": serviceRequestOverduePayloadSchema,
   "table.status_changed": tableStatusChangedPayloadSchema,
@@ -287,6 +304,9 @@ export type OrderIssueResolvedPayload = z.infer<
 >;
 export type OrderIssueManualRefundApprovedPayload = z.infer<
   typeof orderIssueManualRefundApprovedPayloadSchema
+>;
+export type OrderIssueRefundReversalRequestedPayload = z.infer<
+  typeof orderIssueRefundReversalRequestedPayloadSchema
 >;
 export type ServiceRequestCreatedPayload = z.infer<
   typeof serviceRequestCreatedPayloadSchema

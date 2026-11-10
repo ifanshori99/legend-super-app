@@ -70,6 +70,10 @@ import {
   type StoredAutoJournalEvent,
 } from "./accounting-auto-journal-amounts.ts";
 import {
+  AutoJournalRecoveryRefundPending,
+  recoveryRefundFactOf,
+} from "./accounting-auto-journal-recovery-refund.ts";
+import {
   AutoJournalSaleMissing,
   AutoJournalSalePending,
   AutoJournalVoidUnsupported,
@@ -114,6 +118,7 @@ const RETRYABLE_CODES = [
   "PERIOD_CLOSED",
   "AUTO_JOURNAL_RECEIPT_PENDING",
   "AUTO_JOURNAL_SALE_PENDING",
+  "AUTO_JOURNAL_RECOVERY_REFUND_PENDING",
 ] as const;
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
@@ -147,6 +152,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof AutoJournalReceiptMissing) return error.code;
   if (error instanceof AutoJournalReceiptDeadLettered) return error.code;
   if (error instanceof AutoJournalSalePending) return error.code;
+  if (error instanceof AutoJournalRecoveryRefundPending) return error.code;
   if (error instanceof AutoJournalSaleMissing) return error.code;
   if (error instanceof AutoJournalVoidUnsupported) return error.code;
   if (error instanceof AutoJournalDepositCutoverMixed) return error.code;
@@ -544,8 +550,17 @@ async function postAutoJournal(
   // order.voided reverses the sale journal; every other event posts a rule.
   const isVoid = stored.eventName === "order.voided";
   const voidFact = isVoid ? await voidFactOf(tx, tenantId, stored) : null;
-  const fact = isVoid ? null : await autoJournalFactOf(tx, tenantId, stored);
-  const target = voidFact ?? fact;
+  // legend-94q2l: a rejected recovery refund reverses the refund journal.
+  const isRefundReversal =
+    stored.eventName === "order_issue.refund_reversal_requested";
+  const refundReversalFact = isRefundReversal
+    ? await recoveryRefundFactOf(tx, tenantId, stored)
+    : null;
+  const fact =
+    isVoid || isRefundReversal
+      ? null
+      : await autoJournalFactOf(tx, tenantId, stored);
+  const target = voidFact ?? refundReversalFact ?? fact;
   if (!target) return { status: "ignored" };
   const [outlet] = await tx
     .select({
@@ -593,6 +608,20 @@ async function postAutoJournal(
       {
         entryDate: entryDate as typeof naturalDate,
         reason: `Void penjualan ${voidFact.sourceId}${lateSuffix}`,
+        idempotencyKey: key,
+        lateAdjustmentFrom,
+        postedBy: null,
+      },
+      now,
+    );
+  } else if (refundReversalFact) {
+    journal = await reverseJournalInTransaction(
+      tx,
+      context,
+      refundReversalFact.refundEntryId,
+      {
+        entryDate: entryDate as typeof naturalDate,
+        reason: `Refund item gagal ditolak ${refundReversalFact.sourceId}${lateSuffix}`,
         idempotencyKey: key,
         lateAdjustmentFrom,
         postedBy: null,
