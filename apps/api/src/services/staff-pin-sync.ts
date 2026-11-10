@@ -128,6 +128,7 @@ import { z } from "zod";
 import { db } from "../db/index.ts";
 import { staffPins } from "../db/schema/device-pin.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
+import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { withoutSecretErrorDetail } from "../edge/envelope-secrets.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
@@ -430,6 +431,12 @@ export async function listStaffPinRecordsSince(
 export type StaffPinApplyResult = {
   readonly applied: number;
   readonly skipped: number;
+  /**
+   * Records skipped because their `user` row is not on this database yet (the
+   * people snapshot has not delivered it). The caller keeps its watermark so
+   * the next cycle retries them. Present only when at least one was skipped.
+   */
+  readonly missingUsers?: number;
 };
 
 type LocalRow = typeof staffPins.$inferSelect;
@@ -457,6 +464,7 @@ function refuse(message: string): never {
 export async function applyStaffPinRecords(
   context: ScopedTenantContext,
   records: readonly unknown[],
+  database: Parameters<typeof withTenant>[0] = db,
 ): Promise<StaffPinApplyResult> {
   // legend-oark: the cloud is the source of these records and never ingests
   // them. Same rule as pos-receipt.service.ts: the runtime flag, or the static
@@ -487,9 +495,21 @@ export async function applyStaffPinRecords(
   // Same order on every node, so two concurrent pages lock users the same way.
   const ordered = [...parsed].sort((a, b) => a.id.localeCompare(b.id));
 
-  return withTenant(db, context, async (tx) => {
+  return withTenant(database, context, async (tx) => {
     let applied = 0;
+    let missingUsers = 0;
     for (const record of ordered) {
+      // The user arrives with the people snapshot, which can lag this pull. A
+      // record without its user would fail the foreign key and refuse the
+      // whole page: skip it and let the caller retry it next cycle.
+      const [owner] = await tx
+        .select({ id: user.id })
+        .from(user)
+        .where(eq(user.id, record.userId));
+      if (!owner) {
+        missingUsers += 1;
+        continue;
+      }
       const version = new Date(record.updatedAt);
       // Exact microsecond key, compared and stored by the database: a JS Date
       // would cut it to milliseconds and turn a tie into a false "newer".
@@ -672,6 +692,10 @@ export async function applyStaffPinRecords(
       if (!changed) continue;
       applied += 1;
     }
-    return { applied, skipped: ordered.length - applied };
+    return {
+      applied,
+      skipped: ordered.length - applied,
+      ...(missingUsers > 0 ? { missingUsers } : {}),
+    };
   });
 }

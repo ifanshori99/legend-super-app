@@ -78,6 +78,7 @@ import {
   EdgeCloudHttpError,
 } from "./cloud-http.ts";
 import { createStaffPinPull } from "./staff-pin-pull.ts";
+import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
 import { startEdgeMasterSyncLoop } from "./master-sync.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
@@ -140,6 +141,10 @@ function isRejectedCursor(error: unknown): boolean {
 
 /** Longest wait between device-registry pulls while the cloud is failing. */
 const MIN_MAX_PULL_BACKOFF_MS = 300_000;
+// How long boot waits for the first people snapshot before it carries on (the
+// pull keeps running in the background; an offline node never blocks boot).
+const BOOT_PEOPLE_SNAPSHOT_WAIT_MS = 10_000;
+
 // legend-6xcy: how often the edge re-pulls the cloud masters.
 const EDGE_MASTER_SYNC_INTERVAL_MS = 5 * 60_000;
 
@@ -764,6 +769,42 @@ export async function startEdgeRuntime(
   registryPuller = puller;
   // Not awaited: boot never waits for, or fails on, the cloud.
   puller.start();
+  // People snapshot (users, roles, employees, shifts; design
+  // hris-edge-replication.md 3.1). Started BEFORE the staff PIN pull: a PIN
+  // record needs its user row. A standby pulls too. Boot waits a bounded time
+  // for the first pull so the PINs find their users; offline, it moves on.
+  const peoplePuller = createPeopleSnapshotPuller({
+    config: { cloudUrl: config.cloudUrl, credential: config.credential },
+    intervalMs: config.peopleSyncIntervalMs,
+    staleAfterMs: Math.max(
+      config.deviceSyncStaleAfterMs,
+      2 * config.peopleSyncIntervalMs,
+    ),
+    maxBackoffMs: Math.max(
+      config.peopleSyncIntervalMs,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onStaleChange: (stale) => {
+      if (stale)
+        logger.error(
+          "Edge people snapshot is stale; staff changes may be missing",
+        );
+      else logger.info("Edge people snapshot is fresh again");
+    },
+    // Code only: the snapshot holds personal data.
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge people snapshot pull failed"),
+  });
+  peoplePuller.start();
+  let bootWait: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    peoplePuller.runOnce(),
+    new Promise<void>((resolve) => {
+      bootWait = setTimeout(resolve, BOOT_PEOPLE_SNAPSHOT_WAIT_MS);
+      bootWait.unref();
+    }),
+  ]);
+  clearTimeout(bootWait);
   // legend-yvhw8: staff PINs down-sync. Same schedule, backoff and staleness
   // as the registry, its own checkpoint. A standby pulls too: it needs the
   // PINs to take over for a failed primary. Stale PINs are not fatal (the
@@ -863,6 +904,7 @@ export async function startEdgeRuntime(
       // the link and the wakeup listener open during shutdown.
       await Promise.all([
         puller.stop(),
+        peoplePuller.stop(),
         pinPuller.stop(),
         masterSync.stop(),
         selfieUploader.stop(),

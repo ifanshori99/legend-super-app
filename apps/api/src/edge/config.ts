@@ -13,6 +13,10 @@
 //   EDGE_DEVICE_SYNC_INTERVAL_SECONDS
 //                         how often the edge pulls the device registry from
 //                         the cloud (10..3600, default 60; legend-2lp.7)
+//   EDGE_PEOPLE_SYNC_INTERVAL_SECONDS
+//                         how often the edge pulls the people snapshot (users,
+//                         roles, employees, shifts) from the cloud
+//                         (10..3600, default 60)
 //   EDGE_DEVICE_SYNC_STALE_SECONDS
 //                         the replica counts as stale after this long without
 //                         a successful pull (60..86400, default 900, at least
@@ -36,6 +40,12 @@ const schema = z
       .regex(/^[\w.+-]+$/)
       .default("dev"),
     EDGE_DEVICE_SYNC_INTERVAL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(10)
+      .max(3600)
+      .default(60),
+    EDGE_PEOPLE_SYNC_INTERVAL_SECONDS: z.coerce
       .number()
       .int()
       .min(10)
@@ -103,6 +113,7 @@ export type EdgeRuntimeConfig =
       version: string;
       deviceSyncIntervalMs: number;
       deviceSyncStaleAfterMs: number;
+      peopleSyncIntervalMs: number;
     };
 
 export function parseEdgeRuntimeConfig(
@@ -129,6 +140,7 @@ export function parseEdgeRuntimeConfig(
       version: values.EDGE_NODE_VERSION,
       deviceSyncIntervalMs: values.EDGE_DEVICE_SYNC_INTERVAL_SECONDS * 1000,
       deviceSyncStaleAfterMs: values.EDGE_DEVICE_SYNC_STALE_SECONDS * 1000,
+      peopleSyncIntervalMs: values.EDGE_PEOPLE_SYNC_INTERVAL_SECONDS * 1000,
     },
   };
 }
