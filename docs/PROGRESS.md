@@ -3140,3 +3140,9 @@ Langkah berikut CTO baru:
 - Keputusan: id device masuk hash fingerprint (tabel `pos_overrides` tak punya kolom payload). Approval lama tanpa device tetap bisa dipakai seperti sebelumnya. Fixture test lama (raw SQL, fingerprint acak) diganti helper `pos-override-fixture.ts`; assertion tidak diubah.
 - Bukti: test gagal-dulu merah lalu hijau per temuan; 39 file / 470 test area hijau; tsc api (heap 6144) 0 error; eslint dan prettier bersih; review architect (xhigh) 2 P1/P2 dibetulkan, P3 dicatat.
 - Risiko / belum: P3 window per-user mengikuti kasir aktif (`actorOf`), bukan akun login. Terminal berbagi akun outlet kini ikut terblokir bersama bila 10 PIN salah dalam 5 menit (keputusan produk). Oracle serupa + `now` sebelum lock di `hris-payslip.service.ts` (~180-206, ~259) di luar scope; kartu baru disarankan.
+
+## legend-uopl6: oracle replay + `now` sebelum lock di hris-payslip.service (11 Nov 2026, cabang `fix/codex-418-pin`)
+
+- Sudah: `viewMyPayslip` tidak lagi memasukkan PIN ke fingerprint idempotensi (replay hanya mengembalikan kegagalan tersimpan, tanpa oracle; key baru tetap menghitung percobaan di bawah lock; sukses tidak disimpan). Waktu (`nowOverride?`) diambil setelah `lockPayslipPin` untuk cek PIN, `viewedAt`, dan audit.
+- Bukti: 7 test baru `hris-payslip-pin-replay.test.ts`, 5 merah di kode lama lalu 7 hijau; 7 file / 83 test terkait (payslip-pin*, hris-payslip*, hris-employee*) hijau; tsc api (heap 6144) 0 error; eslint dan prettier bersih; review architect xhigh: tidak ada temuan tinggi/sedang.
+- Catatan rendah (tidak diperbaiki, hanya stempel waktu): `requestPayslipPinResetOtp` dan `resetEmployeePayslipPin` di payslip-pin.service.ts masih membaca `now` sebelum lock; `viewedAt` dibaca sebelum lock PIN sehingga dua view benar bersamaan bisa saling menimpa stempel.

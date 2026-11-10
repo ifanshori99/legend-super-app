@@ -46,7 +46,6 @@ import {
   checkPayslipPin,
   lockPayslipPin,
   loadPayslipSelf,
-  payslipFingerprintRequest,
   type PinCheck,
 } from "./payslip-pin.service.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -167,6 +166,12 @@ async function toPayslip(
  * Idempotent write that records only failed outcomes. A replay of a stored
  * failure answers it again without a new attempt; a success is returned
  * without a record, so the next call with the same key checks the PIN afresh.
+ *
+ * The guessed PIN is NOT part of the fingerprint (`request` carries none): a
+ * replay compared on it would answer "stored outcome" for one guess and 409 for
+ * any other, an oracle that costs no attempt (also while locked). A replay only
+ * returns the stored outcome; every fresh key runs `run`, which counts the
+ * attempt under the PIN row lock.
  */
 async function idempotentFailureWrite(
   tx: Tx,
@@ -179,7 +184,7 @@ async function idempotentFailureWrite(
   const parsedKey = idempotencyKeySchema.parse(key);
   const fingerprint = hrisRequestFingerprint(context.tenant.tenantId, {
     operation,
-    request: payslipFingerprintRequest(context.tenant.tenantId, request),
+    request,
   });
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:idem:${context.tenant.tenantId}:${parsedKey}`}, 0))`,
@@ -227,11 +232,16 @@ export async function viewMyPayslip(
   payslipId: PayslipId,
   input: ViewMyPayslipInput,
   signer: HrisFileSigner = noHrisFileSigner,
-  now: Date = new Date(),
+  nowOverride?: Date,
 ): Promise<Payslip> {
   const { idempotencyKey, pin } = input;
   const result = await withTenant(db, context, async (tx) => {
-    const self = await loadPayslipSelf(tx, context, actorUserId, now);
+    const self = await loadPayslipSelf(
+      tx,
+      context,
+      actorUserId,
+      nowOverride ?? new Date(),
+    );
     const [row] = await tx
       .select()
       .from(payslips)
@@ -253,7 +263,6 @@ export async function viewMyPayslip(
         actor: self.actor,
         employeeId: self.employeeId,
         payslipId: row.id,
-        pin,
       },
       async () => {
         const pinRow = await lockPayslipPin(
@@ -261,6 +270,8 @@ export async function viewMyPayslip(
           context.tenant.tenantId,
           self.employeeId,
         );
+        // Clock read AFTER the lock (lock expiry, counters, viewedAt, audit).
+        const now = nowOverride ?? new Date();
         if (!pinRow) return { kind: "not_set" };
         const check = await checkPayslipPin(
           tx,
