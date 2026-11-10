@@ -12,10 +12,10 @@ CREATE TABLE "wa_login_reply_policies" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "wa_login_reply_policies_quota_check" CHECK ("wa_login_reply_policies"."free_monthly_quota" >= 0 AND "wa_login_reply_policies"."free_monthly_quota" <= 1000),
-	CONSTRAINT "wa_login_reply_policies_count_check" CHECK ("wa_login_reply_policies"."replies_this_month" >= 0)
+	CONSTRAINT "wa_login_reply_policies_count_check" CHECK ("wa_login_reply_policies"."replies_this_month" >= 0),
+	CONSTRAINT "wa_login_reply_policies_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "wa_login_reply_policies" ADD CONSTRAINT "wa_login_reply_policies_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.wa_login_reply_policies'::regclass);
 --> statement-breakpoint
 -- A policy is switched off, never deleted. enforce_tenant_rls grants DELETE;

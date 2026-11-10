@@ -99,7 +99,7 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Registry impor: 0205 dan 0208 didaftarkan di `data-import-registry.test.ts`.
 - Tanpa migrasi: ws/tax-snapshot-facility 09a124b2.
 - Perbaikan isi di luar konflik: label `loyalty_reward` ("Hadiah poin") di i18n member dan promo, dan default mock web ws08 (`voucherCode`, `perCustomerLimit`, `redemptionValidDays`) mengikuti kontrak m4p5. Test `platform-access-db` mengikuti batas `>=` dari 0206; test `provisioning-race` kini mengharapkan 64 akun (5104).
-- 0219 `0219_profit_share` (ws/profit-share, legend-2ljb, tingkat K, idx 219, when 1794298000000): tabel bagi hasil dan FK komposit `profit_entity_id` di `shareholder_document_files` dan `shareholder_documents`. GAGAL dengan pesan `0219: ...` bila salah satu tabel dokumen sudah berisi baris, karena `profit_entities` baru dan kosong. Cek dulu: `SELECT (SELECT count(*) FROM shareholder_document_files) AS files, (SELECT count(*) FROM shareholder_documents) AS documents;` Keduanya harus 0, kalau tidak hapus atau pindahkan barisnya dulu.
+- 0217 `0217_profit_share` (dulu 0219 di ws/profit-share, legend-2ljb, tingkat K, idx 217, when 1794298000000): tabel bagi hasil dan FK komposit `profit_entity_id` di `shareholder_document_files` dan `shareholder_documents`. GAGAL dengan pesan `0217: ...` bila salah satu tabel dokumen sudah berisi baris, karena `profit_entities` baru dan kosong. Cek dulu: `SELECT (SELECT count(*) FROM shareholder_document_files) AS files, (SELECT count(*) FROM shareholder_documents) AS documents;` Keduanya harus 0, kalau tidak hapus atau pindahkan barisnya dulu.
 
 ## Tambahan batch45
 
@@ -109,15 +109,15 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Perbaikan isi di luar konflik: `provisioning-race.test.ts` (legend-usa4b) menunggu 64 akun bagan standar; kini 65 sesudah akun 4105.
 - Flaky `platform-org-api` TEN-06 Q39 (409 saat buat outlet, kartu legend-23tbw) gagal di run penuh 3 dan 4, lulus sendiri dan lulus di run penuh 5.
 
-## Tambahan legend-8s992 (aturan bagi hasil founder, migrasi 0221)
+## Tambahan legend-8s992 (aturan bagi hasil founder, migrasi 0218)
 
-- 0221 `0221_profit_share_unabsorbed` (nomor sementara, merge train merangkai ulang idx dan `prevId`): kolom `distribution_runs.unabsorbed_idr`, trigger totals run koreksi (boleh kurang dari 10000 bp), trigger run koreksi hanya menargetkan run reguler, dan backfill izin `profit_share.share_allocation.change`.
+- 0218 `0218_profit_share_unabsorbed` (dulu 0221; batch47a dinomori ulang, idx 218, when 1794299000000): kolom `distribution_runs.unabsorbed_idr`, trigger totals run koreksi (boleh kurang dari 10000 bp), trigger run koreksi hanya menargetkan run reguler, dan backfill izin `profit_share.share_allocation.change`.
 - Backfill izin hanya ke template `owner` dan `finance` di semua tenant. Role kustom yang memegang `profit_share.registry.manage` TIDAK di-backfill (sama dengan keputusan krvk7): pemilik tenant harus menambahkan izin "Ubah porsi saham pemegang saham" ke role kustom itu, kalau tidak mereka kena 403 saat membuat, mengubah, atau mengajukan versi porsi.
 - Perubahan perilaku: klaw-bek yang melebihi yang sudah dibayarkan tidak lagi ditolak seluruhnya; dibatasi per pemegang saham dan sisanya dicatat di `unabsorbed_idr`. Ditolak 422 `ADJUSTMENT_EXCEEDS_PAID` hanya bila tidak ada yang bisa diserap.
 
 ## Tambahan legend-ideif (pepper PIN staf di edge)
 
-- Migrasi `0225_edge_staff_pin_peppers`: tabel `edge_staff_pin_peppers` (RLS tenant dan outlet). Nomor sementara, merge train menyusun ulang bila bentrok. `pnpm db:generate` kosong.
+- Migrasi `0225_edge_staff_pin_peppers`: tabel `edge_staff_pin_peppers` (RLS tenant dan outlet). Nomor tetap 0225 di batch47a (when 1794306000000). `pnpm db:generate` kosong.
 - Urutan: cloud dulu (query `peppers`), lalu edge. Env cloud baru: `STAFF_PIN_PEPPER_CURRENT_VERSION` (default 1).
 - Edge terpasang: hapus `STAFF_PIN_PEPPER` dari env edge SEBELUM restart (edge menolak jalan bila masih ada), outlet online agar sinkron pertama mengirim pepper tenant. Sebelum sinkron itu PIN di edge ditolak tanpa menaikkan hitungan gagal. Langkah lengkap dan rotasi: `docs/deployment.md` "Staff PIN pepper on edge nodes".
 
@@ -141,10 +141,10 @@ Migrasi baru (idx 209 sampai 216, rapat, `when` naik). Penomoran akhir berbeda d
 | 0215 | `0215_hris_attendance` | 0217 | ws/storage-wire | 1794296000000 |
 | 0216 | `0216_wifi_quota_engine` | 0218 | ws/wifi-edge | 1794297000000 |
 
-- Nomor 0217 dan 0218 kosong. `ws/profit-share` (0219 di cabangnya) dan `ws/ws01-k2l` masuk batch47 dan perlu dinomori ulang ke 0217 dan seterusnya.
+- Nomor 0217 dan seterusnya dipakai batch47a (lihat bagian "Tambahan batch47a" di bawah).
 - Rantai: 0208 -> 0209 -> ... -> 0216. `prevId` tiap snapshot disambung ulang dan tiap snapshot berisi skema kumulatif. `pnpm db:generate` kosong.
 - Tanpa migrasi: `ws/hris-loan-perm`, `ws/loyalty-training-lookup`, `ws/az-flow-y` (hanya test e2e), `ws/flaky-ten06` (hanya test).
-- **SQL diubah oleh merge train:** 0210, 0212, 0213, 0214 dan 0216 mengangkat FORCE RLS di sekitar blok `ADD CONSTRAINT ... FOREIGN KEY` ke tabel lama (pola 2 di `docs/plan/contracts.md`) dan memulihkannya sesudahnya. Tanpa ini migrator non-superuser gagal "tenant context is required" (`edge-received-events-migration.test.ts`). Di production migrator punya BYPASSRLS, jadi yang berubah hanya kunci: `NO FORCE` mengambil ACCESS EXCLUSIVE pada `outlets`, `customer_profiles`, `orders`, `order_issues`, `order_items`, `vouchers`, `facilities`, `menu_items`, `item_variants`, `stations`, `wifi_policies` sampai seluruh batch commit. **Jalankan di jendela sepi.** DDL akhir setara.
+- **SQL diubah oleh merge train (batch47a, legend-436yt):** 0210, 0212, 0213, 0214 dan 0216 kini menulis FK tabel baru inline di `CREATE TABLE` (tanpa angkat NO FORCE/FORCE). Hanya FK yang anaknya tabel lama (`customer_profiles_tier_fk` di 0210, `order_issues_replacement_order_item_fk` di 0212, FK `wifi_policies` bila ada) tetap ALTER dengan NO FORCE/FORCE sempit. Skema akhir identik dengan versi lama (dibandingkan lewat pg_constraint, relforcerowsecurity, kolom, indeks, trigger, policy: 0 beda). Migrator production tetap BYPASSRLS; AccessExclusive tinggal pada tabel anak lama yang disebut, induk lain hanya terblokir tulis (ShareRowExclusive). Jalankan di jendela sepi.
 - Pembaruan nama: komentar di `apology-vouchers.ts/.custom.sql`, `facility-entitlement.custom.sql`, `facility-entitlement-migration.test.ts`, `kds-pacing.custom.sql` dan baris `docs/PROGRESS.md` ikut dinomori ulang.
 
 Perlu backfill atau konfigurasi:
@@ -159,3 +159,27 @@ Perilaku berubah:
 - krvk7 (peran kustom tanpa backfill) tidak termasuk batch ini.
 
 Perbaikan isi di luar konflik: lihat laporan merge train batch46 (FORCE RLS di atas, nama migrasi, test hitungan bila ada).
+
+## Tambahan batch47a (penomoran ulang, FK inline)
+
+Nomor sementara dari cabang dinomori ulang rapat sesudah 0216, urut merge. `when` naik 1000000 per migrasi; snapshot dibuat ulang dari skema gabungan; `pnpm db:generate` kosong sesudah tiap merge.
+
+| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
+|---|---|---|---|---|
+| 0217 | `0217_profit_share` | 0219 | ws/profit-share | 1794298000000 |
+| 0218 | `0218_profit_share_unabsorbed` | 0221 | ws/8s992-profit-rules | 1794299000000 |
+| 0219 | `0219_profit_share_carry` | 0224 | ws/lzvh0-unabsorbed-carry | 1794300000000 |
+| 0220 | `0220_payment_refund_order_issue` | 0222 | ws/94q2l-impl | 1794301000000 |
+| 0221 | `0221_k2l_member_signin_identity` | 0220 | ws/k2l-followup | 1794302000000 |
+| 0222 | `0222_wa_login_reply_policies` | 0226 | ws/dn4-wa-replies | 1794303000000 |
+| 0223 | `0223_swap_return_park` | 0228 | ws/nzbi8-swap-stock-park | 1794304000000 |
+| 0224 | `0224_wifi_quota_apply_queue` | 0220 | ws/oeqme-wifi-queue | 1794305000000 |
+| 0225 | `0225_edge_staff_pin_peppers` | 0225 | ws/ideif-edge-pepper | 1794306000000 |
+| 0226 | `0226_hris_edge_replication` | 0227 | ws/hwn02-hris-edge-schema (lewat ye4j1) | 1794307000000 |
+| 0227 | `0227_edge_selfie_rejected_at` | 0233 | ws/hubzo-selfie-worker | 1794308000000 |
+
+- Tanpa migrasi baru: ws/0w2wy-docs-storage, ws/n6fek-recovery-refund-metrics, ws/mz15j-paid-check, ws/eirhm-menu-print-cleanup, ws/5tmye-whitelabel-flaky, ws/hris-edge-design, ws/cku1m-qr-v2, ws/tkycp-people-pull. Tidak ikut: ws/u37u3 (menunggu review founder), tip j6cyb/svy91/i83ls (svy91 ikut lewat hubzo).
+- `ws/94q2l-impl` mengubah `failed_item_recovery` di tempat; di m1 berkas itu `0212_failed_item_recovery.sql`, dan versi m1 (FK inline) dipakai. m1 tidak tercatat pernah diterapkan ke DB bersama, jadi ubah di tempat aman; kalau ternyata sudah diterapkan ke satu DB, DB itu harus dibuat ulang atau diperbaiki manual.
+- 0217 GAGAL (`0217: ...`) bila `shareholder_document_files` atau `shareholder_documents` sudah berisi baris (lihat catatan 0217 di atas).
+- 0218 mem-backfill izin `profit_share.share_allocation.change` ke template owner dan finance (lihat bagian legend-8s992).
+- Test yang bergantung nomor: `edge-hris-migration-0226.test.ts` (dulu `-0227`, journal dipotong di idx 225), `profit-share-permission-backfill-migration.test.ts`, `profit-share-carry-migration.test.ts`, `data-import-registry.test.ts`.

@@ -52,11 +52,11 @@ CREATE TABLE "identity_merges" (
 	"created_by" text,
 	CONSTRAINT "identity_merges_absorbed_user_id_unique" UNIQUE("absorbed_user_id"),
 	CONSTRAINT "identity_merges_trigger_check" CHECK ("identity_merges"."trigger" IN ('whatsapp_link', 'support')),
-	CONSTRAINT "identity_merges_distinct_users_check" CHECK ("identity_merges"."survivor_user_id" <> "identity_merges"."absorbed_user_id")
+	CONSTRAINT "identity_merges_distinct_users_check" CHECK ("identity_merges"."survivor_user_id" <> "identity_merges"."absorbed_user_id"),
+	CONSTRAINT "identity_merges_survivor_user_id_user_id_fk" FOREIGN KEY ("survivor_user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "identity_merges_absorbed_user_id_user_id_fk" FOREIGN KEY ("absorbed_user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "identity_merges" ADD CONSTRAINT "identity_merges_survivor_user_id_user_id_fk" FOREIGN KEY ("survivor_user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "identity_merges" ADD CONSTRAINT "identity_merges_absorbed_user_id_user_id_fk" FOREIGN KEY ("absorbed_user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 -- A merge is a record: never rewritten or deleted (pattern of
 -- receipt_number_writeoffs, 0156).
 CREATE OR REPLACE FUNCTION app.identity_merges_append_only() RETURNS trigger

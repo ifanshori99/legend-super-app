@@ -56,27 +56,17 @@ CREATE TABLE "apology_vouchers" (
 	"issued_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "apology_vouchers_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "apology_vouchers_tenant_voucher_key" UNIQUE("tenant_id","voucher_id"),
-	CONSTRAINT "apology_vouchers_reason_check" CHECK (length(btrim("apology_vouchers"."reason")) >= 10)
+	CONSTRAINT "apology_vouchers_reason_check" CHECK (length(btrim("apology_vouchers"."reason")) >= 10),
+	CONSTRAINT "apology_vouchers_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "apology_vouchers_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "apology_vouchers_issued_by_user_id_fk" FOREIGN KEY ("issued_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "apology_vouchers_voucher_fk" FOREIGN KEY ("tenant_id","voucher_id") REFERENCES "public"."vouchers"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "apology_vouchers_order_issue_fk" FOREIGN KEY ("tenant_id","order_issue_id") REFERENCES "public"."order_issues"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "apology_vouchers_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "apology_vouchers_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "order_issues" ADD COLUMN "approval_request_id" uuid;--> statement-breakpoint
--- Lift FORCE RLS on the existing tables the FK validation scans (as the
--- migrator), restored after the last FK (docs/plan/contracts.md pattern 2).
-ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.customer_profiles NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.vouchers NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.order_issues NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_issued_by_user_id_fk" FOREIGN KEY ("issued_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_voucher_fk" FOREIGN KEY ("tenant_id","voucher_id") REFERENCES "public"."vouchers"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_order_issue_fk" FOREIGN KEY ("tenant_id","order_issue_id") REFERENCES "public"."order_issues"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE public.order_issues FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.vouchers FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.customer_profiles FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE UNIQUE INDEX "apology_vouchers_issue_once_idx" ON "apology_vouchers" USING btree ("tenant_id","order_issue_id") WHERE "apology_vouchers"."order_issue_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "apology_vouchers_approval_once_idx" ON "apology_vouchers" USING btree ("tenant_id","approval_request_id") WHERE "apology_vouchers"."approval_request_id" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "apology_vouchers_outlet_issued_idx" ON "apology_vouchers" USING btree ("tenant_id","outlet_id","issued_at","id");--> statement-breakpoint

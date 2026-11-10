@@ -127,6 +127,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0186_stock_ledger_posting_seq.sql":
     "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
   // legend-k2l
+  "0218_profit_share_unabsorbed.sql":
+    "appends profit_share.share_allocation.change to the stored owner and finance template role rows of existing tenants (legend-8s992, founder Q84); idempotent, never touches a custom role, FORCE RLS lifted for this statement and restored",
   "0221_k2l_member_signin_identity.sql":
     "sets session.auth_method on the existing session rows (management sessions become password, every other row legacy) so the sign-in method gate keeps today's staff sessions working (legend-k2l); no other column changes, never inserts or deletes rows",
   "0187_audit_retention_maintenance.sql":

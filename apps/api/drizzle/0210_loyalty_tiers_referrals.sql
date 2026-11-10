@@ -1,17 +1,3 @@
-CREATE TABLE "customer_tier_history" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"tenant_id" uuid NOT NULL,
-	"customer_profile_id" uuid NOT NULL,
-	"from_tier_id" uuid,
-	"to_tier_id" uuid,
-	"reason" varchar(12) NOT NULL,
-	"rolling_spend_idr" bigint NOT NULL,
-	"rolling_visits" integer NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "customer_tier_history_reason_check" CHECK ("customer_tier_history"."reason" IN ('evaluation', 'manual')),
-	CONSTRAINT "customer_tier_history_stats_check" CHECK ("customer_tier_history"."rolling_spend_idr" >= 0 AND "customer_tier_history"."rolling_visits" >= 0)
-);
---> statement-breakpoint
 CREATE TABLE "loyalty_tiers" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -26,7 +12,26 @@ CREATE TABLE "loyalty_tiers" (
 	CONSTRAINT "loyalty_tiers_tenant_rank_key" UNIQUE("tenant_id","rank"),
 	CONSTRAINT "loyalty_tiers_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "loyalty_tiers_rank_check" CHECK ("loyalty_tiers"."rank" > 0),
-	CONSTRAINT "loyalty_tiers_threshold_check" CHECK ("loyalty_tiers"."threshold_spend_idr" >= 0 AND "loyalty_tiers"."threshold_visits" >= 0)
+	CONSTRAINT "loyalty_tiers_threshold_check" CHECK ("loyalty_tiers"."threshold_spend_idr" >= 0 AND "loyalty_tiers"."threshold_visits" >= 0),
+	CONSTRAINT "loyalty_tiers_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action
+);
+--> statement-breakpoint
+CREATE TABLE "customer_tier_history" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"customer_profile_id" uuid NOT NULL,
+	"from_tier_id" uuid,
+	"to_tier_id" uuid,
+	"reason" varchar(12) NOT NULL,
+	"rolling_spend_idr" bigint NOT NULL,
+	"rolling_visits" integer NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "customer_tier_history_reason_check" CHECK ("customer_tier_history"."reason" IN ('evaluation', 'manual')),
+	CONSTRAINT "customer_tier_history_stats_check" CHECK ("customer_tier_history"."rolling_spend_idr" >= 0 AND "customer_tier_history"."rolling_visits" >= 0),
+	CONSTRAINT "customer_tier_history_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_tier_history_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_tier_history_from_tier_fk" FOREIGN KEY ("tenant_id","from_tier_id") REFERENCES "public"."loyalty_tiers"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_tier_history_to_tier_fk" FOREIGN KEY ("tenant_id","to_tier_id") REFERENCES "public"."loyalty_tiers"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "referrals" (
@@ -51,26 +56,15 @@ CREATE TABLE "referrals" (
 	CONSTRAINT "referrals_points_check" CHECK ("referrals"."referrer_points" >= 0 AND "referrals"."referee_points" >= 0),
 	CONSTRAINT "referrals_first_order_check" CHECK (("referrals"."status" IN ('qualified', 'rewarded')) = ("referrals"."first_order_id" IS NOT NULL)),
 	CONSTRAINT "referrals_qualified_at_check" CHECK (("referrals"."status" IN ('qualified', 'rewarded')) = ("referrals"."qualified_at" IS NOT NULL)),
-	CONSTRAINT "referrals_rewarded_at_check" CHECK (("referrals"."status" = 'rewarded') = ("referrals"."rewarded_at" IS NOT NULL))
+	CONSTRAINT "referrals_rewarded_at_check" CHECK (("referrals"."status" = 'rewarded') = ("referrals"."rewarded_at" IS NOT NULL)),
+	CONSTRAINT "referrals_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "referrals_referrer_fk" FOREIGN KEY ("tenant_id","referrer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "referrals_referee_fk" FOREIGN KEY ("tenant_id","referee_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "referrals_first_order_fk" FOREIGN KEY ("tenant_id","first_order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "customer_profiles" ADD COLUMN "tier_id" uuid;--> statement-breakpoint
 ALTER TABLE "customer_profiles" ADD COLUMN "tier_evaluated_at" timestamp with time zone;--> statement-breakpoint
--- Lift FORCE RLS on the existing tables the FK validation scans (as the
--- migrator), restored after the last FK (docs/plan/contracts.md pattern 2).
-ALTER TABLE public.customer_profiles NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.orders NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE "customer_tier_history" ADD CONSTRAINT "customer_tier_history_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_tier_history" ADD CONSTRAINT "customer_tier_history_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_tier_history" ADD CONSTRAINT "customer_tier_history_from_tier_fk" FOREIGN KEY ("tenant_id","from_tier_id") REFERENCES "public"."loyalty_tiers"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_tier_history" ADD CONSTRAINT "customer_tier_history_to_tier_fk" FOREIGN KEY ("tenant_id","to_tier_id") REFERENCES "public"."loyalty_tiers"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "loyalty_tiers" ADD CONSTRAINT "loyalty_tiers_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "referrals" ADD CONSTRAINT "referrals_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "referrals" ADD CONSTRAINT "referrals_referrer_fk" FOREIGN KEY ("tenant_id","referrer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "referrals" ADD CONSTRAINT "referrals_referee_fk" FOREIGN KEY ("tenant_id","referee_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "referrals" ADD CONSTRAINT "referrals_first_order_fk" FOREIGN KEY ("tenant_id","first_order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE public.orders FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.customer_profiles FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE INDEX "customer_tier_history_profile_idx" ON "customer_tier_history" USING btree ("tenant_id","customer_profile_id","created_at");--> statement-breakpoint
 CREATE INDEX "referrals_referrer_status_idx" ON "referrals" USING btree ("tenant_id","referrer_profile_id","status");
 --> statement-breakpoint

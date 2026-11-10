@@ -15,12 +15,12 @@ CREATE TABLE "wifi_quota_apply_queue" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "wifi_quota_apply_queue_event_key" UNIQUE("tenant_id","event_id"),
 	CONSTRAINT "wifi_quota_apply_queue_status_check" CHECK ("wifi_quota_apply_queue"."status" IN ('pending','applied','skipped','superseded','refused','failed')),
-	CONSTRAINT "wifi_quota_apply_queue_attempts_check" CHECK ("wifi_quota_apply_queue"."attempts" >= 0)
+	CONSTRAINT "wifi_quota_apply_queue_attempts_check" CHECK ("wifi_quota_apply_queue"."attempts" >= 0),
+	CONSTRAINT "wifi_quota_apply_queue_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "wifi_quota_apply_queue_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "wifi_quota_apply_queue_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "wifi_quota_apply_queue" ADD CONSTRAINT "wifi_quota_apply_queue_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wifi_quota_apply_queue" ADD CONSTRAINT "wifi_quota_apply_queue_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wifi_quota_apply_queue" ADD CONSTRAINT "wifi_quota_apply_queue_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "wifi_quota_apply_queue_due_idx" ON "wifi_quota_apply_queue" USING btree ("tenant_id","outlet_id","next_attempt_at") WHERE "wifi_quota_apply_queue"."status" = 'pending';--> statement-breakpoint
 CREATE INDEX "wifi_quota_apply_queue_session_idx" ON "wifi_quota_apply_queue" USING btree ("tenant_id","outlet_id","wifi_session_id","aggregate_sequence");
 --> statement-breakpoint

@@ -11,24 +11,8 @@
 -- shareholder whose whole share the carry absorbs keeps a line with gross 0 and
 -- `carry_deducted` = the share (the line is paid on approval, see below).
 --
--- Runs as a plain table owner too (contracts.md pattern 2): the foreign keys
--- below are validated against parents that have FORCE ROW LEVEL SECURITY, so
--- FORCE is lifted on those parents for this transaction and restored after the
--- last foreign key. The new tables are not forced yet at that point.
+-- The new tables carry their foreign keys inline, so no FORCE toggling is needed.
 
-CREATE TABLE "distribution_carry_deductions" (
-	"tenant_id" uuid NOT NULL,
-	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
-	"distribution_run_id" uuid NOT NULL,
-	"shortfall_id" uuid NOT NULL,
-	"profit_entity_id" uuid NOT NULL,
-	"shareholder_id" uuid NOT NULL,
-	"amount_idr" bigint NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "distribution_carry_deductions_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
-	CONSTRAINT "distribution_carry_deductions_run_shortfall_key" UNIQUE("tenant_id","distribution_run_id","shortfall_id"),
-	CONSTRAINT "distribution_carry_deductions_amount_check" CHECK ("distribution_carry_deductions"."amount_idr" > 0)
-);--> statement-breakpoint
 CREATE TABLE "distribution_run_shortfalls" (
 	"tenant_id" uuid NOT NULL,
 	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -40,26 +24,35 @@ CREATE TABLE "distribution_run_shortfalls" (
 	CONSTRAINT "distribution_run_shortfalls_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
 	CONSTRAINT "distribution_run_shortfalls_run_shareholder_key" UNIQUE("tenant_id","distribution_run_id","shareholder_id"),
 	CONSTRAINT "distribution_run_shortfalls_id_shareholder_key" UNIQUE("tenant_id","id","shareholder_id"),
-	CONSTRAINT "distribution_run_shortfalls_amount_check" CHECK ("distribution_run_shortfalls"."amount_idr" > 0)
-);
---> statement-breakpoint
-ALTER TABLE public.distribution_runs NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.shareholders NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.profit_entities NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+	CONSTRAINT "distribution_run_shortfalls_amount_check" CHECK ("distribution_run_shortfalls"."amount_idr" > 0),
+	CONSTRAINT "distribution_run_shortfalls_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_run_shortfalls_run_fk" FOREIGN KEY ("tenant_id","distribution_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_run_shortfalls_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_run_shortfalls_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action
+);--> statement-breakpoint
+CREATE TABLE "distribution_carry_deductions" (
+	"tenant_id" uuid NOT NULL,
+	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
+	"distribution_run_id" uuid NOT NULL,
+	"shortfall_id" uuid NOT NULL,
+	"profit_entity_id" uuid NOT NULL,
+	"shareholder_id" uuid NOT NULL,
+	"amount_idr" bigint NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "distribution_carry_deductions_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
+	CONSTRAINT "distribution_carry_deductions_run_shortfall_key" UNIQUE("tenant_id","distribution_run_id","shortfall_id"),
+	CONSTRAINT "distribution_carry_deductions_amount_check" CHECK ("distribution_carry_deductions"."amount_idr" > 0),
+	CONSTRAINT "distribution_carry_deductions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_carry_deductions_run_fk" FOREIGN KEY ("tenant_id","distribution_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_carry_deductions_shortfall_fk" FOREIGN KEY ("tenant_id","shortfall_id","shareholder_id") REFERENCES "public"."distribution_run_shortfalls"("tenant_id","id","shareholder_id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_carry_deductions_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_carry_deductions_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action
+);--> statement-breakpoint
 ALTER TABLE "distribution_runs" DROP CONSTRAINT "distribution_runs_totals_check";--> statement-breakpoint
 ALTER TABLE "distribution_runs" DROP CONSTRAINT "distribution_runs_journal_check";--> statement-breakpoint
 ALTER TABLE "distribution_lines" DROP CONSTRAINT "distribution_lines_amounts_check";--> statement-breakpoint
 ALTER TABLE "distribution_lines" ADD COLUMN "carry_deducted_idr" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "distribution_runs" ADD COLUMN "carry_deducted_idr" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE "distribution_carry_deductions" ADD CONSTRAINT "distribution_carry_deductions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_carry_deductions" ADD CONSTRAINT "distribution_carry_deductions_run_fk" FOREIGN KEY ("tenant_id","distribution_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_carry_deductions" ADD CONSTRAINT "distribution_carry_deductions_shortfall_fk" FOREIGN KEY ("tenant_id","shortfall_id","shareholder_id") REFERENCES "public"."distribution_run_shortfalls"("tenant_id","id","shareholder_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_carry_deductions" ADD CONSTRAINT "distribution_carry_deductions_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_carry_deductions" ADD CONSTRAINT "distribution_carry_deductions_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_run_shortfalls" ADD CONSTRAINT "distribution_run_shortfalls_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_run_shortfalls" ADD CONSTRAINT "distribution_run_shortfalls_run_fk" FOREIGN KEY ("tenant_id","distribution_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_run_shortfalls" ADD CONSTRAINT "distribution_run_shortfalls_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_run_shortfalls" ADD CONSTRAINT "distribution_run_shortfalls_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "distribution_carry_deductions_shortfall_idx" ON "distribution_carry_deductions" USING btree ("tenant_id","shortfall_id");--> statement-breakpoint
 CREATE INDEX "distribution_run_shortfalls_fifo_idx" ON "distribution_run_shortfalls" USING btree ("tenant_id","shareholder_id","created_at","id");--> statement-breakpoint
 ALTER TABLE "distribution_lines" ADD CONSTRAINT "distribution_lines_amounts_check" CHECK (("distribution_lines"."gross_idr" <> 0 OR "distribution_lines"."carry_deducted_idr" > 0) AND "distribution_lines"."gross_idr" - "distribution_lines"."tax_withheld_idr" = "distribution_lines"."net_idr" AND sign("distribution_lines"."tax_withheld_idr") * sign("distribution_lines"."gross_idr") >= 0 AND abs("distribution_lines"."tax_withheld_idr") <= abs("distribution_lines"."gross_idr"));--> statement-breakpoint
@@ -67,10 +60,6 @@ ALTER TABLE "distribution_lines" ADD CONSTRAINT "distribution_lines_carry_check"
 ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_carry_check" CHECK ("distribution_runs"."carry_deducted_idr" >= 0 AND ("distribution_runs"."carry_deducted_idr" = 0 OR "distribution_runs"."type" = 'regular' OR ("distribution_runs"."type" = 'adjustment' AND "distribution_runs"."distributable_idr" > 0)));--> statement-breakpoint
 ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_journal_check" CHECK (("distribution_runs"."status" <> 'paid' AND "distribution_runs"."journal_entry_id" IS NULL AND "distribution_runs"."reversal_journal_entry_id" IS NULL) OR ("distribution_runs"."status" = 'paid' AND "distribution_runs"."total_gross_idr" > 0 AND "distribution_runs"."journal_entry_id" IS NOT NULL AND "distribution_runs"."reversal_journal_entry_id" IS NULL) OR ("distribution_runs"."status" = 'paid' AND "distribution_runs"."total_gross_idr" < 0 AND "distribution_runs"."reversal_journal_entry_id" IS NOT NULL AND "distribution_runs"."journal_entry_id" IS NULL) OR ("distribution_runs"."status" = 'paid' AND "distribution_runs"."total_gross_idr" = 0 AND "distribution_runs"."journal_entry_id" IS NULL AND "distribution_runs"."reversal_journal_entry_id" IS NULL));--> statement-breakpoint
 ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_totals_check" CHECK ("distribution_runs"."distributable_idr" = "distribution_runs"."total_gross_idr" + "distribution_runs"."carry_deducted_idr" AND "distribution_runs"."total_gross_idr" - "distribution_runs"."total_tax_withheld_idr" = "distribution_runs"."total_net_idr");
---> statement-breakpoint
-ALTER TABLE public.distribution_runs FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.shareholders FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.profit_entities FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 -- Tenant RLS like every profit-share table (TEN-01/02). Both tables are
 -- append-only for the app: a shortfall is never edited and a rejected run

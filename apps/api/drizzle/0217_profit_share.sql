@@ -1,27 +1,105 @@
-CREATE TABLE "distribution_lines" (
+CREATE TABLE "profit_entities" (
 	"tenant_id" uuid NOT NULL,
 	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
-	"distribution_run_id" uuid NOT NULL,
+	"name" text NOT NULL,
+	"type" text NOT NULL,
+	"legal_entity_id" uuid,
+	"outlet_id" uuid,
+	"basis" text DEFAULT 'closed_period_net_profit' NOT NULL,
+	"reserve_bp" integer NOT NULL,
+	"frequency" text NOT NULL,
+	"tax_withholding_bp" integer NOT NULL,
+	"is_active" boolean DEFAULT true NOT NULL,
+	"created_by" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "profit_entities_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
+	CONSTRAINT "profit_entities_type_check" CHECK (("profit_entities"."type" = 'legal_entity' AND "profit_entities"."legal_entity_id" IS NOT NULL AND "profit_entities"."outlet_id" IS NULL) OR ("profit_entities"."type" = 'outlet' AND "profit_entities"."outlet_id" IS NOT NULL AND "profit_entities"."legal_entity_id" IS NULL)),
+	CONSTRAINT "profit_entities_basis_check" CHECK ("profit_entities"."basis" = 'closed_period_net_profit'),
+	CONSTRAINT "profit_entities_frequency_check" CHECK ("profit_entities"."frequency" IN ('monthly', 'quarterly', 'semi_annual', 'annual')),
+	CONSTRAINT "profit_entities_bp_check" CHECK ("profit_entities"."reserve_bp" BETWEEN 0 AND 10000 AND "profit_entities"."tax_withholding_bp" BETWEEN 0 AND 10000),
+	CONSTRAINT "profit_entities_name_check" CHECK (length(btrim("profit_entities"."name")) BETWEEN 1 AND 150),
+	CONSTRAINT "profit_entities_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "profit_entities_legal_entity_fk" FOREIGN KEY ("tenant_id","legal_entity_id") REFERENCES "public"."legal_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "profit_entities_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
+);
+--> statement-breakpoint
+CREATE TABLE "shareholders" (
+	"tenant_id" uuid NOT NULL,
+	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" text,
+	"name" text NOT NULL,
+	"type" text NOT NULL,
+	"status" text DEFAULT 'active' NOT NULL,
+	"npwp_sealed" text,
+	"npwp_last4" varchar(4),
+	"payout_bank" text,
+	"payout_account_sealed" text,
+	"payout_account_last4" varchar(4),
+	"payout_account_holder" text,
+	"created_by" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "shareholders_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
+	CONSTRAINT "shareholders_type_check" CHECK ("shareholders"."type" IN ('person', 'company')),
+	CONSTRAINT "shareholders_status_check" CHECK ("shareholders"."status" IN ('active', 'inactive')),
+	CONSTRAINT "shareholders_name_check" CHECK (length(btrim("shareholders"."name")) BETWEEN 1 AND 150),
+	CONSTRAINT "shareholders_npwp_check" CHECK (("shareholders"."npwp_sealed" IS NULL) = ("shareholders"."npwp_last4" IS NULL) AND ("shareholders"."npwp_last4" IS NULL OR "shareholders"."npwp_last4" ~ '^[0-9]{4}$')),
+	CONSTRAINT "shareholders_payout_check" CHECK ((("shareholders"."payout_bank" IS NULL AND "shareholders"."payout_account_sealed" IS NULL AND "shareholders"."payout_account_last4" IS NULL AND "shareholders"."payout_account_holder" IS NULL) OR ("shareholders"."payout_bank" IS NOT NULL AND "shareholders"."payout_account_sealed" IS NOT NULL AND "shareholders"."payout_account_last4" ~ '^[0-9]{4}$' AND "shareholders"."payout_account_holder" IS NOT NULL))),
+	CONSTRAINT "shareholders_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action
+);
+--> statement-breakpoint
+CREATE TABLE "profit_share_commands" (
+	"tenant_id" uuid NOT NULL,
+	"idempotency_key" text NOT NULL,
+	"operation" text NOT NULL,
+	"target_id" text NOT NULL,
+	"fingerprint" text NOT NULL,
+	"actor_id" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "profit_share_commands_tenant_id_idempotency_key_pk" PRIMARY KEY("tenant_id","idempotency_key"),
+	CONSTRAINT "profit_share_commands_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action
+);
+--> statement-breakpoint
+CREATE TABLE "share_allocation_versions" (
+	"tenant_id" uuid NOT NULL,
+	"profit_entity_id" uuid NOT NULL,
+	"version" integer NOT NULL,
+	"effective_from" date NOT NULL,
+	"status" text DEFAULT 'draft' NOT NULL,
+	"requested_by" text NOT NULL,
+	"requested_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"decided_by" text,
+	"decided_at" timestamp with time zone,
+	"decision_note" text,
+	"idempotency_key" text NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "share_allocation_versions_tenant_id_profit_entity_id_version_pk" PRIMARY KEY("tenant_id","profit_entity_id","version"),
+	CONSTRAINT "share_allocation_versions_tenant_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
+	CONSTRAINT "share_allocation_versions_version_check" CHECK ("share_allocation_versions"."version" >= 1),
+	CONSTRAINT "share_allocation_versions_status_check" CHECK ("share_allocation_versions"."status" IN ('draft', 'pending_approval', 'approved', 'rejected', 'cancelled')),
+	CONSTRAINT "share_allocation_versions_decided_check" CHECK (("share_allocation_versions"."status" IN ('approved', 'rejected')) = ("share_allocation_versions"."decided_by" IS NOT NULL AND "share_allocation_versions"."decided_at" IS NOT NULL)),
+	CONSTRAINT "share_allocation_versions_note_check" CHECK (("share_allocation_versions"."status" <> 'rejected' OR "share_allocation_versions"."decision_note" IS NOT NULL) AND ("share_allocation_versions"."status" IN ('approved', 'rejected') OR "share_allocation_versions"."decision_note" IS NULL)),
+	CONSTRAINT "share_allocation_versions_four_eyes_check" CHECK ("share_allocation_versions"."decided_by" IS NULL OR "share_allocation_versions"."decided_by" <> "share_allocation_versions"."requested_by"),
+	CONSTRAINT "share_allocation_versions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "share_allocation_versions_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action
+);
+--> statement-breakpoint
+CREATE TABLE "share_allocations" (
+	"tenant_id" uuid NOT NULL,
+	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
+	"profit_entity_id" uuid NOT NULL,
+	"version" integer NOT NULL,
 	"shareholder_id" uuid NOT NULL,
 	"share_bp" integer NOT NULL,
-	"gross_idr" bigint NOT NULL,
-	"tax_withheld_idr" bigint NOT NULL,
-	"net_idr" bigint NOT NULL,
-	"payment_status" text DEFAULT 'pending' NOT NULL,
-	"payment_ref" text,
-	"paid_at" timestamp with time zone,
-	"paid_by" text,
-	"statement_file_key" text,
 	"position" integer NOT NULL,
-	CONSTRAINT "distribution_lines_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
-	CONSTRAINT "distribution_lines_run_shareholder_key" UNIQUE("tenant_id","distribution_run_id","shareholder_id"),
-	CONSTRAINT "distribution_lines_statement_key" UNIQUE("tenant_id","statement_file_key"),
-	CONSTRAINT "distribution_lines_share_bp_check" CHECK ("distribution_lines"."share_bp" > 0 AND "distribution_lines"."share_bp" <= 10000),
-	CONSTRAINT "distribution_lines_amounts_check" CHECK ("distribution_lines"."gross_idr" <> 0 AND "distribution_lines"."gross_idr" - "distribution_lines"."tax_withheld_idr" = "distribution_lines"."net_idr" AND sign("distribution_lines"."tax_withheld_idr") * sign("distribution_lines"."gross_idr") >= 0 AND abs("distribution_lines"."tax_withheld_idr") <= abs("distribution_lines"."gross_idr")),
-	CONSTRAINT "distribution_lines_payment_status_check" CHECK ("distribution_lines"."payment_status" IN ('pending', 'paid')),
-	CONSTRAINT "distribution_lines_paid_check" CHECK (("distribution_lines"."payment_status" = 'paid') = ("distribution_lines"."payment_ref" IS NOT NULL AND "distribution_lines"."paid_at" IS NOT NULL AND "distribution_lines"."paid_by" IS NOT NULL)),
-	CONSTRAINT "distribution_lines_statement_check" CHECK ("distribution_lines"."statement_file_key" IS NULL OR "distribution_lines"."payment_status" = 'paid'),
-	CONSTRAINT "distribution_lines_position_check" CHECK ("distribution_lines"."position" >= 0)
+	CONSTRAINT "share_allocations_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
+	CONSTRAINT "share_allocations_version_shareholder_key" UNIQUE("tenant_id","profit_entity_id","version","shareholder_id"),
+	CONSTRAINT "share_allocations_share_bp_check" CHECK ("share_allocations"."share_bp" > 0 AND "share_allocations"."share_bp" <= 10000),
+	CONSTRAINT "share_allocations_position_check" CHECK ("share_allocations"."position" >= 0),
+	CONSTRAINT "share_allocations_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "share_allocations_version_fk" FOREIGN KEY ("tenant_id","profit_entity_id","version") REFERENCES "public"."share_allocation_versions"("tenant_id","profit_entity_id","version") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "share_allocations_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "distribution_runs" (
@@ -70,131 +148,45 @@ CREATE TABLE "distribution_runs" (
 	CONSTRAINT "distribution_runs_four_eyes_check" CHECK ("distribution_runs"."approved_by" IS NULL OR "distribution_runs"."approved_by" <> "distribution_runs"."requested_by"),
 	CONSTRAINT "distribution_runs_paid_check" CHECK (("distribution_runs"."status" = 'paid') = ("distribution_runs"."paid_at" IS NOT NULL)),
 	CONSTRAINT "distribution_runs_cancelled_check" CHECK (("distribution_runs"."status" = 'cancelled') = ("distribution_runs"."cancelled_by" IS NOT NULL AND "distribution_runs"."cancelled_at" IS NOT NULL)),
-	CONSTRAINT "distribution_runs_journal_check" CHECK (("distribution_runs"."status" <> 'paid' AND "distribution_runs"."journal_entry_id" IS NULL AND "distribution_runs"."reversal_journal_entry_id" IS NULL) OR ("distribution_runs"."status" = 'paid' AND "distribution_runs"."total_gross_idr" > 0 AND "distribution_runs"."journal_entry_id" IS NOT NULL AND "distribution_runs"."reversal_journal_entry_id" IS NULL) OR ("distribution_runs"."status" = 'paid' AND "distribution_runs"."total_gross_idr" < 0 AND "distribution_runs"."reversal_journal_entry_id" IS NOT NULL AND "distribution_runs"."journal_entry_id" IS NULL))
+	CONSTRAINT "distribution_runs_journal_check" CHECK (("distribution_runs"."status" <> 'paid' AND "distribution_runs"."journal_entry_id" IS NULL AND "distribution_runs"."reversal_journal_entry_id" IS NULL) OR ("distribution_runs"."status" = 'paid' AND "distribution_runs"."total_gross_idr" > 0 AND "distribution_runs"."journal_entry_id" IS NOT NULL AND "distribution_runs"."reversal_journal_entry_id" IS NULL) OR ("distribution_runs"."status" = 'paid' AND "distribution_runs"."total_gross_idr" < 0 AND "distribution_runs"."reversal_journal_entry_id" IS NOT NULL AND "distribution_runs"."journal_entry_id" IS NULL)),
+	CONSTRAINT "distribution_runs_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_runs_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_runs_version_fk" FOREIGN KEY ("tenant_id","profit_entity_id","share_version") REFERENCES "public"."share_allocation_versions"("tenant_id","profit_entity_id","version") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_runs_fiscal_period_fk" FOREIGN KEY ("tenant_id","fiscal_period_id") REFERENCES "public"."fiscal_periods"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_runs_adjusts_fk" FOREIGN KEY ("tenant_id","adjusts_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_runs_journal_fk" FOREIGN KEY ("tenant_id","journal_entry_id") REFERENCES "public"."journal_entries"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_runs_reversal_journal_fk" FOREIGN KEY ("tenant_id","reversal_journal_entry_id") REFERENCES "public"."journal_entries"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-CREATE TABLE "profit_entities" (
+CREATE TABLE "distribution_lines" (
 	"tenant_id" uuid NOT NULL,
 	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
-	"name" text NOT NULL,
-	"type" text NOT NULL,
-	"legal_entity_id" uuid,
-	"outlet_id" uuid,
-	"basis" text DEFAULT 'closed_period_net_profit' NOT NULL,
-	"reserve_bp" integer NOT NULL,
-	"frequency" text NOT NULL,
-	"tax_withholding_bp" integer NOT NULL,
-	"is_active" boolean DEFAULT true NOT NULL,
-	"created_by" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "profit_entities_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
-	CONSTRAINT "profit_entities_type_check" CHECK (("profit_entities"."type" = 'legal_entity' AND "profit_entities"."legal_entity_id" IS NOT NULL AND "profit_entities"."outlet_id" IS NULL) OR ("profit_entities"."type" = 'outlet' AND "profit_entities"."outlet_id" IS NOT NULL AND "profit_entities"."legal_entity_id" IS NULL)),
-	CONSTRAINT "profit_entities_basis_check" CHECK ("profit_entities"."basis" = 'closed_period_net_profit'),
-	CONSTRAINT "profit_entities_frequency_check" CHECK ("profit_entities"."frequency" IN ('monthly', 'quarterly', 'semi_annual', 'annual')),
-	CONSTRAINT "profit_entities_bp_check" CHECK ("profit_entities"."reserve_bp" BETWEEN 0 AND 10000 AND "profit_entities"."tax_withholding_bp" BETWEEN 0 AND 10000),
-	CONSTRAINT "profit_entities_name_check" CHECK (length(btrim("profit_entities"."name")) BETWEEN 1 AND 150)
-);
---> statement-breakpoint
-CREATE TABLE "profit_share_commands" (
-	"tenant_id" uuid NOT NULL,
-	"idempotency_key" text NOT NULL,
-	"operation" text NOT NULL,
-	"target_id" text NOT NULL,
-	"fingerprint" text NOT NULL,
-	"actor_id" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "profit_share_commands_tenant_id_idempotency_key_pk" PRIMARY KEY("tenant_id","idempotency_key")
-);
---> statement-breakpoint
-CREATE TABLE "share_allocation_versions" (
-	"tenant_id" uuid NOT NULL,
-	"profit_entity_id" uuid NOT NULL,
-	"version" integer NOT NULL,
-	"effective_from" date NOT NULL,
-	"status" text DEFAULT 'draft' NOT NULL,
-	"requested_by" text NOT NULL,
-	"requested_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"decided_by" text,
-	"decided_at" timestamp with time zone,
-	"decision_note" text,
-	"idempotency_key" text NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "share_allocation_versions_tenant_id_profit_entity_id_version_pk" PRIMARY KEY("tenant_id","profit_entity_id","version"),
-	CONSTRAINT "share_allocation_versions_tenant_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
-	CONSTRAINT "share_allocation_versions_version_check" CHECK ("share_allocation_versions"."version" >= 1),
-	CONSTRAINT "share_allocation_versions_status_check" CHECK ("share_allocation_versions"."status" IN ('draft', 'pending_approval', 'approved', 'rejected', 'cancelled')),
-	CONSTRAINT "share_allocation_versions_decided_check" CHECK (("share_allocation_versions"."status" IN ('approved', 'rejected')) = ("share_allocation_versions"."decided_by" IS NOT NULL AND "share_allocation_versions"."decided_at" IS NOT NULL)),
-	CONSTRAINT "share_allocation_versions_note_check" CHECK (("share_allocation_versions"."status" <> 'rejected' OR "share_allocation_versions"."decision_note" IS NOT NULL) AND ("share_allocation_versions"."status" IN ('approved', 'rejected') OR "share_allocation_versions"."decision_note" IS NULL)),
-	CONSTRAINT "share_allocation_versions_four_eyes_check" CHECK ("share_allocation_versions"."decided_by" IS NULL OR "share_allocation_versions"."decided_by" <> "share_allocation_versions"."requested_by")
-);
---> statement-breakpoint
-CREATE TABLE "share_allocations" (
-	"tenant_id" uuid NOT NULL,
-	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
-	"profit_entity_id" uuid NOT NULL,
-	"version" integer NOT NULL,
+	"distribution_run_id" uuid NOT NULL,
 	"shareholder_id" uuid NOT NULL,
 	"share_bp" integer NOT NULL,
+	"gross_idr" bigint NOT NULL,
+	"tax_withheld_idr" bigint NOT NULL,
+	"net_idr" bigint NOT NULL,
+	"payment_status" text DEFAULT 'pending' NOT NULL,
+	"payment_ref" text,
+	"paid_at" timestamp with time zone,
+	"paid_by" text,
+	"statement_file_key" text,
 	"position" integer NOT NULL,
-	CONSTRAINT "share_allocations_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
-	CONSTRAINT "share_allocations_version_shareholder_key" UNIQUE("tenant_id","profit_entity_id","version","shareholder_id"),
-	CONSTRAINT "share_allocations_share_bp_check" CHECK ("share_allocations"."share_bp" > 0 AND "share_allocations"."share_bp" <= 10000),
-	CONSTRAINT "share_allocations_position_check" CHECK ("share_allocations"."position" >= 0)
+	CONSTRAINT "distribution_lines_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
+	CONSTRAINT "distribution_lines_run_shareholder_key" UNIQUE("tenant_id","distribution_run_id","shareholder_id"),
+	CONSTRAINT "distribution_lines_statement_key" UNIQUE("tenant_id","statement_file_key"),
+	CONSTRAINT "distribution_lines_share_bp_check" CHECK ("distribution_lines"."share_bp" > 0 AND "distribution_lines"."share_bp" <= 10000),
+	CONSTRAINT "distribution_lines_amounts_check" CHECK ("distribution_lines"."gross_idr" <> 0 AND "distribution_lines"."gross_idr" - "distribution_lines"."tax_withheld_idr" = "distribution_lines"."net_idr" AND sign("distribution_lines"."tax_withheld_idr") * sign("distribution_lines"."gross_idr") >= 0 AND abs("distribution_lines"."tax_withheld_idr") <= abs("distribution_lines"."gross_idr")),
+	CONSTRAINT "distribution_lines_payment_status_check" CHECK ("distribution_lines"."payment_status" IN ('pending', 'paid')),
+	CONSTRAINT "distribution_lines_paid_check" CHECK (("distribution_lines"."payment_status" = 'paid') = ("distribution_lines"."payment_ref" IS NOT NULL AND "distribution_lines"."paid_at" IS NOT NULL AND "distribution_lines"."paid_by" IS NOT NULL)),
+	CONSTRAINT "distribution_lines_statement_check" CHECK ("distribution_lines"."statement_file_key" IS NULL OR "distribution_lines"."payment_status" = 'paid'),
+	CONSTRAINT "distribution_lines_position_check" CHECK ("distribution_lines"."position" >= 0),
+	CONSTRAINT "distribution_lines_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_lines_run_fk" FOREIGN KEY ("tenant_id","distribution_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "distribution_lines_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-CREATE TABLE "shareholders" (
-	"tenant_id" uuid NOT NULL,
-	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
-	"user_id" text,
-	"name" text NOT NULL,
-	"type" text NOT NULL,
-	"status" text DEFAULT 'active' NOT NULL,
-	"npwp_sealed" text,
-	"npwp_last4" varchar(4),
-	"payout_bank" text,
-	"payout_account_sealed" text,
-	"payout_account_last4" varchar(4),
-	"payout_account_holder" text,
-	"created_by" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "shareholders_tenant_id_id_pk" PRIMARY KEY("tenant_id","id"),
-	CONSTRAINT "shareholders_type_check" CHECK ("shareholders"."type" IN ('person', 'company')),
-	CONSTRAINT "shareholders_status_check" CHECK ("shareholders"."status" IN ('active', 'inactive')),
-	CONSTRAINT "shareholders_name_check" CHECK (length(btrim("shareholders"."name")) BETWEEN 1 AND 150),
-	CONSTRAINT "shareholders_npwp_check" CHECK (("shareholders"."npwp_sealed" IS NULL) = ("shareholders"."npwp_last4" IS NULL) AND ("shareholders"."npwp_last4" IS NULL OR "shareholders"."npwp_last4" ~ '^[0-9]{4}$')),
-	CONSTRAINT "shareholders_payout_check" CHECK ((("shareholders"."payout_bank" IS NULL AND "shareholders"."payout_account_sealed" IS NULL AND "shareholders"."payout_account_last4" IS NULL AND "shareholders"."payout_account_holder" IS NULL) OR ("shareholders"."payout_bank" IS NOT NULL AND "shareholders"."payout_account_sealed" IS NOT NULL AND "shareholders"."payout_account_last4" ~ '^[0-9]{4}$' AND "shareholders"."payout_account_holder" IS NOT NULL)))
-);
---> statement-breakpoint
--- Lift FORCE RLS on the existing tables the FK validation scans (parent and
--- child), as docs/plan/contracts.md pattern 2; restored after the last FK.
-ALTER TABLE public.legal_entities NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.fiscal_periods NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.journal_entries NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.shareholder_document_files NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.shareholder_documents NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE "distribution_lines" ADD CONSTRAINT "distribution_lines_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_lines" ADD CONSTRAINT "distribution_lines_run_fk" FOREIGN KEY ("tenant_id","distribution_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_lines" ADD CONSTRAINT "distribution_lines_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_version_fk" FOREIGN KEY ("tenant_id","profit_entity_id","share_version") REFERENCES "public"."share_allocation_versions"("tenant_id","profit_entity_id","version") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_fiscal_period_fk" FOREIGN KEY ("tenant_id","fiscal_period_id") REFERENCES "public"."fiscal_periods"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_adjusts_fk" FOREIGN KEY ("tenant_id","adjusts_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_journal_fk" FOREIGN KEY ("tenant_id","journal_entry_id") REFERENCES "public"."journal_entries"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "distribution_runs" ADD CONSTRAINT "distribution_runs_reversal_journal_fk" FOREIGN KEY ("tenant_id","reversal_journal_entry_id") REFERENCES "public"."journal_entries"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "profit_entities" ADD CONSTRAINT "profit_entities_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "profit_entities" ADD CONSTRAINT "profit_entities_legal_entity_fk" FOREIGN KEY ("tenant_id","legal_entity_id") REFERENCES "public"."legal_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "profit_entities" ADD CONSTRAINT "profit_entities_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "profit_share_commands" ADD CONSTRAINT "profit_share_commands_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "share_allocation_versions" ADD CONSTRAINT "share_allocation_versions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "share_allocation_versions" ADD CONSTRAINT "share_allocation_versions_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "share_allocations" ADD CONSTRAINT "share_allocations_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "share_allocations" ADD CONSTRAINT "share_allocations_version_fk" FOREIGN KEY ("tenant_id","profit_entity_id","version") REFERENCES "public"."share_allocation_versions"("tenant_id","profit_entity_id","version") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "share_allocations" ADD CONSTRAINT "share_allocations_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "shareholders" ADD CONSTRAINT "shareholders_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "distribution_lines_shareholder_idx" ON "distribution_lines" USING btree ("tenant_id","shareholder_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "distribution_runs_regular_period_key" ON "distribution_runs" USING btree ("tenant_id","profit_entity_id","fiscal_period_id") WHERE "distribution_runs"."type" = 'regular' AND "distribution_runs"."status" <> 'cancelled';--> statement-breakpoint
 CREATE INDEX "distribution_runs_entity_requested_idx" ON "distribution_runs" USING btree ("tenant_id","profit_entity_id","requested_at" DESC NULLS LAST,"id");--> statement-breakpoint
@@ -203,6 +195,8 @@ CREATE UNIQUE INDEX "profit_entities_tenant_outlet_key" ON "profit_entities" USI
 CREATE UNIQUE INDEX "share_allocation_versions_approved_effective_key" ON "share_allocation_versions" USING btree ("tenant_id","profit_entity_id","effective_from") WHERE "share_allocation_versions"."status" = 'approved';--> statement-breakpoint
 CREATE INDEX "share_allocations_shareholder_idx" ON "share_allocations" USING btree ("tenant_id","shareholder_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "shareholders_tenant_user_key" ON "shareholders" USING btree ("tenant_id","user_id") WHERE "shareholders"."user_id" IS NOT NULL;--> statement-breakpoint
+ALTER TABLE public.shareholder_document_files NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.shareholder_documents NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 -- profit_entities is new and empty, so any existing row would orphan.
 DO $$
 DECLARE
@@ -212,16 +206,12 @@ BEGIN
   SELECT count(*) INTO files_n FROM public.shareholder_document_files;
   SELECT count(*) INTO docs_n FROM public.shareholder_documents;
   IF files_n > 0 OR docs_n > 0 THEN
-    RAISE EXCEPTION '0219: shareholder_document_files has % rows and shareholder_documents has % rows; both must be empty before the profit_entity_id foreign keys can be added (profit_entities starts empty). Remove or migrate them first.', files_n, docs_n;
+    RAISE EXCEPTION '0217: shareholder_document_files has % rows and shareholder_documents has % rows; both must be empty before the profit_entity_id foreign keys can be added (profit_entities starts empty). Remove or migrate them first.', files_n, docs_n;
   END IF;
 END $$;--> statement-breakpoint
 ALTER TABLE "shareholder_document_files" ADD CONSTRAINT "shareholder_document_files_profit_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shareholder_documents" ADD CONSTRAINT "shareholder_documents_profit_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint
-ALTER TABLE public.legal_entities FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.fiscal_periods FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.journal_entries FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.shareholder_document_files FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.shareholder_documents FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint

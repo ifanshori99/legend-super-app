@@ -19,7 +19,11 @@ CREATE TABLE "wifi_sessions" (
 	CONSTRAINT "wifi_sessions_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "wifi_sessions_device_hash_check" CHECK ("wifi_sessions"."device_hash" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "wifi_sessions_speed_tier_check" CHECK ("wifi_sessions"."speed_tier" IN ('full','base')),
-	CONSTRAINT "wifi_sessions_minutes_check" CHECK ("wifi_sessions"."quota_minutes" BETWEEN 0 AND 1440 AND "wifi_sessions"."used_minutes" BETWEEN 0 AND 1440)
+	CONSTRAINT "wifi_sessions_minutes_check" CHECK ("wifi_sessions"."quota_minutes" BETWEEN 0 AND 1440 AND "wifi_sessions"."used_minutes" BETWEEN 0 AND 1440),
+	CONSTRAINT "wifi_sessions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "wifi_sessions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "wifi_sessions_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "wifi_sessions_policy_fk" FOREIGN KEY ("tenant_id","policy_id") REFERENCES "public"."wifi_policies"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "wifi_spend_entries" (
@@ -35,23 +39,13 @@ CREATE TABLE "wifi_spend_entries" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "wifi_spend_entries_source_key" UNIQUE("tenant_id","kind","source_id"),
 	CONSTRAINT "wifi_spend_entries_kind_check" CHECK ("wifi_spend_entries"."kind" IN ('paid','refund')),
-	CONSTRAINT "wifi_spend_entries_amount_check" CHECK ("wifi_spend_entries"."amount_idr" >= 0)
+	CONSTRAINT "wifi_spend_entries_amount_check" CHECK ("wifi_spend_entries"."amount_idr" >= 0),
+	CONSTRAINT "wifi_spend_entries_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "wifi_spend_entries_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "wifi_spend_entries_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "wifi_policies" ADD COLUMN "spend_mode" varchar(20);--> statement-breakpoint
--- Lift FORCE RLS on the existing tables the FK validation scans (as the
--- migrator), restored after the last FK (docs/plan/contracts.md pattern 2).
-ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.wifi_policies NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE "wifi_sessions" ADD CONSTRAINT "wifi_sessions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wifi_sessions" ADD CONSTRAINT "wifi_sessions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wifi_sessions" ADD CONSTRAINT "wifi_sessions_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wifi_sessions" ADD CONSTRAINT "wifi_sessions_policy_fk" FOREIGN KEY ("tenant_id","policy_id") REFERENCES "public"."wifi_policies"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wifi_spend_entries" ADD CONSTRAINT "wifi_spend_entries_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wifi_spend_entries" ADD CONSTRAINT "wifi_spend_entries_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wifi_spend_entries" ADD CONSTRAINT "wifi_spend_entries_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE public.wifi_policies FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE UNIQUE INDEX "wifi_sessions_open_device_key" ON "wifi_sessions" USING btree ("tenant_id","customer_profile_id","device_hash") WHERE "wifi_sessions"."ended_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "wifi_sessions_account_day_idx" ON "wifi_sessions" USING btree ("tenant_id","customer_profile_id","business_date");--> statement-breakpoint
 CREATE INDEX "wifi_sessions_outlet_open_idx" ON "wifi_sessions" USING btree ("tenant_id","outlet_id","ended_at");--> statement-breakpoint
