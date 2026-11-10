@@ -61,7 +61,7 @@ import { SHIFT_COUNT_OBJECT_TYPE } from "./pos-shift-support";
 import { withTenant } from "../db/tenant";
 import { getEdgeRuntimeState } from "../edge/runtime";
 import { recordAudit } from "./audit-writer";
-import { attemptApproverPinOnDevice } from "./staff-pin-proof.service";
+import { attemptApproverPin } from "./staff-pin-proof.service";
 import {
   appendDevicePinEvent,
   isOutletMember,
@@ -617,9 +617,10 @@ export async function createPosOverride(
   if (replay) return { override: toView(replay, requestedBy), replayed: true };
 
   // 2. The approver's pin: counted and committed on its own (§3 F6 lock).
-  await attemptApproverPinOnDevice(tenant, {
+  await attemptApproverPin(tenant, {
     outletId,
-    userId: approverUserId,
+    approverUserId,
+    requesterUserId: requestedBy,
     pin: approval.pin,
     deviceId,
     now,

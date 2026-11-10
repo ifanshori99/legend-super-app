@@ -1401,6 +1401,13 @@
       "when": 1794330000000,
       "tag": "0241_staff_pin_proofs",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1794331000000,
+      "tag": "0242_user_pin_throttle",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,7 @@
 // Per-device PIN window on the open-bill convert path (bead legend-vfj7z).
 //
 // `convertSessionToOpenBill` checks the approver's PIN through
-// `attemptApproverPinOnDevice`: with a device id, one of the device's 10 window
+// `attemptApproverPin`: with a device id, one of the device's 10 window
 // slots (5 minutes, table device_pin_throttle) is taken before the PIN is
 // checked. A wrong guess and the guess that newly locks the staff PIN keep the
 // slot (and can raise one `staff_pin.device_throttled` audit per window); a
@@ -11,7 +11,7 @@
 // open-bill-convert.test.ts. The service is called directly because the route
 // only passes a device id for a device-sourced tenant context.
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import {
   establishScopedTenantContext,
@@ -237,6 +237,13 @@ afterAll(async () => {
 });
 
 describe("legend-vfj7z open-bill convert under the per-device PIN window", () => {
+  // The requester's own window (user_pin_throttle) is shared by every test that
+  // uses the same signed-in user: start each test with it empty.
+  beforeEach(async () => {
+    await owner.query("DELETE FROM user_pin_throttle WHERE tenant_id = $1", [
+      seededTenantId,
+    ]);
+  });
   it("10 locking guesses use the 10 slots; the 11th is 429 before the staff counter moves; one audit", async () => {
     const sessionId = await seat();
     const deviceId = await enrollAt("Layar open bill kunci");
@@ -260,6 +267,11 @@ describe("legend-vfj7z open-bill convert under the per-device PIN window", () =>
 
     // A PIN that was already locked never looks at the guess: it gives the
     // slot back, so on a calm device many tries stay PIN_LOCKED, never 429.
+    // (The requester's own window is full after the 11 calls above: empty it so
+    // this part measures the device window only.)
+    await owner.query("DELETE FROM user_pin_throttle WHERE tenant_id = $1", [
+      seededTenantId,
+    ]);
     const calm = await enrollAt("Layar open bill sudah terkunci");
     for (let i = 0; i < 15; i += 1) {
       const answer = await convert(sessionId, crowd[0]!, WRONG_PIN, calm);

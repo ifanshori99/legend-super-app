@@ -60,7 +60,7 @@ import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
-import { attemptApproverPinOnDevice } from "./staff-pin-proof.service";
+import { attemptApproverPin } from "./staff-pin-proof.service";
 import { currentStaffPinPepperVersion } from "./device-pin-pepper";
 import { outletContext, outletTarget } from "./device-pin-support";
 import { createNotificationConsumer } from "./notification-consumer";
@@ -711,9 +711,10 @@ export async function convertSessionToOpenBill(
     );
 
   // 2. The approver's PIN: counted and committed on its own transaction.
-  await attemptApproverPinOnDevice(context.tenant, {
+  await attemptApproverPin(context.tenant, {
     outletId,
-    userId: input.approverUserId,
+    approverUserId: input.approverUserId,
+    requesterUserId,
     pin: input.pin,
     deviceId,
     now,

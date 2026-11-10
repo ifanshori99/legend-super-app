@@ -12,7 +12,7 @@
 // requester.
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { outletIdSchema } from "@starter/shared/core";
@@ -196,6 +196,13 @@ afterAll(async () => {
 });
 
 describe("legend-vfj7z POST /api/pos-overrides under the device PIN window", () => {
+  // The requester's own window (user_pin_throttle) is shared by every test that
+  // uses the same signed-in user: start each test with it empty.
+  beforeEach(async () => {
+    await owner.query("DELETE FROM user_pin_throttle WHERE tenant_id = $1", [
+      tenantId,
+    ]);
+  });
   it("legend-vfj7z after 10 locking guesses the 11th request is 429 PIN_DEVICE_THROTTLED with Retry-After 1..300, staff counter untouched", async () => {
     const device = await newDevice();
     const approvers: string[] = [];
