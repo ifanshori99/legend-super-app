@@ -43,7 +43,11 @@ import {
   orderStatusKey,
   platformKey,
 } from "../lib";
-import { OrderStatusPill, SourceBadge } from "./delivery-badges";
+import {
+  OrderStatusPill,
+  PlatformSyncBadge,
+  SourceBadge,
+} from "./delivery-badges";
 import { ManualOrderSheet } from "./manual-order-sheet";
 import { OrderDetailSheet } from "./order-detail-sheet";
 
@@ -207,7 +211,10 @@ export function OrdersTab({
                     </span>
                   </TableCell>
                   <TableCell>
-                    <OrderStatusPill status={order.status} />
+                    <span className="grid justify-items-start gap-1">
+                      <OrderStatusPill status={order.status} />
+                      <PlatformSyncBadge sync={order.platformSync} />
+                    </span>
                   </TableCell>
                   <TableCell numeric>
                     <Money amount={order.grossIdr} />

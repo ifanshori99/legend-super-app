@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-u37u3 WS-08 lencana platformSync di layar staf delivery (ui-engineer, cabang `ws/u37u3-delivery-sync-badge` dari milestone/m1 d07b6cf8, 2026-11-10)
+
+- Daftar dan detail pesanan delivery menampilkan `platformSync`: `ok` tanpa tanda; `retrying` lencana netral "Mengirim ulang ke platform" plus catatan detail; `needs_action` lencana peringatan "Belum sinkron, perlu tindakan" plus kartu langkah staf. Teks di `deliveryOps.platformSync` (`ws08-delivery.ts`), komponen `PlatformSyncBadge` (`delivery-badges.tsx`), `PlatformSyncNote` (`order-detail-sheet.tsx`). Tanpa tombol kirim ulang (endpoint ada di legend-eyqvo, belum di m1; keputusan founder Q58: dua tombol menyusul di kartu terpisah).
+- Pesanan final (selesai, dibatalkan, ditolak) yang `needs_action` tidak punya langkah status berikutnya, jadi kartu tidak menjanjikan tanda hilang sendiri (hasil review). Tanda baru bisa dihapus lewat tombol "Tandai sudah ditangani" legend-eyqvo.
+- Mock web: tiga pesanan demo (GF-4471 needs_action, GF-4452 retrying, GF-4468 dibatalkan + needs_action); ganti status di mock mengosongkan tanda.
+- Override DESIGN.md: lencana sinkron di daftar `rounded-xl` dan boleh turun baris (bukan pil satu baris) supaya teks penuh terbaca di 390 px tanpa terpotong.
+- Bukti: `e2e/legend-u37u3.mock.spec.ts` 4 dari 5 tes merah sebelum kode, kini 7/7 (screenshot ikut); `legend-e8oa.mock.spec.ts` 13/13 tetap hijau; tsc web dan shared, eslint, prettier bersih. Screenshot: `docs/screens/u37u3/`.
+- Review: reviewer (2 temuan nyata dibetulkan: teks langkah final, mock tidak mengosongkan tanda), ui-auditor (salinan final dibuat jujur, ID pesanan tidak putus baris, screenshot final 390/1280/320). Subagent 4 (test-writer, reviewer, ui-auditor, test-runner), puncak bersamaan 3.
+
 ## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
 
 - Tanpa migrasi (`db:generate` kosong). Role baru `loyalty_points_deferral` + akun `4105 Penangguhan Pendapatan Poin Loyalty` (kontra-pendapatan di bawah 4100). Tenant baru dari template; tenant lama lewat `pnpm db:backfill-defaults` (`addLoyaltyDeferralAccount`, lewati bila 4105 terpakai).
