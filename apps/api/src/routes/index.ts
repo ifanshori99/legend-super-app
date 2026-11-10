@@ -41,7 +41,6 @@ import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
 import { taxRouter } from "./tax.routes";
-import { createMenuRouter } from "./menu.routes";
 import { createMenuImportRouter } from "./menu-import.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
@@ -99,6 +98,7 @@ import { hrisChecklistRouter } from "./hris-checklist.routes";
 import { hrisOffboardingRouter } from "./hris-offboarding.routes";
 import { hrisWorkCertificateRouter } from "./hris-work-certificate.routes";
 import { hrisKpiRouter } from "./hris-kpi.routes";
+import { hrisAttendanceCorrectionRouter } from "./hris-attendance-correction.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
@@ -116,6 +116,7 @@ import { deviceRouter } from "./device.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
 import { edgeWifiRouter } from "./edge-wifi.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
+import { edgePeopleSnapshotRouter } from "./edge-people-snapshot.routes.ts";
 import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
 import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
 import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
@@ -161,10 +162,10 @@ apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
 // Generic approval inbox for every module (WS-01 F7, legend-y5q).
 apiRouter.use("/approvals", approvalRouter);
-// Menu back office (WS-03, legend-lmk). No object-storage provider is wired
-// yet (WS-00 storage bead owns that), so the image upload answers 503 until
-// the bootstrap injects one; every other menu route is live.
-apiRouter.use("/menu", createMenuRouter());
+// Menu back office (WS-03, legend-lmk). Mounted by createStorageApiRouter
+// (routes/storage-api.routes.ts, legend-7nv1) ahead of this router, because the
+// photo upload needs the object storage runtime: without one it answers 503;
+// every other menu route is live.
 // Menu CSV/XLSX import + printable menu (WS-03, legend-dmi). Storage/PDF
 // renderer are deployment-injected; print answers 503 until they exist.
 apiRouter.use("/menu", createMenuImportRouter({}));
@@ -331,6 +332,11 @@ apiRouter.use(
   hrisWorkCertificateRouter,
   hrisKpiRouter,
 );
+// WS-10 attendance: selfie/geofence/device/QR clock, corrections, sampling
+// review, policy, duty meal (legend-wh71).
+// The employee and admin attendance routers need the storage signer, so
+// createApp mounts them (routes/storage-api.routes.ts) ahead of this router.
+apiRouter.use("/hris", hrisAttendanceCorrectionRouter);
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
 // legend-i57s equipment/maintenance/handovers). Two routers share the prefix;
 // each applies its middleware per route so unmatched paths pass through.
@@ -366,6 +372,8 @@ apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);
 apiRouter.use("/devices", deviceRouter);
 // Device registry replica feed for edge nodes: edge credential only.
 apiRouter.use("/edge-sync/device-records", deviceRecordSyncRouter);
+// People snapshot for edge clocking (WS-02/WS-10 C2, legend-ye4j1): edge credential only.
+apiRouter.use("/edge-sync/people-snapshot", edgePeopleSnapshotRouter);
 apiRouter.use("/edge-sync/bootstrap", edgeBootstrapRouter);
 apiRouter.use("/edge-sync-conflicts", edgeSyncConflictsRouter);
 

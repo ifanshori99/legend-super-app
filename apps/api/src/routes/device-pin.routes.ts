@@ -4,7 +4,10 @@
 // staffPinRouter (mount at /api/staff-pins):
 //   POST /verify              registered outlet device (X-Device-Token), no
 //                             session: switch user with tile + 6-digit pin.
-//                             Contract `verifyStaffPinForUser`.
+//                             Contract `verifyStaffPinForUser`. Optional
+//                             `purpose: "attendance_clock"` adds a single-use
+//                             `proof` (staff-pin-proof.service.ts); every call
+//                             is device-throttled (429 + Retry-After).
 //   PUT  /:outletId/:userId   signed-in, trusted origin, back-office surface
 //                             (AUTH-05): self, or device.registry.manage on
 //                             the outlet. Contract identity `setStaffPin`.
@@ -35,10 +38,11 @@ import { jsonBody } from "../middleware/body";
 import { requireBackOfficeSurface } from "../middleware/identity-surface";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
+import { setStaffPin } from "../services/device-pin.service";
 import {
-  setStaffPin,
-  verifyStaffPinOnDevice,
-} from "../services/device-pin.service";
+  PinDeviceThrottledError,
+  verifyStaffPinWithProof,
+} from "../services/staff-pin-proof.service";
 import {
   createPosOverride,
   getPosOverride,
@@ -76,13 +80,21 @@ staffPinRouter.post(
     const deviceId = deviceIdOf(req);
     const input = verifyStaffPinForUserSchema.parse(req.body);
     res.setHeader("Cache-Control", "private, no-store");
-    res.json({
-      data: await verifyStaffPinOnDevice(getTenantContext(req), {
-        deviceId,
-        userId: input.userId,
-        pin: input.pin,
-      }),
-    });
+    try {
+      res.json({
+        data: await verifyStaffPinWithProof(getTenantContext(req), {
+          deviceId,
+          userId: input.userId,
+          pin: input.pin,
+          purpose: input.purpose,
+        }),
+      });
+    } catch (error) {
+      // 429 tells the device when its window ends (bead legend-u7g9w).
+      if (error instanceof PinDeviceThrottledError)
+        res.setHeader("Retry-After", String(error.retryAfterSeconds));
+      throw error;
+    }
   },
 );
 

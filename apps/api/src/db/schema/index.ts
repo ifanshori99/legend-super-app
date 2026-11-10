@@ -48,6 +48,7 @@ export * from "./hris";
 export * from "./hris-leave";
 // WS-10 shift scheduling: templates, roster, swaps, compliance (legend-jstx).
 export * from "./hris-scheduling";
+export * from "./hris-attendance";
 export * from "./hris-lifecycle";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
@@ -68,6 +69,7 @@ export * from "./operations";
 // WS-02 edge node registry + cloud <-> edge link (legend-2pi).
 export * from "./edge-deferred-event";
 export * from "./edge-node";
+export * from "./edge-hris";
 export * from "./edge-sync-conflict";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
@@ -100,6 +102,8 @@ export * from "./shareholder-documents";
 export * from "./inventory-count";
 // WS-02 device registry + training periods (legend-165).
 export * from "./device";
+// Outlet-device attendance PIN proofs + per-device PIN throttle (legend-u7g9w).
+export * from "./staff-pin-proof";
 // WS-12 Tanya AI, MCP server and AI governance (legend-zfi4, xq8y, zw9r, xkbt).
 export * from "./ai";
 // WS-12 AI insights: forecasts, anomaly alerts, daily summaries (legend-hkd4, legend-lely).

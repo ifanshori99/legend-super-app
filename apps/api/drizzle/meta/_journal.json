@@ -1368,10 +1368,38 @@
       "breakpoints": true
     },
     {
+      "idx": 217,
+      "version": "7",
+      "when": 1794296000000,
+      "tag": "0217_hris_attendance",
+      "breakpoints": true
+    },
+    {
       "idx": 225,
       "version": "7",
       "when": 1794304000000,
       "tag": "0225_edge_staff_pin_peppers",
+      "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "7",
+      "when": 1794306000000,
+      "tag": "0227_hris_edge_replication",
+      "breakpoints": true
+    },
+    {
+      "idx": 233,
+      "version": "7",
+      "when": 1794320000000,
+      "tag": "0233_edge_selfie_rejected_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1794330000000,
+      "tag": "0241_staff_pin_proofs",
       "breakpoints": true
     }
   ]

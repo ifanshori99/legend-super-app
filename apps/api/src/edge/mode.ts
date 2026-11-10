@@ -89,6 +89,27 @@ export const EDGE_API_PREFIXES = [
   "/api/facility",
 ] as const;
 
+/**
+ * Single routes served on the edge, matched by HTTP method AND exact path
+ * (case-insensitive path, repeated slashes collapsed, no sub-path, no `:name`
+ * segments). Used where a whole prefix would open too much: `/api/hris` and
+ * `/api/storage` hold dozens of cloud-only routes (HR master data, QR secret
+ * rotation, device binding, signed downloads), and writes there never sync to
+ * the cloud (design docs/design/hris-edge-replication.md §9 T8).
+ *
+ * - `POST /api/hris/attendance/outlet-clock`: the outlet attendance screen
+ *   (method `outlet_device`, one-time staff PIN proof, selfie; no session).
+ * - `GET /api/hris/attendance/qr`: the outlet screen shows the rotating QR
+ *   from the day keys the cloud sent (never the seed).
+ * - `POST /api/storage/uploads`: the selfie upload. The `purpose` is in the
+ *   body; the edge upload handler rejects every purpose except `selfie`.
+ */
+export const EDGE_API_EXACT_ROUTES = [
+  { method: "POST", path: "/api/hris/attendance/outlet-clock" },
+  { method: "GET", path: "/api/hris/attendance/qr" },
+  { method: "POST", path: "/api/storage/uploads" },
+] as const;
+
 /** Prefixes served only by the edge node. */
 export const EDGE_ONLY_API_PREFIXES = ["/api/edge"] as const;
 
@@ -104,14 +125,26 @@ function matchesPrefix(path: string, prefix: string): boolean {
   });
 }
 
-/** Classifies an absolute request path (no query string). */
-export function classifyApiPath(path: string): ApiRouteClass {
+/**
+ * Classifies an absolute request path (no query string). `method` is needed
+ * only for EDGE_API_EXACT_ROUTES: without it an exact route stays cloud only
+ * (fail closed).
+ */
+export function classifyApiPath(path: string, method?: string): ApiRouteClass {
   const normalized = path.toLowerCase().replace(/\/{2,}/g, "/");
   if (
     EDGE_ONLY_API_PREFIXES.some((prefix) => matchesPrefix(normalized, prefix))
   )
     return "edge_only";
   if (EDGE_API_PREFIXES.some((prefix) => matchesPrefix(normalized, prefix)))
+    return "edge_and_cloud";
+  if (
+    method !== undefined &&
+    EDGE_API_EXACT_ROUTES.some(
+      (route) =>
+        route.method === method.toUpperCase() && route.path === normalized,
+    )
+  )
     return "edge_and_cloud";
   return "cloud_only";
 }
@@ -130,7 +163,7 @@ export type RouteRefusal = {
  */
 export function edgeRouteRefusal(
   raw: string,
-  options: { edgeMode: boolean },
+  options: { edgeMode: boolean; method?: string },
 ): RouteRefusal | null {
   // Only origin-form request targets ("/path"). An absolute-form target
   // ("http://host/api/...") would skip the prefix check below while the
@@ -154,7 +187,7 @@ export function edgeRouteRefusal(
       message: "Alamat permintaan tidak valid.",
     };
   if (!path.toLowerCase().startsWith("/api")) return null;
-  const routeClass = classifyApiPath(path);
+  const routeClass = classifyApiPath(path, options.method);
   if (options.edgeMode && routeClass === "cloud_only")
     return {
       status: 404,
@@ -186,7 +219,10 @@ function isCanonicalPath(path: string): boolean {
  */
 export function edgeRouteGuard(options: { edgeMode: boolean }): RequestHandler {
   return (req, _res, next) => {
-    const refusal = edgeRouteRefusal(req.originalUrl ?? req.url, options);
+    const refusal = edgeRouteRefusal(req.originalUrl ?? req.url, {
+      ...options,
+      method: req.method,
+    });
     if (refusal)
       throw new HttpError(refusal.status, refusal.code, refusal.message);
     next();

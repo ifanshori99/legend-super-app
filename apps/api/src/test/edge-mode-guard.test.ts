@@ -166,6 +166,123 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
       expect(classifyApiPath(path), path).toBe("cloud_only");
   });
 
+  describe("legend-j6cyb edge allowlist for HRIS attendance (method + exact path)", () => {
+    it("serves only the outlet attendance clock, the QR read and the selfie upload on the edge", () => {
+      for (const [method, path] of [
+        ["POST", "/api/hris/attendance/outlet-clock"],
+        ["post", "/API/HRIS/attendance/outlet-clock"],
+        ["POST", "/api/hris//attendance/outlet-clock"],
+        ["GET", "/api/hris/attendance/qr"],
+        ["POST", "/api/storage/uploads"],
+      ] as const)
+        expect(classifyApiPath(path, method), `${method} ${path}`).toBe(
+          "edge_and_cloud",
+        );
+    });
+
+    it("keeps every other /api/hris and /api/storage route cloud only, also with the wrong method", () => {
+      for (const [method, path] of [
+        ["POST", "/api/hris/attendance/clock"],
+        ["GET", "/api/hris/attendance/clock"],
+        ["PUT", "/api/hris/attendance/clock"],
+        ["GET", "/api/hris/attendance/outlet-clock"],
+        ["PUT", "/api/hris/attendance/outlet-clock"],
+        ["POST", "/api/hris/attendance/outlet-clock/x"],
+        ["POST", "/api/hris/attendance/outlet-clockx"],
+        ["POST", "/api/hris/attendance/qr"],
+        ["POST", "/api/hris/attendance/qr/rotate"],
+        ["GET", "/api/hris/attendance/qr/rotate"],
+        ["POST", "/api/hris/attendance/clock/x"],
+        ["POST", "/api/hris/attendance/clockx"],
+        ["POST", "/api/hris"],
+        ["GET", "/api/hris"],
+        ["GET", "/api/hris/attendance"],
+        ["GET", "/api/hris/attendance/logs"],
+        ["POST", "/api/hris/attendance/devices/bind"],
+        ["POST", "/api/hris/attendance/devices/abc/revoke"],
+        ["GET", "/api/hris/attendance/policy"],
+        ["POST", "/api/hris/attendance/corrections"],
+        ["GET", "/api/hris/employees"],
+        ["POST", "/api/hris/payroll"],
+        ["GET", "/api/storage/uploads"],
+        ["DELETE", "/api/storage/uploads"],
+        ["POST", "/api/storage/uploads/x"],
+        ["POST", "/api/storage"],
+        ["GET", "/api/storage/objects/abc"],
+        ["POST", "/api/storage/objects/abc/sign"],
+      ] as const)
+        expect(classifyApiPath(path, method), `${method} ${path}`).toBe(
+          "cloud_only",
+        );
+    });
+
+    it("treats an exact route without a method as cloud only", () => {
+      expect(classifyApiPath("/api/hris/attendance/outlet-clock")).toBe(
+        "cloud_only",
+      );
+      expect(classifyApiPath("/api/storage/uploads")).toBe("cloud_only");
+    });
+
+    it("applies the method at the HTTP guard and at edgeRouteRefusal", async () => {
+      const edge = app(true);
+      expect(
+        (await request(edge).post("/api/hris/attendance/outlet-clock")).status,
+      ).toBe(200);
+      expect(
+        (await request(edge).post("/api/hris/attendance/clock")).status,
+      ).toBe(404);
+      expect((await request(edge).get("/api/hris/attendance/qr")).status).toBe(
+        200,
+      );
+      expect((await request(edge).post("/api/storage/uploads")).status).toBe(
+        200,
+      );
+      for (const [method, path] of [
+        ["get", "/api/hris/attendance/outlet-clock"],
+        ["post", "/api/hris/attendance/qr"],
+        ["post", "/api/hris/attendance/qr/rotate"],
+        ["get", "/api/storage/uploads"],
+      ] as const) {
+        const res = await request(edge)[method](path);
+        expect(res.status, `${method} ${path}`).toBe(404);
+        expect(res.body.code).toBe("CLOUD_ONLY_ROUTE");
+      }
+      expect(
+        edgeRouteRefusal("/api/hris/attendance/outlet-clock", {
+          edgeMode: true,
+          method: "POST",
+        }),
+      ).toBeNull();
+      expect(
+        edgeRouteRefusal("/api/hris/attendance/clock", {
+          edgeMode: true,
+          method: "POST",
+        }),
+      ).toEqual(expect.objectContaining({ code: "CLOUD_ONLY_ROUTE" }));
+      expect(
+        edgeRouteRefusal("/api/hris/attendance/outlet-clock?x=1", {
+          edgeMode: true,
+        }),
+      ).toEqual(expect.objectContaining({ code: "CLOUD_ONLY_ROUTE" }));
+      // The cloud serves everything (the split only denies on the edge).
+      expect(
+        edgeRouteRefusal("/api/hris/attendance/qr/rotate", {
+          edgeMode: false,
+          method: "POST",
+        }),
+      ).toBeNull();
+    });
+
+    it("does not open the upgrade path for an exact POST route", async () => {
+      expect(
+        edgeRouteRefusal("/api/hris/attendance/outlet-clock", {
+          edgeMode: true,
+          method: "GET",
+        }),
+      ).toEqual(expect.objectContaining({ code: "CLOUD_ONLY_ROUTE" }));
+    });
+  });
+
   it("the edge refuses sign-up, the admin plugin and outlet back office over HTTP", async () => {
     const edge = app(true);
     for (const path of [

@@ -27,6 +27,7 @@ import {
   getDeviceRegistrySyncState,
   getEdgeRuntimeState,
 } from "../edge/runtime.ts";
+import { getEdgeSelfieHealth } from "../edge/selfie-health.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
@@ -158,6 +159,8 @@ edgeRouter.get("/health", async (_req, res) => {
     cloudLink: runtime.link.cloudLink,
     database,
     deviceRegistry: { stale: getDeviceRegistrySyncState()?.stale ?? true },
+    // Informational: a full selfie disk never changes status or HTTP code.
+    selfie: getEdgeSelfieHealth(),
   });
 });
 
