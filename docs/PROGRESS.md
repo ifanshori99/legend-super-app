@@ -9,6 +9,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Q84 izin baru `profit_share.share_allocation.change` (finance + owner turunan; bukan kasir) untuk buat/ubah/ajukan versi porsi; putusan tetap `profit_share.distribution.approve`. Backfill role tenant lama di 0221.
 - Review architect K, 4 temuan nyata dibetulkan: backfill izin untuk tenant lama; koreksi hanya boleh menargetkan run reguler (kode + trigger); top-up yang belum approved bukan ruang klaw-bek; pajak tidak menyisakan -1 saat klaw-bek habis. Belum: UI web masih memakai `accounting.journal.post` untuk tombol ubah porsi (kartu terpisah, butuh review UI founder); role kustom pemegang `registry.manage` tidak otomatis dapat izin baru.
 - Test balapan: FK menolak sesudah file tersimpan, blob dihapus (test 14 `shareholder-documents.test.ts`).
+- Keputusan CTO: role kustom tidak di-backfill (catatan rilis `docs/release-notes-m1-migrations.md`); tombol versi porsi di `shareholders-page.tsx` kini diatur `profit_share.share_allocation.change`, tombol setujui/tolak `profit_share.distribution.approve` (hook `ws07-profit-share/guard.ts`, test merah dulu di `tests/ws07-profit-share.test.mjs`).
 - Bukti: 10 file API 162 test + 4 file root 127 test hijau sesudah prettier; tsc shared/api/web, eslint bersih; `db:generate` kosong.
 
 ## legend-2ljb WS-07 bagi hasil backend (engineer Opus, cabang `ws/profit-share` dari milestone/m1 7d388b02, brief 318, 2026-11-10)

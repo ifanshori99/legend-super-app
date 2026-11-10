@@ -772,3 +772,49 @@ describe("founder rule Q83: claw-back is capped per shareholder and leaves no ta
     );
   });
 });
+
+describe("founder rule Q84: share version buttons follow the share allocation permission", () => {
+  const access = (...permissions) => ({ permissions });
+
+  test("only profit_share.share_allocation.change shows the share version controls", () => {
+    assert.equal(
+      share.canChangeShareAllocation(
+        access("profit_share.share_allocation.change"),
+      ),
+      true,
+    );
+    // Journal posting, registry management and approval are not enough.
+    for (const other of [
+      "accounting.journal.post",
+      "profit_share.registry.manage",
+      "profit_share.distribution.approve",
+    ]) {
+      assert.equal(share.canChangeShareAllocation(access(other)), false, other);
+    }
+  });
+
+  test("approve and reject follow profit_share.distribution.approve only", () => {
+    assert.equal(
+      share.canApproveShareAllocation(
+        access("profit_share.distribution.approve"),
+      ),
+      true,
+    );
+    for (const other of [
+      "profit_share.share_allocation.change",
+      "accounting.journal.post",
+    ]) {
+      assert.equal(
+        share.canApproveShareAllocation(access(other)),
+        false,
+        other,
+      );
+    }
+    assert.equal(share.canApproveShareAllocation(undefined), false);
+  });
+
+  test("fails closed without access", () => {
+    assert.equal(share.canChangeShareAllocation(undefined), false);
+    assert.equal(share.canChangeShareAllocation(access()), false);
+  });
+});

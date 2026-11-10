@@ -101,6 +101,12 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Perbaikan isi di luar konflik: label `loyalty_reward` ("Hadiah poin") di i18n member dan promo, dan default mock web ws08 (`voucherCode`, `perCustomerLimit`, `redemptionValidDays`) mengikuti kontrak m4p5. Test `platform-access-db` mengikuti batas `>=` dari 0206; test `provisioning-race` kini mengharapkan 64 akun (5104).
 - 0219 `0219_profit_share` (ws/profit-share, legend-2ljb, tingkat K, idx 219, when 1794298000000): tabel bagi hasil dan FK komposit `profit_entity_id` di `shareholder_document_files` dan `shareholder_documents`. GAGAL dengan pesan `0219: ...` bila salah satu tabel dokumen sudah berisi baris, karena `profit_entities` baru dan kosong. Cek dulu: `SELECT (SELECT count(*) FROM shareholder_document_files) AS files, (SELECT count(*) FROM shareholder_documents) AS documents;` Keduanya harus 0, kalau tidak hapus atau pindahkan barisnya dulu.
 
+## Tambahan legend-8s992 (aturan bagi hasil founder, migrasi 0221)
+
+- 0221 `0221_profit_share_unabsorbed` (nomor sementara, merge train merangkai ulang idx dan `prevId`): kolom `distribution_runs.unabsorbed_idr`, trigger totals run koreksi (boleh kurang dari 10000 bp), trigger run koreksi hanya menargetkan run reguler, dan backfill izin `profit_share.share_allocation.change`.
+- Backfill izin hanya ke template `owner` dan `finance` di semua tenant. Role kustom yang memegang `profit_share.registry.manage` TIDAK di-backfill (sama dengan keputusan krvk7): pemilik tenant harus menambahkan izin "Ubah porsi saham pemegang saham" ke role kustom itu, kalau tidak mereka kena 403 saat membuat, mengubah, atau mengajukan versi porsi.
+- Perubahan perilaku: klaw-bek yang melebihi yang sudah dibayarkan tidak lagi ditolak seluruhnya; dibatasi per pemegang saham dan sisanya dicatat di `unabsorbed_idr`. Ditolak 422 `ADJUSTMENT_EXCEEDS_PAID` hanya bila tidak ada yang bisa diserap.
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).
