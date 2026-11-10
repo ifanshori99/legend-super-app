@@ -189,7 +189,9 @@ CREATE UNIQUE INDEX "hris_checklist_templates_active_default_key" ON "hris_check
 CREATE UNIQUE INDEX "hris_kpi_definitions_active_position_name_key" ON "hris_kpi_definitions" USING btree ("tenant_id","position_id","name") WHERE "hris_kpi_definitions"."is_active" AND "hris_kpi_definitions"."position_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "hris_kpi_definitions_active_default_name_key" ON "hris_kpi_definitions" USING btree ("tenant_id","name") WHERE "hris_kpi_definitions"."is_active" AND "hris_kpi_definitions"."position_id" IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "hris_offboardings_live_employee_key" ON "hris_offboardings" USING btree ("tenant_id","employee_id") WHERE "hris_offboardings"."status" <> 'cancelled';--> statement-breakpoint
-CREATE UNIQUE INDEX "hris_offboardings_certificate_no_key" ON "hris_offboardings" USING btree ("tenant_id","certificate_no") WHERE "hris_offboardings"."certificate_no" IS NOT NULL;
+CREATE UNIQUE INDEX "hris_offboardings_certificate_no_key" ON "hris_offboardings" USING btree ("tenant_id","certificate_no") WHERE "hris_offboardings"."certificate_no" IS NOT NULL;--> statement-breakpoint
+ALTER TABLE "role_assignments" DROP CONSTRAINT "role_assignments_window_check";--> statement-breakpoint
+ALTER TABLE "role_assignments" ADD CONSTRAINT "role_assignments_window_check" CHECK ("role_assignments"."valid_until" IS NULL OR "role_assignments"."valid_until" >= "role_assignments"."valid_from");
 --> statement-breakpoint
 -- HRIS lifecycle and KPI (bead legend-ovxw; PRD v1.7 F24, F29): tenant RLS on
 -- every table (TEN-01/02). None carries a NOT NULL `outlet_id`, so outlet

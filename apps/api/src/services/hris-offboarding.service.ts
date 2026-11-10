@@ -6,16 +6,17 @@
 // Lifecycle: open → revoked (exit clearance ran) → completed (checklist done,
 // settlement frozen); open → cancelled. One live offboarding per employee.
 //
-// Exit clearance runs in ONE tenant transaction, after the last working day:
-// role assignments of this tenant end (sessions and PIN stop working on the
-// next request), the user's staff sessions of this tenant are revoked, the
+// Exit clearance is a tenant-wide action (tenant-scoped `hr.employee.manage`)
+// and runs in ONE tenant transaction, after the last working day: role
+// assignments of this tenant end (sessions and PIN stop working on the next
+// request), the user's staff sessions of this tenant are revoked, the
 // user's push subscriptions of this tenant are removed, shifts after the last
 // working day are cancelled, the employee leaves. The login account is shared
 // across tenants, so it is never banned. Staff PIN rows are kept on purpose:
 // `attemptStaffPin` refuses a non-member, and a deleted row would never reach
 // an edge node. A second call returns the stored result and writes nothing.
 
-import { and, asc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type {
   ScopedTenantContext,
   TenantId,
@@ -40,7 +41,10 @@ import {
   hrisOffboardings,
   type StoredChecklistTemplateItem,
 } from "../db/schema/hris-lifecycle.ts";
-import { shiftAssignments } from "../db/schema/hris-scheduling.ts";
+import {
+  shiftAssignments,
+  shiftSwapRequests,
+} from "../db/schema/hris-scheduling.ts";
 import { pushSubscriptions } from "../db/schema/notification.ts";
 import { session } from "../db/schema/session.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -148,7 +152,9 @@ async function loadEmployee(
     .from(employees)
     .where(and(eq(employees.tenantId, tenantId), eq(employees.id, employeeId)))
     .limit(1);
-  const [row] = lock ? await query.for("update") : await query;
+  // NO KEY UPDATE: shifts and other rows keep taking FK KEY SHARE locks on the
+  // employee while it is held.
+  const [row] = lock ? await query.for("no key update") : await query;
   return row ?? null;
 }
 
@@ -601,12 +607,17 @@ export async function cancelOffboarding(
  * POST /api/hris/offboardings/:offboardingId/revoke-access. Order and
  * reasons: docs/DECISIONS.md "WS-10 lifecycle" §2. Idempotent: an
  * offboarding already revoked (or completed) answers as stored.
+ *
+ * Tenant-wide: `context` must be tenant scoped (HR pusat), else 403 once the
+ * record is known to be in reach. `canAssignRoles` says the caller also holds
+ * `access.role.assign` tenant-wide, needed when the leaver has a
+ * tenant-scoped role assignment.
  */
 export async function revokeOffboardingAccess(
   context: ScopedTenantContext,
   actorUserId: string,
   offboardingId: string,
-  now = new Date(),
+  canAssignRoles: boolean,
 ): Promise<Offboarding> {
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
@@ -614,6 +625,9 @@ export async function revokeOffboardingAccess(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + tenantId}, 0))`,
     );
+    // legend-qr1uv: "now" is read AFTER the lock, for the access check and
+    // every write below.
+    const now = new Date();
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     // 2. The offboarding row; a revoked one returns without writing.
     const { offboarding } = await loadForHr(
@@ -623,6 +637,12 @@ export async function revokeOffboardingAccess(
       offboardingId,
       true,
     );
+    if (context.outletScope.kind !== "tenant")
+      throw new HttpError(
+        403,
+        "CLEARANCE_NEEDS_TENANT_HR",
+        "Pencabutan akses hanya bisa dilakukan HR pusat.",
+      );
     if (offboarding.accessRevokedAt !== null) return toOffboarding(offboarding);
     if (offboarding.status !== "open")
       throw new HttpError(
@@ -638,28 +658,36 @@ export async function revokeOffboardingAccess(
       true,
     );
     if (!employee) throw notFound();
+    // Only AFTER the last working day: on that day the employee still works.
     const today = await homeOutletToday(tx, tenantId, employee, now);
-    if (today < offboarding.lastWorkingDate)
+    if (today <= offboarding.lastWorkingDate)
       throw new HttpError(
         409,
         "EXIT_NOT_DUE",
-        `Akses baru bisa dicabut mulai hari kerja terakhir (${offboarding.lastWorkingDate}).`,
+        `Akses baru bisa dicabut setelah hari kerja terakhir (${offboarding.lastWorkingDate}).`,
       );
 
     let roleAssignmentIds: string[] = [];
     let sessionsRevoked = 0;
     let pushSubscriptionsRemoved = 0;
     if (employee.userId) {
-      // 4. Role assignments of this tenant (Owner / future refused, 409).
+      // 4. Role assignments of this tenant (Owner refused; tenant-scoped
+      // roles need access.role.assign; future ones become empty windows).
       const ended = await endUserRoleAssignmentsForOffboardingInTx(
         tx,
         context,
         employee.userId,
         access.actorUserId,
         "offboarding",
+        canAssignRoles,
+        now,
       );
       roleAssignmentIds = ended.endedAssignmentIds;
-      // 5. Staff sessions of this tenant; never other tenants or customer.
+      // 5. Staff sessions of this tenant, never customer or impersonation.
+      // `session.tenant_id` is not filled at login yet
+      // (middleware/identity-surface.ts), so a NULL-tenant staff session may
+      // be serving this tenant and is revoked too. Consequence: the user signs
+      // in again for any other tenant they work for.
       const revoked = await tx
         .update(session)
         .set({
@@ -669,7 +697,7 @@ export async function revokeOffboardingAccess(
         .where(
           and(
             eq(session.userId, employee.userId),
-            eq(session.tenantId, tenantId),
+            or(eq(session.tenantId, tenantId), isNull(session.tenantId)),
             ne(session.kind, "customer"),
             isNull(session.impersonatedBy),
             isNull(session.revokedAt),
@@ -690,7 +718,7 @@ export async function revokeOffboardingAccess(
       pushSubscriptionsRemoved = removed.length;
     }
 
-    // 7. Shifts after the last working day.
+    // 7. Shifts after the last working day, in every outlet (tenant context).
     const shifts = await tx
       .select({ id: shiftAssignments.id })
       .from(shiftAssignments)
@@ -704,15 +732,60 @@ export async function revokeOffboardingAccess(
       )
       .orderBy(asc(shiftAssignments.businessDate), asc(shiftAssignments.id));
     const cancelledShiftIds: string[] = [];
-    for (const shift of shifts) {
-      await cancelShiftAssignmentInTx(
-        tx,
-        context,
-        access.actorUserId,
-        shift.id,
-        now,
-      );
-      cancelledShiftIds.push(shift.id);
+    if (shifts.length > 0) {
+      const shiftIds = shifts.map((shift) => shift.id);
+      // Lock order is swap -> assignment, as in cancelShiftAssignmentInTx and
+      // decideShiftSwapRequest, so a concurrent swap decision cannot deadlock.
+      await tx
+        .select({ id: shiftSwapRequests.id })
+        .from(shiftSwapRequests)
+        .where(
+          and(
+            eq(shiftSwapRequests.tenantId, tenantId),
+            eq(shiftSwapRequests.status, "pending"),
+            or(
+              inArray(shiftSwapRequests.fromAssignmentId, shiftIds),
+              inArray(shiftSwapRequests.toAssignmentId, shiftIds),
+            ),
+          ),
+        )
+        .orderBy(asc(shiftSwapRequests.id))
+        .for("update");
+      const locked = await tx
+        .select({
+          id: shiftAssignments.id,
+          employeeId: shiftAssignments.employeeId,
+          status: shiftAssignments.status,
+        })
+        .from(shiftAssignments)
+        .where(
+          and(
+            eq(shiftAssignments.tenantId, tenantId),
+            inArray(shiftAssignments.id, shiftIds),
+          ),
+        )
+        .orderBy(asc(shiftAssignments.id))
+        .for("update");
+      const lockedById = new Map(locked.map((row) => [row.id, row]));
+      for (const shift of shifts) {
+        // Re-checked under the lock: a shift swapped to someone else (or
+        // cancelled) since the read above is not the leaver's to cancel.
+        const current = lockedById.get(shift.id);
+        if (
+          !current ||
+          current.employeeId !== employee.id ||
+          current.status === "cancelled"
+        )
+          continue;
+        await cancelShiftAssignmentInTx(
+          tx,
+          context,
+          access.actorUserId,
+          shift.id,
+          now,
+        );
+        cancelledShiftIds.push(shift.id);
+      }
     }
 
     // 8. The employee leaves.

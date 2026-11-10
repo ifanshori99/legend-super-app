@@ -2,9 +2,10 @@
 // lifecycle, brief 299). Routes: routes/hris-work-certificate.routes.ts.
 //
 // - HR (`hr.employee.manage` at the employee's home outlet) reads it once the
-//   offboarding is `revoked` or `completed`; before that it is a 409. The
-//   employee reads their own only when it is `completed`; before that, and for
-//   any other row, the answer is a plain 404. Other viewers get 403.
+//   offboarding is `revoked` or `completed`; before that it is a 409. A leaver
+//   has no access any more, so there is no self route: the certificate is
+//   handed over through HR. Any other viewer of the row gets 403, and a row the
+//   caller cannot reach answers 404 like a missing one.
 // - The first read assigns `certificate_no` = `SK/<YYYY>/<NNNN>` (sequence per
 //   tenant per Jakarta year, under an advisory lock so two first reads cannot
 //   take the same number) and stamps `certificate_issued_at`. Later reads, and
@@ -113,16 +114,13 @@ export async function getWorkCertificate(
       homeOutletId: employee.homeOutletId,
     });
     if (!viewer) throw offboardingNotFound();
-    if (viewer.kind === "hr") {
-      if (offboarding.status === "open")
-        throw new HttpError(
-          409,
-          "CERTIFICATE_NOT_READY",
-          "Surat keterangan kerja belum tersedia: akses karyawan belum dicabut.",
-        );
-    } else if (viewer.kind === "self") {
-      if (offboarding.status !== "completed") throw offboardingNotFound();
-    } else throw forbidden();
+    if (viewer.kind !== "hr") throw forbidden();
+    if (offboarding.status === "open")
+      throw new HttpError(
+        409,
+        "CERTIFICATE_NOT_READY",
+        "Surat keterangan kerja belum tersedia: akses karyawan belum dicabut.",
+      );
 
     let certificateNo = offboarding.certificateNo;
     let issuedAt = offboarding.certificateIssuedAt;

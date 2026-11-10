@@ -22,6 +22,7 @@ import {
 import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
+import { loadRequestAccess } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as offboardingService from "../services/hris-offboarding.service.ts";
 import * as settlementService from "../services/hris-settlement.service.ts";
@@ -134,11 +135,17 @@ export function createHrisOffboardingRouter(): Router {
         req.params,
       );
       revokeOffboardingAccessEndpoint.body.parse(req.body ?? {});
+      // A leaver with a tenant-scoped role also needs tenant-wide
+      // access.role.assign; the service decides once it sees the roles.
+      const snapshot = await loadRequestAccess(req);
+      const canAssignRoles =
+        snapshot.contextFor("access.role.assign", { type: "tenant" }) !== null;
       res.json({
         data: await offboardingService.revokeOffboardingAccess(
           hrisLearningContext(req),
           hrisLearningActor(req),
           offboardingId,
+          canAssignRoles,
         ),
       });
     },

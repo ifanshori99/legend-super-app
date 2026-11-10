@@ -6,10 +6,11 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 
 - Satu migrasi `0206_hris_lifecycle_kpi` (when 1794285000000, prevId 9f64bc61 = id snapshot 0199): 7 tabel baru (template checklist, offboarding, task, log aksi append-only, definisi KPI, review KPI, skor KPI), RLS dipaksa di semua.
 - Slice: checklist (complete/block/unblock/waive + log), exit clearance (akhiri role assignment, cabut sesi staf, hapus push subscription, batalkan shift sesudah hari terakhir, PIN ditolak karena keanggotaan berakhir; idempoten), KPI dari `evaluateMetrics` + siklus review manajer, ringkasan hak akhir tanpa THR/BPJS/neto (beku saat selesai), surat keterangan kerja + PDF.
-- Keputusan: `docs/DECISIONS.md` entri "WS-10 lifecycle". Event `role_assignment.ended` ditulis dengan lingkup tenant walau HR lingkup outlet.
-- Bukti: 6 file test 82/82 (clearance, checklist, kpi, certificate, 2 migration RLS); db:generate kedua kosong; tsc shared dan web lulus, api sedang dibetulkan (tipe `UserId` dan Drizzle).
-- Kartu baru: legend-arj.5 (angka hak akhir dari mesin payroll, tunggu legend-j2l2), legend-arj.6 (job clearance otomatis).
-- Berikut: review architect (K), second-opinion Codex `docs/briefs/299b-second-opinion-hr-lifecycle.md` (belum dijalankan), UI web.
+- Keputusan: `docs/DECISIONS.md` entri "WS-10 lifecycle". Exit clearance hanya HR lingkup tenant; peran admin butuh `access.role.assign`; assignment mendatang diakhiri jadi jendela kosong (constraint `>=` di 0206); sesi tanpa tenant ikut dicabut; revoke hanya setelah hari terakhir; surat kerja hanya lewat HR; KPI sistem lintas outlet untuk satu karyawan.
+- Review architect (K): 3 tinggi, 5 sedang, 1 rendah, semua dibetulkan (brief `docs/briefs/299c-review-fixes.md`). Gagal-dulu: 6 test baru merah di kode lama (D1, D2 x2, D3, D4, D7); KPI D9 merah lalu hijau.
+- Bukti: lihat laporan akhir (6 file test, kontrak root, db:generate kosong, tsc shared/api/web, eslint, prettier).
+- Kartu baru: legend-arj.5 (angka hak akhir dari mesin payroll, tunggu legend-j2l2), legend-arj.6 (job clearance otomatis), legend-arj.7 (surat kerja mandiri mantan karyawan).
+- Berikut: second-opinion Codex `docs/briefs/299b-second-opinion-hr-lifecycle.md` (belum dijalankan), UI web.
 
 ## legend-pxcs + legend-dux2 kebijakan keuangan dan register aset tetap (engineer, cabang `ws/finance-policy-asset-register` dari m1 d8ea5e0b, 2026-11-10)
 

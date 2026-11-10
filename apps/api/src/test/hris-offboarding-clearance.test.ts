@@ -45,6 +45,25 @@
 //    `shift.cancelled` event (only published shifts do), so none is asserted.
 //  - The `access_revocation` checklist task completion (DECISIONS 2.8) is not
 //    covered here: the task category/code values are not named in the spec.
+//  - Review fixes (docs/briefs/299c-review-fixes.md D1-D7). Clearance is a
+//    tenant-wide act: the caller needs hr.employee.manage at tenant scope.
+//    Outlet HR who reach the record get 403 `CLEARANCE_NEEDS_TENANT_HR`; a
+//    record out of reach stays 404. A leaver with an active or future-dated
+//    tenant-scope assignment needs the caller to hold access.role.assign at
+//    tenant scope too, else 409 `OFFBOARDING_ADMIN_ROLE` (nothing changes).
+//    A future-dated assignment no longer blocks: it is ended with
+//    valid_until = valid_from (empty window). Sessions of kind other than
+//    `customer` with tenant_id = this tenant OR tenant_id NULL are revoked
+//    (the tenant is not yet stamped on a fresh session); the user must sign in
+//    again for other tenants. The exit is due only AFTER the last working day:
+//    last working day = today in the home outlet's timezone is 409
+//    `EXIT_NOT_DUE`, yesterday is due. D5 (clock read after the advisory lock)
+//    cannot be observed over HTTP and is not tested here. Shift cancellation
+//    reaches every outlet with the tenant actor (D6); the concurrent
+//    hand-over race (row lock and re-check) is not testable over HTTP.
+//  - Existing revoke calls use `hrTenant` (hr.employee.manage, tenant scope).
+//    `hrTenantAdmin` also holds access.role.assign. Exits are still created by
+//    the outlet manager `hrMgr`.
 //  - An unknown offboarding id answers 404; a manager of another outlet gets
 //    404, a user without hr.employee.manage gets 403, anonymous gets 401; a
 //    body with an unknown key or a client-sent tenantId is 422.
@@ -135,11 +154,14 @@ const key = () => `cl-api-${randomUUID()}`;
 let jkt: string;
 let otherOutlet: string;
 let hrMgr: Client;
-let hrMgrUserId: string;
 let hrMgrOther: Client;
+let hrTenant: Client;
+let hrTenantUserId: string;
+let hrTenantAdmin: Client;
 let scheduler: Client;
 let nobody: Client;
 let tplPagi: string;
+let tplOther: string;
 
 async function newRole(
   permissions: string[],
@@ -270,7 +292,7 @@ type Leaver = {
  * An employee with a login: two role assignments at the outlet, a staff
  * session bound to this tenant, and an employee row.
  */
-async function makeLeaver(): Promise<Leaver> {
+async function makeLeaver(homeOutlet: string = jkt): Promise<Leaver> {
   const { client, userId, email, sessionId } = await signedInClient(
     "Karyawan Keluar API",
     { mfa: true },
@@ -283,19 +305,19 @@ async function makeLeaver(): Promise<Leaver> {
     await assignRole({
       userId,
       roleId: selfRole,
-      scope: { type: "outlet", id: jkt },
+      scope: { type: "outlet", id: homeOutlet },
     }),
     await assignRole({
       userId,
       roleId: await templateRoleId("cashier"),
-      scope: { type: "outlet", id: jkt },
+      scope: { type: "outlet", id: homeOutlet },
     }),
   ];
   await owner.query(
     `UPDATE "session" SET kind = 'management', tenant_id = $2 WHERE id = $1`,
     [sessionId, tenant.id],
   );
-  const employeeId = await seedEmployee(userId, jkt);
+  const employeeId = await seedEmployee(userId, homeOutlet);
   return { client, email, userId, employeeId, assignmentIds, sessionId };
 }
 
@@ -342,7 +364,7 @@ async function setLastDay(offboardingId: string, date: string) {
   );
 }
 
-const revoke = (offboardingId: string, client: Client = hrMgr) =>
+const revoke = (offboardingId: string, client: Client = hrTenant) =>
   post(client, `/api/hris/offboardings/${offboardingId}/revoke-access`, {});
 
 async function employeeRow(employeeId: string) {
@@ -448,12 +470,17 @@ async function seedPush(userId: string, tenantId: string) {
   );
 }
 
-async function createShift(employeeId: string, businessDate: string) {
+async function createShift(
+  employeeId: string,
+  businessDate: string,
+  outletId: string = jkt,
+  templateId: string = tplPagi,
+) {
   const body = {
-    outletId: jkt,
+    outletId,
     employeeId,
     businessDate,
-    shiftTemplateId: tplPagi,
+    shiftTemplateId: templateId,
     stationId: null,
     idempotencyKey: key(),
   };
@@ -541,7 +568,6 @@ beforeAll(async () => {
     scope: { type: "outlet", id: jkt },
   });
   hrMgr = manager.client;
-  hrMgrUserId = manager.userId;
 
   const other = await signedInClient("Manajer Outlet Lain Keluar API", {
     mfa: true,
@@ -556,12 +582,39 @@ beforeAll(async () => {
   });
   hrMgrOther = other.client;
 
-  const sched = await signedInClient("Penjadwal Keluar API", { mfa: true });
+  const tenantHr = await signedInClient("HR Pusat Keluar API", { mfa: true });
   await assignRole({
-    userId: sched.userId,
-    roleId: await newRole(["hr.schedule.manage"], ["outlet"]),
-    scope: { type: "outlet", id: jkt },
+    userId: tenantHr.userId,
+    roleId: await newRole(
+      ["hr.employee.manage", "hr.employee.view"],
+      ["tenant"],
+    ),
+    scope: { type: "tenant" },
   });
+  hrTenant = tenantHr.client;
+  hrTenantUserId = tenantHr.userId;
+
+  const tenantAdmin = await signedInClient("HR Admin Akses Keluar API", {
+    mfa: true,
+  });
+  await assignRole({
+    userId: tenantAdmin.userId,
+    roleId: await newRole(
+      ["hr.employee.manage", "hr.employee.view", "access.role.assign"],
+      ["tenant"],
+    ),
+    scope: { type: "tenant" },
+  });
+  hrTenantAdmin = tenantAdmin.client;
+
+  const sched = await signedInClient("Penjadwal Keluar API", { mfa: true });
+  const schedRole = await newRole(["hr.schedule.manage"], ["outlet"]);
+  for (const outletId of [jkt, otherOutlet])
+    await assignRole({
+      userId: sched.userId,
+      roleId: schedRole,
+      scope: { type: "outlet", id: outletId },
+    });
   scheduler = sched.client;
 
   const none = await signedInClient("Tanpa Izin Keluar API", { mfa: true });
@@ -582,6 +635,16 @@ beforeAll(async () => {
   });
   expect(template.status, JSON.stringify(template.body)).toBe(201);
   tplPagi = template.body.data.id as string;
+  const templateOther = await post(scheduler, "/api/hris/shift-templates", {
+    outletId: otherOutlet,
+    name: "Pagi keluar lain",
+    segments: [{ startTime: "08:00", endTime: "16:00" }],
+    breakMinutes: 60,
+    stationId: null,
+    positionId: null,
+  });
+  expect(templateOther.status, JSON.stringify(templateOther.body)).toBe(201);
+  tplOther = templateOther.body.data.id as string;
 }, 180_000);
 
 afterAll(async () => {
@@ -1057,7 +1120,7 @@ describe("exit clearance (POST /offboardings/:id/revoke-access)", () => {
     const first = await revoke(offboarding.id);
     expect(first.status, JSON.stringify(first.body)).toBe(200);
 
-    const auditActorBefore = await auditCountByActor(hrMgrUserId);
+    const auditActorBefore = await auditCountByActor(hrTenantUserId);
     const auditObjectBefore = await auditCountByObject(offboarding.id);
     const eventsBefore = await Promise.all(
       leaver.assignmentIds.map(endedEventCount),
@@ -1070,7 +1133,7 @@ describe("exit clearance (POST /offboardings/:id/revoke-access)", () => {
     expect(second.status, JSON.stringify(second.body)).toBe(200);
     expect(second.body.data).toEqual(first.body.data);
 
-    expect(await auditCountByActor(hrMgrUserId)).toBe(auditActorBefore);
+    expect(await auditCountByActor(hrTenantUserId)).toBe(auditActorBefore);
     expect(await auditCountByObject(offboarding.id)).toBe(auditObjectBefore);
     expect(
       await Promise.all(leaver.assignmentIds.map(endedEventCount)),
@@ -1140,7 +1203,8 @@ describe("exit clearance (POST /offboardings/:id/revoke-access)", () => {
     const offboarding = await createOffboarding(leaver.employeeId);
     await setLastDay(offboarding.id, LAST_DAY);
 
-    const refused = await revoke(offboarding.id);
+    // A caller who may assign roles, so the Owner rule is what refuses.
+    const refused = await revoke(offboarding.id, hrTenantAdmin);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
     expect(refused.body.error.code).toBe("OFFBOARDING_OWNER");
 
@@ -1158,7 +1222,87 @@ describe("exit clearance (POST /offboardings/:id/revoke-access)", () => {
     });
   }, 90_000);
 
-  it("[HR-01] an employee with a future-dated assignment is refused with 409 FUTURE_ASSIGNMENT and keeps all access", async () => {
+  it("[HR-01] D1 outlet HR who reach the employee cannot clear: 403 CLEARANCE_NEEDS_TENANT_HR and nothing changes", async () => {
+    const leaver = await makeLeaver();
+    const offboarding = await createOffboarding(leaver.employeeId);
+    await setLastDay(offboarding.id, LAST_DAY);
+
+    // hrMgr holds hr.employee.manage at the leaver's outlet only.
+    const refused = await revoke(offboarding.id, hrMgr);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error.code).toBe("CLEARANCE_NEEDS_TENANT_HR");
+
+    expect([...(await endedFlags(leaver.assignmentIds)).values()]).toEqual([
+      false,
+      false,
+    ]);
+    expect(await sessionRevoked(leaver.sessionId)).toBe(false);
+    expect((await leaver.client.get(READ_OWN_SHIFTS)).status).toBe(200);
+    expect(await employeeRow(leaver.employeeId)).toMatchObject({
+      status: "active",
+    });
+    const read = await hrMgr.get(`/api/hris/offboardings/${offboarding.id}`);
+    expect(read.body.data).toMatchObject({
+      status: "open",
+      revocationResult: null,
+    });
+
+    // Control: tenant HR clears the same exit.
+    const cleared = await revoke(offboarding.id, hrTenant);
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+  }, 90_000);
+
+  it.each([
+    ["active", "now() - interval '1 hour'"],
+    ["future-dated", "now() + interval '30 days'"],
+  ] as const)(
+    "[HR-01] D2 a %s tenant-scope assignment needs access.role.assign: 409 OFFBOARDING_ADMIN_ROLE without it, cleared with it",
+    async (_label, validFromSql) => {
+      const leaver = await makeLeaver();
+      const tenantAssignment = await assignRole({
+        userId: leaver.userId,
+        roleId: await newRole(["self.profile.view"], ["tenant"]),
+        scope: { type: "tenant" },
+        validFromSql,
+      });
+      const all = [...leaver.assignmentIds, tenantAssignment];
+      const offboarding = await createOffboarding(leaver.employeeId);
+      await setLastDay(offboarding.id, LAST_DAY);
+
+      // Tenant HR without access.role.assign: refused, all or nothing.
+      const refused = await revoke(offboarding.id, hrTenant);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(refused.body.error.code).toBe("OFFBOARDING_ADMIN_ROLE");
+      expect([...(await endedFlags(all)).values()]).toEqual([
+        false,
+        false,
+        false,
+      ]);
+      expect(await sessionRevoked(leaver.sessionId)).toBe(false);
+      expect(await employeeRow(leaver.employeeId)).toMatchObject({
+        status: "active",
+      });
+      const read = await hrTenant.get(
+        `/api/hris/offboardings/${offboarding.id}`,
+      );
+      expect(read.body.data).toMatchObject({
+        status: "open",
+        revocationResult: null,
+      });
+
+      // Tenant HR who may assign roles clears the exit, tenant role included.
+      const cleared = await revoke(offboarding.id, hrTenantAdmin);
+      expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+      expect(
+        [...cleared.body.data.revocationResult.roleAssignmentIds].sort(),
+      ).toEqual([...all].sort());
+      expect([...(await endedFlags(all)).values()]).toEqual([true, true, true]);
+      expect(await sessionRevoked(leaver.sessionId)).toBe(true);
+    },
+    120_000,
+  );
+
+  it("[HR-01] D3 a future-dated assignment no longer blocks: it is ended as an empty window with its audit row and event", async () => {
     const leaver = await makeLeaver();
     const futureAssignment = await assignRole({
       userId: leaver.userId,
@@ -1166,19 +1310,136 @@ describe("exit clearance (POST /offboardings/:id/revoke-access)", () => {
       scope: { type: "outlet", id: otherOutlet },
       validFromSql: "now() + interval '30 days'",
     });
+    const all = [...leaver.assignmentIds, futureAssignment];
     const offboarding = await createOffboarding(leaver.employeeId);
     await setLastDay(offboarding.id, LAST_DAY);
 
+    const cleared = await revoke(offboarding.id);
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect(cleared.body.data).toMatchObject({ status: "revoked" });
+    expect(
+      [...cleared.body.data.revocationResult.roleAssignmentIds].sort(),
+    ).toEqual([...all].sort());
+
+    expect([...(await endedFlags(all)).values()]).toEqual([true, true, true]);
+    // Never active: the window closes at the instant it would have opened.
+    const window = await owner.query<{ empty: boolean }>(
+      "SELECT valid_until = valid_from AS empty FROM role_assignments WHERE id = $1",
+      [futureAssignment],
+    );
+    expect(window.rows).toEqual([{ empty: true }]);
+    expect(await endedAuditCount(futureAssignment)).toBe(1);
+    expect(await endedAuditText(futureAssignment)).toContain("offboarding");
+    expect(await endedEventCount(futureAssignment)).toBeGreaterThanOrEqual(1);
+    expect(await employeeRow(leaver.employeeId)).toEqual({
+      status: "terminated",
+      end_date: LAST_DAY,
+    });
+  }, 90_000);
+
+  it("[HR-01] D4 sessions without a tenant stamp are revoked too; other tenants' and customer sessions stay", async () => {
+    const leaver = await makeLeaver();
+    // A fresh session has no tenant yet: unstamp the employee's own session.
+    await owner.query(`UPDATE "session" SET tenant_id = NULL WHERE id = $1`, [
+      leaver.sessionId,
+    ]);
+    const stamped = await signInCookie(leaver.email);
+    await owner.query(
+      `UPDATE "session" SET kind = 'management', tenant_id = $2 WHERE id = $1`,
+      [stamped.sessionId, tenant.id],
+    );
+    const b = tenantB!;
+    const sessionB = await signInCookie(leaver.email);
+    await owner.query(
+      `UPDATE "session" SET kind = 'management', tenant_id = $2 WHERE id = $1`,
+      [sessionB.sessionId, b.tenantId],
+    );
+    const customer = await signInCookie(leaver.email);
+    expect((await leaver.client.get(READ_OWN_SHIFTS)).status).toBe(200);
+
+    const offboarding = await createOffboarding(leaver.employeeId);
+    await setLastDay(offboarding.id, LAST_DAY);
+    const cleared = await revoke(offboarding.id);
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect(cleared.body.data.revocationResult.sessionsRevoked).toBe(2);
+
+    expect(await sessionRevoked(leaver.sessionId)).toBe(true);
+    expect(await sessionRevoked(stamped.sessionId)).toBe(true);
+    expect((await leaver.client.get(READ_OWN_SHIFTS)).status).toBe(401);
+    expect(await sessionRevoked(sessionB.sessionId)).toBe(false);
+    expect(await sessionRevoked(customer.sessionId)).toBe(false);
+    for (const live of [sessionB, customer])
+      expect(
+        (
+          await request(app)
+            .get("/api/auth/get-session")
+            .set("Cookie", live.cookie)
+        ).body?.user?.id,
+      ).toBe(leaver.userId);
+  }, 120_000);
+
+  it("[HR-01] D6 shifts of an employee at another outlet are cancelled by tenant HR: after the last day cancelled, before kept", async () => {
+    // Homed at an outlet that the outlet manager hrMgr does not reach.
+    const leaver = await makeLeaver(otherOutlet);
+    const before = await createShift(
+      leaver.employeeId,
+      SHIFT_BEFORE,
+      otherOutlet,
+      tplOther,
+    );
+    const after = await createShift(
+      leaver.employeeId,
+      SHIFT_AFTER,
+      otherOutlet,
+      tplOther,
+    );
+    const offboarding = await createOffboarding(
+      leaver.employeeId,
+      "termination",
+      hrTenant,
+    );
+    await setLastDay(offboarding.id, LAST_DAY);
+
+    const cleared = await revoke(offboarding.id);
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect(cleared.body.data.revocationResult.cancelledShiftIds).toEqual([
+      after.id,
+    ]);
+    expect(await shiftStatus(after.id, SHIFT_AFTER)).toBe("cancelled");
+    expect(await shiftStatus(before.id, SHIFT_BEFORE)).not.toBe("cancelled");
+  }, 120_000);
+
+  it("[HR-01] D7 the exit is due only after the last working day: today in the home outlet's timezone is 409 EXIT_NOT_DUE, yesterday is due", async () => {
+    const jakartaDay = (offsetDays: number) =>
+      new Date(Date.now() + offsetDays * 86_400_000).toLocaleDateString(
+        "en-CA",
+        { timeZone: "Asia/Jakarta" },
+      );
+
+    const leaver = await makeLeaver();
+    const offboarding = await createOffboarding(leaver.employeeId);
+    await setLastDay(offboarding.id, jakartaDay(0));
     const refused = await revoke(offboarding.id);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
-    expect(refused.body.error.code).toBe("FUTURE_ASSIGNMENT");
-
-    const flags = await endedFlags([...leaver.assignmentIds, futureAssignment]);
-    expect([...flags.values()]).toEqual([false, false, false]);
-    expect(await sessionRevoked(leaver.sessionId)).toBe(false);
-    expect((await leaver.client.get(READ_OWN_SHIFTS)).status).toBe(200);
+    expect(refused.body.error.code).toBe("EXIT_NOT_DUE");
     expect(await employeeRow(leaver.employeeId)).toMatchObject({
       status: "active",
+      end_date: null,
+    });
+    expect([...(await endedFlags(leaver.assignmentIds)).values()]).toEqual([
+      false,
+      false,
+    ]);
+    expect(await sessionRevoked(leaver.sessionId)).toBe(false);
+
+    // Same exit, last working day moved to yesterday: now due.
+    const yesterday = jakartaDay(-1);
+    await setLastDay(offboarding.id, yesterday);
+    const cleared = await revoke(offboarding.id);
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect(await employeeRow(leaver.employeeId)).toEqual({
+      status: "terminated",
+      end_date: yesterday,
     });
   }, 90_000);
 
@@ -1220,7 +1481,7 @@ describe("exit clearance (POST /offboardings/:id/revoke-access)", () => {
     const offboarding = await createOffboarding(leaver.employeeId);
     await setLastDay(offboarding.id, LAST_DAY);
     const response = await post(
-      hrMgr,
+      hrTenant,
       `/api/hris/offboardings/${offboarding.id}/revoke-access`,
       { tenantId: tenant.id },
     );

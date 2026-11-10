@@ -706,6 +706,29 @@ describe("KPI reviews", () => {
     expect(again.body.error.code).toBe("KPI_REVIEW_EXISTS");
   });
 
+  it("[HR-01] the system actual spans every outlet, whatever outlet the caller manages", async () => {
+    await voidRow(jkt, "2034-08-05", subjectUserId, 100_000);
+    await voidRow(otherOutlet, "2034-08-06", subjectUserId, 40_000);
+    // Another person at the other outlet: must not count.
+    await voidRow(otherOutlet, "2034-08-07", randomUUID(), 999_999);
+
+    const review = await openReview(mgrJkt, empSubject, "2034-08-01");
+    expect(scoreOf(review, defVoid)).toMatchObject({
+      systemActual: "140000.0000",
+      systemAvailability: "available",
+    });
+
+    await voidRow(otherOutlet, "2034-08-20", subjectUserId, 2_000);
+    const refreshed = await post(
+      mgrJkt,
+      `/api/hris/kpi-reviews/${review.id}/refresh-actuals`,
+    );
+    expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+    expect(scoreOf(refreshed.body.data as Review, defVoid).systemActual).toBe(
+      "142000.0000",
+    );
+  });
+
   it("[HR-01] a manager of another outlet gets 404 and no-permission gets 403", async () => {
     const body = {
       employeeId: empSubject,

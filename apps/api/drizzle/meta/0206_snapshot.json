@@ -6236,7 +6236,7 @@
         },
         "role_assignments_window_check": {
           "name": "role_assignments_window_check",
-          "value": "\"role_assignments\".\"valid_until\" IS NULL OR \"role_assignments\".\"valid_until\" > \"role_assignments\".\"valid_from\""
+          "value": "\"role_assignments\".\"valid_until\" IS NULL OR \"role_assignments\".\"valid_until\" >= \"role_assignments\".\"valid_from\""
         }
       },
       "isRLSEnabled": false

@@ -1,22 +1,26 @@
 // Work certificate ("Surat Keterangan Kerja") over HTTP (WS-10 lifecycle,
-// brief 299; HR-01; TEN-01/02/03). Runs the real Express app, Better Auth, the
-// RBAC resolver and PostgreSQL against the seeded Cafe Legend tenant plus a
-// throwaway second tenant. Offboardings are seeded straight into the table in
-// the state under test; the offboarding routes belong to another slice.
+// brief 299 and 299c D8; HR-01; TEN-01/02/03). Runs the real Express app,
+// Better Auth, the RBAC resolver and PostgreSQL against the seeded Cafe Legend
+// tenant plus a throwaway second tenant. Offboardings go through the real
+// create, revoke-access, complete and cancel routes (tenant-wide HR); only the
+// other tenant's row is seeded with SQL, because nobody of this tenant may
+// act on it. A leaver has no access, so there is no employee route.
 //
 // Needs `hrisWorkCertificateRouter` mounted under `/api/hris` in routes/index.ts.
 //
 // Assumptions (the brief leaves these open):
 //  - HR reading an offboarding that is still `open` is answered 409.
-//  - An employee reading their own certificate before `completed`, someone
-//    else's, or a cancelled offboarding's, is answered 404.
+//  - A cancelled offboarding's certificate, and a row outside the caller's
+//    outlet reach, is answered 404; a caller without `hr.employee.manage` 403.
 //  - A malformed offboarding id is answered 422 (strict params).
+//  - A tenant-wide HR can waive every checklist task with a reason, so the
+//    offboarding can be completed without doing the clearance work.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
-import { agent, signUp, verifySessionMfa } from "./helpers.ts";
+import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 import { allText } from "./pdf-text.ts";
 import {
   createAppPool,
@@ -130,7 +134,7 @@ async function seedOutlet(label: string) {
 
 const FULL_NAME = "Siti Nurhaliza Surat Kerja";
 const JOIN_DATE = "2025-03-01";
-const LAST_DAY = "2034-03-10";
+const LAST_DAY = "2025-06-30";
 
 async function seedEmployee(userId: string | null, outletId: string) {
   const id = randomUUID();
@@ -154,59 +158,72 @@ async function seedEmployee(userId: string | null, outletId: string) {
   return id;
 }
 
-async function seedOffboarding(
-  employeeId: string,
-  status: "open" | "revoked" | "completed" | "cancelled",
-) {
-  const id = randomUUID();
-  createdOffboardings.push(id);
-  const revoked = status === "revoked" || status === "completed";
-  await asTenant((client) =>
-    client.query(
-      `INSERT INTO hris_offboardings
-         (id, tenant_id, employee_id, exit_type, reason, last_working_date, status,
-          access_revoked_at, access_revoked_by, revocation_result,
-          completed_at, completed_by, settlement_snapshot,
-          cancelled_at, cancelled_by, cancel_reason, created_by)
-       VALUES ($1, $2, $3, 'resignation', 'Pindah kota', $4, $5,
-               $6, $7, $8, $9, $10, $11, $12, $13, $14, $7)`,
-      [
-        id,
-        tenant.id,
-        employeeId,
-        LAST_DAY,
-        status,
-        revoked ? new Date() : null,
-        revoked ? "system-test" : "system-test",
-        revoked ? JSON.stringify({ sessionsRevoked: 0 }) : null,
-        status === "completed" ? new Date() : null,
-        status === "completed" ? "system-test" : null,
-        status === "completed" ? JSON.stringify({}) : null,
-        status === "cancelled" ? new Date() : null,
-        status === "cancelled" ? "system-test" : null,
-        status === "cancelled" ? "Batal" : null,
-      ],
-    ),
+const post = (client: Client, path: string, body: unknown) =>
+  client
+    .post(path)
+    .set(originHeader)
+    .send(body as object);
+
+type Started = { id: string; employeeId: string };
+
+/** Real create: the employee leaves on a day long past, so revoke is due. */
+async function startOffboarding(outletId = jkt): Promise<Started> {
+  const employeeId = await seedEmployee(null, outletId);
+  const created = await post(
+    hr,
+    `/api/hris/employees/${employeeId}/offboarding`,
+    {
+      exitType: "resignation",
+      reason: "Pindah kota",
+      lastWorkingDate: LAST_DAY,
+    },
   );
-  return id;
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const id = created.body.data.id as string;
+  createdOffboardings.push(id);
+  return { id, employeeId };
 }
 
-async function setStatus(id: string, status: "revoked" | "completed") {
-  await asTenant((client) =>
-    client.query(
-      `UPDATE hris_offboardings
-          SET status = $2::varchar,
-              access_revoked_at = COALESCE(access_revoked_at, now()),
-              access_revoked_by = COALESCE(access_revoked_by, 'system-test'),
-              revocation_result = COALESCE(revocation_result, '{}'::jsonb),
-              completed_at = CASE WHEN $4::boolean THEN now() END,
-              completed_by = CASE WHEN $4::boolean THEN 'system-test' END,
-              settlement_snapshot = CASE WHEN $4::boolean THEN '{}'::jsonb END
-        WHERE tenant_id = $1 AND id = $3`,
-      [tenant.id, status, id, status === "completed"],
-    ),
+/** Real revoke-access; answers `revoked`. */
+async function revokedOffboarding(outletId = jkt): Promise<Started> {
+  const started = await startOffboarding(outletId);
+  const revoked = await post(
+    hr,
+    `/api/hris/offboardings/${started.id}/revoke-access`,
+    {},
   );
+  expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
+  expect(revoked.body.data.status).toBe("revoked");
+  return started;
 }
+
+/** Real revoke, waive of every open task, complete; answers `completed`. */
+async function completeRevoked(started: Started): Promise<Started> {
+  const listed = await hr.get(
+    `/api/hris/employees/${started.employeeId}/checklist-tasks?limit=100`,
+  );
+  expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+  for (const task of listed.body.data as { id: string; status: string }[]) {
+    if (task.status === "done" || task.status === "waived") continue;
+    const waived = await post(
+      hr,
+      `/api/hris/checklist-tasks/${task.id}/actions`,
+      { action: "waive", reason: "Uji surat keterangan kerja" },
+    );
+    expect(waived.status, JSON.stringify(waived.body)).toBeLessThan(300);
+  }
+  const done = await post(
+    hr,
+    `/api/hris/offboardings/${started.id}/complete`,
+    {},
+  );
+  expect(done.status, JSON.stringify(done.body)).toBe(200);
+  expect(done.body.data.status).toBe("completed");
+  return started;
+}
+
+const completedOffboarding = async (outletId = jkt) =>
+  completeRevoked(await revokedOffboarding(outletId));
 
 async function storedCertificate(id: string) {
   return asTenant(async (client) => {
@@ -271,22 +288,15 @@ let jkt: string;
 let otherOutlet: string;
 let hr: Client;
 let hrOtherOutlet: Client;
-let staffSelf: Client;
-let staffOther: Client;
 let noPermission: Client;
 let supervisor: Client;
-let empSelf: string;
-let empHr: string;
 
 beforeAll(async () => {
   jkt = await seedOutlet("jakarta");
   otherOutlet = await seedOutlet("lain");
 
   const manager = await signedInClient("HR Surat Kerja API", { mfa: true });
-  await grantRole(manager.userId, ["hr.employee.manage"], {
-    kind: "outlet",
-    outletId: jkt,
-  });
+  await grantRole(manager.userId, ["hr.employee.manage"], { kind: "tenant" });
   hr = manager.client;
 
   const managerOther = await signedInClient("HR Outlet Lain Surat API", {
@@ -298,22 +308,6 @@ beforeAll(async () => {
   });
   hrOtherOutlet = managerOther.client;
 
-  const self = await signedInClient("Karyawan Surat Kerja API");
-  await grantRole(self.userId, ["self.profile.view"], {
-    kind: "outlet",
-    outletId: jkt,
-  });
-  staffSelf = self.client;
-  empSelf = await seedEmployee(self.userId, jkt);
-
-  const other = await signedInClient("Karyawan Lain Surat Kerja API");
-  await grantRole(other.userId, ["self.profile.view"], {
-    kind: "outlet",
-    outletId: jkt,
-  });
-  staffOther = other.client;
-  await seedEmployee(other.userId, jkt);
-
   const view = await signedInClient("Supervisor Surat Kerja API");
   await grantRole(view.userId, ["hr.employee.view"], {
     kind: "outlet",
@@ -322,11 +316,19 @@ beforeAll(async () => {
   supervisor = view.client;
 
   noPermission = (await signedInClient("Tanpa Izin Surat Kerja API")).client;
-  empHr = await seedEmployee(null, jkt);
 });
 
 afterAll(async () => {
   await asTenant(async (client) => {
+    await client.query(
+      `DELETE FROM hris_checklist_task_actions WHERE tenant_id = $1 AND task_id IN
+         (SELECT id FROM hris_checklist_tasks WHERE tenant_id = $1 AND employee_id = ANY($2::uuid[]))`,
+      [tenant.id, createdEmployees],
+    );
+    await client.query(
+      "DELETE FROM hris_checklist_tasks WHERE tenant_id = $1 AND employee_id = ANY($2::uuid[])",
+      [tenant.id, createdEmployees],
+    );
     await client.query(
       "DELETE FROM hris_offboardings WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
       [tenant.id, createdOffboardings],
@@ -369,47 +371,44 @@ describe("authentication and permissions", () => {
     expect((await anonymous.get(pdfPath(id))).status).toBe(401);
   });
 
-  it("a user without any HR code is refused and a malformed id is 422", async () => {
-    const id = await seedOffboarding(await seedEmployee(null, jkt), "revoked");
+  it("a user without hr.employee.manage is refused and a malformed id is 422", async () => {
+    const { id } = await revokedOffboarding();
+    expect((await hr.get(certPath(id))).status).toBe(200); // control
     expect((await supervisor.get(certPath(id))).status).toBe(403);
-    expect((await hr.get(certPath("not-a-uuid"))).status).toBe(422);
-    // Control: a profile-only account passes the gate but sees no such row.
+    expect((await supervisor.get(pdfPath(id))).status).toBe(403);
     expect((await noPermission.get(certPath(id))).status).toBe(403);
-    expect((await staffOther.get(certPath(id))).status).toBe(404);
+    expect((await hr.get(certPath("not-a-uuid"))).status).toBe(422);
   });
 
   it("[HR-01] HR of another outlet answers 404, never a hint the row exists", async () => {
-    const id = await seedOffboarding(await seedEmployee(null, jkt), "revoked");
+    const { id } = await revokedOffboarding();
     expect((await hr.get(certPath(id))).status).toBe(200); // control
     expect((await hrOtherOutlet.get(certPath(id))).status).toBe(404);
     expect((await hrOtherOutlet.get(pdfPath(id))).status).toBe(404);
-    expect((await storedCertificate(id)).certificate_no).not.toBeNull();
   });
 });
 
 describe("certificate data", () => {
   it("answers 409 while the offboarding is open and assigns no number", async () => {
-    const id = await seedOffboarding(empHr, "open");
+    const { id } = await startOffboarding();
     const res = await hr.get(certPath(id));
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body.error?.code ?? res.body.code).toBe("CERTIFICATE_NOT_READY");
     expect((await storedCertificate(id)).certificate_no).toBeNull();
-    await asTenant((client) =>
-      client.query("DELETE FROM hris_offboardings WHERE id = $1", [id]),
-    );
   });
 
   it("a cancelled offboarding has no certificate (404)", async () => {
-    const id = await seedOffboarding(
-      await seedEmployee(null, jkt),
-      "cancelled",
-    );
+    const { id } = await startOffboarding();
+    const cancelled = await post(hr, `/api/hris/offboardings/${id}/cancel`, {
+      reason: "Batal pindah",
+    });
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
     expect((await hr.get(certPath(id))).status).toBe(404);
     expect((await storedCertificate(id)).certificate_no).toBeNull();
   });
 
   it("assigns SK/<year>/<4 digits> once; repeats return the same number and date", async () => {
-    const id = await seedOffboarding(await seedEmployee(null, jkt), "revoked");
+    const { id } = await revokedOffboarding();
     const first = await hr.get(certPath(id));
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     const data = first.body.data as Certificate;
@@ -433,8 +432,8 @@ describe("certificate data", () => {
 
   it("numbers of one tenant and year are unique and increase", async () => {
     const ids = [
-      await seedOffboarding(await seedEmployee(null, jkt), "revoked"),
-      await seedOffboarding(await seedEmployee(null, jkt), "revoked"),
+      (await revokedOffboarding()).id,
+      (await revokedOffboarding()).id,
     ];
     const numbers: string[] = [];
     for (const id of ids) {
@@ -447,7 +446,7 @@ describe("certificate data", () => {
   });
 
   it("concurrent first reads end with one number", async () => {
-    const id = await seedOffboarding(await seedEmployee(null, jkt), "revoked");
+    const { id } = await revokedOffboarding();
     const results = await Promise.all(
       [0, 1, 2, 3].map(() => hr.get(certPath(id))),
     );
@@ -460,31 +459,20 @@ describe("certificate data", () => {
     expect(await issuedAuditRows(id)).toBe(1);
   });
 
-  it("[HR-01] the employee reads their own certificate only after completed", async () => {
-    const id = await seedOffboarding(empSelf, "revoked");
-    expect((await staffSelf.get(certPath(id))).status).toBe(404);
-    expect((await getPdf(staffSelf, id)).status).toBe(404);
-    expect((await storedCertificate(id)).certificate_no).toBeNull();
-    // Control: HR can read the same row at this status.
-    const hrRead = await hr.get(certPath(id));
-    expect(hrRead.status).toBe(200);
-
-    await setStatus(id, "completed");
-    const own = await staffSelf.get(certPath(id));
-    expect(own.status, JSON.stringify(own.body)).toBe(200);
-    expect(own.body.data).toEqual(hrRead.body.data);
-    expect((await getPdf(staffSelf, id)).status).toBe(200);
-    // Someone else's completed certificate stays hidden.
-    expect((await staffOther.get(certPath(id))).status).toBe(404);
+  it("the number and date stay the same after the offboarding is completed", async () => {
+    const started = await revokedOffboarding();
+    const beforeDone = await hr.get(certPath(started.id));
+    expect(beforeDone.status).toBe(200);
+    await completeRevoked(started);
+    const afterDone = await hr.get(certPath(started.id));
+    expect(afterDone.status).toBe(200);
+    expect(afterDone.body.data).toEqual(beforeDone.body.data);
   });
 });
 
 describe("certificate PDF", () => {
   it("is a PDF whose text carries the name, number and dates, and is stable", async () => {
-    const id = await seedOffboarding(
-      await seedEmployee(null, jkt),
-      "completed",
-    );
+    const { id } = await completedOffboarding();
     const res = await getPdf(hr, id);
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("application/pdf");
@@ -497,21 +485,23 @@ describe("certificate PDF", () => {
     expect(text).toContain(FULL_NAME);
     expect(text).toContain(cert.certificateNo);
     expect(text).toContain("1 Maret 2025");
-    expect(text).toContain("10 Maret 2034");
+    expect(text).toContain("30 Juni 2025");
     expect(text).toContain("SURAT KETERANGAN KERJA");
 
     const again = await getPdf(hr, id);
     expect(binary(again.body).equals(pdf)).toBe(true);
   });
 
+  it("a revoked offboarding already has a PDF", async () => {
+    const { id } = await revokedOffboarding();
+    expect((await getPdf(hr, id)).status).toBe(200);
+  });
+
   it("[HR-01] open offboarding gives 409 and another outlet's HR gets 404", async () => {
-    const open = await seedOffboarding(await seedEmployee(null, jkt), "open");
-    expect((await getPdf(hr, open)).status).toBe(409);
-    const done = await seedOffboarding(
-      await seedEmployee(null, jkt),
-      "completed",
-    );
-    expect((await getPdf(hrOtherOutlet, done)).status).toBe(404);
+    const open = await startOffboarding();
+    expect((await getPdf(hr, open.id)).status).toBe(409);
+    const revoked = await revokedOffboarding();
+    expect((await getPdf(hrOtherOutlet, revoked.id)).status).toBe(404);
   });
 });
 
@@ -539,10 +529,7 @@ describe("tenant isolation", () => {
                now(), 'system-test', '{}', 'system-test')`,
       [offboardingB, tenantB.tenantId, employeeB, LAST_DAY],
     );
-    const offboardingA = await seedOffboarding(
-      await seedEmployee(null, jkt),
-      "revoked",
-    );
+    const offboardingA = (await revokedOffboarding()).id;
 
     // Control: tenant A reads its own row.
     expect((await hr.get(certPath(offboardingA))).status).toBe(200);

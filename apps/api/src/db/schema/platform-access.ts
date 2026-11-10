@@ -111,9 +111,12 @@ export const roleAssignments = pgTable(
       "role_assignments_scope_check",
       sql`(${table.scopeType} = 'tenant' AND ${table.scopeId} IS NULL) OR (${table.scopeType} IN ('brand', 'outlet', 'station') AND ${table.scopeId} IS NOT NULL)`,
     ),
+    // valid_until is exclusive, so valid_until = valid_from is an empty window
+    // that never grants anything: exit clearance ends a future-dated
+    // assignment this way (legend-ovxw).
     check(
       "role_assignments_window_check",
-      sql`${table.validUntil} IS NULL OR ${table.validUntil} > ${table.validFrom}`,
+      sql`${table.validUntil} IS NULL OR ${table.validUntil} >= ${table.validFrom}`,
     ),
   ],
 );

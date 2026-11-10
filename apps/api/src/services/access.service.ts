@@ -55,7 +55,6 @@ import {
   userIdSchema,
 } from "@starter/shared/core";
 import type { ScopedTenantContext } from "@starter/shared/core";
-import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { ReplaceApprovalMatrixInput } from "@starter/shared/identity";
 import {
   and,
@@ -1186,15 +1185,21 @@ export type OffboardingRoleEndResult = { endedAssignmentIds: string[] };
  * Ends every active or future role assignment of `userId` in this tenant,
  * inside the caller's tenant transaction, for exit clearance
  * (`hris-offboarding.service.ts`; docs/DECISIONS.md "WS-10 lifecycle" §2).
- * The caller has already authorised the offboarding (`hr.employee.manage` on
- * the employee), so `access.role.assign` is not asked here.
+ * The caller has already authorised the offboarding with tenant-wide
+ * `hr.employee.manage`, so `context` is tenant scoped (access events are
+ * tenant-wide and the outbox refuses them under an outlet scope).
  *
  * Takes the same tenant advisory lock as `endRoleAssignment`, before any row
- * lock, so it serialises with grants and other ends. Refuses (409, nothing
- * written) an employee who holds an Owner assignment: the Owner is replaced
- * through the access flow first, never by HR. A future-dated assignment is
- * refused too, because "end" can only shorten a validity window that has
- * started. Each ended row gets the `role_assignment.ended` event and audit
+ * lock, so it serialises with grants and other ends. `now` must be read by the
+ * caller AFTER that lock is held (legend-qr1uv); the lock is re-entrant, so a
+ * caller that took it first keeps one instant for the whole clearance.
+ * Refuses (409, nothing written) an employee who holds an Owner assignment:
+ * the Owner is replaced through the access flow first, never by HR. A
+ * tenant-scoped assignment needs `canAssignRoles` (the caller holds
+ * `access.role.assign` tenant-wide), else 409: HR alone cannot strip a
+ * company-level role. An active row ends at `now`; a future-dated row ends at
+ * its own `valid_from`, an empty window that never grants (`valid_until` is
+ * exclusive). Each ended row gets the `role_assignment.ended` event and audit
  * row, like `endRoleAssignment`. Already ended rows are skipped, so a rerun
  * ends nothing.
  */
@@ -1204,12 +1209,14 @@ export async function endUserRoleAssignmentsForOffboardingInTx(
   userId: string,
   actorUserId: string,
   reason: string,
+  canAssignRoles: boolean,
+  now: Date,
 ): Promise<OffboardingRoleEndResult> {
+  if (context.outletScope.kind !== "tenant")
+    throw new Error("offboarding role end needs a tenant-scoped context");
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
   );
-  // Read after the lock, like endRoleAssignment (legend-qr1uv).
-  const now = new Date();
   const open = await tx
     .select({
       assignment: roleAssignments,
@@ -1241,24 +1248,25 @@ export async function endUserRoleAssignmentsForOffboardingInTx(
       "OFFBOARDING_OWNER",
       "Karyawan ini masih Owner. Ganti Owner lewat pengaturan akses dulu.",
     );
-  if (open.some((row) => row.assignment.validFrom.getTime() > now.getTime()))
+  if (
+    !canAssignRoles &&
+    open.some((row) => row.assignment.scopeType === "tenant")
+  )
     throw new HttpError(
       409,
-      "FUTURE_ASSIGNMENT",
-      "Karyawan ini punya peran yang baru berlaku nanti. Cabut peran itu dulu.",
+      "OFFBOARDING_ADMIN_ROLE",
+      "Karyawan ini punya peran tingkat perusahaan. Minta admin akses mencabutnya.",
     );
-  // Access events are tenant-wide (no outlet), and the outbox refuses them
-  // under an outlet-scoped context. The caller already proved HR reach over
-  // the employee's home outlet, and ending every assignment of a leaver is the
-  // point of exit clearance, so the events go out under the tenant scope.
-  const eventContext = establishScopedTenantContext(context.tenant, {
-    kind: "tenant",
-  });
   const endedAssignmentIds: string[] = [];
   for (const { assignment: current } of open) {
+    // A future-dated row ends at its own start: an empty window. Copied in
+    // SQL, because valid_from keeps microseconds a JS Date would drop.
+    const future = current.validFrom.getTime() > now.getTime();
     const [row] = await tx
       .update(roleAssignments)
-      .set({ validUntil: now })
+      .set({
+        validUntil: future ? sql`${roleAssignments.validFrom}` : now,
+      })
       .where(
         and(
           eq(roleAssignments.tenantId, context.tenant.tenantId),
@@ -1266,7 +1274,8 @@ export async function endUserRoleAssignmentsForOffboardingInTx(
         ),
       )
       .returning();
-    await appendAccessEvent(tx, eventContext, roleAssignmentEndedEvent, {
+    const validUntil = row.validUntil ?? now;
+    await appendAccessEvent(tx, context, roleAssignmentEndedEvent, {
       aggregateId: row.id,
       actorUserId,
       now,
@@ -1274,7 +1283,7 @@ export async function endUserRoleAssignmentsForOffboardingInTx(
         assignmentId: row.id,
         userId: row.userId,
         roleId: row.roleId,
-        validUntil: now.toISOString(),
+        validUntil: validUntil.toISOString(),
         endedBy: actorUserId,
         reason,
       },
@@ -1295,10 +1304,10 @@ export async function endUserRoleAssignmentsForOffboardingInTx(
           roleId: row.roleId,
           validUntil: current.validUntil?.toISOString() ?? null,
         },
-        after: { validUntil: now.toISOString() },
+        after: { validUntil: validUntil.toISOString() },
         sensitiveAccess: false,
       },
-      { tx, context: eventContext },
+      { tx, context },
     );
     endedAssignmentIds.push(row.id);
   }

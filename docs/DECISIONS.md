@@ -27,31 +27,39 @@ an architect consult; tier K (access revocation, money summary).
    service through the employee's home outlet, like `employees`.
 2. **The login account is shared across tenants, so it is never banned.**
    Exit clearance (`POST /api/hris/offboardings/:id/revoke-access`) runs in
-   one tenant transaction, after the last working day only:
+   one tenant transaction, after the last working day only (on the last day
+   itself: 409 `EXIT_NOT_DUE`, the employee still works that shift). It is a
+   tenant-wide action: the caller needs `hr.employee.manage` held tenant-wide
+   (an outlet-scoped HR manager gets 403 `CLEARANCE_NEEDS_TENANT_HR`), so the
+   leaver's role assignments and shifts at every outlet are in reach. Steps:
    1. the tenant role-assignment advisory lock
       (`legend:role-assignment-end:<tenant>`, the key `endRoleAssignment`
-      takes), then the offboarding row `FOR UPDATE`; a row already revoked
-      returns its stored `revocation_result` without writing anything, so a
-      second call equals the first;
-   2. every active role assignment of the employee's user in this tenant is
-      ended with reason `offboarding`, each with the `role_assignment.ended`
-      event and audit row. An employee who holds an Owner assignment is
-      refused (409 `OFFBOARDING_OWNER`): the Owner is replaced through the
-      access flow first. A future-dated assignment is refused too (409
-      `FUTURE_ASSIGNMENT`). The helper is a new function appended to
-      `access.service.ts`; `endRoleAssignment` itself is not touched, because
-      `ws/end-role-assignment-lock` is changing it. The
-      `role_assignment.ended` events and audit rows are written under the
-      tenant scope even when the HR caller is outlet scoped: access events
-      have no outlet, the outbox refuses them under an outlet scope, and the
-      caller's reach was already checked on the employee's home outlet;
-   3. the user's staff sessions of this tenant are revoked (`revoked_at`,
-      expiry moved to creation + 1 ms). Customer sessions, impersonated
-      sessions and other tenants' sessions are left alone;
+      takes), then `now` is read, then the offboarding row `FOR UPDATE`; a
+      row already revoked returns its stored `revocation_result` without
+      writing anything, so a second call equals the first;
+   2. every active or future role assignment of the employee's user in this
+      tenant is ended with reason `offboarding`, each with the
+      `role_assignment.ended` event and audit row. A future assignment gets
+      an empty window (`valid_until = valid_from`, never valid because
+      `valid_until` is exclusive); `role_assignments_window_check` becomes
+      `>=` for that. An employee who holds an Owner assignment is refused
+      (409 `OFFBOARDING_OWNER`): the Owner is replaced through the access flow
+      first. An employee with a tenant-scoped assignment needs a caller who
+      also holds `access.role.assign` tenant-wide (else 409
+      `OFFBOARDING_ADMIN_ROLE`), so HR alone cannot strip an admin. The helper
+      is a new function appended to `access.service.ts`; `endRoleAssignment`
+      itself is not touched, because `ws/end-role-assignment-lock` is changing
+      it;
+   3. the user's staff sessions are revoked (`revoked_at`, expiry moved to
+      creation + 1 ms): non-customer, non-impersonated sessions with this
+      tenant or with no tenant (nothing fills `session.tenant_id` yet). The
+      person signs in again for any other tenant. Customer and impersonated
+      sessions are left alone;
    4. the user's web push subscriptions in this tenant are deleted, so the
       phone stops receiving this tenant's notifications;
-   5. shifts after the last working day that are not cancelled are cancelled
-      through `cancelShiftAssignmentInTx`, split out of
+   5. shifts after the last working day that are not cancelled are locked,
+      re-checked to still belong to the leaver (a swap may have moved them),
+      and cancelled through `cancelShiftAssignmentInTx`, split out of
       `cancelShiftAssignment` without changing it (swap withdrawal,
       `shift.cancelled` event and audit stay);
    6. staff PIN rows are kept. `attemptStaffPin` already answers `not_member`
@@ -76,7 +84,9 @@ an architect consult; tier K (access revocation, money summary).
    submitted review is frozen. An unavailable metric stores null with its
    reason and the reviewer enters a manual actual. `kpiScoreSchema.actual`
    becomes signed and nullable (cash variance can be negative; a draft has no
-   value yet); submit needs a score on every row.
+   value yet); submit needs a score on every row. The system actual of one
+   employee is computed tenant-wide (every outlet the person worked at),
+   whoever refreshes it; the caller still needs reach over the employee.
 4. **The final settlement is a summary of recorded data, not a payment or
    a calculation.** Running salary (last payroll run covering the employee,
    its period end, and the unpaid business days from the day after it up to
@@ -89,8 +99,10 @@ an architect consult; tier K (access revocation, money summary).
    move from the web preview into `packages/shared/src/hris/lifecycle.ts`.
    Completing the offboarding freezes the summary in `settlement_snapshot`.
 5. **Work certificate: render data plus a PDF on the existing pdf-lib
-   pattern** (`purchasing-po-pdf.ts`). Available to HR once access is revoked
-   and to the employee after completion; numbered once per offboarding.
+   pattern** (`purchasing-po-pdf.ts`). Available to HR (`hr.employee.manage`) once
+   access is revoked; numbered once per offboarding. The leaver has no access
+   left after clearance, so HR hands the PDF over; self-service for former
+   employees is legend-arj.7.
 
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 

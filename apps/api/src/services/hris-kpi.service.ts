@@ -53,6 +53,7 @@ import {
   type Decimal4,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { z } from "@starter/shared/core";
 import {
   kpiDefinitionSchema,
@@ -532,9 +533,11 @@ function decimalOf(value: MetricValue): Decimal4 {
 
 /**
  * The value of each system KPI of one employee for one period, read through
- * `evaluateMetrics` (split by employee, filtered to the login account, over
- * the caller's outlet scope). One engine call serves every code. The result
- * has one entry per distinct code.
+ * `evaluateMetrics` (split by employee, filtered to the login account). The
+ * value spans every outlet of the tenant, whatever outlet the caller manages:
+ * the caller already reached this employee, and the filter to the one login
+ * account is what keeps other people's numbers out. One engine call serves
+ * every code. The result has one entry per distinct code.
  */
 export async function computeSystemActuals(
   tx: Tx,
@@ -565,9 +568,20 @@ export async function computeSystemActuals(
     else queryable.push(code);
   }
   if (queryable.length === 0) return result;
+  // `metrics_daily` is outlet-scoped by RLS (`app.outlet_ids`, set by
+  // `withTenant` from the caller's reach), so widen it for this one read and
+  // put it back: later statements in this transaction keep the caller's reach.
+  const tenantWide = establishScopedTenantContext(context.tenant, {
+    kind: "tenant",
+  });
+  const callerOutlets =
+    context.outletScope.kind === "tenant"
+      ? "*"
+      : JSON.stringify(context.outletScope.outletIds);
+  await tx.execute(sql`SELECT set_config('app.outlet_ids', '*', true)`);
   const evaluated = await evaluateMetrics(
     tx,
-    context,
+    tenantWide,
     {
       metricCodes: queryable,
       period: {
@@ -575,13 +589,16 @@ export async function computeSystemActuals(
         end: businessDateSchema.parse(period.end),
       },
       bucket: "total",
-      outletFilter: outletIdsForQuery(context.outletScope),
+      outletFilter: outletIdsForQuery(tenantWide.outletScope),
       groupBy: ["employee"],
       filters: [{ key: "employee", values: [userId] }],
       comparePrevious: false,
       viewer: "full",
     },
     now,
+  );
+  await tx.execute(
+    sql`SELECT set_config('app.outlet_ids', ${callerOutlets}, true)`,
   );
   for (const entry of evaluated.availability) {
     if (entry.status === "unavailable") {
