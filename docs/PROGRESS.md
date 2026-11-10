@@ -878,3 +878,4 @@ Langkah berikut CTO baru:
 - 07:15 Founder: B1 (tanya DOIT) dibatalkan; 3 hal ditangani sendiri di adapter (brief 302).
 - 07:19 G0ymp 290c hadiah/misi/voucher + wa4hp + cap 500 selesai 911846ad (0207), resolve, antre batch44 sesudah ws08-111j. Sisa kecil: legend-xzr10.
 - 07:35 Batch43 masuk m1 8c30c356 (10 cabang, gate hijau: API 8897, root 1821, e2e 18). Batch44 dikirim ke G81x9 (brief 303). Perbaikan 0200 FK inline dan test bank afterAll diterima CTO. MAINTENANCE_DATABASE_URL perlu di worker produksi.
+- 07:48 Founder: retro workflow tiap 5 jam (cron 43 2,7,12,17,22; thread Sonnet, brief ~/.agents/team/retro-brief.md + enam ukuran), harian 10:00 bila 3 retro datar.
