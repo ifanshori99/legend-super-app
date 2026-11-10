@@ -8,6 +8,7 @@ export * from "./ids.ts";
 export * from "./errors.ts";
 export * from "./period-key.ts";
 export * from "./coa.ts";
+export * from "./config-codec.ts";
 export * from "./journal.ts";
 export * from "./period.ts";
 export * from "./banking.ts";
