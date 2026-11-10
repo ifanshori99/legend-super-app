@@ -14,12 +14,18 @@ import { Router } from "express";
 import {
   mfaEnrollSchema,
   mfaFactorParamsSchema,
+  mfaRecoveryVerifySchema,
   mfaVerifySchema,
   sessionParamsSchema,
 } from "@starter/shared/identity";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import {
+  generateMfaRecoveryCodes,
+  getMfaRecoveryStatus,
+  verifyMfaRecoveryCode,
+} from "../services/identity-mfa-recovery.service";
 import {
   deleteMfaFactor,
   enrollMfaFactor,
@@ -96,8 +102,48 @@ identityAuthRouter.delete(
       userId: auth.user.id,
       factorId,
       sessionMfaVerified: await sessionMfaVerified(auth.session.id),
+      sessionId: auth.session.id,
     });
     res.status(204).end();
+  },
+);
+
+identityAuthRouter.get("/mfa/recovery-codes", requireAuth, async (req, res) => {
+  res.json({
+    data: await getMfaRecoveryStatus({ userId: getAuth(req).user.id }),
+  });
+});
+
+identityAuthRouter.post(
+  "/mfa/recovery-codes",
+  requireAuth,
+  requireTrustedOrigin,
+  // No body (the contract defines none), like /sessions/current/activity.
+  async (req, res) => {
+    const auth = getAuth(req);
+    const codes = await generateMfaRecoveryCodes({
+      userId: auth.user.id,
+      sessionId: auth.session.id,
+      sessionMfaVerified: await sessionMfaVerified(auth.session.id),
+    });
+    res.status(201).json({ data: codes });
+  },
+);
+
+identityAuthRouter.post(
+  "/mfa/recovery",
+  requireAuth,
+  requireTrustedOrigin,
+  jsonBody,
+  async (req, res) => {
+    const input = mfaRecoveryVerifySchema.parse(req.body);
+    const auth = getAuth(req);
+    const result = await verifyMfaRecoveryCode({
+      userId: auth.user.id,
+      sessionId: auth.session.id,
+      code: input.code,
+    });
+    res.json({ data: result });
   },
 );
 

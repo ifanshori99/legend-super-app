@@ -394,6 +394,35 @@ export const mfaVerificationResultSchema = z.strictObject({
 });
 export type MfaVerificationResult = z.infer<typeof mfaVerificationResultSchema>;
 
+/** Staff MFA recovery codes: a set of 10 single-use codes per user. */
+export const MFA_RECOVERY_CODE_COUNT = 10;
+/** Crockford base32 (no I, L, O, U), shown as `XXXXX-XXXXX`. */
+export const MFA_RECOVERY_CODE_PATTERN =
+  /^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/;
+
+/** Plaintext codes appear once, in the generate response only. */
+export const mfaRecoveryCodesSchema = z.strictObject({
+  codes: z
+    .array(z.string().regex(MFA_RECOVERY_CODE_PATTERN))
+    .length(MFA_RECOVERY_CODE_COUNT),
+  generatedAt: isoDateTimeSchema,
+});
+export type MfaRecoveryCodes = z.infer<typeof mfaRecoveryCodesSchema>;
+
+export const mfaRecoveryStatusSchema = z.strictObject({
+  remaining: z.number().int().min(0).max(MFA_RECOVERY_CODE_COUNT),
+  generatedAt: isoDateTimeSchema.nullable(),
+});
+export type MfaRecoveryStatus = z.infer<typeof mfaRecoveryStatusSchema>;
+
+export const mfaRecoveryVerificationResultSchema = z.strictObject({
+  verifiedAt: isoDateTimeSchema,
+  remaining: z.number().int().min(0).max(MFA_RECOVERY_CODE_COUNT),
+});
+export type MfaRecoveryVerificationResult = z.infer<
+  typeof mfaRecoveryVerificationResultSchema
+>;
+
 /** Poll result of the requesting browser; the session appears once completed. */
 export const loginChallengeViewSchema = z.strictObject({
   challenge: loginChallengeSchema,

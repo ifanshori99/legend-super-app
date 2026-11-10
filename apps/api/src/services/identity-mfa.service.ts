@@ -14,7 +14,7 @@
 // answers 501 instead of pretending to work (see the report).
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   mfaFactorIdSchema,
   totpEnrollmentSchema,
@@ -30,7 +30,12 @@ import { db } from "../db";
 import { mfaFactors, session } from "../db/schema";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
+import { MAX_MFA_ATTEMPTS, MFA_LOCK_MINUTES } from "../lib/mfa-policy";
 import { openSecret, sealSecret } from "../lib/secrets";
+import {
+  auditRecoveryEvent,
+  revokeMfaRecoveryCodes,
+} from "./identity-mfa-recovery.service";
 import {
   generateTotpSecret,
   totpOtpauthUri,
@@ -41,9 +46,7 @@ import {
 export const MAX_VERIFIED_FACTORS = 5;
 /** PRD is silent; a pending factor cannot be scanned after this window. */
 export const MFA_ENROLLMENT_TTL_MINUTES = 15;
-/** §3 F6 locks a device pin after five misses; the second factor matches it. */
-export const MAX_MFA_ATTEMPTS = 5;
-export const MFA_LOCK_MINUTES = 15;
+export { MAX_MFA_ATTEMPTS, MFA_LOCK_MINUTES };
 
 const mfaLog = logger.child({ module: "identity-mfa" });
 
@@ -320,12 +323,15 @@ export async function verifyMfaCodeForUser(input: {
 }
 
 /** Removes one of the caller's factors. Deleting the last one locks them out
- * of guarded surfaces until they enroll again (fail closed, AUTH-05). */
+ * of guarded surfaces until they enroll again (fail closed, AUTH-05), and
+ * drops their recovery codes: a code must never satisfy MFA with no factor. */
 export async function deleteMfaFactor(input: {
   readonly userId: string;
   readonly factorId: string;
   /** Whether the caller's session already verified a second factor. */
   readonly sessionMfaVerified: boolean;
+  /** The caller's session, to audit a recovery-set revocation on its tenant. */
+  readonly sessionId?: string;
 }): Promise<void> {
   // Step-up (AUTH-05): removing a factor with only a password would let a
   // stolen password strip MFA and enroll a new authenticator.
@@ -333,15 +339,57 @@ export async function deleteMfaFactor(input: {
     const verified = await listMfaFactors(input.userId);
     if (verified.length > 0) throw new AccessError("MFA_REQUIRED");
   }
-  const deleted = await db
-    .delete(mfaFactors)
-    .where(
-      and(
-        eq(mfaFactors.id, input.factorId),
-        eq(mfaFactors.userId, input.userId),
-      ),
-    )
-    .returning({ id: mfaFactors.id });
-  if (!deleted.length)
+  const outcome = await db.transaction(async (tx) => {
+    // Same per-user lock as generateMfaRecoveryCodes: generate-vs-delete and
+    // parallel last-factor deletes serialize, so the set never outlives the
+    // last verified factor.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`mfa-recovery:${input.userId}`}, 0))`,
+    );
+    const deleted = await tx
+      .delete(mfaFactors)
+      .where(
+        and(
+          eq(mfaFactors.id, input.factorId),
+          eq(mfaFactors.userId, input.userId),
+        ),
+      )
+      .returning({ id: mfaFactors.id });
+    if (!deleted.length) return null;
+    const [remaining] = await tx
+      .select({ id: mfaFactors.id })
+      .from(mfaFactors)
+      .where(
+        and(
+          eq(mfaFactors.userId, input.userId),
+          isNotNull(mfaFactors.verifiedAt),
+        ),
+      )
+      .limit(1);
+    if (remaining) return { revokedSetId: null, tenantId: null };
+    const revokedSetId = await revokeMfaRecoveryCodes(tx, {
+      userId: input.userId,
+    });
+    if (revokedSetId === null || input.sessionId === undefined)
+      return { revokedSetId, tenantId: null };
+    const [row] = await tx
+      .select({ tenantId: session.tenantId })
+      .from(session)
+      .where(
+        and(eq(session.id, input.sessionId), eq(session.userId, input.userId)),
+      )
+      .limit(1);
+    return { revokedSetId, tenantId: row?.tenantId ?? null };
+  });
+  if (outcome === null)
     throw new HttpError(404, "NOT_FOUND", "Faktor kedua tidak ditemukan.");
+  // auditRecoveryEvent never throws: a failed audit must not undo a delete.
+  if (outcome.revokedSetId !== null)
+    await auditRecoveryEvent({
+      tenantId: outcome.tenantId,
+      userId: input.userId,
+      setId: outcome.revokedSetId,
+      action: "mfa_recovery_codes.revoked",
+      after: { cause: "last_factor_deleted" },
+    });
 }
