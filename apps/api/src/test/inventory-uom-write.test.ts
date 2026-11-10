@@ -368,6 +368,32 @@ describe("UOM-02 edit a unit", () => {
     expect((await uomRow(created.id))?.name).toBe("Nama Baru");
   });
 
+  it("UOM-01 reserves standard catalog codes even before the tenant is provisioned", async () => {
+    // A tenant whose catalog row is missing (not provisioned or backfilled yet)
+    // must not be able to claim a standard code as a custom unit: provisioning
+    // would then skip it for good and the unit would never become read-only.
+    await owner.query(
+      "DELETE FROM uoms WHERE tenant_id = $1 AND code = 'porsi'",
+      [tenantB],
+    );
+    try {
+      await rejectsWithStatus(
+        createUom(tenantContext(tenantB), managerB, createInput("porsi")),
+        409,
+      );
+      const { rows } = await owner.query(
+        "SELECT 1 FROM uoms WHERE tenant_id = $1 AND code = 'porsi'",
+        [tenantB],
+      );
+      expect(rows).toHaveLength(0);
+    } finally {
+      const scopeB = tenantContext(tenantB);
+      await withTenant(db, scopeB, (tx) =>
+        provisionStandardUoms(tx, scopeB, null),
+      );
+    }
+  });
+
   it("UOM-02 refuses to edit a system unit and leaves the row unchanged", async () => {
     const before = await uomRow(systemKgB);
     expect(before?.is_system).toBe(true);

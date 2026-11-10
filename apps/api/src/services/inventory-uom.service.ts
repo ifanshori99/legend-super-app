@@ -9,6 +9,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
 import {
+  STANDARD_UOM_CATALOG,
   uomSchema,
   type createUomInputSchema,
   type updateUomInputSchema,
@@ -87,6 +88,15 @@ export async function createUom(
       return toUom(first);
     }
     await lockTenantUoms(tx, context.tenant.tenantId);
+    // Standard codes are reserved: a tenant not provisioned yet must not claim
+    // one as a custom unit, or provisioning would skip it and it would never
+    // become read-only.
+    if (STANDARD_UOM_CATALOG.some((standard) => standard.code === input.code))
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "That code is reserved for a standard unit.",
+      );
     const [clash] = await tx
       .select({ id: uoms.id })
       .from(uoms)
