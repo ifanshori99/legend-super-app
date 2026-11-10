@@ -232,7 +232,7 @@ describe("legend-pxcs finance policy (ACC-04 tolerance, ACC-05 batas hari)", () 
       `SELECT event FROM audit_logs
         WHERE tenant_id = $1 AND event->>'action' = 'accounting.finance_policy.updated'
           AND event->>'objectId' = $1::text
-        ORDER BY created_at DESC`,
+        ORDER BY event->>'createdAt' DESC, id DESC`,
       [tenantId],
     );
     expect(audit.rowCount).toBe(3);

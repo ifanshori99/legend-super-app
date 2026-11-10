@@ -275,7 +275,7 @@ describe("F5 enrollment replay (security review)", () => {
         `SELECT event FROM audit_logs
          WHERE tenant_id = $1 AND event->>'objectId' = $2
            AND event->>'action' = 'device.enrolled'
-         ORDER BY created_at, id`,
+         ORDER BY event->>'createdAt', id`,
         [tenantId, deviceId],
       )
     ).rows;

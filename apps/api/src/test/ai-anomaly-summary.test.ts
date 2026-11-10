@@ -346,7 +346,7 @@ async function insightEvents(tenant: TestTenant, name: string) {
     const result = await client.query<{ event: Record<string, unknown> }>(
       `SELECT event FROM domain_event_outbox
         WHERE tenant_id = $1 AND destination = 'notification' AND event ->> 'name' = $2
-        ORDER BY created_at`,
+        ORDER BY aggregate_id, sequence, id`,
       [tenant.id, name],
     );
     return result.rows.map((row) => row.event);

@@ -612,7 +612,10 @@ describe.each(gatewayModes)(
       expect(await outboxRows(id)).toHaveLength(2);
       // The second audit records the earlier escalation it follows. Assumption:
       // `before` carries the previous `escalatedAt` (the brief asks for a trail).
-      const secondAudit = (await audits(id))[1]!;
+      // Found by its `before`, not by position: created_at can tie or step back.
+      const secondAudit = (await audits(id)).find(
+        (row) => row.before?.escalatedAt != null,
+      )!;
       expect(secondAudit.before).toHaveProperty("escalatedAt");
       expect(secondAudit.before?.escalatedAt).not.toBeNull();
       expect(secondAudit.after).toMatchObject({
@@ -1061,9 +1064,11 @@ describe.each(gatewayModes)(
       expect(row.payout_stall_detected_at).toBeNull();
       const auditRows = await audits(id);
       expect(auditRows).toHaveLength(2);
-      expect(auditRows[1]!.before).toHaveProperty("escalatedAt");
-      expect(auditRows[1]!.before?.escalatedAt).not.toBeNull();
-      expect(auditRows[1]!.after).toMatchObject({
+      // Found by its `before`, not by position: created_at can tie or step back.
+      const followUp = auditRows.find((row) => row.before?.escalatedAt != null)!;
+      expect(followUp.before).toHaveProperty("escalatedAt");
+      expect(followUp.before?.escalatedAt).not.toBeNull();
+      expect(followUp.after).toMatchObject({
         escalationReason: "provider_pending",
       });
       expect(await outboxRows(id)).toHaveLength(2);

@@ -887,6 +887,7 @@ describe("§3.19 HPP (COGS) of sales posts to the GL", () => {
     expect((await deliverRow(coffeeRow)).status).toBe("posted");
     let entries = await journalsOf(world, orderId);
     expect(entries).toHaveLength(1);
+    const saleEntryId = entries[0]!.id;
     // 3 x 1500 + 2 x 2000 = 8500 cost of goods sold.
     const saleLines = await linesOf(world, entries[0]!.id);
     expect(saleLines).toEqual([
@@ -911,14 +912,16 @@ describe("§3.19 HPP (COGS) of sales posts to the GL", () => {
 
     entries = await journalsOf(world, orderId);
     expect(entries).toHaveLength(2);
-    const returnLines = await linesOf(world, entries[1]!.id);
+    // By id, not created_at order: that default follows the DB clock.
+    const returnEntry = entries.find((entry) => entry.id !== saleEntryId)!;
+    const returnLines = await linesOf(world, returnEntry.id);
     expect(returnLines).toEqual([
       { role: "cogs", debit: 0, credit: 1500 },
       { role: "inventory", debit: 1500, credit: 0 },
     ]);
     expectNoNegativeAmounts(returnLines);
     // The first journal is untouched (append-only).
-    expect(await linesOf(world, entries[0]!.id)).toEqual(saleLines);
+    expect(await linesOf(world, saleEntryId)).toEqual(saleLines);
   });
 });
 

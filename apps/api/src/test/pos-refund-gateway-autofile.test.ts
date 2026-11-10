@@ -473,9 +473,12 @@ describe("legend-ghgei P3 a POS refund of a QRIS sale files the gateway refund r
     const second = await posRefund(sale, await refundInput(sale, 30_000));
     expect(second.amountIdr).toBe(30_000);
     const rows = await refundRows(sale.intentId);
-    expect(rows.map((r) => [r.status, r.amount, r.requested_by])).toEqual([
-      ["pending", "40000", "system:pos"],
+    // Sorted: created_at can tie or step back, the set of refunds is the point.
+    expect(
+      rows.map((r) => [r.status, r.amount, r.requested_by]).sort(),
+    ).toEqual([
       ["pending", "30000", "system:pos"],
+      ["pending", "40000", "system:pos"],
     ]);
   });
 

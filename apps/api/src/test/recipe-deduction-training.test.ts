@@ -450,7 +450,7 @@ type LedgerRow = { movement_type: string; quantity: string };
 async function orderLedger(order: { uuid: string }): Promise<LedgerRow[]> {
   const { rows } = await owner.query<LedgerRow>(
     `SELECT movement_type, quantity::text AS quantity FROM stock_ledger
-      WHERE tenant_id = $1 AND source_id = $2 ORDER BY occurred_at, id`,
+      WHERE tenant_id = $1 AND source_id = $2 ORDER BY posting_seq`,
     [tenantA, order.uuid],
   );
   return rows;

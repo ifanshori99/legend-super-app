@@ -820,11 +820,12 @@ describe("POS-03 cash in, cash out and drops", () => {
     expect((await movementRows(shift.id)).map((r) => r.needs_approval)).toEqual(
       [true, true, false],
     );
-    expect(await outboxNames(shift.id)).toEqual([
+    // Sorted: created_at can tie or step back, the set of events is the point.
+    expect((await outboxNames(shift.id)).sort()).toEqual([
+      "cash_movement.recorded",
+      "cash_movement.recorded",
+      "cash_movement.recorded",
       "cashier_shift.opened",
-      "cash_movement.recorded",
-      "cash_movement.recorded",
-      "cash_movement.recorded",
     ]);
     // The expected cash is never negative: the exact drop leaves an empty drawer.
     // Round 2: counted - expected + held is not 0 while cash is held, so the
@@ -2064,8 +2065,8 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
     // The cashier (requester) never reads the value back: blind count.
     expect(override.valueIdr).toBeNull();
     const { rows } = await owner.query<{ value: number }>(
-      "SELECT value_idr::int AS value FROM pos_overrides WHERE tenant_id = $1 AND object_id = $2 AND method = 'supervisor_pin' ORDER BY created_at DESC LIMIT 1",
-      [tenant.tenantId, big.id],
+      "SELECT value_idr::int AS value FROM pos_overrides WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, ulidToUuid(override.id)],
     );
     expect(rows[0]?.value).toBe(1_000_000);
 

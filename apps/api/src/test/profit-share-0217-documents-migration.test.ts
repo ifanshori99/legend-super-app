@@ -230,17 +230,24 @@ describe("0217_profit_share on a database that already holds shareholder documen
     const docs = await scratch.query(
       `SELECT file_key, profit_entity_id FROM shareholder_documents ORDER BY created_at`,
     );
-    expect(docs.rows).toEqual([
-      { file_key: randomFileKey, profit_entity_id: randomLegacyId },
-      { file_key: outletFileKey, profit_entity_id: outletId },
-    ]);
+    // Order-insensitive: rows seeded back to back share a created_at window.
+    expect(docs.rows).toHaveLength(2);
+    expect(docs.rows).toEqual(
+      expect.arrayContaining([
+        { file_key: randomFileKey, profit_entity_id: randomLegacyId },
+        { file_key: outletFileKey, profit_entity_id: outletId },
+      ]),
+    );
     const files = await scratch.query(
       `SELECT file_key, profit_entity_id FROM shareholder_document_files ORDER BY created_at`,
     );
-    expect(files.rows).toEqual([
-      { file_key: randomFileKey, profit_entity_id: randomLegacyId },
-      { file_key: outletFileKey, profit_entity_id: outletId },
-    ]);
+    expect(files.rows).toHaveLength(2);
+    expect(files.rows).toEqual(
+      expect.arrayContaining([
+        { file_key: randomFileKey, profit_entity_id: randomLegacyId },
+        { file_key: outletFileKey, profit_entity_id: outletId },
+      ]),
+    );
   });
 
   it("backfills a profit entity per legacy id, keeping the id", async () => {
