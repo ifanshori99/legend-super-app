@@ -43,6 +43,7 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { logger } from "../lib/logger";
 import {
   applyGatewayFailure,
   confirmPayment,
@@ -190,15 +191,21 @@ async function askStatus(
 ): Promise<
   | { kind: "answer"; answer: DuitkuTransactionStatus }
   | { kind: "mismatch" }
+  | { kind: "no_reference" }
   | { kind: "error"; error: unknown }
 > {
-  // A transient error outranks a mismatch: if any call errored and none
-  // matched, report the error so the row is retried, not ignored.
-  let result: { kind: "mismatch" } | { kind: "error"; error: unknown } = {
+  // Nothing was confirmed, so nothing is closed. Precedence among the
+  // failures: a transient error, then a missing reference (Duitku may not
+  // have one to give yet), then a real mismatch. Only the last is final.
+  let result:
+    | { kind: "mismatch" }
+    | { kind: "no_reference" }
+    | { kind: "error"; error: unknown } = {
     kind: "error",
     error: new CoreError("SERVICE_UNAVAILABLE", "Duitku status unavailable."),
   };
   let errored = false;
+  let missing = false;
   for (const creds of credentials) {
     try {
       const answer = await duitkuTransactionStatus({
@@ -206,8 +213,13 @@ async function askStatus(
         merchantOrderId: intent.id,
         fetch: fetchImpl,
       });
+      if (answer.reference === null) {
+        missing = true;
+        if (!errored) result = { kind: "no_reference" };
+        continue;
+      }
       if (answer.reference !== intent.providerRef) {
-        if (!errored) result = { kind: "mismatch" };
+        if (!errored && !missing) result = { kind: "mismatch" };
         continue;
       }
       return { kind: "answer", answer };
@@ -323,31 +335,50 @@ async function processStoredCallback(
     // resultCode is unsigned: the status answer is the only truth.
     const asked = await askStatus(intent, credentials, fetchImpl);
     if (asked.kind !== "answer") {
-      const mismatch = asked.kind === "mismatch";
+      // Not one of these closes the row: the worker asks again until the
+      // retry window ends, and no money moves. A missing reference is only
+      // early. A different one is a payment under another reference (a
+      // reused order id or a second payment): it stays `failed` with its own
+      // code so it shows up for review instead of being ignored silently.
+      if (asked.kind === "mismatch")
+        logger.warn(
+          { paymentIntentId: intent.id, webhookEventId: row.id },
+          "Duitku status reference differs from the stored one; held for review",
+        );
       await markRow(
         context,
         row.id,
-        mismatch
-          ? {
-              status: "ignored",
-              lastErrorCode: "REFERENCE_MISMATCH",
-              processedAt: now,
-              ...bound,
-            }
-          : {
-              status: "failed",
-              lastErrorCode: errorCodeOf(asked.error),
-              ...bound,
-            },
+        {
+          status: "failed",
+          lastErrorCode:
+            asked.kind === "mismatch"
+              ? "REFERENCE_MISMATCH"
+              : asked.kind === "no_reference"
+                ? "REFERENCE_PENDING"
+                : errorCodeOf(asked.error),
+          ...bound,
+        },
         now,
       );
-      return mismatch ? "ignored" : "failed";
+      return "failed";
     }
     const { answer } = asked;
     let outcome: ProcessOutcome = "processed";
     let code: string | null = null;
     if (answer.status === "paid") {
-      const at = plausiblePaidAt(null, intent.createdAt, now);
+      // Duitku gives no paid time. A still-open intent was paid no later than
+      // the first receipt, so a worker retry hours later must not push paidAt
+      // past the bill's expiry or into the next business day (a false
+      // late_payment). A closed intent (failed or expired) was paid after it
+      // closed, and its row may be an older failure callback that shares this
+      // event key, so it keeps `now`.
+      const at = plausiblePaidAt(
+        null,
+        intent.createdAt,
+        intent.status === "pending" && row.receivedAt.getTime() < now.getTime()
+          ? row.receivedAt
+          : now,
+      );
       // Money settles only when the signed callback amount, Duitku's status
       // amount and the bill agree. Any difference (over or under, by even one
       // rupiah) is parked for reconciliation; the intent stays unpaid.

@@ -79,7 +79,11 @@ function contextFor(source: "session" | "webhook"): ScopedTenantContext {
 // ---------------------------------------------------------------------------
 
 type StatusAnswer =
-  | { statusCode: "00" | "01" | "02"; reference: string; amount: string }
+  | {
+      statusCode: "00" | "01" | "02";
+      reference: string | null;
+      amount: string;
+    }
   | "error";
 /** Answer per merchantOrderId and merchantCode that asks. */
 const statusAnswers = new Map<string, StatusAnswer>();
@@ -589,7 +593,7 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     expect(response.status).toBe(200);
     await expectUntouched(bill);
     expect((await rowsFor(bill.intentId))[0]).toMatchObject({
-      status: "ignored",
+      status: "failed",
       last_error_code: "REFERENCE_MISMATCH",
     });
   });
@@ -1255,6 +1259,117 @@ describe("Codex P2 a late payment settles only an open bill", () => {
     expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
     // Settles as today; the order flow refunds a voided order's payment.
     await expectPaidOnce(bill);
+  });
+});
+
+describe("legend-s5jup D1 a worker retry keeps the first receipt time as paidAt", () => {
+  it("a callback received before expiry and settled by a retry after expiry is not flagged late_payment", async () => {
+    // Open for another 30 minutes when the callback arrives; Duitku is still
+    // pending, so the worker settles it two hours later.
+    const bill = await openIntent({
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+    });
+    setAnswer(bill.intentId, {
+      statusCode: "01",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+    expect(await rowsFor(bill.intentId)).toMatchObject([
+      { status: "failed", last_error_code: "PENDING_AT_PROVIDER" },
+    ]);
+
+    setAnswer(bill.intentId, paid(bill.reference));
+    await reprocessDuitkuWebhookEvents(
+      contextFor("webhook"),
+      new Date(Date.now() + 2 * 3_600_000),
+    );
+
+    await expectPaidOnce(bill);
+    expect((await intentRow(bill.intentId)).flags).not.toContain(
+      "late_payment",
+    );
+    const { rows } = await owner.query<{ paid_at: Date; received_at: Date }>(
+      `SELECT i.paid_at, e.received_at
+       FROM payment_intents i
+       JOIN gateway_webhook_events e ON e.payment_intent_id = i.id
+       WHERE i.id = $1`,
+      [bill.intentId],
+    );
+    expect(rows[0]!.paid_at.getTime()).toBe(rows[0]!.received_at.getTime());
+  });
+});
+
+describe("legend-s5jup D1 a payment after a failure callback is not back-dated to it", () => {
+  it("a failure callback, then a paid replay on the same event key hours later, keeps paidAt at the payment time", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, {
+      statusCode: "02",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
+    // The failure callback arrived three hours ago.
+    await owner.query(
+      `UPDATE gateway_webhook_events
+         SET received_at = now() - interval '3 hours',
+             updated_at = now() - interval '3 hours'
+       WHERE tenant_id = $1 AND provider = 'duitku' AND payment_intent_id = $2`,
+      [tenantA, bill.intentId],
+    );
+
+    setAnswer(bill.intentId, paid(bill.reference));
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+    await expectPaidOnce(bill);
+    expect((await intentRow(bill.intentId)).flags).toContain("late_payment");
+    const { rows } = await owner.query<{ age_seconds: string }>(
+      "SELECT extract(epoch FROM now() - paid_at)::text AS age_seconds FROM payment_intents WHERE id = $1",
+      [bill.intentId],
+    );
+    expect(Number(rows[0]!.age_seconds)).toBeLessThan(120);
+  });
+});
+
+describe("legend-s5jup D2 a missing or different status reference is not closed for good", () => {
+  it("a status answer without a reference keeps the row failed for the worker, which settles it once the reference arrives", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, {
+      statusCode: "00",
+      reference: null,
+      amount: String(BILL_TOTAL),
+    });
+
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+    await expectUntouched(bill);
+    expect(await rowsFor(bill.intentId)).toMatchObject([
+      { status: "failed", last_error_code: "REFERENCE_PENDING" },
+    ]);
+
+    setAnswer(bill.intentId, paid(bill.reference));
+    await reprocessDuitkuWebhookEvents(
+      contextFor("webhook"),
+      new Date(Date.now() + 10 * 60_000),
+    );
+    await expectPaidOnce(bill);
+    expect((await rowsFor(bill.intentId))[0]?.status).toBe("processed");
+  });
+
+  it("a really different reference is held for review: no money moves and the row is not closed", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, paid("SOMEONE-ELSES-REF"));
+
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+    await expectUntouched(bill);
+    expect(await evidenceCount(bill.intentId)).toBe(0);
+    expect(await unallocatedCount(bill.intentId)).toBe(0);
+    const [row] = await rowsFor(bill.intentId);
+    expect(row).toMatchObject({
+      status: "failed",
+      last_error_code: "REFERENCE_MISMATCH",
+    });
   });
 });
 
