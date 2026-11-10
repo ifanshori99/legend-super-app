@@ -1026,3 +1026,4 @@ Langkah berikut CTO baru:
   - G0a8q (33im6) diberi tahu: profit share kini 0217 di m1, merge m1 dulu, edit 0217 di tempat (belum rilis).
 - Batch48 berikutnya (tunggu RAM): j6cyb/bod, u7g9w, ideif, jmsdx, arch-357, tct8, i83ls-fix 88ce89d2, omp4, ie6m, kxoyf, n1mp, udu47+ec6fa, r3i8w (setelah powk0), aruta 0fb10745. Perhatikan `when` 0242/0243/0245 di bawah 0244.
 - 20:50 mulai G6wwy ptn11 (381 sonnet) dan G2lh5 sp9vq (384 sonnet). Antre: w5by9 (expiry FIFO, opus), 8docm, batch48 merge train.
+- 20:58 G8go1 ec6fa: 19ee5aaf (lock shared/exclusive per order; Codex 380 P1#1 tertutup; 98/98). Keputusan CTO: P1#2 opsi A (paymentId wajib saat ambil token klaim); P2 by design (24 jam sejak bayar, PRD F609 + founder Q75).
