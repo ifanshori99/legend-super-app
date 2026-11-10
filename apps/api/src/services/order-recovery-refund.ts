@@ -17,9 +17,20 @@
 // - QR pay-first sale: the refund also appends `order.refunded` (the journal
 //   reverses the line's revenue) and the sale's hold on the intent shrinks by
 //   the refund. Open bill: a plain intent refund, the bill is not a sale yet.
+// - Promo order (legend-h1dyy): the CRM promo port re-prices the order
+//   without the failed line (founder Q41/Q19), so a free item pays Rp0 and a
+//   line that drops the bill below the promo condition pays what the guest
+//   paid minus what the kept goods now cost. The port runs after the intent
+//   lock (issue -> order -> intent -> promo; the refund graph that rejects a
+//   refund also holds the intent before the promo, and the QR paths that take
+//   the promo lock - checkout redeem, unpaid void - hold no intent lock). The
+//   goods payout goes on the promo ledger once the refund row is filed. A
+//   failed item was never delivered, whatever happened to its refund, so the
+//   kept lines leave out the item of every manual_refund issue of the order,
+//   and a rejected refund keeps its promo payout (the money is not owed).
 // Events of another tenant or outlet, and every other event, are ignored.
 
-import { and, eq, gte, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -42,8 +53,16 @@ import { posOrders } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
-import { OrderRevenueMismatch } from "./order-revenue.ts";
-import { recoveryRefundSplit } from "./order-recovery-refund-amount.ts";
+import { HttpError } from "../lib/http-error.ts";
+import {
+  livePromoApplicationOf,
+  orderPromoPartialRefundPort,
+} from "./order-promo-refund.ts";
+import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
+import {
+  recoveryRefundSplit,
+  type RecoveryRefundPromo,
+} from "./order-recovery-refund-amount.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
@@ -313,12 +332,19 @@ export async function deliverOrderRecoveryRefundEvent(
   // qrSaleInUseOfIntent). A line can be reported again after a rejection
   // (order_issues.refund_rejected_at, legend-wumm8); any other settled issue
   // of the line still blocks a second one (order_issues_resolved_item_once_idx).
+  // The same issues give the line totals already refunded (`priorLinesIdr`,
+  // cumulative rounding).
   const releasedResult = await tx.execute(sql`
-    SELECT coalesce(sum(m.amt), 0)::text AS released FROM (
-      SELECT max(r.amount_idr) AS amt
+    SELECT coalesce(sum(m.amt), 0)::text AS released,
+           coalesce(sum(m.line_total), 0)::text AS prior_lines
+      FROM (
+      SELECT max(r.amount_idr) AS amt,
+             max(oi.line_total_idr) AS line_total
         FROM payment_refunds r
         JOIN order_issues i
           ON i.tenant_id = r.tenant_id AND i.id = r.order_issue_id
+        LEFT JOIN order_items oi
+          ON oi.tenant_id = i.tenant_id AND oi.id = i.order_item_id
        WHERE r.tenant_id = ${tenantId}
          AND i.order_id = ${orderUuid}::uuid
          AND r.order_issue_id <> ${issue.id}::uuid
@@ -327,7 +353,9 @@ export async function deliverOrderRecoveryRefundEvent(
         bool_or(r.status = 'failed' AND r.failure_reason = 'rejected'),
         false)) m
   `);
-  let releasedIdr = Number(String(releasedResult.rows[0]?.released ?? "0"));
+  const released = releasedResult.rows[0];
+  let releasedIdr = Number(String(released?.released ?? "0"));
+  const priorLinesIdr = Number(String(released?.prior_lines ?? "0"));
   if (!payFirst) {
     // 6. Open bill: the intent's own cap bounds the refund, whatever else the
     // bill holds. Reading the room as released money makes the split cut to it.
@@ -340,11 +368,184 @@ export async function deliverOrderRecoveryRefundEvent(
   }
 
   let split: ReturnType<typeof recoveryRefundSplit>;
+  let promo: RecoveryRefundPromo | undefined;
   try {
+    // Order amounts that fail their tax-mode identity are refused before the
+    // promo port changes anything.
+    orderRevenueSplit(order);
+    // A live promo: the port re-prices the order without the failed lines
+    // (founder Q41/Q19). It records no payout here (`deferPayout`): the
+    // refund records what it files below.
+    if (await livePromoApplicationOf(tx, context, order.id)) {
+      const issues = await tx
+        .select({
+          id: orderIssues.id,
+          orderItemId: orderIssues.orderItemId,
+          replacementOrderItemId: orderIssues.replacementOrderItemId,
+          status: orderIssues.status,
+          resolution: orderIssues.resolution,
+        })
+        .from(orderIssues)
+        .where(
+          and(
+            eq(orderIssues.tenantId, tenantId),
+            eq(orderIssues.orderId, order.id),
+          ),
+        );
+      const items = await tx
+        .select({
+          id: orderItems.id,
+          menuItemId: orderItems.menuItemId,
+          quantity: orderItems.quantity,
+          unitPriceIdr: orderItems.unitPriceIdr,
+          modifiersTotalIdr: orderItems.modifiersTotalIdr,
+          status: orderItems.status,
+        })
+        .from(orderItems)
+        .where(
+          and(
+            eq(orderItems.tenantId, tenantId),
+            eq(orderItems.orderId, order.id),
+          ),
+        )
+        .orderBy(orderItems.id);
+      // The promo was priced on the checkout lines: a swap (legend-zm1e6)
+      // voids the original line and adds a replacement at the swap price, so
+      // the original stands for both and the replacement is left out. A
+      // failed replacement maps back to its original.
+      const originalOf = new Map<string, string>();
+      for (const row of issues)
+        if (row.replacementOrderItemId !== null)
+          originalOf.set(row.replacementOrderItemId, row.orderItemId);
+      const toOriginal = (itemId: string) => {
+        let id = itemId;
+        for (let hop = 0; hop <= issues.length; hop++) {
+          const original = originalOf.get(id);
+          if (original === undefined) break;
+          id = original;
+        }
+        return id;
+      };
+      const swappedOriginals = new Set(originalOf.values());
+      // A failed item was never delivered, whatever happened to its refund
+      // (nothing_left, rejected, ...): the item of every other manual_refund
+      // issue this consumer already processed is out of the kept lines, this
+      // one included. Processed = it has a refund row (any status) or a
+      // `refund_blocked` audit row for nothing_left (its recompute ran). A
+      // promo_state_mismatch issue is not: its recompute never ran, so the
+      // promo still holds its line and a later refund must not pay it. An
+      // issue whose event has not run yet keeps its item here: its own event
+      // refunds it later (two items resolved before either event runs).
+      const others = issues
+        .filter(
+          (row) =>
+            row.id !== issue.id &&
+            row.status === "resolved" &&
+            row.resolution === "manual_refund",
+        )
+        .map((row) => row.id);
+      const processed = new Set<string>();
+      if (others.length > 0) {
+        const refunded = await tx
+          .selectDistinct({ id: paymentRefunds.orderIssueId })
+          .from(paymentRefunds)
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, tenantId),
+              inArray(paymentRefunds.orderIssueId, others),
+            ),
+          );
+        for (const row of refunded) if (row.id !== null) processed.add(row.id);
+        const blockedIssues = await tx
+          .select({ id: sql<string>`${auditLogs.event}->>'objectId'` })
+          .from(auditLogs)
+          .where(
+            and(
+              eq(auditLogs.tenantId, tenantId),
+              // Written after the order existed: bounds the scan.
+              gte(auditLogs.createdAt, order.createdAt),
+              sql`${auditLogs.event}->>'action' = ${AUDIT_BLOCKED}`,
+              sql`${auditLogs.event}->>'objectId' IN (${sql.join(
+                others.map((id) => sql`${id}`),
+                sql`, `,
+              )})`,
+              sql`${auditLogs.event}->'maskedChanges'->'after'->>'blockedReason' = 'nothing_left'`,
+            ),
+          );
+        for (const row of blockedIssues) processed.add(row.id);
+      }
+      const failed = new Set<string>([toOriginal(line.id)]);
+      for (const row of issues)
+        if (processed.has(row.id)) failed.add(toOriginal(row.orderItemId));
+      // Kept lines priced as at checkout (`toPromoLines`, order-promo.ts):
+      // unit = item or variant price + modifiers.
+      const keptLines = items
+        .filter(
+          (item) =>
+            !originalOf.has(item.id) &&
+            (item.status !== "voided" || swappedOriginals.has(item.id)) &&
+            !failed.has(item.id),
+        )
+        .map((item) => {
+          const unitPriceIdr = item.unitPriceIdr + item.modifiersTotalIdr;
+          return {
+            menuItemId: item.menuItemId,
+            quantity: item.quantity,
+            unitPriceIdr: idr(unitPriceIdr),
+            lineTotalIdr: idr(unitPriceIdr * item.quantity),
+          };
+        });
+      let recomputed: Awaited<
+        ReturnType<
+          typeof orderPromoPartialRefundPort.recomputeAfterPartialRefund
+        >
+      >;
+      try {
+        recomputed =
+          await orderPromoPartialRefundPort.recomputeAfterPartialRefund(
+            tx,
+            context,
+            {
+              orderId: order.id,
+              keptLines,
+              reason: REFUND_REASON,
+              actorUserId,
+              at,
+              deferPayout: true,
+            },
+          );
+      } catch (error) {
+        // A void released the promo in between: a retry cannot fix it.
+        if (
+          error instanceof HttpError &&
+          error.status === 409 &&
+          error.code === "PROMO_APPLICATION_RELEASED"
+        ) {
+          await blocked("promo_released");
+          return;
+        }
+        // The kept lines do not fit the promo ledger (e.g. more than it
+        // still stands): a retry gives the same answer, so the event must
+        // not loop. A person looks at the audit row.
+        if (error instanceof HttpError && error.status === 422) {
+          await blocked("promo_state_mismatch");
+          return;
+        }
+        throw error;
+      }
+      if (recomputed.adjusted)
+        promo = {
+          refundedSubtotalIdr: recomputed.refundedSubtotalIdr,
+          goodsDueIdr: recomputed.refundDueIdr,
+          remainingPaidIdr: recomputed.remainingPaidIdr,
+        };
+    }
     split = recoveryRefundSplit({
       order,
       lineTotalIdr: line.lineTotalIdr,
+      priorLinesIdr,
       releasedIdr,
+      ...(promo === undefined ? {} : { promo }),
     });
   } catch (error) {
     // Order amounts that fail their tax-mode identity: a retry cannot fix them.
@@ -367,6 +568,8 @@ export async function deliverOrderRecoveryRefundEvent(
       },
       "Refund item gagal dipotong sisa yang bisa dikembalikan",
     );
+  // A promo order with nothing due (a returned free item) ends here too: the
+  // promo recompute above stays, the item really failed.
   if (split.amountIdr <= 0) {
     await blocked("nothing_left");
     return;
@@ -427,6 +630,20 @@ export async function deliverOrderRecoveryRefundEvent(
         amountIdr: split.amountIdr,
         at,
       });
+      // The goods part of the refund goes on the promo ledger, on its
+      // item-price basis (`goodsIdr`: tax included for inclusive prices).
+      // Only after a recompute that adjusted the promo (never a released
+      // application, which the recompute refuses).
+      const promoRecordedIdr =
+        promo === undefined
+          ? 0
+          : (
+              await orderPromoPartialRefundPort.recordPartialRefundPayout(
+                tx,
+                context,
+                { orderId: order.id, payoutIdr: split.goodsIdr, at },
+              )
+            ).recordedIdr;
       await audit(
         AUDIT_REQUESTED,
         {
@@ -443,6 +660,7 @@ export async function deliverOrderRecoveryRefundEvent(
         refundId: row.id as string | null,
         resolvedBy: actorUserId,
         approvedBy: payload.data.approvedBy,
+        promoRecordedIdr,
       };
     },
   );
@@ -721,6 +939,9 @@ export async function refileRecoveryRefundAfterFailure(
       issueId,
       now,
     );
+    // legend-h1dyy: the promo payout this refund recorded stays on the promo
+    // ledger. The approver decided the money is not owed, so a later refund
+    // of this order must not pay it (the item stays out of the kept lines).
     return;
   }
   if (

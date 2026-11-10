@@ -9,6 +9,10 @@
 // - `order.refunded` / `order.voided` (final order): reverse the earn
 //   proportionally (refund, rounds against the member) or fully (void),
 //   clamped to the balance; the unreversed rest is kept as a shortfall.
+// - `order_issue.refund_reversal_requested` (legend-h1dyy, ORD-09): the
+//   payment module rejected a QR pay-first recovery refund, so the points and
+//   eligible spend its `order.refunded` (refundId = issue id) took are given
+//   back once (`adjust` row, record and profile counters restored).
 // - `payment.refunded` is not handled: it carries no order id. A QR order has
 //   no refund path today (§1); a later card must emit `order.refunded`.
 //
@@ -30,10 +34,12 @@ import { withProfileLock } from "../db/member-scope.ts";
 import {
   customerProfiles,
   customerVisits,
+  domainEventOutbox,
   loyaltyAnomalies,
   loyaltyPrograms,
   orders,
   pointEarnRecords,
+  pointLedger,
   userIdentities,
 } from "../db/schema/index.ts";
 import { isTrainingOrder } from "./device-training.ts";
@@ -51,7 +57,13 @@ import { tierMultiplierBp } from "./loyalty-earn-tier-step.ts";
 import { loyaltyConsentActive } from "./member-profile.service.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
 
-const EARN_EVENTS = new Set(["order.paid", "order.refunded", "order.voided"]);
+const REFUND_REVERSAL_EVENT = "order_issue.refund_reversal_requested";
+const EARN_EVENTS = new Set([
+  "order.paid",
+  "order.refunded",
+  "order.voided",
+  REFUND_REVERSAL_EVENT,
+]);
 /** Attempts of one event when a profile lock deadlocks. */
 const DEADLOCK_ATTEMPTS = 3;
 
@@ -92,6 +104,15 @@ const orderVoidedSchema = z.object({
   businessDate: businessDateSchema,
   voidId: id.nullable(),
   voidedFinalOrder: z.boolean(),
+});
+
+/** legend-h1dyy: payload of order_issue.refund_reversal_requested. */
+const refundReversalSchema = z.object({
+  orderId: ulid,
+  orderIssueId: z.string().uuid(),
+  refundId: z.string().uuid(),
+  amountIdr: amount,
+  rejectedAt: time,
 });
 
 type Scope = { context: ScopedTenantContext; tenantId: string; now: Date };
@@ -165,6 +186,11 @@ async function handleEvent(
       sourceId: data.voidId,
       refundEligibleIdr: null,
     });
+    return;
+  }
+  if (name === REFUND_REVERSAL_EVENT) {
+    const parsed = refundReversalSchema.safeParse(payload);
+    if (parsed.success) await restoreRejectedRefund(tx, scope, parsed.data);
   }
 }
 
@@ -654,4 +680,246 @@ async function reverseForOrder(
         shortfallPoints: delta - posted,
       },
     });
+}
+
+/**
+ * legend-h1dyy (ORD-09): a rejected recovery refund gives back what its
+ * `order.refunded` (sourceId = issue id) took: the reversed points (an
+ * `adjust` row, deduped on its source id), the refunded eligible spend on the
+ * record, the lifetime spend and the visit spend. Once per issue: the record
+ * keeps both `<issueId>` (an `order.refunded` replay stays a no-op) and
+ * `reject:<issueId>`.
+ */
+async function restoreRejectedRefund(
+  tx: Tx,
+  scope: Scope,
+  input: z.infer<typeof refundReversalSchema>,
+): Promise<void> {
+  const { tenantId, context, now } = scope;
+  const recordWhere = and(
+    eq(pointEarnRecords.tenantId, tenantId as never),
+    eq(pointEarnRecords.orderId, input.orderId),
+  );
+  const [unlocked] = await tx
+    .select({ profileId: pointEarnRecords.customerProfileId })
+    .from(pointEarnRecords)
+    .where(recordWhere)
+    .limit(1);
+  if (!unlocked) return;
+  const profile = await lockedProfile(tx, tenantId, unlocked.profileId);
+  if (!profile) return;
+  const [record] = await tx
+    .select()
+    .from(pointEarnRecords)
+    .where(recordWhere)
+    .limit(1);
+  if (!record) return;
+  const issueId = input.orderIssueId;
+  const rejectId = `reject:${issueId}`;
+  if (record.appliedReversalIds.includes(rejectId)) return;
+  // The rejection came before its `order.refunded`: mark both ids so the late
+  // refund is a no-op (reverseForOrder's replay guard), nothing to give back.
+  if (!record.appliedReversalIds.includes(issueId)) {
+    await settleRecord(tx, scope, record, {
+      appliedReversalIds: [...record.appliedReversalIds, issueId, rejectId],
+    });
+    return;
+  }
+  const appliedReversalIds = [...record.appliedReversalIds, rejectId];
+
+  // The stored refunds and voids of this order, to replay what each applied.
+  const storedEvents = await tx
+    .select({
+      name: sql<string>`${domainEventOutbox.event}->>'name'`,
+      payload: sql<unknown>`${domainEventOutbox.event}->'payload'`,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId as never),
+        eq(domainEventOutbox.aggregateType, "order"),
+        sql`${domainEventOutbox.event}->>'name' IN ('order.refunded', 'order.voided')`,
+        sql`${domainEventOutbox.event}->'payload'->>'orderId' = ${input.orderId}`,
+      ),
+    );
+  const refundEligibleById = new Map<string, number>();
+  const voidIds = new Set<string>();
+  for (const row of storedEvents) {
+    if (row.name === "order.refunded") {
+      const parsed = orderRefundedSchema.safeParse(row.payload);
+      if (parsed.success)
+        refundEligibleById.set(
+          parsed.data.refundId,
+          Math.max(
+            0,
+            parsed.data.grossSalesIdr -
+              parsed.data.discountIdr -
+              parsed.data.refundPointsIdr,
+          ),
+        );
+    } else {
+      const parsed = orderVoidedSchema.safeParse(row.payload);
+      if (parsed.success && parsed.data.voidId !== null)
+        voidIds.add(parsed.data.voidId);
+    }
+  }
+  // A void of the order reversed everything: the rejection of one refund gives
+  // nothing back (points, spend, visit); it is only marked as handled.
+  if (record.appliedReversalIds.some((sourceId) => voidIds.has(sourceId))) {
+    await settleRecord(tx, scope, record, { appliedReversalIds });
+    return;
+  }
+
+  // Replay the applied refunds in order with reverseForOrder's cumulative
+  // clamp (min(eligible, previous + refund)); an earlier rejection takes its
+  // applied amount back out. A refund with no stored event counts 0.
+  const eligible = Number(record.eligibleSpendIdr);
+  const appliedById = new Map<string, number>();
+  let cumulative = 0;
+  for (const sourceId of record.appliedReversalIds) {
+    if (sourceId.startsWith("reject:")) {
+      cumulative -= appliedById.get(sourceId.slice("reject:".length)) ?? 0;
+      continue;
+    }
+    const asked = refundEligibleById.get(sourceId) ?? 0;
+    const next = Math.min(eligible, cumulative + asked);
+    appliedById.set(sourceId, next - cumulative);
+    cumulative = next;
+  }
+  const previousRefunded = Number(record.refundedEligibleIdr);
+  const restored = Math.min(appliedById.get(issueId) ?? 0, previousRefunded);
+
+  // The points the refund reversed (none when it was clamped to 0).
+  const [reversal] = await tx
+    .select({ points: pointLedger.points })
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenantId as never),
+        eq(pointLedger.customerProfileId, profile.id),
+        eq(pointLedger.type, "reverse"),
+        eq(pointLedger.sourceType, "refund"),
+        eq(pointLedger.sourceId, issueId),
+      ),
+    )
+    .limit(1);
+  const credited = Math.min(
+    reversal ? -Number(reversal.points) : 0,
+    record.reversedPoints,
+  );
+  if (credited > 0) {
+    let expiresAt: Date | null = null;
+    if (record.earnEntryId) {
+      const [earn] = await tx
+        .select({ expiresAt: pointLedger.expiresAt })
+        .from(pointLedger)
+        .where(
+          and(
+            eq(pointLedger.tenantId, tenantId as never),
+            eq(pointLedger.id, record.earnEntryId),
+          ),
+        )
+        .limit(1);
+      expiresAt = earn?.expiresAt ?? null;
+    }
+    await postLedgerEntry(
+      tx,
+      context,
+      {
+        tenantId,
+        customerProfileId: profile.id,
+        outletId: record.outletId,
+        type: "adjust",
+        points: credited,
+        sourceType: "adjustment",
+        // The points.adjusted event takes a uuid/ulid source id only: the
+        // issue id (unique per adjustment, like a redemption id) dedupes it.
+        sourceId: issueId,
+        expiresAt,
+        reason: "Refund item gagal ditolak (ORD-09)",
+      },
+      now,
+    );
+  }
+
+  const booked = Number(record.bookedPoints);
+  const refundedAfter = previousRefunded - restored;
+  const reversed = record.reversedPoints - credited;
+  const hasPoints = record.state === "booked" || record.state === "reversed";
+  // Same cumulative target as reverseForOrder, rounded up against the member.
+  const target =
+    eligible === 0
+      ? 0
+      : Math.min(
+          booked,
+          Number(
+            (BigInt(booked) * BigInt(refundedAfter) + BigInt(eligible) - 1n) /
+              BigInt(eligible),
+          ),
+        );
+  await settleRecord(
+    tx,
+    scope,
+    record,
+    hasPoints
+      ? {
+          refundedEligibleIdr: idr(refundedAfter),
+          reversedPoints: reversed,
+          reversalShortfallPoints: Math.max(0, target - reversed),
+          state: reversed === booked && booked > 0 ? "reversed" : "booked",
+          appliedReversalIds,
+        }
+      : { refundedEligibleIdr: idr(refundedAfter), appliedReversalIds },
+  );
+
+  // A refund that reached the full eligible spend deleted the visit row and
+  // lowered visits_count (reverseForOrder). Bring the visit back when the
+  // rejection leaves the order partly paid again, so a later full refund
+  // lowers visits_count once, not twice.
+  const restoresVisit =
+    eligible > 0 && previousRefunded >= eligible && refundedAfter < eligible;
+  if (restored > 0 || restoresVisit) {
+    await tx
+      .update(customerProfiles)
+      .set({
+        lifetimeSpendIdr: sql`${customerProfiles.lifetimeSpendIdr} + ${restored}`,
+        ...(restoresVisit
+          ? { visitsCount: sql`${customerProfiles.visitsCount} + 1` }
+          : {}),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(customerProfiles.tenantId, tenantId as never),
+          eq(customerProfiles.id, profile.id),
+        ),
+      );
+  }
+  if (restoresVisit) {
+    // Outlet, business date and visit time come from the earn record (the
+    // values the original insert used). itemCount: the original insert in
+    // earnForPaidOrder leaves the column default (0), so it is not set here.
+    await tx
+      .insert(customerVisits)
+      .values({
+        tenantId: tenantId as never,
+        outletId: record.outletId as never,
+        customerProfileId: profile.id,
+        orderId: input.orderId,
+        businessDate: record.businessDate,
+        visitedAt: record.paidAt,
+        spendIdr: idr(eligible - refundedAfter),
+      })
+      .onConflictDoNothing();
+  } else if (restored > 0) {
+    await tx
+      .update(customerVisits)
+      .set({ spendIdr: sql`${customerVisits.spendIdr} + ${restored}` })
+      .where(
+        and(
+          eq(customerVisits.tenantId, tenantId as never),
+          eq(customerVisits.orderId, input.orderId),
+        ),
+      );
+  }
 }

@@ -389,6 +389,7 @@ describe("legend-i83ls lineShareSplit", () => {
       recoveryRefundSplit({
         order: { ...BASE_ORDER, depositAppliedIdr: 0 },
         lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
         releasedIdr: 0,
       }),
     ).toMatchObject({ wantedIdr: 46_200, amountIdr: 46_200, shortfallIdr: 0 });
