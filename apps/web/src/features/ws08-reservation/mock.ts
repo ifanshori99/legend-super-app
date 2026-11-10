@@ -67,6 +67,7 @@ const fixtures = cafeLegendReservationFixtures;
 const outlet = cafeLegendFixtures.outlets[0];
 const outletId = outlet.id;
 const tenantId = outlet.tenantId;
+const secondOutlet = cafeLegendFixtures.outlets[1];
 /**
  * Mock clock anchored on the fixture day (Opus review, legend-oye8). The
  * fixtures are dated 1–8 Nov 2026; against the wall clock the cancel window,
@@ -89,9 +90,14 @@ function fail(code: ReservationErrorCode): never {
   );
 }
 
-function requireOutlet(requested: string): void {
-  if (requested !== outletId)
-    throw new ApiError(404, "NOT_FOUND", "Outlet tidak ditemukan.");
+/**
+ * The outlet an endpoint addresses: the first fixture outlet, or the second
+ * (`?outlets=many`), which has its own small desk below. Any other id is 404.
+ */
+function requireOutlet(requested: string) {
+  const found = [outlet, secondOutlet].find((row) => row.id === requested);
+  if (!found) throw new ApiError(404, "NOT_FOUND", "Outlet tidak ditemukan.");
+  return found;
 }
 
 /**
@@ -169,29 +175,117 @@ const refundedDepositSlot: ReservationTableSlot =
     releasedAt: null,
   });
 
+// ---- Second outlet (`?outlets=many`) --------------------------------------
+
+/**
+ * The second fixture outlet has its own small desk, cloned from the first
+ * outlet's fixtures inside this store (never edited in `@starter/shared`): one
+ * confirmed booking on a table, one booking still awaiting its DP, one
+ * waiting guest and one event package. Zone and table ids are the ones the
+ * WS-03 floor mock serves for that outlet (its zone "Lantai 1", tables B01-B03;
+ * that file is browser-only, so the ids are repeated here).
+ */
+const secondZoneId = "b1f0c3a2-7d41-4e58-9a06-3c5d7e9f1a20";
+const secondTableId = "b1f0c3a2-7d41-4e58-9a06-3c5d7e9f1a22";
+const secondScope = { tenantId, outletId: secondOutlet.id };
+
+const secondOutletReservations: Reservation[] = [
+  reservationSchema.parse({
+    ...structuredClone(fixtures.reservations[1]),
+    ...secondScope,
+    id: "00000000-0000-4000-8000-000000005501",
+    customerProfileId: null,
+    guestName: "Maya Anindita",
+    reservedFor: "2026-11-07T19:00:00+07:00",
+    durationMinutes: 90,
+    pax: 4,
+    zoneId: secondZoneId,
+    tableIds: [secondTableId],
+    depositIdr: 50_000,
+    policy: structuredClone(fixtures.reservations[0].policy),
+    note: null,
+    source: "staff",
+  }),
+  reservationSchema.parse({
+    ...structuredClone(fixtures.reservations[0]),
+    ...secondScope,
+    id: "00000000-0000-4000-8000-000000005502",
+    customerProfileId: null,
+    guestName: "Bagas Saputra",
+    reservedFor: "2026-11-07T18:00:00+07:00",
+    pax: 2,
+    zoneId: secondZoneId,
+    note: null,
+  }),
+];
+
+const secondOutletSlots: ReservationTableSlot[] = secondOutletReservations
+  .filter((row) => row.tableIds.length > 0)
+  .map((row, index) =>
+    reservationTableSlotSchema.parse({
+      id: `00000000-0000-4000-8000-00000000560${index + 1}`,
+      ...secondScope,
+      reservationId: row.id,
+      tableId: row.tableIds[0],
+      startsAt: row.reservedFor,
+      endsAt: reservationEndsAt(row.reservedFor, row.durationMinutes),
+      releasedAt: null,
+    }),
+  );
+
+const secondOutletWaitlist: WaitlistEntry[] = [
+  waitlistEntrySchema.parse({
+    ...structuredClone(fixtures.waitlist[0]),
+    ...secondScope,
+    id: "00000000-0000-4000-8000-000000005701",
+    name: "Dina Maharani",
+    zoneId: secondZoneId,
+  }),
+];
+
+const secondOutletPackages = [
+  {
+    ...structuredClone(fixtures.packages[0]),
+    ...secondScope,
+    id: "00000000-0000-4000-8000-000000005801",
+  },
+];
+
 // ---- Stores ---------------------------------------------------------------
 
 const reservations = createMockStore(() => [
   ...structuredClone(fixtures.reservations),
   structuredClone(refundedDepositReservation),
   structuredClone(awaitingDepositReservation),
+  ...structuredClone(secondOutletReservations),
 ]);
 const slots = createMockStore(() => [
   ...structuredClone(fixtures.tableSlots),
   structuredClone(refundedDepositSlot),
+  ...structuredClone(secondOutletSlots),
 ]);
-const waitlist = createMockStore(() => structuredClone(fixtures.waitlist));
-const packages = createMockStore(() => structuredClone(fixtures.packages));
+const waitlist = createMockStore(() => [
+  ...structuredClone(fixtures.waitlist),
+  ...structuredClone(secondOutletWaitlist),
+]);
+const packages = createMockStore(() => [
+  ...structuredClone(fixtures.packages),
+  ...structuredClone(secondOutletPackages),
+]);
 const preOrders = createMockStore(() => structuredClone(fixtures.preOrders));
 
-function findReservation(id: string): Reservation {
-  const found = reservations.get().find((row) => row.id === id);
+function findReservation(outlet: string, id: string): Reservation {
+  const found = reservations
+    .get()
+    .find((row) => row.id === id && row.outletId === outlet);
   if (!found) fail("RESERVATION_NOT_FOUND");
   return found;
 }
 
-function findWaitlistEntry(id: string): WaitlistEntry {
-  const found = waitlist.get().find((row) => row.id === id);
+function findWaitlistEntry(outlet: string, id: string): WaitlistEntry {
+  const found = waitlist
+    .get()
+    .find((row) => row.id === id && row.outletId === outlet);
   if (!found) fail("WAITLIST_ENTRY_NOT_FOUND");
   return found;
 }
@@ -217,7 +311,7 @@ function saveSlots(reservation: Reservation): void {
       reservationTableSlotSchema.parse({
         id: mintId(),
         tenantId,
-        outletId,
+        outletId: reservation.outletId,
         reservationId: reservation.id,
         ...slot,
       }),
@@ -256,16 +350,17 @@ function menuItemName(menuItemId: string): string {
 // ---- Schedule -------------------------------------------------------------
 
 registerMock(listReservations, ({ params, query, scenario }) => {
-  requireOutlet(params.outletId);
-  const today = todayInZone(outlet.timeZone, new Date(nowMs()));
+  const scope = requireOutlet(params.outletId);
+  const today = todayInZone(scope.timeZone, new Date(nowMs()));
   const rows = reservations
     .get()
     .filter((row) => {
+      if (row.outletId !== scope.id) return false;
       if (query.status !== undefined && row.status !== query.status)
         return false;
       if (query.zoneId !== undefined && row.zoneId !== query.zoneId)
         return false;
-      const date = businessDateOf(row.reservedFor, outlet.timeZone);
+      const date = businessDateOf(row.reservedFor, scope.timeZone);
       // No `date` means "all upcoming" (the contract's list query); a date
       // filter asks for that business date, past or future.
       return query.date === undefined ? date >= today : date === query.date;
@@ -279,14 +374,16 @@ registerMock(listReservations, ({ params, query, scenario }) => {
 
 registerMock(getReservation, ({ params }) => {
   requireOutlet(params.outletId);
-  return { data: detailOf(findReservation(params.reservationId)) };
+  return {
+    data: detailOf(findReservation(params.outletId, params.reservationId)),
+  };
 });
 
 // ---- Table assignment and the guest lifecycle -----------------------------
 
 registerMock(assignReservationTables, ({ params, body }) => {
   requireOutlet(params.outletId);
-  const current = findReservation(params.reservationId);
+  const current = findReservation(params.outletId, params.reservationId);
   // Tables are only (re)assigned while the party is still expected.
   if (!(current.status === "pending_deposit" || current.status === "confirmed"))
     fail("RESERVATION_TRANSITION_INVALID");
@@ -302,7 +399,7 @@ registerMock(assignReservationTables, ({ params, body }) => {
 
 registerMock(seatReservation, ({ params, body }) => {
   requireOutlet(params.outletId);
-  const current = findReservation(params.reservationId);
+  const current = findReservation(params.outletId, params.reservationId);
   // RSV-02: a required DP is settled before the guest sits. Checked before the
   // status machine so a pending-DP booking reports the actionable cause.
   if (
@@ -329,7 +426,7 @@ registerMock(seatReservation, ({ params, body }) => {
 
 registerMock(cancelReservation, ({ params, body }) => {
   requireOutlet(params.outletId);
-  const current = findReservation(params.reservationId);
+  const current = findReservation(params.outletId, params.reservationId);
   if (!canTransitionReservation(current.status, "cancelled"))
     fail("RESERVATION_TRANSITION_INVALID");
   const cancelledAt = nowIso();
@@ -357,7 +454,7 @@ registerMock(cancelReservation, ({ params, body }) => {
 
 registerMock(markReservationNoShow, ({ params, body }) => {
   requireOutlet(params.outletId);
-  const current = findReservation(params.reservationId);
+  const current = findReservation(params.outletId, params.reservationId);
   if (!canTransitionReservation(current.status, "no_show"))
     fail("RESERVATION_TRANSITION_INVALID");
   const paid = depositAtClose(current);
@@ -382,18 +479,23 @@ registerMock(listReservationPackages, ({ params, scenario }) => {
   requireOutlet(params.outletId);
   if (scenario === "empty") return { data: [] };
   return {
-    data: [...packages.get()].sort(
-      (left, right) => left.sortOrder - right.sortOrder,
-    ),
+    data: packages
+      .get()
+      .filter((row) => row.outletId === params.outletId)
+      .sort((left, right) => left.sortOrder - right.sortOrder),
   };
 });
 
 registerMock(placeReservationPreOrder, ({ params, body }) => {
   requireOutlet(params.outletId);
-  const current = findReservation(params.reservationId);
+  const current = findReservation(params.outletId, params.reservationId);
   if (!(current.status === "pending_deposit" || current.status === "confirmed"))
     fail("RESERVATION_TRANSITION_INVALID");
-  const pack = packages.get().find((row) => row.id === body.packageId);
+  const pack = packages
+    .get()
+    .find(
+      (row) => row.id === body.packageId && row.outletId === params.outletId,
+    );
   if (!pack || pack.status !== "active")
     fail("RESERVATION_PACKAGE_UNAVAILABLE");
   if (current.pax < pack.minPax || current.pax > pack.maxPax)
@@ -414,7 +516,7 @@ registerMock(placeReservationPreOrder, ({ params, body }) => {
   const preOrder: ReservationPreOrder = reservationPreOrderSchema.parse({
     id: existing?.id ?? mintId(),
     tenantId,
-    outletId,
+    outletId: current.outletId,
     reservationId: current.id,
     packageId: pack.id,
     packageName: pack.name,
@@ -446,7 +548,9 @@ registerMock(listWaitlist, ({ params, query, scenario }) => {
     waitlist
       .get()
       .filter(
-        (row) => query.status === undefined || row.status === query.status,
+        (row) =>
+          row.outletId === params.outletId &&
+          (query.status === undefined || row.status === query.status),
       ),
   );
   return paginateFixture(rows, query, (row) => row.id, scenario);
@@ -454,7 +558,7 @@ registerMock(listWaitlist, ({ params, query, scenario }) => {
 
 registerMock(callWaitlistEntry, ({ params }) => {
   requireOutlet(params.outletId);
-  const current = findWaitlistEntry(params.entryId);
+  const current = findWaitlistEntry(params.outletId, params.entryId);
   if (!canTransitionWaitlist(current.status, "called"))
     fail("WAITLIST_TRANSITION_INVALID");
   const next = waitlistEntrySchema.parse({
@@ -468,7 +572,7 @@ registerMock(callWaitlistEntry, ({ params }) => {
 
 registerMock(resendReservationDepositLink, ({ params }) => {
   requireOutlet(params.outletId);
-  const current = findReservation(params.reservationId);
+  const current = findReservation(params.outletId, params.reservationId);
   if (current.status !== "pending_deposit")
     fail("RESERVATION_TRANSITION_INVALID");
   return {
@@ -483,7 +587,7 @@ registerMock(resendReservationDepositLink, ({ params }) => {
 
 registerMock(resolveWaitlistEntry, ({ params, body }) => {
   requireOutlet(params.outletId);
-  const current = findWaitlistEntry(params.entryId);
+  const current = findWaitlistEntry(params.outletId, params.entryId);
   if (!canTransitionWaitlist(current.status, body.resolution))
     fail("WAITLIST_TRANSITION_INVALID");
   const at = nowIso();
