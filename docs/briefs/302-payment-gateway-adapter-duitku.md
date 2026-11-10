@@ -37,7 +37,11 @@ Dijawab founder 10 Nov:
 - Q73: dua gateway boleh aktif bersamaan per metode, dengan cadangan otomatis saat gateway utama gangguan.
 - Q74: Duitku dibangun sekarang, sebelum rilis pertama; dinyalakan per brand begitu akun Duitku ada.
 
-Catatan CTO: repo 119connect (`/Users/ifanshori99/Projects/119connect-portal-alumni`) punya modul penyedia pembayaran. CTO sedang memeriksa kecocokannya; hasil dan bagian yang boleh dipindahkan ditambahkan di sini. Bila sudah ada, pindahkan bagian itu (klien HTTP Duitku, rumus signature, test) alih-alih menulis ulang.
+## Pakai ulang dari 119connect (diperiksa CTO 10 Nov)
+Repo `/Users/ifanshori99/Projects/119connect-portal-alumni` (bukan salinan `119connect-portal-alumni-main` yang lebih lama). Baca-saja, jangan ubah repo itu.
+- Pindahkan (port, sesuaikan gaya Legend): `apps/api/src/lib/payment/duitku.ts` (helper signature `:100-141`, `kirim`, inquiry v2, transactionStatus, verifikasi callback `:200-228` termasuk cek nominal) dan `apps/api/src/test/duitku.test.ts` (22 test). Signature di sana: HMAC-SHA256 berkunci `apiKey` sebagai bawaan, md5 sebagai varian lama (`DUITKU_SIGNATURE`). Cocokkan dengan dokumentasi resmi Duitku sebelum dipakai.
+- Jangan dipakai: konfigurasi gateway per tenant (`services/gateway.konfig.ts`, `tenant_payment_gateways`, `tenant_gateway_credentials`), registry `penyedia/index.ts`, route webhook per provider. Legend sudah punya routing per metode + outlet + cadangan, `tenant_integrations`, dan `gateway_webhook_events`; bangun di atas itu.
+- Belum ada di 119connect, bangun baru: pembungkus `PaymentGatewayPort` untuk klien Duitku, panggilan `getpaymentmethod` (kode metode di sana ditulis tetap di `KODE_METODE_DUITKU`), pemetaan kartu dan e-wallet, sandbox/production per kredensial tenant (di sana global `DUITKU_MODE`), daftar gateway tingkat platform.
 
 ## Kartu
 Awal: `ghostex board associate <kartu>` untuk kartu adapter dan `legend-pa21`, `bd update <id> --status in_progress`. Selesai: `--status review` + `bd comment` bahasa biasa. UI yang perlu berubah: kartu terpisah, jangan kerjakan.

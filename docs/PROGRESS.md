@@ -871,3 +871,4 @@ Langkah berikut CTO baru:
 - 07:09 G9lu3 split bill selesai c6916247 (0202), G52kh retur supplier + petty f2bd63f5 (0208, flag mati sampai 29vw): diterima, resolve, antre batch44. Founder minta adapter ganti gateway + Duitku: kartu legend-l9rji, legend-pa21 ditarik ke m1, brief 302 (migrasi 0211). Form Q72-Q75. Thread baru tunggu #3 reset 10:00 (#1 7d 99%, #2 7d 87%).
 - 07:10 Founder: email login member pakai SumoPod SMTP, bukan Brevo. Board B19 diganti, k2l diberi tahu saat G5byz lanjut 10:03.
 - 07:12 Founder jawab Q72-Q75 semua sesuai rekomendasi. Kartu baru legend-ia54l (klaim split bill dari HP 24 jam). Cek modul gateway 119connect sedang jalan (Explore).
+- 07:12 Cek 119connect: port klien Duitku + 22 test (duitku.ts), sisanya pakai routing/integrasi Legend. Brief 302 diperbarui.
