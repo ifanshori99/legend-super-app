@@ -247,6 +247,14 @@ export function recoveryRefundSplit(input: {
   /** Already released by other issues of this order. */
   releasedIdr: number;
   promo?: RecoveryRefundPromo;
+  /**
+   * legend-fwe4l: value of the line this refund pays for (a swap replacement).
+   * Below the wanted amount it replaces the amount; the parts are cut like a
+   * room cut. Not a shortfall: that money was never owed. `goodsIdr` stays
+   * the goods money before the cap (the promo ledger paid the original out
+   * in full).
+   */
+  capIdr?: number;
 }): RecoveryRefundSplit {
   const { order, releasedIdr } = input;
   if (order.subtotalIdr <= 0 || input.lineTotalIdr <= 0) return { ...ZERO };
@@ -255,19 +263,30 @@ export function recoveryRefundSplit(input: {
     ? promoParts(order, split, input.promo)
     : proRataParts(order, split, input.lineTotalIdr, input.priorLinesIdr);
   if (!parts) return { ...ZERO };
-  let { gross, discount, service, pbjt } = parts;
-  const wanted = gross - discount + service + pbjt;
-  if (wanted <= 0n) return { ...ZERO };
+  const uncappedWanted =
+    parts.gross - parts.discount + parts.service + parts.pbjt;
+  if (uncappedWanted <= 0n) return { ...ZERO };
 
   const room = BigInt(
     Math.max(0, order.totalIdr - order.depositAppliedIdr - releasedIdr),
   );
-  const { amount, parts: cut } = cutToRoom(
-    { gross, discount, service, pbjt },
-    wanted,
-    room,
+  // The goods money on the promo ledger basis is the one before the cap.
+  const uncut = cutToRoom(parts, uncappedWanted, room);
+  const goodsIdr = Number(
+    order.pricesIncludeTax
+      ? uncut.amount
+      : uncut.parts.gross - uncut.parts.discount,
   );
-  ({ gross, discount, service, pbjt } = cut);
+  let wanted = uncappedWanted;
+  let startParts = parts;
+  if (input.capIdr !== undefined && big(input.capIdr) < wanted) {
+    const capped = cutToRoom(startParts, wanted, big(input.capIdr));
+    wanted = capped.amount;
+    startParts = capped.parts;
+    if (wanted <= 0n) return { ...ZERO };
+  }
+  const { amount, parts: cut } = cutToRoom(startParts, wanted, room);
+  const { gross, discount, service, pbjt } = cut;
   return {
     wantedIdr: Number(wanted),
     amountIdr: Number(amount),
@@ -276,7 +295,7 @@ export function recoveryRefundSplit(input: {
     discountIdr: Number(discount),
     serviceChargeIdr: Number(service),
     pbjtIdr: Number(pbjt),
-    goodsIdr: Number(order.pricesIncludeTax ? amount : gross - discount),
+    goodsIdr,
   };
 }
 

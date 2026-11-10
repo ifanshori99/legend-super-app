@@ -22,3 +22,16 @@ Order PROMO: kopi Rp30.000 (issue A) refund gagal final; kopi dilaporkan ulang d
 - Implementer hanya `order-recovery-refund.ts` + `order-recovery-refund-amount.ts`. Test-writer hanya dua file test di atas.
 - Jangan jalankan `pnpm test` (agent utama yang menjalankan). Typecheck `heavy pnpm --filter @starter/api typecheck`, prettier bersih. Jangan commit. Jangan baca `.env*`.
 - Lapor: file, perubahan, keraguan.
+
+## Putaran 2 (temuan architect F1 atas 631344cf)
+
+P1 `apps/api/src/services/order-recovery-refund.ts` ~600: cap hanya dipasang bila ada replay. Order promo, kopi dilaporkan lalu LANGSUNG di-swap ke air (tanpa refund A), voucher 20.000; air gagal, manual_refund B -> replay null, recompute promo menganggap kopi gagal -> B = 8.085 (+ledger 7.000). Tamu 28.085 > 25.000; refund > approval ORD-09 5.000. Rantai: B gagal final, lalu C (baris sama) -> akar B, cap tidak berlaku, C replay 8.085.
+
+Perbaikan:
+
+1. Syarat cap: baris yang dilaporkan adalah baris pengganti (`originalOf.has(issue.orderItemId)`), di jalur replay MAUPUN recompute promo. Nilai cap tetap: `recoveryRefundSplit` baris itu tanpa promo, `.wantedIdr`.
+2. `recoveryRefundSplit` dapat `capIdr?` dengan aturan sama seperti `recoveryRefundReplaySplit` (jumlah dan bagian dipotong seperti `cutToRoom`, lalu room; shortfall hanya dari room). Unit test-nya ikut.
+3. Ledger promo tetap mencatat `goodsIdr` SEBELUM cap (kopi keluar penuh dari promo; refund item lain berikutnya tetap benar). Pastikan `recordPartialRefundPayout` menerima goods pra-cap, dan amount refund pasca-cap.
+4. Audit `swapCapIdr` saat cap memotong.
+
+Test gagal-dulu (tambah ke `order-recovery-refund-swap-cap.test.ts` dan `order-recovery-refund-amount.test.ts`): swap langsung lalu gagal (pay-first promo, open bill promo) -> B = 3.885 persis, voucher + B <= 25.000, ledger paid +7.000 (pra-cap); rantai swap langsung -> B gagal final -> C -> C = 3.885; unit `recoveryRefundSplit` dengan capIdr. Order tanpa promo: swap langsung lalu gagal -> tidak berubah dari sekarang (nilai baris sendiri).

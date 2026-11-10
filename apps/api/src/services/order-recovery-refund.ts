@@ -393,6 +393,7 @@ export async function deliverOrderRecoveryRefundEvent(
   let promo: RecoveryRefundPromo | undefined;
   let replay: RecoveryRefundReplaySource | null = null;
   let swapCapIdr: number | undefined;
+  let swapCapCuts = false;
   try {
     // Order amounts that fail their tax-mode identity are refused before the
     // promo port changes anything.
@@ -594,16 +595,30 @@ export async function deliverOrderRecoveryRefundEvent(
           };
       }
     }
-    // legend-fwe4l: the chain's root is another item (a swap): this line pays
-    // its own value, not the root's amount (the guest got the difference as a
-    // voucher). The replacement line carries no promo price.
-    if (replay !== null && replay.rootOrderItemId !== issue.orderItemId)
+    // legend-fwe4l: the reported line is a swap replacement: it pays its own
+    // value, not the original's amount (the guest got the difference as a
+    // voucher), whether the original's refund was replayed or the promo
+    // recompute counted the original as failed. The replacement line carries
+    // no promo price.
+    if (originalOf.has(issue.orderItemId))
       swapCapIdr = recoveryRefundSplit({
         order,
         lineTotalIdr: line.lineTotalIdr,
         priorLinesIdr,
         releasedIdr,
       }).wantedIdr;
+    if (swapCapIdr !== undefined)
+      swapCapCuts =
+        swapCapIdr <
+        (replay === null
+          ? recoveryRefundSplit({
+              order,
+              lineTotalIdr: line.lineTotalIdr,
+              priorLinesIdr,
+              releasedIdr,
+              ...(promo === undefined ? {} : { promo }),
+            }).wantedIdr
+          : replay.amountIdr);
     split =
       replay === null
         ? recoveryRefundSplit({
@@ -612,6 +627,7 @@ export async function deliverOrderRecoveryRefundEvent(
             priorLinesIdr,
             releasedIdr,
             ...(promo === undefined ? {} : { promo }),
+            ...(swapCapIdr === undefined ? {} : { capIdr: swapCapIdr }),
           })
         : recoveryRefundReplaySplit({
             order,
@@ -731,11 +747,7 @@ export async function deliverOrderRecoveryRefundEvent(
           amountIdr: row.amountIdr,
           status: row.status,
           ...(replay === null ? {} : { replayOfIssueId: replay.issueId }),
-          ...(replay === null ||
-          swapCapIdr === undefined ||
-          swapCapIdr >= replay.amountIdr
-            ? {}
-            : { swapCapIdr }),
+          ...(swapCapCuts ? { swapCapIdr } : {}),
         },
         REFUND_REASON,
       );

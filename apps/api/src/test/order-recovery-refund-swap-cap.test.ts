@@ -430,16 +430,8 @@ async function filedRefund(itemId: string, amountIdr: number) {
   return { ...made, refund: refunds[0]! };
 }
 
-/**
- * The kopi refund (A) fails finally; the kopi line is reported again and swapped to
- * `air` (cheaper, credit below the voucher approval floor: no approval); the swap
- * kitchen event writes the replacement line. Returns A and the replacement line.
- */
-async function kopiFailedThenSwapped(mode: "pay_first" | "open_bill") {
-  const paid = await paidPromoOrder(mode);
-  const a = await filedRefund(paid.line(w.ids.kopi).id, KOPI_PRICE);
-  await failFinally(a.refund.id, "provider_declined");
-
+/** Reports the kopi line and swaps it to `air`; the kitchen event writes the replacement line. */
+async function swapKopiToAir(paid: PaidOrder) {
   const swapIssue = await w.report(paid.line(w.ids.kopi).id);
   expect(swapIssue.status, JSON.stringify(swapIssue.body)).toBe(201);
   const swapIssueId = swapIssue.body.data.id as string;
@@ -460,12 +452,28 @@ async function kopiFailedThenSwapped(mode: "pay_first" | "open_bill") {
     [w.tenant.tenantId, swapIssueId],
   );
   expect(rows[0]!.id, "replacement line written").not.toBeNull();
-  return {
-    paid,
-    a,
-    swapIssueId,
-    replacementLineId: uuidToUlid(rows[0]!.id!),
-  };
+  return { swapIssueId, replacementLineId: uuidToUlid(rows[0]!.id!) };
+}
+
+/**
+ * The kopi refund (A) fails finally; the kopi line is reported again and swapped to
+ * `air` (cheaper, credit below the voucher approval floor: no approval); the swap
+ * kitchen event writes the replacement line. Returns A and the replacement line.
+ */
+async function kopiFailedThenSwapped(mode: "pay_first" | "open_bill") {
+  const paid = await paidPromoOrder(mode);
+  const a = await filedRefund(paid.line(w.ids.kopi).id, KOPI_PRICE);
+  await failFinally(a.refund.id, "provider_declined");
+  return { paid, a, ...(await swapKopiToAir(paid)) };
+}
+
+/**
+ * Round 2: the kopi is reported and swapped to `air` DIRECTLY, with no refund of the
+ * kopi before (no replay of A exists). Returns the replacement line.
+ */
+async function kopiSwappedDirectly(mode: "pay_first" | "open_bill") {
+  const paid = await paidPromoOrder(mode);
+  return { paid, ...(await swapKopiToAir(paid)) };
 }
 
 function expectCapped(amountIdr: number, aAmountIdr: number) {
@@ -612,5 +620,150 @@ describe("legend-fwe4l swap ke menu lebih murah setelah gagal final: refund diba
     expect(vouchers[0]! + refunds[0]!.amount_idr).toBeLessThanOrEqual(
       KOPI_PRICE,
     );
+  });
+});
+
+// Round 2 (architect finding F1 on 631344cf): the cap must also hold when the kopi
+// is swapped DIRECTLY (no refund of the kopi before, so there is no replay of A and
+// the amount is recomputed from the promo). Story: promo order kopi + teh + roti
+// (total 42.735); the kopi is reported and swapped to air (Rp5.000) with a voucher
+// of Rp20.000; the air line fails and the supervisor approves a manual refund (B,
+// ORD-09 approval Rp5.000). Before the fix the recompute treats the kopi as failed
+// and B is 8.085 (with the promo ledger +7.000): the guest holds 28.085 against 25.000
+// paid for the kopi, and B is above its own approval.
+//
+// Assumptions:
+// - B = SWAP_CAP (3.885) exactly, the same pinned value as round 1 (the Rp5.000
+//   line pro rata, no promo share), and it fits the Rp5.000 approval.
+// - Ledger: the promo ledger records the goods of the kopi BEFORE the cap (+7.000
+//   paid) so refunds of other items after it stay right; the delta is read from
+//   `refunded_paid_idr` before and after B (the subtotal column is not pinned).
+// - Non-promo order (kopi + roti: no "2 of {kopi, teh}", 5% service, 10% PBJT on
+//   subtotal 43.000): the air line is worth 5.000 + 250 + 525 = 5.775 and B
+//   already is that today, so the cap must not touch it. The approval is 5.775:
+//   an approval below the refund is blocked by ORD-09.
+// - The audit `swapCapIdr` is not asserted: the brief gives no action name or field.
+const PLAIN_B = 5_775;
+
+describe("legend-fwe4l putaran 2: swap langsung ke menu lebih murah lalu gagal (tanpa refund kopi sebelumnya)", () => {
+  it("pay-first promo: B = 3.885, voucher + B <= 25.000, ledger +7.000 (pra-cap), split konsisten, di bawah approval", async () => {
+    const { paid, swapIssueId, replacementLineId } =
+      await kopiSwappedDirectly("pay_first");
+    const ledgerBefore = await ledgerOf(w.tenant.tenantId, paid.order.id);
+
+    const b = await approvedRefund(replacementLineId, AIR_PRICE);
+    await deliver(b.event);
+
+    const refunds = await issueRefunds(b.issueId);
+    expect(refunds, "one refund for the replacement line").toHaveLength(1);
+    const amount = refunds[0]!.amount_idr;
+    expect(amount).toBe(SWAP_CAP);
+    expect(amount, "within the ORD-09 approval").toBeLessThanOrEqual(AIR_PRICE);
+    expect(await auditRows([b.issueId], "order_issue.refund_blocked")).toEqual(
+      [],
+    );
+
+    const events = await refundedEvents(paid.order.id);
+    const filed = events.find((event) => event.refundId === b.issueId)!;
+    expect(filed.amountIdr).toBe(SWAP_CAP);
+    expect(
+      filed.grossSalesIdr -
+        filed.discountIdr +
+        filed.serviceChargeIdr +
+        filed.pbjtIdr,
+    ).toBe(SWAP_CAP);
+    for (const field of [
+      "grossSalesIdr",
+      "discountIdr",
+      "serviceChargeIdr",
+      "pbjtIdr",
+    ] as const)
+      expect(filed[field], field).toBeGreaterThanOrEqual(0);
+
+    // The kopi left the promo in full: the ledger counts its goods before the cap.
+    const ledgerAfter = await ledgerOf(w.tenant.tenantId, paid.order.id);
+    expect(ledgerAfter).not.toBeNull();
+    expect(ledgerAfter!.paid - (ledgerBefore?.paid ?? 0)).toBe(KOPI_PAYOUT);
+
+    expect(await voucherValues(swapIssueId)).toEqual([KOPI_PRICE - AIR_PRICE]);
+    expect(KOPI_PRICE - AIR_PRICE + amount).toBeLessThanOrEqual(KOPI_PRICE);
+  });
+
+  it("open bill promo: B = 3.885, voucher + B <= 25.000, ledger +7.000 (pra-cap)", async () => {
+    const { paid, swapIssueId, replacementLineId } =
+      await kopiSwappedDirectly("open_bill");
+    const ledgerBefore = await ledgerOf(w.tenant.tenantId, paid.order.id);
+
+    const b = await approvedRefund(replacementLineId, AIR_PRICE);
+    await deliver(b.event);
+
+    const refunds = await issueRefunds(b.issueId);
+    expect(refunds, "one refund for the replacement line").toHaveLength(1);
+    expect(refunds[0]!.amount_idr).toBe(SWAP_CAP);
+    expect(await auditRows([b.issueId], "order_issue.refund_blocked")).toEqual(
+      [],
+    );
+    const ledgerAfter = await ledgerOf(w.tenant.tenantId, paid.order.id);
+    expect(ledgerAfter).not.toBeNull();
+    expect(ledgerAfter!.paid - (ledgerBefore?.paid ?? 0)).toBe(KOPI_PAYOUT);
+    expect(await voucherValues(swapIssueId)).toEqual([KOPI_PRICE - AIR_PRICE]);
+  });
+
+  it("rantai: swap langsung, B gagal final, lalu C untuk lini yang sama: B dan C = 3.885, ledger tidak bertambah lagi", async () => {
+    const { paid, swapIssueId, replacementLineId } =
+      await kopiSwappedDirectly("pay_first");
+
+    const b = await filedRefund(replacementLineId, AIR_PRICE);
+    expect(b.refund.amount_idr).toBe(SWAP_CAP);
+    const ledgerAfterB = await ledgerOf(w.tenant.tenantId, paid.order.id);
+    await failFinally(b.refund.id, "provider_declined");
+
+    const c = await approvedRefund(replacementLineId, AIR_PRICE);
+    expect(c.issueId).not.toBe(b.issueId);
+    await deliver(c.event);
+
+    const refunds = await issueRefunds(c.issueId);
+    expect(refunds, "one refund for the third filing").toHaveLength(1);
+    expect(refunds[0]!.amount_idr).toBe(SWAP_CAP);
+    expect(await auditRows([c.issueId], "order_issue.refund_blocked")).toEqual(
+      [],
+    );
+    const events = await refundedEvents(paid.order.id);
+    const third = events.find((event) => event.refundId === c.issueId)!;
+    expect(third.amountIdr).toBe(SWAP_CAP);
+    expect(
+      third.grossSalesIdr -
+        third.discountIdr +
+        third.serviceChargeIdr +
+        third.pbjtIdr,
+    ).toBe(SWAP_CAP);
+    expect(await ledgerOf(w.tenant.tenantId, paid.order.id)).toEqual(
+      ledgerAfterB,
+    );
+    expect(await voucherValues(swapIssueId)).toEqual([KOPI_PRICE - AIR_PRICE]);
+  });
+
+  it("order tanpa promo: swap langsung lalu gagal -> B = nilai lini sendiri (5.775), tidak berubah", async () => {
+    const placed = await placeLines("pay_first", [w.ids.kopi, w.ids.roti]);
+    const payment = await w
+      .as(placed.guest)
+      .pay({ kind: "order", orderId: placed.order.id });
+    expect(payment.status, JSON.stringify(payment.body)).toBe(201);
+    expect(await payVerified(payment.body.data.id, placed.total)).toBe(true);
+    const { swapIssueId, replacementLineId } = await swapKopiToAir({
+      order: placed.order,
+      line: placed.line,
+    });
+
+    const b = await approvedRefund(replacementLineId, PLAIN_B);
+    await deliver(b.event);
+
+    const refunds = await issueRefunds(b.issueId);
+    expect(refunds, "one refund for the replacement line").toHaveLength(1);
+    expect(refunds[0]!.amount_idr).toBe(PLAIN_B);
+    expect(await auditRows([b.issueId], "order_issue.refund_blocked")).toEqual(
+      [],
+    );
+    expect(await voucherValues(swapIssueId)).toEqual([KOPI_PRICE - AIR_PRICE]);
   });
 });
