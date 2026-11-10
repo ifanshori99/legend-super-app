@@ -104,7 +104,8 @@ function endCause(
  *
  *   - a password route (sign-in, sign-up, change and reset password) and
  *     impersonation (support keeps today's behaviour) -> `password`;
- *   - the OAuth callback (/callback/:id, /oauth2/callback/:providerId) -> `google`;
+ *   - the OAuth callback (/callback/:id, /oauth2/callback/:providerId) and the
+ *     idToken sign-in (/sign-in/social) -> `google`;
  *   - any other Better Auth endpoint -> `legacy` (customer rights only);
  *   - no endpoint context at all: the session came from our own
  *     `createCustomerSession` (WhatsApp, email link), which passes the method
@@ -139,7 +140,13 @@ function sessionAuthMethodFor(
   if (path === undefined)
     return SESSION_AUTH_METHODS.find((method) => method === passed) ?? "legacy";
   if (PASSWORD_SESSION_PATHS.has(path)) return "password";
-  if (path.startsWith("/callback/") || path.startsWith("/oauth2/callback"))
+  // legend-k2l review F6: `/sign-in/social` is the idToken sign-in (no
+  // redirect, no callback). Google is the only social provider configured.
+  if (
+    path === "/sign-in/social" ||
+    path.startsWith("/callback/") ||
+    path.startsWith("/oauth2/callback")
+  )
     return "google";
   return "legacy";
 }

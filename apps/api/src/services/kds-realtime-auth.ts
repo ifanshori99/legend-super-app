@@ -90,6 +90,13 @@ export async function resolveKdsStaffConnection(
       query: { disableCookieCache: true },
     });
     if (!session) return null;
+    // legend-k2l, design ws08 M2 sign-in method gate: this upgrade runs outside
+    // requireAuth, so requestMayUseStaffRoles never sees it. Staff roles need a
+    // password sign-in; a missing method counts as `legacy`.
+    const authMethod =
+      (session.session as { authMethod?: string | null }).authMethod ??
+      "legacy";
+    if (authMethod !== "password") return null;
     const tenant = await tenantOf(request);
     if (!tenant) return null;
     // A support (impersonated) session keeps the socket only while its support

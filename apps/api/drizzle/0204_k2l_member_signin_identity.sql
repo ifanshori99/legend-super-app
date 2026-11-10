@@ -83,7 +83,10 @@ GRANT SELECT, INSERT ON TABLE public.identity_merges TO legend_app;
 -- function walks the tenants and sets the tenant scope for each probe, then
 -- restores the caller's scope. SECURITY DEFINER with a pinned search_path
 -- (pattern app.resolve_delivery_store, 0126); EXECUTE for legend_app only. It
--- returns only a boolean for a user id the caller already holds.
+-- returns only a boolean for a user id the caller already holds. Only a
+-- currently active assignment counts, the same rule as `isAssignmentActive`
+-- in packages/shared/src/access/scope.ts: active on [valid_from, valid_until),
+-- valid_until null = open (ending a role early sets valid_until).
 CREATE OR REPLACE FUNCTION app.user_has_role_assignment(p_user_id text) RETURNS boolean
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE
@@ -93,7 +96,9 @@ DECLARE
 BEGIN
   FOR t IN SELECT id FROM public.tenants LOOP
     PERFORM set_config('app.tenant_id', t::text, true);
-    IF EXISTS (SELECT 1 FROM public.role_assignments WHERE user_id = p_user_id) THEN
+    IF EXISTS (SELECT 1 FROM public.role_assignments WHERE user_id = p_user_id
+                  AND valid_from <= now()
+                  AND (valid_until IS NULL OR valid_until > now())) THEN
       found := true;
       EXIT;
     END IF;

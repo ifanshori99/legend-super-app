@@ -20,10 +20,11 @@
 //
 // Refusals (design M3 rule 1 and 2):
 // - `IDENTITY_MERGE_NEEDS_SUPPORT`: V holds any identity other than the number
-//   just proven, any role assignment in any tenant, a `platform_admins` row,
-//   or is already banned or merged. A WhatsApp-only account belongs to whoever
-//   controls the number (D16); an account with an email or Google identity may
-//   belong to a different person (recycled numbers), so support decides.
+//   just proven, a real (not `.invalid`) e-mail, any Better Auth `account` row,
+//   any role assignment in any tenant, a `platform_admins` row, or is already
+//   banned or merged. A WhatsApp-only account belongs to whoever controls the
+//   number (D16); an account with an email or Google identity may belong to a
+//   different person (recycled numbers), so support decides.
 // - `WHATSAPP_ALREADY_ON_ACCOUNT`: U already holds a different WhatsApp number
 //   (`user_identities_one_whatsapp_per_user`).
 //
@@ -38,7 +39,13 @@
 import { and, eq, ne, sql } from "drizzle-orm";
 import { maskEmail } from "@starter/shared/identity";
 import type { db } from "../db";
-import { platformAdmins, session, user, userIdentities } from "../db/schema";
+import {
+  account,
+  platformAdmins,
+  session,
+  user,
+  userIdentities,
+} from "../db/schema";
 import { identityMerges } from "../db/schema/identity-merge.ts";
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -132,7 +139,7 @@ export async function mergeAbsorbedIntoSurvivor(
   }
 
   const [absorbed] = await tx
-    .select({ id: user.id, banned: user.banned })
+    .select({ id: user.id, email: user.email, banned: user.banned })
     .from(user)
     .where(eq(user.id, absorbedUserId))
     .for("update");
@@ -164,6 +171,21 @@ export async function mergeAbsorbedIntoSurvivor(
     .limit(1);
   if (otherIdentity)
     return refuse("IDENTITY_MERGE_NEEDS_SUPPORT", "absorbed_has_identity");
+
+  // Pre-k2l password accounts and Google users whose identity write failed hold
+  // only a `whatsapp` row, so `user_identities` alone cannot prove V is
+  // WhatsApp-only. A real e-mail or any Better Auth account row means V may
+  // belong to a different person (recycled number): support decides (design M3
+  // step 1).
+  if (!absorbed.email.toLowerCase().endsWith(".invalid"))
+    return refuse("IDENTITY_MERGE_NEEDS_SUPPORT", "absorbed_has_real_email");
+  const [absorbedAccount] = await tx
+    .select({ id: account.id })
+    .from(account)
+    .where(eq(account.userId, absorbedUserId))
+    .limit(1);
+  if (absorbedAccount)
+    return refuse("IDENTITY_MERGE_NEEDS_SUPPORT", "absorbed_has_account");
 
   const [owned] = await tx
     .select({ id: userIdentities.id })

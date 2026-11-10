@@ -298,6 +298,51 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
     expect(identities[0]!.user_id).toBe(v.userId);
   });
 
+  // F1 (architect review): pre-k2l password accounts and Google users whose
+  // identity write failed hold only a whatsapp identity row, so "WhatsApp-only"
+  // must also look at the user email and Better Auth account rows. Assumption:
+  // the absorbed account's sessions are kept as proof that nothing was touched.
+  async function expectRefusedAndUntouched(
+    v: { userId: string },
+    u: { client: Client },
+  ) {
+    const { delivered, polled } = await link(u.client);
+    expect(delivered.body.data.completed).toBe(0);
+    expect(polled.status).toBe(409);
+    expect(polled.body.error.code).toBe("IDENTITY_MERGE_NEEDS_SUPPORT");
+    expect(await merges()).toHaveLength(0);
+    expect((await userRow(v.userId)).banned).not.toBe(true);
+    const vSessions = await owner.query(
+      "SELECT count(*)::int AS count FROM session WHERE user_id = $1",
+      [v.userId],
+    );
+    expect(vSessions.rows[0].count).toBeGreaterThan(0);
+    const identities = await whatsappIdentities();
+    expect(identities).toHaveLength(1);
+    expect(identities[0]!.user_id).toBe(v.userId);
+  }
+
+  it("refuses with IDENTITY_MERGE_NEEDS_SUPPORT when the absorbed account has a real email and only a WhatsApp identity", async () => {
+    const v = await whatsAppOnlyAccount();
+    await owner.query('UPDATE "user" SET email = $2 WHERE id = $1', [
+      v.userId,
+      `real-${randomUUID()}@example.com`,
+    ]);
+    const u = await signedInAccount();
+    await expectRefusedAndUntouched(v, u);
+  });
+
+  it("refuses with IDENTITY_MERGE_NEEDS_SUPPORT when the absorbed account has a credential account", async () => {
+    const v = await whatsAppOnlyAccount();
+    await owner.query(
+      `INSERT INTO "account" (id, account_id, provider_id, user_id, password)
+       VALUES ($1, $2, 'credential', $2, 'x')`,
+      [randomUUID(), v.userId],
+    );
+    const u = await signedInAccount();
+    await expectRefusedAndUntouched(v, u);
+  });
+
   it("refuses with IDENTITY_MERGE_NEEDS_SUPPORT when the absorbed account has a role assignment", async () => {
     const v = await whatsAppOnlyAccount();
     await owner.query(

@@ -12,9 +12,10 @@
 //    is identical for known and unknown addresses (no enumeration): nothing in
 //    this step looks the address up.
 // 2. `verifyEmailMagicLink`: the page opened by the link posts the token (it
-//    travels in the URL fragment, so it never reaches a server log). One
-//    transaction locks the challenge row, resolves or creates the account,
-//    completes the challenge and issues the session, so a token works once.
+//    travels in the URL fragment, so it never reaches a server log). The
+//    account is resolved or created first, one transaction then locks the
+//    challenge row and consumes it, and the session is issued only after that
+//    commit, so a token works once (see the function comment).
 //
 // Browser binding for this channel is deliberately not a gate (machines.ts
 // `assertChallengeCompletable`): the mail app may open the link in another
@@ -216,11 +217,10 @@ function uniqueViolation(error: unknown, depth = 0): boolean {
 }
 
 async function resolveAccount(
-  tx: Transaction,
   email: string,
   digest: string,
 ): Promise<Resolved> {
-  const [identity] = await tx
+  const [identity] = await db
     .select({ userId: userIdentities.userId })
     .from(userIdentities)
     .where(
@@ -257,15 +257,35 @@ async function resolveAccount(
 }
 
 type VerifyOutcome =
-  | { kind: "ok"; session: IssuedSession; userId: string; crossDevice: boolean }
+  | {
+      kind: "consumed";
+      userId: string;
+      crossDevice: boolean;
+      challengeId: string;
+    }
   | { kind: "expired" }
   | { kind: "already_linked" }
   | { kind: "refused" };
 
 /**
- * Completes a magic link: one transaction, one use. Every refusal that could
- * reveal something (unknown token, other tenant, used, banned account) is
- * the same `CHALLENGE_NOT_PENDING`; only an expired token says so.
+ * Completes a magic link: one use. Every refusal that could reveal something
+ * (unknown token, other tenant, used, banned account) is the same
+ * `CHALLENGE_NOT_PENDING`; only an expired token says so.
+ *
+ * Order matters, because Better Auth writes (`createUser`,
+ * `createCustomerSession`) run on its own connection, outside our transaction,
+ * and a rollback cannot undo them (legend-k2l review F5):
+ *
+ * 1. Read the challenge without a lock; only a still-valid token gets this far.
+ *    Resolve or create the account now. That write is idempotent by address and
+ *    harmless if the transaction below then refuses (the mailbox is proven, the
+ *    account simply exists).
+ * 2. One transaction locks the challenge, runs every refusal and consumes the
+ *    token (`completed`, `matchedUserId`, `completedAt`). Nothing outside the
+ *    transaction has been written for this token except the account.
+ * 3. After commit, issue the session and record `sessionId`. A rollback can no
+ *    longer leave a pending token next to a live session. If the session cannot
+ *    be created the token stays consumed: the user asks for a new link.
  */
 export async function verifyEmailMagicLink(
   tenant: TenantContext,
@@ -282,6 +302,38 @@ export async function verifyEmailMagicLink(
   const now = deps.now ?? new Date();
   const codeHash = magicLinkTokenDigest(request.token);
 
+  // Step 1: validity read and account resolution, before the transaction.
+  const pre = await withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(loginChallenges)
+      .where(
+        and(
+          eq(loginChallenges.channel, "email_magic_link"),
+          eq(loginChallenges.codeHash, codeHash),
+        ),
+      )
+      .limit(1);
+    if (
+      !row ||
+      row.tenantId !== tenant.tenantId ||
+      row.status !== "pending" ||
+      row.emailEncrypted === null ||
+      now.getTime() >= row.expiresAt.getTime()
+    )
+      return null;
+    await assertTenantActive(tx, tenant.tenantId);
+    const email = normalizeEmail(
+      openSecret(row.emailEncrypted, challengeEmailAad(row.id)),
+    );
+    if (email === null || isReservedAddress(email)) return null;
+    return { email, digest: await emailDigest(email) };
+  });
+  const resolved = pre
+    ? { ...pre, account: await resolveAccount(pre.email, pre.digest) }
+    : null;
+
+  // Step 2: lock, refuse or consume.
   const outcome = await withTenant(
     db,
     context,
@@ -313,9 +365,6 @@ export async function verifyEmailMagicLink(
         return { kind: "expired" };
       }
 
-      const email = normalizeEmail(
-        openSecret(row.emailEncrypted, challengeEmailAad(row.id)),
-      );
       const cancel = async (): Promise<VerifyOutcome> => {
         await tx
           .update(loginChallenges)
@@ -323,10 +372,11 @@ export async function verifyEmailMagicLink(
           .where(eq(loginChallenges.id, row.id));
         return { kind: "refused" };
       };
-      if (email === null || isReservedAddress(email)) return cancel();
+      // Valid now but not before the read above: cannot happen (a token only
+      // gets less valid), so fail closed.
+      if (resolved === null) return cancel();
+      const { email, digest, account } = resolved;
 
-      const digest = await emailDigest(email);
-      const account = await resolveAccount(tx, email, digest);
       const [owner] = await tx
         .select({ banned: user.banned, emailVerified: user.emailVerified })
         .from(user)
@@ -414,19 +464,12 @@ export async function verifyEmailMagicLink(
           completedAt: now,
         })
         .where(eq(loginChallenges.id, row.id));
-      const session = await createCustomerSession({
+      return {
+        kind: "consumed",
         userId: account.userId,
-        ipAddress: request.ip,
-        userAgent: request.userAgent,
-        now,
-        authMethod: "email_magic_link",
         crossDevice,
-      });
-      await tx
-        .update(loginChallenges)
-        .set({ sessionId: session.id, sessionIssuedAt: now })
-        .where(eq(loginChallenges.id, row.id));
-      return { kind: "ok", session, userId: account.userId, crossDevice };
+        challengeId: row.id,
+      };
     },
   );
 
@@ -435,8 +478,48 @@ export async function verifyEmailMagicLink(
     throw new IdentityError("IDENTITY_ALREADY_LINKED");
   if (outcome.kind === "refused")
     throw new IdentityError("CHALLENGE_NOT_PENDING");
+
+  // Step 3: the token is consumed and committed; now the session.
+  let session: IssuedSession;
+  try {
+    session = await createCustomerSession({
+      userId: outcome.userId,
+      ipAddress: request.ip,
+      userAgent: request.userAgent,
+      now,
+      authMethod: "email_magic_link",
+      crossDevice: outcome.crossDevice,
+    });
+  } catch (error) {
+    // The token stays consumed on purpose: the user asks for a new link.
+    emailLoginLog.error(
+      {
+        challengeId: outcome.challengeId,
+        error: error instanceof Error ? error.name : "unknown",
+      },
+      "magic link consumed but session could not be created",
+    );
+    throw error;
+  }
+  try {
+    await withTenant(db, context, async (tx) => {
+      await tx
+        .update(loginChallenges)
+        .set({ sessionId: session.id, sessionIssuedAt: now })
+        .where(eq(loginChallenges.id, outcome.challengeId));
+    });
+  } catch (error) {
+    // The session is live and valid; only the audit link is missing.
+    emailLoginLog.error(
+      {
+        challengeId: outcome.challengeId,
+        error: error instanceof Error ? error.name : "unknown",
+      },
+      "magic link session issued but challenge could not record it",
+    );
+  }
   return {
-    session: outcome.session,
+    session,
     view: {
       userId: userIdSchema.parse(outcome.userId),
       crossDevice: outcome.crossDevice,

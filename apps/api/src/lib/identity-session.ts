@@ -18,8 +18,15 @@
 import { createHmac } from "node:crypto";
 import type { Response } from "express";
 import { getCookies } from "better-auth/cookies";
-import { CUSTOMER_SESSION_DAYS, DAY_MS } from "@starter/shared/identity";
+import { eq } from "drizzle-orm";
+import {
+  CUSTOMER_SESSION_DAYS,
+  DAY_MS,
+  IdentityError,
+} from "@starter/shared/identity";
 import { env } from "../config/env";
+import { db } from "../db";
+import { user } from "../db/schema";
 import { auth } from "./auth";
 
 export type IssuedSession = {
@@ -50,10 +57,24 @@ export async function createCustomerSession(input: {
   /** True when the browser that finished the sign-in is not the one that asked for it. */
   crossDevice?: boolean;
 }): Promise<IssuedSession> {
+  const now = input.now ?? new Date();
+  // legend-k2l: this call has no Better Auth endpoint context, so the admin
+  // plugin's ban check never runs. Check it here; the refusal is generic and
+  // reveals nothing about the account.
+  const [account] = await db
+    .select({ banned: user.banned, banExpires: user.banExpires })
+    .from(user)
+    .where(eq(user.id, input.userId))
+    .limit(1);
+  if (
+    account?.banned === true &&
+    (account.banExpires === null ||
+      account.banExpires.getTime() > now.getTime())
+  ) {
+    throw new IdentityError("CHALLENGE_NOT_PENDING");
+  }
   const context = await auth.$context;
-  const expiresAt = new Date(
-    (input.now ?? new Date()).getTime() + CUSTOMER_SESSION_DAYS * DAY_MS,
-  );
+  const expiresAt = new Date(now.getTime() + CUSTOMER_SESSION_DAYS * DAY_MS);
   const session = await context.internalAdapter.createSession(
     input.userId,
     false,

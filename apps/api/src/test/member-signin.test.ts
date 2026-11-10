@@ -425,6 +425,52 @@ describe("AUTH-01 email magic link: verify", () => {
     expect(count.rows[0].count).toBe(1);
   });
 
+  it("does not exempt a staff user whose only role assignment has expired (409 IDENTITY_ALREADY_LINKED)", async () => {
+    // F3: the takeover-guard staff exemption counts only currently active
+    // assignments. newStaff() is an unverified password account with an owner
+    // role; ending the window in the past removes the exemption.
+    const staff = await newStaff();
+    await owner.query(
+      "UPDATE role_assignments SET valid_until = now() - interval '10 seconds' WHERE user_id = $1",
+      [staff.userId],
+    );
+    const sessionsBefore = (await sessionRows(staff.userId)).length;
+
+    const client = browser();
+    const refused = await verifyLink(
+      client,
+      await issueToken(client, staff.email),
+    );
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("IDENTITY_ALREADY_LINKED");
+    const me = await client.get("/api/auth/get-session");
+    expect(me.body?.user?.id).toBeUndefined();
+    expect(await sessionRows(staff.userId)).toHaveLength(sessionsBefore);
+  });
+
+  it("gives a banned user no session from a magic link", async () => {
+    // F4: Assumption: the exact refusal status is not fixed by the spec, so
+    // assert any 4xx plus the observable outcome (no session).
+    const email = freshEmail();
+    const first = browser();
+    const verified = await verifyLink(first, await issueToken(first, email));
+    expect(verified.status).toBe(200);
+    const userId = verified.body.data.userId as string;
+    trackedUserIds.push(userId);
+    await owner.query('UPDATE "user" SET banned = true WHERE id = $1', [
+      userId,
+    ]);
+    const sessionsBefore = (await sessionRows(userId)).length;
+
+    const client = browser();
+    const refused = await verifyLink(client, await issueToken(client, email));
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(refused.status).toBeLessThan(500);
+    const me = await client.get("/api/auth/get-session");
+    expect(me.body?.user?.id).toBeUndefined();
+    expect(await sessionRows(userId)).toHaveLength(sessionsBefore);
+  });
+
   it("is single use: a replay is refused and opens no second session", async () => {
     const client = browser();
     const token = await issueToken(client, freshEmail());
@@ -522,6 +568,39 @@ describe("AUTH-01 email magic link: another browser", () => {
       .set(originHeader)
       .send({});
     expect(link.status).toBe(201);
+  });
+});
+
+describe("AUTH-01 banned user", () => {
+  it("gets no session from WhatsApp login", async () => {
+    // F4: Assumption: the webhook may answer completed 0 or 1, so assert only
+    // the user-visible outcome: the poll yields no session and none is stored.
+    const known = await whatsAppLogin(browser());
+    trackedUserIds.push(known.userId);
+    await owner.query('UPDATE "user" SET banned = true WHERE id = $1', [
+      known.userId,
+    ]);
+    const sessionsBefore = (await sessionRows(known.userId)).length;
+
+    const client = browser();
+    const issued = await client
+      .post("/api/auth/login-challenges/whatsapp")
+      .set(originHeader)
+      .send({});
+    expect(issued.status).toBe(201);
+    await postWebhook(
+      kirimPayload(
+        `wamid.${randomUUID()}`,
+        `MASUK LEGEND ${issued.body.data.codeFormatted}`,
+      ),
+    );
+    const polled = await client.get(
+      `/api/auth/login-challenges/${issued.body.data.challenge.id}`,
+    );
+    expect(polled.body?.data?.session ?? null).toBeNull();
+    const me = await client.get("/api/auth/get-session");
+    expect(me.body?.user?.id).toBeUndefined();
+    expect(await sessionRows(known.userId)).toHaveLength(sessionsBefore);
   });
 });
 
