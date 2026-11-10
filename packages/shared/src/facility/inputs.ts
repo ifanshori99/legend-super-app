@@ -101,6 +101,32 @@ export const staffSellTicketSchema = clientInputSchema({
 });
 export type StaffSellTicketInput = z.infer<typeof staffSellTicketSchema>;
 
+/** Staff read of one customer's entitlement balance at one facility. */
+export const customerEntitlementsParamsSchema = z.strictObject({
+  customerProfileId: uuidSchema,
+});
+export const customerEntitlementsQuerySchema = z.strictObject({
+  facilityId: facilityIdSchema,
+});
+
+/**
+ * Staff grants sessions without a sale (source `staff_issue`, FAC-04): the
+ * reason is mandatory and the request id makes a retry a no-op (it becomes the
+ * ledger `sourceRef`, so it must be a UUID).
+ */
+export const staffIssueEntitlementSchema = clientInputSchema({
+  facilityId: facilityIdSchema,
+  customerProfileId: uuidSchema,
+  sessions: z.number().int().min(1).max(100),
+  /** Null or absent = the grant never expires. */
+  expiresAt: isoDateTimeSchema.nullable().optional(),
+  reason: z.string().trim().min(3).max(500),
+  requestId: uuidSchema,
+});
+export type StaffIssueEntitlementInput = z.infer<
+  typeof staffIssueEntitlementSchema
+>;
+
 export const cancelAccessTicketSchema = clientInputSchema({
   reason: z.string().trim().min(3).max(500),
 });

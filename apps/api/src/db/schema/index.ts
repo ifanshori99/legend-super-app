@@ -43,6 +43,7 @@ export * from "./reservation";
 // Guest reservation self-service links (legend-o5gr).
 export * from "./reservation-public";
 export * from "./facility";
+export * from "./facility-entitlement";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";

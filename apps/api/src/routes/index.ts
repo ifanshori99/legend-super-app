@@ -62,6 +62,7 @@ import { reservationRouter } from "./reservation.routes";
 import { reservationPolicyRouter } from "./reservation-policy.routes";
 import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityCustomerRouter } from "./facility-customer.routes";
+import { facilityEntitlementRouter } from "./facility-entitlement.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
@@ -289,6 +290,8 @@ apiRouter.use(reservationPublicRouter);
 apiRouter.use("/facility", facilityCustomerRouter);
 // WS-09 facility slots (legend-nm4f).
 apiRouter.use("/facility", facilityRouter);
+// WS-09 staff entitlements (legend-fjk5), after facilityRouter.
+apiRouter.use("/facility", facilityEntitlementRouter);
 // WS-09 Wi-Fi policy configuration writes (legend-8dpm).
 apiRouter.use("/wifi", wifiConfigRouter);
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp). Before `/hris`,
