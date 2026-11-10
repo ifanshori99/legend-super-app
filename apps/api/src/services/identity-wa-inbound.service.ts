@@ -23,8 +23,10 @@
 //   the receiving number that tenant's active `whatsapp` integration still
 //   maps. A message received on another tenant's number is rejected and the
 //   challenge stays pending.
-// - AUTH-03: nothing is ever sent back. There is no reply path here at all —
-//   the confirmation appears in the guest's browser.
+// - AUTH-03: nothing is sent back by default — the confirmation appears in the
+//   guest's browser. A tenant may opt in to a reply (`wa-login-reply.service`,
+//   default off, monthly quota). It is sent only after the transaction commits
+//   and never changes the outcome.
 // - "Pesan dari nomor yang tidak cocok dengan challenge ditolak tanpa membuka
 //   informasi akun" (§3 F6): an unknown, expired or already used code answers
 //   exactly like any other failed attempt, and the response never says whether
@@ -81,6 +83,10 @@ import {
   recordLoginAudit,
   type LoginAuditAction,
 } from "./identity-wa-audit.ts";
+import {
+  sendLoginReply,
+  type LoginReplySender,
+} from "./wa-login-reply.service.ts";
 
 /** One inbound text message, already reduced to the fields the flow needs. */
 export type InboundWhatsAppMessage = {
@@ -199,6 +205,15 @@ export type ProcessInboundDeps = {
   readonly resolveAccount?: typeof resolveWhatsAppAccount;
   /** Test seam to verify link, audit, outbox and claim roll back together. */
   readonly afterLinkWrite?: () => Promise<void>;
+  /** Optional WhatsApp reply sender; no sender means no reply (AUTH-03). */
+  readonly sendReply?: LoginReplySender;
+};
+
+type PendingReply = {
+  tenantId: string;
+  brandId: string | null;
+  kind: "success" | "error" | "merged";
+  maskedEmail: string | null;
 };
 
 /** Records the outcome of a claimed message; the claim itself is the dedupe. */
@@ -303,7 +318,10 @@ export async function processInboundWhatsApp(
     JSON.stringify([message.receivingNumber, message.sender, message.text]),
   );
 
-  return withInboundSlot(() =>
+  // Set inside the transaction, used only after it commits.
+  let pendingReply: PendingReply | null = null;
+
+  const outcome = await withInboundSlot<InboundOutcome>(() =>
     db.transaction(async (tx) => {
       // AUTH-04 serializes the quota check and insertion for each sender.
       await tx.execute(
@@ -360,6 +378,9 @@ export async function processInboundWhatsApp(
         };
       }
 
+      const merged: { value: { maskedEmail: string | null } | null } = {
+        value: null,
+      };
       const challenge = await pendingChallengeFor(
         tx,
         code,
@@ -381,9 +402,25 @@ export async function processInboundWhatsApp(
             now,
           },
           deps.afterLinkWrite,
+          (maskedEmail) => {
+            merged.value = { maskedEmail };
+          },
         );
-        const kind: InboundKind = completed ? "login" : "rejected";
-        if (!completed)
+        const kind: InboundKind =
+          completed === "completed" ? "login" : "rejected";
+        if (completed !== "unrouted")
+          pendingReply = {
+            tenantId: challenge.tenantId,
+            brandId: challenge.brandId,
+            kind:
+              completed === "refused"
+                ? "error"
+                : merged.value
+                  ? "merged"
+                  : "success",
+            maskedEmail: merged.value?.maskedEmail ?? null,
+          };
+        if (completed !== "completed")
           await auditRejected(tx, challenge, message.sender, now, true);
         await finish(tx, claim.id, {
           kind,
@@ -408,8 +445,16 @@ export async function processInboundWhatsApp(
         senderMasked: maskSenderForAudit(message.sender),
         now,
       });
-      const kind: InboundKind = completed ? "login" : "rejected";
-      if (!completed)
+      const kind: InboundKind =
+        completed === "completed" ? "login" : "rejected";
+      if (completed !== "unrouted")
+        pendingReply = {
+          tenantId: challenge.tenantId,
+          brandId: challenge.brandId,
+          kind: completed === "completed" ? "success" : "error",
+          maskedEmail: null,
+        };
+      if (completed !== "completed")
         await auditRejected(tx, challenge, message.sender, now, false);
       await finish(tx, claim.id, {
         kind,
@@ -419,6 +464,22 @@ export async function processInboundWhatsApp(
       return { eventId: message.eventId, duplicate: false, kind };
     }),
   );
+
+  // After commit, never inside the transaction. A reply failure is swallowed.
+  const reply = pendingReply as PendingReply | null;
+  if (reply && !outcome.duplicate)
+    await sendLoginReply({
+      sender: deps.sendReply,
+      tenantId: reply.tenantId,
+      brandId: reply.brandId,
+      receivingNumber: message.receivingNumber,
+      to: message.sender,
+      eventId: message.eventId,
+      kind: reply.kind,
+      maskedEmail: reply.maskedEmail,
+      now: deps.now ?? new Date(),
+    });
+  return outcome;
 }
 
 /** A found challenge whose completion was refused (inactive tenant, number
@@ -533,6 +594,13 @@ async function pendingChallengeFor(
 }
 
 /**
+ * Result of completing a challenge. `unrouted`: the tenant is not active or no
+ * longer routes this number, so no reply is owed. `refused`: refused after both
+ * checks passed (lost race, stale session, merge refusal): the guest is told.
+ */
+type Completion = "completed" | "refused" | "unrouted";
+
+/**
  * Completes the challenge inside the tenant's transaction: the tenant must
  * still be active and must still route this receiving number to itself. The
  * conditional UPDATE is what makes completion single-use.
@@ -548,7 +616,7 @@ async function completeChallenge(
     senderMasked: string | null;
     now: Date;
   },
-): Promise<boolean> {
+): Promise<Completion> {
   const tenant = establishTenantContext({
     tenantId: input.tenantId,
     brandId: input.brandId,
@@ -564,7 +632,7 @@ async function completeChallenge(
         .from(tenants)
         .where(eq(tenants.id, input.tenantId))
         .limit(1);
-      if (tenantRow?.status !== "active") return false;
+      if (tenantRow?.status !== "active") return "unrouted";
       // Resolve the tenant from the receiving number: the tenant's own active
       // integration must still name this number, otherwise this message is not
       // theirs to complete.
@@ -579,7 +647,7 @@ async function completeChallenge(
         },
       );
       if (!channel || channel.routingNumber !== input.receivingNumber)
-        return false;
+        return "unrouted";
       const updated = await tx
         .update(loginChallenges)
         .set({
@@ -594,7 +662,7 @@ async function completeChallenge(
           ),
         )
         .returning({ id: loginChallenges.id });
-      if (updated.length !== 1) return false;
+      if (updated.length !== 1) return "refused";
       await recordLoginAudit(tx, context, {
         action: "login_challenge.completed",
         challengeId: input.challengeId,
@@ -607,7 +675,7 @@ async function completeChallenge(
         },
         now: input.now,
       });
-      return true;
+      return "completed";
     },
   );
 }
@@ -626,8 +694,9 @@ async function completeLink(
     now: Date;
   },
   afterLinkWrite?: () => Promise<void>,
-): Promise<boolean> {
-  if (!input.linkUserId || !input.linkSessionId) return false;
+  onMerged?: (maskedEmail: string | null) => void,
+): Promise<Completion> {
+  if (!input.linkUserId || !input.linkSessionId) return "unrouted";
   const userId = input.linkUserId;
   const tenant = establishTenantContext({
     tenantId: input.tenantId,
@@ -640,6 +709,25 @@ async function completeLink(
     transaction as unknown as typeof db,
     context,
     async (tx) => {
+      // Refusals before these two checks are silent: a suspended tenant, or a
+      // number its integration no longer maps, is not theirs to answer on.
+      const [tenantRow] = await tx
+        .select({ status: tenants.status })
+        .from(tenants)
+        .where(eq(tenants.id, input.tenantId));
+      if (tenantRow?.status !== "active") return "unrouted";
+      const channel = await resolveWhatsAppChannel(tx, context).catch(
+        (error: unknown) => {
+          if (
+            error instanceof CoreError &&
+            error.code === "SERVICE_UNAVAILABLE"
+          )
+            return null;
+          throw error;
+        },
+      );
+      if (!channel || channel.routingNumber !== input.receivingNumber)
+        return "unrouted";
       // Serialize both the challenge and all attempts for this number.
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${digest}, 0))`,
@@ -656,7 +744,7 @@ async function completeLink(
         challenge.linkUserId !== userId ||
         challenge.linkSessionId !== input.linkSessionId
       )
-        return false;
+        return "refused";
       const [active] = await tx
         .select({ id: session.id, authCrossDevice: session.authCrossDevice })
         .from(session)
@@ -669,7 +757,7 @@ async function completeLink(
           ),
         )
         .for("update");
-      if (!active) return false;
+      if (!active) return "refused";
       // legend-k2l (design M2/M3 rule 2): a session opened through a magic link
       // on another device may not prove a number. The challenge request already
       // refuses it (IDENTITY_LINK_REAUTH_REQUIRED); this re-check covers a
@@ -680,25 +768,8 @@ async function completeLink(
           .update(loginChallenges)
           .set({ status: "cancelled" })
           .where(eq(loginChallenges.id, input.id));
-        return false;
+        return "refused";
       }
-      const [tenantRow] = await tx
-        .select({ status: tenants.status })
-        .from(tenants)
-        .where(eq(tenants.id, input.tenantId));
-      if (tenantRow?.status !== "active") return false;
-      const channel = await resolveWhatsAppChannel(tx, context).catch(
-        (error: unknown) => {
-          if (
-            error instanceof CoreError &&
-            error.code === "SERVICE_UNAVAILABLE"
-          )
-            return null;
-          throw error;
-        },
-      );
-      if (!channel || channel.routingNumber !== input.receivingNumber)
-        return false;
       // legend-k2l: one WhatsApp number per account
       // (`user_identities_one_whatsapp_per_user`). A different number already
       // on this account cancels with the caller as matched user, which the poll
@@ -720,7 +791,7 @@ async function completeLink(
           .update(loginChallenges)
           .set({ status: "cancelled", matchedUserId: userId })
           .where(eq(loginChallenges.id, input.id));
-        return false;
+        return "refused";
       }
       const [existing] = await tx
         .select()
@@ -804,9 +875,10 @@ async function completeLink(
             },
             LOGIN_AUDIT_SAFE_FIELDS,
           );
-          return false;
+          return "refused";
         }
         merge = outcome;
+        onMerged?.(outcome.maskedSurvivorEmail);
       }
       // The account that keeps the number and everything else from here on.
       const survivorUserId = merge ? merge.survivorUserId : userId;
@@ -851,7 +923,7 @@ async function completeLink(
             })
             .onConflictDoNothing()
             .returning();
-          if (!inserted) return false;
+          if (!inserted) return "refused";
           identity = inserted;
         }
         if (!identity) throw new Error("Identity missing after link");
@@ -981,7 +1053,7 @@ async function completeLink(
         },
         now: input.now,
       });
-      return true;
+      return "completed";
     },
   );
 }

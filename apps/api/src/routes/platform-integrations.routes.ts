@@ -46,6 +46,10 @@ import {
 } from "../services/platform-integration.service.ts";
 import { testGatewayConnection } from "../services/payment-gateway-connection.service.ts";
 import {
+  getLoginReplySettings,
+  updateLoginReplySettings,
+} from "../services/wa-login-reply-settings.service.ts";
+import {
   getOrgUsage,
   getTenantUsageForPlatform,
 } from "../services/platform-usage.service.ts";
@@ -135,6 +139,41 @@ orgIntegrationsRouter.get(
   viewUsage,
   async (req, res) => {
     res.json({ data: await getOrgUsage(getScopedTenantContext(req)) });
+  },
+);
+
+// AUTH-03: WhatsApp login replies are opt-in per tenant (default off).
+const loginReplySettingsBody = z.strictObject({
+  enabled: z.boolean(),
+  freeMonthlyQuota: z.number().int().min(0).max(1000).optional(),
+});
+
+orgIntegrationsRouter.get(
+  "/whatsapp/login-replies",
+  ...tenantGuard,
+  viewUsage,
+  async (req, res) => {
+    res.json({
+      data: await getLoginReplySettings(getScopedTenantContext(req)),
+    });
+  },
+);
+
+orgIntegrationsRouter.put(
+  "/whatsapp/login-replies",
+  ...tenantGuard,
+  viewUsage,
+  jsonBody,
+  async (req, res) => {
+    const input = loginReplySettingsBody.parse(req.body);
+    res.json({
+      data: await updateLoginReplySettings(
+        getScopedTenantContext(req),
+        input,
+        new Date(),
+        getAuth(req).user.id,
+      ),
+    });
   },
 );
 

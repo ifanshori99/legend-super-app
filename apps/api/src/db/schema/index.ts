@@ -153,3 +153,6 @@ export * from "./crm-feedback";
 export * from "./crm-segments";
 // WS-08 loyalty tiers, tier history, referrals (legend-3zd1).
 export * from "./crm-tiers";
+
+// legend-dn4 WhatsApp login reply policy, default off (AUTH-03).
+export * from "./wa-login-reply";
