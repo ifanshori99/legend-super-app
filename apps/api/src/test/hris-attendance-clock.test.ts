@@ -217,6 +217,7 @@ function clockBody(
     location: unknown;
     deviceIdHash: string | null;
     qrToken: string | null;
+    photoUploadRef: string | null;
     idempotencyKey: string;
   }> = {},
 ) {
@@ -858,6 +859,15 @@ describe("shift timing", () => {
 
 // ---- idempotency -------------------------------------------------------------
 
+describe("manual correction method", () => {
+  it("[F25] the clock endpoint refuses method manual_correction 422 and stores no log", async () => {
+    const staff = await newStaff(ownOutlet, "Staf Koreksi Palsu");
+    const response = await clock(staff.client, { method: "manual_correction" });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await storedLogs(staff.employeeId)).toHaveLength(0);
+  });
+});
+
 describe("idempotency", () => {
   it("[F25] re-sending a clock-in with the same idempotency key returns the same log and adds none", async () => {
     const staff = await newStaff(ownOutlet);
@@ -890,6 +900,37 @@ describe("idempotency", () => {
     );
     for (const result of results)
       expect(result.status, JSON.stringify(result.body)).toBeLessThan(300);
+    expect(new Set(results.map((result) => result.body.data.id)).size).toBe(1);
+    expect(await storedLogs(staff.employeeId)).toHaveLength(1);
+  });
+
+  it("[F25] concurrent re-sends of one clock-in with a selfie return the same log, not 422", async () => {
+    const staff = await newStaff(ownOutlet, "Staf Selfie Kembar");
+    const objectId = randomUUID();
+    await asTenant((client) =>
+      client.query(
+        `INSERT INTO core_storage_objects
+           (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes,
+            thumbnail_key, owner_user_id)
+         VALUES ($1, $2, $3, 'selfie', $4, 'image/webp', 2048, $5, $6)`,
+        [
+          tenant.id,
+          ownOutlet,
+          objectId,
+          `selfie/${objectId}/original.webp`,
+          `selfie/${objectId}/thumb.webp`,
+          staff.userId,
+        ],
+      ),
+    );
+    const body = clockBody({ photoUploadRef: objectId } as never);
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        post(staff.client, "/api/hris/attendance/clock", body),
+      ),
+    );
+    for (const result of results)
+      expect(result.status, JSON.stringify(result.body)).toBe(201);
     expect(new Set(results.map((result) => result.body.data.id)).size).toBe(1);
     expect(await storedLogs(staff.employeeId)).toHaveLength(1);
   });
@@ -962,6 +1003,25 @@ describe("own data only", () => {
     expect(
       (response.body.data as { id: string }[]).map((row) => row.id),
     ).toEqual([log.body.data.id]);
+  });
+
+  it("[F25] a manager sees no device hash of an employee's log; the employee sees their own", async () => {
+    const a = await newStaff(ownOutlet, "Staf Hash Perangkat");
+    const hash = deviceHash();
+    const log = await clock(a.client, { deviceIdHash: hash });
+    expect(log.status, JSON.stringify(log.body)).toBe(201);
+
+    const asManager = await mgr.get(
+      `/api/hris/attendance/logs?employeeId=${a.employeeId}`,
+    );
+    expect(asManager.status, JSON.stringify(asManager.body)).toBe(200);
+    expect(asManager.body.data).toHaveLength(1);
+    expect(asManager.body.data[0].deviceIdHash).toBeNull();
+    expect(JSON.stringify(asManager.body)).not.toContain(hash);
+
+    const own = await a.client.get("/api/hris/attendance/logs");
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.data[0].deviceIdHash).toBe(hash);
   });
 
   it("[F25] a manager outside the outlet scope cannot read that outlet's logs", async () => {

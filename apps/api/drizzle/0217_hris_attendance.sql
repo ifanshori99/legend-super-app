@@ -22,7 +22,9 @@ CREATE TABLE "attendance_corrections" (
 	CONSTRAINT "attendance_corrections_status_check" CHECK ("attendance_corrections"."status" IN ('pending', 'approved', 'rejected')),
 	CONSTRAINT "attendance_corrections_decision_check" CHECK (("attendance_corrections"."decided_by" IS NULL) = ("attendance_corrections"."decided_at" IS NULL)
         AND ("attendance_corrections"."status" = 'pending') = ("attendance_corrections"."decided_at" IS NULL)),
-	CONSTRAINT "attendance_corrections_result_check" CHECK ("attendance_corrections"."resulting_log_id" IS NULL OR "attendance_corrections"."status" = 'approved')
+	CONSTRAINT "attendance_corrections_result_check" CHECK ("attendance_corrections"."resulting_log_id" IS NULL OR "attendance_corrections"."status" = 'approved'),
+	CONSTRAINT "attendance_corrections_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "attendance_corrections_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "attendance_devices" (
@@ -40,7 +42,8 @@ CREATE TABLE "attendance_devices" (
 	CONSTRAINT "attendance_devices_hash_check" CHECK ("device_id_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "attendance_devices_status_check" CHECK ("attendance_devices"."status" IN ('active', 'revoked')),
 	CONSTRAINT "attendance_devices_revoked_check" CHECK (("attendance_devices"."status" = 'revoked') = ("attendance_devices"."revoked_at" IS NOT NULL)
-        AND ("attendance_devices"."revoked_at" IS NULL) = ("attendance_devices"."revoked_by" IS NULL))
+        AND ("attendance_devices"."revoked_at" IS NULL) = ("attendance_devices"."revoked_by" IS NULL)),
+	CONSTRAINT "attendance_devices_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "attendance_duty_meals" (
@@ -57,7 +60,10 @@ CREATE TABLE "attendance_duty_meals" (
 	CONSTRAINT "attendance_duty_meals_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "attendance_duty_meals_tenant_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
 	CONSTRAINT "attendance_duty_meals_employee_day_shift_key" UNIQUE NULLS NOT DISTINCT("tenant_id","employee_id","business_date","shift_assignment_id"),
-	CONSTRAINT "attendance_duty_meals_count_check" CHECK ("attendance_duty_meals"."meal_count" >= 1)
+	CONSTRAINT "attendance_duty_meals_count_check" CHECK ("attendance_duty_meals"."meal_count" >= 1),
+	CONSTRAINT "attendance_duty_meals_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "attendance_duty_meals_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "attendance_duty_meals_shift_assignment_fk" FOREIGN KEY ("tenant_id","shift_assignment_id") REFERENCES "public"."shift_assignments"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "attendance_logs" (
@@ -100,7 +106,10 @@ CREATE TABLE "attendance_logs" (
         AND ("attendance_logs"."late_minutes" IS NULL OR "attendance_logs"."late_minutes" >= 0)
         AND ("attendance_logs"."early_leave_minutes" IS NULL OR "attendance_logs"."early_leave_minutes" >= 0)
         AND ("attendance_logs"."overtime_minutes" IS NULL OR "attendance_logs"."overtime_minutes" >= 0)),
-	CONSTRAINT "attendance_logs_photo_check" CHECK ("attendance_logs"."photo_purged_at" IS NULL OR "attendance_logs"."photo_key" IS NULL)
+	CONSTRAINT "attendance_logs_photo_check" CHECK ("attendance_logs"."photo_purged_at" IS NULL OR "attendance_logs"."photo_key" IS NULL),
+	CONSTRAINT "attendance_logs_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "attendance_logs_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "attendance_logs_shift_assignment_fk" FOREIGN KEY ("tenant_id","shift_assignment_id") REFERENCES "public"."shift_assignments"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "attendance_policies" (
@@ -118,7 +127,8 @@ CREATE TABLE "attendance_policies" (
 	CONSTRAINT "attendance_policies_sampling_check" CHECK (jsonb_typeof("attendance_policies"."sampling") = 'object'
         AND ("attendance_policies"."sampling"->>'rate')::numeric BETWEEN 0 AND 1
         AND jsonb_typeof("attendance_policies"."sampling"->'flaggedAlways') = 'boolean'
-        AND ("attendance_policies"."sampling"->>'minPerSupervisorPerWeek')::numeric >= 0)
+        AND ("attendance_policies"."sampling"->>'minPerSupervisorPerWeek')::numeric >= 0),
+	CONSTRAINT "attendance_policies_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "attendance_qr_secrets" (
@@ -130,29 +140,19 @@ CREATE TABLE "attendance_qr_secrets" (
 	"rotated_at" timestamp with time zone,
 	CONSTRAINT "attendance_qr_secrets_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "attendance_qr_secrets_tenant_outlet_key" UNIQUE("tenant_id","outlet_id"),
-	CONSTRAINT "attendance_qr_secrets_seed_check" CHECK (octet_length("attendance_qr_secrets"."seed") >= 32)
+	CONSTRAINT "attendance_qr_secrets_seed_check" CHECK (octet_length("attendance_qr_secrets"."seed") >= 32),
+	CONSTRAINT "attendance_qr_secrets_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "attendance_corrections" ADD CONSTRAINT "attendance_corrections_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_corrections" ADD CONSTRAINT "attendance_corrections_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_corrections" ADD CONSTRAINT "attendance_corrections_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attendance_corrections" ADD CONSTRAINT "attendance_corrections_log_fk" FOREIGN KEY ("tenant_id","attendance_log_id") REFERENCES "public"."attendance_logs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attendance_corrections" ADD CONSTRAINT "attendance_corrections_resulting_log_fk" FOREIGN KEY ("tenant_id","resulting_log_id") REFERENCES "public"."attendance_logs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attendance_devices" ADD CONSTRAINT "attendance_devices_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_devices" ADD CONSTRAINT "attendance_devices_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attendance_duty_meals" ADD CONSTRAINT "attendance_duty_meals_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_duty_meals" ADD CONSTRAINT "attendance_duty_meals_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_duty_meals" ADD CONSTRAINT "attendance_duty_meals_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_duty_meals" ADD CONSTRAINT "attendance_duty_meals_shift_assignment_fk" FOREIGN KEY ("tenant_id","shift_assignment_id") REFERENCES "public"."shift_assignments"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attendance_logs" ADD CONSTRAINT "attendance_logs_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_logs" ADD CONSTRAINT "attendance_logs_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_logs" ADD CONSTRAINT "attendance_logs_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_logs" ADD CONSTRAINT "attendance_logs_shift_assignment_fk" FOREIGN KEY ("tenant_id","shift_assignment_id") REFERENCES "public"."shift_assignments"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attendance_logs" ADD CONSTRAINT "attendance_logs_correction_fk" FOREIGN KEY ("tenant_id","correction_id") REFERENCES "public"."attendance_corrections"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attendance_policies" ADD CONSTRAINT "attendance_policies_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_policies" ADD CONSTRAINT "attendance_policies_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attendance_qr_secrets" ADD CONSTRAINT "attendance_qr_secrets_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "attendance_qr_secrets" ADD CONSTRAINT "attendance_qr_secrets_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "attendance_corrections_tenant_employee_idx" ON "attendance_corrections" USING btree ("tenant_id","employee_id","requested_occurred_at");--> statement-breakpoint
 CREATE INDEX "attendance_corrections_tenant_outlet_status_idx" ON "attendance_corrections" USING btree ("tenant_id","outlet_id","status");--> statement-breakpoint
 CREATE INDEX "attendance_corrections_chain_idx" ON "attendance_corrections" USING btree ("tenant_id","approval_chain_id");--> statement-breakpoint

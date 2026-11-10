@@ -376,6 +376,7 @@ export type AttendancePolicyView = z.infer<typeof attendancePolicyViewSchema>;
 export const attendanceStoredFlagReasonSchema = z.enum([
   ...attendanceFlagReasonSchema.options,
   "offline_time_skew",
+  "offline_unverified",
 ]);
 export type AttendanceStoredFlagReason = z.infer<
   typeof attendanceStoredFlagReasonSchema

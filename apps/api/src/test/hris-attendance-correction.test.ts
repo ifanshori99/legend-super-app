@@ -41,9 +41,19 @@
 //    runs.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { tenantIdSchema } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import {
+  decideAttendanceReview,
+  listAttendanceReviewQueue,
+  type AttendancePhotoSigner,
+} from "../services/hris-attendance-admin.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
 const app = createApp();
@@ -61,6 +71,7 @@ const KEY_PREFIX = "att-corr-api-";
 const RUN_MARKER = "attendance-correction-api-test";
 let insertedApprovalPolicy = false;
 const insertedPolicyUsers: string[] = [];
+const photoAuditedLogIds: string[] = [];
 
 async function ownerTx<T>(
   run: (client: PoolClient) => Promise<T>,
@@ -399,9 +410,10 @@ afterAll(async () => {
           );
           await db.query(
             `DELETE FROM audit_logs
-              WHERE tenant_id = $1 AND EXISTS (SELECT 1 FROM unnest($2::text[]) AS e(id)
-                                                WHERE audit_logs.event::text LIKE '%' || e.id || '%')`,
-            [tenant.id, createdEmployees],
+              WHERE tenant_id = $1 AND (event->>'objectId' = ANY($3::text[])
+                 OR EXISTS (SELECT 1 FROM unnest($2::text[]) AS e(id)
+                             WHERE audit_logs.event::text LIKE '%' || e.id || '%'))`,
+            [tenant.id, createdEmployees, photoAuditedLogIds],
           );
           if (insertedApprovalPolicy)
             await db.query(
@@ -902,6 +914,157 @@ describe("hris.attendance.review", () => {
       "/api/hris/attendance/review-queue",
     );
     expect(queueEntry(own, log.id)).toBeUndefined();
+  });
+});
+
+describe("hris.attendance.review own logs and sensitive data", () => {
+  const deviceA = "a".repeat(64);
+  const deviceB = "b".repeat(64);
+
+  async function supervisorWithEmployee(label: string) {
+    const actor = await signedInClient(label, { mfa: true });
+    await assignRole(actor.userId, await templateRoleId("outlet_manager"), {
+      type: "outlet",
+      id: outlet.id,
+    });
+    await grantCustomRole(actor.userId, STAFF_PERMISSIONS, {
+      type: "outlet",
+      id: outlet.id,
+    });
+    await seedEmployee(actor.userId, outlet.id);
+    return actor;
+  }
+
+  /** A flagged selfie/geo clock-in by `actor`, optionally from a device. */
+  async function clockFlagged(actor: Actor, deviceIdHash: string | null) {
+    const response = await post(actor.client, "/api/hris/attendance/clock", {
+      type: "in",
+      method: "selfie_geo",
+      occurredAt: new Date().toISOString(),
+      location: null,
+      deviceIdHash,
+      photoUploadRef: null,
+      qrToken: null,
+      idempotencyKey: key(),
+    });
+    expect([200, 201], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+    expect(response.body.data.validity).toBe("flagged");
+    return response.body.data.id as string;
+  }
+
+  it("a supervisor cannot decide the review of their own log (403)", async () => {
+    await setSampling(1, true);
+    const supervisor = await supervisorWithEmployee("Penyelia Sendiri API");
+    const logId = await clockFlagged(supervisor, null);
+    for (const action of ["accept", "reject", "flag"]) {
+      const own = await post(
+        supervisor.client,
+        `/api/hris/attendance/logs/${logId}/review`,
+        { action, idempotencyKey: key() },
+      );
+      expect(own.status, `${action}: ${JSON.stringify(own.body)}`).toBe(403);
+    }
+    const queue = await queueOf(hr.client);
+    expect(queueEntry(queue, logId)?.log.validity).toBe("flagged");
+    expect(queueEntry(queue, logId)?.reviewStatus).not.toBe("accepted");
+
+    // Another supervisor of the outlet still decides it.
+    const other = await post(
+      manager.client,
+      `/api/hris/attendance/logs/${logId}/review`,
+      { action: "accept", idempotencyKey: key() },
+    );
+    expect(other.status, JSON.stringify(other.body)).toBe(200);
+  });
+
+  it("returns the device hash to a reviewer only for their own log", async () => {
+    await setSampling(1, true);
+    const supervisor = await supervisorWithEmployee("Penyelia Perangkat API");
+    const staff = await signedInClient("Staf Perangkat API");
+    await grantCustomRole(staff.userId, STAFF_PERMISSIONS, {
+      type: "outlet",
+      id: outlet.id,
+    });
+    await seedEmployee(staff.userId, outlet.id);
+    const staffLog = await clockFlagged(staff, deviceA);
+    const ownLog = await clockFlagged(supervisor, deviceB);
+
+    const asHr = await queueOf(hr.client);
+    expect(queueEntry(asHr, staffLog)?.log.deviceIdHash).toBeNull();
+    expect(queueEntry(asHr, ownLog)?.log.deviceIdHash).toBeNull();
+
+    const asSupervisor = await queueOf(supervisor.client);
+    expect(queueEntry(asSupervisor, staffLog)?.log.deviceIdHash).toBeNull();
+    expect(queueEntry(asSupervisor, ownLog)?.log.deviceIdHash).toBe(deviceB);
+
+    // A decision returns the same redacted item.
+    const decided = await post(
+      hr.client,
+      `/api/hris/attendance/logs/${staffLog}/review`,
+      { action: "accept", idempotencyKey: key() },
+    );
+    expect(decided.status, JSON.stringify(decided.body)).toBe(200);
+    expect(decided.body.data.log.deviceIdHash).toBeNull();
+  });
+
+  it("audits every selfie URL issued in the queue and on a decision", async () => {
+    await setSampling(1, true);
+    const first = await clockIn("photo-audit-a", "flagged");
+    const second = await clockIn("photo-audit-b", "flagged");
+    photoAuditedLogIds.push(first.id, second.id);
+    await ownerTx((db) =>
+      db.query(
+        "UPDATE attendance_logs SET photo_key = 'photo-' || id::text WHERE tenant_id = $1 AND employee_id = ANY($2::uuid[])",
+        [tenant.id, [first.employeeId, second.employeeId]],
+      ),
+    );
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.id),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const signer = vi.fn<AttendancePhotoSigner>(
+      async (_context, photoKey) => `https://files.test/${photoKey}`,
+    );
+    const issued = async (logId: string) => {
+      const { rows } = await owner.query(
+        `SELECT event FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2
+            AND event->>'action' = 'hris.attendance.photo_url_issued'`,
+        [tenant.id, logId],
+      );
+      return rows.map((row) => row.event as JsonRow);
+    };
+
+    const page = await listAttendanceReviewQueue(
+      context,
+      hr.userId,
+      { outletId: outlet.id, limit: 100 },
+      signer,
+    );
+    for (const log of [first, second]) {
+      const item = page.data.find((entry) => entry.log.id === log.id);
+      expect(item?.log.photoUrl).toMatch(/^https:\/\/files\.test\/photo-/);
+      const events = await issued(log.id);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.sensitiveAccess).toBe(true);
+      expect(events[0]?.actorId).toBe(hr.userId);
+    }
+
+    await decideAttendanceReview(
+      context,
+      hr.userId,
+      second.id,
+      { action: "flag", idempotencyKey: key() },
+      signer,
+    );
+    expect(await issued(first.id)).toHaveLength(1);
+    expect(await issued(second.id)).toHaveLength(2);
   });
 });
 

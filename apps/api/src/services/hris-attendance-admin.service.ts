@@ -70,6 +70,7 @@ import {
   loadHrisAccess,
   notFound,
   uniqueViolation,
+  type HrisAccess,
   type HrisReach,
   type Tx,
 } from "./hris-access.ts";
@@ -331,12 +332,33 @@ export async function updateAttendancePolicy(
 // ------------------------------------------------------------- review queue
 
 async function toReviewItem(
+  tx: Tx,
   context: ScopedTenantContext,
+  access: HrisAccess,
   row: LogRow,
   signPhoto: AttendancePhotoSigner,
+  now: Date,
 ): Promise<AttendanceReviewItem> {
   const photoUrl =
     row.photoKey === null ? null : await signPhoto(context, row.photoKey);
+  // Each selfie URL handed to a reviewer is a sensitive-data access.
+  if (photoUrl !== null)
+    await recordAudit(
+      tx,
+      context,
+      hrisAuditEntry(context, access.actorUserId, now, {
+        outletId: row.outletId,
+        action: "hris.attendance.photo_url_issued",
+        objectType: LOG_OBJECT_TYPE,
+        objectId: row.id,
+        after: { status: row.validity },
+        sensitiveReason: "Membuka selfie absensi.",
+      }),
+      HRIS_AUDIT_SAFE_FIELDS,
+    );
+  // The device hash is the owner's own data; reviewers never see it.
+  const ownLog =
+    access.own !== null && lower(access.own.id) === lower(row.employeeId);
   const flagged = row.validity === "flagged" || row.flagReasons.length > 0;
   return attendanceReviewItemSchema.parse({
     log: attendanceLogSchema.parse({
@@ -348,7 +370,7 @@ async function toReviewItem(
       method: row.method,
       occurredAt: iso(row.occurredAt),
       geoDistanceM: row.geoDistanceM,
-      deviceIdHash: row.deviceIdHash,
+      deviceIdHash: ownLog ? row.deviceIdHash : null,
       photoUrl,
       validity: row.validity,
       shiftAssignmentId: row.shiftAssignmentId,
@@ -482,10 +504,14 @@ export async function listAttendanceReviewQueue(
       : exhausted
         ? undefined
         : lastScanned;
+    // One at a time: the audit rows share the transaction.
+    const data: AttendanceReviewItem[] = [];
+    for (const row of page)
+      data.push(
+        await toReviewItem(tx, context, access, row, signPhoto, new Date()),
+      );
     return {
-      data: await Promise.all(
-        page.map((row) => toReviewItem(context, row, signPhoto)),
-      ),
+      data,
       meta: {
         limit: query.limit,
         nextCursor: cursorRow
@@ -522,13 +548,19 @@ export async function decideAttendanceReview(
       .for("update");
     // Another outlet answers like a missing row.
     if (!row || !inReach(reach, row.outletId)) throw notFound("Absensi");
+    // Nobody reviews their own attendance, whatever their reach.
+    if (access.own !== null && lower(access.own.id) === lower(row.employeeId))
+      throw forbidden();
     if (row.method === "manual_correction")
       throw conflict(
         "ATTENDANCE_REVIEW_NOT_ALLOWED",
         "Koreksi manual sudah diputuskan lewat persetujuan dan tidak direview.",
       );
     const holds = reviewAlreadyHolds(row, body.action);
-    if (holds) return { data: await toReviewItem(context, row, signPhoto) };
+    if (holds)
+      return {
+        data: await toReviewItem(tx, context, access, row, signPhoto, now),
+      };
 
     // The validity rule decides: accepting a valid log and any move on a
     // rejected log are a 409.
@@ -569,7 +601,9 @@ export async function decideAttendanceReview(
       },
       HRIS_AUDIT_SAFE_FIELDS,
     );
-    return { data: await toReviewItem(context, updated, signPhoto) };
+    return {
+      data: await toReviewItem(tx, context, access, updated, signPhoto, now),
+    };
   });
 }
 

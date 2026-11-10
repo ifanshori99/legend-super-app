@@ -123,6 +123,8 @@ function attendanceEvent(
     eventId?: string;
     clockedAt?: Date;
     type?: "in" | "out";
+    method?: "selfie_geo" | "rotating_qr" | "manual_correction";
+    validity?: "valid" | "flagged" | "rejected";
   } = {},
 ): { event: EventEnvelope; attendanceLogId: string } {
   clock += 1_000;
@@ -152,9 +154,9 @@ function attendanceEvent(
       employeeId: overrides.employeeId ?? employeeId,
       outletId,
       type: overrides.type ?? "in",
-      method: "selfie_geo",
+      method: overrides.method ?? "selfie_geo",
       occurredAt: clockedAt.toISOString(),
-      validity: "valid",
+      validity: overrides.validity ?? "valid",
       shiftAssignmentId: null,
     },
   }) as EventEnvelope;
@@ -204,13 +206,14 @@ type LogRow = {
   offline: boolean;
   validity: string;
   flag_reasons: string[];
+  review_status: string;
   occurred_at: Date;
   client_event_id: string;
 };
 
 async function logsOfEmployee(forEmployee = employeeId) {
   const { rows } = await owner.query<LogRow>(
-    `SELECT id::text, outlet_id::text, type, method, offline, validity, flag_reasons,
+    `SELECT id::text, outlet_id::text, type, method, offline, validity, flag_reasons, review_status,
             occurred_at, client_event_id
        FROM attendance_logs WHERE tenant_id = $1 AND employee_id = $2
       ORDER BY occurred_at`,
@@ -306,8 +309,23 @@ describe("legend-wh71 edge -> cloud attendance.logged", () => {
     expect(row!.outlet_id).toBe(outletA);
     // The client time is trusted for an offline event.
     expect(row!.occurred_at.toISOString()).toBe(clockedAt.toISOString());
-    expect(row!.validity).not.toBe("rejected");
+    // The edge's vetting cannot be verified from the event: flagged for review.
+    expect(row!.validity).toBe("flagged");
+    expect(row!.review_status).toBe("pending");
+    expect(row!.flag_reasons).toContain("offline_unverified");
     expect(row!.flag_reasons).not.toContain("offline_time_skew");
+  });
+
+  it("refuses a payload the edge itself marked rejected and stores nothing", async () => {
+    const { event } = attendanceEvent({ validity: "rejected" });
+    await expect(applyDirect(event)).rejects.toBeTruthy();
+    expect(await logsOfEmployee()).toHaveLength(0);
+  });
+
+  it("refuses an edge event with method manual_correction and stores nothing", async () => {
+    const { event } = attendanceEvent({ method: "manual_correction" });
+    await expect(applyDirect(event)).rejects.toBeTruthy();
+    expect(await logsOfEmployee()).toHaveLength(0);
   });
 
   it("a re-delivered event (same event id) does not create a second log", async () => {

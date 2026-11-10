@@ -9,8 +9,8 @@
 //
 // Assumptions (from docs/PRD.md and the team brief, not from implementation):
 // - A selfie is due when a payroll run covering the log's business_date is
-//   closed (status locked, paid or reversed) and locked_at + retention days
-//   <= now. Retention comes from attendance_policies.policy.selfieRetentionDays
+//   closed (status locked or paid; reversed is not a close) for the legal
+//   entity of the log's employee and locked_at + retention days <= now. Retention comes from attendance_policies.policy.selfieRetentionDays
 //   (tenant default row) and is 90 days when the tenant has no policy.
 // - photo_key is the id of the selfie's core_storage_objects row (source kind
 //   attendance). Purging deletes the blob (original and thumbnail) from object
@@ -142,13 +142,14 @@ async function seedTenant(label: string): Promise<Seeded> {
   await ownerTx(tenant.tenantId, async (client) => {
     await client.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, NULL, $3, 'Karyawan Purge', $4, 'pkwtt', '2025-03-01', 'active')`,
+                              employment_type, join_date, status, legal_entity_id)
+       VALUES ($1, $2, NULL, $3, 'Karyawan Purge', $4, 'pkwtt', '2025-03-01', 'active', $5)`,
       [
         employeeId,
         tenant.tenantId,
         `0000PRG${randomBytes(4).toString("hex").toUpperCase()}`,
         tenant.outletId,
+        tenant.legalEntityId,
       ],
     );
     await client.query(
@@ -178,11 +179,35 @@ function nextPeriod() {
 
 type RunStatus = "approved" | "locked" | "paid" | "reversed";
 
+/** A second legal entity of the same tenant, with its own payroll policy. */
+async function seedOtherEntity(
+  seeded: Seeded,
+): Promise<{ legalEntityId: string; policyId: string }> {
+  const legalEntityId = randomUUID();
+  const policyId = randomUUID();
+  await ownerTx(seeded.tenant.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Lain', false)`,
+      [legalEntityId, seeded.tenant.tenantId],
+    );
+    await client.query(
+      `INSERT INTO payroll_policies
+         (id, tenant_id, legal_entity_id, name, employee_group_code, employee_group, cycle,
+          pay_date_adjustment, jkk_risk_class, bpjs_programmes)
+       VALUES ($1, $2, $3, 'Kebijakan Lain', 'PRG', '{"code":"PRG"}', '{"kind":"monthly"}',
+               'none', 'low', '[]')`,
+      [policyId, seeded.tenant.tenantId, legalEntityId],
+    );
+  });
+  return { legalEntityId, policyId };
+}
+
 /** Walks a run through the real state machine up to `status`. */
 async function seedRun(
   seeded: Seeded,
   period: { start: string; end: string },
   status: RunStatus,
+  entity?: { legalEntityId: string; policyId: string },
 ): Promise<string> {
   const id = randomUUID();
   await ownerTx(seeded.tenant.tenantId, async (client) => {
@@ -194,8 +219,8 @@ async function seedRun(
       [
         id,
         seeded.tenant.tenantId,
-        seeded.tenant.legalEntityId,
-        seeded.policyId,
+        entity?.legalEntityId ?? seeded.tenant.legalEntityId,
+        entity?.policyId ?? seeded.policyId,
         period.start,
         period.end,
       ],
@@ -446,20 +471,41 @@ describe("legend-wh71 selfie purge after payroll close", () => {
     expect((await logState(log)).photo_purged_at).toEqual(purgedAt);
   });
 
-  it.each(["paid", "reversed"] as const)(
-    "a %s run also counts as closed and its selfies are purged after 90 days",
-    async (status) => {
-      const period = nextPeriod();
-      await seedRun(defaultTenant, period, status);
-      const log = await seedLog(defaultTenant, period.businessDate);
+  it("a paid run also counts as closed and its selfies are purged after 90 days", async () => {
+    const period = nextPeriod();
+    await seedRun(defaultTenant, period, "paid");
+    const log = await seedLog(defaultTenant, period.businessDate);
 
-      expect((await purge(after(90, -MINUTE_MS))).purged).toBe(0);
-      expectKept(await logState(log), log.photoKey);
+    expect((await purge(after(90, -MINUTE_MS))).purged).toBe(0);
+    expectKept(await logState(log), log.photoKey);
 
-      expect((await purge(after(90, MINUTE_MS))).purged).toBe(1);
-      expectPurged(await logState(log));
-    },
-  );
+    expect((await purge(after(90, MINUTE_MS))).purged).toBe(1);
+    expectPurged(await logState(log));
+  });
+
+  it("never counts a reversed run as a payroll close", async () => {
+    const period = nextPeriod();
+    await seedRun(defaultTenant, period, "reversed");
+    const log = await seedLog(defaultTenant, period.businessDate);
+
+    expect((await purge(after(3650))).purged).toBe(0);
+    expectKept(await logState(log), log.photoKey);
+  });
+
+  it("never lets a closed run of another legal entity of the tenant release the selfie", async () => {
+    const period = nextPeriod();
+    const other = await seedOtherEntity(defaultTenant);
+    await seedRun(defaultTenant, period, "locked", other);
+    const log = await seedLog(defaultTenant, period.businessDate);
+
+    expect((await purge(after(3650))).purged).toBe(0);
+    expectKept(await logState(log), log.photoKey);
+
+    // The employee's own legal entity closing the same period releases it.
+    await seedRun(defaultTenant, period, "locked");
+    expect((await purge(after(3650))).purged).toBe(1);
+    expectPurged(await logState(log));
+  });
 
   it("never purges a selfie while no payroll run covers its business date", async () => {
     const period = nextPeriod();

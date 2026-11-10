@@ -1,8 +1,9 @@
 // Attendance selfie purge (PRD v1.7 §6 H attendance_logs.photo_key "dihapus
 // sesuai masa simpan"; F25 privasi selfie; bead legend-wh71). Once a day the
 // cloud worker deletes the private selfie of every attendance log whose
-// business date lies in a closed payroll period (run locked, paid or
-// reversed) once the retention window after that close has passed. The window
+// business date lies in a closed payroll period of the employee's legal
+// entity (run locked or paid; a reversed run is not a close) once the
+// retention window after that close has passed. The window
 // comes from the outlet's attendance policy, else the tenant default policy,
 // else 90 days. A period with no closed payroll run keeps its selfies.
 //
@@ -54,7 +55,7 @@ export const ATTENDANCE_SELFIE_PURGE_BATCH = 200;
 export const ATTENDANCE_SELFIE_PURGE_MAX_BATCHES_PER_TENANT = 50;
 const MS_PER_DAY = 86_400_000;
 /** Run states in which the payroll period counts as closed. */
-const CLOSED_RUN_STATUSES = ["locked", "paid", "reversed"];
+const CLOSED_RUN_STATUSES = ["locked", "paid"];
 const ATTENDANCE_SELFIE_PURGE_EXPIRE_SECONDS = 30 * 60;
 
 export type AttendanceSelfiePurgeDeps = {
@@ -129,14 +130,22 @@ async function purgeTenant(
   );
   const dueBefore = new Date(now.getTime() - minRetentionDays * MS_PER_DAY);
 
-  // Earliest close time of any closed run whose period covers the log's day.
+  // Earliest close time of any closed run of the employee's legal entity whose
+  // period covers the log's day. An employee without a legal entity matches no
+  // run, so the selfie stays.
+  // Drizzle drops table qualifiers inside a select list, and this join repeats
+  // column names, so every column is spelled out with its table.
   const closedAt = sql<Date | null>`(
-    SELECT min(${payrollRuns.lockedAt}) FROM ${payrollRuns}
-    WHERE ${payrollRuns.tenantId} = ${attendanceLogs.tenantId}
+    SELECT min("payroll_runs"."locked_at") FROM "payroll_runs"
+    INNER JOIN "employees"
+      ON "employees"."tenant_id" = "payroll_runs"."tenant_id"
+      AND "employees"."legal_entity_id" = "payroll_runs"."legal_entity_id"
+    WHERE "employees"."id" = "attendance_logs"."employee_id"
+      AND "payroll_runs"."tenant_id" = "attendance_logs"."tenant_id"
       AND ${inArray(payrollRuns.status, CLOSED_RUN_STATUSES)}
-      AND ${isNotNull(payrollRuns.lockedAt)}
-      AND ${payrollRuns.periodStart} <= ${attendanceLogs.businessDate}
-      AND ${payrollRuns.periodEnd} >= ${attendanceLogs.businessDate}
+      AND "payroll_runs"."locked_at" IS NOT NULL
+      AND "payroll_runs"."period_start" <= "attendance_logs"."business_date"
+      AND "payroll_runs"."period_end" >= "attendance_logs"."business_date"
   )`;
 
   let cursor: string | null = null;

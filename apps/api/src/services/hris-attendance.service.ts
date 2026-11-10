@@ -308,6 +308,8 @@ export async function resolveEmployeeShift(
 export function toAttendanceLog(
   row: LogRow,
   photoUrl: string | null = null,
+  /** The device hash is the employee's own data: managers get null. */
+  exposeDeviceHash = false,
 ): AttendanceLog {
   return attendanceLogSchema.parse({
     id: row.id,
@@ -318,7 +320,7 @@ export function toAttendanceLog(
     method: row.method,
     occurredAt: row.occurredAt.toISOString(),
     geoDistanceM: row.geoDistanceM,
-    deviceIdHash: row.deviceIdHash,
+    deviceIdHash: exposeDeviceHash ? row.deviceIdHash : null,
     photoUrl,
     validity: row.validity,
     shiftAssignmentId: row.shiftAssignmentId,
@@ -348,11 +350,13 @@ async function presentLog(
   context: ScopedTenantContext,
   actorUserId: string,
   canSee: boolean,
+  isOwn: boolean,
   row: LogRow,
   signer: HrisFileSigner,
   now: Date,
 ): Promise<AttendanceLog> {
-  if (row.photoKey === null || !canSee) return toAttendanceLog(row);
+  if (row.photoKey === null || !canSee)
+    return toAttendanceLog(row, null, isOwn);
   const url = await signer(context, row.photoKey);
   if (url !== null)
     await recordAudit(
@@ -368,7 +372,7 @@ async function presentLog(
       }),
       HRIS_AUDIT_SAFE_FIELDS,
     );
-  return toAttendanceLog(row, url);
+  return toAttendanceLog(row, url, isOwn);
 }
 
 // --------------------------------------------------------- recordAttendance
@@ -492,7 +496,23 @@ export async function recordAttendanceLog(
   scope: AttendanceScope,
   input: RecordAttendanceInput,
 ): Promise<LogRow> {
+  return (await storeAttendanceLog(tx, scope, input)).row;
+}
+
+/**
+ * `recordAttendanceLog` that also says whether this call created the row
+ * (false for a replay or a lost race), so the caller links the selfie once.
+ */
+async function storeAttendanceLog(
+  tx: Tx,
+  scope: AttendanceScope,
+  input: RecordAttendanceInput,
+): Promise<{ row: LogRow; created: boolean }> {
   const { tenantId, outletId } = scope;
+  // A manual correction is written only by the correction approval, which
+  // inserts its own log; no submission path may mint one.
+  if (input.method === "manual_correction")
+    throw validation("Metode koreksi manual tidak bisa dipakai untuk absen.");
   const replayed = await findLogByClientEvent(
     tx,
     tenantId,
@@ -500,7 +520,7 @@ export async function recordAttendanceLog(
   );
   if (replayed) {
     assertSameSubmission(replayed, input);
-    return replayed;
+    return { row: replayed, created: false };
   }
 
   const [outlet] = await tx
@@ -518,14 +538,11 @@ export async function recordAttendanceLog(
     reasons: AttendanceStoredFlagReason[];
   };
   let geoDistanceM: number | null = null;
-  if (input.method === "manual_correction") {
-    // Approved through the approval matrix: nothing left to evaluate.
-    decision = { validity: "valid", reasons: [] };
-  } else if (input.offline) {
-    // Edge replay: the edge already vetted device, QR, selfie and geofence
-    // and only up-syncs accepted logs; the event carries none of them, so
-    // only the client time is checked below.
-    decision = { validity: "valid", reasons: [] };
+  if (input.offline) {
+    // Edge replay: the event carries none of the evidence the edge vetted
+    // (device, QR, selfie, geofence), so it cannot be verified here. Store it
+    // flagged for review; the client time is checked below.
+    decision = { validity: "flagged", reasons: ["offline_unverified"] };
   } else {
     if (input.method === "selfie_geo" && input.location !== null) {
       const distance = geofenceDistance(input.location, outlet.geofence);
@@ -647,11 +664,11 @@ export async function recordAttendanceLog(
     );
     if (!winner) throw new Error("Attendance log insert returned no row");
     assertSameSubmission(winner, input);
-    return winner;
+    return { row: winner, created: false };
   }
   if (inserted.validity !== "rejected")
     await appendAttendanceLogged(tx, scope, inserted, input.receivedAt);
-  return inserted;
+  return { row: inserted, created: true };
 }
 
 // ------------------------------------------------------------------- clock
@@ -722,6 +739,8 @@ export async function clockAttendance(
   now = new Date(),
   signer: HrisFileSigner = noHrisFileSigner,
 ): Promise<ClockResult> {
+  if (body.method === "manual_correction")
+    throw validation("Metode koreksi manual tidak bisa dipakai untuk absen.");
   // Phase 1: who is clocking and where. The outlet is not known until the
   // shift is, and the write below needs a context scoped to it.
   const target = await withTenant(db, context, async (tx) => {
@@ -760,7 +779,7 @@ export async function clockAttendance(
   const tenantId = scoped.tenant.tenantId;
   return withTenant(db, scoped, async (tx) => {
     const present = (row: LogRow) =>
-      presentLog(tx, scoped, actorUserId, true, row, signer, now);
+      presentLog(tx, scoped, actorUserId, true, true, row, signer, now);
     const replayed = await findLogByClientEvent(
       tx,
       tenantId,
@@ -789,7 +808,7 @@ export async function clockAttendance(
         body.photoUploadRef,
         now,
       );
-    const row = await recordAttendanceLog(
+    const { row, created } = await storeAttendanceLog(
       tx,
       { tenantId, outletId: target.outletId },
       {
@@ -806,7 +825,13 @@ export async function clockAttendance(
         offline: false,
       },
     );
-    if (row.photoKey !== null && row.photoKey === body.photoUploadRef)
+    // Only the call that created the row links the selfie: a twin request that
+    // lost the insert race returns the same log without linking again.
+    if (
+      created &&
+      row.photoKey !== null &&
+      row.photoKey === body.photoUploadRef
+    )
       await linkStorageObjectSource(tx, {
         tenantId,
         objectId: row.photoKey,
@@ -882,11 +907,19 @@ export async function listAttendanceLogs(
     const last = page.at(-1);
     const data: AttendanceLog[] = [];
     for (const row of page) {
-      const canSee =
-        (own !== null && lower(own.id) === lower(row.employeeId)) ||
-        reachIncludes(manage, row.outletId);
+      const isOwn = own !== null && lower(own.id) === lower(row.employeeId);
+      const canSee = isOwn || reachIncludes(manage, row.outletId);
       data.push(
-        await presentLog(tx, context, actorUserId, canSee, row, signer, now),
+        await presentLog(
+          tx,
+          context,
+          actorUserId,
+          canSee,
+          isOwn,
+          row,
+          signer,
+          now,
+        ),
       );
     }
     return {

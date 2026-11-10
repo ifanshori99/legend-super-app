@@ -6,8 +6,9 @@
 // time is trusted for an offline event; a time far off the receive time is
 // flagged `offline_time_skew` by recordAttendanceLog.
 //
-// The edge already vetted device, QR and geofence, and the event carries none
-// of them, so the log is stored as a plain event. Its idempotency identity is
+// The event carries none of the evidence the edge vetted (device, QR, geofence,
+// selfie), so the cloud cannot verify it: the log is stored flagged
+// `offline_unverified` and waits in the review queue. Its idempotency identity is
 // the edge's own log id (payload.attendanceLogId): a re-delivered envelope, or
 // a second envelope for the same edge log, never makes a second row.
 //
@@ -66,6 +67,18 @@ export async function applyEdgeAttendanceLogged(
       "Invalid attendance.logged payload",
     );
   const payload = parsed.data;
+  // The edge never up-syncs a rejected attempt, and a manual correction is
+  // written only by the correction approval: neither is accepted from an edge.
+  if (payload.validity === "rejected")
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "A rejected attendance log is not accepted from an edge",
+    );
+  if (payload.method === "manual_correction")
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "A manual correction is not accepted from an edge",
+    );
   if (
     event.aggregateType !== attendanceLogged.entry.aggregateType ||
     event.aggregateId !== payload.attendanceLogId
