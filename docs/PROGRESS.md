@@ -1025,3 +1025,4 @@ Langkah berikut CTO baru:
 - 20:45 G2mmn batch47a selesai: milestone/m1 29ddcbf7 -> 1b1e96eb (23 merge, migrasi 0217-0228 rapat, profit share 0217-0219, tax_reports 0228). Typecheck + e2e 18/1 hijau; full suite run 3: 667 file lulus, 2 flake (member-signin AUTH-01, menu-print-db). Keputusan CTO: m1 diterima, flake di legend-0lyzf (P2, menu-print mungkin race nyata). 24 worktree dihapus, +24 GiB. Postgres OOM belum terbukti (puncak 447/512 MiB) -> legend-p649r.
   - G0a8q (33im6) diberi tahu: profit share kini 0217 di m1, merge m1 dulu, edit 0217 di tempat (belum rilis).
 - Batch48 berikutnya (tunggu RAM): j6cyb/bod, u7g9w, ideif, jmsdx, arch-357, tct8, i83ls-fix 88ce89d2, omp4, ie6m, kxoyf, n1mp, udu47+ec6fa, r3i8w (setelah powk0), aruta 0fb10745. Perhatikan `when` 0242/0243/0245 di bawah 0244.
+- 20:50 mulai G6wwy ptn11 (381 sonnet) dan G2lh5 sp9vq (384 sonnet). Antre: w5by9 (expiry FIFO, opus), 8docm, batch48 merge train.
