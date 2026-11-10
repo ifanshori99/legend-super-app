@@ -22,7 +22,11 @@ import {
 import type * as schema from "../db/schema";
 import { coreStorageObjects } from "../db/schema/core-storage";
 import { withTenant } from "../db/tenant";
-import { processImage, type MalwareScanner } from "./core-image";
+import {
+  assertScannerAcceptsDocuments,
+  processImage,
+  type MalwareScanner,
+} from "./core-image";
 import { HttpError } from "../lib/http-error";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -83,12 +87,7 @@ export async function uploadStorage(
     input.purpose === "document" &&
     Buffer.from(bytes).subarray(0, 5).toString("ascii") === "%PDF-"
   ) {
-    if (deps.scanner.acceptsDocuments === false)
-      throw new HttpError(
-        503,
-        "SERVICE_UNAVAILABLE",
-        "Unggah dokumen PDF belum tersedia: pemindai malware belum dipasang.",
-      );
+    assertScannerAcceptsDocuments(deps.scanner);
     await deps.scanner.scan(bytes);
     contentType = "application/pdf";
     full = bytes;

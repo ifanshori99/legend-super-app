@@ -44,7 +44,11 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { consumeOutbox } from "./core-outbox.ts";
-import { NoopMalwareScanner, type MalwareScanner } from "./core-image.ts";
+import {
+  assertScannerAcceptsDocuments,
+  NoopMalwareScanner,
+  type MalwareScanner,
+} from "./core-image.ts";
 import { signedStorageUrl, uploadStorage } from "./core-storage.ts";
 import {
   MENU_VIEW_PERMISSION,
@@ -395,6 +399,9 @@ export async function regenerateMenuPrint(
       "SERVICE_UNAVAILABLE",
       "Pembuat PDF menu belum tersedia.",
     );
+  // Before the claim and the render: a scanner that cannot vet PDFs would make
+  // the upload below refuse anyway (legend-0w2wy).
+  assertScannerAcceptsDocuments(deps.scanner ?? new NoopMalwareScanner());
   const tenantId = context.tenant.tenantId;
   // Claim: clear the dirty flag first. An event arriving while we render sets
   // it again and triggers one more run; nothing is lost.

@@ -41,7 +41,6 @@ import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
 import { taxRouter } from "./tax.routes";
-import { createMenuImportRouter } from "./menu-import.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
 import { publicSiteRouter } from "./public-site.routes";
@@ -168,9 +167,8 @@ apiRouter.use("/approvals", approvalRouter);
 // (routes/storage-api.routes.ts, legend-7nv1) ahead of this router, because the
 // photo upload needs the object storage runtime: without one it answers 503;
 // every other menu route is live.
-// Menu CSV/XLSX import + printable menu (WS-03, legend-dmi). Storage/PDF
-// renderer are deployment-injected; print answers 503 until they exist.
-apiRouter.use("/menu", createMenuImportRouter({}));
+// Menu CSV/XLSX import + printable menu (WS-03, legend-dmi): mounted by
+// createStorageApiRouter with the storage runtime (legend-0w2wy).
 // Inventory & warehouse (WS-06, bead legend-98t).
 apiRouter.use("/inventory", inventoryRouter);
 // Inventory setup writes + settings (WS-06, legend-gjmk).

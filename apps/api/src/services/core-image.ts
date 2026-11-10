@@ -10,6 +10,21 @@ export interface MalwareScanner {
   readonly acceptsDocuments?: boolean;
 }
 
+/**
+ * Refuses a document (PDF) upload when the scanner cannot vet documents: the
+ * production noop (legend-dzh9q). Call it BEFORE any blob is stored or any PDF
+ * is rendered, so a refusal leaves no orphan file (legend-0w2wy). Shared by the
+ * core-storage, menu print and shareholder document paths.
+ */
+export function assertScannerAcceptsDocuments(scanner: MalwareScanner): void {
+  if (scanner.acceptsDocuments === false)
+    throw new HttpError(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "Unggah dokumen PDF belum tersedia: pemindai malware belum dipasang.",
+    );
+}
+
 /** Development fake only; it does not detect malicious content. */
 export class NoopMalwareScanner implements MalwareScanner {
   readonly acceptsDocuments: boolean;
