@@ -57,6 +57,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import {
   AutoJournalDepositCutoverMixed,
+  AutoJournalLoyaltyEntityAmbiguous,
   AutoJournalPayloadInvalid,
   AutoJournalReceiptDeadLettered,
   AutoJournalReceiptMissing,
@@ -65,6 +66,8 @@ import {
   autoJournalKeyOf,
   invalidEventKeyOf,
   isAutoJournalEvent,
+  isLoyaltyAutoJournalEvent,
+  loyaltyAnchorOf,
   storedEventOf,
   type AutoJournalEventName,
   type StoredAutoJournalEvent,
@@ -150,6 +153,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof AutoJournalSaleMissing) return error.code;
   if (error instanceof AutoJournalVoidUnsupported) return error.code;
   if (error instanceof AutoJournalDepositCutoverMixed) return error.code;
+  if (error instanceof AutoJournalLoyaltyEntityAmbiguous) return error.code;
   if (error instanceof ZodError) return PAYLOAD_INVALID;
   return null;
 }
@@ -312,6 +316,11 @@ export async function deliverAutoJournalEvent(
   if (!isAutoJournalEvent(event.name)) return { status: "ignored" };
   if (event.tenantId !== context.tenant.tenantId) return { status: "ignored" };
   if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
+  // legend-msqvi: a points event has no outlet; it is stored, dated and
+  // parked under the tenant's loyalty anchor outlet (D-msqvi section 7).
+  const loyaltyOutletId = isLoyaltyAutoJournalEvent(event.name)
+    ? ((await loyaltyAnchorOf(tx, context.tenant.tenantId))?.outletId ?? null)
+    : null;
   let stored: StoredAutoJournalEvent;
   try {
     stored = storedEventOf({
@@ -320,6 +329,8 @@ export async function deliverAutoJournalEvent(
       outletId: event.outletId,
       occurredAt: event.occurredAt,
       payload: event.payload,
+      idempotencyKey: event.idempotencyKey,
+      loyaltyOutletId,
     });
   } catch (error) {
     if (parkCodeOf(error) !== PAYLOAD_INVALID) throw error;
@@ -331,7 +342,7 @@ export async function deliverAutoJournalEvent(
       context,
       {
         key: invalidEventKeyOf(event.id),
-        outletCandidates: [event.outletId, raw?.outletId],
+        outletCandidates: [event.outletId, raw?.outletId, loyaltyOutletId],
         eventId: event.id,
         eventName: event.name,
         payload: { occurredAt: event.occurredAt },
@@ -610,7 +621,11 @@ async function postAutoJournal(
         eventName: fact.ruleEvent,
         amounts: fact.amounts,
         legalEntityId,
-        outletId: fact.outletId,
+        // legend-msqvi: a loyalty journal names its own outlet (or none).
+        outletId:
+          fact.journalOutletId === undefined
+            ? fact.outletId
+            : fact.journalOutletId,
         entryDate: entryDate as typeof naturalDate,
         sourceId: fact.sourceId,
         description: `${rule.description}${lateSuffix}`,
