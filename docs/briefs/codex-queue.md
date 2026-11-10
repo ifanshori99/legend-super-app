@@ -19,3 +19,4 @@ Urutan: uang/pajak -> auth/akses -> migrasi -> data pribadi/offline. Satu run pe
 | vfj7z slot device + window per user (ws/jmsdx-pepper) | Codex area PIN | antre |
 | profit share 33im6 fix (ws/8s992-profit-rules 54b76963, migrasi 0252) | Codex ulang area profit share sebelum rilis | antre |
 | 3sy9b approval versi porsi saham (ws/3sy9b-share-alloc-approval 360491fa, migrasi 0256) | gabung area profit share | antre |
+| owner tunggal self-approve (ws/owner-self-approve be5163bc, migrasi 0270) | gabung area profit share + approval | antre |
