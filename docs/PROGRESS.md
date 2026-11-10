@@ -1088,3 +1088,4 @@ Langkah berikut CTO baru:
 - 22:14 G2x9e HRIS selesai ws/hris-pii-pin 8305fdc3 (2ect signer 9a41b851, 33mj key ring+reseal 32212d5a, 2ap3 PIN slip 8305fdc3). Migrasi 0257_payslip_pins when 1794430000000. 336 test, architect K 7 temuan dibetulkan. Kartu baru ilzrj (layar PIN), qih2m (adapter WA OTP), snhxw (rotasi kunci payroll). Tanya founder: PIN dibuat karyawan, HR hanya reset. Resolved.
 - 22:14 heavy: typecheck/tsc kedua di worktree sama ditolak exit 74 (override HEAVY_ALLOW_OVERLAP=1). test-heavy 124 PASS. Celah: dua masuk bersamaan persis bisa lolos.
 - 22:14 Audit UI outlet picker: 2 temuan menengah (kilas outlet salah saat muat, 0 outlet buntu) wajib dibetulkan sebelum merge; dikirim ke G1sxd (docs/briefs/397a).
+- 22:15 Founder Q4: Owner tunggal boleh setujui sendiri (dengan audit). Kartu legend-b8y6l, brief 399, mulai setelah batch48b masuk m1 (Opus, uang+akses).
