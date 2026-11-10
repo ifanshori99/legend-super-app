@@ -919,7 +919,7 @@ export async function moveSessionItemsOperation(
     assertTableUnchanged(from, locatedFrom);
     assertTableUnchanged(to, locatedTo);
 
-    const requested = await tx
+    const requestedEarly = await tx
       .select({ item: orderItems, order: orders })
       .from(orderItems)
       .innerJoin(
@@ -936,8 +936,8 @@ export async function moveSessionItemsOperation(
     // Repeat of a move that already succeeded: every item sits in the
     // destination now and the earlier request is on record.
     if (
-      requested.length === itemIds.length &&
-      requested.every((row) => row.order.tableSessionId === to.id)
+      requestedEarly.length === itemIds.length &&
+      requestedEarly.every((row) => row.order.tableSessionId === to.id)
     ) {
       const wanted = new Set(itemIds);
       const prior = await findPriorEvent(
@@ -975,6 +975,25 @@ export async function moveSessionItemsOperation(
       )
       .orderBy(asc(orders.id))
       .for("update");
+
+    // Re-read the requested lines under the same lock: a POS void of one line
+    // that committed after the first read must not be missed (legend-ekxy2).
+    const freshItems = await tx
+      .select()
+      .from(orderItems)
+      .where(
+        and(eq(orderItems.tenantId, tenantId), inArray(orderItems.id, itemIds)),
+      );
+    const freshItemById = new Map(freshItems.map((item) => [item.id, item]));
+    const freshOrderById = new Map(
+      sessionOrders.map((order) => [order.id, order]),
+    );
+    const requested = requestedEarly.flatMap((row) => {
+      const item = freshItemById.get(row.item.id);
+      return item
+        ? [{ item, order: freshOrderById.get(row.order.id) ?? row.order }]
+        : [];
+    });
 
     const fromBill = await paidOf(tx, context, from.id);
     const toBill = await paidOf(tx, context, to.id);
