@@ -56,6 +56,19 @@ const SUPPORTED_KEY_VERSIONS: ReadonlySet<number> = new Set([
 // unique indexes on `*_hmac` stay valid across rotations. Only the sealed
 // ciphertext columns move between key versions.
 
+/**
+ * Key-ring lookup for sibling sealers (lib/payroll-sealed.ts, legend-snhxw):
+ * payroll values share this ring, so one rotation and one retirement of v1
+ * cover HRIS and payroll. Version 1 has no entry here (it is the data key of
+ * lib/secrets.ts); callers fall back to sealSecret/openSecret for it.
+ */
+export function isHrisPiiKeyVersionSupported(keyVersion: number): boolean {
+  return SUPPORTED_KEY_VERSIONS.has(keyVersion);
+}
+export function hrisPiiRingKey(keyVersion: number): Buffer | undefined {
+  return EXTRA_KEYS.get(keyVersion);
+}
+
 /** Wire names of the sealed employee fields (contract employeePiiSchema keys). */
 export const HRIS_EMPLOYEE_PII_FIELDS = [
   "nik",

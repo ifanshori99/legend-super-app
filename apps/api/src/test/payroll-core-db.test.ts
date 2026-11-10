@@ -777,12 +777,11 @@ describe("payroll core: employee_pay_components is append-only (HR-03, PAYR-02)"
         [id],
       ),
     }));
-    for (const denied of [
-      result.amount,
-      result.version,
-      result.from,
-      result.employee,
-    ])
+    // The sealed amount and its key version are column-granted since 0248 (the
+    // reseal job), so the guard trigger refuses them outside the job (23514).
+    for (const denied of [result.amount, result.version])
+      expect(denied).toEqual({ ok: false, code: CHECK_VIOLATION });
+    for (const denied of [result.from, result.employee])
       expect(denied).toEqual({ ok: false, code: INSUFFICIENT_PRIVILEGE });
     expect(result.endDate).toMatchObject({ ok: true, rowCount: 1 });
     expect((result.endDate as { rows: unknown[] }).rows[0]).toEqual({
@@ -938,7 +937,10 @@ describe("payroll core: payslips and bank files are written once (PAYR-04)", () 
         [id],
       ),
     }));
-    for (const denied of [result.calculation, result.method, result.employee])
+    // calculation_encrypted is column-granted since 0248 (the reseal job); the
+    // guard trigger refuses it outside the job (23514).
+    expect(result.calculation).toEqual({ ok: false, code: CHECK_VIOLATION });
+    for (const denied of [result.method, result.employee])
       expect(denied).toEqual({ ok: false, code: INSUFFICIENT_PRIVILEGE });
     expect(result.pdf).toMatchObject({ ok: true, rowCount: 1 });
     expect(result.viewed).toMatchObject({ ok: true, rowCount: 1 });

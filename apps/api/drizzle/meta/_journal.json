@@ -1639,6 +1639,13 @@
       "when": 1794328000000,
       "tag": "0247_sole_owner_self_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1794329000000,
+      "tag": "0248_payroll_reseal_keys",
+      "breakpoints": true
     }
   ]
 }
