@@ -1109,3 +1109,9 @@ Langkah berikut CTO baru:
 - 00:01 RAM merah (free 24%, swap 6.7 GB). G0muc (gate cakupan) ditidurkan: idle menunggu RAM hijau; bangunkan + suruh run ulang saat hijau. Tidak mulai thread baru.
 - 00:08 Codex 414 HRIS absensi: 2 P1 + 4 P2 -> legend-whiwv brief 416 (antre, RAM merah). Antre slot: 37wom (413), legend-whiwv (416).
 - 00:15 Codex 415 Wi-Fi: 3 P1 + 1 P2 -> legend-tz5to brief 417. Antre slot: 37wom (413), whiwv (416), legend-tz5to (417).
+- 00:38 INSIDEN: layanan akun macOS mati (id tanpa nama, dscl eServerError, sysmond hilang) -> push GitHub, Colima/Postgres port, initdb, Chromium gagal. Butuh restart Mac (founder). Setelah restart: CTO buat ulang cron (push tiap jam :17, retro 3 jam 43 1,4,..,22, cek Codex), push --all, lalu:
+  - G3hrs batch48c (edacffd2): jalankan pnpm test penuh + e2e, lalu majukan m1. Q8 codec vs export kind: CTO putuskan.
+  - G0muc dd0g: run cakupan ulang, tulis threshold. mrez selesai (ddafb5f4).
+  - G2q9m ps-405 (a00aab99): jalankan test DB + bukti gagal-dulu.
+  - G3q1s PIN UI (f358e76f): e2e mock 29 test + screenshot 390/1280 + axe, lalu gerbang review UI founder.
+  - Antre: 37wom (413), whiwv (416), 417 Wi-Fi.
