@@ -268,3 +268,41 @@ test("Alur F: a cloud deployment without an edge route is not an outage", () => 
     true,
   );
 });
+
+// legend-b0l9: the OperationsShell badge shows the cloud link, not just
+// navigator.onLine (PRD v1.7 §4 Alur F step 1, §3 F5).
+test("legend-b0l9: connection badge follows the edge cloud link", () => {
+  // Edge says the cloud is down while the browser still has a LAN: not online.
+  assert.equal(
+    logic.cloudConnectionOnline({
+      browserOnline: true,
+      cloudLink: "disconnected",
+    }),
+    false,
+  );
+  assert.equal(
+    logic.cloudConnectionOnline({
+      browserOnline: true,
+      cloudLink: "connected",
+    }),
+    true,
+  );
+  // Browser offline is a secondary hint: it still forces offline.
+  assert.equal(
+    logic.cloudConnectionOnline({
+      browserOnline: false,
+      cloudLink: "connected",
+    }),
+    false,
+  );
+  // No edge answer (loading, or a cloud deployment without an edge node):
+  // fall back to the browser hint.
+  assert.equal(
+    logic.cloudConnectionOnline({ browserOnline: true, cloudLink: null }),
+    true,
+  );
+  assert.equal(
+    logic.cloudConnectionOnline({ browserOnline: false, cloudLink: null }),
+    false,
+  );
+});

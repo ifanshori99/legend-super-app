@@ -1,5 +1,6 @@
 import { MotionConfig } from "motion/react";
 import { z } from "zod";
+import type { MessageOverrides } from "@starter/shared/i18n";
 import { I18nProvider } from "@/components/i18n";
 import { Toaster } from "@/components/ui/toast";
 import { ThemeBootScript } from "@/lib/theme";
@@ -8,12 +9,19 @@ import { ThemeBootScript } from "@/lib/theme";
 // their own (Bahasa Indonesia is the default UI language).
 z.config(z.locales.id());
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({
+  overrides,
+  children,
+}: {
+  /** Tenant text overrides (PRD §7); none until a public source exists. */
+  overrides?: MessageOverrides;
+  children: React.ReactNode;
+}) {
   return (
     <>
       <ThemeBootScript />
       <MotionConfig reducedMotion="user">
-        <I18nProvider>
+        <I18nProvider overrides={overrides}>
           <Toaster>{children}</Toaster>
         </I18nProvider>
       </MotionConfig>

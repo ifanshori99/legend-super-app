@@ -38,7 +38,12 @@ export function getRouter() {
 
   const router = createRouter({
     routeTree,
-    context: { queryClient, session: null, access: ANONYMOUS_ACCESS },
+    context: {
+      queryClient,
+      session: null,
+      access: ANONYMOUS_ACCESS,
+      tenantTheme: null,
+    },
     scrollRestoration: true,
     defaultPreload: "intent",
     // Let TanStack Query decide freshness for preloaded data.

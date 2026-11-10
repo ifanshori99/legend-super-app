@@ -52,6 +52,21 @@ export function deriveConnectivity(input: {
 }
 
 /**
+ * The cloud connection the operations header badge reports (legend-b0l9, PRD
+ * v1.7 §4 Alur F step 1). The edge node's cloud link is the truth: a LAN that
+ * works while the edge lost the cloud must read "offline". Browser
+ * connectivity is the secondary hint, used alone only while the edge status is
+ * unknown (still loading, or no edge node on this deployment).
+ */
+export function cloudConnectionOnline(input: {
+  browserOnline: boolean;
+  cloudLink: CloudLink | null;
+}): boolean {
+  if (!input.browserOnline) return false;
+  return input.cloudLink === null || input.cloudLink === "connected";
+}
+
+/**
  * A cloud deployment does not serve `/api/edge/*` (edge endpoints live on the
  * outlet's edge node), so a 404 means "no edge node here", not an outage: the
  * back office opened from home must not carry a permanent warning banner.
