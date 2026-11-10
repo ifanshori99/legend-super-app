@@ -8,7 +8,7 @@ Review perubahan satu commit untuk bug correctness, keamanan data poin, dan edge
 - Repo: `/Users/ifanshori99/Projects/legend super app/legend`
 - Buat worktree terpisah, detached: `git worktree add --detach .worktrees/pilot-388-$RANDOM 6ddd5d74` (tanpa `pnpm worktree:setup` kecuali kamu butuh menjalankan test).
 - Diff yang direview: `git diff 6ddd5d74^2 6ddd5d74` (perubahan cabang terhadap milestone/m1, 18 berkas).
-- Konteks fitur: profit share. Distribusi dividen harus lewat matriks approval; koreksi minus mengembalikan pajak (clawback); login penerima pemegang saham bisa diganti dan statement/email harus ke penerima yang benar; migrasi 0217 harus aman untuk data dokumen lama dan migrator non-superuser.
+- Konteks fitur: profit share. Distribusi dividen harus lewat matriks approval; koreksi minus mengembalikan pajak (clawback); login penerima pemegang saham bisa diganti dan statement/email harus ke penerima yang benar; migrasi 0217 harus aman untuk data dokumen lama.
 
 ## Aturan pilot (wajib)
 - Buta: jangan baca commit lain di cabang `ws/8s992-profit-rules` sesudah 6ddd5d74, jangan baca komentar bd `legend-33im6`, brief 377/378/379, `docs/PROGRESS.md`, atau laporan thread lain soal kartu ini.
