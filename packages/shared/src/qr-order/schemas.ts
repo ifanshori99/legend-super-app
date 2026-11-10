@@ -925,6 +925,15 @@ export const qrOrderSchema = z
      * total = subtotal - discount + rounding.
      */
     pricesIncludeTaxAndService: z.boolean().default(false),
+    /**
+     * legend-pc51h: sale value of the lines a kitchen swap added. The replaced
+     * line keeps the sale value inside `subtotalIdr`; the replacement is only a
+     * kitchen line whose price difference is billed (order_issue_charges) or
+     * credited (apology voucher) outside the order, so the order money stays
+     * frozen. The server sets this from the swap links, 0 for an order
+     * without a swap (then the subtotal must equal the item sum exactly).
+     */
+    swapReplacementIdr: nonnegativeIdr.default(0 as Idr),
     status: qrOrderStatusSchema,
     items: z.array(qrOrderItemSchema),
     createdAt: isoDateTimeSchema,
@@ -964,10 +973,17 @@ export const qrOrderSchema = z
           path: ["items"],
           message: "Every order item must belong to the order",
         });
-    if (
-      order.subtotalIdr !==
-      order.items.reduce((sum, item) => sum + item.lineTotalIdr, 0)
-    )
+    const itemSum = order.items.reduce(
+      (sum, item) => sum + item.lineTotalIdr,
+      0,
+    );
+    if (order.swapReplacementIdr > itemSum)
+      ctx.addIssue({
+        code: "custom",
+        path: ["swapReplacementIdr"],
+        message: "swapReplacementIdr cannot exceed the sum of item line totals",
+      });
+    if (order.subtotalIdr !== itemSum - order.swapReplacementIdr)
       ctx.addIssue({
         code: "custom",
         path: ["subtotalIdr"],

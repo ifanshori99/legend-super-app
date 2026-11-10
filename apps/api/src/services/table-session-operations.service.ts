@@ -44,6 +44,7 @@ import {
   tableSessions,
   tables,
 } from "../db/schema";
+import { orderIssues } from "../db/schema/kds-issues";
 import { posOrderTenders } from "../db/schema/pos-order";
 import { reservationTables } from "../db/schema/reservation";
 import { withTenant } from "../db/tenant";
@@ -1121,6 +1122,28 @@ async function splitOrder(
     throw new CoreError(
       "CONFLICT",
       "Item tidak dapat dipisah dari pesanannya; pindahkan seluruh pesanan.",
+    );
+
+  // legend-pc51h: a kitchen-swap replacement line stays with the order whose
+  // frozen subtotal carries the replaced line's value; moving it alone would
+  // leave that order's lines and subtotal out of step.
+  const [swapLine] = await tx
+    .select({ id: orderIssues.id })
+    .from(orderIssues)
+    .where(
+      and(
+        eq(orderIssues.tenantId, order.tenantId),
+        inArray(
+          orderIssues.replacementOrderItemId,
+          selected.map((item) => item.id),
+        ),
+      ),
+    )
+    .limit(1);
+  if (swapLine)
+    throw new CoreError(
+      "CONFLICT",
+      "Item pengganti dari penukaran menu tidak dapat dipindah sendiri; pindahkan seluruh pesanan.",
     );
 
   const newOrderId = createUlid(now.getTime());

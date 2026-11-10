@@ -14,6 +14,22 @@
 //   extra charge and no refund to the bill).
 // - Stations are wired like order-recovery-swap-kitchen.test.ts so the real
 //   consumer runs the same path.
+// - Fix (option A): the bill order DTO carries `swapReplacementIdr` = the
+//   line_total of the replacement line (order_issues.replacement_order_item_id),
+//   and sum(ALL item lineTotalIdr) - swapReplacementIdr == subtotalIdr.
+// - Move guard (legend-pc51h review 1): moving ONLY the replacement line of a
+//   delivered same-price swap through POST /api/table-sessions/:id/move-items
+//   (staff = w.floorStaff, destination = another seated session of the same
+//   tenant) answers 409 CONFLICT and leaves the order and the source bill
+//   untouched. A swap needs a PAID order (open-bill orders cannot be reported),
+//   and a paid order carries payment_link_id/payment_intent_id, which the move
+//   refuses with an earlier CONFLICT. So the test clears those columns via SQL
+//   after the swap to make the new guard the only possible refusal. Same
+//   price keeps sum(live items) == order subtotal, which the earlier "cannot
+//   be split" CONFLICT also requires.
+// - Negative case: corrupting orders.subtotal_idr (+1, and total_idr +1 because
+//   the DB check orders_total_check forbids subtotal alone) on an order without
+//   a swap still answers 422 (the bill is not served for an inconsistent order).
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -24,6 +40,7 @@ import {
 import {
   tenantIdSchema,
   ulidToUuid,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
@@ -135,6 +152,38 @@ async function staffSwap(
   return { ...paid, issueId, event: await resolvedEvent(issueId) };
 }
 
+async function replacementLineTotalOf(issueId: string) {
+  const { rows } = await owner.query<{ line_total_idr: number }>(
+    `SELECT oi.line_total_idr::int AS line_total_idr
+     FROM order_issues i
+     JOIN order_items oi
+       ON oi.tenant_id = i.tenant_id AND oi.id = i.replacement_order_item_id
+     WHERE i.tenant_id = $1 AND i.id = $2`,
+    [w.tenant.tenantId, toUuid(issueId)],
+  );
+  expect(rows, "replacement line of the swapped issue").toHaveLength(1);
+  return rows[0]!.line_total_idr;
+}
+
+async function orderIdsOfSession(sessionId: string) {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM orders WHERE tenant_id = $1 AND table_session_id = $2
+     ORDER BY id`,
+    [w.tenant.tenantId, sessionId],
+  );
+  return rows.map((row) => row.id);
+}
+
+/** "item id -> order id" pairs of every line currently in the order. */
+async function itemOrderIds(orderId: string) {
+  const { rows } = await owner.query<{ id: string; order_id: string }>(
+    `SELECT id, order_id FROM order_items
+     WHERE tenant_id = $1 AND order_id = $2 ORDER BY id`,
+    [w.tenant.tenantId, toUuid(orderId)],
+  );
+  return rows;
+}
+
 function getBill(sessionId: string, token: string) {
   return agent(w.app)
     .get(`/api/table-sessions/${sessionId}/bill`)
@@ -143,7 +192,7 @@ function getBill(sessionId: string, token: string) {
 }
 
 async function expectBillAfterSwap(replacementItemId: string, pricier = false) {
-  const { order, guest, event } = await staffSwap(replacementItemId, {
+  const { order, guest, event, issueId } = await staffSwap(replacementItemId, {
     pricier,
   });
   const moneyBefore = await orderMoney(order.id);
@@ -156,6 +205,15 @@ async function expectBillAfterSwap(replacementItemId: string, pricier = false) {
   const totals = bill.body.data.totals;
   expect(totals.subtotalIdr).toBe(moneyBefore.subtotal_idr);
   expect(totals.totalIdr).toBe(moneyBefore.total_idr);
+
+  const billOrder = bill.body.data.orders[0];
+  const replacementLineTotal = await replacementLineTotalOf(issueId);
+  expect(billOrder.swapReplacementIdr).toBe(replacementLineTotal);
+  const itemSum = (billOrder.items as { lineTotalIdr: number }[]).reduce(
+    (sum, item) => sum + item.lineTotalIdr,
+    0,
+  );
+  expect(itemSum - billOrder.swapReplacementIdr).toBe(totals.subtotalIdr);
 }
 
 // ---- tests -----------------------------------------------------------------
@@ -171,5 +229,70 @@ describe("pc51h tagihan setelah swap staf", () => {
 
   it("pengganti harga sama: tagihan 200, subtotal dan total sama seperti sebelum swap", async () => {
     await expectBillAfterSwap(w.ids.rotiLain);
+  });
+
+  it("order tanpa swap dengan subtotal salah (+1): tagihan tidak 200 (422)", async () => {
+    const { order, guest } = await w.paidOrder();
+    await owner.query(
+      // total_idr moves with the subtotal only to satisfy the DB check
+      // constraint orders_total_check; the item sum no longer matches.
+      `UPDATE orders SET subtotal_idr = subtotal_idr + 1, total_idr = total_idr + 1
+       WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, toUuid(order.id)],
+    );
+
+    const bill = await getBill(guest.sessionId, guest.token);
+    expect(bill.status, JSON.stringify(bill.body)).not.toBe(200);
+    expect(bill.status).toBe(422);
+  });
+
+  it("memindah lini pengganti swap sendirian: 409 CONFLICT, order asal tidak berubah, tagihan meja asal tetap 200", async () => {
+    const open = await w.paidOrder();
+    const issueId = (await w.report(open.roti.id)).body.data.id as string;
+    const resolved = await w.staffPost(
+      w.supervisor,
+      `/api/order-issues/${issueId}/resolve`,
+      { resolution: "swap", replacementItemId: w.ids.rotiLain },
+    );
+    expect(resolved.status).toBe(200);
+    await deliver(await resolvedEvent(issueId));
+
+    const { rows: replacement } = await owner.query<{ id: string }>(
+      `SELECT replacement_order_item_id AS id FROM order_issues
+       WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, toUuid(issueId)],
+    );
+    const replacementId = uuidToUlid(replacement[0]!.id);
+    // A paid order always carries a payment link/intent, and the move refuses
+    // that with its own earlier CONFLICT. Clear them so ONLY the replacement
+    // line guard can refuse this move (the test must go red without it).
+    await owner.query(
+      `UPDATE orders
+       SET payment_link_id = NULL, payment_link_token_sealed = NULL,
+           payment_intent_id = NULL
+       WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, toUuid(open.order.id)],
+    );
+    const moneyBefore = await orderMoney(open.order.id);
+    const orderIdsBefore = await orderIdsOfSession(open.guest.sessionId);
+    const itemOrdersBefore = await itemOrderIds(open.order.id);
+
+    const destination = await w.seat();
+    const moved = await w.staffPost(
+      w.floorStaff,
+      `/api/table-sessions/${open.guest.sessionId}/move-items`,
+      { toSessionId: destination.sessionId, orderItemIds: [replacementId] },
+    );
+    expect(moved.status, JSON.stringify(moved.body)).toBe(409);
+
+    expect(await orderMoney(open.order.id)).toEqual(moneyBefore);
+    expect(await orderIdsOfSession(open.guest.sessionId)).toEqual(
+      orderIdsBefore,
+    );
+    expect(await orderIdsOfSession(destination.sessionId)).toEqual([]);
+    expect(await itemOrderIds(open.order.id)).toEqual(itemOrdersBefore);
+
+    const bill = await getBill(open.guest.sessionId, open.guest.token);
+    expect(bill.status, JSON.stringify(bill.body)).toBe(200);
   });
 });

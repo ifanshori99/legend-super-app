@@ -1049,3 +1049,72 @@ test("ORD-04 session token lives at most 12 hours and ends at bill close", () =>
     true,
   );
 });
+
+test("legend-pc51h qrOrderSchema: swapReplacementIdr balances the item sum against the frozen subtotal", () => {
+  const base = f.orders[0];
+  const itemSum = base.items.reduce((sum, item) => sum + item.lineTotalIdr, 0);
+
+  // Without a swap the subtotal must equal the item sum exactly.
+  assert.equal(base.swapReplacementIdr, 0);
+  assert.equal(base.subtotalIdr, itemSum);
+  assert.equal(qr.qrOrderSchema.safeParse(base).success, true);
+  const wrongSubtotal = qr.qrOrderSchema.safeParse({
+    ...base,
+    subtotalIdr: base.subtotalIdr + 1,
+    totalIdr: base.totalIdr + 1,
+  });
+  assert.equal(wrongSubtotal.success, false);
+  assert.ok(
+    wrongSubtotal.error.issues.some(
+      (issue) => issue.path.join(".") === "subtotalIdr",
+    ),
+  );
+
+  // A swap adds a replacement line; the order money stays frozen.
+  const replacement = {
+    ...base.items[0],
+    id: "01JD0000000000000000000099",
+  };
+  const withSwap = {
+    ...base,
+    items: [...base.items, replacement],
+    swapReplacementIdr: replacement.lineTotalIdr,
+  };
+  assert.equal(qr.qrOrderSchema.safeParse(withSwap).success, true);
+
+  // The same extra line without declaring the swap is rejected.
+  assert.equal(
+    qr.qrOrderSchema.safeParse({ ...withSwap, swapReplacementIdr: 0 }).success,
+    false,
+  );
+
+  // swapReplacementIdr cannot exceed the sum of the item lines.
+  const tooBig = qr.qrOrderSchema.safeParse({
+    ...base,
+    swapReplacementIdr: itemSum + 1,
+  });
+  assert.equal(tooBig.success, false);
+  assert.ok(
+    tooBig.error.issues.some(
+      (issue) => issue.path.join(".") === "swapReplacementIdr",
+    ),
+  );
+
+  // swapReplacementIdr does not rescue a wrong subtotal: with the extra line
+  // and the right swap amount, a subtotal off by one is still rejected.
+  assert.equal(
+    qr.qrOrderSchema.safeParse({
+      ...withSwap,
+      subtotalIdr: base.subtotalIdr + 1,
+      totalIdr: base.totalIdr + 1,
+    }).success,
+    false,
+  );
+  assert.equal(
+    qr.qrOrderSchema.safeParse({
+      ...base,
+      swapReplacementIdr: 1,
+    }).success,
+    false,
+  );
+});
