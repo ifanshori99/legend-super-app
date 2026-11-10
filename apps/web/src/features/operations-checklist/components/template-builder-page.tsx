@@ -136,6 +136,7 @@ export function TemplateBuilderPage({ templateId }: { templateId: string }) {
   if (templateQuery.error)
     return (
       <ErrorState
+        error={templateQuery.error}
         title={t("opsChecklist.builder.errorTitle")}
         description={t("opsChecklist.builder.errorHint")}
         onRetry={() => {

@@ -22,6 +22,7 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import {
   useCapacityRules,
   useKitchenStations,
@@ -81,11 +82,12 @@ type EditorTarget = {
 export function CapacityPage() {
   const t = useT();
   const toast = useToast();
-  const stations = useKitchenStations();
-  const menuStations = useMenuStations();
-  const rules = useCapacityRules();
-  const pacing = usePacing();
-  const save = useUpdateCapacityRules();
+  const outletId = useTenantContext().outlet?.id ?? null;
+  const stations = useKitchenStations(outletId);
+  const menuStations = useMenuStations(outletId);
+  const rules = useCapacityRules(outletId);
+  const pacing = usePacing(outletId);
+  const save = useUpdateCapacityRules(outletId);
   const [editor, setEditor] = React.useState<EditorTarget | null>(null);
   const [saveError, setSaveError] = React.useState<string | null>(null);
 

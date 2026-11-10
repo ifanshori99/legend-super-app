@@ -4,7 +4,6 @@
 // stays a cursor page. Components never call these directly — they use
 // ./hooks.ts, which owns cache keys and invalidation.
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
-import { listExampleOutlets } from "@starter/shared/api";
 import {
   createManualDeliveryOrder as createManualDeliveryOrderEndpoint,
   getDeliveryOrder as getDeliveryOrderEndpoint,
@@ -31,14 +30,6 @@ type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
 /** Channels, the live orders behind the review hints, menu picks. */
 export const DELIVERY_LIST_LIMIT = 100;
-
-/**
- * Outlet context is not part of the web app yet (the API will expose the
- * staff's assigned outlets). Same stopgap as the reservation desk and floor
- * board: list the accessible outlets and open the first active one.
- */
-export const fetchOutlets = (options?: CallOptions) =>
-  callEndpoint(listExampleOutlets, { query: { limit: 20 } }, options);
 
 export const fetchChannels = async (
   params: Params<typeof listDeliveryChannelsEndpoint>,

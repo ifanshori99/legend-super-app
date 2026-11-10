@@ -44,20 +44,44 @@ function useInvalidate(endpoints: readonly AnyEndpoint[]) {
 
 // ---- Reads ---------------------------------------------------------------
 
-export function useTemperatureLogs(query: Query<typeof listTemperatureLogs>) {
-  return useQuery(temperatureLogsQuery(query));
+export function useTemperatureLogs(
+  outletId: string | undefined,
+  query: Omit<Query<typeof listTemperatureLogs>, "outletId">,
+) {
+  return useQuery({
+    ...temperatureLogsQuery({ ...query, outletId: outletId ?? "" }),
+    enabled: Boolean(outletId),
+  });
 }
 
-export function useTemperatureEquipment(query: Query<typeof listEquipment>) {
-  return useQuery(equipmentQuery(query));
+export function useTemperatureEquipment(
+  outletId: string | undefined,
+  query: Omit<Query<typeof listEquipment>, "outletId">,
+) {
+  return useQuery({
+    ...equipmentQuery({ ...query, outletId: outletId ?? "" }),
+    enabled: Boolean(outletId),
+  });
 }
 
-export function usePrepLabels(query: Query<typeof listPrepLabels>) {
-  return useQuery(prepLabelsQuery(query));
+export function usePrepLabels(
+  outletId: string | undefined,
+  query: Omit<Query<typeof listPrepLabels>, "outletId">,
+) {
+  return useQuery({
+    ...prepLabelsQuery({ ...query, outletId: outletId ?? "" }),
+    enabled: Boolean(outletId),
+  });
 }
 
-export function usePrepLists(query: Query<typeof listPrepLists>) {
-  return useQuery(prepListsQuery(query));
+export function usePrepLists(
+  outletId: string | undefined,
+  query: Omit<Query<typeof listPrepLists>, "outletId">,
+) {
+  return useQuery({
+    ...prepListsQuery({ ...query, outletId: outletId ?? "" }),
+    enabled: Boolean(outletId),
+  });
 }
 
 export function usePrepList(prepListId: string | undefined) {
@@ -75,8 +99,14 @@ export function useUnits(query: Query<typeof listUoms>) {
   return useQuery(unitsQuery(query));
 }
 
-export function useStockBatches(query: Query<typeof listStockBatches>) {
-  return useQuery(stockBatchesQuery(query));
+export function useStockBatches(
+  outletId: string | undefined,
+  query: Omit<Query<typeof listStockBatches>, "outletId">,
+) {
+  return useQuery({
+    ...stockBatchesQuery({ ...query, outletId: outletId ?? "" }),
+    enabled: Boolean(outletId),
+  });
 }
 
 // ---- Temperature log (OPS-02) --------------------------------------------

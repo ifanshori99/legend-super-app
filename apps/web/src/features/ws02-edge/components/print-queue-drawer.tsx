@@ -138,6 +138,7 @@ export function PrintQueueDrawer({
 
           {queue.isError && (
             <ErrorState
+              error={queue.error}
               title={t("state.errorTitle")}
               description={t("state.errorHint")}
               onRetry={() => void queue.refetch()}

@@ -97,6 +97,7 @@ export function RunListPage({ access }: { access: AreaAccess }) {
       <ErrorState
         title={t("payrollRun.error.offlineTitle")}
         description={t("payrollRun.error.offlineHint")}
+        error={runs.error}
         onRetry={() => void runs.refetch()}
       />
     );
@@ -224,6 +225,7 @@ export function RunListPage({ access }: { access: AreaAccess }) {
         title={t("payrollRun.list.title")}
         description={t("payrollRun.list.description")}
         state={state}
+        error={runs.error}
         onRetry={() => void runs.refetch()}
         actions={
           canRun ? (

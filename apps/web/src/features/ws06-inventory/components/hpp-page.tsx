@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import type { BusinessDate } from "@starter/shared/core";
 import { useFoodCost, useOnlineStatus, useRecipeCoverage } from "../hpp-hooks";
 import {
@@ -24,7 +25,6 @@ import {
   defaultPeriod,
   foodCostPeriodLabel,
   formatBasisPoints,
-  HPP_OUTLET_NAME,
   sortFoodCost,
   type HppPeriod,
 } from "../hpp-lib";
@@ -43,8 +43,18 @@ const HPP_VIEWS = [
 
 type HppView = (typeof HPP_VIEWS)[number]["value"];
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh screen, so a
+ * tab, period or selection of the previous outlet cannot carry over.
+ */
 export function HppPage() {
+  const { outlet } = useTenantContext();
+  return <HppPageContent key={outlet?.id ?? "none"} />;
+}
+
+function HppPageContent() {
   const t = useT();
+  const { outlet } = useTenantContext();
   const online = useOnlineStatus();
   const [view, setView] = React.useState<HppView>("menu");
   const [period, setPeriod] = React.useState<HppPeriod>(() => defaultPeriod());
@@ -121,13 +131,13 @@ export function HppPage() {
             <span className="text-xs leading-4 font-medium text-muted-foreground">
               {t("inventoryHpp.controls.outlet")}
             </span>
-            {/* The outlet context bead has not landed; one outlet runs the
-               back office and its id travels with every report query. */}
+            {/* The outlet the shell selected; its id travels with every
+               report query. */}
             <Badge
               tone="neutral"
               className="h-control-sm w-fit rounded-field px-3 text-sm font-medium"
             >
-              {HPP_OUTLET_NAME}
+              {outlet?.name ?? "-"}
             </Badge>
           </div>
         </div>
@@ -178,7 +188,8 @@ function HppSummary({
   onResetPeriod: () => void;
 }) {
   const t = useT();
-  const foodCost = useFoodCost(period);
+  const { outlet } = useTenantContext();
+  const foodCost = useFoodCost(outlet?.id, period);
   const coverage = useRecipeCoverage();
 
   const pending = foodCost.isPending || coverage.isPending;

@@ -127,6 +127,7 @@ export function RecipeListPage({
         title={t("inventoryRecipe.list.title")}
         description={t("inventoryRecipe.list.description")}
         state={state}
+        error={recipesQuery.error ?? itemsQuery.error ?? unitsQuery.error}
         onRetry={() => {
           void recipesQuery.refetch();
           void itemsQuery.refetch();

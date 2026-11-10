@@ -2,7 +2,6 @@
 // breakdown tickets and shift handover. Keys are `[endpoint.id, input]`
 // (docs/frontend.md), so invalidating `[endpoint.id]` refreshes every view.
 import { queryOptions } from "@tanstack/react-query";
-import { listExampleOutlets } from "@starter/shared/api";
 import { listSuppliers } from "@starter/shared/inventory";
 import { listItems } from "@starter/shared/menu";
 import {
@@ -18,9 +17,6 @@ import { endpointQueryOptions } from "@/lib/api/endpoint";
 /** One page is enough for the outlet's registry, schedules, tickets and
  * handovers (cursor pages are capped at 100 by the contract). */
 export const LIST_LIMIT = 100;
-
-export const outletsQuery = () =>
-  endpointQueryOptions(listExampleOutlets, { query: { limit: LIST_LIMIT } });
 
 export const equipmentListQuery = (outletId: string) =>
   endpointQueryOptions(listEquipment, {

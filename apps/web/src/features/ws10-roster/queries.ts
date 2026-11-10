@@ -1,6 +1,7 @@
 // Query keys and options for the roster screens. `endpointQueryOptions` keys
 // by endpoint id + input, so invalidating `[endpoint.id]` refreshes every page
 // of that list (docs/frontend.md).
+import type { OutletId } from "@starter/shared/core";
 import {
   listEmployees,
   listHolidays,
@@ -9,17 +10,16 @@ import {
 } from "@starter/shared/hris";
 import { endpointQueryOptions } from "@/lib/api/endpoint";
 import { weekEnd } from "./lib";
-import { ROSTER_OUTLET_ID } from "./outlet";
 
 /** Everything under one prefix, for a screen that opens another roster week. */
 export const rosterKeys = { all: ["roster"] as const };
 
 const LIST_LIMIT = 100;
 
-export const employeesQuery = () =>
+export const employeesQuery = (outletId: OutletId) =>
   endpointQueryOptions(listEmployees, {
     query: {
-      outletId: ROSTER_OUTLET_ID,
+      outletId,
       status: "active" as const,
       limit: LIST_LIMIT,
     },
@@ -28,10 +28,10 @@ export const employeesQuery = () =>
 export const positionsQuery = () =>
   endpointQueryOptions(listPositions, { query: { limit: LIST_LIMIT } });
 
-export const weekShiftsQuery = (weekStart: string) =>
+export const weekShiftsQuery = (outletId: OutletId, weekStart: string) =>
   endpointQueryOptions(listShiftAssignments, {
     query: {
-      outletId: ROSTER_OUTLET_ID,
+      outletId,
       from: weekStart,
       to: weekEnd(weekStart),
       limit: LIST_LIMIT,

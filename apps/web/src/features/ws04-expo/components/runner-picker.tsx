@@ -26,6 +26,7 @@ export function RunnerPicker({
   runners,
   runnersPending,
   runnersFailed,
+  runnersError,
   onRetryRunners,
   assignedRunnerId,
   onPick,
@@ -38,6 +39,7 @@ export function RunnerPicker({
   runners: readonly ExpoRunner[];
   runnersPending: boolean;
   runnersFailed: boolean;
+  runnersError?: unknown;
   onRetryRunners: () => void;
   assignedRunnerId: string | null;
   onPick: (runnerId: ExpoRunner["userId"]) => void;
@@ -79,6 +81,7 @@ export function RunnerPicker({
           </div>
         ) : runnersFailed ? (
           <ErrorState
+            error={runnersError}
             title={t("expo.runnerError")}
             description={t("expo.runnerErrorHint")}
             onRetry={onRetryRunners}

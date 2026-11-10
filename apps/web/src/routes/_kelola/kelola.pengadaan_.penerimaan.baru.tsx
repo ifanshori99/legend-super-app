@@ -4,13 +4,10 @@ import { ReceivingFormPage } from "@/features/ws06-purchasing/components/receivi
 import { purchasingGuard } from "@/features/ws06-purchasing/guard";
 import {
   inventoryItemsQuery,
-  purchaseOrdersQuery,
-  stockLocationsQuery,
   suppliersQuery,
   uomsQuery,
 } from "@/features/ws06-purchasing/queries";
 import { isMockScenarioRequest } from "@/features/ws06-inventory/lib";
-import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
 
 // /kelola/pengadaan/penerimaan/baru — the phone-first receiving form (PRD §16
 // "penerimaan di ponsel", INV-05).
@@ -22,14 +19,9 @@ export const Route = createFileRoute(
     isMockScenarioRequest(location.searchStr)
       ? undefined
       : Promise.all([
-          context.queryClient.ensureQueryData(
-            purchaseOrdersQuery(INVENTORY_OUTLET_ID),
-          ),
+          // Outlet-scoped data loads in the screen, once the shell has chosen the outlet.
           context.queryClient.ensureQueryData(suppliersQuery()),
           context.queryClient.ensureQueryData(inventoryItemsQuery()),
-          context.queryClient.ensureQueryData(
-            stockLocationsQuery(INVENTORY_OUTLET_ID),
-          ),
           context.queryClient.ensureQueryData(uomsQuery()),
         ]),
   component: ReceivingFormScreen,

@@ -107,6 +107,7 @@ export function ScheduleTab({
   if (reservations.error)
     return (
       <ErrorState
+        error={reservations.error}
         title={t("reservation.list.errorTitle")}
         description={t("reservation.list.errorHint")}
         onRetry={() => void reservations.refetch()}

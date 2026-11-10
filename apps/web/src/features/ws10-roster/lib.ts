@@ -24,11 +24,7 @@ import {
 import type { MessageKey } from "@starter/shared/i18n";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { ROSTER_COMPLIANCE_POLICY, ROSTER_TENANT_ID } from "./fixtures";
-import {
-  ROSTER_OUTLET_ID,
-  ROSTER_TIME_ZONE,
-  ROSTER_UTC_OFFSET,
-} from "./outlet";
+import { ROSTER_TIME_ZONE, ROSTER_UTC_OFFSET } from "./outlet";
 
 const DAY_FORMAT = new Intl.DateTimeFormat("id-ID", {
   weekday: "short",
@@ -198,7 +194,7 @@ export function draftFromTemplate(
   return shiftAssignmentSchema.parse({
     id: newIdempotencyKey(),
     tenantId: ROSTER_TENANT_ID,
-    outletId: ROSTER_OUTLET_ID,
+    outletId: template.outletId,
     employeeId,
     shiftTemplateId: template.id,
     stationId: template.stationId,

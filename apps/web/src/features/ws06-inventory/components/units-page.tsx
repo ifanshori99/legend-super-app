@@ -64,6 +64,7 @@ export function UnitsPage() {
         title={t("inventory.units.catalogTitle")}
         description={t("inventory.units.catalogHint")}
         state={state}
+        error={unitsQuery.error ?? itemsQuery.error}
         onRetry={() => {
           void unitsQuery.refetch();
           void itemsQuery.refetch();

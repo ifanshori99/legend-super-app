@@ -10,6 +10,7 @@ import {
   type Uom,
 } from "@starter/shared/inventory";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardShell, CardShellBody } from "@/components/ui/card";
@@ -30,7 +31,6 @@ import {
   useCreatePurchaseOrder,
   useCreatePurchaseRequest,
   useInventoryItems,
-  useOutlets,
   usePurchaseOrder,
   usePurchaseOrders,
   usePurchaseRequest,
@@ -792,10 +792,20 @@ function OrderDetail({
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh page, so the
+ * open view and selected document of the previous outlet cannot leak.
+ */
 export function PurchasingPage() {
+  const { outlet } = useTenantContext();
+  return <PurchasingContent key={outlet?.id ?? "none"} />;
+}
+
+function PurchasingContent() {
   const t = useT();
-  const outlets = useOutlets();
-  const outletId = outlets.data?.data[0]?.id ?? "";
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id ?? "";
   const requests = usePurchaseRequests(outletId);
   const orders = usePurchaseOrders(outletId);
   const items = useInventoryItems();
@@ -806,13 +816,11 @@ export function PurchasingPage() {
   >("list");
   const [selected, setSelected] = React.useState("");
   const loading =
-    outlets.isPending ||
     (Boolean(outletId) && (requests.isPending || orders.isPending)) ||
     items.isPending ||
     suppliers.isPending ||
     uoms.isPending;
   const failed =
-    outlets.isError ||
     requests.isError ||
     orders.isError ||
     items.isError ||
@@ -820,7 +828,6 @@ export function PurchasingPage() {
     uoms.isError;
   const retry = () => {
     void Promise.all([
-      outlets.refetch(),
       requests.refetch(),
       orders.refetch(),
       items.refetch(),

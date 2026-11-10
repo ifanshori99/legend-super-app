@@ -16,12 +16,15 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/feedback-state";
-import { ROSTER_TEMPLATES, stationName } from "../fixtures";
+import { useTenantContext } from "@/lib/tenant-context";
+import { rosterTemplatesFor, stationName } from "../fixtures";
 import { useRosterPositions } from "../hooks";
 import { formatTemplateSegments } from "../lib";
 
 export function TemplatesPage() {
   const t = useT();
+  const { outlet } = useTenantContext();
+  const templates = rosterTemplatesFor(outlet?.id);
   const positionsQ = useRosterPositions();
   const positionsById = new Map(
     (positionsQ.data?.data ?? []).map((position) => [
@@ -44,7 +47,7 @@ export function TemplatesPage() {
         {t("roster.templates.readOnly")}
       </p>
 
-      {ROSTER_TEMPLATES.length === 0 ? (
+      {templates.length === 0 ? (
         <CardShell>
           <CardShellBody>
             <EmptyState title={t("roster.templates.empty")} />
@@ -52,7 +55,7 @@ export function TemplatesPage() {
         </CardShell>
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {ROSTER_TEMPLATES.map((template) => {
+          {templates.map((template) => {
             const crossing = shiftTemplateCrossesMidnight(template);
             const station =
               template.stationId === null

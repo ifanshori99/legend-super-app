@@ -6,6 +6,7 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { ReceiptText } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -44,7 +45,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { formatQuantity } from "../../ws06-inventory/lib.ts";
-import { INVENTORY_OUTLET_ID } from "../../ws06-inventory/outlet.ts";
 import {
   useAttemptKey,
   useCreateSupplierPayment,
@@ -799,13 +799,25 @@ function InvoiceDetailDialog({
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh list, so a
+ * selected invoice or search of the previous outlet cannot leak.
+ */
 export function InvoiceListPage({ canPay }: { canPay: boolean }) {
+  const { outlet } = useTenantContext();
+  return <InvoiceListContent key={outlet?.id ?? "none"} canPay={canPay} />;
+}
+
+function InvoiceListContent({ canPay }: { canPay: boolean }) {
   const t = useT();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id ?? "";
   const invoices = useSupplierInvoices({
-    outletId: INVENTORY_OUTLET_ID,
+    outletId,
     limit: 100,
   });
-  const orders = usePurchaseOrders(INVENTORY_OUTLET_ID);
+  const orders = usePurchaseOrders(outletId);
   const suppliers = useSuppliers();
   const [selected, setSelected] = React.useState("");
   const [search, setSearch] = React.useState("");
@@ -824,7 +836,9 @@ export function InvoiceListPage({ canPay }: { canPay: boolean }) {
     [invoices.data, orders.data, search, suppliers.data],
   );
 
-  const loading = invoices.isPending || orders.isPending || suppliers.isPending;
+  const loading =
+    Boolean(outletId) &&
+    (invoices.isPending || orders.isPending || suppliers.isPending);
   const failed = invoices.isError || orders.isError || suppliers.isError;
   const state: DataState = loading
     ? "loading"
@@ -841,6 +855,7 @@ export function InvoiceListPage({ canPay }: { canPay: boolean }) {
         title={t("inventoryReceiving.invoices.listTitle")}
         description={t("inventoryReceiving.invoices.listDescription")}
         state={state}
+        error={invoices.error ?? orders.error ?? suppliers.error}
         onRetry={() => {
           void invoices.refetch();
           void orders.refetch();

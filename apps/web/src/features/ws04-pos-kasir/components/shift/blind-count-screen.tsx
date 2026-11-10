@@ -163,6 +163,7 @@ export function BlindCountScreen() {
   if (shift.isError)
     return (
       <ErrorState
+        error={shift.error}
         title={t("posKasirShift.error.title")}
         description={t("posKasirShift.error.hint")}
         onRetry={() => void shift.refetch()}

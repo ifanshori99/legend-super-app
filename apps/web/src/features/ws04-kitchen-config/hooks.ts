@@ -1,6 +1,7 @@
 // Hooks are the only way components touch this feature's data; they own cache
 // updates and invalidation (docs/frontend.md, "Custom hooks").
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { OutletId } from "@starter/shared/core";
 import {
   capacityRulesQuery,
   kitchenConfigKeys,
@@ -13,34 +14,39 @@ import {
 import { saveCapacityRules, type CapacityRulesBody } from "./api.ts";
 import type { OrderIssueQuery, ServingSummaryQuery } from "./api.ts";
 
-export function useKitchenStations() {
-  return useQuery(kitchenStationsQuery());
+// The outlet is the one the shell selected (useTenantContext().outlet); null
+// leaves the query disabled.
+type Outlet = OutletId | null;
+
+export function useKitchenStations(outletId: Outlet) {
+  return useQuery(kitchenStationsQuery(outletId));
 }
 
-export function useMenuStations() {
-  return useQuery(menuStationsQuery());
+export function useMenuStations(outletId: Outlet) {
+  return useQuery(menuStationsQuery(outletId));
 }
 
-export function useCapacityRules() {
-  return useQuery(capacityRulesQuery());
+export function useCapacityRules(outletId: Outlet) {
+  return useQuery(capacityRulesQuery(outletId));
 }
 
-export function usePacing() {
-  return useQuery(pacingQuery());
+export function usePacing(outletId: Outlet) {
+  return useQuery(pacingQuery(outletId));
 }
 
 export function useServingTimeSummary(
+  outletId: Outlet,
   query: ServingSummaryQuery,
   enabled = true,
 ) {
-  return useQuery(servingTimeSummaryQuery(query, enabled));
+  return useQuery(servingTimeSummaryQuery(outletId, query, enabled));
 }
 
-export function useOrderIssues(query: OrderIssueQuery) {
-  return useQuery(orderIssuesQuery(query));
+export function useOrderIssues(outletId: Outlet, query: OrderIssueQuery) {
+  return useQuery(orderIssuesQuery(outletId, query));
 }
 
-export function useUpdateCapacityRules() {
+export function useUpdateCapacityRules(outletId: Outlet) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
@@ -49,16 +55,19 @@ export function useUpdateCapacityRules() {
     }: {
       stationId: string;
       rules: CapacityRulesBody["rules"];
-    }) => saveCapacityRules(stationId, rules),
+    }) => {
+      if (!outletId) throw new Error("No outlet selected");
+      return saveCapacityRules(outletId, stationId, rules);
+    },
     onSuccess: () =>
       // The pacing snapshot carries the active capacity per station; refresh
       // it together with the rules the user just replaced (KDS-05).
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: kitchenConfigKeys.capacityRules(),
+          queryKey: kitchenConfigKeys.capacityRules(outletId),
         }),
         queryClient.invalidateQueries({
-          queryKey: kitchenConfigKeys.pacing(),
+          queryKey: kitchenConfigKeys.pacing(outletId),
         }),
       ]),
   });

@@ -8,18 +8,31 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors.ts";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useAssignRunner, useExpoBoard, useExpoRunners } from "../hooks.ts";
 import { ExpoTicketCard } from "./expo-ticket-card.tsx";
 import { RunnerPicker } from "./runner-picker.tsx";
 import { KitchenScreenHeader } from "./screen-header.tsx";
 import { expoTargetLabel } from "./target-label.ts";
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh screen, so an
+ * open runner picker of the previous outlet cannot carry over.
+ */
 export function ExpoScreen() {
+  const { outlet } = useTenantContext();
+  return <ExpoContent key={outlet?.id ?? "none"} />;
+}
+
+function ExpoContent() {
   const t = useT();
   const toast = useToast();
-  const board = useExpoBoard();
-  const runners = useExpoRunners();
-  const assign = useAssignRunner();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
+  const board = useExpoBoard(outletId);
+  const runners = useExpoRunners(outletId);
+  const assign = useAssignRunner(outletId);
   const [picking, setPicking] = useState<ExpoTicket | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
 
@@ -69,7 +82,7 @@ export function ExpoScreen() {
     />
   );
 
-  if (board.isPending) {
+  if (outletId && board.isPending) {
     return (
       <div className="flex w-full flex-col gap-5">
         {header}
@@ -91,6 +104,7 @@ export function ExpoScreen() {
       <div className="flex w-full flex-col gap-5">
         {header}
         <ErrorState
+          error={board.error}
           title={t("expo.errorTitle")}
           description={t("expo.errorHint")}
           onRetry={() => void board.refetch()}
@@ -181,6 +195,7 @@ export function ExpoScreen() {
         runners={runners.data ?? []}
         runnersPending={runners.isPending}
         runnersFailed={runners.isError}
+        runnersError={runners.error}
         onRetryRunners={() => void runners.refetch()}
         assignedRunnerId={picking?.runnerId ?? null}
         onPick={handlePick}

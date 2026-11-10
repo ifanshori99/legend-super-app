@@ -6,16 +6,8 @@ import {
   isMockScenarioRequest,
   LIST_LIMIT,
 } from "@/features/ws06-inventory/lib";
-import {
-  menuQuery,
-  wasteQuery,
-} from "@/features/ws06-inventory/opname-queries";
-import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
-import {
-  itemsQuery,
-  locationsQuery,
-  unitsQuery,
-} from "@/features/ws06-inventory/queries";
+import { menuQuery } from "@/features/ws06-inventory/opname-queries";
+import { itemsQuery, unitsQuery } from "@/features/ws06-inventory/queries";
 import { holdsAny } from "@/lib/areas/guard";
 
 // /kelola/inventori/waste — waste and spoilage log (PRD §16 "Waste &
@@ -23,13 +15,11 @@ import { holdsAny } from "@/lib/areas/guard";
 // area's inventory.stock.view.
 export const Route = createFileRoute("/_kelola/kelola/inventori/waste")({
   beforeLoad: inventoryGuard(["inventory.stock.view"]),
+  // Outlet-scoped data loads in the screen, once the shell has chosen the outlet.
   loader: ({ context, location }) =>
     isMockScenarioRequest(location.searchStr)
       ? undefined
       : Promise.all([
-          context.queryClient.ensureQueryData(
-            wasteQuery({ outletId: INVENTORY_OUTLET_ID, limit: LIST_LIMIT }),
-          ),
           context.queryClient.ensureQueryData(
             itemsQuery({ limit: LIST_LIMIT }),
           ),
@@ -38,12 +28,6 @@ export const Route = createFileRoute("/_kelola/kelola/inventori/waste")({
           ),
           context.queryClient.ensureQueryData(
             unitsQuery({ limit: LIST_LIMIT }),
-          ),
-          context.queryClient.ensureQueryData(
-            locationsQuery({
-              outletId: INVENTORY_OUTLET_ID,
-              limit: LIST_LIMIT,
-            }),
           ),
         ]),
   component: WasteScreen,

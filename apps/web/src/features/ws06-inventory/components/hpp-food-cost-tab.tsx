@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useFoodCost } from "../hpp-hooks";
 import { formatRupiah } from "@starter/shared/i18n";
 import { foodCostPeriodLabel, sortFoodCost, type HppPeriod } from "../hpp-lib";
@@ -30,7 +31,8 @@ import { SignedMoney } from "./hpp-signed-money";
 
 export function HppFoodCostTab({ period }: { period: HppPeriod }) {
   const t = useT();
-  const query = useFoodCost(period);
+  const { outlet } = useTenantContext();
+  const query = useFoodCost(outlet?.id, period);
 
   const rows = React.useMemo(
     () => sortFoodCost(query.data?.data ?? []),
@@ -51,6 +53,7 @@ export function HppFoodCostTab({ period }: { period: HppPeriod }) {
         title={t("inventoryHpp.foodCost.title")}
         description={t("inventoryHpp.foodCost.description")}
         state={state}
+        error={query.error}
         onRetry={() => void query.refetch()}
         empty={{
           title: t("inventoryHpp.foodCost.emptyTitle"),

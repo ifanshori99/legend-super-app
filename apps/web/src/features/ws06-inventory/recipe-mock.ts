@@ -12,6 +12,7 @@ import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import {
+  cafeLegendFixtures,
   extendCostIdr,
   formatDecimal4,
   type Decimal4,
@@ -42,7 +43,7 @@ import { weightedUnitCosts } from "./recipe-lib.ts";
 const fixtures = cafeLegendInventoryFixtures;
 const tenantId = fixtures.recipes[0].tenantId;
 const brandId = fixtures.recipes[0].brandId;
-const fixtureOutletId = fixtures.locations[0].outletId;
+const knownOutlets = new Set(cafeLegendFixtures.outlets.map((row) => row.id));
 const fixtureUserId = fixtures.recipes[0].updatedBy;
 
 type RecipeState = {
@@ -385,7 +386,7 @@ registerMock(createProductionOrder, ({ body, headers }) => {
     "production-order",
     [headers?.["Idempotency-Key"], body.idempotencyKey],
     () => {
-      if (body.outletId !== fixtureOutletId)
+      if (!knownOutlets.has(body.outletId))
         invalid("outletId", "Outlet tidak dikenal.");
       requireRecipe(body.recipeId);
       const created = productionOrderSchema.parse({

@@ -29,10 +29,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
 import { useCreateWasteLog, useMenuItems } from "../opname-hooks";
 import { LIST_LIMIT } from "../lib";
-import { INVENTORY_OUTLET_ID } from "../outlet";
 import { WASTE_REASONS, wasteReasonKey } from "../opname-lib";
 import {
   PhotoField,
@@ -56,10 +56,11 @@ export function WasteFormDialog({
 }) {
   const t = useT();
   const toast = useToast();
+  const { outlet } = useTenantContext();
   const items = useInventoryItems({ limit: LIST_LIMIT });
   const menu = useMenuItems();
   const units = useUnits({ limit: LIST_LIMIT });
-  const locations = useStockLocations();
+  const locations = useStockLocations(outlet?.id);
   const createWaste = useCreateWasteLog();
 
   const [targetType, setTargetType] =
@@ -185,12 +186,12 @@ export function WasteFormDialog({
       nextErrors.quantity = t("waste.form.errorQuantity");
     if (reason === "") nextErrors.reason = t("waste.form.errorReason");
     setErrors(nextErrors);
-    if (Object.values(nextErrors).some(Boolean)) return;
+    if (!outlet || Object.values(nextErrors).some(Boolean)) return;
 
     setFormError(undefined);
     createWaste.mutate(
       {
-        outletId: INVENTORY_OUTLET_ID,
+        outletId: outlet.id,
         locationId: effectiveLocationId,
         targetType,
         targetId,
@@ -393,7 +394,11 @@ export function WasteFormDialog({
             <Button type="button" variant="outline" onClick={close}>
               {t("waste.form.cancel")}
             </Button>
-            <Button type="submit" loading={createWaste.isPending}>
+            <Button
+              type="submit"
+              loading={createWaste.isPending}
+              disabled={!outlet}
+            >
               {t("waste.form.submit")}
             </Button>
           </DialogFooter>

@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { MenuEngineeringClass } from "@starter/shared/inventory";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useMenuEngineering } from "../hpp-hooks";
 import {
   engineeringCounts,
@@ -55,7 +56,8 @@ const CLASS_STATUS: Record<MenuEngineeringClass, StatusKind> = {
 
 export function HppEngineeringTab({ period }: { period: HppPeriod }) {
   const t = useT();
-  const query = useMenuEngineering(period);
+  const { outlet } = useTenantContext();
+  const query = useMenuEngineering(outlet?.id, period);
   const [selected, setSelected] = React.useState<MenuEngineeringClass | null>(
     null,
   );
@@ -85,6 +87,7 @@ export function HppEngineeringTab({ period }: { period: HppPeriod }) {
         title={t("inventoryHpp.engineering.title")}
         description={t("inventoryHpp.engineering.description")}
         state={state}
+        error={query.error}
         onRetry={() => void query.refetch()}
         empty={{
           title: t("inventoryHpp.engineering.emptyTitle"),
@@ -130,6 +133,7 @@ export function HppEngineeringTab({ period }: { period: HppPeriod }) {
             : t("inventoryHpp.engineering.description")
         }
         state={state}
+        error={query.error}
         onRetry={() => void query.refetch()}
         actions={
           selected ? (

@@ -243,6 +243,7 @@ export function WaitlistTab({
   if (waitlist.error)
     return (
       <ErrorState
+        error={waitlist.error}
         title={t("reservation.waitlist.errorTitle")}
         description={t("reservation.waitlist.errorHint")}
         onRetry={() => void waitlist.refetch()}

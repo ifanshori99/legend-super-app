@@ -28,6 +28,7 @@ export function PackagesTab({ outletId }: { outletId: string }) {
   if (packages.error)
     return (
       <ErrorState
+        error={packages.error}
         title={t("reservation.packages.errorTitle")}
         description={t("reservation.packages.errorHint")}
         onRetry={() => void packages.refetch()}

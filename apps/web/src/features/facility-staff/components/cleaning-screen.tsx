@@ -147,6 +147,7 @@ export function CleaningScreen({
           titleKey="facilityStaff.cleaning.error.title"
           hintKey="facilityStaff.cleaning.error.hint"
           onRetry={retry}
+          error={facilities.error ?? config.error ?? board.error}
         />
       )}
 

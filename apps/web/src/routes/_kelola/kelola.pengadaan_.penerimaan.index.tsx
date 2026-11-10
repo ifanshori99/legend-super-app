@@ -2,13 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { PurchasingFrame } from "@/features/ws06-purchasing/components/purchasing-shell";
 import { ReceivingListPage } from "@/features/ws06-purchasing/components/receiving-list-page";
 import { purchasingGuard } from "@/features/ws06-purchasing/guard";
-import { goodsReceiptsQuery } from "@/features/ws06-purchasing/receiving-queries";
-import {
-  purchaseOrdersQuery,
-  suppliersQuery,
-} from "@/features/ws06-purchasing/queries";
+import { suppliersQuery } from "@/features/ws06-purchasing/queries";
 import { isMockScenarioRequest } from "@/features/ws06-inventory/lib";
-import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
 import { holdsAny } from "@/lib/areas/guard";
 
 // /kelola/pengadaan/penerimaan — goods receipt list (PRD v1.7 §3 F18, §16
@@ -23,15 +18,8 @@ export const Route = createFileRoute("/_kelola/kelola/pengadaan_/penerimaan/")({
   loader: ({ context, location }) =>
     isMockScenarioRequest(location.searchStr)
       ? undefined
-      : Promise.all([
-          context.queryClient.ensureQueryData(
-            goodsReceiptsQuery({ outletId: INVENTORY_OUTLET_ID, limit: 100 }),
-          ),
-          context.queryClient.ensureQueryData(
-            purchaseOrdersQuery(INVENTORY_OUTLET_ID),
-          ),
-          context.queryClient.ensureQueryData(suppliersQuery()),
-        ]),
+      : // Outlet-scoped data loads in the screen, once the shell has chosen the outlet.
+        context.queryClient.ensureQueryData(suppliersQuery()),
   component: ReceivingListScreen,
 });
 

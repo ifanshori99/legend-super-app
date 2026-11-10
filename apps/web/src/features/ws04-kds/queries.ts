@@ -1,27 +1,44 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, skipToken } from "@tanstack/react-query";
 import type { StationConfig } from "@starter/shared/kitchen";
 import { fetchBoard, fetchStationLabels, fetchStations } from "./api.ts";
 
+// Every key carries the outlet, so switching outlet never serves another
+// outlet's stations or board from cache. A missing outlet (the session has
+// none) disables the query instead of calling the API.
 export const kdsKeys = {
   all: ["kds"] as const,
-  stations: ["kds", "stations"] as const,
-  stationLabels: ["kds", "station-labels"] as const,
-  board: (stationId: StationConfig["stationId"]) =>
-    ["kds", "board", stationId] as const,
+  outlet: (outletId: string | undefined) => ["kds", outletId] as const,
+  stations: (outletId: string | undefined) =>
+    ["kds", outletId, "stations"] as const,
+  stationLabels: (outletId: string | undefined) =>
+    ["kds", outletId, "station-labels"] as const,
+  board: (
+    outletId: string | undefined,
+    stationId: StationConfig["stationId"],
+  ) => ["kds", outletId, "board", stationId] as const,
 };
-export const stationsQuery = () =>
+export const stationsQuery = (outletId: string | undefined) =>
   queryOptions({
-    queryKey: kdsKeys.stations,
-    queryFn: ({ signal }) => fetchStations(signal),
+    queryKey: kdsKeys.stations(outletId),
+    queryFn: outletId
+      ? ({ signal }) => fetchStations(outletId, signal)
+      : skipToken,
   });
-export const stationLabelsQuery = () =>
+export const stationLabelsQuery = (outletId: string | undefined) =>
   queryOptions({
-    queryKey: kdsKeys.stationLabels,
-    queryFn: ({ signal }) => fetchStationLabels(signal),
+    queryKey: kdsKeys.stationLabels(outletId),
+    queryFn: outletId
+      ? ({ signal }) => fetchStationLabels(outletId, signal)
+      : skipToken,
   });
-export const boardQuery = (stationId: StationConfig["stationId"]) =>
+export const boardQuery = (
+  outletId: string | undefined,
+  stationId: StationConfig["stationId"],
+) =>
   queryOptions({
-    queryKey: kdsKeys.board(stationId),
-    queryFn: ({ signal }) => fetchBoard(stationId, signal),
+    queryKey: kdsKeys.board(outletId, stationId),
+    queryFn: outletId
+      ? ({ signal }) => fetchBoard(outletId, stationId, signal)
+      : skipToken,
     refetchInterval: 2000,
   });

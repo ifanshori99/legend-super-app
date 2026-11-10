@@ -8,11 +8,7 @@ import {
 } from "@/features/ws06-inventory/lib";
 import { unitsQuery } from "@/features/ws06-inventory/queries";
 import { RECIPE_BRAND_ID } from "@/features/ws06-inventory/recipe-lib";
-import {
-  productionOrdersQuery,
-  recipesQuery,
-} from "@/features/ws06-inventory/recipe-queries";
-import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
+import { recipesQuery } from "@/features/ws06-inventory/recipe-queries";
 import { holdsAny } from "@/lib/areas/guard";
 
 // /kelola/inventori/produksi — production batch orders for semi-finished
@@ -21,16 +17,11 @@ import { holdsAny } from "@/lib/areas/guard";
 export const Route = createFileRoute("/_kelola/kelola/inventori/produksi")({
   // recipe-mock.ts is loaded by the mock runtime's features/*/*-mock.ts glob.
   beforeLoad: inventoryGuard(["inventory.stock.view"]),
+  // Outlet-scoped data loads in the screen, once the shell has chosen the outlet.
   loader: ({ context, location }) =>
     isMockScenarioRequest(location.searchStr)
       ? undefined
       : Promise.all([
-          context.queryClient.ensureQueryData(
-            productionOrdersQuery({
-              outletId: INVENTORY_OUTLET_ID,
-              limit: LIST_LIMIT,
-            }),
-          ),
           context.queryClient.ensureQueryData(
             recipesQuery({ brandId: RECIPE_BRAND_ID, limit: LIST_LIMIT }),
           ),

@@ -6,7 +6,7 @@
 // 30-second window minted from the browser clock, and the server render must
 // not guess it (docs/frontend.md "Server rendering with data").
 import { queryOptions, skipToken } from "@tanstack/react-query";
-import type { BusinessDate } from "@starter/shared/core";
+import type { BusinessDate, OutletId } from "@starter/shared/core";
 import {
   ATTENDANCE_QR_ROTATION_SECONDS,
   type AttendanceQrToken,
@@ -22,17 +22,19 @@ import {
   fetchAttendanceQr,
   fetchReviewEmployees,
 } from "./api.ts";
-import { ATTENDANCE_OUTLET_ID } from "./outlet.ts";
 
 export const attendanceQrKeys = {
   all: ["attendance-qr"] as const,
-  token: () =>
-    [...attendanceQrKeys.all, "token", ATTENDANCE_OUTLET_ID] as const,
-  dayLogs: (businessDate: BusinessDate | "unknown") =>
+  token: (outletId: OutletId | undefined) =>
+    [...attendanceQrKeys.all, "token", outletId ?? "none"] as const,
+  dayLogs: (
+    outletId: OutletId | undefined,
+    businessDate: BusinessDate | "unknown",
+  ) =>
     [
       ...attendanceQrKeys.all,
       "day-logs",
-      ATTENDANCE_OUTLET_ID,
+      outletId ?? "none",
       businessDate,
     ] as const,
   employees: () => [...attendanceQrKeys.all, "employees"] as const,
@@ -64,18 +66,24 @@ export function qrRemainingMs(reading: AttendanceQrReading, deviceNow: number) {
  * rotated token for long. Polling pauses in a hidden tab; the focus refetch
  * picks up a fresh token when the screen is visible again.
  */
-export function attendanceQrQuery() {
+export function attendanceQrQuery(outletId: OutletId | undefined) {
   return queryOptions({
-    queryKey: attendanceQrKeys.token(),
-    queryFn: async ({ signal }): Promise<AttendanceQrReading> => {
-      const { qr, sentAt, receivedAt } = await fetchAttendanceQr(signal);
-      clockBounds = nextClockBounds(clockBounds, qr, sentAt, receivedAt);
-      return {
-        qr,
-        offsetMs: estimateOffset(clockBounds),
-        converged: clockBounds.hi - clockBounds.lo <= CONVERGED_WIDTH_MS,
-      };
-    },
+    queryKey: attendanceQrKeys.token(outletId),
+    queryFn:
+      outletId === undefined
+        ? skipToken
+        : async ({ signal }): Promise<AttendanceQrReading> => {
+            const { qr, sentAt, receivedAt } = await fetchAttendanceQr(
+              outletId,
+              signal,
+            );
+            clockBounds = nextClockBounds(clockBounds, qr, sentAt, receivedAt);
+            return {
+              qr,
+              offsetMs: estimateOffset(clockBounds),
+              converged: clockBounds.hi - clockBounds.lo <= CONVERGED_WIDTH_MS,
+            };
+          },
     staleTime: 0,
     refetchIntervalInBackground: false,
     refetchInterval: (query) => {
@@ -93,13 +101,16 @@ export function attendanceQrQuery() {
 }
 
 /** The outlet's logs for one business date (client-only business date). */
-export function attendanceDayQuery(businessDate: BusinessDate | null) {
+export function attendanceDayQuery(
+  outletId: OutletId | undefined,
+  businessDate: BusinessDate | null,
+) {
   return queryOptions({
-    queryKey: attendanceQrKeys.dayLogs(businessDate ?? "unknown"),
+    queryKey: attendanceQrKeys.dayLogs(outletId, businessDate ?? "unknown"),
     queryFn:
-      businessDate === null
+      outletId === undefined || businessDate === null
         ? skipToken
-        : ({ signal }) => fetchAttendanceDay(businessDate, signal),
+        : ({ signal }) => fetchAttendanceDay(outletId, businessDate, signal),
     staleTime: 0,
     refetchInterval: 60_000,
   });

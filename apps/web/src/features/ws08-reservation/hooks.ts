@@ -26,7 +26,6 @@ import * as api from "./api";
 import { RESERVATION_PAGE_SIZE } from "./api";
 import {
   floorBoardQuery,
-  outletsQuery,
   packagesQuery,
   reservationDetailQuery,
   reservationsQuery,
@@ -59,11 +58,6 @@ function useReservationMutation<TVariables, TResult>(
   // RESERVATION_SLOT_TAKEN means the desk's view is stale, so the conflict
   // map and the detail must refetch before the host tries again (RSV-01).
   return useMutation({ mutationFn, onSettled: () => refresh() });
-}
-
-/** Accessible outlets until the outlet-context bead supplies the assignment. */
-export function useOutlets() {
-  return useQuery(outletsQuery());
 }
 
 export function useReservations(

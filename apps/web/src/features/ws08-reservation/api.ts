@@ -4,7 +4,6 @@
 // stay cursor pages. Components never call these directly — they use
 // ./hooks.ts, which owns cache keys and invalidation.
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
-import { listExampleOutlets } from "@starter/shared/api";
 import {
   assignReservationTables as assignReservationTablesEndpoint,
   cancelReservation as cancelReservationEndpoint,
@@ -30,14 +29,6 @@ type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
 /** A day's schedule fits one page; the desk never needs a second cursor. */
 export const RESERVATION_PAGE_SIZE = 100;
-
-/**
- * Outlet context is not part of the web app yet (the API will expose the
- * staff's assigned outlets). Same stopgap as the floor board: list the
- * accessible outlets and open the first active one.
- */
-export const fetchOutlets = (options?: CallOptions) =>
-  callEndpoint(listExampleOutlets, { query: { limit: 20 } }, options);
 
 export const fetchReservations = (
   params: Params<typeof listReservationsEndpoint>,

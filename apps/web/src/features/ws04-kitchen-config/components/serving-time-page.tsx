@@ -7,6 +7,7 @@ import { formatNumber, type Translate } from "@starter/shared/i18n";
 import type { ServingTimeSummary } from "@starter/shared/kitchen";
 import { businessDateSchema } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { Card } from "@/components/ui/card";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import { ErrorState } from "@/components/ui/feedback-state";
@@ -95,6 +96,7 @@ function ServingBar({
 
 export function ServingTimePage() {
   const t = useT();
+  const outletId = useTenantContext().outlet?.id ?? null;
   const [group, setGroup] = React.useState<Group>("station");
   const [period, setPeriod] = React.useState(defaultPeriod);
 
@@ -112,7 +114,7 @@ export function ServingTimePage() {
       valid ? period.endDate : fallback.endDate,
     ),
   };
-  const summary = useServingTimeSummary(query, valid);
+  const summary = useServingTimeSummary(outletId, query, valid);
   const rows = summary.data ?? [];
   const scaleSeconds = rows.reduce(
     (longest, row) =>
@@ -180,6 +182,7 @@ export function ServingTimePage() {
         <ErrorState
           title={t("kitchenConfig.serving.errorTitle")}
           description={t("kitchenConfig.serving.errorHint")}
+          error={summary.error}
           onRetry={() => void summary.refetch()}
         />
       ) : (
@@ -195,6 +198,7 @@ export function ServingTimePage() {
                   ? "empty"
                   : "ready"
           }
+          error={summary.error}
           onRetry={() => void summary.refetch()}
           empty={
             valid

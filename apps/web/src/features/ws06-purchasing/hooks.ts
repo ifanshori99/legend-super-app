@@ -8,7 +8,6 @@ import {
 import * as api from "./api";
 import * as queries from "./queries";
 
-export const useOutlets = () => useQuery(queries.outletsQuery());
 export const usePurchaseRequests = (id: string) =>
   useQuery({ ...queries.purchaseRequestsQuery(id), enabled: Boolean(id) });
 export const usePurchaseOrders = (id: string) =>

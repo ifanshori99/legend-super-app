@@ -33,20 +33,31 @@ import {
   WASTE_REASONS,
 } from "../opname-lib";
 import { WasteFormDialog } from "./waste-form-dialog";
+import { useTenantContext } from "@/lib/tenant-context";
 
 const ALL = "all";
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh list, so a
+ * search, filter or open form of the previous outlet cannot carry over.
+ */
 export function WastePage({ canRecord }: { canRecord: boolean }) {
+  const { outlet } = useTenantContext();
+  return <WasteContent key={outlet?.id ?? "none"} canRecord={canRecord} />;
+}
+
+function WasteContent({ canRecord }: { canRecord: boolean }) {
   const t = useT();
+  const { outlet } = useTenantContext();
   const [search, setSearch] = React.useState("");
   const [reasonFilter, setReasonFilter] = React.useState<string>(ALL);
   const [formOpen, setFormOpen] = React.useState(false);
 
-  const logsQuery = useWasteLogs();
+  const logsQuery = useWasteLogs(outlet?.id);
   const itemsQuery = useInventoryItems({ limit: LIST_LIMIT });
   const menuQuery = useMenuItems();
   const unitsQuery = useUnits({ limit: LIST_LIMIT });
-  const locationsQuery = useStockLocations();
+  const locationsQuery = useStockLocations(outlet?.id);
 
   const targets = React.useMemo(() => {
     const map = new Map<
@@ -135,6 +146,13 @@ export function WastePage({ canRecord }: { canRecord: boolean }) {
           title={t("waste.list.title")}
           description={t("waste.list.description")}
           state={state}
+          error={
+            logsQuery.error ??
+            itemsQuery.error ??
+            menuQuery.error ??
+            unitsQuery.error ??
+            locationsQuery.error
+          }
           onRetry={() => {
             void logsQuery.refetch();
             void itemsQuery.refetch();

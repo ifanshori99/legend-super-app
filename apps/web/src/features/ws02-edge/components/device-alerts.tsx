@@ -56,7 +56,7 @@ function DeviceIcon({ type }: { type: Device["type"] }) {
 export function DeviceAlerts() {
   const t = useT();
   const now = useNowMs();
-  const { data, isPending, isError, refetch } = useEdgeDevices();
+  const { data, isPending, isError, error, refetch } = useEdgeDevices();
   const devices = data?.data;
   useDeviceOfflineToasts(now === null ? undefined : devices);
 
@@ -73,6 +73,7 @@ export function DeviceAlerts() {
   if (isError) {
     return (
       <ErrorState
+        error={error}
         title={t("state.errorTitle")}
         description={t("state.errorHint")}
         onRetry={() => void refetch()}

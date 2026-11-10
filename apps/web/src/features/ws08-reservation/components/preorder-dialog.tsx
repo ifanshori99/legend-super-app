@@ -93,6 +93,7 @@ export function PreOrderDialog({
           </div>
         ) : packages.error ? (
           <ErrorState
+            error={packages.error}
             title={t("reservation.preOrder.errorTitle")}
             description={t("reservation.preOrder.errorHint")}
             onRetry={() => void packages.refetch()}

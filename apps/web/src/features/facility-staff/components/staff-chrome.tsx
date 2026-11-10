@@ -155,15 +155,18 @@ export function StaffError({
   titleKey,
   hintKey,
   onRetry,
+  error,
 }: {
   titleKey: MessageKey;
   hintKey: MessageKey;
   onRetry: () => void;
+  error?: unknown;
 }) {
   const t = useT();
   return (
     <Card data-slot="facility-staff-error">
       <ErrorState
+        error={error}
         title={t(titleKey)}
         description={t(hintKey)}
         onRetry={onRetry}

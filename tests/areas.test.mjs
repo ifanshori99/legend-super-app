@@ -463,6 +463,34 @@ describe("FE-AREA-10 outlet selection from the session outlets", () => {
     assert.equal(outletSel.resolveSelectedOutlet([a, b], undefined), a);
   });
 
+  test("kelola picker: only paths that read the context outlet (legend-sp41n)", () => {
+    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/roster"), true);
+    assert.equal(
+      outletSel.kelolaUsesOutletContext("/kelola/inventori/stok/abc"),
+      true,
+    );
+    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/pengadaan"), true);
+    // Own pickers and name-only lookups: no second control.
+    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/perangkat"), false);
+    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/inventori"), false);
+    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/rosterx"), false);
+    assert.equal(outletSel.kelolaUsesOutletContext("/"), false);
+  });
+
+  test("kelola picker: every listed prefix is a real Kelola route", async () => {
+    const { readdirSync } = await import("node:fs");
+    const routes = readdirSync(
+      new URL("../apps/web/src/routes/_kelola/", import.meta.url),
+    ).map((name) => name.replace(/\.tsx$/, "").replace(/_(?=\.)/g, ""));
+    for (const prefix of outletSel.KELOLA_OUTLET_SCOPED_PREFIXES) {
+      const dotted = prefix.slice(1).replaceAll("/", ".");
+      assert.ok(
+        routes.some((name) => name === dotted || name.startsWith(`${dotted}.`)),
+        `no route file for ${prefix}`,
+      );
+    }
+  });
+
   test("2+ outlets: screen is held until the saved pick is read", () => {
     assert.equal(outletSel.outletPickPending([a, b], undefined), true);
     assert.equal(outletSel.outletPickPending([a, b], null), false);

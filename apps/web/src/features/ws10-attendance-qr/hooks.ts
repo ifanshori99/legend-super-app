@@ -2,7 +2,11 @@
 // way components touch its data (docs/frontend.md "Custom hooks").
 import { useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { localDateOf, type BusinessDate } from "@starter/shared/core";
+import {
+  localDateOf,
+  type BusinessDate,
+  type OutletId,
+} from "@starter/shared/core";
 import {
   attendanceDayQuery,
   attendanceQrQuery,
@@ -43,16 +47,22 @@ export function useBusinessDate(): BusinessDate | null {
   return now === null ? null : localDateOf(new Date(now), ATTENDANCE_TIME_ZONE);
 }
 
-export function useAttendanceQr() {
-  const hydrated = useHydrated();
-  return useQuery({ ...attendanceQrQuery(), enabled: hydrated });
-}
-
-export function useAttendanceDay(businessDate: BusinessDate | null) {
+export function useAttendanceQr(outletId: OutletId | undefined) {
   const hydrated = useHydrated();
   return useQuery({
-    ...attendanceDayQuery(businessDate),
-    enabled: hydrated && businessDate !== null,
+    ...attendanceQrQuery(outletId),
+    enabled: hydrated && Boolean(outletId),
+  });
+}
+
+export function useAttendanceDay(
+  outletId: OutletId | undefined,
+  businessDate: BusinessDate | null,
+) {
+  const hydrated = useHydrated();
+  return useQuery({
+    ...attendanceDayQuery(outletId, businessDate),
+    enabled: hydrated && Boolean(outletId) && businessDate !== null,
   });
 }
 
@@ -65,14 +75,15 @@ const EMPTY_DECISIONS: AttendanceReviewState = Object.freeze({});
 
 /** Supervisor decisions kept in this browser tab (no contract endpoint yet). */
 export function useReviewDecisions(
+  outletId: OutletId | undefined,
   businessDate: BusinessDate | null,
 ): AttendanceReviewState {
   return useSyncExternalStore(
     subscribeReviewDecisions,
     () =>
-      businessDate === null
+      outletId === undefined || businessDate === null
         ? EMPTY_DECISIONS
-        : reviewDecisionsSnapshot(businessDate),
+        : reviewDecisionsSnapshot(outletId, businessDate),
     () => EMPTY_DECISIONS,
   );
 }

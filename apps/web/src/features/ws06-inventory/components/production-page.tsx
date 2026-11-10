@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { useUnits } from "../hooks";
 import { formatQuantity, uomCode } from "../lib";
@@ -39,11 +40,7 @@ import {
   RECIPE_PAGE_SIZE,
   type ProductionFilter,
 } from "../recipe-lib";
-import {
-  useProductionOrders,
-  useProductionOutlets,
-  useRecipes,
-} from "../recipe-hooks";
+import { useProductionOrders, useRecipes } from "../recipe-hooks";
 import { formatDateTime, listPage, shortId } from "../stock-lib";
 import { ProductionCreateDialog } from "./production-create-dialog";
 import { ProductionTransitionDialog } from "./production-transition-dialog";
@@ -71,8 +68,18 @@ const ACTION_ARIA: Record<
   cancel: "inventoryRecipe.production.actions.cancelLabel",
 };
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh list, so a
+ * filter, page or open dialog of the previous outlet cannot carry over.
+ */
 export function ProductionPage({ canManage }: { canManage: boolean }) {
+  const { outlet } = useTenantContext();
+  return <ProductionContent key={outlet?.id ?? "none"} canManage={canManage} />;
+}
+
+function ProductionContent({ canManage }: { canManage: boolean }) {
   const t = useT();
+  const { outlet } = useTenantContext();
   const online = useOnline();
   const [filter, setFilter] = React.useState<ProductionFilter>("all");
   const [page, setPage] = React.useState(1);
@@ -82,10 +89,9 @@ export function ProductionPage({ canManage }: { canManage: boolean }) {
     action: ProductionOrderAction;
   } | null>(null);
 
-  const ordersQuery = useProductionOrders();
+  const ordersQuery = useProductionOrders(outlet?.id);
   const recipesQuery = useRecipes();
   const unitsQuery = useUnits({ limit: 100 });
-  const outletsQuery = useProductionOutlets();
 
   const recipes = React.useMemo(
     () => recipesQuery.data?.data ?? [],
@@ -99,12 +105,6 @@ export function ProductionPage({ canManage }: { canManage: boolean }) {
     () => new Map(recipes.map((recipe) => [recipe.id, recipe])),
     [recipes],
   );
-  const outletsById = React.useMemo(() => {
-    const map = new Map<string, string>();
-    for (const outlet of outletsQuery.data?.data ?? [])
-      map.set(outlet.id, outlet.name);
-    return map;
-  }, [outletsQuery.data]);
   const orders = React.useMemo(
     () => ordersQuery.data?.data ?? [],
     [ordersQuery.data],
@@ -152,11 +152,11 @@ export function ProductionPage({ canManage }: { canManage: boolean }) {
         title={t("inventoryRecipe.production.title")}
         description={t("inventoryRecipe.production.description")}
         state={state}
+        error={ordersQuery.error ?? recipesQuery.error ?? unitsQuery.error}
         onRetry={() => {
           void ordersQuery.refetch();
           void recipesQuery.refetch();
           void unitsQuery.refetch();
-          void outletsQuery.refetch();
         }}
         actions={
           <>
@@ -253,7 +253,9 @@ export function ProductionPage({ canManage }: { canManage: boolean }) {
                     {recipe ? uomCode(units, recipe.yieldUomId) : ""}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {outletsById.get(order.outletId) ?? shortId(order.outletId)}
+                    {outlet && order.outletId === outlet.id
+                      ? outlet.name
+                      : shortId(order.outletId)}
                   </TableCell>
                   <TableCell>
                     <ProductionStatusBadge status={order.status} />

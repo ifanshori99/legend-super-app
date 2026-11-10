@@ -12,9 +12,8 @@ import {
   listAttendanceLogs,
   listEmployees,
 } from "@starter/shared/hris";
-import type { BusinessDate, CursorPage } from "@starter/shared/core";
+import type { BusinessDate, CursorPage, OutletId } from "@starter/shared/core";
 import { callEndpoint } from "@/lib/api/endpoint";
-import { ATTENDANCE_OUTLET_ID } from "./outlet.ts";
 
 /** One page holds a full day of outlet logs for the review screen. */
 export const REVIEW_LOG_LIMIT = 100;
@@ -28,18 +27,20 @@ export type AttendanceQrResponse = {
 };
 
 export async function fetchAttendanceQr(
+  outletId: OutletId,
   signal?: AbortSignal,
 ): Promise<AttendanceQrResponse> {
   const sentAt = Date.now();
   const response = await callEndpoint(
     getAttendanceQr,
-    { query: { outletId: ATTENDANCE_OUTLET_ID } },
+    { query: { outletId } },
     { signal },
   );
   return { qr: response.data, sentAt, receivedAt: Date.now() };
 }
 
 export async function fetchAttendanceDay(
+  outletId: OutletId,
   businessDate: BusinessDate,
   signal?: AbortSignal,
 ): Promise<CursorPage<AttendanceLog>> {
@@ -47,7 +48,7 @@ export async function fetchAttendanceDay(
     listAttendanceLogs,
     {
       query: {
-        outletId: ATTENDANCE_OUTLET_ID,
+        outletId,
         businessDate,
         limit: REVIEW_LOG_LIMIT,
       },

@@ -11,7 +11,7 @@ import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DataTableShell } from "@/components/ui/data-table-shell";
-import { ErrorState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money, NumberDisplay } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
@@ -23,6 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { ActionRow, ActionStrip } from "./action-strip.tsx";
 import { EquipmentFormDialog } from "./equipment-form-dialog.tsx";
@@ -32,12 +33,10 @@ import { TicketFormDialog } from "./ticket-form-dialog.tsx";
 import {
   useEquipmentList,
   useMenuItems,
-  useOutlets,
   useSchedules,
   useServiceVendors,
   useTickets,
 } from "../hooks.ts";
-import { EQUIPMENT_FALLBACK_OUTLET } from "../outlet.ts";
 import {
   EQUIPMENT_CATEGORY_KEYS,
   SERVICE_DUE_WINDOW_DAYS,
@@ -49,20 +48,23 @@ import {
   nextSchedule,
 } from "../lib.ts";
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh registry, so
+ * the search text of the previous outlet cannot filter this one's rows.
+ */
 export function EquipmentRegistryScreen() {
+  const { outlet } = useTenantContext();
+  return <EquipmentRegistryContent key={outlet?.id ?? "none"} />;
+}
+
+function EquipmentRegistryContent() {
   const t = useT();
   const online = useOnline();
-  const outlets = useOutlets();
-  // An outlet-less fixture run (mock-empty) must still show the honest empty
-  // registry: the queries read the documented fixture outlet instead of
-  // failing the whole page.
-  const outlet =
-    outlets.data?.data.find((row) => row.status === "active") ??
-    outlets.data?.data[0] ??
-    EQUIPMENT_FALLBACK_OUTLET;
-  const equipment = useEquipmentList(outlet.id);
-  const schedules = useSchedules(outlet.id);
-  const tickets = useTickets(outlet.id);
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const equipment = useEquipmentList(outlet?.id);
+  const schedules = useSchedules(outlet?.id);
+  const tickets = useTickets(outlet?.id);
   const menu = useMenuItems();
   const vendors = useServiceVendors();
   const [query, setQuery] = React.useState("");
@@ -70,14 +72,9 @@ export function EquipmentRegistryScreen() {
   const [now] = React.useState(() => new Date());
 
   const loading =
-    outlets.isPending ||
-    (outlet !== undefined &&
-      (equipment.isPending || schedules.isPending || tickets.isPending));
-  const failed =
-    outlets.isError ||
-    equipment.isError ||
-    schedules.isError ||
-    tickets.isError;
+    outlet !== null &&
+    (equipment.isPending || schedules.isPending || tickets.isPending);
+  const failed = equipment.isError || schedules.isError || tickets.isError;
 
   const rows = equipment.data?.data ?? [];
   const scheduleRows = schedules.data?.data ?? [];
@@ -115,6 +112,17 @@ export function EquipmentRegistryScreen() {
     </header>
   );
 
+  if (!outlet)
+    return (
+      <div className="mx-auto grid w-full max-w-6xl grid-cols-[minmax(0,1fr)] gap-4">
+        {heading}
+        <EmptyState
+          title={t("state.emptyTitle")}
+          description={t("state.emptyHint")}
+        />
+      </div>
+    );
+
   if (loading)
     return (
       <div
@@ -136,10 +144,10 @@ export function EquipmentRegistryScreen() {
       <div className="mx-auto grid w-full max-w-6xl grid-cols-[minmax(0,1fr)] gap-4">
         {heading}
         <ErrorState
+          error={equipment.error ?? schedules.error ?? tickets.error}
           title={t("state.errorTitle")}
           description={t("state.errorHint")}
           onRetry={() => {
-            void outlets.refetch();
             void equipment.refetch();
             void schedules.refetch();
             void tickets.refetch();

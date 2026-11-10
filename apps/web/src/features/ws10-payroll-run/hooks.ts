@@ -90,8 +90,11 @@ export function useBankFiles(runId: string | undefined, allowed = true) {
   });
 }
 
-export function usePools(outletId: string) {
-  return useQuery(poolsQuery(outletId));
+export function usePools(outletId: string | undefined) {
+  return useQuery({
+    ...poolsQuery(outletId ?? ""),
+    enabled: Boolean(outletId),
+  });
 }
 
 export function useAllocations(poolId: string | undefined, allowed = true) {

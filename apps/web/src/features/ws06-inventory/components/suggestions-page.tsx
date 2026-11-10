@@ -9,7 +9,7 @@ import type { PurchaseRequestDetail } from "@starter/shared/inventory";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { ApiError } from "@/lib/api/errors";
-import { useOutletClock } from "@/lib/tenant-context";
+import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -55,11 +55,20 @@ import {
   shortId,
   type PurchaseSuggestion,
 } from "../stock-lib";
-import { INVENTORY_OUTLET_ID } from "../outlet";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh screen, so a
+ * selection or open dialog of the previous outlet cannot carry over.
+ */
 export function SuggestionsPage() {
+  const { outlet } = useTenantContext();
+  return <SuggestionsContent key={outlet?.id ?? "none"} />;
+}
+
+function SuggestionsContent() {
   const t = useT();
+  const { outlet } = useTenantContext();
   const toast = useToast();
   // The "needed by" floor follows the outlet business date (D-CORE-7), never
   // the device clock; with no outlet the hook returns the documented default.
@@ -69,10 +78,10 @@ export function SuggestionsPage() {
   };
   const canCreate = holdsAny(access, ["purchasing.request.create"]);
 
-  const parLevelsQuery = useParLevels();
-  const balancesQuery = useStockBalances();
+  const parLevelsQuery = useParLevels(outlet?.id);
+  const balancesQuery = useStockBalances(outlet?.id);
   const itemsQuery = useInventoryItems({ limit: STOCK_LIST_LIMIT });
-  const locationsQuery = useStockLocations();
+  const locationsQuery = useStockLocations(outlet?.id);
   const unitsQuery = useUnits({ limit: STOCK_LIST_LIMIT });
   const mutation = useCreatePurchaseRequest();
 
@@ -154,6 +163,7 @@ export function SuggestionsPage() {
   };
 
   const submit = () => {
+    if (!outlet) return;
     if (!neededBy) {
       setDateError(t("inventoryStock.suggestions.dialog.requiredDate"));
       return;
@@ -161,7 +171,7 @@ export function SuggestionsPage() {
     setDateError(undefined);
     mutation.mutate(
       {
-        outletId: INVENTORY_OUTLET_ID,
+        outletId: outlet.id,
         neededBy,
         lines: purchaseRequestLines(selectedSuggestions),
         note: note.trim() === "" ? null : note.trim(),

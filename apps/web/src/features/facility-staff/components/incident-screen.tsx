@@ -174,6 +174,7 @@ export function IncidentScreen({ facilityId }: { facilityId?: string }) {
           titleKey="facilityStaff.incident.error.title"
           hintKey="facilityStaff.incident.error.hint"
           onRetry={retry}
+          error={facilities.error ?? config.error ?? incidents.error}
         />
       )}
 

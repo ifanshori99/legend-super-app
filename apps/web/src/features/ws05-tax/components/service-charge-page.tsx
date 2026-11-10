@@ -30,6 +30,7 @@ import {
   usePublishServiceChargeRule,
   useServiceChargeRules,
 } from "../hooks";
+import { useTenantContext } from "@/lib/tenant-context";
 import { CHANNEL_KEYS, ITEM_CLASS_KEYS } from "../labels";
 import {
   businessDateToday,
@@ -136,11 +137,22 @@ function RowActions({
   return null;
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh screen, so a
+ * filter or open editor of the previous outlet cannot carry over.
+ */
 export function ServiceChargePage() {
+  const { outlet } = useTenantContext();
+  return <ServiceChargeContent key={outlet?.id ?? "none"} />;
+}
+
+function ServiceChargeContent() {
   const t = useT();
   const toast = useToast();
+  // The outlet the shell selected; the zone picker reads its floor.
+  const { outlet } = useTenantContext();
   const rulesQuery = useServiceChargeRules();
-  const zonesQuery = useFloorZones();
+  const zonesQuery = useFloorZones(outlet?.id);
   const publishRule = usePublishServiceChargeRule();
 
   const [search, setSearch] = React.useState("");

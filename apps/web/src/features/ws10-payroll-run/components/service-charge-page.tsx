@@ -36,6 +36,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
+import { useTenantContext } from "@/lib/tenant-context";
 import { isOffline, payrollErrorMessage } from "../errors";
 import { payrollAccess } from "../guard";
 import {
@@ -58,16 +59,25 @@ import {
   shortId,
   sortPools,
 } from "../lib";
-import { PAYROLL_OUTLET_ID } from "../outlet";
 import { CreatePoolDialog } from "./create-pool-dialog";
 
 type PoolAction = "calculate" | "approve";
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh screen, so a
+ * selected pool or open dialog of the previous outlet cannot leak into this one.
+ */
 export function ServiceChargePage({ access }: { access: AreaAccess }) {
+  const { outlet } = useTenantContext();
+  return <ServiceChargeContent key={outlet?.id ?? "none"} access={access} />;
+}
+
+function ServiceChargeContent({ access }: { access: AreaAccess }) {
   const t = useT();
   const toast = useToast();
+  const { outlet } = useTenantContext();
   const permissions = payrollAccess(access);
-  const pools = usePools(PAYROLL_OUTLET_ID);
+  const pools = usePools(outlet?.id);
   const employees = useEmployees();
   const positions = usePositions();
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
@@ -116,13 +126,15 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
   const reconciles = allocationsReconcile(selected, allocationsRows);
   const remaining = selected ? selected.amountIdr - allocated : 0;
 
-  const poolsState: DataState = pools.isPending
-    ? "loading"
-    : pools.isError
-      ? "error"
-      : poolRows.length === 0
-        ? "empty"
-        : "ready";
+  const poolsState: DataState = !outlet
+    ? "empty"
+    : pools.isPending
+      ? "loading"
+      : pools.isError
+        ? "error"
+        : poolRows.length === 0
+          ? "empty"
+          : "ready";
   const allocationsState: DataState = !canSeeAllocations
     ? "empty"
     : allocations.isPending || employees.isPending || positions.isPending
@@ -197,7 +209,7 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
           <Button
             type="button"
             size="sm"
-            disabled={!permissions.canRun}
+            disabled={!permissions.canRun || !outlet}
             onClick={() => setCreateOpen(true)}
           >
             <HandCoins aria-hidden="true" />
@@ -210,17 +222,19 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
         title={t("payrollRun.pool.listTitle")}
         description={t("payrollRun.pool.listDescription")}
         state={poolsState}
+        error={pools.error}
         onRetry={() => void pools.refetch()}
         rowCount={poolRows.length}
         empty={{
           title: t("payrollRun.pool.emptyTitle"),
           description: t("payrollRun.pool.emptyHint"),
-          action: permissions.canRun ? (
-            <Button type="button" onClick={() => setCreateOpen(true)}>
-              <HandCoins aria-hidden="true" />
-              {t("payrollRun.pool.create")}
-            </Button>
-          ) : undefined,
+          action:
+            permissions.canRun && outlet ? (
+              <Button type="button" onClick={() => setCreateOpen(true)}>
+                <HandCoins aria-hidden="true" />
+                {t("payrollRun.pool.create")}
+              </Button>
+            ) : undefined,
         }}
       >
         <Table>
@@ -385,6 +399,7 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
         title={t("payrollRun.pool.allocationsTitle")}
         description={t("payrollRun.pool.allocationsDescription")}
         state={selected === null ? "empty" : allocationsState}
+        error={allocations.error}
         onRetry={() => void allocations.refetch()}
         rowCount={allocationsRows.length}
         actions={

@@ -499,6 +499,7 @@ export function ReservationDetailDialog({
               <DialogTitle>{t("reservation.detail.title")}</DialogTitle>
             </DialogHeader>
             <ErrorState
+              error={detail.error}
               title={t("reservation.detail.errorTitle")}
               description={t("reservation.detail.errorHint")}
               onRetry={() => void detail.refetch()}

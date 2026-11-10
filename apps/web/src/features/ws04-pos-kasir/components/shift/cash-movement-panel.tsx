@@ -78,6 +78,7 @@ function MovementHistory({ shiftId }: { shiftId: string }) {
         </div>
       ) : movements.isError ? (
         <ErrorState
+          error={movements.error}
           title={t("posKasirShift.movement.historyErrorTitle")}
           description={t("posKasirShift.error.hint")}
           onRetry={() => void movements.refetch()}

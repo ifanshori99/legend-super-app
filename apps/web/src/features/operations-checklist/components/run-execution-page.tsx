@@ -96,6 +96,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
   if (runQuery.error)
     return (
       <ErrorState
+        error={runQuery.error ?? templateQuery.error}
         title={t("opsChecklist.run.errorTitle")}
         description={t("opsChecklist.run.errorHint")}
         onRetry={() => {

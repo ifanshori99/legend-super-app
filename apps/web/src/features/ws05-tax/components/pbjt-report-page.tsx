@@ -18,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useTenantContext } from "@/lib/tenant-context";
 import { usePbjtRecap } from "../hooks";
 import {
   downloadTextFile,
@@ -30,7 +31,18 @@ import {
   type PbjtCsvHeaders,
 } from "../lib";
 
-export function PbjtReportPage({
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh report.
+ */
+export function PbjtReportPage(props: {
+  period: string;
+  onPeriodChange: (period: string) => void;
+}) {
+  const { outlet } = useTenantContext();
+  return <PbjtReportContent key={outlet?.id ?? "none"} {...props} />;
+}
+
+function PbjtReportContent({
   period,
   onPeriodChange,
 }: {
@@ -38,7 +50,9 @@ export function PbjtReportPage({
   onPeriodChange: (period: string) => void;
 }) {
   const t = useT();
-  const recapQuery = usePbjtRecap(period);
+  // The outlet the shell selected; none means nothing to report on.
+  const { outlet } = useTenantContext();
+  const recapQuery = usePbjtRecap(outlet?.id, period);
   const recap = recapQuery.data?.data;
   const sums = recap ? pbjtRowTotals(recap) : undefined;
 
@@ -97,13 +111,15 @@ export function PbjtReportPage({
               : t("tax.report.tableDescription")
           }
           state={
-            recapQuery.isPending
-              ? "loading"
-              : recapQuery.isError
-                ? "error"
-                : recap === undefined || recap.rows.length === 0
-                  ? "empty"
-                  : "ready"
+            !outlet
+              ? "empty"
+              : recapQuery.isPending
+                ? "loading"
+                : recapQuery.isError
+                  ? "error"
+                  : recap === undefined || recap.rows.length === 0
+                    ? "empty"
+                    : "ready"
           }
           actions={
             <>
@@ -129,11 +145,19 @@ export function PbjtReportPage({
               </Button>
             </>
           }
+          error={recapQuery.error}
           onRetry={() => void recapQuery.refetch()}
-          empty={{
-            title: t("tax.report.emptyTitle"),
-            description: t("tax.report.emptyHint"),
-          }}
+          empty={
+            outlet
+              ? {
+                  title: t("tax.report.emptyTitle"),
+                  description: t("tax.report.emptyHint"),
+                }
+              : {
+                  title: t("area.noOutletTitle"),
+                  description: t("area.noOutletHint"),
+                }
+          }
           rowCount={recap?.rows.length ?? 0}
         >
           {recap && (

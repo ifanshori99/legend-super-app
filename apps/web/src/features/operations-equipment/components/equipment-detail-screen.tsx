@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { EquipmentFormDialog } from "./equipment-form-dialog.tsx";
@@ -46,7 +47,6 @@ import {
   useEquipment,
   useEquipmentTransition,
   useMenuItems,
-  useOutlets,
   useSchedules,
   useServiceVendors,
   useTickets,
@@ -517,17 +517,29 @@ function TicketActions({
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh detail view,
+ * so dialog and tab state of the previous outlet cannot leak into this one.
+ */
 export function EquipmentDetailScreen({
   equipmentId,
 }: {
   equipmentId: string;
 }) {
+  const { outlet } = useTenantContext();
+  return (
+    <EquipmentDetailContent
+      key={outlet?.id ?? "none"}
+      equipmentId={equipmentId}
+    />
+  );
+}
+
+function EquipmentDetailContent({ equipmentId }: { equipmentId: string }) {
   const t = useT();
   const online = useOnline();
-  const outlets = useOutlets();
-  const outlet =
-    outlets.data?.data.find((row) => row.status === "active") ??
-    outlets.data?.data[0];
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
   const detail = useEquipment(equipmentId);
   const schedules = useSchedules(outlet?.id);
   const tickets = useTickets(outlet?.id);
@@ -546,15 +558,13 @@ export function EquipmentDetailScreen({
   );
 
   const loading =
-    outlets.isPending ||
-    (outlet !== undefined &&
-      (detail.isPending || schedules.isPending || tickets.isPending));
+    outlet !== null &&
+    (detail.isPending || schedules.isPending || tickets.isPending);
   const detailError = detail.error;
   const notFound =
     detailError instanceof ApiError && detailError.status === 404;
   const failed =
-    !notFound &&
-    (outlets.isError || detail.isError || schedules.isError || tickets.isError);
+    !notFound && (detail.isError || schedules.isError || tickets.isError);
 
   const heading = (
     <header className="grid gap-2">
@@ -592,10 +602,10 @@ export function EquipmentDetailScreen({
       <div className="mx-auto grid w-full max-w-5xl grid-cols-[minmax(0,1fr)] gap-4">
         {heading}
         <ErrorState
+          error={detail.error ?? schedules.error ?? tickets.error}
           title={t("state.errorTitle")}
           description={t("state.errorHint")}
           onRetry={() => {
-            void outlets.refetch();
             void detail.refetch();
             void schedules.refetch();
             void tickets.refetch();

@@ -1,7 +1,10 @@
 // Query keys and options for kitchen config & analytics. Keys are
 // hierarchical, so a save refreshes the rules and the pacing that depends on
-// them without touching the serving-time report (docs/frontend.md).
-import { queryOptions } from "@tanstack/react-query";
+// them without touching the serving-time report (docs/frontend.md). Every key
+// carries the outlet, so switching outlet in the shell never shows another
+// outlet's data. A null outlet (none selected) leaves the query disabled.
+import { queryOptions, skipToken } from "@tanstack/react-query";
+import type { OutletId } from "@starter/shared/core";
 import {
   fetchCapacityRules,
   fetchKitchenStations,
@@ -13,23 +16,31 @@ import {
   type ServingSummaryQuery,
 } from "./api.ts";
 
+type Outlet = OutletId | null;
+
 export const kitchenConfigKeys = {
   all: ["kitchen-config"] as const,
-  stations: () => [...kitchenConfigKeys.all, "stations"] as const,
-  menuStations: () => [...kitchenConfigKeys.all, "menu-stations"] as const,
-  capacityRules: () => [...kitchenConfigKeys.all, "capacity-rules"] as const,
-  pacing: () => [...kitchenConfigKeys.all, "pacing"] as const,
-  serving: (query: ServingSummaryQuery) =>
+  outlet: (outletId: Outlet) =>
+    [...kitchenConfigKeys.all, outletId ?? "none"] as const,
+  stations: (outletId: Outlet) =>
+    [...kitchenConfigKeys.outlet(outletId), "stations"] as const,
+  menuStations: (outletId: Outlet) =>
+    [...kitchenConfigKeys.outlet(outletId), "menu-stations"] as const,
+  capacityRules: (outletId: Outlet) =>
+    [...kitchenConfigKeys.outlet(outletId), "capacity-rules"] as const,
+  pacing: (outletId: Outlet) =>
+    [...kitchenConfigKeys.outlet(outletId), "pacing"] as const,
+  serving: (outletId: Outlet, query: ServingSummaryQuery) =>
     [
-      ...kitchenConfigKeys.all,
+      ...kitchenConfigKeys.outlet(outletId),
       "serving",
       query.group,
       query.startDate,
       query.endDate,
     ] as const,
-  issues: (query: OrderIssueQuery) =>
+  issues: (outletId: Outlet, query: OrderIssueQuery) =>
     [
-      ...kitchenConfigKeys.all,
+      ...kitchenConfigKeys.outlet(outletId),
       "issues",
       query.type ?? "all",
       query.stationId ?? "all",
@@ -38,54 +49,67 @@ export const kitchenConfigKeys = {
     ] as const,
 };
 
-export function kitchenStationsQuery() {
+export function kitchenStationsQuery(outletId: Outlet) {
   return queryOptions({
-    queryKey: kitchenConfigKeys.stations(),
-    queryFn: ({ signal }) => fetchKitchenStations(signal),
+    queryKey: kitchenConfigKeys.stations(outletId),
+    queryFn: outletId
+      ? ({ signal }) => fetchKitchenStations(outletId, signal)
+      : skipToken,
     staleTime: 60_000,
   });
 }
 
-export function menuStationsQuery() {
+export function menuStationsQuery(outletId: Outlet) {
   return queryOptions({
-    queryKey: kitchenConfigKeys.menuStations(),
-    queryFn: ({ signal }) => fetchMenuStations(signal),
+    queryKey: kitchenConfigKeys.menuStations(outletId),
+    queryFn: outletId
+      ? ({ signal }) => fetchMenuStations(outletId, signal)
+      : skipToken,
     staleTime: 5 * 60_000,
   });
 }
 
-export function capacityRulesQuery() {
+export function capacityRulesQuery(outletId: Outlet) {
   return queryOptions({
-    queryKey: kitchenConfigKeys.capacityRules(),
-    queryFn: ({ signal }) => fetchCapacityRules(signal),
+    queryKey: kitchenConfigKeys.capacityRules(outletId),
+    queryFn: outletId
+      ? ({ signal }) => fetchCapacityRules(outletId, signal)
+      : skipToken,
     staleTime: 60_000,
   });
 }
 
-export function pacingQuery() {
+export function pacingQuery(outletId: Outlet) {
   return queryOptions({
-    queryKey: kitchenConfigKeys.pacing(),
-    queryFn: ({ signal }) => fetchPacing(signal),
+    queryKey: kitchenConfigKeys.pacing(outletId),
+    queryFn: outletId
+      ? ({ signal }) => fetchPacing(outletId, signal)
+      : skipToken,
     staleTime: 30_000,
   });
 }
 
 export function servingTimeSummaryQuery(
+  outletId: Outlet,
   query: ServingSummaryQuery,
   enabled = true,
 ) {
   return queryOptions({
-    queryKey: kitchenConfigKeys.serving(query),
-    queryFn: ({ signal }) => fetchServingTimeSummary(query, signal),
+    queryKey: kitchenConfigKeys.serving(outletId, query),
+    queryFn: outletId
+      ? ({ signal }) => fetchServingTimeSummary(outletId, query, signal)
+      : skipToken,
     staleTime: 60_000,
     enabled,
   });
 }
 
-export function orderIssuesQuery(query: OrderIssueQuery) {
+export function orderIssuesQuery(outletId: Outlet, query: OrderIssueQuery) {
   return queryOptions({
-    queryKey: kitchenConfigKeys.issues(query),
-    queryFn: ({ signal }) => fetchOrderIssues(query, signal),
+    queryKey: kitchenConfigKeys.issues(outletId, query),
+    queryFn: outletId
+      ? ({ signal }) => fetchOrderIssues(outletId, query, signal)
+      : skipToken,
     staleTime: 30_000,
   });
 }

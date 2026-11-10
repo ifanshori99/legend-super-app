@@ -31,7 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
-import { useOutletClock } from "@/lib/tenant-context";
+import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import {
   useCreateTemperatureLog,
   useTemperatureEquipment,
@@ -49,7 +49,7 @@ import {
   thresholdRange,
   toDateTimeLocalValue,
 } from "../logic.ts";
-import { FOOD_SAFETY_LIST_LIMIT, FOOD_SAFETY_OUTLET_ID } from "../outlet.ts";
+import { FOOD_SAFETY_LIST_LIMIT } from "../outlet.ts";
 import { useMinuteClock } from "../use-minute-clock.ts";
 
 function categoryLabel(t: ReturnType<typeof useT>, equipment: Equipment) {
@@ -60,18 +60,18 @@ function categoryLabel(t: ReturnType<typeof useT>, equipment: Equipment) {
   return t("opsFoodSafety.temperature.category.other");
 }
 
-export function FoodSafetyTemperatureScreen() {
+function FoodSafetyTemperatureScreenContent() {
   const t = useT();
   const toast = useToast();
   const { clock } = useOutletClock();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
   const now = useMinuteClock();
 
-  const equipmentResult = useTemperatureEquipment({
-    outletId: FOOD_SAFETY_OUTLET_ID,
+  const equipmentResult = useTemperatureEquipment(outlet?.id, {
     limit: FOOD_SAFETY_LIST_LIMIT,
   });
-  const logsResult = useTemperatureLogs({
-    outletId: FOOD_SAFETY_OUTLET_ID,
+  const logsResult = useTemperatureLogs(outlet?.id, {
     limit: FOOD_SAFETY_LIST_LIMIT,
   });
   const createLog = useCreateTemperatureLog();
@@ -168,6 +168,7 @@ export function FoodSafetyTemperatureScreen() {
     setFormError(undefined);
     if (Object.values(nextErrors).some(Boolean)) return;
     if (
+      outlet === null ||
       selectedEquipment === null ||
       normalizedReading === null ||
       recordedAt === null
@@ -176,7 +177,7 @@ export function FoodSafetyTemperatureScreen() {
 
     createLog.mutate(
       {
-        outletId: FOOD_SAFETY_OUTLET_ID,
+        outletId: outlet.id,
         equipmentId: selectedEquipment.id,
         readingCelsius: normalizedReading,
         recordedAt,
@@ -215,7 +216,8 @@ export function FoodSafetyTemperatureScreen() {
     );
   }
 
-  const pending = equipmentResult.isPending || logsResult.isPending;
+  const pending =
+    outlet !== null && (equipmentResult.isPending || logsResult.isPending);
   const failed = equipmentResult.isError || logsResult.isError;
   const firstError = equipmentResult.error ?? logsResult.error;
   const offline =
@@ -250,6 +252,7 @@ export function FoodSafetyTemperatureScreen() {
       {!pending && failed && (
         <Card>
           <ErrorState
+            error={firstError}
             title={t("opsFoodSafety.temperature.errorTitle")}
             description={
               offline
@@ -636,4 +639,13 @@ export function FoodSafetyTemperatureScreen() {
       )}
     </div>
   );
+}
+
+/**
+ * Keyed by outlet: switching outlet in the shell resets the form and
+ * selections, so nothing typed for the previous outlet carries over.
+ */
+export function FoodSafetyTemperatureScreen() {
+  const { outlet } = useTenantContext();
+  return <FoodSafetyTemperatureScreenContent key={outlet?.id ?? "none"} />;
 }

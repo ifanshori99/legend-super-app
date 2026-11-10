@@ -12,8 +12,8 @@
 // log, flag only for a valid one, and a rejected log stays terminal.
 import type { AttendanceLog, AttendanceValidity } from "@starter/shared/hris";
 import { transitionAttendanceValidity } from "@starter/shared/hris";
+import type { OutletId } from "@starter/shared/core";
 import { newIdempotencyKey } from "@/lib/idempotency";
-import { ATTENDANCE_OUTLET_ID } from "./outlet.ts";
 
 export type AttendanceReviewKind = "accepted" | "flagged";
 
@@ -33,11 +33,11 @@ export type AttendanceReviewState = Readonly<
 const STORAGE_PREFIX = "legend-attendance-review:";
 const EMPTY: AttendanceReviewState = Object.freeze({});
 const listeners = new Set<() => void>();
-/** Stable snapshot per business date: useSyncExternalStore needs one object. */
+/** Stable snapshot per outlet and business date: useSyncExternalStore needs one object. */
 const cache = new Map<string, AttendanceReviewState>();
 
-function storageKey(businessDate: string): string {
-  return `${STORAGE_PREFIX}${ATTENDANCE_OUTLET_ID}:${businessDate}`;
+function storageKey(outletId: OutletId, businessDate: string): string {
+  return `${STORAGE_PREFIX}${outletId}:${businessDate}`;
 }
 
 function storage(): Storage | null {
@@ -64,10 +64,10 @@ function isDecision(value: unknown): value is AttendanceReviewDecision {
   );
 }
 
-function load(businessDate: string): AttendanceReviewState {
+function load(outletId: OutletId, businessDate: string): AttendanceReviewState {
   const raw = (() => {
     try {
-      return storage()?.getItem(storageKey(businessDate));
+      return storage()?.getItem(storageKey(outletId, businessDate));
     } catch {
       return null;
     }
@@ -89,12 +89,14 @@ function load(businessDate: string): AttendanceReviewState {
 
 /** The decisions saved for this outlet's business date. */
 export function reviewDecisionsSnapshot(
+  outletId: OutletId,
   businessDate: string,
 ): AttendanceReviewState {
-  const cached = cache.get(businessDate);
+  const key = storageKey(outletId, businessDate);
+  const cached = cache.get(key);
   if (cached) return cached;
-  const loaded = load(businessDate);
-  cache.set(businessDate, loaded);
+  const loaded = load(outletId, businessDate);
+  cache.set(key, loaded);
   return loaded;
 }
 
@@ -106,12 +108,14 @@ export function subscribeReviewDecisions(listener: () => void): () => void {
 }
 
 function write(
+  outletId: OutletId,
   businessDate: string,
   next: AttendanceReviewState,
 ): AttendanceReviewState {
-  cache.set(businessDate, next);
+  const key = storageKey(outletId, businessDate);
+  cache.set(key, next);
   try {
-    storage()?.setItem(storageKey(businessDate), JSON.stringify(next));
+    storage()?.setItem(key, JSON.stringify(next));
   } catch {
     // Quota or blocked storage: the in-memory snapshot still drives the screen.
   }
@@ -140,11 +144,12 @@ export function decidedValidity(
  * rejected (terminal) log, which the dialog never offers.
  */
 export function decideAttendanceSample(input: {
+  outletId: OutletId;
   businessDate: string;
   log: Pick<AttendanceLog, "id" | "validity">;
   kind: AttendanceReviewKind;
 }): AttendanceReviewDecision | null {
-  const current = reviewDecisionsSnapshot(input.businessDate);
+  const current = reviewDecisionsSnapshot(input.outletId, input.businessDate);
   const existing = current[input.log.id];
   if (existing?.kind === input.kind) return existing;
   const validity = decidedValidity(input.log.validity, input.kind);
@@ -155,6 +160,9 @@ export function decideAttendanceSample(input: {
     decidedAt: new Date().toISOString(),
     idempotencyKey: newIdempotencyKey(),
   };
-  write(input.businessDate, { ...current, [input.log.id]: decision });
+  write(input.outletId, input.businessDate, {
+    ...current,
+    [input.log.id]: decision,
+  });
   return decision;
 }

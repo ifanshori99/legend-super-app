@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
 import {
   useCountTransition,
@@ -357,23 +358,33 @@ function VarianceList({
   );
 }
 
-export function CountDetailPage({
-  stockCountId,
-  canCount,
-  canApprove,
-  actorId,
-}: {
+/** Keyed by outlet so drafts and dialogs reset when the shell switches outlet. */
+export function CountDetailPage(props: CountDetailProps) {
+  const { outlet } = useTenantContext();
+  return <CountDetailContent key={outlet?.id ?? "none"} {...props} />;
+}
+
+type CountDetailProps = {
   stockCountId: string;
   canCount: boolean;
   canApprove: boolean;
   actorId: string | undefined;
-}) {
+};
+
+function CountDetailContent({
+  stockCountId,
+  canCount,
+  canApprove,
+  actorId,
+}: CountDetailProps) {
   const t = useT();
   const toast = useToast();
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   const detailQuery = useStockCount(stockCountId);
   const itemsQuery = useInventoryItems({ limit: LIST_LIMIT });
   const unitsQuery = useUnits({ limit: LIST_LIMIT });
-  const locationsQuery = useStockLocations();
+  const locationsQuery = useStockLocations(outletId);
   const saveLine = useSaveCountLine();
   const transition = useCountTransition();
 

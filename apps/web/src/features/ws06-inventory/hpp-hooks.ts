@@ -10,34 +10,39 @@ import {
   foodCostQuery,
   menuCostsQuery,
 } from "./hpp-queries";
-import { INVENTORY_OUTLET_ID } from "./outlet";
 
-export function useMenuCosts() {
-  return useQuery(
-    menuCostsQuery({ outletId: INVENTORY_OUTLET_ID, limit: HPP_LIST_LIMIT }),
-  );
+export function useMenuCosts(outletId: string | undefined) {
+  return useQuery({
+    ...menuCostsQuery({ outletId: outletId ?? "", limit: HPP_LIST_LIMIT }),
+    enabled: Boolean(outletId),
+  });
 }
 
-export function useFoodCost(period: HppPeriod) {
-  return useQuery(
-    foodCostQuery({
-      outletId: INVENTORY_OUTLET_ID,
+export function useFoodCost(outletId: string | undefined, period: HppPeriod) {
+  return useQuery({
+    ...foodCostQuery({
+      outletId: outletId ?? "",
       fromDate: period.fromDate,
       toDate: period.toDate,
       limit: HPP_LIST_LIMIT,
     }),
-  );
+    enabled: Boolean(outletId),
+  });
 }
 
-export function useMenuEngineering(period: HppPeriod) {
-  return useQuery(
-    engineeringQuery({
-      outletId: INVENTORY_OUTLET_ID,
+export function useMenuEngineering(
+  outletId: string | undefined,
+  period: HppPeriod,
+) {
+  return useQuery({
+    ...engineeringQuery({
+      outletId: outletId ?? "",
       fromDate: period.fromDate,
       toDate: period.toDate,
       limit: HPP_LIST_LIMIT,
     }),
-  );
+    enabled: Boolean(outletId),
+  });
 }
 
 export function useRecipeCoverage() {

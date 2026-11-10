@@ -21,15 +21,15 @@ import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardShell } from "@/components/ui/card";
-import { ErrorState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOpenBillPolicy, useUpdateOpenBillPolicy } from "../hooks";
 import { OPEN_BILL_DEFAULTS } from "../lib";
-import { OPEN_BILL_OUTLET_ID } from "../outlet";
 
 type FieldName = keyof typeof OPEN_BILL_DEFAULTS;
 type FormValues = Record<FieldName, string>;
@@ -115,9 +115,20 @@ function AffixInput({
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh form, so
+ * unsaved edits of the previous outlet cannot land on this one.
+ */
 export function OpenBillPolicyPage() {
+  const { outlet } = useTenantContext();
+  return <OpenBillPolicyContent key={outlet?.id ?? "none"} />;
+}
+
+function OpenBillPolicyContent() {
   const t = useT();
-  const policyQuery = useOpenBillPolicy(OPEN_BILL_OUTLET_ID);
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const policyQuery = useOpenBillPolicy(outlet?.id);
   const policy = policyQuery.data;
 
   return (
@@ -137,7 +148,12 @@ export function OpenBillPolicyPage() {
         </div>
       </div>
 
-      {policyQuery.isPending ? (
+      {!outlet ? (
+        <EmptyState
+          title={t("area.noOutletTitle")}
+          description={t("area.noOutletHint")}
+        />
+      ) : policyQuery.isPending ? (
         <div aria-busy="true">
           <span className="sr-only">{t("common.loading")}</span>
           <PolicyFormSkeleton />
@@ -147,9 +163,11 @@ export function OpenBillPolicyPage() {
           // Remount on a saved or reloaded policy so the fields restart from it.
           key={`${policy.maxBillValueIdr}-${policy.inactivityMinutes}-${policy.billRequestSloSeconds}-${policy.isDefault}`}
           policy={policy}
+          outletId={outlet.id}
         />
       ) : (
         <ErrorState
+          error={policyQuery.error}
           description={t("openBillPolicy.loadError")}
           action={
             <Button
@@ -190,10 +208,16 @@ function PolicyFormSkeleton() {
   );
 }
 
-function PolicyForm({ policy }: { policy: OpenBillPolicy }) {
+function PolicyForm({
+  policy,
+  outletId,
+}: {
+  policy: OpenBillPolicy;
+  outletId: string;
+}) {
   const t = useT();
   const toast = useToast();
-  const updatePolicy = useUpdateOpenBillPolicy(OPEN_BILL_OUTLET_ID);
+  const updatePolicy = useUpdateOpenBillPolicy(outletId);
 
   const [values, setValues] = React.useState<FormValues>(() =>
     toValues(policy),

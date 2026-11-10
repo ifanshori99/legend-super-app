@@ -2,7 +2,6 @@
 // `[endpoint.id, input]` (docs/frontend.md), so invalidating `[endpoint.id]`
 // refreshes every view of that resource.
 import { queryOptions } from "@tanstack/react-query";
-import { listExampleOutlets } from "@starter/shared/api";
 import {
   getReservation,
   listReservationPackages,
@@ -24,14 +23,6 @@ export type WaitlistQuery = {
   status?: WaitlistStatus;
   limit: number;
 };
-
-export const outletsQuery = () =>
-  queryOptions({
-    queryKey: endpointQueryKey(listExampleOutlets, { query: { limit: 20 } }),
-    queryFn: ({ signal }) => api.fetchOutlets({ signal }),
-    // One quick retry, then the error state with its own "Coba lagi" button.
-    retry: 1,
-  });
 
 export const reservationsQuery = (
   outletId: string,

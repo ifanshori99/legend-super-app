@@ -31,10 +31,9 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
-import { useOutletClock } from "@/lib/tenant-context";
+import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
 import { useCreateStockCount } from "../opname-hooks";
-import { INVENTORY_OUTLET_ID } from "../outlet";
 import { businessDateToday } from "../stock-lib";
 import { LIST_LIMIT } from "../lib";
 import { typeLabelKey } from "../opname-lib";
@@ -57,7 +56,9 @@ export function CountFormDialog({
   const { clock } = useOutletClock();
   const navigate = useNavigate();
   const toast = useToast();
-  const locations = useStockLocations();
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
+  const locations = useStockLocations(outletId);
   const items = useInventoryItems({ limit: LIST_LIMIT });
   const units = useUnits({ limit: LIST_LIMIT });
   const createCount = useCreateStockCount();
@@ -123,6 +124,7 @@ export function CountFormDialog({
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (!outletId) return;
     const nextErrors: Record<string, string | undefined> = {};
     if (effectiveLocationId === "")
       nextErrors.location = t("opname.create.errorLocation");
@@ -136,7 +138,7 @@ export function CountFormDialog({
     setFormError(undefined);
     createCount.mutate(
       {
-        outletId: INVENTORY_OUTLET_ID,
+        outletId,
         locationId: effectiveLocationId,
         type,
         blind,
@@ -381,7 +383,11 @@ export function CountFormDialog({
             <Button
               type="submit"
               loading={createCount.isPending}
-              disabled={locationRows.length === 0 || activeItems.length === 0}
+              disabled={
+                !outletId ||
+                locationRows.length === 0 ||
+                activeItems.length === 0
+              }
             >
               {t("opname.create.submit")}
             </Button>

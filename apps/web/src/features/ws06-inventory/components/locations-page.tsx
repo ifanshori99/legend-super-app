@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import {
   useCreateStockLocation,
   useStockBalances,
@@ -52,7 +53,6 @@ import {
   useUpdateStockLocation,
 } from "../hooks";
 import { locationStock } from "../lib";
-import { INVENTORY_OUTLET_ID } from "../outlet";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const LOCATION_TYPES: StockLocationType[] = [
@@ -84,6 +84,7 @@ function LocationDialog({
 }) {
   const t = useT();
   const toast = useToast();
+  const { outlet } = useTenantContext();
   const createLocation = useCreateStockLocation();
   const updateLocation = useUpdateStockLocation();
   const editing = editor.mode === "edit" ? editor.location : null;
@@ -139,9 +140,10 @@ function LocationDialog({
       );
       return;
     }
+    if (!outlet) return;
     createLocation.mutate(
       {
-        outletId: INVENTORY_OUTLET_ID,
+        outletId: outlet.id,
         name: parsed.data.name,
         type,
         idempotencyKey: newIdempotencyKey(),
@@ -217,7 +219,11 @@ function LocationDialog({
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" loading={pending}>
+            <Button
+              type="submit"
+              loading={pending}
+              disabled={!editing && !outlet}
+            >
               {t("inventory.locations.save")}
             </Button>
           </DialogFooter>
@@ -227,11 +233,19 @@ function LocationDialog({
   );
 }
 
+/** Keyed by outlet so an open dialog never creates a location in another outlet. */
 export function LocationsPage() {
+  const { outlet } = useTenantContext();
+  return <LocationsContent key={outlet?.id ?? "none"} />;
+}
+
+function LocationsContent() {
   const t = useT();
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   const toast = useToast();
-  const locationsQuery = useStockLocations();
-  const balancesQuery = useStockBalances();
+  const locationsQuery = useStockLocations(outletId);
+  const balancesQuery = useStockBalances(outletId);
   const updateLocation = useUpdateStockLocation();
   const [editor, setEditor] = React.useState<Editor | null>(null);
 
@@ -284,6 +298,7 @@ export function LocationsPage() {
         title={t("inventory.locations.title")}
         description={t("inventory.locations.description")}
         state={state}
+        error={locationsQuery.error ?? balancesQuery.error}
         onRetry={() => {
           void locationsQuery.refetch();
           void balancesQuery.refetch();

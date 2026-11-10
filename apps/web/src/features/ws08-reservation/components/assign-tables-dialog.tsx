@@ -108,6 +108,7 @@ export function AssignTablesDialog({
           </div>
         ) : floor.error ? (
           <ErrorState
+            error={floor.error}
             title={t("reservation.assign.errorTitle")}
             description={t("reservation.assign.errorHint")}
             onRetry={() => void floor.refetch()}

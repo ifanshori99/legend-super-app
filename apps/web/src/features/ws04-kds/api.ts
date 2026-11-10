@@ -15,36 +15,37 @@ import type {
   KitchenItemAction,
 } from "@starter/shared/kitchen";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
-import { KITCHEN_OUTLET_ID } from "../ws04-expo/outlet.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
-export async function fetchStations(signal?: AbortSignal) {
+export async function fetchStations(outletId: string, signal?: AbortSignal) {
   return (
     await callEndpoint(
       listKitchenStations,
-      { params: { outletId: KITCHEN_OUTLET_ID } },
+      { params: { outletId } },
       { signal },
     )
   ).data;
 }
 export async function fetchBoard(
+  outletId: string,
   stationId: StationConfig["stationId"],
   signal?: AbortSignal,
 ) {
   return (
     await callEndpoint(
       getKitchenBoard,
-      { params: { outletId: KITCHEN_OUTLET_ID, stationId } },
+      { params: { outletId, stationId } },
       { signal },
     )
   ).data;
 }
 export async function ticketAction(
+  outletId: string,
   ticketId: KitchenTicketDetail["id"],
   action: "start" | "bump" | "recall",
   reason?: string,
 ) {
-  const params = { outletId: KITCHEN_OUTLET_ID, ticketId };
+  const params = { outletId, ticketId };
   if (action === "start")
     return (await callEndpoint(startKitchenTicket, { params })).data;
   if (action === "bump")
@@ -57,23 +58,25 @@ export async function ticketAction(
   ).data;
 }
 export async function setPriority(
+  outletId: string,
   ticketId: KitchenTicketDetail["id"],
   priority: number,
 ) {
   return (
     await callEndpoint(setKitchenTicketPriority, {
-      params: { outletId: KITCHEN_OUTLET_ID, ticketId },
+      params: { outletId, ticketId },
       body: { priority },
     })
   ).data;
 }
 export async function updateItem(
+  outletId: string,
   itemId: KitchenTicketItem["id"],
   action: KitchenItemAction,
 ) {
   return (
     await callEndpoint(updateKitchenTicketItem, {
-      params: { outletId: KITCHEN_OUTLET_ID, itemId },
+      params: { outletId, itemId },
       body: { action },
     })
   ).data;
@@ -83,24 +86,27 @@ export async function updateItem(
  * Station names and target times for the KDS (legend-gt7f): the KDS read the
  * cook is allowed (`kds.ticket.process`), not the menu station list.
  */
-export async function fetchStationLabels(signal?: AbortSignal) {
+export async function fetchStationLabels(
+  outletId: string,
+  signal?: AbortSignal,
+) {
   return (
     await callEndpoint(
       listKitchenStationLabels,
-      { params: { outletId: KITCHEN_OUTLET_ID } },
+      { params: { outletId } },
       { signal },
     )
   ).data;
 }
 
 /** F12 86: find the outlet's availability record before issuing its action. */
-export async function markUnavailable(menuItemId: string) {
+export async function markUnavailable(outletId: string, menuItemId: string) {
   const { listAvailability, setAvailabilityStatus } =
     await import("@starter/shared/menu");
   let cursor: string | undefined;
   do {
     const page = await callEndpoint(listAvailability, {
-      query: { outletId: KITCHEN_OUTLET_ID, limit: 100, cursor },
+      query: { outletId, limit: 100, cursor },
     });
     const row = page.data.find((entry) => entry.menuItemId === menuItemId);
     if (row) {

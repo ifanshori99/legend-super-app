@@ -54,6 +54,7 @@ export function TemplateListPage() {
           <h1 className="type-display">{t("opsChecklist.templates.title")}</h1>
         </header>
         <ErrorState
+          error={templatesQuery.error}
           title={t("opsChecklist.templates.errorTitle")}
           description={t("opsChecklist.templates.errorHint")}
           onRetry={() => {

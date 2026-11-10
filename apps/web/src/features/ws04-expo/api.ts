@@ -8,54 +8,61 @@ import {
   listExpoRunners,
 } from "@starter/shared/kitchen";
 import type { ExpoRunner, ExpoTicket } from "@starter/shared/kitchen";
+import type { OutletId } from "@starter/shared/core";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
-import { KITCHEN_OUTLET_ID } from "./outlet.ts";
 
 /** Every order across stations, per table (F12 "Expo"). */
-export async function fetchExpoBoard(signal?: AbortSignal) {
+export async function fetchExpoBoard(outletId: OutletId, signal?: AbortSignal) {
   const { data } = await callEndpoint(
     getExpoBoard,
-    { params: { outletId: KITCHEN_OUTLET_ID } },
+    { params: { outletId } },
     { signal },
   );
   return data;
 }
 
 /** The staff the expo screen may pick as runner (F12 "menugaskan runner"). */
-export async function fetchExpoRunners(signal?: AbortSignal) {
+export async function fetchExpoRunners(
+  outletId: OutletId,
+  signal?: AbortSignal,
+) {
   const { data } = await callEndpoint(
     listExpoRunners,
-    { params: { outletId: KITCHEN_OUTLET_ID } },
+    { params: { outletId } },
     { signal },
   );
   return data;
 }
 
 export async function assignRunner(
+  outletId: OutletId,
   orderId: ExpoTicket["orderId"],
   runnerId: ExpoRunner["userId"],
 ) {
   const { data } = await callEndpoint(assignExpoRunner, {
-    params: { outletId: KITCHEN_OUTLET_ID, orderId },
+    params: { outletId, orderId },
     body: { runnerId },
   });
   return data;
 }
 
 /** Called numbers for takeaway and delivery channels (F12 "Pickup Display"). */
-export async function fetchPickupDisplay(signal?: AbortSignal) {
+export async function fetchPickupDisplay(
+  outletId: OutletId,
+  signal?: AbortSignal,
+) {
   const { data } = await callEndpoint(
     getPickupDisplay,
-    { params: { outletId: KITCHEN_OUTLET_ID } },
+    { params: { outletId } },
     { signal },
   );
   return data;
 }
 
 /** "Panggil": mark a number called (the display then announces it). */
-export async function callPickup(callId: string) {
+export async function callPickup(outletId: OutletId, callId: string) {
   const { data } = await callEndpoint(callPickupNumber, {
-    params: { outletId: KITCHEN_OUTLET_ID, callId },
+    params: { outletId, callId },
   });
   return data;
 }
