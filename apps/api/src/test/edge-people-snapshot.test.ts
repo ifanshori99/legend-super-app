@@ -1325,6 +1325,42 @@ describe("legend-ye4j1 T1 ban expiry and contract refusal", () => {
     expect(permanent.body.users.find((x) => x.id === u1())?.banned).toBe(true);
   });
 
+  it("T1 a user who is banned right now is sent with no role assignment, an expired ban keeps the assignment (legend-tkycp)", async () => {
+    const assignmentsOf = (
+      body: Awaited<ReturnType<typeof buildEdgePeopleSnapshot>>["body"],
+      userId: string,
+    ) => body.roleAssignments.filter((row) => row.userId === userId);
+    // The edge refuses an assignment for a banned grantee (trigger
+    // role_assignments_grantee_guard), so the cloud does not send one.
+    await asOwner(
+      `UPDATE "user" SET banned = true, ban_expires = NULL WHERE id = $1`,
+      [u1()],
+    );
+    const banned = await buildEdgePeopleSnapshot(keyOf(nodeA, outletA), {
+      now: NOW1,
+    });
+    expect(banned.body.users.find((x) => x.id === u1())?.banned).toBe(true);
+    expect(assignmentsOf(banned.body, u1())).toEqual([]);
+    // Other users keep theirs.
+    expect(
+      banned.body.roleAssignments.some(
+        (row) => row.id === ids.assignments.outletO,
+      ),
+    ).toBe(true);
+    // A ban that has run out no longer blocks: the assignment comes back.
+    await asOwner(`UPDATE "user" SET ban_expires = $2 WHERE id = $1`, [
+      u1(),
+      new Date(NOW1.getTime() - 60_000).toISOString(),
+    ]);
+    const expired = await buildEdgePeopleSnapshot(keyOf(nodeA, outletA), {
+      now: NOW1,
+    });
+    expect(expired.body.users.find((x) => x.id === u1())?.banned).toBe(false);
+    expect(assignmentsOf(expired.body, u1()).map((row) => row.id)).toContain(
+      ids.assignments.tenant,
+    );
+  });
+
   it("T1 a row the contract refuses fails with a 500-class error and logs paths only", async () => {
     await asOwner(`UPDATE "user" SET name = '' WHERE id = $1`, [u1()]);
     const error = vi.spyOn(logger, "error").mockImplementation(() => {});

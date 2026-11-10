@@ -318,7 +318,19 @@ export async function buildEdgePeopleSnapshot(
 
     // Assignments the cloud resolver would use at O: tenant scope, the brand of
     // O, or O itself; active now. Station scope is never sent (design 3.5).
-    const sentUserIds = userRows.map((row) => row.id);
+    // A user who is banned right now gets none: the edge refuses an assignment
+    // for a banned grantee (trigger role_assignments_grantee_guard), which would
+    // fail the whole apply on every cycle. Same rule as `banned` below: a ban
+    // that has run out no longer blocks.
+    const sentUserIds = userRows
+      .filter(
+        (row) =>
+          !(
+            row.banned === true &&
+            (row.banExpires === null || row.banExpires > now)
+          ),
+      )
+      .map((row) => row.id);
     const assignmentRows =
       sentUserIds.length === 0
         ? []
