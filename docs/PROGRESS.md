@@ -982,3 +982,4 @@ Langkah berikut CTO baru:
 - 18:48 omp4 1c06b972 G4do0 resolved (gagal-dulu 16/16 merah, 45/45 hijau, architect tanpa bypass), batch48. Kartu FE sw980 (gate-ui). Mulai G3ctm sonnet: r3i8w+5nhkp pajak (362, 0242). Catatan merge train: 'when' journal harus naik sesuai urutan apply.
 - 18:49 ie6m dde6124b G06f4 resolved (architect: blocker FORCE RLS di backfill dibetulkan, kode standar ditolak 409; gagal-dulu 13/17 + 3/5). Backfill: cocok kode saja (keputusan CTO). Kartu tkc19 (edge isSystem), 7z38l (UI editor UOM). Mulai G5pt0 aruta (363, 0243).
 - 18:55 pc51h 8b0b8d58 G4yoi resolved (opsi A swapReplacementIdr; architect: guard splitOrder 409; 155/155 api). Kartu arp35-dll UI split panel; kxoyf POS detail swap mulai (364).
+- 18:56 aruta: bug nyata (pelaku POS = pemilik sesi; test merah 0ae90e96). CTO setujui token kasir aktif per perangkat (0243), architect subagent dulu, tabel terpisah dari u7g9w.
