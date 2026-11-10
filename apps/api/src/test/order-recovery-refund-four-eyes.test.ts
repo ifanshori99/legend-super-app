@@ -70,6 +70,7 @@ import { setAuditWriter } from "../services/audit-writer";
 import { coreAuditWriter } from "../services/core-audit-writer";
 import { outletContext } from "../services/device-pin-support";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway";
+import { settleRefundFromChain } from "../services/payment-refund.service";
 import {
   handleRefundApprovalResolved,
   openRefundChainAtRequest,
@@ -154,6 +155,8 @@ const intentIds: string[] = [];
 const linkIds: string[] = [];
 const orderUuids: string[] = [];
 const issueIds: string[] = [];
+/** Idempotency keys a re-file wrote (`order-recovery-refund:<issue>:<failed refund>`). */
+const refiledKeys: string[] = [];
 
 type Seeded = { refundId: string; issueId: string; intentId: string };
 
@@ -396,7 +399,15 @@ describe("legend-94q2l T2 four-eyes: the payout of a recovery refund", () => {
     );
     await owner.query(
       "DELETE FROM payment_admin_idempotency WHERE tenant_id = $1 AND key LIKE 'order-recovery-refund:%' AND key = ANY($2::text[])",
-      [seededTenantId, issueIds.map((id) => `order-recovery-refund:${id}`)],
+      [
+        seededTenantId,
+        issueIds.flatMap((id) => [
+          `order-recovery-refund:${id}`,
+          ...refiledKeys.filter((key) =>
+            key.startsWith(`order-recovery-refund:${id}:`),
+          ),
+        ]),
+      ],
     );
     await asOwner(
       async (client) => {
@@ -643,6 +654,45 @@ describe("legend-94q2l T2 four-eyes: the payout of a recovery refund", () => {
       expect(["approved", "completed"]).toContain(
         (await refundState(refundId)).status,
       );
+      expect(fake.executionCount).toBe(1);
+      expect(fake.calls.every((call) => call.amountIdr === REFUND_AMOUNT)).toBe(
+        true,
+      );
+    });
+  });
+  describe("re-filed refund (after approval_expired)", () => {
+    it("FE-6 the resolver and the ORD-09 approver cannot approve the re-filed refund; a third person can", async () => {
+      const { refundId, issueId } = await recoveryRefund();
+      await owner.query(
+        "UPDATE approval_requests SET status = 'expired' WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2",
+        [seededTenantId, refundId],
+      );
+      const failed = await settleRefundFromChain(scope(), refundId);
+      expect(failed.status).toBe("failed");
+      expect(failed.failureReason).toBe("approval_expired");
+      refiledKeys.push(`order-recovery-refund:${issueId}:${refundId}`);
+
+      const { rows } = await owner.query<{ id: string; amount_idr: string }>(
+        `SELECT id, amount_idr::text FROM payment_refunds
+          WHERE tenant_id = $1 AND order_issue_id = $2 AND status <> 'failed'`,
+        [seededTenantId, issueId],
+      );
+      expect(rows).toHaveLength(1);
+      const refiledId = rows[0]!.id;
+      expect(refiledId).not.toBe(refundId);
+      expect(Number(rows[0]!.amount_idr)).toBe(REFUND_AMOUNT);
+
+      await expectRefused(refiledId, clients[1]!, "APPROVER_IS_REQUESTER");
+      await expectRefused(refiledId, clients[0]!, "APPROVER_IS_REQUESTER");
+
+      const fake = new FakeRefundGateway();
+      setPaymentRefundGateway(fake);
+      try {
+        const ok = await approve(refiledId, thirdPerson());
+        expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+      } finally {
+        setPaymentRefundGateway(null);
+      }
       expect(fake.executionCount).toBe(1);
       expect(fake.calls.every((call) => call.amountIdr === REFUND_AMOUNT)).toBe(
         true,
@@ -944,8 +994,9 @@ async function seedPayout(
     client.query(
       `INSERT INTO payment_refunds
          (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
-          requested_by, approved_by, decided_at, completed_at, order_issue_id)
-       VALUES ($1, $2, $3, $4, $5, $6, 'completed', $7, 'approver', $8, $8, $9)`,
+          requested_by, approved_by, decided_at, completed_at, order_issue_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'completed', $7, 'approver', $8, $8, $9,
+               $8::timestamptz - interval '1 minute')`,
       [
         refundId,
         world.tenant.id,
@@ -1332,6 +1383,55 @@ describe("legend-94q2l T2 the qrSales guard counts a recovery refund only once i
       ),
     ).toEqual(BACKING_PENDING);
     // receipt + sale + one recovery refund + one payout
+    expect(await journalCount(world)).toBe(4);
+  });
+  // R4: `releasedOf` is bounded in time like `posRefundsAt(bound)`: a recovery
+  // refund completed after the payout under judgement does not free the sale.
+  it("RG-6 a recovery refund completed AFTER the payout does not reduce the hold: the earlier manual payout parks mismatch", async () => {
+    const { world, intentId, orderUlid, orderUuid } = await sold();
+    const issueId = await seedIssue(world, orderUuid);
+    await post(world, recoveryRefunded(world, orderUlid, issueId, TWENTY_TWO));
+    // The recovery refund pays out later (LATER) than the manual one (REFUND_DAY).
+    await seedPayout(world, intentId, 22_000, issueId, LATER);
+    const manual = await seedPayout(world, intentId, 22_000, null, REFUND_DAY);
+
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, manual, intentId, 22_000),
+      ),
+    ).toEqual(AMOUNTS_MISMATCH);
+    // receipt + sale + the recovery refund's own journal; the payout parked
+    expect(await journalCount(world)).toBe(3);
+  });
+
+  it("RG-7 control: a recovery refund filed BEFORE the payout does reduce the hold: the manual payout posts", async () => {
+    const { world, intentId, orderUlid, orderUuid } = await sold();
+    const issueId = await seedIssue(world, orderUuid);
+    await post(world, recoveryRefunded(world, orderUlid, issueId, TWENTY_TWO));
+    // Filed before the manual payout and still waiting (its own payout is not
+    // among the completed ones, so it does not use up the room it released).
+    const recoveryRefund = await seedPayout(
+      world,
+      intentId,
+      22_000,
+      issueId,
+      T_RECOVERY,
+    );
+    await owner.query(
+      `UPDATE payment_refunds
+          SET status = 'pending', completed_at = NULL, decided_at = NULL, approved_by = NULL
+        WHERE tenant_id = $1 AND id = $2`,
+      [world.tenant.id, recoveryRefund],
+    );
+    const manual = await seedPayout(world, intentId, 22_000, null, REFUND_DAY);
+
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, manual, intentId, 22_000),
+      ),
+    ).toMatchObject({ status: "posted" });
     expect(await journalCount(world)).toBe(4);
   });
 });

@@ -216,6 +216,9 @@ export const paymentRefunds = pgTable(
     uniqueIndex("payment_refunds_approval_chain_uq")
       .on(t.tenantId, t.approvalChainId)
       .where(sql`${t.approvalChainId} IS NOT NULL`),
+    index("payment_refunds_order_issue_idx")
+      .on(t.tenantId, t.orderIssueId)
+      .where(sql`${t.orderIssueId} IS NOT NULL`),
     // One live refund per recovery issue; a failed one frees the issue for a retry.
     uniqueIndex("payment_refunds_order_issue_unique")
       .on(t.tenantId, t.orderIssueId)

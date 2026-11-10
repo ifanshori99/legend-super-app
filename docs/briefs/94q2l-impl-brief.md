@@ -53,3 +53,18 @@ Worktree: `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/94q2l-
 ## Bukti
 
 Tes: `LEGEND_TEST_FILES="src/test/<file>.test.ts" pnpm test` dari root worktree (butuh Docker; jalankan lewat `heavy` bila hook minta). Typecheck api: `heavy pnpm --filter @starter/api typecheck`. Jangan jalankan suite penuh. Laporkan file berubah + ringkas.
+
+## Putaran 2: temuan architect (10 Nov 2026)
+
+- R1 (I2, High): refund `system:recovery` yang `failed` dengan alasan selain `rejected` (approval_expired, approver_unauthorized, cap_exceeded, provider_declined, source_document) dibuka ULANG otomatis. Fungsi ekspor `refileRecoveryRefundAfterFailure(tx, context, failedRefund, now)` di `order-recovery-refund.ts`; dipanggil di `failRefund` (`payment-refund.service.ts`) setelah `refileQrLatePaymentAfterFailure`, lewat lazy `await import(...)` (siklus impor). Syarat: `requestedBy==='system:recovery'`, `orderIssueId` ada, belum ada refund hidup (status <> failed) untuk issue itu. Nominal = nominal refund yang gagal (TANPA `order.refunded` baru: pendapatan sudah dibalik). Kunci `order-recovery-refund:<issueId>:<failedRefundId>`, response `{refundId, resolvedBy, approvedBy}` disalin dari baris idempotensi asli `order-recovery-refund:<issueId>`; baris asli tidak ada = tidak re-file, audit `order_issue.refund_refile_blocked`. Lalu `openRefundChainSafely`, audit `payment.refund_requested` + `order_issue.refund_refiled`, event `payment.refund_requested`. Alasan `rejected`: tidak re-file, audit `order_issue.refund_rejected` (keputusan CTO menyusul).
+- R2 (I2): `isRecoveryRefundParty` cari baris idempotensi dengan kunci tepat `order-recovery-refund:<refund.orderIssueId>` atau `LIKE 'order-recovery-refund:<orderIssueId>:%'` + `response->>'refundId' = refund.id` (bukan LIKE global).
+- R3 (I1): indeks biasa `payment_refunds_order_issue_idx` pada `(tenant_id, order_issue_id) WHERE order_issue_id IS NOT NULL` di skema + 0222 (ubah di tempat, snapshot ikut), `db:generate` kedua kosong.
+- R4 (I4): `releasedOf` di guard `qrSales` dibatasi waktu fakta seperti `posRefundsAt(bound)` (refund setelah bound tidak dihitung).
+- T3 (test): `order-recovery-refund.test.ts`: refund gagal `approval_expired` -> refund baru pending, nominal sama, satu `order.refunded` saja, hold tidak berubah, four-eyes tetap berlaku untuk refund baru; `rejected` -> tidak re-file, audit `order_issue.refund_rejected`; gagal kedua kali -> re-file lagi (kunci beda). Guard: refund setelah bound tidak mengurangi.
+
+## Putaran 3: delta architect
+
+- R5 (I2): re-file otomatis HANYA untuk `approval_expired` dan `approver_unauthorized`. `provider_declined`, `cap_exceeded`, `source_document`: tidak re-file, audit `order_issue.refund_refile_blocked` dengan `blockedReason:'failure_needs_person'` + `failureReason` (provider_declined bisa berarti uang sudah terkirim: re-file = payout ganda).
+- R6 (I2): batas: issue yang sudah punya >= 3 refund `failed` tidak di-re-file; audit `refund_refile_blocked` `blockedReason:'refile_limit'`.
+- R7 (I2): `fileRecoveryRefund` set `createdAt: input.at` (jam fakta sama dengan guard). Komentar kode: re-file memegang kunci intent lalu FK key-share ke `order_issues` (urutan terbalik dari konsumen; deadlock langka, outbox retry).
+- T4 (test): re-filed refund (setelah `approval_expired`): approve oleh resolver dan oleh approver ORD-09 -> `APPROVER_IS_REQUESTER`; orang ketiga lolos. `provider_declined` dan `cap_exceeded` -> tidak re-file, audit `failure_needs_person`. 3 kali gagal -> tidak re-file keempat, audit `refile_limit`.

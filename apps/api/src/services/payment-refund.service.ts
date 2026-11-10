@@ -382,7 +382,8 @@ async function isRecoveryRefundParty(
                response->>'approvedBy' AS approved_by
         FROM payment_admin_idempotency
         WHERE tenant_id = ${refund.tenantId}
-          AND key LIKE 'order-recovery-refund:%'
+          AND (key = ${`order-recovery-refund:${refund.orderIssueId}`}
+               OR key LIKE ${`order-recovery-refund:${refund.orderIssueId}:%`})
           AND response->>'refundId' = ${refund.id}`,
   );
   if (rows.length === 0) return true;
@@ -615,6 +616,14 @@ async function failRefund(
     },
   });
   await refileQrLatePaymentAfterFailure(tx, context, updated, input.now);
+  // legend-94q2l: a failed-item refund that did not fail by a person's
+  // rejection is filed again. Lazy import: order-recovery-refund imports this
+  // module (cycle).
+  if (updated.requestedBy === "system:recovery") {
+    const { refileRecoveryRefundAfterFailure } =
+      await import("./order-recovery-refund.ts");
+    await refileRecoveryRefundAfterFailure(tx, context, updated, input.now);
+  }
   return updated;
 }
 

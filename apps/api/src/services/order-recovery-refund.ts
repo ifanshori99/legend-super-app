@@ -33,6 +33,7 @@ import { orderIssueManualRefundApprovedPayloadSchema } from "@starter/shared/qr-
 import { auditLogs } from "../db/schema/core-audit.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
+import { paymentAdminIdempotency } from "../db/schema/payment-admin.ts";
 import { posOrders } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -53,6 +54,11 @@ const AUDIT_REQUESTED = "order_issue.refund_requested";
 const AUDIT_BLOCKED = "order_issue.refund_blocked";
 const AUDIT_ROUTED_POS = "order_issue.refund_routed_pos";
 const AUDIT_SHORTFALL = "order_issue.refund_shortfall";
+/** An issue whose refunds failed this many times is left to a person. */
+const MAX_FAILED_REFUNDS = 3;
+const AUDIT_REJECTED = "order_issue.refund_rejected";
+const AUDIT_REFILED = "order_issue.refund_refiled";
+const AUDIT_REFILE_BLOCKED = "order_issue.refund_refile_blocked";
 const AUDIT_SAFE_FIELDS = [
   "id",
   "orderId",
@@ -64,6 +70,7 @@ const AUDIT_SAFE_FIELDS = [
   "shortfallIdr",
   "status",
   "blockedReason",
+  "failureReason",
 ];
 
 export const orderRecoveryRefundKey = (orderIssueId: string) =>
@@ -390,57 +397,13 @@ export async function deliverOrderRecoveryRefundEvent(
           caller: null,
           now: at,
         });
-      const [inserted] = await tx
-        .insert(paymentRefunds)
-        .values({
-          tenantId: intent.tenantId,
-          outletId: intent.outletId,
-          paymentIntentId: intent.id,
-          orderIssueId: issue.id,
-          amountIdr: idr(split.amountIdr),
-          reason: REFUND_REASON,
-          note: null,
-          requestedBy: RECOVERY_REQUESTER,
-        })
-        .returning();
-      if (!inserted) throw new Error("Refund insert returned no row");
-      const row = await openRefundChainSafely(tx, context, inserted, at);
-      await recordAudit(
-        tx,
-        context,
-        {
-          id: createUlid(at.getTime()),
-          tenantId,
-          outletId: row.outletId,
-          actorType: "system",
-          actorId: null,
-          deviceId: null,
-          action: "payment.refund_requested",
-          objectType: "payment_refund",
-          objectId: row.id,
-          reason: row.reason,
-          maskedChanges: {
-            before: null,
-            after: { amountIdr: row.amountIdr, status: row.status },
-          },
-          ipHash: null,
-          sensitiveAccess: false,
-          retentionClass: "audit_2y",
-          createdAt: at.toISOString(),
-        },
-        ["amountIdr", "status"],
-      );
-      await appendPaymentEvent(tx, context, {
-        name: "payment.refund_requested",
-        aggregateId: row.id,
-        outletId: row.outletId,
-        actor: { type: "system" },
-        payload: {
-          refundId: row.id,
-          paymentIntentId: row.paymentIntentId,
-          amountIdr: row.amountIdr,
-        },
-        now: at,
+      const row = await fileRecoveryRefund(tx, context, {
+        tenantId: intent.tenantId,
+        outletId: intent.outletId,
+        paymentIntentId: intent.id,
+        orderIssueId: issue.id,
+        amountIdr: split.amountIdr,
+        at,
       });
       await audit(
         AUDIT_REQUESTED,
@@ -458,6 +421,280 @@ export async function deliverOrderRecoveryRefundEvent(
         refundId: row.id as string | null,
         resolvedBy: actorUserId,
         approvedBy: payload.data.approvedBy,
+      };
+    },
+  );
+}
+
+/**
+ * Inserts the `system:recovery` payment refund of an issue, opens its approval
+ * chain and writes the `payment.refund_requested` audit row and event. Shared
+ * by the first filing and the re-filing after a failure; the caller holds the
+ * intent row lock and writes its own `order_issue.*` audit row.
+ * Lock order: the first filing runs under the consumer's issue -> order ->
+ * intent locks. A re-file holds the intent lock (the refund graph locks it
+ * first) and then the insert takes the FK key-share lock on `order_issues`,
+ * the reverse order. A deadlock is rare; Postgres aborts one side and the
+ * outbox retries the event.
+ */
+async function fileRecoveryRefund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    tenantId: ScopedTenantContext["tenant"]["tenantId"];
+    outletId: (typeof paymentRefunds.$inferInsert)["outletId"];
+    paymentIntentId: string;
+    orderIssueId: string;
+    amountIdr: number;
+    at: Date;
+  },
+) {
+  const { at } = input;
+  const [inserted] = await tx
+    .insert(paymentRefunds)
+    .values({
+      tenantId: input.tenantId,
+      outletId: input.outletId,
+      paymentIntentId: input.paymentIntentId,
+      orderIssueId: input.orderIssueId,
+      amountIdr: idr(input.amountIdr),
+      reason: REFUND_REASON,
+      note: null,
+      requestedBy: RECOVERY_REQUESTER,
+      // The fact clock of the guard (lockIntentsForFact), not the DB default.
+      createdAt: input.at,
+    })
+    .returning();
+  if (!inserted) throw new Error("Refund insert returned no row");
+  const row = await openRefundChainSafely(tx, context, inserted, at);
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(at.getTime()),
+      tenantId: input.tenantId,
+      outletId: row.outletId,
+      actorType: "system",
+      actorId: null,
+      deviceId: null,
+      action: "payment.refund_requested",
+      objectType: "payment_refund",
+      objectId: row.id,
+      reason: row.reason,
+      maskedChanges: {
+        before: null,
+        after: { amountIdr: row.amountIdr, status: row.status },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: at.toISOString(),
+    },
+    ["amountIdr", "status"],
+  );
+  await appendPaymentEvent(tx, context, {
+    name: "payment.refund_requested",
+    aggregateId: row.id,
+    outletId: row.outletId,
+    actor: { type: "system" },
+    payload: {
+      refundId: row.id,
+      paymentIntentId: row.paymentIntentId,
+      amountIdr: row.amountIdr,
+    },
+    now: at,
+  });
+  return row;
+}
+
+/**
+ * legend-94q2l: a `system:recovery` refund that ended `failed` is filed again
+ * (`failRefund`, payment-refund.service.ts, lazy import: import cycle), so a
+ * guest owed money for a failed item is not left with a dead request. Only for
+ * the failures that say nothing about the money itself:
+ * - `approval_expired` and `approver_unauthorized` file a new request for the
+ *   same amount;
+ * - `rejected` is a human decision: not re-filed, audited
+ *   (`order_issue.refund_rejected`); what happens next is a business decision;
+ * - `provider_declined` (the money may already have left: a re-file would pay
+ *   twice), `cap_exceeded` and `source_document` need a person: not re-filed,
+ *   audited `order_issue.refund_refile_blocked` (`failure_needs_person`);
+ * - an issue with 3 failed refunds is not re-filed again (`refile_limit`).
+ * No new `order.refunded`: the revenue was already reversed. Idempotent per
+ * failed refund (key `order-recovery-refund:<issueId>:<failedRefundId>`); the
+ * resolver and approver are copied from the first filing's idempotency row,
+ * which four-eyes reads. Without that row nothing is filed: the parties
+ * would be unknown (`order_issue.refund_refile_blocked`).
+ * The caller holds the refund graph locks (intent row first).
+ */
+export async function refileRecoveryRefundAfterFailure(
+  tx: Tx,
+  context: ScopedTenantContext,
+  failedRefund: typeof paymentRefunds.$inferSelect,
+  now: Date,
+): Promise<void> {
+  const issueId = failedRefund.orderIssueId;
+  if (
+    failedRefund.requestedBy !== RECOVERY_REQUESTER ||
+    issueId === null ||
+    failedRefund.status !== "failed"
+  )
+    return;
+  const tenantId = failedRefund.tenantId;
+  const auditIssue = (
+    action: string,
+    after: Record<string, string | number>,
+    reason: string,
+  ) =>
+    recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: failedRefund.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action,
+        objectType: "order_issue",
+        objectId: issueId,
+        reason,
+        maskedChanges: { before: null, after },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: toIsoDateTime(now),
+      },
+      AUDIT_SAFE_FIELDS,
+    );
+  const failureReason = failedRefund.failureReason ?? "unknown";
+  if (failureReason === "rejected") {
+    await auditIssue(
+      AUDIT_REJECTED,
+      {
+        id: issueId,
+        refundId: failedRefund.id,
+        paymentIntentId: failedRefund.paymentIntentId,
+        amountIdr: failedRefund.amountIdr,
+        failureReason,
+      },
+      "Refund item gagal ditolak, tidak diajukan ulang",
+    );
+    return;
+  }
+  if (
+    failureReason !== "approval_expired" &&
+    failureReason !== "approver_unauthorized"
+  ) {
+    await auditIssue(
+      AUDIT_REFILE_BLOCKED,
+      {
+        id: issueId,
+        refundId: failedRefund.id,
+        blockedReason: "failure_needs_person",
+        failureReason,
+      },
+      "Refund item gagal tidak diajukan ulang: perlu keputusan orang",
+    );
+    return;
+  }
+  const [live] = await tx
+    .select({ id: paymentRefunds.id })
+    .from(paymentRefunds)
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        eq(paymentRefunds.orderIssueId, issueId),
+        ne(paymentRefunds.status, "failed"),
+      ),
+    )
+    .limit(1);
+  if (live) return;
+  // This refund is already `failed` in this transaction, so it counts.
+  const [failures] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(paymentRefunds)
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        eq(paymentRefunds.orderIssueId, issueId),
+        eq(paymentRefunds.status, "failed"),
+      ),
+    );
+  if ((failures?.count ?? 0) >= MAX_FAILED_REFUNDS) {
+    await auditIssue(
+      AUDIT_REFILE_BLOCKED,
+      {
+        id: issueId,
+        refundId: failedRefund.id,
+        blockedReason: "refile_limit",
+        failureReason,
+      },
+      "Refund item gagal tidak diajukan ulang: sudah gagal 3 kali",
+    );
+    return;
+  }
+  const [first] = await tx
+    .select({ response: paymentAdminIdempotency.response })
+    .from(paymentAdminIdempotency)
+    .where(
+      and(
+        eq(paymentAdminIdempotency.tenantId, tenantId),
+        eq(paymentAdminIdempotency.key, orderRecoveryRefundKey(issueId)),
+      ),
+    );
+  const firstResponse = first?.response as
+    { resolvedBy?: string | null; approvedBy?: string } | null | undefined;
+  if (!firstResponse) {
+    await auditIssue(
+      AUDIT_REFILE_BLOCKED,
+      {
+        id: issueId,
+        refundId: failedRefund.id,
+        blockedReason: "no_first_filing",
+        failureReason,
+      },
+      "Refund item gagal tidak diajukan ulang: pihak asli tidak terbaca",
+    );
+    return;
+  }
+  await idempotentPaymentAdminWrite(
+    tx,
+    context,
+    RECOVERY_REQUESTER,
+    `${orderRecoveryRefundKey(issueId)}:${failedRefund.id}`,
+    "refund.create",
+    {
+      orderIssueId: issueId,
+      paymentIntentId: failedRefund.paymentIntentId,
+      failedRefundId: failedRefund.id,
+    },
+    async () => {
+      const row = await fileRecoveryRefund(tx, context, {
+        tenantId,
+        outletId: failedRefund.outletId,
+        paymentIntentId: failedRefund.paymentIntentId,
+        orderIssueId: issueId,
+        amountIdr: failedRefund.amountIdr,
+        at: now,
+      });
+      await auditIssue(
+        AUDIT_REFILED,
+        {
+          id: issueId,
+          paymentIntentId: row.paymentIntentId,
+          refundId: row.id,
+          amountIdr: row.amountIdr,
+          status: row.status,
+          failureReason,
+        },
+        REFUND_REASON,
+      );
+      return {
+        refundId: row.id as string | null,
+        resolvedBy: firstResponse.resolvedBy ?? null,
+        approvedBy: firstResponse.approvedBy ?? null,
       };
     },
   );

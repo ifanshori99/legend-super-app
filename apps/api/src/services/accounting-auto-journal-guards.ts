@@ -806,6 +806,16 @@ async function intentBackedAt(
   // that can still post makes the check wait (backingPending), one that never
   // posts (or finance reversed) releases nothing (fail closed). Per issue the
   // largest amount counts, whatever the refund status (as qrSaleInUseOfIntent).
+  // Judged at the bound like a POS refund (posRefundsAt): an issue whose first
+  // refund was opened after the bound releases nothing, and its journal
+  // does not make the check wait.
+  const issueOpenedAt = (issueId: SQL) => {
+    const openedAt = sql`(SELECT min(ia.created_at) FROM payment_refunds ia
+      WHERE ia.tenant_id = ${tenantId} AND ia.order_issue_id = ${issueId})`;
+    return bound.kind === "refund"
+      ? sql`${openedAt} <= ${timeOf(bound)}`
+      : sql`${openedAt} < ${timeOf(bound)}`;
+  };
   const issueCandidates = (
     await tx
       .selectDistinct({
@@ -821,6 +831,7 @@ async function intentBackedAt(
           qrSaleScope,
           sql`EXISTS (SELECT 1 FROM payment_refunds ir
             WHERE ir.tenant_id = ${tenantId} AND ir.order_issue_id = order_issues.id)`,
+          issueOpenedAt(sql`order_issues.id`),
         ),
       )
   ).map((row) => row.issueId);
@@ -844,6 +855,7 @@ async function intentBackedAt(
           SELECT max(ir.amount_idr) AS amount FROM payment_refunds ir
             JOIN order_issues oi ON oi.tenant_id = ir.tenant_id AND oi.id = ir.order_issue_id
             WHERE ir.tenant_id = ${tenantId} AND oi.order_id = ${orders.id}
+              AND ${issueOpenedAt(sql`oi.id`)}
               AND oi.id IN (${sql.join(
                 issuesPosted.map((id) => sql`${id}::uuid`),
                 sql`, `,

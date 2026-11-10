@@ -15427,6 +15427,28 @@
           "method": "btree",
           "with": {}
         },
+        "payment_refunds_order_issue_idx": {
+          "name": "payment_refunds_order_issue_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "order_issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"payment_refunds\".\"order_issue_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "payment_refunds_order_issue_unique": {
           "name": "payment_refunds_order_issue_unique",
           "columns": [

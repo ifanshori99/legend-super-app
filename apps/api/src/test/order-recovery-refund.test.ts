@@ -48,9 +48,14 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { orderRefundedPayloadSchema } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/payment.ts";
+import { paymentRefunds } from "../db/schema/payment-admin.ts";
 import { withTenant } from "../db/tenant.ts";
-import { deliverOrderRecoveryRefundEvent } from "../services/order-recovery-refund.ts";
+import {
+  deliverOrderRecoveryRefundEvent,
+  refileRecoveryRefundAfterFailure,
+} from "../services/order-recovery-refund.ts";
 import { refundableBalance } from "../services/payment-admin.service.ts";
+import { settleRefundFromChain } from "../services/payment-refund.service.ts";
 import {
   CART_TOTAL,
   PRICES,
@@ -1047,5 +1052,338 @@ describe("legend-94q2l cabang 6: open_bill tanpa pos_orders, intent settled", ()
     expect(await onlyAudit(issueId, "order_issue.refund_blocked")).toMatch(
       /"blockedReason":\s*"intent_not_settled"/,
     );
+  });
+});
+
+async function idempotencyByKey(key: string) {
+  const { rows } = await owner.query<{ response: Record<string, unknown> }>(
+    `SELECT response FROM payment_admin_idempotency WHERE tenant_id = $1 AND key = $2`,
+    [w.tenant.tenantId, key],
+  );
+  return rows;
+}
+
+// ---- Putaran 2 (R1): re-file of a recovery refund that failed -------------------
+
+describe("legend-94q2l T3 refund system:recovery yang gagal dibuka ulang (R1)", () => {
+  // Assumptions (brief "Putaran 2", R1):
+  // - Failure is produced the way production does it: the approval request of the
+  //   refund's chain is marked expired (approval_expired) or rejected, then
+  //   `settleRefundFromChain` ends the refund `failed` through `failRefund`,
+  //   which calls `refileRecoveryRefundAfterFailure`.
+  // - Four-eyes of the new refund is read from its idempotency row (key
+  //   `order-recovery-refund:<issueId>:<failedRefundId>`, response copied from the
+  //   original row) and its own pending approval chain; the payout approval over
+  //   HTTP is covered by order-recovery-refund-four-eyes.test.ts.
+  // - A refund that was rejected is not re-filed (CTO decision follows): audit
+  //   `order_issue.refund_rejected`, no `order_issue.refund_refiled`.
+
+  // The refund chain only opens when the tenant has a refund approval policy:
+  // one level for every amount, decided by the supervisor role (never the
+  // consumer, which only files the refund).
+  beforeAll(async () => {
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'refund', 0, $2, 1)`,
+      [w.tenant.tenantId, w.ids.supervisorRole],
+    );
+  });
+
+  /** Ends the refund `failed` as an expired or rejected approval chain does. */
+  async function failChain(
+    refundId: string,
+    how: "approval_expired" | "rejected",
+  ) {
+    if (how === "approval_expired")
+      await owner.query(
+        "UPDATE approval_requests SET status = 'expired' WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2",
+        [w.tenant.tenantId, refundId],
+      );
+    else
+      await owner.query(
+        `UPDATE approval_requests
+            SET status = 'rejected', decided_by = $3, decided_at = now(), reason = 'Ditolak uji T3'
+          WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2`,
+        [w.tenant.tenantId, refundId, w.approverUserId],
+      );
+    const settled = await settleRefundFromChain(
+      contextOf(w.tenant.tenantId),
+      refundId,
+    );
+    expect(settled.status).toBe("failed");
+    expect(settled.failureReason).toBe(how);
+  }
+
+  async function pendingChains(refundId: string) {
+    const { rows } = await owner.query<{ n: string }>(
+      `SELECT count(*) AS n FROM approval_requests
+        WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2
+          AND status = 'pending'`,
+      [w.tenant.tenantId, refundId],
+    );
+    return Number(rows[0]!.n);
+  }
+
+  /** A delivered recovery refund (pending, chain open) of a failed roti. */
+  async function deliveredRefund() {
+    const made = await paidRotiRefund();
+    const intentId = await intentIdOf(made.order.id);
+    await deliver(made.event);
+    const refunds = await issueRefunds(made.issueId);
+    expect(refunds).toHaveLength(1);
+    return { ...made, intentId, first: refunds[0]! };
+  }
+
+  it("approval_expired: refund baru pending dengan nominal sama, satu order.refunded, hold tidak berubah, jejak four-eyes tersalin", async () => {
+    const { order, issueId, intentId, first } = await deliveredRefund();
+    const holdBefore = await holdOf(intentId);
+    expect(holdBefore).toEqual({ cap: ROTI_WANTED, reserved: ROTI_WANTED });
+
+    await failChain(first.id, "approval_expired");
+
+    const refunds = await issueRefunds(issueId);
+    expect(refunds).toHaveLength(2);
+    expect(refunds.find((row) => row.id === first.id)!.status).toBe("failed");
+    const live = refunds.find((row) => row.status !== "failed")!;
+    expect(live).toMatchObject({
+      status: "pending",
+      amount_idr: ROTI_WANTED,
+      requested_by: "system:recovery",
+      payment_intent_id: intentId,
+      order_issue_id: issueId,
+      reason: "Refund item gagal (ORD-09)",
+    });
+    expect(live.id).not.toBe(first.id);
+
+    // Revenue was reversed once; the re-file books no second order.refunded.
+    expect(await orderRefundedEvents(order.id)).toHaveLength(1);
+    // The failed refund released its reservation, the new one took it: no change.
+    expect(await holdOf(intentId)).toEqual(holdBefore);
+
+    // Key per failed refund; response copied from the original row.
+    const original = await idempotencyByKey(`order-recovery-refund:${issueId}`);
+    expect(original).toHaveLength(1);
+    const refiled = await idempotencyByKey(
+      `order-recovery-refund:${issueId}:${first.id}`,
+    );
+    expect(refiled).toHaveLength(1);
+    expect(refiled[0]!.response).toMatchObject({
+      refundId: live.id,
+      resolvedBy: w.supervisor.userId,
+      approvedBy: w.approverUserId,
+    });
+
+    // Audit and events of the new refund; an approval chain is open for it.
+    await onlyAudit(issueId, "order_issue.refund_refiled");
+    expect(await paymentRefundAuditCount(live.id)).toBe(1);
+    expect(
+      await w.outboxRows("payment.refund_requested", live.id),
+    ).toHaveLength(1);
+    expect(await pendingChains(live.id)).toBeGreaterThan(0);
+    expect(await auditCount(issueId, "order_issue.refund_refile_blocked")).toBe(
+      0,
+    );
+  });
+
+  it("rejected: tidak dibuka ulang; audit order_issue.refund_rejected", async () => {
+    const { order, issueId, intentId, first } = await deliveredRefund();
+
+    await failChain(first.id, "rejected");
+
+    const refunds = await issueRefunds(issueId);
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]).toMatchObject({ id: first.id, status: "failed" });
+    await onlyAudit(issueId, "order_issue.refund_rejected");
+    expect(await auditCount(issueId, "order_issue.refund_refiled")).toBe(0);
+    expect(
+      await idempotencyByKey(`order-recovery-refund:${issueId}:${first.id}`),
+    ).toHaveLength(0);
+    expect(await orderRefundedEvents(order.id)).toHaveLength(1);
+    // The reservation is released: the sale hold is the only thing left.
+    expect(await holdOf(intentId)).toEqual({ cap: ROTI_WANTED, reserved: 0 });
+  });
+
+  it("gagal kedua kali: dibuka ulang lagi dengan kunci berbeda, tetap satu refund hidup dan satu order.refunded", async () => {
+    const { order, issueId, intentId, first } = await deliveredRefund();
+    await failChain(first.id, "approval_expired");
+    const second = (await issueRefunds(issueId)).find(
+      (row) => row.status !== "failed",
+    )!;
+
+    await failChain(second.id, "approval_expired");
+
+    const refunds = await issueRefunds(issueId);
+    expect(refunds).toHaveLength(3);
+    const live = refunds.filter((row) => row.status !== "failed");
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({
+      status: "pending",
+      amount_idr: ROTI_WANTED,
+      requested_by: "system:recovery",
+    });
+    expect([first.id, second.id]).not.toContain(live[0]!.id);
+
+    const keyFirst = `order-recovery-refund:${issueId}:${first.id}`;
+    const keySecond = `order-recovery-refund:${issueId}:${second.id}`;
+    expect(keyFirst).not.toBe(keySecond);
+    expect(await idempotencyByKey(keyFirst)).toHaveLength(1);
+    const refiledAgain = await idempotencyByKey(keySecond);
+    expect(refiledAgain).toHaveLength(1);
+    expect(refiledAgain[0]!.response).toMatchObject({
+      refundId: live[0]!.id,
+      resolvedBy: w.supervisor.userId,
+      approvedBy: w.approverUserId,
+    });
+    expect(await auditCount(issueId, "order_issue.refund_refiled")).toBe(2);
+    expect(await orderRefundedEvents(order.id)).toHaveLength(1);
+    expect(await holdOf(intentId)).toEqual({
+      cap: ROTI_WANTED,
+      reserved: ROTI_WANTED,
+    });
+  });
+
+  it("baris idempotensi asli tidak ada: tidak dibuka ulang; audit order_issue.refund_refile_blocked", async () => {
+    const { issueId, first } = await deliveredRefund();
+    await owner.query(
+      "DELETE FROM payment_admin_idempotency WHERE tenant_id = $1 AND key = $2",
+      [w.tenant.tenantId, `order-recovery-refund:${issueId}`],
+    );
+
+    await failChain(first.id, "approval_expired");
+
+    const refunds = await issueRefunds(issueId);
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]!.status).toBe("failed");
+    await onlyAudit(issueId, "order_issue.refund_refile_blocked");
+    expect(await auditCount(issueId, "order_issue.refund_refiled")).toBe(0);
+  });
+});
+
+// ---- Putaran 3 (R5, R6): which failures are re-filed, and how often ---------------
+
+describe("legend-94q2l T4 re-file hanya untuk kegagalan yang aman, dengan batas", () => {
+  // Assumptions (brief "Putaran 3"):
+  // - `provider_declined`, `cap_exceeded` and `source_document` cannot be produced
+  //   through the chain in a test, so a delivered refund is set `failed` with that
+  //   reason by SQL and `refileRecoveryRefundAfterFailure` is called as `failRefund`
+  //   does (same transaction shape). `approver_unauthorized` the same way.
+  // - The limit: after the third refund of the issue ended `failed` there is no
+  //   fourth; the audit row is `order_issue.refund_refile_blocked` with
+  //   `blockedReason` `refile_limit`. The needs-a-person row names the
+  //   `failureReason` in its text.
+  // - The refund approval policy of the T3 describe above stays in place.
+
+  async function deliveredRefund() {
+    const made = await paidRotiRefund();
+    await deliver(made.event);
+    const refunds = await issueRefunds(made.issueId);
+    expect(refunds).toHaveLength(1);
+    return { ...made, first: refunds[0]! };
+  }
+
+  /** Sets the refund `failed` for `reason` and runs the re-file hook on it. */
+  async function failAndRefile(refundId: string, reason: string) {
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'failed', failure_reason = $3, decided_at = now()
+        WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, refundId, reason],
+    );
+    const context = contextOf(w.tenant.tenantId);
+    await withTenant(db, context, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(paymentRefunds)
+        .where(
+          and(
+            eq(paymentRefunds.tenantId, context.tenant.tenantId),
+            eq(paymentRefunds.id, refundId),
+          ),
+        );
+      await refileRecoveryRefundAfterFailure(tx, context, row!, new Date());
+    });
+  }
+
+  async function expireAndSettle(refundId: string) {
+    await owner.query(
+      "UPDATE approval_requests SET status = 'expired' WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2",
+      [w.tenant.tenantId, refundId],
+    );
+    const settled = await settleRefundFromChain(
+      contextOf(w.tenant.tenantId),
+      refundId,
+    );
+    expect(settled.status).toBe("failed");
+    const live = (await issueRefunds(settled.orderIssueId!)).filter(
+      (row) => row.status !== "failed",
+    );
+    return live[0] ?? null;
+  }
+
+  for (const reason of [
+    "provider_declined",
+    "cap_exceeded",
+    "source_document",
+  ]) {
+    it(`${reason}: tidak dibuka ulang, audit refund_refile_blocked failure_needs_person`, async () => {
+      const { issueId, first } = await deliveredRefund();
+
+      await failAndRefile(first.id, reason);
+
+      const refunds = await issueRefunds(issueId);
+      expect(refunds).toHaveLength(1);
+      expect(refunds[0]).toMatchObject({ id: first.id, status: "failed" });
+      const audit = await onlyAudit(
+        issueId,
+        "order_issue.refund_refile_blocked",
+      );
+      expect(audit).toMatch(/"blockedReason":\s*"failure_needs_person"/);
+      expect(audit).toContain(reason);
+      expect(await auditCount(issueId, "order_issue.refund_refiled")).toBe(0);
+      expect(
+        await idempotencyByKey(`order-recovery-refund:${issueId}:${first.id}`),
+      ).toHaveLength(0);
+    });
+  }
+
+  it("approver_unauthorized: dibuka ulang seperti approval_expired", async () => {
+    const { issueId, first } = await deliveredRefund();
+
+    await failAndRefile(first.id, "approver_unauthorized");
+
+    const refunds = await issueRefunds(issueId);
+    expect(refunds).toHaveLength(2);
+    const live = refunds.find((row) => row.status !== "failed")!;
+    expect(live).toMatchObject({
+      status: "pending",
+      amount_idr: ROTI_WANTED,
+      requested_by: "system:recovery",
+    });
+    await onlyAudit(issueId, "order_issue.refund_refiled");
+    expect(await auditCount(issueId, "order_issue.refund_refile_blocked")).toBe(
+      0,
+    );
+  });
+
+  it("tiga kali gagal: refund keempat tidak dibuka, audit refund_refile_blocked refile_limit", async () => {
+    const { order, issueId, first } = await deliveredRefund();
+
+    const second = await expireAndSettle(first.id);
+    expect(second, "refile after the 1st failure").not.toBeNull();
+    const third = await expireAndSettle(second!.id);
+    expect(third, "refile after the 2nd failure").not.toBeNull();
+    const fourth = await expireAndSettle(third!.id);
+    expect(fourth, "no refile after the 3rd failure").toBeNull();
+
+    const refunds = await issueRefunds(issueId);
+    expect(refunds).toHaveLength(3);
+    expect(refunds.every((row) => row.status === "failed")).toBe(true);
+    expect(await auditCount(issueId, "order_issue.refund_refiled")).toBe(2);
+    expect(
+      await onlyAudit(issueId, "order_issue.refund_refile_blocked"),
+    ).toMatch(/"blockedReason":\s*"refile_limit"/);
+    expect(
+      await idempotencyByKey(`order-recovery-refund:${issueId}:${third!.id}`),
+    ).toHaveLength(0);
+    expect(await orderRefundedEvents(order.id)).toHaveLength(1);
   });
 });
