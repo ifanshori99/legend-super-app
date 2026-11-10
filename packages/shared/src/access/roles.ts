@@ -218,6 +218,12 @@ const templates: readonly RoleTemplate[] = [
       "report.sales.view",
       "export.data.run",
       "ai.ask",
+      // legend-111j
+      "crm.loyalty.manage",
+      "crm.loyalty.review",
+      "crm.loyalty.fulfil",
+      "crm.customer.pii.read",
+      "crm.feedback.manage",
       "ai.action.propose",
       "ops.checklist.complete",
       "ops.food_safety.log",
@@ -269,6 +275,12 @@ const templates: readonly RoleTemplate[] = [
       "reservation.view",
       "reservation.manage",
       "crm.consent.record",
+      // legend-111j
+      "crm.loyalty.manage",
+      "crm.loyalty.review",
+      "crm.loyalty.fulfil",
+      "crm.customer.pii.read",
+      "crm.feedback.manage",
       "delivery.order.handle",
       "review.respond",
       "facility.booth.operate",
@@ -354,6 +366,8 @@ const templates: readonly RoleTemplate[] = [
       "wifi.voucher.issue",
       // Records a customer consent at the counter (LOY-04); source cashier only.
       "crm.consent.record",
+      // legend-111j
+      "crm.loyalty.fulfil",
       "ai.ask",
     ],
     optionalPermissions: [],
@@ -540,6 +554,9 @@ const templates: readonly RoleTemplate[] = [
       "crm.customer.view",
       "crm.consent.record",
       "crm.segment.manage",
+      // legend-111j
+      "crm.loyalty.manage",
+      "crm.loyalty.review",
       "promo.manage",
       "campaign.manage",
       "review.respond",

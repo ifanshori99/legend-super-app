@@ -158,6 +158,9 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
       "public.payment_link_tokens",
       "public.brand_websites",
       "public.delivery_store_index",
+      // legend-111j: member_profile_user_index, tenant-level ids only (a
+      // member is not outlet-owned), see db/rls.test.ts; needs Opus review.
+      "public.member_profile_user_index",
     ];
     const result = await ownerPool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table

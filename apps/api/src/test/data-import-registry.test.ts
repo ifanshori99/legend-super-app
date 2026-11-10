@@ -128,6 +128,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
   "0187_audit_retention_maintenance.sql":
     "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
+  // legend-111j
+  "0203_member_loyalty_ledger.sql":
+    "appends crm.loyalty.manage, crm.loyalty.review, crm.loyalty.fulfil, crm.customer.pii.read and crm.feedback.manage to the stored template role rows of existing tenants (legend-111j); idempotent, never touches a custom role, FORCE RLS on roles lifted and restored; the other INSERT/UPDATE text is inside trigger function bodies (ledger balance, point value lock, profile index), no rows written at migration time",
 };
 
 // Entrypoints that open a database pool but import no data.

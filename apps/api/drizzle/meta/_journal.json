@@ -1324,6 +1324,13 @@
       "when": 1794281000000,
       "tag": "0202_bill_splits",
       "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "7",
+      "when": 1794282000000,
+      "tag": "0203_member_loyalty_ledger",
+      "breakpoints": true
     }
   ]
 }

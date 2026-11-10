@@ -115,6 +115,10 @@ const TENANT_RLS_EXCEPTIONS: Record<string, { rowSecurity: boolean }> = {
   "public.tenant_domains": { rowSecurity: true },
   "public.payment_link_tokens": { rowSecurity: true },
   "public.delivery_store_index": { rowSecurity: true },
+  // legend-111j: id-only (user, tenant, profile, status) index read only
+  // through app.member_profiles_of_user for the cross-tenant identity merge;
+  // no policy and no app-role grant (pattern of delivery_store_index).
+  "public.member_profile_user_index": { rowSecurity: true },
   "public.session": { rowSecurity: false },
   "public.login_challenges": { rowSecurity: false },
   "public.wa_inbound_messages": { rowSecurity: false },

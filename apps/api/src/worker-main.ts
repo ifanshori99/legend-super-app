@@ -43,6 +43,9 @@ import {
 } from "./services/accounting-auto-journal-consumer.ts";
 
 import { deliverPayrollGlEvent } from "./services/payroll-gl-consumer.ts";
+// legend-111j
+import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
+import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
@@ -211,6 +214,11 @@ const runtime = createWorkerRuntime({
           // never fail this delivery.
           if (postsInventoryGl)
             await deliverAutoJournalEvent(context, event, tx);
+          // legend-111j (WS-08 member loyalty), cloud only: a paid order earns
+          // points for its attached member, a refund or final-order void
+          // reverses them, in a savepoint under the profile lock.
+          if (postsInventoryGl)
+            await deliverLoyaltyEarnEvent(context, event, tx);
           // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
           // or sale posts its GL journal in a savepoint; a closed period or a
           // missing mapping parks the source for the sweep, never fails this.
@@ -479,6 +487,16 @@ const relay = createRelayRuntime({
       );
     } catch {
       console.error("Checklist run generation failed");
+    }
+    // legend-111j (LOY-02), cloud only: after 02:00 Asia/Jakarta compare every
+    // member balance with its ledger sum, once per tenant per day. A mismatch
+    // writes a `balance_mismatch` anomaly; a sweep error never blocks the relay.
+    if (postsInventoryGl) {
+      try {
+        await runLoyaltyBalanceCheckSweep(context, new Date());
+      } catch {
+        console.error("Loyalty balance check failed");
+      }
     }
     // PRD §3 F11 e-receipt (legend-v3vo): send queued receipt emails. The
     // sealed address is opened only inside the job; nothing is logged here.

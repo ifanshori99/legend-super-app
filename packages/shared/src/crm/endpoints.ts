@@ -17,6 +17,8 @@ import {
   isoDateTimeSchema,
   outletIdSchema,
   ulidIdSchema,
+  businessDateSchema,
+  userIdSchema,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/index.ts";
 import {
@@ -168,6 +170,124 @@ export const updateMemberConsent = defineEndpoint({
   path: "/api/member/consents",
   body: updateMemberConsentInputSchema,
   response: dataResponseSchema(customerConsentSchema),
+});
+
+// ---- Consent policies, member QR, order customer, anomalies (legend-111j) --
+
+/** Active consent policy versions the member PWA shows before a grant. */
+export const consentPolicyVersionSchema = z.strictObject({
+  purpose: consentPurposeSchema,
+  version: z.string().min(1).max(20),
+  publishedAt: isoDateTimeSchema,
+});
+export type ConsentPolicyVersion = z.infer<typeof consentPolicyVersionSchema>;
+
+export const listMemberConsentPolicies = defineEndpoint({
+  method: "GET",
+  path: "/api/member/consent-policies",
+  response: dataResponseSchema(z.array(consentPolicyVersionSchema)),
+});
+
+/** Short-lived (120 s) signed token the cashier scans to attach a member. */
+export const memberQrTokenSchema = z.strictObject({
+  token: z.string().min(1).max(500),
+  expiresAt: isoDateTimeSchema,
+});
+export type MemberQrToken = z.infer<typeof memberQrTokenSchema>;
+
+export const issueMemberQrToken = defineEndpoint({
+  method: "POST",
+  path: "/api/member/qr-token",
+  response: dataResponseSchema(memberQrTokenSchema),
+});
+
+export const orderCustomerAttachViaSchema = z.enum([
+  "member_qr",
+  "phone_lookup",
+  "pwa_session",
+  "receipt_claim",
+]);
+export type OrderCustomerAttachVia = z.infer<
+  typeof orderCustomerAttachViaSchema
+>;
+
+/**
+ * Attach a member to an unpaid order by QR token or WhatsApp number, or detach
+ * with `customerProfileId: null`. The server derives who attached and when.
+ */
+/**
+ * Exactly one of: `memberToken` (rotating member QR), `whatsappNumber`
+ * (cashier lookup, capped per cashier per day) or `customerProfileId: null`
+ * (detach). One object, not a union, so the endpoint body keeps its shape.
+ */
+export const setOrderCustomerInputSchema = clientInputSchema({
+  memberToken: z.string().min(1).max(500).optional(),
+  whatsappNumber: z.string().min(6).max(20).optional(),
+  customerProfileId: z.null().optional(),
+}).superRefine((value, ctx) => {
+  const given = [
+    value.memberToken !== undefined,
+    value.whatsappNumber !== undefined,
+    value.customerProfileId !== undefined,
+  ].filter(Boolean).length;
+  if (given !== 1)
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "Send exactly one of memberToken, whatsappNumber or customerProfileId: null.",
+    });
+});
+export type SetOrderCustomerInput = z.infer<typeof setOrderCustomerInputSchema>;
+
+export const orderCustomerSummarySchema = z.strictObject({
+  orderId: ulidIdSchema<"OrderId">(),
+  customerProfileId: uuidSchema.nullable(),
+  customerName: z.string().min(1).max(150).nullable(),
+  attachedVia: orderCustomerAttachViaSchema.nullable(),
+  attachedAt: isoDateTimeSchema.nullable(),
+});
+export type OrderCustomerSummary = z.infer<typeof orderCustomerSummarySchema>;
+
+export const setOrderCustomer = defineEndpoint({
+  method: "PUT",
+  path: "/api/pos/orders/:orderId/customer",
+  params: z.strictObject({ orderId: ulidIdSchema<"OrderId">() }),
+  body: setOrderCustomerInputSchema,
+  response: dataResponseSchema(orderCustomerSummarySchema),
+});
+
+export const loyaltyAnomalyKindSchema = z.enum([
+  "daily_cap_hit",
+  "self_serve_blocked",
+  "refund_after_redeem",
+  "phone_lookup_attach",
+  "phone_lookup_cap_hit",
+  "balance_mismatch",
+]);
+export type LoyaltyAnomalyKind = z.infer<typeof loyaltyAnomalyKindSchema>;
+
+export const loyaltyAnomalySchema = z.strictObject({
+  id: uuidSchema,
+  kind: loyaltyAnomalyKindSchema,
+  outletId: outletIdSchema.nullable(),
+  customerProfileId: uuidSchema.nullable(),
+  orderId: ulidIdSchema<"OrderId">().nullable(),
+  actorUserId: userIdSchema.nullable(),
+  businessDate: businessDateSchema.nullable(),
+  details: z.record(z.string(), z.unknown()),
+  createdAt: isoDateTimeSchema,
+});
+export type LoyaltyAnomaly = z.infer<typeof loyaltyAnomalySchema>;
+
+export const listLoyaltyAnomaliesQuerySchema = withFilters({
+  kind: loyaltyAnomalyKindSchema.optional(),
+});
+
+export const listLoyaltyAnomalies = defineEndpoint({
+  method: "GET",
+  path: "/api/loyalty/anomalies",
+  query: listLoyaltyAnomaliesQuerySchema,
+  response: page(loyaltyAnomalySchema),
 });
 
 export const submitFeedbackInputSchema = clientInputSchema({
@@ -608,6 +728,11 @@ export const crmEndpoints = [
   listMemberFavorites,
   updateMemberConsent,
   submitFeedback,
+  // legend-111j
+  listMemberConsentPolicies,
+  issueMemberQrToken,
+  setOrderCustomer,
+  listLoyaltyAnomalies,
   listCustomers,
   getCustomer360,
   listCustomerPoints,
@@ -654,6 +779,9 @@ export const memberEndpoints = {
   listMemberFavorites,
   updateMemberConsent,
   submitFeedback,
+  // legend-111j
+  listMemberConsentPolicies,
+  issueMemberQrToken,
 } as const;
 
 export const crmAdminEndpoints = {
@@ -688,4 +816,6 @@ export const crmAdminEndpoints = {
   getCampaignResults,
   listFeedback,
   updateFeedback,
+  // legend-111j
+  listLoyaltyAnomalies,
 } as const;

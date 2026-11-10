@@ -111,6 +111,7 @@ import {
   tableSessionCarts,
   type CartLineModifierSnapshot,
 } from "../db/schema/qr-order.ts";
+import { customerProfiles } from "../db/schema/crm-member.ts"; // legend-111j
 import { withTenant } from "../db/tenant.ts";
 import {
   forwardQrOrderToEdge,
@@ -1608,6 +1609,9 @@ export async function placeQrOrder(
   sessionId: string,
   input: PlaceOrderInput,
   now = new Date(),
+  // legend-111j: Better Auth user id of the signed-in guest, when the request
+  // carries a member session. Guests are not users, so null by default.
+  memberUserId: string | null = null,
 ): Promise<PlaceOrderResult> {
   const parsed = placeOrderInputSchema.parse(input);
   const outcome = await withTenant(
@@ -1636,7 +1640,14 @@ export async function placeQrOrder(
           "order.place",
           request,
           async () => {
-            const placed = await checkout(tx, context, session, parsed, now);
+            const placed = await checkout(
+              tx,
+              context,
+              session,
+              parsed,
+              now,
+              memberUserId,
+            );
             if (placed.kind === "all_sold_out")
               throw new AllSoldOut(placed.names);
             return placed.result;
@@ -1677,6 +1688,7 @@ async function checkout(
   session: SessionRow,
   input: PlaceOrderInput,
   now: Date,
+  memberUserId: string | null = null,
 ): Promise<
   | { kind: "placed"; result: PlaceOrderResult }
   | { kind: "all_sold_out"; names: string[] }
@@ -1836,6 +1848,23 @@ async function checkout(
   // locks before the session deposit lock (the POS order: discount -> redeem
   // -> reprice -> deposit).
   let depositApplied = 0;
+  // legend-111j: a signed-in member with an active profile in this tenant is
+  // attached to their own order (`pwa_session`, attached_by NULL).
+  let memberProfileId: string | null = null;
+  if (memberUserId !== null) {
+    const [profile] = await tx
+      .select({ id: customerProfiles.id })
+      .from(customerProfiles)
+      .where(
+        and(
+          eq(customerProfiles.tenantId, tenantId),
+          eq(customerProfiles.userId, memberUserId),
+          eq(customerProfiles.membershipStatus, "active"),
+        ),
+      )
+      .limit(1);
+    memberProfileId = profile?.id ?? null;
+  }
   let [order] = await tx
     .insert(orders)
     .values({
@@ -1846,7 +1875,10 @@ async function checkout(
       channel: "qr",
       serviceType: "dine_in",
       tableSessionId: session.id,
-      customerProfileId: null,
+      customerProfileId: memberProfileId,
+      customerAttachedBy: null,
+      customerAttachedVia: memberProfileId === null ? null : "pwa_session",
+      customerAttachedAt: memberProfileId === null ? null : now,
       paymentMode: session.paymentMode,
       subtotalIdr: quote.subtotalIdr,
       discountIdr: quote.discountIdr,

@@ -125,3 +125,7 @@ export * from "./ai-provider";
 export * from "./table-links";
 // WS-03 per-order bill splits (legend-ms3).
 export * from "./bill-splits";
+// WS-08 member profiles, consent policy versions, loyalty program, point
+// ledger, earn records, visits, anomalies (legend-111j).
+export * from "./crm-member";
+export * from "./crm-ledger";

@@ -79,7 +79,8 @@ export const pointsReversedPayloadSchema = z.strictObject({
   customerProfileId: uuidSchema,
   /** Magnitude of the points removed by the refund (LOY-02). */
   points: positivePointsSchema,
-  sourceType: z.literal("refund"),
+  // legend-111j: `void` for a voided final order.
+  sourceType: z.enum(["refund", "void"]),
   sourceId: z.union([uuidSchema, ulidIdSchema<"PointsEventSourceId">()]),
   /** The earn row this reversal cancels. */
   reversesLedgerId: ulidIdSchema<"PointLedgerEntryId">(),

@@ -66,6 +66,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import { toOutlet } from "./org.service.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
+import { provisionLoyaltyDefaults } from "./loyalty-provisioning.service.ts"; // legend-111j
 import {
   provisionDefaultServiceChargeRule,
   provisionDefaultTaxConfig,
@@ -252,6 +253,8 @@ export async function createTenant(
       context,
       actor.success ? actor.data : null,
     );
+    // Consent policy versions `2026-01`, same transaction (legend-111j).
+    await provisionLoyaltyDefaults(tx, context);
     // Default 5% dine-in service charge, same transaction (legend-2qz7, Q25).
     await provisionDefaultServiceChargeRule(
       tx,

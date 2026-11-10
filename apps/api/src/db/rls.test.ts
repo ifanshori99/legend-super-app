@@ -86,6 +86,10 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
       "public.tenant_domains",
       "public.payment_link_tokens",
       "public.delivery_store_index",
+      // legend-111j: member_profile_user_index, ids only, read through the
+      // SECURITY DEFINER app.member_profiles_of_user (identity merge, 290b);
+      // RLS enabled, no policy, no app-role grant (same as above).
+      "public.member_profile_user_index",
       "public.session",
       "public.login_challenges",
       "public.wa_inbound_messages",
