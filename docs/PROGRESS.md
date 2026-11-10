@@ -958,3 +958,4 @@ Langkah berikut CTO baru:
 - 17:31 C7 final 68704269 (merge C6, test integrasi asli, 0233 rejected_at). Brief 349 ditambah fase 2 rantai HRIS. Brief 350 j6cyb, 351 svy91. #3 5h 86%: thread baru mulai 18:05 di #1.
 - 17:55 Architect atas rework i83ls 5558eca2: 1 tinggi (worker tanpa settlement lookup), 2 sedang (index oic yatim, tutup via deposit tanpa jurnal). Brief 352 + legend-800h1, mulai 18:07 di #1. i83ls TIDAK ikut batch47 sampai 352 selesai.
 - 18:03 18:0x mulai di #1: batch47 (G2mmn), j6cyb (G2ovc), svy91 (G8smi), i83ls-fix Opus (G9f7b). Brief 353 gmww, 354 cpq2, 355 tct8, 356 bod. 7nv1 hampir selesai, verifikasi nanti.
+- 18:03 gmww (G638j) dan cpq2 (G3bg8) mulai di #1. tct8 (355) dan bod (356) antre: slot RAM 8/8 penuh.
