@@ -1880,3 +1880,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Architect (K) atas diff migrasi: lima pemeriksaan lolos, satu temuan kosmetik (komentar idx 235 di test revisi pajak) sudah dibetulkan. Risiko dicatat: DB dev lokal yang pernah menjalankan 0229 lama harus dibuat ulang (`when` berubah); m1 belum pernah diterapkan ke DB bersama.
 - legend-p649r: `compose.test.yaml` batas memori Postgres test 512m menjadi 768m (commit sendiri).
 - Ukuran: sesi ini 2,48 juta unit biaya (utama Sonnet 2,21 juta, 1 subagent architect Opus 0,27 juta), 1 subagent, puncak 1 bersamaan; kerja merge berurutan dan tidak bisa dipecah.
+
+## legend-pti5r (10 Nov 2026, 23:40) — refund pemulihan promo setelah kegagalan final
+
+- Cabang `ws/pti5r-promo-refund` (dari `ws/refund-recovery-fix` 00caa599). Commit dbe08344 (give-back payout lewat `returnPartialRefundPayout`), 327e0135 (give-back juga subtotal, baris dianggap kept sampai lapor ulang, kunci `#promo-return`, SQL cek + runbook `docs/runbooks/recovery-refund-final-failure-backfill.md`).
+- Bukti: 122/122 test terarah, tsc api bersih (heavy), db:generate kosong, prettier bersih, fail-first terbukti untuk dua putaran.
+- Status: TAHAN. Review architect putaran 2 menemukan regresi: promo yang sudah ditarik tidak bisa dipulihkan, jadi item lain setelah give-back bisa dapat nothing_left. Rekomendasi: ganti desain ke "lapor ulang memutar ulang refund gagal" tanpa menyentuh ledger promo. Menunggu keputusan CTO.
