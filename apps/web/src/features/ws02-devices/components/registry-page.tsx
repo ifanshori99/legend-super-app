@@ -187,18 +187,22 @@ export function DeviceRegistryPage({
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="min-w-0 flex-1 text-sm leading-5 text-muted-foreground">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <p className="min-w-0 text-sm leading-5 text-muted-foreground">
           {t("deviceRegistry.subtitle")}
         </p>
-        {API_MOCK && (
-          <Badge tone="info">{t("deviceRegistry.sampleData")}</Badge>
-        )}
-        {canManage && (
-          <Button disabled={!online} onClick={() => setEnrollOpen(true)}>
-            <Plus aria-hidden="true" />
-            {t("deviceRegistry.enroll.action")}
-          </Button>
+        {(API_MOCK || canManage) && (
+          <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+            {API_MOCK && (
+              <Badge tone="info">{t("deviceRegistry.sampleData")}</Badge>
+            )}
+            {canManage && (
+              <Button disabled={!online} onClick={() => setEnrollOpen(true)}>
+                <Plus aria-hidden="true" />
+                {t("deviceRegistry.enroll.action")}
+              </Button>
+            )}
+          </div>
         )}
       </div>
 
