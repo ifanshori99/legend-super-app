@@ -15,7 +15,7 @@ import {
   type PosSessionResponse,
 } from "@starter/shared/pos/acting-staff";
 import { callEndpoint } from "@/lib/api/endpoint";
-import { clearActingStaffToken, writeActingStaffToken } from "./storage.ts";
+import { releaseActingStaffToken, writeActingStaffToken } from "./storage.ts";
 
 // The API owns these two routes (apps/api/src/routes/pos-acting-staff.routes.ts);
 // the shared package only exports their schemas, so the web client defines the
@@ -55,7 +55,7 @@ export async function endPosSessionCall(): Promise<void> {
   try {
     await callEndpoint(endPosSession);
   } finally {
-    clearActingStaffToken();
+    releaseActingStaffToken();
   }
 }
 

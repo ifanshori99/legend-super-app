@@ -2,8 +2,9 @@
 // per perangkat lewat token server").
 //
 // - Issue: the staff member proves their PIN on the registered device
-//   (`verifyStaffPinOnDevice`, unchanged: same lockout and oracle rules), then
-//   one transaction revokes the device's live token (`switched`), stores the
+//   (`verifyStaffPinOnDeviceVersioned`: same lockout and oracle rules), then
+//   one transaction locks the staff_pins row and refuses when the PIN
+//   generation changed since the check, revokes the device's live token (`switched`), stores the
 //   sha256 of a fresh `pas_` token and audits `pos_acting_staff.started`. The
 //   device owner (login session) must belong to the same outlet.
 // - End: revokes the device's live token of this session (`ended`).
@@ -36,13 +37,14 @@ import {
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { posActingStaff } from "../db/schema/pos-acting-staff.ts";
+import { staffPins } from "../db/schema/device-pin.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./audit-writer.ts";
 import {
   resolveDeviceOutlet,
-  verifyStaffPinOnDevice,
+  verifyStaffPinOnDeviceVersioned,
 } from "./device-pin.service.ts";
 import { isOutletMember, outletContext } from "./device-pin-support.ts";
 import { loadTenantAccessInTransaction } from "./permission-resolver.ts";
@@ -108,11 +110,12 @@ export async function issueActingStaff(
 ): Promise<PosSessionResponse> {
   // Wrong PIN, lockout and "not a member" all throw here, before anything is
   // stored (the attempt counter commits on its own transaction).
-  const verified = await verifyStaffPinOnDevice(tenant, {
-    deviceId: input.deviceId,
-    userId: input.userId,
-    pin: input.pin,
-  });
+  const { switch: verified, pinVersion } =
+    await verifyStaffPinOnDeviceVersioned(tenant, {
+      deviceId: input.deviceId,
+      userId: input.userId,
+      pin: input.pin,
+    });
   const outletId = verified.outletId;
   const context = outletContext(tenant, outletId);
   const now = new Date();
@@ -130,6 +133,37 @@ export async function issueActingStaff(
         throw new AccessError(
           "PERMISSION_DENIED",
           "Anda tidak terdaftar di outlet ini.",
+        );
+
+      // A pin reset between the check above and this transaction must not
+      // leave a token of the old pin. The row lock serialises with
+      // `setStaffPin` and the edge adoption: a reset that committed first
+      // changes the generation or the salt (refused here); one that waits for
+      // this lock revokes the new token after it commits.
+      const [pin] = await tx
+        .select({
+          pinGenerationAt: staffPins.pinGenerationAt,
+          pinSalt: staffPins.pinSalt,
+        })
+        .from(staffPins)
+        .where(
+          and(
+            eq(staffPins.tenantId, tenant.tenantId),
+            eq(staffPins.outletId, outletId),
+            eq(staffPins.userId, verified.user.id),
+          ),
+        )
+        .for("update");
+      if (
+        !pin ||
+        pin.pinGenerationAt.getTime() !==
+          pinVersion.pinGenerationAt.getTime() ||
+        pin.pinSalt !== pinVersion.pinSalt
+      )
+        throw new HttpError(
+          401,
+          CODES.INVALID,
+          "PIN baru saja diganti. Masukkan PIN lagi.",
         );
 
       await revokeActingStaffForDevice(tx, tenant, {

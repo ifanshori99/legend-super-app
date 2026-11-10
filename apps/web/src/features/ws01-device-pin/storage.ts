@@ -8,6 +8,7 @@ import { ACTIVE_STAFF_STORAGE_KEY } from "@/lib/api/acting-staff";
 // client reads it); re-exported so POS beads import it from this feature.
 export {
   clearActingStaffToken,
+  releaseActingStaffToken,
   readActingStaffToken,
   writeActingStaffToken,
 } from "@/lib/api/acting-staff";
