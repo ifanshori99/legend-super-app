@@ -1,0 +1,17 @@
+# 191b result, architect 2 (Claude double review, brief 225)
+
+Kartu: legend-lg45. Diff f5438770..bff215af (ujung ws/edc-pan-tail), merge 694d3af6, ada di milestone/m1 (94d769c6). Tidak ada perubahan sesudahnya pada 0143, skrip, packages/shared/src/edc/index.ts, atau runbook.
+
+## Hasil: Bersih (tidak ada P1/P2)
+
+- Invariant 1 tahan: di 0143 cabang tail hanya untuk panjang asli 200 (UTF-16: length + jumlah karakter astral). Cabang lain sama dengan rantai lama. JS baca: `text.length !== 200` mengembalikan rantai saja. Jalur tulis (safeMessage) tidak berubah.
+- Invariant 2 tahan untuk pola (a), (b), (c): tailCardRun (7+ digit, pemisah lebar di dalam run atau di ujung, potongan `[disamarkan` opsional) dan tailAfterMask (mask + pemisah lebar + digit berapa pun). Jalur tulis lama selalu memasking run berpemisah tunggal sebelum memotong, jadi sisa ujung hanya bisa berasal dari run berpemisah lebar. Inilah sebabnya syarat pemisah lebar tepat.
+- Invariant 3 tahan untuk contoh di brief: lookbehind `(?<![0-9]|[0-9][.,])` menolak awal run sesudah `digit.`/`digit,`, dan digit berikutnya ditolak `(?<!\d)`. Jadi `Rp 1.500.000`, `Rp 50.000  …`, `TRX 12345678` (tanpa pemisah lebar), dan `P261109-1234` aman.
+- Invariant 4 tahan: [0-9] dan \d sama (JS tanpa flag u). `$` tanpa flag m/n sama-sama hanya di ujung string. PG mendukung lookbehind panjang variabel (>= 9.6, API memakai PG 17). Lazy `*?` hanya ada di dalam lookahead, dan constraint tidak punya atribut greediness di ARE, jadi RE tetap greedy. Karena tail berjangkar `$`, hasilnya ditentukan oleh awal paling kiri yang sama di kedua mesin. left(…,200) dan Array.from().slice(0,200) sama-sama memotong per code point. Syarat 200 di CASE/WHERE dievaluasi pada pesan asli. Bila rantai tidak cocok, hasil rantai sama dengan pesan asli, jadi deteksi dan penggantian konsisten.
+- Invariant 5 tahan: penggantian tidak membuat digit baru dan tidak menyambung dua run. Potongan mask hasil left() selalu didahului karakter yang ditolak lookbehind atau non-digit, jadi run kedua 0143/skrip dan JS kedua tidak berubah. Ini sesuai test "idempotent" dan "JS second pass".
+- Invariant 6 tahan: NO FORCE, UPDATE, FORCE ada dalam satu blok DO (atomik juga di psql autocommit). lock_timeout bersifat lokal transaksi. Policy tidak disentuh. Skrip memakai `IS DISTINCT FROM` dan WHERE 0143 hanya memilih baris yang memang berubah.
+- Pembaca lain edc_transactions.message: hanya edge/edc/agent.ts lewat edcTransactionSchema (memakai maskStoredMessage). payment-admin dan pos-edc-* tidak mengembalikan message.
+
+## Temuan P3 (tanpa kartu)
+- packages/shared/src/edc/index.ts:199-208: aturan ujung saat baca berlaku untuk SEMUA pesan tersimpan sepanjang 200, termasuk baris baru dari jalur tulis sekarang (`maskCardNumbers(text).slice(0, 200)`), bukan hanya baris tulisan lama. Contoh: `… [disamarkan] - 51` atau `… 00012345  0001` yang terpotong tepat di 200 pada baris baru ikut disamarkan di API. Ini hanya penyamaran berlebih pada tampilan, data tersimpan tetap. Runbook bagian 6 menulis "new writes behave as before"; itu benar untuk tulis, tetapi baca baris baru juga berubah. Saran: catat di runbook, atau batasi aturan baca pada baris dengan created_at sebelum legend-tjwb.
+- Residu yang sudah diterima runbook (potongan sebelum pemisah lebar pertama, satu spasi tersisa, `digit,`/`digit.` sebelum run) tidak dilaporkan ulang. Pemisah newline/NBSP/'/'/'_' sudah punya kartu legend-deu7r (P2).

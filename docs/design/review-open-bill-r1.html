@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ghostex-page" content="v2">
+<title>Review tampilan open bill: kasir dan Kelola</title>
+<style>
+  .pair { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pair img.wide { flex: 3 1 360px; min-width: 0; max-width: 100%; }
+  .pair img.phone { flex: 1 1 140px; min-width: 0; max-width: 220px; }
+</style>
+</head>
+<body>
+<gx-questions submit="Kirim ke tim">
+  <header>
+    <span class="gx-eyebrow">Review UI · Legend</span>
+    <h1>Review tampilan open bill: kasir dan Kelola</h1>
+    <p class="gx-lede">Open bill artinya meja atau tamu boleh bayar belakangan. Supervisor ke atas bisa mengubah meja jadi open bill dengan PIN. Batas per outlet bisa diatur di Kelola. Semua angka di layar masih data contoh.</p>
+    <div class="gx-chips">
+      <span class="gx-chip">Batas bawaan <b>Rp3 juta</b></span>
+      <span class="gx-chip">Pengingat meja diam <b>45 menit</b></span>
+      <span class="gx-chip">Target respons minta tagihan <b>180 detik</b></span>
+    </div>
+  </header>
+
+  <h2>Di kasir (POS)</h2>
+  <figure class="gx-figure">
+    <figcaption><b>Panel meja di kasir: meja yang bisa dijadikan open bill ada tombol Jadikan open bill</b></figcaption>
+    <div class="pair">
+      <img class="wide" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-panel-1280.png" alt="Panel meja di kasir (layar lebar)">
+      <img class="phone" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-panel-390.png" alt="Panel meja di kasir (HP)">
+    </div>
+  </figure>
+  <figure class="gx-figure">
+    <figcaption><b>Kasir menekan Jadikan open bill, supervisor memasukkan PIN</b></figcaption>
+    <div class="pair">
+      <img class="wide" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-convert-1280.png" alt="Konfirmasi PIN supervisor (layar lebar)">
+      <img class="phone" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-convert-390.png" alt="Konfirmasi PIN supervisor (HP)">
+    </div>
+  </figure>
+  <figure class="gx-figure">
+    <figcaption><b>PIN supervisor salah, meja belum berubah dan kasir diminta coba lagi</b></figcaption>
+    <div class="pair">
+      <img class="wide" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-convert-pin-error-1280.png" alt="PIN salah (layar lebar)">
+      <img class="phone" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-convert-pin-error-390.png" alt="PIN salah (HP)">
+    </div>
+  </figure>
+  <figure class="gx-figure">
+    <figcaption><b>Meja ditolak karena tagihan sudah mencapai batas Rp3 juta</b></figcaption>
+    <div class="pair">
+      <img class="wide" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-convert-over-limit-1280.png" alt="Ditolak karena melewati batas (layar lebar)">
+      <img class="phone" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-convert-over-limit-390.png" alt="Ditolak karena melewati batas (HP)">
+    </div>
+  </figure>
+  <figure class="gx-figure">
+    <figcaption><b>Berhasil: meja sekarang berstatus open bill dan tamu boleh bayar belakangan</b></figcaption>
+    <div class="pair">
+      <img class="wide" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-convert-success-1280.png" alt="Open bill berhasil (layar lebar)">
+      <img class="phone" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/pos-convert-success-390.png" alt="Open bill berhasil (HP)">
+    </div>
+  </figure>
+
+  <gx-question tag="Q34" title="Tombol Jadikan open bill terlihat semua staf, tapi hanya jalan dengan PIN supervisor ke atas (sama seperti persetujuan kasir lain). Setuju?">
+    <gx-choice value="A: Setuju" recommended>A: Setuju (saran)</gx-choice>
+    <gx-choice value="B: Sembunyikan dari kasir biasa">B: Sembunyikan dari kasir biasa</gx-choice>
+  </gx-question>
+
+  <h2>Di Kelola</h2>
+  <figure class="gx-figure">
+    <figcaption><b>Pengaturan batas open bill per outlet di Kelola</b></figcaption>
+    <div class="pair">
+      <img class="wide" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/kelola-policy-1280.png" alt="Pengaturan open bill di Kelola (layar lebar)">
+      <img class="phone" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/kelola-policy-390.png" alt="Pengaturan open bill di Kelola (HP)">
+    </div>
+  </figure>
+  <figure class="gx-figure">
+    <figcaption><b>Isian tidak valid (misalnya batas kosong atau nol), tombol simpan ditahan dan pesan muncul</b></figcaption>
+    <div class="pair">
+      <img class="wide" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/kelola-policy-invalid-1280.png" alt="Isian tidak valid (layar lebar)">
+      <img class="phone" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/kelola-policy-invalid-390.png" alt="Isian tidak valid (HP)">
+    </div>
+  </figure>
+  <figure class="gx-figure">
+    <figcaption><b>Pengaturan tersimpan, tampil konfirmasi di layar</b></figcaption>
+    <div class="pair">
+      <img class="wide" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/kelola-policy-saved-1280.png" alt="Pengaturan tersimpan (layar lebar)">
+      <img class="phone" src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/open-bill-r1/docs/design/screenshots/legend-8cm4/kelola-policy-saved-390.png" alt="Pengaturan tersimpan (HP)">
+    </div>
+  </figure>
+
+  <gx-question tag="Q33" title="Tampilan open bill (kasir + Kelola) sudah oke?">
+    <gx-choice value="A: Oke, lanjut sambungkan ke sistem" recommended>A: Oke, lanjut sambungkan ke sistem (saran)</gx-choice>
+    <gx-choice value="B: Perlu diubah (tulis catatan)">B: Perlu diubah (tulis catatan)</gx-choice>
+  </gx-question>
+</gx-questions>
+</body>
+</html>
