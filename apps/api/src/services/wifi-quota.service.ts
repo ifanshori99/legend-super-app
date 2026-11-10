@@ -21,6 +21,7 @@ import {
   businessDateOf,
   businessDayRange,
   createUlid,
+  type OutletId,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -127,6 +128,8 @@ export async function computeAccountQuota(
   input: {
     policy: WifiPolicy;
     outletTimeZone: string;
+    /** Spend counts per outlet: another outlet's spend never lifts this quota. */
+    outletId: OutletId;
     customerProfileId: string;
     businessDate: string;
     now: Date;
@@ -146,6 +149,7 @@ export async function computeAccountQuota(
     .where(
       and(
         eq(wifiSpendEntries.tenantId, tenantId),
+        eq(wifiSpendEntries.outletId, input.outletId),
         eq(wifiSpendEntries.customerProfileId, input.customerProfileId),
         eq(wifiSpendEntries.businessDate, input.businessDate),
         eq(wifiSpendEntries.kind, "paid"),
@@ -162,6 +166,7 @@ export async function computeAccountQuota(
       .where(
         and(
           eq(wifiSpendEntries.tenantId, tenantId),
+          eq(wifiSpendEntries.outletId, input.outletId),
           eq(wifiSpendEntries.customerProfileId, input.customerProfileId),
           eq(wifiSpendEntries.kind, "refund"),
           inArray(
@@ -473,6 +478,7 @@ export async function recomputeOpenSessions(
     const { quotaMinutes } = await computeAccountQuota(tx, context, {
       policy,
       outletTimeZone: outlet.timezone,
+      outletId: session.outletId,
       customerProfileId: input.customerProfileId,
       businessDate: input.businessDate,
       now: input.now,

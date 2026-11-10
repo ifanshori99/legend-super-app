@@ -15,7 +15,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { ulidToUuid } from "@starter/shared/core";
+import { ulidToUuid, type OutletId } from "@starter/shared/core";
 import type { WifiPolicy } from "@starter/shared/facility";
 import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
@@ -197,15 +197,17 @@ async function pay(
     points?: number;
     businessDate?: string;
     training?: boolean;
+    outletId?: string;
   } = {},
 ) {
+  const outletId = input.outletId ?? s.world.outletA;
   const cash = input.cash ?? 45_000;
   const gateway = input.gateway ?? 0;
   const edc = input.edc ?? 0;
   const points = input.points ?? 0;
   const gross = cash + gateway + edc + points;
   const orderUlid = await seedOrder(s.world.tenantId, {
-    outletId: s.world.outletA,
+    outletId,
     profileId,
     grossSalesIdr: gross,
     businessDate: input.businessDate ?? TODAY,
@@ -221,7 +223,7 @@ async function pay(
     );
   const base = orderPaidEvent(s.world, {
     orderUlid,
-    outletId: s.world.outletA,
+    outletId,
     grossSalesIdr: gross,
     businessDate: input.businessDate ?? TODAY,
     paidAt: NOW.toISOString(),
@@ -753,6 +755,31 @@ describe("accrueUsage (design 4)", () => {
   });
 });
 
+/** Zone + policy (same numbers as `setup`) at the second outlet of the world. */
+async function seedOutletBPolicy(s: Setup): Promise<{
+  zoneId: string;
+  policyId: string;
+}> {
+  const zoneId = randomUUID();
+  const policyId = randomUUID();
+  await asTenant(s.world.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO floor_zones (id, tenant_id, outlet_id, name, payment_mode, hours)
+       VALUES ($1, $2, $3, 'Zona Wifi B', 'pay_first', '[]')`,
+      [zoneId, s.world.tenantId, s.world.outletB],
+    );
+    await client.query(
+      `INSERT INTO wifi_policies
+         (id, tenant_id, outlet_id, zone_id, free_minutes, peak_free_minutes,
+          spend_per_extra_hour_idr, extra_minutes, max_devices, peak_schedule,
+          base_speed_kbps, full_speed_kbps, tier_bonus_minutes)
+       VALUES ($1, $2, $3, $4, 120, 60, 30000, 60, 2, '[]', 2000, 20000, '{}')`,
+      [policyId, s.world.tenantId, s.world.outletB, zoneId],
+    );
+  });
+  return { zoneId, policyId };
+}
+
 describe("computeAccountQuota (design 3)", () => {
   const policy = {
     freeMinutes: 120,
@@ -773,6 +800,7 @@ describe("computeAccountQuota (design 3)", () => {
         computeAccountQuota(tx, s.world.context, {
           policy,
           outletTimeZone: "Asia/Jakarta",
+          outletId: s.world.outletA as OutletId,
           customerProfileId: member.id,
           businessDate: TODAY,
           now,
@@ -797,11 +825,63 @@ describe("computeAccountQuota (design 3)", () => {
       computeAccountQuota(tx, s.world.context, {
         policy,
         outletTimeZone: "Asia/Jakarta",
+        outletId: s.world.outletA as OutletId,
         customerProfileId: member.id,
         businessDate: TODAY,
         now: NOW,
       }),
     );
     expect(result.quotaMinutes).toBe(1440);
+  });
+
+  // legend-415 finding 1: spend is per outlet. Assumption: one account, one
+  // business date, two outlets of the tenant; spend at outlet A must not add
+  // quota at outlet B (and the reverse), so each outlet nets only its own rows.
+  it("counts only the spend of the asked outlet (no cross-outlet quota)", async () => {
+    const s = await setup();
+    const member = await seedMember(s.world.tenantId);
+    await pay(s, member.id, { cash: 45_000, outletId: s.world.outletA });
+    const quotaAt = (outletId: string) =>
+      withTenant(db, s.world.context, (tx) =>
+        computeAccountQuota(tx, s.world.context, {
+          policy,
+          outletTimeZone: "Asia/Jakarta",
+          customerProfileId: member.id,
+          businessDate: TODAY,
+          now: NOW,
+          outletId: outletId as OutletId,
+        }),
+      );
+    // Rp45.000 at A earns one hour at A only: 120 free + 60.
+    expect((await quotaAt(s.world.outletA)).quotaMinutes).toBe(180);
+    expect((await quotaAt(s.world.outletB)).quotaMinutes).toBe(120);
+    await pay(s, member.id, { cash: 90_000, outletId: s.world.outletB });
+    expect((await quotaAt(s.world.outletA)).quotaMinutes).toBe(180);
+    expect((await quotaAt(s.world.outletB)).quotaMinutes).toBe(300);
+  });
+
+  it("spend at outlet A does not raise the quota of the session at outlet B", async () => {
+    const s = await setup();
+    const b = await seedOutletBPolicy(s);
+    const member = await seedMember(s.world.tenantId);
+    const sessionA = await seedSession(s, { profileId: member.id });
+    const sessionB = await seedSession(s, {
+      profileId: member.id,
+      outletId: s.world.outletB,
+    });
+    // Point the B session at the outlet-B zone and policy.
+    await asTenant(s.world.tenantId, (client) =>
+      client.query(
+        "UPDATE wifi_sessions SET zone_id = $3, policy_id = $4 WHERE tenant_id = $1 AND id = $2",
+        [s.world.tenantId, sessionB, b.zoneId, b.policyId],
+      ),
+    );
+    await pay(s, member.id, { cash: 45_000, outletId: s.world.outletA });
+    expect((await sessionOf(s.world.tenantId, sessionA)).quota_minutes).toBe(
+      180,
+    );
+    expect((await sessionOf(s.world.tenantId, sessionB)).quota_minutes).toBe(
+      120,
+    );
   });
 });

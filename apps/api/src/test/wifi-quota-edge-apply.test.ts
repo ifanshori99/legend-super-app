@@ -307,12 +307,16 @@ function variant(
   } as EventEnvelope;
 }
 
-type Call = (context: unknown, input: unknown) => Promise<undefined>;
+type Call = (context: unknown, input: unknown) => Promise<unknown>;
 
 // ---- edge side -----------------------------------------------------------------
 
 function fakeAgent() {
-  const applySession = vi.fn<Call>(async () => undefined);
+  // legend-415: the worker only marks a row applied for an active grant view.
+  const applySession = vi.fn<Call>(async (_context, input) => ({
+    status: "active",
+    speedTier: (input as { speedTier: string }).speedTier,
+  }));
   const endSession = vi.fn<Call>(async () => undefined);
   installWifiEnforcement({
     applySession,

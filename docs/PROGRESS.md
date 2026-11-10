@@ -1991,3 +1991,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Gate: typecheck tiga paket hijau; lint 0 error; `heavy pnpm test` penuh 12091 lulus, 2 gagal (`menu-print-db` render konkuren dan `tax-api` ORD-03, flake yang sudah dikenal, keduanya lulus saat dijalankan sendiri); `heavy pnpm test:e2e` 18 lulus, 1 dilewati. Architect (K) atas diff migrasi: satu temuan nyata (trigger 0239) dan dua kosmetik, semua dibetulkan.
 - Ukuran: sesi 4,92 juta unit biaya total, batch48b kira-kira 2,4 juta (utama Sonnet, subagent: 3 Explore, 1 test-runner, 1 architect Opus); 5 subagent, puncak 3 bersamaan.
 - Belum: batch48c (fe-small-tests, u37u3, fe-badge-theme, tenant-config-export, print-agent) menunggu perintah CTO.
+
+## Fix temuan Codex 415, Wi-Fi per outlet + grant edge (11 Nov 2026, cabang `fix/codex-415-wifi`, kartu legend-tz5to)
+
+- Sudah: (1) `computeAccountQuota` menyaring `wifi_spend_entries` (belanja dan refund) per outlet sesi, belanja di outlet A tidak lagi menambah kuota sesi outlet B; (2) pemakaian harian sesi baru dibatasi pada outlet sesi; (3) edge worker menghitung sisa waktu dari `now` dikurangi umur event (`occurredAt`), jadi sinkron tertunda dan retry tidak memberi ulang waktu terpakai; (4) baris antrean hanya `applied` bila agent mengembalikan grant `active` dengan tier yang diminta, grant lama `pending`/`unknown` membuat baris di-retry (`WIFI_GRANT_IN_FLIGHT`, `failed` setelah batas percobaan).
+- Bukti: 14 test baru gagal-dulu (3 cloud, 11 edge), semuanya lulus setelah perbaikan; 144 test terarah wifi lulus; tsc `apps/api` 0 error, eslint dan prettier bersih; reviewer sonnet (tingkat S) tidak menemukan bug.
+- Catatan: worker mengirim tier `base` ke agent bila sisa 0; waktu edge yang lebih cepat dari cloud hanya mengurangi sisa sedikit lebih banyak (condong ke kecepatan dasar).
+- Ukuran: 1 Explore x2, test-writer x2, test-runner x1, reviewer x1; puncak 2 bersamaan.

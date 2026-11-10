@@ -210,26 +210,64 @@ export async function drainWifiQuotaQueue(
     }
     const { event } = claim;
     const payload = wifiQuotaUpdatedEvent.payloadSchema.parse(event.payload);
+    // The snapshot is as old as the event: time that passed since then (a late
+    // sync, a retry) is already used. Read from `now` on every attempt, so a
+    // retry never hands the same time out again.
+    const snapshotSeconds = Math.min(
+      DAY_SECONDS,
+      wifiRemainingMinutes({
+        quotaMinutes: payload.quotaMinutes,
+        usedMinutes: payload.usedMinutes,
+      }) * 60,
+    );
+    const elapsedSeconds = Math.max(
+      0,
+      Math.floor((now.getTime() - new Date(event.occurredAt).getTime()) / 1000),
+    );
+    const remainingSeconds = Math.max(0, snapshotSeconds - elapsedSeconds);
+    const requestedTier =
+      payload.speedTier === "full" && remainingSeconds > 0 ? "full" : "base";
     let failure: unknown = null;
+    let inFlight = false;
     try {
-      await wifiEnforcement().applySession(context, {
+      const grant = await wifiEnforcement().applySession(context, {
         outletId: event.outletId as OutletId,
         wifiSessionId: payload.sessionId as string,
         controllerDeviceId: claim.controllerDeviceId,
-        speedTier: payload.speedTier,
+        speedTier: requestedTier,
         fullSpeedKbps: payload.fullSpeedKbps as number,
         baseSpeedKbps: payload.baseSpeedKbps as number,
-        remainingSeconds: Math.min(
-          DAY_SECONDS,
-          wifiRemainingMinutes({
-            quotaMinutes: payload.quotaMinutes,
-            usedMinutes: payload.usedMinutes,
-          }) * 60,
-        ),
+        remainingSeconds,
         sessionEndsAt: payload.sessionEndsAt as string,
       });
+      // An older grant still pending/unknown (or of another tier) may have been
+      // returned for this request: the new quota is not at the controller yet.
+      inFlight = grant.status !== "active" || grant.speedTier !== requestedTier;
     } catch (error) {
       failure = error;
+    }
+
+    if (failure === null && inFlight) {
+      if (claim.attempts >= maxAttempts) {
+        await giveUp(
+          context,
+          options.edgeNodeId,
+          id,
+          now,
+          "failed",
+          "WIFI_GRANT_IN_FLIGHT",
+        );
+        result.failed += 1;
+      } else {
+        await retryLater(
+          context,
+          id,
+          new Date(now.getTime() + backoffMs(claim.attempts)),
+          "WIFI_GRANT_IN_FLIGHT",
+        );
+        result.retried += 1;
+      }
+      continue;
     }
 
     if (failure === null) {

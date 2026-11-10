@@ -366,6 +366,7 @@ export async function startWifiSession(
     const { quotaMinutes } = await computeAccountQuota(tx, scope.context, {
       policy,
       outletTimeZone: outlet.timezone,
+      outletId: policy.outletId,
       customerProfileId: profileId,
       businessDate,
       now,
@@ -400,6 +401,7 @@ export async function startWifiSession(
         .where(
           and(
             eq(wifiSessions.tenantId, tenantId),
+            eq(wifiSessions.outletId, policy.outletId),
             eq(wifiSessions.customerProfileId, profileId),
             eq(wifiSessions.businessDate, businessDate),
           ),
