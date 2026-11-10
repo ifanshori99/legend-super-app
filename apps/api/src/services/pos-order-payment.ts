@@ -41,8 +41,10 @@ import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { posOrders, posOrderTenders } from "../db/schema/pos-order.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
+import { closeChargesCoveredAtPos } from "./order-recovery-charge.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
@@ -74,6 +76,7 @@ import {
   type PosCaller,
   type PosRow,
 } from "./pos-order-support.ts";
+import { loadSettlement } from "./table-session.service.ts";
 
 type AddTenderInput = z.output<typeof addTenderEndpoint.body>;
 
@@ -203,6 +206,34 @@ async function assertNoPaidQrisIntent(
 }
 
 /**
+ * legend-i83ls: after a POS tender committed, closes the swap charges of the
+ * order's table session that the money now covers (`closeChargesCoveredAtPos`),
+ * so the guest cannot pay them again through the QR link. A separate
+ * transaction on purpose: the tender transaction holds the order row, and the
+ * charge chain locks issue before order. A failure here never fails the
+ * tender (it is already booked); the charge then stays `open`.
+ */
+async function closeChargesCoveredByTender(
+  context: ScopedTenantContext,
+  sessionId: string,
+  actorUserId: string | null,
+  now: Date,
+): Promise<void> {
+  try {
+    await withTenant(db, context, (tx) =>
+      closeChargesCoveredAtPos(tx, context, sessionId, now, actorUserId, () =>
+        loadSettlement(tx, context, sessionId),
+      ),
+    );
+  } catch (error) {
+    logger.error(
+      { err: error, sessionId },
+      "POS tender: could not close the covered swap charge",
+    );
+  }
+}
+
+/**
  * POST .../tenders. Serialized on the order row: two cashiers splitting one
  * bill never apply more than what is due; the loser of a stale screen gets
  * PRECONDITION_FAILED (expectedStatus / If-Match).
@@ -216,7 +247,9 @@ export async function addPosTender(
   now = new Date(),
 ): Promise<PosTenderResult> {
   const { idempotencyKey, ...request } = input;
-  return mutatePosOrder(
+  // Set by the first run only; a replayed answer touches no charge.
+  const ran: { sessionId: string | null } = { sessionId: null };
+  const result = await mutatePosOrder(
     context,
     caller,
     {
@@ -502,6 +535,7 @@ export async function addPosTender(
         .from(orders)
         .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)));
       const fresh = current[0] ?? order;
+      if (inserted.status === "captured") ran.sessionId = order.tableSessionId;
       return posTenderResultSchema.parse({
         order: detail,
         tender: tenderDto(inserted),
@@ -509,6 +543,14 @@ export async function addPosTender(
       });
     },
   );
+  if (ran.sessionId !== null)
+    await closeChargesCoveredByTender(
+      context,
+      ran.sessionId,
+      caller.userId,
+      now,
+    );
+  return result;
 }
 
 /**
@@ -609,6 +651,7 @@ export async function handlePosPaymentPaid(
   const payload = paidPayloadSchema.safeParse(event.payload);
   if (!payload.success) return;
   const now = new Date();
+  const captured: { sessionId: string | null } = { sessionId: null };
   await withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     const [probe] = await tx
@@ -849,7 +892,10 @@ export async function handlePosPaymentPaid(
       },
       at,
     );
+    captured.sessionId = order.tableSessionId;
   });
+  if (captured.sessionId !== null)
+    await closeChargesCoveredByTender(context, captured.sessionId, null, now);
 }
 
 /**

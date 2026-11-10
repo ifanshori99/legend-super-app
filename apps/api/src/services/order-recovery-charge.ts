@@ -29,7 +29,7 @@
 //   event. They leave an audit row on the issue. Technical errors throw.
 // Events of another tenant or outlet, and every other event, are ignored.
 
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -45,7 +45,11 @@ import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { tableSessions } from "../db/schema/floor.ts";
 import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts";
 import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
-import { posOrders } from "../db/schema/pos-order.ts";
+import {
+  posOrderRefunds,
+  posOrders,
+  posOrderTenders,
+} from "../db/schema/pos-order.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
@@ -60,7 +64,9 @@ const AUDIT_ROUTED_POS = "order_issue.charge_routed_pos";
 const AUDIT_BLOCKED = "order_issue.charge_blocked";
 const AUDIT_PAID = "order_issue.charge_paid";
 const AUDIT_EXPIRED = "order_issue.charge_expired";
+const AUDIT_PAID_AT_POS = "order_issue.charge_paid_at_pos";
 const SESSION_CLOSED_REASON = "session_closed";
+const PAID_AT_POS_REASON = "paid_at_pos";
 const AUDIT_SAFE_FIELDS = [
   "id",
   "orderId",
@@ -334,21 +340,27 @@ async function sessionIsClosed(
   return session?.status === "closed" || session?.status === "voided";
 }
 
+type OpenChargeClosing = {
+  closeReason: string;
+  closedBy: string | null;
+  linkReason: string;
+  auditAction: string;
+  auditReason: string;
+};
+
 /**
- * Expires every `open` charge of a table session that is ending (forced close
- * by a waiter, session expiry), in the closing transaction `tx`: status
- * `expired`, reason `session_closed`, no closer, the payment link cancelled and
- * one `order_issue.charge_expired` audit row (actor system) per charge. Each
- * charge is locked through `lockChargeChain` (issue, order, charge, link,
- * intent); one that was paid or closed meanwhile is left alone. Returns the
- * number of charges expired. No journal: revenue is only recognised when money
- * arrives.
+ * Closes every `open` charge of a table session in `tx` with `closing`: the
+ * payment link cancelled and one audit row per charge. Each charge is locked
+ * through `lockChargeChain` (issue, order, charge, link, intent); one that was
+ * paid or closed meanwhile is left alone. Returns the number of charges
+ * closed. No journal.
  */
-export async function expireOpenChargesOfSession(
+async function closeOpenChargesOfSession(
   tx: Tx,
   context: ScopedTenantContext,
   sessionId: string,
   now: Date,
+  closing: OpenChargeClosing,
 ): Promise<number> {
   const tenantId = context.tenant.tenantId;
   const open = await tx
@@ -362,7 +374,7 @@ export async function expireOpenChargesOfSession(
       ),
     )
     .orderBy(orderIssueCharges.id);
-  let expired = 0;
+  let closed = 0;
   for (const { id } of open) {
     const locked = await lockChargeChain(tx, tenantId, { chargeId: id });
     if (!locked || locked.charge.status !== "open") continue;
@@ -372,8 +384,8 @@ export async function expireOpenChargesOfSession(
       .set({
         status: "expired",
         closedAt: now,
-        closedBy: null,
-        closeReason: SESSION_CLOSED_REASON,
+        closedBy: closing.closedBy,
+        closeReason: closing.closeReason,
         updatedAt: now,
       })
       .where(
@@ -386,20 +398,156 @@ export async function expireOpenChargesOfSession(
       await cancelPaymentLinkInTx(tx, context, {
         linkId: charge.paymentLinkId,
         now,
-        reason: "issue_charge_expired",
+        reason: closing.linkReason,
       });
     await auditCharge(tx, context, {
       outletId: charge.outletId,
       issueId: issue.id,
-      action: AUDIT_EXPIRED,
-      actorUserId: null,
-      reason: "Sesi meja ditutup sebelum selisih dibayar",
+      action: closing.auditAction,
+      actorUserId: closing.closedBy,
+      reason: closing.auditReason,
       after: { ...chargeAudit(charge), status: "expired" },
       at: now,
     });
-    expired += 1;
+    closed += 1;
   }
-  return expired;
+  return closed;
+}
+
+/**
+ * Expires every `open` charge of a table session that is ending (forced close
+ * by a waiter, session expiry), in the closing transaction `tx`: status
+ * `expired`, reason `session_closed`, no closer, the payment link cancelled and
+ * one `order_issue.charge_expired` audit row (actor system) per charge. Returns
+ * the number of charges expired. No journal: revenue is only recognised when
+ * money arrives.
+ */
+export function expireOpenChargesOfSession(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+  now: Date,
+): Promise<number> {
+  return closeOpenChargesOfSession(tx, context, sessionId, now, {
+    closeReason: SESSION_CLOSED_REASON,
+    closedBy: null,
+    linkReason: "issue_charge_expired",
+    auditAction: AUDIT_EXPIRED,
+    auditReason: "Sesi meja ditutup sebelum selisih dibayar",
+  });
+}
+
+/**
+ * The till took the whole session bill, swap charges included (POS tenders):
+ * every `open` charge of the session leaves the guest's bill so the QR link
+ * cannot take the same money a second time. Status `expired` with reason
+ * `paid_at_pos` (the money is already booked by the POS tender journal, so
+ * neither `paid` nor `order_issue.charge_paid` is used: no second journal),
+ * the payment link cancelled (a payment that still lands is refunded as
+ * `late_payment_on_closed_charge`) and one `order_issue.charge_paid_at_pos`
+ * audit row per charge. `actorUserId` is the cashier when known. The caller
+ * decides that the bill is settled. Returns the number of charges closed.
+ */
+function closeOpenChargesPaidAtPos(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+  now: Date,
+  actorUserId: string | null = null,
+): Promise<number> {
+  return closeOpenChargesOfSession(tx, context, sessionId, now, {
+    closeReason: PAID_AT_POS_REASON,
+    closedBy: actorUserId,
+    linkReason: "issue_charge_paid_at_pos",
+    auditAction: AUDIT_PAID_AT_POS,
+    auditReason: "Selisih swap sudah dibayar di kasir",
+  });
+}
+
+/**
+ * legend-i83ls: closes the `open` charges of a session once the money the till
+ * holds covers the whole bill, charge included. The money is the session's
+ * settlement (reservation deposit, paid order links, paid charges) plus the
+ * captured POS tenders of its live orders MINUS the POS refunds of those
+ * orders (a refund is its own row; the tender stays `captured`). The bill is
+ * the settlement's total, open charges included. `loadSettlement` is the
+ * table-session settlement port (this module cannot import the orders module:
+ * import cycle); an unverifiable bill (null) closes nothing. Doubt is no close: no open
+ * charge, no captured tender, or money short of the bill leaves everything as
+ * it is. A charge that is closed leaves through `closeOpenChargesPaidAtPos`
+ * (see there). Call it from its own transaction after the POS tender
+ * committed, not from inside the tender transaction: that one already holds
+ * the order row, and this module locks issue before order. Returns the number
+ * of charges closed.
+ */
+export async function closeChargesCoveredAtPos(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+  now: Date,
+  actorUserId: string | null,
+  loadSettlement: () => Promise<{
+    billTotalIdr: number;
+    paidIdr: number;
+  } | null>,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  const [open] = await tx
+    .select({ id: orderIssueCharges.id })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.tableSessionId, sessionId),
+        eq(orderIssueCharges.status, "open"),
+      ),
+    )
+    .limit(1);
+  if (!open) return 0;
+  const live = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableSessionId, sessionId),
+        ne(orders.status, "voided"),
+      ),
+    );
+  if (live.length === 0) return 0;
+  const orderIds = live.map((row) => row.id);
+  const [tendered] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
+    })
+    .from(posOrderTenders)
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, tenantId),
+        inArray(posOrderTenders.orderId, orderIds),
+        eq(posOrderTenders.status, "captured"),
+      ),
+    );
+  const [refunded] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${posOrderRefunds.amountIdr}), 0)::text`,
+    })
+    .from(posOrderRefunds)
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, tenantId),
+        inArray(posOrderRefunds.orderId, orderIds),
+      ),
+    );
+  const tenderedIdr = Number(tendered?.total ?? 0);
+  if (tenderedIdr <= 0) return 0;
+  const settlement = await loadSettlement();
+  if (settlement === null) return 0;
+  const moneyIdr =
+    settlement.paidIdr +
+    Math.max(0, tenderedIdr - Number(refunded?.total ?? 0));
+  if (moneyIdr < settlement.billTotalIdr) return 0;
+  return closeOpenChargesPaidAtPos(tx, context, sessionId, now, actorUserId);
 }
 
 /**
