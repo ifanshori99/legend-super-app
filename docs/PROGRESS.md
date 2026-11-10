@@ -1074,3 +1074,4 @@ Langkah berikut CTO baru:
 - Mulai G2ol9 tm6pp seed policy (brief 393, 0259 when 1794405000000).
 - 21:46 Temuan baru pilot dicek masih ada (Explore): kartu legend-s5jup (Duitku paidAt/reference, P2), legend-iu91r (refund edge dobel + kegagalan macet, P1), legend-8kilj (four-eyes payout + releasedOf, P2). Antre slot (RAM kuning, Claude 8/4).
 - 21:47 Founder Q3: tetap Opus xhigh untuk review uang/migrasi/akses. Fable tidak dipakai untuk review. Pilot ditutup.
+- 21:52 G0ybr selesai: ws/ebt9f-me-outlets 32e0108b (ebt9f outlets di /api/me/access) + edf04d3e (2aqp pemilih outlet AreaFrame), dari ws/ws01-staff-access. 58+149 test, typecheck 0, e2e mock 13/13, reviewer sonnet 1 bug dibetulkan. Tingkat K (akses): architect opus + ui-auditor jalan. Kartu lanjutan legend-sp41n (ID outlet hardcode). Urutan merge: ws01-staff-access lalu ebt9f-me-outlets di batch48b. Kontrak /api/me/access strict kini wajib outlets.
