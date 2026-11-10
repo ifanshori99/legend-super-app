@@ -1893,3 +1893,8 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Tsc bersih, eslint bersih, prettier bersih, db:generate kosong.
 - BELUM: test DB putaran 3-4 belum dijalankan. Layanan direktori macOS rusak (`id -un` hanya memberi 501, `dscl` eServerError), sehingga colima/lima panic "unknown userid 501" dan Postgres test tidak bisa dijangkau. Perlu dipulihkan (restart Mac atau opendirectoryd), lalu jalankan test terarah + bukti gagal-dulu terhadap 00caa599/327e0135.
 - Langkah berikut setelah Mac di-restart: (1) `LEGEND_TEST_FILES="src/test/order-recovery-refund-promo-final-failure.test.ts src/test/order-recovery-refund-promo.test.ts src/test/order-recovery-refund-final-failure.test.ts src/test/order-recovery-refund-reject.test.ts src/test/pos-refund-promo-db.test.ts src/test/order-promo-db.test.ts src/test/crm-promo-db.test.ts src/test/recovery-refund-final-failure-check-db.test.ts" pnpm test`; (2) bukti gagal-dulu: jalankan file test pti5r dengan `apps/api/src/services/{crm-promo-refund,order-promo-refund,order-recovery-refund,order-recovery-refund-amount}.ts` dari 00caa599 dan 327e0135 (pakai `"${base}:path"`, zsh), lalu pulihkan; (3) `git push`; (4) `bd update legend-pti5r --status review` + komentar.
+
+### legend-pti5r update (11 Nov 2026, 04:55) — siap review
+- Setelah restart Mac: 8 file test terarah lulus 123/123 di HEAD 023d161b.
+- Bukti gagal-dulu (file test pti5r, 22 test, service ditukar lalu dipulihkan): base 00caa599 gagal 15 (T2, T8-T11: replay belum ada), versi putaran 2 327e0135 gagal 19 (termasuk regresi T1, T3, T5-T7 dari give-back). Yang lulus di base (T1, T3-T7) adalah penjaga regresi.
+- Kartu ke `review`. Langkah berikut: second-opinion Codex area refund (wajib sebelum gerbang rilis), lalu merge train.
