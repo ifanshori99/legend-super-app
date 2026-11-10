@@ -25,7 +25,7 @@ import type { PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { createApp } from "../app";
-import { createUlid, idr, ulidToUuid } from "@starter/shared/core";
+import { createUlid, idr, ulidToUuid, uuidToUlid } from "@starter/shared/core";
 import { setTableSessionSettlementLookup } from "../services/table-session.service";
 import { qrOrderSettlementLookup } from "../services/qr-order.service";
 import { originHeader } from "./helpers";
@@ -189,6 +189,16 @@ async function sessionStatus(sessionId: string): Promise<string> {
   return rows[0]!.status;
 }
 
+const moveItems = (
+  fromSessionId: string,
+  toSessionId: string,
+  orderItemIds: string[],
+) =>
+  staff.client
+    .post(`/api/table-sessions/${fromSessionId}/move-items`)
+    .set(originHeader)
+    .send({ toSessionId, orderItemIds });
+
 const merge = (targetId: string, sourceSessionId: string) =>
   staff.client
     .post(`/api/table-sessions/${targetId}/merge`)
@@ -201,6 +211,25 @@ async function twoSessions() {
   const targetOrder = await seedOrder(target.sessionId, 20000);
   const sourceOrder = await seedOrder(source.sessionId, 15000);
   return { target, source, targetOrder, sourceOrder };
+}
+
+/** Poll until some backend waits on a lock held by `holderPid`. */
+async function mergeIsBlockedBy(
+  holderPid: number,
+  settled: () => boolean,
+): Promise<boolean> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline && !settled()) {
+    const { rows } = await owner.query<{ blocked: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+       ) AS blocked`,
+      [holderPid],
+    );
+    if (rows[0]!.blocked) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
 }
 
 // ---- lifecycle ------------------------------------------------------------
@@ -287,25 +316,6 @@ afterAll(async () => {
 // ===========================================================================
 
 describe("merge versus a POS tender in flight (legend-mgavf finding 1)", () => {
-  /** Poll until some backend waits on a lock held by `holderPid`. */
-  async function mergeIsBlockedBy(
-    holderPid: number,
-    settled: () => boolean,
-  ): Promise<boolean> {
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline && !settled()) {
-      const { rows } = await owner.query<{ blocked: boolean }>(
-        `SELECT EXISTS (
-           SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
-         ) AS blocked`,
-        [holderPid],
-      );
-      if (rows[0]!.blocked) return true;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    return false;
-  }
-
   it.each(["source", "target"] as const)(
     "waits for a tender committing on the %s session and then refuses the merge",
     async (side) => {
@@ -429,6 +439,98 @@ describe("merge of a partly paid session (legend-mgavf finding 3)", () => {
       expect(message).toMatch(/gabung/i);
       expect(message).not.toMatch(/\b(payment|already|cannot|merge)\b/i);
       expect(await sessionStatus(pair.source.sessionId)).toBe("open");
+    },
+  );
+});
+
+// ===========================================================================
+// Finding 4 (legend-mgavf, extra): item move versus a POS tender in flight
+// ===========================================================================
+//
+// Same shape as finding 1, for "pindah item". A tender committing on an order
+// of either session while items are moved must not slip past the payment
+// check: the move has to wait for that order's lock and then be refused with
+// 409, with every item still where it was.
+//
+// Assumption (from the brief): a session with a captured tender counts as
+// "already paid" for an item move, like for a merge, so the move is refused
+// with 409.
+
+describe("item move versus a POS tender in flight (legend-mgavf item move)", () => {
+  const cases = [
+    {
+      name: "the order being moved (source session)",
+      pos: "source",
+      moveThePosOrder: true,
+    },
+    {
+      name: "another order of the source session",
+      pos: "source",
+      moveThePosOrder: false,
+    },
+    {
+      name: "an order of the destination session",
+      pos: "destination",
+      moveThePosOrder: false,
+    },
+  ] as const;
+
+  it.each(cases)(
+    "waits for a tender committing on $name and then refuses with 409",
+    async ({ pos, moveThePosOrder }) => {
+      const { target: destination, source } = await twoSessions();
+      const plainSourceOrder = await seedOrder(source.sessionId, 18000);
+      const posSession = pos === "source" ? source : destination;
+      const posOrder = await seedPosOrderWithoutTender(posSession.sessionId);
+      const movedOrder = moveThePosOrder ? posOrder : plainSourceOrder;
+
+      // The "tender": holds the order's row lock, writes a captured tender,
+      // commits only after the move request is waiting.
+      const holder: PoolClient = await owner.connect();
+      let response: Awaited<ReturnType<typeof moveItems>> | undefined;
+      let blocked = false;
+      try {
+        await holder.query("BEGIN");
+        const pid = (
+          await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+        ).rows[0]!.pid;
+        await holder.query("SELECT id FROM orders WHERE id = $1 FOR UPDATE", [
+          posOrder.uuid,
+        ]);
+
+        let done = false;
+        const pending = moveItems(source.sessionId, destination.sessionId, [
+          uuidToUlid(movedOrder.itemUuid),
+        ]).then((res) => {
+          done = true;
+          return res;
+        });
+        blocked = await mergeIsBlockedBy(pid, () => done);
+
+        await holder.query(
+          `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
+              amount_idr, status, requested_at, resolved_at)
+           SELECT tenant_id, outlet_id, id, 'card', 'manual', 30000, 'captured', now(), now()
+           FROM orders WHERE id = $1`,
+          [posOrder.uuid],
+        );
+        await holder.query("COMMIT");
+        response = await pending;
+      } finally {
+        await holder.query("ROLLBACK").catch(() => undefined);
+        holder.release();
+      }
+
+      // (a) the move did not run past the in-flight tender's lock.
+      expect(
+        blocked,
+        `item move did not wait for the order lock (${pos} side)`,
+      ).toBe(true);
+      // (b) once the tender committed, the move saw it and refused.
+      expect(response!.status, JSON.stringify(response!.body)).toBe(409);
+      expect(String(response!.body.error?.message)).toMatch(/dibayar sebagian/);
+      expect(await orderSession(movedOrder.uuid)).toBe(source.sessionId);
+      expect(await orderSession(posOrder.uuid)).toBe(posSession.sessionId);
     },
   );
 });

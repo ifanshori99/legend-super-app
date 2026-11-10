@@ -960,6 +960,22 @@ export async function moveSessionItemsOperation(
         };
     }
 
+    // Lock the orders of both sessions (ascending order id, the same order
+    // every order writer uses) BEFORE reading what is paid: a POS tender that
+    // commits while the move runs waits here, so the payment check below sees
+    // it and a move never touches an order whose bill just changed.
+    const sessionOrders = await tx
+      .select()
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          inArray(orders.tableSessionId, [from.id, to.id]),
+        ),
+      )
+      .orderBy(asc(orders.id))
+      .for("update");
+
     const fromBill = await paidOf(tx, context, from.id);
     const toBill = await paidOf(tx, context, to.id);
     assertItemsCanMove({
@@ -996,15 +1012,11 @@ export async function moveSessionItemsOperation(
       await liveOrdersOf(tx, tenantId, to.id),
     ]);
 
-    // Lock the touched orders in id order and re-read them under the lock.
+    // The touched orders, as re-read under the lock taken above.
     const orderIds = [...new Set(requested.map((row) => row.order.id))].sort();
     const lockedOrders = new Map<string, OrderRow>();
     for (const id of orderIds) {
-      const [order] = await tx
-        .select()
-        .from(orders)
-        .where(and(eq(orders.tenantId, tenantId), eq(orders.id, id)))
-        .for("update");
+      const order = sessionOrders.find((row) => row.id === id);
       if (!order || order.tableSessionId !== from.id)
         throw new CoreError(
           "NOT_FOUND",

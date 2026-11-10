@@ -1997,3 +1997,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Test baru `table-session-merge-hardening.test.ts` (6 test): gagal-dulu pada service lama (4 dari 4 untuk temuan 1 dan 2), lulus sesudah. Gate: tsc api hijau, eslint 0, prettier bersih, 44 test area lulus.
 - Architect (xhigh, uang): merge disetujui, tanpa temuan. Temuan di luar diff: `moveSessionItemsOperation` punya race yang sama (cek bayar L963 sebelum lock order L1002), perlu kartu sendiri.
 - Subagent: 4 (2 Explore, test-writer, implementer) + 1 architect, puncak 4 bersamaan.
+
+### fix-419 tambahan: pindah item (legend-mgavf), 11 Nov 2026
+- `moveSessionItemsOperation`: order kedua sesi (asal dan tujuan) dikunci urut id sebelum cek pembayaran; pencarian order yang dipindah memakai set yang sudah terkunci. Guard dan pesan tidak berubah.
+- 3 test baru di `table-session-merge-hardening.test.ts` (tender di order yang dipindah, order lain sesi asal, order sesi tujuan). Pada service lama: 3 gagal (move 200 tanpa menunggu lock); sesudah perbaikan: lulus. Gate: typecheck api, eslint, prettier hijau; 47 test area lulus.
+- Architect xhigh atas diff tambahan: disetujui. Catatan lama (bukan regresi, tidak dikerjakan): cek order void di `moveSessionItemsOperation` membaca baris sebelum lock, void POS yang commit di sela itu terlewat.
+- Subagent: 2 (test-writer, implementer) + 1 architect, puncak 2 bersamaan.
