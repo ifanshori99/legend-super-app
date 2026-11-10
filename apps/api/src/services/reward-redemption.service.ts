@@ -28,6 +28,7 @@ import { rewardRedemptions, rewards } from "../db/schema/crm-rewards";
 import { orders } from "../db/schema/qr-order";
 import { HttpError } from "../lib/http-error";
 import { hashPromoCode } from "./crm-promo-engine";
+import { isTrainingOrder } from "./device-training";
 import { postLedgerEntry } from "./point-ledger.service";
 import type { Tx } from "./permission-resolver";
 
@@ -611,6 +612,9 @@ export async function fulfilRedemption(
       if (!order) throw notFound();
     }
   }
+  // legend-dbrw3: a training sale never settles a real member's reward.
+  if (orderId !== null && (await isTrainingOrder(tx, tenantId, orderId)))
+    throw crmError("VOUCHER_INVALID", 422);
   const [row] = await tx
     .update(rewardRedemptions)
     .set({

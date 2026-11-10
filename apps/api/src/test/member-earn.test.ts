@@ -25,7 +25,6 @@
 //   tenant's program row.
 
 import { randomUUID } from "node:crypto";
-import { ulidToUuid } from "@starter/shared/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { createApp } from "../app";
@@ -55,6 +54,7 @@ import {
   orderPaidEvent,
   orderRefundedEvent,
   orderVoidedEvent,
+  markTraining,
   outboxEvents,
   owner,
   paymentRefundedEvent,
@@ -361,24 +361,13 @@ describe("LOY-02 refunds and voids", () => {
   });
 });
 
-/** Stamps a completed POS order as a training sale (the row is frozen, so bypass its trigger). */
-async function markTraining(world: World, orderUlid: string): Promise<void> {
-  await asTenant(world.tenantId, async (client) => {
-    await client.query("SET LOCAL session_replication_role = replica");
-    await client.query(
-      "UPDATE pos_orders SET is_training = true WHERE tenant_id = $1 AND order_id = $2",
-      [world.tenantId, ulidToUuid(orderUlid)],
-    );
-  });
-}
-
 describe("LOY-02 training orders earn nothing (legend-kbbma)", () => {
   async function trainingOrder(world: World, member: { id: string }) {
     const orderUlid = await seedOrder(world.tenantId, {
       outletId: world.outletA,
       profileId: member.id,
     });
-    await markTraining(world, orderUlid);
+    await markTraining(world.tenantId, orderUlid);
     return orderUlid;
   }
 
