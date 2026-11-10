@@ -321,6 +321,8 @@ SELECT count(*) FROM employee_pay_components WHERE pii_key_version <> N;
 SELECT count(*) FROM payslips WHERE pii_key_version <> N;
 ```
 
+Baris payroll hanya bisa pindah ke versi yang LEBIH TINGGI (dijaga trigger database, dan tidak pernah di atas versi aktif yang dibawa job). Jadi jangan menurunkan `HRIS_PII_ACTIVE_KEY_VERSION` setelah job pernah jalan. Untuk membatalkan kunci yang buruk, tambahkan materi kunci lama sebagai versi BARU yang lebih tinggi (`N+1`), set versi aktif ke `N+1`, lalu jalankan job reseal dengan `{"targetKeyVersion": N+1}`.
+
 Versi lama boleh dipensiunkan dari `HRIS_PII_KEYS` hanya jika kedua syarat ini terpenuhi: cek di atas bernilai 0 di setiap tenant, dan backup yang dibuat sebelum rotasi tidak lagi dibutuhkan untuk restore. Jika backup lama masih perlu di-restore, simpan kunci lama itu, atau jalankan ulang job reseal setelah restore.
 
 Versi 1 (`DATA_ENCRYPTION_KEY`) tidak bisa dipensiunkan dengan rotasi ini. Kunci itu masih dipakai oleh:

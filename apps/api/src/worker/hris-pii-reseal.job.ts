@@ -7,7 +7,8 @@
 // then `pii_key_version` is set. Payroll sealed values ride the same key ring
 // (lib/payroll-sealed.ts). Their tables only accept a re-seal inside a
 // transaction that sets `app.payroll_reseal` (migration 0272), so every payroll
-// batch sets that flag first; it is transaction-local and changes nothing else.
+// batch sets that flag first, plus the target version (app.payroll_reseal_target_version);
+// both are transaction-local. Payroll versions only move up, never above the target.
 //
 // Safe to repeat and to kill. Work is cut into batches ordered by id; each
 // batch is one tenant transaction that selects its rows `FOR UPDATE SKIP
@@ -33,7 +34,7 @@
 // otherwise re-seal to the wrong key). Logs carry counts and ids of tenants
 // only, never values, keys or row contents.
 
-import { and, asc, eq, ne, sql } from "drizzle-orm";
+import { and, asc, eq, lt, ne, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertTrustedScopedContext,
@@ -312,13 +313,16 @@ async function resealPayComponentBatch(
   return withTenant(database, context, async (tx) => {
     // The payroll tables reject a key change unless this flag is on (0272).
     await tx.execute(sql`SELECT set_config('app.payroll_reseal', 'on', true)`);
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
     const rows = await tx
       .select()
       .from(employeePayComponents)
       .where(
         and(
           eq(employeePayComponents.tenantId, tenantId),
-          ne(employeePayComponents.piiKeyVersion, active),
+          lt(employeePayComponents.piiKeyVersion, active),
         ),
       )
       .orderBy(asc(employeePayComponents.id))
@@ -343,7 +347,7 @@ async function resealPayComponentBatch(
           and(
             eq(employeePayComponents.tenantId, tenantId),
             eq(employeePayComponents.id, row.id),
-            ne(employeePayComponents.piiKeyVersion, active),
+            lt(employeePayComponents.piiKeyVersion, active),
           ),
         );
     }
@@ -361,13 +365,16 @@ async function resealPayslipBatch(
   const tenantId = context.tenant.tenantId;
   return withTenant(database, context, async (tx) => {
     await tx.execute(sql`SELECT set_config('app.payroll_reseal', 'on', true)`);
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
     const rows = await tx
       .select()
       .from(payslips)
       .where(
         and(
           eq(payslips.tenantId, tenantId),
-          ne(payslips.piiKeyVersion, active),
+          lt(payslips.piiKeyVersion, active),
         ),
       )
       .orderBy(asc(payslips.id))
@@ -392,7 +399,7 @@ async function resealPayslipBatch(
           and(
             eq(payslips.tenantId, tenantId),
             eq(payslips.id, row.id),
-            ne(payslips.piiKeyVersion, active),
+            lt(payslips.piiKeyVersion, active),
           ),
         );
     }
@@ -464,7 +471,7 @@ export async function runHrisPiiReseal(
       ) {
         result.incompleteTenants += 1;
         log.error(
-          `HRIS PII re-seal incomplete for tenant ${tenantId}: rows still stale (locked by another transaction)`,
+          `HRIS PII re-seal incomplete for tenant ${tenantId}: rows still stale (locked by another transaction, or on a key version above the active one)`,
         );
       }
     } catch (error) {

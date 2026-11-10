@@ -9,6 +9,12 @@
 // (session_replication_role = replica) so the tests do not depend on the guard
 // they are checking; the job and the guard assertions run as legend_app.
 //
+// Fixtures and read-back assertions use the raw `sealSecret` / `openSecret`
+// helpers with a hand-built AAD (`payroll:{table}:{tenant}:{row}:{field}:k{n}`),
+// never payroll-sealed.ts, so the file runs (and fails test by test) against a
+// tree without the new key ring. Only the explicit key-ring unit tests touch
+// payroll-sealed.ts.
+//
 // Assumptions (the contract in the brief, not the spec text):
 // - A write that changes a sealed column or pii_key_version without the flag is
 //   rejected either by a missing column grant (42501) or by the guard
@@ -16,6 +22,9 @@
 //   the version changes, only the ciphertext changes, version 0, extra column
 //   on payslips) must be the guard itself: 23514 with `PAYR-KEY:`.
 // - Employees are created at the active version so only payroll rows are stale.
+// - The job sets `app.payroll_reseal_target_version` (the active version) next
+//   to the flag; the guard only lets the version move strictly up and never
+//   above that target. The guard tests set both settings like the job does.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -38,6 +47,12 @@ import {
   sealPayrollValue,
   type PayrollSealBinding,
 } from "../lib/payroll-sealed.ts";
+import {
+  openSecret,
+  openSecretWithKey,
+  sealSecret,
+  sealSecretWithKey,
+} from "../lib/secrets.ts";
 import {
   listAllTenantIds,
   runHrisPiiReseal,
@@ -68,18 +83,71 @@ type Fixture = {
 };
 const fixtures: Record<string, Fixture> = {};
 
+/** The version the suite rotates to (HRIS_PII_ACTIVE_KEY_VERSION above). */
+const ACTIVE = 2;
+const V2_KEY = Buffer.from(KEY2, "base64");
+
+// Binding for the key-ring unit tests only (they exercise payroll-sealed.ts).
 const payBinding = (tenantId: string, rowId: string): PayrollSealBinding => ({
   tenantId,
   table: "employee_pay_components",
   rowId,
   field: "amount",
 });
-const slipBinding = (tenantId: string, rowId: string): PayrollSealBinding => ({
-  tenantId,
-  table: "payslips",
-  rowId,
-  field: "calculation",
-});
+
+type Slot = {
+  readonly table: "employee_pay_components" | "payslips";
+  readonly field: "amount" | "calculation";
+};
+const PAY: Slot = { table: "employee_pay_components", field: "amount" };
+const SLIP: Slot = { table: "payslips", field: "calculation" };
+
+const rawAad = (slot: Slot, tenantId: string, rowId: string, version: number) =>
+  [
+    "payroll",
+    slot.table,
+    tenantId.toLowerCase(),
+    rowId.toLowerCase(),
+    slot.field,
+    `k${version}`,
+  ].join(":");
+
+function sealRaw(
+  value: string,
+  slot: Slot,
+  tenantId: string,
+  rowId: string,
+  version: number,
+): Buffer {
+  const aad = rawAad(slot, tenantId, rowId, version);
+  if (version === 1) return Buffer.from(sealSecret(value, aad), "base64");
+  if (version === 2)
+    return Buffer.from(sealSecretWithKey(V2_KEY, value, aad), "base64");
+  throw new Error(`fixture helper has no key for version ${version}`);
+}
+
+function openRaw(
+  sealed: Buffer | Uint8Array,
+  slot: Slot,
+  tenantId: string,
+  rowId: string,
+  version: number,
+): string {
+  const aad = rawAad(slot, tenantId, rowId, version);
+  const envelope = Buffer.from(sealed).toString("base64");
+  if (version === 1) return openSecret(envelope, aad);
+  if (version === 2) return openSecretWithKey(V2_KEY, envelope, aad);
+  throw new Error(`fixture helper has no key for version ${version}`);
+}
+
+const sealPay = (t: string, id: string, amount: number, v: number) =>
+  sealRaw(String(amount), PAY, t, id, v);
+const openPay = (b: Buffer | Uint8Array, t: string, id: string, v: number) =>
+  Number(openRaw(b, PAY, t, id, v));
+const sealSlip = (t: string, id: string, calc: string, v: number) =>
+  sealRaw(calc, SLIP, t, id, v);
+const openSlip = (b: Buffer | Uint8Array, t: string, id: string, v: number) =>
+  openRaw(b, SLIP, t, id, v);
 
 /** Owner transaction scoped to one tenant; `raw` also turns triggers off. */
 async function asOwner<T>(
@@ -148,7 +216,16 @@ async function attempt(
   }
 }
 
-const enableFlag = (client: PoolClient) =>
+/** What the re-seal job sets in each batch transaction. */
+const enableFlag = async (client: PoolClient, target: number = ACTIVE) => {
+  await client.query("SELECT set_config('app.payroll_reseal', 'on', true)");
+  await client.query(
+    "SELECT set_config('app.payroll_reseal_target_version', $1, true)",
+    [String(target)],
+  );
+};
+/** The flag without the target version: the guard must refuse. */
+const enableFlagOnly = (client: PoolClient) =>
   client.query("SELECT set_config('app.payroll_reseal', 'on', true)");
 
 /** The guard itself said no: check violation with the PAYR-KEY prefix. */
@@ -244,7 +321,7 @@ async function seedTenant(tenantId: string, rows: number): Promise<Fixture> {
           tenantId,
           `PK-${i}-${employeeId.slice(0, 8).toUpperCase()}`,
           f.outletId,
-          PAYROLL_SEAL_KEY_VERSION,
+          ACTIVE,
         ],
       );
       await client.query(
@@ -270,7 +347,7 @@ async function seedTenant(tenantId: string, rows: number): Promise<Fixture> {
           tenantId,
           f.employeeIds[i],
           f.componentIds[i],
-          sealPayrollAmount(idr(p.amount), payBinding(tenantId, p.id), 1),
+          sealPay(tenantId, p.id, p.amount, 1),
         ],
       );
     for (const [i, s] of f.slips.entries())
@@ -283,7 +360,7 @@ async function seedTenant(tenantId: string, rows: number): Promise<Fixture> {
           tenantId,
           f.runId,
           f.employeeIds[i],
-          sealPayrollValue(s.calc, slipBinding(tenantId, s.id), 1),
+          sealSlip(tenantId, s.id, s.calc, 1),
         ],
       );
   });
@@ -300,27 +377,13 @@ async function writeAt(tenantId: string, version: number): Promise<void> {
         await client.query(
           `UPDATE employee_pay_components SET amount_encrypted = $3, pii_key_version = $4
             WHERE tenant_id = $1 AND id = $2`,
-          [
-            tenantId,
-            p.id,
-            sealPayrollAmount(
-              idr(p.amount),
-              payBinding(tenantId, p.id),
-              version,
-            ),
-            version,
-          ],
+          [tenantId, p.id, sealPay(tenantId, p.id, p.amount, version), version],
         );
       for (const s of f.slips)
         await client.query(
           `UPDATE payslips SET calculation_encrypted = $3, pii_key_version = $4
             WHERE tenant_id = $1 AND id = $2`,
-          [
-            tenantId,
-            s.id,
-            sealPayrollValue(s.calc, slipBinding(tenantId, s.id), version),
-            version,
-          ],
+          [tenantId, s.id, sealSlip(tenantId, s.id, s.calc, version), version],
         );
     },
     true,
@@ -362,7 +425,6 @@ const reseal = (
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  expect(PAYROLL_SEAL_KEY_VERSION).toBe(2);
   for (const tenant of tenants)
     fixtures[tenant] = await seedTenant(tenant, ROWS[tenant]!);
 });
@@ -452,23 +514,15 @@ describe("legend-snhxw payroll re-seal job", () => {
       expect(versionsOf(rows.slips)).toEqual([1]);
       for (const p of f.pay) {
         const row = rows.pay.find((r) => r.id === p.id)!;
-        expect(
-          openPayrollAmount(
-            Buffer.from(row.bytes, "hex"),
-            payBinding(tenant, p.id),
-            1,
-          ),
-        ).toBe(p.amount);
+        expect(openPay(Buffer.from(row.bytes, "hex"), tenant, p.id, 1)).toBe(
+          p.amount,
+        );
       }
       for (const s of f.slips) {
         const row = rows.slips.find((r) => r.id === s.id)!;
-        expect(
-          openPayrollValue(
-            Buffer.from(row.bytes, "hex"),
-            slipBinding(tenant, s.id),
-            1,
-          ),
-        ).toBe(s.calc);
+        expect(openSlip(Buffer.from(row.bytes, "hex"), tenant, s.id, 1)).toBe(
+          s.calc,
+        );
       }
     }
   });
@@ -494,28 +548,18 @@ describe("legend-snhxw payroll re-seal job", () => {
       const after = afterA.pay.find((r) => r.id === p.id)!;
       expect(after.bytes).not.toBe(before.bytes);
       const sealed = Buffer.from(after.bytes, "hex");
-      expect(openPayrollAmount(sealed, payBinding(tenantA, p.id), 2)).toBe(
-        p.amount,
-      );
-      expect(() =>
-        openPayrollAmount(sealed, payBinding(tenantA, p.id), 1),
-      ).toThrow();
+      expect(openPay(sealed, tenantA, p.id, 2)).toBe(p.amount);
+      expect(() => openPay(sealed, tenantA, p.id, 1)).toThrow();
       // The tenant binding survives the move.
-      expect(() =>
-        openPayrollAmount(sealed, payBinding(tenantB, p.id), 2),
-      ).toThrow();
+      expect(() => openPay(sealed, tenantB, p.id, 2)).toThrow();
     }
     for (const s of f.slips) {
       const before = beforeA.slips.find((r) => r.id === s.id)!;
       const after = afterA.slips.find((r) => r.id === s.id)!;
       expect(after.bytes).not.toBe(before.bytes);
       const sealed = Buffer.from(after.bytes, "hex");
-      expect(openPayrollValue(sealed, slipBinding(tenantA, s.id), 2)).toBe(
-        s.calc,
-      );
-      expect(() =>
-        openPayrollValue(sealed, slipBinding(tenantA, s.id), 1),
-      ).toThrow();
+      expect(openSlip(sealed, tenantA, s.id, 2)).toBe(s.calc);
+      expect(() => openSlip(sealed, tenantA, s.id, 1)).toThrow();
     }
     // Tenant B was not listed: byte for byte unchanged, still version 1.
     expect(await stored(tenantB)).toEqual(beforeB);
@@ -689,7 +733,7 @@ describe("legend-snhxw payroll re-seal job", () => {
     expect((await reseal({}, [tenantB])).failedTenants).toBe(1);
   });
 
-  it("[HR-03] an unknown pii_key_version (9) fails its tenant; the row is unchanged and the other tenant is done", async () => {
+  it("[HR-03] a row above the active version (9) is left alone and reported incomplete; it does not block the other rows or tenants", async () => {
     for (const tenant of tenants) await writeAt(tenant, 1);
     const bad = fixtures[tenantB]!.slips[0]!;
     await asOwner(
@@ -708,12 +752,22 @@ describe("legend-snhxw payroll re-seal job", () => {
       { log: { error: (m: string) => errors.push(m) } },
       [tenantB, tenantA],
     );
-    expect(result.failedTenants).toBe(1);
+    // Payroll versions only go up (trigger 0272), so the job never selects a
+    // row above the active version; it counts it and the tenant is incomplete.
+    expect(result.failedTenants).toBe(0);
+    expect(result.incompleteTenants).toBe(1);
+    expect(errors.join("\n")).toContain(tenantB);
     const afterB = await stored(tenantB);
     expect(afterB.slips.find((r) => r.id === bad.id)).toEqual(
       beforeB.slips.find((r) => r.id === bad.id),
     );
     expect(afterB.slips.find((r) => r.id === bad.id)!.version).toBe(9);
+    // The other rows of the same tenant were not blocked by it.
+    expect(
+      versionsOf(afterB.slips.filter((r) => r.id !== bad.id)).every(
+        (v) => v === 2,
+      ),
+    ).toBe(true);
     expect(versionsOf((await stored(tenantA)).slips)).toEqual([2]);
     expect(errors.join("\n")).not.toContain(KEY2);
     // Leave tenant B sound for later suites.
@@ -728,10 +782,10 @@ describe("legend-snhxw payroll seal guard triggers (legend_app)", () => {
 
   const pay = () => fixtures[tenantA]!.pay[0]!;
   const slip = () => fixtures[tenantA]!.slips[0]!;
-  const newAmount = () =>
-    sealPayrollAmount(idr(pay().amount), payBinding(tenantA, pay().id), 2);
-  const newCalc = () =>
-    sealPayrollValue(slip().calc, slipBinding(tenantA, slip().id), 2);
+  const newAmount = (version = 2) =>
+    sealPay(tenantA, pay().id, pay().amount, version);
+  const newCalc = (version = 2) =>
+    sealSlip(tenantA, slip().id, slip().calc, version);
 
   it("[HR-03] pay component: sealed column and version cannot change without the reseal flag", async () => {
     const result = await asApp(tenantA, (client) =>
@@ -760,13 +814,9 @@ describe("legend-snhxw payroll seal guard triggers (legend_app)", () => {
     });
     expect(result.update).toMatchObject({ ok: true, rowCount: 1 });
     expect(result.row.version).toBe(2);
-    expect(
-      openPayrollAmount(
-        result.row.amount_encrypted,
-        payBinding(tenantA, pay().id),
-        2,
-      ),
-    ).toBe(pay().amount);
+    expect(openPay(result.row.amount_encrypted, tenantA, pay().id, 2)).toBe(
+      pay().amount,
+    );
   });
 
   it("[HR-03] pay component: with the flag, any other column in the same update is rejected", async () => {
@@ -854,11 +904,7 @@ describe("legend-snhxw payroll seal guard triggers (legend_app)", () => {
     expect(result.update).toMatchObject({ ok: true, rowCount: 1 });
     expect(result.row.version).toBe(2);
     expect(
-      openPayrollValue(
-        result.row.calculation_encrypted,
-        slipBinding(tenantA, slip().id),
-        2,
-      ),
+      openSlip(result.row.calculation_encrypted, tenantA, slip().id, 2),
     ).toBe(slip().calc);
   });
 
@@ -923,5 +969,97 @@ describe("legend-snhxw payroll seal guard triggers (legend_app)", () => {
     }));
     expect(result.set).toMatchObject({ ok: true, rowCount: 1 });
     expect(result.repoint.ok).toBe(false);
+  });
+  // Version rules: inside the reseal flag the version only moves strictly up
+  // and never above the job's target version.
+
+  it("[HR-03] pay component: with the flag the version cannot go down, stay the same, exceed the target or be moved without a target", async () => {
+    const result = await asApp(tenantA, async (client) => {
+      await enableFlag(client, 2);
+      const up = await attempt(
+        client,
+        `UPDATE employee_pay_components SET amount_encrypted = $2, pii_key_version = 2 WHERE id = $1`,
+        [pay().id, newAmount()],
+      );
+      const down = await attempt(
+        client,
+        `UPDATE employee_pay_components SET amount_encrypted = $2, pii_key_version = 1 WHERE id = $1`,
+        [pay().id, newAmount(1)],
+      );
+      const same = await attempt(
+        client,
+        `UPDATE employee_pay_components SET amount_encrypted = $2, pii_key_version = 2 WHERE id = $1`,
+        [pay().id, newAmount()],
+      );
+      return { up, down, same };
+    });
+    expect(result.up).toMatchObject({ ok: true, rowCount: 1 });
+    expectGuard(result.down);
+    expectGuard(result.same);
+
+    const above = await asApp(tenantA, async (client) => {
+      await enableFlag(client, 2);
+      return attempt(
+        client,
+        `UPDATE employee_pay_components SET amount_encrypted = $2, pii_key_version = 3 WHERE id = $1`,
+        [pay().id, newAmount()],
+      );
+    });
+    expectGuard(above);
+
+    const noTarget = await asApp(tenantA, async (client) => {
+      await enableFlagOnly(client);
+      return attempt(
+        client,
+        `UPDATE employee_pay_components SET amount_encrypted = $2, pii_key_version = 2 WHERE id = $1`,
+        [pay().id, newAmount()],
+      );
+    });
+    expectGuard(noTarget);
+  });
+
+  it("[HR-03] payslip: with the flag the version cannot go down, stay the same, exceed the target or be moved without a target", async () => {
+    const result = await asApp(tenantA, async (client) => {
+      await enableFlag(client, 2);
+      const up = await attempt(
+        client,
+        `UPDATE payslips SET calculation_encrypted = $2, pii_key_version = 2 WHERE id = $1`,
+        [slip().id, newCalc()],
+      );
+      const down = await attempt(
+        client,
+        `UPDATE payslips SET calculation_encrypted = $2, pii_key_version = 1 WHERE id = $1`,
+        [slip().id, newCalc(1)],
+      );
+      const same = await attempt(
+        client,
+        `UPDATE payslips SET calculation_encrypted = $2, pii_key_version = 2 WHERE id = $1`,
+        [slip().id, newCalc()],
+      );
+      return { up, down, same };
+    });
+    expect(result.up).toMatchObject({ ok: true, rowCount: 1 });
+    expectGuard(result.down);
+    expectGuard(result.same);
+
+    const above = await asApp(tenantA, async (client) => {
+      await enableFlag(client, 2);
+      return attempt(
+        client,
+        `UPDATE payslips SET calculation_encrypted = $2, pii_key_version = 3 WHERE id = $1`,
+        [slip().id, newCalc()],
+      );
+    });
+    expectGuard(above);
+
+    const noTarget = await asApp(tenantA, async (client) => {
+      await enableFlagOnly(client);
+      return attempt(
+        client,
+        `UPDATE payslips SET calculation_encrypted = $2, pii_key_version = 2 WHERE id = $1`,
+        [slip().id, newCalc()],
+      );
+    });
+    expectGuard(noTarget);
   });
 });
