@@ -124,6 +124,8 @@ const AUDIT_SAFE_FIELDS = [
   "sourceType",
   "reversalEntryId",
   "version",
+  // legend-b8y6l: "sole_owner" marks a sole Owner's self-approval.
+  "selfApproval",
 ] as const;
 
 /** Writes one append-only audit row inside the caller's transaction. */

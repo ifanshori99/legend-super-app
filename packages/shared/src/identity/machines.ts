@@ -24,7 +24,7 @@
 //            planIdentityMerge, challengeCompletionAction.
 
 import { CoreError, toIsoDateTime, type UserId } from "../core/index.ts";
-import { AccessError } from "../access/index.ts";
+import { AccessError, type SelfApprovalBasis } from "../access/index.ts";
 import { IdentityError } from "./errors.ts";
 import type { UserIdentityId } from "./ids.ts";
 import {
@@ -559,7 +559,8 @@ export function isApprovalRequestExpired(
 /**
  * Who may decide this row: it must still be pending, inside its deadline, and
  * the approver is never the requester (AUTH-06; §3 F7 "Penyetuju selalu
- * berbeda dari pemohon"). The approver's role and scope are checked by
+ * berbeda dari pemohon"), unless `allowSelfApproval` (sole Owner approving a
+ * shareholder_version request, legend-b8y6l). The approver's role and scope are checked by
  * access.assertApprovalDecisionAllowed with the matrix; this function is the
  * request lifecycle half.
  */
@@ -574,12 +575,17 @@ export function assertApprovalRequestDecidable(input: {
    */
   readonly priorApproverIds: readonly UserId[];
   readonly now: Date;
+  /** Skips only the requester check; the caller verified the sole-Owner basis. */
+  readonly allowSelfApproval?: boolean;
 }): void {
   if (input.request.status !== "pending")
     throw new IdentityError("APPROVAL_REQUEST_NOT_PENDING");
   if (isApprovalRequestExpired(input.request, input.now))
     throw new IdentityError("APPROVAL_REQUEST_EXPIRED");
-  if (input.decidedBy.toLowerCase() === input.request.requestedBy.toLowerCase())
+  if (
+    input.allowSelfApproval !== true &&
+    input.decidedBy.toLowerCase() === input.request.requestedBy.toLowerCase()
+  )
     throw new AccessError("APPROVER_IS_REQUESTER");
   if (
     input.priorApproverIds.some(
@@ -600,8 +606,14 @@ export function recordApprovalDecision(input: {
   readonly priorApproverIds: readonly UserId[];
   readonly reason: string;
   readonly now: Date;
+  /** Sole-Owner basis verified by the service; honored for approvals only. */
+  readonly selfApproval?: SelfApprovalBasis | null;
 }): ApprovalRequest {
-  assertApprovalRequestDecidable(input);
+  assertApprovalRequestDecidable({
+    ...input,
+    allowSelfApproval:
+      input.selfApproval != null && input.decision === "approved",
+  });
   const reason = input.reason.trim();
   if (reason.length < 3 || reason.length > 500)
     throw new RangeError("A decision reason is 3 to 500 characters");

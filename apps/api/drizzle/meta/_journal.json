@@ -1597,6 +1597,13 @@
       "when": 1794322000000,
       "tag": "0241_shareholder_version_approval_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1794440001000,
+      "tag": "0270_sole_owner_self_approval",
+      "breakpoints": true
     }
   ]
 }

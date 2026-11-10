@@ -253,7 +253,10 @@ export const shareholderRecipientVersions = pgTable(
     ),
     check(
       "shareholder_recipient_versions_four_eyes_check",
-      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.requestedBy}`,
+      // legend-b8y6l: a sole Owner may approve its own request (the service
+      // checks "sole Owner" under the role-assignment lock); rejecting one's
+      // own request stays refused here.
+      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.requestedBy} OR ${table.status} = 'approved'`,
     ),
   ],
 );
@@ -328,7 +331,10 @@ export const shareAllocationVersions = pgTable(
     ),
     check(
       "share_allocation_versions_four_eyes_check",
-      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.requestedBy}`,
+      // legend-b8y6l: a sole Owner may approve its own request (the service
+      // checks "sole Owner" under the role-assignment lock); rejecting one's
+      // own request stays refused here.
+      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.requestedBy} OR ${table.status} = 'approved'`,
     ),
   ],
 );
