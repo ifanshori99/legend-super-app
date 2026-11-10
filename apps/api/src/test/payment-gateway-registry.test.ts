@@ -214,14 +214,30 @@ async function newQrisIntent() {
   return { id: intent.id, ...rows[0]! };
 }
 
-beforeAll(() => {
+let originalFlags: unknown;
+
+/** The tenant's package: which gateways its `integrationProviders` lists. */
+async function setPackageGateways(providers: string[]) {
+  await owner.query(
+    `UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{integrationProviders}', $2::jsonb) WHERE id = $1`,
+    [tenantId, JSON.stringify(providers)],
+  );
+}
+
+beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  const flags = await owner.query<{ feature_flags: unknown }>(
+    "SELECT feature_flags FROM tenants WHERE id = $1",
+    [tenantId],
+  );
+  originalFlags = flags.rows[0]!.feature_flags;
 });
 
 beforeEach(async () => {
   platform.enabled = new Set(["doit", "duitku"]);
   statusOrder = [];
+  await setPackageGateways(["doit", "duitku"]);
   doit = new FakeGateway("doit");
   duitku = new FakeGateway("duitku");
   resetPaymentGateways();
@@ -266,6 +282,10 @@ afterAll(async () => {
       WHERE tenant_id = $1 AND gateway_poll_lease_until = $2`,
     [tenantId, PARKED_LEASE],
   );
+  await owner.query("UPDATE tenants SET feature_flags = $2 WHERE id = $1", [
+    tenantId,
+    JSON.stringify(originalFlags),
+  ]);
   await owner.end();
 });
 
@@ -463,6 +483,155 @@ describe("an existing intent stays on its gateway (PAY-05, D11)", () => {
     );
 
     expect(duitku.statusReads.get(intent.provider_ref)).toBe(1);
+  });
+});
+
+describe("a gateway revoked from the tenant's package (legend-8zy5f, D4)", () => {
+  it("a new intent skips a stored rule's revoked primary and uses the fallback", async () => {
+    await setQrisRule("duitku", "doit");
+    await setPackageGateways(["doit"]);
+    const intent = await newQrisIntent();
+    expect(intent.provider).toBe("doit");
+    expect(duitku.created).toHaveLength(0);
+    expect(duitku.healthCalls).toBe(0);
+  });
+
+  it("answers 503 and stores nothing when the only gateway was revoked", async () => {
+    await setQrisRule("duitku", null);
+    await setPackageGateways(["doit"]);
+    const { token, linkId } = await openBill();
+    await expect(
+      createIntent(outletContext(), token, {
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: `k-${unique()}`,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    const { rows } = await owner.query(
+      "SELECT 1 FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2",
+      [tenantId, linkId],
+    );
+    expect(rows).toHaveLength(0);
+    expect(duitku.created).toHaveLength(0);
+  });
+
+  it("a revoked fallback is never used when the primary is down", async () => {
+    await setQrisRule("duitku", "doit");
+    duitku.healthValue = "down";
+    await setPackageGateways(["duitku"]);
+    const { token } = await openBill();
+    await expect(
+      createIntent(outletContext(), token, {
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: `k-${unique()}`,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(doit.created).toHaveLength(0);
+  });
+
+  it("a revoked gateway is not offered as selectable and keeps the primary's health reading", async () => {
+    await setQrisRule("duitku", null);
+    await setPackageGateways(["doit"]);
+    const selected = await selectGatewayForNewIntent(outletContext(), outletA, {
+      provider: "duitku",
+      fallbackProvider: null,
+      enabled: true,
+      isDefault: false,
+    });
+    expect(selected.provider).toBeNull();
+    expect(selected.health.status).toBe("down");
+  });
+
+  it("an intent made before the revoke stays on its gateway", async () => {
+    await setQrisRule("duitku", null);
+    const intent = await newQrisIntent();
+    expect(intent.provider).toBe("duitku");
+    await setPackageGateways(["doit"]);
+
+    const result = await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(Date.now() + 120_000),
+    );
+
+    expect(result.checked).toBe(1);
+    expect(duitku.statusReads.get(intent.provider_ref)).toBe(1);
+  });
+
+  it("outlet health ignores a revoked gateway (failover sees the real picture)", async () => {
+    await setQrisRule("duitku", "doit");
+    doit.healthValue = "down";
+    expect((await outletGatewayHealth(outletContext(), outletA)).status).toBe(
+      "available",
+    );
+    await setPackageGateways(["doit"]);
+    const health = await outletGatewayHealth(outletContext(), outletA);
+    expect(health.status).toBe("down");
+    expect(health.provider.split("+")).toEqual(["doit"]);
+  });
+
+  it("the PRD default (no stored rule) keeps DOIT for a tenant whose package lists no gateway", async () => {
+    await setPackageGateways([]);
+    const intent = await newQrisIntent();
+    expect(intent.provider).toBe("doit");
+  });
+
+  it("the PRD default no longer takes DOIT once the package lists another gateway but not DOIT", async () => {
+    await setPackageGateways(["duitku"]);
+    const { token } = await openBill();
+    await expect(
+      createIntent(outletContext(), token, {
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: `k-${unique()}`,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(doit.created).toHaveLength(0);
+    expect((await outletGatewayHealth(outletContext(), outletA)).status).toBe(
+      "down",
+    );
+  });
+
+  it("outlet health is down when every enabled rule's gateway was revoked", async () => {
+    await setQrisRule("duitku", null);
+    await owner.query(
+      `INSERT INTO payment_routing_rules (tenant_id, outlet_id, method, provider, fallback_provider, enabled, updated_by)
+       VALUES ($1, $2, 'va', 'duitku', NULL, true, 'system:test'),
+              ($1, $2, 'bank_transfer', 'duitku', NULL, true, 'system:test')`,
+      [tenantId, outletA],
+    );
+    try {
+      await setPackageGateways(["doit"]);
+      const health = await outletGatewayHealth(outletContext(), outletA);
+      expect(health.status).toBe("down");
+      expect(health.reason).toBeUndefined();
+      expect(duitku.healthCalls).toBe(0);
+      expect(doit.healthCalls).toBe(0);
+    } finally {
+      await owner.query(
+        "DELETE FROM payment_routing_rules WHERE tenant_id = $1 AND outlet_id = $2 AND method IN ('va','bank_transfer')",
+        [tenantId, outletA],
+      );
+    }
+  });
+
+  it("platform switch off: no-fallback rule answers 503, an old intent keeps polling", async () => {
+    await setQrisRule("duitku", null);
+    const old = await newQrisIntent();
+    platform.enabled.delete("duitku");
+    const { token } = await openBill();
+    await expect(
+      createIntent(outletContext(), token, {
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: `k-${unique()}`,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(Date.now() + 120_000),
+    );
+    expect(duitku.statusReads.get(old.provider_ref)).toBe(1);
   });
 });
 

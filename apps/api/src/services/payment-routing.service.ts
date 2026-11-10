@@ -204,7 +204,8 @@ export async function providerRoutability(
  * Write-time gate for an ENABLED rule (sub-302 D12): the provider and its
  * fallback must be registered, platform-enabled, allowed for the tenant and
  * backed by an active integration; the fallback must differ from the provider.
- * Tenant-allowed is checked here and not at intent time (PAY-05).
+ * Tenant-allowed is re-checked at intent time too (payment-gateway-select.ts):
+ * a later package change does not rewrite rules (PAY-05).
  */
 export async function assertRoutableProvider(
   tx: Tx,

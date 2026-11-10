@@ -1124,7 +1124,7 @@ D3. Boot (`server.ts:44-46`, `worker-main.ts:149-151`): `registerPaymentGateway(
 D4. Provider selection, new module `services/payment-gateway-select.ts` (keeps `payment.service.ts` edits to call swaps):
 - `selectGatewayForNewIntent(context, outletId, routing: ResolvedRouting): Promise<{ provider, port, health } | { provider: null, health }>`: candidates = [routing.provider, routing.fallbackProvider] (non-null, distinct). A candidate is usable when `isPlatformGatewayEnabled(provider)` (D9) and `paymentGatewayFor(p).health(ctx, outletId).status !== "down"`. First usable wins (Q73: fallback only when primary is down or platform-disabled). None usable: return primary's health (so `unconfigured` stays non-incident).
 - `outletGatewayHealth(context, outletId): Promise<GatewayHealth & { provider: string }>`: providers = distinct primary+fallback of the outlet's ENABLED rules for `qris`,`va`,`bank_transfer` (resolveRoutingRule). Status = best of the readings (up > degraded > down); `reason: "unconfigured"` only if every reading is down+unconfigured. `provider` = providers joined with `+` (audit only). Health calls run in parallel.
-- Tenant-allowed (feature flags) is NOT checked at intent time (D12 checks it when a rule is written). Reason: 30+ test tenants have `integrationProviders: []` and default DOIT routing; a package change does not rewrite rules (PAY-05), the rule write is the gate. Risk noted in §10.
+- Tenant-allowed (feature flags) is checked at rule write (D12) AND at intent time (legend-8zy5f, 10 Nov 2026): `selectGatewayForNewIntent` and `outletGatewayHealth` drop a candidate the tenant's package no longer lists, so a revoked gateway falls to the fallback or answers 503; existing intents stay put (PAY-05). The PRD default (no stored rule) is gated only when the package lists some payment gateway but not DOIT; a legacy tenant listing no gateway keeps the default. Legacy test mode skips the check.
 
 D5. Call sites (all verified at base):
 - `payment.service.ts:367` `onlineMethods`: per method use `selectGatewayForNewIntent`; channels from the selected port; `provider` in the view = selected provider (fallback when used). `unavailableReason` unchanged semantics.
@@ -1218,7 +1218,7 @@ D27. One migration `0211_platform_payment_gateways`, `when` 1794290000000 (journ
 Order: A, B, C, E in parallel; D after C (needs `payment-duitku.ts` cred helper `duitkuCredentialSet(loaded, now): DuitkuCredentials[]`, exported by C). A and B meet only via D9 signatures.
 
 ## 10. Risks
-- Tenant-allowed is checked at rule write, not at intent time (D4): a package downgrade leaves existing rules live until edited. Follow-up bead: package change disables rules for removed providers.
+- Package downgrade (legend-8zy5f): rules naming a removed gateway are not rewritten but are skipped at intent time (D4). Residual: a legacy rule-less tenant whose package lists no gateway keeps DOIT by default.
 - Legacy shim (D2) is a catch-all; production must never call `setPaymentGateway`.
 - Routing permission change (D14) hides nothing in UI today but API refuses edc-only actors: UI bead needed before release.
 - Duitku refunds are manual (D6) until a refund API exists.

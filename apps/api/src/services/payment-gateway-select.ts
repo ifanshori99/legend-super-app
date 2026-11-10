@@ -6,7 +6,14 @@
 // `payment_intents.provider` (PAY-05).
 
 import type { ScopedTenantContext } from "@starter/shared/core";
+import {
+  integrationProviderSchema,
+  isIntegrationProviderAvailable,
+  PAYMENT_GATEWAY_PROVIDERS,
+} from "@starter/shared/platform";
+import { eq } from "drizzle-orm";
 import { db } from "../db";
+import { tenants } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import {
   paymentGatewayFor,
@@ -44,6 +51,61 @@ function candidatesOf(routing: ResolvedRouting): string[] {
   return list;
 }
 
+type PackageGate = {
+  readonly allows: (provider: string) => boolean;
+  /** The package lists at least one payment gateway. */
+  readonly listsAnyGateway: boolean;
+};
+
+const OPEN_GATE: PackageGate = { allows: () => true, listsAnyGateway: false };
+
+/**
+ * Package gate read at selection time (legend-8zy5f): a rule may name a gateway
+ * only while the tenant's package (`featureFlags.integrationProviders`) still
+ * lists it. The rule write checks this too (D12), but a later package change
+ * does not rewrite rules (PAY-05), so the rule is re-checked each time it is
+ * used. An unreadable flag set fails closed. Not applied in legacy test mode
+ * (one port for every provider).
+ */
+async function readPackageGate(
+  context: ScopedTenantContext,
+): Promise<PackageGate> {
+  if (paymentGatewayLegacyMode()) return OPEN_GATE;
+  const [tenant] = await withTenant(db, context, (tx) =>
+    tx
+      .select({ featureFlags: tenants.featureFlags })
+      .from(tenants)
+      .where(eq(tenants.id, context.tenant.tenantId))
+      .limit(1),
+  );
+  const allows = (provider: string): boolean => {
+    const known = integrationProviderSchema.safeParse(provider);
+    return (
+      known.success &&
+      isIntegrationProviderAvailable(tenant?.featureFlags, known.data)
+    );
+  };
+  return {
+    allows,
+    listsAnyGateway: PAYMENT_GATEWAY_PROVIDERS.some(allows),
+  };
+}
+
+/**
+ * Candidates a rule may use now. A stored rule needs every gateway in the
+ * package. The PRD default (no stored rule, DOIT) is gated only when the
+ * package lists some payment gateway but not that one (a downgrade): a legacy
+ * tenant whose package lists no gateway keeps the default (D8, PAY-05).
+ */
+function allowedCandidates(
+  routing: ResolvedRouting,
+  gate: PackageGate,
+): string[] {
+  const list = candidatesOf(routing);
+  if (routing.isDefault && !gate.listsAnyGateway) return list;
+  return list.filter(gate.allows);
+}
+
 const DISABLED_HEALTH: GatewayHealth = { status: "down" };
 
 export async function selectGatewayForNewIntent(
@@ -51,7 +113,7 @@ export async function selectGatewayForNewIntent(
   outletId: string,
   routing: ResolvedRouting,
 ): Promise<GatewaySelection> {
-  const candidates = candidatesOf(routing);
+  const candidates = allowedCandidates(routing, await readPackageGate(context));
   let primaryHealth: GatewayHealth | null = null;
   for (const provider of candidates) {
     const port = paymentGatewayFor(provider);
@@ -88,11 +150,18 @@ export async function outletGatewayHealth(
       rules.push(await resolveRoutingRule(tx, context, outletId, method));
     return rules;
   });
+  const gate = routings.some((rule) => rule.enabled)
+    ? await readPackageGate(context)
+    : OPEN_GATE;
   const providers: string[] = [];
   for (const rule of routings) {
     if (!rule.enabled) continue;
-    for (const provider of candidatesOf(rule))
+    for (const provider of allowedCandidates(rule, gate))
       if (!providers.includes(provider)) providers.push(provider);
+  }
+  if (providers.length === 0 && routings.some((rule) => rule.enabled)) {
+    // Every named gateway was revoked from the package: nothing is usable.
+    return { status: "down", provider: "none" };
   }
   if (providers.length === 0) {
     // Nothing routed online: read the PRD default so a tenant that switched
