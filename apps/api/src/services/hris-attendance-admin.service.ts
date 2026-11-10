@@ -25,6 +25,7 @@ import type { PermissionCode } from "@starter/shared/access";
 import {
   createUlid,
   encodeCursor,
+  ulidToUuid,
   type OutletId,
   type ScopedTenantContext,
   type TenantId,
@@ -49,6 +50,7 @@ import {
   type updateAttendancePolicy as updateAttendancePolicyEndpoint,
 } from "@starter/shared/hris";
 import { db } from "../db/index.ts";
+import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import {
   attendanceDutyMeals,
   attendanceLogs,
@@ -333,6 +335,9 @@ export async function updateAttendancePolicy(
 
 // ------------------------------------------------------------- review queue
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function toReviewItem(
   tx: Tx,
   context: ScopedTenantContext,
@@ -341,8 +346,35 @@ async function toReviewItem(
   signPhoto: AttendancePhotoSigner,
   now: Date,
 ): Promise<AttendanceReviewItem> {
-  const photoUrl =
-    row.photoKey === null ? null : await signPhoto(context, row.photoKey, tx);
+  // legend-whiwv: an edge event can name any selfie id. Never sign an object
+  // that is linked to another log, or unlinked at another outlet than this
+  // log's (same rule as the employee's own history).
+  let photoUrl: string | null = null;
+  if (row.photoKey !== null) {
+    // A key that is not a UUID cannot name a storage row (the id column is a
+    // uuid), so there is nothing to compare; skip the lookup instead of failing.
+    const [photoObject] = !UUID_PATTERN.test(row.photoKey)
+      ? []
+      : await tx
+          .select({
+            sourceId: coreStorageObjects.sourceId,
+            outletId: coreStorageObjects.outletId,
+          })
+          .from(coreStorageObjects)
+          .where(
+            and(
+              eq(coreStorageObjects.tenantId, row.tenantId),
+              eq(coreStorageObjects.id, row.photoKey),
+            ),
+          )
+          .limit(1);
+    const foreignPhoto =
+      photoObject !== undefined &&
+      (photoObject.sourceId === null
+        ? photoObject.outletId !== row.outletId
+        : photoObject.sourceId !== ulidToUuid(row.id));
+    photoUrl = foreignPhoto ? null : await signPhoto(context, row.photoKey, tx);
+  }
   // Each selfie URL handed to a reviewer is a sensitive-data access.
   if (photoUrl !== null)
     await recordAudit(

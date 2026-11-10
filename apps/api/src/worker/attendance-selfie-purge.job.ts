@@ -30,6 +30,8 @@ import {
   inArray,
   isNotNull,
   isNull,
+  notInArray,
+  or,
   sql,
 } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -135,14 +137,6 @@ async function purgeTenant(
       .selfieRetentionDays ??
     tenantDefault?.policy.selfieRetentionDays ??
     ATTENDANCE_SELFIE_RETENTION_DEFAULT_DAYS;
-  // Smallest window in play: the SQL pre-filter only drops rows no policy
-  // could make due, the exact per-outlet check follows in code.
-  const minRetentionDays = Math.min(
-    ATTENDANCE_SELFIE_RETENTION_DEFAULT_DAYS,
-    ...policies.map((row) => row.policy.selfieRetentionDays),
-  );
-  const dueBefore = new Date(now.getTime() - minRetentionDays * MS_PER_DAY);
-
   // Earliest close time of any closed run of the employee's legal entity whose
   // period covers the log's day. An employee without a legal entity matches no
   // run, so the selfie stays.
@@ -160,6 +154,34 @@ async function purgeTenant(
       AND "payroll_runs"."period_start" <= "attendance_logs"."business_date"
       AND "payroll_runs"."period_end" >= "attendance_logs"."business_date"
   )`;
+
+  // Per-outlet due filter in SQL, so a row that is not due yet (a longer
+  // outlet window) never takes a slot in a page or moves the cursor. Outlets
+  // with their own policy use that window; every other outlet uses the tenant
+  // default (else 90 days). The exact check in code below stays as a guard.
+  const dueBeforeDays = (days: number): string =>
+    new Date(now.getTime() - days * MS_PER_DAY).toISOString();
+  const outletPolicies = policies.filter(
+    (row): row is typeof row & { outletId: string } => row.outletId !== null,
+  );
+  const defaultDays =
+    tenantDefault?.policy.selfieRetentionDays ??
+    ATTENDANCE_SELFIE_RETENTION_DEFAULT_DAYS;
+  const dueFilter = or(
+    ...outletPolicies.map(
+      (row) =>
+        sql`(${attendanceLogs.outletId} = ${row.outletId} AND ${closedAt} <= ${dueBeforeDays(row.policy.selfieRetentionDays)}::timestamptz)`,
+    ),
+    and(
+      outletPolicies.length === 0
+        ? undefined
+        : notInArray(
+            attendanceLogs.outletId,
+            outletPolicies.map((row) => row.outletId),
+          ),
+      sql`${closedAt} <= ${dueBeforeDays(defaultDays)}::timestamptz`,
+    ),
+  );
 
   let cursor: string | null = null;
   for (
@@ -187,7 +209,7 @@ async function purgeTenant(
             eq(attendanceLogs.tenantId, tenantId),
             isNotNull(attendanceLogs.photoKey),
             isNull(attendanceLogs.photoPurgedAt),
-            sql`${closedAt} <= ${dueBefore.toISOString()}::timestamptz`,
+            dueFilter,
             lastId === null ? undefined : gt(attendanceLogs.id, lastId),
           ),
         )

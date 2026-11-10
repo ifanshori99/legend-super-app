@@ -2072,3 +2072,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - m1 dimajukan fast-forward 46352cd5 -> edacffd2 lalu direfresh dengan commit docs ini; push ke origin tanpa force. Worktree 12 cabang yang sudah digabung dihapus (cabang lokal yang `git branch -d` tolak dibiarkan).
 - Keputusan Q8 (CTO): bentuk `kind` dari tenant-config-export jadi bentuk tunggal, codec ikut; kartu `legend-5cwrq` (P2). Jembatan `hasKind` di `configBundleSchema` tetap sampai kartu itu selesai.
 - Pemakaian: sesi ini 8827k biaya*, 19 subagent, compact 2. parallel-report tidak menemukan sesi di jendela `--since 20:00` (folder proyek berbeda), tidak dicatat per agent.
+
+## Fix Codex 414 HRIS absensi (11 Nov 2026, cabang `fix/codex-414-hris-attendance`, kartu legend-whiwv)
+
+- Sudah: enam temuan dibetulkan. (1) izin absen diperiksa pada outlet tujuan (`snapshot.allows` per outlet). (2) duplikat berturut (in,in / out,out / break,break) dicegah atomik: advisory lock per karyawan+shift lalu cek log pendahulu; hanya jalur online, jalur offline/edge tidak disentuh. (3) URL selfie admin hanya untuk foto milik log itu. (4) purge menyaring jatuh tempo per outlet di SQL, foto belum jatuh tempo tidak memakan batas 10.000. (5) retry mencari log asal berdasarkan kunci idempotensi dulu, sebelum memilih outlet. (6) retry identik bersamaan diserialkan per kunci (advisory lock).
+- Keputusan: indeks unik parsial per (karyawan, shift, jenis) dibuang setelah review architect (P1: UI menawarkan istirahat berulang dan masuk lagi setelah keluar, indeks akan menelan data). Tidak ada migrasi dan tidak ada risiko data duplikat lama.
+- Bukti: tes gagal-dulu di `hris-attendance-clock-414`, `hris-attendance-unique-414`, `hris-attendance-admin-selfie`, `hris-attendance-purge` (10.400 baris); 7 berkas tes terarah 109 lulus; tsc api, eslint, prettier hijau.
+- Sisa risiko: kunci idempotensi yang kena dedupe tidak disimpan (retry kunci itu setelah jenis berbeda bisa menyisipkan baris baru, jendela sempit); foto `photo_key` non-UUID tetap ditandatangani seperti sebelumnya; baris purge yang gagal terus bisa memakan slot bila lebih dari 10.000.
