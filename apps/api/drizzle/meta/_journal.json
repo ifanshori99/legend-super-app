@@ -1366,6 +1366,13 @@
       "when": 1794287000000,
       "tag": "0208_supplier_return_petty",
       "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1794290000000,
+      "tag": "0211_platform_payment_gateways",
+      "breakpoints": true
     }
   ]
 }

@@ -102,8 +102,9 @@ import { runMetricsDailyJob } from "./worker/metrics-daily.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
-import { setPaymentGateway } from "./services/payment-gateway.ts";
-import { setPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
+import { createDuitkuGateway } from "./services/payment-duitku.ts";
+import { registerPaymentGateway } from "./services/payment-gateway.ts";
+import { registerPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
 import { env } from "./config/env";
@@ -147,8 +148,19 @@ setInventoryRecipeSource(recipeBomSource);
 // through the same adapter (PaymentRefundPort, legend-0ogy), only while
 // DOIT_REFUNDS_ENABLED is on; otherwise the refund port stays fail-closed.
 const doitGateway = createDoitGateway();
-setPaymentGateway(doitGateway);
-if (env.DOIT_REFUNDS_ENABLED) setPaymentRefundGateway(doitGateway);
+registerPaymentGateway(doitGateway);
+if (env.DOIT_REFUNDS_ENABLED) registerPaymentRefundGateway(doitGateway);
+// Sub-302 D3: Duitku joins the registry when its public callback origin and
+// return page are configured; without them no Duitku intent could be paid,
+// so the provider stays unregistered (fail closed, cannot be enabled on the
+// platform). Duitku has no refund API: no refund port (D6).
+if (env.DUITKU_CALLBACK_BASE_URL && env.DUITKU_RETURN_URL)
+  registerPaymentGateway(
+    createDuitkuGateway({
+      callbackBaseUrl: env.DUITKU_CALLBACK_BASE_URL,
+      returnUrl: env.DUITKU_RETURN_URL,
+    }),
+  );
 const registry = new Pool({
   connectionString: workerUrl,
   max: 1,

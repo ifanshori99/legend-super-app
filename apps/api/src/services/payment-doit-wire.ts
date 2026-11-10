@@ -593,8 +593,12 @@ export function verifyDoitSignature(input: {
   header: string | undefined;
   secrets: readonly string[];
   now: Date;
+  /** Accepted timestamp age; defaults to `DOIT_SIGNATURE_TOLERANCE`. The
+   * platform sets it per gateway (sub-302 D19). */
+  tolerance?: { pastSeconds: number; futureSeconds: number };
 }): boolean {
   const { rawBody, header, secrets, now } = input;
+  const tolerance = input.tolerance ?? DOIT_SIGNATURE_TOLERANCE;
   if (!header || header.length > 512) return false;
   let timestamp: string | null = null;
   const candidates: Buffer[] = [];
@@ -613,10 +617,7 @@ export function verifyDoitSignature(input: {
   }
   if (timestamp === null || candidates.length === 0) return false;
   const age = now.getTime() / 1000 - Number(timestamp);
-  if (
-    !(age <= DOIT_SIGNATURE_TOLERANCE.pastSeconds) ||
-    !(-age <= DOIT_SIGNATURE_TOLERANCE.futureSeconds)
-  )
+  if (!(age <= tolerance.pastSeconds) || !(-age <= tolerance.futureSeconds))
     return false;
 
   let matched = false;

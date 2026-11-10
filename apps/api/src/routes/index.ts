@@ -39,6 +39,7 @@ import { consentRouter, textOverridesRouter } from "./text-consent.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
+import { platformPaymentGatewaysRouter } from "./platform-payment-gateways.routes";
 import { createNotificationRouter } from "./notification.routes";
 import { taxRouter } from "./tax.routes";
 import { createMenuRouter } from "./menu.routes";
@@ -144,6 +145,7 @@ apiRouter.use(noStore);
 apiRouter.use("/health", healthRouter);
 // Panel Platform (Super Admin) and tenant organisation settings (WS-01).
 apiRouter.use("/platform", platformUsageRouter);
+apiRouter.use("/platform/payment-gateways", platformPaymentGatewaysRouter);
 apiRouter.use("/platform", platformRouter);
 apiRouter.use("/org", orgIntegrationsRouter);
 apiRouter.use("/org", orgRouter);

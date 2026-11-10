@@ -1,0 +1,640 @@
+// Gateway registry and per-intent provider selection (sub-302 D1-D6, D11).
+//
+// - registry: one adapter per provider, fail closed when unknown, the test-only
+//   `setPaymentGateway` shim keeps the old one-port-for-everything behaviour;
+// - new intents: the routing rule's provider, its fallback only when the
+//   primary is down or disabled on the platform (Q73);
+// - existing intents never move (PAY-05): status polls go to the origin port;
+// - poller: every registered provider is polled, one provider's three errors
+//   do not stop another's;
+// - a provider without a refund port (Duitku) leaves its refunds `approved`
+//   for manual settlement.
+//
+// Service level on PostgreSQL. The platform "enabled" switch is mocked here: it
+// is read from `platform_payment_gateways` by slice B.
+import { randomBytes, randomUUID } from "node:crypto";
+import { Pool } from "pg";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { cafeLegendAccessFixtures } from "@starter/shared/access";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
+import type { PaymentGatewayStatus } from "@starter/shared/payment";
+
+const platform = vi.hoisted(() => ({ enabled: new Set<string>() }));
+vi.mock("../services/platform-payment-gateway.service", () => ({
+  isPlatformGatewayEnabled: async (provider: string) =>
+    platform.enabled.has(provider),
+}));
+
+import {
+  paymentGatewayFor,
+  registerPaymentGateway,
+  registeredGatewayProviders,
+  resetPaymentGateways,
+  setPaymentGateway,
+  unconfiguredPaymentGateway,
+  type GatewayIntentRequest,
+  type GatewayPaymentStatus,
+  type PaymentGatewayPort,
+} from "../services/payment-gateway";
+import {
+  outletGatewayHealth,
+  selectGatewayForNewIntent,
+} from "../services/payment-gateway-select";
+import {
+  registerPaymentRefundGateway,
+  resetPaymentRefundGateways,
+  type GatewayRefundLookup,
+  type GatewayRefundRequest,
+  type GatewayRefundResult,
+  type PaymentRefundPort,
+} from "../services/payment-refund-gateway";
+import {
+  runRefundPayout,
+  sweepApprovedRefundPayouts,
+} from "../services/payment-refund.service";
+import {
+  createIntent,
+  createPaymentLink,
+  pollPendingGatewayIntents,
+} from "../services/payment.service";
+
+const tenantId = cafeLegendPlatformFixtures.tenant.id;
+const outletA = cafeLegendAccessFixtures.outletIds.bandung;
+const PARKED_LEASE = "2999-01-01T00:00:00.000Z";
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 3,
+});
+const unique = () => randomBytes(4).toString("hex");
+
+function outletContext(outletId: OutletId = outletA): ScopedTenantContext {
+  return establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    { kind: "outlets", outletIds: [outletId] },
+  );
+}
+
+function tenantContext(): ScopedTenantContext {
+  return establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "job" }),
+    { kind: "tenant" },
+  );
+}
+
+/** Gateway double for one provider code. */
+class FakeGateway implements PaymentGatewayPort {
+  healthValue: PaymentGatewayStatus = "available";
+  reason: "unconfigured" | undefined = undefined;
+  healthCalls = 0;
+  created: GatewayIntentRequest[] = [];
+  /** providerRef -> status reads. */
+  readonly statusReads = new Map<string, number>();
+  failStatus = false;
+  private readonly refs = new Set<string>();
+  constructor(readonly provider: string) {}
+
+  async health() {
+    this.healthCalls += 1;
+    return {
+      status: this.healthValue,
+      ...(this.reason ? { reason: this.reason } : {}),
+    };
+  }
+  async createIntent(input: GatewayIntentRequest) {
+    this.created.push(input);
+    const providerRef = `${this.provider}-${randomBytes(6).toString("hex")}`;
+    this.refs.add(providerRef);
+    return {
+      providerRef,
+      instructions: {
+        method: "qris" as const,
+        qrPayload: `00020101FAKE${this.provider}`,
+        issuer: null,
+      },
+      expiresAt: input.expiresAt,
+    };
+  }
+  async getStatus(input: {
+    providerRef: string;
+  }): Promise<GatewayPaymentStatus> {
+    this.statusReads.set(
+      input.providerRef,
+      (this.statusReads.get(input.providerRef) ?? 0) + 1,
+    );
+    if (this.failStatus) throw new Error("provider down");
+    return {
+      status: "pending",
+      providerRef: input.providerRef,
+      amountIdr: null,
+    };
+  }
+  async channels() {
+    return [{ code: "bca", name: "BCA" }];
+  }
+  totalReads() {
+    let total = 0;
+    for (const n of this.statusReads.values()) total += n;
+    return total;
+  }
+}
+
+let doit: FakeGateway;
+let duitku: FakeGateway;
+const createdLinkIds: string[] = [];
+
+async function setQrisRule(provider: string, fallback: string | null) {
+  await owner.query(
+    "DELETE FROM payment_routing_rules WHERE tenant_id = $1 AND outlet_id = $2 AND method = 'qris'",
+    [tenantId, outletA],
+  );
+  await owner.query(
+    `INSERT INTO payment_routing_rules (tenant_id, outlet_id, method, provider, fallback_provider, enabled, updated_by)
+     VALUES ($1, $2, 'qris', $3, $4, true, 'system:test')`,
+    [tenantId, outletA, provider, fallback],
+  );
+}
+
+async function openBill() {
+  const opened = await createPaymentLink(
+    outletContext(),
+    {
+      outletId: outletA,
+      reference: `RG-${unique()}`,
+      tableLabel: "A07",
+      pax: 2,
+      subtotalIdr: 100_000,
+      discountIdr: 0,
+      serviceChargeIdr: 0,
+      taxIdr: 0,
+      roundingIdr: 0,
+      totalIdr: 100_000,
+      returnPath: "/t/v1.abc",
+    },
+    "00000000-0000-4000-8000-000000000001",
+  );
+  createdLinkIds.push(opened.linkId);
+  return opened;
+}
+
+async function newQrisIntent() {
+  const { token } = await openBill();
+  const intent = await createIntent(outletContext(), token, {
+    method: "qris",
+    channelCode: null,
+    idempotencyKey: `k-${unique()}`,
+  });
+  const { rows } = await owner.query<{
+    provider: string;
+    provider_ref: string;
+    status: string;
+  }>(
+    "SELECT provider, provider_ref, status FROM payment_intents WHERE tenant_id = $1 AND id = $2",
+    [tenantId, intent.id],
+  );
+  return { id: intent.id, ...rows[0]! };
+}
+
+beforeAll(() => {
+  if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
+    throw new Error("Requires the disposable test database");
+});
+
+beforeEach(async () => {
+  platform.enabled = new Set(["doit", "duitku"]);
+  doit = new FakeGateway("doit");
+  duitku = new FakeGateway("duitku");
+  resetPaymentGateways();
+  registerPaymentGateway(doit);
+  registerPaymentGateway(duitku);
+  // The poller is tenant-wide: park every foreign intent so counts are exact.
+  await owner.query(
+    `UPDATE payment_intents SET gateway_poll_lease_until = $2
+      WHERE tenant_id = $1 AND gateway_poll_lease_until IS NULL`,
+    [tenantId, PARKED_LEASE],
+  );
+});
+
+afterEach(async () => {
+  resetPaymentGateways();
+  resetPaymentRefundGateways();
+  await owner.query(
+    "DELETE FROM payment_routing_rules WHERE tenant_id = $1 AND outlet_id = $2 AND method = 'qris'",
+    [tenantId, outletA],
+  );
+});
+
+afterAll(async () => {
+  if (createdLinkIds.length > 0) {
+    const intents =
+      "SELECT id FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])";
+    await owner.query(
+      `DELETE FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
+      "DELETE FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
+      "DELETE FROM payment_links WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [tenantId, createdLinkIds],
+    );
+  }
+  await owner.query(
+    `UPDATE payment_intents SET gateway_poll_lease_until = NULL
+      WHERE tenant_id = $1 AND gateway_poll_lease_until = $2`,
+    [tenantId, PARKED_LEASE],
+  );
+  await owner.end();
+});
+
+describe("gateway registry (D1, D2)", () => {
+  it("answers with the adapter registered for the provider", () => {
+    expect(paymentGatewayFor("doit")).toBe(doit);
+    expect(paymentGatewayFor("duitku")).toBe(duitku);
+    expect([...registeredGatewayProviders()].sort()).toEqual([
+      "doit",
+      "duitku",
+    ]);
+  });
+
+  it("fails closed for a provider nobody registered", async () => {
+    expect(paymentGatewayFor("pjp")).toBe(unconfiguredPaymentGateway);
+    await expect(
+      paymentGatewayFor("pjp").createIntent({} as GatewayIntentRequest),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+  });
+
+  it("registering a provider again replaces its adapter", () => {
+    const replacement = new FakeGateway("duitku");
+    registerPaymentGateway(replacement);
+    expect(paymentGatewayFor("duitku")).toBe(replacement);
+    expect(registeredGatewayProviders()).toHaveLength(2);
+  });
+
+  it("reset drops every adapter", () => {
+    resetPaymentGateways();
+    expect(registeredGatewayProviders()).toEqual([]);
+    expect(paymentGatewayFor("doit")).toBe(unconfiguredPaymentGateway);
+  });
+
+  it("the test shim answers for every provider, and register leaves it", () => {
+    const only = new FakeGateway("x");
+    setPaymentGateway(only);
+    expect(paymentGatewayFor("doit")).toBe(only);
+    expect(paymentGatewayFor("anything")).toBe(only);
+    expect(registeredGatewayProviders()).toEqual(["x"]);
+    registerPaymentGateway(doit);
+    expect(paymentGatewayFor("duitku")).toBe(unconfiguredPaymentGateway);
+    setPaymentGateway(null);
+    expect(registeredGatewayProviders()).toEqual([]);
+  });
+});
+
+describe("provider selection for a new intent (D4, Q73)", () => {
+  it("uses the primary and never asks the fallback while the primary is up", async () => {
+    await setQrisRule("duitku", "doit");
+    const intent = await newQrisIntent();
+    expect(intent.provider).toBe("duitku");
+    expect(duitku.created).toHaveLength(1);
+    expect(duitku.created[0]!.provider).toBe("duitku");
+    expect(doit.created).toHaveLength(0);
+    expect(doit.healthCalls).toBe(0);
+  });
+
+  it("uses the fallback when the primary is down", async () => {
+    await setQrisRule("duitku", "doit");
+    duitku.healthValue = "down";
+    const intent = await newQrisIntent();
+    expect(intent.provider).toBe("doit");
+    expect(doit.created).toHaveLength(1);
+    expect(doit.created[0]!.provider).toBe("doit");
+    expect(duitku.created).toHaveLength(0);
+  });
+
+  it("a degraded primary still takes the payment", async () => {
+    await setQrisRule("duitku", "doit");
+    duitku.healthValue = "degraded";
+    const intent = await newQrisIntent();
+    expect(intent.provider).toBe("duitku");
+  });
+
+  it("uses the fallback when the primary is disabled on the platform", async () => {
+    await setQrisRule("duitku", "doit");
+    platform.enabled.delete("duitku");
+    const intent = await newQrisIntent();
+    expect(intent.provider).toBe("doit");
+    expect(duitku.created).toHaveLength(0);
+    expect(duitku.healthCalls).toBe(0);
+  });
+
+  it("answers 503 and stores nothing when no candidate is usable", async () => {
+    await setQrisRule("duitku", "doit");
+    duitku.healthValue = "down";
+    doit.healthValue = "down";
+    const { token, linkId } = await openBill();
+    await expect(
+      createIntent(outletContext(), token, {
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: `k-${unique()}`,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    const { rows } = await owner.query(
+      "SELECT 1 FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2",
+      [tenantId, linkId],
+    );
+    expect(rows).toHaveLength(0);
+    expect(duitku.created).toHaveLength(0);
+    expect(doit.created).toHaveLength(0);
+  });
+
+  it("a rule without a fallback does not fall back to anything", async () => {
+    await setQrisRule("duitku", null);
+    duitku.healthValue = "down";
+    const selected = await selectGatewayForNewIntent(outletContext(), outletA, {
+      provider: "duitku",
+      fallbackProvider: null,
+      enabled: true,
+      isDefault: false,
+    });
+    expect(selected.provider).toBeNull();
+    expect(selected.health.status).toBe("down");
+    expect(doit.healthCalls).toBe(0);
+  });
+
+  it("keeps the primary's health when nothing is usable (unconfigured stays quiet)", async () => {
+    duitku.healthValue = "down";
+    duitku.reason = "unconfigured";
+    const selected = await selectGatewayForNewIntent(outletContext(), outletA, {
+      provider: "duitku",
+      fallbackProvider: null,
+      enabled: true,
+      isDefault: false,
+    });
+    expect(selected).toMatchObject({
+      provider: null,
+      health: { status: "down", reason: "unconfigured" },
+    });
+  });
+});
+
+describe("outlet health (D4, D5 failover)", () => {
+  it("is the best reading of the providers the outlet's rules name", async () => {
+    await setQrisRule("duitku", "doit");
+    duitku.healthValue = "down";
+    const health = await outletGatewayHealth(outletContext(), outletA);
+    expect(health.status).toBe("available");
+    expect(health.provider.split("+").sort()).toEqual(["doit", "duitku"]);
+  });
+
+  it("is down only when every named provider is down", async () => {
+    await setQrisRule("duitku", "doit");
+    duitku.healthValue = "down";
+    doit.healthValue = "down";
+    const health = await outletGatewayHealth(outletContext(), outletA);
+    expect(health.status).toBe("down");
+    expect(health.reason).toBeUndefined();
+  });
+
+  it("is unconfigured only when every reading is down and unconfigured", async () => {
+    await setQrisRule("duitku", "doit");
+    for (const gateway of [doit, duitku]) {
+      gateway.healthValue = "down";
+      gateway.reason = "unconfigured";
+    }
+    expect(await outletGatewayHealth(outletContext(), outletA)).toMatchObject({
+      status: "down",
+      reason: "unconfigured",
+    });
+    doit.reason = undefined;
+    expect(
+      (await outletGatewayHealth(outletContext(), outletA)).reason,
+    ).toBeUndefined();
+  });
+});
+
+describe("an existing intent stays on its gateway (PAY-05, D11)", () => {
+  it("polling after the rule switched asks the origin port only", async () => {
+    await setQrisRule("duitku", null);
+    const intent = await newQrisIntent();
+    expect(intent.provider).toBe("duitku");
+    await setQrisRule("doit", null);
+
+    const result = await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(Date.now() + 120_000),
+    );
+
+    expect(result.checked).toBe(1);
+    expect(duitku.statusReads.get(intent.provider_ref)).toBe(1);
+    expect(doit.totalReads()).toBe(0);
+  });
+
+  it("a platform-disabled gateway is still polled for money in flight", async () => {
+    await setQrisRule("duitku", null);
+    const intent = await newQrisIntent();
+    platform.enabled.delete("duitku");
+
+    await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(Date.now() + 120_000),
+    );
+
+    expect(duitku.statusReads.get(intent.provider_ref)).toBe(1);
+  });
+});
+
+describe("poller across providers (D5)", () => {
+  it("polls both providers; three errors of one do not stop the other", async () => {
+    await setQrisRule("duitku", null);
+    const duitkuIntents = [];
+    for (let i = 0; i < 4; i += 1) duitkuIntents.push(await newQrisIntent());
+    await setQrisRule("doit", null);
+    const doitIntent = await newQrisIntent();
+    duitku.failStatus = true;
+
+    const result = await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(Date.now() + 120_000),
+    );
+
+    // Three consecutive Duitku errors stop Duitku (the fourth is skipped, not
+    // counted); DOIT is still asked about its intent.
+    expect(duitku.totalReads()).toBe(3);
+    expect(duitku.statusReads.has(duitkuIntents[3]!.provider_ref)).toBe(false);
+    expect(doit.statusReads.get(doitIntent.provider_ref)).toBe(1);
+    expect(result.checked).toBe(4);
+  });
+
+  it("returns at once when no gateway is registered", async () => {
+    await setQrisRule("duitku", null);
+    await newQrisIntent();
+    resetPaymentGateways();
+    const result = await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(Date.now() + 120_000),
+    );
+    expect(result).toEqual({ checked: 0, settled: 0 });
+  });
+});
+
+describe("refund of a provider without a refund API (D6)", () => {
+  class RecordingRefundPort implements PaymentRefundPort {
+    readonly provider = "doit";
+    readonly sent: GatewayRefundRequest[] = [];
+    readonly lookups: string[] = [];
+    async refund(input: GatewayRefundRequest): Promise<GatewayRefundResult> {
+      this.sent.push(input);
+      throw new Error("must not be called");
+    }
+    async getRefundStatus(input: {
+      idempotencyKey: string;
+    }): Promise<GatewayRefundLookup> {
+      this.lookups.push(input.idempotencyKey);
+      return { status: "not_found" };
+    }
+  }
+
+  const refundIds: string[] = [];
+  const intentIds: string[] = [];
+  const linkIds: string[] = [];
+
+  afterAll(async () => {
+    const pool = new Pool({
+      connectionString: process.env.STARTER_TEST_DATABASE_URL,
+      max: 1,
+    });
+    await pool.query("DELETE FROM payment_refunds WHERE id = ANY($1::uuid[])", [
+      refundIds,
+    ]);
+    await pool.query(
+      "DELETE FROM payment_unallocated_funds WHERE payment_intent_id = ANY($1::uuid[])",
+      [intentIds],
+    );
+    await pool.query(
+      "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
+      [intentIds],
+    );
+    await pool.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
+      intentIds,
+    ]);
+    await pool.query("DELETE FROM payment_links WHERE id = ANY($1::uuid[])", [
+      linkIds,
+    ]);
+    await pool.end();
+  });
+
+  async function seedApprovedRefund(provider: string) {
+    const linkId = randomUUID();
+    const intentId = randomUUID();
+    const refundId = randomUUID();
+    const fundId = randomUUID();
+    linkIds.push(linkId);
+    intentIds.push(intentId);
+    refundIds.push(refundId);
+    await owner.query(
+      `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+       VALUES ($1, $2, $3, $4, $5, 100000, 100000, 100000, 'system:test')`,
+      [
+        linkId,
+        tenantId,
+        outletA,
+        randomBytes(32).toString("hex"),
+        `RGR-${linkId.slice(0, 8)}`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_intents (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key, status, paid_at, instructions, expires_at, provider_ref)
+       VALUES ($1, $2, $3, $4, 'qris', $5, 100000, $6, 'paid', now(), '{"method":"qris","qrPayload":"test","issuer":null}', now(), $7)`,
+      [
+        intentId,
+        tenantId,
+        outletA,
+        linkId,
+        provider,
+        `rgr-${intentId}`,
+        `pay-${intentId}`,
+      ],
+    );
+    const evidence = await owner.query<{ id: string }>(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, $4, $5, 'qris', 'verified_webhook', 20000, now())
+       RETURNING id`,
+      [tenantId, outletA, intentId, provider, `ev-${intentId}`],
+    );
+    await owner.query(
+      `INSERT INTO payment_unallocated_funds (id, tenant_id, outlet_id, payment_intent_id, evidence_id, amount_idr, reason)
+       VALUES ($1, $2, $3, $4, $5, 20000, 'overpayment')`,
+      [fundId, tenantId, outletA, intentId, evidence.rows[0]!.id],
+    );
+    await owner.query(
+      `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+                                    requested_by, approved_by, decided_at, payout_attempts,
+                                    updated_at, unallocated_fund_id)
+       VALUES ($1, $2, $3, $4, 20000, 'Kembalikan kelebihan bayar', 'approved', 'system:test', 'system:approver',
+               now(), 0, now() - interval '2 hours', $5)`,
+      [refundId, tenantId, outletA, intentId, fundId],
+    );
+    return refundId;
+  }
+
+  async function refundRow(refundId: string) {
+    const { rows } = await owner.query<{
+      status: string;
+      payout_attempts: number;
+    }>(
+      "SELECT status, payout_attempts FROM payment_refunds WHERE tenant_id = $1 AND id = $2",
+      [tenantId, refundId],
+    );
+    return rows[0]!;
+  }
+
+  it("a Duitku refund is never sent or claimed and stays approved", async () => {
+    const port = new RecordingRefundPort();
+    registerPaymentRefundGateway(port);
+    const refundId = await seedApprovedRefund("duitku");
+
+    await expect(
+      runRefundPayout(tenantContext(), refundId),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    await sweepApprovedRefundPayouts(tenantContext(), new Date());
+
+    expect(port.sent).toHaveLength(0);
+    expect(port.lookups).not.toContain(`refund:${refundId}`);
+    expect(await refundRow(refundId)).toEqual({
+      status: "approved",
+      payout_attempts: 0,
+    });
+  });
+
+  it("a DOIT refund still reaches the DOIT port", async () => {
+    const port = new RecordingRefundPort();
+    registerPaymentRefundGateway(port);
+    const refundId = await seedApprovedRefund("doit");
+    // Quarantined and attempted once: the service only looks it up, never sends.
+    await owner.query(
+      "UPDATE payment_refunds SET payout_attempts = 1, last_payout_error = 'PAYOUT_QUARANTINED' WHERE id = $1",
+      [refundId],
+    );
+
+    await runRefundPayout(tenantContext(), refundId);
+
+    expect(port.lookups).toContain(`refund:${refundId}`);
+    expect(port.sent).toHaveLength(0);
+  });
+});

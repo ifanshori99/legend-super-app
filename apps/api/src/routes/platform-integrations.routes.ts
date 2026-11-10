@@ -1,7 +1,8 @@
 // Integrations store + quota/cost usage routes (PRD v1.7 §3 F4 "Integrasi per
 // Tenant", "Kuota & Plafon"; TEN-06, PAY-06). Contract:
 // @starter/shared/platform endpoints.ts (orgEndpoints.listIntegrations,
-// upsertIntegration, setIntegrationStatus, getUsage;
+// upsertIntegration, setIntegrationStatus, getUsage; the gateway
+// `POST /integrations/:integrationId/test` is declared here only);
 // platformEndpoints.getTenantUsage).
 //
 // Guards are attached per route, not with router.use(), so mounting these
@@ -43,6 +44,7 @@ import {
   setIntegrationStatus,
   upsertIntegration,
 } from "../services/platform-integration.service.ts";
+import { testGatewayConnection } from "../services/payment-gateway-connection.service.ts";
 import {
   getOrgUsage,
   getTenantUsageForPlatform,
@@ -105,6 +107,22 @@ orgIntegrationsRouter.post(
         getScopedTenantContext(req),
         integrationId,
         input,
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
+
+orgIntegrationsRouter.post(
+  "/integrations/:integrationId/test",
+  ...tenantGuard,
+  manageIntegrations,
+  async (req, res) => {
+    const { integrationId } = integrationParams.parse(req.params);
+    res.json({
+      data: await testGatewayConnection(
+        getScopedTenantContext(req),
+        integrationId,
         getAuth(req).user.id,
       ),
     });

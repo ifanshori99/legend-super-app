@@ -11,7 +11,11 @@
 
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, ilike, lt, or } from "drizzle-orm";
-import { PlatformError, platformEvents } from "@starter/shared/platform";
+import {
+  PAYMENT_GATEWAY_PROVIDERS,
+  PlatformError,
+  platformEvents,
+} from "@starter/shared/platform";
 import type {
   CreateTenantInput,
   Outlet,
@@ -55,6 +59,7 @@ import { db } from "../db/index.ts";
 import {
   edgeNodes,
   outlets,
+  paymentRoutingRules,
   platformPackages,
   tenants,
 } from "../db/schema/index.ts";
@@ -66,6 +71,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import { toOutlet } from "./org.service.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
+import { platformDefaultGateway } from "./platform-payment-gateway.service.ts";
 import { provisionLoyaltyDefaults } from "./loyalty-provisioning.service.ts"; // legend-111j
 import {
   provisionDefaultServiceChargeRule,
@@ -219,6 +225,24 @@ export async function createTenant(
   const outside = modulesOutsidePackage(input.featureFlags.modules, pkg);
   if (outside.length > 0) throw new PlatformError("MODULE_NOT_IN_PACKAGE");
 
+  // Sub-302 D8: a new tenant gets the platform default gateway unless Super
+  // Admin already listed a payment gateway for it. Changing the default later
+  // never touches an existing tenant (PAY-05).
+  const defaultGateway = await platformDefaultGateway();
+  const featureFlags =
+    defaultGateway &&
+    !input.featureFlags.integrationProviders.some((provider) =>
+      (PAYMENT_GATEWAY_PROVIDERS as readonly string[]).includes(provider),
+    )
+      ? {
+          ...input.featureFlags,
+          integrationProviders: [
+            ...input.featureFlags.integrationProviders,
+            defaultGateway as (typeof PAYMENT_GATEWAY_PROVIDERS)[number],
+          ],
+        }
+      : input.featureFlags;
+
   const tenantId = randomUUID();
   const context = platformTenantScope(tenantId);
   return withTenant(db, context, async (tx) => {
@@ -230,7 +254,7 @@ export async function createTenant(
         name: input.name,
         plan: input.plan,
         deploymentMode: input.deploymentMode,
-        featureFlags: input.featureFlags,
+        featureFlags,
         limits: input.limits,
         createdBy: actorUserId,
       })
@@ -243,6 +267,19 @@ export async function createTenant(
         "That tenant slug is already taken.",
       );
     await seedTenantRoleTemplates(tx, row.id);
+    // Tenant-wide online-method rules on the default gateway, same transaction.
+    if (defaultGateway)
+      await tx.insert(paymentRoutingRules).values(
+        (["qris", "va", "bank_transfer"] as const).map((method) => ({
+          tenantId: context.tenant.tenantId,
+          outletId: null,
+          method,
+          provider: defaultGateway,
+          fallbackProvider: null,
+          enabled: true,
+          updatedBy: actorUserId,
+        })),
+      );
     // Standard UOM catalog, same transaction (PRD v1.7 §3.19, legend-4ryw).
     const actor = userIdSchema.safeParse(actorUserId);
     await provisionStandardUoms(tx, context, actor.success ? actor.data : null);

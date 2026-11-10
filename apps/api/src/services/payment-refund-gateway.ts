@@ -114,16 +114,44 @@ export const unconfiguredRefundGateway: PaymentRefundPort = {
   },
 };
 
-let gateway: PaymentRefundPort = unconfiguredRefundGateway;
+const registry = new Map<string, PaymentRefundPort>();
+/** Test-only singleton mode, same idea as `setPaymentGateway`. */
+let legacyPort: PaymentRefundPort | null = null;
 
 /**
- * Installed by the API bootstrap (or a test) with a configured adapter. The
+ * Installed by the API bootstrap with a configured adapter per provider. The
  * adapter must dedupe on `idempotencyKey`; the service relies on it for retries.
  */
-export function setPaymentRefundGateway(next: PaymentRefundPort | null): void {
-  gateway = next ?? unconfiguredRefundGateway;
+export function registerPaymentRefundGateway(port: PaymentRefundPort): void {
+  legacyPort = null;
+  registry.set(port.provider, port);
 }
 
-export function paymentRefundGateway(): PaymentRefundPort {
-  return gateway;
+/** Refund port of `provider`; fails closed when none is registered. */
+export function paymentRefundGatewayFor(provider: string): PaymentRefundPort {
+  if (legacyPort) return legacyPort;
+  return registry.get(provider) ?? unconfiguredRefundGateway;
+}
+
+/** True while a test installed a port through `setPaymentRefundGateway`. */
+export function paymentRefundGatewayLegacyMode(): boolean {
+  return legacyPort !== null;
+}
+
+export function registeredRefundProviders(): readonly string[] {
+  if (legacyPort) return [legacyPort.provider];
+  return [...registry.keys()];
+}
+
+export function resetPaymentRefundGateways(): void {
+  registry.clear();
+  legacyPort = null;
+}
+
+/** Test-only shim (sub-302 D6): one port answers for every provider. */
+export function setPaymentRefundGateway(next: PaymentRefundPort | null): void {
+  resetPaymentRefundGateways();
+  if (!next) return;
+  registry.set(next.provider, next);
+  legacyPort = next;
 }

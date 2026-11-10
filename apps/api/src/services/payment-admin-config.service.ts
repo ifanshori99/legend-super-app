@@ -6,6 +6,7 @@ import {
   encodeCursor,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import type { PermissionCode } from "@starter/shared/access";
 import { EdcError } from "@starter/shared/edc";
 import {
   getPaymentRouting as routingContract,
@@ -34,7 +35,12 @@ import {
 import { edcTransactions } from "../db/schema/edc.ts";
 import { withTenant } from "../db/tenant";
 import { recordAudit } from "./core-audit";
-import { paymentGateway } from "./payment-gateway";
+import { registeredGatewayProviders } from "./payment-gateway";
+import {
+  assertRoutableProvider,
+  providerRoutability,
+} from "./payment-routing.service";
+import { listPlatformGateways } from "./platform-payment-gateway.service";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { appendPaymentEvent, assertPaymentPermission } from "./payment-support";
 import type { Tx } from "./permission-resolver";
@@ -45,13 +51,14 @@ async function authorize(
   ctx: ScopedTenantContext,
   actor: string,
   outletId: string | null,
+  permission: PermissionCode = "payment.edc.manage",
 ) {
   if (outletId) assertOutletInScope(ctx.outletScope, outletId);
   await assertPaymentPermission(
     tx,
     ctx,
     actor,
-    "payment.edc.manage",
+    permission,
     outletId ? { type: "outlet", id: outletId } : { type: "tenant" },
     new Date(),
   );
@@ -187,7 +194,8 @@ export async function getPaymentRouting(
 ) {
   const q = routingContract.query.parse(query);
   return withTenant(db, ctx, async (tx) => {
-    await authorize(tx, ctx, actor, q.outletId ?? null);
+    // Routing chooses which gateway receives the money (sub-302 D14).
+    await authorize(tx, ctx, actor, q.outletId ?? null, "org.settings.manage");
     const scope = q.outletId ?? null;
     const allOutlets = await tx
       .select()
@@ -214,18 +222,26 @@ export async function getPaymentRouting(
             : isNull(paymentRoutingRules.outletId),
         ),
       );
-    const gateway = paymentGateway();
-    const providers =
-      gateway.provider === "unconfigured"
-        ? []
-        : [
-            {
-              code: gateway.provider,
-              name: gateway.provider,
-              kind: "gateway" as const,
-              enabled: true,
-            },
-          ];
+    // Registered adapter, switched on by Super Admin and allowed by the
+    // tenant's package; `enabled` says an active integration serves this scope.
+    const providers = [];
+    for (const platform of await listPlatformGateways()) {
+      if (!registeredGatewayProviders().includes(platform.provider)) continue;
+      if (!platform.enabled) continue;
+      const found = await providerRoutability(
+        tx,
+        ctx,
+        platform.provider,
+        scope,
+      );
+      if (!found.tenantAllowed) continue;
+      providers.push({
+        code: platform.provider,
+        name: platform.displayName,
+        kind: "gateway" as const,
+        enabled: found.integrated,
+      });
+    }
     return {
       scope: scope ? ("outlet" as const) : ("tenant" as const),
       outletId: scope,
@@ -268,15 +284,15 @@ export async function updatePaymentRoute(
   key: string,
 ) {
   return withTenant(db, ctx, async (tx) => {
-    await authorize(tx, ctx, actor, body.outletId);
+    await authorize(tx, ctx, actor, body.outletId, "org.settings.manage");
     if (body.outletId) await outletName(tx, ctx, body.outletId);
-    const configured = paymentGateway().provider;
-    if (configured === "unconfigured" || body.provider !== configured)
-      throw new CoreError("VALIDATION_ERROR", "Gateway is not configured.");
-    if (body.fallbackProvider !== null)
-      throw new CoreError(
-        "VALIDATION_ERROR",
-        "No second gateway is configured.",
+    if (body.enabled)
+      await assertRoutableProvider(
+        tx,
+        ctx,
+        body.provider,
+        body.outletId,
+        body.fallbackProvider,
       );
     return idempotentPaymentAdminWrite(
       tx,

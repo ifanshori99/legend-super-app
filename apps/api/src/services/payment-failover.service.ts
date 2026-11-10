@@ -39,7 +39,8 @@ import { withTenant } from "../db/tenant";
 import { logger } from "../lib/logger";
 import { recordAudit } from "./core-audit";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert";
-import { paymentGateway, type GatewayHealth } from "./payment-gateway";
+import type { GatewayHealth } from "./payment-gateway";
+import { outletGatewayHealth } from "./payment-gateway-select";
 import type { Tx } from "./permission-resolver";
 
 const FAILOVER_STARTED = "payment.gateway_failover_started";
@@ -179,6 +180,8 @@ async function writeIncidentRow(
     action: string;
     incident: number;
     seq: number;
+    /** Provider(s) behind the reading, for the audit row only. */
+    provider: string;
     status: PaymentGatewayStatus;
     reopened?: boolean;
     now: Date;
@@ -203,7 +206,7 @@ async function writeIncidentRow(
         after: {
           incident: input.incident,
           seq: input.seq,
-          provider: paymentGateway().provider,
+          provider: input.provider,
           status: input.status,
           ...(input.reopened ? { reopened: true } : {}),
         },
@@ -280,6 +283,7 @@ export async function syncGatewayHealth(
   outletId: string,
   health: GatewayHealth,
   now = new Date(),
+  provider = "unknown",
 ): Promise<GatewayIncidentResult> {
   if (health.reason === "unconfigured")
     return { transition: "none", openIncident: null };
@@ -323,6 +327,7 @@ export async function syncGatewayHealth(
           action: GATEWAY_RECOVERED,
           incident: marker.incident,
           seq: marker.seq + 1,
+          provider,
           status: health.status,
           now,
         });
@@ -336,6 +341,7 @@ export async function syncGatewayHealth(
           action: STILL_DOWN,
           incident: marker.incident,
           seq: marker.seq + 1,
+          provider,
           status: health.status,
           now,
         });
@@ -349,6 +355,7 @@ export async function syncGatewayHealth(
           action: FAILOVER_STARTED,
           incident: marker.incident,
           seq: marker.seq + 1,
+          provider,
           status: health.status,
           reopened: true,
           now,
@@ -364,6 +371,7 @@ export async function syncGatewayHealth(
         action: FAILOVER_STARTED,
         incident,
         seq: 1,
+        provider,
         status: health.status,
         now,
       });
@@ -427,8 +435,14 @@ export async function probeGatewayHealth(
   outletId: string,
   now = new Date(),
 ): Promise<GatewayIncidentResult & { status: PaymentGatewayStatus }> {
-  const health = await paymentGateway().health(context, outletId);
-  const result = await syncGatewayHealth(context, outletId, health, now);
+  const health = await outletGatewayHealth(context, outletId);
+  const result = await syncGatewayHealth(
+    context,
+    outletId,
+    health,
+    now,
+    health.provider,
+  );
   return { ...result, status: health.status };
 }
 
@@ -441,9 +455,10 @@ export async function syncGatewayHealthSafely(
   outletId: string,
   health: GatewayHealth,
   now = new Date(),
+  provider?: string,
 ): Promise<GatewayIncidentResult | null> {
   try {
-    return await syncGatewayHealth(context, outletId, health, now);
+    return await syncGatewayHealth(context, outletId, health, now, provider);
   } catch (error) {
     logger.warn({ err: error, outletId }, "gateway health sync failed");
     return null;

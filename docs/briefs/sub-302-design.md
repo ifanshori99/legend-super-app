@@ -119,3 +119,8 @@ Order: A, B, C, E in parallel; D after C (needs `payment-duitku.ts` cred helper 
 - Legacy shim (D2) is a catch-all; production must never call `setPaymentGateway`.
 - Routing permission change (D14) hides nothing in UI today but API refuses edc-only actors: UI bead needed before release.
 - Duitku refunds are manual (D6) until a refund API exists.
+
+## 11. Lead decisions during build (10 Nov)
+- L1 (D10 audit): no global audit table existed and `audit_logs` needs a tenant. 0211 adds global append-only `platform_payment_gateway_changes` (provider, actor, reason, before/after non-secret, created_at), written in the update tx. Routes use platform guards (requirePlatformAuth, requireTrustedOrigin, requirePlatformAdmin, requireSessionMfa()) with no extra permission check, same as `platform.routes.ts`.
+- L2 (D24): `PaymentInstructions` has no redirect variant, so Duitku `createIntent` for ewallet/card is refused (VALIDATION_ERROR); `methods()` still reports them. Guest e-wallet/card + redirect variant: card legend-6xf7x.
+- L3 (Slice D): C exports `duitkuCredentialSet(loaded, now)`, `createDuitkuGateway`, types `DuitkuLoaded`, `DuitkuCredentialLoader`, `DuitkuCredentialByIdLoader` from `services/payment-duitku.ts`.

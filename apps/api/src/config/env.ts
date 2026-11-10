@@ -185,6 +185,14 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Duitku (sub-302): the public origin Duitku posts callbacks to and the
+    // page it sends a customer back to. https in production. Unset = the Duitku
+    // adapter stays unregistered. Sandbox or production Duitku comes from the
+    // integration's config; merchant code and API key are entered in the app.
+    DUITKU_CALLBACK_BASE_URL: origin(
+      "Use the API's public origin, e.g. https://api.example.com.",
+    ).optional(),
+    DUITKU_RETURN_URL: z.url().max(255).optional(),
     // Gate for supplier return posting (legend-65mgw). Off by default: a
     // return moves stock out without a journal until the goods receipt journal
     // (legend-29vw) runs, which would split the GL from the stock ledger. That
@@ -277,6 +285,22 @@ const schema = z
           code: "custom",
           path: ["AI_BASE_URL"],
           message: reason,
+        });
+    }
+    for (const key of [
+      "DUITKU_CALLBACK_BASE_URL",
+      "DUITKU_RETURN_URL",
+    ] as const) {
+      const value = values[key];
+      if (
+        values.NODE_ENV === "production" &&
+        value !== undefined &&
+        !value.startsWith("https://")
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "Use an https URL in production.",
         });
     }
     if (values.NODE_ENV === "production" && values.AI_PROVIDER === "fake")

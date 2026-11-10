@@ -12,6 +12,7 @@ export * from "./platform-org";
 export * from "./menu";
 export * from "./platform-domains";
 export * from "./platform-packages";
+export * from "./platform-payment-gateways";
 export * from "./platform-integrations";
 export * from "./platform-themes";
 export * from "./platform-support";
