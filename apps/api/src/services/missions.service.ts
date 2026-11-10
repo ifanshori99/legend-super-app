@@ -22,6 +22,7 @@ import {
   gt,
   type SQL,
 } from "drizzle-orm";
+import { maskAuditChanges } from "@starter/shared/audit";
 import {
   createUlid,
   decodeCursor,
@@ -70,9 +71,9 @@ const DAY_MS = 86_400_000;
 /** Outlets default to Asia/Jakarta (UTC+7, no DST): used where no order gives a business date. */
 const DEFAULT_OFFSET_MS = 7 * 3_600_000;
 
-/** Audit field names kept unmasked: names, numbers and flags, no personal data. */
+/** Audit field names kept unmasked: numbers and flags, no personal data. */
+// `name` is left out: the audit schema rejects raw values of name-like keys.
 const AUDIT_SAFE_FIELDS = [
-  "name",
   "type",
   "isActive",
   "startsAt",
@@ -523,8 +524,8 @@ async function audit(
       objectId: after.id,
       reason: null,
       maskedChanges: {
-        before: auditSummary(before),
-        after: auditSummary(after),
+        before: maskAuditChanges(auditSummary(before), AUDIT_SAFE_FIELDS),
+        after: maskAuditChanges(auditSummary(after), AUDIT_SAFE_FIELDS),
       },
       ipHash: null,
       sensitiveAccess: false,

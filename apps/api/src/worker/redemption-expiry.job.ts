@@ -31,6 +31,8 @@ export type RedemptionExpiryResult = {
   businessDate: string;
   expired: number;
   fulfilled: number;
+  /** Redemptions that threw; the sweep retries them on the next tick. */
+  failed: number;
 };
 
 /** Asia/Jakarta calendar day, or null before 02:00 that day. */
@@ -60,17 +62,22 @@ export async function runRedemptionExpiry(
         );
         if (outcome === "expired") expired += 1;
         else if (outcome === "fulfilled") fulfilled += 1;
-      } catch {
+      } catch (error) {
         failed.push(id);
         logger.warn(
-          { job: "redemption_expiry", redemptionId: id },
+          {
+            job: "redemption_expiry",
+            redemptionId: id,
+            errorName: error instanceof Error ? error.name : "unknown",
+            errorCode: (error as { code?: unknown } | null)?.code ?? null,
+          },
           "redemption expiry failed for one redemption",
         );
       }
     }
     if (ids.length < BATCH_SIZE) break;
   }
-  return { businessDate, expired, fulfilled };
+  return { businessDate, expired, fulfilled, failed: failed.length };
 }
 
 const lastDayByTenant = new Map<string, string>();
@@ -88,6 +95,7 @@ export async function runRedemptionExpirySweep(
   const tenantId = context.tenant.tenantId;
   if (lastDayByTenant.get(tenantId) === day) return null;
   const result = await runRedemptionExpiry(db, context, now);
-  lastDayByTenant.set(tenantId, day);
+  // A redemption that failed is retried on the next tick, not tomorrow.
+  if (result.failed === 0) lastDayByTenant.set(tenantId, day);
   return result;
 }

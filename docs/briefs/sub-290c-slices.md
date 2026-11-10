@@ -50,22 +50,23 @@ comment (wa4hp edits: `// legend-wa4hp`). Read 290a code for patterns: `db/membe
 ## Slice C — contract (packages/shared only)
 
 Files: `packages/shared/src/crm/{endpoints,errors,events,loyalty,promo,crm}.ts`. Additive only:
+
 1. `loyalty.ts` `rewardObjectSchema`: add `perCustomerLimit: positive int .nullable()`, `redemptionValidDays: int
-   1..365`. `createRewardInputSchema` (endpoints.ts) makes both optional (defaults null / 30). Reward redemption
+1..365`. `createRewardInputSchema` (endpoints.ts) makes both optional (defaults null / 30). Reward redemption
    schema: add `rewardType: rewardTypeSchema`, `expiresAt: iso`, `voucherId: uuid.nullable()`,
    `fulfilledOutletId: uuid.nullable()` (keep strict; additive response fields).
 2. `promo.ts` `voucherSourceSchema` + `loyalty_reward`.
 3. `errors.ts`: `REDEMPTION_NOT_CANCELLABLE` (status + message).
 4. `events.ts`: `points.adjusted` in `crmEventNames`, payload `{customerProfileId, points (positive), kind:
-   'restore'|'manual', reversesEntryId: ulid nullable, sourceType:'adjustment', sourceId: uuid|ulid nullable, reason:
-   string nullable, liabilityIdr: nonneg, balanceAfter}`; register in `payloadSchemas` and the event registry that
+'restore'|'manual', reversesEntryId: ulid nullable, sourceType:'adjustment', sourceId: uuid|ulid nullable, reason:
+string nullable, liabilityIdr: nonneg, balanceAfter}`; register in `payloadSchemas` and the event registry that
    `crmEvents` uses (find it; `aggregateType` like `points.redeemed`).
 5. `endpoints.ts`: `cancelMemberRedemption` POST `/api/member/redemptions/:redemptionId/cancel` (no body, response
    redemption); `listMemberRedemptions` GET `/api/member/redemptions` (cursor page of redemption); `fulfilRedemption`
    POST `/api/loyalty/redemptions/fulfil` body `{redemptionCode, outletId: uuid, orderId: ulid optional}` response
    redemption. Add `redemptionIdParams` if absent.
 6. `crm.ts` `missionWithProgressSchema`: add `voucherCode: redemptionCodeSchema.nullable()` (always present).
-Then point-ledger `eventFor` support is slice R's job, not yours. Run `heavy pnpm --filter @starter/shared typecheck`.
+   Then point-ledger `eventFor` support is slice R's job, not yours. Run `heavy pnpm --filter @starter/shared typecheck`.
 
 ## Slice S — schema + custom SQL
 
@@ -73,6 +74,7 @@ Files: `db/schema/crm-rewards.ts` (new), `db/schema/crm-rewards.custom.sql` (new
 `db/schema/crm-promo.ts` (vouchers source CHECK + `loyalty_reward`), `db/schema/crm-ledger.ts` (point_earn_records
 add `applied_reversal_ids text[] NOT NULL DEFAULT '{}'` for wa4hp), `test/data-import-registry.test.ts` (0207 entry).
 Tables (all `tenant_id` NOT NULL, unique keys include tenant, `unique(tenant_id,id)`):
+
 - `rewards`: id uuid, tenant_id, name, description, type (CHECK free_item|item_upgrade|voucher), points_cost int >0,
   stock int null CHECK >=0, valid_from, valid_until null, menu_item_id uuid null (composite FK to menu_items if it has
   `unique(tenant_id,id)`), voucher_value_idr null, is_active, sort_order, per_customer_limit int null CHECK >0,
@@ -89,14 +91,14 @@ Tables (all `tenant_id` NOT NULL, unique keys include tenant, `unique(tenant_id,
 - `missions`: id, tenant_id, name, description, type CHECK, rule jsonb, reward jsonb, period jsonb, is_active,
   starts_at null, ends_at null, created_by, created_at, updated_at.
 - `mission_progress`: id, tenant_id, mission_id (FK), customer_profile_id (FK), period_key varchar(32), progress int
-  >=0, target int >0, completed_at null, reward_issued_at null, voucher_id null (FK vouchers), voucher_code varchar(32)
-  null, created_at, updated_at. Unique `(tenant_id, mission_id, customer_profile_id, period_key)`.
-Custom SQL (pattern `crm-member.custom.sql`, `sales-targets.custom.sql`): `app.enforce_tenant_rls` on all 4;
-`app.enforce_member_rls` on `reward_redemptions`, `mission_progress`, `vouchers`; REVOKE DELETE, TRUNCATE on the 4 new
-tables from legend_app; trigger `reward_redemptions_status_guard` BEFORE UPDATE rejecting any status change other than
-`pending → fulfilled|cancelled|expired` and any change of reward_id/customer_profile_id/points_spent/redemption_code/
-idempotency_key; vouchers CHECK `source` replaced (+ `loyalty_reward`); vouchers FK pattern 2 as above. Check whether
-`customer_visits` has DELETE granted to legend_app; report it (wa4hp needs DELETE of a visit row).
+  > =0, target int >0, completed_at null, reward_issued_at null, voucher_id null (FK vouchers), voucher_code varchar(32)
+  > null, created_at, updated_at. Unique `(tenant_id, mission_id, customer_profile_id, period_key)`.
+  > Custom SQL (pattern `crm-member.custom.sql`, `sales-targets.custom.sql`): `app.enforce_tenant_rls` on all 4;
+  > `app.enforce_member_rls` on `reward_redemptions`, `mission_progress`, `vouchers`; REVOKE DELETE, TRUNCATE on the 4 new
+  > tables from legend_app; trigger `reward_redemptions_status_guard` BEFORE UPDATE rejecting any status change other than
+  > `pending → fulfilled|cancelled|expired` and any change of reward_id/customer_profile_id/points_spent/redemption_code/
+  > idempotency_key; vouchers CHECK `source` replaced (+ `loyalty_reward`); vouchers FK pattern 2 as above. Check whether
+  > `customer_visits` has DELETE granted to legend_app; report it (wa4hp needs DELETE of a visit row).
 
 ## Slice T1 — tests: rewards (test-writer)
 
@@ -126,15 +128,47 @@ refund/void changes nothing; never below 0.
 Files `services/reward-redemption.service.ts`, `services/point-ledger.service.ts` (only `eventFor`: `adjust` →
 `points.adjusted` with `kind` = `reversesEntryId ? 'restore' : 'manual'`, plus `sourceType/sourceId/reason`).
 Exports (binding):
+
 ```ts
-export async function redeemReward(tx: Tx, scope: MemberScope, rewardId: string, idempotencyKey: string, now: Date): Promise<RewardRedemptionDto>
-export async function cancelRedemption(tx: Tx, scope: MemberScope, redemptionId: string, now: Date): Promise<RewardRedemptionDto>
-export async function listMemberRedemptions(tx: Tx, scope: MemberScope, page: {cursor?: string; limit: number}): Promise<{items: RewardRedemptionDto[]; nextCursor: string | null}>
-export async function listActiveRewards(tx: Tx, tenantId: string, page): Promise<{items: Reward[]; nextCursor}>
-export async function fulfilRedemption(tx: Tx, context: ScopedTenantContext, actorUserId: string, input: {redemptionCode: string; outletId: string; orderId?: string}, now: Date): Promise<RewardRedemptionDto>
-export async function expireDueRedemptions(tx: Tx, context: ScopedTenantContext, now: Date, limit?: number): Promise<{expired: number; fulfilled: number}>
-export function toRedemptionDto(row): RewardRedemptionDto
+export async function redeemReward(
+  tx: Tx,
+  scope: MemberScope,
+  rewardId: string,
+  idempotencyKey: string,
+  now: Date,
+): Promise<RewardRedemptionDto>;
+export async function cancelRedemption(
+  tx: Tx,
+  scope: MemberScope,
+  redemptionId: string,
+  now: Date,
+): Promise<RewardRedemptionDto>;
+export async function listMemberRedemptions(
+  tx: Tx,
+  scope: MemberScope,
+  page: { cursor?: string; limit: number },
+): Promise<{ items: RewardRedemptionDto[]; nextCursor: string | null }>;
+export async function listActiveRewards(
+  tx: Tx,
+  tenantId: string,
+  page,
+): Promise<{ items: Reward[]; nextCursor }>;
+export async function fulfilRedemption(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  input: { redemptionCode: string; outletId: string; orderId?: string },
+  now: Date,
+): Promise<RewardRedemptionDto>;
+export async function expireDueRedemptions(
+  tx: Tx,
+  context: ScopedTenantContext,
+  now: Date,
+  limit?: number,
+): Promise<{ expired: number; fulfilled: number }>;
+export function toRedemptionDto(row): RewardRedemptionDto;
 ```
+
 Errors via `HttpError(status, code, crmErrorMessages[code])`. Map `rewardRedemptionCheck` reasons:
 reward_inactive/not_started/expired → `REWARD_EXPIRED`, out_of_stock → `REWARD_OUT_OF_STOCK`, insufficient_points →
 `POINTS_INSUFFICIENT`, limit_reached → `REDEMPTION_LIMIT_REACHED`. `existingRedemptions` counts pending+fulfilled.

@@ -642,7 +642,7 @@ export async function listDueRedemptionIds(
   exclude: readonly string[] = [],
 ): Promise<string[]> {
   const conditions = [
-    eq(rewardRedemptions.tenantId, tenantId),
+    eq(rewardRedemptions.tenantId, tenantIdSchema.parse(tenantId)),
     eq(rewardRedemptions.status, "pending"),
     lte(rewardRedemptions.expiresAt, now),
   ];

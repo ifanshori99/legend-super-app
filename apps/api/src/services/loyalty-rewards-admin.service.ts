@@ -5,6 +5,7 @@
 // `reward-redemption.service.ts`; this file never touches stock counters of a
 // redemption, it only edits the catalog row.
 
+import { randomUUID } from "node:crypto";
 import { and, asc, eq, gt, or, type SQL } from "drizzle-orm";
 import {
   createUlid,
@@ -83,6 +84,11 @@ function auditSummary(reward: Reward | null) {
     perCustomerLimit: reward.perCustomerLimit,
     redemptionValidDays: reward.redemptionValidDays,
   };
+}
+
+/** A body that breaks the contract's type rules answers 400. */
+function badRequest(message: string): HttpError {
+  return new HttpError(400, "VALIDATION_ERROR", message);
 }
 
 function invalid(message: string): HttpError {
@@ -189,6 +195,17 @@ export async function createReward(
   now = new Date(),
 ): Promise<Reward> {
   const tenantId = context.tenant.tenantId;
+  // The input schema lacks the cross-field type rules of `rewardSchema`.
+  const checked = rewardSchema.safeParse({
+    ...input,
+    id: randomUUID(),
+    tenantId,
+    perCustomerLimit: input.perCustomerLimit ?? null,
+    redemptionValidDays:
+      input.redemptionValidDays ?? DEFAULT_REDEMPTION_VALID_DAYS,
+  });
+  if (!checked.success)
+    throw badRequest(checked.error.issues[0]?.message ?? "Data tidak valid.");
   return withTenant(db, context, async (tx) => {
     await assertMenuItem(tx, tenantId, input.menuItemId);
     const [row] = await tx
@@ -248,12 +265,13 @@ export async function updateReward(
       ),
     });
     if (!merged.success)
-      throw invalid(merged.error.issues[0]?.message ?? "Data tidak valid.");
+      throw badRequest(merged.error.issues[0]?.message ?? "Data tidak valid.");
     const next = merged.data;
     if (
       next.type !== existing.type ||
       next.menuItemId !== existing.menuItemId ||
-      next.voucherValueIdr !== existing.voucherValueIdr
+      next.voucherValueIdr !== existing.voucherValueIdr ||
+      (next.stock === null) !== (existing.stock === null)
     ) {
       const [pending] = await tx
         .select({ id: rewardRedemptions.id })

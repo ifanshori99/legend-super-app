@@ -18,7 +18,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { rewardRedemptionSchema } from "@starter/shared/crm";
-import { ulidToUuid } from "@starter/shared/core";
+import { idr, ulidToUuid } from "@starter/shared/core";
 import { createApp } from "../app";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -1463,7 +1463,7 @@ describe("LOY-03 reward PATCH with pending redemptions", () => {
         updateReward(world.context, randomUUID(), rewardId, {
           type: "voucher",
           menuItemId: null,
-          voucherValueIdr: 10_000,
+          voucherValueIdr: idr(10_000),
         }),
       ),
     ).toBe("REWARD_HAS_PENDING_REDEMPTIONS");
@@ -1472,6 +1472,18 @@ describe("LOY-03 reward PATCH with pending redemptions", () => {
         updateReward(world.context, randomUUID(), rewardId, {
           menuItemId: otherItem,
         }),
+      ),
+    ).toBe("REWARD_HAS_PENDING_REDEMPTIONS");
+  });
+
+  it("LOY-03 switching between unlimited and limited stock is 409 while a redemption is pending", async () => {
+    const { world, scope } = await setup(100);
+    const rewardId = await seedReward(world.tenantId, { pointsCost: 50 });
+    await redeemAs(scope, rewardId, key());
+
+    expect(
+      await errorCodeOf(
+        updateReward(world.context, randomUUID(), rewardId, { stock: 5 }),
       ),
     ).toBe("REWARD_HAS_PENDING_REDEMPTIONS");
   });
@@ -1491,7 +1503,7 @@ describe("LOY-03 reward PATCH with pending redemptions", () => {
     const retyped = await updateReward(world.context, randomUUID(), rewardId, {
       type: "voucher",
       menuItemId: null,
-      voucherValueIdr: 10_000,
+      voucherValueIdr: idr(10_000),
     });
     expect(retyped.type).toBe("voucher");
   });
