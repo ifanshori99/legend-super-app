@@ -47,6 +47,7 @@ import { deliverPayrollGlEvent } from "./services/payroll-gl-consumer.ts";
 import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
+import { runSegmentMaterializeSweep } from "./worker/segment-materialize.job.ts"; // legend-ts50
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
@@ -504,6 +505,12 @@ const relay = createRelayRuntime({
         await runRedemptionExpirySweep(context, new Date());
       } catch {
         console.error("Redemption expiry sweep failed");
+      }
+      // legend-ts50: rebuild saved segment members once per tenant per day.
+      try {
+        await runSegmentMaterializeSweep(context, new Date());
+      } catch {
+        console.error("Segment materialize sweep failed");
       }
     }
     // PRD §3 F11 e-receipt (legend-v3vo): send queued receipt emails. The

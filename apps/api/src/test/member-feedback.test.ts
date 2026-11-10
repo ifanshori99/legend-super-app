@@ -153,10 +153,7 @@ describe("legend-ts50 member submits feedback", () => {
     expect((await submit(member, complaintFor(orderUlid))).status).toBe(201);
 
     const rows = await feedbackOfOrder(orderUlid);
-    expect(rows.map((row) => row.kind).sort()).toEqual([
-      "complaint",
-      "rating",
-    ]);
+    expect(rows.map((row) => row.kind).sort()).toEqual(["complaint", "rating"]);
   });
 
   it("legend-ts50 a member who joined a table session can leave feedback for that session", async () => {
@@ -273,16 +270,21 @@ describe("legend-ts50 member feedback is refused", () => {
     expect(await feedbackOfOrder(orderUlid)).toHaveLength(1);
   });
 
-  it.each(["pending_verification", "closed"] as const)(
-    "legend-ts50 a %s membership gets 403 MEMBERSHIP_NOT_ACTIVE and nothing is stored",
-    async (status) => {
+  // B16: only `active` may send; a `closed` profile is invisible (404), the
+  // same as no profile (requireMember, middleware/member.ts).
+  it.each([
+    ["pending_verification", 403, "MEMBERSHIP_NOT_ACTIVE"],
+    ["closed", 404, "CUSTOMER_NOT_FOUND"],
+  ] as const)(
+    "legend-ts50 a %s membership gets %i %s and nothing is stored",
+    async (status, httpStatus, code) => {
       const member = await newMemberUser(app, { profile: status });
       const orderUlid = await orderOf(member);
 
       const response = await submit(member, ratingFor(orderUlid));
 
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe("MEMBERSHIP_NOT_ACTIVE");
+      expect(response.status).toBe(httpStatus);
+      expect(response.body.error.code).toBe(code);
       expect(await feedbackOfOrder(orderUlid)).toHaveLength(0);
     },
   );

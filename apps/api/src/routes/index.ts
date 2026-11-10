@@ -124,6 +124,10 @@ import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.t
 // legend-111j
 import { memberRouter } from "./member.routes.ts";
 import { loyaltyProgramRouter } from "./loyalty-program.routes.ts";
+import { customersRouter } from "./customers.routes.ts"; // legend-ts50
+import { segmentsRouter } from "./segments.routes.ts"; // legend-ts50
+import { feedbackRouter } from "./feedback.routes.ts"; // legend-ts50
+import { memberFeedbackRouter } from "./member-feedback.routes.ts"; // legend-ts50
 import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
 import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
 import { posOrderCustomerRouter } from "./pos-order-customer.routes.ts";
@@ -274,8 +278,12 @@ apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/member", memberRouter);
 // legend-m4p5: rewards, redemptions, missions, member vouchers; staff rewards/missions/fulfil.
 apiRouter.use("/member", memberRewardsRouter);
+apiRouter.use("/member", memberFeedbackRouter); // legend-ts50
 // The next two keep full paths inside the router and guard each route.
 apiRouter.use(loyaltyProgramRouter);
+apiRouter.use(customersRouter); // legend-ts50
+apiRouter.use(segmentsRouter); // legend-ts50
+apiRouter.use(feedbackRouter); // legend-ts50
 apiRouter.use(loyaltyRewardsRouter); // legend-m4p5
 apiRouter.use(posOrderCustomerRouter);
 apiRouter.use("/vouchers", vouchersRouter);

@@ -22,7 +22,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { sql } from "drizzle-orm";
-import type { SegmentDefinition } from "@starter/shared/crm";
+import type { segmentDefinitionSchema } from "@starter/shared/crm";
+import type { z } from "zod";
+
+// Wire shape (plain numbers), not the branded parsed type.
+type SegmentDefinition = z.input<typeof segmentDefinitionSchema>;
 import { createApp } from "../app";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";

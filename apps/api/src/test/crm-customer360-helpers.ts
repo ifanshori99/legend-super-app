@@ -82,11 +82,10 @@ export async function realUserId(app: Express): Promise<string> {
   return session.body.user.id as string;
 }
 
-// ASSUMPTION: the service opens value_encrypted with the AAD
-// `user_identities:<identity id>`. If the implementation binds the envelope to
-// something else, change this one function.
-export const identityAad = (identityId: string) =>
-  `user_identities:${identityId}`;
+// Same envelope the identity module writes (identity-account.service.ts:78):
+// AAD `user_identity:whatsapp:<value digest>`.
+export const identityAad = (valueHash: string) =>
+  `user_identity:whatsapp:${valueHash}`;
 
 export type SeededNumber = {
   /** Digits only, e.g. 6281234567890. */
@@ -115,7 +114,7 @@ export async function seedWhatsappIdentity(
   number: SeededNumber,
 ): Promise<void> {
   const id = randomUUID();
-  const sealed = sealSecret(`+${number.digits}`, identityAad(id));
+  const sealed = sealSecret(`+${number.digits}`, identityAad(number.hash));
   await owner.query(
     `INSERT INTO user_identities (id, user_id, type, value_hash, value_encrypted, verified_at)
      VALUES ($1, $2, 'whatsapp', $3, $4, now())`,

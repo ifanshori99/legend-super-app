@@ -500,6 +500,14 @@ export const customer360Schema = z.strictObject({
   favoriteItems: z.array(customerFavoriteItemSchema),
   recentFeedback: z.array(feedbackSchema),
   activeVouchers: z.array(voucherDtoSchema),
+  /**
+   * WhatsApp number (legend-ts50). Masked to the last 4 digits unless the caller
+   * holds crm.customer.pii.read; every full reveal is audited. Optional so
+   * older fixtures stay valid.
+   */
+  whatsapp: z
+    .strictObject({ number: z.string().nullable(), masked: z.boolean() })
+    .optional(),
 });
 export type Customer360 = z.infer<typeof customer360Schema>;
 
