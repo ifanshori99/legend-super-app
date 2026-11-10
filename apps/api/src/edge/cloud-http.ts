@@ -57,13 +57,17 @@ export type CloudGetOptions = {
   timeoutMs?: number;
 };
 
-/**
- * One authenticated GET of `path` (may carry a query string) on the cloud,
- * returning the parsed JSON body. Errors are EdgeCloudHttpError only.
- */
-export async function cloudGetJson(
-  options: CloudGetOptions & { path: string; signal?: AbortSignal },
-): Promise<unknown> {
+type CloudGetResult =
+  { status: 304 } | { status: 200; body: unknown; headers: Headers };
+
+async function cloudGet(
+  options: CloudGetOptions & {
+    path: string;
+    signal?: AbortSignal;
+    headers?: Record<string, string>;
+    allowNotModified?: boolean;
+  },
+): Promise<CloudGetResult> {
   const base = cloudHttpBaseUrl(options.cloudUrl);
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -83,6 +87,7 @@ export async function cloudGetJson(
     const init: EdgeRequestInit = {
       method: "GET",
       headers: {
+        ...options.headers,
         Authorization: `Bearer ${options.credential}`,
         Accept: "application/json",
       },
@@ -91,12 +96,20 @@ export async function cloudGetJson(
       signal: request.signal,
     };
     const response = await fetchImpl(`${base}${options.path}`, init);
+    if (options.allowNotModified === true && response.status === 304) {
+      await response.body?.cancel().catch(() => undefined);
+      return { status: 304 };
+    }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       throw new EdgeCloudHttpError(`HTTP_${response.status}`);
     }
     try {
-      return (await response.json()) as unknown;
+      return {
+        status: 200,
+        body: (await response.json()) as unknown,
+        headers: response.headers,
+      };
     } catch (error) {
       if (request.signal.aborted) throw error;
       throw new EdgeCloudHttpError("BAD_JSON");
@@ -110,6 +123,58 @@ export async function cloudGetJson(
     clearTimeout(timer);
     signal.removeEventListener("abort", onAbort);
   }
+}
+
+/**
+ * One authenticated GET of `path` (may carry a query string) on the cloud,
+ * returning the parsed JSON body. Errors are EdgeCloudHttpError only.
+ */
+export async function cloudGetJson(
+  options: CloudGetOptions & { path: string; signal?: AbortSignal },
+): Promise<unknown> {
+  const result = await cloudGet(options);
+  return result.status === 200 ? result.body : undefined;
+}
+
+export type CloudConditionalGetResult =
+  | { status: 304 }
+  | {
+      status: 200;
+      body: unknown;
+      /** The ETag response header as sent, or null when absent. */
+      etag: string | null;
+      /** The value of `generatedAtHeader`, or null when absent. */
+      generatedAt: string | null;
+    };
+
+/**
+ * Same GET with `If-None-Match: <etag>` when `etag` is given (the people
+ * snapshot, design 3.1). A 304 returns `{ status: 304 }` with no body; any
+ * other non-2xx is an EdgeCloudHttpError as in `cloudGetJson`.
+ */
+export async function cloudGetJsonConditional(
+  options: CloudGetOptions & {
+    path: string;
+    signal?: AbortSignal;
+    etag: string | null;
+    generatedAtHeader?: string;
+  },
+): Promise<CloudConditionalGetResult> {
+  const result = await cloudGet({
+    ...options,
+    headers: options.etag === null ? {} : { "If-None-Match": options.etag },
+    allowNotModified: true,
+  });
+  if (result.status === 304) return { status: 304 };
+  return {
+    status: 200,
+    body: result.body,
+    etag: result.headers.get("ETag"),
+    generatedAt:
+      options.generatedAtHeader === undefined
+        ? null
+        : result.headers.get(options.generatedAtHeader),
+  };
 }
 
 export type DeviceRecordsFetcherOptions = CloudGetOptions & {
