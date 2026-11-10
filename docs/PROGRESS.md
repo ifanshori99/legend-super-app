@@ -1496,3 +1496,8 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Kredit ganda (hipotesis architect): tidak nyata. Total order QR beku sejak checkout, swap hanya di order terbayar; tes `order-recovery-swap-double-credit.test.ts`.
 - Bukti: 9 dari 10 tes stok gagal tanpa fitur lalu hijau; 149 tes terarah (12 berkas), tsc api, eslint, prettier bersih; architect K: 2 wajib + 3 kecil dibetulkan.
 - Risiko: pengembalian yang ditolak aturan stok hanya di-log (tidak diparkir ulang seperti reversal void); `isPaidOrder` menganggap open_bill dengan payment intent pending sebagai dibayar; remake swap tidak di-reverse saat void akhir (konsisten dengan remake/comp).
+
+## 2026-11-10: isPaidOrder cek status intent (legend-mz15j)
+- Sudah: `isPaidOrder` (`order-recovery.service.ts`) menganggap open_bill `sent` lunas hanya bila status intent paid, partially_refunded, atau refunded (sama dengan konsumer QR); intent pending, failed, expired, atau hilang ditolak 422 di lapor, swap, voucher, manual_refund. Status dibaca lewat leftJoin `payment_intents` di transaksi yang sama (loadIssue dan createIssue). pay_first dan completed tidak berubah. Pola lain (`paymentIntentId !== null`) di `qr-order-consumers`, `table-session-operations`, `qr-order-payment`, `pos-order`, akuntansi bukan penanda lunas: tidak diubah.
+- Bukti: 6 dari 10 tes baru merah tanpa fix lalu hijau; 97 tes terarah (6 berkas recovery), tsc api, eslint, prettier bersih; architect K: tidak ada temuan.
+- Risiko: tidak ada jalur produksi yang mengisi `orders.paymentIntentId` untuk open_bill `sent` saat ini (tes membuatnya lewat SQL); fix menutup celah sebelum jalur itu ada.
