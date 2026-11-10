@@ -49,6 +49,7 @@ import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+import { deliverOrderRecoveryRefundEvent } from "./services/order-recovery-refund.ts";
 import { deliverSwapKitchenEvent } from "./services/order-recovery-swap-kitchen.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
 import { sweepInactiveOpenBillSessions } from "./services/open-bill-control.service.ts";
@@ -214,6 +215,9 @@ const runtime = createWorkerRuntime({
           // line, the old line is voided and the new one routed to its KDS
           // station. Idempotent (issue row lock), no extra charge, not gated.
           await deliverSwapKitchenEvent(context, event, tx);
+          // legend-94q2l: an approved manual refund of a failed item opens its
+          // payment refund request (not paid out; WS-05 approves). Idempotent.
+          await deliverOrderRecoveryRefundEvent(context, event, tx);
           // PRD §3.19 Jurnal Otomatis (legend-9pz9, legend-o9q9), cloud only:
           // sales, refunds, gateway receipts and payouts post their journal in
           // a savepoint; expected accounting failures park for the sweep and

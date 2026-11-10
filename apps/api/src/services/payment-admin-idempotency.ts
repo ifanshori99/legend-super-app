@@ -20,6 +20,7 @@ const SYSTEM_KEY_PREFIXES = [
   "qr-late-payment-refund:",
   "pos-refund-gateway:",
   "reservation-refund:",
+  "order-recovery-refund:",
 ];
 
 /** Run inside the mutation's tenant transaction, after authorization. */
