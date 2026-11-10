@@ -74,7 +74,10 @@ import {
 } from "../db/schema/pos-shift.ts";
 import { withTenant } from "../db/tenant.ts";
 import { resolveDeviceOutlet } from "./device-pin.service.ts";
-import { outletTarget } from "./device-pin-support.ts";
+import {
+  outletTarget,
+  posOverrideUsableFromDevice,
+} from "./device-pin-support.ts";
 import { loadOutlet, businessDateFor } from "./pos-order-support.ts";
 import type { PosShiftLookup } from "./pos-order-ports.ts";
 import { posReceiptGapsPort } from "./pos-shift-ports.ts";
@@ -945,6 +948,8 @@ async function verifyCloseApproval(
     valueIdr: number;
     approvedBy: string;
     approvalRequestId: string;
+    /** The verified device the caller acts from (null: no device). */
+    deviceId: string | null;
     now: Date;
   },
 ): Promise<OverrideRow> {
@@ -1044,6 +1049,9 @@ async function verifyCloseApproval(
     throw approvalRefused();
   // Bound to the value: the approval was given for exactly this variance.
   if (Number(override.valueIdr) !== input.valueIdr) throw approvalRefused();
+  // A PIN approval typed on a verified device is bound to it (legend-fjwxo).
+  if (!posOverrideUsableFromDevice(override, input.deviceId))
+    throw approvalRefused();
   if (
     override.method === "supervisor_pin" &&
     input.now.getTime() - override.createdAt.getTime() > PIN_APPROVAL_WINDOW_MS
@@ -1341,6 +1349,7 @@ export async function closePosShift(
       valueIdr: Math.abs(closed.varianceIdr),
       approvedBy: input.approvedBy,
       approvalRequestId: input.approvalRequestId,
+      deviceId: caller.deviceId,
       now,
     });
     // The closer is the shift's cashier: blind response (legend-4wrfd).
@@ -1657,6 +1666,7 @@ export async function forceClosePosShift(
       valueIdr: Math.abs(closed.varianceIdr),
       approvedBy: input.approvedBy,
       approvalRequestId: input.approvalRequestId,
+      deviceId: caller.deviceId,
       now,
     });
     return writeClose(tx, context, caller, {

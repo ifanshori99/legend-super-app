@@ -60,6 +60,12 @@ import { lifecycleMessages } from "./ws10-lifecycle.ts";
 import { payrollConfigMessages } from "./ws10-payroll-config.ts";
 import { payrollRunMessages } from "./ws10-payroll-run.ts";
 import { payslipMessages } from "./ws10-payslip.ts";
+import { payslipPinMessages } from "./ws10-payslip-pin.ts";
+import { payslipPinSetupMessages } from "./ws10-payslip-pin-setup.ts";
+import { payslipPinForgotMessages } from "./ws10-payslip-pin-forgot.ts";
+import { payslipPinChangeMessages } from "./ws10-payslip-pin-change.ts";
+import { payslipPinListMessages } from "./ws10-payslip-pin-list.ts";
+import { payslipPinGateMessages } from "./ws10-payslip-pin-gate.ts";
 import { rosterMessages } from "./ws10-roster.ts";
 import { facilityStaffMessages } from "./facility-staff.ts";
 import { facilityAdminMessages } from "./facility-admin.ts";
@@ -194,6 +200,14 @@ export const id = {
   payrollConfig: payrollConfigMessages,
   payrollRun: payrollRunMessages,
   payslip: payslipMessages,
+  payslipPin: {
+    ...payslipPinMessages,
+    ...payslipPinSetupMessages,
+    ...payslipPinListMessages,
+    ...payslipPinChangeMessages,
+    ...payslipPinGateMessages,
+  },
+  payslipPinForgot: payslipPinForgotMessages,
   learning: learningMessages,
   // WS-09/WS-14 ops squad (2026-11-03): one catalog file per bead so the six
   // parallel beads never edit the same lines.

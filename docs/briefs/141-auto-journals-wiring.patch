@@ -1,0 +1,36 @@
+--- a/apps/api/src/worker-main.ts	2026-11-09 13:17:08
++++ b/apps/api/src/worker-main.ts	2026-11-09 13:17:50
+@@ -34,4 +34,8 @@
+   retryBlockedInventoryGl,
+ } from "./services/inventory-gl-consumer.ts";
++import {
++  deliverAutoJournalEvent,
++  retryParkedAutoJournals,
++} from "./services/accounting-auto-journal-consumer.ts";
+ import { parseEdgeRuntimeConfig } from "./edge/config.ts";
+ import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+@@ -145,4 +149,10 @@
+           // Each consumer re-reads its locked rows, so a replay is a no-op.
+           await deliverOrderPaymentEvent(context, event, tx);
++          // PRD §3.19 Jurnal Otomatis (legend-9pz9, legend-o9q9), cloud only:
++          // sales, refunds, gateway receipts and payouts post their journal in
++          // a savepoint; expected accounting failures park for the sweep and
++          // never fail this delivery.
++          if (postsInventoryGl)
++            await deliverAutoJournalEvent(context, event, tx);
+           // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
+           // or sale posts its GL journal in a savepoint; a closed period or a
+@@ -278,4 +288,13 @@
+       }
+     }
++    // §3.19 (legend-9pz9), cloud only: retry parked auto-journals (mapping
++    // missing, period closed race). A sweep error never blocks the relay.
++    if (postsInventoryGl) {
++      try {
++        await retryParkedAutoJournals(context, new Date());
++      } catch {
++        console.error("Auto-journal retry sweep failed");
++      }
++    }
+     // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
+     // templates, one transaction per period. Fail closed, next tick resumes.

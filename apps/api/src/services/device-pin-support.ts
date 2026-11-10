@@ -3,6 +3,7 @@
 // append. Authorization decisions come from @starter/shared/access through
 // permission-resolver.ts; nothing here re-implements the scope rules.
 
+import { createHash } from "node:crypto";
 import {
   isAssignmentActive,
   scopeCovers,
@@ -176,4 +177,100 @@ export async function appendDevicePinEvent(
     direction: null,
     peerId: null,
   });
+}
+
+/** The fields a POS override request is fingerprinted by. */
+export type PosOverrideFingerprintFields = {
+  readonly requestedBy: string;
+  readonly outletId: string;
+  readonly action: string;
+  readonly valueIdr: number;
+  readonly reason: string;
+  readonly reasonCode: string | null;
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly method: string;
+  readonly approverUserId: string | null;
+};
+
+/**
+ * Request fingerprint of a POS override (legend-fjwxo). A PIN approval typed on
+ * a verified device is bound to it: `deviceId` is part of the hash, so a replay
+ * from another device is IDEMPOTENCY_KEY_REUSED and consumption can re-derive
+ * the fingerprint from the stored row and the caller's device. No device = the
+ * legacy fingerprint (unbound approval, unchanged for stored rows).
+ */
+export function posOverrideFingerprint(
+  fields: PosOverrideFingerprintFields,
+  deviceId: string | null,
+): string {
+  const normalized = {
+    requestedBy: fields.requestedBy.toLowerCase(),
+    outletId: fields.outletId.toLowerCase(),
+    action: fields.action,
+    valueIdr: fields.valueIdr,
+    reason: fields.reason,
+    reasonCode: fields.reasonCode,
+    objectType: fields.objectType,
+    objectId: fields.objectId.toLowerCase(),
+    method: fields.method,
+    approverUserId: fields.approverUserId?.toLowerCase() ?? null,
+  };
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        deviceId === null
+          ? normalized
+          : { ...normalized, deviceId: deviceId.toLowerCase() },
+      ),
+    )
+    .digest("hex");
+}
+
+/** The stored override columns the device binding is derived from. */
+export type PosOverrideDeviceBindRow = {
+  readonly requestedBy: string;
+  readonly outletId: string;
+  readonly action: string;
+  readonly valueIdr: number;
+  readonly reason: string;
+  readonly reasonCode: string | null;
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly method: string;
+  readonly approvedBy: string | null;
+  readonly requestFingerprint: string;
+};
+
+/**
+ * Whether `deviceId` (the verified device the caller acts from, null: none) may
+ * use a stored override (legend-fjwxo). Only a PIN approval is bound: the
+ * device is part of its stored fingerprint, so it is re-derived from the row.
+ * An approval made with no device stays usable as before; one made on a device
+ * is refused for any other device and for a caller naming none. Shared by every
+ * consumer of a `cash_shift_close` / void / discount approval.
+ */
+export function posOverrideUsableFromDevice(
+  override: PosOverrideDeviceBindRow,
+  deviceId: string | null,
+): boolean {
+  if (override.method !== "supervisor_pin") return true;
+  const fields = {
+    requestedBy: override.requestedBy,
+    outletId: override.outletId,
+    action: override.action,
+    valueIdr: override.valueIdr,
+    reason: override.reason,
+    reasonCode: override.reasonCode,
+    objectType: override.objectType,
+    objectId: override.objectId,
+    method: override.method,
+    approverUserId: override.approvedBy,
+  };
+  if (posOverrideFingerprint(fields, null) === override.requestFingerprint)
+    return true;
+  return (
+    deviceId !== null &&
+    posOverrideFingerprint(fields, deviceId) === override.requestFingerprint
+  );
 }

@@ -28,7 +28,6 @@
 // record); same key + another body → IDEMPOTENCY_KEY_REUSED. Creation for one
 // key is serialised with an advisory lock.
 
-import { createHash } from "node:crypto";
 import { AccessError, type PosOverrideAction } from "@starter/shared/access";
 import {
   POS_OVERRIDE_APPROVE_PERMISSION,
@@ -68,6 +67,7 @@ import {
   membershipContext,
   outletContext,
   outletTarget,
+  posOverrideFingerprint,
 } from "./device-pin-support";
 import {
   loadTenantAccessInTransaction,
@@ -87,10 +87,6 @@ export const POS_OVERRIDE_SOURCE_MODULE = "pos_override";
 const APPROVAL_OBJECT_TYPE = "pos_override";
 
 // ------------------------------------------------------------------ helpers
-
-function fingerprint(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
 
 function notFound(): CoreError {
   return new CoreError("NOT_FOUND", "Override tidak ditemukan.");
@@ -455,20 +451,25 @@ export async function createPosOverride(
     options.idempotencyKey === null
       ? null
       : idempotencyKeySchema.parse(options.idempotencyKey);
-  const requestFingerprint = fingerprint({
-    requestedBy: requestedBy.toLowerCase(),
-    outletId: outletId.toLowerCase(),
-    action: input.action,
-    valueIdr: valueIdr,
-    reason,
-    reasonCode,
-    objectType: input.objectType,
-    objectId: input.objectId.toLowerCase(),
-    method: approval.method,
-    approverUserId: approverUserId?.toLowerCase() ?? null,
-  });
-  const context = outletContext(tenant, outletId);
   const deviceId = options.deviceId ?? null;
+  // A PIN approval is bound to the verified device it was typed on
+  // (legend-fjwxo); a phone approval is not (its approver acts elsewhere).
+  const requestFingerprint = posOverrideFingerprint(
+    {
+      requestedBy,
+      outletId,
+      action: input.action,
+      valueIdr: valueIdr,
+      reason,
+      reasonCode,
+      objectType: input.objectType,
+      objectId: input.objectId,
+      method: approval.method,
+      approverUserId,
+    },
+    approval.method === "supervisor_pin" ? deviceId : null,
+  );
+  const context = outletContext(tenant, outletId);
 
   if (approval.method === "supervisor_phone")
     return withTenant(db, context, async (tx) => {

@@ -11,7 +11,7 @@ Baca `~/.agents/team/roles/engineer.md` dan `~/.agents/team/TEAM.md` (bagian "Pa
 - `apps/api/src/services/metric-sources/types.ts` dan `index.ts` di basis.
 
 ## Repo
-Basis `ws/ws11-foundation` (eb4383cb, antre merge train). Satu cabang per keluarga: `ws/ws11-<keluarga>` dengan worktree `.worktrees/ws11-<keluarga>` dan `worktree:setup` di tiap worktree. Jangan checkout di folder utama. Jangan push, jangan merge.
+Basis `ws/ws11-shared-1` (a597254c, di atas `ws/ws11-foundation` eb4383cb; keduanya antre merge train). Kontrak dari putaran shared 1: `reportResultSchema` wajib `bucket` dan `truncated`; tiap baris wajib `bucketStart`/`bucketEnd`; jumlah baris ≤ `rowLimit`; bucket `day` start = end; pecahan maks outlet + 1 dimensi (`REPORT_RUN_MAX_SPLIT_DIMENSIONS`); penolakan akses `REPORT_NOT_PERMITTED`; izin metrik datang dari laporan sumbernya (`apps/api/src/routes/report-viewer.ts`). Test `ws11-gl-parity` SH-01 merah menunggu keputusan founder (legend-upmn7); bukan regresi keluarga. Satu cabang per keluarga: `ws/ws11-<keluarga>` dengan worktree `.worktrees/ws11-<keluarga>` dan `worktree:setup` di tiap worktree. Jangan checkout di folder utama. Jangan push, jangan merge.
 
 ## Berkas
 Tiap keluarga X hanya mengubah:

@@ -1,0 +1,15 @@
+# Run 3 — second opinion PPh 21 take-home cap
+
+Scope: hanya `6e20273a..1535d4d8` pada `ws/pph21-overwithhold`, HEAD `1535d4d872b959a08af37465dc657d6aa35eddce`. Pemeriksaan kode read-only; tidak mengubah kode, commit, push, merge, atau database.
+
+## Temuan
+
+- `packages/shared/src/hris/payroll/pph21.ts:572` — **P2** — Settlement prior cap excess dapat menaikkan potongan karyawan karena tambahan covered melewati ambang pembulatan PKP, melanggar invariant Run 3 bahwa W tidak naik terhadap `6e20273a`; reproduksi TK/0, NPWP, `proportional`, benefit/deductible nol: Januari gross Rp10.000.000 dengan caller cap Rp199.998 menghasilkan borne Rp2/excess Rp1, Februari net Rp5.400.000, Maret–November gross Rp10.000.000 per bulan, Desember gross Rp9.900.147; literal baseline menghasilkan W Rp658.540, X Rp10.024.207, T Rp782.600, B Rp124.060, sedangkan Run 3 menghasilkan W Rp658.589, X Rp10.024.208, T Rp782.650, B Rp124.061; settlement Rp1 menaikkan PKP dari Rp55.652.000 ke Rp55.653.000 sehingga pajak naik Rp50 dan karyawan menanggung tambahan Rp49; bebankan juga kenaikan pajak akibat settlement kepada perusahaan di dalam titik tetap agar W tidak melebihi acuan tanpa settlement, dan tambah regresi tepat di ambang PKP ini.
+
+## Bukti dan verifikasi
+
+- Riwayat reproduksi dibentuk melalui `computePayslipTax` dan `buildPph21Prior`, menghasilkan prior: `taxableGrossIdr=105400002`, `employeeDeductibleIdr=0`, `pph21WithheldIdr=1999998`, `pph21EmployerBorneIdr=2`, `taxAllowanceIdr=0`, `pph21CapExcessIdr=1`, `grossSchemeBaseIdr=100000000`, `employerSchemeBaseIdr=5400002`. Input Desember: `lastTaxPeriod=true`, `monthsWorked=12`, satu baris gross Rp9.900.147. Baseline dimuat dari `git show 6e20273a:packages/shared/src/hris/payroll/pph21.ts` dan ditranspilasi di memori; hasilnya juga sama dengan HEAD yang diberi prior excess nol. Reproduksi diulang langsung oleh pemeriksa utama dan dikonfirmasi dua subagent secara independen.
+- Suite pure terarah: **7 berkas, 158 test lulus**, exit 0. Perintah dari worktree `apps/api`: `heavy pnpm exec vitest run src/test/payroll-pph21-annual.test.ts src/test/payroll-pph21-history-split-reference.test.ts src/test/payroll-pph21-history-split.test.ts src/test/payroll-pph21-overwithhold-reference.test.ts src/test/payroll-pph21-prior-reference.test.ts src/test/payroll-pph21-prior.test.ts src/test/payroll-pph21-takehome-cap.test.ts --reporter=dot`.
+- Uji silang in-memory tambahan: 10.000 tahun acak, 64.976 periode; cap, setoran, take-home, batas refund, pemisahan pembayar, excess ≤ borne, dan identitas X lulus. Sebanyak 40.683 periode tanpa prior excess dengan cap yang tidak terlampaui identik dengan baseline. Sampel acak tidak menangkap kasus ambang PKP di atas; hasil ini tidak membatalkan reproduksi P2.
+- `git diff --check 6e20273a..1535d4d8` lulus. Tiga subagent dipakai, puncak tiga bersamaan; tidak ada subagent lanjutan.
+- Suite database, build, e2e, lint/typecheck, dan gate penuh tidak dijalankan dalam review read-only ini. Run 1 dan Run 2 tidak direview ulang.

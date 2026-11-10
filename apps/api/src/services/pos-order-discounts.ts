@@ -162,6 +162,7 @@ export async function applyPosDiscount(
             approvedBy: input.approvedBy,
             overrideId: input.overrideId,
             minValueIdr: amount,
+            deviceId: caller.deviceId,
             now,
           });
           approved = {

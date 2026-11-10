@@ -107,6 +107,8 @@ import { Route as KaryawanKaryawanAbsensiIndexRouteImport } from './routes/_kary
 import { Route as KaryawanKaryawanAbsensiRiwayatRouteImport } from './routes/_karyawan/karyawan.absensi.riwayat'
 import { Route as KaryawanKaryawanSlipGajiIndexRouteImport } from './routes/_karyawan/karyawan.slip-gaji.index'
 import { Route as KaryawanKaryawanSlipGajiPayslipIdRouteImport } from './routes/_karyawan/karyawan.slip-gaji.$payslipId'
+import { Route as KaryawanKaryawanSlipGajiLupaPinRouteImport } from './routes/_karyawan/karyawan.slip-gaji.lupa-pin'
+import { Route as KaryawanKaryawanSlipGajiUbahPinRouteImport } from './routes/_karyawan/karyawan.slip-gaji.ubah-pin'
 import { Route as KelolaKelolaAbsensiQrRouteImport } from './routes/_kelola/kelola.absensi.qr'
 import { Route as KelolaKelolaAbsensiSelfieRouteImport } from './routes/_kelola/kelola.absensi.selfie'
 import { Route as KelolaKelolaAksesIndexRouteImport } from './routes/_kelola/kelola.akses.index'
@@ -842,6 +844,18 @@ const KaryawanKaryawanSlipGajiPayslipIdRoute =
   KaryawanKaryawanSlipGajiPayslipIdRouteImport.update({
     id: '/karyawan/slip-gaji/$payslipId',
     path: '/karyawan/slip-gaji/$payslipId',
+    getParentRoute: () => KaryawanRoute,
+  } as any)
+const KaryawanKaryawanSlipGajiLupaPinRoute =
+  KaryawanKaryawanSlipGajiLupaPinRouteImport.update({
+    id: '/karyawan/slip-gaji/lupa-pin',
+    path: '/karyawan/slip-gaji/lupa-pin',
+    getParentRoute: () => KaryawanRoute,
+  } as any)
+const KaryawanKaryawanSlipGajiUbahPinRoute =
+  KaryawanKaryawanSlipGajiUbahPinRouteImport.update({
+    id: '/karyawan/slip-gaji/ubah-pin',
+    path: '/karyawan/slip-gaji/ubah-pin',
     getParentRoute: () => KaryawanRoute,
   } as any)
 const KelolaKelolaAbsensiQrRoute = KelolaKelolaAbsensiQrRouteImport.update({
@@ -2340,6 +2354,8 @@ export interface FileRoutesByFullPath {
   '/t/$token/review': typeof CustomerTTokenReviewRoute
   '/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/karyawan/slip-gaji/$payslipId': typeof KaryawanKaryawanSlipGajiPayslipIdRoute
+  '/karyawan/slip-gaji/lupa-pin': typeof KaryawanKaryawanSlipGajiLupaPinRoute
+  '/karyawan/slip-gaji/ubah-pin': typeof KaryawanKaryawanSlipGajiUbahPinRoute
   '/kelola/absensi/qr': typeof KelolaKelolaAbsensiQrRoute
   '/kelola/absensi/selfie': typeof KelolaKelolaAbsensiSelfieRoute
   '/kelola/akses/baru': typeof KelolaKelolaAksesBaruRoute
@@ -2669,6 +2685,8 @@ export interface FileRoutesByTo {
   '/t/$token/review': typeof CustomerTTokenReviewRoute
   '/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/karyawan/slip-gaji/$payslipId': typeof KaryawanKaryawanSlipGajiPayslipIdRoute
+  '/karyawan/slip-gaji/lupa-pin': typeof KaryawanKaryawanSlipGajiLupaPinRoute
+  '/karyawan/slip-gaji/ubah-pin': typeof KaryawanKaryawanSlipGajiUbahPinRoute
   '/kelola/absensi/qr': typeof KelolaKelolaAbsensiQrRoute
   '/kelola/absensi/selfie': typeof KelolaKelolaAbsensiSelfieRoute
   '/kelola/akses/baru': typeof KelolaKelolaAksesBaruRoute
@@ -3010,6 +3028,8 @@ export interface FileRoutesById {
   '/_customer/t/$token/review': typeof CustomerTTokenReviewRoute
   '/_karyawan/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/_karyawan/karyawan/slip-gaji/$payslipId': typeof KaryawanKaryawanSlipGajiPayslipIdRoute
+  '/_karyawan/karyawan/slip-gaji/lupa-pin': typeof KaryawanKaryawanSlipGajiLupaPinRoute
+  '/_karyawan/karyawan/slip-gaji/ubah-pin': typeof KaryawanKaryawanSlipGajiUbahPinRoute
   '/_kelola/kelola/absensi/qr': typeof KelolaKelolaAbsensiQrRoute
   '/_kelola/kelola/absensi/selfie': typeof KelolaKelolaAbsensiSelfieRoute
   '/_kelola/kelola/akses/baru': typeof KelolaKelolaAksesBaruRoute
@@ -3343,6 +3363,8 @@ export interface FileRouteTypes {
     | '/t/$token/review'
     | '/karyawan/absensi/riwayat'
     | '/karyawan/slip-gaji/$payslipId'
+    | '/karyawan/slip-gaji/lupa-pin'
+    | '/karyawan/slip-gaji/ubah-pin'
     | '/kelola/absensi/qr'
     | '/kelola/absensi/selfie'
     | '/kelola/akses/baru'
@@ -3672,6 +3694,8 @@ export interface FileRouteTypes {
     | '/t/$token/review'
     | '/karyawan/absensi/riwayat'
     | '/karyawan/slip-gaji/$payslipId'
+    | '/karyawan/slip-gaji/lupa-pin'
+    | '/karyawan/slip-gaji/ubah-pin'
     | '/kelola/absensi/qr'
     | '/kelola/absensi/selfie'
     | '/kelola/akses/baru'
@@ -4012,6 +4036,8 @@ export interface FileRouteTypes {
     | '/_customer/t/$token/review'
     | '/_karyawan/karyawan/absensi/riwayat'
     | '/_karyawan/karyawan/slip-gaji/$payslipId'
+    | '/_karyawan/karyawan/slip-gaji/lupa-pin'
+    | '/_karyawan/karyawan/slip-gaji/ubah-pin'
     | '/_kelola/kelola/absensi/qr'
     | '/_kelola/kelola/absensi/selfie'
     | '/_kelola/kelola/akses/baru'
@@ -4963,6 +4989,20 @@ declare module '@tanstack/react-router' {
       path: '/karyawan/slip-gaji/$payslipId'
       fullPath: '/karyawan/slip-gaji/$payslipId'
       preLoaderRoute: typeof KaryawanKaryawanSlipGajiPayslipIdRouteImport
+      parentRoute: typeof KaryawanRoute
+    }
+    '/_karyawan/karyawan/slip-gaji/lupa-pin': {
+      id: '/_karyawan/karyawan/slip-gaji/lupa-pin'
+      path: '/karyawan/slip-gaji/lupa-pin'
+      fullPath: '/karyawan/slip-gaji/lupa-pin'
+      preLoaderRoute: typeof KaryawanKaryawanSlipGajiLupaPinRouteImport
+      parentRoute: typeof KaryawanRoute
+    }
+    '/_karyawan/karyawan/slip-gaji/ubah-pin': {
+      id: '/_karyawan/karyawan/slip-gaji/ubah-pin'
+      path: '/karyawan/slip-gaji/ubah-pin'
+      fullPath: '/karyawan/slip-gaji/ubah-pin'
+      preLoaderRoute: typeof KaryawanKaryawanSlipGajiUbahPinRouteImport
       parentRoute: typeof KaryawanRoute
     }
     '/_kelola/kelola/absensi/qr': {
@@ -6755,6 +6795,8 @@ interface KaryawanRouteChildren {
   KaryawanKaryawanIndexRoute: typeof KaryawanKaryawanIndexRoute
   KaryawanKaryawanAbsensiRiwayatRoute: typeof KaryawanKaryawanAbsensiRiwayatRoute
   KaryawanKaryawanSlipGajiPayslipIdRoute: typeof KaryawanKaryawanSlipGajiPayslipIdRoute
+  KaryawanKaryawanSlipGajiLupaPinRoute: typeof KaryawanKaryawanSlipGajiLupaPinRoute
+  KaryawanKaryawanSlipGajiUbahPinRoute: typeof KaryawanKaryawanSlipGajiUbahPinRoute
   KaryawanKaryawanAbsensiIndexRoute: typeof KaryawanKaryawanAbsensiIndexRoute
   KaryawanKaryawanSlipGajiIndexRoute: typeof KaryawanKaryawanSlipGajiIndexRoute
 }
@@ -6766,6 +6808,8 @@ const KaryawanRouteChildren: KaryawanRouteChildren = {
   KaryawanKaryawanAbsensiRiwayatRoute: KaryawanKaryawanAbsensiRiwayatRoute,
   KaryawanKaryawanSlipGajiPayslipIdRoute:
     KaryawanKaryawanSlipGajiPayslipIdRoute,
+  KaryawanKaryawanSlipGajiLupaPinRoute: KaryawanKaryawanSlipGajiLupaPinRoute,
+  KaryawanKaryawanSlipGajiUbahPinRoute: KaryawanKaryawanSlipGajiUbahPinRoute,
   KaryawanKaryawanAbsensiIndexRoute: KaryawanKaryawanAbsensiIndexRoute,
   KaryawanKaryawanSlipGajiIndexRoute: KaryawanKaryawanSlipGajiIndexRoute,
 }

@@ -65,7 +65,12 @@ import {
   currentStaffPinPepperVersion,
   payslipPinPepper,
 } from "./device-pin-pepper.ts";
-import { hrisAuditEntry, loadHrisAccess, notFound } from "./hris-access.ts";
+import {
+  auditOutletFor,
+  hrisAuditEntry,
+  loadHrisAccess,
+  notFound,
+} from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -92,6 +97,10 @@ export type PayslipPinOtpSender = {
     context: ScopedTenantContext,
     message: {
       readonly employeeId: string;
+      /** The outlet the message is sent under: the home outlet when the caller's scope reaches it, else the first outlet it does reach. */
+      readonly outletId: string;
+      /** The reset challenge row id; the delivery reference (idempotency). */
+      readonly challengeId: string;
       readonly phoneE164: string;
       readonly code: string;
     },
@@ -260,7 +269,7 @@ async function auditPin(
 
 export type PinCheck =
   | { readonly kind: "ok" }
-  | { readonly kind: "invalid" }
+  | { readonly kind: "invalid"; readonly remainingAttempts: number }
   | { readonly kind: "locked"; readonly lockedUntil: string };
 
 /**
@@ -302,7 +311,11 @@ export async function checkPayslipPin(
     })
     .where(eq(payslipPins.id, row.id));
   if (correct) return { kind: "ok" };
-  if (next.lockedUntil === null) return { kind: "invalid" };
+  if (next.lockedUntil === null)
+    return {
+      kind: "invalid",
+      remainingAttempts: PAYSLIP_PIN_MAX_ATTEMPTS - next.failedAttempts,
+    };
   await auditPin(tx, context, self.actor, now, {
     outletId: self.homeOutletId,
     action: "payslip_pin.locked",
@@ -319,10 +332,26 @@ export async function checkPayslipPin(
 /** Maps a failed check to the contract error, after the transaction committed. */
 export function assertPinCheckOk(outcome: {
   readonly kind: string;
+  readonly remainingAttempts?: number;
+  readonly lockedUntil?: string;
 }): asserts outcome is { kind: "ok" } {
-  if (outcome.kind === "locked") throw new PayrollError("PAYSLIP_PIN_LOCKED");
+  if (outcome.kind === "locked")
+    throw new PayrollError(
+      "PAYSLIP_PIN_LOCKED",
+      undefined,
+      outcome.lockedUntil !== undefined
+        ? { lockedUntil: outcome.lockedUntil }
+        : {},
+    );
   if (outcome.kind === "not_set") throw new PayrollError("PAYSLIP_PIN_NOT_SET");
-  if (outcome.kind !== "ok") throw new PayrollError("PAYSLIP_PIN_INVALID");
+  if (outcome.kind !== "ok")
+    throw new PayrollError(
+      "PAYSLIP_PIN_INVALID",
+      undefined,
+      outcome.remainingAttempts !== undefined
+        ? { remainingAttempts: outcome.remainingAttempts }
+        : {},
+    );
 }
 
 async function storePin(
@@ -398,7 +427,7 @@ export async function getMyPayslipPinStatus(
 
 type SetOutcome =
   | { readonly kind: "ok"; readonly status: PayslipPinStatus }
-  | { readonly kind: "invalid" }
+  | { readonly kind: "invalid"; readonly remainingAttempts?: number }
   | { readonly kind: "locked"; readonly lockedUntil: string }
   | { readonly kind: "current_required" };
 
@@ -410,11 +439,16 @@ export async function setMyPayslipPin(
   context: ScopedTenantContext,
   actorUserId: string,
   input: SetMyPayslipPinInput,
-  now: Date = new Date(),
+  nowOverride?: Date,
 ): Promise<PayslipPinStatus> {
   const { idempotencyKey, ...request } = input;
   const outcome = await withTenant(db, context, async (tx) => {
-    const self = await loadPayslipSelf(tx, context, actorUserId, now);
+    const self = await loadPayslipSelf(
+      tx,
+      context,
+      actorUserId,
+      nowOverride ?? new Date(),
+    );
     return idempotentHrisWrite<SetOutcome>(
       tx,
       context,
@@ -431,6 +465,8 @@ export async function setMyPayslipPin(
           context.tenant.tenantId,
           self.employeeId,
         );
+        // Clock read AFTER the lock (lock expiry and counters judge this).
+        const now = nowOverride ?? new Date();
         if (row) {
           if (request.currentPin === undefined)
             return { kind: "current_required" };
@@ -685,6 +721,8 @@ export async function requestPayslipPinResetOtp(
         try {
           await sender.send(context, {
             employeeId: self.employeeId,
+            outletId: auditOutletFor(context, self.homeOutletId),
+            challengeId: id,
             phoneE164: phone,
             code,
           });
@@ -722,11 +760,16 @@ export async function verifyPayslipPinResetOtp(
   context: ScopedTenantContext,
   actorUserId: string,
   input: VerifyPayslipPinResetOtpInput,
-  now: Date = new Date(),
+  nowOverride?: Date,
 ): Promise<PayslipPinStatus> {
   const { idempotencyKey, ...request } = input;
   const outcome = await withTenant(db, context, async (tx) => {
-    const self = await loadPayslipSelf(tx, context, actorUserId, now);
+    const self = await loadPayslipSelf(
+      tx,
+      context,
+      actorUserId,
+      nowOverride ?? new Date(),
+    );
     return idempotentHrisWrite<VerifyOutcome>(
       tx,
       context,
@@ -743,6 +786,9 @@ export async function verifyPayslipPinResetOtp(
           context.tenant.tenantId,
           self.employeeId,
         );
+        // Clock read AFTER the lock: a code that expired while this request
+        // waited for the lock must not be accepted with a stale `now`.
+        const now = nowOverride ?? new Date();
         const [challenge] = await tx
           .select()
           .from(payslipPinResetChallenges)

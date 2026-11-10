@@ -242,6 +242,7 @@ export async function voidPosOrderCorrection(
         approvedBy: input.approvedBy,
         overrideId: input.overrideId,
         minValueIdr: order.totalIdr,
+        deviceId: caller.deviceId,
         now,
       });
       const receipts = posReceiptPort();
@@ -810,6 +811,7 @@ export async function refundPosOrder(
         approvedBy: input.approvedBy,
         overrideId: input.overrideId,
         minValueIdr: payout,
+        deviceId: caller.deviceId,
         now,
       });
       const lines: PosRefundLineRow[] = goodsReturnOnly

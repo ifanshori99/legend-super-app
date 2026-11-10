@@ -420,6 +420,7 @@ export async function addPosTender(
                   approvalCode: input.standalone.approvalCode ?? null,
                   overrideId: input.standalone.overrideId,
                   cashierId: caller.userId,
+                  deviceId: caller.deviceId,
                   at: now,
                 })
               : await (

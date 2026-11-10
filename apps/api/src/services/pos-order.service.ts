@@ -1461,6 +1461,7 @@ export async function voidPosOrder(
         approvedBy: input.approvedBy,
         overrideId: input.overrideId,
         minValueIdr: order.totalIdr,
+        deviceId: caller.deviceId,
         now,
       });
       const outlet = await loadOutlet(tx, context, outletId);
@@ -1656,6 +1657,7 @@ export async function voidPosOrderItem(
         approvedBy: input.approvedBy,
         overrideId: input.overrideId,
         minValueIdr: target.item.lineTotalIdr,
+        deviceId: caller.deviceId,
         now,
       });
       await voidLines(tx, context, order, {
