@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-m4p5 + legend-wa4hp WS-08 hadiah, misi, voucher, pembalikan kunjungan (engineer Opus, cabang `ws/m4p5-rewards` dari `ws/ws08-111j` e15950fe, brief 290c, 2026-11-10)
+
+- Migrasi `0207_loyalty_rewards_missions` (when 1794286000000, prevId = snapshot 0203; merge train merangkai ulang). Tabel baru `rewards`, `reward_redemptions`, `missions`, `mission_progress`; `vouchers.source` tambah `loyalty_reward`, FK profil voucher pola 2 contracts.md didahului pembersihan voucher yatim (profil NULL, voucher `issued` jadi `cancelled` alasan `profile_missing_0207`); `point_earn_records.applied_reversal_ids`. Default `loyalty_programs.daily_point_cap_per_customer` jadi 500 (keputusan founder Q69), juga di kontrak `defaultLoyaltyAntiFraud`.
+- API member `/api/member/{rewards,redemptions,missions,vouchers}`: tukar hadiah atomik (kunci profil, hadiah, penukaran, voucher; idempotency key), batal penukaran dengan poin kembali (`points.adjusted` kind restore), misi bulanan/mingguan ISO/rentang tanggal dengan bonus poin atau voucher. API staf `/api/loyalty/{rewards,missions}` + `POST /api/loyalty/redemptions/fulfil`. Job worker `redemption-expiry` (satu transaksi per penukaran, hari dicatat selesai hanya bila tanpa gagal).
+- legend-wa4hp: void dan refund menurunkan jumlah kunjungan dan belanja seumur hidup (tidak di bawah 0, replay dijaga `applied_reversal_ids`), juga untuk record capped, blocked self-serve, dan reversed.
+- Bukti: gagal-dulu di c129293e (26 merah, 3 hijau kasus negatif); tes Q69 merah (1000 bukan 500) lalu hijau. Tes terarah 21 file 412/412 sebelum Q69; typecheck api+shared bersih (heavy), eslint + prettier bersih, `db:generate` kosong.
+- Review architect (K) 2 putaran: fulfil/expiry bercabang di voucher, wa4hp untuk record non-booked, misi tidak jalan di self-serve, expiry per penukaran, voucher yatim di 0207, job expiry menelan error, stok null/terbatas dikunci saat ada penukaran pending; semua dibetulkan. Restore kedaluwarsa tetap sesuai B13.
+- Belum diuji: baris item Rp0 di POS untuk hadiah item, migrasi pada data yatim nyata, job expiry di worker hidup.
+- Berikut: merge train (rangkai ulang 0207), second-opinion Codex area WS-08.
+
 ## legend-111j WS-08 profil member, consent, buku poin (engineer Opus, cabang `ws/ws08-111j` dari `docs/arch-member-loyalty` b07b1032, brief 290a, 2026-11-10)
 
 - Migrasi `0203_member_loyalty_ledger` (when 1794282000000, prevId 8948ed96 = snapshot 0186 m1; merge train merangkai ulang). Tabel baru: `loyalty_programs`, `customer_profiles`, `member_profile_user_index`, `consent_policy_versions`, `point_ledger`, `point_earn_records`, `customer_visits`, `loyalty_anomalies`; kolom `orders.customer_attached_{by,via,at}` + FK komposit ke profil.
