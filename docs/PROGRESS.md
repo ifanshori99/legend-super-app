@@ -1011,3 +1011,4 @@ Langkah berikut CTO baru:
 - 19:58 G0m2d selesai: u7g9w 2c7957bf (bukti PIN absen layar outlet, 0241, 232/232) dan jmsdx 469673f2 (pepper per outlet, berisi u7g9w, 423/423). Architect K semua dibetulkan. Kartu baru 8e0a3, 62jtd; web ws10 /clock di tvkuz. Urutan merge: j6cyb -> u7g9w -> ideif -> jmsdx -> arch-357. Keputusan CTO: device `display` tidak dapat PIN absen (PRD F905: layar outlet menampilkan QR berotasi, staf scan dari ponsel).
 - Brief 381 ptn11 (base ws/aruta-pos-pin).
 - 20:03 Codex 380 split bill: 2 P1 (bayar paralel batalkan bagian lain; token klaim tanpa cek kepemilikan bagian) + 1 P2 (expiry dari waktu bayar, bukan tutup meja). Ditambahkan ke brief 366 (ec6fa). Codex 382 PIN proof + pepper jalan (#2).
+- 20:05 akun #3 reset: mulai 6 thread — G8go1 ec6fa (366 sonnet), G816d rgddb (376 opus), G0y2x 44g8n (369 sonnet), G1fjl powk0 (370 sonnet), G2b3l h1dyy (375 opus), G58ff 5u03q (373 opus). Antre: 33im6 (378), ptn11 (381).
