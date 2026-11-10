@@ -1125,3 +1125,4 @@ Langkah berikut CTO baru:
 - 04:52 Codex 419 gabung meja: 2 P1 -> legend-mgavf brief 420 (antre slot). P2 sesi dibayar sebagian: tetap ditolak (keputusan CTO).
 - 04:53 Codex 418 area PIN: 4 P1 + 2 P2 -> legend-fjwxo brief 421 (P0, antre slot pertama). Cabang fix/codex-418-pin menggantikan payslip-pin-ui + qih2m di batch48d.
 - 04:54 G2i7n pti5r selesai: 123/123, gagal-dulu terbukti, push 095b4099 -> kandidat batch48d. RAM kuning (Claude 7/4): fjwxo (421) menunggu slot. Codex 422 refund mulai (#2).
+- 04:57 Codex 422 refund: 3 P1 + 2 P2 -> legend-pbwzq brief 423 (kirim ke G2i7n saat slot). pti5r ditahan dari batch48d sampai 423 selesai.

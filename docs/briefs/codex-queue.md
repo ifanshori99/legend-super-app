@@ -20,4 +20,4 @@ Urutan: uang/pajak -> auth/akses -> migrasi -> data pribadi/offline. Satu run pe
 | profit share 33im6 fix (ws/8s992-profit-rules 54b76963, migrasi 0252) | Codex ulang area profit share sebelum rilis | tercakup 405 (-> 9t04v) |
 | 3sy9b approval versi porsi saham (ws/3sy9b-share-alloc-approval 360491fa, migrasi 0256) | gabung area profit share | tercakup 405 (-> 9t04v) |
 | owner tunggal self-approve (ws/owner-self-approve be5163bc, migrasi 0270) | gabung area profit share + approval | tercakup 405 (-> 9t04v) |
-| Refund recovery + pti5r | m1..ws/pti5r-promo-refund 095b4099 | order-recovery-refund*.ts | jalan 422 |
+| Refund recovery + pti5r | m1..ws/pti5r-promo-refund 095b4099 | order-recovery-refund*.ts | selesai 422 (3 P1 + 2 P2 -> brief 423) |
