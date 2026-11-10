@@ -202,6 +202,8 @@ export const POSTING_ACCOUNT_ROLES = {
   sales_revenue: "revenue",
   sales_discount: "revenue",
   loyalty_breakage_revenue: "revenue",
+  /** legend-msqvi: deferred revenue for loyalty points (PSAK 72), contra of the points liability. */
+  loyalty_points_deferral: "revenue",
   rounding: "revenue",
   /** Forfeited DP (reservation cancelled late or no-show) recognised as other income. */
   deposit_forfeit_income: "revenue",
@@ -453,6 +455,14 @@ const standardRows: Row[] = [
     "revenue",
     "4100",
     ["loyalty_breakage_revenue"],
+  ],
+  // legend-msqvi: points earned defer revenue here; redemption releases it.
+  [
+    "4105",
+    "Penangguhan Pendapatan Poin Loyalty",
+    "revenue",
+    "4100",
+    ["loyalty_points_deferral"],
   ],
   ["5100", "Harga Pokok Penjualan", "cogs", null],
   ["5101", "HPP Makanan dan Minuman", "cogs", "5100", ["cogs"]],

@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
+
+- Tanpa migrasi (`db:generate` kosong). Role baru `loyalty_points_deferral` + akun `4105 Penangguhan Pendapatan Poin Loyalty` (kontra-pendapatan di bawah 4100). Tenant baru dari template; tenant lama lewat `pnpm db:backfill-defaults` (`addLoyaltyDeferralAccount`, lewati bila 4105 terpakai).
+- Jurnal otomatis untuk `points.earned/reversed/redeemed/adjusted/expired` di consumer jurnal otomatis yang ada (`accounting-auto-journal-amounts.ts`, `posting-rules.ts`). Earn: Dr 4105 / Cr 2105; reverse dan redeem: Dr 2105 / Cr 4105; adjust bertanda; expire: Dr 2105 / Cr 4104. Nilai = `liability_idr` baris buku poin (Rp100 per poin, asumsi tingkat penukaran 100%). Kunci `aj:loyalty:<ledgerId>` dari idempotencyKey envelope, tanpa ubah payload. Tanggal = `business_date` buku poin.
+- Keputusan: `docs/DECISIONS.md` "WS-08: loyalty points journal, PSAK 72"; redeem ke 4105, bukan 4103 seperti desain 290f. Hanya tenant satu legal entity (lainnya parkir `LOYALTY_LEGAL_ENTITY_AMBIGUOUS`). Gate: akuntansi menyala; buku poin hanya terisi bila program menyala.
+- Bukti: `loyalty-journal.test.ts` 16/17 merah sebelum kode, kini 20/20; 10 file terarah 354/354 (setelah perubahan terakhir); tsc api + shared (heavy) lulus; eslint dan prettier bersih.
+- Review architect (K, xhigh): tanggal jurnal (dibetulkan), tes pin redeem dan retry sweep (ditambah), poin pesanan latihan (kartu `legend-kbbma`, wajib sebelum dinyalakan), multi-entity (kartu `legend-6m1w1`).
+- Berikut: second-opinion Codex `docs/briefs/304c-second-opinion-points-journal.md` (xhigh, belum dijalankan); konfirmasi akuntan founder (Q7) sebelum dinyalakan; merge train.
+
 ## legend-dwrr WS-12 provider AI OpenAI-compatible per tenant (engineer, cabang `ws/ai-provider-tenant` dari milestone/m1 d2080951, 2026-11-10)
 
 - Satu migrasi `0188_ai_provider_configs` (when 1794267000000, prevId 8948ed96 = id snapshot 0186): tabel `ai_provider_configs` satu baris per tenant, tenant RLS (`ai-provider.custom.sql`). Kunci API disegel `sealSecret` (AAD `ai_provider_config:<tenantId>:<rowId>`), hanya `hasKey` + `keyLast4` yang keluar. Tipe koneksi `api_key`; `chatgpt_oauth` dicadangkan dan ditolak (legend-z83k).

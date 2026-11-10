@@ -1022,3 +1022,133 @@ describe("tenant can still manage the provisioned chart", () => {
     );
   });
 });
+
+// legend-msqvi: `addLoyaltyDeferralAccount` is not exported; it runs from
+// `provisionStandardChart` (via `backfillTenantCharts`) when the entity already
+// has accounts. A chart "made before the points journal" is simulated by
+// provisioning the full chart and then removing 4105 and its mapping.
+describe("legend-msqvi loyalty deferral account on an existing chart", () => {
+  const DEFERRAL_ROLE = "loyalty_points_deferral";
+
+  async function legacyChart() {
+    const tenant = await seedBareTenant({});
+    const entityId = tenant.entityIds[0]!;
+    await backfillTenantCharts(tenant.tenantId);
+    await owner.query(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+      [tenant.tenantId, entityId, DEFERRAL_ROLE],
+    );
+    await owner.query(
+      "DELETE FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '4105'",
+      [tenant.tenantId, entityId],
+    );
+    return { ...tenant, entityId };
+  }
+
+  async function deferralState(tenantId: string, entityId: string) {
+    const accounts = await owner.query<{
+      id: string;
+      name: string;
+      parent_code: string | null;
+    }>(
+      `SELECT a.id, a.name, p.code AS parent_code
+         FROM chart_of_accounts a
+         LEFT JOIN chart_of_accounts p ON p.id = a.parent_id
+        WHERE a.tenant_id = $1 AND a.legal_entity_id = $2 AND a.code = '4105'`,
+      [tenantId, entityId],
+    );
+    const mappings = await owner.query<{ account_id: string }>(
+      "SELECT account_id FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+      [tenantId, entityId, DEFERRAL_ROLE],
+    );
+    return { accounts: accounts.rows, mappings: mappings.rows };
+  }
+
+  const auditCountFor = async (tenantId: string, entityId: string) =>
+    (await auditActions(tenantId, CHART_ACTION)).filter(
+      (event) => event.objectId === entityId,
+    ).length;
+
+  it("adds 4105 under 4100 with its mapping once, and a rerun changes nothing", async () => {
+    const { tenantId, entityId } = await legacyChart();
+    const auditsBefore = await auditCountFor(tenantId, entityId);
+    expect(await deferralState(tenantId, entityId)).toEqual({
+      accounts: [],
+      mappings: [],
+    });
+
+    const first = await backfillTenantCharts(tenantId);
+    expect(first).toHaveLength(1);
+    expect(first[0]!.status).toBe("already_present");
+    expect(first[0]!.accounts).toBe(1);
+    expect(first[0]!.mappings).toBe(1);
+    expect(first[0]!.missingRoles).toBe(0);
+
+    const row = standardFnbChartTemplate.find((r) => r.code === "4105")!;
+    const state = await deferralState(tenantId, entityId);
+    expect(state.accounts).toHaveLength(1);
+    expect(state.accounts[0]!.name).toBe(row.name);
+    expect(state.accounts[0]!.parent_code).toBe("4100");
+    expect(state.mappings).toEqual([{ account_id: state.accounts[0]!.id }]);
+    expect(await auditCountFor(tenantId, entityId)).toBe(auditsBefore + 1);
+
+    const afterFirst = await snapshot(tenantId);
+    const second = await backfillTenantCharts(tenantId);
+    expect(second[0]!.status).toBe("already_present");
+    expect(second[0]!.accounts).toBe(0);
+    expect(second[0]!.mappings).toBe(0);
+    expect(await snapshot(tenantId)).toEqual(afterFirst);
+    expect(await deferralState(tenantId, entityId)).toEqual(state);
+  });
+
+  it("skips when code 4105 is already taken by a tenant account", async () => {
+    const { tenantId, entityId } = await legacyChart();
+    // Tenant created its own account on code 4105 (not mapped to the role).
+    await owner.query(
+      `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+       VALUES ($1, $2, '4105', 'Pendapatan Tenant Sendiri', 'revenue', 'revenue')`,
+      [tenantId, entityId],
+    );
+    const before = await snapshot(tenantId);
+
+    const [result] = await backfillTenantCharts(tenantId);
+    expect(result!.status).toBe("already_present");
+    expect(result!.accounts).toBe(0);
+    expect(result!.mappings).toBe(0);
+
+    expect(await snapshot(tenantId)).toEqual(before);
+    const state = await deferralState(tenantId, entityId);
+    expect(state.accounts.map((a) => a.name)).toEqual([
+      "Pendapatan Tenant Sendiri",
+    ]);
+    expect(state.mappings).toEqual([]);
+  });
+
+  it("skips when the role is already mapped to another account", async () => {
+    const { tenantId, entityId } = await legacyChart();
+    // Tenant maps the role to its own account and has no 4105 at all.
+    const {
+      rows: [custom],
+    } = await owner.query<{ id: string }>(
+      `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+       VALUES ($1, $2, '4199', 'Penangguhan Tenant', 'revenue', 'revenue')
+       RETURNING id`,
+      [tenantId, entityId],
+    );
+    await owner.query(
+      "INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id) VALUES ($1, $2, $3, $4)",
+      [tenantId, entityId, DEFERRAL_ROLE, custom!.id],
+    );
+    const before = await snapshot(tenantId);
+
+    const [result] = await backfillTenantCharts(tenantId);
+    expect(result!.status).toBe("already_present");
+    expect(result!.accounts).toBe(0);
+    expect(result!.mappings).toBe(0);
+
+    expect(await snapshot(tenantId)).toEqual(before);
+    const state = await deferralState(tenantId, entityId);
+    expect(state.accounts).toEqual([]);
+    expect(state.mappings).toEqual([{ account_id: custom!.id }]);
+  });
+});
