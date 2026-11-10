@@ -956,3 +956,4 @@ Langkah berikut CTO baru:
 - 17:23 i83ls+wumm8 900f6f53 (migrasi 0229, architect 1 tinggi dibetulkan). Lanjutan: test 3 risiko uang. Pertanyaan bisnis Q91-Q94 ke founder.
 - 17:30 Founder Q91-Q93: semua sesuai implementasi i83ls (selisih penuh, waive staf berizin tanpa batas, tutup meja tunggu lunas).
 - 17:31 C7 final 68704269 (merge C6, test integrasi asli, 0233 rejected_at). Brief 349 ditambah fase 2 rantai HRIS. Brief 350 j6cyb, 351 svy91. #3 5h 86%: thread baru mulai 18:05 di #1.
+- 17:55 Architect atas rework i83ls 5558eca2: 1 tinggi (worker tanpa settlement lookup), 2 sedang (index oic yatim, tutup via deposit tanpa jurnal). Brief 352 + legend-800h1, mulai 18:07 di #1. i83ls TIDAK ikut batch47 sampai 352 selesai.
