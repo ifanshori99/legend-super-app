@@ -461,15 +461,13 @@ async function whileWebhookHeld(
   await Promise.all([webhook, working]);
 }
 
-async function expectNothingPaid(bill: Bill) {
+async function expectNothingPaid(bill: Bill, expectedEvidence: number) {
   expect(await intentStatus(bill.intentId)).not.toBe("paid");
   expect(await linkPaidIdr(bill.linkId)).toBe(0);
-  // Held money is kept as evidence parked as unallocated funds, once; no
-  // evidence ever settles the bill.
-  expect(await evidenceCount(bill.intentId)).toBeLessThanOrEqual(1);
-  expect(await evidenceCount(bill.intentId)).toBe(
-    await unallocatedCount(bill.intentId),
-  );
+  // Held money is kept as evidence parked as unallocated funds, exactly the
+  // expected number of times; no evidence ever settles the bill.
+  expect(await evidenceCount(bill.intentId)).toBe(expectedEvidence);
+  expect(await unallocatedCount(bill.intentId)).toBe(expectedEvidence);
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +517,7 @@ describe("legend-s0u8c F1 the amount hold follows the Duitku status call; poller
     await whileWebhookHeld(held, webhook, runPoller);
     await webhook;
 
-    await expectNothingPaid(bill);
+    await expectNothingPaid(bill, 1);
     // Held once (audit row), the money parked once, whoever was first.
     expect(await intentStatus(bill.intentId)).toBe("failed");
     expect(await heldAuditCount(bill.intentId)).toBe(1);
@@ -531,7 +529,7 @@ describe("legend-s0u8c F1 the amount hold follows the Duitku status call; poller
       (await callback(bill.intentId, bill.reference, String(BILL_TOTAL)))
         .status,
     ).toBeLessThan(500);
-    await expectNothingPaid(bill);
+    await expectNothingPaid(bill, 1);
     expect(await heldAuditCount(bill.intentId)).toBe(1);
     expect(await unallocatedCount(bill.intentId)).toBe(1);
   });
@@ -544,13 +542,13 @@ describe("legend-s0u8c F1 the amount hold follows the Duitku status call; poller
     expect((await callback(bill.intentId, bill.reference, "1000")).status).toBe(
       200,
     );
-    await expectNothingPaid(bill);
+    await expectNothingPaid(bill, 1);
     expect(await heldAuditCount(bill.intentId)).toBe(1);
 
     await runPoller();
 
     // Both paths honour the hold: held for review, never settled by polling.
-    await expectNothingPaid(bill);
+    await expectNothingPaid(bill, 1);
     expect(await heldAuditCount(bill.intentId)).toBe(1);
   });
 });
@@ -575,7 +573,7 @@ describe("legend-s0u8c F4 paidAt follows the intent status locked after the Duit
       const { rows } = await owner.query<{ closed_at: Date }>(
         `UPDATE payment_intents SET status = 'failed', updated_at = clock_timestamp()
           WHERE id = $1 AND status = 'pending'
-          RETURNING clock_timestamp() AS closed_at`,
+          RETURNING updated_at AS closed_at`,
         [bill.intentId],
       );
       expect(rows).toHaveLength(1);
@@ -608,7 +606,7 @@ describe("legend-s0u8c F5 an amount mismatch is held for review, not ignored, an
       200,
     );
 
-    await expectNothingPaid(bill);
+    await expectNothingPaid(bill, 1);
     const rows = await eventRows(bill.intentId);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).not.toBe("ignored");
