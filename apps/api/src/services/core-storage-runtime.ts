@@ -5,7 +5,7 @@ import type { ObjectStorage } from "@starter/shared/adapters";
 import type * as schema from "../db/schema";
 import { NoopMalwareScanner, type MalwareScanner } from "./core-image";
 import { S3ObjectStorage } from "./core-storage-provider";
-import { signedStorageUrl } from "./core-storage";
+import { signedStorageUrl, signedStorageUrlInTx } from "./core-storage";
 import type { HrisFileSigner } from "./hris-contract.service";
 import { toLoggableError } from "../lib/safe-error";
 
@@ -85,19 +85,28 @@ export function createAttendanceSelfieSigner(deps: {
   log?: Pick<Console, "error">;
 }): HrisFileSigner {
   const log = deps.log ?? console;
-  return async (context, storageObjectId) => {
+  return async (context, storageObjectId, tx) => {
     try {
-      const signed = await signedStorageUrl(
-        deps.database,
-        context,
-        storageObjectId,
-        "original",
-        {
-          storage: deps.storage,
-          authorize: async (action, purpose) =>
-            action === "read" && purpose === "selfie",
-        },
-      );
+      const signerDeps = {
+        storage: deps.storage,
+        authorize: async (action: "upload" | "read", purpose: string) =>
+          action === "read" && purpose === "selfie",
+      };
+      const signed = tx
+        ? await signedStorageUrlInTx(
+            tx,
+            context,
+            storageObjectId,
+            "original",
+            signerDeps,
+          )
+        : await signedStorageUrl(
+            deps.database,
+            context,
+            storageObjectId,
+            "original",
+            signerDeps,
+          );
       return signed.url;
     } catch (error) {
       if (
@@ -116,7 +125,9 @@ export function createAttendanceSelfieSigner(deps: {
 /**
  * Storage runtime from env, or null when storage is not configured. The
  * scanner is the no-op one: images are re-encoded by `processImage` and SVG is
- * refused, but no malware engine is wired yet (report risk, legend-dzh9q).
+ * refused, but no malware engine is wired yet (report risk, legend-dzh9q). PDF
+ * documents are not re-encoded, so production refuses them until a real
+ * scanner replaces the no-op one.
  */
 export function createStorageRuntimeFromEnv(
   source: StorageEnv,
@@ -127,7 +138,9 @@ export function createStorageRuntimeFromEnv(
   if (!storage) return null;
   return {
     storage,
-    scanner: new NoopMalwareScanner(),
+    scanner: new NoopMalwareScanner({
+      acceptsDocuments: source.NODE_ENV !== "production",
+    }),
     fileSigner: createAttendanceSelfieSigner({ database, storage, log }),
   };
 }

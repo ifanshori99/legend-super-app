@@ -359,7 +359,7 @@ async function presentLog(
 ): Promise<AttendanceLog> {
   if (row.photoKey === null || !canSee)
     return toAttendanceLog(row, null, isOwn);
-  const url = await signer(context, row.photoKey);
+  const url = await signer(context, row.photoKey, tx);
   if (url !== null)
     await recordAudit(
       tx,

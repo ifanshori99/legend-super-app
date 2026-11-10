@@ -9,6 +9,7 @@ import type { StorageRuntime } from "../services/core-storage-runtime";
 import type * as schema from "../db/schema";
 import { createHrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
 import { createHrisAttendanceRouter } from "./hris-attendance.routes";
+import { createMenuRouter } from "./menu.routes";
 
 /**
  * The /api routes that need the object storage (legend-dzh9q): core-storage
@@ -35,6 +36,17 @@ export function createStorageApiRouter(options: {
     : unavailableStorageRouter();
   router.use((req, res, next) =>
     req.path.startsWith("/storage/") ? storage(req, res, next) : next(),
+  );
+
+  // Menu back office (legend-7nv1): the photo upload needs the storage and the
+  // scanner. The menu router runs the auth guards on every /menu/* request,
+  // as it did in apiRouter; the menu import router stays there, after this.
+  router.use(
+    "/menu",
+    createMenuRouter({
+      storage: runtime?.storage ?? null,
+      scanner: runtime?.scanner,
+    }),
   );
 
   // Only attendance paths enter these routers: each runs the session and

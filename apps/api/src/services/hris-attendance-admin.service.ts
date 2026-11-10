@@ -121,6 +121,8 @@ type DutyMealsQuery = z.output<typeof listAttendanceDutyMealsEndpoint.query>;
 export type AttendancePhotoSigner = (
   context: ScopedTenantContext,
   photoKey: string,
+  /** The caller's tenant transaction: sign inside it, no extra connection. */
+  tx?: Tx,
 ) => Promise<string | null>;
 export const noAttendancePhotoSigner: AttendancePhotoSigner = async () => null;
 
@@ -340,7 +342,7 @@ async function toReviewItem(
   now: Date,
 ): Promise<AttendanceReviewItem> {
   const photoUrl =
-    row.photoKey === null ? null : await signPhoto(context, row.photoKey);
+    row.photoKey === null ? null : await signPhoto(context, row.photoKey, tx);
   // Each selfie URL handed to a reviewer is a sensitive-data access.
   if (photoUrl !== null)
     await recordAudit(

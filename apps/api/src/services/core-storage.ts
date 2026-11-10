@@ -83,6 +83,12 @@ export async function uploadStorage(
     input.purpose === "document" &&
     Buffer.from(bytes).subarray(0, 5).toString("ascii") === "%PDF-"
   ) {
+    if (deps.scanner.acceptsDocuments === false)
+      throw new HttpError(
+        503,
+        "SERVICE_UNAVAILABLE",
+        "Unggah dokumen PDF belum tersedia: pemindai malware belum dipasang.",
+      );
     await deps.scanner.scan(bytes);
     contentType = "application/pdf";
     full = bytes;
@@ -163,23 +169,34 @@ export async function signedStorageUrl(
   options: { downloadFileName?: string } = {},
 ) {
   assertTrustedScopedContext(context);
-  const row = await withTenant(
-    database,
-    context,
-    async (tx) =>
-      (
-        await tx
-          .select()
-          .from(coreStorageObjects)
-          .where(
-            and(
-              eq(coreStorageObjects.tenantId, context.tenant.tenantId),
-              eq(coreStorageObjects.id, id),
-            ),
-          )
-          .limit(1)
-      )[0],
+  return withTenant(database, context, (tx) =>
+    signedStorageUrlInTx(tx, context, id, variant, deps, options),
   );
+}
+
+/** Same as `signedStorageUrl`, inside the caller's tenant transaction (`tx`
+ * is already scoped to `context`): no extra pooled connection per call. */
+export async function signedStorageUrlInTx(
+  tx: Transaction,
+  context: ScopedTenantContext,
+  id: string,
+  variant: "original" | "thumbnail",
+  deps: Pick<Dependencies, "storage" | "authorize">,
+  options: { downloadFileName?: string } = {},
+) {
+  assertTrustedScopedContext(context);
+  const row = (
+    await tx
+      .select()
+      .from(coreStorageObjects)
+      .where(
+        and(
+          eq(coreStorageObjects.tenantId, context.tenant.tenantId),
+          eq(coreStorageObjects.id, id),
+        ),
+      )
+      .limit(1)
+  )[0];
   if (!row) throw new CoreError("NOT_FOUND", "Object not found.");
   // A tenant-level row (no outlet) is only ever a public purpose: no signed URL.
   if (row.outletId === null)
