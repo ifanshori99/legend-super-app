@@ -73,12 +73,7 @@ const DEFAULT_OFFSET_MS = 7 * 3_600_000;
 
 /** Audit field names kept unmasked: numbers and flags, no personal data. */
 // `name` is left out: the audit schema rejects raw values of name-like keys.
-const AUDIT_SAFE_FIELDS = [
-  "type",
-  "isActive",
-  "startsAt",
-  "endsAt",
-] as const;
+const AUDIT_SAFE_FIELDS = ["type", "isActive", "startsAt", "endsAt"] as const;
 
 // ---- Pure helpers -----------------------------------------------------------
 
