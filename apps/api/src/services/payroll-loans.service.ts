@@ -73,8 +73,8 @@ import type { Tx } from "./permission-resolver.ts";
 
 const VIEW_CODE: PermissionCode = "payroll.view";
 const APPROVE_CODE: PermissionCode = "hr.loan.approve";
-/** No kasbon-specific self code exists: own record needs a profile (HR-01). */
-const SELF_CODE: PermissionCode = "self.profile.view";
+/** Own kasbon record: the employee template code, not the profile code (HR-01, legend-krvk7). */
+const SELF_CODE: PermissionCode = "self.loan.request";
 
 const AUDIT_ACTION: Record<EmployeeLoanAction, string> = {
   approve: "payroll.loan.approved",
