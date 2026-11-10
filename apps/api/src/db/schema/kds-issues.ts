@@ -226,6 +226,8 @@ export const orderIssueCharges = pgTable(
     /** gross + service + pbjt: what the guest pays. */
     amountIdr: idrColumn("amount_idr").notNull(),
     paymentLinkId: uuid("payment_link_id"),
+    /** Link token, sealed like `orders.payment_link_token_sealed`. */
+    paymentLinkTokenSealed: text("payment_link_token_sealed"),
     paymentIntentId: uuid("payment_intent_id"),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     closedAt: timestamp("closed_at", { withTimezone: true }),
@@ -281,6 +283,10 @@ export const orderIssueCharges = pgTable(
       columns: [table.tenantId, table.paymentIntentId],
       foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
     }),
+    check(
+      "order_issue_charges_link_token_check",
+      sql`(${table.paymentLinkId} IS NULL) = (${table.paymentLinkTokenSealed} IS NULL)`,
+    ),
     check(
       "order_issue_charges_route_check",
       sql`${table.route} IN ('qr_link', 'pos')`,

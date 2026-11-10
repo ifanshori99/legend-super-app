@@ -33,6 +33,7 @@ import {
   domainEventOutbox,
   journalEntries,
   journalLines,
+  orderIssueCharges,
   orders,
   paymentIntents,
   paymentRefunds,
@@ -474,15 +475,26 @@ const saleAt = saleAtOf("orders");
  */
 export type Bound =
   | { kind: "refund"; tenantId: TenantId; refundId: string }
-  | { kind: "sale"; tenantId: TenantId; orderId: string };
+  | { kind: "sale"; tenantId: TenantId; orderId: string }
+  /**
+   * legend-i83ls: a paid swap-difference charge (order_issue_charges.paid_at).
+   * Judged like a sale: refunds and forfeits count only when strictly before it.
+   */
+  | { kind: "charge"; tenantId: TenantId; chargeId: string };
 
 function timeOf(bound: Bound) {
-  return bound.kind === "refund"
-    ? sql`(SELECT b.completed_at FROM payment_refunds b
-          WHERE b.tenant_id = ${bound.tenantId}::uuid AND b.id = ${bound.refundId}::uuid)`
-    : sql`(SELECT ${saleAtOf("b")} FROM orders b
+  switch (bound.kind) {
+    case "refund":
+      return sql`(SELECT b.completed_at FROM payment_refunds b
+          WHERE b.tenant_id = ${bound.tenantId}::uuid AND b.id = ${bound.refundId}::uuid)`;
+    case "charge":
+      return sql`(SELECT b.paid_at FROM order_issue_charges b
+          WHERE b.tenant_id = ${bound.tenantId}::uuid AND b.id = ${bound.chargeId}::uuid)`;
+    case "sale":
+      return sql`(SELECT ${saleAtOf("b")} FROM orders b
           WHERE b.tenant_id = ${bound.tenantId}::uuid
             AND b.id = ${ulidToUuid(bound.orderId)}::uuid)`;
+  }
 }
 
 /**
@@ -546,12 +558,28 @@ function forfeitsAt(bound: Bound) {
  */
 function salesAt(bound: Bound) {
   const done = sql`${saleAt} IS NOT NULL`;
-  return bound.kind === "refund"
-    ? and(done, sql`${saleAt} <= ${timeOf(bound)}`)
-    : and(
+  // A sale is earlier than a refund or a charge made at the same instant.
+  return bound.kind === "sale"
+    ? and(
         done,
         sql`(${saleAt}, ${orders.id}) <= (${timeOf(bound)}, ${ulidToUuid(bound.orderId)}::uuid)`,
-      );
+      )
+    : and(done, sql`${saleAt} <= ${timeOf(bound)}`);
+}
+
+/**
+ * Paid swap-difference charges (legend-i83ls) that count at `bound`: earlier
+ * than or at a refund (the charge is earlier on a tie) and at itself, strictly
+ * earlier than a sale (an order sale never uses a charge intent anyway).
+ */
+function chargesAt(bound: Bound) {
+  const paid = and(
+    eq(orderIssueCharges.status, "paid"),
+    isNotNull(orderIssueCharges.paidAt),
+  );
+  return bound.kind === "sale"
+    ? and(paid, sql`${orderIssueCharges.paidAt} < ${timeOf(bound)}`)
+    : and(paid, sql`${orderIssueCharges.paidAt} <= ${timeOf(bound)}`);
 }
 
 const mismatch = (message: string) =>
@@ -652,6 +680,30 @@ export async function sessionDepositAt(
       ),
     );
   return { intentIds, heldIdr, appliedIdr: BigInt(applied?.total ?? "0") };
+}
+
+/**
+ * The charge an order_issue.charge_paid event journals: it must be `paid`
+ * (paid_at set), the bound of the charge, else AutoJournalPayloadInvalid.
+ */
+export async function chargeBoundOf(
+  tx: Tx,
+  tenantId: TenantId,
+  chargeId: string,
+): Promise<Bound> {
+  const [charge] = await tx
+    .select({ paidAt: orderIssueCharges.paidAt })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.id, chargeId),
+        eq(orderIssueCharges.status, "paid"),
+      ),
+    );
+  if (!charge || charge.paidAt === null)
+    throw new AutoJournalPayloadInvalid("Charge is not paid");
+  return { kind: "charge", tenantId, chargeId };
 }
 
 /**
@@ -880,6 +932,23 @@ async function intentBackedAt(
       .from(orders)
       .where(qrSaleScope),
   );
+  // legend-i83ls: the revenue of a swap-difference charge paid by this intent
+  // took its amount out of customer_deposit (order_issue.charge_paid). The
+  // charge has its own payment link, so qrSales never sees it.
+  const charges = await sumOf(
+    tx
+      .select({
+        total: sql<string>`coalesce(sum(${orderIssueCharges.amountIdr}), 0)::text`,
+      })
+      .from(orderIssueCharges)
+      .where(
+        and(
+          eq(orderIssueCharges.tenantId, tenantId),
+          eq(orderIssueCharges.paymentIntentId, intentId),
+          chargesAt(bound),
+        ),
+      ),
+  );
   const forfeits = await sumOf(
     tx
       .select({
@@ -917,7 +986,7 @@ async function intentBackedAt(
       ),
   );
   return {
-    backedIdr: tenders + qrSales + forfeits + payouts,
+    backedIdr: tenders + qrSales + charges + forfeits + payouts,
     backingPending: posRefundPending || voidPending || qrRefundPending,
   };
 }
@@ -1059,6 +1128,33 @@ export async function assertSaleWithinReceipt(
     saleBound,
     receiptCredit,
     "Sale of an intent exceeds its receipt after earlier sales, forfeits and payouts",
+  );
+}
+
+/**
+ * The revenue of a paid swap-difference charge (legend-i83ls) may not take more
+ * out of customer_deposit than its intent receipt put in, judged at the charge
+ * bound: the receipt >= what the intent backs there (this charge included;
+ * payouts completed strictly before the charge count).
+ */
+export async function assertChargeWithinReceipt(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+  chargeBound: Bound,
+): Promise<void> {
+  const receiptCredit = await postedCreditOf(
+    tx,
+    tenantId,
+    backingKeyOf({ kind: "intent", intentId }),
+  );
+  await assertIntentWithinReceipt(
+    tx,
+    tenantId,
+    intentId,
+    chargeBound,
+    receiptCredit,
+    "Charge of an intent exceeds its receipt after earlier payouts",
   );
 }
 

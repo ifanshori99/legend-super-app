@@ -60,6 +60,7 @@ import {
 } from "@starter/shared/payment";
 import {
   domainEventOutbox,
+  orderIssueCharges,
   orders,
   paymentIntents,
   paymentRefunds,
@@ -74,9 +75,11 @@ import {
   assertPayoutWithinReceipt,
   assertSaleWithinReceipt,
   type Bound,
+  assertChargeWithinReceipt,
   backingKeyOf,
   backingStateOf,
   backingStatesOf,
+  chargeBoundOf,
   DP_INTENT_STATUSES,
   payoutBackingOf,
   saleBoundOf,
@@ -97,6 +100,7 @@ export const AUTO_JOURNAL_EVENTS = [
   "order.refunded",
   "order.voided",
   "order_issue.refund_reversal_requested",
+  "order_issue.charge_paid",
   "payment.paid",
   "payment.funds_unallocated",
   "payment.refunded",
@@ -223,6 +227,24 @@ export const orderIssueRefundReversalStoredSchema = z.object({
   rejectedAt: time,
 });
 
+/**
+ * order_issue.charge_paid as the consumer stores it (legend-i83ls): the guest
+ * paid the swap-difference charge of an issue. Only ids, amounts and the time
+ * are kept; the outlet is the event envelope outlet, the charge row is the
+ * source of truth for the split.
+ */
+export const orderIssueChargePaidStoredSchema = z.object({
+  orderId: id,
+  orderIssueId: z.string().uuid(),
+  chargeId: z.string().uuid(),
+  paymentIntentId: z.string().uuid(),
+  grossSalesIdr: idr.nonnegative(),
+  serviceChargeIdr: idr.nonnegative(),
+  pbjtIdr: idr.nonnegative(),
+  amountIdr: idr.refine((value) => value > 0),
+  paidAt: time,
+});
+
 const paymentPaidSchema = z.object({
   intentId: z.string().uuid(),
   receivedIdr: idr,
@@ -345,6 +367,14 @@ export function storedEventOf(event: {
         );
       return { ...base, outletId: event.outletId, occurredAt, payload };
     }
+    case "order_issue.charge_paid": {
+      const payload = orderIssueChargePaidStoredSchema.parse(event.payload);
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      return { ...base, outletId: event.outletId, occurredAt, payload };
+    }
     case "payment.paid":
     case "payment.funds_unallocated":
     case "payment.refunded": {
@@ -434,6 +464,8 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:sale-void:${String(p.orderId)}`);
     case "order_issue.refund_reversal_requested":
       return boundedKey(`aj:order-refund-reversal:${String(p.orderIssueId)}`);
+    case "order_issue.charge_paid":
+      return boundedKey(`aj:order-charge:${String(p.chargeId)}`);
     case "payment.paid":
       return receiptKeyOf(String(p.intentId));
     case "payment.funds_unallocated":
@@ -877,6 +909,112 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
 }
 
 /**
+ * legend-i83ls: the revenue of a paid swap-difference charge, booked with the
+ * rule of order.paid. The money of the charge is one intent of its own payment
+ * link (never the order's), so the fact reads the charge row, not the order:
+ * - the charge is `paid` by the intent the event names, with the exact split
+ *   and amount of the event (identity gross + service + pbjt), of the outlet;
+ * - the sale journal of its order must exist (or still be able to post), like
+ *   a refund (order.refunded): the charge revenue follows the sale;
+ * - the intent receipt decides the debit as for a QR sale: posted (out of
+ *   customer_deposit, within what the receipt still holds at the charge bound),
+ *   none (pre-cutover gateway money, gateway_clearing), pending (wait). An
+ *   EDC-linked intent fails closed (receiptStatesOf).
+ */
+async function chargePaidFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<AutoJournalFact> {
+  const p = orderIssueChargePaidStoredSchema.parse(stored.payload);
+  const [charge] = await tx
+    .select({
+      outletId: orderIssueCharges.outletId,
+      orderId: orderIssueCharges.orderId,
+      orderIssueId: orderIssueCharges.orderIssueId,
+      status: orderIssueCharges.status,
+      paymentIntentId: orderIssueCharges.paymentIntentId,
+      grossSalesIdr: orderIssueCharges.grossSalesIdr,
+      serviceChargeIdr: orderIssueCharges.serviceChargeIdr,
+      pbjtIdr: orderIssueCharges.pbjtIdr,
+      amountIdr: orderIssueCharges.amountIdr,
+    })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.id, p.chargeId),
+      ),
+    );
+  if (!charge)
+    throw new AutoJournalPayloadInvalid("Charge of the event not found");
+  if (
+    charge.status !== "paid" ||
+    charge.paymentIntentId !== p.paymentIntentId ||
+    charge.outletId !== stored.outletId ||
+    charge.orderId !== p.orderId ||
+    charge.orderIssueId !== p.orderIssueId
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Charge is not paid by the intent of the event",
+    );
+  if (
+    Number(charge.grossSalesIdr) !== p.grossSalesIdr ||
+    Number(charge.serviceChargeIdr) !== p.serviceChargeIdr ||
+    Number(charge.pbjtIdr) !== p.pbjtIdr ||
+    Number(charge.amountIdr) !== p.amountIdr ||
+    p.grossSalesIdr + p.serviceChargeIdr + p.pbjtIdr !== p.amountIdr
+  )
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "Charge payload does not match the charge row",
+    );
+  const saleState = await backingStateOf(tx, tenantId, {
+    kind: "sale",
+    orderId: p.orderId,
+  });
+  if (saleState === "pending")
+    throw new AutoJournalSalePending("Sale journal is not posted yet");
+  if (saleState === "none")
+    throw new AutoJournalSaleMissing("Sale journal will never post");
+  const states = await receiptStatesOf(tx, tenantId, [p.paymentIntentId]);
+  const state = states.get(p.paymentIntentId);
+  if (state === "pending")
+    throw new AutoJournalReceiptPending(
+      "Gateway receipt of the charge is not booked yet",
+    );
+  let withReceipt = 0;
+  if (state === "posted") {
+    await assertChargeWithinReceipt(
+      tx,
+      tenantId,
+      p.paymentIntentId,
+      await chargeBoundOf(tx, tenantId, p.chargeId),
+    );
+    withReceipt = p.amountIdr;
+  }
+  return {
+    ruleEvent: "order.paid",
+    amounts: {
+      paidCashIdr: 0,
+      paidGatewayIntentIdr: withReceipt,
+      paidDepositIdr: 0,
+      paidGatewayIdr: p.amountIdr - withReceipt,
+      paidEdcIdr: 0,
+      paidPointsIdr: 0,
+      discountIdr: 0,
+      grossSalesIdr: p.grossSalesIdr,
+      serviceChargeIdr: p.serviceChargeIdr,
+      pbjtIdr: p.pbjtIdr,
+      roundingIdr: 0,
+    },
+    sourceId: p.chargeId,
+    outletId: stored.outletId,
+    moneyTime: new Date(p.paidAt),
+  };
+}
+
+/**
  * Rule input of one stored event, or null when the event books nothing
  * (EDC-linked intent on a payment event, zero receipt, zero forfeit, zero
  * shift difference, order.paid with every amount 0). Re-reads only rows that
@@ -1061,6 +1199,8 @@ export async function autoJournalFactOf(
       throw new Error(
         "order_issue.refund_reversal_requested is handled by recoveryRefundFactOf",
       );
+    case "order_issue.charge_paid":
+      return chargePaidFactOf(tx, tenantId, stored);
     case "payment.paid": {
       const p = paymentPaidSchema.parse(stored.payload);
       if (p.receivedIdr <= 0) return null;

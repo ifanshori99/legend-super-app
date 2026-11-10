@@ -187,6 +187,41 @@ export const orderIssueRefundReversalRequestedPayloadSchema = z.strictObject({
   rejectedAt: isoDateTimeSchema,
 });
 
+/**
+ * legend-i83ls: the guest paid the dearer-swap difference of a failed item
+ * (`order_issue_charges`). The journal recognises its revenue from this event
+ * with the account rules of `order.paid`: the money arrived through the
+ * gateway intent `paymentIntentId`. gross + service + pbjt = amount.
+ */
+export const orderIssueChargePaidPayloadSchema = z
+  .strictObject({
+    orderId: orderIdSchema,
+    orderIssueId: orderIssueIdSchema,
+    /** The `order_issue_charges` row. */
+    chargeId: z.string().uuid(),
+    paymentIntentId: z.string().uuid(),
+    /** Price difference of the swap line, before service charge and PBJT. */
+    differenceIdr: idrSchema.refine((value) => value > 0),
+    grossSalesIdr: idrSchema.refine((value) => value >= 0),
+    serviceChargeIdr: idrSchema.refine((value) => value >= 0),
+    pbjtIdr: idrSchema.refine((value) => value >= 0),
+    amountIdr: idrSchema.refine((value) => value > 0),
+    paidAt: isoDateTimeSchema,
+  })
+  .superRefine((payload, ctx) => {
+    if (
+      Number(payload.amountIdr) !==
+      Number(payload.grossSalesIdr) +
+        Number(payload.serviceChargeIdr) +
+        Number(payload.pbjtIdr)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["amountIdr"],
+        message: "amountIdr must equal gross + service + pbjt",
+      });
+  });
+
 export const serviceRequestCreatedPayloadSchema = z.strictObject({
   serviceRequestId: serviceRequestIdSchema,
   sessionId: tableSessionIdSchema,
@@ -221,6 +256,7 @@ export const qrOrderEventNames = [
   "order_issue.resolved",
   "order_issue.manual_refund_approved",
   "order_issue.refund_reversal_requested",
+  "order_issue.charge_paid",
   "service_request.created",
   "service_request.overdue",
   "table.status_changed",
@@ -248,6 +284,7 @@ export const qrOrderEventPayloads: Record<
     orderIssueManualRefundApprovedPayloadSchema,
   "order_issue.refund_reversal_requested":
     orderIssueRefundReversalRequestedPayloadSchema,
+  "order_issue.charge_paid": orderIssueChargePaidPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,
   "service_request.overdue": serviceRequestOverduePayloadSchema,
   "table.status_changed": tableStatusChangedPayloadSchema,
@@ -307,6 +344,9 @@ export type OrderIssueManualRefundApprovedPayload = z.infer<
 >;
 export type OrderIssueRefundReversalRequestedPayload = z.infer<
   typeof orderIssueRefundReversalRequestedPayloadSchema
+>;
+export type OrderIssueChargePaidPayload = z.infer<
+  typeof orderIssueChargePaidPayloadSchema
 >;
 export type ServiceRequestCreatedPayload = z.infer<
   typeof serviceRequestCreatedPayloadSchema

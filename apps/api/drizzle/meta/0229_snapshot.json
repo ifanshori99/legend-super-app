@@ -1,5 +1,5 @@
 {
-  "id": "72ec6d0f-da98-4a75-8a43-5c324ef886e2",
+  "id": "5c165a52-daa3-473a-b99b-3eac76840427",
   "prevId": "b885f249-0f88-4183-89b0-c2483bcb36b3",
   "version": "7",
   "dialect": "postgresql",
@@ -45087,6 +45087,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "payment_link_token_sealed": {
+          "name": "payment_link_token_sealed",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "payment_intent_id": {
           "name": "payment_intent_id",
           "type": "uuid",
@@ -45343,6 +45349,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "order_issue_charges_link_token_check": {
+          "name": "order_issue_charges_link_token_check",
+          "value": "(\"order_issue_charges\".\"payment_link_id\" IS NULL) = (\"order_issue_charges\".\"payment_link_token_sealed\" IS NULL)"
+        },
         "order_issue_charges_route_check": {
           "name": "order_issue_charges_route_check",
           "value": "\"order_issue_charges\".\"route\" IN ('qr_link', 'pos')"

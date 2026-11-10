@@ -45,6 +45,48 @@ function mulDivHalfUp(
   return (2n * value * numerator + denominator) / (2n * denominator);
 }
 
+export type LineShareSplit = {
+  grossSalesIdr: number;
+  discountIdr: number;
+  serviceChargeIdr: number;
+  pbjtIdr: number;
+};
+
+/**
+ * The share of the order's gross, discount, service and PBJT that `baseIdr`
+ * weighs: `s = baseIdr / subtotalIdr`, each component rounded half up (BigInt).
+ * Shared by the failed-item refund (`clamp: true`: a line never weighs more
+ * than its order) and the dearer-swap charge (`clamp: false`: the difference
+ * is not a part of the subtotal). All zero for a non-positive subtotal or base,
+ * before the order's identity is checked.
+ */
+export function lineShareSplit(
+  order: OrderRevenueInput,
+  baseIdr: number,
+  options: { clamp: boolean },
+): LineShareSplit {
+  if (order.subtotalIdr <= 0 || baseIdr <= 0)
+    return {
+      grossSalesIdr: 0,
+      discountIdr: 0,
+      serviceChargeIdr: 0,
+      pbjtIdr: 0,
+    };
+  const split = orderRevenueSplit(order);
+  const subtotal = BigInt(order.subtotalIdr);
+  const base = BigInt(
+    options.clamp ? Math.min(baseIdr, order.subtotalIdr) : baseIdr,
+  );
+  const share = (value: number) =>
+    Number(mulDivHalfUp(BigInt(value), base, subtotal));
+  return {
+    grossSalesIdr: share(split.grossSalesIdr),
+    discountIdr: share(split.discountIdr),
+    serviceChargeIdr: share(split.serviceChargeIdr),
+    pbjtIdr: share(split.pbjtIdr),
+  };
+}
+
 export function recoveryRefundSplit(input: {
   order: OrderRevenueInput & { depositAppliedIdr: number };
   lineTotalIdr: number;
@@ -53,15 +95,11 @@ export function recoveryRefundSplit(input: {
 }): RecoveryRefundSplit {
   const { order, releasedIdr } = input;
   if (order.subtotalIdr <= 0 || input.lineTotalIdr <= 0) return { ...ZERO };
-  const split = orderRevenueSplit(order);
-  const subtotal = BigInt(order.subtotalIdr);
-  // A line never weighs more than the order it belongs to.
-  const line = BigInt(Math.min(input.lineTotalIdr, order.subtotalIdr));
-  const share = (value: number) => mulDivHalfUp(BigInt(value), line, subtotal);
-  let gross = share(split.grossSalesIdr);
-  let discount = share(split.discountIdr);
-  let service = share(split.serviceChargeIdr);
-  let pbjt = share(split.pbjtIdr);
+  const shares = lineShareSplit(order, input.lineTotalIdr, { clamp: true });
+  let gross = BigInt(shares.grossSalesIdr);
+  let discount = BigInt(shares.discountIdr);
+  let service = BigInt(shares.serviceChargeIdr);
+  let pbjt = BigInt(shares.pbjtIdr);
   const wanted = gross - discount + service + pbjt;
   if (wanted <= 0n) return { ...ZERO };
 
@@ -93,5 +131,39 @@ export function recoveryRefundSplit(input: {
     discountIdr: Number(discount),
     serviceChargeIdr: Number(service),
     pbjtIdr: Number(pbjt),
+  };
+}
+
+export type RecoveryChargeSplit = {
+  differenceIdr: number;
+  grossSalesIdr: number;
+  serviceChargeIdr: number;
+  pbjtIdr: number;
+  /** gross + service + pbjt: what the guest pays. */
+  amountIdr: number;
+};
+
+/**
+ * legend-i83ls: what the guest owes for a dearer swap. The price difference
+ * `differenceIdr` weighs like a line of that value (`lineShareSplit`, no clamp
+ * to the subtotal) and brings its share of service charge and PBJT. No order
+ * discount and no deposit apply (CTO default, a business decision: the order's
+ * discount does not cut the difference), and there is no room to cut to: the
+ * guest pays the whole amount. `amount = gross + service + pbjt` holds exactly.
+ * A zero result (no subtotal or no difference) is all zero.
+ */
+export function recoveryChargeSplit(input: {
+  order: OrderRevenueInput;
+  differenceIdr: number;
+}): RecoveryChargeSplit {
+  const shares = lineShareSplit(input.order, input.differenceIdr, {
+    clamp: false,
+  });
+  return {
+    differenceIdr: Math.max(0, input.differenceIdr),
+    grossSalesIdr: shares.grossSalesIdr,
+    serviceChargeIdr: shares.serviceChargeIdr,
+    pbjtIdr: shares.pbjtIdr,
+    amountIdr: shares.grossSalesIdr + shares.serviceChargeIdr + shares.pbjtIdr,
   };
 }

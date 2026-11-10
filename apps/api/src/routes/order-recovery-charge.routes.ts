@@ -1,0 +1,61 @@
+// Staff close of a dearer-swap charge (legend-i83ls S4): waive or expire.
+//
+// Mount (routes/index.ts): `apiRouter.use(orderRecoveryChargeRouter)`; the
+// router carries the full paths.
+//
+// - requireAuth + requireTrustedOrigin + requireTenantContext +
+//   requireMenuPermission("order.recovery.handle"); the service re-checks the
+//   outlet of the concrete charge. The tenant comes from the server-minted
+//   context, never the body.
+// - Strict schemas parse params and body; the reason is mandatory.
+
+import { Router } from "express";
+import { userIdSchema, uuidSchema, z } from "@starter/shared/core";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { jsonBody } from "../middleware/body.ts";
+import { requireTrustedOrigin } from "../middleware/origin.ts";
+import {
+  getScopedTenantContext,
+  requireMenuPermission,
+} from "../middleware/permissions.ts";
+import { requireTenantContext } from "../middleware/tenant.ts";
+import {
+  closeIssueCharge,
+  type IssueChargeCloseAction,
+} from "../services/order-recovery-charge-staff.ts";
+
+export const orderRecoveryChargeRouter = Router();
+
+const staffGuard = [
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireMenuPermission("order.recovery.handle"),
+];
+
+const params = z.strictObject({ chargeId: uuidSchema });
+const body = z.strictObject({ reason: z.string().trim().min(3).max(300) });
+
+for (const action of [
+  "waive",
+  "expire",
+] as const satisfies readonly IssueChargeCloseAction[])
+  orderRecoveryChargeRouter.post(
+    `/order-issue-charges/:chargeId/${action}`,
+    ...staffGuard,
+    jsonBody,
+    async (req, res) => {
+      const { chargeId } = params.parse(req.params);
+      const input = body.parse(req.body);
+      res.json({
+        data: await closeIssueCharge(
+          getScopedTenantContext(req),
+          userIdSchema.parse(getAuth(req).user.id),
+          chargeId,
+          action,
+          input,
+          new Date(),
+        ),
+      });
+    },
+  );

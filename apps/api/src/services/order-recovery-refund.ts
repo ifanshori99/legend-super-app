@@ -258,7 +258,9 @@ export async function deliverOrderRecoveryRefundEvent(
   // to one payer. Checked on the pinned intent, any split row of the order,
   // and any other intent of the order or of its payment link (a QR bill split
   // over several codes, legend-nslvm) that took money, the same test as the
-  // payout guard (accounting-auto-journal-guards.ts qrSales).
+  // payout guard (accounting-auto-journal-guards.ts qrSales). The intent of a
+  // swap-difference charge (legend-i83ls) is no payer of the order's bill: it
+  // paid its own payment link, so it is skipped (by intent and by link).
   const orderUuid = ulidToUuid(order.id);
   const splitCheck = await tx.execute(sql`
     SELECT
@@ -271,6 +273,10 @@ export async function deliverOrderRecoveryRefundEvent(
                OR (${order.paymentLinkId}::uuid IS NOT NULL
                    AND other.payment_link_id = ${order.paymentLinkId}::uuid))
           AND other.status IN ('paid', 'partially_refunded', 'refunded')
+          AND NOT EXISTS (SELECT 1 FROM order_issue_charges c
+                WHERE c.tenant_id = other.tenant_id
+                  AND (c.payment_intent_id = other.id
+                       OR c.payment_link_id = other.payment_link_id))
           AND (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
                 WHERE e.tenant_id = other.tenant_id AND e.payment_intent_id = other.id)
             - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f

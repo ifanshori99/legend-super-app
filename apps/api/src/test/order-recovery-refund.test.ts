@@ -762,6 +762,102 @@ describe("legend-94q2l cabang 2: split bill ditolak", () => {
   });
 });
 
+describe("legend-i83ls cabang 2: intent tagihan selisih swap bukan pembayar bill", () => {
+  /**
+   * The paid intent of a swap-difference charge of the order: its own payment
+   * link (never the order's), named after the order, real evidence, and an
+   * `order_issue_charges` row that points at link and intent. Issue foreign
+   * keys are skipped (the refund check reads only the charge's link and intent).
+   */
+  async function paidChargeIntent(orderId: string) {
+    const row = await orderRow(orderId);
+    const linkId = randomUUID();
+    const chargeIntentId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_links
+         (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+       VALUES ($1, $2, $3, $4, $5, 2420, 2420, 2420, 'i83ls-test')`,
+      [
+        linkId,
+        w.tenant.tenantId,
+        row.outlet_id,
+        randomUUID().replaceAll("-", "").padEnd(64, "0"),
+        `OC-${linkId.slice(0, 8)}`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, order_id, method, provider,
+          amount_idr, idempotency_key, status, instructions, expires_at, paid_at)
+       VALUES ($1, $2, $3, $4, $5, 'qris', 'doit', 2420, $6, 'paid',
+               '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}',
+               now() + interval '1 hour', now())`,
+      [
+        chargeIntentId,
+        w.tenant.tenantId,
+        row.outlet_id,
+        linkId,
+        toUuid(orderId),
+        `i83ls-${chargeIntentId}`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_evidence
+         (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 2420, now())`,
+      [
+        w.tenant.tenantId,
+        row.outlet_id,
+        chargeIntentId,
+        `evidence-${chargeIntentId}`,
+      ],
+    );
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO order_issue_charges
+           (tenant_id, outlet_id, order_issue_id, order_id, route, status, difference_idr,
+            gross_sales_idr, service_charge_idr, pbjt_idr, amount_idr, payment_link_id,
+            payment_link_token_sealed, payment_intent_id, paid_at)
+         VALUES ($1, $2, $3, $4, 'qr_link', 'paid', 2000, 2000, 200, 220, 2420, $5, 'sealed', $6, now())`,
+        [
+          w.tenant.tenantId,
+          row.outlet_id,
+          randomUUID(),
+          toUuid(orderId),
+          linkId,
+          chargeIntentId,
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return chargeIntentId;
+  }
+
+  it("intent tagihan selisih yang dibayar (order_id = order): bukan split, refund dibuka", async () => {
+    const { order, issueId, event } = await paidRotiRefund();
+    const intentId = await intentIdOf(order.id);
+    await paidChargeIntent(order.id);
+
+    await deliver(event);
+
+    const refunds = await issueRefunds(issueId);
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]).toMatchObject({
+      payment_intent_id: intentId,
+      amount_idr: ROTI_WANTED,
+    });
+    expect(await auditCount(issueId, "order_issue.refund_blocked")).toBe(0);
+  });
+});
+
 // ---- branch 3: no intent ---------------------------------------------------
 
 describe("legend-94q2l cabang 3: order tanpa intent", () => {

@@ -95,6 +95,7 @@ const TRAINING_ORDER_EVENTS: ReadonlySet<string> = new Set([
   "order.paid",
   "order.refunded",
   "order.voided",
+  "order_issue.charge_paid",
 ]);
 
 export type AutoJournalResult =
@@ -436,6 +437,7 @@ async function requeueSaleDependents(
         inArray(autoJournalParked.eventName, [
           "order.voided",
           "order.refunded",
+          "order_issue.charge_paid",
         ]),
         sql`${autoJournalParked.payload}->>'orderId' = ${String(stored.payload.orderId)}`,
       ),
