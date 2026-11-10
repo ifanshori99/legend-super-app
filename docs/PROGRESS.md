@@ -1003,3 +1003,6 @@ Langkah berikut CTO baru:
 - 19:55 Codex 372 refund recovery: 1 P1 (refund abaikan evaluasi ulang promo) + 2 P2 (poin tidak kembali saat refund ditolak; pembulatan PBJT tidak kumulatif). Kartu legend-h1dyy, brief 375. 94q2l-impl ditahan dari merge sampai selesai.
 - Codex #3 7d 97%: berhenti dipakai sampai reset 15 Nov. Antrean Codex jalan satu per satu di #2.
 - legend-p649r: naikkan memori Postgres test 512->768 MiB (puncak 445 MiB).
+- 20:00 Codex 374 Duitku: 2 P1 (kredensial intent lama ikut cek paket; dedup pakai resultCode tak bertanda tangan) + 2 P2 (nominal tidak wajib sama; failed/expired->paid tanpa aturan). Kartu legend-rgddb (P0), brief 376, worktree baru dari milestone/m1. Keputusan CTO: dana terlambat diterima bila pesanan belum lunas lain dan nominal cocok; selain itu kelebihan bayar ke antrean rekonsiliasi.
+- Codex jalan: 377 profit share bagian A (akun #2).
+- Rekap Codex hari ini: 6 run, 18 temuan (8 P1) yang lolos review Claude.
