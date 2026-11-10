@@ -27,7 +27,13 @@ CREATE TABLE "purchase_return_lines" (
 	CONSTRAINT "purchase_return_lines_quantity_check" CHECK ("purchase_return_lines"."quantity" > 0),
 	CONSTRAINT "purchase_return_lines_unit_cost_check" CHECK ("purchase_return_lines"."unit_cost_idr" >= 0),
 	CONSTRAINT "purchase_return_lines_value_check" CHECK ("purchase_return_lines"."line_value_idr" >= 0),
-	CONSTRAINT "purchase_return_lines_line_no_check" CHECK ("purchase_return_lines"."line_no" > 0)
+	CONSTRAINT "purchase_return_lines_line_no_check" CHECK ("purchase_return_lines"."line_no" > 0),
+	CONSTRAINT "purchase_return_lines_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_return_lines_receipt_line_fk" FOREIGN KEY ("tenant_id","goods_receipt_line_id") REFERENCES "public"."goods_receipt_lines"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_return_lines_po_line_fk" FOREIGN KEY ("tenant_id","purchase_order_line_id") REFERENCES "public"."purchase_order_lines"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_return_lines_item_fk" FOREIGN KEY ("tenant_id","inventory_item_id") REFERENCES "public"."inventory_items"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_return_lines_location_fk" FOREIGN KEY ("tenant_id","location_id") REFERENCES "public"."stock_locations"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_return_lines_batch_fk" FOREIGN KEY ("tenant_id","batch_id") REFERENCES "public"."stock_batches"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "purchase_returns" (
@@ -58,7 +64,12 @@ CREATE TABLE "purchase_returns" (
         AND "purchase_returns"."ppn_idr" >= 0),
 	CONSTRAINT "purchase_returns_split_check" CHECK ("purchase_returns"."value_idr" = "purchase_returns"."uninvoiced_value_idr" + "purchase_returns"."invoiced_value_idr"),
 	CONSTRAINT "purchase_returns_ppn_check" CHECK ("purchase_returns"."ppn_idr" = 0 OR "purchase_returns"."invoiced_value_idr" > 0),
-	CONSTRAINT "purchase_returns_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
+	CONSTRAINT "purchase_returns_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_returns_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_returns_returned_by_user_id_fk" FOREIGN KEY ("returned_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_returns_receipt_fk" FOREIGN KEY ("tenant_id","outlet_id","goods_receipt_id") REFERENCES "public"."goods_receipts"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_returns_order_fk" FOREIGN KEY ("tenant_id","purchase_order_id") REFERENCES "public"."purchase_orders"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "purchase_returns_supplier_fk" FOREIGN KEY ("tenant_id","supplier_id") REFERENCES "public"."suppliers"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "petty_purchase_policies" (
@@ -71,7 +82,9 @@ CREATE TABLE "petty_purchase_policies" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "petty_purchase_policies_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "petty_purchase_policies_limit_check" CHECK ("petty_purchase_policies"."limit_idr" > 0),
-	CONSTRAINT "petty_purchase_policies_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
+	CONSTRAINT "petty_purchase_policies_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "petty_purchase_policies_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "petty_purchase_policies_updated_by_user_id_fk" FOREIGN KEY ("updated_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "petty_purchases" (
@@ -92,28 +105,15 @@ CREATE TABLE "petty_purchases" (
 	CONSTRAINT "petty_purchases_tenant_photo_key" UNIQUE("tenant_id","photo_object_id"),
 	CONSTRAINT "petty_purchases_amount_check" CHECK ("petty_purchases"."amount_idr" > 0),
 	CONSTRAINT "petty_purchases_limit_check" CHECK ("petty_purchases"."limit_idr_applied" > 0),
-	CONSTRAINT "petty_purchases_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
+	CONSTRAINT "petty_purchases_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "petty_purchases_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "petty_purchases_paid_by_user_id_fk" FOREIGN KEY ("paid_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "petty_purchases_photo_fk" FOREIGN KEY ("tenant_id","photo_object_id") REFERENCES "public"."core_storage_objects"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "core_storage_objects" DROP CONSTRAINT "core_storage_objects_source_kind_check";--> statement-breakpoint
 ALTER TABLE "purchasing_document_sequences" DROP CONSTRAINT "purchasing_document_sequences_kind_check";--> statement-breakpoint
-ALTER TABLE "purchase_return_lines" ADD CONSTRAINT "purchase_return_lines_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "purchase_return_lines" ADD CONSTRAINT "purchase_return_lines_return_fk" FOREIGN KEY ("tenant_id","outlet_id","purchase_return_id") REFERENCES "public"."purchase_returns"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_return_lines" ADD CONSTRAINT "purchase_return_lines_receipt_line_fk" FOREIGN KEY ("tenant_id","goods_receipt_line_id") REFERENCES "public"."goods_receipt_lines"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_return_lines" ADD CONSTRAINT "purchase_return_lines_po_line_fk" FOREIGN KEY ("tenant_id","purchase_order_line_id") REFERENCES "public"."purchase_order_lines"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_return_lines" ADD CONSTRAINT "purchase_return_lines_item_fk" FOREIGN KEY ("tenant_id","inventory_item_id") REFERENCES "public"."inventory_items"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_return_lines" ADD CONSTRAINT "purchase_return_lines_location_fk" FOREIGN KEY ("tenant_id","location_id") REFERENCES "public"."stock_locations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_return_lines" ADD CONSTRAINT "purchase_return_lines_batch_fk" FOREIGN KEY ("tenant_id","batch_id") REFERENCES "public"."stock_batches"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_returns" ADD CONSTRAINT "purchase_returns_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_returns" ADD CONSTRAINT "purchase_returns_returned_by_user_id_fk" FOREIGN KEY ("returned_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_returns" ADD CONSTRAINT "purchase_returns_receipt_fk" FOREIGN KEY ("tenant_id","outlet_id","goods_receipt_id") REFERENCES "public"."goods_receipts"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_returns" ADD CONSTRAINT "purchase_returns_order_fk" FOREIGN KEY ("tenant_id","purchase_order_id") REFERENCES "public"."purchase_orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "purchase_returns" ADD CONSTRAINT "purchase_returns_supplier_fk" FOREIGN KEY ("tenant_id","supplier_id") REFERENCES "public"."suppliers"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "petty_purchase_policies" ADD CONSTRAINT "petty_purchase_policies_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "petty_purchase_policies" ADD CONSTRAINT "petty_purchase_policies_updated_by_user_id_fk" FOREIGN KEY ("updated_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "petty_purchases" ADD CONSTRAINT "petty_purchases_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "petty_purchases" ADD CONSTRAINT "petty_purchases_paid_by_user_id_fk" FOREIGN KEY ("paid_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "petty_purchases" ADD CONSTRAINT "petty_purchases_photo_fk" FOREIGN KEY ("tenant_id","photo_object_id") REFERENCES "public"."core_storage_objects"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "purchase_return_lines_tenant_receipt_line_idx" ON "purchase_return_lines" USING btree ("tenant_id","goods_receipt_line_id");--> statement-breakpoint
 CREATE INDEX "purchase_returns_tenant_outlet_returned_idx" ON "purchase_returns" USING btree ("tenant_id","outlet_id","returned_at","id");--> statement-breakpoint
 CREATE INDEX "purchase_returns_tenant_receipt_idx" ON "purchase_returns" USING btree ("tenant_id","goods_receipt_id");--> statement-breakpoint

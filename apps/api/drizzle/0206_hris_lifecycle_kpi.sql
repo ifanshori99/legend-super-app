@@ -13,7 +13,9 @@ CREATE TABLE "hris_checklist_task_actions" (
 	CONSTRAINT "hris_checklist_task_actions_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "hris_checklist_task_actions_idempotency_key" UNIQUE("tenant_id","task_id","idempotency_key"),
 	CONSTRAINT "hris_checklist_task_actions_action_check" CHECK ("hris_checklist_task_actions"."action" IN ('complete', 'block', 'unblock', 'waive')),
-	CONSTRAINT "hris_checklist_task_actions_reason_check" CHECK ("hris_checklist_task_actions"."action" NOT IN ('block', 'waive') OR "hris_checklist_task_actions"."reason" IS NOT NULL)
+	CONSTRAINT "hris_checklist_task_actions_reason_check" CHECK ("hris_checklist_task_actions"."action" NOT IN ('block', 'waive') OR "hris_checklist_task_actions"."reason" IS NOT NULL),
+	CONSTRAINT "hris_checklist_task_actions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hris_checklist_task_actions_document_fk" FOREIGN KEY ("tenant_id","document_id") REFERENCES "public"."employee_documents"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "hris_checklist_tasks" (
@@ -46,7 +48,10 @@ CREATE TABLE "hris_checklist_tasks" (
 	CONSTRAINT "hris_checklist_tasks_done_check" CHECK (("hris_checklist_tasks"."status" = 'done') = ("hris_checklist_tasks"."done_at" IS NOT NULL)),
 	CONSTRAINT "hris_checklist_tasks_blocked_check" CHECK ("hris_checklist_tasks"."status" <> 'blocked' OR "hris_checklist_tasks"."block_reason" IS NOT NULL),
 	CONSTRAINT "hris_checklist_tasks_waived_check" CHECK ("hris_checklist_tasks"."status" <> 'waived' OR "hris_checklist_tasks"."waive_reason" IS NOT NULL),
-	CONSTRAINT "hris_checklist_tasks_offboarding_link_check" CHECK (("hris_checklist_tasks"."kind" = 'offboarding') = ("hris_checklist_tasks"."offboarding_id" IS NOT NULL))
+	CONSTRAINT "hris_checklist_tasks_offboarding_link_check" CHECK (("hris_checklist_tasks"."kind" = 'offboarding') = ("hris_checklist_tasks"."offboarding_id" IS NOT NULL)),
+	CONSTRAINT "hris_checklist_tasks_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hris_checklist_tasks_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hris_checklist_tasks_document_fk" FOREIGN KEY ("tenant_id","document_id") REFERENCES "public"."employee_documents"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "hris_checklist_templates" (
@@ -63,7 +68,9 @@ CREATE TABLE "hris_checklist_templates" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "hris_checklist_templates_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "hris_checklist_templates_kind_check" CHECK ("hris_checklist_templates"."kind" IN ('onboarding', 'offboarding')),
-	CONSTRAINT "hris_checklist_templates_items_array_check" CHECK (jsonb_typeof("hris_checklist_templates"."items") = 'array' AND jsonb_array_length("hris_checklist_templates"."items") > 0)
+	CONSTRAINT "hris_checklist_templates_items_array_check" CHECK (jsonb_typeof("hris_checklist_templates"."items") = 'array' AND jsonb_array_length("hris_checklist_templates"."items") > 0),
+	CONSTRAINT "hris_checklist_templates_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hris_checklist_templates_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "hris_kpi_definitions" (
@@ -84,7 +91,9 @@ CREATE TABLE "hris_kpi_definitions" (
 	CONSTRAINT "hris_kpi_definitions_source_check" CHECK ("hris_kpi_definitions"."source" IN ('system', 'manager')),
 	CONSTRAINT "hris_kpi_definitions_metric_code_check" CHECK (("hris_kpi_definitions"."source" = 'system') = ("hris_kpi_definitions"."metric_code" IS NOT NULL)),
 	CONSTRAINT "hris_kpi_definitions_target_check" CHECK ("hris_kpi_definitions"."target" IS NULL OR "hris_kpi_definitions"."target" >= 0),
-	CONSTRAINT "hris_kpi_definitions_direction_check" CHECK ("hris_kpi_definitions"."direction" IN ('higher_is_better', 'lower_is_better'))
+	CONSTRAINT "hris_kpi_definitions_direction_check" CHECK ("hris_kpi_definitions"."direction" IN ('higher_is_better', 'lower_is_better')),
+	CONSTRAINT "hris_kpi_definitions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hris_kpi_definitions_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "hris_kpi_reviews" (
@@ -107,7 +116,9 @@ CREATE TABLE "hris_kpi_reviews" (
 	CONSTRAINT "hris_kpi_reviews_cycle_check" CHECK ("hris_kpi_reviews"."cycle" IN ('monthly', 'quarterly')),
 	CONSTRAINT "hris_kpi_reviews_status_check" CHECK ("hris_kpi_reviews"."status" IN ('draft', 'submitted')),
 	CONSTRAINT "hris_kpi_reviews_period_check" CHECK ("hris_kpi_reviews"."period_end" >= "hris_kpi_reviews"."period_start"),
-	CONSTRAINT "hris_kpi_reviews_submitted_check" CHECK (("hris_kpi_reviews"."status" = 'submitted') = ("hris_kpi_reviews"."submitted_at" IS NOT NULL AND "hris_kpi_reviews"."reviewer_user_id" IS NOT NULL))
+	CONSTRAINT "hris_kpi_reviews_submitted_check" CHECK (("hris_kpi_reviews"."status" = 'submitted') = ("hris_kpi_reviews"."submitted_at" IS NOT NULL AND "hris_kpi_reviews"."reviewer_user_id" IS NOT NULL)),
+	CONSTRAINT "hris_kpi_reviews_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hris_kpi_reviews_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "hris_kpi_scores" (
@@ -126,7 +137,8 @@ CREATE TABLE "hris_kpi_scores" (
 	CONSTRAINT "hris_kpi_scores_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "hris_kpi_scores_review_definition_key" UNIQUE("tenant_id","review_id","kpi_definition_id"),
 	CONSTRAINT "hris_kpi_scores_score_check" CHECK ("hris_kpi_scores"."score" IS NULL OR "hris_kpi_scores"."score" BETWEEN 0 AND 100),
-	CONSTRAINT "hris_kpi_scores_actual_source_check" CHECK ("hris_kpi_scores"."actual_source" IS NULL OR "hris_kpi_scores"."actual_source" IN ('system', 'manual'))
+	CONSTRAINT "hris_kpi_scores_actual_source_check" CHECK ("hris_kpi_scores"."actual_source" IS NULL OR "hris_kpi_scores"."actual_source" IN ('system', 'manual')),
+	CONSTRAINT "hris_kpi_scores_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "hris_offboardings" (
@@ -158,28 +170,16 @@ CREATE TABLE "hris_offboardings" (
 	CONSTRAINT "hris_offboardings_revoked_check" CHECK ("hris_offboardings"."status" NOT IN ('revoked', 'completed') OR ("hris_offboardings"."access_revoked_at" IS NOT NULL AND "hris_offboardings"."access_revoked_by" IS NOT NULL AND "hris_offboardings"."revocation_result" IS NOT NULL)),
 	CONSTRAINT "hris_offboardings_completed_check" CHECK ("hris_offboardings"."status" <> 'completed' OR ("hris_offboardings"."completed_at" IS NOT NULL AND "hris_offboardings"."completed_by" IS NOT NULL AND "hris_offboardings"."settlement_snapshot" IS NOT NULL)),
 	CONSTRAINT "hris_offboardings_cancelled_check" CHECK ("hris_offboardings"."status" <> 'cancelled' OR ("hris_offboardings"."access_revoked_at" IS NULL AND "hris_offboardings"."cancelled_at" IS NOT NULL AND "hris_offboardings"."cancel_reason" IS NOT NULL)),
-	CONSTRAINT "hris_offboardings_notice_check" CHECK ("hris_offboardings"."notice_date" IS NULL OR "hris_offboardings"."notice_date" <= "hris_offboardings"."last_working_date")
+	CONSTRAINT "hris_offboardings_notice_check" CHECK ("hris_offboardings"."notice_date" IS NULL OR "hris_offboardings"."notice_date" <= "hris_offboardings"."last_working_date"),
+	CONSTRAINT "hris_offboardings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hris_offboardings_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "hris_checklist_task_actions" ADD CONSTRAINT "hris_checklist_task_actions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hris_checklist_task_actions" ADD CONSTRAINT "hris_checklist_task_actions_task_fk" FOREIGN KEY ("tenant_id","task_id") REFERENCES "public"."hris_checklist_tasks"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_checklist_task_actions" ADD CONSTRAINT "hris_checklist_task_actions_document_fk" FOREIGN KEY ("tenant_id","document_id") REFERENCES "public"."employee_documents"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_checklist_tasks" ADD CONSTRAINT "hris_checklist_tasks_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_checklist_tasks" ADD CONSTRAINT "hris_checklist_tasks_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hris_checklist_tasks" ADD CONSTRAINT "hris_checklist_tasks_offboarding_fk" FOREIGN KEY ("tenant_id","offboarding_id") REFERENCES "public"."hris_offboardings"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hris_checklist_tasks" ADD CONSTRAINT "hris_checklist_tasks_template_fk" FOREIGN KEY ("tenant_id","template_id") REFERENCES "public"."hris_checklist_templates"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_checklist_tasks" ADD CONSTRAINT "hris_checklist_tasks_document_fk" FOREIGN KEY ("tenant_id","document_id") REFERENCES "public"."employee_documents"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_checklist_templates" ADD CONSTRAINT "hris_checklist_templates_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_checklist_templates" ADD CONSTRAINT "hris_checklist_templates_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_kpi_definitions" ADD CONSTRAINT "hris_kpi_definitions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_kpi_definitions" ADD CONSTRAINT "hris_kpi_definitions_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_kpi_reviews" ADD CONSTRAINT "hris_kpi_reviews_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_kpi_reviews" ADD CONSTRAINT "hris_kpi_reviews_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_kpi_scores" ADD CONSTRAINT "hris_kpi_scores_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hris_kpi_scores" ADD CONSTRAINT "hris_kpi_scores_review_fk" FOREIGN KEY ("tenant_id","review_id") REFERENCES "public"."hris_kpi_reviews"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hris_kpi_scores" ADD CONSTRAINT "hris_kpi_scores_definition_fk" FOREIGN KEY ("tenant_id","kpi_definition_id") REFERENCES "public"."hris_kpi_definitions"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_offboardings" ADD CONSTRAINT "hris_offboardings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_offboardings" ADD CONSTRAINT "hris_offboardings_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "hris_checklist_task_actions_task_idx" ON "hris_checklist_task_actions" USING btree ("tenant_id","task_id","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "hris_checklist_tasks_onboarding_code_key" ON "hris_checklist_tasks" USING btree ("tenant_id","employee_id","code") WHERE "hris_checklist_tasks"."kind" = 'onboarding';--> statement-breakpoint
 CREATE UNIQUE INDEX "hris_checklist_tasks_offboarding_code_key" ON "hris_checklist_tasks" USING btree ("tenant_id","offboarding_id","code") WHERE "hris_checklist_tasks"."offboarding_id" IS NOT NULL;--> statement-breakpoint

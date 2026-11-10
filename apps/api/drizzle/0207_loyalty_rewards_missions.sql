@@ -14,7 +14,10 @@ CREATE TABLE "mission_progress" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "mission_progress_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "mission_progress_period_key" UNIQUE("tenant_id","mission_id","customer_profile_id","period_key"),
-	CONSTRAINT "mission_progress_counts_check" CHECK ("mission_progress"."progress" >= 0 AND "mission_progress"."target" > 0)
+	CONSTRAINT "mission_progress_counts_check" CHECK ("mission_progress"."progress" >= 0 AND "mission_progress"."target" > 0),
+	CONSTRAINT "mission_progress_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "mission_progress_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "mission_progress_voucher_fk" FOREIGN KEY ("tenant_id","voucher_id") REFERENCES "public"."vouchers"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "missions" (
@@ -34,7 +37,8 @@ CREATE TABLE "missions" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "missions_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "missions_type_check" CHECK ("missions"."type" IN ('visit_count', 'try_new_item', 'weekday_visit', 'stamp_card')),
-	CONSTRAINT "missions_window_check" CHECK ("missions"."starts_at" IS NULL OR "missions"."ends_at" IS NULL OR "missions"."ends_at" > "missions"."starts_at")
+	CONSTRAINT "missions_window_check" CHECK ("missions"."starts_at" IS NULL OR "missions"."ends_at" IS NULL OR "missions"."ends_at" > "missions"."starts_at"),
+	CONSTRAINT "missions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "reward_redemptions" (
@@ -65,7 +69,13 @@ CREATE TABLE "reward_redemptions" (
 	CONSTRAINT "reward_redemptions_status_check" CHECK ("reward_redemptions"."status" IN ('pending', 'fulfilled', 'cancelled', 'expired')),
 	CONSTRAINT "reward_redemptions_fulfilled_check" CHECK (("reward_redemptions"."status" = 'fulfilled') = ("reward_redemptions"."fulfilled_at" IS NOT NULL)),
 	CONSTRAINT "reward_redemptions_cancelled_check" CHECK (("reward_redemptions"."status" = 'cancelled') = ("reward_redemptions"."cancelled_at" IS NOT NULL)),
-	CONSTRAINT "reward_redemptions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action
+	CONSTRAINT "reward_redemptions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "reward_redemptions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "reward_redemptions_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "reward_redemptions_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "reward_redemptions_ledger_entry_fk" FOREIGN KEY ("tenant_id","ledger_entry_id") REFERENCES "public"."point_ledger"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "reward_redemptions_restore_entry_fk" FOREIGN KEY ("tenant_id","restore_entry_id") REFERENCES "public"."point_ledger"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "reward_redemptions_voucher_fk" FOREIGN KEY ("tenant_id","voucher_id") REFERENCES "public"."vouchers"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "rewards" (
@@ -96,26 +106,16 @@ CREATE TABLE "rewards" (
 	CONSTRAINT "rewards_validity_check" CHECK ("rewards"."valid_until" IS NULL OR "rewards"."valid_until" > "rewards"."valid_from"),
 	CONSTRAINT "rewards_type_shape_check" CHECK (CASE WHEN "rewards"."type" = 'voucher'
                THEN "rewards"."voucher_value_idr" IS NOT NULL AND "rewards"."voucher_value_idr" > 0 AND "rewards"."menu_item_id" IS NULL
-               ELSE "rewards"."menu_item_id" IS NOT NULL AND "rewards"."voucher_value_idr" IS NULL END)
+               ELSE "rewards"."menu_item_id" IS NOT NULL AND "rewards"."voucher_value_idr" IS NULL END),
+	CONSTRAINT "rewards_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "rewards_menu_item_fk" FOREIGN KEY ("tenant_id","menu_item_id") REFERENCES "public"."menu_items"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "loyalty_programs" ALTER COLUMN "daily_point_cap_per_customer" SET DEFAULT 500;--> statement-breakpoint
 ALTER TABLE "vouchers" DROP CONSTRAINT "vouchers_source_check";--> statement-breakpoint
 ALTER TABLE "point_earn_records" ADD COLUMN "applied_reversal_ids" text[] DEFAULT '{}'::text[] NOT NULL;--> statement-breakpoint
-ALTER TABLE "mission_progress" ADD CONSTRAINT "mission_progress_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "mission_progress" ADD CONSTRAINT "mission_progress_mission_fk" FOREIGN KEY ("tenant_id","mission_id") REFERENCES "public"."missions"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "mission_progress" ADD CONSTRAINT "mission_progress_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "mission_progress" ADD CONSTRAINT "mission_progress_voucher_fk" FOREIGN KEY ("tenant_id","voucher_id") REFERENCES "public"."vouchers"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "missions" ADD CONSTRAINT "missions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_reward_fk" FOREIGN KEY ("tenant_id","reward_id") REFERENCES "public"."rewards"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_ledger_entry_fk" FOREIGN KEY ("tenant_id","ledger_entry_id") REFERENCES "public"."point_ledger"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_restore_entry_fk" FOREIGN KEY ("tenant_id","restore_entry_id") REFERENCES "public"."point_ledger"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_voucher_fk" FOREIGN KEY ("tenant_id","voucher_id") REFERENCES "public"."vouchers"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "rewards" ADD CONSTRAINT "rewards_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "rewards" ADD CONSTRAINT "rewards_menu_item_fk" FOREIGN KEY ("tenant_id","menu_item_id") REFERENCES "public"."menu_items"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "mission_progress_profile_idx" ON "mission_progress" USING btree ("tenant_id","customer_profile_id");--> statement-breakpoint
 CREATE INDEX "missions_tenant_active_idx" ON "missions" USING btree ("tenant_id","is_active");--> statement-breakpoint
 CREATE INDEX "reward_redemptions_status_expiry_idx" ON "reward_redemptions" USING btree ("tenant_id","status","expires_at");--> statement-breakpoint
