@@ -151,6 +151,29 @@ Full design: `docs/design/ws08-member-loyalty.md`. Decisions:
   purpose. The loyalty consent plus a verified WhatsApp activate membership.
 - **Migrations** `0193` (111j) to `0197` (3zd1), numbered by merge order.
 
+## Edge staff PIN and outlet attendance
+
+Target design, decided 10 Nov 2026 and not built yet: the code at
+`ws/ideif-edge-pepper` (1cc10ce4) is still tenant-scoped and has no PIN proof.
+Details in `docs/DECISIONS.md` (legend-jmsdx, legend-u7g9w).
+
+- **Pepper scope.** The cloud holds the root `STAFF_PIN_PEPPER`. Pepper version
+  1 is tenant-scoped and cloud-only; version 2 and later are derived per outlet
+  (`HKDF info ...:v{n}:{tenant}:{outlet}`). An edge receives only its own
+  outlet's peppers, sealed in `edge_staff_pin_peppers`, and refuses to boot if
+  the root is present. Rotation bumps `STAFF_PIN_PEPPER_CURRENT_VERSION`; the
+  cloud rehashes on a successful verify, the edge never rehashes.
+- **Outlet attendance.** A shared outlet screen has no session. The staff
+  member proves the PIN on `POST /api/staff-pins/verify` with
+  `purpose: "attendance_clock"` and gets a single-use proof (120 s, bound to
+  device and staff, stored hashed in `staff_pin_proofs`). The selfie upload and
+  `POST /api/hris/attendance/outlet-clock` carry `X-Device-Token` +
+  `X-Pin-Proof`; the clock consumes the proof in the same transaction as the
+  log insert. The staff ID always comes from the proof, never from a cookie.
+- **Throttle.** Besides the per-staff lockout (5 misses, 15 minutes), each
+  device is limited to 10 wrong PINs in 5 minutes across all staff
+  (`device_pin_throttle`).
+
 ## Dependency notes
 
 TypeScript 5.9 and ESLint 9 are pinned with `typescript-eslint` and `eslint-plugin-react-hooks`. Shared versions (better-auth, drizzle-orm, pg, pino, zod, TypeScript) come from the pnpm catalog in `pnpm-workspace.yaml`. pnpm blocks dependency install scripts unless listed under `allowBuilds`. The `@esbuild-kit/core-utils` override updates Drizzle Kit's legacy nested esbuild to the patched 0.25.12. Turborepo runs in `envMode: "loose"` so your shell environment reaches both apps, matching the precedence above.

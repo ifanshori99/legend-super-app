@@ -3,6 +3,364 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Bukti PIN sekali pakai untuk absen outlet_device di edge (legend-u7g9w, dari review legend-j6cyb, membuka legend-tvkuz)
+
+Konteks: di cabang `ws/j6cyb-edge-attendance`, `POST /api/hris/attendance/clock`
+dengan method `outlet_device` memakai `requireAuth` dan `actor(req)`: staf yang
+tercatat absen adalah pemilik sesi Better Auth di layar itu, bukan orang yang
+mengetik PIN. `POST /api/staff-pins/verify` memeriksa PIN (lockout 5 kali salah,
+kunci 15 menit per staf per outlet) tetapi hanya mengembalikan
+`{user, outletId, verifiedAt}`: tidak ada token, tidak ada sesi, pergantian
+pengguna di layar bersama hanya di sisi klien. Founder Q86: absen di layar
+outlet = PIN + selfie. Tingkat K (auth).
+
+Opsi:
+
+1. Bukti PIN berumur pendek, sekali pakai, terikat device + staf + tujuan.
+2. Sesi PIN per absen: PIN membuat sesi Better Auth sementara, absen, lalu
+   sign-out. Ditolak: sesi itu punya kuasa penuh staf di layar bersama; bila
+   sign-out gagal, orang berikutnya bertindak atas nama staf itu (kelas bug yang
+   sama). Peran `mfa_required` juga butuh TOTP di kios. `sign-in` di edge tidak
+   pernah berhasil (desain HRIS edge §12), jadi tabel sesi edge harus ditulis
+   jalur baru.
+3. PIN dikirim langsung di body absen. Ditolak: layar menyapa staf sebelum
+   selfie, jadi PIN harus disimpan di memori browser selama kamera aktif atau
+   diperiksa dua kali (dua kali menyentuh hitungan lockout), dan unggahan selfie
+   tidak terikat ke orang yang sudah terverifikasi.
+
+Keputusan: opsi 1, token opak di database edge (bukan JWT bertanda tangan).
+
+- Terbit: `POST /api/staff-pins/verify` dengan body tambahan opsional
+  `purpose: "attendance_clock"`. Bila PIN benar, respons menambah
+  `proof: { token, expiresAt }`. Tanpa `purpose` respons tetap seperti sekarang
+  (pergantian kasir POS tidak berubah).
+- Bentuk: 32 byte acak, base64url, prefix `pp_`. Database hanya menyimpan
+  sha256-nya (`staff_pin_proofs.token_hash`). Tidak butuh kunci tanda tangan,
+  jadi tidak menambah rahasia di edge dan tidak memakai pepper PIN.
+- TTL 120 detik: cukup untuk selfie dan unggah di jaringan outlet yang lambat.
+- Replay: bukti dikonsumsi sekali dengan
+  `UPDATE ... SET consumed_at = now() WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now() AND device_id = $2 RETURNING user_id`
+  di transaksi yang sama dengan insert log absen. Bukti terikat ke device dari
+  `X-Device-Token` saat terbit: bukti dari device lain ditolak. Terbit bukti
+  baru untuk device yang sama langsung mengakhiri bukti lama yang belum dipakai
+  (satu bukti hidup per device, tidak bisa ditimbun). Layar outlet melayani satu
+  orang sekali jalan: bila staf B mulai saat alur staf A belum selesai, alur A
+  batal dan layar meminta A mulai lagi dari PIN. PIN benar tidak menambah
+  hitungan lockout, jadi A tidak dirugikan.
+- Ulang karena jaringan: route absen mencari bukti lewat `token_hash` dan
+  `device_id` dulu, terpakai atau belum, untuk mendapat `user_id`. Lalu route
+  mencari log dengan `idempotencyKey` milik staf itu dari device itu. Bila ada:
+  200 dengan log lama. Bila tidak: bukti dikonsumsi seperti biasa. Ulang hanya
+  bisa dilakukan oleh pemegang token bukti itu sendiri, jadi log staf lain tidak
+  pernah terbuka.
+- Rate limit: lockout per staf yang ada tetap (5 salah, 15 menit). Tambahan per
+  device, berlaku untuk semua `/api/staff-pins/verify`: 10 PIN salah dalam satu
+  jendela tetap 5 menit (dimulai dari salah pertama) lintas staf memberi 429
+  `PIN_DEVICE_THROTTLED` dengan `Retry-After` sampai jendela habis. Ini menahan
+  tebak-sebar (4 tebakan ke banyak staf supaya tidak kena lockout). Throttle
+  hanya mengenai device itu sendiri: tiap kasir POS dan layar outlet punya
+  device token sendiri, jadi perangkat lain di outlet tetap jalan. Yang bisa
+  memicunya hanya pemegang device token itu, yaitu orang yang sudah memegang
+  perangkatnya. Saat throttle aktif: satu audit `staff_pin.device_throttled` dan
+  satu notifikasi ke manajer outlet per jendela, supaya serangan yang terus
+  memperbarui jendela terlihat dan token device bisa dicabut. Penghitung di
+  tabel `device_pin_throttle`, bukan memori, supaya tahan restart. Permintaan
+  yang ditolak throttle tidak menambah `failed_attempts` staf.
+- Izin: route `outlet-clock` sengaja tidak memakai `requireBackOfficeSurface`
+  (aturan `MFA_REQUIRED` milik sesi, dan bukti bukan sesi). Route memeriksa
+  sendiri bahwa staf pemilik bukti adalah karyawan aktif dengan izin
+  `self.attendance.clock` di outlet device itu (`loadHrisAccess`). Pemeriksaan
+  yang sama berjalan saat bukti diterbitkan dengan
+  `purpose: "attendance_clock"`, sebelum PIN dicek (403 `ATTENDANCE_NOT_ALLOWED`).
+  Jadi kasir yang bukan karyawan HRIS tidak bisa membuat bukti, dan tidak ada
+  sinyal "PIN benar" untuk orang yang tidak boleh absen. Jawaban 403 ini memang
+  membuka siapa yang boleh absen, tetapi daftar nama di layar outlet sudah hanya
+  berisi staf yang boleh absen, jadi tidak ada informasi baru.
+- MFA: staf peran `mfa_required` (manajer, pemilik) bisa absen di layar outlet
+  dengan PIN + selfie tanpa TOTP. Alasan bisnis: absen hanya mencatat kehadiran
+  diri sendiri, bukan akses ke data atau uang. Selfie dan tanda cek supervisor
+  (Q87) adalah pengamannya. Bukti hanya berlaku di route `outlet-clock` dan
+  unggah selfie, tidak pernah menjadi sesi, dan ditolak di route lain mana pun.
+- Route: absen lewat layar outlet pindah ke route baru
+  `POST /api/hris/attendance/outlet-clock` (masuk `EDGE_API_EXACT_ROUTES`),
+  tanpa sesi. Header `X-Device-Token` + `X-Pin-Proof`, body
+  `{ type, occurredAt, photoUploadRef, idempotencyKey }`, tanpa `userId`: staf
+  diambil dari bukti. `POST /api/hris/attendance/clock` dengan method
+  `outlet_device` menjadi 400 `ATTENDANCE_METHOD_USE_OUTLET_CLOCK`. Satu route
+  dengan dua cara auth mudah salah, jadi keduanya dipisah.
+- Selfie: `POST /api/storage/uploads` untuk selfie absen menerima
+  `X-Device-Token` + `X-Pin-Proof` tanpa sesi. Bukti dicek dengan syarat yang
+  sama seperti konsumsi (belum terpakai, belum kedaluwarsa atau diakhiri bukti
+  baru, device sama), tetapi tidak dikonsumsi. Bukti yang sudah habis tidak bisa
+  lagi dipakai mengunggah. Server mengisi `core_storage_objects.owner_user_id` dari
+  `proof.user_id` (tidak pernah dari klien) dan kolom baru `pin_proof_id`.
+  Pemeriksaan selfie yang ada (`ownerUserId === staf`,
+  `hris-attendance.service.ts:884` di j6cyb) tetap berlaku dengan staf dari
+  bukti. `outlet-clock` juga menolak selfie yang `pin_proof_id`-nya bukan bukti
+  ini (400 `SELFIE_NOT_FROM_PROOF`), jadi selfie orang lain tidak bisa ditempel.
+- CORS: `app.ts` `allowedHeaders` ditambah `X-Device-Token` dan `X-Pin-Proof`.
+  Header ini sudah dipakai (`routes/device-id.ts`, `device-pin.routes.ts`, route
+  clock), tetapi preflight lintas origin gagal hari ini. Kios tidak mengirim
+  cookie, jadi bukti di header tidak terkena CSRF.
+- Alur layar (legend-tvkuz): pilih nama, ketik PIN, terima bukti, ambil selfie,
+  unggah dengan bukti, absen dengan bukti, layar bersih. Tidak ada sesi yang
+  perlu di-sign-out.
+
+Kontrak dan migrasi: migrasi 0241 membuat `staff_pin_proofs` (id, tenant_id,
+outlet_id, device_id, user_id, purpose CHECK `attendance_clock`, token_hash
+UNIQUE, expires_at, consumed_at, created_at, RLS tenant + outlet) dan
+`device_pin_throttle` (tenant_id, device_id PK, window_started_at, failures),
+dan menambah `core_storage_objects.pin_proof_id` (nullable, FK ke
+`staff_pin_proofs`, ON DELETE SET NULL). Baris bukti lebih tua dari 1 hari
+dihapus job housekeeping edge. Kontrak baru di
+`packages/shared/src/hris/endpoints.ts`: route outlet-clock, `purpose` dan
+`proof` di verify, kode error `PIN_PROOF_INVALID` (401: tidak dikenal,
+kedaluwarsa, device lain), `PIN_PROOF_USED` (409), `PIN_DEVICE_THROTTLED` (429),
+`ATTENDANCE_NOT_ALLOWED` (403), `SELFIE_NOT_FROM_PROOF` (400),
+`ATTENDANCE_METHOD_USE_OUTLET_CLOCK` (400). Payload
+`attendance.logged` tidak berubah: setelah perubahan ini method `outlet_device`
+selalu berarti PIN sudah diperiksa. Produk belum production, jadi tidak ada log
+`outlet_device` lama yang perlu dibedakan.
+
+Risiko: lalu lintas LAN ke edge membawa PIN dan bukti, jadi harus HTTPS atau
+dalam satu perangkat. Device token yang dicuri bersama bukti dari kios yang sama
+berarti kios itu sendiri sudah dikuasai: batasnya satu outlet, dan tiap absen
+tetap butuh selfie.
+
+Rencana cadangan: bila tabel bukti di edge bermasalah, ganti dengan HMAC
+bertanda tangan kunci node edge (klaim sama, `jti` disimpan untuk sekali pakai).
+Kontrak HTTP tidak berubah.
+
+Kartu: legend-u7g9w (basis `ws/j6cyb-edge-attendance`, tingkat K, migrasi 0241).
+legend-tvkuz sekarang bergantung padanya. Bersentuhan dengan legend-jmsdx di
+`device-pin.service.ts`: kartu ini tidak mengubah fungsi verify. Bukti dan
+throttle ada di service baru `staff-pin-proof.service.ts`.
+
+## 2026-11-10: Pepper PIN per outlet di edge, rotasi, dan hash lama (legend-ideif, lanjutan legend-jmsdx)
+
+Konteks: cabang `ws/ideif-edge-pepper` (1cc10ce4, belum merge) sudah menutup
+temuan utama: edge menolak boot bila root `STAFF_PIN_PEPPER` ada, dan menerima
+pepper turunan tenant yang tersegel di `edge_staff_pin_peppers` (migrasi 0225,
+AES-256-GCM dengan kunci dari kredensial node). Turunan sekarang
+`HKDF-SHA256(root, salt "legend", info "legend:staff-pin-pepper:v{n}:{tenant}")`,
+hanya per tenant. Hash PIN: `scrypt(HMAC-SHA256(pepper, "legend:staff-pin:v1\0tenant\0outlet\0user\0pin"))`,
+dan baris `staff_pins` sudah per (tenant, outlet, staf). Tingkat K.
+
+Masalah tersisa: edge outlet A yang dicuri membawa pepper seluruh tenant.
+Ditambah satu kebocoran salinan `staff_pins` cloud, hash PIN semua outlet tenant
+itu bisa ditebak offline. Rotasi darurat juga harus menyentuh semua outlet.
+
+Opsi:
+
+1. Tetap per tenant. Ditolak: radius bocor satu tenant penuh.
+2. Per outlet lewat versi pepper baru. Dipilih.
+3. Membungkus hash lama dengan pepper baru tanpa PIN asli. Ditolak: verifikasi
+   tetap butuh pepper lama di edge, jadi tidak ada keamanan yang bertambah.
+
+Keputusan:
+
+- Versi pepper 2 dan seterusnya diturunkan per outlet:
+  `info "legend:staff-pin-pepper:v{n}:{tenant}:{outlet}"`. Versi 1 tetap per
+  tenant dan hanya untuk cloud. Default `STAFF_PIN_PEPPER_CURRENT_VERSION`
+  menjadi 2.
+- Edge hanya menerima pepper outletnya sendiri: versi 2 ke atas yang dipakai
+  baris `staff_pins` outlet itu, ditambah versi current. Edge tidak pernah
+  menerima versi 1. AAD segel menjadi `tenant:outlet:version`. Primary key
+  `edge_staff_pin_peppers` (tenant, edge_node, version) tetap, karena satu node
+  = satu outlet.
+- Protokol sync pepper berubah. Sekarang edge melapor `peppers=<n>` (versi
+  1..n lengkap, `edgeStaffPinPepperContiguous`) dan cloud mengirim dari n+1.
+  Tanpa versi 1, n akan selalu 0. Gantinya: edge mengirim daftar versi yang
+  dipegang (`peppers=2,3`), dan cloud mengirim selisihnya dari himpunan {versi
+  dipakai baris outlet itu} ∪ {current}, tanpa versi 1.
+- PIN yang di-set di edge (jalur `setStaffPin` edge yang sudah ada, diadopsi
+  cloud lewat kunci `pin_generation_at` yang lebih baru) memakai pepper outlet
+  versi current. Cloud menurunkan pepper yang sama dari root, jadi hash itu
+  tetap bisa diverifikasi di cloud.
+- Keputusan bukti PIN (legend-u7g9w) memakai verifikasi lokal ini apa adanya.
+  Bukti tidak memakai pepper dan tidak butuh kunci baru.
+- Rotasi terencana: naikkan `STAFF_PIN_PEPPER_CURRENT_VERSION` di env cloud,
+  lalu deploy. PIN baru dan PIN yang diganti memakai versi baru. Baris lama
+  tetap terverifikasi dengan versinya sendiri, di cloud maupun di edge, tanpa
+  batas waktu. Karena pepper per outlet, versi lama outlet B tidak ikut lemah
+  saat outlet A bocor, jadi versi lama tidak perlu dipensiunkan paksa dan
+  outlet yang hanya memakai edge tidak pernah dipaksa reset oleh rotasi biasa.
+- Rehash: verify yang berhasil di cloud pada baris berversi lama di-rehash di
+  transaksi `FOR UPDATE` yang sama (cloud memegang PIN asli di request itu).
+  Rehash mempertahankan `pin_generation_at` dan `pin_set_at` apa adanya. Edge
+  menerapkan bahan hash baru karena kuncinya sama (aturan
+  `record key >= local key`). PIN yang lebih baru di edge (kunci lebih besar)
+  tetap menang, dan cloud mengadopsinya seperti biasa. Edge tidak rehash: agar
+  diadopsi cloud, edge harus memberi kunci generasi baru, dan kunci baru itu
+  bisa mengalahkan reset PIN dari cloud yang belum sampai ke edge, sehingga PIN
+  lama hidup lagi.
+- Baris versi 1 yang ditemui edge: 409 `STAFF_PIN_RESET_REQUIRED` ("PIN perlu
+  diatur ulang"). Respons ini tidak menambah `failed_attempts`. Ini hanya
+  mengenai data dev dan staging. Production dimulai di versi 2, sehingga tidak
+  ada baris versi 1 di sana.
+- Edge dicuri (runbook baru `docs/runbooks/edge-node-stolen.md`): cabut node dan
+  semua token device outlet itu, naikkan versi current, lalu reset PIN semua staf
+  outlet itu, termasuk baris staf yang sama di outlet lain, karena PIN yang sama
+  sering dipakai ulang. PIN baru outlet itu memakai versi baru, sehingga pepper
+  curian tidak berguna lagi. Pepper outlet lain tidak perlu dirotasi, karena
+  pepper curian hanya cocok untuk hash outlet itu. Reset di outlet lain hanya
+  untuk staf yang sama, karena PIN-nya mungkin dipakai ulang.
+
+Kontrak dan migrasi: tanpa migrasi skema. Produk belum production
+(`docs/PROGRESS.md`), jadi tidak ada hash PIN asli berversi 1. Seed dev dan test
+pindah ke versi 2. Data staging berversi 1 ter-rehash saat verify berikutnya di
+cloud, atau direset. Nomor 0243 dicadangkan bila ternyata perlu CHECK. Kontrak
+HTTP: query `peppers` di `GET /api/edge-sync/staff-pin-records` menjadi daftar
+versi, dan kode error baru `STAFF_PIN_RESET_REQUIRED` (409). Edge dan cloud
+dirilis bersama (belum production), jadi tidak butuh jalur kompat untuk
+`peppers=<n>` lama.
+
+Risiko: PIN 6 digit di edge yang dicuri tetap bisa ditebak offline untuk staf
+outlet itu (10^6 percobaan scrypt). Ini bawaan semua verifikasi offline, dan
+karena itu runbook mewajibkan reset PIN. Kunci segel berasal dari kredensial
+node yang juga ada di edge, jadi segel hanya melindungi salinan database (backup),
+bukan disk yang dicuri utuh. Root `STAFF_PIN_PEPPER` yang bocor dari cloud
+membuka semua versi sekaligus. Menaikkan versi tidak menolong, karena turunannya
+dari root yang sama. Jalurnya: root baru dan reset semua PIN. Pemetaan versi ke
+root baru belum dibangun, karena ini kejadian luar biasa.
+
+Rencana cadangan: bila staf sering pindah outlet dan reset per outlet terasa
+berat, kembalikan cakupan versi berikutnya ke tenant. Ini satu baris di fungsi
+turunan, karena versi lama tetap bisa diverifikasi.
+
+Kartu: legend-jmsdx (basis `ws/ideif-edge-pepper`, tingkat K, tanpa migrasi).
+Bersentuhan dengan legend-u7g9w hanya di `device-pin.service.ts`: kartu ini
+menambah rehash di verify cloud.
+
+## 2026-11-10: Laporan pajak: pembetulan sebagai rantai revisi (legend-4uapw, legend-r3i8w, dasar legend-5nhkp)
+
+Konteks: `tax_reports` (cabang `ws/gmww-accounting-deltas`, migrasi 0235
+sementara) hanya unik untuk draft (`tax_reports_draft_key`). Setelah periode
+dibuka ulang dan laporan difinalkan lagi, dua laporan final/exported hidup
+berdampingan tanpa tanda mana yang berlaku, dan XML Coretax lama bisa diekspor
+ulang. Trigger `app.guard_tax_report_filed` mengunci baris setelah draft, dan
+komentarnya menyebut koreksi = draft baru setelah periode dibuka ulang.
+Pertanyaan kartu: unik keras (supersede) atau banyak versi (pembetulan SPT)?
+
+Fakta hukum: UU KUP Pasal 8 dan Coretax mengizinkan pembetulan berkali-kali
+selama belum diperiksa. Coretax memberi kode 0 untuk SPT normal dan 1, 2, dan
+seterusnya untuk pembetulan, dan tiap pembetulan menggantikan SPT sebelumnya
+secara utuh. Jadi keduanya benar sekaligus: banyak versi per periode memang sah,
+tetapi pada satu waktu hanya satu yang berlaku.
+
+Opsi:
+
+1. Unik keras satu laporan final per periode. Ditolak: pembetulan tidak bisa
+   dicatat, dan riwayat laporan yang sudah dikirim hilang.
+2. Bebas banyak final tanpa penanda. Ditolak: ini bug yang sekarang.
+3. Rantai revisi. Dipilih: tiap final baru menggantikan final sebelumnya,
+   bernomor, dan yang lama tetap tersimpan baca-saja.
+
+Keputusan:
+
+- Kolom baru:
+  - `revision_no smallint`: NULL saat draft, 0 = normal, n = pembetulan ke-n.
+  - `supersedes_id`, `superseded_by_id`: FK komposit ke (tenant_id, id).
+  - `superseded_at`.
+  - `correction_reason text`: wajib untuk revisi 1 ke atas, NULL untuk revisi 0.
+  - `fiscal_period_version int NOT NULL`: versi periode saat draft dibuat atau
+    dibuat ulang, untuk audit "revisi ini berdasarkan buku versi berapa".
+- CHECK di database (selain yang sudah ada seperti `tax_reports_finalized_check`):
+  - `(status = 'draft') = (revision_no IS NULL)` dan `revision_no >= 0`.
+  - `revision_no IS NULL OR (revision_no = 0) = (supersedes_id IS NULL)`.
+  - `revision_no IS NULL OR (revision_no >= 1) = (correction_reason IS NOT NULL)`,
+    dan `correction_reason IS NULL OR length(btrim(correction_reason)) > 0`.
+  - `(superseded_at IS NULL) = (superseded_by_id IS NULL)`.
+  - `superseded_by_id IS NULL OR superseded_by_id <> id`.
+- Dua index unik parsial:
+  - (tenant, entitas, jenis, periode, revision_no) `WHERE status <> 'draft'`.
+  - (tenant, entitas, jenis, periode)
+    `WHERE status <> 'draft' AND superseded_at IS NULL`: tepat satu laporan
+    berlaku.
+  - Index draft tetap.
+- Generate draft (upsert pada `tax_reports_draft_key`) mencatat
+  `fiscal_period_version` dari periode saat itu.
+- Finalize dalam satu transaksi:
+  1. Kunci draft `FOR UPDATE`.
+  2. Kunci periode `FOR SHARE`, supaya reopen yang berjalan bersamaan harus
+     menunggu. Periode harus tutup, dan `period.version` harus sama dengan
+     `draft.fiscal_period_version`. Bila beda, 409 `TAX_REPORT_STALE`: buat
+     ulang draft. Tutup periode menaikkan versi, jadi draft yang dibuat saat
+     periode masih buka selalu harus dibuat ulang dari buku yang sudah tutup.
+     Kunci ini hanya bertahan selama transaksi finalize yang pendek. Urutan
+     kunci selalu draft, periode, laporan berlaku. Tutup dan buka periode tidak
+     menyentuh `tax_reports`, jadi tidak ada deadlock.
+  3. `SELECT ... FOR UPDATE` laporan berlaku untuk kunci itu.
+  4. `revision_no` = nomor revisi lama + 1, atau 0 bila belum ada.
+     `correction_reason` wajib bila nomor itu 1 ke atas (400
+     `TAX_REPORT_CORRECTION_REASON_REQUIRED`).
+  5. Isi `superseded_at` dan `superseded_by_id` pada yang lama dan naikkan
+     `version`-nya, lalu ubah draft menjadi final. Urutan ini menjaga index
+     "satu berlaku" tidak bentrok, dan index tetap menjadi pengaman bila dua
+     finalize balapan (409).
+- Trigger `app.guard_tax_report_filed` diperluas:
+  - Setelah draft, kolom `revision_no`, `supersedes_id`, `correction_reason` dan
+    `fiscal_period_version` tidak boleh berubah, sama seperti kolom yang sudah
+    dikunci.
+  - Kolom supersede (`superseded_at` + `superseded_by_id`) diisi bersama, satu
+    kali, dari NULL. Setelah itu tidak bisa diubah atau dikosongkan.
+  - Baris yang sudah superseded menolak semua perubahan lain, termasuk final
+    menjadi exported. Ekspor pada laporan berlaku tetap jalan seperti sekarang.
+  - `file_key` dikunci setelah terisi.
+- Constraint trigger `DEFERRABLE INITIALLY DEFERRED` memeriksa rantai saat
+  commit. Pengganti (`superseded_by_id`) harus berkunci sama (tenant, entitas,
+  jenis, periode), non-draft, dengan `supersedes_id` = baris lama dan
+  `revision_no` = lama + 1. Jadi tidak ada periode yang tertinggal tanpa
+  laporan berlaku karena bug service.
+- Ekspor: kunci baris `FOR UPDATE`, lalu cek ulang `superseded_at`. Laporan
+  superseded memberi 409 `TAX_REPORT_SUPERSEDED` dengan `supersededById`, bukan
+  error trigger mentah. Ekspor ulang revisi berlaku mengembalikan berkas yang
+  sama (`file_key` terkunci, dan isinya ditentukan baris yang juga terkunci).
+  Berkas XML revisi lama tetap bisa diunduh lewat `file_key`-nya untuk audit,
+  diberi label "diganti oleh revisi n", tetapi tidak pernah dibuat ulang.
+- Daftar: `GET /tax-reports` mengembalikan laporan berlaku dan draft.
+  `?includeSuperseded=true` menampilkan riwayat. Tiap baris membawa
+  `revisionNo`, `isCurrent`, `supersededById`.
+- Label di layar: revisi 0 "Normal", revisi n "Pembetulan ke-n". Nomor ini
+  urutan internal Legend. Coretax memberi nomornya sendiri saat pembetulan dibuat
+  di sana, jadi keduanya bisa berbeda bila sebuah revisi Legend tidak pernah
+  dilaporkan.
+
+Kontrak dan migrasi: kolom, CHECK, index dan trigger dilipat ke migrasi
+`0235_tax_reports` di cabang `ws/gmww-accounting-deltas` selama cabang itu belum
+merge. Nomornya masih sementara, belum pernah jalan di lingkungan bersama, dan FK
+bisa ditulis inline (pola `contracts.md` 1). Komentar trigger di 0235 yang
+menyebut ekspor ulang membuat berkas baru ikut diperbarui. Bila 0235 sudah merge
+saat kartu dikerjakan, pakai migrasi 0242. Migrasi itu harus berhenti dengan
+error bila `tax_reports` berisi baris apa pun, termasuk draft: tidak ada
+backfill, trigger akan memblokir backfill, dan `fiscal_period_version NOT NULL`
+tidak bisa ditambah ke baris yang ada. FK ditambah `NOT VALID` lalu `VALIDATE`.
+Perubahan di
+`packages/shared/src/accounting/tax.ts`:
+
+- Field baru di `TaxReport`, dan `superRefine` ikut CHECK di atas.
+- `transitionTaxReport` menerima `Pick<TaxReport, "status" | "supersededAt">`
+  dan menolak ekspor laporan superseded.
+- `coretaxExportFileName(type, period, revisionNo: number)`: hanya dipanggil
+  untuk baris non-draft, jadi `revisionNo` tidak pernah null.
+- Finalize body `{ correctionReason? }`.
+- Kode error `TAX_REPORT_SUPERSEDED` (409), `TAX_REPORT_STALE` (409) dan
+  `TAX_REPORT_CORRECTION_REASON_REQUIRED` (400).
+
+legend-5nhkp membangun service dan route di atas skema ini.
+
+Risiko: label "Pembetulan ke-n" bisa berbeda dari nomor di Coretax bila ada
+revisi yang difinalkan tetapi tidak pernah diunggah. Mitigasi nanti: penanda
+"sudah dilaporkan" (tanggal + nomor BPE) per laporan. Ini keputusan alur kerja
+akuntan, bukan syarat skema ini.
+
+Rencana cadangan: bila akuntan ingin pembetulan hanya dihitung dari laporan yang
+sudah dilaporkan, tambahkan `filed_at` dan hitung label dari baris yang punya
+`filed_at`. Rantai supersede tidak berubah.
+
+Kartu: legend-r3i8w (basis `ws/gmww-accounting-deltas`, tingkat K karena
+migrasi, lipat ke 0235, cadangan 0242). legend-5nhkp sekarang bergantung padanya.
+
 ## 2026-11-10: Laporan harian tanpa pesanan latihan (legend-fbxzw)
 
 Konteks: rekap akhir hari (`computeRecap`, `pos-day.service.ts`) masih
