@@ -1006,3 +1006,4 @@ Langkah berikut CTO baru:
 - 20:00 Codex 374 Duitku: 2 P1 (kredensial intent lama ikut cek paket; dedup pakai resultCode tak bertanda tangan) + 2 P2 (nominal tidak wajib sama; failed/expired->paid tanpa aturan). Kartu legend-rgddb (P0), brief 376, worktree baru dari milestone/m1. Keputusan CTO: dana terlambat diterima bila pesanan belum lunas lain dan nominal cocok; selain itu kelebihan bayar ke antrean rekonsiliasi.
 - Codex jalan: 377 profit share bagian A (akun #2).
 - Rekap Codex hari ini: 5 run selesai, 16 temuan (8 P1) yang lolos review Claude.
+- 19:52 Codex 377 profit share A: P1 approval lewati matriks, P2 clawback pajak berlebih. Kartu legend-33im6, brief 378. 8s992 ditahan dari merge. Codex 379 profit share B jalan (#2).
