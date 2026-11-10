@@ -13,10 +13,16 @@
 // - Real events are taken from edge_outbound_queue after a real paid-spend;
 //   ordering / retry tests clone them with another sequence, id and quota.
 // - Remaining seconds are (quota - used) * 60, never below 0, capped at 86400.
-// - A 5xx agent failure (503 not ready, 502) throws, rolls the receive batch
-//   back (nothing recorded, cursor unchanged) so the next delivery retries.
-// - A 4xx agent refusal (409) is recorded as an `applier_refused` conflict and
-//   the batch goes on (the cursor advances, later events still apply).
+// - legend-oeqme: the receive path only inserts into `wifi_quota_apply_queue`
+//   and never calls the agent. `drain(node)` runs one pass of
+//   drainWifiQuotaQueue, which calls the agent. The receive therefore always
+//   succeeds (cursor advances, receipt `applied`); an agent that is not ready
+//   (503/502, 409 WIFI_GRANT_IN_FLIGHT) leaves the row `pending` (retry detail:
+//   wifi-quota-edge-queue.test.ts).
+// - A final agent refusal (502 WIFI_AUTHORIZE_REFUSED, 409 bound elsewhere) ends
+//   the queue row as `refused` with an `applier_refused` conflict written by the
+//   worker; the receipt stays `applied` and later events still apply.
+// - No live grant: the queue row ends as `skipped`, the agent is not called.
 // - A tenant mismatch between event and context is refused with CoreError
 //   FORBIDDEN by the applier (checked by calling the applier directly).
 import { randomUUID } from "node:crypto";
@@ -49,6 +55,7 @@ import { withTenant } from "../db/tenant.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { registerWifiQuotaEdgeApplier } from "../edge/wifi-quota-applier.ts";
+import { drainWifiQuotaQueue } from "../edge/wifi-quota-queue-worker.ts";
 import { edgeEventApplier, type EdgeApplyMeta } from "../edge/ports.ts";
 import {
   installWifiEnforcement,
@@ -337,6 +344,30 @@ async function deliver(node: AuthenticatedEdgeNode, events: EventEnvelope[]) {
   });
 }
 
+/**
+ * One worker pass (the only caller of the agent). Never-tried rows are made due
+ * just before NOW first; the pass runs at NOW, inside the session's day.
+ */
+async function drain(node: AuthenticatedEdgeNode) {
+  await owner.query(
+    `UPDATE wifi_quota_apply_queue
+        SET next_attempt_at = $2
+      WHERE tenant_id = $1 AND status = 'pending' AND attempts = 0`,
+    [node.context.tenant.tenantId, new Date(NOW.getTime() - 1000)],
+  );
+  return drainWifiQuotaQueue({ context: node.context, now: NOW });
+}
+
+/** Status of the apply-queue row of one event. */
+async function applyStatus(tenantId: string, eventId: string) {
+  const { rows } = await owner.query<{ status: string; attempts: number }>(
+    "SELECT status, attempts FROM wifi_quota_apply_queue WHERE tenant_id = $1 AND event_id = $2::uuid",
+    [tenantId, ulidToUuid(eventId)],
+  );
+  expect(rows).toHaveLength(1);
+  return rows[0]!;
+}
+
 const cursor = (node: AuthenticatedEdgeNode) =>
   edgeStore(node).lastReceivedInbound();
 
@@ -472,12 +503,17 @@ describe("legend-xk7az edge applier through the link", () => {
     const event = await firstEvent(s);
     const agent = fakeAgent();
     await deliver(s.node!, [event]);
+    expect(agent.applySession).not.toHaveBeenCalled();
+    await drain(s.node!);
     expect(agent.applySession).toHaveBeenCalledTimes(1);
     expect(agent.applySession).toHaveBeenCalledWith(
       ...appliedWith(s, 180 * 60),
     );
     expect(agent.endSession).not.toHaveBeenCalled();
     expect(await receipts(s.world.tenantId, event.id)).toEqual(["applied"]);
+    expect((await applyStatus(s.world.tenantId, event.id)).status).toBe(
+      "applied",
+    );
   });
 
   it("remaining seconds are (quota - used) * 60", async () => {
@@ -487,6 +523,7 @@ describe("legend-xk7az edge applier through the link", () => {
     await deliver(s.node!, [
       variant(event, 5, { quotaMinutes: 300, usedMinutes: 100 }),
     ]);
+    await drain(s.node!);
     expect(agent.applySession).toHaveBeenCalledWith(
       ...appliedWith(s, 200 * 60),
     );
@@ -504,6 +541,7 @@ describe("legend-xk7az edge applier through the link", () => {
         reason: "quota_spent",
       }),
     ]);
+    await drain(s.node!);
     expect(agent.applySession).toHaveBeenCalledTimes(1);
     expect(agent.applySession).toHaveBeenCalledWith(
       expect.anything(),
@@ -521,7 +559,9 @@ describe("legend-xk7az duplicate and reversed delivery", () => {
     const event = await firstEvent(s);
     const agent = fakeAgent();
     await deliver(s.node!, [event]);
+    await drain(s.node!);
     await deliver(s.node!, [event]);
+    await drain(s.node!);
     expect(agent.applySession).toHaveBeenCalledTimes(1);
     expect(await cursor(s.node!)).toBe(2);
   });
@@ -533,11 +573,13 @@ describe("legend-xk7az duplicate and reversed delivery", () => {
     const older = variant(event, 1, { quotaMinutes: 180, usedMinutes: 0 });
     const agent = fakeAgent();
     await deliver(s.node!, [newer]);
+    await drain(s.node!);
     expect(agent.applySession).toHaveBeenCalledTimes(1);
     expect(agent.applySession).toHaveBeenLastCalledWith(
       ...appliedWith(s, 300 * 60),
     );
     await deliver(s.node!, [older]);
+    await drain(s.node!);
     expect(agent.applySession).toHaveBeenCalledTimes(1);
     expect(await receipts(s.world.tenantId, older.id)).not.toContain("applied");
   });
@@ -545,38 +587,49 @@ describe("legend-xk7az duplicate and reversed delivery", () => {
 
 // ---- 5. agent failure retries ----------------------------------------------------
 
+/**
+ * Receive succeeds without touching the agent; the worker pass meets the
+ * failing agent and leaves the row pending (retry detail: wifi-quota-edge-queue).
+ */
+async function expectReceiveSurvivesAgentFailure(status: number, code: string) {
+  const s = await scenario();
+  const event = await firstEvent(s);
+  const failing = vi.fn<Call>(async () => {
+    throw new HttpError(status, code, "Agen belum siap.");
+  });
+  installWifiEnforcement({
+    applySession: failing,
+    endSession: vi.fn(async () => undefined),
+  } as unknown as WifiEnforcement);
+
+  const before = await cursor(s.node!);
+  await expect(deliver(s.node!, [event])).resolves.toBeUndefined();
+  expect(failing).not.toHaveBeenCalled();
+  expect(await cursor(s.node!)).toBe(before + 1);
+  expect(await receipts(s.world.tenantId, event.id)).toEqual(["applied"]);
+  expect(await applyStatus(s.world.tenantId, event.id)).toMatchObject({
+    status: "pending",
+    attempts: 0,
+  });
+
+  await drain(s.node!);
+  expect(failing).toHaveBeenCalledTimes(1);
+  expect(await applyStatus(s.world.tenantId, event.id)).toMatchObject({
+    status: "pending",
+    attempts: 1,
+  });
+  expect(await conflicts(s.world.tenantId, event.id)).toEqual([]);
+  expect(await cursor(s.node!)).toBe(before + 1);
+}
+
 describe("legend-xk7az agent unavailable", () => {
   it.each([
     ["503 WIFI_AGENT_NOT_READY", 503, "WIFI_AGENT_NOT_READY"],
     ["502 controller error", 502, "WIFI_CONTROLLER_ERROR"],
   ])(
-    "%s rolls the receive back; the redelivery applies once",
+    "%s does not fail the receive; the row stays pending",
     async (_label, status, code) => {
-      const s = await scenario();
-      const event = await firstEvent(s);
-      const failing = vi.fn<Call>(async () => {
-        throw new HttpError(status, code, "Agen belum siap.");
-      });
-      installWifiEnforcement({
-        applySession: failing,
-        endSession: vi.fn(async () => undefined),
-      } as unknown as WifiEnforcement);
-
-      const before = await cursor(s.node!);
-      await expect(deliver(s.node!, [event])).rejects.toThrow();
-      expect(failing).toHaveBeenCalledTimes(1);
-      expect(await cursor(s.node!)).toBe(before);
-      expect(await receipts(s.world.tenantId, event.id)).toEqual([]);
-      expect(await conflicts(s.world.tenantId, event.id)).toEqual([]);
-
-      const agent = fakeAgent();
-      await deliver(s.node!, [event]);
-      expect(agent.applySession).toHaveBeenCalledTimes(1);
-      expect(agent.applySession).toHaveBeenCalledWith(
-        ...appliedWith(s, 180 * 60),
-      );
-      expect(await receipts(s.world.tenantId, event.id)).toEqual(["applied"]);
-      expect(await cursor(s.node!)).toBe(before + 1);
+      await expectReceiveSurvivesAgentFailure(status, code);
     },
   );
 
@@ -604,6 +657,7 @@ describe("legend-xk7az edge offline", () => {
 
     const agent = fakeAgent();
     await deliver(s.node!, events);
+    await drain(s.node!);
 
     const { quota, used } = await sessionQuota(s);
     expect(quota).toBeGreaterThan(180);
@@ -633,9 +687,13 @@ describe("legend-xk7az session without a live grant", () => {
     const event = await firstEvent(s);
     const agent = fakeAgent();
     await expect(deliver(s.node!, [event])).resolves.toBeUndefined();
+    await drain(s.node!);
     expect(agent.applySession).not.toHaveBeenCalled();
     expect(agent.endSession).not.toHaveBeenCalled();
     expect(await cursor(s.node!)).toBe(1);
+    expect((await applyStatus(s.world.tenantId, event.id)).status).toBe(
+      "skipped",
+    );
     expect(await receipts(s.world.tenantId, event.id)).toEqual(["applied"]);
     expect(await conflicts(s.world.tenantId, event.id)).toEqual([]);
   });
@@ -644,7 +702,7 @@ describe("legend-xk7az session without a live grant", () => {
 // ---- 8. agent refusal ----------------------------------------------------------------
 
 describe("legend-xk7az agent refuses the device", () => {
-  it("409 WIFI_DEVICE_BOUND_ELSEWHERE becomes an applier_refused conflict and the queue goes on", async () => {
+  it("409 WIFI_DEVICE_BOUND_ELSEWHERE ends the queue row as refused with an applier_refused conflict and the queue goes on", async () => {
     const s = await scenario();
     const event = await firstEvent(s);
     const refused = variant(event, 2, { quotaMinutes: 240 });
@@ -664,7 +722,13 @@ describe("legend-xk7az agent refuses the device", () => {
     } as unknown as WifiEnforcement);
 
     await expect(deliver(s.node!, [refused])).resolves.toBeUndefined();
+    expect(applySession).not.toHaveBeenCalled();
+    await drain(s.node!);
     expect(applySession).toHaveBeenCalledTimes(1);
+    expect((await applyStatus(s.world.tenantId, refused.id)).status).toBe(
+      "refused",
+    );
+    expect(await receipts(s.world.tenantId, refused.id)).toEqual(["applied"]);
     expect(await conflicts(s.world.tenantId, refused.id)).toEqual([
       "applier_refused",
     ]);
@@ -672,6 +736,7 @@ describe("legend-xk7az agent refuses the device", () => {
 
     // The next event is not stalled behind the refused one.
     await deliver(s.node!, [next]);
+    await drain(s.node!);
     expect(applySession).toHaveBeenCalledTimes(2);
     expect(applySession).toHaveBeenLastCalledWith(...appliedWith(s, 300 * 60));
     expect(await cursor(s.node!)).toBe(2);
@@ -681,42 +746,11 @@ describe("legend-xk7az agent refuses the device", () => {
 // ---- agent answers that retry or refuse for good (classifyAgentError) -------------
 
 describe("legend-xk7az agent answer classification", () => {
-  it("409 WIFI_GRANT_IN_FLIGHT is transient: rolled back and unacked, applied once on retry, no conflict", async () => {
-    const s = await scenario();
-    const event = await firstEvent(s);
-    const inFlight = vi.fn<Call>(async () => {
-      throw new HttpError(
-        409,
-        "WIFI_GRANT_IN_FLIGHT",
-        "Pemberian akses sebelumnya masih diproses.",
-      );
-    });
-    installWifiEnforcement({
-      applySession: inFlight,
-      endSession: vi.fn(async () => undefined),
-    } as unknown as WifiEnforcement);
-
-    const before = await cursor(s.node!);
-    await expect(deliver(s.node!, [event])).rejects.toThrow();
-    expect(inFlight).toHaveBeenCalledTimes(1);
-    expect(await cursor(s.node!)).toBe(before);
-    expect(await receipts(s.world.tenantId, event.id)).toEqual([]);
-    expect(await conflicts(s.world.tenantId, event.id)).toEqual([]);
-    // The cloud still holds it as not yet acknowledged.
-    expect((await queueRows(s.world.tenantId))[0]!.status).toBe("pending");
-
-    const agent = fakeAgent();
-    await deliver(s.node!, [event]);
-    expect(agent.applySession).toHaveBeenCalledTimes(1);
-    expect(agent.applySession).toHaveBeenCalledWith(
-      ...appliedWith(s, 180 * 60),
-    );
-    expect(await receipts(s.world.tenantId, event.id)).toEqual(["applied"]);
-    expect(await conflicts(s.world.tenantId, event.id)).toEqual([]);
-    expect(await cursor(s.node!)).toBe(before + 1);
+  it("409 WIFI_GRANT_IN_FLIGHT is transient: the receive succeeds and the row stays pending, no conflict", async () => {
+    await expectReceiveSurvivesAgentFailure(409, "WIFI_GRANT_IN_FLIGHT");
   });
 
-  it("502 WIFI_AUTHORIZE_REFUSED is final: recorded as applier_refused, consumed, the next event still arrives", async () => {
+  it("502 WIFI_AUTHORIZE_REFUSED is final: the queue row ends refused with an applier_refused conflict, the next event still applies", async () => {
     const s = await scenario();
     const event = await firstEvent(s);
     const refused = variant(event, 2, { quotaMinutes: 240 });
@@ -735,13 +769,20 @@ describe("legend-xk7az agent answer classification", () => {
     } as unknown as WifiEnforcement);
 
     await expect(deliver(s.node!, [refused])).resolves.toBeUndefined();
+    expect(applySession).not.toHaveBeenCalled();
+    await drain(s.node!);
     expect(applySession).toHaveBeenCalledTimes(1);
+    expect((await applyStatus(s.world.tenantId, refused.id)).status).toBe(
+      "refused",
+    );
+    expect(await receipts(s.world.tenantId, refused.id)).toEqual(["applied"]);
     expect(await conflicts(s.world.tenantId, refused.id)).toEqual([
       "applier_refused",
     ]);
     expect(await cursor(s.node!)).toBe(1);
 
     await deliver(s.node!, [next]);
+    await drain(s.node!);
     expect(applySession).toHaveBeenCalledTimes(2);
     expect(applySession).toHaveBeenLastCalledWith(...appliedWith(s, 300 * 60));
     expect(await cursor(s.node!)).toBe(2);
@@ -784,6 +825,11 @@ describe("legend-xk7az outlet with a primary and a standby node", () => {
     const agent = fakeAgent();
     await expect(deliver(standby, [event])).resolves.toBeUndefined();
     await expect(deliver(primary, [event])).resolves.toBeUndefined();
+    await drain(standby);
+    await drain(primary);
+    expect((await applyStatus(s.world.tenantId, event.id)).status).toBe(
+      "skipped",
+    );
     expect(agent.applySession).not.toHaveBeenCalled();
     expect(agent.endSession).not.toHaveBeenCalled();
     expect(await cursor(standby)).toBe(1);

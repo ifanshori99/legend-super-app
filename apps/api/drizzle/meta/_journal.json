@@ -1471,6 +1471,13 @@
       "when": 1794304000000,
       "tag": "0223_swap_return_park",
       "breakpoints": true
+    },
+    {
+      "idx": 224,
+      "version": "7",
+      "when": 1794305000000,
+      "tag": "0224_wifi_quota_apply_queue",
+      "breakpoints": true
     }
   ]
 }

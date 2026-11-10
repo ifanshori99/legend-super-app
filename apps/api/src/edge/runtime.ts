@@ -64,6 +64,10 @@ import {
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
 import { registerAttendanceLoggedEdgeApplier } from "./attendance-logged-applier.ts";
 import { registerWifiQuotaEdgeApplier } from "./wifi-quota-applier.ts";
+import {
+  startWifiQuotaQueueWorker,
+  type WifiQuotaWorkerHandle,
+} from "./wifi-quota-queue-worker.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
@@ -109,6 +113,7 @@ export const EDGE_REQUIRED_TABLES = [
   "edge_sync_conflicts",
   "edge_pull_checkpoints",
   "wifi_device_grants",
+  "wifi_quota_apply_queue",
 ] as const;
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */
@@ -827,9 +832,19 @@ export async function startEdgeRuntime(
     // fail-closed (503) and the cause is logged by name/code only.
     logger.error(safeError(error), "Wi-Fi agent failed to start");
   }
+  // legend-oeqme: pushes the queued cloud quota changes to the controller,
+  // outside the link receive transaction. Every role prunes the queue; only
+  // the primary drains it, like the agent: a standby never talks to the
+  // controller.
+  const wifiQuotaWorker: WifiQuotaWorkerHandle = startWifiQuotaQueueWorker({
+    context: local.context,
+    edgeNodeId: local.scope.edgeNodeId,
+    drain: config.role === "primary",
+  });
   return {
     async stop() {
       clearInterval(sweep);
+      await wifiQuotaWorker.stop();
       await wifi?.stop();
       stopPrune();
       // Torn down together: a pull stuck in a slow local write must not hold
