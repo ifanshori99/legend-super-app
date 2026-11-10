@@ -1481,3 +1481,8 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti: 463 tes terarah lulus di 16 berkas; mutasi (ambang prep, filter stasiun, audit, penolakan manual) membuat 2 sampai 10 tes gagal; tsc, eslint, prettier bersih; `db:generate` kosong; architect delta K 1 temuan tinggi dibetulkan (webhook tersangkut needs_review) dan 1 rendah (lock timeout).
 - Belum: kartu `legend-7svpq` (kontrak + route admin muat menu dan pause manual); uji beban KDS-06.
 
+
+## 2026-11-10: WS-04 admin muat menu dan pause manual dapur (legend-7svpq)
+- Sudah: kontrak `packages/shared/src/kitchen` (`listMenuLoads`, `setMenuLoads`, `deleteMenuLoad`, `listChannelPauses`, `setManualChannelPause`, `releaseManualChannelPause`) dan enam route di `/outlets/:outletId/kitchen` dengan izin `kds.station.manage`. Muat menu per outlet dan baris menu (tabel tidak punya kolom stasiun), upsert idempoten tanpa audit bila nilai sama. Pause manual satu per baris menu, `reason=manual`, tidak disentuh auto-pause; lepas pause otomatis memberi 404; pause kedaluwarsa dilepas jadi `released:false`. Audit `kitchen_menu_load.*` dan `kitchen_channel_pause.*`; lock timeout 2 s.
+- Bukti: 44 tes baru (`kds-pacing-admin.test.ts`), 39 gagal tanpa implementasi; 229 tes terarah lulus di 4 berkas; kontrak root 169 lulus; tsc api, eslint, prettier bersih; satu reviewer sonnet, 2 catatan rendah dibetulkan.
+- Belum: UI kitchen config untuk muat menu dan pause; uji beban KDS-06; second opinion Codex.

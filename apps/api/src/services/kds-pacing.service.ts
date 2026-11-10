@@ -31,6 +31,7 @@ import {
 import {
   assertOutletInScope,
   CoreError,
+  createUlid,
   toIsoDateTime,
   type OutletId,
   type ScopedTenantContext,
@@ -42,6 +43,7 @@ import {
   pacingSnapshotSchema,
   type CapacityLevel,
   type ChannelPause,
+  type ManualChannelPauseInput,
   type MenuLoad,
   type PacingSnapshot,
 } from "@starter/shared/kitchen";
@@ -63,7 +65,9 @@ import {
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { permittedStationIds } from "./station-access.ts";
+import { recordAudit } from "./core-audit.ts";
 import { notifyKitchenPacing } from "./kds-staff-alerts.ts";
+import type { KdsActor } from "./kds-support.ts";
 import {
   FALLBACK_SERVICE_SECONDS,
   decidePauses,
@@ -983,20 +987,7 @@ export async function listChannelPauses(
         asc(kitchenChannelPauses.createdAt),
         asc(kitchenChannelPauses.id),
       );
-    return rows.map((row) =>
-      channelPauseSchema.parse({
-        tenantId: row.tenantId,
-        outletId: row.outletId,
-        id: row.id,
-        menuItemId: row.menuItemId,
-        variantId: row.variantId,
-        channels: row.channels,
-        reason: row.reason,
-        pausedUntil: row.pausedUntil ? toIsoDateTime(row.pausedUntil) : null,
-        createdAt: toIsoDateTime(row.createdAt),
-        createdBy: row.createdBy,
-      }),
-    );
+    return rows.map(pauseDto);
   });
 }
 
@@ -1057,10 +1048,61 @@ function loadDto(row: MenuLoadRow): MenuLoad {
   });
 }
 
+const LOAD_AUDIT_FIELDS = [
+  "id",
+  "menuItemId",
+  "variantId",
+  "loadPoints",
+  "prepSeconds",
+  "channels",
+  "pausedUntil",
+  "reason",
+];
+
+/** One audit row for a menu load or manual pause change (same tx). */
+async function auditPacingAdmin(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    action: string;
+    objectType: "kitchen_menu_load" | "kitchen_channel_pause";
+    objectId: string;
+    outletId: OutletId;
+    actor: KdsActor | null;
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+  },
+  now: Date,
+): Promise<void> {
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: input.outletId,
+      actorType: input.actor === null ? "system" : "user",
+      actorId: input.actor?.userId ?? null,
+      deviceId: input.actor?.deviceId ?? null,
+      action: input.action,
+      objectType: input.objectType,
+      objectId: input.objectId,
+      reason: null,
+      maskedChanges: { before: input.before, after: input.after },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: toIsoDateTime(now),
+    },
+    LOAD_AUDIT_FIELDS,
+  );
+}
+
 /**
  * Upserts the load of each line. The menu item must belong to the outlet's
  * brand and a variant to that item, else NOT_FOUND. A repeated line in one
- * call: the last entry wins.
+ * call: the last entry wins. A line whose values already match is left
+ * alone and not audited; a new or changed line is audited.
  */
 export async function setMenuLoads(
   context: ScopedTenantContext,
@@ -1072,9 +1114,11 @@ export async function setMenuLoads(
     prepSeconds: number;
   }[],
   now: Date,
+  actor: KdsActor | null = null,
 ): Promise<MenuLoad[]> {
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
+    await tx.execute(sql.raw(`SET LOCAL lock_timeout = '2000ms'`));
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${`kitchen-menu-loads:${outletId}`}, 0))`,
     );
@@ -1115,7 +1159,7 @@ export async function setMenuLoads(
           throw new CoreError("NOT_FOUND", "Varian menu tidak ditemukan.");
       }
       const [existing] = await tx
-        .select({ id: kitchenMenuLoads.id })
+        .select()
         .from(kitchenMenuLoads)
         .where(
           and(
@@ -1127,6 +1171,14 @@ export async function setMenuLoads(
               : isNull(kitchenMenuLoads.variantId),
           ),
         );
+      if (
+        existing &&
+        existing.loadPoints === load.loadPoints &&
+        existing.prepSeconds === load.prepSeconds
+      ) {
+        result.push(loadDto(existing));
+        continue;
+      }
       const [row] = existing
         ? await tx
             .update(kitchenMenuLoads)
@@ -1155,6 +1207,25 @@ export async function setMenuLoads(
               updatedAt: now,
             })
             .returning();
+      await auditPacingAdmin(
+        tx,
+        context,
+        {
+          action: "kitchen_menu_load.set",
+          objectType: "kitchen_menu_load",
+          objectId: row.id,
+          outletId,
+          actor,
+          before: existing
+            ? {
+                loadPoints: existing.loadPoints,
+                prepSeconds: existing.prepSeconds,
+              }
+            : null,
+          after: { loadPoints: row.loadPoints, prepSeconds: row.prepSeconds },
+        },
+        now,
+      );
       result.push(loadDto(row));
     }
     return result;
@@ -1181,5 +1252,285 @@ export async function listMenuLoads(
         asc(kitchenMenuLoads.id),
       );
     return rows.map(loadDto);
+  });
+}
+
+/**
+ * Removes one load line. A line already gone (or of another outlet or tenant)
+ * answers `removed: false`: no error, no audit.
+ */
+export async function deleteMenuLoad(
+  context: ScopedTenantContext,
+  actor: KdsActor,
+  outletId: OutletId,
+  loadId: string,
+  now: Date,
+): Promise<{ id: string; removed: boolean }> {
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    await tx.execute(sql.raw(`SET LOCAL lock_timeout = '2000ms'`));
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`kitchen-menu-loads:${outletId}`}, 0))`,
+    );
+    const [row] = await tx
+      .delete(kitchenMenuLoads)
+      .where(
+        and(
+          eq(kitchenMenuLoads.tenantId, tenantId),
+          eq(kitchenMenuLoads.outletId, outletId),
+          eq(kitchenMenuLoads.id, loadId),
+        ),
+      )
+      .returning();
+    if (!row) return { id: loadId, removed: false };
+    await auditPacingAdmin(
+      tx,
+      context,
+      {
+        action: "kitchen_menu_load.deleted",
+        objectType: "kitchen_menu_load",
+        objectId: row.id,
+        outletId,
+        actor,
+        before: {
+          menuItemId: row.menuItemId,
+          variantId: row.variantId,
+          loadPoints: row.loadPoints,
+          prepSeconds: row.prepSeconds,
+        },
+        after: null,
+      },
+      now,
+    );
+    return { id: row.id, removed: true };
+  });
+}
+
+type ChannelPauseRow = typeof kitchenChannelPauses.$inferSelect;
+
+function pauseDto(row: ChannelPauseRow): ChannelPause {
+  return channelPauseSchema.parse({
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    id: row.id,
+    menuItemId: row.menuItemId,
+    variantId: row.variantId,
+    channels: row.channels,
+    reason: row.reason,
+    pausedUntil: row.pausedUntil ? toIsoDateTime(row.pausedUntil) : null,
+    createdAt: toIsoDateTime(row.createdAt),
+    createdBy: row.createdBy,
+  });
+}
+
+const sameChannels = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length &&
+  [...a].sort().join("\n") === [...b].sort().join("\n");
+
+/**
+ * Pauses a menu line by hand. The item must belong to the outlet's brand and
+ * a variant to that item, else NOT_FOUND; `pausedUntil` must be in the future
+ * (VALIDATION_ERROR). One live manual pause per line: a repeat updates its
+ * channels and end time (no audit when nothing changes). The automatic pacing
+ * only touches `station_capacity` rows, so it never edits this one.
+ */
+export async function setManualChannelPause(
+  context: ScopedTenantContext,
+  actor: KdsActor,
+  outletId: OutletId,
+  input: ManualChannelPauseInput,
+  now: Date,
+): Promise<ChannelPause> {
+  const pausedUntil =
+    input.pausedUntil === null ? null : new Date(input.pausedUntil);
+  if (pausedUntil !== null && pausedUntil.getTime() <= now.getTime())
+    throw new CoreError("VALIDATION_ERROR", "Waktu jeda harus di masa depan.");
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    await tx.execute(sql.raw(`SET LOCAL lock_timeout = '2000ms'`));
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`kitchen-channel-pauses:${outletId}`}, 0))`,
+    );
+    const [outlet] = await tx
+      .select({ brandId: outlets.brandId })
+      .from(outlets)
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)));
+    if (!outlet) throw new CoreError("NOT_FOUND", "Outlet tidak ditemukan.");
+    const [item] = await tx
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(
+        and(
+          eq(menuItems.tenantId, tenantId),
+          eq(menuItems.id, input.menuItemId),
+          eq(menuItems.brandId, outlet.brandId),
+          isNull(menuItems.deletedAt),
+        ),
+      );
+    if (!item)
+      throw new CoreError("NOT_FOUND", "Menu tidak ditemukan di outlet ini.");
+    if (input.variantId) {
+      const [variant] = await tx
+        .select({ id: itemVariants.id })
+        .from(itemVariants)
+        .where(
+          and(
+            eq(itemVariants.tenantId, tenantId),
+            eq(itemVariants.id, input.variantId),
+            eq(itemVariants.menuItemId, input.menuItemId),
+            isNull(itemVariants.deletedAt),
+          ),
+        );
+      if (!variant)
+        throw new CoreError("NOT_FOUND", "Varian menu tidak ditemukan.");
+    }
+    const [existing] = await tx
+      .select()
+      .from(kitchenChannelPauses)
+      .where(
+        and(
+          livePauseCondition(context, outletId, now),
+          eq(kitchenChannelPauses.reason, "manual"),
+          eq(kitchenChannelPauses.menuItemId, input.menuItemId),
+          input.variantId
+            ? eq(kitchenChannelPauses.variantId, input.variantId)
+            : isNull(kitchenChannelPauses.variantId),
+        ),
+      )
+      .orderBy(
+        asc(kitchenChannelPauses.createdAt),
+        asc(kitchenChannelPauses.id),
+      )
+      .limit(1);
+    if (
+      existing &&
+      sameChannels(existing.channels, input.channels) &&
+      (existing.pausedUntil?.getTime() ?? null) ===
+        (pausedUntil?.getTime() ?? null)
+    )
+      return pauseDto(existing);
+    const [row] = existing
+      ? await tx
+          .update(kitchenChannelPauses)
+          .set({ channels: input.channels, pausedUntil })
+          .where(
+            and(
+              eq(kitchenChannelPauses.tenantId, tenantId),
+              eq(kitchenChannelPauses.id, existing.id),
+            ),
+          )
+          .returning()
+      : await tx
+          .insert(kitchenChannelPauses)
+          .values({
+            tenantId,
+            outletId,
+            menuItemId: input.menuItemId,
+            variantId: input.variantId,
+            stationId: null,
+            channels: input.channels,
+            reason: "manual",
+            pausedUntil,
+            createdBy: actor.userId,
+            createdAt: now,
+          })
+          .returning();
+    await auditPacingAdmin(
+      tx,
+      context,
+      {
+        action: "kitchen_channel_pause.paused",
+        objectType: "kitchen_channel_pause",
+        objectId: row.id,
+        outletId,
+        actor,
+        before: existing
+          ? {
+              channels: existing.channels,
+              pausedUntil: existing.pausedUntil
+                ? toIsoDateTime(existing.pausedUntil)
+                : null,
+            }
+          : null,
+        after: {
+          menuItemId: row.menuItemId,
+          variantId: row.variantId,
+          channels: row.channels,
+          pausedUntil: row.pausedUntil ? toIsoDateTime(row.pausedUntil) : null,
+          reason: row.reason,
+        },
+      },
+      now,
+    );
+    return pauseDto(row);
+  });
+}
+
+/**
+ * Lifts a manual pause. Only `manual` pauses: an unknown id, an automatic
+ * pause or one of another outlet or tenant is NOT_FOUND. Already lifted:
+ * `released: false`, no audit.
+ */
+export async function releaseManualChannelPause(
+  context: ScopedTenantContext,
+  actor: KdsActor,
+  outletId: OutletId,
+  pauseId: string,
+  now: Date,
+): Promise<{ id: string; released: boolean }> {
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    await tx.execute(sql.raw(`SET LOCAL lock_timeout = '2000ms'`));
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`kitchen-channel-pauses:${outletId}`}, 0))`,
+    );
+    const [row] = await tx
+      .select()
+      .from(kitchenChannelPauses)
+      .where(
+        and(
+          eq(kitchenChannelPauses.tenantId, tenantId),
+          eq(kitchenChannelPauses.outletId, outletId),
+          eq(kitchenChannelPauses.id, pauseId),
+          eq(kitchenChannelPauses.reason, "manual"),
+        ),
+      );
+    if (!row) throw new CoreError("NOT_FOUND", "Jeda tidak ditemukan.");
+    // Lifted already, or expired on its own: nothing live to release.
+    if (
+      row.releasedAt !== null ||
+      (row.pausedUntil !== null && row.pausedUntil.getTime() <= now.getTime())
+    )
+      return { id: row.id, released: false };
+    await tx
+      .update(kitchenChannelPauses)
+      .set({ releasedAt: now })
+      .where(
+        and(
+          eq(kitchenChannelPauses.tenantId, tenantId),
+          eq(kitchenChannelPauses.id, row.id),
+        ),
+      );
+    await auditPacingAdmin(
+      tx,
+      context,
+      {
+        action: "kitchen_channel_pause.released",
+        objectType: "kitchen_channel_pause",
+        objectId: row.id,
+        outletId,
+        actor,
+        before: {
+          menuItemId: row.menuItemId,
+          variantId: row.variantId,
+          channels: row.channels,
+          pausedUntil: row.pausedUntil ? toIsoDateTime(row.pausedUntil) : null,
+          reason: row.reason,
+        },
+        after: null,
+      },
+      now,
+    );
+    return { id: row.id, released: true };
   });
 }

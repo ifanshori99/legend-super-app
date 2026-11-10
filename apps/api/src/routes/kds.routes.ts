@@ -19,16 +19,22 @@ import { Router, type Request } from "express";
 import { userIdSchema } from "@starter/shared/core";
 import {
   bumpKitchenTicket,
+  deleteMenuLoad,
   getKitchenStationFeed,
   getKitchenStationSummary,
   getKitchenTicket,
   getPacing,
   getStationCapacityRules,
   listCapacityRules,
+  listChannelPauses,
+  listMenuLoads,
   listKitchenStationLabels,
   listKitchenStationTickets,
   recallKitchenTicket,
+  releaseManualChannelPause,
   setKitchenTicketPriority,
+  setManualChannelPause,
+  setMenuLoads,
   startKitchenTicket,
   updateCapacityRules,
   updateKitchenTicketItem,
@@ -356,6 +362,85 @@ kdsRouter.put(
         outletId,
         stationId,
         body.rules,
+        new Date(),
+      ),
+    });
+  },
+);
+
+// legend-7svpq: menu load admin and manual channel pauses, same guard.
+kdsRouter.get("/menu-loads", manageStations, async (req, res) => {
+  const { outletId } = listMenuLoads.params.parse(req.params);
+  res.json({
+    data: await pacing.listMenuLoads(getScopedTenantContext(req), outletId),
+  });
+});
+
+kdsRouter.put("/menu-loads", manageStations, jsonBody, async (req, res) => {
+  const { outletId } = setMenuLoads.params.parse(req.params);
+  const body = setMenuLoads.body.parse(req.body);
+  res.json({
+    data: await pacing.setMenuLoads(
+      getScopedTenantContext(req),
+      outletId,
+      body.loads,
+      new Date(),
+      actor(req),
+    ),
+  });
+});
+
+kdsRouter.delete("/menu-loads/:loadId", manageStations, async (req, res) => {
+  const { outletId, loadId } = deleteMenuLoad.params.parse(req.params);
+  res.json({
+    data: await pacing.deleteMenuLoad(
+      getScopedTenantContext(req),
+      actor(req),
+      outletId,
+      loadId,
+      new Date(),
+    ),
+  });
+});
+
+kdsRouter.get("/channel-pauses", manageStations, async (req, res) => {
+  const { outletId } = listChannelPauses.params.parse(req.params);
+  res.json({
+    data: await pacing.listChannelPauses(
+      getScopedTenantContext(req),
+      outletId,
+      new Date(),
+    ),
+  });
+});
+
+kdsRouter.put("/channel-pauses", manageStations, jsonBody, async (req, res) => {
+  const { outletId } = setManualChannelPause.params.parse(req.params);
+  const body = setManualChannelPause.body.parse(req.body);
+  res.json({
+    data: await pacing.setManualChannelPause(
+      getScopedTenantContext(req),
+      actor(req),
+      outletId,
+      body,
+      new Date(),
+    ),
+  });
+});
+
+kdsRouter.delete(
+  "/channel-pauses/:pauseId",
+  manageStations,
+  async (req, res) => {
+    const { outletId, pauseId } = releaseManualChannelPause.params.parse(
+      req.params,
+    );
+    res.json({
+      data: await pacing.releaseManualChannelPause(
+        getScopedTenantContext(req),
+        actor(req),
+        outletId,
+        pauseId,
         new Date(),
       ),
     });
