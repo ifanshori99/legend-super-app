@@ -1017,3 +1017,4 @@ Langkah berikut CTO baru:
 - 20:25 G0y2x 44g8n selesai: 88ce89d2 ws/i83ls-fix. 0229 dikembalikan identik (dicek), forward 0244 (when 1794390000000), advisory lock collect charge, 409 pada key ganda. Architect K setuju. i83ls-fix siap batch48. Sisa: legend-8docm (cash movement manual tanpa lock, P3).
   - Catatan merge train: r3i8w 0242 (when ...370), aruta 0243 (...380), ie6m 0245 (...360) punya `when` di bawah 0244; naikkan `when` di atas 1794390000000 bila masuk sesudah i83ls-fix.
 - 20:26 mulai G0a8q 33im6 profit share (378, opus).
+- 20:30 G1fjl powk0: 1f599c08 (PBJT dari jurnal penjualan/refund, dasar taxBaseIdr, NO_CHANGE banding amount+lines; 142 test). Keputusan CTO: tolak laporan bila ledger != snapshot (fail-closed, belum ada data lama). Lanjutan: error sebut outlet+selisih, architect delta. Kartu legend-knfl6 (jurnal refund simpan order id).
