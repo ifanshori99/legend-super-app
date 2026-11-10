@@ -275,6 +275,20 @@ export function isOwnRequest(
 }
 
 /**
+ * legend-mbhw1: the sole Owner approving their own pending request. The API
+ * marks such a request `selfApprovalAllowed` (and re-checks under the lock);
+ * the screen only opens "Setujui" then, never "Tolak".
+ */
+export function isSelfApproval(
+  request: Pick<ApprovalRequest, "requestedBy" | "selfApprovalAllowed">,
+  currentUserId: string | null | undefined,
+): boolean {
+  return (
+    request.selfApprovalAllowed === true && isOwnRequest(request, currentUserId)
+  );
+}
+
+/**
  * Why the approve/reject controls are disabled, or null when they are live.
  * The lifecycle half (pending, deadline, approver ≠ requester) is the shared
  * `assertApprovalRequestDecidable`, so the screen and the service refuse the
@@ -282,7 +296,10 @@ export function isOwnRequest(
  * enrollment checks are screen-side.
  */
 export function decisionBlock(input: {
-  request: Pick<ApprovalRequest, "status" | "deadlineAt" | "requestedBy">;
+  request: Pick<
+    ApprovalRequest,
+    "status" | "deadlineAt" | "requestedBy" | "selfApprovalAllowed"
+  >;
   currentUserId: string | null | undefined;
   canDecide: boolean;
   mfaEnrollmentRequired?: boolean;
@@ -303,12 +320,29 @@ export function decisionBlock(input: {
     });
   } catch (error) {
     const code = (error as { code?: string }).code;
-    if (code === "APPROVER_IS_REQUESTER") return "own";
     if (code === "APPROVAL_REQUEST_EXPIRED") return "expired";
-    return "notPending";
+    // The sole Owner's own request passes here; the service re-checks.
+    const selfApproval =
+      code === "APPROVER_IS_REQUESTER" &&
+      isSelfApproval(request, currentUserId);
+    if (!selfApproval)
+      return code === "APPROVER_IS_REQUESTER" ? "own" : "notPending";
   }
   if (input.mfaEnrollmentRequired) return "enrollment";
   return null;
+}
+
+/**
+ * Same as `decisionBlock` for the reject button: a sole Owner's own request
+ * can be approved, never rejected, so "own" stays on for "Tolak".
+ */
+export function rejectBlock(
+  input: Parameters<typeof decisionBlock>[0],
+): DecisionBlock | null {
+  return (
+    decisionBlock(input) ??
+    (isSelfApproval(input.request, input.currentUserId) ? "own" : null)
+  );
 }
 
 export function decisionBlockKey(block: DecisionBlock): MessageKey {
@@ -346,6 +380,8 @@ export function errorMessageKey(code: string | undefined): MessageKey {
       return "approvals.errors.expired";
     case "APPROVER_IS_REQUESTER":
       return "approvals.errors.approverIsRequester";
+    case "APPROVAL_PENDING":
+      return "approvals.errors.pending";
     case "APPROVER_ALREADY_DECIDED":
       return "approvals.errors.alreadyDecided";
     case "APPROVER_ROLE_MISMATCH":

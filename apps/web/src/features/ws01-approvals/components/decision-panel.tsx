@@ -25,8 +25,10 @@ import {
   decisionBlock,
   decisionBlockKey,
   errorMessageKey,
+  isSelfApproval,
   needsStepUp,
   reasonProblem,
+  rejectBlock,
 } from "../logic.ts";
 
 type Decision = "approved" | "rejected";
@@ -64,13 +66,18 @@ export function DecisionPanel({
   );
 
   const view = auth.data?.data;
-  const block = decisionBlock({
+  const blockInput = {
     request,
     currentUserId: view?.user.id ?? null,
     canDecide,
     mfaEnrollmentRequired: view?.mfaEnrollmentRequired ?? false,
     now,
-  });
+  };
+  const block = decisionBlock(blockInput);
+  // Sole Owner on their own request: "Setujui" is live, "Tolak" stays shut.
+  const selfApproving =
+    block === null && isSelfApproval(request, blockInput.currentUserId);
+  const rejectBlocked = rejectBlock(blockInput) !== null;
   const factor = useTotpFactor(stepUp);
   const problem = reasonProblem(reason);
 
@@ -238,6 +245,15 @@ export function DecisionPanel({
         </div>
       )}
 
+      {selfApproving && (
+        <p
+          data-testid="self-approval-note"
+          className="text-sm text-muted-foreground"
+        >
+          {t("approvals.selfApproval.note")}
+        </p>
+      )}
+
       <FormField
         label={t("approvals.decision.reason")}
         hint={t("approvals.decision.reasonHint")}
@@ -272,7 +288,7 @@ export function DecisionPanel({
           type="button"
           variant="outline"
           className="min-h-11 flex-1"
-          disabled={block !== null || decide.isPending}
+          disabled={rejectBlocked || decide.isPending}
           loading={decide.isPending && pending === "rejected"}
           onClick={() => choose("rejected")}
         >
