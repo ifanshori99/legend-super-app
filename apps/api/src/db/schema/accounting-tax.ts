@@ -14,8 +14,18 @@
 // - At most one draft per (entity, type, period): regenerate overwrites it.
 //   Final and exported reports of the same period may sit beside a newer
 //   draft after a reopen.
+// - A correction is a revision chain (migration 0231): finalizing a draft
+//   for a period that already has a current report gives it
+//   revision_no = old + 1 and supersedes the old row (superseded_at,
+//   superseded_by_id), which stays readable. Exactly one non-draft row per
+//   (entity, type, period) is current; revision_no is unique among them.
+//   revision_no is NULL while draft, 0 for the original, n for correction n
+//   (Coretax pembetulan code). fiscal_period_version pins the fiscal period
+//   `version` the draft was generated from, so finalize can reject a stale
+//   draft after the period moved.
 //
-// RLS lives in accounting-tax.custom.sql (shipped in 0228).
+// RLS, the filed-report guard and the chain trigger live in
+// accounting-tax.custom.sql (0228, replaced in 0231).
 
 import { sql } from "drizzle-orm";
 import {
@@ -25,6 +35,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -60,6 +71,21 @@ export const taxReports = pgTable(
     finalizedBy: text("finalized_by"),
     finalizedAt: timestamp("finalized_at", { withTimezone: true }),
     exportedAt: timestamp("exported_at", { withTimezone: true }),
+    /** NULL while draft, 0 for the original, n for correction n. */
+    revisionNo: smallint("revision_no"),
+    /** Previous revision this one corrects (revision_no >= 1). */
+    supersedesId: uuid("supersedes_id"),
+    /** Replacement revision; set together with `supersededAt`. */
+    supersededById: uuid("superseded_by_id"),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    /** Why the report was corrected; required from revision 1. */
+    correctionReason: text("correction_reason"),
+    /** `fiscal_periods.version` the draft was generated from. */
+    fiscalPeriodVersion: integer("fiscal_period_version").notNull(),
+    /** Idempotency key of the finalize call; NULL for drafts, locked once set. */
+    finalizeIdempotencyKey: varchar("finalize_idempotency_key", {
+      length: 100,
+    }),
     /** +1 on every regenerate, finalize and export (optimistic concurrency). */
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -76,9 +102,28 @@ export const taxReports = pgTable(
       columns: [t.tenantId, t.legalEntityId],
       foreignColumns: [legalEntities.tenantId, legalEntities.id],
     }),
+    foreignKey({
+      name: "tax_reports_supersedes_fk",
+      columns: [t.tenantId, t.supersedesId],
+      foreignColumns: [t.tenantId, t.id],
+    }),
+    foreignKey({
+      name: "tax_reports_superseded_by_fk",
+      columns: [t.tenantId, t.supersededById],
+      foreignColumns: [t.tenantId, t.id],
+    }),
     uniqueIndex("tax_reports_draft_key")
       .on(t.tenantId, t.legalEntityId, t.type, t.period)
       .where(sql`${t.status} = 'draft'`),
+    uniqueIndex("tax_reports_revision_key")
+      .on(t.tenantId, t.legalEntityId, t.type, t.period, t.revisionNo)
+      .where(sql`${t.status} <> 'draft'`),
+    uniqueIndex("tax_reports_current_key")
+      .on(t.tenantId, t.legalEntityId, t.type, t.period)
+      .where(sql`${t.status} <> 'draft' AND ${t.supersededAt} IS NULL`),
+    uniqueIndex("tax_reports_finalize_idempotency_key")
+      .on(t.tenantId, t.finalizeIdempotencyKey)
+      .where(sql`${t.finalizeIdempotencyKey} IS NOT NULL`),
     index("tax_reports_period_idx").on(
       t.tenantId,
       t.legalEntityId,
@@ -115,6 +160,39 @@ export const taxReports = pgTable(
       sql`(${t.status} = 'exported') = (${t.exportFormat} IS NOT NULL AND ${t.fileKey} IS NOT NULL AND ${t.exportedAt} IS NOT NULL) AND (${t.exportFormat} IS NULL) = (${t.fileKey} IS NULL) AND (${t.fileKey} IS NULL) = (${t.exportedAt} IS NULL)`,
     ),
     check("tax_reports_version_check", sql`${t.version} >= 1`),
+    check(
+      "tax_reports_fiscal_period_version_check",
+      sql`${t.fiscalPeriodVersion} >= 1`,
+    ),
+    // Revision chain (0231).
+    check(
+      "tax_reports_revision_draft_check",
+      sql`(${t.status} = 'draft') = (${t.revisionNo} IS NULL)`,
+    ),
+    check(
+      "tax_reports_revision_range_check",
+      sql`${t.revisionNo} IS NULL OR ${t.revisionNo} >= 0`,
+    ),
+    check(
+      "tax_reports_revision_supersedes_check",
+      sql`${t.revisionNo} IS NULL OR (${t.revisionNo} = 0) = (${t.supersedesId} IS NULL)`,
+    ),
+    check(
+      "tax_reports_revision_reason_check",
+      sql`${t.revisionNo} IS NULL OR (${t.revisionNo} >= 1) = (${t.correctionReason} IS NOT NULL)`,
+    ),
+    check(
+      "tax_reports_reason_text_check",
+      sql`${t.correctionReason} IS NULL OR length(btrim(${t.correctionReason})) > 0`,
+    ),
+    check(
+      "tax_reports_superseded_pair_check",
+      sql`(${t.supersededAt} IS NULL) = (${t.supersededById} IS NULL)`,
+    ),
+    check(
+      "tax_reports_superseded_self_check",
+      sql`${t.supersededById} IS NULL OR ${t.supersededById} <> ${t.id}`,
+    ),
   ],
 );
 

@@ -59,6 +59,19 @@ export const accountingErrorHttpStatus = {
   STATEMENT_VALUE_INVALID: 422,
   /** Tax type does not apply to this legal entity (PPN needs PKP status). */
   TAX_REPORT_NOT_APPLICABLE: 422,
+  /** The report was replaced by a later revision; only the current one can be exported. */
+  TAX_REPORT_SUPERSEDED: 409,
+  /** The fiscal period changed after the draft was generated; regenerate the draft. */
+  TAX_REPORT_STALE: 409,
+  /** A correction (revision >= 1) needs a written reason. */
+  TAX_REPORT_CORRECTION_REASON_REQUIRED: 400,
+  /** The data source for this tax type is not wired yet (payroll / payables). */
+  TAX_REPORT_SOURCE_UNAVAILABLE: 422,
+  /** The stored amount differs from the sum of the report lines. */
+  TAX_REPORT_AMOUNT_MISMATCH: 422,
+  TAX_REPORT_NOT_FOUND: 404,
+  /** The draft equals the current report (same period version, amount and lines). */
+  TAX_REPORT_NO_CHANGE: 409,
   ASSET_ALREADY_DISPOSED: 409,
   /** A share version must sum to exactly 10,000 bp before it can be submitted or approved (SH-03). */
   SHARE_ALLOCATION_NOT_EXACT_100: 422,
@@ -122,6 +135,19 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   MATCH_AMOUNT_MISMATCH: "Jumlah dokumen tidak sama dengan nilai mutasi.",
   STATEMENT_VALUE_INVALID: "Nilai pada file mutasi tidak dapat dibaca.",
   TAX_REPORT_NOT_APPLICABLE: "Jenis pajak ini tidak berlaku untuk badan usaha.",
+  TAX_REPORT_SUPERSEDED:
+    "Laporan pajak ini sudah digantikan revisi yang lebih baru.",
+  TAX_REPORT_STALE:
+    "Periode berubah sejak draf dibuat. Buat ulang draf laporan pajak.",
+  TAX_REPORT_CORRECTION_REASON_REQUIRED:
+    "Alasan pembetulan wajib diisi untuk revisi laporan pajak.",
+  TAX_REPORT_SOURCE_UNAVAILABLE:
+    "Sumber data untuk jenis pajak ini belum tersedia.",
+  TAX_REPORT_AMOUNT_MISMATCH:
+    "Jumlah laporan tidak sama dengan total pajak per baris.",
+  TAX_REPORT_NOT_FOUND: "Laporan pajak tidak ditemukan.",
+  TAX_REPORT_NO_CHANGE:
+    "Tidak ada perubahan dari laporan pajak yang berlaku. Tidak perlu dibuat revisi.",
   ASSET_ALREADY_DISPOSED: "Aset sudah dilepas.",
   SHARE_ALLOCATION_NOT_EXACT_100:
     "Total porsi pemegang saham harus tepat 10.000 bp (100%).",
@@ -150,14 +176,18 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
 export class AccountingError extends Error {
   readonly code: AccountingErrorCode;
   readonly status: number;
+  /** Optional machine-readable context (e.g. `supersededById` on TAX_REPORT_SUPERSEDED). */
+  readonly details?: Readonly<Record<string, unknown>>;
 
   constructor(
     code: AccountingErrorCode,
     message: string = defaultMessages[code],
+    details?: Readonly<Record<string, unknown>>,
   ) {
     super(message);
     this.name = "AccountingError";
     this.code = code;
     this.status = accountingErrorHttpStatus[code];
+    if (details !== undefined) this.details = details;
   }
 }

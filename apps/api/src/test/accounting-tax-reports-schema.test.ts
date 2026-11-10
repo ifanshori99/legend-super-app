@@ -3,6 +3,11 @@
 // packages/shared/src/accounting/tax.ts: lines, finalized_by/at, exported_at.
 // Real PostgreSQL on the disposable test DB: constraints are checked with the
 // owner pool, tenant isolation (TEN-01/02) through withTenant.
+// Migration 0231 (legend-r3i8w) added the revision chain: every row carries
+// fiscal_period_version, and a filed row carries revision_no (0 here, the
+// normal filing). Chain rules themselves live in
+// accounting-tax-report-revisions.test.ts; this file only keeps its earlier
+// cases valid and records what 0231 changed (file_key is now locked).
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -116,8 +121,10 @@ function insertReport(o: Overrides = {}) {
     `INSERT INTO tax_reports
        (tenant_id, legal_entity_id, type, period, amount_idr, lines, status,
         export_format, file_key, generated_by, generated_at,
-        finalized_by, finalized_at, exported_at)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, 'user-1', $10, $11, $12, $13)`,
+        finalized_by, finalized_at, exported_at,
+        revision_no, fiscal_period_version)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, 'user-1', $10, $11, $12, $13,
+             $14, 1)`,
     [
       v.tenantId,
       v.legalEntityId,
@@ -132,6 +139,8 @@ function insertReport(o: Overrides = {}) {
       v.finalizedBy,
       v.finalizedAt,
       v.exportedAt,
+      // 0231: NULL exactly while draft; 0 = the normal filing.
+      v.status === "draft" ? null : 0,
     ],
   );
 }
@@ -243,7 +252,7 @@ describe("legend-gmww tax_reports", () => {
       expect(del.rowCount).toBe(1);
     });
 
-    it("lets final move to exported, and an export be repeated", async () => {
+    it("lets final move to exported, and an export be repeated without a new file", async () => {
       await insertReport({
         period: "2025-02",
         status: "final",
@@ -254,13 +263,23 @@ describe("legend-gmww tax_reports", () => {
         "pbjt",
         `status = 'exported', export_format = 'coretax_xml', file_key = 'k1', exported_at = '${NOW}'`,
       );
-      await update(
-        "2025-02",
-        "pbjt",
-        `file_key = 'k2', exported_at = '2026-11-11T03:00:00Z', version = version + 1`,
-      );
+      // 0231: the file_key is locked once set, so a repeat keeps the same file.
+      await update("2025-02", "pbjt", "version = version + 1");
     });
 
+    it("rejects swapping the file of an exported report (changed by 0231)", async () => {
+      await insertReport({
+        period: "2025-06",
+        status: "exported",
+        ...STAMPS,
+        ...EXPORT,
+      });
+      await expect(
+        update("2025-06", "pbjt", "file_key = 'k2'"),
+      ).rejects.toMatchObject({ code: "42501" });
+    });
+
+    let lockCase = 0;
     it.each([
       ["amount_idr", "amount_idr = 1"],
       ["lines", "lines = '[]'::jsonb"],
@@ -273,8 +292,10 @@ describe("legend-gmww tax_reports", () => {
         "status = 'draft', finalized_by = NULL, finalized_at = NULL",
       ],
     ])("rejects changing %s of a final report", async (_name, set) => {
-      await insertReport({ period: "2025-03", status: "final", ...STAMPS });
-      await expect(update("2025-03", "pbjt", set)).rejects.toMatchObject({
+      // 0231: one current filed report per key, so each case owns its period.
+      const period = `${2100 + lockCase++}-03`;
+      await insertReport({ period, status: "final", ...STAMPS });
+      await expect(update(period, "pbjt", set)).rejects.toMatchObject({
         code: "42501",
       });
     });
