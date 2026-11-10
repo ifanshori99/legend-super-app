@@ -1008,3 +1008,5 @@ Langkah berikut CTO baru:
 - Rekap Codex hari ini: 5 run selesai, 16 temuan (8 P1) yang lolos review Claude.
 - 19:52 Codex 377 profit share A: P1 approval lewati matriks, P2 clawback pajak berlebih. Kartu legend-33im6, brief 378. 8s992 ditahan dari merge. Codex 379 profit share B jalan (#2).
 - 19:58 Codex 379 profit share B: 2 P1 (ganti userId alihkan akses statement historis; 0219 gagal bila dokumen sudah ada) + 1 P2 (penerbit statement tak dipasang). Masuk brief 378 (legend-33im6). Codex 380 split bill jalan (#2).
+- 19:58 G0m2d selesai: u7g9w 2c7957bf (bukti PIN absen layar outlet, 0241, 232/232) dan jmsdx 469673f2 (pepper per outlet, berisi u7g9w, 423/423). Architect K semua dibetulkan. Kartu baru 8e0a3, 62jtd; web ws10 /clock di tvkuz. Urutan merge: j6cyb -> u7g9w -> ideif -> jmsdx -> arch-357. Keputusan CTO: device `display` tidak dapat PIN absen (PRD F905: layar outlet menampilkan QR berotasi, staf scan dari ponsel).
+- Brief 381 ptn11 (base ws/aruta-pos-pin).
