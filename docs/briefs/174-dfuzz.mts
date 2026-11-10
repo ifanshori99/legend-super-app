@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { year, type M, type Sc } from "./sim.mts";
 let seed = Number(process.argv[2] ?? 7); const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
 const ri = (a: number, b: number) => a + Math.floor(rnd() * (b - a + 1));

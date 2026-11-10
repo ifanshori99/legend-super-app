@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global window, document */
 // UI check for the payslip PIN screens (bead legend-ilzrj, Wave 3).
 //
 // For every screen/state below, at 390x844 and 1280x800: open the page in mock

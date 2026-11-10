@@ -421,7 +421,7 @@ registerMock(updateDeliveryOrderStatus, ({ params, body }) => {
 // the real endpoint can be seen in mock mode.
 registerMock(resendDeliveryOrderSync, ({ params }) => {
   requireOutlet(params.outletId);
-  const current = findOrder(params.deliveryOrderId);
+  const current = findOrder(params.outletId, params.deliveryOrderId);
   if (current.platformSync !== "needs_action")
     fail("DELIVERY_SYNC_NOT_PENDING");
   const accepted = !orderIsFinal(current.status);
@@ -435,7 +435,7 @@ registerMock(resendDeliveryOrderSync, ({ params }) => {
 
 registerMock(resolveDeliveryOrderSync, ({ params }) => {
   requireOutlet(params.outletId);
-  const current = findOrder(params.deliveryOrderId);
+  const current = findOrder(params.outletId, params.deliveryOrderId);
   if (current.platformSync !== "needs_action")
     fail("DELIVERY_SYNC_NOT_PENDING");
   return { data: saveOrder({ ...current, platformSync: "ok" }) };
