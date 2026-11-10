@@ -72,6 +72,7 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
       recoveryRefundSplit({
         order: BRIEF_ORDER,
         lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
         releasedIdr: 0,
       }),
     ).toEqual({
@@ -89,6 +90,7 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
     const result = recoveryRefundSplit({
       order: BRIEF_ORDER,
       lineTotalIdr: 100_000,
+      priorLinesIdr: 0,
       releasedIdr: 0,
     });
     expect(result).toMatchObject({
@@ -111,7 +113,12 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
     });
     expect(order.totalIdr).toBe(115_550);
     expect(
-      recoveryRefundSplit({ order, lineTotalIdr: 100_000, releasedIdr: 0 }),
+      recoveryRefundSplit({
+        order,
+        lineTotalIdr: 100_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+      }),
     ).toMatchObject({
       wantedIdr: 115_500,
       amountIdr: 115_500,
@@ -123,6 +130,7 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
       recoveryRefundSplit({
         order,
         lineTotalIdr: 100_000,
+        priorLinesIdr: 0,
         releasedIdr: 115_500,
       }),
     ).toMatchObject({
@@ -142,7 +150,12 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
     });
     expect(order.totalIdr).toBe(103_950);
     expect(
-      recoveryRefundSplit({ order, lineTotalIdr: 50_000, releasedIdr: 0 }),
+      recoveryRefundSplit({
+        order,
+        lineTotalIdr: 50_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+      }),
     ).toEqual({
       wantedIdr: 51_975,
       amountIdr: 51_975,
@@ -164,7 +177,12 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
     });
     expect(order.totalIdr).toBe(100_000);
     expect(
-      recoveryRefundSplit({ order, lineTotalIdr: 40_000, releasedIdr: 0 }),
+      recoveryRefundSplit({
+        order,
+        lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+      }),
     ).toEqual({
       wantedIdr: 40_000,
       amountIdr: 40_000,
@@ -183,6 +201,7 @@ describe("legend-94q2l recoveryRefundSplit: pembulatan half-up", () => {
     const tie = recoveryRefundSplit({
       order: makeOrder({ subtotal: 6_000, service: 3 }),
       lineTotalIdr: 1_000,
+      priorLinesIdr: 0,
       releasedIdr: 0,
     });
     expect(tie).toMatchObject({
@@ -193,6 +212,7 @@ describe("legend-94q2l recoveryRefundSplit: pembulatan half-up", () => {
     const below = recoveryRefundSplit({
       order: makeOrder({ subtotal: 6_000, service: 2 }),
       lineTotalIdr: 1_000,
+      priorLinesIdr: 0,
       releasedIdr: 0,
     });
     expect(below).toMatchObject({ serviceChargeIdr: 0, wantedIdr: 1_000 });
@@ -202,6 +222,7 @@ describe("legend-94q2l recoveryRefundSplit: pembulatan half-up", () => {
     const result = recoveryRefundSplit({
       order: makeOrder({ subtotal: 6_000, tax: 9 }),
       lineTotalIdr: 1_000,
+      priorLinesIdr: 0,
       releasedIdr: 0,
     });
     expect(result).toMatchObject({ pbjtIdr: 2, wantedIdr: 1_002 });
@@ -221,6 +242,7 @@ describe("legend-94q2l recoveryRefundSplit: pembulatan half-up", () => {
     const result = recoveryRefundSplit({
       order: makeOrder({ subtotal, service, tax }),
       lineTotalIdr: line,
+      priorLinesIdr: 0,
       releasedIdr: 0,
     });
     expect(result.grossSalesIdr).toBe(half(subtotal));
@@ -237,6 +259,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
     const result = recoveryRefundSplit({
       order: BRIEF_ORDER,
       lineTotalIdr: 40_000,
+      priorLinesIdr: 0,
       releasedIdr: 100_000,
     });
     expect(result).toEqual({
@@ -261,6 +284,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
     const result = recoveryRefundSplit({
       order,
       lineTotalIdr: 50_000,
+      priorLinesIdr: 0,
       releasedIdr: 73_950,
     });
     expect(result).toEqual({
@@ -284,6 +308,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
     const result = recoveryRefundSplit({
       order,
       lineTotalIdr: 100_000,
+      priorLinesIdr: 0,
       releasedIdr: 0,
     });
     expect(result.wantedIdr).toBe(115_500);
@@ -302,6 +327,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
       recoveryRefundSplit({
         order: BRIEF_ORDER,
         lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
         releasedIdr: 115_500,
       }),
     ).toEqual({ ...ZERO, wantedIdr: 46_200, shortfallIdr: 46_200 });
@@ -312,6 +338,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
       recoveryRefundSplit({
         order: BRIEF_ORDER,
         lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
         releasedIdr: 999_999,
       }),
     ).toEqual({ ...ZERO, wantedIdr: 46_200, shortfallIdr: 46_200 });
@@ -323,6 +350,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
       recoveryRefundSplit({
         order: BRIEF_ORDER,
         lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
         releasedIdr: 69_300,
       }),
     ).toEqual({
@@ -341,7 +369,12 @@ describe("legend-94q2l recoveryRefundSplit: masukan kosong", () => {
   it("subtotal 0: semua 0", () => {
     const order = makeOrder({ subtotal: 0 });
     expect(
-      recoveryRefundSplit({ order, lineTotalIdr: 10_000, releasedIdr: 0 }),
+      recoveryRefundSplit({
+        order,
+        lineTotalIdr: 10_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+      }),
     ).toEqual(ZERO);
   });
 
@@ -351,6 +384,7 @@ describe("legend-94q2l recoveryRefundSplit: masukan kosong", () => {
         recoveryRefundSplit({
           order: BRIEF_ORDER,
           lineTotalIdr,
+          priorLinesIdr: 0,
           releasedIdr: 0,
         }),
       ).toEqual(ZERO);
@@ -400,6 +434,7 @@ describe("legend-94q2l recoveryRefundSplit: sifat untuk banyak order acak", () =
       const result = recoveryRefundSplit({
         order: orderWithDeposit,
         lineTotalIdr: line,
+        priorLinesIdr: 0,
         releasedIdr: released,
       });
 
@@ -430,5 +465,218 @@ describe("legend-94q2l recoveryRefundSplit: sifat untuk banyak order acak", () =
         label,
       ).toBe(result.amountIdr);
     }
+  });
+});
+
+describe("legend-h1dyy recoveryRefundSplit: pembulatan kumulatif antar refund", () => {
+  const identity = (result: ReturnType<typeof recoveryRefundSplit>) =>
+    result.grossSalesIdr -
+    result.discountIdr +
+    result.serviceChargeIdr +
+    result.pbjtIdr;
+
+  it("contoh Codex: dua baris 50.005 dari 100.010, PBJT 10.001 -> 5.001 lalu 5.000 (jumlah 10.001, bukan 10.002)", () => {
+    const order = makeOrder({ subtotal: 100_010, tax: 10_001 });
+    const first = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 50_005,
+      priorLinesIdr: 0,
+      releasedIdr: 0,
+    });
+    expect(first).toMatchObject({ grossSalesIdr: 50_005, pbjtIdr: 5_001 });
+    expect(identity(first)).toBe(first.amountIdr);
+    const second = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 50_005,
+      priorLinesIdr: 50_005,
+      releasedIdr: first.amountIdr,
+    });
+    expect(second).toMatchObject({ grossSalesIdr: 50_005, pbjtIdr: 5_000 });
+    expect(identity(second)).toBe(second.amountIdr);
+    expect(first.pbjtIdr + second.pbjtIdr).toBe(10_001);
+    expect(first.amountIdr + second.amountIdr).toBe(order.totalIdr);
+  });
+
+  it("tiga baris 10.000, service 1.000, PBJT 3.100: refund terakhir mengambil sisa, jumlah = komponen order", () => {
+    const order = makeOrder({ subtotal: 30_000, service: 1_000, tax: 3_100 });
+    let prior = 0;
+    let released = 0;
+    const results = [];
+    for (let index = 0; index < 3; index += 1) {
+      const result = recoveryRefundSplit({
+        order,
+        lineTotalIdr: 10_000,
+        priorLinesIdr: prior,
+        releasedIdr: released,
+      });
+      expect(identity(result)).toBe(result.amountIdr);
+      expect(result.shortfallIdr).toBe(0);
+      results.push(result);
+      prior += 10_000;
+      released += result.amountIdr;
+    }
+    expect(results.map((result) => result.serviceChargeIdr)).toEqual([
+      333, 334, 333,
+    ]);
+    expect(results.map((result) => result.pbjtIdr)).toEqual([
+      1_033, 1_034, 1_033,
+    ]);
+    expect(results.map((result) => result.grossSalesIdr)).toEqual([
+      10_000, 10_000, 10_000,
+    ]);
+    expect(released).toBe(order.totalIdr);
+  });
+
+  it("baris yang sudah lewat subtotal (prior + line > subtotal) tidak melebihi komponen order", () => {
+    const order = makeOrder({ subtotal: 30_000, service: 1_000, tax: 3_100 });
+    const result = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 10_000,
+      priorLinesIdr: 25_000,
+      releasedIdr: 0,
+    });
+    // Only 5.000 of the subtotal is left: 1.000 - 833 = 167, 3.100 - 2.583 = 517.
+    expect(result).toMatchObject({
+      grossSalesIdr: 5_000,
+      serviceChargeIdr: 167,
+      pbjtIdr: 517,
+      wantedIdr: 5_684,
+    });
+  });
+});
+
+describe("legend-h1dyy recoveryRefundSplit: promo dihitung ulang (CRM)", () => {
+  /** 2 kopi 50.000 + croissant 20.000; promo makes the croissant free. */
+  const PROMO_ORDER = makeOrder({ subtotal: 120_000, discount: 20_000 });
+
+  it("croissant gratis gagal: promo tidak berubah, goodsDue 0 -> amount 0 (pro-rata lama 16.667)", () => {
+    expect(PROMO_ORDER.totalIdr).toBe(100_000);
+    expect(
+      recoveryRefundSplit({
+        order: PROMO_ORDER,
+        lineTotalIdr: 20_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+        promo: {
+          refundedSubtotalIdr: 20_000,
+          goodsDueIdr: 0,
+          remainingPaidIdr: 100_000,
+        },
+      }),
+    ).toEqual(ZERO);
+  });
+
+  it("satu kopi gagal, promo ditarik: amount 30.000, gross 50.000, diskon 20.000", () => {
+    expect(
+      recoveryRefundSplit({
+        order: PROMO_ORDER,
+        lineTotalIdr: 50_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+        promo: {
+          refundedSubtotalIdr: 50_000,
+          goodsDueIdr: 30_000,
+          remainingPaidIdr: 100_000,
+        },
+      }),
+    ).toEqual({
+      wantedIdr: 30_000,
+      amountIdr: 30_000,
+      shortfallIdr: 0,
+      grossSalesIdr: 50_000,
+      discountIdr: 20_000,
+      serviceChargeIdr: 0,
+      pbjtIdr: 0,
+    });
+  });
+
+  it("eksklusif, service 5% + PBJT 10%: service/pbjt mengikuti uang barang, refund kedua mengambil sisa", () => {
+    // Goods paid P = 100.000; service 5.000; PBJT 10% of 105.000 = 10.500.
+    const order = makeOrder({
+      subtotal: 120_000,
+      discount: 20_000,
+      service: 5_000,
+      tax: 10_500,
+    });
+    expect(order.totalIdr).toBe(115_500);
+    const first = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 50_000,
+      priorLinesIdr: 0,
+      releasedIdr: 0,
+      promo: {
+        refundedSubtotalIdr: 50_000,
+        goodsDueIdr: 30_000,
+        remainingPaidIdr: 100_000,
+      },
+    });
+    expect(first).toEqual({
+      wantedIdr: 34_650,
+      amountIdr: 34_650,
+      shortfallIdr: 0,
+      grossSalesIdr: 50_000,
+      discountIdr: 20_000,
+      serviceChargeIdr: 1_500,
+      pbjtIdr: 3_150,
+    });
+    // The rest of the goods (70.000 paid) refunds later: it takes the rest.
+    const second = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 70_000,
+      priorLinesIdr: 50_000,
+      releasedIdr: first.amountIdr,
+      promo: {
+        refundedSubtotalIdr: 70_000,
+        goodsDueIdr: 70_000,
+        remainingPaidIdr: 70_000,
+      },
+    });
+    expect(second).toMatchObject({
+      amountIdr: 80_850,
+      grossSalesIdr: 70_000,
+      discountIdr: 0,
+      serviceChargeIdr: 3_500,
+      pbjtIdr: 7_350,
+    });
+    for (const result of [first, second])
+      expect(
+        result.grossSalesIdr -
+          result.discountIdr +
+          result.serviceChargeIdr +
+          result.pbjtIdr,
+      ).toBe(result.amountIdr);
+    expect(first.amountIdr + second.amountIdr).toBe(order.totalIdr);
+  });
+
+  it("inklusif, PBJT 9.091: wanted = goodsDue, gross dari basis pendapatan (floor)", () => {
+    const order = makeOrder({
+      subtotal: 120_000,
+      discount: 20_000,
+      tax: 9_091,
+      inclusive: true,
+    });
+    // pbjt round(9.091 * 30.000 / 100.000) = 2.727; net 27.273;
+    // gross floor(50.000 * 110.909 / 120.000) = 46.212; discount 18.939.
+    expect(
+      recoveryRefundSplit({
+        order,
+        lineTotalIdr: 50_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+        promo: {
+          refundedSubtotalIdr: 50_000,
+          goodsDueIdr: 30_000,
+          remainingPaidIdr: 100_000,
+        },
+      }),
+    ).toEqual({
+      wantedIdr: 30_000,
+      amountIdr: 30_000,
+      shortfallIdr: 0,
+      grossSalesIdr: 46_212,
+      discountIdr: 18_939,
+      serviceChargeIdr: 0,
+      pbjtIdr: 2_727,
+    });
   });
 });

@@ -862,6 +862,53 @@ export async function recordPartialRefundPayout(
   return { recordedIdr };
 }
 
+/**
+ * Gives back a payout recorded by `recordPartialRefundPayout` whose refund
+ * never paid out (legend-h1dyy: a rejected ORD-09 recovery refund). Same lock
+ * order: per-order advisory lock, then the application row.
+ * `refunded_paid_idr` drops by `payoutIdr`, never below zero. No application,
+ * or a released one (the release already gave the promotion back): Rp0.
+ */
+export async function reversePartialRefundPayout(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { orderId: string; payoutIdr: number; at: Date },
+): Promise<{ reversedIdr: number }> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const orderId = orderIdSchema.parse(input.orderId);
+  if (!Number.isSafeInteger(input.payoutIdr) || input.payoutIdr < 0)
+    throw new HttpError(422, "VALIDATION_ERROR", "Jumlah refund tidak valid.");
+  await lockOrder(tx, tenantId, orderId);
+  const [application] = await tx
+    .select()
+    .from(promotionOrderApplications)
+    .where(
+      and(
+        eq(promotionOrderApplications.tenantId, tenantId),
+        eq(promotionOrderApplications.orderId, orderId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!application || application.status === "released")
+    return { reversedIdr: 0 };
+  const reversedIdr = Math.min(input.payoutIdr, application.refundedPaidIdr);
+  if (reversedIdr > 0)
+    await tx
+      .update(promotionOrderApplications)
+      .set({
+        refundedPaidIdr: idr(application.refundedPaidIdr - reversedIdr),
+      })
+      .where(
+        and(
+          eq(promotionOrderApplications.tenantId, tenantId),
+          eq(promotionOrderApplications.orderId, orderId),
+        ),
+      );
+  return { reversedIdr };
+}
+
 /** Default port: the real recompute (the refund module injects it). */
 export const promoPartialRefundPort: PromoPartialRefundPort = {
   recomputeAfterPartialRefund,
