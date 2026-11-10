@@ -714,34 +714,77 @@ async function restoreRejectedRefund(
   const issueId = input.orderIssueId;
   const rejectId = `reject:${issueId}`;
   if (record.appliedReversalIds.includes(rejectId)) return;
-  // The refund was never applied to this record: nothing to give back.
-  if (!record.appliedReversalIds.includes(issueId)) return;
+  // The rejection came before its `order.refunded`: mark both ids so the late
+  // refund is a no-op (reverseForOrder's replay guard), nothing to give back.
+  if (!record.appliedReversalIds.includes(issueId)) {
+    await settleRecord(tx, scope, record, {
+      appliedReversalIds: [...record.appliedReversalIds, issueId, rejectId],
+    });
+    return;
+  }
+  const appliedReversalIds = [...record.appliedReversalIds, rejectId];
 
-  // The eligible spend the refund applied, from its stored `order.refunded`.
-  const [stored] = await tx
-    .select({ payload: sql<unknown>`${domainEventOutbox.event}->'payload'` })
+  // The stored refunds and voids of this order, to replay what each applied.
+  const storedEvents = await tx
+    .select({
+      name: sql<string>`${domainEventOutbox.event}->>'name'`,
+      payload: sql<unknown>`${domainEventOutbox.event}->'payload'`,
+    })
     .from(domainEventOutbox)
     .where(
       and(
         eq(domainEventOutbox.tenantId, tenantId as never),
         eq(domainEventOutbox.aggregateType, "order"),
-        sql`${domainEventOutbox.event}->>'name' = 'order.refunded'`,
+        sql`${domainEventOutbox.event}->>'name' IN ('order.refunded', 'order.voided')`,
         sql`${domainEventOutbox.event}->'payload'->>'orderId' = ${input.orderId}`,
-        sql`${domainEventOutbox.event}->'payload'->>'refundId' = ${issueId}`,
       ),
-    )
-    .limit(1);
-  const refunded = orderRefundedSchema.safeParse(stored?.payload);
-  const refundEligible = refunded.success
-    ? Math.max(
-        0,
-        refunded.data.grossSalesIdr -
-          refunded.data.discountIdr -
-          refunded.data.refundPointsIdr,
-      )
-    : 0;
+    );
+  const refundEligibleById = new Map<string, number>();
+  const voidIds = new Set<string>();
+  for (const row of storedEvents) {
+    if (row.name === "order.refunded") {
+      const parsed = orderRefundedSchema.safeParse(row.payload);
+      if (parsed.success)
+        refundEligibleById.set(
+          parsed.data.refundId,
+          Math.max(
+            0,
+            parsed.data.grossSalesIdr -
+              parsed.data.discountIdr -
+              parsed.data.refundPointsIdr,
+          ),
+        );
+    } else {
+      const parsed = orderVoidedSchema.safeParse(row.payload);
+      if (parsed.success && parsed.data.voidId !== null)
+        voidIds.add(parsed.data.voidId);
+    }
+  }
+  // A void of the order reversed everything: the rejection of one refund gives
+  // nothing back (points, spend, visit); it is only marked as handled.
+  if (record.appliedReversalIds.some((sourceId) => voidIds.has(sourceId))) {
+    await settleRecord(tx, scope, record, { appliedReversalIds });
+    return;
+  }
+
+  // Replay the applied refunds in order with reverseForOrder's cumulative
+  // clamp (min(eligible, previous + refund)); an earlier rejection takes its
+  // applied amount back out. A refund with no stored event counts 0.
+  const eligible = Number(record.eligibleSpendIdr);
+  const appliedById = new Map<string, number>();
+  let cumulative = 0;
+  for (const sourceId of record.appliedReversalIds) {
+    if (sourceId.startsWith("reject:")) {
+      cumulative -= appliedById.get(sourceId.slice("reject:".length)) ?? 0;
+      continue;
+    }
+    const asked = refundEligibleById.get(sourceId) ?? 0;
+    const next = Math.min(eligible, cumulative + asked);
+    appliedById.set(sourceId, next - cumulative);
+    cumulative = next;
+  }
   const previousRefunded = Number(record.refundedEligibleIdr);
-  const restored = Math.min(refundEligible, previousRefunded);
+  const restored = Math.min(appliedById.get(issueId) ?? 0, previousRefunded);
 
   // The points the refund reversed (none when it was clamped to 0).
   const [reversal] = await tx
@@ -796,7 +839,6 @@ async function restoreRejectedRefund(
     );
   }
 
-  const eligible = Number(record.eligibleSpendIdr);
   const booked = Number(record.bookedPoints);
   const refundedAfter = previousRefunded - restored;
   const reversed = record.reversedPoints - credited;
@@ -812,7 +854,6 @@ async function restoreRejectedRefund(
               BigInt(eligible),
           ),
         );
-  const appliedReversalIds = [...record.appliedReversalIds, rejectId];
   await settleRecord(
     tx,
     scope,

@@ -26,6 +26,7 @@ import {
   ledgerOf,
   orderPaidEvent,
   orderRefundedEvent,
+  orderVoidedEvent,
   owner,
   profileOf,
   recordOf,
@@ -43,12 +44,16 @@ afterAll(async () => {
 const REVERSAL = "order_issue.refund_reversal_requested";
 
 /** 1 point per 1.000: a 100.000 QR order books 100 points. */
-async function paidQrOrder(world: World, memberId: string) {
+async function paidQrOrder(
+  world: World,
+  memberId: string,
+  grossSalesIdr = 100_000,
+) {
   const orderUlid = await seedOrder(world.tenantId, {
     outletId: world.outletA,
     channel: "qr",
     profileId: memberId,
-    grossSalesIdr: 100_000,
+    grossSalesIdr,
   });
   await deliver(
     world,
@@ -56,18 +61,22 @@ async function paidQrOrder(world: World, memberId: string) {
       orderUlid,
       outletId: world.outletA,
       channel: "qr",
-      grossSalesIdr: 100_000,
+      grossSalesIdr,
     }),
   );
   return orderUlid;
 }
 
-/** Stores `order.refunded` in the outbox like the recovery refund does. */
+/** Next outbox sequence per order: the helper envelopes all use 1. */
+let storedSequence = 0;
+
+/** Stores an order event in the outbox like the recovery refund does. */
 async function storeEvent(world: World, event: EventEnvelope): Promise<void> {
+  storedSequence += 1;
   await withTenant(db, world.context, (tx) =>
     appendOutbox(tx, world.context, {
       id: createUlid(),
-      event,
+      event: { ...event, sequence: storedSequence },
       destination: "cloud-sync",
       direction: null,
       peerId: null,
@@ -172,20 +181,32 @@ describe("ORD-09 rejected recovery refund gives the loyalty points back", () => 
     ).toBe(100_000);
   });
 
-  it("ORD-09 a rejection of a refund loyalty never applied changes nothing", async () => {
+  it("ORD-09 a rejection that arrives before its order.refunded changes nothing, and the late refund is a no-op", async () => {
     const world = await createWorld();
     await seedProgram(world.tenantId, { earnSpendIdr: 1_000 });
     const member = await seedMember(world.tenantId);
     const orderUlid = await paidQrOrder(world, member.id);
 
+    const issueId = randomUUID();
     await deliver(
       world,
-      reversalEvent(world, {
-        orderUlid,
-        issueId: randomUUID(),
-        amountIdr: 50_000,
-      }),
+      reversalEvent(world, { orderUlid, issueId, amountIdr: 50_000 }),
     );
+    // The order.refunded of the same issue is delivered late: the refund was
+    // already rejected, loyalty must not take the points.
+    const late = orderRefundedEvent(world, {
+      orderUlid,
+      outletId: world.outletA,
+      refundId: issueId,
+      grossSalesIdr: 50_000,
+    });
+    await storeEvent(world, late);
+    await deliver(world, late);
+    expect(
+      (await ledgerOf(world.tenantId, member.id)).filter(
+        (row) => row.type === "reverse",
+      ),
+    ).toHaveLength(0);
     expect(await balanceOf(world.tenantId, member.id)).toBe(100);
     expect(
       (await ledgerOf(world.tenantId, member.id)).filter(
@@ -269,5 +290,96 @@ describe("ORD-09 rejected recovery refund gives the loyalty points back", () => 
     expect(await balanceOf(world.tenantId, member.id)).toBe(100);
     expect(await visitCount(world.tenantId, member.id)).toBe(1);
     expect((await profileOf(world.tenantId, member.id)).visits_count).toBe(1);
+  });
+
+  it("ORD-09 a clamped refund is restored by what it applied: eligible 80.000, A 50.000, B clamped to 30.000, rejecting B leaves 50.000", async () => {
+    const world = await createWorld();
+    await seedProgram(world.tenantId, { earnSpendIdr: 1_000 });
+    const member = await seedMember(world.tenantId);
+    const orderUlid = await paidQrOrder(world, member.id, 80_000);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(80);
+
+    const refundA = orderRefundedEvent(world, {
+      orderUlid,
+      outletId: world.outletA,
+      refundId: randomUUID(),
+      grossSalesIdr: 50_000,
+    });
+    const issueB = randomUUID();
+    const refundB = orderRefundedEvent(world, {
+      orderUlid,
+      outletId: world.outletA,
+      refundId: issueB,
+      grossSalesIdr: 40_000,
+    });
+    for (const event of [refundA, refundB]) {
+      await storeEvent(world, event);
+      await deliver(world, event);
+    }
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    expect(await recordOf(world.tenantId, orderUlid)).toMatchObject({
+      refunded_eligible_idr: "80000",
+      reversed_points: "80",
+    });
+
+    await deliver(
+      world,
+      reversalEvent(world, { orderUlid, issueId: issueB, amountIdr: 40_000 }),
+    );
+    expect(await recordOf(world.tenantId, orderUlid)).toMatchObject({
+      state: "booked",
+      refunded_eligible_idr: "50000",
+      reversed_points: "50",
+      reversal_shortfall_points: "0",
+    });
+    expect(await balanceOf(world.tenantId, member.id)).toBe(30);
+    const profile = await profileOf(world.tenantId, member.id);
+    expect(Number(profile.lifetime_spend_idr)).toBe(30_000);
+    expect(profile.visits_count).toBe(1);
+  });
+
+  it("ORD-09 after a void of the order, a rejected refund restores nothing", async () => {
+    const world = await createWorld();
+    await seedProgram(world.tenantId, { earnSpendIdr: 1_000 });
+    const member = await seedMember(world.tenantId);
+    const orderUlid = await paidQrOrder(world, member.id);
+
+    const issueId = randomUUID();
+    const refunded = orderRefundedEvent(world, {
+      orderUlid,
+      outletId: world.outletA,
+      refundId: issueId,
+      grossSalesIdr: 50_000,
+    });
+    await storeEvent(world, refunded);
+    await deliver(world, refunded);
+    const voided = orderVoidedEvent(world, {
+      orderUlid,
+      outletId: world.outletA,
+      voidId: randomUUID(),
+      voidedFinalOrder: true,
+    });
+    await storeEvent(world, voided);
+    await deliver(world, voided);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+
+    await deliver(
+      world,
+      reversalEvent(world, { orderUlid, issueId, amountIdr: 50_000 }),
+    );
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    expect(
+      (await ledgerOf(world.tenantId, member.id)).filter(
+        (row) => row.type === "adjust",
+      ),
+    ).toHaveLength(0);
+    expect(await recordOf(world.tenantId, orderUlid)).toMatchObject({
+      state: "reversed",
+      refunded_eligible_idr: "100000",
+      reversed_points: "100",
+    });
+    const profile = await profileOf(world.tenantId, member.id);
+    expect(Number(profile.lifetime_spend_idr)).toBe(0);
+    expect(profile.visits_count).toBe(0);
   });
 });
