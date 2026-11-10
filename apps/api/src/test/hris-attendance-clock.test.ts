@@ -876,8 +876,8 @@ describe("T3 QR v2 in EDGE_MODE (card C4, legend-cku1m)", () => {
   });
 
   it("an edge never validates a QR clock-in itself (fails closed)", async () => {
-    // Design §3.2/T4: the edge rejects rotating_qr before this point; if a call
-    // gets here anyway, a token that is valid on the cloud must not count.
+    // Design §3.2/T4: the edge answers 400 to every method but outlet_device,
+    // with or without a device token, so a cloud-valid QR never counts.
     const staff = await newStaff(qrEdgeOutlet);
     const shown = await mgr.get(
       `/api/hris/attendance/qr?outletId=${qrEdgeOutlet}`,
@@ -891,8 +891,8 @@ describe("T3 QR v2 in EDGE_MODE (card C4, legend-cku1m)", () => {
         location: null,
         qrToken: shown.body.data.token,
       });
-      expect(response.status, JSON.stringify(response.body)).toBe(422);
-      expect(JSON.stringify(response.body)).toContain("qr_token_invalid");
+      expect(response.status, JSON.stringify(response.body)).toBe(400);
+      expect(response.body.error.code).toBe("ATTENDANCE_METHOD_NOT_ON_EDGE");
     } finally {
       if (previous === undefined) delete process.env.EDGE_MODE;
       else process.env.EDGE_MODE = previous;
@@ -1052,10 +1052,11 @@ describe("manual correction method", () => {
 });
 
 describe("outlet_device method (legend-hwn02)", () => {
-  it("[F25] the clock endpoint refuses method outlet_device 422 until the edge path exists and stores no log", async () => {
+  it("[F25] the clock endpoint refuses method outlet_device 400 ATTENDANCE_METHOD_USE_OUTLET_CLOCK and stores no log", async () => {
     const staff = await newStaff(ownOutlet, "Staf Layar Outlet Palsu");
     const response = await clock(staff.client, { method: "outlet_device" });
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.status, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error.code).toBe("ATTENDANCE_METHOD_USE_OUTLET_CLOCK");
     expect(await storedLogs(staff.employeeId)).toHaveLength(0);
   });
 });

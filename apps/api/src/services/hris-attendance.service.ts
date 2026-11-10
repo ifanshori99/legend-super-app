@@ -48,6 +48,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import type { DeviceTokenPayload } from "@starter/shared/platform";
 import {
   ATTENDANCE_QR_ROTATION_SECONDS,
   addBusinessDays,
@@ -59,6 +60,7 @@ import {
   attendanceQrRotationSchema,
   attendanceQrTokenSchema,
   attendanceSamplingConfigSchema,
+  OUTLET_CLOCK_ERROR_CODES,
   evaluateAttendanceSubmission,
   type AttendanceDevice,
   type AttendanceFlagReason,
@@ -77,6 +79,7 @@ import {
   type getAttendanceQr as getAttendanceQrEndpoint,
   type listAttendanceDevices as listAttendanceDevicesEndpoint,
   type listAttendanceLogs as listAttendanceLogsEndpoint,
+  type outletClockAttendance as outletClockAttendanceEndpoint,
   type revokeAttendanceDevice as revokeAttendanceDeviceEndpoint,
   type rotateAttendanceQrSecret as rotateAttendanceQrSecretEndpoint,
 } from "@starter/shared/hris";
@@ -90,9 +93,12 @@ import {
   attendancePolicies,
   attendanceQrSecrets,
 } from "../db/schema/hris-attendance.ts";
+import type { DeviceType } from "../db/schema/device.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { EDGE_SELFIE_ERROR_CODES } from "@starter/shared/edge";
 import { env } from "../config/env.ts";
+import { loadEdgePeopleSyncState } from "../edge/people-snapshot-apply.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { EDGE_SEALED_KEY_PREFIX } from "../edge/selfie-paths.ts";
 import { enqueueEdgeSelfieUpload } from "../edge/selfie-queue.ts";
@@ -100,6 +106,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { linkStorageObjectSource } from "./core-storage.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { findActiveDeviceForToken } from "./device-registry-check.ts";
 import { linkEdgeSelfie } from "./edge-selfie-link.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
@@ -132,6 +139,8 @@ import {
   loadOutletTimeZone,
   loadWeekAssignments,
 } from "./hris-scheduling-common.ts";
+import { assertAttendanceClockAllowed } from "./hris-attendance-eligibility.ts";
+import { consumePinProof, findPinProof } from "./staff-pin-proof.service.ts";
 
 export const HRIS_ATTENDANCE_MANAGE_CODE = "hr.attendance.manage";
 export const HRIS_ATTENDANCE_CLOCK_CODE = "self.attendance.clock";
@@ -156,6 +165,7 @@ const UUID_PATTERN =
 type LogRow = typeof attendanceLogs.$inferSelect;
 type DeviceRow = typeof attendanceDevices.$inferSelect;
 type ClockBody = z.output<typeof clockAttendanceEndpoint.body>;
+type OutletClockBody = z.output<typeof outletClockAttendanceEndpoint.body>;
 type ListLogsQuery = z.output<typeof listAttendanceLogsEndpoint.query>;
 type GetQrQuery = z.output<typeof getAttendanceQrEndpoint.query>;
 type RotateQrBody = z.output<typeof rotateAttendanceQrSecretEndpoint.body>;
@@ -286,6 +296,8 @@ export async function resolveEmployeeShift(
   employeeId: string,
   at: Date,
   timeZone: string,
+  /** Only shifts of this outlet (edge clock: the shifts of its own outlet). */
+  outletId?: string,
 ): Promise<ShiftAssignment | null> {
   const date = localDateOf(at, timeZone);
   const assignments = await loadWeekAssignments(
@@ -301,6 +313,8 @@ export async function resolveEmployeeShift(
   for (const shift of assignments) {
     if (shift.status !== "published" && shift.status !== "swapped") continue;
     if (shift.segments.length === 0) continue;
+    if (outletId !== undefined && lower(shift.outletId) !== lower(outletId))
+      continue;
     const { start, end } = shiftEdges(shift);
     const distance = time < start ? start - time : time > end ? time - end : 0;
     if (distance > SHIFT_MATCH_MARGIN_MS) continue;
@@ -437,6 +451,13 @@ export type RecordAttendanceInput = {
    * stored unioned with the cloud's own reasons.
    */
   edgeFlagReasons?: readonly AttendanceStoredFlagReason[];
+  /**
+   * An outlet device clock made on this edge process (method `outlet_device`,
+   * not a replay): the registered device and whether the roster copy is stale.
+   * The edge could not verify location, device binding or QR, so the log is
+   * always flagged for supervisor review (founder Q87).
+   */
+  edge?: { deviceId: string; rosterStale: boolean };
 };
 
 /**
@@ -504,6 +525,7 @@ async function appendAttendanceLogged(
   scope: AttendanceScope,
   row: LogRow,
   now: Date,
+  edgeDeviceId: string | null = null,
 ): Promise<void> {
   // Minted here from ids this service verified itself: callers (clock, edge
   // replay, correction consumer) hand over plain ids.
@@ -517,6 +539,7 @@ async function appendAttendanceLogged(
       typeof establishScopedTenantContext
     >[1],
   );
+  const edgeMode = isEdgeMode();
   for (const destination of ATTENDANCE_EVENT_DESTINATIONS) {
     const event = attendanceLogged.envelopeSchema.parse({
       id: createUlid(now.getTime()),
@@ -541,6 +564,16 @@ async function appendAttendanceLogged(
         occurredAt: row.occurredAt.toISOString(),
         validity: row.validity,
         shiftAssignmentId: row.shiftAssignmentId,
+        // v2 (design 6.2): every log an edge process records carries the
+        // sealed selfie, the reasons it attached and the outlet device. The
+        // cloud keeps the v1 shape.
+        ...(edgeMode
+          ? {
+              selfieObjectId: row.photoKey,
+              edgeFlagReasons: storedReasons(row),
+              edgeDeviceId,
+            }
+          : {}),
       },
     });
     await appendOutbox(tx, context, {
@@ -665,6 +698,12 @@ async function storeAttendanceLog(
       if (inactive) reasons.push("employee_inactive");
     }
     decision = { validity: "flagged", reasons };
+  } else if (input.method === "outlet_device" && input.edge !== undefined) {
+    // Edge outlet screen: no geofence, device binding or QR check is possible
+    // or wanted (design 3.4). Always flagged for supervisor review (Q87).
+    const reasons: AttendanceStoredFlagReason[] = ["offline_unverified"];
+    if (input.edge.rosterStale) reasons.push("edge_roster_stale");
+    decision = { validity: "flagged", reasons };
   } else {
     if (input.method === "selfie_geo" && input.location !== null) {
       const distance = geofenceDistance(input.location, outlet.geofence);
@@ -727,6 +766,7 @@ async function storeAttendanceLog(
     input.employeeId,
     effectiveAt,
     outlet.timezone,
+    input.edge === undefined ? undefined : outletId,
   );
   const counted =
     shift !== null &&
@@ -787,7 +827,13 @@ async function storeAttendanceLog(
     return { row: winner, created: false };
   }
   if (inserted.validity !== "rejected")
-    await appendAttendanceLogged(tx, scope, inserted, input.receivedAt);
+    await appendAttendanceLogged(
+      tx,
+      scope,
+      inserted,
+      input.receivedAt,
+      input.edge?.deviceId ?? null,
+    );
   return { row: inserted, created: true };
 }
 
@@ -848,6 +894,46 @@ async function assertSelfieUsable(
 }
 
 /**
+ * Links the selfie to the log the call just created (a twin request that lost
+ * the insert race links nothing) and, for an edge-sealed selfie that lives on
+ * the edge disk, queues it for the cloud in the same transaction as the log.
+ */
+async function linkClockSelfie(
+  tx: Tx,
+  tenantId: TenantId,
+  row: LogRow,
+  actorUserId: string,
+): Promise<void> {
+  if (row.photoKey === null) return;
+  await linkStorageObjectSource(tx, {
+    tenantId,
+    objectId: row.photoKey,
+    sourceKind: "attendance",
+    sourceId: ulidToUuid(row.id),
+    actorUserId,
+    outletId: row.outletId,
+  });
+  const [stored] = await tx
+    .select({ objectKey: coreStorageObjects.objectKey })
+    .from(coreStorageObjects)
+    .where(
+      and(
+        eq(coreStorageObjects.tenantId, tenantId),
+        eq(coreStorageObjects.id, row.photoKey),
+      ),
+    )
+    .limit(1);
+  if (stored?.objectKey.startsWith(EDGE_SEALED_KEY_PREFIX))
+    await enqueueEdgeSelfieUpload(tx, {
+      tenantId,
+      outletId: row.outletId,
+      attendanceLogId: ulidToUuid(row.id),
+      objectKey: stored.objectKey,
+      dir: env.EDGE_SELFIE_DIR,
+    });
+}
+
+/**
  * POST /api/hris/attendance/clock — the employee clocks themself. The log
  * outlet is the outlet of the shift they work now, else their home outlet.
  * Replaying the same idempotency key returns the stored log.
@@ -861,12 +947,23 @@ export async function clockAttendance(
 ): Promise<ClockResult> {
   if (body.method === "manual_correction")
     throw validation("Metode koreksi manual tidak bisa dipakai untuk absen.");
-  // outlet_device is made only by the outlet attendance screen on an edge
-  // (design 2, 3.4). Its checks (device token, PIN session) are legend-j6cyb;
-  // until they exist nobody may claim the method, or a phone could skip the
-  // geofence, device and QR checks.
+  // The outlet attendance screen clocks only through the PIN-proof route
+  // (outletClockAttendance): this route has a session, not a verified PIN, so
+  // the method is refused here on the cloud and on the edge alike.
   if (body.method === "outlet_device")
-    throw validation("Metode layar outlet belum tersedia untuk absen.");
+    throw new HttpError(
+      400,
+      OUTLET_CLOCK_ERROR_CODES.ATTENDANCE_METHOD_USE_OUTLET_CLOCK,
+      "Absen di layar outlet memakai PIN lewat rute absen outlet.",
+    );
+  // The edge cannot check a geofence, a device binding or a rotating QR
+  // (design 3.4 step 5): in edge mode every method is 400.
+  if (isEdgeMode())
+    throw new HttpError(
+      400,
+      EDGE_SELFIE_ERROR_CODES.ATTENDANCE_METHOD_NOT_ON_EDGE,
+      "Metode ini hanya bisa dipakai lewat server cloud.",
+    );
   // Phase 1: who is clocking and where. The outlet is not known until the
   // shift is, and the write below needs a context scoped to it.
   const target = await withTenant(db, context, async (tx) => {
@@ -957,38 +1054,228 @@ export async function clockAttendance(
       created &&
       row.photoKey !== null &&
       row.photoKey === body.photoUploadRef
-    ) {
-      await linkStorageObjectSource(tx, {
-        tenantId,
-        objectId: row.photoKey,
-        sourceKind: "attendance",
-        sourceId: ulidToUuid(row.id),
-        actorUserId,
-        outletId: row.outletId,
-      });
-      // An edge-sealed selfie lives on the edge disk: queue it for the cloud
-      // in the same transaction as the log.
-      const [stored] = await tx
-        .select({ objectKey: coreStorageObjects.objectKey })
-        .from(coreStorageObjects)
-        .where(
-          and(
-            eq(coreStorageObjects.tenantId, tenantId),
-            eq(coreStorageObjects.id, row.photoKey),
-          ),
-        )
-        .limit(1);
-      if (stored?.objectKey.startsWith(EDGE_SEALED_KEY_PREFIX))
-        await enqueueEdgeSelfieUpload(tx, {
-          tenantId,
-          outletId: row.outletId,
-          attendanceLogId: ulidToUuid(row.id),
-          objectKey: stored.objectKey,
-          dir: env.EDGE_SELFIE_DIR,
-        });
-    }
+    )
+      await linkClockSelfie(tx, tenantId, row, actorUserId);
     return { log: await present(row), flagReasons: storedReasons(row) };
   });
+}
+
+export type OutletClockResult = ClockResult & {
+  /** True when the idempotency key replayed the proof holder's own log. */
+  replayed: boolean;
+};
+
+/**
+ * POST /api/hris/attendance/outlet-clock — the outlet attendance screen clocks
+ * the staff member who just proved their PIN (legend-u7g9w). No session: the
+ * registered device comes from X-Device-Token and the employee from the
+ * X-Pin-Proof proof, never from the body. Everything runs in one transaction
+ * scoped to the device outlet, so a refusal after the proof is consumed
+ * (missing or foreign selfie) rolls the consumption back.
+ */
+export async function outletClockAttendance(
+  context: ScopedTenantContext,
+  deviceToken: DeviceTokenPayload | null,
+  proofToken: string,
+  body: OutletClockBody,
+  now = new Date(),
+  signer: HrisFileSigner = noHrisFileSigner,
+): Promise<OutletClockResult> {
+  // Only an edge process serves the outlet screen: on the cloud nobody may
+  // claim the method, or a phone could skip the geofence, device and QR checks.
+  if (!isEdgeMode())
+    throw new HttpError(
+      400,
+      "VALIDATION_ERROR",
+      "Absen layar outlet belum tersedia.",
+    );
+  const proofInvalid = () =>
+    new HttpError(401, "PIN_PROOF_INVALID", "Bukti PIN tidak valid.");
+  if (proofToken === "") throw proofInvalid();
+  const device = await resolveEdgeClockDevice(context, deviceToken, now);
+  const scoped = outletScoped(context, device.outletId);
+  const tenantId = scoped.tenant.tenantId;
+  return withTenant(db, scoped, async (tx) => {
+    const lookup = { tenantId, deviceId: device.deviceId, token: proofToken };
+    const proof = await findPinProof(tx, lookup);
+    if (proof === null) throw proofInvalid();
+    const actorUserId = proof.userId;
+    const { employeeId } = await assertAttendanceClockAllowed(
+      tx,
+      scoped,
+      actorUserId,
+      device.outletId,
+      now,
+    );
+    const present = (row: LogRow) =>
+      presentLog(tx, scoped, actorUserId, true, true, row, signer, now);
+    // A retry after a network failure: the proof holder gets their own log
+    // back without consuming anything. A key that belongs to another staff
+    // member, type, method or outlet never opens that log.
+    const replayOf = (replayed: LogRow) => {
+      if (
+        lower(replayed.employeeId) !== lower(employeeId) ||
+        replayed.type !== body.type ||
+        replayed.method !== "outlet_device" ||
+        lower(replayed.outletId) !== lower(device.outletId)
+      )
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Idempotency key already used for a different request.",
+        );
+      return present(replayed).then((log) => ({
+        log,
+        flagReasons: storedReasons(replayed),
+        replayed: true as const,
+      }));
+    };
+    const replayed = await findLogByClientEvent(
+      tx,
+      tenantId,
+      body.idempotencyKey,
+    );
+    if (replayed) return replayOf(replayed);
+    const consumed = await consumePinProof(tx, { ...lookup, now });
+    if (consumed === null) {
+      // A twin request may have committed between our first read and the
+      // consume (READ COMMITTED): its log is now visible, so answer as a replay.
+      const twin = await findLogByClientEvent(
+        tx,
+        tenantId,
+        body.idempotencyKey,
+      );
+      if (twin) return replayOf(twin);
+      // Read again: the proof may have been used by a request that raced us.
+      const latest = await findPinProof(tx, lookup);
+      if (latest !== null && latest.consumedAt !== null)
+        throw new HttpError(409, "PIN_PROOF_USED", "Bukti PIN sudah dipakai.");
+      throw proofInvalid();
+    }
+    if (body.photoUploadRef === null) {
+      const { policy } = await loadAttendancePolicy(
+        tx,
+        tenantId,
+        device.outletId,
+      );
+      if (policy.requireSelfie) throw new EdgeSelfieMissingError();
+    } else {
+      // The selfie must come from this very proof, so another person's
+      // selfie cannot be attached to this clock.
+      if (UUID_PATTERN.test(body.photoUploadRef)) {
+        const [object] = await tx
+          .select({ pinProofId: coreStorageObjects.pinProofId })
+          .from(coreStorageObjects)
+          .where(
+            and(
+              eq(coreStorageObjects.tenantId, tenantId),
+              eq(coreStorageObjects.id, body.photoUploadRef),
+            ),
+          )
+          .limit(1);
+        if (object && object.pinProofId !== consumed.id)
+          throw new HttpError(
+            400,
+            OUTLET_CLOCK_ERROR_CODES.SELFIE_NOT_FROM_PROOF,
+            "Selfie bukan dari verifikasi PIN ini. Ambil selfie lagi.",
+          );
+      }
+      await assertSelfieUsable(
+        tx,
+        tenantId,
+        device.outletId,
+        actorUserId,
+        body.photoUploadRef,
+        now,
+      );
+    }
+    const { row, created } = await storeAttendanceLog(
+      tx,
+      { tenantId, outletId: device.outletId },
+      {
+        employeeId,
+        type: body.type,
+        method: "outlet_device",
+        occurredAt: new Date(body.occurredAt),
+        receivedAt: now,
+        location: null,
+        deviceIdHash: null,
+        photoKey: body.photoUploadRef,
+        qrToken: null,
+        clientEventId: body.idempotencyKey,
+        offline: false,
+        edge: { deviceId: device.deviceId, rosterStale: device.rosterStale },
+      },
+    );
+    if (
+      created &&
+      row.photoKey !== null &&
+      row.photoKey === body.photoUploadRef
+    )
+      await linkClockSelfie(tx, tenantId, row, actorUserId);
+    return {
+      log: await present(row),
+      flagReasons: storedReasons(row),
+      replayed: false,
+    };
+  });
+}
+
+/** Device types that may clock on the edge (the outlet attendance screen). */
+const EDGE_CLOCK_DEVICE_TYPES: readonly DeviceType[] = ["pos", "display"];
+
+/**
+ * The edge refused an outlet_device clock because the policy needs a selfie
+ * and none came. The route answers it with the cloud rejection body.
+ */
+export class EdgeSelfieMissingError extends Error {
+  constructor() {
+    super("Absensi ditolak: selfie_missing. Ambil selfie lalu kirim ulang.");
+    this.name = "EdgeSelfieMissingError";
+  }
+}
+
+/** The roster copy counts as stale after this long without a cloud check. */
+const EDGE_ROSTER_STALE_MS = 24 * 60 * 60_000;
+
+/**
+ * Edge outlet screen (EDG-03): the request must carry a signed device token
+ * whose device is active in the local registry replica, at the outlet this
+ * node serves (the node's own outlet when it runs a link; otherwise an outlet
+ * the node holds a people snapshot for). Every failure is the same 403.
+ */
+async function resolveEdgeClockDevice(
+  context: ScopedTenantContext,
+  token: DeviceTokenPayload | null,
+  now: Date,
+): Promise<{ deviceId: string; outletId: string; rosterStale: boolean }> {
+  const tenantId = context.tenant.tenantId;
+  if (token === null || lower(token.tenantId) !== lower(tenantId))
+    throw forbidden();
+  const nodeOutletId = getEdgeRuntimeState().identity?.scope.outletId;
+  const device = await findActiveDeviceForToken(
+    token,
+    nodeOutletId === undefined ? {} : { outletId: nodeOutletId },
+  );
+  if (device === null) throw forbidden();
+  // Only the outlet attendance screen (a pos or display device) may clock,
+  // and never one in training mode.
+  if (!EDGE_CLOCK_DEVICE_TYPES.includes(device.type) || device.trainingMode)
+    throw forbidden();
+  const state = await loadEdgePeopleSyncState({
+    claims: { tenantId, outletId: device.outletId } as Parameters<
+      typeof loadEdgePeopleSyncState
+    >[0]["claims"],
+  });
+  // No roster copy for the device's outlet: this node does not serve it.
+  if (state === null) throw forbidden();
+  const checkedAt = state.lastCheckedAt;
+  return {
+    deviceId: device.id,
+    outletId: device.outletId,
+    rosterStale:
+      checkedAt === null ||
+      now.getTime() - checkedAt.getTime() > EDGE_ROSTER_STALE_MS,
+  };
 }
 
 function storedReasons(row: LogRow): AttendanceStoredFlagReason[] {

@@ -79,6 +79,11 @@ export const POS_OVERRIDE_APPROVE_PERMISSION = {
 export const verifyStaffPinForUserSchema = clientInputSchema({
   userId: userIdSchema,
   pin: staffPinInputSchema,
+  /**
+   * Optional (bead legend-u7g9w): `attendance_clock` asks for a single-use PIN
+   * proof for the outlet clock route. Without it the answer is unchanged.
+   */
+  purpose: z.literal("attendance_clock").optional(),
 });
 export type VerifyStaffPinForUserInput = z.infer<
   typeof verifyStaffPinForUserSchema

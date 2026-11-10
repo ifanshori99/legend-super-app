@@ -261,6 +261,10 @@ export function createApp({
         "X-Request-Id",
         // Active cashier token of a shared POS device (middleware/acting-staff).
         "X-Acting-Staff",
+        // The outlet screen sends no cookie: the registered device and the
+        // one-time staff PIN proof travel in headers (legend-u7g9w).
+        "X-Device-Token",
+        "X-Pin-Proof",
       ],
       exposedHeaders: ["X-Request-Id", "Location"],
       maxAge: 600,
