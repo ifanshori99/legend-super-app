@@ -1338,6 +1338,13 @@
       "when": 1794283000000,
       "tag": "0204_hris_scheduling",
       "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
+      "when": 1794284000000,
+      "tag": "0205_purchase_return_posting",
+      "breakpoints": true
     }
   ]
 }

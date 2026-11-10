@@ -956,3 +956,36 @@ Reviewed with an architect consult before implementation.
    table (30 s, 2 min, 10 min, 1 h; tenant policy may change it) only the
    last retry falls outside the window. A duplicate notification email is accepted as the lesser failure
    compared with a lost one.
+
+## WS-07: purchase return and petty purchase journals (legend-1xbs, legend-v3lh)
+
+Decided 10 Nov 2026 (architect, tier K money). Design brief: `docs/briefs/298a-sub-purchase-return-posting-design.md`.
+
+1. **Return payload carries the split.** `purchase_return.recorded` adds
+   `outletId`, `uninvoicedValueIdr`, `invoicedValueIdr` and `ppnIdr`;
+   `valueIdr = uninvoicedValueIdr + invoicedValueIdr`, and `ppnIdr > 0` only
+   when `invoicedValueIdr > 0`. A split (not one flag) keeps a mixed return
+   balanced. The emitter sums per-line rounded values; it never prorates the
+   total.
+2. **Return journal.** Dr `grni` for the uninvoiced part (receipt not yet
+   billed), Dr `accounts_payable` for the invoiced part plus PPN (debit note),
+   Cr `inventory` for `valueIdr`, Cr `ppn_input` for `ppnIdr`. A return with
+   `valueIdr = 0` posts nothing.
+3. **Petty purchase** is an expense, never stock (the contract says it is not
+   a stock document, so debiting `inventory` would break the GL to stock
+   ledger tie). New event `petty_purchase.recorded` (id-only payload), new role
+   `petty_purchase_expense`, default account `5104 Pembelian Langsung (Kas
+   Kecil)` (tenant can remap). Credit goes to `petty_cash` (1102), not
+   `cash_on_hand` (1101 is the POS drawer, settled at shift close). This
+   overrides the card text "kredit kas". No PPN input on petty purchases.
+4. **New journal source types** `purchase_return` and `petty_purchase`
+   (check constraint widened in migration 0205, which also backfills 5104).
+5. **Goods receipt is NOT posted here.** `goods_receipt.recorded` has a rule
+   but no consumer yet (legend-29vw). A return that debits GRNI is only
+   correct once receipts credit GRNI, so legend-29vw must ship before the
+   purchase return emitter goes live. No emitter exists today, so nothing
+   posts and no balance drifts.
+6. **Known gaps (follow-up beads):** a debit note reduces AP in the ledger but
+   creates no AP open item; invoice-vs-receipt price differences on returns;
+   receipts recorded before go-live need a finance cutover entry; no PPN input
+   on petty purchases; `supplier_invoice.recorded` still unposted.

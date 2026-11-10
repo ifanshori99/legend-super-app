@@ -163,6 +163,8 @@ export const JOURNAL_SOURCE_KEYS = {
   purchase: "accounting.source.purchase",
   supplier_invoice: "accounting.source.supplier_invoice",
   supplier_payment: "accounting.source.supplier_payment",
+  purchase_return: "accounting.source.purchase_return",
+  petty_purchase: "accounting.source.petty_purchase",
   production: "accounting.source.production",
   payroll: "accounting.source.payroll",
   loyalty: "accounting.source.loyalty",
