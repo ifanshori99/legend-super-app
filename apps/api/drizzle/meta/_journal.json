@@ -1520,6 +1520,13 @@
       "when": 1794319778545,
       "tag": "0256_share_version_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 259,
+      "version": "7",
+      "when": 1794405000000,
+      "tag": "0259_shareholder_version_approval_policy",
+      "breakpoints": true
     }
   ]
 }
