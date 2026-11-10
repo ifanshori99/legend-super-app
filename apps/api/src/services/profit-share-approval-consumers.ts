@@ -4,8 +4,8 @@
 // The approval service never writes another module's tables: it appends
 // `approval.resolved` and the source module applies the effect in its own
 // transaction. This consumer only reacts to chains profit share opened
-// (sourceModule `profit_share`; objectType distribution_run or
-// shareholder_recipient_version) and delegates to the settle functions, which
+// (sourceModule `profit_share`; objectType distribution_run,
+// shareholder_recipient_version or share_allocation_version) and delegates to the settle functions, which
 // re-read the chain outcome and the final approver from the database under the
 // row lock. The event payload is a trigger, never the authority: a forged or
 // stale "approved" event cannot approve a chain the database still has pending.
@@ -19,16 +19,23 @@ import type { ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { shareholderRecipientVersions } from "../db/schema/accounting-profit-share.ts";
+import {
+  shareAllocationVersions,
+  shareholderRecipientVersions,
+} from "../db/schema/accounting-profit-share.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   DISTRIBUTION_RUN_OBJECT_TYPE,
   PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+  SHARE_ALLOCATION_VERSION_OBJECT_TYPE,
   SHAREHOLDER_RECIPIENT_OBJECT_TYPE,
 } from "./profit-share-approval.ts";
 import { settleDistributionRunForApproval } from "./profit-share-distribution.service.ts";
-import { settleShareholderRecipientVersionForApproval } from "./profit-share-registry.service.ts";
+import {
+  settleShareAllocationVersionForApproval,
+  settleShareholderRecipientVersionForApproval,
+} from "./profit-share-registry.service.ts";
 
 /** Envelope as the worker hands it to `deliverEvent`. */
 export type DomainEvent = EventEnvelope;
@@ -41,8 +48,8 @@ function payloadField(event: DomainEvent, key: string): unknown {
 }
 
 /**
- * Settles the distribution run or recipient change that owns the resolved
- * chain. Idempotent and replay safe; ignores events that are not ours.
+ * Settles the distribution run, recipient change or share version that owns
+ * the resolved chain. Idempotent and replay safe; ignores events that are not ours.
  */
 export async function handleProfitShareApprovalResolved(
   context: ScopedTenantContext,
@@ -57,7 +64,8 @@ export async function handleProfitShareApprovalResolved(
   const objectType = payloadField(event, "objectType");
   if (
     objectType !== DISTRIBUTION_RUN_OBJECT_TYPE &&
-    objectType !== SHAREHOLDER_RECIPIENT_OBJECT_TYPE
+    objectType !== SHAREHOLDER_RECIPIENT_OBJECT_TYPE &&
+    objectType !== SHARE_ALLOCATION_VERSION_OBJECT_TYPE
   )
     return;
 
@@ -87,6 +95,51 @@ export async function handleProfitShareApprovalResolved(
         .limit(1);
       if (head)
         await settleDistributionRunForApproval(tx, context, head.objectId, now);
+      return;
+    }
+    if (objectType === SHARE_ALLOCATION_VERSION_OBJECT_TYPE) {
+      // A share version carries no chain column: the level-1 row (id = chain
+      // id) names its id.
+      const [head] = await tx
+        .select({ objectId: approvalRequests.objectId })
+        .from(approvalRequests)
+        .where(
+          and(
+            eq(approvalRequests.tenantId, tenantId),
+            eq(approvalRequests.id, chainId),
+            eq(
+              approvalRequests.sourceModule,
+              PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+            ),
+            eq(
+              approvalRequests.objectType,
+              SHARE_ALLOCATION_VERSION_OBJECT_TYPE,
+            ),
+          ),
+        )
+        .limit(1);
+      if (!head) return;
+      const [target] = await tx
+        .select({
+          profitEntityId: shareAllocationVersions.profitEntityId,
+          version: shareAllocationVersions.version,
+        })
+        .from(shareAllocationVersions)
+        .where(
+          and(
+            eq(shareAllocationVersions.tenantId, tenantId),
+            eq(shareAllocationVersions.id, head.objectId),
+          ),
+        )
+        .limit(1);
+      if (target)
+        await settleShareAllocationVersionForApproval(
+          tx,
+          context,
+          target.profitEntityId,
+          target.version,
+          now,
+        );
       return;
     }
     const [version] = await tx

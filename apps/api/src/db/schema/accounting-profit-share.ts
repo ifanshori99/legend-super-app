@@ -265,6 +265,9 @@ export const shareAllocationVersions = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id),
+    // The approval `objectId` (approval object_id is varchar(36); the
+    // composite primary key does not fit). Immutable, see the guard trigger.
+    id: uuid("id").notNull().defaultRandom(),
     profitEntityId: uuid("profit_entity_id").notNull(),
     version: integer("version").notNull(),
     effectiveFrom: businessDate("effective_from").notNull(),
@@ -295,6 +298,10 @@ export const shareAllocationVersions = pgTable(
       columns: [table.tenantId, table.profitEntityId],
       foreignColumns: [profitEntities.tenantId, profitEntities.id],
     }),
+    unique("share_allocation_versions_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
     unique("share_allocation_versions_tenant_idempotency_key").on(
       table.tenantId,
       table.idempotencyKey,

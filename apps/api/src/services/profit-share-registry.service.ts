@@ -55,6 +55,7 @@ import {
   type BusinessDate,
   type IsoDateTime,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
   userIdSchema,
 } from "@starter/shared/core";
@@ -81,9 +82,11 @@ import {
 import { claimProfitShareCommand } from "./profit-share-idempotency";
 import {
   PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+  SHARE_ALLOCATION_VERSION_OBJECT_TYPE,
   SHAREHOLDER_RECIPIENT_OBJECT_TYPE,
 } from "./profit-share-approval";
 import {
+  cancelApprovalRequest,
   openApprovalRequest,
   resolveApprovalChainOutcome,
 } from "./platform-approval.service";
@@ -1218,6 +1221,193 @@ async function applyTransition(
   return toVersion(next, allocations);
 }
 
+/** Approval request opened for a submitted share version (matrix `shareholder_version`). */
+function openShareVersionApproval(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  requestedBy: string,
+  entity: EntityRow,
+  row: VersionRow,
+) {
+  return openApprovalRequest(tx, context, {
+    sourceModule: PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+    actionType: "shareholder_version",
+    objectType: SHARE_ALLOCATION_VERSION_OBJECT_TYPE,
+    objectId: row.id,
+    amountIdr: null,
+    outletId: entity.outletId,
+    requestedBy: userIdSchema.parse(requestedBy),
+    source: "user",
+    requestReason: `Versi porsi saham ${entity.name} v${row.version}`,
+  });
+}
+
+/**
+ * The latest approval chain opened for a share version (level-1 row id), or
+ * null when the matrix needed none. No column on the version: the chain is
+ * found by (tenant, source module, object type, object id).
+ */
+async function shareVersionChainOf(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  versionId: string,
+): Promise<string | null> {
+  const [head] = await tx
+    .select({ chainId: approvalRequests.chainId })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.sourceModule, PROFIT_SHARE_APPROVAL_SOURCE_MODULE),
+        eq(approvalRequests.objectType, SHARE_ALLOCATION_VERSION_OBJECT_TYPE),
+        eq(approvalRequests.objectId, versionId),
+        eq(approvalRequests.level, 1),
+      ),
+    )
+    .orderBy(desc(approvalRequests.createdAt))
+    .limit(1);
+  return head?.chainId ?? null;
+}
+
+/**
+ * Applies the approval chain's outcome to a pending share version already
+ * loaded and locked (entity first, then the version). Idempotent: a version
+ * that is no longer pending, has no chain, or whose chain is still open is
+ * returned unchanged.
+ *
+ * - approved: the decider is the last level's `decidedBy` (never the
+ *   requester). The contract guards (sum, unique shareholders, effective date
+ *   after the latest approved version) run again; a refusal rejects the
+ *   version with a note instead of approving it.
+ * - rejected: rejected by that decider.
+ * - expired or cancelled: `cancelled` (nobody decided).
+ */
+async function settleLoadedShareVersion(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  row: VersionRow,
+  now: Date,
+): Promise<ShareAllocationVersion> {
+  const tenantId = context.tenant.tenantId;
+  const allocations = await loadAllocations(tx, tenantId, row.profitEntityId, [
+    row.version,
+  ]);
+  if (row.status !== "pending_approval") return toVersion(row, allocations);
+  const chainId = await shareVersionChainOf(tx, tenantId, row.id);
+  if (chainId === null) return toVersion(row, allocations);
+  // Locks the chain head and applies the deadline atomically, so an inbox
+  // decision in flight commits first; read the last level only afterwards.
+  const outcome = await resolveApprovalChainOutcome(tx, context, {
+    chainId,
+    sourceModule: PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+    now,
+  });
+  if (outcome === "pending") return toVersion(row, allocations);
+  const [last] = await tx
+    .select({ decidedBy: approvalRequests.decidedBy })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.chainId, chainId),
+      ),
+    )
+    .orderBy(desc(approvalRequests.level))
+    .limit(1);
+  if (!last) throw notFound("Approval chain");
+  const decider =
+    last.decidedBy !== null &&
+    last.decidedBy.toLowerCase() !== row.requestedBy.toLowerCase()
+      ? userIdSchema.parse(last.decidedBy)
+      : null;
+  const nowIso = now.toISOString() as IsoDateTime;
+  const close = async (
+    status: "approved" | "rejected" | "cancelled",
+    decidedBy: UserId | null,
+    note: string | null,
+    reason: string | null,
+  ) => {
+    const view = await applyTransition(tx, row, allocations, {
+      status,
+      decidedBy,
+      decidedAt: decidedBy === null ? null : nowIso,
+      decisionNote: note,
+    });
+    await auditAccountingChange(tx, context, {
+      actorId: decidedBy,
+      action: `share_version.${status}`,
+      objectType: "share_allocation_version",
+      objectId: row.profitEntityId,
+      reason,
+      before: { status: "pending_approval" },
+      after: { version: row.version, count: allocations.length, status },
+    });
+    return view;
+  };
+  if (outcome === "cancelled" || outcome === "expired")
+    return close("cancelled", null, null, `approval ${outcome}`);
+  if (decider === null)
+    return close("cancelled", null, null, "approval approver invalid");
+  if (outcome === "rejected")
+    return close("rejected", decider, "approval rejected", "approval rejected");
+  // approved
+  try {
+    // Savepoint: a refused guard leaves nothing half applied.
+    const approved = await tx.transaction(async (sp) => {
+      const result = transitionShareAllocationVersion(
+        transitionState(row, allocations),
+        { type: "approve", actorId: decider, now: nowIso },
+      );
+      assertEffectiveFromAdvances(
+        await latestApprovedEffectiveFrom(
+          sp,
+          tenantId,
+          row.profitEntityId,
+          row.version,
+        ),
+        row.effectiveFrom,
+      );
+      return applyTransition(sp, row, allocations, result);
+    });
+    await auditAccountingChange(tx, context, {
+      actorId: decider,
+      action: "share_version.approved",
+      objectType: "share_allocation_version",
+      objectId: row.profitEntityId,
+      reason: null,
+      before: { status: "pending_approval" },
+      after: {
+        version: row.version,
+        count: allocations.length,
+        status: "approved",
+      },
+    });
+    return approved;
+  } catch (error) {
+    if (!(error instanceof AccountingError)) throw error;
+    const note = `approval refused: ${error.code}`;
+    return close("rejected", decider, note, note);
+  }
+}
+
+/**
+ * Applies the approval chain's outcome to a share version, on the caller's
+ * transaction (entity, then the version, locked FOR UPDATE, the same order as
+ * decide). Used by the `approval.resolved` consumer.
+ */
+export async function settleShareAllocationVersionForApproval(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  profitEntityId: string,
+  version: number,
+  now = new Date(),
+): Promise<ShareAllocationVersion> {
+  const tenantId = context.tenant.tenantId;
+  await lockEntity(tx, tenantId, profitEntityId);
+  const row = await loadVersionRow(tx, tenantId, profitEntityId, version, true);
+  return settleLoadedShareVersion(tx, context, row, now);
+}
+
 export async function submitShareAllocationVersionService(
   context: ScopedTenantContext,
   actorId: UserId,
@@ -1228,7 +1418,7 @@ export async function submitShareAllocationVersionService(
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
-    await lockEntity(tx, tenantId, profitEntityId);
+    const entity = await lockEntity(tx, tenantId, profitEntityId);
     const row = await loadVersionRow(
       tx,
       tenantId,
@@ -1255,6 +1445,11 @@ export async function submitShareAllocationVersionService(
       { type: "submit", actorId },
     );
     const view = await applyTransition(tx, row, allocations, result);
+    // The tenant's approval matrix (`shareholder_version`) decides who
+    // approves and in how many levels; the permission alone never does.
+    // APPROVAL_POLICY_MISSING propagates: nobody may approve, fail closed.
+    // `required: false` keeps the direct decide path (distribution parity).
+    await openShareVersionApproval(tx, context, actorId, entity, row);
     await auditAccountingChange(tx, context, {
       actorId,
       action: "share_version.submitted",
@@ -1276,8 +1471,11 @@ export async function decideShareAllocationVersionService(
 ): Promise<ShareAllocationVersion> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
-    await lockEntity(tx, tenantId, profitEntityId);
+  // Opening a chain here must commit before the 409 is answered, so the
+  // answer is thrown after the transaction instead of inside it.
+  let chainOpenedNow = false;
+  const decided = await withTenant(db, context, async (tx) => {
+    const entity = await lockEntity(tx, tenantId, profitEntityId);
     const row = await loadVersionRow(
       tx,
       tenantId,
@@ -1299,15 +1497,46 @@ export async function decideShareAllocationVersionService(
     });
     if (claim === "replay") return toVersion(row, allocations);
 
-    const now = new Date().toISOString() as IsoDateTime;
+    const now = new Date();
+    const nowIso = now.toISOString() as IsoDateTime;
     const state = transitionState(row, allocations);
+    const chainId = await shareVersionChainOf(tx, tenantId, row.id);
+    // Same guards as the direct path: pending status and requester != caller.
     const result = transitionShareAllocationVersion(
       state,
       input.decision === "approve"
-        ? { type: "approve", actorId, now }
-        : { type: "reject", actorId, now, reason: input.note ?? "" },
+        ? { type: "approve", actorId, now: nowIso }
+        : { type: "reject", actorId, now: nowIso, reason: input.note ?? "" },
     );
     if (input.decision === "approve") {
+      if (chainId === null) {
+        // Submit found no tier (or this is a version submitted before the
+        // matrix applied). The matrix may have tightened since: ask it again
+        // with the same open path before approving directly. A chain opened
+        // now is the requester's, like at submit.
+        const opened = await openShareVersionApproval(
+          tx,
+          context,
+          row.requestedBy,
+          entity,
+          row,
+        );
+        if (opened.required) {
+          chainOpenedNow = true;
+          return toVersion(row, allocations);
+        }
+      } else {
+        // A chain decides: this call only settles it (the approver is the
+        // last level's user), or answers 409 while levels are still open.
+        const settled = await settleLoadedShareVersion(tx, context, row, now);
+        if (settled.status === "pending_approval")
+          throw new HttpError(
+            409,
+            "APPROVAL_PENDING",
+            "Persetujuan belum selesai di kotak masuk approval.",
+          );
+        return settled;
+      }
       // A replacement must start after the latest approved version (checked
       // again here: another version may have been approved since submit).
       assertEffectiveFromAdvances(
@@ -1319,6 +1548,22 @@ export async function decideShareAllocationVersionService(
         ),
         row.effectiveFrom,
       );
+    } else if (chainId !== null) {
+      // An open chain is cancelled first; one that already ended "approved"
+      // cannot be rejected any more: the decision exists, settle applies it.
+      const outcome = await cancelApprovalRequest(tx, context, {
+        chainId,
+        sourceModule: PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+        actorUserId: actorId,
+        now,
+      });
+      if (outcome === "approved")
+        throw new AccountingError("INVALID_TRANSITION");
+      // A chain that already ended rejected or expired before the consumer
+      // ran: record that outcome (the inbox decider, or cancelled), not the
+      // caller's reject.
+      if (outcome === "rejected" || outcome === "expired")
+        return settleLoadedShareVersion(tx, context, row, now);
     }
     const view = await applyTransition(tx, row, allocations, result);
     await auditAccountingChange(tx, context, {
@@ -1335,4 +1580,11 @@ export async function decideShareAllocationVersionService(
     });
     return view;
   });
+  if (chainOpenedNow)
+    throw new HttpError(
+      409,
+      "APPROVAL_PENDING",
+      "Persetujuan belum selesai di kotak masuk approval.",
+    );
+  return decided;
 }

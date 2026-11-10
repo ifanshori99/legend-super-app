@@ -13,3 +13,6 @@ export const DISTRIBUTION_RUN_OBJECT_TYPE = "distribution_run";
 /** A change of a shareholder's statement recipient, matrix action `shareholder_version`. */
 export const SHAREHOLDER_RECIPIENT_OBJECT_TYPE =
   "shareholder_recipient_version";
+
+/** A share allocation version (SH-03), matrix action `shareholder_version`. */
+export const SHARE_ALLOCATION_VERSION_OBJECT_TYPE = "share_allocation_version";

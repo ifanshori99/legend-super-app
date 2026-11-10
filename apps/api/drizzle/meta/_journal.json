@@ -1513,6 +1513,13 @@
       "when": 1794318165482,
       "tag": "0252_profit_share_recipient_versions",
       "breakpoints": true
+    },
+    {
+      "idx": 256,
+      "version": "7",
+      "when": 1794319778545,
+      "tag": "0256_share_version_approval",
+      "breakpoints": true
     }
   ]
 }

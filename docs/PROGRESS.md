@@ -2,6 +2,12 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-3sy9b versi porsi saham lewat matriks approval (engineer, cabang `ws/3sy9b-share-alloc-approval` dari `ws/8s992-profit-rules` 54b76963, 2026-11-10)
+
+- Sudah: submit versi porsi saham membuka chain `shareholder_version` (source `profit_share`, object `share_allocation_version`, objectId = kolom baru `share_allocation_versions.id`). Decide approve saat chain terbuka 409 `APPROVAL_PENDING`; tanpa chain (versi lama) cek ulang matriks lalu buka chain dan 409. Reject menutup chain dulu; chain yang sudah approved tidak bisa di-reject (`INVALID_TRANSITION`); chain yang sudah berakhir rejected/expired dicatat sesuai hasilnya. Consumer `approval.resolved` menyelesaikan versi (approved oleh approver terakhir, rejected, atau cancelled saat chain expired/cancelled; tanggal berlaku mundur ditolak dengan catatan `approval refused: <kode>`). Kebijakan tidak ada: 409 `APPROVAL_POLICY_MISSING` (fail closed).
+- Migrasi sementara `0256_share_version_approval` (idx 256, when 1794319778545 > 0252): kolom `id uuid` + unik `(tenant_id, id)`, fungsi guard: `id` tidak bisa berubah, `pending_approval -> cancelled` diizinkan. Sama persis di `accounting-profit-share.custom.sql`.
+- Keputusan: pola sama dengan distribusi (54b76963), bukan pola recipient (`APPROVAL_REQUIRED`), karena versi tanpa nominal selalu butuh approval bila kebijakan ada.
+- Rilis: tenant tanpa kebijakan `shareholder_version` tidak bisa submit versi porsi saham setelah deploy. Owner perlu mengatur matriks itu dulu (atau seed kebijakan).
 ## legend-k2l WS-01 login email, Google, dan graf identitas member (engineer, cabang `ws/ws01-k2l` dari `docs/arch-member-loyalty` b07b1032, brief 290b, 2026-11-10)
 
 - Sudah: migrasi `0220_k2l_member_signin_identity` (sebelumnya 0204; digeser ke ujung, when 1794297863874, snapshot 0220 mengikuti 0208; lihat putaran 3). Isi: `session.auth_method` + `auth_cross_device` (backfill `password` untuk sesi management, sisanya `legacy`), `login_challenges.email_encrypted`, indeks unik satu WhatsApp per user (berhenti bila ada duplikat), tabel append-only `identity_merges`, fungsi SECURITY DEFINER `app.user_has_role_assignment` (hanya role yang masih berlaku).
