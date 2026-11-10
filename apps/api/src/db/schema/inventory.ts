@@ -49,8 +49,9 @@ import { user } from "./user";
 
 /**
  * `uoms` (T): tenant-wide unit catalog (PRD §6 E `uoms.code` / `name`).
- * The contract has no create endpoint, so these rows are provisioned by the
- * tenant setup/import tooling and read through `GET /api/inventory/uoms`.
+ * Standard units are provisioned with `is_system = true` (read-only); tenants
+ * add custom units through `POST /api/inventory/uoms` and read them through
+ * `GET /api/inventory/uoms`.
  */
 export const uoms = pgTable(
   "uoms",
@@ -59,6 +60,7 @@ export const uoms = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     code: varchar("code", { length: 10 }).notNull(),
     name: varchar("name", { length: 150 }).notNull(),
+    isSystem: boolean("is_system").default(false).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

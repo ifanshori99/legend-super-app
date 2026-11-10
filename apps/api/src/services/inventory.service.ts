@@ -328,6 +328,7 @@ function toUom(row: UomRow): Uom {
     tenantId: row.tenantId,
     code: row.code,
     name: row.name,
+    isSystem: row.isSystem,
   });
 }
 

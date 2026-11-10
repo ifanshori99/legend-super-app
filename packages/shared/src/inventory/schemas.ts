@@ -104,6 +104,8 @@ export const uomSchema = z.strictObject({
   tenantId: tenantIdSchema,
   code: z.string().min(1).max(10),
   name,
+  /** Standard catalog units are read-only; tenant-created units are not. */
+  isSystem: z.boolean(),
 });
 export type Uom = z.infer<typeof uomSchema>;
 

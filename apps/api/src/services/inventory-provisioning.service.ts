@@ -92,6 +92,7 @@ export async function provisionStandardUoms(
         tenantId,
         code: uom.code,
         name: uom.name,
+        isSystem: true,
       })),
     )
     .onConflictDoNothing({ target: [uoms.tenantId, uoms.code] })
