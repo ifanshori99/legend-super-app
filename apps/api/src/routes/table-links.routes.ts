@@ -8,7 +8,8 @@ import {
   unlinkTablesInputSchema,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
-import { getAuth, requireAuth } from "../middleware/auth";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
+import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { requireTenantContext } from "../middleware/tenant";
@@ -22,13 +23,18 @@ const groupParams = z.strictObject({ groupId: tableLinkGroupIdSchema });
 
 export const tableLinksRouter = Router();
 
-const staffGuard = [requireAuth, requireTrustedOrigin, requireTenantContext];
+const staffGuard = [
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+];
 
 tableLinksRouter.post("/", ...staffGuard, jsonBody, async (req, res) => {
   const input = linkTablesInputSchema.parse(req.body);
   const { context } = await resolveFloorContext(req, "floor.table.operate");
   res.json({
-    data: await linkTablesOperation(context, input, getAuth(req).user.id),
+    data: await linkTablesOperation(context, input, actorOf(req)),
   });
 });
 
@@ -41,12 +47,7 @@ tableLinksRouter.post(
     const input = unlinkTablesInputSchema.parse(req.body);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
     res.json({
-      data: await unlinkTablesOperation(
-        context,
-        groupId,
-        input,
-        getAuth(req).user.id,
-      ),
+      data: await unlinkTablesOperation(context, groupId, input, actorOf(req)),
     });
   },
 );

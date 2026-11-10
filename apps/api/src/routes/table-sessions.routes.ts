@@ -17,7 +17,8 @@ import {
   tableSessionIdSchema,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
-import { getAuth, requireAuth } from "../middleware/auth";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
+import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { requireTenantContext } from "../middleware/tenant";
@@ -37,7 +38,12 @@ const sessionParams = z.strictObject({ sessionId: tableSessionIdSchema });
 export const tableSessionsRouter = Router();
 
 /** Staff session + trusted origin + resolved tenant, per staff route. */
-const staffGuard = [requireAuth, requireTrustedOrigin, requireTenantContext];
+const staffGuard = [
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+];
 
 tableSessionsRouter.post(
   "/:sessionId/confirm",
@@ -46,11 +52,7 @@ tableSessionsRouter.post(
     const { sessionId } = sessionParams.parse(req.params);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
     res.json({
-      data: await confirmOpenBillSession(
-        context,
-        sessionId,
-        getAuth(req).user.id,
-      ),
+      data: await confirmOpenBillSession(context, sessionId, actorOf(req)),
     });
   },
 );
@@ -64,12 +66,7 @@ tableSessionsRouter.post(
     const input = closeTableSessionInputSchema.parse(req.body);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
     res.json({
-      data: await closeTableSession(
-        context,
-        sessionId,
-        input,
-        getAuth(req).user.id,
-      ),
+      data: await closeTableSession(context, sessionId, input, actorOf(req)),
     });
   },
 );
@@ -89,7 +86,7 @@ tableSessionsRouter.post(
         context,
         sessionId,
         input,
-        getAuth(req).user.id,
+        actorOf(req),
       ),
     });
   },
@@ -108,7 +105,7 @@ tableSessionsRouter.post(
         context,
         sessionId,
         input,
-        getAuth(req).user.id,
+        actorOf(req),
       ),
     });
   },
@@ -127,7 +124,7 @@ tableSessionsRouter.post(
         context,
         sessionId,
         input,
-        getAuth(req).user.id,
+        actorOf(req),
       ),
     });
   },

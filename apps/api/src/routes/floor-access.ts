@@ -19,6 +19,8 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
+import { HttpError } from "../lib/http-error";
 import { getTenantContext } from "../middleware/tenant";
 import { loadRequestAccess } from "../middleware/permissions";
 import { listTenantOutletIds } from "../services/floor.service";
@@ -28,6 +30,38 @@ export type FloorAccess = {
   /** The outlet a floor-level read/write works on ("the caller's outlet"). */
   readonly outletId: string;
 };
+
+/**
+ * An acting cashier's token is bound to one outlet (middleware/acting-staff.ts
+ * leaves the check to the handler on routes without :outletId). A brand- or
+ * tenant-wide role must not let the token act in another outlet.
+ */
+function assertActingOutlet(req: Request, outletId: string): void {
+  const acting = req.actingStaff;
+  if (acting && acting.outletId.toLowerCase() !== outletId.toLowerCase())
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+      "Kasir aktif ini bertugas di outlet lain.",
+    );
+}
+
+/**
+ * The reach of an acting cashier's context is cut to the token's outlet: a
+ * tenant- or brand-wide role would otherwise let a service touch rows of
+ * another outlet by id (they then read as not found).
+ */
+function narrowToActingOutlet(
+  req: Request,
+  context: ScopedTenantContext,
+): ScopedTenantContext {
+  const acting = req.actingStaff;
+  if (!acting) return context;
+  return establishScopedTenantContext(context.tenant, {
+    kind: "outlets",
+    outletIds: [outletIdSchema.parse(acting.outletId)],
+  });
+}
 
 /** Denies unless `permission` reaches at least one outlet of this tenant. */
 export async function resolveFloorContext(
@@ -39,7 +73,14 @@ export async function resolveFloorContext(
   const outletIds = await listTenantOutletIds(
     establishScopedTenantContext(tenant, { kind: "tenant" }),
   );
-  for (const raw of outletIds) {
+  // An acting cashier works in the token's outlet only, whatever else the
+  // role reaches.
+  const candidates = req.actingStaff
+    ? outletIds.filter(
+        (raw) => raw.toLowerCase() === req.actingStaff!.outletId.toLowerCase(),
+      )
+    : outletIds;
+  for (const raw of candidates) {
     const outletId = outletIdSchema.parse(raw);
     const context = snapshot.contextFor(permission, {
       type: "outlet",
@@ -47,7 +88,7 @@ export async function resolveFloorContext(
     });
     if (context) {
       assertTrustedScopedContext(context);
-      return { context, outletId };
+      return { context: narrowToActingOutlet(req, context), outletId };
     }
   }
   throw new AccessError(
@@ -67,6 +108,7 @@ export async function resolveOutletContext(
 ): Promise<ScopedTenantContext> {
   const snapshot = await loadRequestAccess(req);
   const parsed = outletIdSchema.parse(outletId);
+  assertActingOutlet(req, parsed);
   const context = snapshot.contextFor(permission, {
     type: "outlet",
     id: parsed,
@@ -77,5 +119,5 @@ export async function resolveOutletContext(
       "Your account cannot perform this action in this outlet.",
     );
   assertTrustedScopedContext(context);
-  return context;
+  return narrowToActingOutlet(req, context);
 }
