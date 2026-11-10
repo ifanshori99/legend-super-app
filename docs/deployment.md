@@ -320,6 +320,19 @@ From migration `0160_support_access_requests`, a Super Admin's read_write suppor
 3. **Owner permission.** The migration adds `org.support_access.approve` to the owner role of every existing tenant. A tenant created by an old API instance after the migration and before the rollout misses it, so its owners get 403 when they approve. Rerun the backfill block at the end of `0160` once the rollout finishes (it is idempotent).
 4. **Web.** Until UI card legend-8r77t ships, the platform request dialog can only open read_only sessions. A read_write request answers 409 `SUPPORT_ACCESS_OWNER_APPROVAL_REQUIRED`. Use `POST /api/platform/tenants/:tenantId/support-access-requests` instead, and have the owner answer with `POST /api/org/support-access/requests/:requestId/approve`.
 
+## Kirimdev inbound WhatsApp (legend-s5rgo)
+
+Customer WhatsApp sign-in (`MASUK <brand> <KODE>`) and payslip PIN reset (`RESET PIN <KODE>`) both arrive as signed Kirimdev `message.received` webhooks at `POST /api/webhooks/whatsapp`. Outbound replies stay off (`NOTIFICATION_WHATSAPP_PROVIDER=disabled`). Kirimdev has no sandbox: develop with `scripts/wa-simulate-inbound.mjs`.
+
+1. **Account and number.** Create the Kirimdev account and plan, connect one WhatsApp number per tenant, and finish Meta Business verification. One number can be active in only one tenant (two unique indexes enforce it).
+2. **Find the `phoneNumberId`.** `GET /v1/accounts` with the Kirimdev API key (`kdv_live_...`) lists the numbers and their `phoneNumberId`. The API key is used once by the person who registers the subscription; the application never holds it.
+3. **Register the subscription.** `POST /v1/webhook_subscriptions` with the public URL `https://<api-origin>/api/webhooks/whatsapp`, event `message.received`, and `phone_number_ids` filtered to that tenant's number(s). Kirimdev returns the signing secret once.
+4. **Secret.** Ask the founder for it with `ghostex secret request`, never in chat. Set `KIRIM_WEBHOOK_SECRET` on the API (comma separated while rotating, see the runbook). Empty: the webhook answers 503 and creating a PIN reset challenge answers 503.
+5. **Tenant row.** Insert or update `tenant_integrations` with `provider = 'whatsapp'`, `status = 'active'`, `config = { "receivingNumber": "628...", "phoneNumberId": "<id from step 2>", "loginKeyword": "MASUK LEGEND" }`.
+6. **Check.** Run the production tests in [runbooks/kirimdev-webhook.md](runbooks/kirimdev-webhook.md) once before release.
+
+PIN reset needs a verified WhatsApp number that has been linked to the account for at least 3 days (`WA_PROOF_IDENTITY_MIN_AGE_DAYS`, founder decision 11 Nov 2026). Existing numbers count from the migration time. Employees without one need an HR reset.
+
 ## Security checklist
 
 Built in: authenticated and origin-checked API routes, ownership filtered in SQL, sign-in/sign-up rate limits, 100 kB request bodies (including Better Auth's), `httpOnly` `SameSite=Lax` session cookies, helmet on the API, and frame/nosniff/referrer headers (plus HSTS in production) on the web app. Before launch, confirm:
