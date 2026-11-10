@@ -1864,16 +1864,22 @@ async function applyConfirmation(
         "This payment is held for an amount mismatch.",
       );
     // paidAt from the LOCKED status: a still pending intent was paid no later
-    // than the first receipt; a closed one was paid after it closed (now).
+    // than the first receipt; a closed one was paid after it closed, so never
+    // before its close time (`now` is taken when the caller started, which can
+    // be before a close committed while it waited on the gateway or the lock).
     const { receivedAt, ...base } = rawConfirmation;
+    const closedAt = new Date(current.updatedAt).getTime();
     const confirmation: PaymentConfirmation =
       receivedAt !== undefined || options.closedIntentNeedsOpenBill
         ? {
             ...base,
-            at: (current.status === "pending" &&
-            (receivedAt ?? now).getTime() < now.getTime()
-              ? (receivedAt as Date)
-              : now
+            at: (current.status === "pending"
+              ? (receivedAt ?? now).getTime() < now.getTime()
+                ? (receivedAt as Date)
+                : now
+              : closedAt > now.getTime()
+                ? new Date(closedAt)
+                : now
             ).toISOString(),
           }
         : base;

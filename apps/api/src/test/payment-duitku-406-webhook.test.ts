@@ -464,7 +464,12 @@ async function whileWebhookHeld(
 async function expectNothingPaid(bill: Bill) {
   expect(await intentStatus(bill.intentId)).not.toBe("paid");
   expect(await linkPaidIdr(bill.linkId)).toBe(0);
-  expect(await evidenceCount(bill.intentId)).toBe(0);
+  // Held money is kept as evidence parked as unallocated funds, once; no
+  // evidence ever settles the bill.
+  expect(await evidenceCount(bill.intentId)).toBeLessThanOrEqual(1);
+  expect(await evidenceCount(bill.intentId)).toBe(
+    await unallocatedCount(bill.intentId),
+  );
 }
 
 // ---------------------------------------------------------------------------
