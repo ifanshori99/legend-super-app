@@ -41,6 +41,8 @@ import {
   revokeAttendanceDevice as revokeAttendanceDeviceEndpoint,
   rotateAttendanceQrSecret as rotateAttendanceQrSecretEndpoint,
 } from "@starter/shared/hris";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { verifyDeviceToken } from "../lib/device-token.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireIdentitySurface } from "../middleware/identity.ts";
@@ -54,6 +56,7 @@ import {
 import { loadTenantAccess } from "../services/permission-resolver.ts";
 import { loadSurfaceAccessFacts } from "../services/surface-access.service.ts";
 import * as attendanceService from "../services/hris-attendance.service.ts";
+import { deviceIdOf } from "./device-id.ts";
 import {
   noHrisFileSigner,
   type HrisFileSigner,
@@ -203,6 +206,11 @@ export function createHrisAttendanceRouter(
         body,
         new Date(),
         signer,
+        // Only a token that names this tenant counts (deviceIdOf); the
+        // service checks the registry (edge outlet_device only).
+        deviceIdOf(req) === null
+          ? null
+          : verifyDeviceToken(req.get(DEVICE_TOKEN_HEADER) ?? ""),
       );
       // A rejected attempt is stored for HR but is not a clock event: 422 with
       // the reasons, never a log the employee could mistake for a valid one.
