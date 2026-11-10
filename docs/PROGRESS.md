@@ -896,3 +896,4 @@ Langkah berikut CTO baru:
 - 10 Nov 11:50 G5ye7 4qu lanjutan selesai b339a57c (swap lebih mahal tamu 422, staf via price_correction; CRM voucher normalisasi hubung; Idempotency-Key voucher staf; 244 + 89 tes; architect delta 2 sedang dibetulkan). Kartu: zm1e6, 94q2l, ok3zg, v32bv, i83ls (tagih selisih swap). Resolve, batch46. Slot: ok3zg test-writer brief 314 dari ws/failed-item.
 - 10 Nov 12:00 G3ucg ok3zg selesai ws/az-flow-y d83ed9c7 (Alur Y ikut kontrak, skip dibuka, 13 lulus 2 skip), resolve, batch46. Slot: zm1e6 + v32bv brief 315 dari ws/failed-item (kredit swap ikut matriks apology_voucher, CHECK DB di 0214).
 - 10 Nov 12:05 Founder Q78 hari operasi berikutnya, Q79 comp boleh (bd comment fjk5). Lanjutan Q78 ke G7akk ditahan: RAM kuning (Claude 8/4).
+- 10 Nov 12:10 G2vsn 8zy5f selesai ws/gateway-plan-revoke e77bf057 (cek saat baca, tanpa migrasi; 159 tes; architect K 3 dibetulkan). Resolve, batch46 (di atas gateway). RAM kuning: slot tidak diisi.
