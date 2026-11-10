@@ -1,5 +1,5 @@
 -- Per-requester approver-PIN window (bead legend-vfj7z). Provisional number
--- 0242, renumbered by the merge train if taken. One new empty table with the
+-- 0258, renumbered by the merge train if taken. One new empty table with the
 -- foreign keys inside CREATE TABLE (docs/plan/contracts.md pattern 1: no
 -- validation scan), then tenant RLS.
 CREATE TABLE "user_pin_throttle" (

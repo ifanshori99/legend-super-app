@@ -468,9 +468,9 @@ export async function verifyStaffPinWithProof(
 
 // ------------------------------------------------- approver PIN (legend-vfj7z)
 // The approver PIN checks of the supervisor override and open bill run under
-// TWO fixed windows (10 wrong PINs / 5 minutes each), both taken before the
-// PIN is checked: one per device (when the request carries a verified device)
-// and one per authenticated requester (always: a client cannot drop it).
+// one fixed window (10 wrong PINs / 5 minutes), taken before the PIN is
+// checked: per verified device when the request has one, otherwise per
+// authenticated requester (a client cannot drop that key).
 
 /** Takes one of the requester's window slots; over the limit: 429 and returned. */
 async function reserveRequesterSlot(
@@ -628,14 +628,18 @@ async function alertRequesterThrottled(
 }
 
 /**
- * An approver's PIN on the supervisor override and open-bill paths, under the
- * per-requester window (always) and the per-device window (with a verified
- * device id). Both slots are taken before the PIN is checked, requester first
- * (a device 429 gives the requester slot back). A wrong guess and the guess that
- * newly locks the approver's PIN keep both slots (and can raise the window
- * alerts); a correct PIN, an already locked PIN and any other answer give them
- * back. Over a limit the answer is 429 before the approver's counter moves.
- * Throws what `assertPinAttemptOk` throws.
+ * An approver's PIN on the supervisor override and open-bill paths, under ONE
+ * fixed window, chosen by what the request can prove:
+ * - a verified device id: the per-device window (terminals that share one
+ *   account, e.g. an outlet account with the cashier active by PIN, never
+ *   block each other);
+ * - no verified device: the per-requester window of the authenticated account,
+ *   so a client that drops X-Device-Token still meets a limit.
+ * The slot is taken before the PIN is checked. A wrong guess and the guess that
+ * newly locks the approver's PIN keep it (and can raise the window alert); a
+ * correct PIN, an already locked PIN and any other answer give it back. Over the
+ * limit the answer is 429 before the approver's counter moves. Throws what
+ * `assertPinAttemptOk` throws.
  */
 export async function attemptApproverPin(
   tenant: TenantContext,
@@ -650,29 +654,31 @@ export async function attemptApproverPin(
 ): Promise<void> {
   const outletId = outletIdSchema.parse(input.outletId);
   const context = outletContext(tenant, outletId);
+  const { deviceId, now } = input;
   // One key per account, whatever the caller's case (a window split in two
   // would double the limit).
   const requesterUserId = input.requesterUserId.toLowerCase();
-  const { deviceId, now } = input;
-  const requesterWindow = await reserveRequesterSlot(
-    context,
-    requesterUserId,
-    now,
-  );
-  let deviceWindow: Date | null = null;
-  if (deviceId !== null) {
-    try {
-      deviceWindow = await reserveDeviceSlot(context, deviceId, now);
-    } catch (error) {
-      await releaseRequesterSlot(context, requesterUserId, requesterWindow);
-      throw error;
-    }
-  }
-  const giveBack = async (): Promise<void> => {
-    await releaseRequesterSlot(context, requesterUserId, requesterWindow);
-    if (deviceId !== null && deviceWindow !== null)
-      await releaseDeviceSlot(context, deviceId, deviceWindow);
-  };
+  const window =
+    deviceId !== null
+      ? {
+          start: await reserveDeviceSlot(context, deviceId, now),
+          release: (start: Date) => releaseDeviceSlot(context, deviceId, start),
+          alert: (start: Date) =>
+            alertDeviceThrottled(context, outletId, deviceId, start, now),
+        }
+      : {
+          start: await reserveRequesterSlot(context, requesterUserId, now),
+          release: (start: Date) =>
+            releaseRequesterSlot(context, requesterUserId, start),
+          alert: (start: Date) =>
+            alertRequesterThrottled(
+              context,
+              outletId,
+              requesterUserId,
+              start,
+              now,
+            ),
+        };
   let outcome: PinAttemptOutcome;
   try {
     outcome = await attemptStaffPin(tenant, {
@@ -683,28 +689,14 @@ export async function attemptApproverPin(
       now,
     });
   } catch (error) {
-    await giveBack();
+    await window.release(window.start);
     throw error;
   }
   if (
     outcome.kind === "invalid" ||
     (outcome.kind === "locked" && outcome.fresh === true)
-  ) {
-    await alertRequesterThrottled(
-      context,
-      outletId,
-      requesterUserId,
-      requesterWindow,
-      now,
-    );
-    if (deviceId !== null && deviceWindow !== null)
-      await alertDeviceThrottled(
-        context,
-        outletId,
-        deviceId,
-        deviceWindow,
-        now,
-      );
-  } else await giveBack();
+  )
+    await window.alert(window.start);
+  else await window.release(window.start);
   assertPinAttemptOk(outcome);
 }

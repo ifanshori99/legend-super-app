@@ -1,14 +1,15 @@
-// Per-requester PIN window of approver PINs (bead legend-vfj7z, round 2; PRD
-// v1.7 §3 F6 "Override Supervisor", AUTH-06). attemptApproverPin takes one of
-// the requester's 10 slots per 5 minutes (user_pin_throttle, ALWAYS, with or
-// without a device id) and, with a verified device id, one of the device's 10
-// slots (device_pin_throttle), both before the approver's PIN is checked,
-// requester first. A wrong guess and the guess that newly locks the PIN keep
-// both slots (and raise staff_pin.requester_throttled / device_throttled once
-// per window); a correct PIN, an already locked PIN, not_member,
-// reset_required and an error thrown during the check give them back. Over a
-// limit: 429 PIN_DEVICE_THROTTLED before the approver's counter moves; a
-// device 429 gives the requester slot back. Service level; same style as
+// Approver PIN windows (bead legend-vfj7z, round 3; PRD v1.7 §3 F6 "Override
+// Supervisor", AUTH-06). attemptApproverPin uses ONE window of 10 failures per
+// 5 minutes, taken before the approver's PIN is checked: with a verified
+// device id only the device's (device_pin_throttle; user_pin_throttle is not
+// touched, so official POS terminals may share one account without blocking
+// each other); without a device id only the requester's (user_pin_throttle),
+// so a client that drops X-Device-Token still hits a per-account limit. A
+// wrong guess and the guess that newly locks the PIN keep the slot (and raise
+// staff_pin.requester_throttled / device_throttled once per window); a correct
+// PIN, an already locked PIN, not_member, reset_required and an error thrown
+// during the check give it back. Over the limit: 429 PIN_DEVICE_THROTTLED
+// before the approver's counter moves. Service level; same style as
 // staff-override-device-slot.test.ts. Runs the real services on the
 // disposable PostgreSQL (RLS on). Only attemptStaffPin is spied on so a test
 // can force one outcome or one thrown error.
@@ -89,10 +90,7 @@ async function newApprover(): Promise<string> {
 }
 
 /** Runs `sql` as the tenant with every outlet visible (RLS on). */
-async function asTenant(
-  sql: string,
-  params: unknown[],
-): Promise<void> {
+async function asTenant(sql: string, params: unknown[]): Promise<void> {
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
@@ -136,6 +134,14 @@ async function requesterFailures(userId: string): Promise<number> {
     [tenantId, userId],
   );
   return rows[0]?.failures ?? 0;
+}
+
+async function requesterRowCount(userId: string): Promise<number> {
+  const { rowCount } = await owner.query(
+    "SELECT 1 FROM user_pin_throttle WHERE tenant_id = $1 AND user_id = $2",
+    [tenantId, userId],
+  );
+  return rowCount ?? 0;
 }
 
 async function deviceFailures(deviceId: string): Promise<number> {
@@ -350,32 +356,8 @@ describe("legend-vfj7z attemptApproverPin under the requester window (no device 
   });
 });
 
-describe("legend-vfj7z attemptApproverPin with a device id: both windows", () => {
-  it("a device 429 gives the requester slot back; the approver counter does not move", async () => {
-    const cashier = await createUser("cashier");
-    const device = await newDevice();
-    const approver = await lockableApprovers(1);
-    // The device already used its 10 slots in the current window.
-    await asTenant(
-      `INSERT INTO device_pin_throttle (tenant_id, device_id, window_started_at, failures)
-       VALUES ($1, $2, $3, 10)`,
-      // The Node clock, not now(): the container clock may drift.
-      [tenantId, device, new Date().toISOString()],
-    );
-    const blocked = await attempt(cashier, approver[0]!, WRONG, device);
-    expect(blocked, "device window full").toMatchObject({
-      code: "PIN_DEVICE_THROTTLED",
-      status: 429,
-    });
-    expect(blocked?.retryAfterSeconds).toBeGreaterThanOrEqual(1);
-    expect(blocked?.retryAfterSeconds).toBeLessThanOrEqual(300);
-    expect(await requesterFailures(cashier)).toBe(0);
-    expect(await deviceFailures(device)).toBe(10);
-    expect((await pinRow(approver[0]!))?.failed_attempts).toBe(4);
-    expect(requesterAudits(cashier)).toBe(0);
-  });
-
-  it("a wrong guess raises both counters; a correct PIN gives both back", async () => {
+describe("legend-vfj7z attemptApproverPin with a device id: only the device window", () => {
+  it("a wrong guess raises the device counter only; a correct PIN gives the device slot back", async () => {
     const cashier = await createUser("cashier");
     const device = await newDevice();
     const approver = await newApprover();
@@ -383,12 +365,47 @@ describe("legend-vfj7z attemptApproverPin with a device id: both windows", () =>
       code: "PIN_INVALID",
       status: 401,
     });
-    expect(await requesterFailures(cashier)).toBe(1);
     expect(await deviceFailures(device)).toBe(1);
+    // user_pin_throttle is not touched: no row at all for the requester.
+    expect(await requesterRowCount(cashier)).toBe(0);
     expect(await attempt(cashier, approver, PIN, device)).toBeNull();
-    expect(await requesterFailures(cashier)).toBe(1);
     expect(await deviceFailures(device)).toBe(1);
+    expect(await requesterRowCount(cashier)).toBe(0);
     expect(requesterAudits(cashier)).toBe(0);
     expect(deviceAudits(device)).toBe(0);
+  });
+
+  it("two devices, one requester: 10 locking guesses at device A make the 11th at A 429; device B is not blocked and the requester window stays empty", async () => {
+    const cashier = await createUser("cashier");
+    const deviceA = await newDevice();
+    const deviceB = await newDevice();
+    const approvers = await lockableApprovers(12);
+    for (const approver of approvers.slice(0, 10)) {
+      expect(
+        await attempt(cashier, approver, WRONG, deviceA),
+        "locking guess at A",
+      ).toMatchObject({ code: "PIN_LOCKED", status: 423 });
+    }
+    expect(await deviceFailures(deviceA)).toBe(10);
+    const blocked = await attempt(cashier, approvers[10]!, WRONG, deviceA);
+    expect(blocked, "11th call at A").toMatchObject({
+      code: "PIN_DEVICE_THROTTLED",
+      status: 429,
+    });
+    expect(blocked?.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+    expect(blocked?.retryAfterSeconds).toBeLessThanOrEqual(300);
+    expect((await pinRow(approvers[10]!))?.failed_attempts).toBe(4);
+    expect(deviceAudits(deviceA)).toBe(1);
+    // Device B has its own window: a fresh approver gets the normal answer.
+    const atB = await attempt(cashier, approvers[11]!, WRONG, deviceB);
+    expect(atB, "first call at B").toMatchObject({
+      code: "PIN_LOCKED",
+      status: 423,
+    });
+    expect(atB?.status).not.toBe(429);
+    expect(await deviceFailures(deviceB)).toBe(1);
+    expect(await deviceFailures(deviceA)).toBe(10);
+    expect(await requesterRowCount(cashier)).toBe(0);
+    expect(requesterAudits(cashier)).toBe(0);
   });
 });

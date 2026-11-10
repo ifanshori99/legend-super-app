@@ -1,12 +1,16 @@
-// Per-requester approver-PIN window over HTTP (bead legend-vfj7z, round 2;
-// PRD v1.7 §3 F6 "Override Supervisor", F43 "Kontrol Open Bill", AUTH-06).
-// One signed-in requester (a cashier session) guesses approver PINs. Every
-// wrong guess, and every guess that newly locks the approver, holds one of the
-// requester's 10 slots per 5 minutes, with or without a device token. The 11th
-// request is 429 PIN_DEVICE_THROTTLED with Retry-After (1..300 s) before the
-// approver's counter moves. Covers the HTTP layer of POST /api/pos-overrides
-// and POST /api/table-sessions/:id/open-bill; the service rules are in
-// staff-override-device-slot.test.ts and open-bill-device-slot.test.ts.
+// Approver-PIN window over HTTP (bead legend-vfj7z, round 3; PRD v1.7 §3 F6
+// "Override Supervisor", F43 "Kontrol Open Bill", AUTH-06). One signed-in
+// requester (a cashier session) guesses approver PINs. Only ONE window
+// applies per request: with a verified X-Device-Token only the device's 10
+// slots per 5 minutes (user_pin_throttle is not touched, so official POS
+// terminals may share one account without blocking each other); without the
+// token only the requester's 10 slots, so a client that drops the header still
+// hits a per-account limit. Every wrong guess, and every guess that newly
+// locks the approver, holds a slot. The 11th request is 429
+// PIN_DEVICE_THROTTLED with Retry-After (1..300 s) before the approver's
+// counter moves. Covers the HTTP layer of POST /api/pos-overrides and POST
+// /api/table-sessions/:id/open-bill; the service rules are in
+// approver-pin-requester-window.test.ts.
 // Real Express app + Better Auth + PostgreSQL (disposable server from
 // `pnpm test`).
 import { randomUUID } from "node:crypto";
@@ -81,12 +85,7 @@ async function newApprover(): Promise<string> {
      VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
     [seededTenantId, id, await roleIdOf("supervisor"), outletId],
   );
-  await setStaffPin(
-    tenantContext,
-    id,
-    { outletId, userId: id },
-    { pin: PIN },
-  );
+  await setStaffPin(tenantContext, id, { outletId, userId: id }, { pin: PIN });
   return id;
 }
 
@@ -215,19 +214,24 @@ type Attempt = (
   headers: Record<string, string>;
 }>;
 
-/** 10 locking guesses by one requester, then the 11th is throttled. */
+/**
+ * 10 locking guesses by one requester, then the 11th is throttled. Without a
+ * device token the requester window counts them; with one, the device window
+ * does and user_pin_throttle stays empty.
+ */
 async function expectRequesterWindow(
   attempt: Attempt,
   deviceToken: string | null,
 ) {
   const requester = await newRequester();
+  const heldByRequester = deviceToken === null ? 10 : 0;
   await armApprovers();
   for (const approver of approvers.slice(0, 10)) {
     const response = await attempt(requester, approver, deviceToken);
     expect(response.status, JSON.stringify(response.body)).toBe(423);
     expect(response.body.error.code).toBe("PIN_LOCKED");
   }
-  expect(await requesterFailures(requester.userId)).toBe(10);
+  expect(await requesterFailures(requester.userId)).toBe(heldByRequester);
 
   const blocked = await attempt(requester, approvers[10]!, deviceToken);
   expect(blocked.status, JSON.stringify(blocked.body)).toBe(429);
@@ -239,7 +243,7 @@ async function expectRequesterWindow(
   // The approver's counter did not move, and the refused request gave its
   // own reservation back.
   expect(await pinFailedAttempts(approvers[10]!)).toBe(4);
-  expect(await requesterFailures(requester.userId)).toBe(10);
+  expect(await requesterFailures(requester.userId)).toBe(heldByRequester);
   return requester;
 }
 
@@ -321,11 +325,59 @@ describe("legend-vfj7z approver PIN window per requester over HTTP", () => {
   );
 
   it(
-    "POST /api/table-sessions/:id/open-bill with a registered device token: the 11th guess is 429 with Retry-After, device slots held too",
+    "POST /api/table-sessions/:id/open-bill with a registered device token: the 11th guess is 429 with Retry-After, device slots held, requester window untouched",
     async () => {
       const device = await newDevice();
-      await expectRequesterWindow(requestOpenBill, device.token);
+      const requester = await expectRequesterWindow(
+        requestOpenBill,
+        device.token,
+      );
       expect(await deviceFailures(device.id)).toBe(10);
+      expect(await requesterFailures(requester.userId)).toBe(0);
+    },
+    SLOW,
+  );
+
+  it(
+    "POST /api/pos-overrides with a registered device token: user_pin_throttle gets no row for the requester",
+    async () => {
+      const device = await newDevice();
+      const requester = await expectRequesterWindow(
+        requestOverride,
+        device.token,
+      );
+      expect(await deviceFailures(device.id)).toBe(10);
+      const { rowCount } = await owner.query(
+        "SELECT 1 FROM user_pin_throttle WHERE tenant_id = $1 AND user_id = $2",
+        [seededTenantId, requester.userId],
+      );
+      expect(rowCount).toBe(0);
+    },
+    SLOW,
+  );
+
+  it(
+    "POST /api/pos-overrides: two registered devices, one requester session: 10 locking guesses at device A make the 11th at A 429, a request at device B is not",
+    async () => {
+      const deviceA = await newDevice();
+      const deviceB = await newDevice();
+      const requester = await expectRequesterWindow(
+        requestOverride,
+        deviceA.token,
+      );
+      expect(await deviceFailures(deviceA.id)).toBe(10);
+      // Device B has its own window: the same requester gets a normal answer
+      // (the armed approver locks: 423), not a 429.
+      const other = await requestOverride(
+        requester,
+        approvers[10]!,
+        deviceB.token,
+      );
+      expect(other.status, JSON.stringify(other.body)).not.toBe(429);
+      expect(other.body.error.code).toBe("PIN_LOCKED");
+      expect(await deviceFailures(deviceB.id)).toBe(1);
+      expect(await deviceFailures(deviceA.id)).toBe(10);
+      expect(await requesterFailures(requester.userId)).toBe(0);
     },
     SLOW,
   );
