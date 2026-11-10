@@ -1061,3 +1061,8 @@ Langkah berikut CTO baru:
 - Founder ditanya ulang: Q1 review u37u3 (page), Q2 seed policy shareholder_version.
 - 21:40 G1kpy selesai: ws/fe-badge-theme f2815e9a (b0l9 badge ikut edge cloudLink, 1v1g tema tenant di root; 99 test, typecheck 0, e2e mock 3/3, reviewer sonnet bersih). Kandidat batch48b. Celah: text override publik belum ada -> kartu P3 baru. Resolved.
 - 21:42 mulai G2x9e HRIS 2ect+33mj+2ap3 (brief 390, opus, migrasi 0256-0258).
+- 21:45 Pilot Fable sampel 2 (388, 6ddd5d74 profit share). Kunci = perbaikan 54b76963: K1 0217 gagal bila dokumen lama, K2 migrasi recipient version + backfill belum ada, K3 guard baris blok pembayaran set penerima, K4 email statement ke login sekarang, K5 pembayaran tidak snapshot login, K6 login lama hilang riwayat, K7 decide tanpa rantai tidak cek ulang matriks, (K8 FORCE RLS migrator, lingkungan).
+  - A Opus xhigh: 21:34-21:38 (kena batas 30 langkah, dilanjutkan), 126k token, 37 tool. Cocok K1 K2 K4 K5 K6 = 5/7. 2 LOW tambahan masuk akal. Tanpa positif palsu.
+  - B Fable medium: 21:34-21:37, 77k token (~154k ekuivalen Opus, harga 2x), 13 tool. Cocok K2 K3 K4 K6 = 4/7. Lewatkan K1 (deploy macet). LOW 5 tarif clawback kemungkinan positif palsu (A menyatakan aman).
+  - Keduanya lewatkan K7. Kuota: Fable 7d 0->1%, 5h #3 57->63% (berdua).
+- 21:46 Sampel 3 (391 Duitku e77bf057, kunci Codex 374) dan 4 (392 refund recovery b78f169c, kunci Codex 372) jalan paralel, A/B sama, batas ~25 tool.
