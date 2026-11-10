@@ -1258,3 +1258,50 @@ describe("legend-b8y6l sole Owner self-approves a statement recipient change", (
     ).toHaveLength(0);
   });
 });
+
+// Codex 405 (P2, bead legend-9t04v): the `approval.decided` audit event used to
+// show only `selfApproval`; status, level and actionType are operational facts
+// (not personal) and must be readable. Assumption: they sit in
+// `maskedChanges.after`; `before`, when present, never shows them as redacted.
+// Personal fields (the decider's id, the free-text reason) stay out of the
+// readable snapshot.
+describe("legend-9t04v approval.decided audit shows status, level and actionType", () => {
+  it("a normal two-Owner approval: the three fields are unmasked; personal data is not", async () => {
+    const tenant = await newTenant();
+    const a = await newOwner(tenant, "Audit Fields Owner A");
+    const b = await newOwner(tenant, "Audit Fields Owner B");
+    const target = await submittedVersion(tenant, a);
+    const requestId = await openRequestId(
+      tenant,
+      await chainOfVersion(tenant, target),
+    );
+    await inboxDecide(tenant, b, requestId, "approved");
+
+    const { rows } = await pg.query<{
+      before: Record<string, unknown> | null;
+      after: Record<string, unknown> | null;
+    }>(
+      `SELECT event->'maskedChanges'->'before' AS before,
+              event->'maskedChanges'->'after' AS after
+         FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'approval.decided'
+          AND event->>'objectId' = $2`,
+      [tenant.id, requestId],
+    );
+    expect(rows).toHaveLength(1);
+    const { before, after } = rows[0]!;
+    expect(after).toMatchObject({
+      status: "approved",
+      level: 1,
+      actionType: "shareholder_version",
+    });
+    for (const snapshot of [before, after]) {
+      for (const field of ["status", "level", "actionType"]) {
+        expect(snapshot?.[field]).not.toBe("[REDACTED]");
+      }
+    }
+    const readable = JSON.stringify(after);
+    expect(readable).not.toContain(b.userId);
+    expect(readable).not.toContain("Perubahan sudah diverifikasi.");
+  });
+});

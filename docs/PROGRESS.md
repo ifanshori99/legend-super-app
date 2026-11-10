@@ -2002,3 +2002,8 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Gate: typecheck tiga paket hijau; lint 0 error; `heavy pnpm test` penuh 12091 lulus, 2 gagal (`menu-print-db` render konkuren dan `tax-api` ORD-03, flake yang sudah dikenal, keduanya lulus saat dijalankan sendiri); `heavy pnpm test:e2e` 18 lulus, 1 dilewati. Architect (K) atas diff migrasi: satu temuan nyata (trigger 0239) dan dua kosmetik, semua dibetulkan.
 - Ukuran: sesi 4,92 juta unit biaya total, batch48b kira-kira 2,4 juta (utama Sonnet, subagent: 3 Explore, 1 test-runner, 1 architect Opus); 5 subagent, puncak 3 bersamaan.
 - Belum: batch48c (fe-small-tests, u37u3, fe-badge-theme, tenant-config-export, print-agent) menunggu perintah CTO.
+
+## ps-405 (legend-9t04v, 11 Nov 2026): temuan Codex 405 profit share
+- Sudah: 0239 tidak lagi menyalin login saat migrasi ke laporan lama. Baris lama yang SUDAH dibayar dan pemegang sahamnya punya login ditandai `recipient_unverified`, penerima tetap NULL, tidak terbaca login mana pun. Owner merekonsiliasi lewat `GET/POST /api/tenant/profit-share/recipient-reconciliation` (audit `profit_share.recipient_reconciled`). Audit `approval.decided` kini memuat `status`, `level`, `actionType`.
+- Belum terverifikasi: test DB (layanan direktori macOS mati, Colima dan initdb gagal). Typecheck, prettier, eslint, `db:generate` kosong: hijau.
+- Perhatian rilis: 0239 diedit di tempat; DB dev/test yang sudah menerapkan 0239 harus di-reset.

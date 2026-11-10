@@ -60,6 +60,7 @@ import { accountingRouter } from "./accounting.routes";
 import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
 import { createProfitShareRegistryRouter } from "./profit-share-registry.routes";
 import { createProfitShareDistributionRouter } from "./profit-share-distribution.routes";
+import { createProfitShareRecipientReconcileRouter } from "./profit-share-recipient-reconcile.routes";
 import { dbShareholderMembership } from "../services/profit-share-membership";
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
@@ -287,6 +288,7 @@ apiRouter.use(
 // (SH-03), distribution runs, adjustments and statements (SH-04).
 apiRouter.use("/accounting", createProfitShareRegistryRouter());
 apiRouter.use("/accounting", createProfitShareDistributionRouter());
+apiRouter.use("/tenant", createProfitShareRecipientReconcileRouter());
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
 apiRouter.use("/accounting", accountingRouter);
 // Manual + recurring journals with approval (WS-07, legend-vmyg).

@@ -33,16 +33,26 @@ CREATE TABLE "shareholder_recipient_versions" (
 );
 --> statement-breakpoint
 ALTER TABLE "distribution_lines" ADD COLUMN "recipient_user_id" text;--> statement-breakpoint
+ALTER TABLE "distribution_lines" ADD COLUMN "recipient_unverified" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "shareholder_recipient_versions_pending_key" ON "shareholder_recipient_versions" USING btree ("tenant_id","shareholder_id") WHERE "shareholder_recipient_versions"."status" = 'pending_approval';--> statement-breakpoint
 CREATE INDEX "shareholder_recipient_versions_chain_idx" ON "shareholder_recipient_versions" USING btree ("tenant_id","approval_chain_id");--> statement-breakpoint
 CREATE INDEX "distribution_lines_recipient_idx" ON "distribution_lines" USING btree ("tenant_id","recipient_user_id");--> statement-breakpoint
+CREATE INDEX "distribution_lines_recipient_unverified_idx" ON "distribution_lines" USING btree ("tenant_id") WHERE "distribution_lines"."recipient_unverified";--> statement-breakpoint
 -- Custom SQL (Codex 379, bead legend-33im6): recipient changes are versioned
 -- and approved; past lines keep the recipient they were created for.
 --
 -- 1. Tenant RLS on the new table (TEN-01/02); nothing is ever deleted.
--- 2. Backfill: a line created before this migration takes its shareholder's
---    login as it is now (the only identity known). The lines guard freezes
---    lines of submitted runs, so it is paused for this one statement only.
+-- 2. Backfill (Codex 405): no trusted snapshot of who a line was created for
+--    exists before this migration (recipient_user_id is new here), and the
+--    shareholder's login today may differ from the one at creation time, so
+--    copying it would hand a later login the old statements. Old lines keep
+--    recipient_user_id NULL; only PAID ones whose shareholder has a login now
+--    are marked recipient_unverified. They are visible to no login until an
+--    Owner reconciles them. An unpaid line is unreadable anyway (statements
+--    exist only for paid lines), and flagging it would block its payment
+--    recipient: it stays NULL, unflagged, and gets the login at payment time
+--    like any new line. The lines guard freezes lines of submitted runs, so it
+--    is paused for this one statement only.
 -- 3. A decided recipient version is frozen; only pending_approval may move.
 SELECT app.enforce_tenant_rls('public.shareholder_recipient_versions'::regclass);
 --> statement-breakpoint
@@ -52,14 +62,15 @@ ALTER TABLE public.distribution_lines DISABLE TRIGGER distribution_lines_guard_t
 --> statement-breakpoint
 -- The deferred totals check (0217) would otherwise be queued by the UPDATE and
 -- run at commit, after FORCE RLS is back on, without a tenant context. The
--- UPDATE changes only recipient_user_id, so no total moves.
+-- UPDATE changes only recipient_unverified, so no total moves.
 ALTER TABLE public.distribution_lines DISABLE TRIGGER distribution_lines_totals_trg;
 --> statement-breakpoint
 UPDATE public.distribution_lines l
-SET recipient_user_id = s.user_id
+SET recipient_unverified = true
 FROM public.shareholders s
 WHERE s.tenant_id = l.tenant_id AND s.id = l.shareholder_id
-  AND l.recipient_user_id IS NULL AND s.user_id IS NOT NULL;
+  AND l.recipient_user_id IS NULL AND s.user_id IS NOT NULL
+  AND l.payment_status = 'paid';
 --> statement-breakpoint
 ALTER TABLE public.distribution_lines ENABLE TRIGGER distribution_lines_totals_trg;
 --> statement-breakpoint
@@ -100,6 +111,9 @@ CREATE TRIGGER "shareholder_recipient_versions_guard_trg"
 -- 4. Paying a line also records who it was paid to: a login linked after the
 --    line was created must still see its statement, so recipient_user_id joins
 --    the pay-once columns (draft lines stay free, nothing else is loosened).
+--    One more branch (Codex 405): an Owner may reconcile a line flagged
+--    recipient_unverified by setting its recipient (a login, or NULL for none)
+--    and clearing the flag, with every other column unchanged.
 CREATE OR REPLACE FUNCTION app.distribution_lines_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
@@ -134,6 +148,13 @@ BEGIN
     IF run_status IN ('approved', 'paid') AND OLD.payment_status = 'paid'
        AND OLD.statement_file_key IS NULL AND NEW.statement_file_key IS NOT NULL
        AND (to_jsonb(NEW) - 'statement_file_key') = (to_jsonb(OLD) - 'statement_file_key') THEN
+      RETURN NEW;
+    END IF;
+    -- Reconcile an unverified recipient once, nothing else changing.
+    IF OLD.recipient_unverified = true AND OLD.recipient_user_id IS NULL
+       AND NEW.recipient_unverified = false
+       AND (to_jsonb(NEW) - ARRAY['recipient_user_id', 'recipient_unverified'])
+         = (to_jsonb(OLD) - ARRAY['recipient_user_id', 'recipient_unverified']) THEN
       RETURN NEW;
     END IF;
     IF to_jsonb(NEW) = to_jsonb(OLD) THEN

@@ -589,6 +589,14 @@ export const distributionLines = pgTable(
      * later recipient change cannot open another person's history.
      */
     recipientUserId: text("recipient_user_id"),
+    /**
+     * Set by migration 0239 on a line created before recipient snapshots whose
+     * shareholder has a login today (Codex 405): the original recipient is
+     * unknown, so no login sees it until an Owner reconciles it.
+     */
+    recipientUnverified: boolean("recipient_unverified")
+      .notNull()
+      .default(false),
     /** Canonical allocation order (by shareholder id), as calculated. */
     position: integer("position").notNull(),
   },
@@ -621,6 +629,9 @@ export const distributionLines = pgTable(
       table.tenantId,
       table.recipientUserId,
     ),
+    index("distribution_lines_recipient_unverified_idx")
+      .on(table.tenantId)
+      .where(sql`${table.recipientUnverified}`),
     check(
       "distribution_lines_share_bp_check",
       sql`${table.shareBp} > 0 AND ${table.shareBp} <= 10000`,

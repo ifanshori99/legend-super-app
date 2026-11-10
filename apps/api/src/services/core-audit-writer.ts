@@ -172,7 +172,16 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
   ],
   // legend-b8y6l: only the self-approval marker ("sole_owner") is shown;
   // the rest of the decision snapshot stays masked as before.
-  "approval.decided": ["selfApproval"],
+  "approval.decided": ["selfApproval", "status", "level", "actionType"],
+  // legend-9t04v: an Owner assigned the recipient of a pre-snapshot line. The
+  // note lives in `reason`; ids only, no names.
+  "profit_share.recipient_reconciled": [
+    "recipientUnverified",
+    "recipientUserId",
+    "distributionRunId",
+    "shareholderId",
+    "paymentStatus",
+  ],
 };
 
 export const coreAuditWriter: AuditWriter = {
