@@ -37,6 +37,12 @@ Dijawab founder 10 Nov:
 - Q73: dua gateway boleh aktif bersamaan per metode, dengan cadangan otomatis saat gateway utama gangguan.
 - Q74: Duitku dibangun sekarang, sebelum rilis pertama; dinyalakan per brand begitu akun Duitku ada.
 
+## Asumsi aman untuk semua gateway (founder 10 Nov: jangan menunggu jawaban DOIT/Duitku)
+Berlaku di level adapter/registry, untuk DOIT dan Duitku:
+1. Toleransi waktu tanda tangan webhook tidak diketahui: jendela waktu jadi konfigurasi per gateway (bawaan tetap 25 jam ke belakang, 5 menit ke depan). Keamanan replay tidak bergantung pada jendela itu: dedupe simpan-lalu-proses, dan status lunas dipastikan lewat `getStatus` ke gateway sebelum ditandai bila payload tidak membawa signature yang cukup.
+2. Rotasi secret webhook tidak diketahui: kredensial integrasi menyimpan secret aktif dan secret sebelumnya dengan masa tenggang; verifikasi menerima keduanya selama tenggang; rotasi tercatat di audit.
+3. Status `failed`/`expired` bisa berubah jadi `paid`: perlakukan sebagai mungkin. Pembayaran terverifikasi yang datang sesudah intent `failed`/`expired` dicatat sebagai pembayaran terlambat lewat jalur yang ada (refund pembayaran terlambat / dana belum teralokasi), tidak pernah diabaikan dan tidak membuat order lunas dua kali. Test untuk ketiganya.
+
 ## Pakai ulang dari 119connect (diperiksa CTO 10 Nov)
 Repo `/Users/ifanshori99/Projects/119connect-portal-alumni` (bukan salinan `119connect-portal-alumni-main` yang lebih lama). Baca-saja, jangan ubah repo itu.
 - Pindahkan (port, sesuaikan gaya Legend): `apps/api/src/lib/payment/duitku.ts` (helper signature `:100-141`, `kirim`, inquiry v2, transactionStatus, verifikasi callback `:200-228` termasuk cek nominal) dan `apps/api/src/test/duitku.test.ts` (22 test). Signature di sana: HMAC-SHA256 berkunci `apiKey` sebagai bawaan, md5 sebagai varian lama (`DUITKU_SIGNATURE`). Cocokkan dengan dokumentasi resmi Duitku sebelum dipakai.

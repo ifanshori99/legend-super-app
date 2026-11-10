@@ -874,3 +874,4 @@ Langkah berikut CTO baru:
 - 07:12 Cek 119connect: port klien Duitku + 22 test (duitku.ts), sisanya pakai routing/integrasi Legend. Brief 302 diperbarui.
 - 07:12 G17fa lifecycle KPI selesai 5f864932 (0206), resolve, antre batch44 sesudah hr-scheduling. arj.6 (clearance otomatis) P2 sebelum rilis.
 - 07:14 Founder: domain email per brand diatur Super Admin lewat SumoPod custom domain; belum punya domain. Kartu legend-m0mch.
+- 07:15 Founder: B1 (tanya DOIT) dibatalkan; 3 hal ditangani sendiri di adapter (brief 302).
