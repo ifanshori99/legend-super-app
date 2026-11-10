@@ -1136,3 +1136,4 @@ Langkah berikut CTO baru:
 - Subagent CTO "Fix Duitku review nits" (DECISIONS.md:1284, expectNothingPaid) masih jalan di .worktrees/duitku-406.
 - Serah terima: sesi CTO ini sudah compact 2x -> CTO baru lanjut dari berkas ini. Cron (session-only) wajib dibuat ulang: retro 3 jam `43 1,4,7,10,13,16,19,22 * * *`, push GitHub tiap jam :17. Q berikut: Q12.
 - 05:16 Founder Q11: UI PIN slip gaji disetujui (gerbang UI lewat). Layar lupa PIN WhatsApp tetap menunggu mockup 425 + review founder.
+- 05:18 Duitku nits selesai: 10c6e338 di ws/duitku-406 (DECISIONS paidAt, expectNothingPaid ketat, flake F4 2ms dibetulkan), 15/15. Founder menambah akun Codex.
