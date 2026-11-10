@@ -1905,3 +1905,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti: test baru `order-recovery-refund-codex422.test.ts` 15 test. Gagal-dulu: di 095b4099 14/17 gagal (codex422 + cek SQL), T6 gagal 2/2 di 2b42c788. 9 file terarah 140/140 lulus. tsc, eslint, prettier bersih, db:generate kosong.
 - Untuk CTO: order promo yang item-nya di-swap ke menu lebih murah setelah gagal final masih me-replay jumlah item asal (ditambah voucher selisih). Sudah ada sejak desain Round 3, perlu keputusan.
 - Langkah berikut: kartu legend-pbwzq review; second-opinion Codex ulang area refund bila CTO mau.
+
+### legend-fwe4l (11 Nov 2026) — refund baris pengganti dibatasi nilai baris itu (keputusan founder Q17)
+- Sudah: bila baris yang dilaporkan adalah baris pengganti (swap), refund-nya dibatasi nilai baris itu sendiri tanpa promo (`recoveryRefundSplit` baris itu, `.wantedIdr`), di jalur replay dan hitung ulang promo. Replay dengan akar baris yang sama tidak dipotong ulang. Ledger promo tetap mencatat goods pra-cap (dipotong room hanya bila room < jumlah pasca-cap). Audit `swapCapIdr` saat cap memotong.
+- Architect xhigh 2x: F1 (swap langsung tanpa refund gagal lolos cap) dibetulkan 376d33a4; cek ulang: regresi replay baris sama + goods ledger terhadap room dibetulkan dc7c4270.
+- Bukti gagal-dulu: di b36d5d3c 7 gagal; di 631344cf 10 gagal (swap langsung, unit cap); di 29926efc 2 gagal (replay baris sama, goods vs room). 11 file terarah 193/193 lulus. tsc, eslint, prettier bersih; db:generate kosong.
+- Untuk CTO: (F2) voucher selisih dihitung dari harga daftar, jadi di order promo voucher + refund bisa melebihi nilai kopi setelah promo (contoh test: voucher 20.000 + 3.885 vs kopi 8.085). (Temuan 2) order yang sudah selesai mencatat baris pengganti Rp0 -> refund-nya nothing_left dan goods kopi tidak tercatat di ledger, sehingga refund item lain berikutnya bisa ikut membayar porsi promo itu. Keduanya di luar diff, perlu keputusan.
