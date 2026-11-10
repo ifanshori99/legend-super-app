@@ -145,7 +145,7 @@ Form ini memakai layar PIN yang sudah dibangun; enam kotak di layar ini hanya un
 ## Sumber, asumsi, dan keputusan yang belum menjadi kontrak
 
 - Referensi utama yang dibaca satu per satu: `lupa-pin-390.png`, `lupa-pin-belum-tersedia-390.png`, `kode-whatsapp-390.png`, `buat-pin-390.png`, dan `pin-tersimpan-390.png` di `.worktrees/payslip-pin-ui/design/screenshots/payslip-pin/`. `DESIGN.md`, `design/REFERENCES.md`, standar tim, brief #412, #424, dan #425 menjadi konteks pendukung. Bukti visual berasal dari repo, tanpa klaim audit produk luar.
-- **Nomor tujuan `+62 812-0000-4250` adalah ilustrasi mockup, bukan nomor layanan.** Nomor layanan sebenarnya belum tersedia dalam bahan. Implementasi wajib menggantinya dengan konfigurasi tujuan WhatsApp yang sah dan konsisten antara label, tombol salin, dan pembuka WhatsApp. Sumber mockup tidak memiliki tautan wa.me aktif ke nomor contoh.
+- **Nomor tujuan `+62 812-0000-4250` adalah ilustrasi mockup, bukan nomor layanan.** Nomor layanan sebenarnya belum tersedia dalam bahan; nama tujuan “WhatsApp Cafe Legend” juga ilustratif dan harus mengikuti identitas layanan yang benar. Implementasi wajib menggantinya dengan konfigurasi tujuan WhatsApp yang sah dan konsisten antara label, tombol salin, dan pembuka WhatsApp. Sumber mockup tidak memiliki tautan wa.me aktif ke nomor contoh.
 - **Nomor pengirim tersamar, pesan `PIN K7M9-2Q4P`, dan countdown adalah data contoh.** Jangan memperlakukan format kode sebagai kontrak atau kode operasional. Jangan memasukkan PIN pribadi ke pesan WhatsApp.
 - **TTL 5 menit mengikuti referensi lama sebagai asumsi visual saja.** Kontrak verifikasi masuk #424 menentukan TTL, format pesan, lifecycle tantangan, polling/SSE, dan batas percobaan final. Countdown pembatasan 09:59 adalah snapshot nilai `retry-after`, bukan usulan aturan sepuluh menit.
 - Tombol WhatsApp pada mockup hanya menjelaskan aksi yang akan dilakukan produk. Tidak mengirim pesan atau memverifikasi nomor sungguhan. Keberhasilan backend, kirim WhatsApp, dan reset HR belum diuji melalui mockup.
@@ -167,6 +167,29 @@ heavy node design/mockups/payslip-pin-inbound/render.cjs
 ```
 
 Hasil pemeriksaan akhir dan ukuran masing-masing layar dicatat setelah ekspor pada `verification.json`. Pemeriksaan ini memverifikasi artefak desain; bukan bukti integrasi WhatsApp.
+
+## Hasil verifikasi akhir
+
+- Ekspor terakhir: `2026-11-10T22:29:11.363Z`; **10/10 PNG lulus** melalui `heavy node design/mockups/payslip-pin-inbound/render.cjs`.
+- Lebar tepat 390 px; font Jakarta lokal termuat; tidak ada overflow horizontal, teks terpotong, copy utama hilang, pola input OTP lama, tautan WhatsApp aktif, error JavaScript, atau permintaan jaringan luar. Pemeriksaan kontras teks AA dan target kontrol minimal 24 px lulus; CTA utama 56 px.
+- Sembilan footer nonmodal dibandingkan dengan tangkapan navigasi terpisah: **0 piksel berbeda**. Layar dialog dikecualikan karena latarnya memang diredupkan. Artefak footer dari run awal sudah diperbaiki dengan halaman browser baru pada ukuran ekspor akhir.
+- Reviewer membaca seluruh 10 PNG satu per satu dan memeriksa ulang tiga gambar hasil perbaikan; tidak ada temuan tersisa. Syntax JavaScript sumber dan renderer serta `git diff --check` lulus.
+- PNG panjang menampilkan seluruh konten tanpa mengecilkan teks; pada HP 390×844 konten tetap dapat digulir, dengan CTA Buka WhatsApp berada sebelum lipatan layar. Dialog sukses diekspor pada viewport 390×844.
+
+| Layar | Ukuran PNG |
+| --- | --- |
+| `lupa-pin-mobile.png` | 390 × 864 px |
+| `menunggu-whatsapp-mobile.png` | 390 × 1148 px |
+| `kode-disalin-mobile.png` | 390 × 1148 px |
+| `terverifikasi-mobile.png` | 390 × 844 px |
+| `kode-kedaluwarsa-mobile.png` | 390 × 844 px |
+| `nomor-tidak-cocok-mobile.png` | 390 × 918 px |
+| `terlalu-banyak-percobaan-mobile.png` | 390 × 845 px |
+| `nomor-belum-terdaftar-mobile.png` | 390 × 861 px |
+| `bantuan-hr-mobile.png` | 390 × 865 px |
+| `buat-pin-baru-mobile.png` | 390 × 917 px |
+
+Tidak ada build, e2e aplikasi, pesan WhatsApp nyata, atau perubahan PIN nyata yang dijalankan. Ini verifikasi artefak mockup sesuai batas peran designer.
 
 ## Catatan pengerjaan
 

@@ -1,0 +1,3130 @@
+{
+  "generatedAt": "2026-11-10T22:29:11.363Z",
+  "scope": "Static design export. No app, WhatsApp, backend, keyboard flow, or real verification integration tested.",
+  "screenshotCount": 10,
+  "width": 390,
+  "passed": true,
+  "results": [
+    {
+      "screen": "lupa-pin",
+      "file": "lupa-pin-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 864,
+        "bytes": 57482
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 864
+      },
+      "document": {
+        "width": 390,
+        "height": 864
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Lewat WhatsApp",
+          "x": 37,
+          "y": 342,
+          "width": 316,
+          "height": 56
+        },
+        {
+          "label": "Lihat cara minta bantuan",
+          "x": 37,
+          "y": 567,
+          "width": 316,
+          "height": 56
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Lupa PIN?",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Pilih cara untuk membuat PIN baru.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Lewat WhatsApp",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Kirim pesan dari nomor yang terdaftar.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 18,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Tidak bisa pakai nomor terdaftar? Minta reset PIN ke HR atau supervisor di outlet.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Lihat cara minta bantuan",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PIN tetap pribadi",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 750,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "HR bisa mereset PIN, tetapi tidak bisa melihat atau menentukan PIN Anda.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "menunggu-whatsapp",
+      "file": "menunggu-whatsapp-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 1148,
+        "bytes": 80482
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 1148
+      },
+      "document": {
+        "width": 390,
+        "height": 1148
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Buka WhatsApp",
+          "x": 37,
+          "y": 512,
+          "width": 316,
+          "height": 56
+        },
+        {
+          "label": "Salin kode",
+          "x": 37,
+          "y": 881,
+          "width": 316,
+          "height": 50
+        },
+        {
+          "label": "Salin nomor tujuan",
+          "x": 37,
+          "y": 931,
+          "width": 316,
+          "height": 48
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "x": 16,
+          "y": 1012,
+          "width": 358,
+          "height": 48
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Kirim lewat WhatsApp",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Gunakan nomor terdaftar: +62 812-••••-4821",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "+62 812-••••-4821",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Pesan yang akan dikirim",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "PIN K7M9-2Q4P",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 24,
+          "weight": 750,
+          "ratio": 15.66,
+          "required": 3
+        },
+        {
+          "label": "Berlaku 04:59 lagi",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "04:59",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "Buka WhatsApp",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Pesan sudah terisi. Tekan Kirim tanpa mengubahnya, lalu kembali ke halaman ini.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Menunggu pesan Anda…",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Verifikasi muncul di sini, tanpa balasan WhatsApp.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "WhatsApp di perangkat lain?",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 18,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Kirim kode ke nomor WhatsApp Cafe Legend:",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "+62 812-0000-4250",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Salin kode",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Salin nomor tujuan",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "kode-disalin",
+      "file": "kode-disalin-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 1148,
+        "bytes": 84674
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 1148
+      },
+      "document": {
+        "width": 390,
+        "height": 1148
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Buka WhatsApp",
+          "x": 37,
+          "y": 512,
+          "width": 316,
+          "height": 56
+        },
+        {
+          "label": "Kode disalin",
+          "x": 37,
+          "y": 881,
+          "width": 316,
+          "height": 50
+        },
+        {
+          "label": "Salin nomor tujuan",
+          "x": 37,
+          "y": 931,
+          "width": 316,
+          "height": 48
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "x": 16,
+          "y": 1012,
+          "width": 358,
+          "height": 48
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Kirim lewat WhatsApp",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Gunakan nomor terdaftar: +62 812-••••-4821",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "+62 812-••••-4821",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Pesan yang akan dikirim",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "PIN K7M9-2Q4P",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 24,
+          "weight": 750,
+          "ratio": 15.66,
+          "required": 3
+        },
+        {
+          "label": "Berlaku 04:59 lagi",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "04:59",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "Buka WhatsApp",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Pesan sudah terisi. Tekan Kirim tanpa mengubahnya, lalu kembali ke halaman ini.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Menunggu pesan Anda…",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Verifikasi muncul di sini, tanpa balasan WhatsApp.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "WhatsApp di perangkat lain?",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 18,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Kirim kode ke nomor WhatsApp Cafe Legend:",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "+62 812-0000-4250",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Kode disalin",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Salin nomor tujuan",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Kode disalin. Tempel dan kirim lewat WhatsApp.",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 17.21,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "terverifikasi",
+      "file": "terverifikasi-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 844,
+        "bytes": 64194
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "passed": true,
+        "excluded": "Navigation intentionally covered by modal backdrop."
+      },
+      "backgroundIntentionallyCropped": true,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "document": {
+        "width": 390,
+        "height": 1148
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Buka WhatsApp",
+          "x": 37,
+          "y": 512,
+          "width": 316,
+          "height": 56
+        },
+        {
+          "label": "Salin kode",
+          "x": 37,
+          "y": 881,
+          "width": 316,
+          "height": 50
+        },
+        {
+          "label": "Salin nomor tujuan",
+          "x": 37,
+          "y": 931,
+          "width": 316,
+          "height": 48
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "x": 16,
+          "y": 1012,
+          "width": 358,
+          "height": 48
+        },
+        {
+          "label": "Buat PIN baru",
+          "x": 41,
+          "y": 472,
+          "width": 308,
+          "height": 56
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Nomor berhasil diverifikasi",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 23,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Sekarang buat PIN slip gaji yang baru.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Buat PIN baru",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "kode-kedaluwarsa",
+      "file": "kode-kedaluwarsa-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 844,
+        "bytes": 49353
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "document": {
+        "width": 390,
+        "height": 844
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Buat kode baru",
+          "x": 37,
+          "y": 590,
+          "width": 316,
+          "height": 56
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "x": 16,
+          "y": 679,
+          "width": 358,
+          "height": 48
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Kode sudah kedaluwarsa",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Pesan dengan kode ini tidak bisa dipakai lagi. Buat kode baru, lalu kirim lewat WhatsApp.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Kode tidak berlaku",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "PIN K7M9-2Q4P",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 24,
+          "weight": 750,
+          "ratio": 5.33,
+          "required": 3
+        },
+        {
+          "label": "00:00",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "Buat kode baru",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "nomor-tidak-cocok",
+      "file": "nomor-tidak-cocok-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 918,
+        "bytes": 59192
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 918
+      },
+      "document": {
+        "width": 390,
+        "height": 918
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Coba dari nomor terdaftar",
+          "x": 37,
+          "y": 556,
+          "width": 316,
+          "height": 56
+        },
+        {
+          "label": "Lihat cara minta bantuan",
+          "x": 37,
+          "y": 761,
+          "width": 316,
+          "height": 48
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Nomor WhatsApp tidak cocok",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Pesan dikirim dari nomor yang berbeda. Gunakan nomor yang terdaftar:",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "+62 812-••••-4821",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "Pilih akun WhatsApp dengan nomor tersebut sebelum mengirim pesan.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Coba dari nomor terdaftar",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Nomor sudah berubah?",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 18,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor di outlet untuk memperbarui nomor atau mereset PIN.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Lihat cara minta bantuan",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "terlalu-banyak-percobaan",
+      "file": "terlalu-banyak-percobaan-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 845,
+        "bytes": 54780
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 845
+      },
+      "document": {
+        "width": 390,
+        "height": 845
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Lihat cara minta bantuan",
+          "x": 37,
+          "y": 612,
+          "width": 316,
+          "height": 56
+        },
+        {
+          "label": "Kembali ke slip gaji",
+          "x": 37,
+          "y": 680,
+          "width": 316,
+          "height": 56
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Terlalu banyak percobaan",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Pemulihan lewat WhatsApp dibatasi sementara. Tunggu sebelum mencoba lagi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Coba lagi dalam",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "09:59",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 28,
+          "weight": 750,
+          "ratio": 15.66,
+          "required": 3
+        },
+        {
+          "label": "Sambil menunggu, Anda bisa minta reset PIN ke HR atau supervisor di outlet.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Lihat cara minta bantuan",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Kembali ke slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "nomor-belum-terdaftar",
+      "file": "nomor-belum-terdaftar-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 861,
+        "bytes": 54351
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 861
+      },
+      "document": {
+        "width": 390,
+        "height": 861
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Lihat cara minta bantuan",
+          "x": 37,
+          "y": 496,
+          "width": 316,
+          "height": 56
+        },
+        {
+          "label": "Kembali ke slip gaji",
+          "x": 37,
+          "y": 564,
+          "width": 316,
+          "height": 56
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Nomor WhatsApp belum terdaftar",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Pemulihan lewat WhatsApp belum bisa dipakai. Minta HR atau supervisor di outlet memperbarui nomor at",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Lihat cara minta bantuan",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Kembali ke slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PIN tetap pribadi",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 750,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "HR bisa mereset PIN, tetapi tidak bisa melihat atau menentukan PIN Anda.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "bantuan-hr",
+      "file": "bantuan-hr-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 865,
+        "bytes": 55538
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 865
+      },
+      "document": {
+        "width": 390,
+        "height": 865
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Kembali ke slip gaji",
+          "x": 37,
+          "y": 700,
+          "width": 316,
+          "height": 56
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Minta bantuan HR atau supervisor",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Hubungi HR atau supervisor di outlet dan minta reset PIN slip gaji.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "1",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 750,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "Minta reset PIN",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Sampaikan bahwa Anda lupa PIN slip gaji.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "2",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 750,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "Buka slip gaji lagi",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Setelah HR meresetnya, buat PIN baru sendiri.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "HR tidak bisa melihat atau menentukan PIN Anda.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "Kembali ke slip gaji",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    },
+    {
+      "screen": "buat-pin-baru",
+      "file": "buat-pin-baru-mobile.png",
+      "png": {
+        "width": 390,
+        "height": 917,
+        "bytes": 52357
+      },
+      "passed": true,
+      "failures": [],
+      "errors": [],
+      "networkRequests": [],
+      "footerPixels": {
+        "width": 390,
+        "height": 65,
+        "differingPixels": 0,
+        "totalPixels": 25350,
+        "passed": true
+      },
+      "backgroundIntentionallyCropped": false,
+      "viewport": {
+        "width": 390,
+        "height": 917
+      },
+      "document": {
+        "width": 390,
+        "height": 917
+      },
+      "fontFaces": [
+        {
+          "family": "Jakarta",
+          "status": "loaded"
+        }
+      ],
+      "localJakartaLoaded": true,
+      "missingCopy": [],
+      "wrongLegacyCopy": [],
+      "activeWhatsAppOnFailure": false,
+      "activeWaLinks": [],
+      "inputCount": 0,
+      "badInputs": false,
+      "horizontalOverflow": [],
+      "clipped": [],
+      "undersizedControls": [],
+      "controls": [
+        {
+          "label": "Slip gaji",
+          "x": 16,
+          "y": 71,
+          "width": 80.078125,
+          "height": 48
+        },
+        {
+          "label": "Simpan PIN",
+          "x": 37,
+          "y": 598,
+          "width": 316,
+          "height": 56
+        }
+      ],
+      "contrast": [
+        {
+          "label": "Cafe Legend",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 650,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "PRIVASI GAJI",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 750,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 32,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Akses informasi gaji Anda secara pribadi.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 14,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Buat PIN slip gaji",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 21,
+          "weight": 750,
+          "ratio": 17.21,
+          "required": 3
+        },
+        {
+          "label": "Buat PIN pribadi untuk membuka slip gaji Anda.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "PIN baru",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Gunakan 6 angka yang mudah Anda ingat.",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Ulangi PIN baru",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 17.21,
+          "required": 4.5
+        },
+        {
+          "label": "Simpan PIN",
+          "foreground": "rgb(255, 255, 255)",
+          "background": [
+            15,
+            94,
+            104
+          ],
+          "fontSize": 16,
+          "weight": 700,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Informasi",
+          "foreground": "rgb(28, 27, 25)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 750,
+          "ratio": 15.66,
+          "required": 4.5
+        },
+        {
+          "label": "PIN hanya dibuat dan diketahui oleh Anda. HR dapat mereset PIN, tetapi tidak dapat melihat atau mene",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            245,
+            244,
+            242
+          ],
+          "fontSize": 16,
+          "weight": 400,
+          "ratio": 5.33,
+          "required": 4.5
+        },
+        {
+          "label": "Karyawan",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Absen",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Riwayat",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        },
+        {
+          "label": "Slip Gaji",
+          "foreground": "rgb(15, 94, 104)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 650,
+          "ratio": 7.44,
+          "required": 4.5
+        },
+        {
+          "label": "Lainnya",
+          "foreground": "rgb(105, 100, 94)",
+          "background": [
+            255,
+            255,
+            255
+          ],
+          "fontSize": 12,
+          "weight": 400,
+          "ratio": 5.86,
+          "required": 4.5
+        }
+      ],
+      "contrastFailures": []
+    }
+  ]
+}

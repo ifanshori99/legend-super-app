@@ -129,6 +129,33 @@ async function inspect(page, key, expected) {
   }, { key, expected });
 }
 
+async function inspectFooterPixels(page, fullPng, footerPng, footerBox) {
+  return page.evaluate(async ({ full, footer, box }) => {
+    const load = (source) => new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('PNG pixel decode failed'));
+      image.src = source;
+    });
+    const images = await Promise.all([load(full), load(footer)]);
+    const canvas = document.createElement('canvas');
+    canvas.width = images[1].width;
+    canvas.height = images[1].height;
+    const context = canvas.getContext('2d');
+    context.drawImage(images[0], Math.round(box.x), Math.round(box.y), canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+    const actual = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(images[1], 0, 0);
+    const expected = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let differingPixels = 0;
+    for (let index = 0; index < actual.length; index += 4) {
+      if ([0, 1, 2].some((channel) => Math.abs(actual[index + channel] - expected[index + channel]) > 20)) differingPixels += 1;
+    }
+    const totalPixels = canvas.width * canvas.height;
+    return { width: canvas.width, height: canvas.height, differingPixels, totalPixels, passed: differingPixels / totalPixels <= .005 };
+  }, { full: `data:image/png;base64,${fullPng.toString('base64')}`, footer: `data:image/png;base64,${footerPng.toString('base64')}`, box: footerBox });
+}
+
 async function main() {
   if (!fs.existsSync(path.join(directory, 'index.html'))) throw new Error('index.html is not ready. No screenshots were generated.');
   const { chromium } = resolvePlaywright();
@@ -137,7 +164,7 @@ async function main() {
   const results = [];
   try {
     for (const [key, expected] of screens) {
-      const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
+      let page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
       // This source is self-contained. Any outgoing HTTP request is an export failure.
@@ -150,21 +177,40 @@ async function main() {
       // Include the full long state while keeping the 390px mobile width.
       // Resizing before capture keeps the fixed bottom navigation below the content.
       let height = 844;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+      const modalViewport = key === 'terverifikasi';
+      for (let attempt = 0; !modalViewport && attempt < 3; attempt += 1) {
         const contentHeight = await page.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
         if (contentHeight <= height) break;
         height = contentHeight;
         await page.setViewportSize({ width: 390, height });
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       }
+      // A fresh page at the final viewport avoids reusing resized compositor
+      // layers; Chrome can otherwise reuse the old fixed-nav tile incorrectly.
+      await page.close();
+      page = await browser.newPage({ viewport: { width: 390, height }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
+      page.on('pageerror', (error) => errors.push(error.message));
+      await page.route(/^https?:/, (route) => { networkRequests.push(route.request().url()); return route.abort(); });
+      await page.goto(url.href, { waitUntil: 'load' });
+      await page.evaluate(() => document.fonts.ready);
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.waitForTimeout(150);
       const checks = await inspect(page, key, expected);
       const file = `${key}-mobile.png`;
-      await page.screenshot({ path: path.join(directory, file), fullPage: false, animations: 'disabled' });
+      let footerPng;
+      let footerBox;
+      if (!modalViewport) {
+        footerBox = await page.locator('.bottom-nav').boundingBox();
+        footerPng = await page.locator('.bottom-nav').screenshot({ animations: 'disabled' });
+      }
+      const fullPng = await page.screenshot({ path: path.join(directory, file), fullPage: false, animations: 'disabled' });
+      const footerPixels = modalViewport ? { passed: true, excluded: 'Navigation intentionally covered by modal backdrop.' } : await inspectFooterPixels(page, fullPng, footerPng, footerBox);
       const size = pngSize(path.join(directory, file));
       const failures = [];
       if (size.width !== 390 || size.height !== height || size.bytes === 0) failures.push('PNG dimensions/content');
       if (!checks.localJakartaLoaded) failures.push('Local Jakarta font did not load');
       if (checks.document.width !== 390 || checks.horizontalOverflow.length) failures.push('Horizontal overflow');
-      if (checks.document.height > height) failures.push('Vertical content cropped');
+      if (!modalViewport && checks.document.height > height) failures.push('Vertical content cropped');
       if (checks.clipped.length) failures.push('Text clipped by overflow');
       if (checks.missingCopy.length) failures.push('Required copy missing');
       if (checks.wrongLegacyCopy.length || checks.badInputs) failures.push('Legacy OTP UI');
@@ -172,8 +218,9 @@ async function main() {
       if (checks.activeWaLinks.length) failures.push('Active external WhatsApp link in static mockup');
       if (checks.undersizedControls.length) failures.push('Control target below 24px');
       if (checks.contrastFailures.length) failures.push('Text contrast below AA');
+      if (!footerPixels.passed) failures.push('Fixed navigation pixels differ from isolated navigation capture');
       if (errors.length || networkRequests.length) failures.push('Script error or external network request');
-      results.push({ screen: key, file, png: size, passed: failures.length === 0, failures, errors, networkRequests, ...checks });
+      results.push({ screen: key, file, png: size, passed: failures.length === 0, failures, errors, networkRequests, footerPixels, backgroundIntentionallyCropped: modalViewport, ...checks });
       console.log(`${key}: ${size.width}x${size.height}, ${failures.length ? `FAIL ${failures.join('; ')}` : 'PASS'}`);
       await page.close();
     }
