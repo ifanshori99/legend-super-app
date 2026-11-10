@@ -115,6 +115,19 @@ TRUST_PROXY=2
 # TRUSTED_ORIGINS=https://admin.example.com
 # Optional direct connection when DATABASE_URL uses a pooler:
 # MIGRATION_DATABASE_URL=postgresql://user:password@direct-host:5432/app
+# Optional: member sign-in email over SMTP (legend-k2l). SMTP_HOST, SMTP_USER,
+# SMTP_PASS and EMAIL_FROM together or none; none = email sign-in answers 503.
+# Port 465 uses implicit TLS (SMTP_SECURE=true); SMTP_SECURE=false requires STARTTLS.
+# SMTP_HOST=smtp.example.com
+# SMTP_PORT=465
+# SMTP_SECURE=true
+# SMTP_USER=replace_me
+# SMTP_PASS=replace_me
+# EMAIL_FROM=masuk@example.com
+# Optional: member Google sign-in (legend-k2l). Both or neither; neither = off.
+# Redirect URI: <BETTER_AUTH_URL>/api/auth/callback/google
+# GOOGLE_CLIENT_ID=replace_me
+# GOOGLE_CLIENT_SECRET=replace_me
 ```
 
 **Web**:

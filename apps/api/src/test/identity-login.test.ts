@@ -350,6 +350,15 @@ describe("WhatsApp reverse-OTP login", () => {
         text: `MASUK LEGEND ${issued.body.data.codeFormatted}`,
       }),
     );
+    // A WhatsApp-only owner is merged into the linking account (design ws08
+    // M3), so it is not refused. Give the owner an email identity too: such an
+    // account is real, and the link is refused for support to resolve.
+    await owner.query(
+      `INSERT INTO user_identities (user_id, type, value_hash, verified_at)
+       SELECT user_id, 'email', $1, now() FROM user_identities
+       WHERE type = 'whatsapp' LIMIT 1`,
+      [randomBytes(32).toString("hex")],
+    );
     const second = agent(app).host(fixtures.domains[0]!.hostname);
     await signUp(second);
     const other = await second
@@ -371,7 +380,7 @@ describe("WhatsApp reverse-OTP login", () => {
       `/api/auth/login-challenges/${other.body.data.challenge.id}`,
     );
     expect(conflict.status).toBe(409);
-    expect(conflict.body.error.code).toBe("IDENTITY_ALREADY_LINKED");
+    expect(conflict.body.error.code).toBe("IDENTITY_MERGE_NEEDS_SUPPORT");
   });
 
   it("AUTH-07 refuses linking after the initiating session is revoked", async () => {

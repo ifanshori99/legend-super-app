@@ -126,6 +126,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "gives unverified custom tenant_domains rows a DNS verification token (legend-t57t); only rows with no token, idempotent",
   "0186_stock_ledger_posting_seq.sql":
     "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
+  // legend-k2l
+  "0221_k2l_member_signin_identity.sql":
+    "sets session.auth_method on the existing session rows (management sessions become password, every other row legacy) so the sign-in method gate keeps today's staff sessions working (legend-k2l); no other column changes, never inserts or deletes rows",
   "0187_audit_retention_maintenance.sql":
     "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
   // legend-111j

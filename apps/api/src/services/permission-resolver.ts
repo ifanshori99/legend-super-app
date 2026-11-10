@@ -21,6 +21,7 @@
 // station-bound service re-asserts the station from this same snapshot
 // (legend-fsb7).
 
+import { requestMayUseStaffRoles } from "../lib/request-context";
 import {
   PERMISSION_CODES,
   roleAssignmentSchema,
@@ -115,15 +116,20 @@ export async function loadTenantAccessInTransaction(
   // One query at a time on the tenant transaction: pg serialises concurrent
   // queries on a single client anyway, and its deprecation warning would
   // otherwise fire on every request.
-  const assignmentRows = await tx
-    .select()
-    .from(roleAssignments)
-    .where(
-      and(
-        eq(roleAssignments.tenantId, context.tenant.tenantId),
-        eq(roleAssignments.userId, userId),
-      ),
-    );
+  // legend-k2l (design ws08 M2 "Sign-in method gate"): a caller whose session
+  // did not sign in with the password holds no staff assignment on this
+  // request, so every tenant, outlet and station guard answers 403.
+  const assignmentRows = !requestMayUseStaffRoles(userId)
+    ? []
+    : await tx
+        .select()
+        .from(roleAssignments)
+        .where(
+          and(
+            eq(roleAssignments.tenantId, context.tenant.tenantId),
+            eq(roleAssignments.userId, userId),
+          ),
+        );
   const roleRows = await tx
     .select()
     .from(roles)
