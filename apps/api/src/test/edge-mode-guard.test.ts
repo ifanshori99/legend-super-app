@@ -166,6 +166,36 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
       expect(classifyApiPath(path), path).toBe("cloud_only");
   });
 
+describe("legend-j6cyb edge allowlist for HRIS attendance", () => {
+  // WIP, skipped: red until /api/hris/attendance/clock joins EDGE_API_PREFIXES.
+  // Blocked on the HRIS master replication design for the edge (employees,
+  // devices, policy, QR secret, shifts, role assignments) and offline selfie
+  // storage; see `bd show legend-j6cyb`. Enable together with that slice.
+  it.skip("serves only the clock endpoint of /api/hris on the edge", () => {
+    for (const path of [
+      "/api/hris/attendance/clock",
+      "/API/HRIS/attendance/clock",
+    ])
+      expect(classifyApiPath(path), path).toBe("edge_and_cloud");
+    for (const path of [
+      "/api/hris",
+      "/api/hris/attendance",
+      "/api/hris/attendance/logs",
+      "/api/hris/attendance/qr",
+      "/api/hris/attendance/qr/rotate",
+      "/api/hris/attendance/devices",
+      "/api/hris/attendance/devices/bind",
+      "/api/hris/attendance/devices/abc/revoke",
+      "/api/hris/attendance/policy",
+      "/api/hris/attendance/corrections",
+      "/api/hris/attendance/clockx",
+      "/api/hris/employees",
+      "/api/hris/payroll",
+    ])
+      expect(classifyApiPath(path), path).toBe("cloud_only");
+  });
+});
+
   it("the edge refuses sign-up, the admin plugin and outlet back office over HTTP", async () => {
     const edge = app(true);
     for (const path of [
