@@ -951,3 +951,4 @@ Langkah berikut CTO baru:
 - 17:08 C6 interop C5 cocok, merge 9afc06f4 (1005 tes hijau). Batch47: 0wvoz menggantikan we0yc (sudah memuat). Lint C5 dibetulkan di 0wvoz.
 - 17:08 C6 final 8fa3f787 (ws/0wvoz-selfie-ingest, memuat we0yc). Batch47 pakai 8fa3f787.
 - 17:13 GitHub: repo privat ifanshori99/legend-super-app dibuat, 180 cabang di-push (scan rahasia bersih, hanya fixture). Aturan baru: thread push cabang kerja tiap commit; main hanya gerbang founder; cron CTO push --all tiap jam. Brief baru: ganti 'Jangan push' jadi 'push cabang kerja ke origin'.
+- 17:17 C7 hubzo 2d0cf65d (architect 1 sedang + 2 rendah dibetulkan). Lanjutan: merge 0wvoz + test integrasi rute C6 asli + kolom rejected_at (0233).
