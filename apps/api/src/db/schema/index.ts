@@ -149,3 +149,5 @@ export * from "./crm-feedback";
 export * from "./crm-segments";
 // WS-08 loyalty tiers, tier history, referrals (legend-3zd1).
 export * from "./crm-tiers";
+// Panic alert relay (legend-bod).
+export * from "./panic-alert";
