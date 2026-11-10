@@ -703,11 +703,14 @@ async function orderBlocksClaim(
 }
 
 /**
- * GET .../splits/:splitId/claim. `unavailable` until the part is paid;
+ * GET .../splits/:splitId/claim. `unavailable` when the paid part shows no
+ * code (no token, or its order is voided, refunded, a member's or practice);
  * `available` shows the token for 24 hours; `claimed` once redeemed;
  * `expired` after the deadline. The part ids are public to the table, so the
- * read also needs the payment intent of that very part (`paymentId`). A wrong
- * part, an unknown part or a foreign intent answer the same NOT_FOUND.
+ * read also needs the paid intent that settled that very part (`paymentId` =
+ * `bill_splits.payment_intent_id`, status paid). A wrong part, an unknown
+ * part, a foreign, old or replaced intent, or a part not yet paid answer the
+ * same NOT_FOUND (legend-ec6fa).
  */
 export async function getSplitClaim(
   context: ScopedTenantContext,
@@ -743,7 +746,8 @@ export async function getSplitClaim(
                 and(
                   eq(paymentIntents.tenantId, tenantId),
                   eq(paymentIntents.id, paymentId),
-                  eq(paymentIntents.billSplitId, billSplits.id),
+                  eq(paymentIntents.id, billSplits.paymentIntentId),
+                  eq(paymentIntents.status, "paid"),
                 ),
               ),
           ),

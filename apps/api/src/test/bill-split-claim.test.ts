@@ -397,19 +397,18 @@ afterAll(async () => {
 });
 
 describe("split part claim token (legend-ms3)", () => {
-  it("SPLIT-CLAIM-UNAVAILABLE an unpaid part has no token", async () => {
+  it("SPLIT-CLAIM-UNAVAILABLE an unpaid part has no token: its pending intent is no proof yet (404)", async () => {
     const part = orderParts[0]!;
-    // The guest opened a code for the part but has not paid it yet.
+    // The guest opened a code for the part but has not paid it yet. Only the
+    // paid intent that settled the part is proof, so the read is NOT_FOUND.
     const pay = await as(guest).paySplit(part.id);
     expect(pay.status, JSON.stringify(pay.body)).toBe(201);
     const response = await as(guest).claim(part.id, pay.body.data.id);
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(response.body.data).toEqual({
-      billSplitId: part.id,
-      status: "unavailable",
-      claimToken: null,
-      claimableUntil: null,
-    });
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body.error?.message).toBe(
+      "Bagian tagihan tidak ditemukan.",
+    );
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
     const row = await claimRow(part.id);
     expect(row.status).toBe("pending");
     expect(row.claim_token_hash).toBeNull();
@@ -536,6 +535,44 @@ describe("split part claim token (legend-ms3)", () => {
     expect(response.body.error?.message).toBe(
       "Bagian tagihan tidak ditemukan.",
     );
+  });
+
+  // legend-ec6fa: only the intent that settled the part (bill_splits.payment_intent_id,
+  // status paid) is proof. An older intent of the same part (expired or replaced)
+  // is not, even though its bill_split_id matches.
+  it("SPLIT-CLAIM-PROOF an old or replaced intent of the same part is no proof (404)", async () => {
+    const part = orderParts[4]!;
+    const current = await intentOf(part.id);
+    const copyOld = async (status: "expired" | "paid") => {
+      const id = randomUUID();
+      await owner.query(
+        `INSERT INTO payment_intents
+           (id, tenant_id, outlet_id, payment_link_id, order_id, bill_split_id, method, provider,
+            amount_idr, fee_idr, idempotency_key, provider_ref, status, flags, instructions,
+            paid_at, expires_at)
+         SELECT $3::uuid, tenant_id, outlet_id, payment_link_id, order_id, bill_split_id, method,
+                provider, amount_idr, fee_idr, $4, NULL, $5::varchar, flags, instructions,
+                CASE WHEN $5::varchar = 'paid' THEN now() ELSE NULL END, expires_at
+           FROM payment_intents WHERE tenant_id = $1 AND id = $2::uuid`,
+        [tenant.tenantId, current, id, `old-${id}`, status],
+      );
+      return id;
+    };
+    const expired = await copyOld("expired");
+    const replacedPaid = await copyOld("paid");
+
+    for (const old of [expired, replacedPaid]) {
+      const response = await as(guest).claim(part.id, old);
+      expect(response.status, JSON.stringify(response.body)).toBe(404);
+      expect(response.body.error?.message).toBe(
+        "Bagian tagihan tidak ditemukan.",
+      );
+      expect(JSON.stringify(response.body)).not.toContain("sc_");
+    }
+
+    const own = await as(guest).claim(part.id, current);
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.data.claimToken).toMatch(/^sc_/);
   });
 
   it("SPLIT-CLAIM-PROOF a read without the payment id is a validation error (422)", async () => {
