@@ -105,9 +105,14 @@ function maskedSurvivorEmail(email: string | null | undefined): string | null {
  * The ledger never moves: it keys on `customer_profile_id`, which survives.
  */
 export async function moveMemberProfiles(
-  _tx: Transaction,
-  _input: { survivorUserId: string; absorbedUserId: string; now: Date },
+  tx: Transaction,
+  input: { survivorUserId: string; absorbedUserId: string; now: Date },
 ): Promise<ProfileMove[]> {
+  // TODO(legend-111j/290a): implement with `tx` and `input` once
+  // `customer_profiles` exists. No member profile exists before 290a, so
+  // there is nothing to move yet.
+  void tx;
+  void input;
   return [];
 }
 

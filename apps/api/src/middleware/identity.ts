@@ -98,7 +98,8 @@ export function requireSessionMfa(
     // legend-k2l (ws08 M2 sign-in method gate): only a password sign-in can
     // reach a platform surface. An email inbox, a Google account or a WhatsApp
     // code plus a second factor must never stand in for the staff password.
-    if (row.authMethod !== "password") throw new AccessError("PERMISSION_DENIED");
+    if (row.authMethod !== "password")
+      throw new AccessError("PERMISSION_DENIED");
     // A platform session is management by definition (§3 F6 30-minute idle).
     const policy = sessionPolicy({
       row,

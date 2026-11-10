@@ -16,11 +16,7 @@ import { user } from "./user";
 // `legacy` is every session that existed before migration 0204 (customer rows)
 // and the safe default for any path that does not set the column.
 export type SessionAuthMethod =
-  | "password"
-  | "whatsapp"
-  | "email_magic_link"
-  | "google"
-  | "legacy";
+  "password" | "whatsapp" | "email_magic_link" | "google" | "legacy";
 
 // Better Auth owns the session cookie and the `token` lookup column. PRD v1.7
 // §6 B lists `sessions` (global) with token_hash, device_label, tenant_id,

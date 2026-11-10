@@ -3,10 +3,7 @@ import { fromNodeHeaders } from "better-auth/node";
 import type { Permissions } from "@starter/shared/permissions";
 import { auth } from "../lib/auth";
 import { HttpError } from "../lib/http-error";
-import {
-  setRequestAuthMethod,
-  setRequestUser,
-} from "../lib/request-context";
+import { setRequestAuthMethod, setRequestUser } from "../lib/request-context";
 import { enforceSupportSession } from "./support-session";
 
 // Authenticates against the database on every request (no cookie cache), so a
