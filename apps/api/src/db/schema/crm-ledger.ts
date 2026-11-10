@@ -126,7 +126,7 @@ export const pointLedger = pgTable(
     check(
       "point_ledger_source_type_check",
       sql`CASE ${table.type}
-            WHEN 'earn' THEN ${table.sourceType} = 'order'
+            WHEN 'earn' THEN ${table.sourceType} IN ('order', 'table_claim')
             WHEN 'bonus' THEN ${table.sourceType} IN ('mission', 'referral', 'birthday', 'adjustment')
             WHEN 'redeem' THEN ${table.sourceType} = 'reward_redemption'
             WHEN 'expire' THEN ${table.sourceType} = 'expiry'

@@ -58,8 +58,17 @@ export const pointsEarnedPayloadSchema = z
   .strictObject({
     customerProfileId: uuidSchema,
     points: positivePointsSchema,
-    /** PRD §3.20: earn comes from a paid order, a mission, referral or birthday. */
-    sourceType: z.enum(["order", "mission", "referral", "birthday"]),
+    /**
+     * PRD §3.20: earn comes from a paid order, a mission, referral or birthday;
+     * legend-n1mp adds a table guest's claim of what they paid.
+     */
+    sourceType: z.enum([
+      "order",
+      "mission",
+      "referral",
+      "birthday",
+      "table_claim",
+    ]),
     /** Order ids are ULIDs, mission/referral rows are UUIDs. */
     sourceId: z
       .union([uuidSchema, ulidIdSchema<"PointsEventSourceId">()])

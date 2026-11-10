@@ -24,7 +24,6 @@ import {
   isNull,
   gt,
   ne,
-  notExists,
   or,
   sql,
 } from "drizzle-orm";
@@ -69,6 +68,7 @@ import {
   qrOrderIdempotent,
   type QrOrderRow,
 } from "./qr-order.service.ts";
+import { orderRefunded, orderTraining } from "./table-claim.service.ts";
 
 export type BillSplitRow = typeof billSplits.$inferSelect;
 
@@ -671,6 +671,37 @@ export async function markSplitPartPaidTx(
 }
 
 /**
+ * legend-udu47: the points of this part cannot be claimed (the POST answers
+ * 409), so the code is not shown either: the order has a refund, was rung up
+ * in practice (latihan) mode, is voided, or already has a member attached (the
+ * earn consumer credits them). Same conditions as `redeemSplit` in
+ * `table-claim.service`.
+ */
+async function orderBlocksClaim(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+): Promise<boolean> {
+  const [blocked] = await tx
+    .select({ one: sql<number>`1` })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.id, orderId),
+        or(
+          eq(orders.status, "voided"),
+          isNotNull(orders.customerProfileId),
+          orderRefunded(tenantId),
+          orderTraining(tenantId),
+        ),
+      ),
+    )
+    .limit(1);
+  return blocked !== undefined;
+}
+
+/**
  * GET .../splits/:splitId/claim. `unavailable` until the part is paid;
  * `available` shows the token for 24 hours; `claimed` once redeemed;
  * `expired` after the deadline.
@@ -724,6 +755,8 @@ export async function getSplitClaim(
     if (part.claimRedeemedAt !== null) return claim("claimed", null, null);
     if (part.claimExpiresAt.getTime() <= now.getTime())
       return claim("expired", null, null);
+    if (await orderBlocksClaim(tx, tenantId, part.orderId))
+      return claim("unavailable", null, null);
     return claim(
       "available",
       openSecret(part.claimTokenSealed, claimAad(tenantId, part.id)),
@@ -755,6 +788,7 @@ export async function getSplitClaimByToken(
         id: billSplits.id,
         sealed: billSplits.claimTokenSealed,
         expiresAt: billSplits.claimExpiresAt,
+        orderId: billSplits.orderId,
         orderStatus: orders.status,
       })
       .from(billSplits)
@@ -777,6 +811,7 @@ export async function getSplitClaimByToken(
     if (!part || part.sealed === null || part.expiresAt === null)
       throw notFound();
     if (part.orderStatus === "voided") throw notFound();
+    if (await orderBlocksClaim(tx, tenantId, part.orderId)) throw notFound();
     return splitClaimSchema.parse({
       billSplitId: part.id,
       status: "available",
@@ -784,43 +819,4 @@ export async function getSplitClaimByToken(
       claimableUntil: toIsoDateTime(part.expiresAt),
     });
   });
-}
-
-/**
- * Redeems a claim token once. null: unknown, already used, expired, the part
- * not paid, or the order voided. No
- * public route yet (waits legend-111j); the caller owns the transaction.
- */
-export async function redeemSplitClaimTx(
-  tx: Tx,
-  context: ScopedTenantContext,
-  rawToken: string,
-  now: Date,
-): Promise<{ billSplitId: string } | null> {
-  const [redeemed] = await tx
-    .update(billSplits)
-    .set({ claimRedeemedAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(billSplits.tenantId, context.tenant.tenantId),
-        eq(billSplits.claimTokenHash, sha256(rawToken)),
-        eq(billSplits.status, "paid"),
-        isNull(billSplits.claimRedeemedAt),
-        gt(billSplits.claimExpiresAt, now),
-        notExists(
-          tx
-            .select({ one: sql`1` })
-            .from(orders)
-            .where(
-              and(
-                eq(orders.tenantId, billSplits.tenantId),
-                eq(orders.id, billSplits.orderId),
-                eq(orders.status, "voided"),
-              ),
-            ),
-        ),
-      ),
-    )
-    .returning({ id: billSplits.id });
-  return redeemed ? { billSplitId: redeemed.id } : null;
 }

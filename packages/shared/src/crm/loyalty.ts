@@ -250,6 +250,8 @@ export const pointSourceTypeSchema = z.enum([
   // legend-111j: a voided final order reverses its points like a refund.
   "void",
   "adjustment",
+  // legend-n1mp: a QR table guest claims the points of what they paid.
+  "table_claim",
 ]);
 export type PointSourceType = z.infer<typeof pointSourceTypeSchema>;
 
@@ -294,8 +296,10 @@ export const pointLedgerEntrySchema = pointLedgerEntryObjectSchema.superRefine(
     switch (entry.type) {
       case "earn":
         if (entry.points <= 0) reject("Earn rows are positive");
-        if (entry.sourceType !== "order")
-          reject("Earn rows come from a paid order", ["sourceType"]);
+        if (entry.sourceType !== "order" && entry.sourceType !== "table_claim")
+          reject("Earn rows come from a paid order or a table claim", [
+            "sourceType",
+          ]);
         if (entry.expiresAt === null)
           reject("Earned points need an expiry", ["expiresAt"]);
         break;

@@ -9,16 +9,19 @@
 // guest read (ORD-04: a closed session is refused). A zone that cannot order
 // right now (inactive or outside its hours) gets an empty list.
 
-import { and, eq, gte, ne, notExists, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, ne, notExists, sql } from "drizzle-orm";
 import { idr, type ScopedTenantContext } from "@starter/shared/core";
 import {
   menuSuggestionSchema,
+  orderEtaSchema,
   type MenuSuggestion,
+  type OrderEta,
 } from "@starter/shared/qr-order";
 import { db } from "../db/index.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { cartLines, orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { estimateOrderRanges } from "./kds-estimate.service.ts";
 import {
   listOrderableGuestItems,
   zoneOrderingOpen,
@@ -155,5 +158,104 @@ export async function getMenuSuggestions(
         basedOnMenuItemId: anchor,
       }),
     );
+  });
+}
+
+/**
+ * GET /api/table-sessions/:sessionId/order-etas (bead legend-541h).
+ *
+ * One ETA range per order of the session that is in the kitchen (`sent`) and
+ * still has a line that is neither served nor voided; lines already `ready`
+ * add no cooking time (an order with only ready lines gets 0 to 0). Unpaid, voided and
+ * completed orders get none. Ranges come from the KDS pacing maths over the
+ * remaining lines (kds-estimate.service.ts); `estimatedReadyAt` is the low
+ * end of the range from `now`.
+ */
+export async function getOrderEtas(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  now = new Date(),
+): Promise<OrderEta[]> {
+  return withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "none",
+    );
+    const tenantId = context.tenant.tenantId;
+    const sessionOrders = await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.tableSessionId, session.id),
+          eq(orders.status, "sent"),
+        ),
+      )
+      .orderBy(asc(orders.createdAt), asc(orders.id));
+    if (sessionOrders.length === 0) return [];
+
+    const lines = await tx
+      .select({
+        orderId: orderItems.orderId,
+        menuItemId: orderItems.menuItemId,
+        quantity: orderItems.quantity,
+        status: orderItems.status,
+      })
+      .from(orderItems)
+      .where(
+        and(
+          eq(orderItems.tenantId, tenantId),
+          inArray(
+            orderItems.orderId,
+            sessionOrders.map((order) => order.id),
+          ),
+          ne(orderItems.status, "served"),
+          ne(orderItems.status, "voided"),
+        ),
+      );
+    const linesOf = new Map<
+      string,
+      { menuItemId: string; quantity: number }[]
+    >();
+    for (const line of lines) {
+      const list = linesOf.get(line.orderId) ?? [];
+      // A ready line is out of the station queue: the order is still open
+      // (not served) but that line adds no cooking time.
+      if (line.status !== "ready")
+        list.push({ menuItemId: line.menuItemId, quantity: line.quantity });
+      linesOf.set(line.orderId, list);
+    }
+    const open = sessionOrders
+      .filter((order) => linesOf.has(order.id))
+      .map((order) => ({
+        orderId: order.id,
+        lines: linesOf.get(order.id) ?? [],
+      }));
+    if (open.length === 0) return [];
+
+    const ranges = await estimateOrderRanges(
+      tx,
+      context,
+      session.outletId,
+      open,
+      now,
+    );
+    return open.map(({ orderId }) => {
+      const range = ranges.get(orderId) ?? { minMinutes: 0, maxMinutes: 0 };
+      return orderEtaSchema.parse({
+        orderId,
+        minMinutes: range.minMinutes,
+        maxMinutes: range.maxMinutes,
+        estimatedReadyAt: new Date(
+          now.getTime() + range.minMinutes * 60_000,
+        ).toISOString(),
+      });
+    });
   });
 }

@@ -55,6 +55,16 @@ type StationEta = {
   queueLoadPoints: number;
 };
 
+/** Reads shared by several `stationEtas` calls of one request. */
+type StationEtaShared = {
+  rules?: Map<string, PacingRule>;
+  queues?: Map<
+    string,
+    Awaited<ReturnType<typeof readStationQueue>>[number]["items"]
+  >;
+  history: Map<string, number | null>;
+};
+
 /** Minutes of a whole outlet are capped by the contract (`estimatedMinutes`). */
 const MAX_ESTIMATE_MINUTES = 720;
 
@@ -119,14 +129,22 @@ async function stationEtas(
     cartPoints: number | ReadonlyMap<string, number>;
   },
   now: Date,
+  shared?: StationEtaShared,
 ): Promise<StationEta[]> {
-  const rules = await activeRules(tx, context, outletId, now);
-  const queues = new Map(
-    (await readStationQueue(tx, context, outletId)).map((entry) => [
-      entry.stationId,
-      entry.items,
-    ]),
-  );
+  const rules =
+    shared?.rules ?? (await activeRules(tx, context, outletId, now));
+  const queues =
+    shared?.queues ??
+    new Map(
+      (await readStationQueue(tx, context, outletId)).map((entry) => [
+        entry.stationId,
+        entry.items,
+      ]),
+    );
+  if (shared) {
+    shared.rules = rules;
+    shared.queues = queues;
+  }
   const usedOf = (stationId: string) =>
     (queues.get(stationId) ?? []).reduce((sum, item) => sum + item.points, 0);
 
@@ -174,13 +192,11 @@ async function stationEtas(
           windowMinutes: rule.windowMinutes,
         })
       : 0;
-    const history = await readStationHistory(
-      tx,
-      context,
-      outletId,
-      stationId,
-      now,
-    );
+    let history = shared?.history.get(stationId);
+    if (history === undefined) {
+      history = await readStationHistory(tx, context, outletId, stationId, now);
+      shared?.history.set(stationId, history);
+    }
     result.push({
       etaMinutes: etaMinutes({
         delayMinutes,
@@ -364,6 +380,54 @@ export const kdsServingEstimatePort: ServingEstimatePort = async (
   );
   return etaRange(Math.max(...etas.map((entry) => entry.etaMinutes)));
 };
+
+/**
+ * ETA of orders already in the kitchen (guest `getOrderEtas`, bead
+ * legend-541h): per order, the slowest station its remaining lines touch,
+ * through the same pacing maths as the cart port. The order's own lines are
+ * already in the station queue, so they are not added a second time
+ * (`cartPoints` 0). The result is a range per order id, in input order.
+ */
+export async function estimateOrderRanges(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  orders: readonly {
+    orderId: string;
+    lines: readonly { menuItemId: string; quantity: number }[];
+  }[],
+  now: Date,
+): Promise<Map<string, { minMinutes: number; maxMinutes: number }>> {
+  const result = new Map<string, { minMinutes: number; maxMinutes: number }>();
+  // Rules, queue and history do not depend on the order: read them once.
+  const shared: StationEtaShared = { history: new Map() };
+  for (const order of orders) {
+    // Nothing left to cook (every open line is ready): no wait.
+    if (order.lines.length === 0) {
+      result.set(order.orderId, { minMinutes: 0, maxMinutes: 0 });
+      continue;
+    }
+    const { prep } = await touchedStations(tx, context, outletId, order.lines);
+    const etas = await stationEtas(
+      tx,
+      context,
+      outletId,
+      { channel: QR_PRICE_CHANNEL, touched: prep, cartPoints: 0 },
+      now,
+      shared,
+    );
+    result.set(
+      order.orderId,
+      etaRange(
+        Math.min(
+          Math.max(...etas.map((entry) => entry.etaMinutes)),
+          MAX_ESTIMATE_MINUTES,
+        ),
+      ),
+    );
+  }
+  return result;
+}
 
 /** Wires the pacing-aware estimator into the QR order flow (app start). */
 export function installKdsServingEstimate(): void {

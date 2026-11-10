@@ -234,6 +234,15 @@ export const orders = pgTable(
     /** The one live WS-05 intent for this order (two payers share it). */
     paymentIntentId: uuid("payment_intent_id"),
     note: varchar("note", { length: 200 }),
+    /**
+     * Guest point claim for a paid order with no bill split (single payer):
+     * sha-256 hash of the `sc_` token, the sealed token, its 24 h expiry and
+     * the redemption time. Same shape as `bill_splits` (migration 0237).
+     */
+    claimTokenHash: varchar("claim_token_hash", { length: 64 }),
+    claimTokenSealed: text("claim_token_sealed"),
+    claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+    claimRedeemedAt: timestamp("claim_redeemed_at", { withTimezone: true }),
     /** Staff creator; null for a guest order (§6 C). */
     createdBy: uuid("created_by"),
     placedAt: timestamp("placed_at", { withTimezone: true }).notNull(),
@@ -312,6 +321,17 @@ export const orders = pgTable(
     check(
       "orders_payment_link_pair_check",
       sql`(${table.paymentLinkId} IS NULL) = (${table.paymentLinkTokenSealed} IS NULL)`,
+    ),
+    uniqueIndex("orders_claim_token_hash_key")
+      .on(table.claimTokenHash)
+      .where(sql`${table.claimTokenHash} IS NOT NULL`),
+    check(
+      "orders_claim_paid_check",
+      sql`${table.claimTokenHash} IS NULL OR ${table.status} IN ('sent', 'completed', 'voided')`,
+    ),
+    check(
+      "orders_claim_redeemed_check",
+      sql`${table.claimRedeemedAt} IS NULL OR ${table.claimTokenHash} IS NOT NULL`,
     ),
   ],
 );

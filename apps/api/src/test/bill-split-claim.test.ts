@@ -42,7 +42,6 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import {
   getSplitClaim,
   getSplitClaimByToken,
-  redeemSplitClaimTx,
 } from "../services/bill-split.service.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
@@ -66,6 +65,7 @@ import {
   type IsolatedTenant,
   type Staff,
 } from "./floor-test-helpers.ts";
+import { seedProfile } from "./member-loyalty-helpers.ts";
 
 let app: Express;
 let tenant: IsolatedTenant;
@@ -259,10 +259,12 @@ async function readClaim(guest: Guest, splitId: string, now = new Date()) {
   ) as Promise<Claim>;
 }
 
-async function redeem(rawToken: string, now: Date) {
-  const context = contextOf(tenant.tenantId);
-  return withTenant(db, context, (tx) =>
-    redeemSplitClaimTx(tx, context, rawToken, now),
+// The redeem itself is table-claim.service `redeemSplit` (POST points-claim,
+// ws03-points-claim.test.ts); here the redeemed state is set by the owner.
+async function markRedeemed(splitId: string) {
+  await owner.query(
+    "UPDATE bill_splits SET claim_redeemed_at = now() WHERE tenant_id = $1 AND id = $2::uuid",
+    [tenant.tenantId, splitId],
   );
 }
 
@@ -434,44 +436,26 @@ describe("split part claim token (legend-ms3)", () => {
     expect(after.claimableUntil).toBe(before.claimableUntil);
   });
 
-  it("SPLIT-CLAIM-REDEEM the token redeems once, the second time returns null", async () => {
+  it("SPLIT-CLAIM-REDEEMED a redeemed part reads claimed and shows no token", async () => {
     const part = orderParts[2]!;
     const claim = (await as(guest).claim(part.id)).body.data as Claim;
     expect(claim.status).toBe("available");
 
-    expect(await redeem(claim.claimToken!, new Date())).toEqual({
-      billSplitId: part.id,
-    });
-    expect(await redeem(claim.claimToken!, new Date())).toBeNull();
+    await markRedeemed(part.id);
 
     expect((await claimRow(part.id)).claim_redeemed_at).not.toBeNull();
     const after = await as(guest).claim(part.id);
     expect(after.status).toBe(200);
     expect(after.body.data.status).toBe("claimed");
+    expect(after.body.data.claimToken).toBeNull();
   });
 
-  it("SPLIT-CLAIM-UNKNOWN a token that was never issued redeems to null", async () => {
-    expect(
-      await redeem(`sc_${randomBytes(32).toString("base64url")}`, new Date()),
-    ).toBeNull();
-  });
-
-  it("SPLIT-CLAIM-WINDOW the token still redeems inside 24 hours", async () => {
-    const part = orderParts[4]!;
-    const claim = (await as(guest).claim(part.id)).body.data as Claim;
-    expect(claim.status).toBe("available");
-    expect(
-      await redeem(claim.claimToken!, new Date(Date.now() + 23 * HOUR)),
-    ).toEqual({ billSplitId: part.id });
-  });
-
-  it("SPLIT-CLAIM-EXPIRED after 24 hours the token no longer redeems and the guest session read is closed", async () => {
+  it("SPLIT-CLAIM-EXPIRED after 24 hours the guest session read is closed", async () => {
     const part = orderParts[3]!;
     const claim = (await as(guest).claim(part.id)).body.data as Claim;
     expect(claim.status).toBe("available");
     const late = new Date(Date.now() + 24 * HOUR + 60_000);
 
-    expect(await redeem(claim.claimToken!, late)).toBeNull();
     // The claim read is session-scoped: the guest credential expires with
     // the session at +24h, so the late read answers ORD-04 (the token on the
     // receipt is what redeems, legend-90na8).
@@ -633,9 +617,7 @@ describe("claim by token after table close (legend-ia54l)", () => {
     const part = parts[3]!;
     const claim = claims[3]!;
     expect((await byToken(claim.claimToken!)).status).toBe(200);
-    expect(await redeem(claim.claimToken!, new Date())).toEqual({
-      billSplitId: part.id,
-    });
+    await markRedeemed(part.id);
 
     await expect(
       getSplitClaimByToken(contextOf(tenant.tenantId), claim.claimToken!),
@@ -660,6 +642,104 @@ describe("claim by token after table close (legend-ia54l)", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
     const response = await byToken(voidClaim.claimToken!);
     expect(response.status, JSON.stringify(response.body)).toBe(404);
+  });
+
+  // legend-udu47: a practice (latihan) or refunded part shows no code: the
+  // POST claim answers 409 for it, so showing the code only led to a dead end.
+  async function markTraining(orderId: string) {
+    await owner.query(
+      "UPDATE orders SET channel = 'pos' WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, orderId],
+    );
+    await owner.query(
+      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, is_training)
+       SELECT id, tenant_id, outlet_id, channel, true
+         FROM orders WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, orderId],
+    );
+  }
+
+  async function refundPart(splitId: string) {
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO payment_refunds
+           (tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
+         SELECT $1, $2, i.id, 1000, 'uji', 'pending', $3
+           FROM payment_intents i WHERE i.tenant_id = $1 AND i.bill_split_id = $4::uuid`,
+        [tenant.tenantId, tenant.outletId, staff.userId, splitId],
+      ),
+    );
+  }
+
+  async function orderIdOf(splitId: string): Promise<string> {
+    const { rows } = await owner.query<{ order_id: string }>(
+      "SELECT order_id FROM bill_splits WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, splitId],
+    );
+    return rows[0]!.order_id;
+  }
+
+  it("CLAIM-TRAINING a part of a practice order shows no code, by session and by token", async () => {
+    const w = await splitWorld(2, 2);
+    const part = w.parts[0]!;
+    const claim = await readClaim(w.guest, part.id);
+    expect(claim.status).toBe("available");
+    await markTraining(await orderIdOf(part.id));
+
+    const bySession = await readClaim(w.guest, part.id);
+    expect(bySession).toEqual({
+      billSplitId: part.id,
+      status: "unavailable",
+      claimToken: null,
+      claimableUntil: null,
+    });
+    await expect(
+      getSplitClaimByToken(contextOf(tenant.tenantId), claim.claimToken!),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const response = await byToken(claim.claimToken!);
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(claim.claimToken!);
+  });
+
+  it("CLAIM-MEMBER-ATTACHED a part of an order with a member attached shows no code, by session and by token", async () => {
+    const w = await splitWorld(2, 2);
+    const part = w.parts[0]!;
+    const claim = await readClaim(w.guest, part.id);
+    expect(claim.status).toBe("available");
+    const attached = await seedProfile(tenant.tenantId);
+    await owner.query(
+      `UPDATE orders SET customer_profile_id = $3, customer_attached_via = 'pwa_session',
+              customer_attached_at = now()
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, await orderIdOf(part.id), attached.id],
+    );
+
+    expect((await readClaim(w.guest, part.id)).status).toBe("unavailable");
+    await expect(
+      getSplitClaimByToken(contextOf(tenant.tenantId), claim.claimToken!),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("CLAIM-REFUNDED a refunded part shows no code, by session and by token", async () => {
+    const w = await splitWorld(2, 2);
+    const part = w.parts[0]!;
+    const claim = await readClaim(w.guest, part.id);
+    expect(claim.status).toBe("available");
+    await refundPart(part.id);
+
+    const bySession = await readClaim(w.guest, part.id);
+    expect(bySession).toEqual({
+      billSplitId: part.id,
+      status: "unavailable",
+      claimToken: null,
+      claimableUntil: null,
+    });
+    await expect(
+      getSplitClaimByToken(contextOf(tenant.tenantId), claim.claimToken!),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const response = await byToken(claim.claimToken!);
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(claim.claimToken!);
   });
 
   it("CLAIM-ISOLATION a token returns only its own part; unknown token and another tenant's host give 404", async () => {

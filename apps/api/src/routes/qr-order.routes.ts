@@ -19,12 +19,15 @@ import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.ts";
 import {
   addCartLine,
+  claimSessionPoints,
   createGuestPayment,
   createIssueChargePayment,
   createSessionSplits,
   getGuestPayment,
   getGuestPaymentOptions,
   getMenuSuggestions,
+  getOrderEtas,
+  getPointClaim,
   getSessionBill,
   getSplitClaim,
   getTableSession,
@@ -57,7 +60,14 @@ import {
   getSplitClaim as getSplitClaimService,
   getSplitClaimByToken as getSplitClaimByTokenService,
 } from "../services/bill-split.service.ts";
-import { getMenuSuggestions as getMenuSuggestionsService } from "../services/qr-guest-reads.service.ts";
+import {
+  getMenuSuggestions as getMenuSuggestionsService,
+  getOrderEtas as getOrderEtasService,
+} from "../services/qr-guest-reads.service.ts";
+import {
+  claimSessionPoints as claimSessionPointsService,
+  getPointClaim as getPointClaimService,
+} from "../services/table-claim.service.ts";
 import {
   createGuestPayment as createGuestPaymentService,
   getGuestPayment as getGuestPaymentService,
@@ -385,3 +395,54 @@ qrOrderRouter.get("/:sessionId/suggestions", ...read, async (req, res) => {
     ),
   });
 });
+
+qrOrderRouter.get("/:sessionId/order-etas", ...read, async (req, res) => {
+  const { sessionId } = getOrderEtas.params.parse(req.params);
+  const credential = sessionCredential(req);
+  res.json({
+    data: await getOrderEtasService(
+      await guestContext(req, credential),
+      credential,
+      sessionId,
+    ),
+  });
+});
+
+// Point claim (legend-n1mp). The guest session stays the Bearer credential;
+// the member is the optional signed-in cookie session. Reading works for an
+// anonymous guest (`requiresLogin`); claiming needs the member session.
+qrOrderRouter.get("/:sessionId/points-claim", ...read, async (req, res) => {
+  const { sessionId } = getPointClaim.params.parse(req.params);
+  const query = getPointClaim.query.parse(req.query);
+  const credential = sessionCredential(req);
+  res.json({
+    data: await getPointClaimService(
+      await guestContext(req, credential),
+      credential,
+      sessionId,
+      { claimToken: query.claimToken, userId: await optionalMemberUserId(req) },
+    ),
+  });
+});
+
+qrOrderRouter.post(
+  "/:sessionId/points-claim",
+  ...write,
+  jsonBody,
+  async (req, res) => {
+    const { sessionId } = claimSessionPoints.params.parse(req.params);
+    const body = claimSessionPoints.body.parse(req.body);
+    const credential = sessionCredential(req);
+    res.json({
+      data: await claimSessionPointsService(
+        await guestContext(req, credential),
+        credential,
+        sessionId,
+        {
+          claimToken: body.claimToken,
+          userId: await optionalMemberUserId(req),
+        },
+      ),
+    });
+  },
+);

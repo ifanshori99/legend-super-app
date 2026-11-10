@@ -115,6 +115,55 @@ Titik sentuh merge train: `device-pin.service.ts` (hanya kait `setStaffPin`),
 `pos-shift.service.ts`, `pos-day.service.ts`, `permissions.ts`, `core-audit.ts`,
 `audit/schemas.ts`, `app.ts`, `routes/index.ts`, nomor/`when` migrasi
 (journal worktree ini berhenti di 0216).
+## 2026-11-10: Klaim poin tamu QR per orang (legend-n1mp)
+
+Konteks: PRD v1.7 §3 F10 "Klaim Poin per Orang"; kontrak `getPointClaim` dan
+`claimSessionPoints` (guest.ts). Token klaim bagian split (legend-ms3 butir 7)
+sudah ada tetapi belum ada penebusan. Tingkat K (poin = kewajiban).
+
+1. Identitas tamu tidak dipakai. Bearer sesi hanya mengenali sesi, dan
+   `session_participants.user_id` tidak pernah diisi. Yang membuktikan "ini
+   bagianku" adalah token klaim bagian split (jalur A, disetujui CTO). Pembaca
+   login tetap dari cookie Better Auth yang terverifikasi.
+2. Sesi tanpa split (pembayar tunggal) mendapat token yang sama di kolom baru
+   `orders.claim_*` (hash unik, sealed, kedaluwarsa 24 jam sejak lunas,
+   ditebus sekali), diterbitkan di consumer pembayaran bila pesanan tidak punya
+   bagian split hidup. Tanpa `claimToken`, GET/POST mengolah semua pesanan
+   tanpa split milik sesi (satu pembayar); bagian split HANYA lewat token.
+3. Delta kontrak: `claimToken` opsional di query GET dan body POST. Field
+   opsional, FE lama tetap jalan; kartu FE terpisah untuk memakainya
+   (token bagian split dari `getSplitClaim`).
+4. Ledger: sumber baru `table_claim` untuk tipe `earn`; `source_id` = id bagian
+   split atau id pesanan, jadi kunci dedupe ledger sekaligus menjadi kunci
+   idempotensi. Satu migrasi (CHECK `point_ledger_source_type_check` plus kolom
+   klaim di `orders`); payload event `points.earned` menerima sumber itu.
+5. Poin = `pointsForSpend(program, belanja)`: belanja = penjualan kotor dikurangi
+   diskon, SEBELUM pajak dan service charge (PRD D18 dan bagian Poin; harga
+   nett: subtotal tanpa service dan pajak yang sudah dikandungnya, sama dengan
+   pemisahan `order.paid`). Bagian split mendapat porsi pro-rata dari
+   `jumlah bayar bagian / total pesanan`, dibulatkan ke bawah. Jumlah yang
+   ditampilkan (`paidIdr`) tetap yang dibayar tamu. Kedaluwarsa poin seperti
+   earn biasa. Batas harian per profil dihitung dari baris ledger `earn`
+   profil itu pada business date yang sama; poin dipotong ke sisa.
+6. Pesanan yang sudah punya member ter-attach (consumer earn yang menghitung)
+   tidak bisa diklaim: mencegah poin ganda. Pesanan void: klaim berhenti.
+7. Larangan self-serve (`isSelfServe`) tidak berlaku untuk klaim: PRD alur QR
+   (langkah 7) membolehkan tamu mengklaim poin dengan login, dan jalur ini
+   dibuktikan oleh pembayaran meja. Tidak perlu keputusan founder.
+8. Syarat penebus: login, profil member aktif, WhatsApp terverifikasi,
+   persetujuan loyalty aktif (sama dengan consumer earn). Posting ledger
+   memakai konteks tenant member (event earn berlaku tenant-wide).
+9. Hasil review architect: pesanan yang sudah direfund tidak bisa diklaim;
+   klaim yang kalah balapan dijawab 409 dan peserta lain tidak melihat poin
+   orang lain; klaim dengan token tetap jalan setelah meja tutup; void atau
+   refund pesanan menarik kembali poin klaim (baris reverse idempoten); batas
+   harian ikut menghitung baris klaim. Diterima dan dicatat: token bagian split
+   terbaca oleh sesama sesi meja (kepercayaan = sesi), dasar poin = jumlah
+   dibayar termasuk pajak dan servis, pesanan latihan belum dikecualikan.
+   Dua yang terakhir sudah dibetulkan: dasar poin kini belanja sebelum pajak
+   dan service (butir 5), dan pesanan latihan (`pos_orders.is_training`) serta
+   bagian splitnya tidak bisa diklaim. Consumer earn biasa sudah benar
+   (`grossSalesIdr - discountIdr - paidPointsIdr`, gross sudah sebelum pajak).
 
 ## 2026-11-10: Laporan harian tanpa pesanan latihan (legend-fbxzw)
 
