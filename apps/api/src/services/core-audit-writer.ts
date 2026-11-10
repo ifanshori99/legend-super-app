@@ -36,6 +36,21 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "objectId",
     "approvalRequestId",
   ],
+  // Active cashier per device (DECISIONS 2026-11-10). No PIN or token material.
+  "pos_acting_staff.started": [
+    "staffUserId",
+    "sessionUserId",
+    "deviceId",
+    "tokenId",
+    "expiresAt",
+  ],
+  "pos_acting_staff.ended": [
+    "staffUserId",
+    "sessionUserId",
+    "deviceId",
+    "tokenId",
+    "reason",
+  ],
   "tenant.created": [
     "slug",
     "plan",

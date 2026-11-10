@@ -21,6 +21,21 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti putaran 3: tes terarah 10 file 170 lulus, 2 todo (Google, butuh kunci); tes gagal-dulu per butir: merge dua arah dan profil 13 merah lalu 26 hijau di `identity-merge.test.ts`, throttle email 4 pesan terkirim (harus 3) lalu hijau, audit email tanpa baris lalu hijau; tsc api (heavy) bersih, eslint dan prettier bersih di berkas kode, `db:generate` kosong, `heavy pnpm test:e2e` 18 lulus 1 dilewati. Review architect (K): F1 tinggi (sesi lama V tetap hidup saat V tersisa: pemilik lama nomor daur ulang bisa membaca data U), dibetulkan (sesi V dihapus, challenge selesai-belum-diklaim dibatalkan, tes merah lalu hijau); F2 rendah (profil survivor `closed` ditolak `profile_conflict`), dibetulkan; F3 rendah (penuhnya 10.000 kunci throttle bisa mengusir counter, sengaja diterima, in-memory per instance).
 - Putaran 4 (keputusan CTO 10 Nov): arah tetap createdAt lebih tua. Profil survivor benar-benar kosong (tanpa baris di tabel mana pun, tanpa consent, bukan `suspended` atau `closed`; hash dan status tidak dihitung) dan profil terserap berisi: profil survivor ditutup (`merged_into_profile_id` ke profil terserap), profil terserap pindah ke user survivor, hash WhatsApp survivor dibawa lewat `onWhatsAppVerified` di tenant itu, `profile_moves` mencatat `survivor_closed_into_absorbed` + `intoProfileId`; selain itu tetap `profile_conflict`. Pembatalan challenge V yang selesai-belum-diklaim ternyata sudah lintas tenant: `login_challenges` tabel global tanpa RLS (`identity-login.test.ts` menegaskan `rls: false`), test lintas tenant ditambah (hijau sebelum perubahan, jadi penjaga regresi). Review architect putaran 2: F1 (hash survivor hilang di tenant lain), F2 (cek kosong sebelum kunci, kunci `FOR UPDATE` dan tes balapan deterministik), F3 (audit `intoProfileId`), semua dibetulkan. Profil survivor `suspended` ditolak (ditemukan sendiri: menutupnya menghapus suspensi). Bukti: 8 file terarah 154 lulus 2 todo (dua kali jalan), tsc api bersih, `db:generate` kosong.
 - TBD putaran 3: arah "akun lama" ditafsir sebagai createdAt lebih tua (kontrak `planIdentityMerge`), bukan "pemegang WhatsApp"; `onWhatsAppVerified` hanya untuk tenant webhook; throttle email dalam memori per instance; callback Google dan SMTP SumoPod belum diuji tanpa kunci; `docs/PROGRESS.md` memang belum lolos prettier sejak sebelum putaran ini.
+## legend-5u03q temuan second-opinion Codex kasir aktif (engineer Opus, cabang `ws/aruta-pos-pin`, 2026-11-10)
+
+- 4 temuan Codex ditutup, test gagal-dulu per temuan, commit `b3ab050a`: (1) web menahan mutasi POS tanpa token hidup (tidak dikirim sebagai pemilik sesi), hold lengket per tab sampai token baru atau sign-out; (2) `issueActingStaff` mengunci baris `staff_pins` `FOR UPDATE` dan menolak bila `pinGenerationAt`/`pinSalt` berubah sejak cek PIN; (3) adopsi PIN edge memanggil `revokeActingStaffForStaff(pin_reset)` di transaksi yang sama; (4) `GET /api/pos-overrides/:id` dibatasi outlet token sebelum `settlePending`.
+- Review architect (K): S2-S4 bersih; S1 1 temuan tinggi (hold hanya satu request), dibetulkan. Reviewer: undo salah-tile mencabut hold, dibetulkan (`releaseActingStaffToken`).
+- Lanjutan CTO: hold hanya untuk mutasi; GET (layar pelanggan `/pos/customer-display` di jendela kedua) tidak pernah ditahan, tidak ke layar PIN, tidak menghapus label; GET yang ditolak API hanya membuang token tab itu dan menahan mutasi berikutnya. Sign-in sukses (`auth-form`, `sign-in-screen` termasuk WhatsApp, `verify-link`; Google sebelum redirect ke provider) menghapus hold dan label kasir sisa login lama. Reviewer: label sisa, Google, dan `readActingStaffToken` yang me-redirect, dibetulkan dengan test gagal-dulu; impersonasi (`session-banner.tsx`) tidak menghapus hold, dicatat untuk `legend-f586w`.
+- Bukti: 8 file API terkait 112/112; `tests/acting-staff-path.test.mjs` + `tests/acting-staff-sign-in.test.mjs` 21/21; typecheck api + web (heavy) lulus; prettier bersih.
+- Tidak di sini: penegakan header sisi API (kartu `legend-f586w`).
+
+## legend-aruta kasir aktif per perangkat (engineer Sonnet, cabang `ws/aruta-pos-pin` dari milestone/m1, 2026-11-10)
+
+- Bug nyata: ganti kasir POS dengan PIN hanya di klien; semua rute POS memakai pengguna sesi sebagai pelaku dan subjek izin. Test merah `pos-cashier-switch-actor.test.ts`, kini hijau.
+- Perbaikan: token kasir aktif per perangkat (`X-Acting-Staff`, tabel `pos_acting_staff`, migrasi `0243`, `POST /api/staff-pins/pos-session` + `/end`). Keputusan di `docs/DECISIONS.md` "Kasir aktif per perangkat lewat token server" (architect opus). Tanpa header = perilaku lama; kartu bd untuk mewajibkan header di mode perangkat bersama.
+- Bukti: 209 test terarah lulus (12 berkas), typecheck shared+api+web lulus, prettier bersih. Review architect (K): 1 cacat nyata (cabut token saat PIN tersinkron di edge) dan 1 celah klien (rute customer), keduanya dibetulkan dengan test; 5 test ditambah.
+- Untuk merge train: nomor/`when` migrasi 0243 (journal worktree ini idx 217, when 1794380000000); titik sentuh `device-pin.service.ts` (hook `setStaffPin`), `staff-pin-sync.ts`, `pos-shift.service.ts`, `pos-day.service.ts`, `permissions.ts`, `core-audit.ts`, `audit/schemas.ts`, `app.ts`, `routes/index.ts`. Rute lain (floor, table-sessions, table-links, kds) belum memakai token (gelombang berikut).
+
 ## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
 
 - Tanpa migrasi (`db:generate` kosong). Role baru `loyalty_points_deferral` + akun `4105 Penangguhan Pendapatan Poin Loyalty` (kontra-pendapatan di bawah 4100). Tenant baru dari template; tenant lama lewat `pnpm db:backfill-defaults` (`addLoyaltyDeferralAccount`, lewati bila 4105 terpakai).
@@ -1571,23 +1586,29 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum: retur aktif sesudah jurnal penerimaan barang (`legend-29vw`) menyalakan flag; UI; kas kecil `legend-4961`. Brief Codex: `docs/briefs/301c-second-opinion-supplier-return-petty.md` (belum dijalankan).
 
 ## 2026-11-10: WS-03 kode klaim split bill sesudah meja ditutup (legend-ia54l)
+
 - Sudah: `GET /api/table-sessions/split-claims/current` dengan `Authorization: Bearer <kode klaim>`; hanya bagian itu yang terbaca, sampai `claimableUntil`, tanpa data tamu atau order lain. Tidak dikenal, dipakai, lewat 24 jam, atau order di-void: 404 yang sama. Tanpa migrasi. Cabang `ws/ia54l-claim-after-close`.
 - Bukti: 6 tes baru lulus (14 dari 14 di `bill-split-claim.test.ts`); typecheck shared dan api bersih; review tingkat S (reviewer) tanpa temuan berat. Catatan: kode ditulis sebelum tes, jadi bukti gagal-dulu tidak ada untuk kartu ini.
 
 ## 2026-11-10: WS-10 exit clearance otomatis (legend-arj.6)
+
 - Sudah: job per tenant di sapuan relay worker (`services/hris-offboarding-jobs.ts`), memanggil `revokeOffboardingAccessAsSystem`; aktor sistem (audit `system`, kolom "siapa" berisi UUID nol), `canAssignRoles=false` (Owner dan peran tingkat perusahaan gagal, tetap open untuk HR, dicoba sekali per hari). Tanpa penanda harian: tiap tick memindai, karena exit bisa jatuh tempo kapan saja. Worker kini memasang audit writer (sebelumnya tidak, sehingga audit pencabutan peran gagal di worker). Tanpa migrasi. Cabang `ws/arj6-auto-clearance`.
 - Bukti: 10 tes baru lulus (dicabut sekali walau dua kali jalan, belum jatuh tempo tidak tersentuh, aktor sistem di audit, isolasi tenant, error satu karyawan tidak menghentikan yang lain); 161 tes terarah lulus sebelum perubahan terakhir, 41 sesudahnya; typecheck api bersih; review K (architect) 1 temuan berat (penanda harian menunda) dibetulkan.
 
 ## 2026-11-10: worker tanpa audit writer (legend-j88cz)
+
 - Sudah: pemasangan `setAuditWriter(coreAuditWriter)` di `worker-main.ts` (dari `ws/arj6-auto-clearance`) kini punya tes `worker-audit-writer.test.ts`: tanpa writer sapuan support access, kedaluwarsa izin dan persetujuan melempar `AuditUnavailableError` dan tidak mengubah apa pun; dengan writer menulis sekali sebagai `system` dan idempoten; worker-main memasang writer di tingkat atas sebelum worker mulai. Runbook cek produksi (hanya baca): `docs/runbooks/worker-audit-writer-m1-window.md`.
 - Bukti: di m1 2 tes struktural gagal (4 tes mode-gagal lulus karena memasang writer sendiri); di cabang 6 dari 6 lulus plus `support-access-approval.test.ts` (43 tes); typecheck api bersih; review K (architect): perbaikan benar dan cukup awal, tidak ada entrypoint lain tanpa writer.
 - Dampak nyata di m1 (koreksi daftar kartu): hanya jalur yang memakai `audit-writer` gagal: kedaluwarsa persetujuan, kedaluwarsa support access (akses tetap ditolak, hanya catatan hilang), override POS lewat HP (outbox dicoba ulang lalu mati), event edge yang diparkir (ditandai `refused` permanen). Konsumen auto-jurnal, HRIS, pengiriman memakai `core-audit` dan tidak terpengaruh.
+
 ## 2026-11-10: WS-08 Customer 360, segmentasi RFM, feedback (legend-ts50)
+
 - Sudah: tabel `feedback` (T+O+member RLS, `handled_note`, unique per order dan unique parsial per sesi meja tanpa order), `segments`, `segment_members` (migrasi 0209, `when` 1794288000000); `GET /api/customers` dan `/api/customers/:id` (nomor WhatsApp termasking, nomor penuh hanya `crm.customer.pii.read` dengan audit), favorit (`memberFavorites`), `GET/POST /api/segments` + `/preview` + job harian `segment-materialize`, `POST /api/member/feedback`, `GET /api/feedback`, `PATCH /api/feedback/:id`. Kontrak aditif: `whatsapp` di `customer360Schema`, `handledNote` di PATCH, `FEEDBACK_DUPLICATE`, `FEEDBACK_TRANSITION_INVALID`, `handledBy` jadi teks (id user Better Auth).
 - Bukti: merah dulu di 201801d0 (feedback 38 dari 46 gagal, 360 dan segmen 31 dari 32 gagal); hijau 12 berkas 184 tes; typecheck shared dan api lewat heavy bersih; eslint, prettier, db:generate kedua kosong. Review K (architect): 5 temuan dibetulkan (nomor di access log, identitas WA harus cocok hash profil, feedback sesi meja ganda, job segmen rusak, format masking).
 - Keputusan: profil `closed` mengirim feedback dapat 404 `CUSTOMER_NOT_FOUND` (B16 dan `requireMember`), bukan 403 seperti tulisan 290d. Rute staf feedback memakai `requireMenuPermission` supaya manajer outlet terbatas outlet-nya.
 - Belum: tier (`currentTier`/`nextTier` null, filter tier kosong sampai 3zd1); job harian segmen belum dijalankan end-to-end; tes baru setelah review belum dibuktikan merah dulu.
 - Biaya: sesi 5203k token-biaya, 16 subagent, puncak 6 sekaligus.
+
 ## 2026-11-10: WS-03 item gagal sesudah bayar (legend-4qu, ORD-08, ORD-09)
 
 - Sudah: endpoint kontrak qr-order untuk lapor item gagal (event `item.failed` + sinyal realtime ke ponsel tamu), daftar/opsi/pilihan tamu (hanya ganti menu atau kredit voucher), penyelesaian staf, refund manual hanya dengan approval `refund` yang disetujui dan alasan >= 10 karakter (event `order_issue.manual_refund_approved`), voucher permintaan maaf (`apology_vouchers`, kode disegel, batas matriks approval). Migrasi 0214 (tabel `apology_vouchers`, `order_issues.approval_request_id`, 3 indeks unik).
@@ -1618,25 +1639,31 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Kredit ganda (hipotesis architect): tidak nyata. Total order QR beku sejak checkout, swap hanya di order terbayar; tes `order-recovery-swap-double-credit.test.ts`.
 - Bukti: 9 dari 10 tes stok gagal tanpa fitur lalu hijau; 149 tes terarah (12 berkas), tsc api, eslint, prettier bersih; architect K: 2 wajib + 3 kecil dibetulkan.
 - Risiko: pengembalian yang ditolak aturan stok hanya di-log (tidak diparkir ulang seperti reversal void); `isPaidOrder` menganggap open_bill dengan payment intent pending sebagai dibayar; remake swap tidak di-reverse saat void akhir (konsisten dengan remake/comp).
+
 ## 2026-11-10: WS-04 order pacing dan estimasi waktu saji (legend-gyc)
+
 - Sudah: tabel `kitchen_menu_loads`, `kitchen_channel_pauses`, `kitchen_pacing_state` (migrasi 0214, RLS tenant dan outlet), evaluator kapasitas per stasiun (aturan jadwal, level near/at capacity), ETA berbasis antrean dan riwayat 14 hari dengan prioritas kanal, auto-pause menu prep panjang per kanal (kecuali kanal teratas) dan lepas pause saat antrean turun, alert supervisor sekali per transisi, route `GET /kitchen/pacing` dan `GET /serving-time-estimate`, port estimasi QR, penolakan menu dijeda di POS dan QR.
 - Bukti: 364 tes terarah lulus di 11 berkas (pacing 181+, KDS, POS, QR, isolasi tenant); mutasi (prioritas, kanal teratas, rilis pause, alert) membuat 6 sampai 15 tes gagal; tsc api, eslint, prettier bersih; `db:generate` kedua kosong; review K (architect) 4 temuan tinggi/sedang dibetulkan (koneksi ganda, evaluasi tanpa aturan, routing stasiun, pause stasiun terhapus).
 - Belum: jalur pesanan delivery (GoFood/Grab/Shopee) belum menolak menu dijeda; tidak ada route admin untuk muat menu (`kitchen_menu_loads`) dan pause manual (kontrak belum ada); uji beban KDS-06 (median ETA vs aktual); second opinion Codex.
 
 ## 2026-11-10: WS-04 order pacing, putaran keputusan CTO (legend-gyc)
+
 - Sudah: auto-pause hanya untuk menu dengan baris `kitchen_menu_loads` dan prep >= 600 s (sudah berlaku, kini dijaga tes); jalur delivery manual menolak menu dijeda untuk platform (409 KDS-05); webhook delivery tetap diinjeksi dan diterima (pesanan sudah dibayar platform) dengan catatan audit `delivery_order.paused_line_accepted`; `GET /kitchen/pacing` boleh dibaca juru masak per stasiun, hanya stasiunnya (200, bukan 403); lock timeout 2 s pada evaluasi pacing.
 - Bukti: 463 tes terarah lulus di 16 berkas; mutasi (ambang prep, filter stasiun, audit, penolakan manual) membuat 2 sampai 10 tes gagal; tsc, eslint, prettier bersih; `db:generate` kosong; architect delta K 1 temuan tinggi dibetulkan (webhook tersangkut needs_review) dan 1 rendah (lock timeout).
 - Belum: kartu `legend-7svpq` (kontrak + route admin muat menu dan pause manual); uji beban KDS-06.
 
-
 ## 2026-11-10: WS-04 admin muat menu dan pause manual dapur (legend-7svpq)
+
 - Sudah: kontrak `packages/shared/src/kitchen` (`listMenuLoads`, `setMenuLoads`, `deleteMenuLoad`, `listChannelPauses`, `setManualChannelPause`, `releaseManualChannelPause`) dan enam route di `/outlets/:outletId/kitchen` dengan izin `kds.station.manage`. Muat menu per outlet dan baris menu (tabel tidak punya kolom stasiun), upsert idempoten tanpa audit bila nilai sama. Pause manual satu per baris menu, `reason=manual`, tidak disentuh auto-pause; lepas pause otomatis memberi 404; pause kedaluwarsa dilepas jadi `released:false`. Audit `kitchen_menu_load.*` dan `kitchen_channel_pause.*`; lock timeout 2 s.
 - Bukti: 44 tes baru (`kds-pacing-admin.test.ts`), 39 gagal tanpa implementasi; 229 tes terarah lulus di 4 berkas; kontrak root 169 lulus; tsc api, eslint, prettier bersih; satu reviewer sonnet, 2 catatan rendah dibetulkan.
 - Belum: UI kitchen config untuk muat menu dan pause; uji beban KDS-06; second opinion Codex.
+
 ## 2026-11-10: WS-10 absensi karyawan (legend-wh71)
+
 - Sudah: 6 tabel `attendance_*` (migrasi 0215, RLS tenant + outlet), clock selfie/geofence/QR 30 detik/ikat perangkat, terlambat/pulang cepat/lembur dari shift, idempoten, koreksi lewat approval `hris_attendance`, antrean review sampling + config kebijakan, duty meal (catat saja), applier edge `attendance.logged`, job purge selfie 90 hari sesudah payroll tutup (per badan hukum).
 - Bukti: tes terarah 153 lulus di 8 berkas; typecheck api dan shared, eslint, prettier bersih; `db:generate` kedua kosong; review K (architect xhigh) 8 temuan (1 kritis: method manual_correction di clock) dibetulkan dengan tes gagal-dulu.
 - Belum: provider object storage prod belum ada (legend-7nv1), jadi job purge belum didaftarkan di `worker-main.ts` dan upload selfie belum bisa; pemotongan stok duty meal (konsumen event) dan event duty meal belum ada; FE legend-0z5k; second-opinion Codex per area.
+
 ## 2026-11-10: WS-09 mesin kuota Wi-Fi (legend-kmd3)
 
 - Sudah: migrasi 0216 (`wifi_sessions`, `wifi_spend_entries`, `wifi_policies.spend_mode`, RLS tenant+outlet), `wifi-quota.service.ts` (ledger belanja, kuota akun per hari, hitung ulang sesi terbuka, penerapan ke agen edge), konsumer `order.paid`/`order.refunded` (di `worker-main.ts` setelah loyalty), `wifi-session.service.ts` dan rute tamu `/api/wifi` (policy, start, current, refresh body kosong, end), `spendMode` (`per_day_multiple` default | `per_order`) di config panel.

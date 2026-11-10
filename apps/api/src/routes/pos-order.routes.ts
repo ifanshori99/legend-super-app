@@ -42,7 +42,8 @@ import {
   voidPosOrderItem,
 } from "@starter/shared/pos";
 import type { PermissionCode } from "@starter/shared/access";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
+import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -59,7 +60,12 @@ import type { PosCaller } from "../services/pos-order-support.ts";
 
 export const posOrderRouter = Router({ mergeParams: true });
 
-posOrderRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+posOrderRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+);
 
 const outletOf = (req: Request) => String(req.params.outletId ?? "");
 const can = (permission: PermissionCode) =>
@@ -105,7 +111,7 @@ function caller(req: Request, body?: { expectedVersion?: number }): PosCaller {
   // and If-Match keeps one fingerprint and replays instead of 409.
   if (body) delete body.expectedVersion;
   return {
-    userId: userIdSchema.parse(getAuth(req).user.id),
+    userId: userIdSchema.parse(actorOf(req)),
     deviceId: deviceIdOf(req),
     expectedVersion: fromBody ?? fromHeader,
   };

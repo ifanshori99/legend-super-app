@@ -11,6 +11,7 @@ import {
 } from "@starter/shared/access";
 import { outletIdSchema, userIdSchema } from "@starter/shared/core";
 import { receiptNumberWriteoffInputSchema } from "@starter/shared/pos";
+import { rejectActingStaff } from "../middleware/acting-staff.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
@@ -35,6 +36,12 @@ const outletOf = (req: Request) => String(req.params.outletId ?? "");
 const owner = requireOutletPermission("pos.receipt.writeoff", outletOf);
 
 const params = z.strictObject({ outletId: outletIdSchema });
+
+// Owner-only and session-bound (second factor): an active cashier token is
+// refused outright (403 ACTING_STAFF_NOT_ALLOWED), before any permission
+// check. It sits on the routes, not the router `.use`: the router shares its
+// URL prefix with the other POS routers, so a `.use` would also refuse their
+// requests.
 
 // The permission code alone is not enough: a tenant admin can put it in a
 // custom role (top-authority path), and that holder would pass the middleware.
@@ -76,6 +83,7 @@ const recentSecondFactor: RequestHandler = async (req, _res, next) => {
 
 posReceiptWriteoffRouter.post(
   "/receipt-writeoffs",
+  rejectActingStaff,
   owner,
   ownerTemplateOnly,
   recentSecondFactor,
@@ -96,6 +104,7 @@ posReceiptWriteoffRouter.post(
 
 posReceiptWriteoffRouter.get(
   "/receipt-writeoffs",
+  rejectActingStaff,
   owner,
   ownerTemplateOnly,
   async (req, res) => {

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { LogOut } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
+import { endActingStaffMode } from "@/lib/api/acting-staff";
 import { Button } from "@/components/ui/button";
 
 export function SignOutButton() {
@@ -15,6 +16,8 @@ export function SignOutButton() {
     try {
       const result = await authClient.signOut();
       if (result.error) throw new Error("Sign out failed");
+      // The POS cashier hold belongs to this login; the next one starts clean.
+      endActingStaffMode();
       await router.invalidate();
       await navigate({ to: "/sign-in", replace: true });
     } catch {

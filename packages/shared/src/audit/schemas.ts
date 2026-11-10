@@ -68,6 +68,16 @@ export const auditEventSchema = z
         accessMode: z.enum(["read_only", "read_write"]),
       })
       .optional(),
+    // Set when the write ran with an active-cashier token on a shared POS
+    // device: `actorId` is the staff member, this names the login session owner
+    // and the token. Optional: rows written before this field stay valid.
+    acting: z
+      .strictObject({
+        sessionUserId: uuidSchema,
+        actingStaffUserId: uuidSchema,
+        actingTokenId: uuidSchema,
+      })
+      .optional(),
     retentionClass: z.literal("audit_2y"),
     createdAt: isoDateTimeSchema,
   })

@@ -259,6 +259,8 @@ export function createApp({
         "Idempotency-Key",
         "X-Reservation-Link-Token",
         "X-Request-Id",
+        // Active cashier token of a shared POS device (middleware/acting-staff).
+        "X-Acting-Staff",
       ],
       exposedHeaders: ["X-Request-Id", "Location"],
       maxAge: 600,

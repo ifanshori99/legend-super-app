@@ -788,12 +788,15 @@ async function settlePending(
 /**
  * GET /api/pos-overrides/:overrideId — the requester (or the recorded
  * approver) polls; a pending phone approval is settled on the way. Rows
- * outside the caller's outlets are invisible (RLS) and answer 404.
+ * outside the caller's outlets are invisible (RLS) and answer 404. With
+ * `outletId` (the acting-staff token's outlet) only that outlet's row is
+ * visible, so a mismatch answers 404 and nothing is settled.
  */
 export async function getPosOverride(
   tenant: TenantContext,
   actorUserId: string,
   overrideId: string,
+  outletId: string | null = null,
   now = new Date(),
 ): Promise<PosOverrideView> {
   const actorId = userIdSchema.parse(actorUserId);
@@ -812,6 +815,9 @@ export async function getPosOverride(
         and(
           eq(posOverrides.tenantId, tenant.tenantId),
           eq(posOverrides.id, overrideId),
+          outletId === null
+            ? undefined
+            : eq(posOverrides.outletId, outletIdSchema.parse(outletId)),
           or(
             eq(posOverrides.requestedBy, actorId),
             eq(posOverrides.approvedBy, actorId),

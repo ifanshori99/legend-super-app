@@ -74,6 +74,7 @@ export function createLogger({
         paths: [
           "req.headers.cookie",
           "req.headers.authorization",
+          'req.headers["x-acting-staff"]',
           'res.headers["set-cookie"]',
           "*.password",
           "*.newPassword",

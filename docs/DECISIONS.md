@@ -24,6 +24,98 @@ Keputusan founder (Q85) dan CTO, desain architect tingkat K (`docs/briefs/94q2l-
 4. **Four-eyes.** Penyetuju payout bukan resolver issue dan bukan approver ORD-09; tidak terbaca = ditolak.
 5. **Refund gagal.** Pendapatan sudah dibalik saat permintaan dibuka, jadi refund yang gagal karena `approval_expired` atau `approver_unauthorized` dibuka ulang otomatis (nominal sama, tanpa `order.refunded` baru, kunci `order-recovery-refund:<issueId>:<failedRefundId>`), maksimal sampai 3 refund gagal per issue (`refile_limit`). `provider_declined` (uang mungkin sudah terkirim), `cap_exceeded`, `source_document`: tidak dibuka ulang, audit `order_issue.refund_refile_blocked` untuk ditangani orang. `rejected` (keputusan CTO 10 Nov): penolakan final, tidak dibuka ulang, audit `order_issue.refund_rejected` tetap. Untuk QR pay-first, event `order_issue.refund_reversal_requested` membalik jurnal `aj:order-refund:<issueId>` otomatis dan idempoten (pendapatan, service, PBJT diakui lagi; `customer_deposit` kembali), dan hold `qrSaleInUse` menahan uangnya lagi. Perlu refund lagi: buat issue baru.
 
+## 2026-11-10: Kasir aktif per perangkat lewat token server (legend-aruta)
+
+Konteks: setelah ganti kasir dengan PIN, POS tetap mencatat transaksi atas nama
+pemilik sesi login. Pergantian kasir hanya terjadi di browser.
+`POST /api/staff-pins/verify` (`routes/device-pin.routes.ts:71`) memeriksa PIN
+tanpa sesi login dan tanpa menerbitkan token (`services/device-pin.service.ts:502`).
+Semua route POS mengambil pelaku dari `getAuth(req).user.id`
+(`middleware/auth.ts:46`). Bukti gagal-dulu:
+`apps/api/src/test/pos-cashier-switch-actor.test.ts`. Tingkat K (akses dan uang).
+Ditinjau architect (opus) sebelum kode ditulis.
+
+Keputusan: token opak "kasir aktif", terikat ke device, outlet, staf DAN sesi
+login. Dikirim di header `X-Acting-Staff`. Satu middleware menjadikan staf itu
+pelaku sekaligus subjek pemeriksaan izin. Tanpa header, perilaku lama tetap
+(kartu bd terpisah mewajibkan header di mode perangkat bersama).
+
+1. Tabel `pos_acting_staff` (migrasi 0232, dulu 0243, berkas sendiri; bukan tabel bukti PIN
+   u7g9w, dan inti `device-pin.service.ts` verify tidak diubah)
+   - Kolom: `id` uuid pk; `tenant_id`, `outlet_id`, `device_id`, `staff_user_id`,
+     `session_user_id`, `session_id` NOT NULL; `token_hash` (sha256) NOT NULL
+     UNIQUE; `issued_at` default now(); `expires_at` NOT NULL; `revoked_at`;
+     `revoke_reason` CHECK in (`switched`, `ended`, `shift_closed`, `day_closed`,
+     `pin_reset`, `staff_inactive`).
+   - CHECK: `expires_at <= issued_at + interval '12 hours'`; `revoked_at` terisi
+     jika dan hanya jika `revoke_reason` terisi.
+   - Satu token hidup per device: unique parsial `(tenant_id, device_id) WHERE
+     revoked_at IS NULL`. Index `(tenant_id, outlet_id, staff_user_id) WHERE
+     revoked_at IS NULL`.
+   - RLS ENABLE + FORCE (tenant_isolation, outlet_isolation). SELECT, INSERT,
+     UPDATE; tanpa DELETE. Tidak direplikasi: token berlaku di node penerbit.
+   - Token: 32 byte acak base64url, prefix `pas_` (bukan `pp_`), hanya sha256
+     disimpan.
+   - Terbit lewat route baru `POST /api/staff-pins/pos-session` (bukan `purpose`
+     di `/verify`) dengan `requireAuth`, `requireTrustedOrigin`, ikatan
+     `session_id`. Urutan: `verifyStaffPinOnDevice` tanpa diubah; lalu satu
+     transaksi: cabut token hidup device (`switched`), sisipkan baris baru
+     `expires_at = now() + 12 jam`, audit `pos_acting_staff.started`. Pemilik
+     sesi wajib anggota outlet yang sama. `POST .../pos-session/end` (`ended`).
+   - TTL = min(tutup shift, 12 jam): `expires_at` 12 jam + cabut saat tutup shift.
+   - Cabut: `setStaffPin` (`pin_reset`, semua token staf itu di outlet itu),
+     `closePosShift`/`forceClosePosShift` (`shift_closed`, token device shift),
+     `closePosDay` (`day_closed`, semua token outlet). Logout tidak perlu kait:
+     `session_id` dicocokkan tiap request.
+2. Middleware `middleware/acting-staff.ts` (`resolveActingStaff`, `actorOf(req)`),
+   dipasang di `.use(...)` tiap router POS sesudah `requireTenantContext`, sebelum
+   guard izin. Header ada → wajib lolos semua: prefix benar; `deviceIdOf(req)`
+   sama dengan `device_id`; `session_id` sama dengan sesi; `outlet_id` sama
+   dengan `:outletId` dan outlet perangkat; belum dicabut/kedaluwarsa; staf aktif
+   dan anggota outlet.
+   - `getAuth` TIDAK dibungkus (dipakai untuk MFA sesi, support session, cek
+     "self" di `setStaffPin`). Subjek izin: `loadRequestAccess`
+     (`permissions.ts`), `requireMenuPermission`, `requireStationScopePermission`
+     memakai `actorOf(req)`. Cache WeakMap per `req` aman.
+   - Saat ada kasir aktif `mfaVerified = false`. Tidak ada fallback "izin staf
+     ATAU izin sesi". Tanpa header, subjek = pemilik sesi.
+   - Header ada tapi middleware tidak terpasang → `loadRequestAccess` menolak 400
+     `ACTING_STAFF_UNSUPPORTED` (fail closed).
+   - Pemanggil yang diganti ke `actorOf`: `pos-order.routes.ts` caller(),
+     `pos-shift.routes.ts`, `pos-receipt.routes.ts`,
+     `pos-receipt-writeoff.routes.ts` (dengan header: 403
+     `ACTING_STAFF_NOT_ALLOWED`), `pos-order-customer.routes.ts`, dan
+     requester override di `device-pin.routes.ts` (wajib, agar aturan "approver
+     bukan requester" tidak terlewati).
+   - Gelombang berikut (bead terpisah): `floor.routes.ts`,
+     `table-sessions.routes.ts`, `table-links.routes.ts`, `kds.routes.ts`.
+3. Idempotensi: pelaku di fingerprint = staf aktif. Kunci sama dengan staf aktif
+   berbeda → 409 `IDEMPOTENCY_KEY_REUSED`. Klien mengosongkan antrean tulis
+   sebelum ganti kasir.
+4. Audit: field opsional `acting: {sessionUserId, actingStaffUserId,
+   actingTokenId}` di `auditEventSchema`, pola `attributeToSupport`. `actorType`
+   `user`, `actorId` = staf aktif. Kolom domain (`cashierId`, dst.) otomatis staf
+   aktif. Aksi `pos_acting_staff.started`/`.ended` masuk daftar aman audit.
+5. Error: 401 `ACTING_STAFF_INVALID` (format, hash tak dikenal, device/sesi/
+   tenant salah), 401 `ACTING_STAFF_EXPIRED`, 401 `ACTING_STAFF_REVOKED` (+reason),
+   403 `ACTING_STAFF_OUTLET_MISMATCH`, 403 `ACTING_STAFF_INACTIVE` (cabut
+   `staff_inactive`), 403 `PERMISSION_DENIED` untuk izin kurang. Terbit:
+   `PIN_LOCKED`/`PIN_INVALID` (lockout 5x/15 menit dipakai ulang).
+6. Edge: path POS dan `/api/staff-pins` sudah di `EDGE_API_PREFIXES`; migrasi
+   wajib ikut ke edge; token lokal per node (kasir ketik PIN lagi setelah
+   failover); pengikatan `session_id` perlu dicek terhadap sign-in di edge.
+7. Perbaikan atas arah awal: (a) route terpisah dengan sesi, bukan `purpose` di
+   `/verify`; (b) MFA sesi tidak diwarisi; (c) header tak boleh diabaikan diam-
+   diam; (d) requester override memakai `actorOf`; (e) CORS `app.ts` izinkan
+   `X-Acting-Staff` dan redact di `logger.ts`; (f) token di memori atau
+   sessionStorage (bukan localStorage), header hanya untuk
+   `/outlets/:id/pos` dan `/pos-overrides`.
+
+Titik sentuh merge train: `device-pin.service.ts` (hanya kait `setStaffPin`),
+`pos-shift.service.ts`, `pos-day.service.ts`, `permissions.ts`, `core-audit.ts`,
+`audit/schemas.ts`, `app.ts`, `routes/index.ts`, nomor/`when` migrasi
+(journal worktree ini berhenti di 0216).
+
 ## 2026-11-10: Laporan harian tanpa pesanan latihan (legend-fbxzw)
 
 Konteks: rekap akhir hari (`computeRecap`, `pos-day.service.ts`) masih

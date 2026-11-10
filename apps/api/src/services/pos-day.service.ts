@@ -82,6 +82,7 @@ import { withTenant } from "../db/tenant.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { outletTarget } from "./device-pin-support.ts";
+import { revokeActingStaffForOutlet } from "./pos-acting-staff-revoke.ts";
 import { reportablePosOrders } from "./device-training.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import {
@@ -895,6 +896,12 @@ export async function closePosDay(
       closedAt: now,
       idempotencyKey: body.idempotencyKey,
       requestFingerprint: fingerprint,
+    });
+
+    // legend-aruta: closing the day ends every acting cashier of the outlet.
+    await revokeActingStaffForOutlet(tx, context.tenant, {
+      outletId,
+      reason: "day_closed",
     });
 
     // day.closed on the outbox (same envelope/destination as appendPosEvent).

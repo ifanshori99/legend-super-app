@@ -3,6 +3,7 @@ import { noStore } from "../middleware/no-store";
 import { accessRouter } from "./access.routes";
 import { serviceRequestRouter } from "./service-request.routes";
 import { posOverrideRouter, staffPinRouter } from "./device-pin.routes";
+import { posActingStaffRouter } from "./pos-acting-staff.routes";
 import { qrOrderRouter } from "./qr-order.routes";
 import { orderRecoveryRouter } from "./order-recovery.routes.ts";
 import { apologyVoucherRouter } from "./apology-voucher.routes.ts";
@@ -260,6 +261,9 @@ apiRouter.use("/apology-vouchers", apologyVoucherRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/table-sessions", qrOrderRouter);
 apiRouter.use("/qr", qrRouter);
+// Acting cashier token (legend-aruta), before staffPinRouter; its routes carry
+// their own guards so /staff-pins/verify stays sessionless.
+apiRouter.use("/staff-pins", posActingStaffRouter);
 apiRouter.use("/staff-pins", staffPinRouter);
 apiRouter.use("/pos-overrides", posOverrideRouter);
 // Public brand website (WS-08 F21): the online menu page, tenant and brand from

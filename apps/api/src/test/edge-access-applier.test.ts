@@ -604,6 +604,8 @@ afterAll(async () => {
       "sync_cursors",
       "edge_nodes",
       "audit_logs",
+      "pos_acting_staff", // before "user" and "devices"
+      "devices",
       "staff_pins", // before "user"
       "role_assignments", // before "user"
       "roles",
@@ -632,6 +634,94 @@ afterAll(async () => {
 // ---------------------------------------------------------------- PIN set
 
 describe("legend-kyie staff_pin.set from an edge", () => {
+  // Seeds a live acting-cashier token of the staff member at outlet A on a
+  // fresh device (the token a PIN adoption must end).
+  async function seedActingToken(userId: string): Promise<string> {
+    const deviceId = randomUUID();
+    await owner.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+       VALUES ($1, $2, $3, 'pos', 'Kasir edge', now() - interval '1 minute')`,
+      [deviceId, tenantId, outletA],
+    );
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO pos_acting_staff
+         (id, tenant_id, outlet_id, device_id, staff_user_id, session_user_id,
+          session_id, token_hash, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $5, $6, $7, now() + interval '1 hour')`,
+      [
+        id,
+        tenantId,
+        outletA,
+        deviceId,
+        userId,
+        randomUUID(),
+        randomUUID().replaceAll("-", "").padEnd(64, "0"),
+      ],
+    );
+    return id;
+  }
+
+  async function actingTokenState(id: string) {
+    const { rows } = await owner.query<{
+      revoked: boolean;
+      reason: string | null;
+    }>(
+      "SELECT revoked_at IS NOT NULL AS revoked, revoke_reason AS reason FROM pos_acting_staff WHERE id = $1",
+      [id],
+    );
+    return rows[0]!;
+  }
+
+  it("revokes the live acting-cashier tokens when a newer edge set is adopted (update), and not on the same material", async () => {
+    const userId = await newUser();
+    await seedPin(userId, "135790", { setAtMs: Date.now() - 3 * HOUR });
+    const tokenId = await seedActingToken(userId);
+    const material = await pinMaterial(userId, "246801", Date.now() - HOUR);
+
+    await deliver([pinSetEvent({ userId, material })]);
+    expect(await actingTokenState(tokenId)).toEqual({
+      revoked: true,
+      reason: "pin_reset",
+    });
+
+    // Same material again (a re-send): not an adoption, a new token lives on.
+    const liveId = await seedActingToken(userId);
+    await deliver([pinSetEvent({ userId, material })]);
+    expect(await actingTokenState(liveId)).toEqual({
+      revoked: false,
+      reason: null,
+    });
+  });
+
+  it("revokes the live acting-cashier tokens when an edge set inserts the cloud row", async () => {
+    const userId = await newUser();
+    const tokenId = await seedActingToken(userId);
+    const material = await pinMaterial(userId, "482916", Date.now() - MINUTE);
+
+    await deliver([pinSetEvent({ userId, material })]);
+
+    expect(await pinRows(userId)).toHaveLength(1);
+    expect(await actingTokenState(tokenId)).toEqual({
+      revoked: true,
+      reason: "pin_reset",
+    });
+  });
+
+  it("keeps the tokens when an older edge set is refused", async () => {
+    const userId = await newUser();
+    await seedPin(userId, "135790", { setAtMs: Date.now() - HOUR });
+    const tokenId = await seedActingToken(userId);
+    const older = await pinMaterial(userId, "246801", Date.now() - 2 * HOUR);
+
+    await deliver([pinSetEvent({ userId, material: older })]);
+
+    expect(await actingTokenState(tokenId)).toEqual({
+      revoked: false,
+      reason: null,
+    });
+  });
+
   it("inserts the cloud row when none exists, keeps it out of the parked inbox and queues nothing", async () => {
     const userId = await newUser();
     const setAtMs = Date.now() - MINUTE;
