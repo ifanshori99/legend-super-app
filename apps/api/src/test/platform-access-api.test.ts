@@ -10,6 +10,7 @@ import {
   grantRoleSchema,
 } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { cafeLegendFixtures } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -36,6 +37,56 @@ const owner = new Pool({
 });
 const createdUserIds: string[] = [];
 const createdRoleIds: string[] = [];
+const createdStationIds: string[] = [];
+const bandung2 = cafeLegendAccessFixtures.outletIds.bandung2;
+// Seed outlets of the cafe-legend tenant (legend-ebt9f). Sorted by name, the
+// first one comes before "... Bandung 2 (contoh)".
+const bandungFixture = cafeLegendFixtures.outlets[0];
+const bandung2Fixture = cafeLegendFixtures.outlets[1];
+
+/** One live station in `outletId`, written as the owner (stations has FORCED RLS). */
+async function createStation(outletId: string): Promise<string> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [seededTenantId],
+    );
+    const { rows } = await client.query<{ id: string }>(
+      `INSERT INTO stations (tenant_id, outlet_id, name, type)
+       VALUES ($1, $2, $3, 'coffee_bar') RETURNING id`,
+      [seededTenantId, outletId, `Uji ${randomUUID().slice(0, 8)}`],
+    );
+    await client.query("COMMIT");
+    createdStationIds.push(rows[0]!.id);
+    return rows[0]!.id;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Tenant-local custom role allowed at station scope (no template). */
+async function stationRole(): Promise<string> {
+  const roleId = randomUUID();
+  await owner.query(
+    `INSERT INTO roles
+       (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, $3, false, NULL, $4::jsonb, false, $5::jsonb)`,
+    [
+      roleId,
+      seededTenantId,
+      `Uji ${roleId.slice(0, 8)}`,
+      JSON.stringify(["kds.ticket.process"]),
+      JSON.stringify(["station"]),
+    ],
+  );
+  createdRoleIds.push(roleId);
+  return roleId;
+}
 
 type AuditedEvent = {
   action: string;
@@ -128,6 +179,22 @@ afterAll(async () => {
       "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
       [seededTenantId, createdRoleIds],
     );
+  if (createdStationIds.length > 0) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [seededTenantId],
+      );
+      await client.query("DELETE FROM stations WHERE id = ANY($1::uuid[])", [
+        createdStationIds,
+      ]);
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+  }
   await owner.end();
 });
 
@@ -144,6 +211,8 @@ describe("legend-t4y7 GET /api/me/access", () => {
       mfaVerified: false,
       // No assignment, no station reach (legend-fsb7).
       stations: [],
+      // No assignment, no outlet reach (legend-ebt9f).
+      outlets: [],
       // Not an impersonated support session (legend-cg071).
       supportSession: null,
     });
@@ -161,6 +230,83 @@ describe("legend-t4y7 GET /api/me/access", () => {
         code.startsWith("platform."),
       ),
     ).toBe(false);
+  });
+
+  // legend-ebt9f: the staff web app builds its outlet context from `outlets`.
+  // Assumption: names sort ascending, "Cafe Legend Bandung" before
+  // "Cafe Legend Bandung 2 (contoh)" (spec: urut nama).
+  const outletView = (fixture: { id: string; name: string }) =>
+    expect.objectContaining({ id: fixture.id, name: fixture.name });
+
+  it("legend-ebt9f an outlet-scoped cashier gets only that outlet", async () => {
+    const cashier = await signedIn("Kasir satu outlet", { mfa: false });
+    await assign(cashier.userId, "cashier", { type: "outlet", id: bandung });
+    const res = await cashier.client.get("/api/me/access");
+    expect(res.status).toBe(200);
+    expect(res.body.data.outlets).toHaveLength(1);
+    expect(res.body.data.outlets[0]).toEqual({
+      id: bandungFixture.id,
+      name: bandungFixture.name,
+      timeZone: bandungFixture.timeZone,
+      businessDayCutoff: bandungFixture.businessDayCutoff,
+    });
+    // The other seeded outlet of the same tenant is not assigned.
+    expect(
+      res.body.data.outlets.map((row: { id: string }) => row.id),
+    ).not.toContain(bandung2);
+  });
+
+  it("legend-ebt9f two outlet assignments list both outlets sorted by name", async () => {
+    const staff = await signedIn("Kasir dua outlet", { mfa: false });
+    // Assign the later-sorting outlet first: order must come from the name.
+    await assign(staff.userId, "cashier", { type: "outlet", id: bandung2 });
+    await assign(staff.userId, "cashier", { type: "outlet", id: bandung });
+    const res = await staff.client.get("/api/me/access");
+    expect(res.status).toBe(200);
+    expect(res.body.data.outlets).toEqual([
+      outletView(bandungFixture),
+      outletView(bandung2Fixture),
+    ]);
+  });
+
+  it("legend-ebt9f a tenant-wide owner gets every outlet of the tenant sorted by name", async () => {
+    const ownerUser = await signedIn("Pemilik semua outlet", { mfa: false });
+    await assign(ownerUser.userId, "owner");
+    const res = await ownerUser.client.get("/api/me/access");
+    expect(res.status).toBe(200);
+    const names = res.body.data.outlets.map(
+      (row: { name: string }) => row.name,
+    );
+    expect(names).toContain(bandungFixture.name);
+    expect(names).toContain(bandung2Fixture.name);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it("legend-ebt9f a station-only assignment gives that station's outlet", async () => {
+    const stationId = await createStation(bandung2);
+    const staff = await signedIn("Staf stasiun", { mfa: false });
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'station', $4, now() - interval '1 minute', $2)`,
+      [seededTenantId, staff.userId, await stationRole(), stationId],
+    );
+    const res = await staff.client.get("/api/me/access");
+    expect(res.status).toBe(200);
+    expect(res.body.data.outlets).toEqual([outletView(bandung2Fixture)]);
+  });
+
+  it("legend-ebt9f an expired assignment gives no outlet", async () => {
+    const staff = await signedIn("Staf kedaluwarsa", { mfa: false });
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '2 hours', now() - interval '1 minute', $2)`,
+      [seededTenantId, staff.userId, await roleIdOf("cashier"), bandung],
+    );
+    const res = await staff.client.get("/api/me/access");
+    expect(res.status).toBe(200);
+    expect(res.body.data.outlets).toEqual([]);
   });
 });
 

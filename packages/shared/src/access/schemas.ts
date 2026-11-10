@@ -5,11 +5,14 @@
 
 import { z } from "zod";
 import {
+  businessDayCutoffSchema,
   clientInputSchema,
   cursorPageQuerySchema,
   idrSchema,
   isoDateTimeSchema,
+  outletIdSchema,
   tenantIdSchema,
+  timeZoneSchema,
   userIdSchema,
 } from "../core/index.ts";
 import {
@@ -94,6 +97,15 @@ export const listRoleAssignmentsQuerySchema = cursorPageQuerySchema.extend({
 
 export const roleAssignmentListItemSchema = roleAssignmentSchema;
 
+export const myOutletSchema = z.strictObject({
+  id: outletIdSchema,
+  name: z.string().min(1).max(150),
+  timeZone: timeZoneSchema,
+  /** Owner Q39: the business day starts here ("HH:mm"). */
+  businessDayCutoff: businessDayCutoffSchema,
+});
+export type MyOutlet = z.infer<typeof myOutletSchema>;
+
 /**
  * GET /api/me/access (bead legend-t4y7): the signed-in account's effective
  * permissions in the resolved tenant, plus `users.mfa_required` (§6 B) and
@@ -111,6 +123,14 @@ export const myAccessViewSchema = z.strictObject({
   mfaRequired: z.boolean(),
   mfaVerified: z.boolean(),
   stations: z.array(stationIdSchema),
+  /**
+   * Outlets assigned to the caller (legend-ebt9f): reached through an active
+   * tenant, brand, outlet or station assignment, never closed, sorted by name.
+   * Empty for an account with no assignment. The web app builds the staff
+   * outlet context and picker from it. Presentation only: every request is
+   * authorized again against its own outlet.
+   */
+  outlets: z.array(myOutletSchema),
   /**
    * Set only while the request runs in a support session (a platform admin
    * impersonating a tenant user under an active support access grant); null

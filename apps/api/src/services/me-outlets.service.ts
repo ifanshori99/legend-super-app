@@ -1,0 +1,106 @@
+// Outlets assigned to the signed-in account (bead legend-ebt9f; PRD v1.7 §3.7
+// RBAC outlet scope, §5 "Peta situs" ops area).
+//
+// The staff web app builds its outlet context and picker from this list
+// (GET /api/me/access). The reach comes only from the caller's own stored
+// assignments, never from request input (TEN-02). A tenant-scoped assignment
+// reaches every outlet of the (brand-pinned) tenant, a brand-scoped one the
+// brand's outlets, an outlet-scoped one that outlet. A station-scoped
+// assignment contributes its station's outlet: the person works at that
+// outlet, and every station-bound request still re-asserts the station itself.
+// Presentation data only: each API request is authorized again against its own
+// outlet. Closed outlets are not offered.
+
+import {
+  isAssignmentActive,
+  outletReachOf,
+  type MyOutlet,
+} from "@starter/shared/access";
+import { userIdSchema, type TenantContext } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { db } from "../db";
+import { outlets } from "../db/schema";
+import { withTenant } from "../db/tenant";
+import type { TenantAccessData } from "./permission-resolver";
+
+export function assignedOutletIds(input: {
+  readonly tenant: TenantContext;
+  readonly userId: string;
+  readonly data: TenantAccessData;
+  readonly now: Date;
+}): string[] {
+  const { data } = input;
+  const userId = userIdSchema.parse(input.userId);
+  const principal = {
+    tenantId: input.tenant.tenantId,
+    userId,
+    assignments: data.assignments,
+  } as const;
+  const reach = outletReachOf({
+    principal,
+    roles: data.roles,
+    org: data.org,
+    now: input.now,
+  });
+  if (reach?.kind === "tenant")
+    return data.org.outlets.map((outlet) => outlet.id);
+  const ids = new Set<string>(reach?.outletIds ?? []);
+  // Station-only assignments: the station's outlet (known roles only).
+  const knownRoles = new Set(data.roles.map((role) => role.id.toLowerCase()));
+  for (const assignment of data.assignments) {
+    if (
+      assignment.scope.type !== "station" ||
+      assignment.userId.toLowerCase() !== userId.toLowerCase() ||
+      assignment.tenantId.toLowerCase() !==
+        input.tenant.tenantId.toLowerCase() ||
+      !knownRoles.has(assignment.roleId.toLowerCase()) ||
+      !isAssignmentActive(assignment, input.now)
+    )
+      continue;
+    const station = data.org.stations.find(
+      (row) => row.id.toLowerCase() === assignment.scope.id?.toLowerCase(),
+    );
+    if (station) ids.add(station.outletId.toLowerCase());
+  }
+  return [...ids];
+}
+
+/** The caller's assigned, non-closed outlets, sorted by name then id. */
+export async function listMyOutlets(input: {
+  readonly tenant: TenantContext;
+  readonly userId: string;
+  readonly data: TenantAccessData;
+  readonly now: Date;
+}): Promise<MyOutlet[]> {
+  const ids = assignedOutletIds(input);
+  if (ids.length === 0) return [];
+  const context = establishScopedTenantContext(input.tenant, {
+    kind: "outlets",
+    outletIds: ids as never,
+  });
+  const rows = await withTenant(db, context, (tx) =>
+    tx
+      .select({
+        id: outlets.id,
+        name: outlets.name,
+        timezone: outlets.timezone,
+        businessDayCutoff: outlets.businessDayCutoff,
+      })
+      .from(outlets)
+      .where(
+        and(
+          eq(outlets.tenantId, input.tenant.tenantId),
+          inArray(outlets.id, ids),
+          ne(outlets.status, "closed"),
+        ),
+      )
+      .orderBy(asc(outlets.name), asc(outlets.id)),
+  );
+  return rows.map((row) => ({
+    id: row.id as MyOutlet["id"],
+    name: row.name,
+    timeZone: row.timezone,
+    businessDayCutoff: row.businessDayCutoff,
+  }));
+}

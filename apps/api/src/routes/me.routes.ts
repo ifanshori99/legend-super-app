@@ -9,11 +9,15 @@
 
 import { Router } from "express";
 import { myAccessViewSchema } from "@starter/shared/access";
-import { requireAuth } from "../middleware/auth";
+import { getAuth, requireAuth } from "../middleware/auth";
 import { requireTrustedOrigin } from "../middleware/origin";
-import { loadRequestAccess } from "../middleware/permissions";
+import {
+  getRequestAccessData,
+  loadRequestAccess,
+} from "../middleware/permissions";
 import { supportSessionOf } from "../middleware/support-session";
-import { requireTenantContext } from "../middleware/tenant";
+import { getTenantContext, requireTenantContext } from "../middleware/tenant";
+import { listMyOutlets } from "../services/me-outlets.service";
 
 export const meRouter = Router();
 
@@ -37,12 +41,21 @@ meRouter.get("/access", async (req, res) => {
   // and expiry (cached from the requireAuth guard). A normal session costs no
   // extra query.
   const support = await supportSessionOf(req);
+  // Assigned outlets (legend-ebt9f): filtered from the session user's stored
+  // assignments, never from request input.
+  const outlets = await listMyOutlets({
+    tenant: getTenantContext(req),
+    userId: getAuth(req).user.id,
+    data: getRequestAccessData(req),
+    now: new Date(),
+  });
   res.json({
     data: myAccessViewSchema.parse({
       permissions: snapshot.permissions,
       mfaRequired: snapshot.mfaRequired,
       mfaVerified: snapshot.mfaVerified,
       stations,
+      outlets,
       supportSession: support
         ? { accessMode: support.accessMode, expiresAt: support.expiresAt }
         : null,
