@@ -12,7 +12,17 @@
 // PRECONDITION_FAILED (legend-63l6).
 
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  sql,
+} from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   assertOutletInScope,
@@ -32,6 +42,7 @@ import {
   posEvents,
   posOrderDetailSchema,
   posOrderSummarySchema,
+  voidReasonSchema,
   type PosEventName,
   type PosOrderDetail,
   type PosOrderStatus,
@@ -57,6 +68,7 @@ import {
   posOrders,
   posOrderTenders,
 } from "../db/schema/pos-order.ts";
+import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
@@ -964,6 +976,39 @@ export function tenderDto(row: TenderRow): PosTender {
   } as PosTender;
 }
 
+/**
+ * legend-kxoyf: the kitchen-swap links of an order (`order_issues`, tenant
+ * scoped, only issues that got a replacement line). A swap leaves the order
+ * money frozen, so the detail reports the replacement lines and the voided
+ * swapped-out lines as recovery adjustments for the subtotal check.
+ */
+async function swapLinksOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<{ replacementIds: Set<string>; replacedIds: Set<string> }> {
+  const rows = await tx
+    .select({
+      orderItemId: orderIssues.orderItemId,
+      replacementId: orderIssues.replacementOrderItemId,
+    })
+    .from(orderIssues)
+    .where(
+      and(
+        eq(orderIssues.tenantId, context.tenant.tenantId),
+        eq(orderIssues.orderId, orderId),
+        isNotNull(orderIssues.replacementOrderItemId),
+      ),
+    );
+  const replacementIds = new Set<string>();
+  const replacedIds = new Set<string>();
+  for (const row of rows) {
+    if (row.replacementId !== null) replacementIds.add(row.replacementId);
+    replacedIds.add(row.orderItemId);
+  }
+  return { replacementIds, replacedIds };
+}
+
 /** The cashier screen's order: lines, tenders, live discounts and receipt. */
 export async function orderDetail(
   tx: Tx,
@@ -971,12 +1016,32 @@ export async function orderDetail(
   locked: Locked,
 ): Promise<PosOrderDetail> {
   const { order, pos } = locked;
-  const [items, tenders, discounts, receipt] = await Promise.all([
+  const [items, tenders, discounts, receipt, swaps] = await Promise.all([
     itemsOf(tx, context, order.id),
     tendersOf(tx, context, order.id),
     liveDiscountsOf(tx, context, order.id),
     posReceiptPort().findForOrder(tx, context, order.id),
+    swapLinksOf(tx, context, order.id),
   ]);
+  // A voided order's schema counts every line, so it carries no adjustment.
+  const swapReplacementIdr =
+    order.status === "voided"
+      ? 0
+      : items
+          .filter(
+            ({ item }) =>
+              swaps.replacementIds.has(item.id) && item.status !== "voided",
+          )
+          .reduce((sum, { item }) => sum + item.lineTotalIdr, 0);
+  const swapReplacedIdr =
+    order.status === "voided"
+      ? 0
+      : items
+          .filter(
+            ({ item }) =>
+              swaps.replacedIds.has(item.id) && item.status === "voided",
+          )
+          .reduce((sum, { item }) => sum + item.lineTotalIdr, 0);
   return posOrderDetailSchema.parse({
     id: order.id,
     tenantId: order.tenantId,
@@ -997,6 +1062,8 @@ export async function orderDetail(
     roundingIdr: order.roundingIdr,
     totalIdr: order.totalIdr,
     depositAppliedIdr: order.depositAppliedIdr,
+    swapReplacementIdr,
+    swapReplacedIdr,
     status: order.status,
     createdBy: order.createdBy,
     createdAt: order.createdAt.toISOString(),
@@ -1013,6 +1080,14 @@ export async function orderDetail(
     version: pos.version,
     items: items.map(({ item, pos: extra }) => {
       const voided = item.status === "voided";
+      const swapRole = swaps.replacementIds.has(item.id)
+        ? "replacement"
+        : swaps.replacedIds.has(item.id)
+          ? "replaced"
+          : "none";
+      // The swap consumer voids with its own reason ("item_failed_swap"), which
+      // is not a cashier void reason: show it as "other" with the text as note.
+      const knownReason = voidReasonSchema.safeParse(item.voidReason);
       return {
         id: item.id,
         tenantId: item.tenantId,
@@ -1037,8 +1112,20 @@ export async function orderDetail(
             ? (iso(extra?.firedAt ?? null) ?? item.updatedAt.toISOString())
             : null,
         status: item.status,
-        voidReason: voided ? item.voidReason : null,
-        voidReasonNote: voided ? (extra?.voidReasonNote ?? null) : null,
+        swapRole,
+        voidReason: voided
+          ? knownReason.success
+            ? knownReason.data
+            : swapRole === "replaced"
+              ? "other"
+              : item.voidReason
+          : null,
+        voidReasonNote: voided
+          ? (extra?.voidReasonNote ??
+            (!knownReason.success && swapRole === "replaced"
+              ? item.voidReason
+              : null))
+          : null,
         voidedBy: voided ? item.voidedBy : null,
         voidApprovedBy: voided ? item.voidApprovedBy : null,
         voidApprovalRequestId: voided

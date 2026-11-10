@@ -432,12 +432,20 @@ export const posOrderItemShape = {
   variantId: uuidSchema.nullable(),
   name,
   quantity: z.number().int().min(1).max(99),
-  unitPriceIdr: positiveIdr,
+  /** Positive, except a swap replacement on a completed order (see swapRole). */
+  unitPriceIdr: nonnegativeIdr,
   modifiersTotalIdr: nonnegativeIdr,
   lineTotalIdr: nonnegativeIdr,
   modifiers: z.array(orderModifierSnapshotSchema),
   note: note.nullable(),
   course: z.string().min(1).max(20).nullable(),
+  /**
+   * legend-kxoyf: the part this line plays in a kitchen swap (order_issues).
+   * `replaced` = the failed line the swap voided (no POS-02 approval chain:
+   * the recovery flow approved it); `replacement` = the line added by the swap
+   * (recorded at zero on a completed order). Every other line is `none`.
+   */
+  swapRole: z.enum(["none", "replaced", "replacement"]).default("none"),
   /** F8 hold & fire, per item and per course. */
   fireStatus: fireStatusSchema,
   firedAt: isoDateTimeSchema.nullable(),
@@ -460,6 +468,12 @@ export const posOrderItemShape = {
 export const posOrderItemSchema = z
   .strictObject(posOrderItemShape)
   .superRefine((item, ctx) => {
+    if (Number(item.unitPriceIdr) <= 0 && item.swapRole !== "replacement")
+      ctx.addIssue({
+        code: "custom",
+        path: ["unitPriceIdr"],
+        message: "Amount must be positive",
+      });
     if (
       Number(item.lineTotalIdr) !==
       (Number(item.unitPriceIdr) + Number(item.modifiersTotalIdr)) *
@@ -488,12 +502,16 @@ export const posOrderItemSchema = z
         path: ["firedAt"],
         message: "A fired item records firedAt; a held item does not",
       });
-    if (item.status === "voided") {
+    if (item.swapRole === "replaced" && item.status !== "voided") {
+      // A completed order keeps the swapped-out line live: no void metadata.
+    } else if (item.status === "voided") {
       if (
         item.voidReason === null ||
-        item.voidedBy === null ||
-        item.voidApprovedBy === null ||
-        (item.voidOverrideId === null && item.voidApprovalRequestId === null)
+        (item.swapRole !== "replaced" &&
+          (item.voidedBy === null ||
+            item.voidApprovedBy === null ||
+            (item.voidOverrideId === null &&
+              item.voidApprovalRequestId === null)))
       )
         ctx.addIssue({
           code: "custom",
@@ -1616,6 +1634,20 @@ export const posOrderDetailSchema = posOrderBaseSchema
     tenders: z.array(posTenderSchema),
     discounts: z.array(posDiscountSchema),
     receipt: posReceiptSchema.nullable(),
+    /**
+     * legend-kxoyf: sale value of the counted (not voided) kitchen-swap
+     * replacement lines. The swap leaves the order money frozen (the price
+     * difference is settled outside the order), so these lines are taken back
+     * out of the subtotal check. 0 for an order without a swap.
+     */
+    swapReplacementIdr: nonnegativeIdr.default(0 as Idr),
+    /**
+     * legend-kxoyf: sale value of the voided swapped-out lines. The frozen
+     * subtotal still includes them, so they are added back into the subtotal
+     * check. 0 for an order without a swap (and for a completed order, whose
+     * old line stays live).
+     */
+    swapReplacedIdr: nonnegativeIdr.default(0 as Idr),
   })
   .superRefine((order, ctx) => {
     checkOrderMoney(order, ctx);
@@ -1632,16 +1664,49 @@ export const posOrderDetailSchema = posOrderBaseSchema
       order.status === "voided"
         ? order.items
         : order.items.filter((item) => item.status !== "voided");
-    const subtotal = countedItems.reduce(
+    const counted = countedItems.reduce(
       (sum, item) => sum + Number(item.lineTotalIdr),
       0,
     );
+    // The adjustments are not free numbers: they must equal what the lines
+    // themselves say (swapRole), so they cannot hide a wrong subtotal. A voided
+    // order counts every line and carries no adjustment.
+    const roleSum = (role: "replacement" | "replaced", voided: boolean) =>
+      order.items
+        .filter(
+          (item) =>
+            item.swapRole === role && (item.status === "voided") === voided,
+        )
+        .reduce((sum, item) => sum + Number(item.lineTotalIdr), 0);
+    const swapReplacement = Number(order.swapReplacementIdr);
+    const swapReplaced = Number(order.swapReplacedIdr);
+    const expectedReplacement =
+      order.status === "voided" ? 0 : roleSum("replacement", false);
+    const expectedReplaced =
+      order.status === "voided" ? 0 : roleSum("replaced", true);
+    if (swapReplacement !== expectedReplacement)
+      ctx.addIssue({
+        code: "custom",
+        path: ["swapReplacementIdr"],
+        message:
+          "swapReplacementIdr must equal the sum of the live swap replacement lines",
+      });
+    if (swapReplaced !== expectedReplaced)
+      ctx.addIssue({
+        code: "custom",
+        path: ["swapReplacedIdr"],
+        message:
+          "swapReplacedIdr must equal the sum of the voided swapped-out lines",
+      });
+    // A kitchen swap keeps the order money frozen: the replacement line is
+    // taken back out and the voided swapped-out line is added back.
+    const subtotal = counted - swapReplacement + swapReplaced;
     if (Number(order.subtotalIdr) !== subtotal)
       ctx.addIssue({
         code: "custom",
         path: ["subtotalIdr"],
         message:
-          "subtotalIdr must equal the sum of the non-voided lines (all lines once the order is voided)",
+          "subtotalIdr must equal the sum of the non-voided lines (all lines once the order is voided), less swap replacement lines plus swapped-out voided lines",
       });
     for (const tender of order.tenders)
       if (tender.orderId !== order.id)
