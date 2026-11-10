@@ -520,7 +520,7 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
       amount: "1000",
     });
     expect(response.status).toBe(200);
-    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
     expect(await unallocatedCount(bill.intentId)).toBe(1);
     expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
@@ -537,7 +537,7 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     });
 
     expect(response.status).toBe(200);
-    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
     expect(await unallocatedCount(bill.intentId)).toBe(1);
     expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
@@ -1074,7 +1074,7 @@ describe("Codex P2 only callback == status == bill settles", () => {
     });
 
     expect(response.status).toBe(200);
-    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
     expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL + 1);
     expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
@@ -1091,7 +1091,7 @@ describe("Codex P2 only callback == status == bill settles", () => {
     });
 
     expect(response.status).toBe(200);
-    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
     expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
   });
@@ -1161,7 +1161,7 @@ describe("Codex P2 a late payment settles only an open bill", () => {
 
     expect((await intentRow(closedBill.intentId)).status).toBe("expired");
     expect(await unallocatedIdr(closedBill.intentId)).toBe(BILL_TOTAL);
-    expect((await intentRow(overpaid.intentId)).status).toBe("expired");
+    expect((await intentRow(overpaid.intentId)).status).toBe("failed");
     expect(await linkPaidIdr(overpaid.linkId)).toBe(0);
     expect(await unallocatedIdr(overpaid.intentId)).toBe(BILL_TOTAL + 1);
   });
@@ -1251,14 +1251,16 @@ describe("Codex P2 a late payment settles only an open bill", () => {
     }
   });
 
-  it("a pending intent on a voided order is not touched by this rule (only closed intents are)", async () => {
+  it("a pending intent on a voided order does not settle it either; the money is parked (legend-s0u8c F2)", async () => {
     const bill = await openIntent();
     await seedOrderOnLink(bill.linkId, "voided");
     setAnswer(bill.intentId, paid(bill.reference));
 
     expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
-    // Settles as today; the order flow refunds a voided order's payment.
-    await expectPaidOnce(bill);
+    // A closed bill is never settled, whatever the intent status.
+    expect((await intentRow(bill.intentId)).status).not.toBe("paid");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
   });
 });
 

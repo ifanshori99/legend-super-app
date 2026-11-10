@@ -4,18 +4,101 @@
  * bill (flagged `late_payment`) only while that bill is open. When the bill is
  * already covered by other payments, or its order or tender was voided,
  * completed or failed, or its reservation deposit was cancelled or no-show, the intent must not become paid: the caller parks the
- * money as unallocated funds instead. The caller must hold the bill and intent
- * row locks, so the answer cannot change before its write.
+ * money as unallocated funds instead. The caller must hold the bill owner, bill and
+ * intent row locks (see the lock order above), so the answer cannot change before its write.
  */
 import type { ScopedTenantContext } from "@starter/shared/core";
-import { and, eq, inArray, or } from "drizzle-orm";
-import { orders, posOrderTenders, reservations } from "../db/schema";
+import { and, asc, eq, inArray, or } from "drizzle-orm";
+import { orders, posOrders, posOrderTenders, reservations } from "../db/schema";
 import {
   outstandingIdr,
   type PaymentIntentRow,
   type PaymentLinkRow,
 } from "./payment-support";
 import type { Tx } from "./permission-resolver";
+
+/**
+ * LOCK ORDER FOR PAYMENTS (legend-s0u8c). Every writer that settles, fails or
+ * cancels money for a bill takes row locks in this one order, so none can
+ * deadlock and none decides from a state another commits underneath it:
+ *
+ *   1. bill owner: reservations row (deposit link), OR orders rows
+ *      (ORDER BY id) then their pos_orders rows (ORDER BY order_id);
+ *   2. payment_links (the bill);
+ *   3. payment_intents (ORDER BY id when several);
+ *   4. funds / refunds (payment_unallocated_funds, refunds).
+ *
+ * Settlement (webhook via confirmPayment, the poller, a held amount mismatch)
+ * calls `lockBillOwner` first, then locks link and intent, and reads the
+ * business status only after that. POS cancel (mutatePosOrder: order, pos_order,
+ * link) and reservation cancel (reservation, link, re-check intents) follow the
+ * same order.
+ */
+
+/**
+ * Locks the owner(s) of a bill, step 1 of the lock order above. Returns the
+ * number of owner rows locked (0 for a bill without a reservation or order).
+ */
+export async function lockBillOwner(
+  tx: Tx,
+  context: ScopedTenantContext,
+  linkId: string,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  const reservationRows = await tx
+    .select({ id: reservations.id })
+    .from(reservations)
+    .where(
+      and(
+        eq(reservations.tenantId, tenantId),
+        eq(reservations.depositPaymentLinkId, linkId),
+      ),
+    )
+    .orderBy(asc(reservations.id))
+    .for("update");
+  const orderRows = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        or(
+          eq(orders.paymentLinkId, linkId),
+          inArray(
+            orders.id,
+            tx
+              .select({ orderId: posOrderTenders.orderId })
+              .from(posOrderTenders)
+              .where(
+                and(
+                  eq(posOrderTenders.tenantId, tenantId),
+                  eq(posOrderTenders.paymentLinkId, linkId),
+                ),
+              ),
+          ),
+        ),
+      ),
+    )
+    .orderBy(asc(orders.id))
+    .for("update");
+  const orderIds = orderRows.map((row) => row.id);
+  let posRows = 0;
+  if (orderIds.length > 0)
+    posRows = (
+      await tx
+        .select({ orderId: posOrders.orderId })
+        .from(posOrders)
+        .where(
+          and(
+            eq(posOrders.tenantId, tenantId),
+            inArray(posOrders.orderId, orderIds),
+          ),
+        )
+        .orderBy(asc(posOrders.orderId))
+        .for("update")
+    ).length;
+  return reservationRows.length + orderRows.length + posRows;
+}
 
 const CLOSED_ORDER_STATUSES = ["voided", "completed"] as const;
 const CLOSED_TENDER_STATUSES = ["voided", "failed"];

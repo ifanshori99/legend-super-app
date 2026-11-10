@@ -80,7 +80,10 @@ import {
   failOverLinkSafely,
   syncGatewayHealthSafely,
 } from "./payment-failover.service";
-import { billClosedForLateSettlement } from "./payment-late-settlement";
+import {
+  billClosedForLateSettlement,
+  lockBillOwner,
+} from "./payment-late-settlement";
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
   paymentGatewayFor,
@@ -1129,24 +1132,39 @@ export class PaymentConfirmationRejected extends HttpError {
  * allocated to this bill). The payment evidence row makes a replay, or the
  * same transaction seen by both webhook and poll, a no-op.
  */
+type UnsettledGatewayFunds = {
+  provider: string;
+  providerRef: string;
+  method?: PaymentIntentRow["method"];
+  source: "verified_webhook" | "gateway_status";
+  paidAmountIdr: number;
+  receivedAt: Date;
+};
+
 export async function recordUnsettledGatewayFunds(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
-  funds: {
-    provider: string;
-    providerRef: string;
-    method?: PaymentIntentRow["method"];
-    source: "verified_webhook" | "gateway_status";
-    paidAmountIdr: number;
-    receivedAt: Date;
-  },
+  funds: UnsettledGatewayFunds,
+  now: Date,
+): Promise<void> {
+  await withTenant(db, context, (tx) =>
+    recordUnsettledGatewayFundsInTx(tx, context, intent, funds, now),
+  );
+}
+
+/** The same recording inside the caller's transaction (and lock order). */
+async function recordUnsettledGatewayFundsInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  funds: UnsettledGatewayFunds,
   now: Date,
 ): Promise<void> {
   const paid = funds.paidAmountIdr;
   if (!(paid > 0)) return;
   const reason =
     paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
-  await withTenant(db, context, async (tx) => {
+  {
     const [inserted] = await tx
       .insert(paymentEvidence)
       .values({
@@ -1228,6 +1246,146 @@ export async function recordUnsettledGatewayFunds(
       },
       ["status", "unallocatedIdr", "providerRef"],
     );
+  }
+}
+
+const MISMATCH_HELD_ACTION = "payment.amount_mismatch_held";
+
+/** True when a held amount mismatch was recorded for this intent. */
+async function amountMismatchHeld(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: auditLogs.id })
+    .from(auditLogs)
+    .where(
+      and(
+        eq(auditLogs.tenantId, context.tenant.tenantId),
+        sql`${auditLogs.event}->>'action' = ${MISMATCH_HELD_ACTION}`,
+        sql`${auditLogs.event}->>'objectId' = ${intentId}`,
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * A signed gateway amount that differs from the bill (Codex legend-s0u8c, D2):
+ * the intent is closed `failed` and marked held for review (an audit row,
+ * `payment.amount_mismatch_held`, read back by `applyConfirmation`), and the
+ * money is parked once as unallocated funds. Runs in one transaction in the
+ * payment lock order (see `payment-late-settlement.ts`): bill owner, link,
+ * intent. Funds are recorded even when the intent is already paid or settled
+ * (the money did arrive); only an unpaid intent is failed and held.
+ */
+export async function holdGatewayAmountMismatch(
+  context: ScopedTenantContext,
+  intentId: string,
+  input: {
+    providerRef: string;
+    paidAmountIdr: number;
+    eventId?: string;
+    source: "webhook" | "gateway_status";
+  },
+  now: Date,
+): Promise<{ held: boolean; intentStatus: PaymentIntentRow["status"] }> {
+  return withTenant(db, context, async (tx) => {
+    const [probe] = await tx
+      .select({ paymentLinkId: paymentIntents.paymentLinkId })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
+        ),
+      );
+    if (!probe) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    await lockBillOwner(tx, context, probe.paymentLinkId);
+    await tx
+      .select({ id: paymentLinks.id })
+      .from(paymentLinks)
+      .where(
+        and(
+          eq(paymentLinks.tenantId, context.tenant.tenantId),
+          eq(paymentLinks.id, probe.paymentLinkId),
+        ),
+      )
+      .for("update");
+    const current = await lockedIntent(tx, context, intentId);
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    let status = current.status;
+    let held = false;
+    if (status === "pending" || status === "expired") {
+      await tx
+        .update(paymentIntents)
+        .set({ status: "failed", updatedAt: now })
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            eq(paymentIntents.id, current.id),
+          ),
+        );
+      await appendPaymentEvent(tx, context, {
+        name: "payment.failed",
+        aggregateId: current.id,
+        outletId: current.outletId,
+        actor: { type: "system" },
+        payload: { intentId: current.id, reason: "amount_mismatch" },
+        now,
+      });
+      status = "failed";
+    }
+    held = status === "failed";
+    // The mismatch is recorded even when the intent was already paid (the
+    // audit trail keeps the evidence); only a failed intent is held.
+    if (!(await amountMismatchHeld(tx, context, current.id)))
+      await recordAudit(
+        tx,
+        context,
+        {
+          id: createUlid(now.getTime()),
+          tenantId: context.tenant.tenantId,
+          outletId: current.outletId,
+          actorType: "system",
+          actorId: null,
+          deviceId: null,
+          action: MISMATCH_HELD_ACTION,
+          objectType: "payment_intent",
+          objectId: current.id,
+          reason: null,
+          maskedChanges: {
+            before: { status: current.status },
+            after: {
+              status,
+              paidIdr: input.paidAmountIdr,
+              dueIdr: Number(current.amountIdr),
+              source: input.source,
+            },
+          },
+          ipHash: null,
+          sensitiveAccess: false,
+          retentionClass: "audit_2y",
+          createdAt: now.toISOString(),
+        },
+        ["status", "paidIdr", "dueIdr", "source"],
+      );
+    await recordUnsettledGatewayFundsInTx(
+      tx,
+      context,
+      { ...current, status },
+      {
+        provider: current.provider,
+        providerRef: input.providerRef,
+        source:
+          input.source === "webhook" ? "verified_webhook" : "gateway_status",
+        paidAmountIdr: input.paidAmountIdr,
+        receivedAt: now,
+      },
+      now,
+    );
+    return { held, intentStatus: status };
   });
 }
 
@@ -1244,20 +1402,35 @@ type SyncResult = {
  */
 const STRICT_SETTLEMENT_PROVIDERS: ReadonlySet<string> = new Set(["duitku"]);
 
-/** Throws the same refusal the lifecycle uses, so the callers' parking path
- * handles a strict provider's amount difference like an underpayment. */
-function assertStrictAmount(
+/** A strict provider's amount difference is held for review (the intent
+ * fails, the money is parked, see `holdGatewayAmountMismatch`), then refused
+ * with the lifecycle's own error so the callers' parking path stays a no-op. */
+async function assertStrictAmount(
+  context: ScopedTenantContext,
   intent: PaymentIntentRow,
-  paidAmountIdr: number,
-): void {
+  paid: { providerRef: string; amountIdr: number },
+  now: Date,
+): Promise<void> {
+  const paidAmountIdr = paid.amountIdr;
   if (
     STRICT_SETTLEMENT_PROVIDERS.has(intent.provider) &&
     paidAmountIdr !== Number(intent.amountIdr)
-  )
+  ) {
+    await holdGatewayAmountMismatch(
+      context,
+      intent.id,
+      {
+        providerRef: paid.providerRef,
+        paidAmountIdr,
+        source: "gateway_status",
+      },
+      now,
+    );
     throw new PaymentConfirmationRejected(
       "AMOUNT_MISMATCH",
       "The gateway amount differs from the bill.",
     );
+  }
 }
 
 const strictOptions = (intent: PaymentIntentRow) => ({
@@ -1322,7 +1495,15 @@ async function syncPendingIntentDetailed(
       now,
     );
     try {
-      assertStrictAmount(intent, providerStatus.amountIdr);
+      await assertStrictAmount(
+        context,
+        intent,
+        {
+          providerRef: providerStatus.providerRef,
+          amountIdr: providerStatus.amountIdr,
+        },
+        now,
+      );
       return {
         intent: await applyConfirmation(
           context,
@@ -1511,12 +1692,19 @@ export async function refreshIntent(
 export async function confirmPayment(
   context: ScopedTenantContext,
   intentId: string,
-  confirmation: PaymentConfirmationInput,
+  confirmation: PaymentConfirmationInput & {
+    /** First receipt of the signed evidence; bounds `paidAt` of a still
+     * pending intent (decided under the lock, never before the call). */
+    receivedAt?: Date;
+  },
   actor: PaymentActor = { type: "system" },
   now = new Date(),
   options: { closedIntentNeedsOpenBill?: boolean } = {},
 ): Promise<PaymentIntent> {
-  const parsed = paymentConfirmationSchema.parse(confirmation);
+  // The strict schema refuses unknown keys, `receivedAt` is not evidence.
+  const evidence = { ...confirmation };
+  delete evidence.receivedAt;
+  const parsed = paymentConfirmationSchema.parse(evidence);
   const id = uuidSchema.parse(intentId);
   const intent = await withTenant(db, context, async (tx) => {
     const [row] = await tx
@@ -1541,6 +1729,7 @@ export async function confirmPayment(
       amountIdr: parsed.amountIdr,
       providerRef: parsed.providerRef,
       at: parsed.at,
+      receivedAt: confirmation.receivedAt,
     },
     actor,
     now,
@@ -1634,19 +1823,21 @@ async function lockedIntent(
 async function applyConfirmation(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
-  confirmation: PaymentConfirmation,
+  rawConfirmation: PaymentConfirmation & { receivedAt?: Date },
   actor: PaymentActor,
   now: Date,
   options: { closedIntentNeedsOpenBill?: boolean } = {},
 ): Promise<PaymentIntentRow> {
   const auditActor = auditActorOf(actor);
   return withTenant(db, context, async (tx) => {
-    // PAY-04 concurrency: lock the bill row (FOR UPDATE) before reading its
-    // balance, then the intent row. Every settlement writer takes the locks in
-    // this order (bill, then intent), so two settlements for different intents
-    // serialize on the bill and two for the same intent serialize on both; the
-    // decision below is always made from the committed, locked state — never
-    // from a snapshot read before another delivery settled the intent.
+    // PAY-04 concurrency, lock order in `payment-late-settlement.ts`: bill
+    // owner, then the bill row (FOR UPDATE) before reading its balance, then
+    // the intent row. Every settlement writer takes the locks in this order,
+    // so two settlements for different intents serialize on the bill and two
+    // for the same intent serialize on both; the decision below is always
+    // made from the committed, locked state — never from a snapshot read
+    // before another delivery settled the intent.
+    await lockBillOwner(tx, context, intent.paymentLinkId);
     const [freshLink] = await tx
       .select()
       .from(paymentLinks)
@@ -1661,6 +1852,37 @@ async function applyConfirmation(
       throw new HttpError(404, "NOT_FOUND", "Payment link not found.");
     const current = await lockedIntent(tx, context, intent.id);
     if (!current) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    // A strict provider's amount mismatch holds the intent for review: a later
+    // delivery for the same intent may not settle it, whatever amount it says.
+    if (
+      options.closedIntentNeedsOpenBill &&
+      current.status === "failed" &&
+      (await amountMismatchHeld(tx, context, current.id))
+    )
+      throw new PaymentConfirmationRejected(
+        "AMOUNT_MISMATCH",
+        "This payment is held for an amount mismatch.",
+      );
+    // paidAt from the LOCKED status: a still pending intent was paid no later
+    // than the first receipt; a closed one was paid after it closed, so never
+    // before its close time (`now` is taken when the caller started, which can
+    // be before a close committed while it waited on the gateway or the lock).
+    const { receivedAt, ...base } = rawConfirmation;
+    const closedAt = new Date(current.updatedAt).getTime();
+    const confirmation: PaymentConfirmation =
+      receivedAt !== undefined || options.closedIntentNeedsOpenBill
+        ? {
+            ...base,
+            at: (current.status === "pending"
+              ? (receivedAt ?? now).getTime() < now.getTime()
+                ? (receivedAt as Date)
+                : now
+              : closedAt > now.getTime()
+                ? new Date(closedAt)
+                : now
+            ).toISOString(),
+          }
+        : base;
     const decision = decidePaymentConfirmation(
       {
         status: current.status,
@@ -1675,12 +1897,11 @@ async function applyConfirmation(
     if (decision.kind === "duplicate") return current;
     if (decision.kind === "reject")
       throw new PaymentConfirmationRejected(decision.code, decision.message);
-    // Opt-in late settlement guard: a failed or expired intent may only settle
-    // a bill that is still open. Checked under the bill + intent locks above
+    // Opt-in late settlement guard: a pending, failed or expired intent may
+    // only settle a bill that is still open. Checked under the bill + intent locks above
     // and before any write, so the caller can park the money as unallocated.
     if (
       options.closedIntentNeedsOpenBill &&
-      (current.status === "failed" || current.status === "expired") &&
       decision.kind === "settle" &&
       (await billClosedForLateSettlement(tx, context, freshLink, current))
     )
@@ -2145,7 +2366,15 @@ async function syncExpiredIntentPayment(
     return { intent, gatewayError: false };
   const paidAt = plausiblePaidAt(providerStatus.paidAt, intent.createdAt, now);
   try {
-    assertStrictAmount(intent, providerStatus.amountIdr);
+    await assertStrictAmount(
+      context,
+      intent,
+      {
+        providerRef: providerStatus.providerRef,
+        amountIdr: providerStatus.amountIdr,
+      },
+      now,
+    );
     const settled = await applyConfirmation(
       context,
       intent,
