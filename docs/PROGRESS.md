@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-w8dfz desain verifikasi WhatsApp masuk lewat Kirimdev (architect, cabang `ws/kirimdev-inbound-design` dari `origin/milestone/m1` 46352cd5, 2026-11-11)
+
+- Sudah: `docs/design/whatsapp-inbound-verification.md`. Login pelanggan lewat WhatsApp masuk ternyata sudah ada di m1 (WS-01). Reset PIN slip gaji memakai mesin yang sama: kolom `purpose` di `login_challenges` (D-WA1), kata perintah `RESET PIN <KODE>` (D-WA2), nomor pengirim harus identitas WhatsApp terverifikasi yang lebih tua dari PIN atau berumur 7 hari (D-WA3), satu nomor platform untuk semua tenant (D-WA4), polling 2 detik (D-WA5), kode tidak pernah disimpan atau diulang (D-WA6).
+- Tidak ada pesan keluar dan tidak ada env key baru; aplikasi hanya butuh `KIRIM_WEBHOOK_SECRET` (sudah ada).
+- Kartu: A `legend-lgfru` (identitas, migrasi sementara 0270), B `legend-9h2oj` (API reset PIN, basis `fix/codex-418-pin` yang belum di-push), C `legend-ur82k` (layar), D `legend-s5rgo` (simulator + dokumen), E `legend-axmob` (ops produksi). Urutan A -> B -> C -> E; D bebas.
+- Berikut: keputusan founder di §10 dokumen (paket Kirimdev, nomor, aturan 7 hari, teks PRD AUTH-02, masa simpan).
+
 ## legend-3sy9b versi porsi saham lewat matriks approval (engineer, cabang `ws/3sy9b-share-alloc-approval` dari `ws/8s992-profit-rules` 54b76963, 2026-11-10)
 
 - Sudah: submit versi porsi saham membuka chain `shareholder_version` (source `profit_share`, object `share_allocation_version`, objectId = kolom baru `share_allocation_versions.id`). Decide approve saat chain terbuka 409 `APPROVAL_PENDING`; tanpa chain (versi lama) cek ulang matriks lalu buka chain dan 409. Reject menutup chain dulu; chain yang sudah approved tidak bisa di-reject (`INVALID_TRANSITION`); chain yang sudah berakhir rejected/expired dicatat sesuai hasilnya. Consumer `approval.resolved` menyelesaikan versi (approved oleh approver terakhir, rejected, atau cancelled saat chain expired/cancelled; tanggal berlaku mundur ditolak dengan catatan `approval refused: <kode>`). Kebijakan tidak ada: 409 `APPROVAL_POLICY_MISSING` (fail closed).
