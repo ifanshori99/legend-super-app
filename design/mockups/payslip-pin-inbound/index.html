@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PIN slip gaji — WhatsApp masuk</title>
+    <style>
+      @font-face {
+        font-family: Jakarta;
+        src: url('./plus-jakarta-sans-latin.woff2') format('woff2');
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: swap;
+      }
+      :root {
+        --page: #ffffff;
+        --ink: #1c1b19;
+        --muted: #69645e;
+        --border: #e8e5e1;
+        --primary: #0f5e68;
+        --tint: #e6f0f1;
+        --surface: #f5f4f2;
+        --warning: #854825;
+        --warning-bg: #fbf3ec;
+        --success: #286a49;
+        --success-bg: #eaf4ee;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.375 Jakarta, Arial, sans-serif; }
+      button, input { font: inherit; }
+      button, a { -webkit-tap-highlight-color: transparent; }
+      a { color: inherit; }
+      button { cursor: pointer; }
+      svg { display: block; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+      :focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+      .shell { min-height: 100vh; max-width: 520px; margin: auto; position: relative; padding-bottom: 88px; }
+      .top { height: 57px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+      .brand { font-size: 21px; line-height: 28px; font-weight: 750; letter-spacing: -.65px; }
+      .top-icon { width: 48px; height: 48px; display: grid; place-items: center; }
+      main { padding: 0 16px; }
+      .back { display: flex; width: fit-content; align-items: center; gap: 8px; height: 48px; margin: 14px 0 22px; font-size: 14px; line-height: 20px; font-weight: 650; text-decoration: none; }
+      .hero { margin-bottom: 24px; }
+      .eyebrow { margin: 0 0 4px; color: var(--muted); font-size: 12px; line-height: 16px; font-weight: 750; letter-spacing: .09em; }
+      h1 { margin: 0 0 2px; font-size: 32px; line-height: 40px; font-weight: 750; letter-spacing: -1.4px; }
+      .hero p { margin: 0; color: var(--muted); font-size: 14px; line-height: 20px; }
+      .card { border: 1px solid var(--border); border-radius: 12px; background: var(--page); padding: 20px; box-shadow: 0 1px 2px #1c1b1906; }
+      h2 { margin: 0 0 8px; font-size: 21px; line-height: 28px; font-weight: 750; letter-spacing: -.65px; }
+      h3 { margin: 0 0 8px; font-size: 18px; line-height: 26px; font-weight: 750; letter-spacing: -.4px; }
+      p { margin: 0; }
+      .muted { color: var(--muted); }
+      .intro { color: var(--muted); margin-bottom: 16px; }
+      .btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 56px; padding: 12px 16px; border: 1px solid transparent; border-radius: 999px; background: var(--primary); color: white; font-weight: 700; line-height: 24px; text-decoration: none; text-align: center; box-shadow: 0 1px 2px #0f5e6822; }
+      .btn.secondary { background: var(--page); color: var(--ink); border-color: var(--border); box-shadow: 0 1px 2px #1c1b1905; }
+      .btn.compact { min-height: 48px; }
+      .text-action { display: flex; align-items: center; justify-content: center; min-height: 48px; width: 100%; padding: 10px 4px; background: transparent; border: 0; color: var(--primary); font-weight: 700; line-height: 24px; text-align: center; text-decoration: underline; text-underline-offset: 3px; }
+      .space-8 { margin-top: 8px; }
+      .space-12 { margin-top: 12px; }
+      .space-16 { margin-top: 16px; }
+      .space-20 { margin-top: 20px; }
+      .space-24 { margin-top: 24px; }
+      .rule { height: 1px; border: 0; background: var(--border); margin: 20px 0; }
+      .info { margin-top: 16px; border-radius: 12px; background: var(--surface); padding: 20px; }
+      .info h3 { font-size: 16px; line-height: 24px; letter-spacing: -.2px; margin-bottom: 8px; }
+      .info p { color: var(--muted); }
+      .registered { display: block; margin-top: 4px; color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+      .code { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+      .code-label { color: var(--muted); font-size: 16px; line-height: 22px; }
+      .code-value { display: block; margin: 6px 0 10px; font-size: 24px; line-height: 32px; letter-spacing: .4px; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .timer { display: flex; align-items: center; gap: 8px; font-size: 16px; line-height: 24px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      .timer strong { font-weight: 700; color: var(--ink); }
+      .wait-status { margin-top: 20px; padding-left: 28px; position: relative; }
+      .wait-status > svg { position: absolute; left: 0; top: 2px; color: var(--primary); }
+      .wait-status strong { display: block; font-weight: 700; margin-bottom: 6px; }
+      .wait-status p { color: var(--muted); }
+      .destination { font-weight: 700; line-height: 26px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+      .help-link { margin-top: 12px; }
+      .state-icon { width: 40px; height: 40px; border-radius: 50%; background: var(--warning-bg); color: var(--warning); display: grid; place-items: center; margin-bottom: 16px; }
+      .expired .code-value { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+      .clock-panel { display: flex; align-items: center; gap: 12px; padding: 16px; border-radius: 12px; background: var(--surface); }
+      .clock-panel span { display: block; color: var(--muted); }
+      .clock-panel strong { display: block; font-size: 28px; line-height: 36px; font-weight: 750; font-variant-numeric: tabular-nums; }
+      .step { display: flex; align-items: flex-start; gap: 12px; }
+      .step + .step { margin-top: 24px; }
+      .step-number { display: grid; place-items: center; min-width: 28px; height: 28px; border-radius: 50%; background: var(--surface); font-weight: 750; }
+      .step strong { display: block; line-height: 28px; margin-bottom: 4px; }
+      .step p { color: var(--muted); }
+      .field-label { display: block; font-weight: 700; margin-bottom: 8px; }
+      .pin-row { display: flex; gap: 8px; }
+      .digit { width: calc((100% - 40px) / 6); height: 48px; border: 1px solid #958e85; border-radius: 12px; display: grid; place-items: center; font-size: 22px; }
+      .digit.focus { border-color: var(--primary); outline: 3px solid #0f5e6822; outline-offset: 0; }
+      .field-help { color: var(--muted); margin-top: 8px; }
+      .bottom-nav { position: fixed; z-index: 2; bottom: 0; left: 50%; transform: translateX(-50%); width: min(100%, 520px); height: 65px; padding: 7px 0 4px; display: grid; grid-template-columns: repeat(5,1fr); background: var(--page); border-top: 1px solid var(--border); }
+      .nav-item { color: var(--muted); display: flex; align-items: center; flex-direction: column; gap: 1px; font-size: 12px; line-height: 18px; text-decoration: none; }
+      .nav-icon { display: grid; place-items: center; width: 56px; height: 32px; border-radius: 20px; }
+      .nav-item.active { color: var(--primary); font-weight: 650; }
+      .nav-item.active .nav-icon { background: var(--tint); }
+      .toast { position: fixed; z-index: 4; bottom: 80px; left: 50%; transform: translateX(-50%); width: calc(100% - 32px); max-width: 488px; display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--page); box-shadow: 0 6px 28px #1c1b1926; }
+      .toast svg { color: var(--success); margin-top: 2px; }
+      dialog { padding: 24px; width: calc(100% - 32px); max-width: 358px; border: 1px solid var(--border); border-radius: 18px; color: var(--ink); box-shadow: 0 18px 60px #0003; }
+      dialog::backdrop { background: #1c1b196b; }
+      dialog .state-icon { background: var(--success-bg); color: var(--success); width: 48px; height: 48px; margin-bottom: 20px; }
+      dialog h2 { font-size: 23px; line-height: 30px; margin-bottom: 12px; }
+      dialog p { color: var(--muted); }
+      dialog .btn { margin-top: 24px; }
+      .gallery { max-width: 880px; margin: 0 auto; padding: 32px 20px; }
+      .gallery h1 { font-size: 28px; line-height: 36px; letter-spacing: -.8px; margin-bottom: 12px; }
+      .gallery p { margin-bottom: 24px; color: var(--muted); }
+      .gallery-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(230px,1fr)); gap: 12px; }
+      .gallery-grid a { display: block; border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-decoration: none; font-weight: 700; }
+      @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation: none !important; transition: none !important; } }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      const paths = {
+        back: '<path d="m15 18-6-6 6-6"/>',
+        monitor: '<rect x="3" y="3" width="18" height="13" rx="1.5"/><path d="M8 21h8M12 16v5"/>',
+        employee: '<rect x="2" y="5" width="20" height="15" rx="1.5"/><circle cx="8" cy="10" r="2"/><path d="M5 16a3 3 0 0 1 6 0m4-6h4m-4 4h4"/>',
+        clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+        history: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M7 2v4m10-4v4M3 10h7"/><circle cx="16" cy="15" r="4"/><path d="M16 13v2l1 1"/>',
+        wallet: '<path d="M20 8V5a2 2 0 0 0-2-2H5a3 3 0 0 0 0 6h16v12H5a3 3 0 0 1-3-3V6"/><path d="M21 12h-6v5h6M5 6h12"/>',
+        more: '<circle cx="5" cy="12" r=".7"/><circle cx="12" cy="12" r=".7"/><circle cx="19" cy="12" r=".7"/>',
+        check: '<path d="m5 12 4 4L19 6"/>',
+        alert: '<path d="m10.3 3.8-8 14a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/>',
+        phone: '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18h4M10 5h4"/>',
+        loader: '<path d="M12 2a10 10 0 1 1-7.1 2.9"/><path d="M3 2v5h5"/>',
+        copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4"/>',
+        message: '<path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 21l2.1-5.4A8.5 8.5 0 1 1 21 11.5Z"/><path d="M8 10h8m-8 4h5"/>',
+      };
+      const icon = (name,size=20) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`;
+      const button = (text,to,secondary=false) => `<a class="btn${secondary?' secondary':''}" href="?screen=${to}">${text}</a>`;
+      const help = '<a class="text-action help-link" href="?screen=bantuan-hr">Minta bantuan HR atau supervisor</a>';
+      const privacy = '<aside class="info"><h3>PIN tetap pribadi</h3><p>HR bisa mereset PIN, tetapi tidak bisa melihat atau menentukan PIN Anda.</p></aside>';
+      const code = (time='04:59',expired=false) => `<div class="code${expired?' expired':''}"><p class="code-label">${expired?'Kode tidak berlaku':'Pesan yang akan dikirim'}</p><strong class="code-value">PIN K7M9-2Q4P</strong><p class="timer">${icon('clock',18)}${expired?'<strong>00:00</strong>':`<span>Berlaku <strong>${time}</strong> lagi</span>`}</p></div>`;
+      const openWhatsapp = '<button class="btn space-16" type="button" data-demo-whatsapp>'+icon('message',20)+'Buka WhatsApp</button>';
+      const waiting = (copied=false) => `<section class="card"><h2>Kirim lewat WhatsApp</h2><p class="intro">Gunakan nomor terdaftar:<strong class="registered">+62 812-••••-4821</strong></p>${code()}${openWhatsapp}<p class="muted space-12">Pesan sudah terisi. Tekan Kirim tanpa mengubahnya, lalu kembali ke halaman ini.</p><div class="wait-status">${icon('loader',18)}<strong>Menunggu pesan Anda…</strong><p>Verifikasi muncul di sini, tanpa balasan WhatsApp.</p></div><hr class="rule"/><h3>WhatsApp di perangkat lain?</h3><p class="muted">Kirim kode ke nomor WhatsApp Cafe Legend:</p><p class="destination">+62 812-0000-4250</p><button class="btn secondary compact space-16" type="button" data-copy-code>${icon(copied?'check':'copy',18)}${copied?'Kode disalin':'Salin kode'}</button><button class="text-action" type="button" data-copy-destination>Salin nomor tujuan</button></section>${help}`;
+      const screens = {
+        'lupa-pin': {
+          title: 'Lupa PIN?',
+          content: `<section class="card"><h2>Lupa PIN?</h2><p class="intro">Pilih cara untuk membuat PIN baru.</p>${button('Lewat WhatsApp','menunggu-whatsapp')}<p class="muted space-12">Kirim pesan dari nomor yang terdaftar.</p><hr class="rule"/><h3>Minta bantuan HR atau supervisor</h3><p class="muted">Tidak bisa pakai nomor terdaftar? Minta reset PIN ke HR atau supervisor di outlet.</p><div class="space-16">${button('Lihat cara minta bantuan','bantuan-hr',true)}</div></section>${privacy}`,
+        },
+        'menunggu-whatsapp': { title: 'Menunggu pesan WhatsApp', content: waiting() },
+        'kode-disalin': { title: 'Kode disalin', content: waiting(true), copied: true },
+        'terverifikasi': { title: 'Nomor berhasil diverifikasi', content: waiting(), success: true },
+        'kode-kedaluwarsa': {
+          title: 'Kode sudah kedaluwarsa',
+          content: `<section class="card"><div class="state-icon">${icon('clock',24)}</div><h2>Kode sudah kedaluwarsa</h2><p class="intro">Pesan dengan kode ini tidak bisa dipakai lagi. Buat kode baru, lalu kirim lewat WhatsApp.</p>${code('00:00',true)}<div class="space-20">${button('Buat kode baru','menunggu-whatsapp')}</div></section>${help}`,
+        },
+        'nomor-tidak-cocok': {
+          title: 'Nomor WhatsApp tidak cocok',
+          content: `<section class="card"><div class="state-icon">${icon('alert',24)}</div><h2>Nomor WhatsApp tidak cocok</h2><p class="intro">Pesan dikirim dari nomor yang berbeda. Gunakan nomor yang terdaftar:</p><div class="code"><strong class="registered" style="margin:0">+62 812-••••-4821</strong></div><p class="muted space-16">Pilih akun WhatsApp dengan nomor tersebut sebelum mengirim pesan.</p><div class="space-20">${button('Coba dari nomor terdaftar','menunggu-whatsapp')}</div><hr class="rule"/><h3>Nomor sudah berubah?</h3><p class="muted">Minta bantuan HR atau supervisor di outlet untuk memperbarui nomor atau mereset PIN.</p><a class="text-action space-8" href="?screen=bantuan-hr">Lihat cara minta bantuan</a></section>`,
+        },
+        'terlalu-banyak-percobaan': {
+          title: 'Terlalu banyak percobaan',
+          content: `<section class="card"><div class="state-icon">${icon('clock',24)}</div><h2>Terlalu banyak percobaan</h2><p class="intro">Pemulihan lewat WhatsApp dibatasi sementara. Tunggu sebelum mencoba lagi.</p><div class="clock-panel">${icon('clock',24)}<div><span>Coba lagi dalam</span><strong>09:59</strong></div></div><p class="muted space-16">Sambil menunggu, Anda bisa minta reset PIN ke HR atau supervisor di outlet.</p><div class="space-20">${button('Lihat cara minta bantuan','bantuan-hr')}</div><div class="space-12">${button('Kembali ke slip gaji','lupa-pin',true)}</div></section>`,
+        },
+        'nomor-belum-terdaftar': {
+          title: 'Nomor WhatsApp belum terdaftar',
+          content: `<section class="card"><div class="state-icon">${icon('phone',24)}</div><h2>Nomor WhatsApp belum terdaftar</h2><p class="intro">Pemulihan lewat WhatsApp belum bisa dipakai. Minta HR atau supervisor di outlet memperbarui nomor atau mereset PIN Anda.</p><div class="space-20">${button('Lihat cara minta bantuan','bantuan-hr')}</div><div class="space-12">${button('Kembali ke slip gaji','lupa-pin',true)}</div></section>${privacy}`,
+        },
+        'bantuan-hr': {
+          title: 'Minta bantuan HR atau supervisor',
+          content: `<section class="card"><h2>Minta bantuan HR atau supervisor</h2><p class="intro">Hubungi HR atau supervisor di outlet dan minta reset PIN slip gaji.</p><div class="space-24"><div class="step"><span class="step-number">1</span><div><strong>Minta reset PIN</strong><p>Sampaikan bahwa Anda lupa PIN slip gaji.</p></div></div><div class="step"><span class="step-number">2</span><div><strong>Buka slip gaji lagi</strong><p>Setelah HR meresetnya, buat PIN baru sendiri.</p></div></div></div><div class="info"><p>HR tidak bisa melihat atau menentukan PIN Anda.</p></div><div class="space-24">${button('Kembali ke slip gaji','lupa-pin')}</div></section>`,
+        },
+        'buat-pin-baru': {
+          title: 'Buat PIN slip gaji',
+          content: `<section class="card"><h2>Buat PIN slip gaji</h2><p class="intro">Buat PIN pribadi untuk membuka slip gaji Anda.</p><div class="space-16"><span class="field-label">PIN baru</span><div class="pin-row">${Array.from({length:6},(_,i)=>`<span class="digit${i===0?' focus':''}"></span>`).join('')}</div><p class="field-help">Gunakan 6 angka yang mudah Anda ingat.</p></div><div class="space-24"><span class="field-label">Ulangi PIN baru</span><div class="pin-row">${'<span class="digit"></span>'.repeat(6)}</div></div><button class="btn space-24" type="button" data-demo-save>Simpan PIN</button></section><aside class="info"><h3>Informasi</h3><p>PIN hanya dibuat dan diketahui oleh Anda. HR dapat mereset PIN, tetapi tidak dapat melihat atau menentukan PIN Anda.</p></aside>`,
+        },
+      };
+      const current = new URLSearchParams(location.search).get('screen');
+      const app = document.getElementById('app');
+      function toast(message) {
+        document.querySelector('.toast')?.remove();
+        const el = document.createElement('div'); el.className = 'toast'; el.setAttribute('role','status');
+        el.innerHTML = icon('check',20) + `<p>${message}</p>`; document.body.append(el);
+      }
+      if (!screens[current]) {
+        app.innerHTML = `<div class="gallery"><p class="eyebrow">MOCKUP #425 · 390 PX</p><h1>Lupa PIN lewat WhatsApp masuk</h1><p>Mockup statis untuk review. Nomor, kode, dan hitung mundur adalah data contoh. Tidak terhubung ke WhatsApp atau layanan reset PIN.</p><div class="gallery-grid">${Object.entries(screens).map(([key,value],i)=>`<a href="?screen=${key}">${String(i+1).padStart(2,'0')}. ${value.title}</a>`).join('')}</div></div>`;
+      } else {
+        const screen = screens[current]; document.title = screen.title + ' — PIN slip gaji';
+        app.innerHTML = `<div class="shell"><header class="top"><div class="brand">Cafe Legend</div><span class="top-icon">${icon('monitor',20)}</span></header><main><a class="back" href="?screen=lupa-pin">${icon('back',20)}<span>Slip gaji</span></a><div class="hero"><div class="eyebrow">PRIVASI GAJI</div><h1>Slip gaji</h1><p>Akses informasi gaji Anda secara pribadi.</p></div>${screen.content}</main><nav class="bottom-nav" aria-label="Navigasi karyawan">${[['employee','Karyawan'],['clock','Absen'],['history','Riwayat'],['wallet','Slip Gaji'],['more','Lainnya']].map(([name,label])=>`<span class="nav-item${label==='Slip Gaji'?' active':''}"><span class="nav-icon">${icon(name,24)}</span><span>${label}</span></span>`).join('')}</nav></div>`;
+        if (screen.copied) toast('Kode disalin. Tempel dan kirim lewat WhatsApp.');
+        if (screen.success) {
+          const modal = document.createElement('dialog'); modal.setAttribute('aria-labelledby','verified-title'); modal.setAttribute('aria-describedby','verified-description');
+          modal.innerHTML = `<div class="state-icon">${icon('check',28)}</div><h2 id="verified-title">Nomor berhasil diverifikasi</h2><p id="verified-description">Sekarang buat PIN slip gaji yang baru.</p>${button('Buat PIN baru','buat-pin-baru')}`;
+          document.body.append(modal); modal.showModal();
+          modal.addEventListener('cancel',e=>e.preventDefault());
+        }
+        document.querySelector('[data-demo-whatsapp]')?.addEventListener('click',()=>toast('Ini mockup statis. WhatsApp belum dihubungkan.'));
+        document.querySelector('[data-demo-save]')?.addEventListener('click',()=>toast('Ini mockup statis. PIN tidak disimpan.'));
+        document.querySelector('[data-copy-code]')?.addEventListener('click',async e=>{
+          const copyButton = e.currentTarget;
+          try { await navigator.clipboard.writeText('PIN K7M9-2Q4P'); copyButton.innerHTML = icon('check',18)+'Kode disalin'; toast('Kode disalin. Tempel dan kirim lewat WhatsApp.'); }
+          catch { toast('Contoh pesan: PIN K7M9-2Q4P'); }
+        });
+        document.querySelector('[data-copy-destination]')?.addEventListener('click',async()=>{
+          try { await navigator.clipboard.writeText('+62 812-0000-4250'); toast('Nomor contoh disalin. Jangan kirim pesan ke nomor ini.'); }
+          catch { toast('Nomor tujuan contoh: +62 812-0000-4250'); }
+        });
+      }
+    </script>
+  </body>
+</html>
