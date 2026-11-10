@@ -447,13 +447,14 @@ describe("legend-powk0 PBJT tax line source", () => {
     expect(await novLines(world)).toEqual([]);
   });
 
-  it("legend-powk0 refuses a sale with PBJT but no tax snapshot", async () => {
+  it("legend-powk0 refuses a sale with PBJT but no tax snapshot, naming the outlet, the gap and the sale", async () => {
     const world = await makeWorld();
+    const orderId = createUlid();
     await postEntry(world, {
       period: world.nov,
       entryDate: "2026-11-05",
       sourceType: "sale",
-      sourceId: createUlid(),
+      sourceId: orderId,
       lines: [
         [world.cash, 110_000, 0],
         [world.revenue, 0, 100_000],
@@ -461,9 +462,14 @@ describe("legend-powk0 PBJT tax line source", () => {
       ],
     });
 
-    await expect(novLines(world)).rejects.toMatchObject({
-      code: "TAX_REPORT_SOURCE_UNAVAILABLE",
-    });
+    const error = await novLines(world).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "TAX_REPORT_SOURCE_UNAVAILABLE" });
+    const message = (error as Error).message;
+    expect(message).toContain(
+      "buku besar Rp10000, snapshot Rp0, selisih Rp10000",
+    );
+    expect(message).toContain("Penjualan tanpa snapshot: 1");
+    expect(message).toContain(orderId);
   });
 
   it("legend-powk0 refuses when the snapshot tax differs from the ledger tax", async () => {
@@ -486,8 +492,13 @@ describe("legend-powk0 PBJT tax line source", () => {
       ],
     });
 
-    await expect(novLines(world)).rejects.toMatchObject({
-      code: "TAX_REPORT_SOURCE_UNAVAILABLE",
-    });
+    const error = await novLines(world).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "TAX_REPORT_SOURCE_UNAVAILABLE" });
+    const message = (error as Error).message;
+    expect(message).toContain(
+      "buku besar Rp10000, snapshot Rp9000, selisih Rp1000",
+    );
+    // the sale has a snapshot, so no "missing sale" hint
+    expect(message).not.toContain("Penjualan tanpa snapshot");
   });
 });

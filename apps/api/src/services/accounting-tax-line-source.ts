@@ -156,10 +156,16 @@ function snapshotSourceId(sourceId: string): string | null {
  * outlet. The sale journals carry the order id as ULID text (or a UUID); the
  * snapshots store it as a uuid. A reversal (void) of a sale counts negative.
  */
+type SaleSnapshots = {
+  byOutlet: Map<string, { base: bigint; tax: bigint }>;
+  /** Source ids (journal form) of sales in the period without any snapshot. */
+  missing: string[];
+};
+
 async function saleSnapshotsByOutlet(
   tx: TenantTransaction,
   args: TaxLineSourceArgs,
-): Promise<Map<string, { base: bigint; tax: bigint }>> {
+): Promise<SaleSnapshots> {
   const sign = sql<number>`case when ${journalEntries.reversalOf} is null then 1 else -1 end`;
   const sourceId = sql<
     string | null
@@ -195,13 +201,16 @@ async function saleSnapshotsByOutlet(
     )
     .groupBy(sourceId);
   const weight = new Map<string, bigint>();
+  const journalForm = new Map<string, string>();
   for (const entry of entries) {
     const id =
       entry.sourceId === null ? null : snapshotSourceId(entry.sourceId);
-    if (id !== null) weight.set(id, (weight.get(id) ?? 0n) + BigInt(entry.net));
+    if (id === null || entry.sourceId === null) continue;
+    weight.set(id, (weight.get(id) ?? 0n) + BigInt(entry.net));
+    journalForm.set(id, entry.sourceId);
   }
-  const result = new Map<string, { base: bigint; tax: bigint }>();
-  if (weight.size === 0) return result;
+  const byOutlet = new Map<string, { base: bigint; tax: bigint }>();
+  if (weight.size === 0) return { byOutlet, missing: [] };
 
   const snapshots = await tx
     .select({
@@ -218,15 +227,22 @@ async function saleSnapshotsByOutlet(
         inArray(taxSnapshots.sourceId, [...weight.keys()]),
       ),
     );
+  const seen = new Set<string>();
   for (const row of snapshots) {
-    const w = weight.get(row.sourceId.toLowerCase()) ?? 0n;
-    const current = result.get(row.outletId) ?? { base: 0n, tax: 0n };
-    result.set(row.outletId, {
+    const key = row.sourceId.toLowerCase();
+    seen.add(key);
+    const w = weight.get(key) ?? 0n;
+    const current = byOutlet.get(row.outletId) ?? { base: 0n, tax: 0n };
+    byOutlet.set(row.outletId, {
       base: current.base + w * BigInt(row.base),
       tax: current.tax + w * BigInt(row.tax),
     });
   }
-  return result;
+  const missing = [...weight.entries()]
+    .filter(([id, w]) => w > 0n && !seen.has(id))
+    .map(([id]) => journalForm.get(id) ?? id)
+    .sort();
+  return { byOutlet, missing };
 }
 
 /** First day of the month after "YYYY-MM". */
@@ -297,19 +313,32 @@ async function pbjtLines(
     );
   const nameOf = new Map(names.map((row) => [row.id, row.name]));
 
-  const sales = await saleSnapshotsByOutlet(tx, args);
+  const { byOutlet: sales, missing } = await saleSnapshotsByOutlet(tx, args);
 
   // The base comes from the snapshots, the tax from the ledger: they must agree
   // on the sales of the period, else a sale lacks its snapshot (or was
   // re-quoted after posting) and the base would be wrong without any warning.
+  // Fail closed, and say which outlet and by how much.
+  const mismatches: string[] = [];
   for (const outletId of outletIds) {
     const ledgerSaleTax =
       (tax.get(outletId) ?? 0n) - (refundTax.get(outletId) ?? 0n);
-    if ((sales.get(outletId)?.tax ?? 0n) !== ledgerSaleTax)
-      throw new AccountingError(
-        "TAX_REPORT_SOURCE_UNAVAILABLE",
-        "Pajak PBJT di buku besar tidak cocok dengan snapshot pajak transaksi, laporan tidak bisa dibuat.",
+    const snapshotTax = sales.get(outletId)?.tax ?? 0n;
+    if (snapshotTax !== ledgerSaleTax)
+      mismatches.push(
+        `${nameOf.get(outletId) ?? outletId}: buku besar Rp${ledgerSaleTax}, snapshot Rp${snapshotTax}, selisih Rp${ledgerSaleTax - snapshotTax}`,
       );
+  }
+  if (mismatches.length > 0) {
+    const sample = missing.slice(0, 3).join(", ");
+    throw new AccountingError(
+      "TAX_REPORT_SOURCE_UNAVAILABLE",
+      `Pajak PBJT di buku besar tidak cocok dengan snapshot pajak transaksi (${mismatches.join("; ")})` +
+        (missing.length > 0
+          ? `. Penjualan tanpa snapshot: ${missing.length}, contoh id: ${sample}`
+          : "") +
+        ". Laporan tidak bisa dibuat.",
+    );
   }
 
   const lines: TaxReportLine[] = [];
