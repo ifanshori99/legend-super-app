@@ -242,6 +242,30 @@ async function insertTaxSettingsV2(
   });
 }
 
+/** Defaults untouched, nothing audited, and both skips warned in Indonesian. */
+async function expectDefaultsKept(
+  tenantId: string,
+  warnings: string[],
+): Promise<void> {
+  const [settings] = (await settingsRows(tenantId)).filter(
+    (row) => row.outlet_id === null,
+  );
+  expect(settings).toMatchObject({
+    service_rounding_mode: "half_up",
+    tax_rounding_mode: "half_up",
+    version: 1,
+  });
+  const [charge] = (await chargeRows(tenantId)).filter(
+    (row) => row.outlet_id === null,
+  );
+  expect(charge).toMatchObject({ code: "SC-DINE-IN", rate_bp: 500 });
+  expect(await overwriteAudits(tenantId)).toHaveLength(0);
+  const text = warnings.join("\n");
+  expect(text).toMatch(/pajak/i);
+  expect(text).toMatch(/service charge/i);
+  expect(text).toContain("ubah manual di Pengaturan");
+}
+
 let admin: Admin;
 let bundle: Loose;
 
@@ -368,6 +392,50 @@ describe("legend-z1qk8 import over provisioning defaults", () => {
     );
     expect(again.warnings.join("\n")).not.toMatch(/skipped/i);
     expect(await overwriteAudits(tenantId)).toHaveLength(2);
+  });
+
+  it("skips the default overwrite and warns when the tenant already has a transaction", async () => {
+    const tenantId = await createTenant(admin, true);
+    const outletId = await addOutlet(tenantId);
+    await asTenant(tenantId, async (client) => {
+      // Minimal trading row; FK checks are off so no cashier or device is needed.
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO pos_shifts
+           (id, tenant_id, outlet_id, device_id, cashier_id, business_date, status,
+            opened_at, opening_float_idr, open_key, open_fingerprint)
+         VALUES ($1, $2, $3, $4, $5, current_date, 'open', now(), 100000, $6, $7)`,
+        [
+          randomUUID(),
+          tenantId,
+          outletId,
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          "a".repeat(64),
+        ],
+      );
+    });
+
+    const imported = await importBundle(admin, tenantId, bundle);
+
+    await expectDefaultsKept(tenantId, imported.warnings);
+  });
+
+  it("skips the default overwrite and warns when the tenant has a registered edge node", async () => {
+    const tenantId = await createTenant(admin, true);
+    const outletId = await addOutlet(tenantId);
+    await asTenant(tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, label, credential_hash)
+         VALUES ($1, $2, $3, 'primary', 'Edge uji', $4)`,
+        [randomUUID(), tenantId, outletId, "b".repeat(64)],
+      );
+    });
+
+    const imported = await importBundle(admin, tenantId, bundle);
+
+    await expectDefaultsKept(tenantId, imported.warnings);
   });
 
   it("skips tax settings and the service charge the owner changed, and warns", async () => {

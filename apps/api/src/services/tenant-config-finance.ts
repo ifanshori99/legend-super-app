@@ -30,6 +30,10 @@ import {
   taxSettings,
 } from "../db/schema/index.ts";
 import { recordAudit } from "./core-audit.ts";
+import {
+  TRADING_GUARD_HINT,
+  tenantHasStartedTrading,
+} from "./tenant-config-trading-guard.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import {
   DEFAULT_EFFECTIVE_FROM,
@@ -647,6 +651,10 @@ async function importTaxRules(
   const tenantId = input.tenantId as TenantId;
   await lockTaxConfig(tx, tenantId);
   const clocks = await targetOutletClocks(tx, tenantId);
+  // Checked once per import, and only when a default is about to be replaced.
+  let started: boolean | undefined;
+  const hasStarted = async () =>
+    (started ??= await tenantHasStartedTrading(tx, tenantId));
   const today = (outletId: string | null) =>
     businessDateOf(now, clockFor(outletId, clocks));
 
@@ -764,6 +772,13 @@ async function importTaxRules(
           )
             input.warn(
               "Skipped tax settings: the tenant's tax settings were changed after provisioning, so the template's were not applied.",
+            );
+          continue;
+        }
+        if (await hasStarted()) {
+          if (!taxSettingsMatchItem(rows[0]!, item))
+            input.warn(
+              `Pengaturan pajak tidak diganti karena tenant sudah punya transaksi atau perangkat edge terdaftar; ${TRADING_GUARD_HINT}.`,
             );
           continue;
         }
@@ -926,6 +941,10 @@ async function importServiceChargeRules(
   const tenantId = input.tenantId as TenantId;
   await lockServiceChargeConfig(tx, tenantId);
   const clocks = await targetOutletClocks(tx, tenantId);
+  // Checked once per import, and only when a default is about to be replaced.
+  let started: boolean | undefined;
+  const hasStarted = async () =>
+    (started ??= await tenantHasStartedTrading(tx, tenantId));
 
   for (const item of items) {
     const outletId = resolveOutlet(
@@ -956,10 +975,26 @@ async function importServiceChargeRules(
       );
     // Only the tenant-wide provisioning default may be overwritten; any other
     // existing rule (including every outlet rule) is the owner's.
-    const overwritable =
+    const isDefaultRow =
       outletId === null &&
       item.code === DEFAULT_SERVICE_CHARGE_CODE &&
       isDefaultServiceCharge(rows);
+    // Even a default row stays once the tenant has started trading.
+    const blockedByTrading = isDefaultRow && (await hasStarted());
+    const overwritable = isDefaultRow && !blockedByTrading;
+    if (blockedByTrading) {
+      if (
+        !serviceChargeMatchesItem(
+          rows[0]!,
+          item,
+          item.zoneKey === null ? null : keys.zones.get(item.zoneKey),
+        )
+      )
+        input.warn(
+          `Service charge ${item.code} tidak diganti karena tenant sudah punya transaksi atau perangkat edge terdaftar; ${TRADING_GUARD_HINT}.`,
+        );
+      continue;
+    }
     if (rows.length > 0 && !overwritable) {
       if (
         outletId === null &&
