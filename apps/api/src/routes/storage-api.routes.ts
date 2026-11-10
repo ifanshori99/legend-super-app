@@ -15,8 +15,27 @@ import { createEdgeSelfieReceiveRouter } from "./edge-selfie-receive.routes";
 import { createAccountingTaxFileRouter } from "./accounting.routes";
 import { createHrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
 import { createHrisAttendanceRouter } from "./hris-attendance.routes";
+import { createHrisLeaveRouter } from "./hris-leave.routes";
+import { createHrisRouter } from "./hris.routes";
 import { createMenuImportRouter } from "./menu-import.routes";
 import { createMenuRouter } from "./menu.routes";
+
+/**
+ * First path segments of /api/hris owned by `hrisRouter` and `hrisLeaveRouter`
+ * (`/me` is matched exactly, beside it). Keep in sync with their routes: a
+ * test walks both route stacks and fails on a segment missing here.
+ */
+export const HRIS_SIGNED_SEGMENTS: ReadonlySet<string> = new Set([
+  "employees",
+  "employment-contracts",
+  "org-units",
+  "position-grades",
+  "positions",
+  "holidays",
+  "leave",
+  "overtime-formulas",
+  "overtime-requests",
+]);
 
 /**
  * The /api routes that need the object storage (legend-dzh9q): core-storage
@@ -108,6 +127,30 @@ export function createStorageApiRouter(options: {
       ? taxFiles(req, res, next)
       : next(),
   );
+
+  // HRIS employees, contracts, documents, leave, overtime and holidays mint
+  // private document URLs (legend-2ect), so they are mounted here with the
+  // runtime's signer instead of as static routers in apiRouter. Same rule as
+  // above: only their own first path segments enter, so the guards run once
+  // per request. The payroll routers that own /hris/payroll/*, /hris/me/loans
+  // and /hris/me/reimbursements live in apiRouter, mounted after this router.
+  // They do not collide: their segments never overlap the ones below (`me` is
+  // matched exactly).
+  const hris = Router();
+  hris.use(
+    createHrisRouter({ fileSigner: runtime?.hrisDocumentSigner }),
+    createHrisLeaveRouter({ fileSigner: runtime?.hrisDocumentSigner }),
+  );
+  router.use("/hris", (req, res, next) => {
+    // Express routes case-insensitively, so the gate must too.
+    const segment = req.path.split("/").filter(Boolean)[0]?.toLowerCase();
+    const owned =
+      segment !== undefined &&
+      (HRIS_SIGNED_SEGMENTS.has(segment) ||
+        (segment === "me" &&
+          req.path.replace(/\/+$/, "").toLowerCase() === "/me"));
+    return owned ? hris(req, res, next) : next();
+  });
   return router;
 }
 

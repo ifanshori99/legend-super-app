@@ -114,6 +114,7 @@ function makeRuntime() {
     scanner: new NoopMalwareScanner(),
     fileSigner: async (_context, objectId) =>
       `https://signed.invalid/${objectId}`,
+    hrisDocumentSigner: async () => null,
   };
   return { storage, runtime };
 }

@@ -24,6 +24,7 @@ const withStorage: StorageRuntime = {
   scanner: new NoopMalwareScanner(),
   fileSigner: async (_context, objectId) =>
     `https://signed.invalid/${objectId}`,
+  hrisDocumentSigner: async () => null,
 };
 const appWithStorage = createApp({ storageRuntime: withStorage });
 const appWithoutStorage = createApp({ storageRuntime: null });

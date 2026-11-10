@@ -71,7 +71,6 @@ import { facilityEntitlementRouter } from "./facility-entitlement.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { wifiGuestRouter } from "./wifi-guest.routes.ts";
-import { hrisRouter } from "./hris.routes";
 import { payrollLoanPolicyRouter } from "./payroll-loan-policy.routes";
 import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
 import { payrollStatutoryRouter } from "./payroll-statutory.routes";
@@ -100,7 +99,6 @@ import { aiGuidelinesRouter } from "./ai-guidelines.routes";
 import { aiMcpAdminRouter } from "./ai-mcp-admin.routes";
 import { aiProviderRouter } from "./ai-provider.routes";
 import { aiInsightsRouter } from "./ai-insights.routes";
-import { hrisLeaveRouter } from "./hris-leave.routes";
 import { hrisSchedulingRouter } from "./hris-scheduling.routes";
 import { hrisChecklistRouter } from "./hris-checklist.routes";
 import { hrisOffboardingRouter } from "./hris-offboarding.routes";
@@ -354,15 +352,16 @@ apiRouter.use(
 apiRouter.use("/hris/payroll/reimbursements", payrollReimbursementsRouter);
 apiRouter.use("/hris/me/loans", payrollMyLoansRouter);
 apiRouter.use("/hris/me/reimbursements", payrollMyReimbursementsRouter);
-// WS-10 HRIS (legend-qe1z).
-apiRouter.use("/hris", hrisRouter);
+// WS-10 HRIS (legend-qe1z). hrisRouter and hrisLeaveRouter need the storage
+// signer, so createApp mounts them (routes/storage-api.routes.ts) ahead of
+// this router; the other two groups below sat between them and keep their
+// paths, which the two never own.
 apiRouter.use(
   "/hris",
   hrisSopRouter,
   hrisTrainingRouter,
   hrisAnnouncementRouter,
 );
-apiRouter.use("/hris", hrisLeaveRouter);
 // WS-10 employee scheduling: shift templates, roster, publication, swaps
 // (legend-jstx).
 apiRouter.use("/hris", hrisSchedulingRouter);

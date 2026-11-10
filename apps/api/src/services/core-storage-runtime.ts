@@ -31,6 +31,8 @@ export type StorageRuntime = {
   scanner: MalwareScanner;
   /** Mints the 5-minute URL of a private attendance selfie (object id in). */
   fileSigner: HrisFileSigner;
+  /** Mints the 5-minute URL of a private HRIS document (leave attachment, contract scan, employee document). */
+  hrisDocumentSigner: HrisFileSigner;
 };
 
 export type StorageEnv = Readonly<Record<string, string | undefined>>;
@@ -73,15 +75,18 @@ export function createObjectStorageFromEnv(
 }
 
 /**
- * Signer for private attendance selfies. The caller (attendance service) has
- * already decided who may see the log; this still lets core-storage enforce
+ * Signer for one private purpose (read only). The caller (a HRIS service) has
+ * already decided who may see the record; this still lets core-storage enforce
  * tenant, outlet scope and the private purpose, and refuses every purpose
- * except `selfie`, so the port cannot sign other private files. Returns null
- * when no URL can be minted.
+ * except the allowed one, so the port cannot sign other private files.
+ * Returns null when no URL can be minted. With `tx` the URL is signed inside
+ * the caller's tenant transaction instead of on another pooled connection.
  */
-export function createAttendanceSelfieSigner(deps: {
+function createPurposeFileSigner(deps: {
   database: Database;
   storage: ObjectStorage;
+  purpose: string;
+  failureMessage: string;
   log?: Pick<Console, "error">;
 }): HrisFileSigner {
   const log = deps.log ?? console;
@@ -90,7 +95,7 @@ export function createAttendanceSelfieSigner(deps: {
       const signerDeps = {
         storage: deps.storage,
         authorize: async (action: "upload" | "read", purpose: string) =>
-          action === "read" && purpose === "selfie",
+          action === "read" && purpose === deps.purpose,
       };
       const signed = tx
         ? await signedStorageUrlInTx(
@@ -116,10 +121,39 @@ export function createAttendanceSelfieSigner(deps: {
           error.code === "OUTLET_OUT_OF_SCOPE")
       )
         return null;
-      log.error("attendance selfie signing failed", error);
+      log.error(deps.failureMessage, error);
       return null;
     }
   };
+}
+
+/** Signer for private attendance selfies: purpose `selfie` only. */
+export function createAttendanceSelfieSigner(deps: {
+  database: Database;
+  storage: ObjectStorage;
+  log?: Pick<Console, "error">;
+}): HrisFileSigner {
+  return createPurposeFileSigner({
+    ...deps,
+    purpose: "selfie",
+    failureMessage: "attendance selfie signing failed",
+  });
+}
+
+/**
+ * Signer for private HRIS files (leave attachments, contract scans, employee
+ * documents): purpose `document` only.
+ */
+export function createHrisDocumentSigner(deps: {
+  database: Database;
+  storage: ObjectStorage;
+  log?: Pick<Console, "error">;
+}): HrisFileSigner {
+  return createPurposeFileSigner({
+    ...deps,
+    purpose: "document",
+    failureMessage: "HRIS document signing failed",
+  });
 }
 
 /**
@@ -142,6 +176,7 @@ export function createStorageRuntimeFromEnv(
       acceptsDocuments: source.NODE_ENV !== "production",
     }),
     fileSigner: createAttendanceSelfieSigner({ database, storage, log }),
+    hrisDocumentSigner: createHrisDocumentSigner({ database, storage, log }),
   };
 }
 

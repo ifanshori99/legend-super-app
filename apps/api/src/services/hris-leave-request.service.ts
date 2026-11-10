@@ -429,7 +429,7 @@ async function presentRequest(
 ): Promise<LeaveRequest> {
   if (row.attachmentKey === null || !canSee(access, row))
     return toLeaveRequest(row);
-  const url = await signer(context, row.attachmentKey);
+  const url = await signer(context, row.attachmentKey, tx);
   if (url !== null)
     await recordAudit(
       tx,
