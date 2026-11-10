@@ -21,7 +21,7 @@ import {
   hkdfSync,
   randomBytes,
 } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { edgeNodes, edgeStaffPinPeppers } from "../db/schema/edge-node.ts";
@@ -90,14 +90,26 @@ export function openEdgePepper(
   }
 }
 
-/** Version to pepper for this node; rows that fail to open (or are version 1) are skipped. */
+/**
+ * Version to pepper for this node; rows that fail to open are skipped. A row
+ * below the edge minimum version (an old tenant-wide v1 pepper) is deleted on
+ * load, so it does not stay on the edge disk.
+ */
 export async function loadEdgePeppers(
   context: ScopedTenantContext,
   edgeNodeId: string,
   key: Buffer,
 ): Promise<Map<number, Buffer>> {
-  const rows = await withTenant(db, context, (tx) =>
-    tx
+  const rows = await withTenant(db, context, async (tx) => {
+    await tx
+      .delete(edgeStaffPinPeppers)
+      .where(
+        and(
+          eq(edgeStaffPinPeppers.edgeNodeId, edgeNodeId),
+          lt(edgeStaffPinPeppers.version, EDGE_PEPPER_MIN_VERSION),
+        ),
+      );
+    return tx
       .select({
         tenantId: edgeStaffPinPeppers.tenantId,
         outletId: edgeStaffPinPeppers.outletId,
@@ -105,11 +117,11 @@ export async function loadEdgePeppers(
         ciphertext: edgeStaffPinPeppers.ciphertext,
       })
       .from(edgeStaffPinPeppers)
-      .where(eq(edgeStaffPinPeppers.edgeNodeId, edgeNodeId)),
-  );
+      .where(eq(edgeStaffPinPeppers.edgeNodeId, edgeNodeId));
+  });
   const peppers = new Map<number, Buffer>();
   for (const row of rows) {
-    // An edge never holds version 1 (per tenant, cloud only).
+    // Defensive: an edge never holds version 1 (per tenant, cloud only).
     if (row.version < EDGE_PEPPER_MIN_VERSION) continue;
     const pepper = openEdgePepper(
       key,

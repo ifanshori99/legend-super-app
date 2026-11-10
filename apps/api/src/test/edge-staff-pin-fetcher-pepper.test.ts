@@ -1,6 +1,6 @@
 // The edge's staff pin page request asks for its outlet's peppers (beads
 // legend-ideif, legend-jmsdx; PRD v1.7 §3 F6 "Staf — PIN Perangkat", EDG-02).
-// `peppers=<versions held, e.g. 2,3>` (empty = none held) goes out only over https (a pepper never travels in clear text) and falls
+// `peppers=<versions held, e.g. 2,3>` (`peppers=none` = none held) goes out only over https (a pepper never travels in clear text) and falls
 // back for an older cloud whose strict query refuses it: revision + peppers,
 // then revision only, then neither. Any other error is not retried.
 import { describe, expect, it } from "vitest";
@@ -45,17 +45,30 @@ describe("legend-jmsdx the staff pin fetcher asks for peppers", () => {
     expect(urls[0]!.searchParams.get("revision")).toBe("1");
   });
 
-  it("asks again for the versions held on every page (empty value = none yet)", async () => {
+  it("asks again for the versions held on every page (`none` = nothing held yet)", async () => {
     let held: number[] = [];
     const { fetchPage, urls } = stubFetcher(SECURE, ok, () => held);
     await fetchPage(null, signal);
     held = [2];
     await fetchPage("cursor-1", signal);
     expect(urls.map((url) => url.searchParams.get("peppers"))).toEqual([
-      "",
+      "none",
       "2",
     ]);
     expect(urls[0]!.searchParams.has("peppers")).toBe(true);
+  });
+
+  it("an edge holding nothing sends peppers=none, and an older cloud's 400 falls back to revision only", async () => {
+    const { fetchPage, urls } = stubFetcher(
+      SECURE,
+      (url) => (url.searchParams.has("peppers") ? refuse(400) : ok()),
+      () => [],
+    );
+    await fetchPage(null, signal);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]!.searchParams.get("peppers")).toBe("none");
+    expect(urls[1]!.searchParams.has("peppers")).toBe(false);
+    expect(urls[1]!.searchParams.get("revision")).toBe("1");
   });
 
   it("never sends peppers over a non-https (ws://) cloud url", async () => {

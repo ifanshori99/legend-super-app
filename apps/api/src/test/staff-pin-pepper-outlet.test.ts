@@ -749,6 +749,101 @@ describe("legend-jmsdx staff PIN pepper per outlet", () => {
     });
   });
 
+  it("(f2) a cloud rehash under the same key takes the new hash but keeps the edge's failed attempts and lock", async () => {
+    const userId = await newStaff([outletA]);
+    await setPin(userId, outletA, PIN_C);
+    await downgradeToV1(userId, outletA, PIN_C);
+    const oldA = await rowOf(userId, outletA);
+    const token = await deviceTokenAt(outletA);
+    expect((await verifyOverHttp(token, userId, PIN_C)).status).toBe(200);
+    const record = await exportRecordOf(userId);
+    const rehashed = await rowOf(userId, outletA);
+    expect(record.pinHash).toBe(rehashed.pin_hash);
+    expect(record.pinHash).not.toBe(oldA.pin_hash);
+    expect(record.failedAttempts).toBe(0);
+    expect(record.lockedUntil).toBeNull();
+
+    // The edge still holds the old material under the same key, with its own
+    // count of wrong guesses.
+    const holdOldMaterial = (
+      old: PinRow,
+      failed: number,
+      lockedMinutes: number | null,
+    ) =>
+      owner.query(
+        `UPDATE staff_pins
+            SET pin_hash = $2, pin_salt = $3, pepper_version = 1,
+                failed_attempts = $4,
+                locked_until = CASE WHEN $5::int IS NULL THEN NULL
+                                    ELSE now() + make_interval(mins => $5::int) END,
+                cloud_failed_attempts = NULL, cloud_locked_until = NULL,
+                cloud_attempt_revision = NULL
+          WHERE id = $1`,
+        [old.id, old.pin_hash, old.pin_salt, failed, lockedMinutes],
+      );
+    const current = currentStaffPinPepperVersion();
+    const verifiesWithNewMaterial = async () =>
+      verifyStaffPinHash({
+        pepper: staffPinPepper(tenantId, outletA, current),
+        binding: bindingOf(userId, outletA),
+        pin: PIN_C,
+        stored: storedOf(await rowOf(userId, outletA)),
+      });
+
+    // Four wrong guesses on the edge stay four.
+    await holdOldMaterial(oldA, 4, null);
+    await asEdgeNode(outletA, async () => {
+      expect((await applyStaffPinRecords(edgeContext, [record])).applied).toBe(
+        1,
+      );
+    });
+    const counted = await rowOf(userId, outletA);
+    expect(counted.pin_hash).toBe(record.pinHash);
+    expect(counted.pin_salt).toBe(record.salt);
+    expect(counted.pepper_version).toBe(record.pepperVersion);
+    expect(counted.failed_attempts).toBe(4);
+    expect(counted.pin_generation_at).toEqual(oldA.pin_generation_at);
+    expect(await verifiesWithNewMaterial()).toBe(true);
+
+    // A locked edge stays locked.
+    await holdOldMaterial(oldA, 5, 10);
+    const lockedBefore = (await rowOf(userId, outletA)).locked_until;
+    expect(lockedBefore!.getTime()).toBeGreaterThan(Date.now() + MINUTE);
+    await asEdgeNode(outletA, async () => {
+      await applyStaffPinRecords(edgeContext, [record]);
+      const locked = await rowOf(userId, outletA);
+      expect(locked.pin_hash).toBe(record.pinHash);
+      expect(locked.failed_attempts).toBe(5);
+      expect(locked.locked_until).toEqual(lockedBefore);
+      expect(
+        (
+          await attemptStaffPin(tenant, {
+            outletId: outletA,
+            userId,
+            pin: PIN_C,
+          })
+        ).kind,
+      ).toBe("locked");
+    });
+
+    // After the lock passes the right PIN verifies with the new material.
+    await owner.query(
+      `UPDATE staff_pins SET locked_until = now() - interval '1 minute'
+        WHERE id = $1`,
+      [oldA.id],
+    );
+    expect(await verifiesWithNewMaterial()).toBe(true);
+    await asEdgeNode(outletA, async () => {
+      expect(
+        await attemptStaffPin(tenant, {
+          outletId: outletA,
+          userId,
+          pin: PIN_C,
+        }),
+      ).toEqual({ kind: "ok", userId });
+    });
+  });
+
   it("(g) an edge holding versions 2 and 3 with current 3 is sent only what it lacks", async () => {
     const { pepper, registry } = await loadFresh(3);
 

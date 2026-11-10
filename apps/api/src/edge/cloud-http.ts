@@ -330,7 +330,7 @@ export function createStaffPinRecordsFetcher(
     /**
      * legend-ideif, legend-jmsdx: the staff pin pepper versions this edge
      * holds (empty = none). When set, the page request lists them
-     * (`peppers=2,3`, empty value = none) and the cloud answers with this
+     * (`peppers=2,3`, `peppers=none` = holds none) and the cloud answers with this
      * outlet's peppers it lacks. Sent only over https: a pepper never travels
      * in clear text.
      */
@@ -350,7 +350,15 @@ export function createStaffPinRecordsFetcher(
     // record (an older edge's strict parse would refuse it, so the cloud only
     // sends it on request).
     if (withRevision) query.set("revision", "1");
-    if (pepperHave !== null) query.set("peppers", pepperHave.join(","));
+    // `none`, not an empty value: a cloud from before legend-jmsdx reads an
+    // empty value as 0 held and answers its tenant-wide v1 pepper, which the
+    // edge refuses. It answers 400 to `none` instead, and the fallback below
+    // retries the page without the opt-in.
+    if (pepperHave !== null)
+      query.set(
+        "peppers",
+        pepperHave.length === 0 ? "none" : pepperHave.join(","),
+      );
     if (since !== null) query.set("since", since);
     return `${STAFF_PIN_RECORDS_PATH}?${query.toString()}`;
   };

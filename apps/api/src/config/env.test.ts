@@ -144,6 +144,17 @@ test("STAFF_PIN_PEPPER_CURRENT_VERSION is a positive integer, default 2 (legend-
   const one = run({ STAFF_PIN_PEPPER_CURRENT_VERSION: "1" }, show);
   assert.equal(one.status, 0);
   assert.equal(one.stdout.trim(), "1");
+  // Production refuses version 1 (f2).
+  const prodOne = run(
+    {
+      NODE_ENV: "production",
+      STAFF_PIN_PEPPER: "p".repeat(32),
+      STAFF_PIN_PEPPER_CURRENT_VERSION: "1",
+    },
+    show,
+  );
+  assert.equal(prodOne.status, 1);
+  assert.match(prodOne.stderr, /STAFF_PIN_PEPPER_CURRENT_VERSION/);
 });
 
 test("rejects real or unclassified imports outside production", () => {

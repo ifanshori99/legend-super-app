@@ -217,6 +217,27 @@ describe("legend-jmsdx the sealed peppers in the edge database", () => {
     );
   });
 
+  it("(f2) a leftover version 1 row is deleted on load and version 2 stays", async () => {
+    const v1Pepper = randomBytes(32);
+    await owner.query(
+      `INSERT INTO edge_staff_pin_peppers (tenant_id, outlet_id, edge_node_id, version, ciphertext)
+       VALUES ($1, $2, $3, 1, $4)`,
+      [
+        tenantId,
+        outletId,
+        edgeNodeId,
+        sealEdgePepper(key, { tenantId, outletId, version: 1 }, v1Pepper),
+      ],
+    );
+    expect((await rows()).map((row) => row.version)).toContain(1);
+    const loaded = await loadEdgePeppers(context, edgeNodeId, key);
+    expect(loaded.has(1)).toBe(false);
+    expect(loaded.has(2)).toBe(true);
+    const left = (await rows()).map((row) => row.version);
+    expect(left).not.toContain(1);
+    expect(left).toContain(2);
+  });
+
   it("saving for an unknown node is refused, without the pepper in the message", async () => {
     const pepper = randomBytes(32);
     const error = await saveEdgePeppers(context, randomUUID(), key, [

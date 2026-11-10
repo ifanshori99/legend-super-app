@@ -65,8 +65,8 @@
 // Pepper provisioning (legend-ideif, legend-jmsdx). The edge verifies offline
 // with `record + pepper`, but it never holds the root STAFF_PIN_PEPPER (the
 // edge refuses to boot with it, config/env.ts). When the edge asks with
-// `peppers=<versions it holds>` (`peppers=2,3`; an empty value = holds none;
-// no parameter = does not ask) the cloud answers `meta.peppers`: the peppers it
+// `peppers=<versions it holds>` (`peppers=2,3`; `peppers=none` or an empty value =
+// holds none; no parameter = does not ask) the cloud answers `meta.peppers`: the peppers it
 // derived for THE CREDENTIAL'S OUTLET (version >= 2, never version 1), for the
 // versions the staff_pins rows of that outlet use plus the current version,
 // minus the ones the edge already holds (`staffPinPeppersForEdge`,
@@ -229,14 +229,15 @@ export const staffPinSyncQuerySchema = z.strictObject({
   // so it needs a cloud that knows this flag (cloud first, as documented).
   revision: z.literal("1").optional(),
   // legend-ideif, legend-jmsdx: opt-in as well (an older edge parses `meta`
-  // strictly). The pepper versions the edge holds, `2,3` ("" = none); the
+  // strictly). The pepper versions the edge holds, `2,3` ("none" or "" = none); the
   // cloud answers with the outlet's derived peppers it lacks. Parsed twice
   // (route, then service), so an already parsed array passes through.
   peppers: z
     .preprocess(
       (value) =>
-        typeof value === "string" && /^(\d{1,4}(,\d{1,4})*)?$/.test(value)
-          ? value === ""
+        typeof value === "string" &&
+        (value === "none" || /^(\d{1,4}(,\d{1,4})*)?$/.test(value))
+          ? value === "" || value === "none"
             ? []
             : value.split(",").map(Number)
           : value,
@@ -648,7 +649,14 @@ export async function applyStaffPinRecords(
         applied += 1;
         continue;
       }
-      if (!sameMaterial(local, record)) {
+      // legend-jmsdx: the cloud re-hashes an old-version pin under the same
+      // generation key (device-pin.service.ts), so a tie with other material
+      // is the same PIN in new hash material. Only the hash columns are taken
+      // and the lock state goes through the merge below: copying the cloud's
+      // counter and lock here would clear what the edge counted (a rehash
+      // must never weaken the edge's lockout).
+      const rehashed = found!.keyOrder === 0 && !sameMaterial(local, record);
+      if (!rehashed && !sameMaterial(local, record)) {
         // A pin set or reset on the cloud: a tie or a later key wins. An
         // earlier key is an older generation replayed late.
         if (found!.keyOrder < 0) continue;
@@ -728,6 +736,7 @@ export async function applyStaffPinRecords(
         (local.cloudLockedUntil?.getTime() ?? null) !==
           (recordLock?.getTime() ?? null);
       const changed =
+        rehashed ||
         found!.keyOrder > 0 ||
         found!.cloudKeyLater ||
         counterRaised ||
@@ -736,6 +745,17 @@ export async function applyStaffPinRecords(
       await tx
         .update(staffPins)
         .set({
+          ...(rehashed
+            ? {
+                pinHash: material.pinHash,
+                pinSalt: material.pinSalt,
+                kdfN: material.kdfN,
+                kdfR: material.kdfR,
+                kdfP: material.kdfP,
+                pepperVersion: material.pepperVersion,
+                updatedAt: version,
+              }
+            : {}),
           ...(counterRaised ? { failedAttempts: record.failedAttempts } : {}),
           ...(lockRaised ? { lockedUntil: recordLock } : {}),
           cloudFailedAttempts: record.failedAttempts,

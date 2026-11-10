@@ -145,6 +145,20 @@ describe("legend-jmsdx staff pin sync export delivers the outlet pepper", () => 
     expect(response.body.meta.peppers).toEqual(direct.meta.peppers);
   });
 
+  it("over HTTP: peppers=none means nothing held, the same answer as the empty value", async () => {
+    const direct = await listStaffPinRecordsSince(node, {
+      limit: 100,
+      peppers: [],
+    });
+    const response = await request(app)
+      .get(path)
+      .query({ peppers: "none" })
+      .set(bearer);
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(response.body.meta.peppers).toEqual(direct.meta.peppers);
+  });
+
   it("over HTTP: peppers=<list> parses the held versions", async () => {
     const current = currentStaffPinPepperVersion();
     const response = await request(app)

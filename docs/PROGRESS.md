@@ -10,6 +10,18 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti: `loyalty-journal.test.ts` 16/17 merah sebelum kode, kini 20/20; 10 file terarah 354/354 (setelah perubahan terakhir); tsc api + shared (heavy) lulus; eslint dan prettier bersih.
 - Review architect (K, xhigh): tanggal jurnal (dibetulkan), tes pin redeem dan retry sweep (ditambah), poin pesanan latihan (kartu `legend-kbbma`, wajib sebelum dinyalakan), multi-entity (kartu `legend-6m1w1`).
 - Berikut: second-opinion Codex `docs/briefs/304c-second-opinion-points-journal.md` (xhigh, belum dijalankan); konfirmasi akuntan founder (Q7) sebelum dinyalakan; merge train.
+
+## legend-jmsdx pepper PIN per outlet v2, rehash cloud, runbook edge dicuri (engineer, cabang `ws/jmsdx-pepper` dari ws/ideif-edge-pepper 3150feeb + merge ws/u7g9w-pin-proof, 2026-11-10)
+
+- Tanpa migrasi. Merge u7g9w (fc1271db): konflik journal/runtime/staff-pin-pull/deployment/PROGRESS dibereskan; snapshot drizzle dirangkai linear 0217 -> 0225 -> 0227 -> 0233 -> 0241 (delta `edge_staff_pin_peppers` dibawa maju), `db:generate` kosong.
+- Pepper v2+ diturunkan per outlet (HKDF info `legend:staff-pin-pepper:v{n}:{tenant}:{outlet}`), v1 tetap per tenant dan hanya di cloud. `STAFF_PIN_PEPPER_CURRENT_VERSION` default 2, production wajib >= 2. Query sync `peppers` = daftar versi yang dipegang (`none` = kosong); cloud mengirim ({versi dipakai baris outlet} ∪ {current}) minus yang dipegang, tidak pernah v1 atau outlet lain. AAD segel edge `tenant:outlet:version`; baris segel v1 sisa dihapus saat load.
+- Verify cloud PIN benar pada versi lama: rehash di tx `FOR UPDATE` yang sama, kunci generasi tetap; edge menerapkan bahan hash baru tetapi mempertahankan hitungan salah dan kunci lokal (merge "same material"). PIN baru di edge tetap menang. Edge baris v1: 409 `STAFF_PIN_RESET_REQUIRED`, tanpa menambah percobaan.
+- Runbook `docs/runbooks/edge-node-stolen.md`; `docs/deployment.md` bagian pepper edge diperbarui.
+- Bukti: gagal-dulu `staff-pin-pepper-outlet.test.ts` 8/8 merah di fc1271db; test perbaikan review 6/6 merah di eb7e2069. Sesudah: 29 file 423/423 (semua test pepper/PIN/sync + paket u7g9w + guard migrasi); tsc shared + api bersih (heavy); eslint + prettier bersih.
+- Review architect (K): 0 tinggi; 2 sedang (rehash cloud mengosongkan lockout edge; body revoke di runbook tidak lengkap, node standby terlewat); 4 rendah (edge baru vs cloud ideif lama berhenti sync -> `peppers=none`; segel v1 tertinggal di disk; production boleh v1; penanda reset di runbook). Semua dibetulkan.
+- Sisa: link runbook ke `docs/DECISIONS.md` "Pepper PIN per outlet" baru hidup setelah `ws/arch-357-decisions` di-merge. Tidak ada endpoint reset PIN massal (runbook: per staf).
+- Pemakaian sesi (u7g9w + jmsdx, 18:47-19:55): subagent 26 di laporan (total spawn 37: implementer 17, Explore 10, test-runner 5, test-writer 3, doc-writer 2, architect 2), maks bersamaan 6, rata 0.89; biaya* 9349k (utama Opus 3267k, sonnet 4541k, opus sub 1118k, haiku 424k).
+
 ## legend-u7g9w bukti PIN sekali pakai untuk absen layar outlet (engineer, cabang `ws/u7g9w-pin-proof` dari ws/j6cyb-edge-attendance d0376c66, 2026-11-10)
 
 - Absen di layar outlet mencatat staf yang mengetik PIN, bukan pemilik sesi. `POST /api/staff-pins/verify` dengan `purpose: "attendance_clock"` memberi bukti `pp_…` (32 byte acak, hanya sha256 disimpan), umur 120 s, terikat tenant/outlet/device/user, satu bukti hidup per device (advisory lock). Rute baru `POST /api/hris/attendance/outlet-clock` (tanpa sesi, header `X-Device-Token` + `X-Pin-Proof`, edge saja) memakai bukti di transaksi yang sama dengan log; replay idempoten dengan `idempotencyKey`.
@@ -1505,23 +1517,28 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum: retur aktif sesudah jurnal penerimaan barang (`legend-29vw`) menyalakan flag; UI; kas kecil `legend-4961`. Brief Codex: `docs/briefs/301c-second-opinion-supplier-return-petty.md` (belum dijalankan).
 
 ## 2026-11-10: WS-03 kode klaim split bill sesudah meja ditutup (legend-ia54l)
+
 - Sudah: `GET /api/table-sessions/split-claims/current` dengan `Authorization: Bearer <kode klaim>`; hanya bagian itu yang terbaca, sampai `claimableUntil`, tanpa data tamu atau order lain. Tidak dikenal, dipakai, lewat 24 jam, atau order di-void: 404 yang sama. Tanpa migrasi. Cabang `ws/ia54l-claim-after-close`.
 - Bukti: 6 tes baru lulus (14 dari 14 di `bill-split-claim.test.ts`); typecheck shared dan api bersih; review tingkat S (reviewer) tanpa temuan berat. Catatan: kode ditulis sebelum tes, jadi bukti gagal-dulu tidak ada untuk kartu ini.
 
 ## 2026-11-10: WS-10 exit clearance otomatis (legend-arj.6)
+
 - Sudah: job per tenant di sapuan relay worker (`services/hris-offboarding-jobs.ts`), memanggil `revokeOffboardingAccessAsSystem`; aktor sistem (audit `system`, kolom "siapa" berisi UUID nol), `canAssignRoles=false` (Owner dan peran tingkat perusahaan gagal, tetap open untuk HR, dicoba sekali per hari). Tanpa penanda harian: tiap tick memindai, karena exit bisa jatuh tempo kapan saja. Worker kini memasang audit writer (sebelumnya tidak, sehingga audit pencabutan peran gagal di worker). Tanpa migrasi. Cabang `ws/arj6-auto-clearance`.
 - Bukti: 10 tes baru lulus (dicabut sekali walau dua kali jalan, belum jatuh tempo tidak tersentuh, aktor sistem di audit, isolasi tenant, error satu karyawan tidak menghentikan yang lain); 161 tes terarah lulus sebelum perubahan terakhir, 41 sesudahnya; typecheck api bersih; review K (architect) 1 temuan berat (penanda harian menunda) dibetulkan.
 
 ## 2026-11-10: worker tanpa audit writer (legend-j88cz)
+
 - Sudah: pemasangan `setAuditWriter(coreAuditWriter)` di `worker-main.ts` (dari `ws/arj6-auto-clearance`) kini punya tes `worker-audit-writer.test.ts`: tanpa writer sapuan support access, kedaluwarsa izin dan persetujuan melempar `AuditUnavailableError` dan tidak mengubah apa pun; dengan writer menulis sekali sebagai `system` dan idempoten; worker-main memasang writer di tingkat atas sebelum worker mulai. Runbook cek produksi (hanya baca): `docs/runbooks/worker-audit-writer-m1-window.md`.
 - Bukti: di m1 2 tes struktural gagal (4 tes mode-gagal lulus karena memasang writer sendiri); di cabang 6 dari 6 lulus plus `support-access-approval.test.ts` (43 tes); typecheck api bersih; review K (architect): perbaikan benar dan cukup awal, tidak ada entrypoint lain tanpa writer.
 - Dampak nyata di m1 (koreksi daftar kartu): hanya jalur yang memakai `audit-writer` gagal: kedaluwarsa persetujuan, kedaluwarsa support access (akses tetap ditolak, hanya catatan hilang), override POS lewat HP (outbox dicoba ulang lalu mati), event edge yang diparkir (ditandai `refused` permanen). Konsumen auto-jurnal, HRIS, pengiriman memakai `core-audit` dan tidak terpengaruh.
 
 ## 2026-11-10: edge tidak memegang root STAFF_PIN_PEPPER (legend-ideif)
+
 - Sudah: edge hanya menerima pepper turunan tenant-nya (HKDF per tenant dan versi) lewat sinkron PIN yang ada (`GET /api/edge-sync/staff-pin-records?peppers=<n>` -> `meta.peppers`, opt-in, https, no-store). Disimpan tersegel (AES-256-GCM, kunci dari rahasia kredensial node, AAD tenant:versi) di tabel baru `edge_staff_pin_peppers` (migrasi `0225`, nomor sementara, `when` 1794304000000, RLS tenant dan outlet) dan dimuat ke memori saat boot (`edge/staff-pin-pepper-registry.ts`, `edge/staff-pin-pepper-store.ts`). Edge menolak boot bila `STAFF_PIN_PEPPER` ada (env.ts dan `startEdgeRuntime`). Rotasi: `STAFF_PIN_PEPPER_CURRENT_VERSION` di cloud; PIN lama tetap terverifikasi (pepper per versi baris) sampai di-set ulang. Runbook: `docs/deployment.md` "Staff PIN pepper on edge nodes"; catatan rilis; `.env.example`.
 - Bukti: test baru (registry, store, sync export, pull, fetcher, boot, env, resend) lulus bersama test PIN lama; typecheck api, eslint, prettier bersih; `db:generate` kosong; review K (architect): 6 temuan, 5 dibetulkan (resend tanpa pepper, `have` kontigu, runbook cabut kredensial dan rotasi root), 1 untuk merge train (urutan `when` migrasi).
 - Belum: edge lama (tanpa `peppers`) terhadap cloud baru jalan terus tapi tidak mendapat pepper; edge baru terhadap cloud lama jatuh ke query lama tanpa pepper. Cloud dulu, lalu edge. Rilis dan merge menunggu gerbang founder.
 - Bukti merah (legend-ideif, 2026-11-10): refine env.ts dan guard `startEdgeRuntime` dilepas sementara: test env "edge menolak root" dan test boot `edge-boot-pepper` merah (2 gagal, 7 lulus); dikembalikan, kembali hijau (9 lulus). Temuan architect ke-6 (urutan `when` migrasi 0225 vs 0216–0222) sengaja tidak diubah di cabang: nomor dan `when` ditetapkan CTO (0225, 1794304000000), merge train menyusun ulang saat gabung.
+
 ## 2026-11-10: WS-10 absensi karyawan (legend-wh71)
 
 - Sudah: 6 tabel `attendance_*` (migrasi 0217, RLS tenant + outlet), clock selfie/geofence/QR 30 detik/ikat perangkat, terlambat/pulang cepat/lembur dari shift, idempoten, koreksi lewat approval `hris_attendance`, antrean review sampling + config kebijakan, duty meal (catat saja), applier edge `attendance.logged`, job purge selfie 90 hari sesudah payroll tutup (per badan hukum).

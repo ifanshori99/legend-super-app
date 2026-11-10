@@ -15,17 +15,17 @@ Jangan menunggu bukti kuat. Cabut dulu, selidiki kemudian.
 
 Urutannya penting. Cabut akses dulu, baru rotasi, lalu reset PIN.
 
-1. **Cabut node edge.** Ambil ID node dari daftar node outlet:
+1. **Cabut setiap node outlet yang hilang.** Outlet bisa punya node primary dan standby. Bila ragu, cabut semua node outlet itu. Ambil ID node dari daftar node outlet (GET butuh izin `device.registry.manage` di outlet itu):
 
    ```
    GET /api/edge-nodes?outletId=<outletId>
    ```
 
-   Cabut node itu. Penutupan ini terminal, dan link node ditutup. Node yang masih punya kredensial valid akan menarik pepper baru pada sync berikutnya, jadi langkah ini wajib pertama.
+   Cabut tiap node. Penutupan ini terminal, dan link node ditutup. Node yang masih punya kredensial valid akan menarik pepper baru pada sync berikutnya, jadi langkah ini wajib pertama. Body wajib berisi `outletId` dan `reason` (teks, 1 sampai 500 karakter):
 
    ```
    POST /api/edge-nodes/<edgeNodeId>/revoke
-   { "outletId": "<outletId>" }
+   { "outletId": "<outletId>", "reason": "<alasan singkat, mis. box hilang>" }
    ```
 
    Butuh izin `device.registry.revoke` di outlet itu.
@@ -36,10 +36,11 @@ Urutannya penting. Cabut akses dulu, baru rotasi, lalu reset PIN.
    GET /api/devices?outletId=<outletId>
    ```
 
-   Cabut tiap device. Ini terminal.
+   Cabut tiap device. Ini terminal. Body wajib berisi `reason` (teks, 3 sampai 500 karakter) dan `idempotencyKey`:
 
    ```
    POST /api/devices/<deviceId>/revoke
+   { "reason": "<alasan singkat, mis. box hilang>", "idempotencyKey": "<kunci unik per percobaan>" }
    ```
 
    Butuh izin `device.registry.revoke` di outlet itu.
@@ -58,6 +59,8 @@ Urutannya penting. Cabut akses dulu, baru rotasi, lalu reset PIN.
 
    Belum ada endpoint bulk untuk reset. Daftar user ID staf per outlet belum saya verifikasi dari route, jadi ambil daftar itu dari sumber yang sudah dipakai tim (misalnya daftar staf back-office) dan catat siapa saja yang sudah direset.
 
+   Cara memastikan sudah direset: `pin_set_at` baris PIN itu sesudah jam kejadian, atau ada audit `staff_pin.set` / `staff_pin.reset` sesudah jam kejadian. Jangan memakai `pepper_version` sebagai penanda, karena cloud me-rehash PIN lama ke versi baru saat verifikasi benar (lihat risiko di bawah).
+
 5. **Cek outlet lain tidak terdampak.**
    - Outlet lain tetap bisa verifikasi PIN. Dari device outlet itu, `POST /api/staff-pins/verify` dengan header `X-Device-Token` harus tetap berhasil untuk staf yang PIN-nya tidak berubah.
    - Node edge outlet lain tidak ikut tercabut: `GET /api/edge-nodes?outletId=<outletIdLain>` tetap menampilkan node yang aktif.
@@ -71,5 +74,5 @@ Urutannya penting. Cabut akses dulu, baru rotasi, lalu reset PIN.
 ## Risiko tersisa
 
 - Sebelum PIN staf direset, PIN lama masih berlaku, dan pepper curian masih bisa dipakai menebak PIN 6 digit itu offline. Karena itu reset harus selesai secepat mungkin.
-- Verifikasi ulang PIN lama di cloud akan menulis ulang hash ke versi baru. Ini tidak menggantikan reset, karena PIN lama tetap diterima sampai diganti.
+- Verifikasi ulang PIN lama di cloud akan menulis ulang hash ke versi baru (`pepper_version` naik). Ini tidak menggantikan reset, karena PIN lama tetap diterima sampai diganti. Jadi `pepper_version` yang sudah naik tidak berarti PIN itu sudah direset.
 - Jika root `STAFF_PIN_PEPPER` ikut bocor (misalnya dari cloud), ini kejadian lain. Versi pepper tidak menolong karena semua turunannya berasal dari root yang sama. Jalurnya root baru dan reset semua PIN. Pemetaan versi ke root baru belum dibangun.

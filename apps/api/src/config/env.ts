@@ -341,6 +341,19 @@ const schema = z
       });
   })
   .superRefine((values, ctx) => {
+    // Version 1 is the old tenant-wide pepper; only dev data may stay on it.
+    if (
+      values.NODE_ENV === "production" &&
+      values.STAFF_PIN_PEPPER_CURRENT_VERSION < 2
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["STAFF_PIN_PEPPER_CURRENT_VERSION"],
+        message:
+          "STAFF_PIN_PEPPER_CURRENT_VERSION must be 2 or higher in production.",
+      });
+  })
+  .superRefine((values, ctx) => {
     for (const problem of sealKeyConfigProblems(
       values.ATTENDANCE_SELFIE_SEAL_KEYS,
       values.ATTENDANCE_SELFIE_SEAL_ACTIVE_KID,
