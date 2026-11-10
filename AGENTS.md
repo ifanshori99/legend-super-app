@@ -92,7 +92,7 @@ Use PostgreSQL `pgTable`/boolean/timestamp-with-time-zone columns and asynchrono
 
 ## Test terarah
 
-- Verifikasi kecil: `LEGEND_TEST_FILES="src/test/x.test.ts src/test/y.test.ts" pnpm test` dari root worktree (path dipisah spasi). Perintah ini juga menyiapkan DB, dan dianggap ringan oleh hook `heavy`.
+- Verifikasi kecil: `LEGEND_TEST_FILES="src/test/x.test.ts src/test/y.test.ts" pnpm test` dari root worktree (path dipisah spasi). Perintah ini juga menyiapkan DB, dan wajib lewat `heavy` (jalur ringan test terarah, maks 2 di seluruh Mac, 2 worker vitest).
 - `pnpm test` penuh dan `pnpm check` hanya untuk gate akhir: sekali, lewat `heavy`, oleh satu `test-runner`.
 - Jangan menjalankan suite penuh paralel dari worktree yang sama.
 
