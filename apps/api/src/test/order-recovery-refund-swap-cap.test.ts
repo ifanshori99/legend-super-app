@@ -755,7 +755,9 @@ describe("legend-fwe4l putaran 2: swap langsung ke menu lebih murah lalu gagal (
       line: placed.line,
     });
 
-    const b = await approvedRefund(replacementLineId, PLAIN_B);
+    // ORD-09: the approval equals the line total (Rp5.000); the refund adds
+    // service and tax on top.
+    const b = await approvedRefund(replacementLineId, AIR_PRICE);
     await deliver(b.event);
 
     const refunds = await issueRefunds(b.issueId);
