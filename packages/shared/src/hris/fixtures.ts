@@ -52,7 +52,12 @@ import {
   trainingSchema,
   trainingAnswerKeySchema,
 } from "./performance.ts";
-import { attendanceLogged, leaveApproved, shiftPublished } from "./events.ts";
+import {
+  attendanceLogged,
+  leaveApproved,
+  shiftCancelled,
+  shiftPublished,
+} from "./events.ts";
 import { employeeIdSchema } from "./ids.ts";
 import type { Employee } from "./organization.ts";
 import type { ShiftAssignment } from "./scheduling.ts";
@@ -1850,6 +1855,31 @@ const shiftEvent = shiftPublished.envelopeSchema.parse({
   },
 });
 
+const shiftCancelledEvent = shiftCancelled.envelopeSchema.parse({
+  id: ulid(204),
+  tenantId: tenant.id,
+  outletId: outletA,
+  name: "shift.cancelled",
+  version: 1,
+  aggregateType: "shift",
+  aggregateId: id(7301),
+  sequence: 2,
+  occurredAt: publishedAt,
+  actor: admittedActor,
+  deviceId: null,
+  idempotencyKey: "shift.cancelled:roster-2026-10-26-bdg-01-1003:2",
+  payloadSchemaRef: "shift.cancelled.v1",
+  payload: {
+    shiftAssignmentId: id(7301),
+    employeeId: id(1003),
+    outletId: outletA,
+    businessDate: weekOne,
+    cause: "cancelled",
+    cancelledBy: publishedBy,
+    cancelledAt: publishedAt,
+  },
+});
+
 const leaveEvent = leaveApproved.envelopeSchema.parse({
   id: ulid(203),
   tenantId: tenant.id,
@@ -1959,6 +1989,7 @@ export const cafeLegendHrisFixtures = {
   events: {
     attendanceLogged: attendanceEvent,
     shiftPublished: shiftEvent,
+    shiftCancelled: shiftCancelledEvent,
     leaveApproved: leaveEvent,
   },
   userIds: {

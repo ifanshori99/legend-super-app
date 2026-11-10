@@ -29,6 +29,7 @@ import {
   leaveTypeIdSchema,
   shiftAssignmentIdSchema,
   shiftSwapRequestIdSchema,
+  shiftTemplateIdSchema,
   leaveRequestIdSchema,
   overtimeRequestIdSchema,
   overtimeFormulaIdSchema,
@@ -65,9 +66,16 @@ import {
   attendanceTypeSchema,
 } from "./attendance.ts";
 import {
+  refineShiftCompliancePolicyLimits,
   rosterPublicationSchema,
+  rosterViewSchema,
   shiftAssignmentSchema,
+  shiftCompliancePolicyBaseSchema,
+  shiftCompliancePolicyViewSchema,
   shiftSwapRequestSchema,
+  shiftSwapStatusSchema,
+  shiftTemplateSchema,
+  shiftTemplateSegmentsSchema,
 } from "./scheduling.ts";
 import {
   holidaySchema,
@@ -307,6 +315,132 @@ export const listAttendanceCorrections = defineEndpoint({
 
 // ---- Roster, shifts, swaps ---------------------------------------------
 
+const queryBooleanSchema = z
+  .enum(["true", "false"])
+  .transform((value) => value === "true");
+
+export const listShiftTemplates = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/shift-templates",
+  query: cursorPageQuerySchema.extend({
+    outletId: outletIdSchema.optional(),
+    includeInactive: queryBooleanSchema.optional(),
+  }),
+  response: cursorPageSchema(shiftTemplateSchema),
+});
+
+export const createShiftTemplate = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shift-templates",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    name: shiftTemplateSchema.shape.name,
+    segments: shiftTemplateSegmentsSchema,
+    breakMinutes: shiftTemplateSchema.shape.breakMinutes,
+    stationId: stationIdSchema.nullable(),
+    positionId: positionIdSchema.nullable(),
+  }),
+  response: dataResponseSchema(shiftTemplateSchema),
+});
+
+export const updateShiftTemplate = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/shift-templates/:templateId",
+  params: z.strictObject({ templateId: shiftTemplateIdSchema }),
+  body: z
+    .strictObject({
+      name: shiftTemplateSchema.shape.name,
+      segments: shiftTemplateSegmentsSchema,
+      breakMinutes: shiftTemplateSchema.shape.breakMinutes,
+      stationId: stationIdSchema.nullable(),
+      positionId: positionIdSchema.nullable(),
+      isActive: z.boolean(),
+    })
+    .partial()
+    .refine((body) => Object.keys(body).length > 0, {
+      message: "Provide at least one field to update",
+    }),
+  response: dataResponseSchema(shiftTemplateSchema),
+});
+
+export const getShiftCompliancePolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/shift-compliance-policy",
+  query: z.strictObject({ outletId: outletIdSchema.optional() }),
+  response: dataResponseSchema(shiftCompliancePolicyViewSchema),
+});
+
+export const updateShiftCompliancePolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/shift-compliance-policy",
+  body: shiftCompliancePolicyBaseSchema
+    .omit({ tenantId: true })
+    .superRefine(refineShiftCompliancePolicyLimits),
+  response: dataResponseSchema(shiftCompliancePolicyViewSchema),
+});
+
+export const createShiftAssignment = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shifts",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    employeeId: employeeIdSchema,
+    businessDate: businessDateSchema,
+    shiftTemplateId: shiftTemplateIdSchema,
+    stationId: stationIdSchema.nullable(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(shiftAssignmentSchema),
+});
+
+export const updateShiftAssignment = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/shifts/:assignmentId",
+  params: z.strictObject({ assignmentId: shiftAssignmentIdSchema }),
+  body: z
+    .strictObject({
+      employeeId: employeeIdSchema,
+      shiftTemplateId: shiftTemplateIdSchema,
+      stationId: stationIdSchema.nullable(),
+      businessDate: businessDateSchema,
+    })
+    .partial()
+    .refine((body) => Object.keys(body).length > 0, {
+      message: "Provide at least one field to update",
+    }),
+  response: dataResponseSchema(shiftAssignmentSchema),
+});
+
+export const cancelShiftAssignment = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shifts/:assignmentId/cancel",
+  params: z.strictObject({ assignmentId: shiftAssignmentIdSchema }),
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(shiftAssignmentSchema),
+});
+
+export const copyRosterWeek = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/rosters/copy",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    fromWeekStart: businessDateSchema,
+    toWeekStart: businessDateSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(rosterViewSchema),
+});
+
+export const getRoster = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/rosters",
+  query: z.strictObject({
+    outletId: outletIdSchema,
+    weekStart: businessDateSchema,
+  }),
+  response: dataResponseSchema(rosterViewSchema),
+});
+
 export const listShiftAssignments = defineEndpoint({
   method: "GET",
   path: "/api/hris/shifts",
@@ -341,6 +475,25 @@ export const createShiftSwapRequest = defineEndpoint({
     toAssignmentId: shiftAssignmentIdSchema.nullable(),
     idempotencyKey: idempotencyKeySchema,
   }),
+  response: dataResponseSchema(shiftSwapRequestSchema),
+});
+
+export const listShiftSwapRequests = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/shift-swaps",
+  query: cursorPageQuerySchema.extend({
+    outletId: outletIdSchema.optional(),
+    status: shiftSwapStatusSchema.optional(),
+    mine: queryBooleanSchema.optional(),
+  }),
+  response: cursorPageSchema(shiftSwapRequestSchema),
+});
+
+export const cancelShiftSwapRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shift-swaps/:swapId/cancel",
+  params: z.strictObject({ swapId: shiftSwapRequestIdSchema }),
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
   response: dataResponseSchema(shiftSwapRequestSchema),
 });
 
@@ -678,8 +831,20 @@ export const hrisEndpoints = [
   getAttendanceQr,
   requestAttendanceCorrection,
   listAttendanceCorrections,
+  listShiftTemplates,
+  createShiftTemplate,
+  updateShiftTemplate,
+  getShiftCompliancePolicy,
+  updateShiftCompliancePolicy,
+  createShiftAssignment,
+  updateShiftAssignment,
+  cancelShiftAssignment,
+  copyRosterWeek,
+  getRoster,
   listShiftAssignments,
   publishRoster,
+  listShiftSwapRequests,
+  cancelShiftSwapRequest,
   createShiftSwapRequest,
   decideShiftSwapRequest,
   listLeaveRequests,

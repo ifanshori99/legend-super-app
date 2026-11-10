@@ -46,6 +46,8 @@ export * from "./facility";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";
+// WS-10 shift scheduling: templates, roster, swaps, compliance (legend-jstx).
+export * from "./hris-scheduling";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
 export * from "./accounting-auto-journal";

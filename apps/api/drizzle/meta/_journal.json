@@ -1331,6 +1331,13 @@
       "when": 1794282000000,
       "tag": "0203_member_loyalty_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 204,
+      "version": "7",
+      "when": 1794283000000,
+      "tag": "0204_hris_scheduling",
+      "breakpoints": true
     }
   ]
 }
