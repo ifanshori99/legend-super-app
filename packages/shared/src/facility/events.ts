@@ -173,6 +173,15 @@ export const wifiQuotaUpdatedEvent = defineDomainEvent({
     quotaMinutes: z.number().int().min(0).max(1440),
     usedMinutes: z.number().int().min(0).max(1440),
     speedTier: wifiSpeedTierSchema,
+    /**
+     * What the edge needs to push the quota to the controller without the
+     * policy row (the edge holds no wifi_policies): both speeds and the end of
+     * the session's business day. Optional so older outbox rows still parse;
+     * the cloud -> edge forwarder always fills them.
+     */
+    fullSpeedKbps: z.number().int().min(1).max(1_000_000).optional(),
+    baseSpeedKbps: z.number().int().min(1).max(1_000_000).optional(),
+    sessionEndsAt: isoDateTimeSchema.optional(),
     reason: z.enum([
       "session_started",
       "spend",

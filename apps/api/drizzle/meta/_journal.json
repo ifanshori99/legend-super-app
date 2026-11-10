@@ -1415,6 +1415,13 @@
       "when": 1794296000000,
       "tag": "0215_hris_attendance",
       "breakpoints": true
+    },
+    {
+      "idx": 216,
+      "version": "7",
+      "when": 1794297000000,
+      "tag": "0216_wifi_quota_engine",
+      "breakpoints": true
     }
   ]
 }

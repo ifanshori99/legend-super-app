@@ -29,6 +29,7 @@ import {
   overtimePolicySchema,
   peakWindowSchema,
   subscriptionIntervalSchema,
+  wifiSpendModeSchema,
 } from "./schemas.ts";
 import { facilityHoursSchema } from "./slots.ts";
 import {
@@ -211,6 +212,18 @@ export const startWifiSessionSchema = clientInputSchema({
    * it (SHA-256) before storing it; the raw value is never persisted.
    */
   deviceFingerprint: z.string().min(8).max(512),
+  /**
+   * The id the controller knows the device by (a MAC), taken from the
+   * controller's portal redirect. Optional: without it the quota is computed
+   * but no controller grant is requested. Never stored in `wifi_sessions`.
+   */
+  controllerDeviceId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9:._-]+$/)
+    .optional(),
 });
 export type StartWifiSessionInput = z.infer<typeof startWifiSessionSchema>;
 
@@ -488,6 +501,7 @@ export const putWifiPolicySchema = clientInputSchema({
   fullSpeedKbps: z.number().int().min(1).max(1_000_000),
   minSpendPerHourIdr: nonnegativeIdr.nullable(),
   tierBonusMinutes: z.record(z.string(), z.number().int().min(0).max(720)),
+  spendMode: wifiSpendModeSchema.optional(),
   expectedUpdatedAt: expectedUpdatedAtOrNew,
 });
 export type PutWifiPolicyInput = z.infer<typeof putWifiPolicySchema>;

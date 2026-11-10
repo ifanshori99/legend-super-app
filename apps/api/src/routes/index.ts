@@ -67,6 +67,7 @@ import { facilityCustomerRouter } from "./facility-customer.routes";
 import { facilityEntitlementRouter } from "./facility-entitlement.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
+import { wifiGuestRouter } from "./wifi-guest.routes.ts";
 import { hrisRouter } from "./hris.routes";
 import { payrollLoanPolicyRouter } from "./payroll-loan-policy.routes";
 import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
@@ -314,6 +315,8 @@ apiRouter.use("/facility", facilityCustomerRouter);
 apiRouter.use("/facility", facilityRouter);
 // WS-09 staff entitlements (legend-fjk5), after facilityRouter.
 apiRouter.use("/facility", facilityEntitlementRouter);
+// WS-09 guest Wi-Fi sessions of a member (legend-kmd3). Before wifiConfigRouter, which requires a staff session on the same prefix.
+apiRouter.use("/wifi", wifiGuestRouter);
 // WS-09 Wi-Fi policy configuration writes (legend-8dpm).
 apiRouter.use("/wifi", wifiConfigRouter);
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp). Before `/hris`,

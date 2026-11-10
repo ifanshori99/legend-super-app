@@ -46,6 +46,7 @@ import { deliverPayrollGlEvent } from "./services/payroll-gl-consumer.ts";
 // legend-111j
 import { deliverFacilityEntitlementEvent } from "./services/facility-entitlement-consumer.ts";
 import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
+import { deliverWifiQuotaEvent } from "./services/wifi-quota-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
 import { runSegmentMaterializeSweep } from "./worker/segment-materialize.job.ts"; // legend-ts50
@@ -259,6 +260,10 @@ const runtime = createWorkerRuntime({
           // left of them (savepoint, replay is a no-op).
           if (postsInventoryGl)
             await deliverFacilityEntitlementEvent(context, event, tx);
+          // legend-kmd3 (WS-09 Wi-Fi quota), cloud only: paid money and
+          // refunds of a member's order move the daily Wi-Fi quota of the
+          // account (ledger row + recompute of its open sessions) in a savepoint.
+          if (postsInventoryGl) await deliverWifiQuotaEvent(context, event, tx);
           // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
           // or sale posts its GL journal in a savepoint; a closed period or a
           // missing mapping parks the source for the sweep, never fails this.

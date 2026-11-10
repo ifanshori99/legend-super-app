@@ -63,6 +63,7 @@ import {
 } from "./deferred-event-applier.ts";
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
 import { registerAttendanceLoggedEdgeApplier } from "./attendance-logged-applier.ts";
+import { registerWifiQuotaEdgeApplier } from "./wifi-quota-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
@@ -618,6 +619,7 @@ export async function startEdgeRuntime(
   await assertEdgeSchemaReady();
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
   registerQrOrderEdgeApplier();
+  registerWifiQuotaEdgeApplier();
   // Section D (legend-khu5): first boot provisions the node from its bundle.
   await bootstrapEdgeNodeIfNeeded(config);
   let local: Awaited<ReturnType<typeof ensureLocalEdgeNode>>;
