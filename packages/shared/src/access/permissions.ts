@@ -152,6 +152,9 @@ const entries = [
   ["purchasing.order.create", []],
   ["purchasing.order.approve", ["approve"]],
   ["purchasing.invoice.match", ["finance"]],
+  ["purchasing.return.create", []],
+  ["purchasing.petty.record", []],
+  ["purchasing.petty_policy.manage", ["finance"]],
 
   // Accounting & finance (§3.16, F16)
   ["accounting.journal.view", ["finance"]],

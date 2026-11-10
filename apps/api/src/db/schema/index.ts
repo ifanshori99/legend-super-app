@@ -114,6 +114,9 @@ export * from "./delivery";
 export * from "./recipe";
 // WS-06 goods receipts: partial receiving, QC, photos (legend-o1o4s).
 export * from "./inventory-receiving";
+// WS-06 supplier returns and simple petty purchases (legend-65mgw).
+export * from "./purchase-returns";
+export * from "./petty-purchases";
 // WS-11 metrics_daily pre-aggregates (kartu A, legend-5wzoc).
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).

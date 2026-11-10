@@ -352,7 +352,7 @@ async function assertPhotos(
 }
 
 /** Purchase cost per base unit: PO unit price x accepted / accepted base. */
-function baseUnitCost(
+export function baseUnitCost(
   unitCostIdr: string,
   accepted: string,
   acceptedBase: string,

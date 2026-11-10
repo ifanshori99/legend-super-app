@@ -480,3 +480,14 @@ Decided 10 Nov 2026 (architect, tier K money). Design brief: `docs/briefs/298a-s
    creates no AP open item; invoice-vs-receipt price differences on returns;
    receipts recorded before go-live need a finance cutover entry; no PPN input
    on petty purchases; `supplier_invoice.recorded` still unposted.
+
+## WS-06: supplier return and petty purchase backend (legend-65mgw)
+
+Decided 10 Nov 2026 (architect, tier K). Design: `docs/briefs/301b-sub-return-petty-design.md`.
+
+1. **Return gate.** `PURCHASE_RETURN_POSTING_ENABLED` (env, default off). While off the whole `POST /api/inventory/purchase-returns` is refused with 403 `FEATURE_DISABLED` before the idempotency claim: a stock-out without a GRNI journal would split the GL from stock. Reads stay open. `legend-29vw` (goods receipt journal) turns it on and adds a cutover guard.
+2. **Return value.** Stock leaves at the receipt cost, not the moving average, so GRNI clears exactly. Each line books the cumulative rounded value minus earlier returns; `valueIdr` is the sum of line values. Split is `uninvoiced = valueIdr`, `invoiced = 0`, `ppn = 0` until supplier invoices exist.
+3. **Over-return race.** Returns of one receipt are serialised by a row lock on the receipt's purchase order (`legend_app` has no UPDATE on `goods_receipts`, so locking the receipt fails). Own location lock and balance check give `INSUFFICIENT_STOCK` because the stock ledger allows negative balances.
+4. **Petty purchase** is rejected, not approved, when over the limit or when no policy exists (409 `PETTY_PURCHASE_LIMIT_EXCEEDED`). Photo is mandatory, stored in `core_storage_objects` with source kind `petty_purchase`, linked once. Business date is the outlet business date; no back-dating. Policy writes: `PUT /api/inventory/petty-purchase-policy`, permission `purchasing.petty_policy.manage` (owner, finance).
+5. **Permissions:** `purchasing.return.create` (owner, purchasing, warehouse), `purchasing.petty.record` (owner, general_manager, outlet_manager, kitchen_lead, purchasing), `purchasing.petty_policy.manage` (owner, finance).
+6. **Known gaps (beads):** moving average not re-averaged on return; petty limit is per transaction only (daily cap bead); invoiced debit notes need AP open items (`legend-179bw`); batch returns from another location than received give a generic 422.

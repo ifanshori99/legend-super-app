@@ -373,6 +373,13 @@ export const createPurchaseReturnInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+/** Upsert of the petty purchase limit; `outletId: null` is the tenant default. */
+export const upsertPettyPurchasePolicyInputSchema = clientInputSchema({
+  outletId: outletIdSchema.nullable(),
+  limitIdr: pettyPurchasePolicySchema.shape.limitIdr,
+  idempotencyKey: idempotencyKeySchema,
+});
+
 export const createPettyPurchaseInputSchema = clientInputSchema({
   outletId: outletIdSchema,
   vendorName: z.string().trim().min(1).max(150),
@@ -669,6 +676,13 @@ export const createPettyPurchase = defineEndpoint({
   response: dataResponseSchema(pettyPurchaseSchema),
 });
 
+export const upsertPettyPurchasePolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/inventory/petty-purchase-policy",
+  body: upsertPettyPurchasePolicyInputSchema,
+  response: dataResponseSchema(pettyPurchasePolicySchema),
+});
+
 /**
  * Every purchasing endpoint in one list, for API route registration, FE mock
  * discovery and contract tests: ids are unique and paths live under
@@ -713,4 +727,5 @@ export const purchasingEndpoints = [
   postSupplierPaymentTransition,
   createPurchaseReturn,
   createPettyPurchase,
+  upsertPettyPurchasePolicy,
 ] as const;
