@@ -1991,3 +1991,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Gate: typecheck tiga paket hijau; lint 0 error; `heavy pnpm test` penuh 12091 lulus, 2 gagal (`menu-print-db` render konkuren dan `tax-api` ORD-03, flake yang sudah dikenal, keduanya lulus saat dijalankan sendiri); `heavy pnpm test:e2e` 18 lulus, 1 dilewati. Architect (K) atas diff migrasi: satu temuan nyata (trigger 0239) dan dua kosmetik, semua dibetulkan.
 - Ukuran: sesi 4,92 juta unit biaya total, batch48b kira-kira 2,4 juta (utama Sonnet, subagent: 3 Explore, 1 test-runner, 1 architect Opus); 5 subagent, puncak 3 bersamaan.
 - Belum: batch48c (fe-small-tests, u37u3, fe-badge-theme, tenant-config-export, print-agent) menunggu perintah CTO.
+
+## fix-419 gabung meja (legend-mgavf), 11 Nov 2026
+- Cabang `fix/codex-419-table-merge`. `table-session-operations.service.ts`: merge mengunci order kedua sesi (urut id, FOR UPDATE) sebelum cek pembayaran, jadi tender POS yang commit saat merge terlihat dan merge ditolak. Biaya selisih swap terbuka (`order_issue_charges`, status open) ikut dipindah ke sesi tujuan dalam transaksi yang sama. Guard sesi dibayar sebagian tidak diubah (pesan sudah jelas).
+- Test baru `table-session-merge-hardening.test.ts` (6 test): gagal-dulu pada service lama (4 dari 4 untuk temuan 1 dan 2), lulus sesudah. Gate: tsc api hijau, eslint 0, prettier bersih, 44 test area lulus.
+- Architect (xhigh, uang): merge disetujui, tanpa temuan. Temuan di luar diff: `moveSessionItemsOperation` punya race yang sama (cek bayar L963 sebelum lock order L1002), perlu kartu sendiri.
+- Subagent: 4 (2 Explore, test-writer, implementer) + 1 architect, puncak 4 bersamaan.

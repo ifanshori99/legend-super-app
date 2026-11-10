@@ -44,7 +44,7 @@ import {
   tableSessions,
   tables,
 } from "../db/schema";
-import { orderIssues } from "../db/schema/kds-issues";
+import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues";
 import { posOrderTenders } from "../db/schema/pos-order";
 import { reservationTables } from "../db/schema/reservation";
 import { withTenant } from "../db/tenant";
@@ -563,6 +563,22 @@ export async function mergeTableSessionsOperation(
         };
     }
 
+    // Lock the orders of both sessions (ascending order id, the same order
+    // every order writer uses) BEFORE reading what is paid: a POS tender that
+    // commits while the merge runs waits here, so the payment check below sees
+    // it and a merge never moves an order whose bill just changed.
+    const lockedOrders = await tx
+      .select()
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          inArray(orders.tableSessionId, [target.id, source.id]),
+        ),
+      )
+      .orderBy(asc(orders.id))
+      .for("update");
+
     const targetBill = await paidOf(tx, context, target.id);
     const sourceBill = await paidOf(tx, context, source.id);
     assertSessionsCanMerge({
@@ -585,16 +601,9 @@ export async function mergeTableSessionsOperation(
         "CONFLICT",
         "Sesi dari reservasi beberapa meja tidak dapat digabung; pecah reservasinya dulu.",
       );
-    const moved = await tx
-      .select()
-      .from(orders)
-      .where(
-        and(
-          eq(orders.tenantId, tenantId),
-          eq(orders.tableSessionId, source.id),
-        ),
-      )
-      .for("update");
+    const moved = lockedOrders.filter(
+      (order) => order.tableSessionId === source.id,
+    );
     const liveOrders = moved.filter((order) => order.status !== "voided");
     assertSamePricingMode([
       liveOrders,
@@ -642,6 +651,19 @@ export async function mergeTableSessionsOperation(
             ),
           ),
         );
+
+    // An open dearer-swap charge rides on the source session; without this it
+    // would be lost when the source closes below.
+    await tx
+      .update(orderIssueCharges)
+      .set({ tableSessionId: target.id, updatedAt: now })
+      .where(
+        and(
+          eq(orderIssueCharges.tenantId, tenantId),
+          eq(orderIssueCharges.tableSessionId, source.id),
+          eq(orderIssueCharges.status, "open"),
+        ),
+      );
 
     // Guests of the source join the shared bill; a device already in the
     // target stays one participant (unique device per session).
