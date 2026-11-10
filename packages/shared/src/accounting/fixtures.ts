@@ -941,6 +941,13 @@ const taxReports = [
     finalizedBy: finance,
     finalizedAt: "2026-11-04T11:10:00.000Z",
     exportedAt: "2026-11-04T11:12:00.000Z",
+    revisionNo: 0,
+    supersedesId: null,
+    supersededById: null,
+    supersededAt: null,
+    correctionReason: null,
+    fiscalPeriodVersion: 1,
+    isCurrent: true,
   }),
   taxReportSchema.parse({
     id: fixedId("7a000000", 2),
@@ -969,6 +976,13 @@ const taxReports = [
     finalizedBy: null,
     finalizedAt: null,
     exportedAt: null,
+    revisionNo: null,
+    supersedesId: null,
+    supersededById: null,
+    supersededAt: null,
+    correctionReason: null,
+    fiscalPeriodVersion: 1,
+    isCurrent: false,
   }),
 ];
 
@@ -1328,6 +1342,9 @@ function draftDistributionRun(input: {
     adjustsRunId: input.adjustsRunId ?? null,
     adjustmentReason: input.adjustmentReason ?? null,
     reversalJournalEntryId: null,
+    unabsorbedIdr: 0,
+    carryDeductedIdr: calc.carryDeductedIdr,
+    carryDeductions: [],
   });
 }
 

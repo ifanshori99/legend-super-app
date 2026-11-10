@@ -1,6 +1,6 @@
 // Apology vouchers of the failed-item recovery flow (legend-4qu, ORD-08,
 // ORD-09; contract @starter/shared/qr-order `apologyVoucherSchema`, shipped as
-// migration 0214).
+// migration 0212).
 //
 // One row = one apology voucher issued by the system (the guest chose a
 // voucher for a failed paid item) or by staff (`order.apology_voucher.issue`),

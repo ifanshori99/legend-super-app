@@ -8,20 +8,28 @@ import {
 } from "../packages/shared/src/accounting/index.ts";
 
 describe("coretaxExportFileName", () => {
-  test("builds coretax-<type>-<period>.xml for every report type", () => {
+  test("builds coretax-<type>-<period>-r<n>.xml for every report type", () => {
     for (const type of TAX_REPORT_TYPES)
       assert.equal(
-        coretaxExportFileName(type, "2026-03"),
-        `coretax-${type}-2026-03.xml`,
+        coretaxExportFileName(type, "2026-03", 0),
+        `coretax-${type}-2026-03-r0.xml`,
       );
   });
 
   test("output only uses [a-z0-9-] before the .xml extension and stays short", () => {
     for (const type of TAX_REPORT_TYPES) {
-      const name = coretaxExportFileName(type, "2026-12");
+      const name = coretaxExportFileName(type, "2026-12", 1);
       assert.match(name, /^[a-z0-9-]+\.xml$/);
       assert.ok(name.length <= 40);
     }
+  });
+
+  test("accepts every revision the smallint column can hold (0..32767)", () => {
+    assert.equal(
+      coretaxExportFileName("ppn", "2026-03", 32767),
+      "coretax-ppn-2026-03-r32767.xml",
+    );
+    assert.throws(() => coretaxExportFileName("ppn", "2026-03", 32768));
   });
 
   test("rejects unknown type and malformed period", () => {
@@ -41,7 +49,7 @@ describe("coretaxExportFileName", () => {
     ];
     for (const [type, period] of invalid)
       assert.throws(
-        () => coretaxExportFileName(type, period),
+        () => coretaxExportFileName(type, period, 0),
         `${String(type)} / ${String(period)}`,
       );
   });

@@ -16,15 +16,22 @@ import {
 } from "@starter/shared/core";
 import { AccessError } from "@starter/shared/access";
 import {
+  integrationProviderSchema,
+  isIntegrationProviderAvailable,
+} from "@starter/shared/platform";
+import {
   paymentMethodSchema,
   type PaymentMethod,
 } from "@starter/shared/payment";
 import { and, asc, eq, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
-import { paymentRoutingRules } from "../db/schema";
+import { paymentRoutingRules, tenantIntegrations, tenants } from "../db/schema";
 import { withTenant } from "../db/tenant";
+import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
+import { registeredGatewayProviders } from "./payment-gateway";
+import { isPlatformGatewayEnabled } from "./platform-payment-gateway.service";
 import { assertPaymentPermission } from "./payment-support";
 import type { Tx } from "./permission-resolver";
 
@@ -137,6 +144,98 @@ export async function resolveRoutingRule(
   };
 }
 
+export type ProviderRoutability = {
+  /** An adapter is registered in this deployment. */
+  readonly registered: boolean;
+  /** Super Admin switched the gateway on. */
+  readonly platformEnabled: boolean;
+  /** The tenant's package lists the gateway (`integrationProviders`). */
+  readonly tenantAllowed: boolean;
+  /** An active integration row serves this scope. */
+  readonly integrated: boolean;
+};
+
+/**
+ * What stands between a rule and `provider` (sub-302 D12). An outlet rule
+ * needs an active outlet row or an active tenant-wide row (the same pick as
+ * `resolveIntegration`); a tenant-wide rule needs an active tenant-wide row or
+ * at least one active outlet row. Fails closed on unreadable tenant flags.
+ */
+export async function providerRoutability(
+  tx: Tx,
+  context: ScopedTenantContext,
+  provider: string,
+  outletId: string | null,
+): Promise<ProviderRoutability> {
+  const registered = registeredGatewayProviders().includes(provider);
+  const platformEnabled = await isPlatformGatewayEnabled(provider);
+  const known = integrationProviderSchema.safeParse(provider);
+  const [tenant] = await tx
+    .select({ featureFlags: tenants.featureFlags })
+    .from(tenants)
+    .where(eq(tenants.id, context.tenant.tenantId))
+    .limit(1);
+  const tenantAllowed =
+    known.success &&
+    isIntegrationProviderAvailable(tenant?.featureFlags, known.data);
+  // A provider outside the integration catalog can have no integration row.
+  if (!known.success)
+    return { registered, platformEnabled, tenantAllowed, integrated: false };
+  const rows = await tx
+    .select({ outletId: tenantIntegrations.outletId })
+    .from(tenantIntegrations)
+    .where(
+      and(
+        eq(tenantIntegrations.tenantId, context.tenant.tenantId),
+        eq(tenantIntegrations.provider, known.data),
+        eq(tenantIntegrations.status, "active"),
+      ),
+    );
+  const wanted = outletId?.toLowerCase() ?? null;
+  const integrated = rows.some((row) =>
+    wanted === null
+      ? true
+      : row.outletId === null || row.outletId.toLowerCase() === wanted,
+  );
+  return { registered, platformEnabled, tenantAllowed, integrated };
+}
+
+/**
+ * Write-time gate for an ENABLED rule (sub-302 D12): the provider and its
+ * fallback must be registered, platform-enabled, allowed for the tenant and
+ * backed by an active integration; the fallback must differ from the provider.
+ * Tenant-allowed is re-checked at intent time too (payment-gateway-select.ts):
+ * a later package change does not rewrite rules (PAY-05).
+ */
+export async function assertRoutableProvider(
+  tx: Tx,
+  context: ScopedTenantContext,
+  provider: string,
+  outletId: string | null,
+  fallbackProvider: string | null,
+): Promise<void> {
+  const refuse = (reason: string): never => {
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      `GATEWAY_NOT_AVAILABLE: ${reason}`,
+    );
+  };
+  if (fallbackProvider !== null && fallbackProvider === provider)
+    refuse("The fallback gateway must differ from the main gateway.");
+  for (const candidate of fallbackProvider === null
+    ? [provider]
+    : [provider, fallbackProvider]) {
+    const found = await providerRoutability(tx, context, candidate, outletId);
+    if (!found.registered) refuse(`${candidate} has no adapter.`);
+    if (!found.platformEnabled) refuse(`${candidate} is switched off.`);
+    if (!found.tenantAllowed)
+      refuse(`${candidate} is not in this tenant's package.`);
+    if (!found.integrated)
+      refuse(`${candidate} has no active integration for this scope.`);
+  }
+}
+
 export async function listRoutingRules(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -190,6 +289,15 @@ export async function upsertRoutingRule(
       throw new AccessError(
         "PERMISSION_DENIED",
         "Tenant-wide gateway routing needs a tenant-wide role.",
+      );
+
+    if (parsed.enabled)
+      await assertRoutableProvider(
+        tx,
+        context,
+        parsed.provider,
+        parsed.outletId,
+        parsed.fallbackProvider,
       );
 
     const existingRows = await tx

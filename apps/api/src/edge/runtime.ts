@@ -62,6 +62,12 @@ import {
   registerPosDeferredEdgeApplier,
 } from "./deferred-event-applier.ts";
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
+import { registerAttendanceLoggedEdgeApplier } from "./attendance-logged-applier.ts";
+import { registerWifiQuotaEdgeApplier } from "./wifi-quota-applier.ts";
+import {
+  startWifiQuotaQueueWorker,
+  type WifiQuotaWorkerHandle,
+} from "./wifi-quota-queue-worker.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
@@ -77,6 +83,17 @@ import {
   EdgeCloudHttpError,
 } from "./cloud-http.ts";
 import { createStaffPinPull } from "./staff-pin-pull.ts";
+import {
+  activateEdgePepperRegistry,
+  edgeStaffPinPepperContiguous,
+  installEdgeStaffPinPeppers,
+} from "./staff-pin-pepper-registry.ts";
+import {
+  deriveEdgePepperSealKey,
+  loadEdgePeppers,
+  saveEdgePeppers,
+} from "./staff-pin-pepper-store.ts";
+import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
 import { startEdgeMasterSyncLoop } from "./master-sync.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
@@ -86,6 +103,9 @@ import {
 } from "./link-client.ts";
 import type { LinkScope } from "./link-peer.ts";
 import { LINK_CLOSE } from "./protocol.ts";
+import { recordUploaderRejection } from "./selfie-health.ts";
+import { startEdgeSelfieSweep } from "./selfie-retention.ts";
+import { createEdgeSelfieUploader } from "./selfie-uploader.ts";
 import { createEdgeLinkServer, type EdgeLinkIdentity } from "./link-server.ts";
 import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
 import { createDefaultWifiProvider } from "./wifi/registry.ts";
@@ -107,6 +127,10 @@ export const EDGE_REQUIRED_TABLES = [
   "edge_sync_conflicts",
   "edge_pull_checkpoints",
   "wifi_device_grants",
+  "wifi_quota_apply_queue",
+  // legend-hwn02: the edge QR display reads the day keys; a missing table must
+  // refuse boot (assertEdgeSchemaReady) instead of failing each request.
+  "edge_attendance_qr_keys",
 ] as const;
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */
@@ -133,6 +157,10 @@ function isRejectedCursor(error: unknown): boolean {
 
 /** Longest wait between device-registry pulls while the cloud is failing. */
 const MIN_MAX_PULL_BACKOFF_MS = 300_000;
+// How long boot waits for the first people snapshot before it carries on (the
+// pull keeps running in the background; an offline node never blocks boot).
+const BOOT_PEOPLE_SNAPSHOT_WAIT_MS = 10_000;
+
 // legend-6xcy: how often the edge re-pulls the cloud masters.
 const EDGE_MASTER_SYNC_INTERVAL_MS = 5 * 60_000;
 
@@ -614,9 +642,17 @@ export async function startEdgeRuntime(
     registryPuller = null;
     return { stop: async () => {} };
   }
+  // legend-ideif: the root pepper must never be on an edge box (a stolen box
+  // would derive every tenant's pepper). config/env.ts refuses it too; this
+  // guard covers a `source` that is not process.env. Names only, no value.
+  if (source.STAFF_PIN_PEPPER !== undefined && source.STAFF_PIN_PEPPER !== "")
+    throw new EdgeBootError(
+      "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the tenant pepper over the sync.",
+    );
   await assertEdgeSchemaReady();
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
   registerQrOrderEdgeApplier();
+  registerWifiQuotaEdgeApplier();
   // Section D (legend-khu5): first boot provisions the node from its bundle.
   await bootstrapEdgeNodeIfNeeded(config);
   let local: Awaited<ReturnType<typeof ensureLocalEdgeNode>>;
@@ -634,6 +670,26 @@ export async function startEdgeRuntime(
   }
   const identity = { context: local.context, scope: local.scope };
   state = { edgeMode: true, identity, link: disconnected };
+  // legend-ideif: from here on pin hashing uses only the tenant peppers the
+  // cloud sent (none yet = fail closed). Restore the sealed ones from the
+  // database so a restart verifies pins offline; rows sealed under a rotated
+  // credential do not open and are fetched again on the next sync.
+  const pepperSealKey = deriveEdgePepperSealKey(
+    config.credential.split(".")[4] ?? "",
+  );
+  activateEdgePepperRegistry(local.scope.tenantId);
+  installEdgeStaffPinPeppers(
+    local.scope.tenantId,
+    [
+      ...(
+        await loadEdgePeppers(
+          local.context,
+          local.scope.edgeNodeId,
+          pepperSealKey,
+        )
+      ).entries(),
+    ].map(([version, pepper]) => ({ version, pepper })),
+  );
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
@@ -757,6 +813,42 @@ export async function startEdgeRuntime(
   registryPuller = puller;
   // Not awaited: boot never waits for, or fails on, the cloud.
   puller.start();
+  // People snapshot (users, roles, employees, shifts; design
+  // hris-edge-replication.md 3.1). Started BEFORE the staff PIN pull: a PIN
+  // record needs its user row. A standby pulls too. Boot waits a bounded time
+  // for the first pull so the PINs find their users; offline, it moves on.
+  const peoplePuller = createPeopleSnapshotPuller({
+    config: { cloudUrl: config.cloudUrl, credential: config.credential },
+    intervalMs: config.peopleSyncIntervalMs,
+    staleAfterMs: Math.max(
+      config.deviceSyncStaleAfterMs,
+      2 * config.peopleSyncIntervalMs,
+    ),
+    maxBackoffMs: Math.max(
+      config.peopleSyncIntervalMs,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onStaleChange: (stale) => {
+      if (stale)
+        logger.error(
+          "Edge people snapshot is stale; staff changes may be missing",
+        );
+      else logger.info("Edge people snapshot is fresh again");
+    },
+    // Code only: the snapshot holds personal data.
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge people snapshot pull failed"),
+  });
+  peoplePuller.start();
+  let bootWait: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    peoplePuller.runOnce(),
+    new Promise<void>((resolve) => {
+      bootWait = setTimeout(resolve, BOOT_PEOPLE_SNAPSHOT_WAIT_MS);
+      bootWait.unref();
+    }),
+  ]);
+  clearTimeout(bootWait);
   // legend-yvhw8: staff PINs down-sync. Same schedule, backoff and staleness
   // as the registry, its own checkpoint. A standby pulls too: it needs the
   // PINs to take over for a failed primary. Stale PINs are not fatal (the
@@ -767,7 +859,27 @@ export async function startEdgeRuntime(
       fetchPage: createStaffPinRecordsFetcher({
         cloudUrl: config.cloudUrl,
         credential: config.credential,
+        pepperHave: edgeStaffPinPepperContiguous,
       }),
+      onPeppers: async (peppers) => {
+        const decoded = peppers.map(({ version, pepper }) => ({
+          version,
+          pepper: Buffer.from(pepper, "base64"),
+        }));
+        // Sealed in the database first, then live: a crash in between only
+        // costs one more delivery.
+        await saveEdgePeppers(
+          local.context,
+          local.scope.edgeNodeId,
+          pepperSealKey,
+          decoded,
+        );
+        installEdgeStaffPinPeppers(local.scope.tenantId, decoded);
+        logger.info(
+          { versions: decoded.map((entry) => entry.version) },
+          "Edge staff pin peppers updated",
+        );
+      },
       onRestart: () =>
         logger.warn("Edge staff pin cursor refused; pulling from the start"),
     }),
@@ -792,6 +904,29 @@ export async function startEdgeRuntime(
       logger.warn(safeError(error), "Edge staff pin pull failed"),
   });
   pinPuller.start();
+  // legend-hubzo: sealed selfies go up to the cloud, one file at a time. Both
+  // roles run it: a node with no rows is idle, and the cloud answers 200 for a
+  // file it already holds. Failures are logged by class only; a selfie never
+  // reaches a log line.
+  const selfieUploader = createEdgeSelfieUploader({
+    context: local.context,
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+    intervalMs: env.EDGE_SELFIE_UPLOAD_INTERVAL_MS,
+    maxBackoffMs: Math.max(
+      env.EDGE_SELFIE_UPLOAD_INTERVAL_MS,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onRejected: () => recordUploaderRejection(),
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge selfie upload failed"),
+  });
+  selfieUploader.start();
+  const selfieSweep = startEdgeSelfieSweep({
+    context: local.context,
+    dir: env.EDGE_SELFIE_DIR,
+    maxAgeDays: env.EDGE_SELFIE_MAX_AGE_DAYS,
+  });
   // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
   // accounts. No tick at start: a fresh bootstrap (or missing masters) syncs at
   // boot, a restarted node first refreshes one interval later. A failure is logged by class only and the loop keeps
@@ -824,17 +959,30 @@ export async function startEdgeRuntime(
     // fail-closed (503) and the cause is logged by name/code only.
     logger.error(safeError(error), "Wi-Fi agent failed to start");
   }
+  // legend-oeqme: pushes the queued cloud quota changes to the controller,
+  // outside the link receive transaction. Every role prunes the queue; only
+  // the primary drains it, like the agent: a standby never talks to the
+  // controller.
+  const wifiQuotaWorker: WifiQuotaWorkerHandle = startWifiQuotaQueueWorker({
+    context: local.context,
+    edgeNodeId: local.scope.edgeNodeId,
+    drain: config.role === "primary",
+  });
   return {
     async stop() {
       clearInterval(sweep);
+      await wifiQuotaWorker.stop();
       await wifi?.stop();
       stopPrune();
       // Torn down together: a pull stuck in a slow local write must not hold
       // the link and the wakeup listener open during shutdown.
       await Promise.all([
         puller.stop(),
+        peoplePuller.stop(),
         pinPuller.stop(),
         masterSync.stop(),
+        selfieUploader.stop(),
+        selfieSweep.stop(),
         stopWakeups(),
         client.stop(),
       ]);
@@ -862,6 +1010,8 @@ export async function registerEdgeLink(
     throw new EdgeBootError("registerEdgeLink runs on the cloud only");
   // legend-s4r6: edge -> cloud appliers, before any edge can connect.
   registerStockMovedEdgeApplier();
+  // legend-wh71: offline attendance.logged (WS-10) recorded idempotently.
+  registerAttendanceLoggedEdgeApplier();
   // legend-9fhs: POS (WS-04) events parked in edge_deferred_events (no stall).
   registerPosDeferredEdgeApplier();
   // legend-kyie: pos_override.* / staff_pin.* applied (and parked ones drained).

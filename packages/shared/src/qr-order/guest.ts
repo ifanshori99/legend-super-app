@@ -38,6 +38,7 @@ import {
   orderIssueTypeSchema,
   orderItemIdSchema,
   paymentModeSchema,
+  sessionBillChargeSchema,
   signedQrTokenSchema,
   tableIdSchema,
   tableSessionIdSchema,
@@ -283,16 +284,16 @@ export const guestPaymentTargetSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("order"), orderId: orderIdSchema }),
   z.strictObject({ kind: z.literal("split"), billSplitId: billSplitIdSchema }),
   z.strictObject({ kind: z.literal("bill") }),
+  /** The dearer-swap difference of a failed item (legend-i83ls). */
+  z.strictObject({ kind: z.literal("issue_charge"), chargeId: uuidSchema }),
 ]);
 export type GuestPaymentTarget = z.infer<typeof guestPaymentTargetSchema>;
 
-export const createGuestPaymentInputSchema = clientInputSchema({
-  target: guestPaymentTargetSchema,
-  method: guestPaymentMethodSchema,
-  /** Required for `va` (validated against the provider list); none for QRIS. */
-  bankCode: guestPaymentBankCodeSchema.nullable().optional(),
-  idempotencyKey: idempotencyKeySchema,
-}).superRefine((input, ctx) => {
+/** A VA names a bank; QRIS takes none. */
+function requireBankForVaOnly(
+  input: { method: "qris" | "va"; bankCode?: string | null },
+  ctx: z.RefinementCtx,
+): void {
   const hasBank = input.bankCode !== undefined && input.bankCode !== null;
   if ((input.method === "va") !== hasBank)
     ctx.addIssue({
@@ -303,7 +304,15 @@ export const createGuestPaymentInputSchema = clientInputSchema({
           ? "Choose a bank for the virtual account"
           : "QRIS does not take a bank",
     });
-});
+}
+
+export const createGuestPaymentInputSchema = clientInputSchema({
+  target: guestPaymentTargetSchema,
+  method: guestPaymentMethodSchema,
+  /** Required for `va` (validated against the provider list); none for QRIS. */
+  bankCode: guestPaymentBankCodeSchema.nullable().optional(),
+  idempotencyKey: idempotencyKeySchema,
+}).superRefine(requireBankForVaOnly);
 
 /** ORD-02: `paid` arrives from the verified gateway webhook, never the client. */
 export const guestPaymentSchema = z
@@ -353,6 +362,34 @@ export const createGuestPayment = defineEndpoint({
   path: "/api/table-sessions/:sessionId/payments",
   params: z.strictObject({ sessionId: tableSessionIdSchema }),
   body: createGuestPaymentInputSchema,
+  response: dataResponseSchema(guestPaymentSchema),
+});
+
+/**
+ * legend-i83ls: the guest pays the swap difference of one charge. The charge
+ * is in the path, so the body has no target.
+ */
+export const createIssueChargePaymentInputSchema = clientInputSchema({
+  method: guestPaymentMethodSchema,
+  bankCode: guestPaymentBankCodeSchema.nullable().optional(),
+  idempotencyKey: idempotencyKeySchema,
+}).superRefine(requireBankForVaOnly);
+
+export const listSessionIssueCharges = defineEndpoint({
+  method: "GET",
+  path: "/api/table-sessions/:sessionId/issue-charges",
+  params: z.strictObject({ sessionId: tableSessionIdSchema }),
+  response: dataResponseSchema(z.array(sessionBillChargeSchema)),
+});
+
+export const createIssueChargePayment = defineEndpoint({
+  method: "POST",
+  path: "/api/table-sessions/:sessionId/issue-charges/:chargeId/payments",
+  params: z.strictObject({
+    sessionId: tableSessionIdSchema,
+    chargeId: uuidSchema,
+  }),
+  body: createIssueChargePaymentInputSchema,
   response: dataResponseSchema(guestPaymentSchema),
 });
 
@@ -439,6 +476,17 @@ export const getSplitClaim = defineEndpoint({
     sessionId: tableSessionIdSchema,
     splitId: billSplitIdSchema,
   }),
+  response: dataResponseSchema(splitClaimSchema),
+});
+
+/**
+ * legend-ia54l: open the claim code with the claim token alone (header
+ * `Authorization: Bearer <claimToken>`), up to `claimableUntil`, also after the
+ * table session is closed. Unknown, used, expired or voided: 404.
+ */
+export const getSplitClaimByToken = defineEndpoint({
+  method: "GET",
+  path: "/api/table-sessions/split-claims/current",
   response: dataResponseSchema(splitClaimSchema),
 });
 

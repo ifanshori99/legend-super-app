@@ -206,7 +206,7 @@ async function rowCount(ctx: Ctx): Promise<number> {
 }
 
 async function seedStaff(ctx: Ctx) {
-  const staff = await actor(ctx, ["self.profile.view"], "Loan policy staff");
+  const staff = await actor(ctx, ["self.loan.request"], "Loan policy staff");
   const id = randomUUID();
   createdEmployees.push({ id, tenantId: ctx.tenant.tenantId });
   await asTenant(ctx.tenant.tenantId, (db) =>

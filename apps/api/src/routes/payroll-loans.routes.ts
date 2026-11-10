@@ -4,7 +4,7 @@
 //   payrollMyLoansRouter  mounted at `/api/hris/me/loans` (own rows, HR-01)
 // The tenant comes from the server-minted context (TEN-02). The HR list takes
 // `payroll.view` or `hr.loan.approve`; deciding and disbursing `hr.loan.approve`.
-// The self routes need `self.profile.view` (no kasbon self code exists) and
+// The self routes need `self.loan.request` (legend-krvk7; 403 without it) and
 // resolve the employee from the session, never from input. The services
 // re-check every right inside the tenant transaction.
 //
@@ -71,7 +71,7 @@ function requireAnyTenantPermission(
 }
 
 /**
- * `self.profile.view` is granted at outlet scope for staff, so a tenant-wide
+ * `self.loan.request` is granted at outlet scope for staff, so a tenant-wide
  * target does not fit: mint the narrowest context the caller reaches (TEN-03).
  * Same logic as the HRIS gate (routes/hris-leave.routes.ts requireHris).
  */
@@ -195,7 +195,7 @@ payrollMyLoansRouter.use(
 
 payrollMyLoansRouter.get(
   "/",
-  requireSelf("self.profile.view"),
+  requireSelf("self.loan.request"),
   async (req, res) => {
     const query = listMyLoans.query.parse(req.query);
     res.json(
@@ -206,7 +206,7 @@ payrollMyLoansRouter.get(
 
 payrollMyLoansRouter.post(
   "/",
-  requireSelf("self.profile.view"),
+  requireSelf("self.loan.request"),
   jsonBody,
   async (req, res) => {
     const body = createMyLoan.body.parse(req.body);

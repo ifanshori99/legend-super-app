@@ -31,7 +31,7 @@
 //   guarded by `status = 'open'`, so two concurrent choices end in one winner
 //   (the other replays the same choice or ends in 409).
 
-import { and, asc, eq, inArray, like, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   CoreError,
@@ -644,17 +644,27 @@ async function storeFailedItem(
     if (!snapshot.allows(HANDLE, { type: "outlet", id: line.outletId }))
       throw deniedOutlet();
 
-    const idempotencyKey = `recovery:${orderItemId}:${input.type}`;
-    const [replay] = await tx
+    const baseKey = `recovery:${orderItemId}:${input.type}`;
+    // The newest report of this line and type is the replay. One whose manual
+    // refund was rejected is final and gave nothing back: a new report then
+    // opens a fresh issue under the next key `<base>:<n>` (legend-wumm8).
+    const previous = await tx
       .select()
       .from(orderIssues)
       .where(
         and(
           eq(orderIssues.tenantId, tenantId),
-          eq(orderIssues.idempotencyKey, idempotencyKey),
+          or(
+            eq(orderIssues.idempotencyKey, baseKey),
+            like(orderIssues.idempotencyKey, `${baseKey}:%`),
+          ),
         ),
-      );
-    if (replay) return toIssue(replay);
+      )
+      .orderBy(desc(orderIssues.createdAt), desc(orderIssues.id));
+    const [latest] = previous;
+    if (latest && latest.refundRejectedAt === null) return toIssue(latest);
+    const idempotencyKey =
+      latest === undefined ? baseKey : `${baseKey}:${previous.length + 1}`;
 
     if (
       !isPaidOrder({

@@ -35,6 +35,9 @@ export function createStorageRouter(options: {
   storage: UploadDependencies["storage"];
   scanner: UploadDependencies["scanner"];
   resolveRequest: ResolveRequest;
+  /** Replaces `uploadStorage`. The edge passes the sealing upload here
+   * (services/edge-selfie.service.ts); the cloud leaves it unset. */
+  upload?: typeof uploadStorage;
 }) {
   const router = Router();
   router.use(requireAuth, requireTrustedOrigin);
@@ -86,7 +89,7 @@ export function createStorageRouter(options: {
         throw new HttpError(422, "VALIDATION_ERROR", "A file is required.");
       const resolved = await options.resolveRequest(req);
       assertTrustedScopedContext(resolved.context);
-      const data = await uploadStorage(
+      const data = await (options.upload ?? uploadStorage)(
         options.database,
         resolved.context,
         metadata,

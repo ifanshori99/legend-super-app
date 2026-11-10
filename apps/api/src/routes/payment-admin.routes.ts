@@ -49,6 +49,16 @@ function byOutlet(
 }
 const edcQuery = byOutlet("payment.edc.manage", (req) => req.query.outletId);
 const edcBody = byOutlet("payment.edc.manage", (req) => req.body?.outletId);
+// Routing picks the gateway that receives the money: org.settings.manage
+// (sub-302 D14), not the EDC permission.
+const settingsQuery = byOutlet(
+  "org.settings.manage",
+  (req) => req.query.outletId,
+);
+const settingsBody = byOutlet(
+  "org.settings.manage",
+  (req) => req.body?.outletId,
+);
 const reconcileQuery = byOutlet(
   "payment.reconcile",
   (req) => req.query.outletId,
@@ -64,7 +74,7 @@ const reconcileRecord = requireMenuPermission("payment.reconcile");
 
 paymentAdminRouter.get(
   route(contract.getPaymentRouting.path),
-  edcQuery,
+  settingsQuery,
   async (req, res) => {
     res.json({
       data: await config.getPaymentRouting(
@@ -78,7 +88,7 @@ paymentAdminRouter.get(
 paymentAdminRouter.put(
   route(contract.updatePaymentRoute.path),
   jsonBody,
-  edcBody,
+  settingsBody,
   async (req, res) => {
     res.json({
       data: await config.updatePaymentRoute(

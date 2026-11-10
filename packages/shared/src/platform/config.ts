@@ -26,6 +26,10 @@ import {
   z,
 } from "../core/index.ts";
 import { textOverrideSetSchema } from "../text/index.ts";
+import {
+  configBundleReferenceIssues,
+  configSectionItemIssues,
+} from "./config-codecs.ts";
 import { configImportIdSchema, configTemplateIdSchema } from "./ids.ts";
 import { featureFlagsSchema } from "./modules.ts";
 import { tenantLimitsSchema } from "./limits.ts";
@@ -76,42 +80,56 @@ export const genericSectionSchema = z
     { path: ["items"], message: "Duplicate item key" },
   );
 
-export const configBundleSchema = z.strictObject({
-  formatVersion: z.literal(CONFIG_BUNDLE_FORMAT_VERSION),
-  exportedAt: isoDateTimeSchema,
-  sections: z.strictObject({
-    modules: z
-      .strictObject({
-        version: z.literal(1),
-        featureFlags: featureFlagsSchema,
-        limits: tenantLimitsSchema,
-      })
-      .optional(),
-    text_overrides: z
-      .strictObject({
-        version: z.literal(1),
-        sets: z.array(textOverrideSetSchema),
-      })
-      .optional(),
-    theme: z
-      .strictObject({
-        version: z.literal(1),
-        tokens: themeTokensSchema,
-        fontFamily: z.enum(BRAND_FONTS),
-        corners: z.enum(CORNER_STYLES),
-      })
-      .optional(),
-    ...(Object.fromEntries(
-      GENERIC_CONFIG_SECTIONS.map((section) => [
-        section,
-        genericSectionSchema.optional(),
-      ]),
-    ) as Record<
-      GenericConfigSection,
-      z.ZodOptional<typeof genericSectionSchema>
-    >),
-  }),
-});
+export const configBundleSchema = z
+  .strictObject({
+    formatVersion: z.literal(CONFIG_BUNDLE_FORMAT_VERSION),
+    exportedAt: isoDateTimeSchema,
+    sections: z.strictObject({
+      modules: z
+        .strictObject({
+          version: z.literal(1),
+          featureFlags: featureFlagsSchema,
+          limits: tenantLimitsSchema,
+        })
+        .optional(),
+      text_overrides: z
+        .strictObject({
+          version: z.literal(1),
+          sets: z.array(textOverrideSetSchema),
+        })
+        .optional(),
+      theme: z
+        .strictObject({
+          version: z.literal(1),
+          tokens: themeTokensSchema,
+          fontFamily: z.enum(BRAND_FONTS),
+          corners: z.enum(CORNER_STYLES),
+        })
+        .optional(),
+      ...(Object.fromEntries(
+        GENERIC_CONFIG_SECTIONS.map((section) => [
+          section,
+          genericSectionSchema.optional(),
+        ]),
+      ) as Record<
+        GenericConfigSection,
+        z.ZodOptional<typeof genericSectionSchema>
+      >),
+    }),
+  })
+  .superRefine((bundle, ctx) => {
+    // Sections whose domain registered a codec (config-codecs.ts) must carry
+    // items its item schema accepts; the rest stay free-form JSON.
+    const itemIssues = GENERIC_CONFIG_SECTIONS.flatMap((section) =>
+      configSectionItemIssues(section, bundle.sections[section]),
+    );
+    // References (role keys, CoA parents) and uniqueness are only checked
+    // once every item is well-formed, so a stored template is importable.
+    for (const issue of itemIssues.length > 0
+      ? itemIssues
+      : configBundleReferenceIssues(bundle))
+      ctx.addIssue({ code: "custom", ...issue });
+  });
 export type ConfigBundle = z.infer<typeof configBundleSchema>;
 
 /**

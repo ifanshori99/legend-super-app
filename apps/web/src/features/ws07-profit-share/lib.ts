@@ -11,6 +11,7 @@ import {
   effectiveShareAllocationVersion,
   shareAllocationTotalBp,
   type DistributionFrequency,
+  type DistributionLine,
   type DistributionLinePaymentStatus,
   type DistributionPolicy,
   type DistributionRun,
@@ -28,6 +29,30 @@ import {
 } from "@starter/shared/accounting";
 import { formatNumber } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
+import type { PermissionCode } from "@starter/shared/access";
+
+/**
+ * Founder rule Q84: changing share percentages (create, edit, submit a version)
+ * is its own permission, apart from posting journals and from approving. Fails
+ * closed without access. The API re-checks it.
+ */
+export function canChangeShareAllocation(
+  access: { readonly permissions: readonly PermissionCode[] } | undefined,
+): boolean {
+  return (
+    access?.permissions.includes("profit_share.share_allocation.change") ??
+    false
+  );
+}
+
+/** Approving or rejecting a share version: `profit_share.distribution.approve`. */
+export function canApproveShareAllocation(
+  access: { readonly permissions: readonly PermissionCode[] } | undefined,
+): boolean {
+  return (
+    access?.permissions.includes("profit_share.distribution.approve") ?? false
+  );
+}
 
 /** SH-03: 10,000 bp = 100%; the API sends basis points, never a percentage. */
 export const SHARE_TOTAL_BP = 10_000;
@@ -442,6 +467,16 @@ export function isDistributionLocked(status: DistributionRunStatus): boolean {
 /** Payment recording is the one write an approved run allows. */
 export function canRecordPayments(status: DistributionRunStatus): boolean {
   return status === "approved";
+}
+
+/**
+ * A line whose whole share was taken by carry: Rp0 net, settled on approval,
+ * with nothing to pay and no statement.
+ */
+export function isCarryAbsorbedLine(
+  line: Pick<DistributionLine, "grossIdr" | "carryDeductedIdr">,
+): boolean {
+  return line.grossIdr === 0 && line.carryDeductedIdr > 0;
 }
 
 export type DistributionProgress = {

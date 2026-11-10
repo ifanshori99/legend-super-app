@@ -53,9 +53,11 @@ import { endUserRoleAssignmentsForOffboardingInTx } from "./access.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
+  SYSTEM_ACTOR_ID,
   hrisAuditEntry,
   loadHrisAccess,
   type HrisAccess,
+  type HrisActor,
   type Tx,
 } from "./hris-access.ts";
 import { cancelShiftAssignmentInTx } from "./hris-scheduling-roster.service.ts";
@@ -198,7 +200,7 @@ async function loadForHr(
 async function audit(
   tx: Tx,
   context: ScopedTenantContext,
-  actorUserId: string,
+  actorUserId: string | HrisActor,
   now: Date,
   employee: EmployeeRow,
   offboarding: OffboardingRow,
@@ -495,7 +497,7 @@ async function settleTasks(
   offboardingId: string,
   filter: { categories?: string[]; statuses: ("open" | "blocked")[] },
   to: "done" | "waived",
-  actorUserId: UserId,
+  actorUserId: string,
   reason: string | null,
   now: Date,
 ): Promise<number> {
@@ -519,7 +521,12 @@ async function settleTasks(
       .update(hrisChecklistTasks)
       .set(
         to === "done"
-          ? { status: "done", doneBy: actorUserId, doneAt: now, updatedAt: now }
+          ? {
+              status: "done",
+              doneBy: actorUserId as UserId,
+              doneAt: now,
+              updatedAt: now,
+            }
           : { status: "waived", waiveReason: reason, updatedAt: now },
       )
       .where(
@@ -535,7 +542,7 @@ async function settleTasks(
       fromStatus: task.status,
       toStatus: to,
       reason,
-      actorUserId,
+      actorUserId: actorUserId as UserId,
       createdAt: now,
     });
   }
@@ -619,6 +626,41 @@ export async function revokeOffboardingAccess(
   offboardingId: string,
   canAssignRoles: boolean,
 ): Promise<Offboarding> {
+  return revokeOffboardingAccessAs(
+    context,
+    { type: "user", id: actorUserId },
+    offboardingId,
+    canAssignRoles,
+  );
+}
+
+/**
+ * The scheduled exit-clearance job (`hris-offboarding-jobs.ts`; legend-arj.6).
+ * Same steps and the same EXIT_NOT_DUE guard as the HR click, but no HR
+ * permission check and `canAssignRoles = false`: a leaver who is Owner or
+ * holds a tenant-scoped role rolls back with OFFBOARDING_OWNER /
+ * OFFBOARDING_ADMIN_ROLE and stays open for a human (docs/DECISIONS.md
+ * "WS-10 lifecycle" §2). Audit rows, events and "who" columns record the
+ * system actor.
+ */
+export async function revokeOffboardingAccessAsSystem(
+  context: ScopedTenantContext,
+  offboardingId: string,
+): Promise<Offboarding> {
+  return revokeOffboardingAccessAs(
+    context,
+    { type: "system" },
+    offboardingId,
+    false,
+  );
+}
+
+async function revokeOffboardingAccessAs(
+  context: ScopedTenantContext,
+  actor: HrisActor,
+  offboardingId: string,
+  canAssignRoles: boolean,
+): Promise<Offboarding> {
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     // 1. Same tenant lock as every role-assignment end, before any row lock.
@@ -628,15 +670,28 @@ export async function revokeOffboardingAccess(
     // legend-qr1uv: "now" is read AFTER the lock, for the access check and
     // every write below.
     const now = new Date();
-    const access = await loadHrisAccess(tx, context, actorUserId, now);
-    // 2. The offboarding row; a revoked one returns without writing.
-    const { offboarding } = await loadForHr(
-      tx,
-      context,
-      access,
-      offboardingId,
-      true,
-    );
+    // 2. The offboarding row; a revoked one returns without writing. A user
+    // is authorised as HR of the employee; the system job has no HR access.
+    let offboarding: OffboardingRow;
+    let who: HrisActor;
+    if (actor.type === "user") {
+      const access = await loadHrisAccess(tx, context, actor.id, now);
+      ({ offboarding } = await loadForHr(
+        tx,
+        context,
+        access,
+        offboardingId,
+        true,
+      ));
+      who = { type: "user", id: access.actorUserId };
+    } else {
+      const found = await loadOffboarding(tx, tenantId, offboardingId, true);
+      if (!found) throw notFound();
+      offboarding = found;
+      who = actor;
+    }
+    // Recorded in uuid/text "who" columns: the nil UUID for the system.
+    const whoId = who.type === "user" ? who.id : SYSTEM_ACTOR_ID;
     if (context.outletScope.kind !== "tenant")
       throw new HttpError(
         403,
@@ -677,7 +732,7 @@ export async function revokeOffboardingAccess(
         tx,
         context,
         employee.userId,
-        access.actorUserId,
+        who,
         "offboarding",
         canAssignRoles,
         now,
@@ -777,13 +832,7 @@ export async function revokeOffboardingAccess(
           current.status === "cancelled"
         )
           continue;
-        await cancelShiftAssignmentInTx(
-          tx,
-          context,
-          access.actorUserId,
-          shift.id,
-          now,
-        );
+        await cancelShiftAssignmentInTx(tx, context, who, shift.id, now);
         cancelledShiftIds.push(shift.id);
       }
     }
@@ -807,7 +856,7 @@ export async function revokeOffboardingAccess(
       offboarding.id,
       { categories: ["access_revocation"], statuses: ["open", "blocked"] },
       "done",
-      access.actorUserId,
+      whoId,
       null,
       now,
     );
@@ -824,7 +873,7 @@ export async function revokeOffboardingAccess(
       .set({
         status: "revoked",
         accessRevokedAt: now,
-        accessRevokedBy: access.actorUserId,
+        accessRevokedBy: whoId as UserId,
         revocationResult,
         updatedAt: now,
       })
@@ -838,7 +887,7 @@ export async function revokeOffboardingAccess(
     await audit(
       tx,
       context,
-      access.actorUserId,
+      who,
       now,
       employee,
       row,

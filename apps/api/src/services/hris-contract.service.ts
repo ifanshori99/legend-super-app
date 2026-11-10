@@ -91,6 +91,9 @@ type Page<T> = {
 export type HrisFileSigner = (
   context: ScopedTenantContext,
   storageObjectId: string,
+  /** The caller's tenant transaction, when it has one: sign inside it instead
+   * of opening another pooled connection. */
+  tx?: Tx,
 ) => Promise<string | null>;
 export const noHrisFileSigner: HrisFileSigner = async () => null;
 

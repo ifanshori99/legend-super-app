@@ -20,6 +20,7 @@ import { auth } from "../lib/auth.ts";
 import {
   addCartLine,
   createGuestPayment,
+  createIssueChargePayment,
   createSessionSplits,
   getGuestPayment,
   getGuestPaymentOptions,
@@ -27,12 +28,14 @@ import {
   getSessionBill,
   getSplitClaim,
   getTableSession,
+  listSessionIssueCharges,
   placeQrOrder,
   quoteTableSession,
   removeCartLine,
   updateCartLine,
 } from "@starter/shared/qr-order";
 import { CoreError, idempotencyKeySchema } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -52,6 +55,7 @@ import { guestSessionContext } from "../services/guest-session-scope.ts";
 import {
   createSessionSplits as createSessionSplitsService,
   getSplitClaim as getSplitClaimService,
+  getSplitClaimByToken as getSplitClaimByTokenService,
 } from "../services/bill-split.service.ts";
 import { getMenuSuggestions as getMenuSuggestionsService } from "../services/qr-guest-reads.service.ts";
 import {
@@ -59,6 +63,10 @@ import {
   getGuestPayment as getGuestPaymentService,
   getGuestPaymentOptions as getGuestPaymentOptionsService,
 } from "../services/qr-order-payment.ts";
+import {
+  createIssueChargePayment as createIssueChargePaymentService,
+  listIssueChargesOfSession as listIssueChargesOfSessionService,
+} from "../services/order-recovery-charge-payment.ts";
 
 /**
  * The guest acts inside the host's tenant, reaching only the outlet of the
@@ -85,6 +93,22 @@ const read = [requireTenantContext];
 const write = [requireTenantContext, requireTrustedOrigin];
 
 export const qrOrderRouter = Router();
+
+// legend-ia54l: the claim token alone opens the claim code for 24 hours, also
+// after the table is closed. Registered before "/:sessionId" so the literal
+// segment wins. The guest rate limit on this mount covers it, but guessing is
+// bounded by the IP and tenant buckets only (a new token is a new bearer
+// bucket); the 256-bit token is the real defence. The read is tenant-wide like
+// payment link tokens: no outlet is known before the token is resolved.
+qrOrderRouter.get("/split-claims/current", ...read, async (req, res) => {
+  const rawToken = sessionCredential(req);
+  res.json({
+    data: await getSplitClaimByTokenService(
+      establishScopedTenantContext(getTenantContext(req), { kind: "tenant" }),
+      rawToken,
+    ),
+  });
+});
 
 qrOrderRouter.get("/:sessionId", ...read, async (req, res) => {
   const { sessionId } = getTableSession.params.parse(req.params);
@@ -290,6 +314,41 @@ qrOrderRouter.post(
         await guestContext(req, credential),
         credential,
         sessionId,
+        body,
+      ),
+    });
+  },
+);
+
+// legend-i83ls: the dearer-swap difference owed on this session.
+qrOrderRouter.get("/:sessionId/issue-charges", ...read, async (req, res) => {
+  const { sessionId } = listSessionIssueCharges.params.parse(req.params);
+  const credential = sessionCredential(req);
+  res.json({
+    data: await listIssueChargesOfSessionService(
+      await guestContext(req, credential),
+      credential,
+      sessionId,
+    ),
+  });
+});
+
+qrOrderRouter.post(
+  "/:sessionId/issue-charges/:chargeId/payments",
+  ...write,
+  jsonBody,
+  async (req, res) => {
+    const { sessionId, chargeId } = createIssueChargePayment.params.parse(
+      req.params,
+    );
+    const body = createIssueChargePayment.body.parse(req.body);
+    const credential = sessionCredential(req);
+    res.status(201).json({
+      data: await createIssueChargePaymentService(
+        await guestContext(req, credential),
+        credential,
+        sessionId,
+        chargeId,
         body,
       ),
     });

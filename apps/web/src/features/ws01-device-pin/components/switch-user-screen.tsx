@@ -5,7 +5,6 @@
 import { useCallback, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ShieldCheck, UserRound, UsersRound } from "lucide-react";
-import type { StaffPinSwitch } from "@starter/shared/identity";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { CardShell, CardShellBody } from "@/components/ui/card";
@@ -19,7 +18,7 @@ import {
   useRoster,
   type RosterEntry,
 } from "../storage.ts";
-import { usePinSession } from "../use-pin-session.ts";
+import { usePinSession, type PosSessionStaff } from "../use-pin-session.ts";
 import { LockoutNotice } from "./lockout-notice.tsx";
 import {
   OverrideRequestModal,
@@ -42,14 +41,14 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
   const pickedName = picked && picked !== "other" ? picked.displayName : null;
 
   const accept = useCallback(
-    (result: StaffPinSwitch) =>
+    (result: PosSessionStaff) =>
       picked && picked !== "other" && result.user.id !== picked.userId
         ? t("devicePin.error.mismatch", { name: picked.displayName })
         : null,
     [picked, t],
   );
   const onVerified = useCallback(
-    (result: StaffPinSwitch) => {
+    (result: PosSessionStaff) => {
       const entry = {
         userId: result.user.id,
         displayName: result.user.displayName,
@@ -64,7 +63,11 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
     },
     [t, toast],
   );
+  // POS switch: the PIN also makes this person the device's active cashier
+  // (token for X-Acting-Staff). The KDS station has no acting-staff support
+  // yet, so it keeps the plain PIN check.
   const session = usePinSession({
+    mode: shell === "pos" ? "pos-session" : "verify",
     // The per-staff lockout counts misses for the tile the guest picked.
     userId: picked && picked !== "other" ? picked.userId : null,
     onVerified,

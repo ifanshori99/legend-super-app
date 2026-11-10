@@ -221,6 +221,25 @@ export const updateStockLocationInputSchema = clientInputSchema({
   isActive: z.boolean().optional(),
 });
 
+/**
+ * Tenant-defined units. The code is normalized (trimmed, lowercased) and is
+ * immutable after creation because edge sync keys on it; only the name can be
+ * edited, and never on a system (standard catalog) unit.
+ */
+export const createUomInputSchema = clientInputSchema({
+  code: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^[a-z0-9]{1,10}$/),
+  name: z.string().trim().min(1).max(150),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const updateUomInputSchema = clientInputSchema({
+  name: z.string().trim().min(1).max(150),
+});
+
 export const createInventoryItemAlternateInputSchema = clientInputSchema({
   alternateItemId: inventoryItemIdSchema,
   /** Lower priority wins when a recipe suggests a substitute. */
@@ -564,6 +583,21 @@ export const updateStockLocation = defineEndpoint({
   response: dataResponseSchema(stockLocationSchema),
 });
 
+export const createUom = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/uoms",
+  body: createUomInputSchema,
+  response: dataResponseSchema(uomSchema),
+});
+
+export const updateUom = defineEndpoint({
+  method: "PATCH",
+  path: "/api/inventory/uoms/:uomId",
+  params: z.strictObject({ uomId: uomIdSchema }),
+  body: updateUomInputSchema,
+  response: dataResponseSchema(uomSchema),
+});
+
 export const listInventoryItemAlternates = defineEndpoint({
   method: "GET",
   path: "/api/inventory/items/:itemId/alternates",
@@ -765,6 +799,8 @@ export const inventoryEndpoints = [
   updateInventoryItem,
   createStockLocation,
   updateStockLocation,
+  createUom,
+  updateUom,
   listInventoryItemAlternates,
   createInventoryItemAlternate,
   deleteInventoryItemAlternate,

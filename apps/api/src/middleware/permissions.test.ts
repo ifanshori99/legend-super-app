@@ -46,7 +46,8 @@ function fakeResponse(): Response {
 describe("permission middleware fail-closed getters (legend-tjey)", () => {
   let req: Request;
   beforeEach(() => {
-    req = {} as Request;
+    // A real request always carries `headers` (legend-aruta reads X-Acting-Staff).
+    req = { headers: {} } as unknown as Request;
   });
 
   it("TEN-03 getStationScope throws on a route without requireStationScopePermission", () => {

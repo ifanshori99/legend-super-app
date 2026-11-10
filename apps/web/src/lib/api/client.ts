@@ -2,6 +2,12 @@ import { createIsomorphicFn } from "@tanstack/react-start";
 import { API_URL } from "@/lib/env";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { bearerHeaderFor } from "@/lib/api/credentials";
+import {
+  ACTING_STAFF_HELD_MESSAGE,
+  actingStaffHeaderFor,
+  handleActingStaffRejection,
+} from "@/lib/api/acting-staff";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import type { ApiErrorBody } from "@starter/shared/types";
 import {
   apiBaseUrl,
@@ -73,6 +79,15 @@ export async function apiFetch<T>(
   for (const [key, value] of Object.entries(query ?? {}))
     if (value !== undefined) url.searchParams.set(key, String(value));
 
+  // POS mutation without a live cashier: never send it as the session owner.
+  const actingHeader = actingStaffHeaderFor(path, method);
+  if (actingHeader === null)
+    throw new ApiError(
+      401,
+      ACTING_STAFF_ERROR_CODES.EXPIRED,
+      ACTING_STAFF_HELD_MESSAGE,
+    );
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -83,6 +98,8 @@ export async function apiFetch<T>(
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...bearerHeaderFor(path),
+        // Browser only, POS paths only (see acting-staff.ts).
+        ...actingHeader,
         ...headers,
         // Per-call headers are allow-listed (contracts.md "Typed web client &
         // idempotency headers"): only Idempotency-Key is forwarded, so no
@@ -105,6 +122,7 @@ export async function apiFetch<T>(
   if (!response.ok) {
     onFailure(path, { status: response.status });
     const error = payload?.error;
+    if (error?.code) handleActingStaffRejection(error.code, method);
     throw new ApiError(
       response.status,
       error?.code ?? "HTTP_ERROR",

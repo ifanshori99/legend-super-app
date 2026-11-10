@@ -17,7 +17,7 @@
 // Every digest is 64 lowercase hex characters (`identityDigestSchema`).
 
 import { createHmac, hkdfSync } from "node:crypto";
-import { whatsAppNumberDigest } from "@starter/shared/identity";
+import { normalizeEmail, whatsAppNumberDigest } from "@starter/shared/identity";
 import { env } from "../config/env";
 import { clientIpKey } from "./client-ip-key";
 
@@ -39,7 +39,12 @@ function digestKey(): Buffer {
  * per use, so a digest can never be replayed against a different purpose.
  */
 export type IdentityDigestPurpose =
-  "login-code" | "browser-binding" | "client-ip" | "inbound-request";
+  | "login-code"
+  | "browser-binding"
+  | "client-ip"
+  | "inbound-request"
+  // legend-k2l: the 256-bit email magic-link token (only this digest is stored).
+  | "magic-link";
 
 /** HMAC-SHA-256 hex of `<purpose>\0<value>`. */
 export function identityDigest(
@@ -54,6 +59,15 @@ export function identityDigest(
 /** The digest of a login code, already normalized by the shared contract. */
 export function loginCodeDigest(code: string): string {
   return identityDigest("login-code", code);
+}
+
+/**
+ * legend-k2l: the digest of an email magic-link token, as stored in
+ * `login_challenges.code_hash`. The `magic-link` purpose keeps it apart from a
+ * login-code digest even though both sit in the same column.
+ */
+export function magicLinkTokenDigest(token: string): string {
+  return identityDigest("magic-link", token);
 }
 
 /** The digest of a browser-binding nonce. */
@@ -81,4 +95,19 @@ export function contactDigestSecret(): string {
  */
 export function whatsAppDigest(number: string): Promise<string> {
   return whatsAppNumberDigest(number, contactDigestSecret());
+}
+
+/**
+ * legend-k2l: the canonical digest of an email address, the value of a
+ * `user_identities` row of type `email`. Same key family as `whatsAppDigest`
+ * (CONTACT_HASH_SECRET), with an `email` label ahead of the lowercased,
+ * trimmed address so it never collides with another contact type. Throws for a
+ * value that is not an email; callers validate first.
+ */
+export async function emailDigest(email: string): Promise<string> {
+  const normalized = normalizeEmail(email);
+  if (normalized === null) throw new RangeError("Not an email address");
+  return createHmac("sha256", contactDigestSecret())
+    .update(`email\u0000${normalized}`, "utf8")
+    .digest("hex");
 }

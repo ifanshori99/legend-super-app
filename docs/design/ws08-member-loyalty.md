@@ -155,39 +155,69 @@ has at most one WhatsApp identity: new partial unique index
 `user_identities_one_whatsapp_per_user ON (user_id) WHERE type='whatsapp'`.
 
 Merge happens only when a signed-in user U proves a WhatsApp number (reverse
-OTP link path) that already belongs to user V:
+OTP link path) that already belongs to user V. The contract
+`planIdentityMerge` (`packages/shared/src/identity/machines.ts`) picks the
+direction: the OLDER account (`createdAt`; tie: smaller id) survives, the
+other is absorbed. So the survivor is U or V, not always U. The login
+session is re-issued to the survivor (see 4).
 
-1. V must be WhatsApp-only: no identity other than its WhatsApp row, no role
-   assignment, no `platform_admins` row. Otherwise refuse 409
-   `IDENTITY_MERGE_NEEDS_SUPPORT` (new code) and write an audit row; support
-   resolves by hand. Reason: a WhatsApp-only account belongs to whoever
-   controls the number (D16); an account with an email or Google identity
-   may belong to a different person (recycled numbers).
-2. U must not already hold a different WhatsApp identity (unique index).
-   U's session must not be `auth_cross_device` (M2).
+1. V must be WhatsApp-only, in both directions: no identity other than its
+   WhatsApp row, a `.invalid` e-mail, no Better Auth `account` row, no role
+   assignment, no `platform_admins` row, not banned or merged. Otherwise
+   refuse 409 `IDENTITY_MERGE_NEEDS_SUPPORT` (new code) and write an audit
+   row; support resolves by hand. Reason: a WhatsApp-only account belongs to
+   whoever controls the number (D16); an account with an email or Google
+   identity may belong to a different person (recycled numbers).
+   If U is the absorbed account it may have a real e-mail and Google, but it
+   must have no role assignment, no `platform_admins` row and no password
+   (`credential`) account; otherwise the same refusal.
+2. U must not already hold a different WhatsApp identity (unique index;
+   409 `WHATSAPP_ALREADY_ON_ACCOUNT`). U's session must not be
+   `auth_cross_device` (M2).
 3. Before linking, the PWA shows a confirmation naming the account that is
    signed in (masked email). After the merge, the WhatsApp reply to that
    number names the account it joined (masked). A victim tricked into a
    foreign session therefore sees it twice.
-4. One transaction, advisory locks on both user ids in sorted order:
-   move V's identity rows to U; for each tenant, move V's
-   `customer_profiles.user_id` to U (rules below); delete V's sessions;
-   ban V (`banned=true`, `banReason='merged'`); insert `identity_merges`.
+4. One transaction, advisory locks on both user ids in sorted order. The
+   profile decision (5) is made first, so a refusal writes nothing. Then:
+   move the absorbed account's identity rows to the survivor. When U is
+   absorbed: its Google `account` rows move too, and the survivor V takes
+   over U's `email`, `emailVerified` and `name` (U gets the unique
+   placeholder `merged+<U.id>@merged.invalid` first, because e-mail is
+   unique). Then move the absorbed account's profiles per tenant (5), delete
+   its sessions, ban it (`banned=true`, `banReason='merged'`) and insert
+   `identity_merges`. When U was absorbed its sessions are gone, so the
+   browser that bound the challenge claims one session for the survivor on
+   its next poll (single use, same claim path and audit as a WhatsApp login).
+   The tenant audit row `identity.merged` records both the survivor and the
+   absorbed user id (no e-mail, no number).
    Profiles live in FORCE RLS tables, so the cross-tenant lookup uses a
    `SECURITY DEFINER` function `app.member_profiles_of_user(text)` returning
    `(tenant_id, profile_id, status)` (0193, pattern of
    `app.resolve_delivery_store` in `drizzle/0126_*`); each tenant's changes
-   then run under `withTenant` for that tenant.
-5. Profile rule per tenant: if only V has a profile, repoint it. If both have
-   one, U's profile must be empty: no WhatsApp hash (so it is
+   then run with that tenant's `app.tenant_id` set inside the same
+   transaction (so a refusal or error rolls back every tenant together).
+5. Profile rule per tenant, A = absorbed account, S = survivor: if only A has
+   a profile, repoint its `user_id` to S. If only S has one, nothing. If both
+   have one, A's profile must be empty: no WhatsApp hash (so it is
    `pending_verification`) and no rows in `point_ledger`,
    `reward_redemptions`, `vouchers`, `orders`, `customer_visits`, `feedback`,
-   `referrals` or `mission_progress`. It is closed
-   (`membership_status='closed'`, `user_id = NULL` so V's profile can take
-   `(tenant_id, U)`, `merged_into_profile_id` = V's profile), and U's latest
-   consent decisions are re-recorded onto V's profile with
-   `recordMemberConsent` (source `member_pwa`, same policy version).
-   Anything else refuses with `IDENTITY_MERGE_NEEDS_SUPPORT`.
+   `referrals` or `mission_progress` (in code: every table with a
+   `customer_profile_id` column). It is closed
+   (`membership_status='closed'`, `user_id = NULL` so S's profile keeps
+   `(tenant_id, S)`, `merged_into_profile_id` = S's profile), and A's latest
+   consent decisions are re-recorded onto S's profile with
+   `recordMemberConsentInTx` (source `member_pwa`, same policy version; a
+   grant of an outdated version is not carried over). If A's profile is not
+   empty but S's is truly empty (the same row scan, plus no `consents` row;
+   S's hash and status do not count, S usually holds the number), S's profile
+   is closed the same way (`merged_into_profile_id` = A's profile) and A's
+   profile is repointed to S (action `survivor_closed_into_absorbed` in
+   `identity_merges.profile_moves`). Anything else (both have content, or S's
+   profile is closed) refuses
+   with `IDENTITY_MERGE_NEEDS_SUPPORT` (`profile_conflict`). After the merge
+   `onWhatsAppVerified` runs for the survivor, so a `pending_verification`
+   profile of the signed-in tenant becomes `active` when loyalty consent is on.
 
 The ledger never moves: it keys on `customer_profile_id`, which survives.
 
@@ -549,7 +579,8 @@ default false. Backfill: `kind='management'` → `password`, the rest
 `legacy`. The backfill is registered in `MIGRATION_DATA_STATEMENTS`.
 
 `identity_merges` (global, like `user_identities`; no tenant): `id`,
-`survivor_user_id`, `absorbed_user_id` (unique), `trigger`
+`survivor_user_id` (the older account), `absorbed_user_id` (unique, the
+newer one), `trigger`
 (`whatsapp_link`, `support`), `identity_ids` uuid[], `profile_moves` jsonb
 (`[{tenantId, profileId, action}]`), `created_at`, `created_by`. Append-only
 trigger, `legend_app` SELECT and INSERT.
@@ -805,7 +836,8 @@ Needs the accounting second opinion and the founder's accountant (Q7).
   verified email; merge of a WhatsApp-only account moves profiles and bans
   the absorbed user; merge refused when the other account has an email
   identity or the closed profile has a voucher or order; merge clears
-  `user_id` on the closed profile and re-records consent onto V's profile.
+  `user_id` on the closed profile and re-records consent onto the
+  survivor's profile; the older account survives in both directions.
 - Consent: grant with an old version 409; withdrawal of loyalty suspends;
   staff path still refuses `member_pwa`.
 - Redemption: 20 parallel redeems with stock 1 give exactly one success;

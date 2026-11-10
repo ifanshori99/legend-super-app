@@ -112,6 +112,7 @@ import {
   type CartLineModifierSnapshot,
 } from "../db/schema/qr-order.ts";
 import { customerProfiles } from "../db/schema/crm-member.ts"; // legend-111j
+import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   forwardQrOrderToEdge,
@@ -126,6 +127,10 @@ import {
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { zoneOrderingOpen } from "./guest-menu.service.ts";
+import {
+  evaluatePacingIfStale,
+  readPausedMenuLines,
+} from "./kds-pacing.service.ts";
 import { routeFiredItemsToKitchen } from "./kds.service.ts";
 import {
   releaseMenuItemDailyLimit,
@@ -301,6 +306,40 @@ async function guestSession(
     throw unauthorized("ORD-04: sesi meja sudah ditutup; pindai QR meja lagi.");
   assertOutletInScope(context.outletScope, row.outletId);
   return row;
+}
+
+/**
+ * Refresh stale auto-pause state BEFORE the order transaction opens, so the
+ * in-tx `readPausedMenuLines` stays a plain read. The session's outlet is only
+ * known from the session row, so a short read-only tx resolves it first. Never
+ * throws: a bad credential or session surfaces from the real transaction.
+ */
+async function refreshPacingForSession(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  if (credential.length < 20 || credential.length > 256) return;
+  let outletId: string | undefined;
+  try {
+    const [found] = await withTenant(db, context, (tx) =>
+      tx
+        .select({ id: tableSessions.id, outletId: tableSessions.outletId })
+        .from(tableSessions)
+        .where(
+          and(
+            eq(tableSessions.tenantId, context.tenant.tenantId),
+            eq(tableSessions.sessionTokenHash, sha256(credential)),
+          ),
+        ),
+    );
+    if (found?.id === sessionId) outletId = found.outletId;
+  } catch {
+    return;
+  }
+  if (outletId === undefined) return;
+  await evaluatePacingIfStale(context, outletId as OutletId, now);
 }
 
 async function loadOutlet(
@@ -848,10 +887,18 @@ async function priceCartLines(
     itemIds: lines.map((line) => line.menuItemId),
     now,
   });
+  const paused = await readPausedMenuLines(
+    tx,
+    context,
+    outlet.id as OutletId,
+    QR_PRICE_CHANNEL,
+    now,
+  );
   const result: PricedCart = { sellable: [], removed: [], priceChanges: [] };
   for (const row of lines) {
     const item = catalogue.get(row.menuItemId);
     const resolution = resolveLine(item, {
+      paused,
       menuItemId: row.menuItemId,
       variantId: row.variantId,
       quantity: row.quantity,
@@ -1073,6 +1120,7 @@ export async function getTableSessionView(
   sessionId: string,
   now = new Date(),
 ): Promise<TableSessionView> {
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1166,6 +1214,7 @@ export async function addCartLine(
   now = new Date(),
 ): Promise<CartMutationResult> {
   const parsed = addCartLineInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1200,7 +1249,15 @@ export async function addCartLine(
           itemIds: [parsed.menuItemId],
           now,
         });
+        const paused = await readPausedMenuLines(
+          tx,
+          context,
+          outlet.id as OutletId,
+          QR_PRICE_CHANNEL,
+          now,
+        );
         const resolution = resolveLine(catalogue.get(parsed.menuItemId), {
+          paused,
           menuItemId: parsed.menuItemId,
           variantId: parsed.variantId ?? null,
           quantity: parsed.quantity,
@@ -1260,6 +1317,7 @@ export async function updateCartLine(
   now = new Date(),
 ): Promise<CartMutationResult> {
   const parsed = updateCartLineInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1307,7 +1365,15 @@ export async function updateCartLine(
             itemIds: [current.menuItemId],
             now,
           });
+          const paused = await readPausedMenuLines(
+            tx,
+            context,
+            outlet.id as OutletId,
+            QR_PRICE_CHANNEL,
+            now,
+          );
           const resolution = resolveLine(catalogue.get(current.menuItemId), {
+            paused,
             menuItemId: current.menuItemId,
             variantId: current.variantId,
             quantity,
@@ -1436,6 +1502,7 @@ export async function quoteTableSession(
   now = new Date(),
 ): Promise<OrderQuote> {
   const parsed = quoteInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1614,6 +1681,7 @@ export async function placeQrOrder(
   memberUserId: string | null = null,
 ): Promise<PlaceOrderResult> {
   const parsed = placeOrderInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   const outcome = await withTenant(
     db,
     context,
@@ -2144,9 +2212,33 @@ async function checkout(
 type Settlement = { billTotalIdr: Idr; paidIdr: Idr };
 
 /**
+ * Swap differences owed on the session (legend-i83ls). A charge is not an
+ * order: no kitchen, no order total. `open` and `paid` ones are on the bill,
+ * `paid` is also paid; `waived`, `expired` and `routed_pos` owe nothing here.
+ */
+async function sessionCharges(tx: Tx, tenantId: TenantId, sessionId: string) {
+  return tx
+    .select()
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.tableSessionId, sessionId),
+      ),
+    )
+    .orderBy(asc(orderIssueCharges.createdAt), asc(orderIssueCharges.id));
+}
+
+type ChargeRow = Awaited<ReturnType<typeof sessionCharges>>[number];
+
+const chargeOwed = (row: ChargeRow) =>
+  row.status === "open" || row.status === "paid" ? row.amountIdr : 0;
+
+/**
  * The session's bill: live (non-voided) orders, the reservation deposit
- * credit (WS-08, floored at 0) and what verified payments allocated to the
- * orders' WS-05 links. Shared by GET /bill and the ORD-10 close port.
+ * credit (WS-08, floored at 0), what verified payments allocated to the
+ * orders' WS-05 links, and the swap charges (open or paid). Shared by GET
+ * /bill and the ORD-10 close port, so closing waits for an open charge.
  */
 async function settlementOf(
   tx: Tx,
@@ -2171,7 +2263,16 @@ async function settlementOf(
     : [];
   const linkPaid = links.reduce((sum, row) => sum + row.paidIdr, 0);
   const deposit = await depositCreditFor(tx, tenantId, sessionId);
-  return { billTotalIdr: idr(billTotal), paidIdr: idr(deposit + linkPaid) };
+  const charges = await sessionCharges(tx, tenantId, sessionId);
+  const chargesOwed = charges.reduce((sum, row) => sum + chargeOwed(row), 0);
+  const chargesPaid = charges.reduce(
+    (sum, row) => sum + (row.status === "paid" ? row.amountIdr : 0),
+    0,
+  );
+  return {
+    billTotalIdr: idr(billTotal + chargesOwed),
+    paidIdr: idr(deposit + linkPaid + chargesPaid),
+  };
 }
 
 /** GET /bill — orders, totals, paid and outstanding (splits: legend-ms3). */
@@ -2199,11 +2300,28 @@ export async function getSessionBill(
       session.id,
       liveOrders,
     );
+    const charges = await sessionCharges(
+      tx,
+      context.tenant.tenantId,
+      session.id,
+    );
     const sum = (pick: (row: OrderRow) => number) =>
       liveOrders.reduce((total, row) => total + pick(row), 0);
     return sessionBillSchema.parse({
       sessionId: session.id,
       orders: await orderDtos(tx, context, liveOrders),
+      charges: charges.map((row) => ({
+        id: row.id,
+        orderIssueId: row.orderIssueId,
+        orderId: row.orderId,
+        status: row.status,
+        differenceIdr: row.differenceIdr,
+        grossSalesIdr: row.grossSalesIdr,
+        serviceChargeIdr: row.serviceChargeIdr,
+        pbjtIdr: row.pbjtIdr,
+        amountIdr: row.amountIdr,
+        paidAt: row.paidAt ? toIsoDateTime(row.paidAt) : null,
+      })),
       totals: {
         subtotalIdr: sum((row) => row.subtotalIdr),
         discountIdr: sum((row) => row.discountIdr),

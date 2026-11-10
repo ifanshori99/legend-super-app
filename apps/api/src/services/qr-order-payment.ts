@@ -45,13 +45,15 @@ import { z } from "@starter/shared/core";
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
+import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { billSplits } from "../db/schema/bill-splits.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
-import { paymentGateway } from "./payment-gateway.ts";
+import { paymentGatewayFor } from "./payment-gateway.ts";
+import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
   assertSplitMutableTx,
@@ -83,7 +85,12 @@ function linkSealAad(tenantId: string, orderId: string): string {
   return `qr-order-payment-link:${tenantId}:${orderId}`;
 }
 
-function guestPaymentDto(
+/** legend-i83ls: the sealed link token of a swap-difference charge. */
+export function chargeLinkSealAad(tenantId: string, chargeId: string): string {
+  return `order-issue-charge-link:${tenantId}:${chargeId}`;
+}
+
+export function guestPaymentDto(
   intent: CustomerPaymentIntent,
   target: z.input<typeof guestPaymentTargetSchema>,
 ): GuestPayment {
@@ -215,7 +222,7 @@ async function ensurePaymentLink(
 }
 
 /** True when the live intent is the method and bank the guest asks for. */
-function sameChoice(
+export function sameChoice(
   intent: CustomerPaymentIntent,
   method: GuestPaymentMethod,
   bankCode: string | null,
@@ -231,12 +238,20 @@ function sameChoice(
  * A VA bank must be one the gateway lists right now (PRD §3.13 "Metode DOIT":
  * the list comes from the provider, never from the client).
  */
-async function assertVaBank(
+export async function assertVaBank(
   context: ScopedTenantContext,
   bankCode: string,
   outletId: string,
 ): Promise<void> {
-  const banks = await paymentGateway().channels(context, "va", outletId);
+  // The gateway the VA rule routes to now (fallback when the primary is down).
+  const routing = await withTenant(db, context, (tx) =>
+    resolveRoutingRule(tx, context, outletId, "va"),
+  );
+  const selected = await selectGatewayForNewIntent(context, outletId, routing);
+  const port = selected.provider
+    ? selected.port
+    : paymentGatewayFor(routing.provider);
+  const banks = await port.channels(context, "va", outletId);
   if (!banks.some((bank) => bank.code === bankCode))
     throw new CoreError(
       "VALIDATION_ERROR",
@@ -272,27 +287,30 @@ export async function getGuestPaymentOptions(
         session.outletId,
         method,
       );
-      rules.push({ method, enabled: rule.enabled });
+      rules.push({ method, routing: rule });
     }
     return { outletId: session.outletId, rules };
   });
-  const gateway = paymentGateway();
-  const gatewayUsable =
-    (await gateway.health(context, routed.outletId)).status !== "down";
   const methods = [];
   for (const entry of routed.rules) {
+    const selected = await selectGatewayForNewIntent(
+      context,
+      routed.outletId,
+      entry.routing,
+    );
+    const gatewayUsable = selected.provider !== null;
     const banks =
-      entry.method === "va" && entry.enabled && gatewayUsable
-        ? await gateway.channels(context, "va", routed.outletId)
+      entry.method === "va" && entry.routing.enabled && selected.provider
+        ? await selected.port.channels(context, "va", routed.outletId)
         : [];
     const configured = entry.method === "qris" || banks.length > 0;
-    const enabled = entry.enabled && gatewayUsable && configured;
+    const enabled = entry.routing.enabled && gatewayUsable && configured;
     methods.push({
       method: entry.method,
       enabled,
       unavailableReason: enabled
         ? null
-        : !entry.enabled
+        : !entry.routing.enabled
           ? ("routing_disabled" as const)
           : !gatewayUsable
             ? ("gateway_down" as const)
@@ -320,6 +338,11 @@ export async function createGuestPayment(
     throw new CoreError(
       "VALIDATION_ERROR",
       "Pembayaran tagihan open bill belum tersedia di sini.",
+    );
+  if (parsed.target.kind === "issue_charge")
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Selisih swap dibayar lewat tagihannya sendiri.",
     );
   const bankCode = parsed.method === "va" ? (parsed.bankCode ?? null) : null;
   // A split share pays into its order's bill: find the order first.
@@ -568,6 +591,33 @@ export async function getGuestPayment(
             ),
           )
       : [];
+    // legend-i83ls: the intent may belong to a swap-difference charge link.
+    const [charge] =
+      intent && !order
+        ? await tx
+            .select({
+              id: orderIssueCharges.id,
+              sealed: orderIssueCharges.paymentLinkTokenSealed,
+            })
+            .from(orderIssueCharges)
+            .where(
+              and(
+                eq(orderIssueCharges.tenantId, context.tenant.tenantId),
+                eq(orderIssueCharges.tableSessionId, session.id),
+                eq(orderIssueCharges.paymentLinkId, intent.paymentLinkId),
+              ),
+            )
+        : [];
+    if (charge?.sealed)
+      return {
+        target: { kind: "issue_charge", chargeId: charge.id } as z.input<
+          typeof guestPaymentTargetSchema
+        >,
+        token: openSecret(
+          charge.sealed,
+          chargeLinkSealAad(context.tenant.tenantId, charge.id),
+        ),
+      };
     if (!order || order.paymentLinkTokenSealed === null)
       throw new CoreError("NOT_FOUND", "Pembayaran tidak ditemukan.");
     return {

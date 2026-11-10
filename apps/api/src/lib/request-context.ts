@@ -13,10 +13,22 @@ export type RequestSupport = {
   reason: string;
 };
 
+// Set by the acting-staff middleware (middleware/acting-staff.ts) when a POS
+// request carries a valid X-Acting-Staff token: the staff member who is the
+// actor, on the login session of `sessionUserId`.
+export type RequestActingStaff = {
+  staffUserId: string;
+  sessionUserId: string;
+  tokenId: string;
+};
+
 type RequestContext = {
   reqId: string;
   userId?: string;
   support?: RequestSupport;
+  // legend-k2l: how the authenticated session signed in (session.auth_method).
+  authMethod?: string;
+  actingStaff?: RequestActingStaff;
 };
 
 const storage = new AsyncLocalStorage<RequestContext>();
@@ -33,6 +45,27 @@ export function setRequestUser(userId: string) {
   if (store) store.userId = userId;
 }
 
+// legend-k2l (design ws08 M2 "Sign-in method gate"): recorded by requireAuth.
+export function setRequestAuthMethod(authMethod: string) {
+  const store = storage.getStore();
+  if (store) store.authMethod = authMethod;
+}
+
+/**
+ * legend-k2l: may this request act on `userId`'s staff role assignments?
+ * Only a password sign-in may (design ws08 M2). A session opened by WhatsApp,
+ * an email magic link, Google or a pre-0204 `legacy` session is customer-only,
+ * so a staff person using the member app never carries staff access. Applies
+ * only to the authenticated caller's own access on an HTTP request: workers
+ * (no request context) and lookups of another user's access are unchanged.
+ */
+export function requestMayUseStaffRoles(userId: string): boolean {
+  const store = storage.getStore();
+  if (!store || store.userId !== userId || store.authMethod === undefined)
+    return true;
+  return store.authMethod === "password";
+}
+
 export function setRequestSupport(value: RequestSupport) {
   const store = storage.getStore();
   if (store) store.support = value;
@@ -42,6 +75,17 @@ export function setRequestSupport(value: RequestSupport) {
 // to the platform admin, not the impersonated tenant user.
 export function getRequestSupport() {
   return storage.getStore()?.support;
+}
+
+export function setRequestActingStaff(value: RequestActingStaff) {
+  const store = storage.getStore();
+  if (store) store.actingStaff = value;
+}
+
+// Read by recordAudit so a row written as the acting staff member also names
+// the login session owner and the token (DECISIONS: kasir aktif per perangkat).
+export function getRequestActingStaff() {
+  return storage.getStore()?.actingStaff;
 }
 
 const SAFE_REQUEST_ID = /^[\w-]{1,128}$/;

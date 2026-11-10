@@ -63,8 +63,9 @@ import {
 import { roleAssignments } from "../db/schema/platform-access.ts";
 import { user } from "../db/schema/user.ts";
 import { recordAudit } from "../services/audit-writer.ts";
-import { STAFF_PIN_PEPPER_VERSION } from "../services/device-pin-pepper.ts";
+import { isStaffPinPepperVersionUsable } from "../services/device-pin-pepper.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
+import { revokeActingStaffForStaff } from "../services/pos-acting-staff-revoke.ts";
 import {
   registerEdgeAggregateKind,
   registerEdgeAggregateLastSequence,
@@ -209,9 +210,10 @@ export async function applyStaffPinSet(
   await assertTenantUser(tx, tenantId, payload.userId, { active: true });
   await assertTenantUser(tx, tenantId, payload.setBy, { active: false });
   const material = payload.material;
-  // Old event or a cloud-shaped one: nothing to adopt. Another pepper
-  // generation would never verify here.
-  if (!material || material.pepperVersion !== STAFF_PIN_PEPPER_VERSION)
+  // Old event or a cloud-shaped one: nothing to adopt. A pepper generation
+  // above the cloud's current one would never verify here (an edge only holds
+  // generations the cloud sent it, so this is a guard, legend-ideif).
+  if (!material || !isStaffPinPepperVersionUsable(material.pepperVersion))
     return "not_applicable";
 
   const { rows: skew } = await tx.execute(
@@ -342,14 +344,27 @@ export async function applyStaffPinSet(
   return guardPinWrite(async (): Promise<AccessApplyOutcome> => {
     // A cloud row of the same staff member keeps its own id.
     const existing = await ownRow();
-    if (existing) return update(existing.id);
-    if (await insert(payload.staffPinId)) return "applied";
-    const raced = await ownRow();
-    if (raced) return update(raced.id);
-    if (await insert(randomUUID())) return "applied";
-    const last = await ownRow();
-    if (last) return update(last.id);
-    throw new CoreError("CONFLICT", "Staff pin row could not be written");
+    const written = await (async (): Promise<AccessApplyOutcome> => {
+      if (existing) return update(existing.id);
+      if (await insert(payload.staffPinId)) return "applied";
+      const raced = await ownRow();
+      if (raced) return update(raced.id);
+      if (await insert(randomUUID())) return "applied";
+      const last = await ownRow();
+      if (last) return update(last.id);
+      throw new CoreError("CONFLICT", "Staff pin row could not be written");
+    })();
+    // New PIN material adopted: tokens issued for the old PIN end here, on
+    // the same transaction as the write (legend-aruta). A refused or same-
+    // material set leaves them alone. `EdgeTx` and `Tx` are both the drizzle
+    // transaction type of the shared `db`, so no cast is needed.
+    if (written === "applied")
+      await revokeActingStaffForStaff(tx, meta.context.tenant, {
+        outletId,
+        staffUserId: payload.userId,
+        reason: "pin_reset",
+      });
+    return written;
   });
 }
 

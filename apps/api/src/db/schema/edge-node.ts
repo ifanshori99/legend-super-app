@@ -27,12 +27,16 @@
 // - edge_pull_checkpoints: edge side only, per node and pulled stream, the
 //   watermark of the last fully applied cloud pull (legend-2lp.7). It cannot
 //   be derived from the replica (heartbeats bump devices.updated_at locally).
+// - edge_staff_pin_peppers: edge side only, per node and key version, the
+//   tenant's DERIVED staff pin pepper sealed with a key derived from the edge
+//   credential (edge/staff-pin-pepper-store.ts, legend-ideif). Never the root.
 import { sql } from "drizzle-orm";
 import {
   bigint,
   check,
   foreignKey,
   index,
+  integer,
   jsonb,
   pgTable,
   primaryKey,
@@ -467,5 +471,34 @@ export const edgePullCheckpoints = pgTable(
       // staff_pins: the staff pin down-sync (legend-yvhw8).
       sql`${table.stream} IN ('device_registry', 'staff_pins')`,
     ),
+  ],
+);
+
+// Edge-side staff pin peppers (legend-ideif). One row per (node, version): the
+// tenant's derived pepper, AES-256-GCM sealed (edge/staff-pin-pepper-store.ts),
+// so the edge can verify pins offline without ever holding the root pepper.
+export const edgeStaffPinPeppers = pgTable(
+  "edge_staff_pin_peppers",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    version: integer("version").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.edgeNodeId, table.version] }),
+    foreignKey({
+      name: "edge_staff_pin_peppers_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+    check("edge_staff_pin_peppers_version_check", sql`${table.version} >= 1`),
   ],
 );

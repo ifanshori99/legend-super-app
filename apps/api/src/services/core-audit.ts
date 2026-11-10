@@ -6,7 +6,10 @@ import {
   ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { getRequestSupport } from "../lib/request-context.ts";
+import {
+  getRequestActingStaff,
+  getRequestSupport,
+} from "../lib/request-context.ts";
 import type * as schema from "../db/schema/index.ts";
 import { auditLogs } from "../db/schema/core-audit.ts";
 
@@ -45,6 +48,27 @@ function attributeToSupport(input: unknown): unknown {
   return tagged;
 }
 
+/*
+ * Active cashier on a shared POS device (DECISIONS 2026-11-10). A row written
+ * as the acting staff member keeps them as actor and also names the login
+ * session owner and the token. Rows by any other actor are left alone.
+ */
+function attributeToActingStaff(input: unknown): unknown {
+  const acting = getRequestActingStaff();
+  if (!acting || typeof input !== "object" || input === null) return input;
+  const row = input as Record<string, unknown>;
+  if (row.actorType !== "user" || row.actorId !== acting.staffUserId)
+    return input;
+  return {
+    ...row,
+    acting: {
+      sessionUserId: acting.sessionUserId,
+      actingStaffUserId: acting.staffUserId,
+      actingTokenId: acting.tokenId,
+    },
+  };
+}
+
 /** Append in the same tenant transaction as the operation being audited. */
 export async function recordAudit(
   tx: Transaction,
@@ -53,7 +77,9 @@ export async function recordAudit(
   safeFields: readonly string[] = [],
 ) {
   assertTrustedScopedContext(context);
-  const event = auditEventSchema.parse(attributeToSupport(input));
+  const event = auditEventSchema.parse(
+    attributeToActingStaff(attributeToSupport(input)),
+  );
   if (event.tenantId !== context.tenant.tenantId)
     throw new Error("Audit tenant does not match context");
   if (event.outletId) assertOutletInScope(context.outletScope, event.outletId);

@@ -18,7 +18,8 @@
 //   of the nonce, never the nonce. A request without a valid cookie is charged
 //   to its IP only.
 // Two classes: issuing a challenge (POST /whatsapp: DB writes, session lookup,
-// advisory locks) gets a small budget; polling and cancelling (GET /:id,
+// advisory locks; legend-k2l: POST /email sends a mail and POST /email/verify
+// opens a transaction, both charged as issues) gets a small budget; polling and cancelling (GET /:id,
 // POST /:id/cancel: one read every few seconds per waiting browser) a larger one
 // so a venue full of guests behind one NAT is not locked out. The AUTH-04
 // rule (5 active challenges per device or IP in 15 minutes) is unchanged and

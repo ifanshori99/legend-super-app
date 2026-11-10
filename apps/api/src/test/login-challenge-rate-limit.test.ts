@@ -148,6 +148,19 @@ beforeEach(async () => {
   await owner.query("DELETE FROM wa_inbound_messages");
   await owner.query("DELETE FROM login_challenges");
   await owner.query("DELETE FROM user_identities");
+  // Dropping the identities alone orphans the invited-admin accounts that
+  // earlier files created through POST /api/platform/tenants (email
+  // <digest>@wa.invalid). A later file that provisions the same WhatsApp number
+  // would then claim a fresh identity, hit the taken email and get 409 "first
+  // admin's contact is already used" (legend-5tmye). Remove those accounts too,
+  // as identity-login.test.ts does.
+  await owner.query(
+    `DELETE FROM role_assignments
+      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
+         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
+    ["%@wa.invalid"],
+  );
+  await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
 });
 
 afterEach(() => {

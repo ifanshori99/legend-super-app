@@ -117,6 +117,7 @@ import {
   loadTenantAccessInTransaction,
   type Tx,
 } from "./permission-resolver.ts";
+import { revokeActingStaffForDevice } from "./pos-acting-staff-revoke.ts";
 import { POS_OVERRIDE_SOURCE_MODULE } from "./staff-override.service.ts";
 
 export type { ShiftCaller } from "./pos-shift-support.ts";
@@ -1453,6 +1454,11 @@ async function writeClose(
     throw error;
   }
   if (!row) throw new CoreError("CONFLICT", "Shift sudah tidak terbuka.");
+  // legend-aruta: the acting cashier of the shift's device ends with the shift.
+  await revokeActingStaffForDevice(tx, context.tenant, {
+    deviceId: row.deviceId,
+    reason: "shift_closed",
+  });
   const dto = shiftFiguresDto(row);
   await appendShiftEvent(tx, context, "cashier_shift.closed", {
     aggregateId: row.id,

@@ -134,7 +134,9 @@ const uoms = [
   { id: uom.ml, code: "ml", name: "Mililiter" },
   { id: uom.pcs, code: "pcs", name: "Pieces" },
   { id: uom.pack, code: "pack", name: "Pack" },
-].map((row) => uomSchema.parse({ ...row, tenantId: tenant.id }));
+].map((row) =>
+  uomSchema.parse({ ...row, tenantId: tenant.id, isSystem: true }),
+);
 
 const locations = [
   { id: location.gudang, name: "Gudang Utama", type: "warehouse" },

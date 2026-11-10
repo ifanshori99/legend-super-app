@@ -254,6 +254,7 @@ export const FACILITY_AUDIT_SAFE_FIELDS: readonly string[] = [
   "minSpendIdr",
   "baseSpeedKbps",
   "fullSpeedKbps",
+  "spendMode",
 ];
 
 export async function auditFacility(

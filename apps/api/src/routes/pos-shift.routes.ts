@@ -36,7 +36,8 @@ import {
   openPosShift,
   recordPosCashMovement,
 } from "@starter/shared/pos";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
+import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -50,7 +51,12 @@ import { deviceIdOf } from "./device-id.ts";
 
 export const posShiftRouter = Router({ mergeParams: true });
 
-posShiftRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+posShiftRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+);
 
 const outletOf = (req: Request) => String(req.params.outletId ?? "");
 const can = (permission: PermissionCode) =>
@@ -108,7 +114,7 @@ const closeDay = can("pos.day.close");
 
 function caller(req: Request): shifts.ShiftCaller {
   return {
-    userId: userIdSchema.parse(getAuth(req).user.id),
+    userId: userIdSchema.parse(actorOf(req)),
     deviceId: deviceIdOf(req),
   };
 }
@@ -275,7 +281,7 @@ posShiftRouter.get("/day", readDay, async (req, res) => {
   res.json({
     data: await day.getEndOfDayRecap(
       getScopedTenantContext(req),
-      { userId: userIdSchema.parse(getAuth(req).user.id) },
+      { userId: userIdSchema.parse(actorOf(req)) },
       outletId,
       businessDate,
     ),
@@ -288,7 +294,7 @@ posShiftRouter.post("/day/close", closeDay, jsonBody, async (req, res) => {
   res.json({
     data: await day.closePosDay(
       getScopedTenantContext(req),
-      { userId: userIdSchema.parse(getAuth(req).user.id) },
+      { userId: userIdSchema.parse(actorOf(req)) },
       outletId,
       body,
     ),

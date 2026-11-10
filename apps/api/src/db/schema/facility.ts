@@ -639,6 +639,12 @@ export const wifiPolicies = pgTable(
     tierBonusMinutes: jsonb("tier_bonus_minutes")
       .$type<Record<string, number>>()
       .notNull(),
+    // legend-kmd3: how spend turns into extra hours. Null reads as the CTO
+    // default `per_day_multiple` (whole-day net spend / step); `per_order`
+    // floors each order on its own.
+    spendMode: varchar("spend_mode", { length: 20 }).$type<
+      "per_day_multiple" | "per_order"
+    >(),
     createdAt,
     updatedAt,
   },
@@ -656,6 +662,10 @@ export const wifiPolicies = pgTable(
       foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
     }),
     index("wifi_policies_zone_idx").on(table.tenantId, table.zoneId, table.id),
+    check(
+      "wifi_policies_spend_mode_check",
+      sql`${table.spendMode} IS NULL OR ${table.spendMode} IN ('per_day_multiple','per_order')`,
+    ),
     check(
       "wifi_policies_amount_check",
       sql`${table.freeMinutes} >= 0 AND ${table.peakFreeMinutes} >= 0 AND ${table.spendPerExtraHourIdr} >= 0 AND ${table.extraMinutes} BETWEEN 1 AND 1440 AND ${table.maxDevices} BETWEEN 1 AND 20 AND ${table.baseSpeedKbps} >= 1 AND ${table.fullSpeedKbps} >= 1 AND (${table.minSpendPerHourIdr} IS NULL OR ${table.minSpendPerHourIdr} >= 0)`,

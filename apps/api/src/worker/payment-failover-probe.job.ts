@@ -15,7 +15,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
-import { paymentGateway } from "../services/payment-gateway.ts";
+import { outletGatewayHealth } from "../services/payment-gateway-select.ts";
 import {
   listOutletsWithOpenIncident,
   syncGatewayHealth,
@@ -70,7 +70,7 @@ export async function sweepGatewayHealth(
         kind: "outlets",
         outletIds: [outletIdSchema.parse(outletId)],
       });
-      const health = await paymentGateway().health(outletContext, outletId);
+      const health = await outletGatewayHealth(outletContext, outletId);
       // The reading is as old as the answer, not as old as the sweep: a guest
       // request may have recorded a newer state while the gateway was slow.
       const synced = await syncGatewayHealth(
@@ -78,6 +78,7 @@ export async function sweepGatewayHealth(
         outletId,
         health,
         options.now ?? new Date(),
+        health.provider,
       );
       if (synced.transition === "recovered") result.recovered += 1;
       else if (synced.openIncident !== null) result.stillDown += 1;

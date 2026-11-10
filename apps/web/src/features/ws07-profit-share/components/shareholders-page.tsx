@@ -16,6 +16,10 @@ import { NumberDisplay } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { useCanPostJournals } from "@/features/ws07-accounting/guard";
+import {
+  useCanApproveShareAllocation,
+  useCanChangeShareAllocation,
+} from "../guard";
 import { useProfitEntities, useShareholders, useShareVersions } from "../hooks";
 import {
   effectiveVersionOfEntity,
@@ -39,6 +43,8 @@ import { VersionsTable } from "./versions-table";
 export function ProfitSharePage({ legalEntityId }: { legalEntityId: string }) {
   const t = useT();
   const canWrite = useCanPostJournals();
+  const canChangeShares = useCanChangeShareAllocation();
+  const canApproveShares = useCanApproveShareAllocation();
   const entitiesQuery = useProfitEntities();
   const shareholdersQuery = useShareholders();
 
@@ -243,7 +249,8 @@ export function ProfitSharePage({ legalEntityId }: { legalEntityId: string }) {
             <VersionFocusCard
               version={focused}
               shareholders={shareholders}
-              canWrite={canWrite}
+              canWrite={canChangeShares}
+              canApprove={canApproveShares}
               onEdit={() => openEditVersion(focused)}
             />
           ) : (
@@ -253,7 +260,7 @@ export function ProfitSharePage({ legalEntityId }: { legalEntityId: string }) {
                   title={t("accounting.share.versions.emptyTitle")}
                   description={t("accounting.share.versions.emptyHint")}
                   action={
-                    canWrite ? (
+                    canChangeShares ? (
                       <Button
                         type="button"
                         size="sm"
@@ -271,7 +278,7 @@ export function ProfitSharePage({ legalEntityId }: { legalEntityId: string }) {
           <VersionsTable
             versions={versions}
             state={versionsState}
-            canWrite={canWrite}
+            canWrite={canChangeShares}
             onRetry={() => {
               void versionsQuery.refetch();
             }}

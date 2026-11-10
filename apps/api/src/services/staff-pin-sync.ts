@@ -62,17 +62,19 @@
 // - Each record carries `pinGenerationAt`, the exact microsecond order key of
 //   the pin generation (`staff_pins.pin_generation_at`, legend-kyie).
 //
-// Pepper provisioning (out of band, never in this payload). The edge verifies
-// offline with `record + pepper`. The pepper is installed on the edge box by
-// the operator, through the deployment's secret store, as the environment
-// variable STAFF_PIN_PEPPER — the same value the cloud uses, so
-// `staffPinPepper(tenantId)` (HKDF per tenant, device-pin-pepper.ts) derives
-// the same per-tenant pepper there. It is never sent over HTTP, logged,
-// audited, put in an event or in this response. Rotation follows
-// docs/deployment.md "Staff device pins" (bump the pepper version, staff set
-// new pins; old rows stop verifying on the edge as on the cloud). Follow-up:
-// provision only the tenant-derived pepper to an edge box instead of the root
-// secret, so a stolen edge box cannot derive other tenants' peppers.
+// Pepper provisioning (legend-ideif). The edge verifies offline with
+// `record + pepper`, but it never holds the root STAFF_PIN_PEPPER (the edge
+// refuses to boot with it, config/env.ts). When the edge asks with
+// `peppers=<highest version it holds>` the cloud answers `meta.peppers`: the
+// peppers it derived for THE CREDENTIAL'S TENANT, for every version above that
+// one (`staffPinPeppersForEdge`, device-pin-pepper.ts), base64, over TLS and
+// `Cache-Control: private, no-store`. The edge seals them in its own database
+// (edge/staff-pin-pepper-store.ts). A stolen edge box thus yields one
+// tenant's peppers, never the root and never another tenant's. The values are
+// never logged, audited, put in an event or in any other response. Rotation
+// (raise STAFF_PIN_PEPPER_CURRENT_VERSION on the cloud, docs/deployment.md
+// "Staff device pins"): the next pull delivers the new version; pins hashed
+// under an older version keep verifying until their owner sets a new pin.
 //
 // Apply (edge, `applyStaffPinRecords`): idempotent, cloud wins. Runs on the
 // edge's own database, on the outlet-scoped context of the edge node. One
@@ -128,10 +130,13 @@ import { z } from "zod";
 import { db } from "../db/index.ts";
 import { staffPins } from "../db/schema/device-pin.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
+import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { withoutSecretErrorDetail } from "../edge/envelope-secrets.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { staffPinPeppersForEdge } from "./device-pin-pepper.ts";
 import { outletContext } from "./device-pin-support.ts";
+import { revokeActingStaffForStaff } from "./pos-acting-staff-revoke.ts";
 
 // ------------------------------------------------------- edge credential port
 
@@ -220,6 +225,10 @@ export const staffPinSyncQuerySchema = z.strictObject({
   // so the cloud only sends it to an edge that asks. A new edge always asks,
   // so it needs a cloud that knows this flag (cloud first, as documented).
   revision: z.literal("1").optional(),
+  // legend-ideif: opt-in as well (an older edge parses `meta` strictly). The
+  // highest pepper version the edge holds (0 = none); the cloud answers with
+  // the tenant's derived peppers above it.
+  peppers: z.coerce.number().int().min(0).max(1000).optional(),
 });
 export type StaffPinSyncQuery = z.infer<typeof staffPinSyncQuerySchema>;
 
@@ -231,6 +240,15 @@ export const staffPinSyncPageSchema = z.strictObject({
     nextCursor: cursorSchema.nullable(),
     /** Store after applying the page; null = nothing replicated yet. */
     watermark: cursorSchema.nullable(),
+    /** Only when asked (`peppers=`): the tenant's derived peppers, base64 of 32 bytes. */
+    peppers: z
+      .array(
+        z.strictObject({
+          version: z.number().int().min(1).max(1000),
+          pepper: z.string().length(44),
+        }),
+      )
+      .optional(),
   }),
 });
 export type StaffPinSyncPage = z.infer<typeof staffPinSyncPageSchema>;
@@ -315,7 +333,7 @@ export async function listStaffPinRecordsSince(
   query: StaffPinSyncQuery,
 ): Promise<StaffPinSyncPage> {
   const verified = verifiedEdgeNodeSchema.parse(node);
-  const { limit, revision } = staffPinSyncQuerySchema.parse(query);
+  const { limit, revision, peppers } = staffPinSyncQuerySchema.parse(query);
   const stored = parseWatermark(query.since);
   const tenant = establishTenantContext({
     tenantId: verified.tenantId,
@@ -421,6 +439,10 @@ export async function listStaffPinRecordsSince(
       // A legacy, foreign-epoch or future cursor is not carried over: the
       // edge restarts from the beginning.
       watermark: lastMark ?? (since === null ? null : encodeWatermark(since)),
+      // The tenant is the verified credential's, never the query's.
+      ...(peppers !== undefined
+        ? { peppers: staffPinPeppersForEdge(verified.tenantId, peppers) }
+        : {}),
     },
   });
 }
@@ -430,6 +452,12 @@ export async function listStaffPinRecordsSince(
 export type StaffPinApplyResult = {
   readonly applied: number;
   readonly skipped: number;
+  /**
+   * Records skipped because their `user` row is not on this database yet (the
+   * people snapshot has not delivered it). The caller keeps its watermark so
+   * the next cycle retries them. Present only when at least one was skipped.
+   */
+  readonly missingUsers?: number;
 };
 
 type LocalRow = typeof staffPins.$inferSelect;
@@ -457,6 +485,7 @@ function refuse(message: string): never {
 export async function applyStaffPinRecords(
   context: ScopedTenantContext,
   records: readonly unknown[],
+  database: Parameters<typeof withTenant>[0] = db,
 ): Promise<StaffPinApplyResult> {
   // legend-oark: the cloud is the source of these records and never ingests
   // them. Same rule as pos-receipt.service.ts: the runtime flag, or the static
@@ -487,9 +516,21 @@ export async function applyStaffPinRecords(
   // Same order on every node, so two concurrent pages lock users the same way.
   const ordered = [...parsed].sort((a, b) => a.id.localeCompare(b.id));
 
-  return withTenant(db, context, async (tx) => {
+  return withTenant(database, context, async (tx) => {
     let applied = 0;
+    let missingUsers = 0;
     for (const record of ordered) {
+      // The user arrives with the people snapshot, which can lag this pull. A
+      // record without its user would fail the foreign key and refuse the
+      // whole page: skip it and let the caller retry it next cycle.
+      const [owner] = await tx
+        .select({ id: user.id })
+        .from(user)
+        .where(eq(user.id, record.userId));
+      if (!owner) {
+        missingUsers += 1;
+        continue;
+      }
       const version = new Date(record.updatedAt);
       // Exact microsecond key, compared and stored by the database: a JS Date
       // would cut it to milliseconds and turn a tie into a false "newer".
@@ -565,6 +606,13 @@ export async function applyStaffPinRecords(
             updatedAt: version,
           }),
         );
+        // A pin set on the cloud ends the acting-cashier tokens of that staff
+        // member on this edge, in the same transaction (legend-aruta).
+        await revokeActingStaffForStaff(tx, context.tenant, {
+          outletId: record.outletId,
+          staffUserId: record.userId,
+          reason: "pin_reset",
+        });
         applied += 1;
         continue;
       }
@@ -589,6 +637,11 @@ export async function applyStaffPinRecords(
             })
             .where(eq(staffPins.id, local.id)),
         );
+        await revokeActingStaffForStaff(tx, context.tenant, {
+          outletId: record.outletId,
+          staffUserId: record.userId,
+          reason: "pin_reset",
+        });
         applied += 1;
         continue;
       }
@@ -672,6 +725,10 @@ export async function applyStaffPinRecords(
       if (!changed) continue;
       applied += 1;
     }
-    return { applied, skipped: ordered.length - applied };
+    return {
+      applied,
+      skipped: ordered.length - applied,
+      ...(missingUsers > 0 ? { missingUsers } : {}),
+    };
   });
 }

@@ -11,7 +11,7 @@
 // `phone_lookup_daily_cap_per_cashier` has no contract field: PUT never
 // changes it (database default 20).
 
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -31,11 +31,13 @@ import {
 import type { z } from "@starter/shared/core";
 import { db } from "../db";
 import { customerProfiles, loyaltyPrograms } from "../db/schema/crm-member";
+import { loyaltyTiers } from "../db/schema/crm-tiers";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { crmHttpError } from "./crm-promo-engine";
 import { listLoyaltyAnomalies as listAnomalyRows } from "./loyalty-anomaly.service";
+import { toLoyaltyTier } from "./loyalty-tier.service";
 import { listLedgerForProfile } from "./point-ledger.service";
 
 type ProgramRow = typeof loyaltyPrograms.$inferSelect;
@@ -135,8 +137,16 @@ export async function getLoyaltyProgram(
       .from(loyaltyPrograms)
       .where(eq(loyaltyPrograms.tenantId, context.tenant.tenantId))
       .limit(1);
-    // Tiers arrive with legend-3zd1 (290e); none exist yet.
-    return { program: toProgram(context.tenant.tenantId, row), tiers: [] };
+    // legend-3zd1: the tier ladder, lowest rank first.
+    const tiers = await tx
+      .select()
+      .from(loyaltyTiers)
+      .where(eq(loyaltyTiers.tenantId, context.tenant.tenantId))
+      .orderBy(asc(loyaltyTiers.rank), asc(loyaltyTiers.id));
+    return {
+      program: toProgram(context.tenant.tenantId, row),
+      tiers: tiers.map(toLoyaltyTier),
+    };
   });
 }
 

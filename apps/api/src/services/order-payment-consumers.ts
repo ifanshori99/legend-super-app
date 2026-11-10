@@ -12,6 +12,8 @@
 // own. `payment.expired` / `payment.failed` of a link that belongs to a POS
 // tender go to `handlePosPaymentClosed` (bead legend-b0au) inside the
 // consumption transaction: the still-authorized tender becomes `failed`.
+// A link that belongs to a dearer-swap difference charge (legend-i83ls) goes to
+// order-recovery-charge-payment.ts the same way, after the order check.
 // Events of another tenant are refused before any query (TEN-01).
 
 import { and, eq } from "drizzle-orm";
@@ -22,6 +24,14 @@ import { paymentIntents } from "../db/schema/index.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { Tx } from "./menu-internals.ts";
+import {
+  dispatchIssueChargeClosed,
+  dispatchIssueChargePaid,
+} from "./order-recovery-charge-payment.ts";
+import type {
+  IssueChargeClosedOutcome,
+  IssueChargePaidOutcome,
+} from "./order-recovery-charge.ts";
 import {
   handlePosPaymentClosed,
   handlePosPaymentPaid,
@@ -49,6 +59,11 @@ export type OrderPaymentDispatch =
   | {
       readonly route: "qr";
       readonly outcome: QrPaymentPaidOutcome | QrPaymentClosedOutcome;
+    }
+  | {
+      /** legend-i83ls: the link of a dearer-swap difference charge. */
+      readonly route: "issue_charge";
+      readonly outcome: IssueChargePaidOutcome | IssueChargeClosedOutcome;
     }
   | { readonly route: "pos" };
 
@@ -104,6 +119,13 @@ async function dispatchInTx(
             ? await handleQrOrderPaymentPaid(context, event, tx, now)
             : await handleQrOrderPaymentClosed(context, event, tx, now),
       };
+    // legend-i83ls: a swap-difference charge has its own link; anything that
+    // is not one falls through to the POS consumer.
+    const charge =
+      event.name === "payment.paid"
+        ? await dispatchIssueChargePaid(context, event, tx, now)
+        : await dispatchIssueChargeClosed(context, event, tx, now);
+    if (charge !== null) return { route: "issue_charge", outcome: charge };
   }
   if (event.name === "payment.paid") return "pos";
   return (await handlePosPaymentClosed(context, event, tx, now))

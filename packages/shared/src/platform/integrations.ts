@@ -177,6 +177,112 @@ export function canTransitionIntegration(
   return to !== "active" || hasCredentials;
 }
 
+// ----------------------------------------------------- payment gateways
+
+/** True for a provider of the `payment_gateway` category. */
+export function isGatewayProvider(provider: IntegrationProvider): boolean {
+  return integrationCategoryOf[provider] === "payment_gateway";
+}
+
+/**
+ * Per-gateway credential contract (sub-302 D15). `credentials: null` keeps
+ * the DOIT body as it is today (free-form field names); `rotating` lists the
+ * fields whose replacement keeps the old value for a grace window (D17) and
+ * `previous` names the key that holds each old value inside the sealed blob.
+ */
+export const GATEWAY_CREDENTIAL_SPECS = {
+  doit: {
+    credentials: null,
+    config: null,
+    rotating: ["webhookSecret"],
+    previous: { webhookSecret: "previousWebhookSecret" },
+  },
+  duitku: {
+    credentials: ["merchantCode", "apiKey"],
+    config: {
+      environment: ["sandbox", "production"],
+      notificationEmail: "email",
+      vaName: { optional: true, maxLength: 20 },
+    },
+    rotating: ["apiKey", "merchantCode"],
+    previous: {
+      merchantCode: "previousMerchantCode",
+      apiKey: "previousApiKey",
+    },
+  },
+} as const satisfies Record<
+  "doit" | "duitku",
+  {
+    credentials: readonly string[] | null;
+    config: unknown;
+    rotating: readonly string[];
+    previous: Record<string, string>;
+  }
+>;
+
+/** Server-written keys inside a gateway's sealed credentials; a client never sends them. */
+export const GATEWAY_PREVIOUS_VALID_UNTIL = "previousValidUntil";
+export function isGatewayPreviousKey(key: string): boolean {
+  return key.startsWith("previous");
+}
+
+const duitkuConfigSchema = z.object({
+  environment: z.enum(GATEWAY_CREDENTIAL_SPECS.duitku.config.environment),
+  notificationEmail: z.email().max(254),
+  vaName: z.union([z.string().max(20), z.null()]).optional(),
+});
+
+/**
+ * Names of the fields an upsert body gets wrong for a payment gateway
+ * (never values: a rejected body must not echo a secret). Empty = acceptable.
+ * `credentials` undefined = "keep the stored secret".
+ */
+export function gatewayCredentialIssues(
+  provider: IntegrationProvider,
+  config: IntegrationConfig,
+  credentials: Record<string, string> | undefined,
+): string[] {
+  if (!isGatewayProvider(provider)) return [];
+  const issues = new Set<string>();
+  if (credentials)
+    for (const key of Object.keys(credentials))
+      if (isGatewayPreviousKey(key)) issues.add(key);
+  if (provider === "duitku") {
+    const parsed = duitkuConfigSchema.safeParse(config);
+    if (!parsed.success)
+      for (const issue of parsed.error.issues)
+        issues.add(String(issue.path[0] ?? "config"));
+    if (credentials) {
+      const allowed: readonly string[] =
+        GATEWAY_CREDENTIAL_SPECS.duitku.credentials;
+      for (const key of allowed) if (!credentials[key]) issues.add(key);
+      for (const key of Object.keys(credentials))
+        if (!allowed.includes(key)) issues.add(key);
+    }
+  }
+  return [...issues].sort();
+}
+
+/** Result of POST /api/org/integrations/:integrationId/test (sub-302 D16). */
+export const integrationConnectionTestSchema = z.strictObject({
+  ok: z.boolean(),
+  checkedAt: isoDateTimeSchema,
+  errorCode: z
+    .string()
+    .regex(/^[A-Z][A-Z0-9_]{1,63}$/)
+    .nullable(),
+  methods: z.array(
+    z.strictObject({
+      method: z.string().min(1).max(30),
+      enabled: z.boolean(),
+      channelCount: z.number().int().nonnegative(),
+    }),
+  ),
+});
+export type IntegrationConnectionTest = z.infer<
+  typeof integrationConnectionTestSchema
+>;
+
 /** Log/audit-safe copy of an upsert body: every credential value redacted,
  * config passed through the audit masker rules. */
 export function redactIntegrationInput(

@@ -58,9 +58,14 @@ export function requireIdentitySurface(
       tenantId: row.tenantId,
       now,
     });
+    // legend-k2l (design ws08 M2 "Sign-in method gate"): only a password
+    // session may be management. A WhatsApp, magic-link or Google session
+    // (or a pre-k2l `legacy` one) with a staff role stays a customer session,
+    // so a stolen phone number or mailbox never opens the back office.
     const management =
-      row.kind === "management" ||
-      (facts !== null && hasActiveAssignment(facts, now));
+      row.authMethod === "password" &&
+      (row.kind === "management" ||
+        (facts !== null && hasActiveAssignment(facts, now)));
     const mfaRequired =
       facts !== null && userRequiresMfa(facts.principal, facts.roles, now);
     const policy = sessionPolicy({ row, management, mfaRequired, now });
@@ -90,6 +95,11 @@ export function requireSessionMfa(
     const now = clock();
     const row = await loadSessionRow(auth.session.id);
     if (!row) throw unauthorized();
+    // legend-k2l (ws08 M2 sign-in method gate): only a password sign-in can
+    // reach a platform surface. An email inbox, a Google account or a WhatsApp
+    // code plus a second factor must never stand in for the staff password.
+    if (row.authMethod !== "password")
+      throw new AccessError("PERMISSION_DENIED");
     // A platform session is management by definition (§3 F6 30-minute idle).
     const policy = sessionPolicy({
       row,

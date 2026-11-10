@@ -25,6 +25,9 @@ const ACCOUNTING_DOMAIN = [
   /^db\/schema\//,
   /^services\/accounting-[^/]+\.ts$/,
   /^services\/payroll-gl-consumer\.ts$/,
+  // Profit share (legend-2ljb) is accounting: it derives distributable net
+  // profit straight from the posted journal, which is the ledger of record.
+  /^services\/profit-share-net-profit\.ts$/,
 ];
 
 const ENGINE = "services/metrics-query.service.ts";

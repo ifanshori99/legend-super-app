@@ -1,12 +1,12 @@
-// `approval.resolved` consumer for HRIS leave and overtime requests (bead
-// legend-hggk; PRD v1.7 §3 Kelompok D 29 "Cuti, Izin & Lembur", F7 "Kotak
+// `approval.resolved` consumer for HRIS leave, overtime and attendance
+// correction requests (bead legend-hggk, legend-wh71; PRD v1.7 §3 Kelompok D 29 "Cuti, Izin & Lembur", F7 "Kotak
 // Approval"). Wired in worker-main.ts next to staff-override's
 // `handleApprovalResolved`. Modelled on staff-override-consumers.ts.
 //
 // The approval service never writes another module's tables: it appends
 // `approval.resolved` and the source module applies the effect in its own
 // transaction. This consumer only reacts to chains this module opened
-// (sourceModule `hris_leave` / `hris_overtime`) and delegates to the settle
+// (sourceModule `hris_leave` / `hris_overtime` / `hris_attendance`) and delegates to the settle
 // functions, which re-read the chain outcome from the database under the
 // request row lock. The event payload is a trigger, never the authority.
 //
@@ -27,8 +27,14 @@ import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
+import { attendanceCorrections } from "../db/schema/hris-attendance.ts";
 import { leaveRequests, overtimeRequests } from "../db/schema/hris-leave.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  HRIS_ATTENDANCE_OBJECT_TYPE,
+  HRIS_ATTENDANCE_SOURCE_MODULE,
+  settleAttendanceCorrection,
+} from "./hris-attendance-correction.service.ts";
 import {
   HRIS_LEAVE_OBJECT_TYPE,
   HRIS_LEAVE_SOURCE_MODULE,
@@ -62,7 +68,7 @@ function refuse(message: string): never {
 }
 
 /**
- * Settles the leave or overtime request that owns the resolved chain.
+ * Settles the leave, overtime or attendance correction request that owns the resolved chain.
  * Idempotent and replay safe; ignores other events and source modules.
  */
 export async function handleHrisApprovalResolved(
@@ -73,7 +79,8 @@ export async function handleHrisApprovalResolved(
   const sourceModule = sourceModuleOf(event);
   if (
     sourceModule !== HRIS_LEAVE_SOURCE_MODULE &&
-    sourceModule !== HRIS_OVERTIME_SOURCE_MODULE
+    sourceModule !== HRIS_OVERTIME_SOURCE_MODULE &&
+    sourceModule !== HRIS_ATTENDANCE_SOURCE_MODULE
   )
     return;
 
@@ -84,10 +91,13 @@ export async function handleHrisApprovalResolved(
   if (resolved.tenantId.toLowerCase() !== context.tenant.tenantId.toLowerCase())
     refuse("approval.resolved tenant does not match the worker context");
   const isLeave = sourceModule === HRIS_LEAVE_SOURCE_MODULE;
-  if (
-    resolved.payload.objectType !==
-    (isLeave ? HRIS_LEAVE_OBJECT_TYPE : HRIS_OVERTIME_OBJECT_TYPE)
-  )
+  const isAttendance = sourceModule === HRIS_ATTENDANCE_SOURCE_MODULE;
+  const expectedObjectType = isLeave
+    ? HRIS_LEAVE_OBJECT_TYPE
+    : isAttendance
+      ? HRIS_ATTENDANCE_OBJECT_TYPE
+      : HRIS_OVERTIME_OBJECT_TYPE;
+  if (resolved.payload.objectType !== expectedObjectType)
     refuse(`approval.resolved for ${sourceModule} names another object type`);
   // Requests always belong to one outlet; settle on exactly that RLS scope so
   // another outlet's approval rows stay invisible (TEN-03).
@@ -103,7 +113,11 @@ export async function handleHrisApprovalResolved(
   // corrupt or forged input: refuse. No row: never recorded (rolled back) or
   // another outlet's: nothing of ours to settle.
   const owner = await withTenant(db, scoped, async (tx) => {
-    const table = isLeave ? leaveRequests : overtimeRequests;
+    const table = isLeave
+      ? leaveRequests
+      : isAttendance
+        ? attendanceCorrections
+        : overtimeRequests;
     const [row] = await tx
       .select({ id: table.id })
       .from(table)
@@ -121,5 +135,6 @@ export async function handleHrisApprovalResolved(
     refuse(`approval.resolved chain belongs to another ${sourceModule} row`);
 
   if (isLeave) await settleLeaveRequest(scoped, owner.id);
+  else if (isAttendance) await settleAttendanceCorrection(scoped, owner.id);
   else await settleOvertimeRequest(scoped, owner.id);
 }

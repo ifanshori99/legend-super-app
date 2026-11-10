@@ -64,6 +64,7 @@ import {
 } from "../lib/identity-session";
 
 import { recordLoginAudit } from "./identity-wa-audit.ts";
+import { loadSessionRow } from "./identity-session.service";
 
 type ChallengeRow = typeof loginChallenges.$inferSelect;
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -247,6 +248,14 @@ export async function issueWhatsAppChallenge(
   const code = (deps.generateCode ?? generateLoginCode)();
   const bindingHash = bindingDigestOf(request.bindingNonce);
   const ipHash = request.ip ? clientIpDigest(request.ip) : null;
+
+  // legend-k2l: a session that signed in on another device may not link a
+  // number (design ws08 M2); the owner proves the phone again first.
+  if (request.link) {
+    const linking = await loadSessionRow(request.link.sessionId);
+    if (linking?.authCrossDevice === true)
+      throw new IdentityError("IDENTITY_LINK_REAUTH_REQUIRED");
+  }
 
   const issued = await withTenant(db, context, async (tx) => {
     await assertTenantActive(tx, context);
@@ -461,18 +470,29 @@ export async function pollWhatsAppChallenge(
   const row = await loadChallenge(challengeId);
   if (!row) throw new CoreError("NOT_FOUND", "Kode masuk tidak ditemukan.");
   assertBinding(row, request.bindingNonce);
-  if (row.linkUserId !== null) {
+  // legend-k2l: a link that merged with the signed-in account U as the
+  // ABSORBED one completes with the survivor as matched user, and U's sessions
+  // are gone. The bound browser (checked above) then claims one session for
+  // the survivor below, so the link-session check does not apply to it.
+  const absorbedIntoSurvivor =
+    row.linkUserId !== null &&
+    row.status === "completed" &&
+    row.matchedUserId !== null &&
+    row.matchedUserId !== row.linkUserId;
+  if (row.linkUserId !== null && !absorbedIntoSurvivor) {
     if (
       request.link?.userId !== row.linkUserId ||
       request.link?.sessionId !== row.linkSessionId
     )
       throw new CoreError("FORBIDDEN", "Sesi penautan tidak cocok.");
-    if (
-      row.status === "cancelled" &&
-      row.matchedUserId !== null &&
-      row.matchedUserId !== row.linkUserId
-    )
-      throw new IdentityError("IDENTITY_ALREADY_LINKED");
+    // legend-k2l: a successful merge completes the challenge, so a cancel with
+    // a matched user only means the link was refused.
+    if (row.status === "cancelled" && row.matchedUserId !== null)
+      throw new IdentityError(
+        row.matchedUserId === row.linkUserId
+          ? "WHATSAPP_ALREADY_ON_ACCOUNT"
+          : "IDENTITY_MERGE_NEEDS_SUPPORT",
+      );
   }
 
   if (row.status === "pending") {
@@ -513,7 +533,7 @@ export async function pollWhatsAppChallenge(
     return { view: pendingView(expired), session: null };
   }
 
-  if (row.linkUserId !== null)
+  if (row.linkUserId !== null && !absorbedIntoSurvivor)
     return { view: pendingView(toChallenge(row)), session: null };
 
   if (row.status !== "completed" || row.matchedUserId === null)
@@ -574,6 +594,7 @@ export async function pollWhatsAppChallenge(
       ipAddress: request.ip,
       userAgent: request.userAgent,
       now,
+      authMethod: "whatsapp",
     });
   } catch (error) {
     // Release the reservation so the browser can retry; nothing was issued.

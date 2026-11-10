@@ -242,6 +242,24 @@ export const magicLinkRequestedSchema = z.strictObject({
 });
 export type MagicLinkRequested = z.infer<typeof magicLinkRequestedSchema>;
 
+// legend-k2l: body of POST /api/auth/login-challenges/email/verify. The token
+// comes from the link's URL fragment (it never reaches a server log), so the
+// page posts it instead of the API reading a query string.
+export const magicLinkVerifyBodySchema = z.strictObject({
+  token: magicLinkTokenSchema,
+});
+export type MagicLinkVerifyBody = z.infer<typeof magicLinkVerifyBodySchema>;
+
+// legend-k2l: what a verified magic link yields. The session itself travels in
+// the Set-Cookie header; `crossDevice` tells the page the link was opened in
+// another browser than the one that asked (design ws08 M2: such a session may
+// not start a WhatsApp link without a fresh proof).
+export const magicLinkVerifiedSchema = z.strictObject({
+  userId: userIdSchema,
+  crossDevice: z.boolean(),
+});
+export type MagicLinkVerified = z.infer<typeof magicLinkVerifiedSchema>;
+
 /** Google OAuth start: the API builds the URL including its state (browser-bound). */
 export const googleLoginStartSchema = z.strictObject({
   authorizationUrl: httpsUrlSchema,
@@ -375,6 +393,35 @@ export const mfaVerificationResultSchema = z.strictObject({
   verifiedAt: isoDateTimeSchema,
 });
 export type MfaVerificationResult = z.infer<typeof mfaVerificationResultSchema>;
+
+/** Staff MFA recovery codes: a set of 10 single-use codes per user. */
+export const MFA_RECOVERY_CODE_COUNT = 10;
+/** Crockford base32 (no I, L, O, U), shown as `XXXXX-XXXXX`. */
+export const MFA_RECOVERY_CODE_PATTERN =
+  /^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/;
+
+/** Plaintext codes appear once, in the generate response only. */
+export const mfaRecoveryCodesSchema = z.strictObject({
+  codes: z
+    .array(z.string().regex(MFA_RECOVERY_CODE_PATTERN))
+    .length(MFA_RECOVERY_CODE_COUNT),
+  generatedAt: isoDateTimeSchema,
+});
+export type MfaRecoveryCodes = z.infer<typeof mfaRecoveryCodesSchema>;
+
+export const mfaRecoveryStatusSchema = z.strictObject({
+  remaining: z.number().int().min(0).max(MFA_RECOVERY_CODE_COUNT),
+  generatedAt: isoDateTimeSchema.nullable(),
+});
+export type MfaRecoveryStatus = z.infer<typeof mfaRecoveryStatusSchema>;
+
+export const mfaRecoveryVerificationResultSchema = z.strictObject({
+  verifiedAt: isoDateTimeSchema,
+  remaining: z.number().int().min(0).max(MFA_RECOVERY_CODE_COUNT),
+});
+export type MfaRecoveryVerificationResult = z.infer<
+  typeof mfaRecoveryVerificationResultSchema
+>;
 
 /** Poll result of the requesting browser; the session appears once completed. */
 export const loginChallengeViewSchema = z.strictObject({

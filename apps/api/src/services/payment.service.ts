@@ -82,14 +82,20 @@ import {
 } from "./payment-failover.service";
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
-  paymentGateway,
+  paymentGatewayFor,
+  registeredGatewayProviders,
   type GatewayCancelRequest,
   type GatewayIntent,
   type OnlinePaymentMethod,
 } from "./payment-gateway";
 import {
+  outletGatewayHealth,
+  selectGatewayForNewIntent,
+} from "./payment-gateway-select";
+import {
   onlinePaymentMethodSchema,
   resolveRoutingRule,
+  type ResolvedRouting,
 } from "./payment-routing.service";
 import {
   appendPaymentEvent,
@@ -338,9 +344,7 @@ type RoutedMethod = {
 async function routeOnlineMethods(
   context: ScopedTenantContext,
   link: PaymentLinkRow,
-): Promise<
-  Array<{ method: OnlinePaymentMethod; provider: string; enabled: boolean }>
-> {
+): Promise<Array<{ method: OnlinePaymentMethod; routing: ResolvedRouting }>> {
   return withTenant(db, context, async (tx) => {
     const routed = [];
     for (const method of ["qris", "va", "bank_transfer"] as const) {
@@ -350,11 +354,7 @@ async function routeOnlineMethods(
         link.outletId,
         method,
       );
-      routed.push({
-        method,
-        provider: routing.provider,
-        enabled: routing.enabled,
-      });
+      routed.push({ method, routing });
     }
     return routed;
   });
@@ -364,21 +364,30 @@ async function onlineMethods(
   context: ScopedTenantContext,
   link: PaymentLinkRow,
 ): Promise<RoutedMethod[]> {
-  const gateway = paymentGateway();
-  const [routed, health] = await Promise.all([
-    routeOnlineMethods(context, link),
-    gateway.health(context, link.outletId),
-  ]);
-  const gatewayUsable = health.status !== "down";
+  const routed = await routeOnlineMethods(context, link);
+  // Per method: the routing rule's provider, or its fallback when the primary
+  // is down or disabled on the platform (sub-302 D4/D5).
+  const selections = await Promise.all(
+    routed.map((entry) =>
+      selectGatewayForNewIntent(context, link.outletId, entry.routing),
+    ),
+  );
   const result: RoutedMethod[] = [];
-  for (const entry of routed) {
+  for (const [index, entry] of routed.entries()) {
+    const selection = selections[index]!;
+    const gatewayUsable = selection.provider !== null;
+    const port = selection.provider
+      ? selection.port
+      : paymentGatewayFor(entry.routing.provider);
+    // A down gateway is not asked for channels: its adapter may throw, and the
+    // view must still render so the bill can fail over to the cashier.
     const channels =
-      entry.method === "qris"
+      entry.method === "qris" || !gatewayUsable
         ? []
-        : await gateway.channels(context, entry.method, link.outletId);
+        : await port.channels(context, entry.method, link.outletId);
     const configured = entry.method === "qris" || channels.length > 0;
-    const enabled = entry.enabled && gatewayUsable && configured;
-    const unavailableReason = !entry.enabled
+    const enabled = entry.routing.enabled && gatewayUsable && configured;
+    const unavailableReason = !entry.routing.enabled
       ? ("routing_disabled" as const)
       : enabled
         ? null
@@ -386,7 +395,13 @@ async function onlineMethods(
           ? // Routing is on but no bank/channel is configured for the method.
             ("routing_disabled" as const)
           : ("gateway_down" as const);
-    result.push({ ...entry, enabled, unavailableReason, channels });
+    result.push({
+      method: entry.method,
+      provider: selection.provider ?? entry.routing.provider,
+      enabled,
+      unavailableReason,
+      channels,
+    });
   }
   return result;
 }
@@ -400,7 +415,7 @@ export async function getPaymentLinkView(
   const parsedToken = paymentLinkTokenSchema.parse(token);
   const link = await loadLink(context, parsedToken, now);
   const [health, methods] = await Promise.all([
-    paymentGateway().health(context, link.outletId),
+    outletGatewayHealth(context, link.outletId),
     onlineMethods(context, link),
   ]);
   // PRD §3.13 Failover: a down gateway moves this bill to the cashier on its
@@ -411,6 +426,7 @@ export async function getPaymentLinkView(
     link.outletId,
     health,
     now,
+    health.provider,
   );
   if (incident?.openIncident != null && outstandingIdr(link) > 0)
     await failOverLinkSafely(context, link, incident.openIncident, now);
@@ -485,7 +501,9 @@ export async function getPaymentLinkView(
 
 type IntentPlan = {
   readonly link: PaymentLinkRow;
-  readonly provider: string;
+  /** Routing rule for a new intent; null when an idempotent retry found its
+   * intent (an existing intent is never re-routed, PAY-05). */
+  readonly routing: ResolvedRouting | null;
   readonly existing: PaymentIntentRow | null;
 };
 
@@ -542,7 +560,7 @@ async function readIntentPlan(
         channelCode: input.channelCode,
         billSplitId: part?.billSplitId ?? null,
       });
-      return { link, provider: existing.provider, existing };
+      return { link, routing: null, existing };
     }
     if (outstandingIdr(link) <= 0)
       throw new HttpError(409, "CONFLICT", "This bill is already paid.");
@@ -564,7 +582,7 @@ async function readIntentPlan(
         "VALIDATION_ERROR",
         "This payment method is not available.",
       );
-    return { link, provider: routing.provider, existing: null };
+    return { link, routing, existing: null };
   });
 }
 
@@ -632,6 +650,7 @@ async function supersedePending(
     if (row.providerRef !== null)
       superseded.push({
         intentId: row.id,
+        provider: row.provider,
         providerRef: row.providerRef,
         outletId: row.outletId,
       });
@@ -649,9 +668,10 @@ async function cancelSupersededAtGateway(
   context: ScopedTenantContext,
   superseded: readonly GatewayCancelRequest[],
 ): Promise<void> {
-  const gateway = paymentGateway();
-  if (!gateway.cancel) return;
   for (const intent of superseded) {
+    // The code's own gateway, never the current routing (PAY-05).
+    const gateway = paymentGatewayFor(intent.provider);
+    if (!gateway.cancel) continue;
     try {
       await gateway.cancel(context, intent);
     } catch (error) {
@@ -708,14 +728,22 @@ async function createIntentCore(
   if (amountIdr <= 0)
     throw new HttpError(409, "CONFLICT", "This bill is already paid.");
 
-  const gateway = paymentGateway();
-  const health = await gateway.health(context, plan.link.outletId);
-  if (health.status === "down") {
+  if (!plan.routing)
+    throw new Error("Payment intent plan has neither an intent nor a route");
+  const selected = await selectGatewayForNewIntent(
+    context,
+    plan.link.outletId,
+    plan.routing,
+  );
+  if (selected.provider === null) {
+    // No usable gateway for this outlet: record the outlet-level reading.
+    const health = await outletGatewayHealth(context, plan.link.outletId);
     const incident = await syncGatewayHealthSafely(
       context,
       plan.link.outletId,
       health,
       now,
+      health.provider,
     );
     if (incident?.openIncident != null)
       await failOverLinkSafely(context, plan.link, incident.openIncident, now);
@@ -743,10 +771,10 @@ async function createIntentCore(
   const requestedExpiry = new Date(Math.min(methodExpiry, callerExpiry));
   // Same key, same id, same DOIT request: see intentIdFor.
   const intentId = intentIdFor(context.tenant.tenantId, parsed.idempotencyKey);
-  const created: GatewayIntent = await gateway.createIntent({
+  const created: GatewayIntent = await selected.port.createIntent({
     context,
     outletId: plan.link.outletId,
-    provider: plan.provider,
+    provider: selected.provider,
     intentId,
     method: parsed.method,
     channelCode: parsed.channelCode,
@@ -837,7 +865,7 @@ async function createIntentCore(
           outletId: plan.link.outletId,
           paymentLinkId: plan.link.id,
           method: parsed.method,
-          provider: plan.provider,
+          provider: selected.provider,
           amountIdr: idr(amountIdr),
           billSplitId: part?.billSplitId ?? null,
           idempotencyKey: parsed.idempotencyKey,
@@ -1237,7 +1265,7 @@ async function syncPendingIntentDetailed(
   let gatewayError = false;
   let settlementFailed = false;
   try {
-    providerStatus = await paymentGateway().getStatus({
+    providerStatus = await paymentGatewayFor(intent.provider).getStatus({
       context,
       outletId: intent.outletId,
       integrationId: intent.gatewayIntegrationId,
@@ -1926,9 +1954,12 @@ export async function expireDueIntents(
   limit = 200,
   options: { leaveGatewayReconciling?: boolean } = {},
 ): Promise<{ expired: number }> {
+  const providers = registeredGatewayProviders();
   const gatewayOwned = and(
     isNotNull(paymentIntents.providerRef),
-    eq(paymentIntents.provider, paymentGateway().provider),
+    providers.length > 0
+      ? inArray(paymentIntents.provider, [...providers])
+      : sql`false`,
   );
   const due = await withTenant(db, context, async (tx) =>
     tx
@@ -2037,7 +2068,7 @@ async function syncExpiredIntentPayment(
     return { intent, gatewayError: false };
   let providerStatus;
   try {
-    providerStatus = await paymentGateway().getStatus({
+    providerStatus = await paymentGatewayFor(intent.provider).getStatus({
       context,
       outletId: intent.outletId,
       integrationId: intent.gatewayIntegrationId,
@@ -2164,7 +2195,7 @@ async function releasePollLease(
  * retries. Past expiry a code is asked again only after the backoff (half the
  * time since expiry, at most `GATEWAY_POLL_MAX_BACKOFF_MS`). Intents are taken least-recently-polled first and each attempt
  * stamps `gateway_polled_at`, so a few failing intents cannot starve the rest.
- * A run stops after its time budget or three gateway errors in a row (the
+ * A run stops after its time budget; a provider with three gateway errors in a row (the
  * gateway is down).
  */
 export async function pollPendingGatewayIntents(
@@ -2172,6 +2203,8 @@ export async function pollPendingGatewayIntents(
   now = new Date(),
   limit = 100,
 ): Promise<{ checked: number; settled: number }> {
+  const providers = registeredGatewayProviders();
+  if (providers.length === 0) return { checked: 0, settled: 0 };
   const cutoff = new Date(now.getTime() - GATEWAY_POLL_GRACE_MS);
   const windowStart = new Date(now.getTime() - GATEWAY_POLL_WINDOW_MS);
   const nowAt = sql`${now.toISOString()}::timestamptz`;
@@ -2188,41 +2221,48 @@ export async function pollPendingGatewayIntents(
   // Claim atomically: rows another worker holds (a live lease, or a row lock
   // mid-claim) are skipped, so two workers never poll the same intent.
   const pending = await withTenant(db, context, async (tx) => {
-    const candidates = await tx
-      .select({ id: paymentIntents.id })
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.tenantId, context.tenant.tenantId),
-          or(
-            isNull(paymentIntents.gatewayPollLeaseUntil),
-            lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
-          ),
-          or(
-            eq(paymentIntents.status, "pending"),
-            and(
-              eq(paymentIntents.status, "expired"),
-              or(
-                gt(paymentIntents.expiresAt, cutoff),
-                and(
-                  lt(paymentIntents.updatedAt, paymentIntents.expiresAt),
-                  gt(paymentIntents.expiresAt, windowStart),
+    // One window per provider: rows of a provider at its error budget are
+    // skipped without a stamp, so a shared window would fill with them and
+    // starve the other providers.
+    const candidates: Array<{ id: string }> = [];
+    for (const provider of providers) {
+      const rows = await tx
+        .select({ id: paymentIntents.id })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            or(
+              isNull(paymentIntents.gatewayPollLeaseUntil),
+              lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
+            ),
+            or(
+              eq(paymentIntents.status, "pending"),
+              and(
+                eq(paymentIntents.status, "expired"),
+                or(
+                  gt(paymentIntents.expiresAt, cutoff),
+                  and(
+                    lt(paymentIntents.updatedAt, paymentIntents.expiresAt),
+                    gt(paymentIntents.expiresAt, windowStart),
+                  ),
                 ),
               ),
             ),
+            backoffDue,
+            eq(paymentIntents.provider, provider),
+            isNotNull(paymentIntents.providerRef),
+            lt(paymentIntents.createdAt, cutoff),
           ),
-          backoffDue,
-          eq(paymentIntents.provider, paymentGateway().provider),
-          isNotNull(paymentIntents.providerRef),
-          lt(paymentIntents.createdAt, cutoff),
-        ),
-      )
-      .orderBy(
-        sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
-        asc(paymentIntents.createdAt),
-      )
-      .limit(limit)
-      .for("update", { skipLocked: true });
+        )
+        .orderBy(
+          sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
+          asc(paymentIntents.createdAt),
+        )
+        .limit(limit)
+        .for("update", { skipLocked: true });
+      candidates.push(...rows);
+    }
     if (candidates.length === 0) return [];
     const claimed = await tx
       .update(paymentIntents)
@@ -2237,18 +2277,30 @@ export async function pollPendingGatewayIntents(
         ),
       )
       .returning();
-    const byId = new Map(claimed.map((row) => [row.id, row]));
-    // `returning` has no order: keep the least-recently-polled-first order.
-    return candidates.flatMap((row) => byId.get(row.id) ?? []);
+    // `returning` has no order, and the per-provider windows come back grouped
+    // by provider. Process in one global least-recently-polled-first order
+    // (never polled first, then oldest) so a slow provider that uses up the
+    // time budget cannot keep another provider's rows behind its own forever.
+    return claimed.sort((a, b) => {
+      const ap = a.gatewayPolledAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+      const bp = b.gatewayPolledAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+      if (ap !== bp) return ap < bp ? -1 : 1;
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    });
   });
   let checked = 0;
   let settled = 0;
-  let consecutiveErrors = 0;
+  // Error budget per provider: one down gateway never stops another's poll.
+  const consecutiveErrors = new Map<string, number>();
   const startedAt = Date.now();
   try {
     for (const row of pending) {
       if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
-      if (consecutiveErrors >= GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS) break;
+      if (
+        (consecutiveErrors.get(row.provider) ?? 0) >=
+        GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS
+      )
+        continue;
       checked += 1;
       try {
         // Stamp the attempt first so an erroring intent rotates to the back.
@@ -2276,7 +2328,12 @@ export async function pollPendingGatewayIntents(
           row.status === "expired"
             ? await syncExpiredIntentPayment(outletContext, row, now)
             : await syncPendingIntentDetailed(outletContext, row, now);
-        consecutiveErrors = result.gatewayError ? consecutiveErrors + 1 : 0;
+        consecutiveErrors.set(
+          row.provider,
+          result.gatewayError
+            ? (consecutiveErrors.get(row.provider) ?? 0) + 1
+            : 0,
+        );
         if (
           row.status !== result.intent.status &&
           (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)

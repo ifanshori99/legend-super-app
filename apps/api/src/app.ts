@@ -5,7 +5,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
 import { env, trustProxySetting } from "./config/env";
-import { pool } from "./db";
+import { db, pool } from "./db";
 import { auth, CLIENT_IP_HEADER } from "./lib/auth";
 import {
   logger as defaultLogger,
@@ -29,6 +29,12 @@ import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
+import { createStorageApiRouter } from "./routes/storage-api.routes";
+import {
+  consoleLikeLog,
+  createStorageRuntimeFromEnv,
+  type StorageRuntime,
+} from "./services/core-storage-runtime";
 import { mcpOAuthRouter, mcpRouter } from "./routes/mcp.routes";
 import { auditEventsRouter } from "./routes/audit-events.routes";
 import { createMetricsRouter } from "./routes/metrics.routes";
@@ -71,6 +77,7 @@ import {
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
+import { installKdsServingEstimate } from "./services/kds-estimate.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -79,6 +86,8 @@ setAuditWriter(coreAuditWriter);
 // WS-03 QR order wiring (legend-e2x/souz): promo engine port + ORD-10 settlement.
 setQrOrderPromoPort(orderPromoPort);
 setQrOrderDepositCreditLookup(depositCreditForSession);
+// WS-04 order pacing (legend-gyc, KDS-05): queue-aware serving estimate.
+installKdsServingEstimate();
 setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // WS-04 POS order wiring (legend-kk7): the same promo engine port as QR. The
 // reservation deposit credit is shared through the QR port above. Receipt
@@ -105,6 +114,11 @@ setPosEdcTenderPort(edcTenderSettlement);
 setInventoryRecipeSource(recipeBomSource);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
+// A search value with a run of 6+ digits (spaces, "+" and "-" ignored) is
+// likely a phone number, e.g. GET /api/customers?q=081234567890: personal data.
+const PHONE_LIKE_VALUE = /\d{6,}/;
+// ISO dates/timestamps (from=2026-11-10) are filters, not numbers: keep them in the log.
+const ISO_DATE_VALUE = /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.+Z-]*)?$/;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 const ABSOLUTE_FORM_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
 
@@ -138,8 +152,13 @@ function safeUrl(url: string) {
     .replace(PUBLIC_RECEIPT_PATH, "$1[redacted]…");
   if (!query) return path;
   const params = new URLSearchParams(query);
-  for (const key of params.keys())
-    if (SENSITIVE_QUERY.test(key)) params.set(key, "[redacted]");
+  for (const [key, value] of [...params.entries()])
+    if (
+      SENSITIVE_QUERY.test(key) ||
+      (!ISO_DATE_VALUE.test(value) &&
+        PHONE_LIKE_VALUE.test(value.replace(/[\s+-]/g, "")))
+    )
+      params.set(key, "[redacted]");
   return `${path}?${params.toString()}`;
 }
 
@@ -153,6 +172,11 @@ export function createApp({
   publicRateLimit: publicRateLimitOptions,
   loginChallengeRateLimit: loginChallengeRateLimitOptions,
   edgeMode = env.EDGE_MODE,
+  storageRuntime = createStorageRuntimeFromEnv(
+    process.env,
+    db,
+    consoleLikeLog(defaultLogger),
+  ),
 }: {
   logger?: Logger;
   /** Test seam; production reads EDGE_MODE (legend-2pi route split). */
@@ -163,6 +187,8 @@ export function createApp({
   publicRateLimit?: Partial<PublicRateLimitOptions>;
   /** Test seam; production uses the LOGIN_* defaults (legend-fc0f2). */
   loginChallengeRateLimit?: Partial<LoginChallengeRateLimitOptions>;
+  /** Test seam; production reads STORAGE_* (null: uploads answer 503, legend-dzh9q). */
+  storageRuntime?: StorageRuntime | null;
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
@@ -233,6 +259,8 @@ export function createApp({
         "Idempotency-Key",
         "X-Reservation-Link-Token",
         "X-Request-Id",
+        // Active cashier token of a shared POS device (middleware/acting-staff).
+        "X-Acting-Staff",
       ],
       exposedHeaders: ["X-Request-Id", "Location"],
       maxAge: 600,
@@ -398,6 +426,11 @@ export function createApp({
   app.use("/api/reports", createReportsRouter());
   // Dashboard layout, tile values (batch) and queue rows (legend-flb8f).
   app.use("/api/dashboards", createDashboardsRouter());
+  // Object storage consumers (core-storage router, attendance selfie URLs).
+  app.use(
+    "/api",
+    createStorageApiRouter({ runtime: storageRuntime, database: db }),
+  );
   app.use("/api", apiRouter);
 
   app.use(notFound);

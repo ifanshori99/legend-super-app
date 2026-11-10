@@ -42,6 +42,7 @@ import {
   magicLinkQuerySchema,
   mfaEnrollSchema,
   mfaFactorParamsSchema,
+  mfaRecoveryVerifySchema,
   mfaVerifySchema,
   replaceApprovalMatrixSchema,
   roleAssignmentParamsSchema,
@@ -59,8 +60,14 @@ import {
   loginChallengeViewSchema,
   loginResultSchema,
   magicLinkRequestedSchema,
+  // legend-k2l
+  magicLinkVerifiedSchema,
+  magicLinkVerifyBodySchema,
   mfaEnrollmentSchema,
   mfaFactorSchema,
+  mfaRecoveryCodesSchema,
+  mfaRecoveryStatusSchema,
+  mfaRecoveryVerificationResultSchema,
   mfaVerificationResultSchema,
   sessionViewSchema,
   staffPinSwitchSchema,
@@ -82,6 +89,15 @@ export const requestMagicLink = defineEndpoint({
   path: "/api/auth/login-challenges/email",
   body: createMagicLinkChallengeSchema,
   response: dataResponseSchema(magicLinkRequestedSchema),
+});
+
+// legend-k2l: the clicked email link opens a page that posts the token from its
+// URL fragment; the API sets the session cookie and answers with the user id.
+export const verifyMagicLinkEmail = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/login-challenges/email/verify",
+  body: magicLinkVerifyBodySchema,
+  response: dataResponseSchema(magicLinkVerifiedSchema),
 });
 
 /** The requesting browser polls; the session appears once the message lands. */
@@ -160,6 +176,28 @@ export const deleteMfaFactor = defineEndpoint({
   method: "DELETE",
   path: "/api/auth/mfa/factors/:factorId",
   params: mfaFactorParamsSchema,
+});
+
+/** Remaining recovery codes; never the codes themselves. */
+export const getMfaRecoveryStatus = defineEndpoint({
+  method: "GET",
+  path: "/api/auth/mfa/recovery-codes",
+  response: dataResponseSchema(mfaRecoveryStatusSchema),
+});
+
+/** Needs an MFA-verified session. Replaces the whole set; plaintext shown once. */
+export const generateMfaRecoveryCodes = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/mfa/recovery-codes",
+  response: dataResponseSchema(mfaRecoveryCodesSchema),
+});
+
+/** Spends one recovery code and marks this session MFA-verified. */
+export const verifyMfaRecoveryCode = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/mfa/recovery",
+  body: mfaRecoveryVerifySchema,
+  response: dataResponseSchema(mfaRecoveryVerificationResultSchema),
 });
 
 // ---------------------------------------------------------------- sessions

@@ -10,6 +10,7 @@ import {
   uuidSchema,
   idempotencyKeySchema,
   clientInputSchema,
+  cursorPageMetaSchema,
   cursorPageQuerySchema,
   cursorPageSchema,
   dataResponseSchema,
@@ -37,6 +38,7 @@ import {
   redemptionCodeSchema,
   rewardSchema,
   customerConsentSchema,
+  referralCodeSchema,
 } from "./loyalty.ts";
 import {
   campaignAbTestSchema,
@@ -110,11 +112,22 @@ export const getMemberOverview = defineEndpoint({
   response: dataResponseSchema(memberOverviewSchema),
 });
 
+/** Points about to expire (legend-3zd1); additive, absent on other lists. */
+export const memberPointsExpiringSoonSchema = z.strictObject({
+  points: z.number().int().min(0),
+  earliestExpiresAt: isoDateTimeSchema.nullable(),
+});
+
 export const listMemberPoints = defineEndpoint({
   method: "GET",
   path: "/api/member/points",
   query: cursorPageQuerySchema,
-  response: page(pointLedgerEntrySchema),
+  response: z.object({
+    data: z.array(pointLedgerEntrySchema),
+    meta: cursorPageMetaSchema.extend({
+      expiringSoon: memberPointsExpiringSoonSchema.optional(),
+    }),
+  }),
 });
 
 export const listMemberRewards = defineEndpoint({
@@ -182,6 +195,8 @@ export const updateMemberConsentInputSchema = clientInputSchema({
   purpose: consentPurposeSchema,
   granted: z.boolean(),
   policyVersion: z.string().min(1).max(20),
+  /** Referral code typed at signup (legend-3zd1); unknown codes are ignored. */
+  referralCode: referralCodeSchema.optional(),
 });
 
 export const updateMemberConsent = defineEndpoint({
@@ -742,6 +757,8 @@ export const listFeedback = defineEndpoint({
 
 export const updateFeedbackInputSchema = clientInputSchema({
   action: feedbackActionSchema,
+  // legend-ts50: catatan penanganan staf, opsional.
+  handledNote: z.string().trim().min(1).max(2000).optional(),
 });
 
 export const updateFeedback = defineEndpoint({

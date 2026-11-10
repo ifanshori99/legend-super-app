@@ -17,15 +17,18 @@ import {
   createParLevelInputSchema,
   createStockLocationInputSchema,
   createUomConversionInputSchema,
+  createUomInputSchema,
   inventoryItemAlternateIdSchema,
   inventoryItemIdSchema,
   parLevelIdSchema,
   parLevelQuerySchema,
   stockLocationIdSchema,
   uomConversionIdSchema,
+  uomIdSchema,
   updateInventorySettingsInputSchema,
   updateParLevelInputSchema,
   updateStockLocationInputSchema,
+  updateUomInputSchema,
 } from "@starter/shared/inventory";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
@@ -54,6 +57,7 @@ import {
   getInventorySettings,
   updateInventorySettings,
 } from "../services/inventory-settings.service.ts";
+import { createUom, updateUom } from "../services/inventory-uom.service.ts";
 
 export function createInventorySetupRouter(): Router {
   const router = Router();
@@ -109,6 +113,34 @@ export function createInventorySetupRouter(): Router {
       });
     },
   );
+
+  // ------------------------------------------------------------------ uoms
+
+  router.post("/uoms", writeTenant, jsonBody, async (req, res) => {
+    const input = createUomInputSchema.parse(req.body);
+    const uom = await createUom(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      input,
+    );
+    res
+      .status(201)
+      .location(`/api/inventory/uoms/${uom.id}`)
+      .json({ data: uom });
+  });
+
+  router.patch("/uoms/:uomId", writeTenant, jsonBody, async (req, res) => {
+    const uomId = uomIdSchema.parse(req.params.uomId);
+    const input = updateUomInputSchema.parse(req.body);
+    res.json({
+      data: await updateUom(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        uomId,
+        input,
+      ),
+    });
+  });
 
   // ------------------------------------------------------------ alternates
 

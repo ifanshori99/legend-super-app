@@ -94,6 +94,8 @@ export type GatewayPaymentStatus = {
 /** A code that was replaced by another one on the same bill. */
 export type GatewayCancelRequest = {
   readonly intentId: string;
+  /** Provider of the intent (`payment_intents.provider`). */
+  readonly provider: string;
   readonly providerRef: string;
   readonly outletId: string;
 };
@@ -143,6 +145,23 @@ export interface PaymentGatewayPort {
     context: ScopedTenantContext,
     intent: GatewayCancelRequest,
   ): Promise<void>;
+  /** Credential check for the admin "test connection" button (sub-302 D16).
+   * Works on a `draft` integration. Never returns secrets or raw provider
+   * bodies. Optional: a gateway without it answers NOT_SUPPORTED. */
+  testConnection?(
+    context: ScopedTenantContext,
+    integrationId: string,
+  ): Promise<
+    | {
+        readonly ok: true;
+        readonly methods: readonly GatewayMethodAvailability[];
+      }
+    | {
+        readonly ok: false;
+        readonly code:
+          "GATEWAY_AUTH_FAILED" | "GATEWAY_UNREACHABLE" | "GATEWAY_REJECTED";
+      }
+  >;
 }
 
 /**
@@ -172,17 +191,55 @@ export const unconfiguredPaymentGateway: PaymentGatewayPort = {
   },
 };
 
-let gateway: PaymentGatewayPort = unconfiguredPaymentGateway;
+/** Registered adapters by provider code (sub-302 D1). */
+const registry = new Map<string, PaymentGatewayPort>();
+/** Test-only singleton mode (D2): `setPaymentGateway` makes one port answer
+ * for every provider, as the old singleton did. */
+let legacyPort: PaymentGatewayPort | null = null;
 
-/**
- * Installed by the API bootstrap (or a test) with a configured adapter. Never
- * install an adapter that skips verification: `confirmPayment` expects the
- * caller to have verified the evidence already.
- */
-export function setPaymentGateway(next: PaymentGatewayPort | null): void {
-  gateway = next ?? unconfiguredPaymentGateway;
+/** True while a test installed a port through `setPaymentGateway`. */
+export function paymentGatewayLegacyMode(): boolean {
+  return legacyPort !== null;
 }
 
-export function paymentGateway(): PaymentGatewayPort {
-  return gateway;
+/**
+ * Installed by the API bootstrap with one configured adapter per provider.
+ * Adds or replaces `port.provider` and leaves legacy mode. Never install an
+ * adapter that skips verification: `confirmPayment` expects the caller to have
+ * verified the evidence already.
+ */
+export function registerPaymentGateway(port: PaymentGatewayPort): void {
+  legacyPort = null;
+  registry.set(port.provider, port);
+}
+
+/** Adapter of `provider`; fails closed (`unconfiguredPaymentGateway`) when none
+ * is registered. */
+export function paymentGatewayFor(provider: string): PaymentGatewayPort {
+  if (legacyPort) return legacyPort;
+  return registry.get(provider) ?? unconfiguredPaymentGateway;
+}
+
+export function registeredGatewayProviders(): readonly string[] {
+  if (legacyPort) return [legacyPort.provider];
+  return [...registry.keys()];
+}
+
+/** Tests: drop every adapter and leave legacy mode. */
+export function resetPaymentGateways(): void {
+  registry.clear();
+  legacyPort = null;
+}
+
+/**
+ * Test-only shim (sub-302 D2): clears the registry, registers `next` and turns
+ * on legacy mode, where `paymentGatewayFor(anything)` returns `next`. `null`
+ * resets. Production code (`server.ts`, `worker-main.ts`) must call
+ * `registerPaymentGateway`, never this.
+ */
+export function setPaymentGateway(next: PaymentGatewayPort | null): void {
+  resetPaymentGateways();
+  if (!next) return;
+  registry.set(next.provider, next);
+  legacyPort = next;
 }

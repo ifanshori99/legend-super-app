@@ -6,8 +6,10 @@
 
 import { Router, type Request } from "express";
 import { userIdSchema } from "@starter/shared/core";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { setOrderCustomer as setOrderCustomerEndpoint } from "@starter/shared/crm";
-import { getAuth, requireAuth } from "../middleware/auth";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
+import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -32,6 +34,7 @@ posOrderCustomerRouter.put(
   requireAuth,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
   jsonBody,
   async (req, _res, next) => {
     const { orderId } = setOrderCustomerEndpoint.params.parse(req.params);
@@ -41,6 +44,14 @@ posOrderCustomerRouter.put(
     );
     if (!outletId)
       throw new HttpError(404, "NOT_FOUND", "Pesanan tidak ditemukan.");
+    // The path carries no outlet, so resolveActingStaff could not compare it:
+    // a cashier token issued for another outlet is refused here.
+    if (req.actingStaff && req.actingStaff.outletId !== outletId)
+      throw new HttpError(
+        403,
+        ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+        "Kasir aktif bukan untuk outlet pesanan ini.",
+      );
     outlets.set(req, outletId);
     next();
   },
@@ -51,7 +62,7 @@ posOrderCustomerRouter.put(
     res.json({
       data: await orderCustomer.setPosOrderCustomer(
         getScopedTenantContext(req),
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         orderId,
         input,
       ),

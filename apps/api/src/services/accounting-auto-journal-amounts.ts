@@ -43,13 +43,20 @@
 // orders.payment_intent_id, receipt-first like a POS gateway tender. An
 // order.paid with every amount 0 books nothing (null).
 //
+// legend-msqvi (D-msqvi, PSAK 72): the five points.* events post the loyalty
+// journal. The ledger entry id comes from the envelope idempotency key
+// (`<event name>:<ledgerEntryId>`, point-ledger.service.ts), and the amount is
+// the signed liability_idr of that point_ledger row, never the payload. The
+// tenant must have exactly one legal entity; the anchor outlet (oldest outlet
+// of that entity) gives the business-day clock and owns a parked row.
+//
 // A payload, row or method that can never post as sent throws
 // AutoJournalPayloadInvalid (or a ZodError): the consumer parks it as
 // non-retryable AUTO_JOURNAL_PAYLOAD_INVALID instead of failing the outbox
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { AccountingError } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
@@ -59,11 +66,15 @@ import {
   settlementReconciledPayloadSchema,
 } from "@starter/shared/payment";
 import {
+  cashMovements,
   domainEventOutbox,
+  orderIssueCharges,
   orders,
+  outlets,
   paymentIntents,
   paymentRefunds,
   paymentUnallocatedFunds,
+  pointLedger,
   posOrders,
   posOrderTenders,
   posShifts,
@@ -74,9 +85,11 @@ import {
   assertPayoutWithinReceipt,
   assertSaleWithinReceipt,
   type Bound,
+  assertChargeWithinReceipt,
   backingKeyOf,
   backingStateOf,
   backingStatesOf,
+  chargeBoundOf,
   DP_INTENT_STATUSES,
   payoutBackingOf,
   saleBoundOf,
@@ -86,17 +99,36 @@ import {
   AutoJournalSaleMissing,
   AutoJournalSalePending,
 } from "./accounting-auto-journal-void.ts";
+import { isTrainingOrder } from "./device-training.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
+/** legend-msqvi: points.* events journaled from their point_ledger row. */
+export const LOYALTY_AUTO_JOURNAL_EVENTS = [
+  "points.earned",
+  "points.reversed",
+  "points.redeemed",
+  "points.adjusted",
+  "points.expired",
+] as const;
+export type LoyaltyAutoJournalEventName =
+  (typeof LOYALTY_AUTO_JOURNAL_EVENTS)[number];
+
+export function isLoyaltyAutoJournalEvent(
+  name: string,
+): name is LoyaltyAutoJournalEventName {
+  return (LOYALTY_AUTO_JOURNAL_EVENTS as readonly string[]).includes(name);
+}
+
 export const AUTO_JOURNAL_EVENTS = [
   "order.paid",
   "order.refunded",
   "order.voided",
   "order_issue.refund_reversal_requested",
+  "order_issue.charge_paid",
   "payment.paid",
   "payment.funds_unallocated",
   "payment.refunded",
@@ -107,6 +139,8 @@ export const AUTO_JOURNAL_EVENTS = [
   "edc_transaction.settled",
   "purchase_return.recorded",
   "petty_purchase.recorded",
+  // legend-msqvi
+  ...LOYALTY_AUTO_JOURNAL_EVENTS,
 ] as const;
 export type AutoJournalEventName = (typeof AUTO_JOURNAL_EVENTS)[number];
 
@@ -154,6 +188,15 @@ export class AutoJournalReceiptMissing extends Error {
  */
 export class AutoJournalDepositCutoverMixed extends Error {
   readonly code = "AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED";
+}
+
+/**
+ * legend-msqvi: a points event of a tenant whose outlets belong to more than
+ * one legal entity. v1 cannot tell which entity owes the points (follow-up:
+ * loyalty_programs.legal_entity_id). Parked, never retried.
+ */
+export class AutoJournalLoyaltyEntityAmbiguous extends Error {
+  readonly code = "LOYALTY_LEGAL_ENTITY_AMBIGUOUS";
 }
 
 const idr = z.number().int().safe();
@@ -223,6 +266,28 @@ export const orderIssueRefundReversalStoredSchema = z.object({
   rejectedAt: time,
 });
 
+/**
+ * order_issue.charge_paid as the consumer stores it (legend-i83ls): the guest
+ * paid the swap-difference charge of an issue. Only ids, amounts and the time
+ * are kept; the outlet is the event envelope outlet, the charge row is the
+ * source of truth for the split.
+ */
+export const orderIssueChargePaidStoredSchema = z.object({
+  orderId: id,
+  orderIssueId: z.string().uuid(),
+  chargeId: z.string().uuid(),
+  /** Null exactly when the charge was paid in cash at the POS (legend-800h1). */
+  paymentIntentId: z.string().uuid().nullable(),
+  /** Absent on events stored before the cash variant: qr_link. */
+  method: z.enum(["qr_link", "pos_cash"]).optional(),
+  cashMovementId: z.string().uuid().nullable().optional(),
+  grossSalesIdr: idr.nonnegative(),
+  serviceChargeIdr: idr.nonnegative(),
+  pbjtIdr: idr.nonnegative(),
+  amountIdr: idr.refine((value) => value > 0),
+  paidAt: time,
+});
+
 const paymentPaidSchema = z.object({
   intentId: z.string().uuid(),
   receivedIdr: idr,
@@ -279,6 +344,11 @@ const pettyPurchaseRecordedSchema = z.object({
   paidAt: time,
 });
 
+// legend-msqvi: the stored loyalty fact is the ledger entry id only; the rest
+// is re-read from the point_ledger row (the authority).
+const ledgerEntryIdSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+const loyaltyStoredSchema = z.object({ ledgerEntryId: ledgerEntryIdSchema });
+
 const PAYMENT_SCHEMAS = {
   "payment.paid": paymentPaidSchema,
   "payment.funds_unallocated": fundsUnallocatedSchema,
@@ -309,6 +379,12 @@ export type AutoJournalFact = {
    * date from `moneyTime` (timezone and business-day cutoff would shift it).
    */
   readonly entryDate?: string;
+  /**
+   * legend-msqvi: outlet of the journal and its lines when it differs from
+   * `outletId` (which then only gives the legal entity and the business-day
+   * clock); null posts an entity-level journal.
+   */
+  readonly journalOutletId?: string | null;
 };
 
 /**
@@ -321,6 +397,10 @@ export function storedEventOf(event: {
   outletId: string | null;
   occurredAt: string;
   payload: unknown;
+  /** legend-msqvi: envelope key, carries the point_ledger entry id. */
+  idempotencyKey?: string | null;
+  /** legend-msqvi: anchor outlet of a points event (loyaltyAnchorOf). */
+  loyaltyOutletId?: string | null;
 }): StoredAutoJournalEvent {
   const base = { eventId: event.id, eventName: event.name };
   const occurredAt = event.occurredAt;
@@ -339,6 +419,14 @@ export function storedEventOf(event: {
     }
     case "order_issue.refund_reversal_requested": {
       const payload = orderIssueRefundReversalStoredSchema.parse(event.payload);
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      return { ...base, outletId: event.outletId, occurredAt, payload };
+    }
+    case "order_issue.charge_paid": {
+      const payload = orderIssueChargePaidStoredSchema.parse(event.payload);
       if (event.outletId === null)
         throw new AutoJournalPayloadInvalid(
           `${event.name} event has no outlet`,
@@ -388,7 +476,71 @@ export function storedEventOf(event: {
       assertEnvelopeOutlet(event, payload.outletId);
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
+    // legend-msqvi
+    case "points.earned":
+    case "points.reversed":
+    case "points.redeemed":
+    case "points.adjusted":
+    case "points.expired": {
+      const ledgerEntryId = ledgerEntryIdOf(event.name, event.idempotencyKey);
+      if (!event.loyaltyOutletId)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} has no outlet to post under`,
+        );
+      return {
+        ...base,
+        outletId: event.loyaltyOutletId,
+        occurredAt,
+        payload: { ledgerEntryId },
+      };
+    }
   }
+}
+
+/**
+ * legend-msqvi: the point_ledger entry id of a points event, from its
+ * envelope key `<event name>:<ledgerEntryId>` (appendPointsEvent).
+ */
+function ledgerEntryIdOf(
+  eventName: string,
+  idempotencyKey: string | null | undefined,
+): string {
+  const separator = idempotencyKey?.indexOf(":") ?? -1;
+  const parsed =
+    idempotencyKey && separator > 0
+      ? idempotencyKey.slice(0, separator) === eventName
+        ? ledgerEntryIdSchema.safeParse(idempotencyKey.slice(separator + 1))
+        : null
+      : null;
+  if (!parsed?.success)
+    throw new AutoJournalPayloadInvalid(
+      `${eventName} idempotency key carries no ledger entry id`,
+    );
+  return parsed.data;
+}
+
+/**
+ * legend-msqvi (D-msqvi section 7): where a tenant's loyalty journals post.
+ * One legal entity across the tenant's outlets: that entity, anchored on its
+ * oldest outlet. More than one: legalEntityId null (ambiguous), anchored on
+ * the tenant's oldest outlet so the event can still be parked. No outlet: null.
+ */
+export async function loyaltyAnchorOf(
+  tx: Tx,
+  tenantId: TenantId,
+): Promise<{ outletId: string; legalEntityId: string | null } | null> {
+  const rows = await tx
+    .select({ id: outlets.id, legalEntityId: outlets.legalEntityId })
+    .from(outlets)
+    .where(eq(outlets.tenantId, tenantId))
+    .orderBy(asc(outlets.createdAt), asc(outlets.id));
+  const [oldest] = rows;
+  if (!oldest) return null;
+  const entities = new Set(rows.map((row) => row.legalEntityId));
+  return {
+    outletId: oldest.id,
+    legalEntityId: entities.size === 1 ? oldest.legalEntityId : null,
+  };
 }
 
 /** An envelope outlet, when set, must be the payload outlet. */
@@ -434,6 +586,8 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:sale-void:${String(p.orderId)}`);
     case "order_issue.refund_reversal_requested":
       return boundedKey(`aj:order-refund-reversal:${String(p.orderIssueId)}`);
+    case "order_issue.charge_paid":
+      return boundedKey(`aj:order-charge:${String(p.chargeId)}`);
     case "payment.paid":
       return receiptKeyOf(String(p.intentId));
     case "payment.funds_unallocated":
@@ -453,6 +607,13 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:purchase-return:${String(p.purchaseReturnId)}`);
     case "petty_purchase.recorded":
       return boundedKey(`aj:petty-purchase:${String(p.pettyPurchaseId)}`);
+    // legend-msqvi: one ledger row, one journal.
+    case "points.earned":
+    case "points.reversed":
+    case "points.redeemed":
+    case "points.adjusted":
+    case "points.expired":
+      return boundedKey(`aj:loyalty:${String(p.ledgerEntryId)}`);
   }
 }
 
@@ -877,6 +1038,171 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
 }
 
 /**
+ * legend-i83ls: the revenue of a paid swap-difference charge, booked with the
+ * rule of order.paid. The money of the charge is one intent of its own payment
+ * link (never the order's), so the fact reads the charge row, not the order:
+ * - the charge is `paid` by the intent the event names, with the exact split
+ *   and amount of the event (identity gross + service + pbjt), of the outlet;
+ * - the sale journal of its order must exist (or still be able to post), like
+ *   a refund (order.refunded): the charge revenue follows the sale;
+ * - the intent receipt decides the debit as for a QR sale: posted (out of
+ *   customer_deposit, within what the receipt still holds at the charge bound),
+ *   none (pre-cutover gateway money, gateway_clearing), pending (wait). An
+ *   EDC-linked intent fails closed (receiptStatesOf).
+ * legend-800h1: a charge paid in cash at the POS (method pos_cash) has no
+ * intent. Its money is the charge's own cash_in movement (same tenant and
+ * outlet, amount = charge amount), booked straight to cash_on_hand; there is
+ * no receipt to wait for or to bound, the sale journal rule is unchanged.
+ */
+async function chargePaidFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<AutoJournalFact> {
+  const p = orderIssueChargePaidStoredSchema.parse(stored.payload);
+  const [charge] = await tx
+    .select({
+      outletId: orderIssueCharges.outletId,
+      orderId: orderIssueCharges.orderId,
+      orderIssueId: orderIssueCharges.orderIssueId,
+      status: orderIssueCharges.status,
+      paymentIntentId: orderIssueCharges.paymentIntentId,
+      cashMovementId: orderIssueCharges.cashMovementId,
+      grossSalesIdr: orderIssueCharges.grossSalesIdr,
+      serviceChargeIdr: orderIssueCharges.serviceChargeIdr,
+      pbjtIdr: orderIssueCharges.pbjtIdr,
+      amountIdr: orderIssueCharges.amountIdr,
+    })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.id, p.chargeId),
+      ),
+    );
+  if (!charge)
+    throw new AutoJournalPayloadInvalid("Charge of the event not found");
+  const cash = p.method === "pos_cash";
+  if (
+    cash !== (p.cashMovementId != null) ||
+    cash !== (p.paymentIntentId === null)
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Charge event mixes the cash and the payment link variants",
+    );
+  if (
+    charge.status !== "paid" ||
+    charge.paymentIntentId !== p.paymentIntentId ||
+    (charge.cashMovementId ?? null) !== (p.cashMovementId ?? null) ||
+    charge.outletId !== stored.outletId ||
+    charge.orderId !== p.orderId ||
+    charge.orderIssueId !== p.orderIssueId
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Charge is not paid by the intent of the event",
+    );
+  if (
+    Number(charge.grossSalesIdr) !== p.grossSalesIdr ||
+    Number(charge.serviceChargeIdr) !== p.serviceChargeIdr ||
+    Number(charge.pbjtIdr) !== p.pbjtIdr ||
+    Number(charge.amountIdr) !== p.amountIdr ||
+    p.grossSalesIdr + p.serviceChargeIdr + p.pbjtIdr !== p.amountIdr
+  )
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "Charge payload does not match the charge row",
+    );
+  const saleState = await backingStateOf(tx, tenantId, {
+    kind: "sale",
+    orderId: p.orderId,
+  });
+  if (saleState === "pending")
+    throw new AutoJournalSalePending("Sale journal is not posted yet");
+  if (saleState === "none")
+    throw new AutoJournalSaleMissing("Sale journal will never post");
+  if (cash) {
+    const [movement] = await tx
+      .select({
+        type: cashMovements.type,
+        outletId: cashMovements.outletId,
+        amountIdr: cashMovements.amountIdr,
+      })
+      .from(cashMovements)
+      .where(
+        and(
+          eq(cashMovements.tenantId, tenantId),
+          eq(cashMovements.id, p.cashMovementId!),
+        ),
+      );
+    if (
+      !movement ||
+      movement.type !== "cash_in" ||
+      movement.outletId !== stored.outletId ||
+      Number(movement.amountIdr) !== p.amountIdr
+    )
+      throw new AutoJournalPayloadInvalid(
+        "Cash movement of the charge is not its cash_in",
+      );
+    return {
+      ruleEvent: "order.paid",
+      amounts: {
+        paidCashIdr: p.amountIdr,
+        paidGatewayIntentIdr: 0,
+        paidDepositIdr: 0,
+        paidGatewayIdr: 0,
+        paidEdcIdr: 0,
+        paidPointsIdr: 0,
+        discountIdr: 0,
+        grossSalesIdr: p.grossSalesIdr,
+        serviceChargeIdr: p.serviceChargeIdr,
+        pbjtIdr: p.pbjtIdr,
+        roundingIdr: 0,
+      },
+      sourceId: p.chargeId,
+      outletId: stored.outletId,
+      moneyTime: new Date(p.paidAt),
+    };
+  }
+  // qr_link: paymentIntentId is set (checked above).
+  const intentId = p.paymentIntentId!;
+  const states = await receiptStatesOf(tx, tenantId, [intentId]);
+  const state = states.get(intentId);
+  if (state === "pending")
+    throw new AutoJournalReceiptPending(
+      "Gateway receipt of the charge is not booked yet",
+    );
+  let withReceipt = 0;
+  if (state === "posted") {
+    await assertChargeWithinReceipt(
+      tx,
+      tenantId,
+      intentId,
+      await chargeBoundOf(tx, tenantId, p.chargeId),
+    );
+    withReceipt = p.amountIdr;
+  }
+  return {
+    ruleEvent: "order.paid",
+    amounts: {
+      paidCashIdr: 0,
+      paidGatewayIntentIdr: withReceipt,
+      paidDepositIdr: 0,
+      paidGatewayIdr: p.amountIdr - withReceipt,
+      paidEdcIdr: 0,
+      paidPointsIdr: 0,
+      discountIdr: 0,
+      grossSalesIdr: p.grossSalesIdr,
+      serviceChargeIdr: p.serviceChargeIdr,
+      pbjtIdr: p.pbjtIdr,
+      roundingIdr: 0,
+    },
+    sourceId: p.chargeId,
+    outletId: stored.outletId,
+    moneyTime: new Date(p.paidAt),
+  };
+}
+
+/**
  * Rule input of one stored event, or null when the event books nothing
  * (EDC-linked intent on a payment event, zero receipt, zero forfeit, zero
  * shift difference, order.paid with every amount 0). Re-reads only rows that
@@ -1061,6 +1387,8 @@ export async function autoJournalFactOf(
       throw new Error(
         "order_issue.refund_reversal_requested is handled by recoveryRefundFactOf",
       );
+    case "order_issue.charge_paid":
+      return chargePaidFactOf(tx, tenantId, stored);
     case "payment.paid": {
       const p = paymentPaidSchema.parse(stored.payload);
       if (p.receivedIdr <= 0) return null;
@@ -1356,5 +1684,123 @@ export async function autoJournalFactOf(
         entryDate: p.businessDate,
       };
     }
+    case "points.earned":
+    case "points.reversed":
+    case "points.redeemed":
+    case "points.adjusted":
+    case "points.expired":
+      return loyaltyFactOf(tx, tenantId, stored.eventName, stored.payload);
   }
+}
+
+/** legend-msqvi: ledger row types each points event is emitted for. */
+const LOYALTY_ROW_TYPES: Record<
+  LoyaltyAutoJournalEventName,
+  readonly string[]
+> = {
+  "points.earned": ["earn", "bonus"],
+  "points.reversed": ["reverse"],
+  "points.redeemed": ["redeem"],
+  "points.adjusted": ["adjust"],
+  "points.expired": ["expire"],
+};
+
+/**
+ * legend-msqvi (D-msqvi sections 3-7): the loyalty fact of one point_ledger
+ * row. pointsValueIdr keeps the row's sign: earned and adjusted rules credit
+ * loyalty_liability, the others debit it, so the amount is liability_idr or
+ * its negation and the journal always moves loyalty_liability exactly as the
+ * ledger did (a negative manual adjustment flips to Dr liability / Cr
+ * deferral). Ignored (null): a redeem row that is not a reward redemption
+ * (points tender belongs to order.paid paidPointsIdr), an earn on a training
+ * order or the reversal of one, a zero liability.
+ */
+async function loyaltyFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  eventName: LoyaltyAutoJournalEventName,
+  payload: Record<string, unknown>,
+): Promise<AutoJournalFact | null> {
+  const { ledgerEntryId } = loyaltyStoredSchema.parse(payload);
+  const row = await ledgerRowOf(tx, tenantId, ledgerEntryId);
+  if (!row || !LOYALTY_ROW_TYPES[eventName].includes(row.type))
+    throw new AutoJournalPayloadInvalid(
+      `Ledger entry of ${eventName} not found or of another type`,
+    );
+  if (eventName === "points.redeemed" && row.sourceType !== "reward_redemption")
+    return null;
+  let journalOutletId: string | null = null;
+  if (eventName === "points.earned") {
+    if (
+      row.sourceType === "order" &&
+      row.sourceId !== null &&
+      (await isTrainingOrder(tx, tenantId, row.sourceId))
+    )
+      return null;
+    journalOutletId = row.outletId;
+  }
+  if (eventName === "points.reversed") {
+    const reversed =
+      row.reversesEntryId === null
+        ? undefined
+        : await ledgerRowOf(tx, tenantId, row.reversesEntryId);
+    if (!reversed)
+      throw new AutoJournalPayloadInvalid(
+        "Reversed ledger entry of points.reversed not found",
+      );
+    if (
+      reversed.sourceType === "order" &&
+      reversed.sourceId !== null &&
+      (await isTrainingOrder(tx, tenantId, reversed.sourceId))
+    )
+      return null;
+    journalOutletId = reversed.outletId;
+  }
+  const liabilityIdr = Number(row.liabilityIdr);
+  if (liabilityIdr === 0) return null;
+  const anchor = await loyaltyAnchorOf(tx, tenantId);
+  if (!anchor)
+    throw new AutoJournalPayloadInvalid("Tenant has no outlet for loyalty");
+  if (anchor.legalEntityId === null)
+    throw new AutoJournalLoyaltyEntityAmbiguous(
+      "Tenant outlets belong to more than one legal entity",
+    );
+  const raisesLiability =
+    eventName === "points.earned" || eventName === "points.adjusted";
+  return {
+    ruleEvent: eventName,
+    amounts: { pointsValueIdr: raisesLiability ? liabilityIdr : -liabilityIdr },
+    sourceId: row.id,
+    outletId: anchor.outletId,
+    journalOutletId,
+    moneyTime: row.createdAt,
+    // Dated like the sale that earned the points (the earn consumer copies the
+    // order business date), so an offline order synced after midnight or
+    // month end defers in the same period as its revenue. Rows without one
+    // (expire, redeem, manual) fall back to the anchor outlet clock.
+    ...(row.businessDate ? { entryDate: row.businessDate } : {}),
+  };
+}
+
+async function ledgerRowOf(tx: Tx, tenantId: TenantId, ledgerEntryId: string) {
+  const [row] = await tx
+    .select({
+      id: pointLedger.id,
+      type: pointLedger.type,
+      outletId: pointLedger.outletId,
+      sourceType: pointLedger.sourceType,
+      sourceId: pointLedger.sourceId,
+      reversesEntryId: pointLedger.reversesEntryId,
+      liabilityIdr: pointLedger.liabilityIdr,
+      createdAt: pointLedger.createdAt,
+      businessDate: pointLedger.businessDate,
+    })
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenantId),
+        eq(pointLedger.id, ledgerEntryId),
+      ),
+    );
+  return row;
 }

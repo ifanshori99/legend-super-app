@@ -12,6 +12,7 @@ export * from "./platform-org";
 export * from "./menu";
 export * from "./platform-domains";
 export * from "./platform-packages";
+export * from "./platform-payment-gateways";
 export * from "./platform-integrations";
 export * from "./platform-themes";
 export * from "./platform-support";
@@ -43,17 +44,20 @@ export * from "./reservation";
 // Guest reservation self-service links (legend-o5gr).
 export * from "./reservation-public";
 export * from "./facility";
+export * from "./facility-entitlement";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";
 // WS-10 shift scheduling: templates, roster, swaps, compliance (legend-jstx).
 export * from "./hris-scheduling";
+export * from "./hris-attendance";
 export * from "./hris-lifecycle";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
 export * from "./accounting-auto-journal";
 export * from "./accounting-journal-requests";
 export * from "./accounting-cash-bank";
+export * from "./accounting-tax";
 // WS-06 inventory setup writes (legend-gjmk).
 export * from "./inventory-setup";
 // WS-03 menu import + printable menu (legend-dmi).
@@ -68,6 +72,7 @@ export * from "./operations";
 // WS-02 edge node registry + cloud <-> edge link (legend-2pi).
 export * from "./edge-deferred-event";
 export * from "./edge-node";
+export * from "./edge-hris";
 export * from "./edge-sync-conflict";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
@@ -81,10 +86,14 @@ export * from "./kds-issues";
 export * from "./apology-vouchers";
 // WS-04 kitchen capacity rules (legend-w4nq4).
 export * from "./kds-capacity";
+// WS-04 order pacing: menu loads, channel pauses, pacing state (legend-gyc).
+export * from "./kds-pacing";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
 export * from "./purchasing";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
 export * from "./pos-shift";
+// Acting cashier token per POS device (legend-aruta).
+export * from "./pos-acting-staff";
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
 export * from "./payroll-pph21-policy";
 // WS-10 payroll core tables (legend-gfcr).
@@ -97,6 +106,8 @@ export * from "./hris-training";
 export * from "./hris-announcement";
 // WS-07 shareholder documents (legend-69yq).
 export * from "./shareholder-documents";
+// WS-07 profit share (legend-2ljb).
+export * from "./accounting-profit-share";
 // WS-06 stock count / stok opname (legend-j5x).
 export * from "./inventory-count";
 // WS-02 device registry + training periods (legend-165).
@@ -109,6 +120,7 @@ export * from "./ai-insights";
 export * from "./inventory-gl";
 // WS-09 edge Wi-Fi agent grant ledger (legend-hsk).
 export * from "./edge-wifi";
+export * from "./wifi-quota";
 // WS-03 open-bill controls per outlet (legend-cqrw).
 export * from "./open-bill";
 // WS-08 public brand website content (legend-qgr6).
@@ -126,6 +138,8 @@ export * from "./petty-purchases";
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
+// legend-k2l
+export * from "./identity-merge";
 // WS-12 per-tenant AI provider config (legend-dwrr).
 export * from "./ai-provider";
 // WS-03 table link groups (legend-1nmh).
@@ -138,3 +152,11 @@ export * from "./crm-member";
 export * from "./crm-ledger";
 // WS-08 rewards, redemptions, missions (legend-m4p5).
 export * from "./crm-rewards";
+// WS-08 feedback, customer segments (legend-ts50).
+export * from "./crm-feedback";
+export * from "./crm-segments";
+// WS-08 loyalty tiers, tier history, referrals (legend-3zd1).
+export * from "./crm-tiers";
+
+// legend-dn4 WhatsApp login reply policy, default off (AUTH-03).
+export * from "./wa-login-reply";
