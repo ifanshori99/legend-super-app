@@ -25,15 +25,19 @@ sudah ada tetapi belum ada penebusan. Tingkat K (poin = kewajiban).
    split atau id pesanan, jadi kunci dedupe ledger sekaligus menjadi kunci
    idempotensi. Satu migrasi (CHECK `point_ledger_source_type_check` plus kolom
    klaim di `orders`); payload event `points.earned` menerima sumber itu.
-5. Poin = `pointsForSpend(program, jumlah dibayar)`: jumlah dibayar = nilai
-   bagian atau total pesanan (bukan harga sebelum pajak). Kedaluwarsa poin
-   seperti earn biasa. Batas harian per profil dihitung dari baris ledger `earn`
+5. Poin = `pointsForSpend(program, belanja)`: belanja = penjualan kotor dikurangi
+   diskon, SEBELUM pajak dan service charge (PRD D18 dan bagian Poin; harga
+   nett: subtotal tanpa service dan pajak yang sudah dikandungnya, sama dengan
+   pemisahan `order.paid`). Bagian split mendapat porsi pro-rata dari
+   `jumlah bayar bagian / total pesanan`, dibulatkan ke bawah. Jumlah yang
+   ditampilkan (`paidIdr`) tetap yang dibayar tamu. Kedaluwarsa poin seperti
+   earn biasa. Batas harian per profil dihitung dari baris ledger `earn`
    profil itu pada business date yang sama; poin dipotong ke sisa.
 6. Pesanan yang sudah punya member ter-attach (consumer earn yang menghitung)
    tidak bisa diklaim: mencegah poin ganda. Pesanan void: klaim berhenti.
-7. Larangan self-serve (`isSelfServe`) tidak berlaku untuk klaim: klaim memang
-   jalur poin tamu QR yang dibuktikan pembayaran. Founder perlu tahu bila
-   larangan itu dimaksudkan juga untuk QR.
+7. Larangan self-serve (`isSelfServe`) tidak berlaku untuk klaim: PRD alur QR
+   (langkah 7) membolehkan tamu mengklaim poin dengan login, dan jalur ini
+   dibuktikan oleh pembayaran meja. Tidak perlu keputusan founder.
 8. Syarat penebus: login, profil member aktif, WhatsApp terverifikasi,
    persetujuan loyalty aktif (sama dengan consumer earn). Posting ledger
    memakai konteks tenant member (event earn berlaku tenant-wide).
@@ -44,6 +48,10 @@ sudah ada tetapi belum ada penebusan. Tingkat K (poin = kewajiban).
    harian ikut menghitung baris klaim. Diterima dan dicatat: token bagian split
    terbaca oleh sesama sesi meja (kepercayaan = sesi), dasar poin = jumlah
    dibayar termasuk pajak dan servis, pesanan latihan belum dikecualikan.
+   Dua yang terakhir sudah dibetulkan: dasar poin kini belanja sebelum pajak
+   dan service (butir 5), dan pesanan latihan (`pos_orders.is_training`) serta
+   bagian splitnya tidak bisa diklaim. Consumer earn biasa sudah benar
+   (`grossSalesIdr - discountIdr - paidPointsIdr`, gross sudah sebelum pajak).
 
 ## 2026-11-10: Laporan harian tanpa pesanan latihan (legend-fbxzw)
 

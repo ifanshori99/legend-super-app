@@ -532,7 +532,11 @@ async function reverseTableClaims(
   const { tenantId, context, now } = scope;
   const [order] = await tx
     .select({
-      eligible: sql<string>`${orders.subtotalIdr} - ${orders.discountIdr}`,
+      // Gross sales minus discount, the base the claim earned on (tax-inclusive
+      // prices already hold the service charge and tax: order-revenue.ts).
+      eligible: sql<string>`GREATEST(0, CASE WHEN ${orders.pricesIncludeTax}
+        THEN ${orders.subtotalIdr} - ${orders.serviceChargeIdr} - ${orders.taxIdr}
+        ELSE ${orders.subtotalIdr} END - ${orders.discountIdr})`,
     })
     .from(orders)
     .where(

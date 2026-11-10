@@ -275,32 +275,101 @@ async function settle(
   return { before, after: Date.now() };
 }
 
+/** Service charge, tax and discount stamped on an order before it is paid. */
+type Skew = {
+  serviceIdr: number;
+  taxIdr: number;
+  discountIdr: number;
+  inclusive?: boolean;
+};
+
+/**
+ * Rewrites the amounts of a placed (unpaid) order so it carries service
+ * charge, tax and discount, keeping the identity its CHECK requires. Returns
+ * the new total and the spend the PRD counts for points (D18: after
+ * discount, before tax and service charge).
+ */
+async function skewOrder(orderId: string, skew: Skew) {
+  const inclusive = skew.inclusive === true;
+  const { rows } = await owner.query(
+    `UPDATE orders
+        SET service_charge_idr = $3, tax_idr = $4, discount_idr = $5,
+            prices_include_tax = $6, rounding_idr = 0,
+            total_idr = CASE WHEN $6 THEN subtotal_idr - $5
+                             ELSE subtotal_idr - $5 + $3 + $4 END
+      WHERE tenant_id = $1 AND id = $2::uuid
+      RETURNING subtotal_idr::bigint AS subtotal, total_idr::bigint AS total`,
+    [
+      tenant.tenantId,
+      ulidToUuid(orderId),
+      skew.serviceIdr,
+      skew.taxIdr,
+      skew.discountIdr,
+      inclusive,
+    ],
+  );
+  const subtotal = Number(rows[0].subtotal);
+  const gross = inclusive ? subtotal - skew.serviceIdr - skew.taxIdr : subtotal;
+  return {
+    totalIdr: Number(rows[0].total),
+    eligibleIdr: gross - skew.discountIdr,
+  };
+}
+
 /** Places one pay-first order of one kopi (not paid). */
-async function placeOrder(guest: Guest) {
+async function placeOrder(guest: Guest, skew?: Skew) {
   const added = await as(guest).add(ids.kopi, 0);
   expect(added.status, JSON.stringify(added.body)).toBe(201);
   const placed = await as(guest).checkout(added.body.data.cart.version);
   expect(placed.status, JSON.stringify(placed.body)).toBe(201);
+  const orderId = placed.body.data.order.id as string;
+  if (skew) {
+    const skewed = await skewOrder(orderId, skew);
+    return { orderId, ...skewed };
+  }
+  // The seeded outlet charges service and tax: points follow the spend
+  // before them (PRD D18), not the total the guest pays.
+  const { rows } = await owner.query(
+    `SELECT total_idr::bigint AS total,
+            (CASE WHEN prices_include_tax THEN subtotal_idr - service_charge_idr - tax_idr
+                  ELSE subtotal_idr END - discount_idr)::bigint AS eligible
+       FROM orders WHERE tenant_id = $1 AND id = $2::uuid`,
+    [tenant.tenantId, ulidToUuid(orderId)],
+  );
   return {
-    orderId: placed.body.data.order.id as string,
-    totalIdr: placed.body.data.order.totalIdr as number,
+    orderId,
+    totalIdr: Number(rows[0].total),
+    eligibleIdr: Number(rows[0].eligible),
   };
 }
 
 /** One order paid in full by a single payer (no split). */
-async function paidOrder(guest: Guest) {
-  const order = await placeOrder(guest);
+async function paidOrder(guest: Guest, skew?: Skew) {
+  const order = await placeOrder(guest, skew);
   const pay = await as(guest).payOrder(order.orderId);
   expect(pay.status, JSON.stringify(pay.body)).toBe(201);
   const window = await settle(pay.body.data.id as string, order.totalIdr);
   return { ...order, ...window, intentId: pay.body.data.id as string };
 }
 
+/** Pro-rata spend of one part of a split order (rounded down). */
+const shareOf = (
+  split: {
+    eligibleIdr: number;
+    totalIdr: number;
+    parts: { amountIdr: number }[];
+  },
+  index: number,
+) =>
+  Math.floor(
+    (split.eligibleIdr * split.parts[index]!.amountIdr) / split.totalIdr,
+  );
+
 type SplitDto = { id: string; shareIndex: number; amountIdr: number };
 
 /** One order split in two equal parts, both paid; returns parts and tokens. */
-async function paidSplitOrder(guest: Guest) {
-  const order = await placeOrder(guest);
+async function paidSplitOrder(guest: Guest, skew?: Skew) {
+  const order = await placeOrder(guest, skew);
   const created = await as(guest).split({
     method: "equal",
     parts: 2,
@@ -480,7 +549,7 @@ describe("guest point claim: reading (legend-n1mp)", () => {
     const claim = res.body.data;
     expect(claim.status).toBe("available");
     expect(claim.paidIdr).toBe(order.totalIdr);
-    expect(claim.points).toBe(pointsOf(order.totalIdr));
+    expect(claim.points).toBe(pointsOf(order.eligibleIdr));
     expect(claim.points).toBeGreaterThan(0);
     expect(claim.requiresLogin).toBe(true);
     const until = new Date(claim.claimableUntil).getTime();
@@ -616,7 +685,7 @@ describe("guest point claim: claiming (legend-n1mp)", () => {
     const guest = await seat();
     const order = await paidOrder(guest);
     const member = await newMember();
-    const expected = pointsOf(order.totalIdr);
+    const expected = pointsOf(order.eligibleIdr);
     const before = await balanceOf(tenant.tenantId, member.profileId);
 
     const res = await as(guest, member).claim();
@@ -654,10 +723,10 @@ describe("guest point claim: claiming (legend-n1mp)", () => {
     const again = await as(guest, member).claim();
     expect(again.status, JSON.stringify(again.body)).toBe(200);
     expect(again.body.data.status).toBe("claimed");
-    expect(again.body.data.points).toBe(pointsOf(order.totalIdr));
+    expect(again.body.data.points).toBe(pointsOf(order.eligibleIdr));
     expect(await ledgerClaims(member.profileId)).toHaveLength(1);
     expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(
-      pointsOf(order.totalIdr),
+      pointsOf(order.eligibleIdr),
     );
   });
 
@@ -706,7 +775,7 @@ describe("guest point claim: claiming (legend-n1mp)", () => {
 
     const first = await seat();
     const orderOne = await paidOrder(first);
-    expect(pointsOf(orderOne.totalIdr)).toBeGreaterThan(10);
+    expect(pointsOf(orderOne.eligibleIdr)).toBeGreaterThan(10);
     const one = await as(first, member).claim();
     expect(one.status, JSON.stringify(one.body)).toBe(200);
     expect(one.body.data.points).toBe(10);
@@ -747,7 +816,7 @@ describe("guest point claim: split parts (legend-n1mp)", () => {
     expect(viewA.status, JSON.stringify(viewA.body)).toBe(200);
     expect(viewA.body.data.status).toBe("available");
     expect(viewA.body.data.paidIdr).toBe(partA.amountIdr);
-    expect(viewA.body.data.points).toBe(pointsOf(partA.amountIdr));
+    expect(viewA.body.data.points).toBe(pointsOf(shareOf(split, 0)));
 
     const memberA = await newMember();
     const memberB = await newMember();
@@ -768,7 +837,7 @@ describe("guest point claim: split parts (legend-n1mp)", () => {
       source_type: "table_claim",
     });
     expect(rowsA[0]!.source_id).toBe(partA.id);
-    expect(Number(rowsA[0]!.points)).toBe(pointsOf(partA.amountIdr));
+    expect(Number(rowsA[0]!.points)).toBe(pointsOf(shareOf(split, 0)));
 
     // Part B is untouched by A's redeem: still available to another member.
     const viewB = await as(guest).pointClaim(tokenB);
@@ -923,5 +992,101 @@ describe("guest point claim: review hardening (legend-n1mp)", () => {
     // Without a token the open-session rule stays.
     const bare = await as(guest, member).claim();
     expect(bare.status).toBe(401);
+  });
+});
+
+describe("guest point claim: spend base and training (legend-n1mp)", () => {
+  const skew: Skew = { serviceIdr: 4000, taxIdr: 4000, discountIdr: 2000 };
+
+  it("counts points on spend after discount, before tax and service charge (PRD D18)", async () => {
+    const guest = await seat();
+    const order = await paidOrder(guest, skew);
+    expect(order.totalIdr).toBeGreaterThan(order.eligibleIdr);
+    const view = await as(guest).pointClaim();
+    expect(view.status, JSON.stringify(view.body)).toBe(200);
+    expect(view.body.data.status).toBe("available");
+    // The amount paid stays what the guest paid; the points follow the spend.
+    expect(view.body.data.paidIdr).toBe(order.totalIdr);
+    expect(view.body.data.points).toBe(pointsOf(order.eligibleIdr));
+    const member = await newMember();
+    const res = await as(guest, member).claim();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const rows = await ledgerClaims(member.profileId);
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]!.points)).toBe(pointsOf(order.eligibleIdr));
+    expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(
+      pointsOf(order.eligibleIdr),
+    );
+  });
+
+  it("strips the tax and service charge that tax-inclusive prices already hold", async () => {
+    const guest = await seat();
+    const order = await paidOrder(guest, {
+      serviceIdr: 3000,
+      taxIdr: 2000,
+      discountIdr: 0,
+      inclusive: true,
+    });
+    expect(order.eligibleIdr).toBe(order.totalIdr - 5000);
+    const view = await as(guest).pointClaim();
+    expect(view.body.data.points).toBe(pointsOf(order.eligibleIdr));
+  });
+
+  it("gives a split part its pro-rata share of the spend", async () => {
+    const guest = await seat();
+    const split = await paidSplitOrder(guest, skew);
+    for (const [index, part] of split.parts.entries()) {
+      const share = shareOf(split, index);
+      const view = await as(guest).pointClaim(split.tokens[index]!);
+      expect(view.status, JSON.stringify(view.body)).toBe(200);
+      expect(view.body.data.paidIdr).toBe(part.amountIdr);
+      expect(view.body.data.points).toBe(pointsOf(share));
+    }
+    const member = await newMember();
+    const res = await as(guest, member).claim(split.tokens[0]!);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(Number((await ledgerClaims(member.profileId))[0]!.points)).toBe(
+      pointsOf(shareOf(split, 0)),
+    );
+  });
+
+  // pos_orders only knows POS channels and must match the order's channel.
+  const markTraining = async (orderId: string) => {
+    await owner.query(
+      "UPDATE orders SET channel = 'pos' WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    await owner.query(
+      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, is_training)
+       SELECT id, tenant_id, outlet_id, channel, true
+         FROM orders WHERE tenant_id = $1 AND id = $2::uuid`,
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+  };
+
+  it("a training order cannot be claimed: GET unavailable, POST 409, no ledger row", async () => {
+    const guest = await seat();
+    const order = await paidOrder(guest);
+    expect((await as(guest).pointClaim()).body.data.status).toBe("available");
+    await markTraining(order.orderId);
+    const res = await as(guest).pointClaim();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.status).toBe("unavailable");
+    const member = await newMember();
+    const post = await as(guest, member).claim();
+    expect(post.status, JSON.stringify(post.body)).toBe(409);
+    expect(await ledgerClaims(member.profileId)).toEqual([]);
+  });
+
+  it("the parts of a training order cannot be claimed either", async () => {
+    const guest = await seat();
+    const split = await paidSplitOrder(guest);
+    await markTraining(split.orderId);
+    const view = await as(guest).pointClaim(split.tokens[0]!);
+    expect(view.body.data.status).toBe("unavailable");
+    const member = await newMember();
+    const post = await as(guest, member).claim(split.tokens[0]!);
+    expect(post.status, JSON.stringify(post.body)).toBe(409);
+    expect(await ledgerClaims(member.profileId)).toEqual([]);
   });
 });

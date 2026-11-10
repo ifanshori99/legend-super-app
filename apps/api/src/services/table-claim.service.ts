@@ -125,6 +125,19 @@ function orderRefunded(tenantId: TenantId) {
   )`;
 }
 
+/**
+ * SQL condition: the order was rung up on a training device (`pos_orders`
+ * stamp, legend-2lp.8). Training sales earn no points, claim included.
+ */
+function orderTraining(tenantId: TenantId) {
+  return sql`EXISTS (
+    SELECT 1 FROM pos_orders t
+    WHERE t.tenant_id = ${tenantId}
+      AND t.order_id = orders.id
+      AND t.is_training
+  )`;
+}
+
 // ---- Issue -------------------------------------------------------------------------
 
 /**
@@ -180,7 +193,13 @@ export async function issueWholeBillClaimTx(
 type ClaimUnit = {
   kind: "split" | "order";
   id: string;
+  /** What the guest paid (shown as is). */
   paidIdr: number;
+  /**
+   * The spend that earns points: after discount, before tax and service
+   * charge (PRD D18); a split part holds its pro-rata share.
+   */
+  spendIdr: number;
   paidAt: Date;
   expiresAt: Date;
   redeemedAt: Date | null;
@@ -195,10 +214,40 @@ type OrderUnitRow = {
   outletId: string;
   businessDate: string;
   totalIdr: number;
+  subtotalIdr: number;
+  discountIdr: number;
+  serviceChargeIdr: number;
+  taxIdr: number;
+  pricesIncludeTax: boolean;
   expiresAt: Date | null;
   redeemedAt: Date | null;
   customerProfileId: string | null;
 };
+
+/**
+ * Spend of a whole order that earns points: gross sales minus discount. Gross
+ * sales are the subtotal, or, for tax-inclusive prices (harga nett), the
+ * subtotal without the service charge and tax it already holds (the same split
+ * `order.paid` carries, order-revenue.ts).
+ */
+function eligibleSpend(row: {
+  subtotalIdr: number;
+  discountIdr: number;
+  serviceChargeIdr: number;
+  taxIdr: number;
+  pricesIncludeTax: boolean;
+}): number {
+  const gross = row.pricesIncludeTax
+    ? row.subtotalIdr - row.serviceChargeIdr - row.taxIdr
+    : row.subtotalIdr;
+  return Math.max(0, gross - row.discountIdr);
+}
+
+/** A part's pro-rata share of the order's spend, rounded down. */
+function partSpend(eligible: number, partIdr: number, totalIdr: number) {
+  if (totalIdr <= 0) return 0;
+  return Number((BigInt(eligible) * BigInt(partIdr)) / BigInt(totalIdr));
+}
 
 function orderUnit(row: OrderUnitRow): ClaimUnit | null {
   if (row.expiresAt === null) return null;
@@ -206,6 +255,7 @@ function orderUnit(row: OrderUnitRow): ClaimUnit | null {
     kind: "order",
     id: row.id,
     paidIdr: row.totalIdr,
+    spendIdr: eligibleSpend(row),
     paidAt: new Date(row.expiresAt.getTime() - CLAIM_TTL_MS),
     expiresAt: row.expiresAt,
     redeemedAt: row.redeemedAt,
@@ -232,6 +282,11 @@ async function loadUnits(
     outletId: orders.outletId,
     businessDate: orders.businessDate,
     totalIdr: orders.totalIdr,
+    subtotalIdr: orders.subtotalIdr,
+    discountIdr: orders.discountIdr,
+    serviceChargeIdr: orders.serviceChargeIdr,
+    taxIdr: orders.taxIdr,
+    pricesIncludeTax: orders.pricesIncludeTax,
     expiresAt: orders.claimExpiresAt,
     redeemedAt: orders.claimRedeemedAt,
     customerProfileId: orders.customerProfileId,
@@ -248,6 +303,12 @@ async function loadUnits(
         outletId: orders.outletId,
         businessDate: orders.businessDate,
         customerProfileId: orders.customerProfileId,
+        totalIdr: orders.totalIdr,
+        subtotalIdr: orders.subtotalIdr,
+        discountIdr: orders.discountIdr,
+        serviceChargeIdr: orders.serviceChargeIdr,
+        taxIdr: orders.taxIdr,
+        pricesIncludeTax: orders.pricesIncludeTax,
       })
       .from(billSplits)
       .innerJoin(
@@ -265,6 +326,7 @@ async function loadUnits(
           eq(billSplits.status, "paid"),
           ne(orders.status, "voided"),
           sql`NOT ${orderRefunded(tenantId)}`,
+          sql`NOT ${orderTraining(tenantId)}`,
         ),
       );
     if (part) {
@@ -274,6 +336,11 @@ async function loadUnits(
           kind: "split",
           id: part.id,
           paidIdr: part.amountIdr,
+          spendIdr: partSpend(
+            eligibleSpend(part),
+            part.amountIdr,
+            part.totalIdr,
+          ),
           paidAt: part.paidAt,
           expiresAt: part.expiresAt,
           redeemedAt: part.redeemedAt,
@@ -293,6 +360,7 @@ async function loadUnits(
           eq(orders.tableSessionId, sessionId),
           ne(orders.status, "voided"),
           sql`NOT ${orderRefunded(tenantId)}`,
+          sql`NOT ${orderTraining(tenantId)}`,
         ),
       );
     const unit = row ? orderUnit(row) : null;
@@ -308,6 +376,7 @@ async function loadUnits(
         isNotNull(orders.claimTokenHash),
         ne(orders.status, "voided"),
         sql`NOT ${orderRefunded(tenantId)}`,
+        sql`NOT ${orderTraining(tenantId)}`,
       ),
     )
     .orderBy(asc(orders.claimExpiresAt), asc(orders.id));
@@ -392,7 +461,7 @@ async function planPoints(
   const cap = profile ? program.dailyPointCapPerCustomer : null;
   const remaining = new Map<string, number>();
   for (const unit of open) {
-    let points = pointsForSpend(dto, unit.paidIdr, multiplier);
+    let points = pointsForSpend(dto, unit.spendIdr, multiplier);
     if (cap !== null && profile) {
       if (!remaining.has(unit.businessDate)) {
         const [day] = await tx
@@ -775,6 +844,7 @@ async function redeemSplit(
                   eq(orders.status, "voided"),
                   isNotNull(orders.customerProfileId),
                   orderRefunded(tenantId),
+                  orderTraining(tenantId),
                 ),
               ),
             ),
@@ -805,6 +875,7 @@ async function redeemOrder(
         ne(orders.status, "voided"),
         isNull(orders.customerProfileId),
         sql`NOT ${orderRefunded(tenantId)}`,
+        sql`NOT ${orderTraining(tenantId)}`,
       ),
     )
     .returning({ id: orders.id });

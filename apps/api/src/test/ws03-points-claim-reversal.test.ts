@@ -198,6 +198,40 @@ describe("legend-n1mp F1: void/refund takes back table-claim points", () => {
     );
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
+
+  it("a partial refund of a tax-inclusive order reverses its share of the spend before tax and service", async () => {
+    const world = await createWorld();
+    await seedProgram(world.tenantId, { earnSpendIdr: 1000 });
+    const member = await seedMember(world.tenantId);
+    // Harga nett: Rp105.000 holds Rp3.000 service and Rp2.000 tax, so the
+    // spend that earned the points is Rp100.000.
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      channel: "qr",
+      profileId: null,
+      grossSalesIdr: 105_000,
+      serviceChargeIdr: 3_000,
+      pbjtIdr: 2_000,
+      nett: true,
+    });
+    await claim(world, member.id, orderUlid, 100);
+
+    // Half of the spend (Rp50.000 of Rp100.000) comes back: 50 points, not
+    // ceil(100 * 50.000 / 105.000) = 48.
+    await deliver(
+      world,
+      orderRefundedEvent(world, {
+        orderUlid,
+        outletId: world.outletA,
+        refundId: randomUUID(),
+        grossSalesIdr: 50_000,
+      }),
+    );
+    const reversed = reverseRows(await ledgerOf(world.tenantId, member.id));
+    expect(reversed).toHaveLength(1);
+    expect(reversed[0]).toMatchObject({ points: "-50", source_type: "refund" });
+    expect(await balanceOf(world.tenantId, member.id)).toBe(50);
+  });
 });
 
 describe("legend-n1mp F3: the daily cap counts claimed points", () => {
