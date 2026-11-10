@@ -350,7 +350,9 @@ export const recipeDeductions = pgTable(
     reversalSourceId: text("reversal_source_id"),
     // Set when a reversal of a posted deduction was refused by a stock rule:
     // the row stays `posted` with reason/source kept, and `day.closed` retries
-    // it (cleared once the reversal posts).
+    // it (cleared once the reversal posts). legend-nzbi8: on a `remake` row
+    // (reason `swap`, source = the swap issue id) it parks the refused return of
+    // the swapped-away line; the row keeps its own status.
     reversalFailedAt: timestamp("reversal_failed_at", { withTimezone: true }),
   },
   (table) => [
@@ -419,11 +421,11 @@ export const recipeDeductions = pgTable(
     ),
     check(
       "recipe_deductions_reversal_failed_check",
-      sql`${table.reversalFailedAt} IS NULL OR ${table.status} = 'posted'`,
+      sql`${table.reversalFailedAt} IS NULL OR ${table.status} <> 'reversed'`,
     ),
     check(
       "recipe_deductions_reversal_reason_check",
-      sql`${table.reversalReason} IS NULL OR ${table.reversalReason} IN ('void')`,
+      sql`${table.reversalReason} IS NULL OR ${table.reversalReason} IN ('void', 'swap')`,
     ),
     check(
       "recipe_deductions_skipped_check",

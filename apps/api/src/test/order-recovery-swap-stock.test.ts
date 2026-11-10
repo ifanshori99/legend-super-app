@@ -837,3 +837,239 @@ describe("legend-v51rh swap dan stok", () => {
     }
   });
 });
+
+// legend-nzbi8: a swap return refused by a stock rule is parked on the remake
+// row (`reversal_failed_at`, reason `swap`, source = issue id) and retried on
+// `day.closed`, like a parked void reversal. The refusal is forced by planting a
+// foreign ledger row that owns the return's idempotency key (HTTP 409).
+describe("legend-nzbi8 swap: pengembalian stok ditolak diparkir dan di-retry saat day.closed", () => {
+  type Parked = {
+    id: string;
+    status: string;
+    reversal_reason: string | null;
+    reversal_source_id: string | null;
+    reversal_failed_at: string | null;
+    reversal_failed_epoch: number | null;
+  };
+
+  async function parkedRow(issueId: string): Promise<Parked> {
+    const { rows } = await owner.query<Parked>(
+      `SELECT id, status, reversal_reason, reversal_source_id,
+              reversal_failed_at::text AS reversal_failed_at,
+              extract(epoch FROM reversal_failed_at)::float8 AS reversal_failed_epoch
+       FROM recipe_deductions WHERE tenant_id = $1 AND idempotency_key = $2`,
+      [t(), `swap:issue:${issueId}`],
+    );
+    return rows[0]!;
+  }
+
+  /** A foreign ledger row owns a swap return key: the stock service refuses it. */
+  async function blockReturn(
+    location: string,
+    drawId: string,
+    issueId: string,
+    itemId: string,
+  ): Promise<string> {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO stock_ledger (id, tenant_id, outlet_id, location_id, inventory_item_id,
+          movement_type, quantity, unit_cost_idr, source_type, source_id,
+          idempotency_key, request_fingerprint, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, 'receipt', 1, 1, 'goods_receipt', $6, $7, 'not-the-same-request', now())`,
+      [
+        id,
+        t(),
+        w.tenant.outletId,
+        location,
+        itemId,
+        randomUUID(),
+        `recipe-swap-return:${drawId}:${issueId}:${itemId}`,
+      ],
+    );
+    return id;
+  }
+
+  async function unblock(ledgerId: string) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "DELETE FROM stock_ledger WHERE tenant_id = $1 AND id = $2",
+        [t(), ledgerId],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async function flourReturns(location: string) {
+    return (await ledger(location, fx.flour)).filter(
+      (row) => row.movement_type === "return",
+    );
+  }
+
+  async function failedAudits(remakeId: string): Promise<number> {
+    const { rows } = await owner.query<{ n: string }>(
+      `SELECT count(*) AS n FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'action' = 'recipe_deduction.swap_return_failed'
+         AND event->>'objectId' = $2`,
+      [t(), remakeId],
+    );
+    return Number(rows[0]!.n);
+  }
+
+  /** Paid + completed order, swap delivered while the flour return is refused. */
+  async function parkedSwap() {
+    const { location } = await freshStock();
+    const o = await swappedOrder();
+    await deliverRecipe(o.paidEvent);
+    await setOrderCompleted(o.order.id);
+    const sale = (await deduction(`sale:order:${o.orderUlid}`))!;
+    const poison = await blockReturn(location, sale.id, o.issueId, fx.flour);
+    await deliverSwap(o.swapEvent); // must not throw
+    return { location, o, poison };
+  }
+
+  it("8a. return ditolak: swap tetap jalan, return diparkir di baris remake", async () => {
+    const { location, o } = await parkedSwap();
+
+    expect(await flourReturns(location)).toEqual([]);
+    expect(await onHand(location, fx.flour)).toBe("950.0000");
+    // The replacement is still drawn.
+    expect(await onHand(location, fx.tea)).toBe("990.0000");
+    const parked = await parkedRow(o.issueId);
+    expect(parked).toMatchObject({
+      status: "posted",
+      reversal_reason: "swap",
+      reversal_source_id: o.issueId,
+    });
+    expect(parked.reversal_failed_at).not.toBeNull();
+  });
+
+  it("8b. day.closed menerapkan ulang return; gagal lagi hanya menaikkan reversal_failed_at dan tercatat di audit; berhasil sekali, tidak ganda", async () => {
+    const { location, o, poison } = await parkedSwap();
+    const first = await parkedRow(o.issueId);
+
+    // Cause still there: no return, parked again, failure audited.
+    await deliverRecipe(dayClosedEvent(o.businessDate));
+    const again = await parkedRow(o.issueId);
+    expect(again).toMatchObject({
+      reversal_reason: "swap",
+      reversal_source_id: o.issueId,
+    });
+    expect(again.reversal_failed_epoch!).toBeGreaterThanOrEqual(
+      first.reversal_failed_epoch!,
+    );
+    expect(await flourReturns(location)).toEqual([]);
+    expect(await failedAudits(first.id)).toBeGreaterThanOrEqual(1);
+
+    // Cause fixed (the flour average moved meanwhile): returned at the sale cost.
+    await unblock(poison);
+    await receive(location, fx.flour, START, "60");
+    await deliverRecipe(dayClosedEvent(o.businessDate));
+    const returns = await flourReturns(location);
+    expect(returns).toHaveLength(1);
+    expect(returns[0]).toMatchObject({
+      quantity: FLOUR_PER_ROTI,
+      unit_cost_idr: "20.0000",
+      source_type: "order",
+    });
+    expect(await onHand(location, fx.flour)).toBe("2000.0000");
+    expect(await parkedRow(o.issueId)).toMatchObject({
+      status: "posted",
+      reversal_reason: null,
+      reversal_source_id: null,
+      reversal_failed_at: null,
+    });
+
+    // More day closes and a replay of the swap change nothing.
+    await deliverRecipe(dayClosedEvent(o.businessDate));
+    await deliverRecipe(dayClosedEvent(o.businessDate));
+    await deliverSwap(o.swapEvent);
+    expect(await flourReturns(location)).toHaveLength(1);
+    expect(await onHand(location, fx.flour)).toBe("2000.0000");
+  }, 30_000);
+
+  it("8c. order di-void final sesudah swap diparkir: void mengembalikan semuanya, retry swap tidak mengembalikan lagi", async () => {
+    const { location, o, poison } = await parkedSwap();
+
+    await deliverRecipe(voidedFinalEvent(o.orderUlid, o.businessDate));
+    // The void returned the whole sale, the refused swap return included.
+    expect(await onHand(location, fx.flour)).toBe(START);
+
+    await unblock(poison);
+    await deliverRecipe(dayClosedEvent(o.businessDate));
+    expect(await onHand(location, fx.flour)).toBe(START);
+    expect(await parkedRow(o.issueId)).toMatchObject({
+      reversal_reason: null,
+      reversal_source_id: null,
+      reversal_failed_at: null,
+    });
+  }, 30_000);
+  it("8d. swap berantai B->C diparkir lalu order di-void final: void tidak mengembalikan remake, retry tetap mengembalikan bahan B", async () => {
+    const { location } = await freshStock();
+    const o = await swappedOrder(); // issue 1: roti (A) -> teh (B)
+    await deliverRecipe(o.paidEvent);
+    await setOrderCompleted(o.order.id);
+    await deliverSwap(o.swapEvent);
+    const remake1 = (await deduction(`swap:issue:${o.issueId}`))!;
+
+    // Issue 2: B itself fails and is swapped for roti-lain (C).
+    const { rows } = await owner.query<{ id: string }>(
+      "SELECT replacement_order_item_id AS id FROM order_issues WHERE tenant_id = $1 AND id = $2",
+      [t(), o.issueId],
+    );
+    const reported = await w.report(uuidToUlid(rows[0]!.id));
+    expect(reported.status, JSON.stringify(reported.body)).toBe(201);
+    const issue2 = reported.body.data.id as string;
+    const approvalRequestId = await w.insertApproval({
+      actionType: "price_correction",
+      objectType: "order_issue",
+      objectId: issue2,
+      amountIdr: PRICES.rotiLain,
+      status: "approved",
+      requestedBy: w.floorStaff.userId,
+    });
+    const resolved = await w.staffPost(
+      w.supervisor,
+      `/api/order-issues/${issue2}/resolve`,
+      {
+        resolution: "swap",
+        replacementItemId: w.ids.rotiLain,
+        approvalRequestId,
+      },
+    );
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    const swap2 = (await w.outboxRows("order_issue.resolved", issue2))[0]!
+      .event;
+
+    // The tea return of swap 2 (drawn by the remake of issue 1) is refused.
+    const poison = await blockReturn(location, remake1.id, issue2, fx.tea);
+    await deliverSwap(swap2); // must not throw
+    expect(await onHand(location, fx.tea)).toBe("990.0000");
+    expect(await parkedRow(issue2)).toMatchObject({
+      reversal_reason: "swap",
+      reversal_source_id: issue2,
+    });
+
+    // The void reverses the sale only; the remake of issue 1 stays drawn.
+    await deliverRecipe(voidedFinalEvent(o.orderUlid, o.businessDate));
+    expect(await onHand(location, fx.tea)).toBe("990.0000");
+
+    await unblock(poison);
+    await deliverRecipe(dayClosedEvent(o.businessDate));
+    expect(await onHand(location, fx.tea)).toBe(START);
+    expect(await parkedRow(issue2)).toMatchObject({
+      reversal_reason: null,
+      reversal_source_id: null,
+      reversal_failed_at: null,
+    });
+    await deliverRecipe(dayClosedEvent(o.businessDate));
+    expect(await onHand(location, fx.tea)).toBe(START);
+  }, 30_000);
+});

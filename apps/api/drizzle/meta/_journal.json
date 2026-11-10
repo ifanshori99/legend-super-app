@@ -1464,6 +1464,13 @@
       "when": 1794303000000,
       "tag": "0222_wa_login_reply_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 223,
+      "version": "7",
+      "when": 1794304000000,
+      "tag": "0223_swap_return_park",
+      "breakpoints": true
     }
   ]
 }

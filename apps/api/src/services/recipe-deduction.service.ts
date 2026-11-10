@@ -57,6 +57,7 @@ import {
 import {
   businessDateOf,
   CoreError,
+  createUlid,
   encodeCursor,
   formatDecimal4,
   idr,
@@ -125,6 +126,7 @@ import {
   type CursorPage,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import { recordAudit } from "./core-audit.ts";
 import { isTrainingOrder } from "./device-training.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 import { explodeMenuLines } from "./recipe-bom.service.ts";
@@ -829,8 +831,9 @@ export type SwapStockAdjustmentInput = {
  * returns from the earlier swap's `remake` deduction, which is what drew it.
  * Idempotent on the issue id (the `remake` key is checked first). The caller
  * holds the issue row lock. A stock rule refusing the return rolls that part
- * back alone, so the event is not dead-lettered; that return is then lost (no
- * retry, unlike a parked void reversal).
+ * back alone, so the event is not dead-lettered; the return is then parked on
+ * the `remake` row (`reversal_failed_at`, reason `swap`, source = issue id) and
+ * `day.closed` retries it, like a parked void reversal (legend-nzbi8).
  */
 export async function applySwapStockAdjustment(
   tx: Tx,
@@ -852,46 +855,20 @@ export async function applySwapStockAdjustment(
     .for("update");
   if (!sale || sale.status === "reversed") return;
 
-  // What drew the old line: the sale, or the remake of the swap that created it.
-  let source = sale;
-  const [earlier] = await tx
-    .select({ id: orderIssues.id })
-    .from(orderIssues)
-    .where(
-      and(
-        eq(orderIssues.tenantId, tenantId),
-        eq(orderIssues.replacementOrderItemId, input.oldLineId),
-      ),
-    );
-  if (earlier) {
-    const [earlierDrawn] = await tx
-      .select()
-      .from(recipeDeductions)
-      .where(
-        and(
-          eq(recipeDeductions.tenantId, tenantId),
-          eq(recipeDeductions.idempotencyKey, `swap:issue:${earlier.id}`),
-        ),
-      )
-      .for("update");
-    if (earlierDrawn) source = earlierDrawn;
-  }
+  const source = await swapReturnSource(tx, tenantId, sale, input.oldLineId);
 
+  let returnRefused = false;
   if (source.status === "posted" || source.status === "pending") {
     try {
       await tx.transaction(async (savepoint) => {
         await returnSwappedLine(savepoint, context, source, input);
       });
     } catch (error) {
-      if (!(
-        error instanceof HttpError ||
-        error instanceof InventoryError ||
-        error instanceof CoreError
-      ))
-        throw error;
+      if (!isBusinessRefusal(error)) throw error;
+      returnRefused = true;
       logger.warn(
         { err: error, orderId: input.orderId, issueId: input.issueId },
-        "Swapped line stock not returned",
+        "Swapped line stock not returned; parked for retry at day close",
       );
     }
   }
@@ -907,13 +884,132 @@ export async function applySwapStockAdjustment(
     recordedBy: input.recordedBy,
     occurredAt: input.occurredAt,
   });
+  if (returnRefused) {
+    const [parked] = await tx
+      .update(recipeDeductions)
+      .set({
+        reversalFailedAt: new Date(),
+        reversalReason: "swap",
+        reversalSourceId: input.issueId,
+      })
+      .where(
+        and(
+          eq(recipeDeductions.tenantId, tenantId),
+          eq(recipeDeductions.idempotencyKey, `swap:issue:${input.issueId}`),
+          eq(recipeDeductions.kind, "remake"),
+        ),
+      )
+      .returning({ id: recipeDeductions.id });
+    if (parked)
+      await auditSwapReturnFailed(tx, context, {
+        outletId: input.outletId,
+        deductionId: parked.id,
+        orderId: input.orderId,
+        issueId: input.issueId,
+        stage: "swap",
+      });
+  }
+}
+
+/** HTTP, inventory and core rule errors are refusals; anything else rethrows. */
+function isBusinessRefusal(error: unknown): boolean {
+  return (
+    error instanceof HttpError ||
+    error instanceof InventoryError ||
+    error instanceof CoreError
+  );
+}
+
+/**
+ * What drew the old line: the sale row, or the `remake` of the earlier swap
+ * that created the old line (a chained swap). Locks the earlier remake row.
+ */
+async function swapReturnSource(
+  tx: Tx,
+  tenantId: TenantId,
+  sale: DeductionRow,
+  oldLineId: string,
+): Promise<DeductionRow> {
+  const [earlier] = await tx
+    .select({ id: orderIssues.id })
+    .from(orderIssues)
+    .where(
+      and(
+        eq(orderIssues.tenantId, tenantId),
+        eq(orderIssues.replacementOrderItemId, oldLineId),
+      ),
+    );
+  if (!earlier) return sale;
+  const [earlierDrawn] = await tx
+    .select()
+    .from(recipeDeductions)
+    .where(
+      and(
+        eq(recipeDeductions.tenantId, tenantId),
+        eq(recipeDeductions.idempotencyKey, `swap:issue:${earlier.id}`),
+      ),
+    )
+    .for("update");
+  return earlierDrawn ?? sale;
+}
+
+const SWAP_AUDIT_SAFE_FIELDS = ["orderId", "issueId", "stage"];
+
+/**
+ * A swap return refused by a stock rule (at the swap or at a day-close retry)
+ * is left visible in the audit log, on top of the parked marker.
+ */
+async function auditSwapReturnFailed(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: string;
+    deductionId: string;
+    orderId: string;
+    issueId: string;
+    stage: "swap" | "retry";
+  },
+): Promise<void> {
+  const now = new Date();
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: input.outletId,
+      actorType: "system",
+      actorId: null,
+      deviceId: null,
+      action: "recipe_deduction.swap_return_failed",
+      objectType: "recipe_deduction",
+      objectId: input.deductionId,
+      reason: null,
+      maskedChanges: {
+        before: null,
+        after: {
+          orderId: input.orderId,
+          issueId: input.issueId,
+          stage: input.stage,
+        },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    },
+    SWAP_AUDIT_SAFE_FIELDS,
+  );
 }
 
 async function returnSwappedLine(
   tx: Tx,
   context: ScopedTenantContext,
   sale: DeductionRow,
-  input: SwapStockAdjustmentInput,
+  input: Pick<
+    SwapStockAdjustmentInput,
+    "outletId" | "issueId" | "oldLine" | "occurredAt"
+  >,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   const alreadyReturned = await swapReturnedQuantities(tx, tenantId, sale);
@@ -1072,6 +1168,147 @@ async function retryParkedReversals(
       reason: row.reason as ReverseOrderSaleDeductionInput["reason"],
       reversalSourceId: row.reversalSourceId,
       occurredAt: row.failedAt.toISOString(),
+    });
+  }
+}
+
+/**
+ * Day close: retries the parked swap returns of the outlet (`remake` rows with
+ * `reversal_failed_at` and reason `swap`), oldest first, each in its own
+ * savepoint. The return keeps its once-only ledger key per issue and item, so a
+ * retry never returns twice. A sale reversed by a void meanwhile already got the
+ * whole line back: the park is just cleared. A return refused again bumps
+ * `reversal_failed_at` and is audited (`recipe_deduction.swap_return_failed`).
+ */
+async function retryParkedSwapReturns(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const parked = await tx
+    .select({
+      id: recipeDeductions.id,
+      orderId: recipeDeductions.sourceId,
+      issueId: recipeDeductions.reversalSourceId,
+      occurredAt: recipeDeductions.occurredAt,
+    })
+    .from(recipeDeductions)
+    .where(
+      and(
+        eq(recipeDeductions.tenantId, tenantId),
+        eq(recipeDeductions.outletId, outletId),
+        eq(recipeDeductions.kind, "remake"),
+        eq(recipeDeductions.reversalReason, "swap"),
+        sql`${recipeDeductions.reversalFailedAt} IS NOT NULL`,
+      ),
+    )
+    .orderBy(recipeDeductions.reversalFailedAt, recipeDeductions.id)
+    .limit(MAX_POSTED_PER_DAY_CLOSE);
+  const clear = () => ({
+    reversalFailedAt: null,
+    reversalReason: null,
+    reversalSourceId: null,
+  });
+  for (const row of parked) {
+    if (!row.issueId) continue;
+    const issueId = row.issueId;
+    const [sale] = await tx
+      .select()
+      .from(recipeDeductions)
+      .where(
+        and(
+          eq(recipeDeductions.tenantId, tenantId),
+          eq(recipeDeductions.idempotencyKey, `sale:order:${row.orderId}`),
+        ),
+      )
+      .for("update");
+    const [issue] = await tx
+      .select({ orderItemId: orderIssues.orderItemId })
+      .from(orderIssues)
+      .where(
+        and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issueId)),
+      );
+    const [oldLine] = issue
+      ? await tx
+          .select()
+          .from(orderItems)
+          .where(
+            and(
+              eq(orderItems.tenantId, tenantId),
+              eq(orderItems.id, issue.orderItemId),
+            ),
+          )
+      : [];
+    let failure: unknown = null;
+    let returned = false;
+    if (!sale) {
+      returned = true; // no sale deduction: nothing was drawn
+    } else if (!oldLine) {
+      failure = new Error("Swapped order line not found");
+    } else {
+      const source = await swapReturnSource(tx, tenantId, sale, oldLine.id);
+      if (source.id === sale.id && sale.status === "reversed") {
+        returned = true; // the void gave the whole sale line back
+      } else if (source.status !== "posted" && source.status !== "pending") {
+        returned = true; // nothing was drawn for the old line
+      } else {
+        try {
+          await tx.transaction(async (savepoint) => {
+            await returnSwappedLine(savepoint, context, source, {
+              outletId,
+              issueId,
+              oldLine: {
+                menuItemId: oldLine.menuItemId,
+                variantId: oldLine.variantId ?? null,
+                modifierIds: (oldLine.modifiers ?? []).map((m) => m.modifierId),
+                quantity: oldLine.quantity,
+              },
+              occurredAt: row.occurredAt.toISOString(),
+            });
+          });
+          returned = true;
+        } catch (error) {
+          if (!isBusinessRefusal(error)) throw error;
+          failure = error;
+        }
+      }
+    }
+    if (returned) {
+      await tx
+        .update(recipeDeductions)
+        .set(clear())
+        .where(
+          and(
+            eq(recipeDeductions.tenantId, tenantId),
+            eq(recipeDeductions.id, row.id),
+          ),
+        );
+      continue;
+    }
+    logger.warn(
+      { err: failure, orderId: row.orderId, issueId },
+      "Swapped line stock return refused again; stays parked",
+    );
+    await tx
+      .update(recipeDeductions)
+      .set({
+        reversalFailedAt: new Date(),
+        reversalReason: "swap",
+        reversalSourceId: issueId,
+      })
+      .where(
+        and(
+          eq(recipeDeductions.tenantId, tenantId),
+          eq(recipeDeductions.id, row.id),
+        ),
+      );
+    await auditSwapReturnFailed(tx, context, {
+      outletId,
+      deductionId: row.id,
+      orderId: row.orderId,
+      issueId,
+      stage: "retry",
     });
   }
 }
@@ -1250,6 +1487,7 @@ async function consumeInTransaction(
       businessDate: parsed.data.businessDate,
     });
     await retryParkedReversals(tx, context, parsed.data.outletId);
+    await retryParkedSwapReturns(tx, context, parsed.data.outletId);
   }
 }
 
