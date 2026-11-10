@@ -1004,7 +1004,7 @@ async function assertManagesOutlet(
 }
 
 /** Cloud only: creates the outlet seed on first use (no-op when it exists). */
-async function ensureQrSeed(
+export async function ensureQrSeed(
   tx: Tx,
   tenantId: TenantId,
   outletId: string,
