@@ -42,6 +42,7 @@ import {
   issueEntitlement,
   lockCustomer,
   operatingDayEnd,
+  operatingDayEndAfter,
 } from "./facility-entitlement.service.ts";
 import { outletTimeZone } from "./facility-shared.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
@@ -432,13 +433,20 @@ async function issueForPaidOrder(
     }
     if (sessions < 1) continue;
 
+    const facilityHours = hoursOf.get(rule.facilityId) ?? [];
     const expiresAt = expiryOfValidity(rule.validity, {
       occurredAt: paidAt,
-      operatingDayEndsAt: operatingDayEnd(
-        hoursOf.get(rule.facilityId) ?? [],
-        paid.businessDate,
-        timeZone,
-      ),
+      // Q78: a package bought after closing runs to the next operating day;
+      // the min-spend voucher keeps the closing of its own business date.
+      operatingDayEndsAt:
+        rule.type === "package"
+          ? operatingDayEndAfter(
+              facilityHours,
+              paid.businessDate,
+              timeZone,
+              paidAt,
+            )
+          : operatingDayEnd(facilityHours, paid.businessDate, timeZone),
     });
     await issueEntitlement(tx, context, {
       facilityId: rule.facilityId,

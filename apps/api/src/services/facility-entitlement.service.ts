@@ -357,6 +357,38 @@ export function operatingDayEnd(
   return zonedInstant(businessDate, closing === 0 ? 1440 : closing, timeZone);
 }
 
+/**
+ * Q78: the closing instant an `operating_day` grant bought at `notBefore`
+ * lives until. Normally the closing of the business date; when the sale came
+ * after that closing, the closing of the next day the facility has hours (a
+ * paid package is never born expired). No hours at all: the old behaviour,
+ * the end of the business date.
+ */
+export function operatingDayEndAfter(
+  hours: ReadonlyArray<{
+    daysOfWeek: readonly number[];
+    opensAt: string;
+    closesAt: string;
+  }>,
+  businessDate: string,
+  timeZone: string,
+  notBefore: Date,
+): Date {
+  const [year, month, day] = businessDate.split("-").map(Number);
+  for (let offset = 0; offset < 8 && hours.length > 0; offset += 1) {
+    const date = new Date(Date.UTC(year, month - 1, day + offset));
+    if (!hours.some((entry) => entry.daysOfWeek.includes(date.getUTCDay())))
+      continue;
+    const end = operatingDayEnd(
+      hours,
+      date.toISOString().slice(0, 10),
+      timeZone,
+    );
+    if (end.getTime() > notBefore.getTime()) return end;
+  }
+  return operatingDayEnd(hours, businessDate, timeZone);
+}
+
 /** Expiry of a grant from the rule validity (contract `entitlementExpiresAt`). */
 export function expiryOfValidity(
   validity: RuleValidity,

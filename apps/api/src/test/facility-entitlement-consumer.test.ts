@@ -1145,3 +1145,130 @@ describe("TEN-01..03 consumer isolation", () => {
     });
   });
 });
+
+// Q78 (founder decision): a `package` grant with `operating_day` validity paid
+// AFTER the facility closed on the order's business day lasts until the close of
+// the NEXT operating day that has opening hours (it is not void at once). Paid
+// BEFORE closing: it still ends at that day's closing. A facility without any
+// operating hours keeps the old behavior (end of the business day).
+//
+// Assumptions: facility hours are Mon-Sat 10:00-22:00 outlet time (Asia/Jakarta,
+// UTC+7; the outlet's business-day cutoff is 04:00); `daysOfWeek` 0 = Sunday;
+// "closes" means the `closesAt` instant of that day, so `expires_at` equals it.
+// Dates: Mon 2026-11-09, Tue 2026-11-10, Sat 2026-11-14, Sun 2026-11-15,
+// Mon 2026-11-16.
+describe("Q78 package operating_day paid after closing", () => {
+  const jakarta = (date: string, time: string) =>
+    new Date(`${date}T${time}:00+07:00`);
+
+  async function setOperatingHours(
+    world: World,
+    facilityId: string,
+    hours: { daysOfWeek: number[]; opensAt: string; closesAt: string }[],
+  ) {
+    await asTenant(world.tenantId, (client) =>
+      client.query(
+        "UPDATE facilities SET operating_hours = $3::jsonb WHERE tenant_id = $1 AND id = $2",
+        [world.tenantId, facilityId, JSON.stringify(hours)],
+      ),
+    );
+  }
+
+  /** Seeds hours and rule, pays the package order at `paidAt`, delivers the event at that time. */
+  async function payPackage(input: {
+    businessDate: string;
+    paidAt: Date;
+    hours?: { daysOfWeek: number[]; opensAt: string; closesAt: string }[];
+  }) {
+    const { world, facilityId, member, menuA } = await setup();
+    await setOperatingHours(
+      world,
+      facilityId,
+      input.hours ?? [
+        { daysOfWeek: [1, 2, 3, 4, 5, 6], opensAt: "10:00", closesAt: "22:00" },
+      ],
+    );
+    await seedRule(world, {
+      facilityId,
+      outletId: world.outletA,
+      type: "package",
+      condition: { menuItemId: menuA },
+      validity: { kind: "operating_day" },
+    });
+    const { paid } = await order(world, {
+      profileId: member.id,
+      menuItemIds: [menuA],
+      businessDate: input.businessDate,
+      paidAt: input.paidAt.toISOString(),
+    });
+    await withTenant(db, world.context, (tx) =>
+      deliverFacilityEntitlementEvent(world.context, paid, tx, input.paidAt),
+    );
+    const [row] = await grants(world.tenantId);
+    return { world, facilityId, member, row: row! };
+  }
+
+  it("Q78 paid after closing on Monday, open Mon-Sat: expires at Tuesday's closing", async () => {
+    const { row } = await payPackage({
+      businessDate: "2026-11-09",
+      paidAt: jakarta("2026-11-09", "23:00"),
+    });
+    expect(row.expires_at!.toISOString()).toBe(
+      jakarta("2026-11-10", "22:00").toISOString(),
+    );
+  });
+
+  it("Q78 paid Saturday night after closing, closed Sunday: expires at Monday's closing", async () => {
+    const { row } = await payPackage({
+      businessDate: "2026-11-14",
+      paidAt: jakarta("2026-11-14", "23:00"),
+    });
+    expect(row.expires_at!.toISOString()).toBe(
+      jakarta("2026-11-16", "22:00").toISOString(),
+    );
+  });
+
+  it("Q78 paid before closing: expires at the same day's closing", async () => {
+    const { row } = await payPackage({
+      businessDate: "2026-11-09",
+      paidAt: jakarta("2026-11-09", "20:00"),
+    });
+    expect(row.expires_at!.toISOString()).toBe(
+      jakarta("2026-11-09", "22:00").toISOString(),
+    );
+  });
+
+  it("Q78 a facility without operating hours keeps the old end-of-business-day expiry", async () => {
+    const { row } = await payPackage({
+      businessDate: "2026-11-09",
+      paidAt: jakarta("2026-11-09", "23:00"),
+      hours: [],
+    });
+    const expiresAt = row.expires_at!.getTime();
+    expect(expiresAt).toBeGreaterThan(jakarta("2026-11-09", "23:00").getTime());
+    // Not extended to the next day's closing (or even its opening).
+    expect(expiresAt).toBeLessThanOrEqual(
+      jakarta("2026-11-10", "04:00").getTime(),
+    );
+  });
+
+  it("Q78 the grant paid after closing can be redeemed on Tuesday morning", async () => {
+    const { world, facilityId, member, row } = await payPackage({
+      businessDate: "2026-11-09",
+      paidAt: jakarta("2026-11-09", "23:00"),
+    });
+    const at = jakarta("2026-11-10", "11:00");
+    const result = await entitlementsOf(world).redeem({
+      facilityId,
+      customerProfileId: member.id,
+      at,
+    });
+    expect(result.grantEntryId).toBe(row.id);
+    const current = await entitlementsOf(world).current({
+      facilityId,
+      customerProfileId: member.id,
+      at,
+    });
+    expect(current.balance.availableSessions).toBe(0);
+  });
+});
