@@ -252,7 +252,8 @@ export async function createTenant(
   );
   let defaultGateway: (typeof PAYMENT_GATEWAY_PROVIDERS)[number] | null = null;
   if (platformDefault && tenantGateways.includes(platformDefault as never))
-    defaultGateway = platformDefault as (typeof PAYMENT_GATEWAY_PROVIDERS)[number];
+    defaultGateway =
+      platformDefault as (typeof PAYMENT_GATEWAY_PROVIDERS)[number];
   else
     for (const provider of tenantGateways)
       if (await isPlatformGatewayEnabled(provider)) {
