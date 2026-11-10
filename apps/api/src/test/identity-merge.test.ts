@@ -1106,6 +1106,35 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
       );
     });
 
+    it("refuses when the absorbed U's profile is the referee of a referral", async () => {
+      const v = await whatsAppOnlyAccount();
+      const u = await signedInAccount();
+      await makeOlder(v, u);
+      await toGoogleAccount(u.userId);
+      const vProfile = await seedMemberProfile(TENANT_A, v.userId, {
+        whatsappHash: hex64(),
+      });
+      await seedConsent(TENANT_A, vProfile, { purpose: "loyalty" });
+      const uProfile = await seedMemberProfile(TENANT_A, u.userId);
+      // `referrals` names the profile in referrer_profile_id/referee_profile_id,
+      // not customer_profile_id, so only an explicit check sees it.
+      await asTenant(TENANT_A, (client) =>
+        client.query(
+          `INSERT INTO referrals (tenant_id, referrer_profile_id, referee_profile_id, code, referrer_points, referee_points)
+           VALUES ($1, $2, $3, 'REFTEST1', 0, 0)`,
+          [TENANT_A, vProfile, uProfile],
+        ),
+      );
+
+      await expectProfileConflict(v, u);
+      expect((await profileRow(TENANT_A, uProfile)).user_id).toBe(u.userId);
+      await asTenant(TENANT_A, (client) =>
+        client.query("DELETE FROM referrals WHERE referee_profile_id = $1", [
+          uProfile,
+        ]),
+      );
+    });
+
     it("refuses when the absorbed U's profile holds an order", async () => {
       const v = await whatsAppOnlyAccount();
       const u = await signedInAccount();

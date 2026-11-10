@@ -172,12 +172,17 @@ async function profilesOfUser(
 }
 
 /**
- * Tables the design names that carry member rows but have no schema yet, so
- * their profile column is not known. If one exists the profile cannot be
- * proven empty and the merge is refused (fail closed); whoever adds the table
- * must teach `profileIsEmpty` its column.
+ * Tables that point at a profile through a column other than
+ * `customer_profile_id`. The generic scan in `profileHasNoRows` cannot see
+ * them, so each is checked by name. `feedback` (0209) uses
+ * `customer_profile_id` and needs no entry. A table that is missing from the
+ * database is skipped; one that exists must have both columns or the profile
+ * is treated as not empty (fail closed). Whoever adds a table with another
+ * profile column must add it here.
  */
-const UNMAPPED_PROFILE_TABLES = ["feedback", "referrals"] as const;
+const PROFILE_COLUMNS_BY_TABLE: Readonly<Record<string, readonly string[]>> = {
+  referrals: ["referrer_profile_id", "referee_profile_id"],
+};
 
 /**
  * `SELECT ... FOR UPDATE` on one profile row, under the profile's tenant
@@ -205,18 +210,26 @@ async function lockProfileForUpdate(
  * True when no table holds a row for the profile: nothing in any table that
  * points at a profile through `customer_profile_id` (point_ledger,
  * reward_redemptions, vouchers, orders, customer_visits, mission_progress, and
- * any later one), and none of the `UNMAPPED_PROFILE_TABLES` exists (fail
+ * any later one), and no row in a `PROFILE_COLUMNS_BY_TABLE` table names it (fail
  * closed). Runs under the profile's tenant (`inTenant`).
  */
 async function profileHasNoRows(
   tx: Transaction,
   profileId: string,
 ): Promise<boolean> {
-  for (const table of UNMAPPED_PROFILE_TABLES) {
+  for (const [table, columns] of Object.entries(PROFILE_COLUMNS_BY_TABLE)) {
     const exists = await tx.execute(
       sql`SELECT to_regclass(${`public.${table}`}) IS NOT NULL AS present`,
     );
-    if (exists.rows[0]?.present !== false) return false;
+    const present = exists.rows[0]?.present;
+    if (present === false) continue;
+    if (present !== true) return false;
+    for (const column of columns) {
+      const found = await tx.execute(
+        sql`SELECT EXISTS (SELECT 1 FROM public.${sql.identifier(table)} WHERE ${sql.identifier(column)} = ${profileId}) AS present`,
+      );
+      if (found.rows[0]?.present !== false) return false;
+    }
   }
   const referencing = await tx.execute(
     sql`SELECT c.relname AS name
