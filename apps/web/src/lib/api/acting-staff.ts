@@ -73,9 +73,11 @@ export function readActingStaffToken(): string | null {
   return value.token;
 }
 
-// POS calls only: /api/outlets/<id>/pos... and /api/pos-overrides... Every
-// other path keeps the session owner as the actor.
-const POS_PATH = /^\/api\/(?:outlets\/[^/]+\/pos|pos-overrides)(?:\/|$)/;
+// POS calls only: /api/outlets/<id>/pos..., /api/pos-overrides... and
+// /api/pos/orders/<id>/customer. Every other path keeps the session owner as
+// the actor.
+const POS_PATH =
+  /^\/api\/(?:outlets\/[^/]+\/pos(?:\/|$)|pos-overrides(?:\/|$)|pos\/orders\/[^/]+\/customer\/?$)/;
 
 export function actingStaffHeaderFor(path: string): Record<string, string> {
   if (typeof window === "undefined") return {};

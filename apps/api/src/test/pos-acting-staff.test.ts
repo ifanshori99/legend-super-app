@@ -26,27 +26,63 @@
 //    second sign-in) is ACTING_STAFF_INVALID, as is another device's token.
 //  - The outlet mismatch is a second outlet of the same tenant, called with the
 //    token issued for the first outlet.
+//  - Day close (second describe): a manager closes the empty business day
+//    2025-01-15 through POST .../pos/day/close; every live token of the outlet
+//    is then ACTING_STAFF_REVOKED with reason day_closed.
+//  - MFA: a role with mfa_required only grants its permissions when the
+//    session verified a second factor. The session owner verifies MFA; the
+//    acting staff member (same role) must still be refused, as MFA is never
+//    inherited from the session. The spec fixes "mfaVerified = false" but not
+//    the error code, so 403 PERMISSION_DENIED or MFA_REQUIRED are both accepted.
+//  - ACTING_STAFF_UNSUPPORTED: GET /api/outlets/:id/floor is a router the
+//    decision lists as a later wave (no acting-staff middleware yet). If that
+//    router gains the middleware, pick another unwired router.
+//  - Idempotency: POST .../pos/orders carries the key in the body
+//    (`idempotencyKey`); the same key with another acting staff is 409
+//    IDEMPOTENCY_KEY_REUSED, the same key with the same staff replays.
+//  - Concurrency: two simultaneous pos-session issues on one device end with
+//    exactly one live token row. Observed: both answer 201 and the later one
+//    switches the earlier (revoked, reason switched); a refusal must be 409
+//    CONFLICT.
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { tenantIdSchema } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { loadRequestAccess } from "../middleware/permissions.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import {
   setDeviceOutletResolver,
   setStaffPin,
 } from "../services/device-pin.service.ts";
-import { agent, originHeader, signUp } from "./helpers.ts";
+import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 import {
   createIsolatedTenant,
   fixtures,
   owner,
   type IsolatedTenant,
 } from "./floor-test-helpers.ts";
+
+// Lets the MFA test hand loadRequestAccess a hand-built request: the real
+// getTenantContext only knows requests that went through the tenant middleware.
+// Every other request (the whole HTTP suite) takes the real implementation.
+const fakeTenantContexts = vi.hoisted(() => new WeakMap<object, unknown>());
+vi.mock("../middleware/tenant", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("../middleware/tenant")>();
+  return {
+    ...original,
+    getTenantContext: (req: object) =>
+      fakeTenantContexts.get(req) ??
+      original.getTenantContext(
+        req as Parameters<typeof original.getTenantContext>[0],
+      ),
+  };
+});
 
 const ACTING_HEADER = "X-Acting-Staff";
 const PIN = "582914";
@@ -623,5 +659,170 @@ describe("legend-aruta acting cashier token", () => {
     expect(recorded).toEqual(
       recorded.map(([key]) => [key, sessionOwner.userId]),
     );
+  });
+});
+
+describe("legend-aruta acting cashier token: edge cases", () => {
+  const MFA_DAY = "2025-01-15";
+  const extraRoles = { manager: randomUUID(), mfaTill: randomUUID() };
+  let manager: Member;
+  let mfaOwner: Member; // session on the till, MFA verified
+  let mfaStaff: Member; // same MFA role, acting through a PIN
+
+  beforeAll(async () => {
+    const defs: [string, string, string[], boolean][] = [
+      [extraRoles.manager, "POS Manajer Aktif", ["pos.day.close"], false],
+      [
+        extraRoles.mfaTill,
+        "POS Kasir MFA",
+        ["order.view", "shift.cash.operate"],
+        true,
+      ],
+    ];
+    for (const [id, name, permissions, mfa] of defs)
+      await owner.query(
+        `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+         VALUES ($1, $2, $3, false, NULL, $4, $5, '["tenant"]')`,
+        [id, tenant.tenantId, name, JSON.stringify(permissions), mfa],
+      );
+    manager = await member("Manajer Tutup Hari", extraRoles.manager);
+    mfaOwner = await member("Sesi MFA", extraRoles.mfaTill);
+    mfaStaff = await member("Staf MFA", extraRoles.mfaTill);
+    await verifySessionMfa(mfaOwner.email);
+    await givePin(mfaStaff);
+  });
+
+  it("closing the business day revokes every live acting token of the outlet: ACTING_STAFF_REVOKED with reason day_closed", async () => {
+    const token = await tokenFor(cashierB);
+    expect((await probe({ token })).status).toBe(200);
+    const closed = await manager.client
+      .post(`${posBase()}/day/close`)
+      .set(headers)
+      .set(originHeader)
+      .send({
+        businessDate: MFA_DAY,
+        inventoryDeduction: false,
+        idempotencyKey: randomUUID(),
+      });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expectError(await probe({ token }), 401, "ACTING_STAFF_REVOKED");
+    expect((await actingRows(cashierB.userId)).at(-1)).toMatchObject({
+      revoke_reason: "day_closed",
+    });
+  });
+
+  it("the session owner's verified MFA is not inherited: with an acting staff member the access snapshot reports mfaVerified=false", async () => {
+    // No POS route enforces an MFA-gated permission over HTTP, so this checks
+    // the decision input itself: loadRequestAccess (permissions middleware).
+    const sessionId = (await mfaOwner.client.get("/api/auth/get-session")).body
+      .session.id as string;
+    const fakeRequest = (acting: boolean, userId: string) => {
+      const req = {
+        headers: {},
+        auth: { user: { id: mfaOwner.userId }, session: { id: sessionId } },
+        ...(acting
+          ? {
+              actingStaff: {
+                staffUserId: userId,
+                sessionUserId: mfaOwner.userId,
+                tokenId: randomUUID(),
+                outletId: tenant.outletId,
+              },
+            }
+          : {}),
+      };
+      fakeTenantContexts.set(req, tenantCtx());
+      return req as unknown as Parameters<typeof loadRequestAccess>[0];
+    };
+    // Control: the session owner acting as themself has verified MFA.
+    const own = await loadRequestAccess(fakeRequest(false, mfaOwner.userId));
+    expect(own.userId).toBe(mfaOwner.userId);
+    expect(own.mfaRequired).toBe(true);
+    expect(own.mfaVerified).toBe(true);
+    // Same session, but the actor is the PIN-authenticated staff member.
+    const staff = await loadRequestAccess(fakeRequest(true, mfaStaff.userId));
+    expect(staff.userId).toBe(mfaStaff.userId);
+    expect(staff.mfaRequired).toBe(true);
+    expect(staff.mfaVerified).toBe(false);
+  });
+
+  it("the acting header on a router without the acting-staff middleware is refused with 400 ACTING_STAFF_UNSUPPORTED, never ignored", async () => {
+    const token = await tokenFor(cashierB);
+    const response = await sessionOwner.client
+      .get(`/api/outlets/${encodeURIComponent(tenant.outletId)}/floor`)
+      .set(headers)
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, deviceToken())
+      .set(ACTING_HEADER, token);
+    expectError(response, 400, "ACTING_STAFF_UNSUPPORTED");
+  });
+
+  it("the same Idempotency-Key reused with a different acting staff member is 409 IDEMPOTENCY_KEY_REUSED; the same staff member replays", async () => {
+    const idempotencyKey = randomUUID();
+    const tokenB = await tokenFor(cashierB);
+    const first = await posPost(
+      "orders",
+      { ...orderBody(), idempotencyKey },
+      { token: tokenB },
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const replay = await posPost(
+      "orders",
+      { ...orderBody(), idempotencyKey },
+      { token: tokenB },
+    );
+    expect(replay.status, JSON.stringify(replay.body)).toBeLessThan(300);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+
+    const ordersBefore = await count("orders");
+    const tokenC = await tokenFor(cashierC);
+    const reused = await posPost(
+      "orders",
+      { ...orderBody(), idempotencyKey },
+      { token: tokenC },
+    );
+    expectError(reused, 409, "IDEMPOTENCY_KEY_REUSED");
+    expect(await count("orders")).toBe(ordersBefore);
+  });
+
+  it("two simultaneous pos-session issues on one device leave exactly one live token", async () => {
+    await sessionOwner.client
+      .post("/api/staff-pins/pos-session/end")
+      .set(headers)
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, deviceToken());
+    const [a, b] = await Promise.all([
+      startSession(cashierB.userId, PIN),
+      startSession(cashierC.userId, PIN),
+    ]);
+    // Assumption: serialized issues may both answer 201 (the later one switches
+    // the earlier one) or the loser may get 409 CONFLICT. Either way exactly one
+    // token stays live; any refusal is 409 CONFLICT and issues nothing.
+    for (const r of [a, b].filter((x) => x.status !== 201))
+      expectError(r, 409, "CONFLICT");
+    const winners = [a, b].filter((r) => r.status === 201);
+    expect(winners.length).toBeGreaterThan(0);
+    const live = await asOwnerTenant(async (client) => {
+      const { rows } = await client.query<{ staff_user_id: string }>(
+        `SELECT staff_user_id FROM pos_acting_staff
+         WHERE tenant_id = $1 AND device_id = $2 AND revoked_at IS NULL`,
+        [tenant.tenantId, device],
+      );
+      return rows;
+    });
+    expect(live).toHaveLength(1);
+    const liveWinners = [];
+    for (const w of winners) {
+      const status = (await probe({ token: w.body.data.token })).status;
+      if (status === 200) liveWinners.push(w);
+      else
+        expectError(
+          await probe({ token: w.body.data.token }),
+          401,
+          "ACTING_STAFF_REVOKED",
+        );
+    }
+    expect(liveWinners).toHaveLength(1);
+    expect(liveWinners[0]!.body.data.staff.id).toBe(live[0]!.staff_user_id);
   });
 });

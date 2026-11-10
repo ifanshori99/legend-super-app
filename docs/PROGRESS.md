@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-aruta kasir aktif per perangkat (engineer Sonnet, cabang `ws/aruta-pos-pin` dari milestone/m1, 2026-11-10)
+
+- Bug nyata: ganti kasir POS dengan PIN hanya di klien; semua rute POS memakai pengguna sesi sebagai pelaku dan subjek izin. Test merah `pos-cashier-switch-actor.test.ts`, kini hijau.
+- Perbaikan: token kasir aktif per perangkat (`X-Acting-Staff`, tabel `pos_acting_staff`, migrasi `0243`, `POST /api/staff-pins/pos-session` + `/end`). Keputusan di `docs/DECISIONS.md` "Kasir aktif per perangkat lewat token server" (architect opus). Tanpa header = perilaku lama; kartu bd untuk mewajibkan header di mode perangkat bersama.
+- Bukti: 209 test terarah lulus (12 berkas), typecheck shared+api+web lulus, prettier bersih. Review architect (K): 1 cacat nyata (cabut token saat PIN tersinkron di edge) dan 1 celah klien (rute customer), keduanya dibetulkan dengan test; 5 test ditambah.
+- Untuk merge train: nomor/`when` migrasi 0243 (journal worktree ini idx 217, when 1794380000000); titik sentuh `device-pin.service.ts` (hook `setStaffPin`), `staff-pin-sync.ts`, `pos-shift.service.ts`, `pos-day.service.ts`, `permissions.ts`, `core-audit.ts`, `audit/schemas.ts`, `app.ts`, `routes/index.ts`. Rute lain (floor, table-sessions, table-links, kds) belum memakai token (gelombang berikut).
+
 ## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
 
 - Tanpa migrasi (`db:generate` kosong). Role baru `loyalty_points_deferral` + akun `4105 Penangguhan Pendapatan Poin Loyalty` (kontra-pendapatan di bawah 4100). Tenant baru dari template; tenant lama lewat `pnpm db:backfill-defaults` (`addLoyaltyDeferralAccount`, lewati bila 4105 terpakai).

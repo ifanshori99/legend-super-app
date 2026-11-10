@@ -132,6 +132,7 @@ import { withTenant } from "../db/tenant.ts";
 import { withoutSecretErrorDetail } from "../edge/envelope-secrets.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { outletContext } from "./device-pin-support.ts";
+import { revokeActingStaffForStaff } from "./pos-acting-staff-revoke.ts";
 
 // ------------------------------------------------------- edge credential port
 
@@ -565,6 +566,13 @@ export async function applyStaffPinRecords(
             updatedAt: version,
           }),
         );
+        // A pin set on the cloud ends the acting-cashier tokens of that staff
+        // member on this edge, in the same transaction (legend-aruta).
+        await revokeActingStaffForStaff(tx, context.tenant, {
+          outletId: record.outletId,
+          staffUserId: record.userId,
+          reason: "pin_reset",
+        });
         applied += 1;
         continue;
       }
@@ -589,6 +597,11 @@ export async function applyStaffPinRecords(
             })
             .where(eq(staffPins.id, local.id)),
         );
+        await revokeActingStaffForStaff(tx, context.tenant, {
+          outletId: record.outletId,
+          staffUserId: record.userId,
+          reason: "pin_reset",
+        });
         applied += 1;
         continue;
       }

@@ -12,33 +12,31 @@
 
 import { Router, type Request } from "express";
 import { CoreError } from "@starter/shared/core";
-import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { posSessionRequestSchema } from "@starter/shared/pos/acting-staff";
-import { verifyDeviceToken } from "../lib/device-token";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
+import { deviceIdOf } from "./device-id";
 import {
   endActingStaff,
   issueActingStaff,
 } from "../services/pos-acting-staff.service";
 
-/** The signed device id, only when the token names the resolved tenant. */
-function deviceIdOf(req: Request): string {
-  const tenant = getTenantContext(req);
-  const raw = req.get(DEVICE_TOKEN_HEADER);
-  const payload = raw ? verifyDeviceToken(raw) : null;
-  if (
-    tenant.source !== "device" ||
-    payload === null ||
-    payload.tenantId.toLowerCase() !== tenant.tenantId.toLowerCase()
-  )
+/**
+ * The signed device id. Unlike `/verify` (no session), this route has a login
+ * session AND the device token, and the request may arrive on the tenant's
+ * registered domain (tenant source "domain"), so `source === "device"` is not
+ * required: the signature and the tenant match (device-id.ts) are.
+ */
+function signedDeviceId(req: Request): string {
+  const deviceId = deviceIdOf(req);
+  if (deviceId === null)
     throw new CoreError(
       "UNAUTHORIZED",
       "Hanya perangkat outlet terdaftar yang dapat memakai PIN.",
     );
-  return payload.deviceId;
+  return deviceId;
 }
 
 export const posActingStaffRouter = Router();
@@ -52,7 +50,7 @@ posActingStaffRouter.post(
   requireTenantContext,
   jsonBody,
   async (req, res) => {
-    const deviceId = deviceIdOf(req);
+    const deviceId = signedDeviceId(req);
     const input = posSessionRequestSchema.parse(req.body);
     const auth = getAuth(req);
     res.setHeader("Cache-Control", "private, no-store");
@@ -75,7 +73,7 @@ posActingStaffRouter.post(
   requireTenantContext,
   async (req, res) => {
     await endActingStaff(getTenantContext(req), {
-      deviceId: deviceIdOf(req),
+      deviceId: signedDeviceId(req),
       sessionId: getAuth(req).session.id,
     });
     res.status(204).end();

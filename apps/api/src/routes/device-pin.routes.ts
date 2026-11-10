@@ -145,10 +145,6 @@ posOverrideRouter.get("/:overrideId", async (req, res) => {
   const { overrideId } = posOverrideParamsSchema.parse(req.params);
   res.setHeader("Cache-Control", "private, no-store");
   res.json({
-    data: await getPosOverride(
-      getTenantContext(req),
-      actorOf(req),
-      overrideId,
-    ),
+    data: await getPosOverride(getTenantContext(req), actorOf(req), overrideId),
   });
 });
