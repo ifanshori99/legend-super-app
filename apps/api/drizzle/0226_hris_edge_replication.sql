@@ -1,5 +1,5 @@
 -- HRIS edge replication (bead legend-hwn02, C1; design
--- docs/design/hris-edge-replication.md section 8). Provisional number 0227,
+-- docs/design/hris-edge-replication.md section 8). Number 0226,
 -- renumbered by the merge train if taken. New empty tables only, plus the
 -- attendance_logs method CHECK widened with 'outlet_device'. The foreign keys
 -- sit inside CREATE TABLE (docs/plan/contracts.md pattern 1): no validation
@@ -78,7 +78,7 @@ CREATE INDEX "edge_selfie_uploads_state_next_idx" ON "edge_selfie_uploads" USING
 ALTER TABLE "attendance_logs" ADD CONSTRAINT "attendance_logs_method_check" CHECK ("attendance_logs"."method" IN ('selfie_geo', 'rotating_qr', 'manual_correction', 'outlet_device'));
 --> statement-breakpoint
 -- HRIS edge replication (bead legend-hwn02, C1; design
--- docs/design/hris-edge-replication.md section 8). Folded into migration 0227
+-- docs/design/hris-edge-replication.md section 8). Folded into migration 0226
 -- after the CREATE TABLEs. The three edge tables are tenant + outlet owned;
 -- edge_received_selfies (cloud) is tenant RLS only and append-only.
 SELECT app.enforce_tenant_rls('public.edge_people_sync_state'::regclass);

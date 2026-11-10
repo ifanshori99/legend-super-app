@@ -1,6 +1,6 @@
 -- Profit share carry-over of claw-back shortfalls (legend-lzvh0, founder rule
 -- Q83; brief docs/briefs/lzvh0-carry.md section B). Appended to
--- drizzle/0219_profit_share.sql and 0221_profit_share_unabsorbed.sql.
+-- drizzle/0217_profit_share.sql and 0218_profit_share_unabsorbed.sql.
 --
 -- A negative correction never pushes a shareholder below zero: the rest it
 -- could not claw back (`distribution_runs.unabsorbed_idr`) is kept per

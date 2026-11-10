@@ -4,7 +4,7 @@
 // tenant opts in. Each reply uses one message of the provider's free monthly
 // quota (1.000 per month); a tenant may only lower its own cap.
 //
-// Database guarantees (hand SQL in migration 0226):
+// Database guarantees (hand SQL in migration 0222):
 // - Tenant RLS (ENABLE + FORCE) through `app.enforce_tenant_rls`.
 // - legend_app has SELECT, INSERT and UPDATE only (no DELETE or TRUNCATE).
 

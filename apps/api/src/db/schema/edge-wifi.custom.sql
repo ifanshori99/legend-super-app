@@ -51,7 +51,7 @@ END $$;
 CREATE TRIGGER wifi_device_grants_guard BEFORE UPDATE ON public.wifi_device_grants
 FOR EACH ROW EXECUTE FUNCTION app.guard_wifi_device_grant_update();
 
--- legend-oeqme (migration 0220): local queue of wifi_quota.updated events
+-- legend-oeqme (migration 0224): local queue of wifi_quota.updated events
 -- waiting for the controller. Tenant + outlet owned like the grant ledger.
 -- Fold into the migration after the generated CREATE TABLE.
 SELECT app.enforce_tenant_rls('public.wifi_quota_apply_queue'::regclass);
