@@ -81,6 +81,7 @@ import { HttpError } from "../lib/http-error";
 import { SYSTEM_ACCOUNT_ID } from "../lib/system-account";
 import { recordAudit } from "./audit-writer";
 import { appendOutbox } from "./core-outbox";
+import { SYSTEM_ACTOR_ID, type HrisActor } from "./hris-access";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -210,7 +211,8 @@ export async function appendAccessEvent(
   },
   input: {
     aggregateId: string;
-    actorUserId: string;
+    /** A string is a user id; `{type:"system"}` is a scheduled job. */
+    actorUserId: string | HrisActor;
     payload: Record<string, unknown>;
     now: Date;
   },
@@ -231,7 +233,10 @@ export async function appendAccessEvent(
     aggregateId: input.aggregateId,
     sequence,
     occurredAt: input.now.toISOString(),
-    actor: { type: "user", id: input.actorUserId },
+    actor:
+      typeof input.actorUserId === "string"
+        ? { type: "user", id: input.actorUserId }
+        : input.actorUserId,
     deviceId: null,
     idempotencyKey: `${definition.name}:${input.aggregateId}:${sequence}`.slice(
       0,
@@ -1207,13 +1212,17 @@ export async function endUserRoleAssignmentsForOffboardingInTx(
   tx: Tx,
   context: ScopedTenantContext,
   userId: string,
-  actorUserId: string,
+  actor: HrisActor | string,
   reason: string,
   canAssignRoles: boolean,
   now: Date,
 ): Promise<OffboardingRoleEndResult> {
   if (context.outletScope.kind !== "tenant")
     throw new Error("offboarding role end needs a tenant-scoped context");
+  const resolved: HrisActor =
+    typeof actor === "string" ? { type: "user", id: actor } : actor;
+  // A system run records the nil UUID wherever a "who" column needs a value.
+  const actorUserId = resolved.type === "user" ? resolved.id : SYSTEM_ACTOR_ID;
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
   );
@@ -1277,7 +1286,7 @@ export async function endUserRoleAssignmentsForOffboardingInTx(
     const validUntil = row.validUntil ?? now;
     await appendAccessEvent(tx, context, roleAssignmentEndedEvent, {
       aggregateId: row.id,
-      actorUserId,
+      actorUserId: resolved,
       now,
       payload: {
         assignmentId: row.id,
@@ -1292,8 +1301,8 @@ export async function endUserRoleAssignmentsForOffboardingInTx(
       {
         tenantId: context.tenant.tenantId,
         outletId: null,
-        actorType: "user",
-        actorId: actorUserId,
+        actorType: resolved.type,
+        actorId: resolved.type === "user" ? resolved.id : null,
         deviceId: null,
         action: "role_assignment.ended",
         objectType: "role_assignment",

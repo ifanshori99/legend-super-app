@@ -624,6 +624,25 @@ an architect consult; tier K (access revocation, money summary).
       An offline edge node keeps accepting the PIN until it pulls the ended
       assignments. Revocation does not run by itself on the last day: a job is a
       follow-up bead.
+
+   Automatic clearance (legend-arj.6) runs the same steps from the worker as
+   the **system actor**, `{type:"system"}` (same shape as `hris-leave`):
+   - audit rows get `actor_type = 'system'`, `actor_id = NULL`; the event
+     envelope actor is `{type:"system"}`;
+   - every uuid/text column that records "who" (`ended_by` in the event
+     payload, `cancelled_by`, `access_revoked_by`, `done_by`, the task action
+     `actor_user_id`) holds the nil UUID
+     `00000000-0000-0000-0000-000000000000` (`SYSTEM_ACTOR_ID`). The UI shows
+     it as "Sistem". No migration: the columns are text;
+   - the system run uses `canAssignRoles = false`. An Owner leaver
+     (`OFFBOARDING_OWNER`) or one with a tenant-scoped role
+     (`OFFBOARDING_ADMIN_ROLE`) rolls back, is logged, and the offboarding
+     stays open for a human with `access.role.assign`. A job must never strip
+     a company-level role by itself;
+   - the worker never installed an audit writer (only `app.ts` called
+     `setAuditWriter`), so the role-assignment end inside clearance would have
+     failed closed with 503. `worker-main.ts` now installs `coreAuditWriter`
+     at startup.
 3. **KPI system actuals go through `evaluateMetrics`.** The `employee`
    dimension value of `metrics_daily` is the user id (`orders.cashier_id`,
    `pos_shifts.cashier_id`), so an employee without a user account gets
