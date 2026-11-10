@@ -12,6 +12,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti: 9 test baru/berubah merah di base (fail-first, log run 3), lalu 20 file terarah 549/550 dengan 1 gagal berantai dari cleanup test (order final tidak bisa dihapus, diperbaiki dengan `session_replication_role = replica`), rerun 3 file 53/53 setelah perubahan terakhir; tsc api (heavy) exit 0; eslint + prettier berkas berubah bersih.
 - Review architect xhigh: 4 temuan (poller melewati aturan, reservasi batal tak tercakup, reference palsu menghentikan worker, replay DoS) semua dibetulkan, re-review: tertutup, tanpa bug uang baru. Sisa minor: worker ambil 100 baris tertua per run; halaman tamu 409 saat dana diparkir pada intent pending (sama seperti underpayment hari ini).
 - Subagent: 7 (Explore 4, implementer 1, test-runner 1, architect 1 dua putaran), puncak bersamaan 3.
+- Penutup celah bukti (permintaan CTO): test balapan poller vs webhook pada transaksi yang sama (3 putaran; satu pelunasan, satu evidence, satu event `payment.paid`, nol `payment.funds_unallocated`), reservasi `cancelled`/`no_show` -> `REJECTED_BILL_CLOSED`, tender POS `failed` -> diparkir. Semua lulus tanpa perubahan kode produksi (satu perbaikan seed test: pasangan link/token tender). Rerun 20 file pembayaran 566/566, tsc api EXIT 0, eslint EXIT 0, prettier bersih.
 
 ## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
 

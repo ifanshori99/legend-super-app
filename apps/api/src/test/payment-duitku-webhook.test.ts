@@ -223,6 +223,14 @@ afterAll(async () => {
         "DELETE FROM orders WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
         [tenantA, createdLinkIds],
       );
+      await client.query(
+        "DELETE FROM reservations WHERE tenant_id = $1 AND deposit_payment_link_id = ANY($2::uuid[])",
+        [tenantA, createdLinkIds],
+      );
+      await client.query(
+        "DELETE FROM pos_order_tenders WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
+        [tenantA, createdLinkIds],
+      );
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -814,6 +822,68 @@ async function ageRows(intentId: string, ms = 2 * 60_000) {
   );
 }
 
+/** Inserts a row whose parents this suite does not build (reservation,
+ * POS order): foreign keys and triggers are skipped for that one statement,
+ * CHECK and NOT NULL constraints still hold. */
+async function insertWithoutParents(sqlText: string, params: unknown[]) {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(sqlText, params);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** A reservation whose deposit is the bill's link, closed as `status`. */
+async function seedClosedReservation(
+  linkId: string,
+  status: "cancelled" | "no_show",
+): Promise<void> {
+  await insertWithoutParents(
+    `INSERT INTO reservations
+       (tenant_id, outlet_id, guest_name, reserved_for, duration_minutes, pax,
+        deposit_idr, policy_snapshot, status, source, closed_at,
+        deposit_payment_link_id)
+     VALUES ($1, $2, 'Tamu Uji', now() - interval '1 hour', 90, 2, $3,
+             '{}'::jsonb, $4, 'staff', now(), $5)`,
+    [tenantA, outletA, BILL_TOTAL, status, linkId],
+  );
+}
+
+/** A POS gateway tender on the bill's link, closed as `failed`. */
+async function seedFailedPosTender(
+  linkId: string,
+  intentId: string,
+): Promise<void> {
+  await insertWithoutParents(
+    `INSERT INTO pos_order_tenders
+       (tenant_id, outlet_id, order_id, method, provider, payment_link_id,
+        payment_link_token_sealed, payment_intent_id, amount_idr, status,
+        requested_at, resolved_at)
+     VALUES ($1, $2, $3, 'qris', 'duitku', $4, 'sealed-test', $5, $6,
+             'failed', now(), now())`,
+    [tenantA, outletA, randomUUID(), linkId, intentId, BILL_TOTAL],
+  );
+}
+
+/** Distinct domain events of `name` raised for one intent (the outbox keeps
+ * one row per destination). */
+async function eventCount(name: string, intentId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT count(DISTINCT event_id)::text AS n FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = $2
+        AND (aggregate_id = $3 OR event->'payload'->>'intentId' = $3::text)`,
+    [tenantA, name, intentId],
+  );
+  return Number(rows[0]?.n);
+}
+
 /** A QR order on the bill's link, as the order flow would leave it. */
 async function seedOrderOnLink(
   linkId: string,
@@ -1102,6 +1172,79 @@ describe("Codex P2 a late payment settles only an open bill", () => {
     expect((await intentRow(bill.intentId)).status).toBe("failed");
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
     expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
+  });
+
+  it.each(["cancelled", "no_show"] as const)(
+    "an expired reservation deposit intent whose reservation is %s stays expired; the money is parked",
+    async (status) => {
+      const bill = await openIntent({
+        status: "expired",
+        expiresAt: new Date(Date.now() - 5 * 60_000),
+      });
+      await seedClosedReservation(bill.linkId, status);
+      setAnswer(bill.intentId, paid(bill.reference));
+
+      expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+      expect((await intentRow(bill.intentId)).status).toBe("expired");
+      expect(await linkPaidIdr(bill.linkId)).toBe(0);
+      expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
+      expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
+        "REJECTED_BILL_CLOSED",
+      );
+    },
+  );
+
+  it("a failed intent whose POS tender failed stays failed; the money is parked", async () => {
+    const bill = await openIntent({ status: "failed" });
+    await seedFailedPosTender(bill.linkId, bill.intentId);
+    setAnswer(bill.intentId, paid(bill.reference));
+
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
+    expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
+      "REJECTED_BILL_CLOSED",
+    );
+  });
+
+  it("the poller and the webhook racing on the same transaction settle it once, with one payment.paid", async () => {
+    registerPaymentGateway(
+      createDuitkuGateway({
+        fetch: globalThis.fetch,
+        callbackBaseUrl: "https://api.example.test",
+        returnUrl: "https://app.example.test/paid",
+      }),
+    );
+    const expiresAt = new Date(Date.now() - 5 * 60_000);
+    // Several rounds: the interleaving differs from one to the next.
+    for (let round = 0; round < 3; round += 1) {
+      const bill = await openIntent({
+        status: "expired",
+        expiresAt,
+        createdAt: new Date(Date.now() - 20 * 60_000),
+        updatedAt: new Date(expiresAt.getTime() - 60_000),
+      });
+      setAnswer(bill.intentId, paid(bill.reference));
+
+      const [response] = await Promise.all([
+        callback(bill.intentId, bill.reference),
+        runPaymentGatewayPollJob(contextFor("webhook"), new Date(), {
+          force: true,
+        }),
+      ]);
+
+      expect(response.status).toBe(200);
+      await expectPaidOnce(bill);
+      expect(await unallocatedCount(bill.intentId)).toBe(0);
+      // One receipt event: the gateway receipt journal posts once.
+      expect(await eventCount("payment.paid", bill.intentId)).toBe(1);
+      expect(await eventCount("payment.funds_unallocated", bill.intentId)).toBe(
+        0,
+      );
+    }
   });
 
   it("a pending intent on a voided order is not touched by this rule (only closed intents are)", async () => {
