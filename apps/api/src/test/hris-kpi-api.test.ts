@@ -135,7 +135,7 @@ async function seedOutlet(label: string) {
   await asTenant((client) =>
     client.query(
       `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'Jl. KPI', 'Asia/Jakarta', '{}', 'active')`,
+       VALUES ($1, $2, $3, $4, $5, $6, 'Jl. KPI', 'Asia/Jakarta', '{"mon":null,"tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}', 'active')`,
       [
         id,
         tenant.id,

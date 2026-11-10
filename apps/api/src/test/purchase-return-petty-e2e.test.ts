@@ -222,7 +222,7 @@ async function makeAccountingWorld(): Promise<void> {
   );
   await owner.query(
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
-     VALUES ($1, $2, $3, $4, $5, 'Outlet PRE', 'Jl. PRE', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+     VALUES ($1, $2, $3, $4, $5, 'Outlet PRE', 'Jl. PRE', 'Asia/Jakarta', '04:00', '{"mon":null,"tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}', 'active')`,
     [outletC, tenantA, brandA, entityId, `PRE-${short()}`.toUpperCase()],
   );
   for (const [role, code, name, type, group] of CHART) {
