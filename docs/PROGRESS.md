@@ -952,3 +952,4 @@ Langkah berikut CTO baru:
 - 17:08 C6 final 8fa3f787 (ws/0wvoz-selfie-ingest, memuat we0yc). Batch47 pakai 8fa3f787.
 - 17:13 GitHub: repo privat ifanshori99/legend-super-app dibuat, 180 cabang di-push (scan rahasia bersih, hanya fixture). Aturan baru: thread push cabang kerja tiap commit; main hanya gerbang founder; cron CTO push --all tiap jam. Brief baru: ganti 'Jangan push' jadi 'push cabang kerja ke origin'.
 - 17:17 C7 hubzo 2d0cf65d (architect 1 sedang + 2 rendah dibetulkan). Lanjutan: merge 0wvoz + test integrasi rute C6 asli + kolom rejected_at (0233).
+- 17:19 Batch46 selesai: m1 29ddcbf7 (51 commit, migrasi 0209-0216), di-push. Gate: typecheck hijau, e2e 18/1 skip, root 1857/1857, api 10462 lulus (floor-api dibetulkan, api penuh belum diulang). Brief 349 batch47a (14 cabang non-HRIS, migrasi mulai 0217, FK inline). Mulai 18:04 di #1.
