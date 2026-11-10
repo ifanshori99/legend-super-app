@@ -218,6 +218,22 @@ export async function recordConsent(
       .returning();
     if (!row) throw new Error("Consent was not recorded");
 
+    // Keep the profile's marketing flag in step with the ledger (same as the
+    // member path); other purposes do not touch the profile here.
+    if (input.purpose === "marketing")
+      await tx
+        .update(customerProfiles)
+        .set({
+          marketingOptIn: input.decision === "granted",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(customerProfiles.tenantId, tenantId as TenantId),
+            eq(customerProfiles.id, input.subjectId),
+          ),
+        );
+
     await recordAudit(
       tx,
       context,

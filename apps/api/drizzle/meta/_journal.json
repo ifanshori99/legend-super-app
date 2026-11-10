@@ -1597,6 +1597,13 @@
       "when": 1794322000000,
       "tag": "0241_shareholder_version_approval_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1794347972656,
+      "tag": "0242_backfill_marketing_opt_in_from_consents",
+      "breakpoints": true
     }
   ]
 }

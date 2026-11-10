@@ -246,7 +246,11 @@ describe("CRM-C360 detail and personal data", () => {
       whatsappHash: stranger.hash,
     });
     await seedConsent(world.tenantId, mismatched.id);
-    const mismatch = await get(withPii, world, `/api/customers/${mismatched.id}`);
+    const mismatch = await get(
+      withPii,
+      world,
+      `/api/customers/${mismatched.id}`,
+    );
     expect(mismatch.status).toBe(200);
     expect(mismatch.body.data.whatsapp.number).toBeNull();
     expect(bodyHasDigits(mismatch.body, drifted.tail)).toBe(false);
@@ -400,5 +404,112 @@ describe("CRM-C360 access and tenant isolation", () => {
     expect(ids).toEqual([foreign.id]);
     const cross = await get(otherStaff, other, `/api/customers/${a.id}`);
     expect(cross.status).toBe(404);
+  });
+});
+
+// Consent periods (F3). The detail derives grant periods from an append-only
+// consent log. Assumption: a new grant of a purpose supersedes the earlier
+// grant of the same purpose (one open period per purpose), and a withdrawal
+// closes every grant of that purpose still open. Each period is identified by
+// its policyVersion; a period is open when withdrawnAt is null.
+describe("CRM-C360 consent periods", () => {
+  type Period = {
+    policyVersion: string;
+    purpose: string;
+    grantedAt: string;
+    withdrawnAt: string | null;
+  };
+
+  async function periodsOf(profileId: string, purpose = "loyalty") {
+    const response = await get(viewOnly, world, `/api/customers/${profileId}`);
+    expect(response.status).toBe(200);
+    return (response.body.data.consents as Period[]).filter(
+      (period) => period.purpose === purpose,
+    );
+  }
+
+  async function freshProfile() {
+    return seedProfile(world.tenantId, {
+      name: `Consent ${randomUUID().slice(0, 6)}`,
+    });
+  }
+
+  const T1 = "2026-02-01T00:00:00.000Z";
+  const T2 = "2026-03-01T00:00:00.000Z";
+  const T3 = "2026-04-01T00:00:00.000Z";
+
+  it("CRM-C360-17 a single grant stays open, and a single withdrawal closes it", async () => {
+    const granted = await freshProfile();
+    await seedConsent(world.tenantId, granted.id, {
+      policyVersion: "v1",
+      recordedAt: T1,
+    });
+    expect(await periodsOf(granted.id)).toEqual([
+      expect.objectContaining({
+        policyVersion: "v1",
+        grantedAt: T1,
+        withdrawnAt: null,
+      }),
+    ]);
+
+    const withdrawn = await freshProfile();
+    await seedConsent(world.tenantId, withdrawn.id, {
+      policyVersion: "v1",
+      recordedAt: T1,
+    });
+    await seedConsent(world.tenantId, withdrawn.id, {
+      decision: "withdrawn",
+      policyVersion: "v1",
+      recordedAt: T2,
+    });
+    expect(await periodsOf(withdrawn.id)).toEqual([
+      expect.objectContaining({
+        policyVersion: "v1",
+        grantedAt: T1,
+        withdrawnAt: T2,
+      }),
+    ]);
+  });
+
+  it("CRM-C360-18 granting a newer policy version closes the earlier grant, so only v2 is active", async () => {
+    const profile = await freshProfile();
+    await seedConsent(world.tenantId, profile.id, {
+      policyVersion: "v1",
+      recordedAt: T1,
+    });
+    await seedConsent(world.tenantId, profile.id, {
+      policyVersion: "v2",
+      recordedAt: T2,
+    });
+    const periods = await periodsOf(profile.id);
+    const v1 = periods.find((period) => period.policyVersion === "v1");
+    const v2 = periods.find((period) => period.policyVersion === "v2");
+    expect(v1?.withdrawnAt).toBe(T2);
+    expect(v2?.withdrawnAt).toBeNull();
+    expect(
+      periods.filter((period) => period.withdrawnAt === null),
+    ).toHaveLength(1);
+  });
+
+  it("CRM-C360-19 grant v1, grant v2, then withdraw leaves no open period", async () => {
+    const profile = await freshProfile();
+    await seedConsent(world.tenantId, profile.id, {
+      policyVersion: "v1",
+      recordedAt: T1,
+    });
+    await seedConsent(world.tenantId, profile.id, {
+      policyVersion: "v2",
+      recordedAt: T2,
+    });
+    await seedConsent(world.tenantId, profile.id, {
+      decision: "withdrawn",
+      policyVersion: "v2",
+      recordedAt: T3,
+    });
+    const periods = await periodsOf(profile.id);
+    expect(periods.filter((period) => period.withdrawnAt === null)).toEqual([]);
+    // v1 was closed when v2 was granted, v2 when the customer withdrew.
+    expect(periods.find((p) => p.policyVersion === "v1")?.withdrawnAt).toBe(T2);
+    expect(periods.find((p) => p.policyVersion === "v2")?.withdrawnAt).toBe(T3);
   });
 });

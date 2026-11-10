@@ -231,7 +231,10 @@ function fullWhatsappNumber(number: string): string {
   return `+${number.replace(/\D/g, "")}`;
 }
 
-/** Consent history as grant periods: a withdrawal closes the open grant. */
+/**
+ * Consent history as grant periods: a new grant or a withdrawal closes every
+ * open period of the same purpose.
+ */
 function consentPeriods(rows: (typeof consents.$inferSelect)[]) {
   const periods: {
     id: string;
@@ -244,6 +247,12 @@ function consentPeriods(rows: (typeof consents.$inferSelect)[]) {
     source: string;
   }[] = [];
   for (const row of rows) {
+    // Any new decision closes every still-open period of the same purpose.
+    for (const period of periods) {
+      if (period.purpose === row.purpose && period.withdrawnAt === null) {
+        period.withdrawnAt = row.recordedAt.toISOString();
+      }
+    }
     if (row.decision === "granted") {
       periods.push({
         id: row.id,
@@ -255,12 +264,6 @@ function consentPeriods(rows: (typeof consents.$inferSelect)[]) {
         withdrawnAt: null,
         source: row.source,
       });
-    } else {
-      const open = periods.findLast(
-        (period) =>
-          period.purpose === row.purpose && period.withdrawnAt === null,
-      );
-      if (open) open.withdrawnAt = row.recordedAt.toISOString();
     }
   }
   return periods.map((period) => customerConsentSchema.parse(period));

@@ -145,6 +145,8 @@ function post(
   world: World,
   profileId: string,
   input: Omit<LedgerPostInput, "tenantId" | "customerProfileId">,
+  // The clock of the posting: its row id (ULID) carries this instant.
+  at: Date = NOW,
 ) {
   return withTenant(db, world.context, async (tx) => {
     await withProfileLock(tx, world.tenantId, profileId);
@@ -152,7 +154,7 @@ function post(
       tx,
       world.context,
       { tenantId: world.tenantId, customerProfileId: profileId, ...input },
-      NOW,
+      at,
     );
   });
 }
@@ -227,16 +229,22 @@ const restore = (
   profileId: string,
   redeemEntryId: string,
   points: number,
+  at: Date = NOW,
 ) =>
-  post(world, profileId, {
-    type: "adjust",
-    points,
-    sourceType: "adjustment",
-    sourceId: randomUUID(),
-    reversesEntryId: redeemEntryId,
-    reason: "redemption_cancelled",
-    expiresAt: null,
-  });
+  post(
+    world,
+    profileId,
+    {
+      type: "adjust",
+      points,
+      sourceType: "adjustment",
+      sourceId: randomUUID(),
+      reversesEntryId: redeemEntryId,
+      reason: "redemption_cancelled",
+      expiresAt: null,
+    },
+    at,
+  );
 
 function runExpiry(
   world: World,
@@ -521,6 +529,53 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(100);
 
     expect(await runExpiry(world, member.id, T1)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+  });
+
+  // A (expires D1) is fully used by R1; B (expires D2) is partly used by R2.
+  // Assumption: "A expired" means the sweep ran at T1 (it writes nothing, A has
+  // no live points left). The restore of R1 is posted at T1, after D1.
+  it("LOY-07 a restore posted after the consumed grant expired does not take points off a later grant: the restored points expire at the next run, the later grant keeps its own", async () => {
+    const { world, member } = await expiryWorld();
+    const a = await earn(world, member.id, 100, D1); // A
+    await earn(world, member.id, 100, D2); // B
+    const r1 = await redeem(world, member.id, 100); // R1 uses A
+    await redeem(world, member.id, 60); // R2 uses 60 of B; B has 40 left
+    expect(await balanceOf(world.tenantId, member.id)).toBe(40);
+
+    expect(await runExpiry(world, member.id, T1)).toBe(0); // A has nothing live
+    await restore(world, member.id, r1.entry.id, 100, T1);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(140);
+
+    // The 100 restored points sit on A, which is already past D1: they expire
+    // now. B must not give any of its points to A.
+    expect(await runExpiry(world, member.id, T1)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(40);
+    const afterT1 = await expireRows(world.tenantId, member.id);
+    expect(afterT1).toHaveLength(1);
+    expect(afterT1[0]).toMatchObject({
+      points: "-100",
+      reverses_entry_id: a.entry.id,
+    });
+
+    // B expires only its own 40 at D2.
+    expect(await runExpiry(world, member.id, T2)).toBe(40);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+  });
+
+  it("LOY-07 a restore posted before the consumed grant expires still reallocates: the later redeem moves onto the refilled grant, the later grant stays whole", async () => {
+    const { world, member } = await expiryWorld();
+    await earn(world, member.id, 100, D1); // A
+    await earn(world, member.id, 100, D2); // B
+    const r1 = await redeem(world, member.id, 100); // R1 uses A
+    await redeem(world, member.id, 60); // R2 uses 60 of B
+    await restore(world, member.id, r1.entry.id, 100); // at NOW, before D1
+    expect(await balanceOf(world.tenantId, member.id)).toBe(140);
+
+    // A is refilled and R2 moves onto it: A has 40 live, B has 100.
+    expect(await runExpiry(world, member.id, T1)).toBe(40);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(100);
+    expect(await runExpiry(world, member.id, T2)).toBe(100);
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
