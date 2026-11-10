@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-oeqme antrean lokal edge untuk kuota Wi-Fi (engineer, cabang `ws/oeqme-wifi-queue` dari `ws/wifi-edge` 8b57852f, 2026-11-10)
+
+- Masalah: event `wifi_quota.updated` diterapkan ke controller di dalam transaksi terima tautan; agen Wi-Fi 503 membatalkan transaksi dan menahan seluruh tautan outlet (pesanan ikut tertahan).
+- Sekarang: terima hanya validasi + tulis `wifi_quota_apply_queue` (migrasi sementara `0220_wifi_quota_apply_queue`, idx 211, when 1794299000000; merge train menomori ulang; RLS tenant+outlet, unik (tenant, event)). Worker `edge/wifi-quota-queue-worker.ts` menerapkan di luar transaksi: hanya baris terbaru per sesi (yang lama `superseded`), tanpa grant hidup atau hari bisnis selesai `skipped`, retry 5 dtk x2 maks 5 menit sampai 20 percobaan, 4xx final (termasuk 502 WIFI_AUTHORIZE_REFUSED) `refused`, percobaan habis `failed`; keduanya menulis `edge_sync_conflicts` `applier_refused` + log kode. Agen belum terpasang (kunci agen di proses lain): baris dibiarkan, percobaan tidak terpakai. Hanya primary yang menguras; semua peran memangkas (selesai 7 hari, pending lebih dari 2 hari).
+- Architect (K): 4 temuan nyata (antrean standby tak terpangkas, percobaan terbuang tanpa agen, stop menunggu satu pass penuh, `now` satu pass) dibetulkan dengan tes. Risiko terbuka (keputusan produk): sisa detik dihitung saat event dibuat, backoff sampai ~75 menit bisa memberi menit berlebih.
+- Bukti: tes gagal-dulu 28 dari 30 gagal pada applier lama; sesudah: wifi-quota-edge-queue 37 + wifi-quota-edge-apply 20 + db/rls + migration-force-rls-guard lulus; typecheck api, eslint, prettier bersih; `drizzle-kit generate` kosong. `edge-received-events-migration` (3 tes "full migration folder as non-superuser owner": `customer_tier_history_profile_fk`, "tenant context is required", migrasi 0210) gagal juga tanpa migrasi ini: sudah ada sebelumnya.
+- Subagent: 9 (Explore 3, test-writer 3, implementer 1, test-runner 1, architect 1), puncak bersamaan 3.
+
 ## legend-3zd1 + legend-xzr10 WS-08 tier, kedaluwarsa poin, ulang tahun, referral (engineer, cabang `ws/3zd1-tiers-expiry` dari milestone/m1 7d388b02, brief 290e + 304 bagian B, 2026-11-10)
 
 - Migrasi `0210_loyalty_tiers_referrals` (idx 209, when 1794289000000, prevId 711b7929 = snapshot 0208; merge train merangkai ulang dengan 0209 ts50). Tabel `loyalty_tiers`, `customer_tier_history` (append-only, trigger + REVOKE), `referrals` (kebijakan RLS khusus referrer/referee); kolom `customer_profiles.tier_id`, `tier_evaluated_at` (FK pola 2, grant INSERT/UPDATE per kolom tanpa `points_balance`). `db:generate` kedua kosong.
