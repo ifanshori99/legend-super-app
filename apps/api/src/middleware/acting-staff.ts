@@ -44,7 +44,23 @@ export function hasActingStaffHeader(req: Request): boolean {
 }
 
 export const resolveActingStaff: RequestHandler = async (req, _res, next) => {
-  if (!hasActingStaffHeader(req) || req.actingStaff) return next();
+  if (!hasActingStaffHeader(req)) return next();
+  if (req.actingStaff) {
+    // A later pass (shared URL prefix): the token was resolved already, but
+    // this router may see an :outletId the first one did not (Express params
+    // are per router). The token's outlet is still the only one it may act in.
+    const later = req.params.outletId;
+    if (
+      typeof later === "string" &&
+      later.toLowerCase() !== req.actingStaff.outletId.toLowerCase()
+    )
+      throw new HttpError(
+        403,
+        ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+        "Kasir aktif ini bertugas di outlet lain.",
+      );
+    return next();
+  }
   const deviceId = deviceIdOf(req);
   // The token is bound to a signed device; a request without one cannot use it.
   if (deviceId === null)

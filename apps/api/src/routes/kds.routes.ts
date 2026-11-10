@@ -368,6 +368,7 @@ kdsRouter.put(
         outletId,
         stationId,
         body.rules,
+        actor(req),
         new Date(),
       ),
     });

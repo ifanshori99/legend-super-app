@@ -15,9 +15,10 @@
 //    form of the row uuid).
 //  - Menu-load / channel-pause routes: actor = audit_logs.event.actorId of the
 //    event for the row id (same shape as kds-pacing-admin.test.ts).
-//  - Priority and capacity-rules write no actor anywhere (no audit event, no
-//    status change, no actor column; checked in the DB), so for those two only
-//    2xx and the permission/401 behavior are asserted.
+//  - Priority and capacity-rules (no status change, no actor column) must write
+//    one audit_logs event each whose actorId is the actor. The action names are
+//    not fixed by the spec, so the event is found by the ids it names (ticket
+//    uuid or ULID, station id) and the audit objectId/ids may be either form.
 //  - Routes need kds.ticket.process (tickets) or kds.station.manage (admin).
 
 import { randomUUID } from "node:crypto";
@@ -267,14 +268,23 @@ async function auditActors(action: string, objectId: string) {
   return rows.map((r) => r.actor).filter((a): a is string => a !== null);
 }
 
+/** Actor ids of audit events that name any of `refs` (row ids in uuid/ULID form). */
+async function auditActorsNaming(...refs: string[]): Promise<string[]> {
+  const { rows } = await owner.query<{ actor: string | null }>(
+    `SELECT event->>'actorId' AS actor FROM audit_logs
+      WHERE tenant_id = $1 AND event->>'actorType' = 'user'
+        AND event->>'action' NOT LIKE 'pos_acting_staff.%'
+        AND event::text ILIKE ANY (SELECT '%' || r || '%' FROM unnest($2::text[]) AS r)`,
+    [tenant.tenantId, refs],
+  );
+  return rows.map((r) => r.actor).filter((a): a is string => a !== null);
+}
+
 // ---- cases --------------------------------------------------------------------
 
 type Prepared = {
   call: (token: string) => Req;
-  // null: the route records no actor anywhere (checked in the DB), so only the
-  // status and permission behavior can be asserted.
-  actors:
-    ((response: { body: { data?: unknown } }) => Promise<string[]>) | null;
+  actors: (response: { body: { data?: unknown } }) => Promise<string[]>;
 };
 type Case = { name: string; prepare: () => Promise<Prepared> };
 
@@ -313,7 +323,9 @@ function ticketCase(
       const r = route(t.id);
       return {
         call: (token) => send(r.method, r.path, token, r.body),
-        actors: noActorColumn ? null : () => ticketActors(t.uuid),
+        actors: noActorColumn
+          ? () => auditActorsNaming(t.id, t.uuid)
+          : () => ticketActors(t.uuid),
       };
     },
   };
@@ -370,7 +382,7 @@ const cases: Case[] = [
           send("put", `/stations/${stationId}/capacity-rules`, token, {
             rules: [rule],
           }),
-        actors: null,
+        actors: () => auditActorsNaming(stationId),
       };
     },
   },
@@ -524,7 +536,6 @@ describe("KDS honors X-Acting-Staff", () => {
         expect(response.status, JSON.stringify(response.body)).toBeLessThan(
           300,
         );
-        if (!actors) return;
         const recorded = await actors(response);
         expect(recorded.length).toBeGreaterThan(0);
         expect(recorded.every((id) => id === cashierB.userId)).toBe(true);
@@ -558,5 +569,25 @@ describe("KDS honors X-Acting-Staff", () => {
     const recorded = await ticketActors(t.uuid);
     expect(recorded.length).toBeGreaterThan(0);
     expect(recorded.every((id) => id === sessionOwner.userId)).toBe(true);
+  });
+
+  it("no header on priority and capacity-rules: an audit event names the session owner", async () => {
+    const t = await ticket("new");
+    const priority = await send("patch", `/tickets/${t.id}/priority`, null, {
+      priority: 2,
+    });
+    expect(priority.status, JSON.stringify(priority.body)).toBe(200);
+    expect(await auditActorsNaming(t.id, t.uuid)).toEqual([
+      sessionOwner.userId,
+    ]);
+    const stationId = await station();
+    const rules = await send(
+      "put",
+      `/stations/${stationId}/capacity-rules`,
+      null,
+      { rules: [rule] },
+    );
+    expect(rules.status, JSON.stringify(rules.body)).toBe(200);
+    expect(await auditActorsNaming(stationId)).toEqual([sessionOwner.userId]);
   });
 });
