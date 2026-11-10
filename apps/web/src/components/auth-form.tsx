@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
+import { endActingStaffMode } from "@/lib/api/acting-staff";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -40,6 +41,8 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
         );
         return;
       }
+      // A new login starts without the previous one's POS cashier hold.
+      endActingStaffMode();
       // Re-run route guards with the new cookie, then move to the app.
       await router.invalidate();
       await navigate({ to: siteConfig.appHomePath, replace: true });

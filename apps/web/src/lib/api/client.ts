@@ -79,8 +79,8 @@ export async function apiFetch<T>(
   for (const [key, value] of Object.entries(query ?? {}))
     if (value !== undefined) url.searchParams.set(key, String(value));
 
-  // POS call without a live cashier: never send it as the session owner.
-  const actingHeader = actingStaffHeaderFor(path);
+  // POS mutation without a live cashier: never send it as the session owner.
+  const actingHeader = actingStaffHeaderFor(path, method);
   if (actingHeader === null)
     throw new ApiError(
       401,
@@ -122,7 +122,7 @@ export async function apiFetch<T>(
   if (!response.ok) {
     onFailure(path, { status: response.status });
     const error = payload?.error;
-    if (error?.code) handleActingStaffRejection(error.code);
+    if (error?.code) handleActingStaffRejection(error.code, method);
     throw new ApiError(
       response.status,
       error?.code ?? "HTTP_ERROR",

@@ -4,6 +4,7 @@
 // (119connect's flow, kept for the same reason), and the token stays out of
 // the address bar's shared space: no referrer, noindex.
 import { useEffect, useState } from "react";
+import { endActingStaffMode } from "@/lib/api/acting-staff";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronLeft, MailX, LogIn } from "lucide-react";
 import type { LoginResult } from "@starter/shared/identity";
@@ -42,7 +43,10 @@ export function VerifyLinkScreen({
   async function submit() {
     if (!token || complete.isPending) return;
     try {
-      setResult(await complete.mutateAsync(token));
+      const signedIn = await complete.mutateAsync(token);
+      // A new login starts without the previous one's POS cashier hold.
+      endActingStaffMode();
+      setResult(signedIn);
     } catch {
       // Rendered from complete.error below.
     }

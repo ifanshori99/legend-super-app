@@ -78,6 +78,13 @@ export function endActingStaffMode(): void {
   clearActingStaffToken();
   if (typeof window === "undefined") return;
   setPinRequired(false);
+  // A label left by an earlier login (localStorage outlives the tab and the
+  // sign-out) would otherwise hold the new login's first POS mutation.
+  try {
+    window.localStorage.removeItem(ACTIVE_STAFF_STORAGE_KEY);
+  } catch {
+    // Blocked storage: nothing stored that we can reach.
+  }
 }
 
 /**
@@ -118,8 +125,9 @@ export function readActingStaffToken(): string | null {
   const value = stored();
   if (!value) return null;
   if (isExpired(value)) {
-    // Not a silent clear: the label goes too and the cashier is sent to the PIN screen.
-    handleActingStaffRejection(ACTING_STAFF_ERROR_CODES.EXPIRED);
+    // Not a silent clear: the tab's POS mutations stay held until a new PIN.
+    // A read never redirects or wipes the label (customer display rule).
+    handleActingStaffRejection(ACTING_STAFF_ERROR_CODES.EXPIRED, "GET");
     return null;
   }
   return value.token;
@@ -149,20 +157,28 @@ const POS_PATH =
   /^\/api\/(?:outlets\/[^/]+\/pos(?:\/|$)|pos-overrides(?:\/|$)|pos\/orders\/[^/]+\/customer\/?$)/;
 
 /**
- * Headers for a call to `path`. Returns null when the call must be HELD: a POS
- * path with an expired token, with no token after this tab's token was
- * refused (sticky until a new token), or with no token while the
- * active-cashier label says a cashier is working. Sent without the header, the API would treat the
- * call as the session owner. The rejection flow has already run (token and
- * label cleared, PIN screen opened); the caller must not send the request.
+ * Headers for a `method` call to `path`. Returns null when the call must be
+ * HELD: a POS mutation with an expired token, with no token after this tab's
+ * token was refused (sticky until a new token), or with no token while the
+ * active-cashier label says a cashier is working. Sent without the header, the
+ * API would treat the call as the session owner. The rejection flow has
+ * already run (token and label cleared, PIN screen opened); the caller must
+ * not send the request.
+ *
+ * Reads (GET) are never held and never run the rejection flow: the customer
+ * display and other read-only screens in a second window have no token of
+ * their own and must not ask for a PIN or wipe the cashier tab's label. They
+ * carry the token only while it is live.
  */
 export function actingStaffHeaderFor(
   path: string,
+  method: string = "GET",
 ): Record<string, string> | null {
   if (typeof window === "undefined") return {};
   if (!POS_PATH.test(path.split("?")[0] ?? "")) return {};
   const value = stored();
   if (value && !isExpired(value)) return { [ACTING_STAFF_HEADER]: value.token };
+  if (method.toUpperCase() === "GET") return {};
   if (value || pinRequired() || hasActiveStaffLabel()) {
     handleActingStaffRejection(ACTING_STAFF_ERROR_CODES.EXPIRED);
     return null;
@@ -183,13 +199,21 @@ const REJECTING_CODES: ReadonlySet<string> = new Set([
 
 /**
  * Called for every failed API answer. When the code says the acting-staff
- * token was refused, forget it and the active cashier label, then send the
- * user to the PIN screen.
+ * token was refused, forget it, hold this tab's POS mutations, and (for a
+ * refused mutation) clear the active cashier label and send the user to the
+ * PIN screen.
  */
-export function handleActingStaffRejection(code: string): void {
+export function handleActingStaffRejection(
+  code: string,
+  method: string = "POST",
+): void {
   if (typeof window === "undefined" || !REJECTING_CODES.has(code)) return;
   clearActingStaffToken();
   setPinRequired(true);
+  // A refused read (the customer display polling in a second window) only
+  // drops this tab's token and holds its next mutation: no PIN screen, and
+  // the label of the cashier's tab stays.
+  if (method.toUpperCase() === "GET") return;
   try {
     window.localStorage.removeItem(ACTIVE_STAFF_STORAGE_KEY);
   } catch {

@@ -84,7 +84,7 @@ describe("actingStaffHeaderFor", () => {
   });
 });
 
-describe("actingStaffHeaderFor holds POS calls without a live cashier", () => {
+describe("actingStaffHeaderFor holds POS mutations without a live cashier", () => {
   const expire = () =>
     writeActingStaffToken({
       token: "pas_old",
@@ -98,7 +98,7 @@ describe("actingStaffHeaderFor holds POS calls without a live cashier", () => {
       expire();
       local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
       redirects = [];
-      assert.equal(actingStaffHeaderFor(path), null, path);
+      assert.equal(actingStaffHeaderFor(path, "POST"), null, path);
       assert.deepEqual(redirects, ["/pos/ganti-pengguna"], path);
       assert.equal(store.has("legend-acting-staff"), false, path);
       assert.equal(local.has(ACTIVE_STAFF_STORAGE_KEY), false, path);
@@ -108,32 +108,30 @@ describe("actingStaffHeaderFor holds POS calls without a live cashier", () => {
   test("a cashier label without a token holds the call", () => {
     clearActingStaffToken();
     local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
-    assert.equal(actingStaffHeaderFor("/api/outlets/o1/pos/orders"), null);
+    assert.equal(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      null,
+    );
     assert.deepEqual(redirects, ["/pos/ganti-pengguna"]);
     assert.equal(local.has(ACTIVE_STAFF_STORAGE_KEY), false);
   });
 
   test("no token and no label (owner at the POS) sends no header", () => {
     clearActingStaffToken();
-    assert.deepEqual(actingStaffHeaderFor("/api/outlets/o1/pos/orders"), {});
+    assert.deepEqual(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      {},
+    );
     assert.deepEqual(redirects, []);
   });
 
   test("non-POS paths are never held", () => {
     expire();
     local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
-    assert.deepEqual(actingStaffHeaderFor("/api/outlets/o1/menu"), {});
+    assert.deepEqual(actingStaffHeaderFor("/api/outlets/o1/menu", "POST"), {});
     clearActingStaffToken();
-    assert.deepEqual(actingStaffHeaderFor("/api/notes"), {});
+    assert.deepEqual(actingStaffHeaderFor("/api/notes", "POST"), {});
     assert.deepEqual(redirects, []);
-  });
-
-  test("readActingStaffToken on an expired token runs the full rejection flow", () => {
-    expire();
-    local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
-    assert.equal(readActingStaffToken(), null);
-    assert.deepEqual(redirects, ["/pos/ganti-pengguna"]);
-    assert.equal(local.has(ACTIVE_STAFF_STORAGE_KEY), false);
   });
 
   // Review K (legend-5u03q): the hold must outlive the first held call. The
@@ -143,29 +141,44 @@ describe("actingStaffHeaderFor holds POS calls without a live cashier", () => {
   test("after a rejection every later POS call stays held until a new token", () => {
     expire();
     local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
-    assert.equal(actingStaffHeaderFor("/api/outlets/o1/pos/orders"), null);
+    assert.equal(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      null,
+    );
     pathname = "/pos";
-    assert.equal(actingStaffHeaderFor("/api/outlets/o1/pos/orders"), null);
-    assert.equal(actingStaffHeaderFor("/api/pos-overrides/x"), null);
+    assert.equal(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      null,
+    );
+    assert.equal(actingStaffHeaderFor("/api/pos-overrides/x", "POST"), null);
     writeActingStaffToken({
       token: "pas_new",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    assert.deepEqual(actingStaffHeaderFor("/api/outlets/o1/pos/orders"), {
-      [ACTING_STAFF_HEADER]: "pas_new",
-    });
+    assert.deepEqual(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      {
+        [ACTING_STAFF_HEADER]: "pas_new",
+      },
+    );
   });
 
   test("a token the API refused (REVOKED) also keeps later POS calls held", () => {
     handleActingStaffRejection(ACTING_STAFF_ERROR_CODES.REVOKED);
-    assert.equal(actingStaffHeaderFor("/api/outlets/o1/pos/orders"), null);
+    assert.equal(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      null,
+    );
   });
 
   test("ending cashier mode (sign-out) lets the owner use the POS again", () => {
     handleActingStaffRejection(ACTING_STAFF_ERROR_CODES.REVOKED);
     endActingStaffMode();
     redirects = [];
-    assert.deepEqual(actingStaffHeaderFor("/api/outlets/o1/pos/orders"), {});
+    assert.deepEqual(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      {},
+    );
     assert.deepEqual(redirects, []);
   });
 
@@ -179,6 +192,93 @@ describe("actingStaffHeaderFor holds POS calls without a live cashier", () => {
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
     releaseActingStaffToken();
-    assert.equal(actingStaffHeaderFor("/api/outlets/o1/pos/orders"), null);
+    assert.equal(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      null,
+    );
+  });
+});
+
+// legend-5u03q follow-up: only mutations are held. Reads (the customer display
+// in a second window, order boards) never wait for a PIN and never wipe the
+// cashier tab's label; they carry the token only while it is live.
+describe("actingStaffHeaderFor never holds POS reads", () => {
+  const display = "/api/outlets/o1/pos/customer-display";
+
+  test("a second window with the cashier label and no token reads freely", () => {
+    clearActingStaffToken();
+    local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
+    assert.deepEqual(actingStaffHeaderFor(display, "GET"), {});
+    assert.deepEqual(redirects, []);
+    assert.equal(local.get(ACTIVE_STAFF_STORAGE_KEY), "kasir-1");
+  });
+
+  test("an expired token is not sent on a read, and the read is not held", () => {
+    writeActingStaffToken({
+      token: "pas_old",
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
+    assert.deepEqual(actingStaffHeaderFor(display), {});
+    assert.deepEqual(redirects, []);
+  });
+
+  test("reads go through while the tab's hold is set; mutations stay held", () => {
+    handleActingStaffRejection(ACTING_STAFF_ERROR_CODES.REVOKED);
+    redirects = [];
+    assert.deepEqual(actingStaffHeaderFor(display, "GET"), {});
+    assert.deepEqual(redirects, []);
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"])
+      assert.equal(
+        actingStaffHeaderFor("/api/outlets/o1/pos/orders", method),
+        null,
+        method,
+      );
+  });
+
+  test("a live token is still sent on reads", () => {
+    assert.deepEqual(actingStaffHeaderFor(display, "GET"), {
+      [ACTING_STAFF_HEADER]: "pas_test",
+    });
+  });
+
+  test("a read the API refused drops the tab's token quietly: no PIN screen, label kept", () => {
+    local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
+    handleActingStaffRejection(ACTING_STAFF_ERROR_CODES.REVOKED, "GET");
+    assert.deepEqual(redirects, []);
+    assert.equal(local.get(ACTIVE_STAFF_STORAGE_KEY), "kasir-1");
+    assert.equal(store.has("legend-acting-staff"), false);
+    assert.deepEqual(actingStaffHeaderFor(display, "GET"), {});
+    assert.equal(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      null,
+    );
+  });
+
+  test("ending cashier mode (sign-in) also lifts a leftover cashier label", () => {
+    clearActingStaffToken();
+    local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
+    endActingStaffMode();
+    assert.deepEqual(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      {},
+    );
+    assert.deepEqual(redirects, []);
+  });
+
+  test("readActingStaffToken on an expired token never redirects or wipes the label", () => {
+    writeActingStaffToken({
+      token: "pas_old",
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    local.set(ACTIVE_STAFF_STORAGE_KEY, "kasir-1");
+    redirects = [];
+    assert.equal(readActingStaffToken(), null);
+    assert.deepEqual(redirects, []);
+    assert.equal(local.get(ACTIVE_STAFF_STORAGE_KEY), "kasir-1");
+    assert.equal(
+      actingStaffHeaderFor("/api/outlets/o1/pos/orders", "POST"),
+      null,
+    );
   });
 });

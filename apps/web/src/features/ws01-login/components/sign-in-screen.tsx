@@ -9,6 +9,7 @@
 // session that still needs its second factor goes to the dashboard, whose
 // guard shows the AUTH-05 screen (bead legend-9bh owns the MFA screens).
 import { useEffect, useState } from "react";
+import { endActingStaffMode } from "@/lib/api/acting-staff";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Globe, Mail, ShieldAlert } from "lucide-react";
 import type { Session } from "@starter/shared/identity";
@@ -39,6 +40,12 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
   // Arriving from a page means the guest wanted that page back. `href` keeps
   // the query intact (e.g. `/wifi?zone=…&table=…`), which `to` would read as
   // part of the path.
+  // A new login (password, WhatsApp) starts without the previous one's POS
+  // cashier hold.
+  useEffect(() => {
+    if (result) endActingStaffMode();
+  }, [result]);
+
   useEffect(() => {
     if (!result || !safeReturnTo) return;
     void navigate({ href: safeReturnTo, replace: true });

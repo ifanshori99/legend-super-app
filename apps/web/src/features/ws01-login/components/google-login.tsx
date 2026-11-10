@@ -10,6 +10,7 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, Globe, Info } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { endActingStaffMode } from "@/lib/api/acting-staff";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useStartGoogleLogin } from "../hooks";
@@ -26,6 +27,9 @@ export function GoogleLoginScreen({ returnTo }: { returnTo?: string }) {
       const url = await start.mutateAsync(returnTo);
       setRedirecting(true);
       // A full navigation: the provider owns this step and returns to the API.
+      // The success comes back through an API redirect with no client code
+      // to run, so the POS cashier hold of this tab is lifted before leaving.
+      endActingStaffMode();
       window.location.assign(url);
     } catch {
       setRedirecting(false);
