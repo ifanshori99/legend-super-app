@@ -10,7 +10,8 @@ CREATE TABLE "roster_copies" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "roster_copies_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "roster_copies_tenant_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
-	CONSTRAINT "roster_copies_count_check" CHECK (cardinality("roster_copies"."assignment_ids") > 0 AND "roster_copies"."to_week_start" <> "roster_copies"."from_week_start")
+	CONSTRAINT "roster_copies_count_check" CHECK (cardinality("roster_copies"."assignment_ids") > 0 AND "roster_copies"."to_week_start" <> "roster_copies"."from_week_start"),
+	CONSTRAINT "roster_copies_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "roster_publications" (
@@ -27,7 +28,8 @@ CREATE TABLE "roster_publications" (
 	"published_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "roster_publications_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "roster_publications_tenant_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
-	CONSTRAINT "roster_publications_count_check" CHECK ("roster_publications"."assignment_count" > 0 AND cardinality("roster_publications"."assignment_ids") = "roster_publications"."assignment_count")
+	CONSTRAINT "roster_publications_count_check" CHECK ("roster_publications"."assignment_count" > 0 AND cardinality("roster_publications"."assignment_ids") = "roster_publications"."assignment_count"),
+	CONSTRAINT "roster_publications_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "shift_assignments" (
@@ -57,7 +59,8 @@ CREATE TABLE "shift_assignments" (
 	CONSTRAINT "shift_assignments_segments_check" CHECK (jsonb_typeof("shift_assignments"."segments") = 'array' AND jsonb_array_length("shift_assignments"."segments") BETWEEN 1 AND 2),
 	CONSTRAINT "shift_assignments_published_check" CHECK (("shift_assignments"."published_by" IS NULL) = ("shift_assignments"."published_at" IS NULL)
         AND ("shift_assignments"."status" = 'draft') = ("shift_assignments"."published_at" IS NULL)
-        OR "shift_assignments"."status" = 'cancelled')
+        OR "shift_assignments"."status" = 'cancelled'),
+	CONSTRAINT "shift_assignments_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "shift_compliance_policies" (
@@ -76,7 +79,8 @@ CREATE TABLE "shift_compliance_policies" (
         AND "shift_compliance_policies"."max_daily_minutes" BETWEEN "shift_compliance_policies"."max_shift_minutes" AND 2880
         AND "shift_compliance_policies"."max_weekly_minutes" BETWEEN "shift_compliance_policies"."max_daily_minutes" AND 10080
         AND "shift_compliance_policies"."min_rest_minutes_between_shifts" BETWEEN 0 AND 1440
-        AND "shift_compliance_policies"."max_consecutive_work_days" BETWEEN 1 AND 31)
+        AND "shift_compliance_policies"."max_consecutive_work_days" BETWEEN 1 AND 31),
+	CONSTRAINT "shift_compliance_policies_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "shift_swap_requests" (
@@ -101,7 +105,8 @@ CREATE TABLE "shift_swap_requests" (
 	CONSTRAINT "shift_swap_requests_status_check" CHECK ("shift_swap_requests"."status" IN ('pending', 'approved', 'rejected', 'cancelled', 'expired')),
 	CONSTRAINT "shift_swap_requests_distinct_employee_check" CHECK ("shift_swap_requests"."requested_by" <> "shift_swap_requests"."to_employee_id"),
 	CONSTRAINT "shift_swap_requests_decision_check" CHECK (("shift_swap_requests"."approved_by" IS NULL) = ("shift_swap_requests"."decided_at" IS NULL)
-        OR "shift_swap_requests"."status" IN ('cancelled', 'expired'))
+        OR "shift_swap_requests"."status" IN ('cancelled', 'expired')),
+	CONSTRAINT "shift_swap_requests_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "shift_templates" (
@@ -121,28 +126,23 @@ CREATE TABLE "shift_templates" (
 	CONSTRAINT "shift_templates_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id"),
 	CONSTRAINT "shift_templates_tenant_outlet_name_key" UNIQUE("tenant_id","outlet_id","name"),
 	CONSTRAINT "shift_templates_break_check" CHECK ("shift_templates"."break_minutes" >= 0 AND "shift_templates"."break_minutes" <= 240),
-	CONSTRAINT "shift_templates_segments_check" CHECK (jsonb_typeof("shift_templates"."segments") = 'array' AND jsonb_array_length("shift_templates"."segments") BETWEEN 1 AND 2)
+	CONSTRAINT "shift_templates_segments_check" CHECK (jsonb_typeof("shift_templates"."segments") = 'array' AND jsonb_array_length("shift_templates"."segments") BETWEEN 1 AND 2),
+	CONSTRAINT "shift_templates_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "roster_copies" ADD CONSTRAINT "roster_copies_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "roster_copies" ADD CONSTRAINT "roster_copies_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "roster_publications" ADD CONSTRAINT "roster_publications_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "roster_publications" ADD CONSTRAINT "roster_publications_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_assignments" ADD CONSTRAINT "shift_assignments_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "shift_assignments" ADD CONSTRAINT "shift_assignments_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_assignments" ADD CONSTRAINT "shift_assignments_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_assignments" ADD CONSTRAINT "shift_assignments_template_fk" FOREIGN KEY ("tenant_id","outlet_id","shift_template_id") REFERENCES "public"."shift_templates"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_assignments" ADD CONSTRAINT "shift_assignments_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_compliance_policies" ADD CONSTRAINT "shift_compliance_policies_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "shift_compliance_policies" ADD CONSTRAINT "shift_compliance_policies_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_swap_requests" ADD CONSTRAINT "shift_swap_requests_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "shift_swap_requests" ADD CONSTRAINT "shift_swap_requests_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_swap_requests" ADD CONSTRAINT "shift_swap_requests_from_fk" FOREIGN KEY ("tenant_id","outlet_id","from_assignment_id") REFERENCES "public"."shift_assignments"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_swap_requests" ADD CONSTRAINT "shift_swap_requests_to_fk" FOREIGN KEY ("tenant_id","outlet_id","to_assignment_id") REFERENCES "public"."shift_assignments"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_swap_requests" ADD CONSTRAINT "shift_swap_requests_requester_fk" FOREIGN KEY ("tenant_id","requested_by") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_swap_requests" ADD CONSTRAINT "shift_swap_requests_target_fk" FOREIGN KEY ("tenant_id","to_employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_templates" ADD CONSTRAINT "shift_templates_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "shift_templates" ADD CONSTRAINT "shift_templates_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_templates" ADD CONSTRAINT "shift_templates_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shift_templates" ADD CONSTRAINT "shift_templates_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "roster_copies_tenant_outlet_week_idx" ON "roster_copies" USING btree ("tenant_id","outlet_id","to_week_start");--> statement-breakpoint

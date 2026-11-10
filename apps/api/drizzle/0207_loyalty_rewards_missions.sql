@@ -64,7 +64,8 @@ CREATE TABLE "reward_redemptions" (
 	CONSTRAINT "reward_redemptions_points_check" CHECK ("reward_redemptions"."points_spent" > 0),
 	CONSTRAINT "reward_redemptions_status_check" CHECK ("reward_redemptions"."status" IN ('pending', 'fulfilled', 'cancelled', 'expired')),
 	CONSTRAINT "reward_redemptions_fulfilled_check" CHECK (("reward_redemptions"."status" = 'fulfilled') = ("reward_redemptions"."fulfilled_at" IS NOT NULL)),
-	CONSTRAINT "reward_redemptions_cancelled_check" CHECK (("reward_redemptions"."status" = 'cancelled') = ("reward_redemptions"."cancelled_at" IS NOT NULL))
+	CONSTRAINT "reward_redemptions_cancelled_check" CHECK (("reward_redemptions"."status" = 'cancelled') = ("reward_redemptions"."cancelled_at" IS NOT NULL)),
+	CONSTRAINT "reward_redemptions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "rewards" (
@@ -107,7 +108,6 @@ ALTER TABLE "mission_progress" ADD CONSTRAINT "mission_progress_profile_fk" FORE
 ALTER TABLE "mission_progress" ADD CONSTRAINT "mission_progress_voucher_fk" FOREIGN KEY ("tenant_id","voucher_id") REFERENCES "public"."vouchers"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "missions" ADD CONSTRAINT "missions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_reward_fk" FOREIGN KEY ("tenant_id","reward_id") REFERENCES "public"."rewards"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reward_redemptions" ADD CONSTRAINT "reward_redemptions_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
