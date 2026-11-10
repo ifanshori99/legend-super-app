@@ -58,7 +58,12 @@ const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 2,
 });
-const app = createApp({ whatsappWebhookSecrets: [SECRET] });
+// The file issues more than LOGIN_ISSUE_PER_IP challenges from one test IP;
+// the limiter has its own tests (login-challenge-rate-limit.test.ts).
+const app = createApp({
+  whatsappWebhookSecrets: [SECRET],
+  loginChallengeRateLimit: { issuePerIp: 1_000, issuePerBinding: 1_000 },
+});
 const trackedUserIds: string[] = [];
 const outbox: EmailMessage[] = [];
 
