@@ -142,6 +142,7 @@ import {
   qrOrderPromoPort,
   qrOrderServingEstimatePort,
 } from "./qr-order-ports.ts";
+import { listSessionSplitDtosTx } from "./bill-split.service.ts";
 import { appendQrOrderPaid } from "./qr-order-paid.ts";
 import {
   buildQuote,
@@ -2184,7 +2185,7 @@ export async function getSessionBill(
           settlement.billTotalIdr - settlement.paidIdr,
         ),
       },
-      splits: [],
+      splits: await listSessionSplitDtosTx(tx, context, session.id),
       computedAt: toIsoDateTime(now),
     });
   });

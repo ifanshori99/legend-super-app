@@ -46,6 +46,7 @@
 import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import type { PaymentStatus } from "@starter/shared/payment";
 import { db } from "../db/index.ts";
 import {
   domainEventOutbox,
@@ -56,6 +57,12 @@ import {
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
+import {
+  expireSplitClaimsTx,
+  listLiveSplitsTx,
+  markSplitPartPaidTx,
+  voidLiveSplitsTx,
+} from "./bill-split.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
@@ -84,7 +91,7 @@ export const UNPAID_ORDER_ABANDON_MS = 15 * 60_000;
  * `partially_refunded`; its rest goes back like a full `paid` payment
  * (`refunded` holds nothing).
  */
-const HOLDS_REFUNDABLE_MONEY: readonly string[] = [
+const HOLDS_REFUNDABLE_MONEY: readonly PaymentStatus[] = [
   "paid",
   "partially_refunded",
 ];
@@ -261,6 +268,7 @@ async function loadUnpaidState(
       id: paymentIntents.id,
       status: paymentIntents.status,
       expiresAt: paymentIntents.expiresAt,
+      billSplitId: paymentIntents.billSplitId,
     })
     .from(paymentIntents)
     .where(
@@ -280,12 +288,35 @@ async function loadUnpaidState(
       ...intents.map((row) => row.expiresAt.getTime()),
     ),
   );
+  // Split bill: codes are counted per part, so a part that already used its
+  // attempts never voids a bill whose other parts are paid or still open.
+  // Attempts = the most codes any pending part used (superseded, paid and
+  // refunded codes do not count).
+  const liveSplits = await listLiveSplitsTx(tx, context, order.id);
+  const attempts =
+    liveSplits.length === 0
+      ? intents.filter((row) => !superseded.has(row.id)).length
+      : Math.max(
+          0,
+          ...liveSplits
+            .filter((part) => part.status === "pending")
+            .map(
+              (part) =>
+                intents.filter(
+                  (row) =>
+                    row.billSplitId === part.id &&
+                    !superseded.has(row.id) &&
+                    !HOLDS_REFUNDABLE_MONEY.includes(row.status) &&
+                    row.status !== "refunded",
+                ).length,
+            ),
+        );
   return {
     sessionActive,
     // A missing link row fails closed: treated as expired.
     linkExpiresAt: link ? (link.expiresAt ?? null) : new Date(0),
     linkFullyPaid: link !== undefined && link.paidIdr >= link.totalIdr,
-    attempts: intents.filter((row) => !superseded.has(row.id)).length,
+    attempts,
     hasOpenIntent: intents.some(
       (row) =>
         row.status === "pending" &&
@@ -385,6 +416,45 @@ async function voidAndNotify(
     { reason, actorUserId: null },
     now,
   );
+  // Split bill: unpaid parts can no longer be paid, and the paid parts'
+  // claim links stop redeeming (the order is gone).
+  await voidLiveSplitsTx(tx, context, order.id, now);
+  await expireSplitClaimsTx(tx, context, order.id, now);
+  // Split bill: a part (or any code) already settled on this link holds
+  // money of a voided order. One refund request per paid intent; each is
+  // replay safe (once-only key per intent), so the callers that file the
+  // event's own refund afterwards find the same request.
+  if (order.paymentLinkId !== null) {
+    const [link] = await tx
+      .select({ paidIdr: paymentLinks.paidIdr })
+      .from(paymentLinks)
+      .where(
+        and(
+          eq(paymentLinks.tenantId, context.tenant.tenantId),
+          eq(paymentLinks.id, order.paymentLinkId),
+        ),
+      );
+    if (link && link.paidIdr > 0) {
+      const paid = await tx
+        .select({ id: paymentIntents.id })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            eq(paymentIntents.paymentLinkId, order.paymentLinkId),
+            inArray(paymentIntents.status, [...HOLDS_REFUNDABLE_MONEY]),
+          ),
+        )
+        .orderBy(asc(paymentIntents.id));
+      for (const row of paid)
+        await requestQrLatePaymentRefund(tx, context, {
+          order,
+          paymentLinkId: order.paymentLinkId,
+          intentId: row.id,
+          now,
+        });
+    }
+  }
   if (order.tableSessionId !== null)
     await notifyQrOrderChange(tx, context, {
       sessionId: order.tableSessionId,
@@ -507,6 +577,9 @@ export async function handleQrOrderPaymentPaid(
     );
     return "late_payment_on_closed_session";
   }
+  // Split bill: mark the part this code paid (replay safe; "no_split" for an
+  // ordinary payment). The order still fires only when the link is covered.
+  await markSplitPartPaidTx(tx, context, { intentId, now });
   const [link] = await tx
     .select({ paidIdr: paymentLinks.paidIdr, totalIdr: paymentLinks.totalIdr })
     .from(paymentLinks)
@@ -655,6 +728,14 @@ export async function handleQrOrderPaymentPaid(
     reason: "verified_payment",
     paidIntentId: payerIntentId,
   });
+  // Split bill: the paid parts covered the bill; a part still pending (a
+  // different code settled the whole bill) can no longer be paid.
+  const voidedParts = await voidLiveSplitsTx(tx, context, order.id, at);
+  if (voidedParts > 0)
+    logger.warn(
+      { orderId: order.id, intentId, voidedParts },
+      "QR order: fired with split parts still pending; leftover parts voided",
+    );
   // Outbox order across intents is not relied on: when this event's intent
   // also carries `double_payment` funds (another code covered the bill
   // first), they are returned here too; a replay files nothing new.

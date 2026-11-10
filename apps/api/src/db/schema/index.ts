@@ -123,3 +123,5 @@ export * from "./sales-targets";
 export * from "./ai-provider";
 // WS-03 table link groups (legend-1nmh).
 export * from "./table-links";
+// WS-03 per-order bill splits (legend-ms3).
+export * from "./bill-splits";

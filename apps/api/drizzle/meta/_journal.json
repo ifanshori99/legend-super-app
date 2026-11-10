@@ -1317,6 +1317,13 @@
       "when": 1794280000000,
       "tag": "0201_brand_logo_storage",
       "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "7",
+      "when": 1794281000000,
+      "tag": "0202_bill_splits",
+      "breakpoints": true
     }
   ]
 }
