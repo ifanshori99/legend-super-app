@@ -1436,6 +1436,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Biaya sesi dca0a2b2: total biaya* 1688k (utama 562k, subagent 1127k), 7 subagent (3 Explore, 2 implementer, 1 test-writer, 1 reviewer), puncak 3 bersamaan.
 
 ## WS-03 operasi meja: pindah, gabung, pindah item (legend-685n, cabang `ws/table-move-merge`)
+
 - Dibangun: `POST /api/table-sessions/:id/move`, `/merge`, `/move-items` (`services/table-session-operations.service.ts`, route di `table-sessions.routes.ts`), event `table_session.moved|merged|items_moved` di katalog WS-03, audit tiap operasi. Tanpa migrasi.
 - Aturan: total tagihan tetap; pembayaran (tautan bayar, deposit, tender POS) mengunci gabung dan pindah item; sesi open bill yang lunas tidak dipindah; ulang permintaan dijawab dari event tersimpan tanpa tulis ulang.
 - Bukti: tanpa route 35 dari 38 tes gagal; dengan implementasi 84 dari 84 hijau di 5 file terkait; mutasi dua penjaga membuat 3 tes gagal. Review K (architect): 2 tinggi, 5 sedang, 3 rendah; 7 dibetulkan, sisanya dicatat sebagai risiko.
@@ -1473,47 +1474,56 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti: tes terarah 128 lulus di 6 berkas (setup 23, roster 52, swap 35, konkurensi 5, guard migrasi/RLS 13); root hris+payroll+core 95 lulus; tsc shared dan api lewat heavy bersih; eslint dan prettier bersih; `db:generate` kedua kosong.
 
 ## 2026-11-10: WS-07 jurnal retur pembelian dan pembelian sederhana (legend-1xbs, legend-v3lh)
+
 - Sudah: aturan `purchase_return.recorded` (Dr GRNI bagian belum ditagih, Dr utang usaha plus PPN bagian sudah ditagih, Cr persediaan, Cr PPN masukan) dan `petty_purchase.recorded` (Dr 5104 beban pembelian langsung, Cr kas kecil 1102), fact builder di consumer auto-jurnal, event baru `petty_purchase.recorded`, source type jurnal baru, migrasi 0205 (constraint plus backfill 5104). Keputusan: `docs/DECISIONS.md`.
 - Bukti: merah dulu 9 dari 12 tes api gagal tanpa sumber; typecheck shared, api, web bersih; review K (architect) 1 temuan (label web) dibetulkan; brief Codex `docs/briefs/298b-second-opinion-purchase-return-posting.md` (belum dijalankan).
 - Belum: emitter retur dan pembelian sederhana tidak ada di m1 (kartu `legend-316`); jurnal `goods_receipt.recorded` (kartu `legend-29vw`) harus jadi sebelum emitter retur aktif, kalau tidak GRNI bersaldo debit.
 
 ## 2026-11-10: WS-06 retur supplier dan pembelian sederhana (legend-65mgw)
+
 - Sudah: tabel `purchase_returns`, `purchase_return_lines`, `petty_purchases`, `petty_purchase_policies` (migrasi 0208), service dan route retur serta pembelian sederhana, izin baru, event `purchase_return.recorded` dengan split per baris dan `petty_purchase.recorded`, gerbang env `PURCHASE_RETURN_POSTING_ENABLED` (default mati), tes ujung ke ujung event ke jurnal. Keputusan: `docs/DECISIONS.md`.
 - Bukti: mutasi (batas qty mati, gerbang mati, batas petty mati) membuat tes gagal; 73 tes terarah lulus; tsc shared dan api bersih; review K (architect) 1 sedang dibetulkan (kunci PO kosong) plus normalisasi UUID.
 - Belum: retur aktif sesudah jurnal penerimaan barang (`legend-29vw`) menyalakan flag; UI; kas kecil `legend-4961`. Brief Codex: `docs/briefs/301c-second-opinion-supplier-return-petty.md` (belum dijalankan).
 
 ## 2026-11-10: WS-03 item gagal sesudah bayar (legend-4qu, ORD-08, ORD-09)
+
 - Sudah: endpoint kontrak qr-order untuk lapor item gagal (event `item.failed` + sinyal realtime ke ponsel tamu), daftar/opsi/pilihan tamu (hanya ganti menu atau kredit voucher), penyelesaian staf, refund manual hanya dengan approval `refund` yang disetujui dan alasan >= 10 karakter (event `order_issue.manual_refund_approved`), voucher permintaan maaf (`apology_vouchers`, kode disegel, batas matriks approval). Migrasi 0214 (tabel `apology_vouchers`, `order_issues.approval_request_id`, 3 indeks unik).
 - Bukti: 41 tes baru (+ perbaikan review) dan 117 tes terarah lulus di 8 berkas; tsc api bersih; `pnpm db:generate` kedua kosong; eslint dan prettier bersih; 84 tes kontrak root lulus; review K (architect) 10 temuan, yang uang dibetulkan.
 - Belum: selisih harga swap positif belum ditagih lewat pembayaran, lini pengganti belum masuk tiket dapur, eksekusi refund WS-05 dari event approval, kode voucher bertanda hubung vs input kasir CRM tanpa hubung, UI. Kartu 4qls (daftar issue tamu) ikut tercakup.
 
 ## 2026-11-10: WS-03 item gagal, putaran keputusan CTO (legend-4qu)
+
 - Sudah: tamu hanya boleh swap ke menu seharga atau lebih murah (lebih mahal 422, tak muncul di opsi); staf swap lebih mahal hanya lewat approval `price_correction` objek `order_issue` yang disetujui, dicatat di `order_issues.approval_request_id`. `voucherCodeInputSchema` CRM menerima tanda hubung dan menormalkan. POST /api/apology-vouchers idempoten lewat header Idempotency-Key (wajib bila tanpa orderIssueId), replay memeriksa ulang izin dan status.
 - Bukti: 6 tes swap merah di kode lama (9cf85303), hijau sesudah; 244 tes API terarah dan 89 tes kontrak lulus; tsc api bersih; db:generate kosong; eslint dan prettier bersih; architect delta K: 2 temuan sedang dibetulkan.
 - Belum: kartu legend-zm1e6 (tiket dapur lini pengganti), legend-94q2l (konsumen refund WS-05), legend-ok3zg (selaraskan acceptance Alur Y), legend-v32bv (kredit swap murah oleh staf).
 
 ## 2026-11-10: WS-03 swap item gagal: tiket dapur + kredit lewat matriks (legend-zm1e6, legend-v32bv)
+
 - Sudah: konsumer outbox `order_issue.resolved` (swap) `order-recovery-swap-kitchen.ts` membuat lini pengganti harga katalog di pesanan yang sama, void lini gagal, fire ke stasiun KDS; idempoten lewat `order_issues.replacement_order_item_id` (unik); total order dan pembayaran tidak dihitung ulang. Kredit swap staf ke menu murah tunduk matriks `apology_voucher` (409 APPROVAL_REQUIRED, request dibuka ulang bila mati). Migrasi 0214 diubah di tempat: CHECK swap positif wajib approval, kolom baru.
 - Bukti: tes merah dulu lalu hijau; 308 tes terarah (20 berkas), tsc api, eslint, prettier bersih; db:generate kedua kosong; review K architect: 1 High + 3 Medium dibetulkan (konsumer tidak throw bila menu tak bisa dipesan; order voided dilewati; request approval mati).
 - Belum/risiko: stok resep tidak dipotong untuk lini pengganti dan tidak dikembalikan untuk lini gagal (deduksi hanya di order.paid); order `completed` menyimpan lini lama (trigger final) sehingga laporan penjualan item menghitung dobel; harga lini pengganti diambil saat konsumsi event, bukan saat resolve; selisih mahal belum ditagih (legend-i83ls).
 
 ## 2026-11-10: WS-03 swap dapur putaran 2 (legend-zm1e6, keputusan CTO)
+
 - Sudah: harga lini pengganti = snapshot saat resolve (`order_issues.replacement_unit_price_idr`, 0214 diubah di tempat, fallback harga katalog bila null); order `completed`: lini pengganti nilai jual 0 (unit/modifier/line total 0, cost snapshot dan qty tetap, tiket dapur tetap terbit) supaya omzet tidak ganda, order non-final memakai harga snapshot; audit blocked/skipped sekali per issue; baris order dikunci FOR UPDATE di konsumer. Kartu baru `legend-v51rh` (potong stok resep lini pengganti, kembalikan/waste lini gagal).
 - Bukti: tes merah dulu lalu hijau; 104 tes terarah (4 berkas), tsc api, eslint, prettier bersih; db:generate kedua kosong; architect delta K: 2 Medium (kunci order, indeks audit) dibetulkan.
 - Risiko: laporan jumlah-terjual per item masih menghitung qty lini pengganti nol-nilai di order completed (omzet benar, qty dan rata-rata harga per item meleset); `EXPLAIN` cek audit belum dijalankan.
 
 ## 2026-11-10: WS-06 stok lini swap + laporan (legend-v51rh, legend-8igcm)
+
 - Sudah: `recipe-deduction.service.ts`: `order.paid` melewati lini yang sudah di-swap (tidak pernah dimasak, juga di order completed yang membekukan lini lama) dan membaca lini di bawah kunci order FOR SHARE; `applySwapStockAdjustment` (dipanggil konsumer swap) untuk order yang SUDAH dibayar mengembalikan bahan lini lama (return/order di harga unit asli, kunci `recipe-swap-return:`; pending: baris sale mengecil) dan memotong lini pengganti sebagai deduction `remake` kunci `swap:issue:<id>`; swap berantai mengembalikan dari remake swap sebelumnya; void akhir hanya mengembalikan sisa yang belum dikembalikan swap. Pilihan: kembalikan, bukan waste, karena lini `unfulfillable` tidak pernah dimasak. Laporan: ai-metrics top items, metric-source `menu_sold_qty`, popularitas QR mengecualikan lini pengganti bernilai 0 (`replacement_order_item_id`); biaya (food cost, menu COGS) tidak diubah; `remake_count` tidak menghitung `swap:issue:%`.
 - Kredit ganda (hipotesis architect): tidak nyata. Total order QR beku sejak checkout, swap hanya di order terbayar; tes `order-recovery-swap-double-credit.test.ts`.
 - Bukti: 9 dari 10 tes stok gagal tanpa fitur lalu hijau; 149 tes terarah (12 berkas), tsc api, eslint, prettier bersih; architect K: 2 wajib + 3 kecil dibetulkan.
 - Risiko: pengembalian yang ditolak aturan stok hanya di-log (tidak diparkir ulang seperti reversal void); `isPaidOrder` menganggap open_bill dengan payment intent pending sebagai dibayar; remake swap tidak di-reverse saat void akhir (konsisten dengan remake/comp).
 
 ## 2026-11-10: isPaidOrder cek status intent (legend-mz15j)
+
 - Sudah: `isPaidOrder` (`order-recovery.service.ts`) menganggap open_bill `sent` lunas hanya bila status intent paid, partially_refunded, atau refunded (sama dengan konsumer QR); intent pending, failed, expired, atau hilang ditolak 422 di lapor, swap, voucher, manual_refund. Status dibaca lewat leftJoin `payment_intents` di transaksi yang sama (loadIssue dan createIssue). pay_first dan completed tidak berubah. Pola lain (`paymentIntentId !== null`) di `qr-order-consumers`, `table-session-operations`, `qr-order-payment`, `pos-order`, akuntansi bukan penanda lunas: tidak diubah.
 - Bukti: 6 dari 10 tes baru merah tanpa fix lalu hijau; 97 tes terarah (6 berkas recovery), tsc api, eslint, prettier bersih; architect K: tidak ada temuan.
 - Risiko: tidak ada jalur produksi yang mengisi `orders.paymentIntentId` untuk open_bill `sent` saat ini (tes membuatnya lewat SQL); fix menutup celah sebelum jalur itu ada.
 
 ## 2026-11-10: ORD-09 refund item gagal dari approval (legend-94q2l)
+
 - Sudah: konsumen `order_issue.manual_refund_approved` (`order-recovery-refund.ts`, worker-main) membuka permintaan refund `system:recovery` (kunci `order-recovery-refund:<issueId>`), nominal pro-rata `recoveryRefundSplit` (keputusan founder Q85, `docs/DECISIONS.md`). QR pay-first: `order.refunded` (refundId = issue id) membalik pendapatan + PBJT dalam transaksi yang sama; hold `qrSaleInUseOfIntent` dilepas; guard payout `qrSales` menguranginya hanya setelah jurnal posted (Backing `qrRefund`, dibatasi jam fakta). Open bill: refund biasa. Bill kasir: audit `refund_routed_pos`. Split bill (termasuk kode lain di payment link), tanpa intent, belum lunas: audit `refund_blocked`. Four-eyes: penyetuju payout bukan resolver dan bukan approver ORD-09. Refund gagal `approval_expired`/`approver_unauthorized` dibuka ulang (maks 3 gagal); alasan lain diaudit untuk orang. Migrasi 0222 (sementara, when 1794301000000): `payment_refunds.order_issue_id` + FK komposit + unique parsial + indeks. 0214 diubah di tempat: FORCE RLS diangkat di blok FK (migrator non-superuser gagal 42501 sebelumnya).
 - Bukti: test gagal-dulu di basis (2 suite modul hilang, four-eyes 10/14 merah, 4 kontrol hijau); 70 test baru hijau; regresi 38 berkas terkait; tsc api, eslint, prettier; `db:generate` kosong; architect K xhigh 2 putaran: 1 High (refund gagal tanpa jalan ulang) + 4 Medium + Low dibetulkan.
 - Putaran 4 (10 Nov, keputusan CTO): refund `rejected` final. QR pay-first: event `order_issue.refund_reversal_requested` (sekali per issue) membalik jurnal `aj:order-refund:<issueId>` lewat konsumen auto-journal (kunci `aj:order-refund-reversal:<issueId>`, jurnal refund pending: parkir retryable `AUTO_JOURNAL_RECOVERY_REFUND_PENDING`, state none: ignored). Hold `qrSaleInUse` dan jumlah released issue lain tidak lagi melepas issue yang ditolak. Test `order-recovery-refund-reject.test.ts` RJ-1..13 (10 merah di 086ba7f8, 4 kontrol hijau). Review architect xhigh delta: tanpa High; Medium (released issue lain) diperbaiki defensif.
