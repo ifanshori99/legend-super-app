@@ -38,17 +38,17 @@ import {
 } from "@starter/shared/access/override";
 import { outletIdSchema, type TenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, lte, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { staffPins } from "../db/schema/device-pin.ts";
 import { withTenant } from "../db/tenant.ts";
-import { STAFF_PIN_PEPPER_VERSION } from "../services/device-pin-pepper.ts";
 import {
   appendDevicePinEvent,
   DEVICE_PIN_EVENT_DESTINATION,
   outletContext,
 } from "../services/device-pin-support.ts";
+import { currentStaffPinPepperVersion } from "../services/device-pin-pepper.ts";
 import { withoutSecretErrorDetail } from "./envelope-secrets.ts";
 
 export type StaffPinResendResult = { readonly resent: number };
@@ -75,11 +75,15 @@ export async function resendMateriallessStaffPinSets(
   const context = outletContext(tenant, outletId);
   const tenantId = tenant.tenantId;
   const outlet = outletIdSchema.parse(outletId);
+  const heldVersion = currentStaffPinPepperVersion();
   const pinFilter = and(
     eq(staffPins.tenantId, tenantId),
     eq(staffPins.outletId, outlet),
-    // Another pepper generation would never verify on the cloud.
-    eq(staffPins.pepperVersion, STAFF_PIN_PEPPER_VERSION),
+    // A generation above the current one would never verify on the cloud. An
+    // edge that holds no pepper yet (first boot after the upgrade, current 0,
+    // legend-ideif) cannot tell, so it filters nothing and the cloud applier
+    // refuses what it cannot verify.
+    heldVersion > 0 ? lte(staffPins.pepperVersion, heldVersion) : undefined,
   );
   return withoutSecretErrorDetail("Staff pin resend failed", async () => {
     // Candidates only: ids read without a lock. Each one is read again under

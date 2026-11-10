@@ -115,6 +115,12 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Backfill izin hanya ke template `owner` dan `finance` di semua tenant. Role kustom yang memegang `profit_share.registry.manage` TIDAK di-backfill (sama dengan keputusan krvk7): pemilik tenant harus menambahkan izin "Ubah porsi saham pemegang saham" ke role kustom itu, kalau tidak mereka kena 403 saat membuat, mengubah, atau mengajukan versi porsi.
 - Perubahan perilaku: klaw-bek yang melebihi yang sudah dibayarkan tidak lagi ditolak seluruhnya; dibatasi per pemegang saham dan sisanya dicatat di `unabsorbed_idr`. Ditolak 422 `ADJUSTMENT_EXCEEDS_PAID` hanya bila tidak ada yang bisa diserap.
 
+## Tambahan legend-ideif (pepper PIN staf di edge)
+
+- Migrasi `0225_edge_staff_pin_peppers`: tabel `edge_staff_pin_peppers` (RLS tenant dan outlet). Nomor sementara, merge train menyusun ulang bila bentrok. `pnpm db:generate` kosong.
+- Urutan: cloud dulu (query `peppers`), lalu edge. Env cloud baru: `STAFF_PIN_PEPPER_CURRENT_VERSION` (default 1).
+- Edge terpasang: hapus `STAFF_PIN_PEPPER` dari env edge SEBELUM restart (edge menolak jalan bila masih ada), outlet online agar sinkron pertama mengirim pepper tenant. Sebelum sinkron itu PIN di edge ditolak tanpa menaikkan hitungan gagal. Langkah lengkap dan rotasi: `docs/deployment.md` "Staff PIN pepper on edge nodes".
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).

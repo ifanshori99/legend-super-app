@@ -14,7 +14,7 @@
 // waiter call (`zone_waiter_assignments`, `waiter_call` category, pg_notify at
 // commit). They are never service_request rows.
 
-import { and, asc, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, ne, notInArray, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   assertOutletInScope,
@@ -61,7 +61,7 @@ import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
 import { assertPinAttemptOk, attemptStaffPin } from "./device-pin.service";
-import { STAFF_PIN_PEPPER_VERSION } from "./device-pin-pepper";
+import { currentStaffPinPepperVersion } from "./device-pin-pepper";
 import { outletContext, outletTarget } from "./device-pin-support";
 import { createNotificationConsumer } from "./notification-consumer";
 import {
@@ -600,7 +600,7 @@ export function listOpenBillApprovers(
         and(
           eq(staffPins.tenantId, context.tenant.tenantId),
           eq(staffPins.outletId, outlet),
-          eq(staffPins.pepperVersion, STAFF_PIN_PEPPER_VERSION),
+          lte(staffPins.pepperVersion, currentStaffPinPepperVersion()),
           sql`${user.banned} IS NOT TRUE`,
         ),
       )

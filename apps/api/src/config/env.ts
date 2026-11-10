@@ -237,6 +237,16 @@ const schema = z
       .string()
       .min(32, "Use at least 32 random characters.")
       .optional(),
+    // Pepper generation new staff pins are hashed under (cloud only). Raise it
+    // to rotate: older generations stay derivable so existing pins verify until
+    // their owner sets a new one, and every edge fetches the new tenant pepper
+    // on its next sync (docs/deployment.md "Staff device pins").
+    STAFF_PIN_PEPPER_CURRENT_VERSION: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .default(1),
     // Edge node settings (legend-2pi, edge/config.ts). Required only with
     // EDGE_MODE=true; the cloud ignores them. EDGE_NODE_CREDENTIAL is the
     // secret shown once at registration: never logged, never committed.
@@ -377,11 +387,24 @@ const schema = z
   })
   .refine(
     (values) =>
-      values.NODE_ENV !== "production" || Boolean(values.STAFF_PIN_PEPPER),
+      values.NODE_ENV !== "production" ||
+      values.EDGE_MODE ||
+      Boolean(values.STAFF_PIN_PEPPER),
     {
       path: ["STAFF_PIN_PEPPER"],
       message:
         "Set STAFF_PIN_PEPPER in production so a BETTER_AUTH_SECRET rotation does not wipe staff pins.",
+    },
+  )
+  .refine(
+    (values) => !values.EDGE_MODE || values.STAFF_PIN_PEPPER === undefined,
+    {
+      // legend-ideif: an edge node holds only the tenant-derived peppers the cloud
+      // sends it. The root secret on an edge box would let a stolen box derive
+      // every tenant's pepper, so the node refuses to boot with it (fail closed).
+      path: ["STAFF_PIN_PEPPER"],
+      message:
+        "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the tenant pepper over the sync.",
     },
   )
   .refine(

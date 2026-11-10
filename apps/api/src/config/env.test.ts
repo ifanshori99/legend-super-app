@@ -101,6 +101,47 @@ test("production requires its own staff pin pepper secret (legend-dxb)", () => {
   assert.equal(run({}).status, 0);
 });
 
+// legend-ideif: an edge node never holds the root staff pin pepper.
+const edgeNode = {
+  DEPLOYMENT_MODE: "production",
+  DATA_CLASSIFICATION: "real",
+  EDGE_MODE: "true",
+  APP_DATABASE_URL: appUrl,
+  EDGE_CLOUD_URL: "wss://cloud.example.test/api/edge-link",
+  EDGE_NODE_CREDENTIAL: `edg1.${randomUUID()}.${randomUUID()}.${randomUUID()}.${"a".repeat(43)}`,
+};
+
+test("an edge node refuses to boot with the root STAFF_PIN_PEPPER (legend-ideif)", () => {
+  const rootValue = "Zq9Lm4".repeat(6);
+  for (const NODE_ENV of ["production", "test"]) {
+    const result = run({ ...edgeNode, NODE_ENV, STAFF_PIN_PEPPER: rootValue });
+    assert.equal(result.status, 1);
+    // Names the key, never echoes the value.
+    assert.match(result.stderr, /STAFF_PIN_PEPPER/);
+    assert.ok(!result.stderr.includes(rootValue));
+    assert.ok(!result.stdout.includes(rootValue));
+  }
+});
+
+test("an edge node in production needs no root pepper (legend-ideif)", () => {
+  assert.equal(run({ ...edgeNode, NODE_ENV: "production" }).status, 0);
+  // The cloud still requires it in production.
+  assert.equal(run({ NODE_ENV: "production" }).status, 1);
+});
+
+test("STAFF_PIN_PEPPER_CURRENT_VERSION is a positive integer, default 1 (legend-ideif)", () => {
+  const show = "console.log(env.STAFF_PIN_PEPPER_CURRENT_VERSION)";
+  assert.equal(run({ STAFF_PIN_PEPPER_CURRENT_VERSION: "0" }).status, 1);
+  assert.equal(run({ STAFF_PIN_PEPPER_CURRENT_VERSION: "-1" }).status, 1);
+  assert.equal(run({ STAFF_PIN_PEPPER_CURRENT_VERSION: "1.5" }).status, 1);
+  const two = run({ STAFF_PIN_PEPPER_CURRENT_VERSION: "2" }, show);
+  assert.equal(two.status, 0);
+  assert.equal(two.stdout.trim(), "2");
+  const unset = run({}, show);
+  assert.equal(unset.status, 0);
+  assert.equal(unset.stdout.trim(), "1");
+});
+
 test("rejects real or unclassified imports outside production", () => {
   for (const mode of ["development", "staging"]) {
     for (const classification of ["real", "unknown"]) {
