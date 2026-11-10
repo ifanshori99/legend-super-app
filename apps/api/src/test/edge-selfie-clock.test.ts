@@ -13,8 +13,7 @@
 // - The queue row's file_path is <dir>/<tenantId>/<objectId>.lss.
 // - A clock-in without a selfie queues nothing either.
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
