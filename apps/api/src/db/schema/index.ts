@@ -140,3 +140,5 @@ export * from "./crm-rewards";
 // WS-08 feedback, customer segments (legend-ts50).
 export * from "./crm-feedback";
 export * from "./crm-segments";
+// WS-08 loyalty tiers, tier history, referrals (legend-3zd1).
+export * from "./crm-tiers";

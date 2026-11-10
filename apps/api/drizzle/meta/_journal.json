@@ -1373,6 +1373,13 @@
       "when": 1794288000000,
       "tag": "0209_crm_feedback_segments",
       "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1794289000000,
+      "tag": "0210_loyalty_tiers_referrals",
+      "breakpoints": true
     }
   ]
 }

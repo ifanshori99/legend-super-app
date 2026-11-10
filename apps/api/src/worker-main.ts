@@ -48,6 +48,9 @@ import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
 import { runSegmentMaterializeSweep } from "./worker/segment-materialize.job.ts"; // legend-ts50
+// legend-3zd1
+import { runLoyaltyTierSweep } from "./worker/loyalty-tier.job.ts";
+import { runLoyaltyExpirySweep } from "./worker/loyalty-expiry.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
@@ -526,6 +529,19 @@ const relay = createRelayRuntime({
         await runSegmentMaterializeSweep(context, new Date());
       } catch {
         console.error("Segment materialize sweep failed");
+      }
+      // legend-3zd1: nightly tier evaluation first (the birthday bonus reads the
+      // tier), then expire due points + birthday bonus, once per tenant per day.
+      // Never blocks the relay.
+      try {
+        await runLoyaltyTierSweep(context, new Date());
+      } catch {
+        console.error("Loyalty tier sweep failed");
+      }
+      try {
+        await runLoyaltyExpirySweep(context, new Date());
+      } catch {
+        console.error("Loyalty expiry sweep failed");
       }
     }
     // PRD §3 F11 e-receipt (legend-v3vo): send queued receipt emails. The

@@ -10,6 +10,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti: `loyalty-journal.test.ts` 16/17 merah sebelum kode, kini 20/20; 10 file terarah 354/354 (setelah perubahan terakhir); tsc api + shared (heavy) lulus; eslint dan prettier bersih.
 - Review architect (K, xhigh): tanggal jurnal (dibetulkan), tes pin redeem dan retry sweep (ditambah), poin pesanan latihan (kartu `legend-kbbma`, wajib sebelum dinyalakan), multi-entity (kartu `legend-6m1w1`).
 - Berikut: second-opinion Codex `docs/briefs/304c-second-opinion-points-journal.md` (xhigh, belum dijalankan); konfirmasi akuntan founder (Q7) sebelum dinyalakan; merge train.
+## legend-3zd1 + legend-xzr10 WS-08 tier, kedaluwarsa poin, ulang tahun, referral (engineer, cabang `ws/3zd1-tiers-expiry` dari milestone/m1 7d388b02, brief 290e + 304 bagian B, 2026-11-10)
+
+- Migrasi `0210_loyalty_tiers_referrals` (idx 209, when 1794289000000, prevId 711b7929 = snapshot 0208; merge train merangkai ulang dengan 0209 ts50). Tabel `loyalty_tiers`, `customer_tier_history` (append-only, trigger + REVOKE), `referrals` (kebijakan RLS khusus referrer/referee); kolom `customer_profiles.tier_id`, `tier_evaluated_at` (FK pola 2, grant INSERT/UPDATE per kolom tanpa `points_balance`). `db:generate` kedua kosong.
+- Tier: job malam (setelah 02:00 Asia/Jakarta, kursor antar tick) memakai `customer_visits` dalam `rollingMonths` dan `evaluateTier`; berubah = update profil + riwayat + outbox `tier.changed` satu transaksi; tak berubah = tanpa riwayat. Pengali masuk lewat `loyalty-earn-tier-step.ts` (tier nonaktif/kosong = 10 000 bp). CRUD `/api/loyalty/tiers` (`crm.loyalty.manage`), program GET kini memuat tier. Peringkat ganda 409 `TIER_RANK_TAKEN`, validasi salah 422.
+- Kedaluwarsa tanpa tabel baru: per profil di bawah kunci, FIFO per grant (urut `expires_at`); baris `expire` memakai `reverses_entry_id` = grant (menautkan expire ke grant) dan `source_id` UUIDv5 `<grant>:<n>`; poin yang sudah hangus tidak menyerap redeem berikut, kelebihan reversal dihitung terpakai (temuan architect, rumus B13 di brief kurang). Ulang tahun: bonus `birthday` sekali per tahun, hanya tier aktif. `GET /api/member/points` menambah `meta.expiringSoon` (selalu ada).
+- Referral: kode saat signup (`referralCode` opsional di `POST /api/member/consents`; kode salah/diri sendiri diam), kode sendiri dibuat saat `GET /api/member/profile` bila program aktif; kualifikasi di earn pertama >= `minFirstOrderIdr` (referrer dikunci sesudah referee), cap bulanan, hash WhatsApp pernah dipakai, order self-serve diblokir tidak mengkualifikasi. Order pertama di bawah minimum: referral tetap `pending` selamanya (event hanya order pertama).
+- legend-xzr10: staf `POST` voucher dengan source `loyalty_reward` ditolak 422 `VALIDATION_ERROR`; `REWARD_HAS_PENDING_REDEMPTIONS` (409) dan `REDEMPTION_CODE_UNAVAILABLE` (503) masuk `crm/errors.ts`. `vouchers_source_check` ganda ada di 0207 yang sudah terbit (DROP/ADD dua kali, hasil sama): tidak dirapikan karena butuh menulis ulang migrasi terpakai atau migrasi baru; tak berbahaya.
+- Review architect (K, xhigh): 2 berat (referral signup tak tercatat karena GUC member; bonus referral pada order self-serve), 4 sedang (sapuan >10 000 profil, retry penuh tiap menit, reversal setelah expire, tier nonaktif di ulang tahun) dibetulkan dengan tes gagal-dulu. Risiko terbuka: bonus referral tidak dibalik bila order pertama di-void/refund (butuh keputusan bisnis).
+- Bukti (setelah perubahan terakhir): 15 file 302/302 (crm-tiers 36, crm-expiry 35+, voucher-loyalty-source 3, earn, rewards, ledger, isolation, consent, missions, visit-reversal, rewards-admin, daily-cap, consent-db, crm-promo-api, data-import-registry) + 7 file RLS/migrasi 40/40; typecheck api + shared bersih (heavy); eslint + prettier berkas berubah bersih. Gagal-dulu terbukti untuk xzr10 (2 merah) dan perbaikan review (item 1, 2, 5, 6, 9); tes inti 3zd1 ditulis sebelum kode tetapi tidak dijalankan merah (tabel belum ada), item 3 dan 4 job tidak dibuktikan merah.
+- Subagent: 15 (Explore 3, implementer 8, test-writer 1, test-runner 2, architect 1), puncak bersamaan 7.
 
 ## legend-dwrr WS-12 provider AI OpenAI-compatible per tenant (engineer, cabang `ws/ai-provider-tenant` dari milestone/m1 d2080951, 2026-11-10)
 
@@ -1434,6 +1444,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Biaya sesi dca0a2b2: total biaya* 1688k (utama 562k, subagent 1127k), 7 subagent (3 Explore, 2 implementer, 1 test-writer, 1 reviewer), puncak 3 bersamaan.
 
 ## WS-03 operasi meja: pindah, gabung, pindah item (legend-685n, cabang `ws/table-move-merge`)
+
 - Dibangun: `POST /api/table-sessions/:id/move`, `/merge`, `/move-items` (`services/table-session-operations.service.ts`, route di `table-sessions.routes.ts`), event `table_session.moved|merged|items_moved` di katalog WS-03, audit tiap operasi. Tanpa migrasi.
 - Aturan: total tagihan tetap; pembayaran (tautan bayar, deposit, tender POS) mengunci gabung dan pindah item; sesi open bill yang lunas tidak dipindah; ulang permintaan dijawab dari event tersimpan tanpa tulis ulang.
 - Bukti: tanpa route 35 dari 38 tes gagal; dengan implementasi 84 dari 84 hijau di 5 file terkait; mutasi dua penjaga membuat 3 tes gagal. Review K (architect): 2 tinggi, 5 sedang, 3 rendah; 7 dibetulkan, sisanya dicatat sebagai risiko.
@@ -1471,11 +1482,13 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti: tes terarah 128 lulus di 6 berkas (setup 23, roster 52, swap 35, konkurensi 5, guard migrasi/RLS 13); root hris+payroll+core 95 lulus; tsc shared dan api lewat heavy bersih; eslint dan prettier bersih; `db:generate` kedua kosong.
 
 ## 2026-11-10: WS-07 jurnal retur pembelian dan pembelian sederhana (legend-1xbs, legend-v3lh)
+
 - Sudah: aturan `purchase_return.recorded` (Dr GRNI bagian belum ditagih, Dr utang usaha plus PPN bagian sudah ditagih, Cr persediaan, Cr PPN masukan) dan `petty_purchase.recorded` (Dr 5104 beban pembelian langsung, Cr kas kecil 1102), fact builder di consumer auto-jurnal, event baru `petty_purchase.recorded`, source type jurnal baru, migrasi 0205 (constraint plus backfill 5104). Keputusan: `docs/DECISIONS.md`.
 - Bukti: merah dulu 9 dari 12 tes api gagal tanpa sumber; typecheck shared, api, web bersih; review K (architect) 1 temuan (label web) dibetulkan; brief Codex `docs/briefs/298b-second-opinion-purchase-return-posting.md` (belum dijalankan).
 - Belum: emitter retur dan pembelian sederhana tidak ada di m1 (kartu `legend-316`); jurnal `goods_receipt.recorded` (kartu `legend-29vw`) harus jadi sebelum emitter retur aktif, kalau tidak GRNI bersaldo debit.
 
 ## 2026-11-10: WS-06 retur supplier dan pembelian sederhana (legend-65mgw)
+
 - Sudah: tabel `purchase_returns`, `purchase_return_lines`, `petty_purchases`, `petty_purchase_policies` (migrasi 0208), service dan route retur serta pembelian sederhana, izin baru, event `purchase_return.recorded` dengan split per baris dan `petty_purchase.recorded`, gerbang env `PURCHASE_RETURN_POSTING_ENABLED` (default mati), tes ujung ke ujung event ke jurnal. Keputusan: `docs/DECISIONS.md`.
 - Bukti: mutasi (batas qty mati, gerbang mati, batas petty mati) membuat tes gagal; 73 tes terarah lulus; tsc shared dan api bersih; review K (architect) 1 sedang dibetulkan (kunci PO kosong) plus normalisasi UUID.
 - Belum: retur aktif sesudah jurnal penerimaan barang (`legend-29vw`) menyalakan flag; UI; kas kecil `legend-4961`. Brief Codex: `docs/briefs/301c-second-opinion-supplier-return-petty.md` (belum dijalankan).
