@@ -1028,3 +1028,4 @@ Langkah berikut CTO baru:
 - 20:50 mulai G6wwy ptn11 (381 sonnet) dan G2lh5 sp9vq (384 sonnet). Antre: w5by9 (expiry FIFO, opus), 8docm, batch48 merge train.
 - 20:58 G8go1 ec6fa: 19ee5aaf (lock shared/exclusive per order; Codex 380 P1#1 tertutup; 98/98). Keputusan CTO: P1#2 opsi A (paymentId wajib saat ambil token klaim); P2 by design (24 jam sejak bayar, PRD F609 + founder Q75).
 - 21:05 G1fjl powk0 selesai: bdfeb6a9 (XML Coretax saring 'Peringatan:'; 148 test; typecheck EXIT=0). r3i8w siap batch48. Mulai G1amj w5by9 (385 opus).
+- 21:10 G2lh5 sp9vq: f103f371 ws/jmsdx-pepper (PinNewlyLockedError hitung slot device; 115/115; EXIT=0). Lanjutan di thread sama: legend-vfj7z (slot device di override POS dan konversi open bill).
