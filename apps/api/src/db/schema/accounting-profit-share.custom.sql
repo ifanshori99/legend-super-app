@@ -313,7 +313,8 @@ CREATE OR REPLACE FUNCTION app.distribution_lines_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
   run_status text;
-  payment_cols text[] := ARRAY['payment_status', 'payment_ref', 'paid_at', 'paid_by'];
+  payment_cols text[] := ARRAY['payment_status', 'payment_ref', 'paid_at', 'paid_by',
+    'recipient_user_id'];
 BEGIN
   SELECT r.status INTO run_status FROM public.distribution_runs r
   WHERE r.tenant_id = coalesce(NEW.tenant_id, OLD.tenant_id)

@@ -43,6 +43,7 @@ import { resolveHostname } from "../services/org-resolve.service";
 import { deviceTenantCredential } from "../services/platform-tenant.service";
 import { decideApprovalRequest } from "../services/platform-approval.service";
 import { settleShareholderRecipientVersionForApproval } from "../services/profit-share-registry.service";
+import { issueDistributionStatement } from "../services/profit-share-statement.service";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
 import { closeFiscalPeriod } from "../services/accounting-period-close.service";
 import { db } from "../db";
@@ -294,11 +295,11 @@ async function setPolicy(present: boolean) {
  * must be `paid` (journal and all), so the second line stays pending and the
  * run stays `approved`: enough for statements, which only need a paid line.
  */
-async function makeWorld(login: Person) {
+async function makeWorld(login: Person | null) {
   const created = await post(manager, "/shareholders", {
     name: `Pemegang ${unique()}`,
     type: "person",
-    userId: login.userId,
+    userId: login?.userId ?? null,
     npwp: null,
     payoutAccount: null,
   });
@@ -361,7 +362,7 @@ type World = Awaited<ReturnType<typeof makeWorld>>;
  * A run created through the endpoint (so `insertRun` snapshots the recipient),
  * then approved and its line paid as the migration owner.
  */
-async function paidRun(world: World): Promise<PaidRun> {
+async function approvedRun(world: World): Promise<PaidRun> {
   const period = await closedPeriod(
     world,
     `${2021 + Math.floor(world.next / 12)}-${String((world.next++ % 12) + 1).padStart(2, "0")}`,
@@ -380,19 +381,25 @@ async function paidRun(world: World): Promise<PaidRun> {
   );
   await owner.query(
     `UPDATE distribution_runs
-     SET status = 'approved', approved_by = $3, approved_at = now()
+     SET status = 'approved', approved_by = $3, approved_at = now() - interval '1 hour'
      WHERE tenant_id = $1 AND id = $2`,
     [tenantA, run.id, approver.userId],
   );
+  const lineId = run.lines.find(
+    (line) => line.shareholderId === world.shareholderId,
+  )!.id;
+  return { run, lineId };
+}
+
+/** An approved run whose line of the world's shareholder is paid as owner. */
+async function paidRun(world: World): Promise<PaidRun> {
+  const { run, lineId } = await approvedRun(world);
   await owner.query(
     `UPDATE distribution_lines
      SET payment_status = 'paid', payment_ref = $3, paid_at = now(), paid_by = $4
      WHERE tenant_id = $1 AND distribution_run_id = $2 AND shareholder_id = $5`,
     [tenantA, run.id, `TRF-${unique()}`, manager.userId, world.shareholderId],
   );
-  const lineId = run.lines.find(
-    (line) => line.shareholderId === world.shareholderId,
-  )!.id;
   return { run, lineId };
 }
 
@@ -611,5 +618,169 @@ describe("S3 recipient change: versioned, approved, history stays with its login
     }
     expect(await userIdOf(world.shareholderId)).toBe(alice.userId);
     expect(await versionsOf(world.shareholderId)).toHaveLength(0);
+  });
+});
+
+describe("R2 statement recipient is the login of the paid line", () => {
+  it("emails the paid-time recipient (Alice) after an approved change to Bob", async () => {
+    const alice = await shareholderUser("Alice Email");
+    const bob = await shareholderUser("Bob Email");
+    const world = await makeWorld(alice);
+    const paid = await paidRun(world);
+    const changed = await patch(
+      manager,
+      `/shareholders/${world.shareholderId}`,
+      { userId: bob.userId },
+    );
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    const [pending] = await versionsOf(world.shareholderId);
+    await decideAndSettle(pending!.id, pending!.approval_chain_id!, "approved");
+    expect(await userIdOf(world.shareholderId)).toBe(bob.userId);
+
+    const emails = await owner.query<{ id: string; email: string }>(
+      `SELECT id, email FROM "user" WHERE id = ANY($1)`,
+      [[alice.userId, bob.userId]],
+    );
+    const emailOf = (id: string) =>
+      emails.rows.find((row) => row.id === id)!.email;
+    const sent: string[] = [];
+    await issueDistributionStatement(
+      scopedContext(),
+      { distributionRunId: paid.run.id, distributionLineId: paid.lineId },
+      {
+        storage: { put: async () => ({}) } as never,
+        email: {
+          send: async (_context: unknown, message: { to: string }) => {
+            sent.push(message.to);
+            return {};
+          },
+        } as never,
+      },
+    );
+    expect(sent).toEqual([emailOf(alice.userId)]);
+    expect(sent).not.toContain(emailOf(bob.userId));
+  });
+});
+
+describe("R2 payment-time recipient and the former login", () => {
+  it("a login linked after the run was created reads the statement once paid", async () => {
+    const bob = await shareholderUser("Bob Bayar");
+    const world = await makeWorld(null);
+    const { run, lineId } = await approvedRun(world);
+    const path = statementPath({ run, lineId });
+    const snapshot = await owner.query<{ recipient_user_id: string | null }>(
+      "SELECT recipient_user_id FROM distribution_lines WHERE id = $1",
+      [lineId],
+    );
+    expect(snapshot.rows[0]!.recipient_user_id).toBeNull();
+
+    const changed = await patch(
+      manager,
+      `/shareholders/${world.shareholderId}`,
+      { userId: bob.userId },
+    );
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    const [pending] = await versionsOf(world.shareholderId);
+    await decideAndSettle(pending!.id, pending!.approval_chain_id!, "approved");
+
+    const paid = await post(
+      manager,
+      `/distributions/${run.id}/lines/${lineId}/payment`,
+      {
+        paymentRef: `TRF-${unique()}`,
+        paidAt: new Date(Date.now() - 60_000).toISOString(),
+        idempotencyKey: key("pay"),
+      },
+    );
+    expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    const after = await owner.query<{ recipient_user_id: string | null }>(
+      "SELECT recipient_user_id FROM distribution_lines WHERE id = $1",
+      [lineId],
+    );
+    expect(after.rows[0]!.recipient_user_id).toBe(bob.userId);
+    const read = await get(bob, path);
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+  });
+
+  it("an approved removal of the login leaves the paid line with no recipient: Alice 404, no email", async () => {
+    const alice = await shareholderUser("Alice Dicabut");
+    const world = await makeWorld(alice);
+    const { run, lineId } = await approvedRun(world);
+    const path = statementPath({ run, lineId });
+    const snapshot = await owner.query<{ recipient_user_id: string | null }>(
+      "SELECT recipient_user_id FROM distribution_lines WHERE id = $1",
+      [lineId],
+    );
+    expect(snapshot.rows[0]!.recipient_user_id).toBe(alice.userId);
+
+    const changed = await patch(
+      manager,
+      `/shareholders/${world.shareholderId}`,
+      { userId: null },
+    );
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    const [pending] = await versionsOf(world.shareholderId);
+    await decideAndSettle(pending!.id, pending!.approval_chain_id!, "approved");
+    expect(await userIdOf(world.shareholderId)).toBeNull();
+
+    const paid = await post(
+      manager,
+      `/distributions/${run.id}/lines/${lineId}/payment`,
+      {
+        paymentRef: `TRF-${unique()}`,
+        paidAt: new Date(Date.now() - 60_000).toISOString(),
+        idempotencyKey: key("pay"),
+      },
+    );
+    expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    const after = await owner.query<{ recipient_user_id: string | null }>(
+      "SELECT recipient_user_id FROM distribution_lines WHERE id = $1",
+      [lineId],
+    );
+    expect(after.rows[0]!.recipient_user_id).toBeNull();
+    const read = await get(alice, path);
+    expect(read.status, JSON.stringify(read.body)).toBe(404);
+
+    const sent: string[] = [];
+    await issueDistributionStatement(
+      scopedContext(),
+      { distributionRunId: run.id, distributionLineId: lineId },
+      {
+        storage: { put: async () => ({}) } as never,
+        email: {
+          send: async (_context: unknown, message: { to: string }) => {
+            sent.push(message.to);
+            return {};
+          },
+        } as never,
+      },
+    );
+    expect(sent).toEqual([]);
+  });
+
+  it("a former login still lists its own paid lines instead of 404", async () => {
+    const alice = await shareholderUser("Alice Lama");
+    const bob = await shareholderUser("Bob Baru");
+    const world = await makeWorld(alice);
+    const paid = await paidRun(world);
+    const changed = await patch(
+      manager,
+      `/shareholders/${world.shareholderId}`,
+      { userId: bob.userId },
+    );
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    const [pending] = await versionsOf(world.shareholderId);
+    await decideAndSettle(pending!.id, pending!.approval_chain_id!, "approved");
+
+    const mine = await get(alice, "/my-profit-share");
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    const lines = (
+      mine.body.data.distributionHistory as { distributionLineId: string }[]
+    ).map((entry) => entry.distributionLineId);
+    expect(lines).toEqual([paid.lineId]);
+    expect(mine.body.data.holdings).toEqual([]);
+    // A login with neither a row nor a paid line still gets 404.
+    const stranger = await shareholderUser("Orang Asing");
+    expect((await get(stranger, "/my-profit-share")).status).toBe(404);
   });
 });

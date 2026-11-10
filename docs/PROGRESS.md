@@ -59,6 +59,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Keterbatasan tersisa: klaw-bek atas run yang semua barisnya nol ditolak (carry yang diampuni tidak dipulihkan); regular run yang dibuat sebelum koreksi di-approve tidak melihat carry itu (run berikutnya melihat); mock tidak melacak carry.
 - Bukti: 10 file API 165 test hijau; root `accounting-contract` + `ws07-profit-share` + `ws07-profit-share-carry` 117 hijau; tsc shared/api/web exit 0; eslint dan prettier bersih; `db:generate` kosong. Test gagal-dulu: shared 13 test merah (`unabsorbedByShareholder is not iterable`), migrasi 8/8 merah, test API 1-9 dan 10-11 merah sebelum kode. Subagent: 3 Explore, 4 implementer berurutan/paralel, 1 architect; puncak 2 bersamaan.
 
+## legend-33im6 perbaikan temuan Codex bagi hasil (engineer Opus, cabang `ws/8s992-profit-rules`, 2026-11-10)
+
+- Cabang sudah digabung dengan milestone/m1 (1b1e96eb, merge 6ddd5d74). Migrasi bagi hasil kini 0217/0218/0219; perbaikan migrasi diedit di `0217_profit_share.sql` (m1 belum rilis): DB dev/test perlu reset.
+- P1 approval: submit membuka chain matriks `dividend_distribution` (source module `profit_share`); status approved hanya setelah chain selesai (approver = pemutus level terakhir); di bawah semua ambang tetap jalur langsung; tanpa chain saat decide, matriks dicek ulang dan chain dibuka (409). Consumer `approval.resolved` di worker-main.
+- P2 klaw-bek: pajak dikembalikan kumulatif (target pajak sisa minus pajak dipegang), tidak pernah melebihi potongan, tidak pernah positif.
+- P1 penerima: ganti login pemegang saham = versi baru `shareholder_recipient_versions` lewat chain `shareholder_version` (tanpa kebijakan: ditolak). Baris distribusi menyimpan `recipient_user_id` (dibuat, lalu diperbarui saat dibayar); statement, email, dan my-profit-share memakai identitas itu. Migrasi 0252 (tabel baru, backfill, guard baris).
+- P1 migrasi: 0217 tidak lagi menolak dokumen lama; backfill `profit_entities` per id lama (cocok outlet/badan hukum, sisanya nonaktif di badan hukum kosong), RLS dilonggarkan sementara untuk migrator non-superuser.
+- P2 statement: `installProfitShareStatementPorts` dipasang di server.ts, storage dari `OBJECT_STORAGE_*` (opsional, semua-atau-tidak), email dari setelan Brevo.
+- Review architect xhigh 2 putaran; temuan nyata dibetulkan. Sisa kecil dicatat di laporan.
+
 ## legend-8s992 aturan founder bagi hasil + sisa test (engineer Sonnet, cabang `ws/8s992-profit-rules` dari `ws/profit-share` 9e3d3928, 2026-11-10)
 
 - Q82 pembulatan: sudah ada (`allocateIdr`, seri ke shareholderId terendah); dibuktikan 3 test baru di `tests/ws07-profit-share.test.mjs` (sisa hitung tangan, seri dengan semua urutan input, loop properti 400 putaran). Mutasi balik urutan seri: 3 test merah.

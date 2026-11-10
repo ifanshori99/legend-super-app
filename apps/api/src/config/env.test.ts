@@ -119,8 +119,11 @@ test("object storage settings are all-or-none (legend-33im6)", () => {
     0,
   );
   // Partial, same buckets, or a non-https public URL: refused at boot.
-  const partial: Record<string, string | undefined> = { ...storage };
-  delete partial.OBJECT_STORAGE_SECRET_ACCESS_KEY;
+  const partial: Record<string, string> = Object.fromEntries(
+    Object.entries(storage).filter(
+      ([key]) => key !== "OBJECT_STORAGE_SECRET_ACCESS_KEY",
+    ),
+  );
   for (const settings of [
     partial,
     { OBJECT_STORAGE_PRIVATE_BUCKET: "only-this" },

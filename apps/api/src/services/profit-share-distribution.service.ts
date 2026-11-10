@@ -1690,7 +1690,10 @@ export async function decideDistributionRunService(
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
   const actorId = userIdSchema.parse(actorUserId);
-  return withTenant(db, context, async (tx) => {
+  // Opening a chain here must commit before the 409 is answered, so the
+  // answer is thrown after the transaction instead of inside it.
+  let chainOpenedNow = false;
+  const decided = await withTenant(db, context, async (tx) => {
     const { row, run } = await loadRun(tx, tenantId, runId, true);
     const entityRow = await loadEntityRow(tx, tenantId, row.profitEntityId);
     const now = new Date();
@@ -1711,7 +1714,26 @@ export async function decideDistributionRunService(
         actorId,
         now: isoDateTimeSchema.parse(now.toISOString()),
       });
-      if (chainId === null)
+      if (chainId === null) {
+        // Submit found no tier for this amount. The matrix may have tightened
+        // since: ask it again with the same open path before approving
+        // directly. A chain opened now is the requester's, like at submit.
+        const opened = await openApprovalRequest(tx, context, {
+          sourceModule: PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+          actionType: "dividend_distribution",
+          objectType: DISTRIBUTION_RUN_OBJECT_TYPE,
+          objectId: runId,
+          amountIdr: idr(Math.abs(run.totalGrossIdr)),
+          outletId: entityRow.outletId,
+          requestedBy: userIdSchema.parse(run.requestedBy),
+          source: "user",
+          requestReason: `Distribusi bagi hasil ${run.period}`,
+          now,
+        });
+        if (opened.required) {
+          chainOpenedNow = true;
+          return run;
+        }
         return applyDistributionApproval(tx, context, {
           row,
           run,
@@ -1720,6 +1742,7 @@ export async function decideDistributionRunService(
           now,
           note: input.note ?? null,
         });
+      }
       // A chain decides: this call only settles it (the approver is the last
       // level's user), or answers 409 while levels are still open.
       const settled = await settleLoadedRun(
@@ -1762,6 +1785,13 @@ export async function decideDistributionRunService(
       now,
     });
   });
+  if (chainOpenedNow)
+    throw new HttpError(
+      409,
+      "APPROVAL_PENDING",
+      "Persetujuan belum selesai di kotak masuk approval.",
+    );
+  return decided;
 }
 
 /** The automatic journal of a completed run (§4 P step 4). */
@@ -1875,6 +1905,19 @@ export async function recordDistributionPaymentService(
         "INVALID_PAID_AT",
         "Tanggal pembayaran harus setelah persetujuan dan tidak boleh di masa depan.",
       );
+    // The statement goes to the login the shareholder has at payment time: one
+    // linked after the run was created must read it (set once, with the pay).
+    // A shareholder left without a login keeps the one the line was made for.
+    const [holder] = await tx
+      .select({ userId: shareholders.userId })
+      .from(shareholders)
+      .where(
+        and(
+          eq(shareholders.tenantId, tenantId),
+          eq(shareholders.id, target.shareholderId),
+        ),
+      )
+      .limit(1);
     await tx
       .update(distributionLines)
       .set({
@@ -1882,6 +1925,9 @@ export async function recordDistributionPaymentService(
         paymentRef: input.paymentRef.trim(),
         paidAt,
         paidBy: actorId,
+        // The login linked when the money moves (an approved change may have
+        // removed it: then nobody, not the creation-time login).
+        recipientUserId: holder?.userId ?? null,
       })
       .where(
         and(
@@ -2109,40 +2155,37 @@ export async function getMyProfitShareService(
         ),
       )
       .limit(1);
-    if (!me)
-      throw new HttpError(
-        404,
-        "NOT_FOUND",
-        "Data pemegang saham tidak ditemukan.",
-      );
-
+    // A former login (no shareholder row points at it any more) still reads
+    // its own paid history below; holdings need a current row.
     // Own allocation rows in approved versions only: drafts are never shown.
-    const mine = await tx
-      .select({
-        allocationId: shareAllocations.id,
-        profitEntityId: shareAllocations.profitEntityId,
-        version: shareAllocations.version,
-        shareBp: shareAllocations.shareBp,
-      })
-      .from(shareAllocations)
-      .innerJoin(
-        shareAllocationVersions,
-        and(
-          eq(shareAllocationVersions.tenantId, shareAllocations.tenantId),
-          eq(
-            shareAllocationVersions.profitEntityId,
-            shareAllocations.profitEntityId,
-          ),
-          eq(shareAllocationVersions.version, shareAllocations.version),
-        ),
-      )
-      .where(
-        and(
-          eq(shareAllocations.tenantId, tenantId),
-          eq(shareAllocations.shareholderId, me.id),
-          eq(shareAllocationVersions.status, "approved"),
-        ),
-      );
+    const mine = !me
+      ? []
+      : await tx
+          .select({
+            allocationId: shareAllocations.id,
+            profitEntityId: shareAllocations.profitEntityId,
+            version: shareAllocations.version,
+            shareBp: shareAllocations.shareBp,
+          })
+          .from(shareAllocations)
+          .innerJoin(
+            shareAllocationVersions,
+            and(
+              eq(shareAllocationVersions.tenantId, shareAllocations.tenantId),
+              eq(
+                shareAllocationVersions.profitEntityId,
+                shareAllocations.profitEntityId,
+              ),
+              eq(shareAllocationVersions.version, shareAllocations.version),
+            ),
+          )
+          .where(
+            and(
+              eq(shareAllocations.tenantId, tenantId),
+              eq(shareAllocations.shareholderId, me.id),
+              eq(shareAllocationVersions.status, "approved"),
+            ),
+          );
     const entityIds = [...new Set(mine.map((row) => row.profitEntityId))];
     const entityRows =
       entityIds.length === 0
@@ -2183,15 +2226,16 @@ export async function getMyProfitShareService(
         version: row.version,
         effectiveFrom: row.effectiveFrom,
         status: row.status,
-        allocations: own
-          ? [
-              {
-                id: own.allocationId,
-                shareholderId: me.id,
-                shareBp: own.shareBp,
-              },
-            ]
-          : [],
+        allocations:
+          own && me
+            ? [
+                {
+                  id: own.allocationId,
+                  shareholderId: me.id,
+                  shareBp: own.shareBp,
+                },
+              ]
+            : [],
         requestedBy: row.requestedBy,
         requestedAt: iso(row.requestedAt),
         decidedBy: row.decidedBy,
@@ -2217,6 +2261,13 @@ export async function getMyProfitShareService(
         ),
       )
       .orderBy(desc(distributionLines.paidAt), desc(distributionLines.id));
+    // No current row and no paid line of this login: there is nothing to show.
+    if (!me && ownLines.length === 0)
+      throw new HttpError(
+        404,
+        "NOT_FOUND",
+        "Data pemegang saham tidak ditemukan.",
+      );
     const runIds = [...new Set(ownLines.map((line) => line.distributionRunId))];
     // A line may belong to another shareholder row than today's (the login was
     // moved between rows): each statement names its own shareholder.
@@ -2292,7 +2343,8 @@ export async function getMyProfitShareService(
           line,
           shareholder: {
             id: ownLine.shareholderId as never,
-            name: holderNames.get(ownLine.shareholderId) ?? me.name,
+            name:
+              holderNames.get(ownLine.shareholderId) ?? me?.name ?? "Pemegang",
           },
           profitEntity: {
             id: run.profitEntityId,
@@ -2302,8 +2354,13 @@ export async function getMyProfitShareService(
       );
     }
 
+    // The self view names the current row, else the row of the newest paid line.
+    const subject = me ?? {
+      id: ownLines[0]!.shareholderId,
+      name: holderNames.get(ownLines[0]!.shareholderId) ?? "Pemegang",
+    };
     return buildMyProfitShare({
-      shareholder: { id: me.id, name: me.name } as never,
+      shareholder: { id: subject.id, name: subject.name } as never,
       entities: entityRows.map(toEntity),
       versions,
       statements,

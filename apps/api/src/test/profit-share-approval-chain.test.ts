@@ -610,3 +610,34 @@ describe("S1 a distribution run is approved through the approval matrix", () => 
     expect(settled.approved_by).toBe(directApprover.userId);
   });
 });
+
+describe("R2 a policy tightened after submit is honoured at decide", () => {
+  it("opens the chain and answers 409 instead of approving directly", async () => {
+    // Below every threshold at submit: no chain opened.
+    await setPolicy([
+      { threshold: 1_000_000_000_000, roleId: level1RoleId, level: 1 },
+    ]);
+    const run = await pendingRun();
+    const before = await owner.query(
+      `SELECT 1 FROM approval_requests
+        WHERE tenant_id = $1 AND source_module = 'profit_share' AND object_id = $2`,
+      [tenantA, run.id],
+    );
+    expect(before.rows).toHaveLength(0);
+
+    await twoLevelPolicy();
+    const response = await decideRoute(directApprover, run.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error?.code).toBe("APPROVAL_PENDING");
+    expect((await statusOf(run.id)).status).toBe("pending_approval");
+
+    // The chain now exists, opened for the run's requester, and survived the 409.
+    const chainId = await chainOf(run.id);
+    const { rows } = await owner.query<{ requested_by: string }>(
+      `SELECT requested_by FROM approval_requests
+        WHERE tenant_id = $1 AND chain_id = $2 AND level = 1`,
+      [tenantA, chainId],
+    );
+    expect(rows[0]!.requested_by).toBe(manager.userId);
+  });
+});
