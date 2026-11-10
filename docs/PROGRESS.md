@@ -927,3 +927,4 @@ Langkah berikut CTO baru:
 - 15:26 CTO: k2l-followup 1fd0e1a9 (0220 sementara, akun lama createdAt menang, profil, throttle email 3/15m, audit email, F1 takeover dibetulkan). Lanjutan G08n2: profil kosong tidak ditolak, batal challenge lintas tenant.
 - 15:35 CTO: 0w2wy 80f5c4d1 (router impor/cetak menu, helper acceptsDocuments, architect 2 temuan dibetulkan) G4gfq resolved, batch47. Kartu legend-eirhm (PDF lama). lzvh0 mulai G2crn (334).
 - 15:42 CTO: founder Q85 refund item gagal pro-rata (harga + service + PBJT), dikirim ke G9whx.
+- 15:43 CTO: 5tmye f4a782b7 (login-challenge-rate-limit hapus admin wa.invalid; run penuh exit 0) G8669 resolved, batch47. Mulai ideif (335, keamanan pepper edge) G2a6h.
