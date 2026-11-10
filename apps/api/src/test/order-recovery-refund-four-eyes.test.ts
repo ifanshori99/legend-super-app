@@ -441,6 +441,14 @@ describe("legend-94q2l T2 four-eyes: the payout of a recovery refund", () => {
       },
       { replica: true },
     );
+    // ORD-09 chains seeded by FE-2b (the issue rows are gone: no FK holds them).
+    for (const op of ["level > 1", "level = 1"])
+      await owner.query(
+        `DELETE FROM approval_requests
+         WHERE tenant_id = $1 AND object_type = 'order_issue'
+           AND object_id = ANY($2::text[]) AND ${op}`,
+        [seededTenantId, issueIds],
+      );
     await owner.query(
       "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
       [seededTenantId],
@@ -488,6 +496,53 @@ describe("legend-94q2l T2 four-eyes: the payout of a recovery refund", () => {
     it("FE-2 the approver of the ORD-09 approval cannot approve the payout", async () => {
       const { refundId } = await recoveryRefund();
       await expectRefused(refundId, clients[0]!, "APPROVER_IS_REQUESTER");
+    });
+
+    it("FE-2b a level-1 decider of a two-level ORD-09 chain cannot approve the payout; a person outside the chain can", async () => {
+      const { refundId, issueId } = await recoveryRefund();
+      // ORD-09 chain of the issue: level 1 decided by [2], level 2 (the last,
+      // = order_issues.approved_by) by [0]. The issue links to the last level.
+      const level1 = randomUUID();
+      const level2 = randomUUID();
+      const insertLevel = (id: string, level: number, decidedBy: string) =>
+        owner.query(
+          `INSERT INTO approval_requests
+             (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type, object_id,
+              requested_by, source, level, required_levels, required_steps, status,
+              request_reason, decided_by, decided_at, reason, deadline_at, created_at)
+           VALUES ($1, $2, $3, $4, 'order-recovery', 'refund', 'order_issue', $5,
+                   $6, 'user', $7, 2, '[]'::jsonb, 'approved',
+                   'Refund manual item gagal', $8, now(), 'Sesuai bukti item gagal.',
+                   now() + interval '1 day', now())`,
+          [
+            id,
+            seededTenantId,
+            seededOutletA,
+            level1,
+            issueId,
+            resolver(),
+            level,
+            decidedBy,
+          ],
+        );
+      await insertLevel(level1, 1, thirdId());
+      await insertLevel(level2, 2, ord09Approver());
+      await owner.query(
+        "UPDATE order_issues SET approval_request_id = $1 WHERE tenant_id = $2 AND id = $3",
+        [level2, seededTenantId, issueId],
+      );
+
+      await expectRefused(refundId, thirdPerson(), "APPROVER_IS_REQUESTER");
+
+      const fake = new FakeRefundGateway();
+      setPaymentRefundGateway(fake);
+      try {
+        const ok = await approve(refundId, clients[3]!);
+        expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+      } finally {
+        setPaymentRefundGateway(null);
+      }
+      expect(fake.executionCount).toBe(1);
     });
 
     it("FE-3 a third person with payment.reconcile approves it and the guest is paid once", async () => {

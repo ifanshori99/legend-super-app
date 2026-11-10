@@ -17,6 +17,8 @@
 //   delivered as a separate `payment.funds_unallocated` receipt.
 // - Helpers are copied from accounting-auto-journal.test.ts (the old file is
 //   not changed).
+// - order_items and order_issues point at users and menu items the test does not
+//   need; they are inserted with session_replication_role = replica.
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
@@ -57,6 +59,8 @@ const SWEEP_AT = new Date(NOW.getTime() + 24 * 60 * 60 * 1000);
 const DAY = "2026-10-15T05:00:00.000Z";
 /** Completion instant of payouts: after the order fired. */
 const REFUND_DAY = "2026-10-16T05:00:00.000Z";
+/** The recovery refund of an order issue is filed here: after the order, before REFUND_DAY. */
+const T_RECOVERY = "2026-10-15T08:00:00.000Z";
 
 const FLAGS_ON = JSON.stringify({
   modules: ["accounting"],
@@ -139,10 +143,13 @@ async function makeTenant(): Promise<Tenant> {
 async function asTenant<T>(
   tenant: Tenant,
   run: (client: PoolClient) => Promise<T>,
+  { replica = false }: { replica?: boolean } = {},
 ): Promise<T> {
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
+    if (replica)
+      await client.query("SET LOCAL session_replication_role = replica");
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
       [tenant.id],
@@ -287,7 +294,8 @@ async function seedSplitOrder(
   world: World,
   linkId: string,
   payerIntentId: string,
-): Promise<void> {
+): Promise<string> {
+  const orderUuid = ulidToUuid(createUlid());
   await asTenant(world.tenant, (client) =>
     client.query(
       `INSERT INTO orders
@@ -298,7 +306,7 @@ async function seedSplitOrder(
        VALUES ($1, $2, $3, $4, 'qr', 'takeaway', 'pay_first', 100000, 0, 0, 10000, 0, 110000,
                false, 'sent', '2026-10-15', now(), $5, 0, $6, 'sealed', $7)`,
       [
-        ulidToUuid(createUlid()),
+        orderUuid,
         world.tenant.id,
         world.outletId,
         `QR-${short()}`,
@@ -308,6 +316,71 @@ async function seedSplitOrder(
       ],
     ),
   );
+  return orderUuid;
+}
+
+/** A resolved ORD-09 failed-item issue of the order (user and menu FKs skipped). */
+async function seedIssue(world: World, orderUuid: string): Promise<string> {
+  const itemId = randomUUID();
+  const issueId = randomUUID();
+  await asTenant(
+    world.tenant,
+    async (client) => {
+      await client.query(
+        `INSERT INTO order_items (id, tenant_id, outlet_id, order_id, menu_item_id, variant_id, name,
+         quantity, unit_price_idr, modifiers_total_idr, line_total_idr, modifiers,
+         fire_status, status, reserved_business_date)
+       VALUES ($1, $2, $3, $4, $5, NULL, 'Roti Bakar', 1, 40000, 0, 40000, '[]'::jsonb,
+         'fired', 'served', '2026-10-15')`,
+        [itemId, world.tenant.id, world.outletId, orderUuid, randomUUID()],
+      );
+      await client.query(
+        `INSERT INTO order_issues (id, tenant_id, outlet_id, order_id, order_item_id, type, reason,
+         reason_note, reported_by, resolution, approved_by, cost_idr, status, idempotency_key, resolved_at)
+       VALUES ($1, $2, $3, $4, $5, 'unfulfillable', 'out_of_stock', 'Roti habis, refund manual disetujui',
+         $6, 'manual_refund', $7, 0, 'resolved', $8, now())`,
+        [
+          issueId,
+          world.tenant.id,
+          world.outletId,
+          orderUuid,
+          itemId,
+          randomUUID(),
+          randomUUID(),
+          `sq-issue-${randomUUID()}`,
+        ],
+      );
+    },
+    { replica: true },
+  );
+  return issueId;
+}
+
+/** The completed gateway payout the recovery filed for an issue (system:recovery). */
+async function seedRecoveryRefund(
+  world: World,
+  intentId: string,
+  amountIdr: number,
+  issueId: string,
+): Promise<string> {
+  const refundId = randomUUID();
+  await owner.query(
+    `INSERT INTO payment_refunds
+       (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+        requested_by, approved_by, decided_at, completed_at, order_issue_id, created_at)
+     VALUES ($1, $2, $3, $4, $5, 'Refund item gagal (ORD-09)', 'completed', 'system:recovery',
+             'approver', $6, $6, $7, $6::timestamptz - interval '1 minute')`,
+    [
+      refundId,
+      world.tenant.id,
+      world.outletId,
+      intentId,
+      amountIdr,
+      T_RECOVERY,
+      issueId,
+    ],
+  );
+  return refundId;
 }
 
 /** A completed gateway payout of an intent (or one of its funds) at REFUND_DAY. */
@@ -332,6 +405,55 @@ async function seedRefund(
     ],
   );
   return refundId;
+}
+
+/**
+ * The posted order.refunded journal of a recovery refund (aj:order-refund:<issueId>).
+ * The split sale itself cannot be journalled today, so the refund's own event
+ * parks; the guard only reads that this journal exists.
+ */
+async function seedRecoveryJournal(
+  world: World,
+  issueId: string,
+  amountIdr: number,
+): Promise<void> {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM fiscal_periods
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-10'`,
+    [world.tenant.id, world.entity],
+  );
+  const entryId = randomUUID();
+  await asTenant(world.tenant, async (client) => {
+    await client.query(
+      `INSERT INTO journal_entries
+         (id, tenant_id, legal_entity_id, outlet_id, entry_date, fiscal_period_id, source_type,
+          source_id, description, posted_by, idempotency_key, request_fingerprint)
+       VALUES ($1, $2, $3, $4, '2026-10-15', $5, 'refund', $6, 'Refund item gagal (ORD-09)',
+               'system:recovery', $7, $8)`,
+      [
+        entryId,
+        world.tenant.id,
+        world.entity,
+        world.outletId,
+        rows[0]!.id,
+        issueId,
+        `aj:order-refund:${issueId}`,
+        randomBytes(32).toString("hex"),
+      ],
+    );
+    await client.query(
+      `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr, outlet_id)
+       VALUES ($1, $2, $3, 1, $5, 0, $6), ($1, $2, $4, 2, 0, $5, $6)`,
+      [
+        world.tenant.id,
+        entryId,
+        world.accounts.customer_deposit,
+        world.accounts.gateway_clearing,
+        amountIdr,
+        world.outletId,
+      ],
+    );
+  });
 }
 
 // ---- events -----------------------------------------------------------------
@@ -591,5 +713,28 @@ describe("legend-05cm9 payout guard of a split-bill QR order", () => {
     expect(parked).toEqual([
       { error_code: "POSTING_AMOUNTS_MISMATCH", retryable: false },
     ]);
+  });
+  // R4: a recovery refund releases the sale hold only on the pinned code
+  // (qrSaleInUseOfIntent); a non-pinned code's part of the sale stays whole.
+  it("SPLIT-R4 a posted recovery refund does not release the non-payer's part of the sale: its payout still parks mismatch", async () => {
+    const world = await makeWorld(await makeTenant());
+    const linkId = await seedLink(world, 110_000);
+    const payer = await seedIntentOnLink(world, linkId, 60_000);
+    const other = await seedIntentOnLink(world, linkId, 50_000);
+    const orderUuid = await seedSplitOrder(world, linkId, payer.intentId);
+    await post(world, paymentPaid(world, payer.intentId, 60_000));
+    await post(world, paymentPaid(world, other.intentId, 50_000));
+    const issueId = await seedIssue(world, orderUuid);
+    await seedRecoveryRefund(world, payer.intentId, 22_000, issueId);
+    await seedRecoveryJournal(world, issueId, 22_000);
+
+    // The non-payer's 50k is wholly in the sale; the release belongs to the payer.
+    const refundId = await seedRefund(world, other.intentId, 22_000);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, other.intentId, 22_000),
+      ),
+    ).toEqual(AMOUNTS_MISMATCH);
   });
 });

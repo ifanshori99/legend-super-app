@@ -993,7 +993,7 @@ describe("legend-94q2l selisih dan sisa habis (cabang 5)", () => {
     );
   });
 
-  it("refund issue lain yang gagal tetap dihitung dilepas (status apa pun): nothing_left", async () => {
+  it("refund issue lain yang gagal (status failed, alasan apa pun) tidak dihitung dilepas: penjualan menahan uangnya lagi (legend-iu91r)", async () => {
     const paid = await w.paidOrder();
     const intentId = await intentIdOf(paid.order.id);
     const kopiIssue = (await w.report(paid.kopi.id)).body.data.id as string;
@@ -1007,9 +1007,9 @@ describe("legend-94q2l selisih dan sisa habis (cabang 5)", () => {
 
     await deliver(roti.event);
 
-    expect(await issueRefunds(roti.issueId)).toHaveLength(0);
-    expect(await onlyAudit(roti.issueId, "order_issue.refund_blocked")).toMatch(
-      /"blockedReason":\s*"nothing_left"/,
+    expect((await issueRefunds(roti.issueId))[0]!.amount_idr).toBe(ROTI_WANTED);
+    expect(await auditCount(roti.issueId, "order_issue.refund_blocked")).toBe(
+      0,
     );
   });
 });

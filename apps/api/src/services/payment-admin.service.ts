@@ -206,9 +206,12 @@ async function posSaleInUseOfIntent(
  * (payment_refunds.order_issue_id, any status) releases its amount from the
  * pinned code's hold: per issue the largest refund counts once, so a retried
  * failed refund never releases twice. Only the pinned branch releases; the
- * other codes of the link hold their own evidence. An issue with a refund
- * `failed` as `rejected` releases nothing: the sale holds its money again
- * (its journal is reversed).
+ * other codes of the link hold their own evidence. An issue releases only
+ * while it has a live refund (`status <> 'failed'`): once every refund of it
+ * is `failed` (`rejected` or a final failure: `provider_declined`,
+ * `cap_exceeded`, `source_document`, `refile_limit`) it releases nothing, the
+ * sale holds its money again (its journal is reversed). A failure re-filed in
+ * the same transaction (`approval_expired`) still has a live refund.
  */
 async function qrSaleInUseOfIntent(
   tx: Tx,
@@ -227,8 +230,7 @@ async function qrSaleInUseOfIntent(
               ON pr.tenant_id = oi.tenant_id AND pr.order_issue_id = oi.id
             WHERE oi.tenant_id = o.tenant_id AND oi.order_id = o.id
             GROUP BY oi.id
-            HAVING NOT coalesce(bool_or(
-              pr.status = 'failed' AND pr.failure_reason = 'rejected'), false)
+            HAVING coalesce(bool_or(pr.status <> 'failed'), false)
           ) per_issue), 0)
         ELSE least(
           o.total_idr - o.deposit_applied_idr,

@@ -25,4 +25,14 @@ describe("legend-jm5c the refund sweep is cloud only", () => {
     // Definition plus the one gated start call: no other start site.
     expect(source.match(/scheduleRefundPayoutRound\(\)/g)).toHaveLength(2);
   });
+
+  it("legend-iu91r files the ORD-09 recovery refund on the cloud only", () => {
+    expect(source).toMatch(
+      /if \(sweepsRefunds\)\s*await deliverOrderRecoveryRefundEvent\(context, event, tx\);/,
+    );
+    // The one gated call is the only call site.
+    expect(
+      source.match(/await deliverOrderRecoveryRefundEvent\(/g),
+    ).toHaveLength(1);
+  });
 });

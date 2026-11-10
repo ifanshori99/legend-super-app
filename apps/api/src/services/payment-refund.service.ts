@@ -359,8 +359,9 @@ async function isPosRefundParty(
 
 /**
  * system:recovery refund (legend-94q2l): parties are the approver recorded on
- * the order issue plus the resolver and approver kept on the idempotency row
- * that opened the refund. Any missing piece makes everyone a party.
+ * the order issue, every decider of the issue's ORD-09 approval chain, plus the
+ * resolver and approver kept on the idempotency row that opened the refund.
+ * Any missing piece makes everyone a party.
  */
 async function isRecoveryRefundParty(
   tx: Tx,
@@ -376,6 +377,24 @@ async function isRecoveryRefundParty(
   const issue = issues[0];
   if (!issue?.approved_by || issue.approved_by.toLowerCase() === who)
     return true;
+  // Every decider of every ORD-09 approval level of the issue: the issue keeps
+  // only the last approver, an earlier level counts as a party too. The chain
+  // is found through the issue's approval_request_id and through the rows that
+  // name the issue as their object.
+  const { rows: deciders } = await tx.execute<{ decided_by: string }>(
+    sql`SELECT decided_by FROM approval_requests
+        WHERE tenant_id = ${refund.tenantId}
+          AND decided_by IS NOT NULL
+          AND (chain_id IN (
+                 SELECT a.chain_id FROM approval_requests a
+                 JOIN order_issues i
+                   ON i.tenant_id = a.tenant_id AND i.approval_request_id = a.id
+                 WHERE i.tenant_id = ${refund.tenantId}
+                   AND i.id = ${refund.orderIssueId})
+               OR (object_type = 'order_issue'
+                   AND object_id = ${refund.orderIssueId}::text))`,
+  );
+  if (deciders.some((row) => row.decided_by.toLowerCase() === who)) return true;
   const { rows } = await tx.execute<{
     resolved_by: string | null;
     approved_by: string | null;

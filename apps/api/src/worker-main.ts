@@ -266,7 +266,10 @@ const runtime = createWorkerRuntime({
           await deliverIssueChargeEvent(context, event, tx);
           // legend-94q2l: an approved manual refund of a failed item opens its
           // payment refund request (not paid out; WS-05 approves). Idempotent.
-          await deliverOrderRecoveryRefundEvent(context, event, tx);
+          // legend-iu91r: cloud only, like every refund (legend-jm5c): an
+          // edge worker must not file a refund the cloud also files.
+          if (sweepsRefunds)
+            await deliverOrderRecoveryRefundEvent(context, event, tx);
           // PRD §3.19 Jurnal Otomatis (legend-9pz9, legend-o9q9), cloud only:
           // sales, refunds, gateway receipts and payouts post their journal in
           // a savepoint; expected accounting failures park for the sweep and

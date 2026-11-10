@@ -23,9 +23,10 @@
 //   (T4 helper). The approval policy of the refund chain is inserted here.
 // - `payload.orderId` may be a ULID or its uuid (compared as uuid); `refundId` is
 //   the uuid of the rejected refund; `rejectedAt` is any ISO-8601 timestamp.
-// - Only `rejected` reverses. `approval_expired` re-files (revenue stays reversed
-//   for the new refund) and `provider_declined` may mean the money already left,
-//   so neither emits a reversal.
+// - `rejected` and every other final failure (`provider_declined`, `cap_exceeded`,
+//   `source_document`, `refile_limit`: legend-iu91r, see
+//   order-recovery-refund-final-failure.test.ts) reverse. `approval_expired`
+//   re-files (revenue stays reversed for the new refund) and emits no reversal.
 // - Running the failure path again for the same rejected refund appends no second
 //   reversal event ("append once per issue").
 // - The consumer parks a still-pending refund journal retryable under the key
@@ -476,12 +477,12 @@ describe("legend-94q2l T5 refund rejected: the reversal request", () => {
     expect(await orderRefundedEvents(order.id)).toHaveLength(1);
   });
 
-  it("RJ-7 provider_declined needs a person (the money may have left): no reversal is requested", async () => {
+  it("RJ-7 provider_declined is final (legend-iu91r): not re-filed, audited as refund_refile_blocked, and the reversal is requested like rejected", async () => {
     const { issueId, first } = await deliveredRefund();
 
     await failAndRefile(first.id, "provider_declined");
 
-    expect(await reversalEvents(issueId)).toHaveLength(0);
+    expect(await reversalEvents(issueId)).toHaveLength(1);
     expect(await auditCount(issueId, "order_issue.refund_rejected")).toBe(0);
   });
 
