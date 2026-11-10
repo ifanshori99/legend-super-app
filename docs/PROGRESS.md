@@ -959,3 +959,4 @@ Langkah berikut CTO baru:
 - 17:55 Architect atas rework i83ls 5558eca2: 1 tinggi (worker tanpa settlement lookup), 2 sedang (index oic yatim, tutup via deposit tanpa jurnal). Brief 352 + legend-800h1, mulai 18:07 di #1. i83ls TIDAK ikut batch47 sampai 352 selesai.
 - 18:03 18:0x mulai di #1: batch47 (G2mmn), j6cyb (G2ovc), svy91 (G8smi), i83ls-fix Opus (G9f7b). Brief 353 gmww, 354 cpq2, 355 tct8, 356 bod. 7nv1 hampir selesai, verifikasi nanti.
 - 18:03 gmww (G638j) dan cpq2 (G3bg8) mulai di #1. tct8 (355) dan bod (356) antre: slot RAM 8/8 penuh.
+- 18:13 gmww dd4db5d2 (tax_reports, 0235; kartu 5nhkp, 4uapw). cpq2 45241da4 (541h ETA; 4qls tutup). n1mp klaim poin lanjut di G3bg8 (K). tct8/bod antre: RAM 8/8.
