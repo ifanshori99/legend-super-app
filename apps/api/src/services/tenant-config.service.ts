@@ -20,6 +20,7 @@ import {
   configTemplateSummarySchema,
   parseConfigBundle,
   PlatformError,
+  scanConfigBundlePii,
   platformEvents,
   CONFIG_SECTIONS,
   type ConfigBundle,
@@ -79,6 +80,7 @@ type ImportConfigInput = z.infer<typeof importConfigInputSchema>;
 const EVENT_DESTINATION = "cloud-sync";
 const MAX_WARNINGS = 500;
 const MAX_MESSAGE = 500;
+const MAX_PII_DETAILS = 50;
 
 /** Parents before children, references after what they point at. */
 export const CONFIG_IMPORT_ORDER = [
@@ -258,6 +260,21 @@ export async function createConfigTemplate(
   const ctx = platformTenantScope(tenantId);
   return withTenant(db, ctx, async (tx) => {
     const bundle = await exportInTx(tx, ctx, tenantId, input.sections, now);
+    // A global template must not carry personal data typed into free text
+    // (legend-ms2a). Findings are masked; the admin confirms or fixes the source.
+    const piiFindings = scanConfigBundlePii(bundle.sections);
+    if (piiFindings.length > 0 && input.confirmPiiFindings !== true)
+      throw new ConfigDetailedError(
+        "TEMPLATE_PII_FINDINGS",
+        piiFindings.slice(0, MAX_PII_DETAILS).map((finding) => ({
+          field: `${finding.section}.${finding.path}`,
+          message: `${finding.kind}: ${finding.excerpt}`,
+        })),
+        // Details are capped; say how many findings there are in total.
+        piiFindings.length > MAX_PII_DETAILS
+          ? `Teks di konfigurasi ini tampak memuat data pribadi: ${piiFindings.length} temuan, ${MAX_PII_DETAILS} pertama ditampilkan. Periksa temuan, lalu konfirmasi bila memang aman.`
+          : undefined,
+      );
     // Serialise versions of one name; (name, version) is unique anyway.
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${`config_templates:${input.name}`}, 0))`,
@@ -297,6 +314,15 @@ export async function createConfigTemplate(
           name: row.name,
           version: row.version,
           sections: Object.keys(bundle.sections),
+          ...(piiFindings.length > 0
+            ? {
+                piiFindingsConfirmed: true,
+                piiFindingCount: piiFindings.length,
+                piiFindingKinds: [
+                  ...new Set(piiFindings.map((finding) => finding.kind)),
+                ],
+              }
+            : {}),
         },
         sensitiveAccess: false,
       },
