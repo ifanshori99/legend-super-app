@@ -12,7 +12,9 @@ CREATE TABLE "edge_print_alerts" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "edge_print_alerts_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id"),
 	CONSTRAINT "edge_print_alerts_kind_check" CHECK ("edge_print_alerts"."kind" IN ('printer_offline', 'printer_online', 'kds_down', 'kds_up', 'fallback_printed', 'job_failed')),
-	CONSTRAINT "edge_print_alerts_ack_check" CHECK (("edge_print_alerts"."acknowledged_at" IS NULL) = ("edge_print_alerts"."acknowledged_by" IS NULL))
+	CONSTRAINT "edge_print_alerts_ack_check" CHECK (("edge_print_alerts"."acknowledged_at" IS NULL) = ("edge_print_alerts"."acknowledged_by" IS NULL)),
+	CONSTRAINT "edge_print_alerts_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edge_print_alerts_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "edge_print_jobs" (
@@ -46,7 +48,8 @@ CREATE TABLE "edge_print_jobs" (
 	CONSTRAINT "edge_print_jobs_failure_phase_check" CHECK ("edge_print_jobs"."failure_phase" IN ('write', 'stale', 'other')),
 	CONSTRAINT "edge_print_jobs_failure_phase_status_check" CHECK (("edge_print_jobs"."status" = 'failed') = ("edge_print_jobs"."failure_phase" IS NOT NULL)),
 	CONSTRAINT "edge_print_jobs_attempts_check" CHECK ("edge_print_jobs"."attempts" >= 0),
-	CONSTRAINT "edge_print_jobs_printed_at_check" CHECK (("edge_print_jobs"."status" = 'printed') = ("edge_print_jobs"."printed_at" IS NOT NULL))
+	CONSTRAINT "edge_print_jobs_printed_at_check" CHECK (("edge_print_jobs"."status" = 'printed') = ("edge_print_jobs"."printed_at" IS NOT NULL)),
+	CONSTRAINT "edge_print_jobs_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "edge_printers" (
@@ -77,20 +80,17 @@ CREATE TABLE "edge_printers" (
 	CONSTRAINT "edge_printers_port_check" CHECK ("edge_printers"."port" IS NULL OR "edge_printers"."port" BETWEEN 9100 AND 9102),
 	CONSTRAINT "edge_printers_host_check" CHECK ("edge_printers"."host" IS NULL OR (CASE WHEN "edge_printers"."host" ~ '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$' THEN "edge_printers"."host"::inet << '10.0.0.0/8'::inet OR "edge_printers"."host"::inet << '172.16.0.0/12'::inet OR "edge_printers"."host"::inet << '192.168.0.0/16'::inet ELSE false END)),
 	CONSTRAINT "edge_printers_station_role_check" CHECK ("edge_printers"."role" = 'station' OR "edge_printers"."station_id" IS NULL),
-	CONSTRAINT "edge_printers_not_own_fallback_check" CHECK ("edge_printers"."fallback_printer_id" IS NULL OR "edge_printers"."fallback_printer_id" <> "edge_printers"."id")
+	CONSTRAINT "edge_printers_not_own_fallback_check" CHECK ("edge_printers"."fallback_printer_id" IS NULL OR "edge_printers"."fallback_printer_id" <> "edge_printers"."id"),
+	CONSTRAINT "edge_printers_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edge_printers_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "edge_print_alerts" ADD CONSTRAINT "edge_print_alerts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edge_print_alerts" ADD CONSTRAINT "edge_print_alerts_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edge_print_alerts" ADD CONSTRAINT "edge_print_alerts_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edge_print_jobs" ADD CONSTRAINT "edge_print_jobs_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edge_print_jobs" ADD CONSTRAINT "edge_print_jobs_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edge_print_jobs" ADD CONSTRAINT "edge_print_jobs_printer_fk" FOREIGN KEY ("tenant_id","outlet_id","printer_id") REFERENCES "public"."edge_printers"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edge_print_jobs" ADD CONSTRAINT "edge_print_jobs_original_printer_fk" FOREIGN KEY ("tenant_id","outlet_id","original_printer_id") REFERENCES "public"."edge_printers"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edge_print_jobs" ADD CONSTRAINT "edge_print_jobs_reprint_of_fk" FOREIGN KEY ("tenant_id","outlet_id","reprint_of") REFERENCES "public"."edge_print_jobs"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edge_printers" ADD CONSTRAINT "edge_printers_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edge_printers" ADD CONSTRAINT "edge_printers_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edge_printers" ADD CONSTRAINT "edge_printers_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edge_printers" ADD CONSTRAINT "edge_printers_fallback_fk" FOREIGN KEY ("tenant_id","outlet_id","fallback_printer_id") REFERENCES "public"."edge_printers"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "edge_print_alerts_recent_idx" ON "edge_print_alerts" USING btree ("tenant_id","outlet_id","occurred_at");--> statement-breakpoint
 CREATE INDEX "edge_print_jobs_queue_idx" ON "edge_print_jobs" USING btree ("tenant_id","outlet_id","printer_id","status","created_at","id");--> statement-breakpoint

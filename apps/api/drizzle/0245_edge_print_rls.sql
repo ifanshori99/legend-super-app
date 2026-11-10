@@ -18,6 +18,9 @@ SELECT app.enforce_tenant_rls('public.edge_print_alerts'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.edge_print_alerts'::regclass);
 --> statement-breakpoint
+-- Jobs and alerts are evidence; the app never deletes them (no retention job yet).
+REVOKE DELETE, TRUNCATE ON TABLE public.edge_print_alerts, public.edge_print_jobs FROM legend_app;
+--> statement-breakpoint
 
 -- A queued job is evidence of what was sent to a printer: the bytes, kind,
 -- idempotency key, reprint link and creation time never change. Status,

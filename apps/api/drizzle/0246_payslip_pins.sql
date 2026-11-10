@@ -10,7 +10,8 @@ CREATE TABLE "payslip_pin_reset_challenges" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "payslip_pin_reset_challenges_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "payslip_pin_reset_challenges_attempts_check" CHECK ("payslip_pin_reset_challenges"."attempts" BETWEEN 0 AND 5),
-	CONSTRAINT "payslip_pin_reset_challenges_pepper_version_check" CHECK ("payslip_pin_reset_challenges"."pepper_version" >= 1)
+	CONSTRAINT "payslip_pin_reset_challenges_pepper_version_check" CHECK ("payslip_pin_reset_challenges"."pepper_version" >= 1),
+	CONSTRAINT "payslip_pin_reset_challenges_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "payslip_pins" (
@@ -30,13 +31,12 @@ CREATE TABLE "payslip_pins" (
 	CONSTRAINT "payslip_pins_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "payslip_pins_tenant_employee_key" UNIQUE("tenant_id","employee_id"),
 	CONSTRAINT "payslip_pins_failed_attempts_check" CHECK ("payslip_pins"."failed_attempts" BETWEEN 0 AND 5),
-	CONSTRAINT "payslip_pins_pepper_version_check" CHECK ("payslip_pins"."pepper_version" >= 1)
+	CONSTRAINT "payslip_pins_pepper_version_check" CHECK ("payslip_pins"."pepper_version" >= 1),
+	CONSTRAINT "payslip_pins_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "payslip_pin_reset_challenges" ADD CONSTRAINT "payslip_pin_reset_challenges_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payslip_pin_reset_challenges" ADD CONSTRAINT "payslip_pin_reset_challenges_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payslip_pins" ADD CONSTRAINT "payslip_pins_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payslip_pins" ADD CONSTRAINT "payslip_pins_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "payslip_pin_reset_challenges_employee_idx" ON "payslip_pin_reset_challenges" USING btree ("tenant_id","employee_id","created_at");
 --> statement-breakpoint
 -- Payslip PIN (bead legend-2ap3): tenant-owned, forced restrictive tenant RLS
