@@ -1141,3 +1141,4 @@ Langkah berikut CTO baru:
 - 05:24 RAM merah/kuning (Claude 8/4). G3hrs merge train: full test dihentikan sistem karena RAM, worktree bersih edacffd2, m1 masih 46352cd5 -> ditidurkan. Q8 jadi kartu legend-5cwrq. Aturan: slot pertama yang lowong dipakai serah terima CTO + bangunkan merge train ('lanjut') sebelum mengisi kartu baru. G4bs0 restart sendiri (sesi mati).
 - 05:28 Founder: Codex #2 dilarang dipakai Legend (proyek lain). Rute Codex: #3, #4, #5.
 - 05:29 G2gcq 420: 77651114 (2 P1 dibetulkan, P2 tetap, architect lolos). Tambahan: race sama di moveSessionItemsOperation -> dikerjakan di cabang yang sama.
+- 05:29 Koreksi founder: Codex #2 boleh sampai 09:00 WIB hari ini, lalu berhenti sampai founder izinkan.
