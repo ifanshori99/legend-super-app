@@ -33,6 +33,8 @@ export const platformErrorHttpStatus = {
   INTEGRATION_PROVIDER_NOT_AVAILABLE: 422,
   /** Config bundle failed validation or still carries source-tenant identifiers (TEN-09). */
   CONFIG_BUNDLE_INVALID: 422,
+  /** Free text in a template export looks like personal data and the admin has not confirmed it (legend-ms2a). */
+  TEMPLATE_PII_FINDINGS: 422,
   /** A valid bundle failed while being applied; the import was rolled back (TEN-09). */
   CONFIG_IMPORT_FAILED: 422,
   /** Status change not allowed from the current status. */
@@ -70,6 +72,8 @@ const defaultMessages: Record<PlatformErrorCode, string> = {
   INTEGRATION_PROVIDER_NOT_AVAILABLE:
     "Penyedia integrasi ini belum tersedia untuk tenant.",
   CONFIG_BUNDLE_INVALID: "Berkas konfigurasi tidak valid.",
+  TEMPLATE_PII_FINDINGS:
+    "Teks di konfigurasi ini tampak memuat data pribadi. Periksa temuan, lalu konfirmasi bila memang aman.",
   CONFIG_IMPORT_FAILED:
     "Konfigurasi gagal diterapkan; tidak ada perubahan yang disimpan.",
   INVALID_TRANSITION: "Perubahan status ini tidak diizinkan.",

@@ -43,7 +43,11 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { cafeLegendTaxFixtures, type TaxChannel } from "@starter/shared/tax";
+import {
+  cafeLegendTaxFixtures,
+  type ItemTaxClass,
+  type TaxChannel,
+} from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import {
   serviceChargeRules,
@@ -93,7 +97,8 @@ const DEFAULT_RULE = (() => {
   return rule;
 })();
 
-const DEFAULT_SETTINGS = (() => {
+/** Tenant-wide v1 tax settings every new tenant is provisioned with. */
+export const DEFAULT_SETTINGS = (() => {
   const row = cafeLegendTaxFixtures.settings.find(
     (settings) => settings.outletId === null && settings.version === 1,
   );
@@ -238,6 +243,10 @@ export async function provisionDefaultTaxConfig(
 /** Founder decision Q25: 5% service charge, on-site orders only. */
 export const DEFAULT_SERVICE_CHARGE_CODE = "SC-DINE-IN";
 export const DEFAULT_SERVICE_CHARGE_RATE_BP = 500;
+export const DEFAULT_SERVICE_CHARGE_NAME = "Service charge dine-in";
+export const DEFAULT_SERVICE_CHARGE_ITEM_CLASSES: ItemTaxClass[] = [
+  "food_beverage",
+];
 /** Dine-in and dine-in reservations (guests eat on site; CTO decision legend-9flj). */
 export const DEFAULT_SERVICE_CHARGE_ORDER_TYPES: TaxChannel[] = [
   "dine_in",
@@ -285,11 +294,11 @@ export async function provisionDefaultServiceChargeRule(
     tenantId,
     outletId,
     code: DEFAULT_SERVICE_CHARGE_CODE,
-    name: "Service charge dine-in",
+    name: DEFAULT_SERVICE_CHARGE_NAME,
     rateBp: DEFAULT_SERVICE_CHARGE_RATE_BP,
     zoneId: null,
     orderTypes: DEFAULT_SERVICE_CHARGE_ORDER_TYPES,
-    itemClasses: ["food_beverage"],
+    itemClasses: DEFAULT_SERVICE_CHARGE_ITEM_CLASSES,
     isActive: true,
     version: 1,
     effectiveFrom: DEFAULT_EFFECTIVE_FROM,
@@ -305,7 +314,7 @@ export async function provisionDefaultServiceChargeRule(
       ruleCodes: [DEFAULT_SERVICE_CHARGE_CODE],
       rateBp: DEFAULT_SERVICE_CHARGE_RATE_BP,
       orderTypes: DEFAULT_SERVICE_CHARGE_ORDER_TYPES,
-      itemClasses: ["food_beverage"],
+      itemClasses: DEFAULT_SERVICE_CHARGE_ITEM_CLASSES,
       scope: outletId === null ? "tenant" : "outlet",
       effectiveFrom: DEFAULT_EFFECTIVE_FROM,
       version: 1,
