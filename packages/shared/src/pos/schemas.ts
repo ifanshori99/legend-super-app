@@ -1781,14 +1781,26 @@ export type PosTenderResult = z.infer<typeof posTenderResultSchema>;
 
 // ---- Documents: receipt, kuitansi, invoice (POS-07, F43/F44) --------------
 
-export const posDocumentLineSchema = z.strictObject({
-  name,
-  quantity: z.number().int().min(1).max(99),
-  unitPriceIdr: positiveIdr,
-  modifiersTotalIdr: nonnegativeIdr,
-  lineTotalIdr: nonnegativeIdr,
-  note: note.nullable(),
-});
+export const posDocumentLineSchema = z
+  .strictObject({
+    name,
+    quantity: z.number().int().min(1).max(99),
+    /** Positive, except a swap replacement on a completed order (swapRole). */
+    unitPriceIdr: nonnegativeIdr,
+    modifiersTotalIdr: nonnegativeIdr,
+    lineTotalIdr: nonnegativeIdr,
+    note: note.nullable(),
+    /** legend-135b4: a kitchen-swap replacement line is recorded at zero. */
+    swapRole: z.enum(["none", "replacement"]).default("none"),
+  })
+  .superRefine((line, ctx) => {
+    if (Number(line.unitPriceIdr) <= 0 && line.swapRole !== "replacement")
+      ctx.addIssue({
+        code: "custom",
+        path: ["unitPriceIdr"],
+        message: "Amount must be positive",
+      });
+  });
 export type PosDocumentLine = z.infer<typeof posDocumentLineSchema>;
 
 export const posDocumentTenderSchema = z.strictObject({

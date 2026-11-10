@@ -22,7 +22,12 @@ import { posOrderRefunds, posOrders } from "../db/schema/pos-order.ts";
 import { posReceipts, type posInvoices } from "../db/schema/pos-receipt.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import type { Tx } from "./permission-resolver.ts";
-import { itemsOf, liveDiscountsOf, tendersOf } from "./pos-order-support.ts";
+import {
+  itemsOf,
+  liveDiscountsOf,
+  swapLinksOf,
+  tendersOf,
+} from "./pos-order-support.ts";
 
 /** Contract: outletAddress is 10..300 characters. */
 const MIN_ADDRESS = 10;
@@ -90,10 +95,11 @@ export async function buildReceiptDocument(
     cashierName = cashier?.name.trim().slice(0, 150) || null;
   }
 
-  const [items, tenders, discounts] = await Promise.all([
+  const [items, tenders, discounts, swaps] = await Promise.all([
     itemsOf(tx, context, order.id),
     tendersOf(tx, context, order.id),
     liveDiscountsOf(tx, context, order.id),
+    swapLinksOf(tx, context, order.id),
   ]);
 
   const result = order.taxResult;
@@ -171,14 +177,21 @@ export async function buildReceiptDocument(
     issuedAt: receipt.issuedAt,
     items: items
       .filter(({ item }) => item.status !== "voided")
-      .map(({ item }) => ({
-        name: item.name,
-        quantity: item.quantity,
-        unitPriceIdr: item.unitPriceIdr,
-        modifiersTotalIdr: item.modifiersTotalIdr,
-        lineTotalIdr: item.lineTotalIdr,
-        note: item.note,
-      })),
+      .map(({ item }) => {
+        // legend-135b4: a kitchen-swap replacement is recorded at zero.
+        const replacement = swaps.replacementIds.has(item.id);
+        return {
+          name: replacement
+            ? `Pengganti: ${item.name}`.slice(0, 150)
+            : item.name,
+          quantity: item.quantity,
+          unitPriceIdr: item.unitPriceIdr,
+          modifiersTotalIdr: item.modifiersTotalIdr,
+          lineTotalIdr: item.lineTotalIdr,
+          note: item.note,
+          swapRole: replacement ? ("replacement" as const) : ("none" as const),
+        };
+      }),
     discounts: discounts.map((row) => ({
       label: (row.promoCode ?? DISCOUNT_LABELS[row.source as never]) as string,
       source: row.source,

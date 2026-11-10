@@ -982,7 +982,7 @@ export function tenderDto(row: TenderRow): PosTender {
  * money frozen, so the detail reports the replacement lines and the voided
  * swapped-out lines as recovery adjustments for the subtotal check.
  */
-async function swapLinksOf(
+export async function swapLinksOf(
   tx: Tx,
   context: ScopedTenantContext,
   orderId: string,
