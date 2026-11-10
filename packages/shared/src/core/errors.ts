@@ -60,6 +60,10 @@ export const apiErrorBodySchema = z.object({
     code: errorCodeSchema,
     message: z.string().min(1),
     details: z.array(apiErrorDetailSchema).optional(),
+    /** PAYSLIP_PIN_INVALID (403): attempts left before the PIN locks. */
+    remainingAttempts: z.number().int().nonnegative().optional(),
+    /** PAYSLIP_PIN_LOCKED (423): ISO datetime the lock ends. */
+    lockedUntil: z.string().datetime().optional(),
     requestId: z.string().optional(),
   }),
 });
@@ -70,7 +74,12 @@ export type ApiErrorEnvelope = z.infer<typeof apiErrorBodySchema>;
 export function apiErrorBody(
   code: string,
   message: string,
-  options: { details?: ApiErrorDetail[]; requestId?: string } = {},
+  options: {
+    details?: ApiErrorDetail[];
+    remainingAttempts?: number;
+    lockedUntil?: string;
+    requestId?: string;
+  } = {},
 ): ApiErrorEnvelope {
   return { error: { code, message, ...options } };
 }

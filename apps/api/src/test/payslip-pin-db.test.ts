@@ -825,6 +825,63 @@ describe("payslip PIN: viewing a payslip", () => {
   });
 });
 
+describe("payslip PIN: attempt feedback (remainingAttempts, lockedUntil)", () => {
+  it("a wrong PIN answers 403 with remainingAttempts counting down from 4 to 1", async () => {
+    const staff = await makeStaff();
+    await setPin(staff.client, { pin: GOOD });
+    for (const remaining of [4, 3, 2, 1]) {
+      const wrong = await view(staff.client, staff.payslipId, WRONG);
+      expect(wrong.status).toBe(403);
+      expect(wrong.body.error.code).toBe("PAYSLIP_PIN_INVALID");
+      expect(wrong.body.error.remainingAttempts).toBe(remaining);
+      expect(wrong.body.error.lockedUntil).toBeUndefined();
+    }
+  });
+
+  it("a wrong current PIN on change also reports remainingAttempts", async () => {
+    const staff = await makeStaff();
+    await setPin(staff.client, { pin: GOOD });
+    const wrong = await setPin(staff.client, {
+      pin: NEW_PIN,
+      currentPin: WRONG,
+    });
+    expect(wrong.status).toBe(403);
+    expect(wrong.body.error.remainingAttempts).toBe(4);
+  });
+
+  it("the locking 5th miss and every later attempt answer 423 with lockedUntil (ISO, ~15 min)", async () => {
+    const staff = await makeStaff();
+    await setPin(staff.client, { pin: GOOD });
+    await failTimes(staff, 4);
+    const fifth = await view(staff.client, staff.payslipId, WRONG);
+    expect(fifth.status).toBe(423);
+    expect(fifth.body.error.code).toBe("PAYSLIP_PIN_LOCKED");
+    expect(fifth.body.error.remainingAttempts).toBeUndefined();
+
+    const later = await view(staff.client, staff.payslipId, GOOD);
+    expect(later.status).toBe(423);
+    for (const body of [fifth.body, later.body]) {
+      const until = body.error.lockedUntil as string;
+      expect(new Date(until).toISOString()).toBe(until);
+      const minutes = (new Date(until).getTime() - Date.now()) / 60_000;
+      expect(minutes).toBeGreaterThan(13);
+      expect(minutes).toBeLessThanOrEqual(15.5);
+    }
+    expect(later.body.error.lockedUntil).toBe(fifth.body.error.lockedUntil);
+  });
+
+  it("a replay of a wrong PIN with the same key returns the same remainingAttempts", async () => {
+    const staff = await makeStaff();
+    await setPin(staff.client, { pin: GOOD });
+    const key = randomUUID();
+    const first = await view(staff.client, staff.payslipId, WRONG, key);
+    const replay = await view(staff.client, staff.payslipId, WRONG, key);
+    expect(first.body.error.remainingAttempts).toBe(4);
+    expect(replay.status).toBe(403);
+    expect(replay.body.error.remainingAttempts).toBe(4);
+  });
+});
+
 describe("payslip PIN: ownership and tenant isolation", () => {
   it("employee A cannot view employee B's payslip: 404, same as a missing one", async () => {
     const a = await makeStaff();
@@ -1217,6 +1274,24 @@ describe("payslip PIN: reset by WhatsApp OTP", () => {
     expect(late.status).toBeGreaterThanOrEqual(400);
     expect(late.status).toBeLessThan(500);
     expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(200);
+  });
+
+  it("the 5th wrong code answers 423 PAYSLIP_PIN_LOCKED with lockedUntil", async () => {
+    const staff = await makeStaff();
+    await setPin(staff.client, { pin: GOOD });
+    await requestOtp(staff.client);
+    const code = lastCode(staff.employeeId);
+    const wrongCode = code === "000000" ? "000001" : "000000";
+    for (let i = 0; i < 4; i += 1)
+      await verifyOtp(staff.client, { code: wrongCode, pin: NEW_PIN });
+    const fifth = await verifyOtp(staff.client, {
+      code: wrongCode,
+      pin: NEW_PIN,
+    });
+    expect(fifth.status).toBe(423);
+    expect(fifth.body.error.code).toBe("PAYSLIP_PIN_LOCKED");
+    const until = fifth.body.error.lockedUntil as string;
+    expect(new Date(until).toISOString()).toBe(until);
   });
 
   it("verify with a malformed new PIN is 422", async () => {
