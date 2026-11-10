@@ -1018,3 +1018,4 @@ Langkah berikut CTO baru:
   - Catatan merge train: r3i8w 0242 (when ...370), aruta 0243 (...380), ie6m 0245 (...360) punya `when` di bawah 0244; naikkan `when` di atas 1794390000000 bila masuk sesudah i83ls-fix.
 - 20:26 mulai G0a8q 33im6 profit share (378, opus).
 - 20:30 G1fjl powk0: 1f599c08 (PBJT dari jurnal penjualan/refund, dasar taxBaseIdr, NO_CHANGE banding amount+lines; 142 test). Keputusan CTO: tolak laporan bila ledger != snapshot (fail-closed, belum ada data lama). Lanjutan: error sebut outlet+selisih, architect delta. Kartu legend-knfl6 (jurnal refund simpan order id).
+- 20:35 Codex 383 ledger loyalty: 1 P1 (expiry FIFO salah alokasi redeem). Kartu legend-w5by9 (Opus), antre slot. Codex #2 5h 100% (reset 00:35), #3 7d 99%. Cron 00:41 lanjutkan antrean (WS-08 B).
