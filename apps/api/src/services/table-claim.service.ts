@@ -60,6 +60,7 @@ import {
   loyaltyConsentActive,
 } from "./member-profile.service.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
+import { lockOrdersForClaim } from "./table-claim-lock.ts";
 import { lockGuestSessionForPayment } from "./qr-order.service.ts";
 
 type SessionRow = typeof tableSessions.$inferSelect;
@@ -193,6 +194,8 @@ export async function issueWholeBillClaimTx(
 type ClaimUnit = {
   kind: "split" | "order";
   id: string;
+  /** The order the unit belongs to (the unit itself for a whole bill). */
+  orderId: string;
   /** What the guest paid (shown as is). */
   paidIdr: number;
   /**
@@ -254,6 +257,7 @@ function orderUnit(row: OrderUnitRow): ClaimUnit | null {
   return {
     kind: "order",
     id: row.id,
+    orderId: row.id,
     paidIdr: row.totalIdr,
     spendIdr: eligibleSpend(row),
     paidAt: new Date(row.expiresAt.getTime() - CLAIM_TTL_MS),
@@ -296,6 +300,7 @@ async function loadUnits(
     const [part] = await tx
       .select({
         id: billSplits.id,
+        orderId: billSplits.orderId,
         amountIdr: billSplits.amountIdr,
         paidAt: billSplits.paidAt,
         expiresAt: billSplits.claimExpiresAt,
@@ -335,6 +340,7 @@ async function loadUnits(
         {
           kind: "split",
           id: part.id,
+          orderId: part.orderId,
           paidIdr: part.amountIdr,
           spendIdr: partSpend(
             eligibleSpend(part),
@@ -713,6 +719,16 @@ export async function claimSessionPoints(
         "MEMBER_PROFILE_REQUIRED",
         "Daftar jadi member dulu untuk mengklaim poin.",
       );
+    // legend-ec6fa: lock the orders of the units first (shared, ascending id),
+    // then the profile, the same order the earn consumer's reversal takes
+    // them. The units are not known before the profile is locked, so read
+    // them once to learn the orders; they are read again under the lock.
+    const lockedOrders = new Set(
+      (await loadUnits(tx, tenantId, session.id, input.claimToken)).map(
+        (unit) => unit.orderId,
+      ),
+    );
+    await lockOrdersForClaim(tx, tenantId, lockedOrders);
     await withProfileLock(tx, tenantId, found.id);
     // Typed re-read under the lock, as the earn consumer does.
     const [profile] = await tx
@@ -744,7 +760,11 @@ export async function claimSessionPoints(
       );
 
     const program = await loadProgram(tx, tenantId);
-    const units = await loadUnits(tx, tenantId, session.id, input.claimToken);
+    // A unit that appeared after the order locks (its order is not locked)
+    // waits for the guest's next request.
+    const units = (
+      await loadUnits(tx, tenantId, session.id, input.claimToken)
+    ).filter((unit) => lockedOrders.has(unit.orderId));
     const open = units.filter((unit) => isOpen(unit, now));
     const plan = await planPoints(tx, tenantId, program, profile, open);
     const toClaim = open.filter((unit) => (plan.get(unit.id) ?? 0) > 0);

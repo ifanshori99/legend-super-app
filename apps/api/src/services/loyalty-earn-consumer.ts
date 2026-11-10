@@ -54,6 +54,7 @@ import type {
 import { tierMultiplierBp } from "./loyalty-earn-tier-step.ts";
 import { loyaltyConsentActive } from "./member-profile.service.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
+import { lockOrderForClaimReversal } from "./table-claim-lock.ts";
 
 const EARN_EVENTS = new Set(["order.paid", "order.refunded", "order.voided"]);
 /** Attempts of one event when a profile lock deadlocks. */
@@ -530,6 +531,10 @@ async function reverseTableClaims(
   input: ReverseInput,
 ): Promise<void> {
   const { tenantId, context, now } = scope;
+  // legend-ec6fa: wait for the open claims of this order (they hold the same
+  // lock shared) so their earn rows are visible below. Order lock first, the
+  // profile lock (lockedProfile) after: the claim takes them in that order too.
+  await lockOrderForClaimReversal(tx, tenantId, input.orderId);
   const [order] = await tx
     .select({
       // Gross sales minus discount, the base the claim earned on (tax-inclusive

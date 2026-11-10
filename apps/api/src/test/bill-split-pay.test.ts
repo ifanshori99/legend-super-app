@@ -648,4 +648,28 @@ describe("Split bill payment (legend-ms3, ORD-06)", () => {
     expect(again.body.data.status).toBe("paid");
     expect((await splitRow(p0.id)).payment_intent_id).toBe(intentId);
   });
+
+  it("ORD-06-PAY-12 two parts settled before either event is consumed: both end paid with a claim token, none voided", async () => {
+    const w = await splitOrder(2);
+    const [p0, p1] = w.parts as [Part, Part];
+    const code0 = await openCode(w.guest, p0);
+    const code1 = await openCode(w.guest, p1);
+    await settle(code0, p0.amountIdr);
+    await settle(code1, p1.amountIdr);
+    const event0 = await onlyPaidEvent(code0);
+    const event1 = await onlyPaidEvent(code1);
+
+    await deliverToQr(event0);
+    await deliverToQr(event1);
+
+    expect((await orderRow(w.orderId)).status).toBe("sent");
+    expect(await orderPaidCount(w.orderId)).toBe(1);
+    const rows = await splitRows(w.orderId);
+    expect(rows.map((row) => row.status)).toEqual(["paid", "paid"]);
+    for (const row of rows) {
+      expect(row.claim_token_hash).not.toBeNull();
+      expect(row.paid_at).not.toBeNull();
+    }
+    expect(rows.map((row) => row.payment_intent_id)).toEqual([code0, code1]);
+  });
 });
