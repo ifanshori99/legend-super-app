@@ -945,3 +945,4 @@ Langkah berikut CTO baru:
 - 16:48 CTO: lzvh0 6d75e50f (baris nol POTONG-KEKURANGAN, top-up kurangi carry; architect tanpa high) G2crn resolved, batch47. Kartu claw-back run serba-nol (P3). Mulai n6fek (347).
 - 16:53 C5 we0yc selesai (7b9a526f, masuk batch47). C7 hubzo dimulai (brief 348). #3 5h 73%: thread baru lain ditahan sampai #1 reset 18:00.
 - 16:55 n6fek selesai (ea9c7741, basis b78f169c, tanpa migrasi, S). Masuk batch47 setelah 94q2l-impl. Slot tidak diisi: #3 5h >70%, tunggu #1 18:00.
+- 17:01 C3 tkycp selesai 6266a8b7 (architect: 1 tinggi dibetulkan, assignment user banned). Lanjutan kecil: filter banned di builder cloud C2.
