@@ -80,6 +80,8 @@ export * from "./expo-pickup";
 export * from "./kds-issues";
 // WS-04 kitchen capacity rules (legend-w4nq4).
 export * from "./kds-capacity";
+// WS-04 order pacing: menu loads, channel pauses, pacing state (legend-gyc).
+export * from "./kds-pacing";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
 export * from "./purchasing";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).

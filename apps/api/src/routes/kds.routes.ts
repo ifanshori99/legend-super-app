@@ -22,6 +22,7 @@ import {
   getKitchenStationFeed,
   getKitchenStationSummary,
   getKitchenTicket,
+  getPacing,
   getStationCapacityRules,
   listCapacityRules,
   listKitchenStationLabels,
@@ -46,6 +47,7 @@ import {
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as capacity from "../services/kds-capacity.service.ts";
 import * as cookReads from "../services/kds-cook-reads.service.ts";
+import * as pacing from "../services/kds-pacing.service.ts";
 import * as kds from "../services/kds.service.ts";
 import type { KdsActor } from "../services/kds.service.ts";
 
@@ -160,6 +162,25 @@ kdsRouter.get(
         actor(req),
         outletId,
         stationId,
+        new Date(),
+      ),
+    });
+  },
+);
+
+// KDS-05: capacity per station for the current window. Evaluating on read
+// keeps the level (and the auto-pause behind it) fresh without a scheduler.
+kdsRouter.get(
+  "/pacing",
+  requireOutletPermission("kds.ticket.process", (req) =>
+    String(req.params.outletId),
+  ),
+  async (req, res) => {
+    const { outletId } = getPacing.params.parse(req.params);
+    res.json({
+      data: await pacing.getPacingSnapshot(
+        getScopedTenantContext(req),
+        outletId,
         new Date(),
       ),
     });

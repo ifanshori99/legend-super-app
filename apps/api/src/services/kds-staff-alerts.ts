@@ -203,7 +203,11 @@ async function zoneOfOrder(
 type Alert = {
   /** Natural key of the event; the same key never notifies twice. */
   key: string;
-  name: "kitchen_ticket.unrouted" | "order.kitchen_voided";
+  name:
+    | "kitchen_ticket.unrouted"
+    | "order.kitchen_voided"
+    | "kitchen_pacing.near_capacity"
+    | "kitchen_pacing.at_capacity";
   order: QrOrder;
   userIds: string[];
   payload: Record<string, unknown>;
@@ -311,6 +315,60 @@ export async function notifyUnroutedQrLines(
         body: `${line.name} di pesanan ${order.number} tidak muncul di layar dapur mana pun. Atur stasiun menu ini agar pesanan berikutnya masuk dapur.`,
         now: input.now,
       });
+  });
+}
+
+/**
+ * A station's pacing level got worse (bead legend-gyc): one alert per
+ * transition to the outlet's KDS managers. The key holds the level and the
+ * moment it changed, so a replayed evaluation never notifies twice and a later
+ * transition (after a release) does.
+ */
+export async function notifyKitchenPacing(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: string;
+    stationId: string;
+    stationName: string;
+    level: "near_capacity" | "at_capacity";
+    usedPoints: number;
+    capacityPoints: number;
+    changedAt: Date;
+  },
+): Promise<void> {
+  await guarded(tx, context, async (sp) => {
+    const userIds = await kdsManagerIds(
+      sp,
+      context.tenant.tenantId,
+      input.outletId,
+    );
+    const atCapacity = input.level === "at_capacity";
+    await emitAlert(sp, context, {
+      key: `${input.stationId}:${input.level}:${input.changedAt.toISOString()}`,
+      name: `kitchen_pacing.${input.level}`,
+      // No order here: the station stands in as the event's aggregate.
+      order: {
+        id: input.stationId,
+        outletId: input.outletId,
+        number: "",
+        tableSessionId: null,
+      },
+      userIds,
+      payload: {
+        stationId: input.stationId,
+        level: input.level,
+        usedPoints: input.usedPoints,
+        capacityPoints: input.capacityPoints,
+      },
+      title: atCapacity
+        ? `Dapur ${input.stationName} penuh`
+        : `Dapur ${input.stationName} hampir penuh`,
+      body: atCapacity
+        ? `Antrean ${input.stationName} sudah ${input.usedPoints} dari ${input.capacityPoints} poin. Menu yang lama dimasak dijeda untuk kanal non-prioritas.`
+        : `Antrean ${input.stationName} sudah ${input.usedPoints} dari ${input.capacityPoints} poin. Siapkan tambahan tenaga.`,
+      now: input.changedAt,
+    });
   });
 }
 
