@@ -1,6 +1,6 @@
 // HR-03 field encryption helper (PRD v1.7 §2 enkripsi aplikasi + blind index;
 // bead legend-qe1z). Pure: no database.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HRIS_PII_KEY_VERSION,
   hrisBlindIndex,
@@ -11,6 +11,10 @@ import {
   sealHrisPii,
   type HrisPiiBinding,
 } from "./hris-pii.ts";
+import {
+  assertHrisPiiActiveVersion,
+  parseHrisPiiKeys,
+} from "./hris-pii-keys.ts";
 
 const tenantA = "11111111-1111-4111-8111-111111111111";
 const tenantB = "22222222-2222-4222-8222-222222222222";
@@ -142,5 +146,110 @@ describe("HR-03 masking", () => {
     expect(maskHrisPii("bankAccount", "1234567890", 1).masked).not.toContain(
       "123456",
     );
+  });
+});
+
+// ---------------------------------------------------------------- rotation
+
+const KEY2 = Buffer.alloc(32, 2).toString("base64");
+const KEY3 = Buffer.alloc(32, 3).toString("base64");
+
+describe("legend-33mj HRIS PII key ring parsing", () => {
+  it("[HR-03] parses versions >= 2 with 32-byte base64 keys; empty is no extra keys", () => {
+    expect(parseHrisPiiKeys(undefined).size).toBe(0);
+    expect(parseHrisPiiKeys("  ").size).toBe(0);
+    const ring = parseHrisPiiKeys(`2:${KEY2}, 3:${KEY3}`);
+    expect([...ring.keys()]).toEqual([2, 3]);
+    expect(ring.get(2)?.equals(Buffer.alloc(32, 2))).toBe(true);
+  });
+
+  it("[HR-03] rejects bad entries without echoing the key", () => {
+    const bad = [
+      `1:${KEY2}`, // version 1 is DATA_ENCRYPTION_KEY
+      `0:${KEY2}`,
+      `40000:${KEY2}`,
+      `2:${KEY2},2:${KEY3}`, // duplicate
+      "2:c2hvcnQ=", // too short
+      `x:${KEY2}`,
+      KEY2, // no version
+      "2:not base64 !!",
+    ];
+    for (const spec of bad) {
+      let message = "";
+      try {
+        parseHrisPiiKeys(spec);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message, spec).not.toBe("");
+      expect(message).not.toContain(KEY2);
+    }
+  });
+
+  it("[HR-03] the active version must be 1 or in the ring", () => {
+    const ring = parseHrisPiiKeys(`2:${KEY2}`);
+    expect(() => assertHrisPiiActiveVersion(1, ring)).not.toThrow();
+    expect(() => assertHrisPiiActiveVersion(2, ring)).not.toThrow();
+    expect(() => assertHrisPiiActiveVersion(3, ring)).toThrow();
+    expect(() => assertHrisPiiActiveVersion(0, ring)).toThrow();
+  });
+});
+
+describe("legend-33mj HRIS PII after rotation to version 2", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  async function rotated() {
+    vi.resetModules();
+    vi.stubEnv("HRIS_PII_KEYS", `2:${KEY2}`);
+    vi.stubEnv("HRIS_PII_ACTIVE_KEY_VERSION", "2");
+    return import("./hris-pii.ts");
+  }
+
+  it("[HR-03] writes with the active version and still opens version 1 data", async () => {
+    const before = sealHrisPii(NIK, binding(), 1);
+    const pii = await rotated();
+    expect(pii.HRIS_PII_KEY_VERSION).toBe(2);
+    // Old data stays readable under its own version.
+    expect(pii.openHrisPii(before, binding(), 1)).toBe(NIK);
+    // New seals default to version 2 and open only as version 2.
+    const sealed = pii.sealHrisPii(NIK, binding());
+    expect(pii.openHrisPii(sealed, binding(), 2)).toBe(NIK);
+    expect(() => pii.openHrisPii(sealed, binding(), 1)).toThrow();
+    // A v1 envelope claimed as v2 fails closed (different key and AAD).
+    expect(() => pii.openHrisPii(before, binding(), 2)).toThrow();
+    // Version 1 can still be written explicitly (re-seal job reads old only).
+    expect(
+      pii.openHrisPii(pii.sealHrisPii(NIK, binding(), 1), binding(), 1),
+    ).toBe(NIK);
+  });
+
+  it("[HR-03] a version outside the ring fails closed", async () => {
+    const pii = await rotated();
+    const sealed = pii.sealHrisPii(NIK, binding());
+    expect(() => pii.openHrisPii(sealed, binding(), 3)).toThrow(
+      "Unsupported HRIS PII key version",
+    );
+    expect(() => pii.sealHrisPii(NIK, binding(), 3)).toThrow(
+      "Unsupported HRIS PII key version",
+    );
+  });
+
+  it("[HR-03] the blind index does not rotate: lookups stay valid", async () => {
+    const before = hrisBlindIndex("nik", tenantA, NIK);
+    const pii = await rotated();
+    expect(pii.hrisBlindIndex("nik", tenantA, NIK)).toBe(before);
+  });
+
+  it("[HR-03] a wrong key for the version does not open another ring's data", async () => {
+    const pii = await rotated();
+    const sealed = pii.sealHrisPii(NIK, binding());
+    vi.resetModules();
+    vi.stubEnv("HRIS_PII_KEYS", `2:${KEY3}`);
+    vi.stubEnv("HRIS_PII_ACTIVE_KEY_VERSION", "2");
+    const other = await import("./hris-pii.ts");
+    expect(() => other.openHrisPii(sealed, binding(), 2)).toThrow();
   });
 });

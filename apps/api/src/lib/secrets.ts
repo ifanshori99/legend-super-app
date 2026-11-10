@@ -46,9 +46,22 @@ function dataKey(): Buffer {
 
 /** Seals a UTF-8 value for the row identified by `aad`. */
 export function sealSecret(plaintext: string, aad: string): string {
+  return sealSecretWithKey(dataKey(), plaintext, aad);
+}
+
+/**
+ * Same envelope as `sealSecret` under an explicit 32-byte key (HRIS PII key
+ * rotation, lib/hris-pii.ts). The caller owns the key's lifetime.
+ */
+export function sealSecretWithKey(
+  key: Buffer,
+  plaintext: string,
+  aad: string,
+): string {
   if (!aad) throw new TypeError("Sealed data needs an AAD");
+  if (key.length !== 32) throw new TypeError("Sealing key must be 32 bytes");
   const nonce = randomBytes(NONCE_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", dataKey(), nonce);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
   cipher.setAAD(Buffer.from(aad, "utf8"));
   const ciphertext = Buffer.concat([
     cipher.update(plaintext, "utf8"),
@@ -64,7 +77,17 @@ export function sealSecret(plaintext: string, aad: string): string {
 
 /** Opens a sealed value; throws if the envelope or AAD does not match. */
 export function openSecret(sealed: string, aad: string): string {
+  return openSecretWithKey(dataKey(), sealed, aad);
+}
+
+/** `openSecret` under an explicit 32-byte key. */
+export function openSecretWithKey(
+  key: Buffer,
+  sealed: string,
+  aad: string,
+): string {
   if (!sealed) throw new TypeError("Nothing to open");
+  if (key.length !== 32) throw new TypeError("Sealing key must be 32 bytes");
   const envelope = Buffer.from(sealed, "base64");
   if (envelope.length < 1 + NONCE_BYTES + TAG_BYTES)
     throw new Error("Sealed value is truncated");
@@ -73,7 +96,7 @@ export function openSecret(sealed: string, aad: string): string {
   const nonce = envelope.subarray(1, 1 + NONCE_BYTES);
   const tag = envelope.subarray(1 + NONCE_BYTES, 1 + NONCE_BYTES + TAG_BYTES);
   const ciphertext = envelope.subarray(1 + NONCE_BYTES + TAG_BYTES);
-  const decipher = createDecipheriv("aes-256-gcm", dataKey(), nonce);
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
   decipher.setAAD(Buffer.from(aad, "utf8"));
   decipher.setAuthTag(tag);
   return Buffer.concat([

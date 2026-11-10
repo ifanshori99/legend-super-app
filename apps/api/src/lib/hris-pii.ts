@@ -22,17 +22,39 @@ import {
   type HrisPiiFieldName,
   type MaskedPiiValue,
 } from "@starter/shared/hris";
-import { blindIndex, openSecret, sealSecret } from "./secrets.ts";
+import { env } from "../config/env.ts";
+import {
+  blindIndex,
+  openSecret,
+  openSecretWithKey,
+  sealSecret,
+  sealSecretWithKey,
+} from "./secrets.ts";
 import { HttpError } from "./http-error.ts";
+import {
+  assertHrisPiiActiveVersion,
+  parseHrisPiiKeys,
+} from "./hris-pii-keys.ts";
 
-/**
- * Key version written with every new seal. lib/secrets.ts holds exactly one
- * data key today; rotation adds a version here plus a re-seal job.
- */
-export const HRIS_PII_KEY_VERSION = 1;
+// Key ring (legend-33mj). Version 1 is the data key of lib/secrets.ts, so data
+// sealed before rotation stays readable. Versions >= 2 come from HRIS_PII_KEYS;
+// HRIS_PII_ACTIVE_KEY_VERSION picks the one new seals use. config/env.ts
+// validates both at boot; the ring is resolved once at module load. Moving
+// existing rows to the active version is worker/hris-pii-reseal.job.ts.
+const EXTRA_KEYS = parseHrisPiiKeys(env.HRIS_PII_KEYS);
+assertHrisPiiActiveVersion(env.HRIS_PII_ACTIVE_KEY_VERSION, EXTRA_KEYS);
+
+/** Key version written with every new seal (the ring's active version). */
+export const HRIS_PII_KEY_VERSION: number = env.HRIS_PII_ACTIVE_KEY_VERSION;
 const SUPPORTED_KEY_VERSIONS: ReadonlySet<number> = new Set([
-  HRIS_PII_KEY_VERSION,
+  1,
+  ...EXTRA_KEYS.keys(),
 ]);
+
+// The blind index (`hrisBlindIndex`, `hrisRequestFingerprint`) is NOT rotated:
+// it stays an HMAC under the version 1 data key, so equality lookups and the
+// unique indexes on `*_hmac` stay valid across rotations. Only the sealed
+// ciphertext columns move between key versions.
 
 /** Wire names of the sealed employee fields (contract employeePiiSchema keys). */
 export const HRIS_EMPLOYEE_PII_FIELDS = [
@@ -158,7 +180,12 @@ export function sealHrisPii(
   keyVersion: number = HRIS_PII_KEY_VERSION,
 ): Buffer {
   assertKeyVersion(keyVersion);
-  return Buffer.from(sealSecret(value, aadOf(binding, keyVersion)), "base64");
+  const aad = aadOf(binding, keyVersion);
+  const extra = EXTRA_KEYS.get(keyVersion);
+  return Buffer.from(
+    extra ? sealSecretWithKey(extra, value, aad) : sealSecret(value, aad),
+    "base64",
+  );
 }
 
 /** Opens a sealed column; throws (fail closed) on any mismatch. */
@@ -168,10 +195,12 @@ export function openHrisPii(
   keyVersion: number,
 ): string {
   assertKeyVersion(keyVersion);
-  return openSecret(
-    Buffer.from(sealed).toString("base64"),
-    aadOf(binding, keyVersion),
-  );
+  const envelope = Buffer.from(sealed).toString("base64");
+  const aad = aadOf(binding, keyVersion);
+  const extra = EXTRA_KEYS.get(keyVersion);
+  return extra
+    ? openSecretWithKey(extra, envelope, aad)
+    : openSecret(envelope, aad);
 }
 
 /** Tenant-separated HMAC blind index of a normalized value. */

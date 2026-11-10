@@ -8,6 +8,11 @@ import {
 import { normalizeHostname } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { unsafeAiUrlReason } from "../lib/ai/url-guard.ts";
+import {
+  HRIS_PII_MAX_KEY_VERSION,
+  assertHrisPiiActiveVersion,
+  parseHrisPiiKeys,
+} from "../lib/hris-pii-keys.ts";
 import { sealKeyConfigProblems } from "../lib/selfie-seal.ts";
 
 // Environment values are loaded by Node (`--env-file-if-exists` in the package
@@ -91,6 +96,17 @@ const schema = z
         "Use base64 of 32 bytes.",
       )
       .optional(),
+    // HRIS PII key rotation (legend-33mj, lib/hris-pii.ts). Extra data keys as
+    // `<version>:<base64 32 bytes>` entries, comma separated, versions >= 2
+    // (version 1 is DATA_ENCRYPTION_KEY). The active version is the one new
+    // seals use; it must be 1 or listed in HRIS_PII_KEYS.
+    HRIS_PII_KEYS: z.string().optional(),
+    HRIS_PII_ACTIVE_KEY_VERSION: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(HRIS_PII_MAX_KEY_VERSION)
+      .default(1),
     BETTER_AUTH_URL: origin(
       "Use the API's origin, e.g. http://localhost:4000.",
     ).default("http://localhost:4000"),
@@ -345,6 +361,23 @@ const schema = z
       .default(3600),
   })
   .superRefine((values, ctx) => {
+    // Messages name the problem only, never the key material.
+    try {
+      assertHrisPiiActiveVersion(
+        values.HRIS_PII_ACTIVE_KEY_VERSION,
+        parseHrisPiiKeys(values.HRIS_PII_KEYS),
+      );
+    } catch (error) {
+      ctx.addIssue({
+        code: "custom",
+        path: [
+          error instanceof Error && error.message.startsWith("HRIS_PII_ACTIVE")
+            ? "HRIS_PII_ACTIVE_KEY_VERSION"
+            : "HRIS_PII_KEYS",
+        ],
+        message: error instanceof Error ? error.message : "Invalid value.",
+      });
+    }
     if (values.AI_BASE_URL !== undefined) {
       const reason = unsafeAiUrlReason(
         values.AI_BASE_URL,
