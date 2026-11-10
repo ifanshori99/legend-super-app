@@ -56,6 +56,9 @@ import { paymentAdminRouter } from "./payment-admin.routes.ts";
 import { accountingJournalRouter } from "./accounting-journal.routes";
 import { accountingRouter } from "./accounting.routes";
 import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
+import { createProfitShareRegistryRouter } from "./profit-share-registry.routes";
+import { createProfitShareDistributionRouter } from "./profit-share-distribution.routes";
+import { dbShareholderMembership } from "../services/profit-share-membership";
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 import { reservationRouter } from "./reservation.routes";
@@ -251,7 +254,14 @@ apiRouter.use("/public/purchase-orders", publicPurchaseOrderRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
 // Shareholder documents (WS-07, legend-69yq): upload, publish, list, signed URL.
-apiRouter.use("/accounting", createShareholderDocumentsRouter());
+apiRouter.use(
+  "/accounting",
+  createShareholderDocumentsRouter({ membership: dbShareholderMembership }),
+);
+// Profit share (WS-07, legend-2ljb): entities, shareholders, share versions
+// (SH-03), distribution runs, adjustments and statements (SH-04).
+apiRouter.use("/accounting", createProfitShareRegistryRouter());
+apiRouter.use("/accounting", createProfitShareDistributionRouter());
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
 apiRouter.use("/accounting", accountingRouter);
 // Manual + recurring journals with approval (WS-07, legend-vmyg).

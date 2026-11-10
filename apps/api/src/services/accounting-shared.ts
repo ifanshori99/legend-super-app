@@ -122,6 +122,7 @@ const AUDIT_SAFE_FIELDS = [
   "entryDate",
   "sourceType",
   "reversalEntryId",
+  "version",
 ] as const;
 
 /** Writes one append-only audit row inside the caller's transaction. */
