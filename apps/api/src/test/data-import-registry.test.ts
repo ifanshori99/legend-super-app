@@ -131,6 +131,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-111j
   "0203_member_loyalty_ledger.sql":
     "appends crm.loyalty.manage, crm.loyalty.review, crm.loyalty.fulfil, crm.customer.pii.read and crm.feedback.manage to the stored template role rows of existing tenants (legend-111j); idempotent, never touches a custom role, FORCE RLS on roles lifted and restored; the other INSERT/UPDATE text is inside trigger function bodies (ledger balance, point value lock, profile index), no rows written at migration time",
+  // legend-m4p5
+  "0207_loyalty_rewards_missions.sql":
+    "before adding vouchers_profile_fk, sets customer_profile_id to NULL on vouchers whose profile has no customer_profiles row in the same tenant and cancels those still issued (cancelled_reason profile_missing_0207) (legend-m4p5); touches only orphan rows and edits only customer_profile_id, status and cancelled_reason, FORCE RLS lifted for that one statement and restored, never inserts or deletes rows",
 };
 
 // Entrypoints that open a database pool but import no data.

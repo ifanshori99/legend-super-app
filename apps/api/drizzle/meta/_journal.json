@@ -1352,6 +1352,13 @@
       "when": 1794285000000,
       "tag": "0206_hris_lifecycle_kpi",
       "breakpoints": true
+    },
+    {
+      "idx": 207,
+      "version": "7",
+      "when": 1794286000000,
+      "tag": "0207_loyalty_rewards_missions",
+      "breakpoints": true
     }
   ]
 }

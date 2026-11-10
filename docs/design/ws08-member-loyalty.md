@@ -469,7 +469,7 @@ Points `bigint` (contract caps at safe integer).
 `loyalty_programs` (T): `id`, `tenant_id`, `name`, `earn_spend_idr` (>0),
 `earn_points` (>0), `expiry_months` (1-60, default 12), `rolling_months`
 (1-60, default 12), `point_value_idr` (>0), `daily_point_cap_per_customer`
-(null = none, default 1000), `phone_lookup_daily_cap_per_cashier` (int >0,
+(null = none, default 500, founder Q69), `phone_lookup_daily_cap_per_cashier` (int >0,
 default 20), `employee_self_serve_ban` (default true), `referral` jsonb
 (contract `referralRulesSchema`, default off; created here, 0197 side only
 reads and writes it), `is_active` (default **false**), `point_value_locked_at`,
@@ -816,8 +816,8 @@ Needs the accounting second opinion and the founder's accountant (Q7).
 ## 8. Defaults used until the founder answers
 
 Program created inactive per tenant. Earn Rp10.000 = 1 point; point value
-Rp100; expiry 12 months; tier window 12 months; daily cap 1.000 points
-(contract default; 500 recommended to the founder);
+Rp100; expiry 12 months; tier window 12 months; daily cap 500 points
+(founder Q69, 10 Nov 2026; set in 0207);
 self-serve ban on; referral off; points tender stays refused; cancelled and
 expired redemptions restore points; receipt claim off. All are columns of
 `loyalty_programs` or feature flags, changeable without code.

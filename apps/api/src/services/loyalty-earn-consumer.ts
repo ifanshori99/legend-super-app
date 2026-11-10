@@ -503,7 +503,20 @@ async function reverseForOrder(
     .from(pointEarnRecords)
     .where(recordWhere)
     .limit(1);
-  if (!record || record.state !== "booked") return;
+  if (!record) return;
+  // legend-wa4hp: the counters follow every record whose visit was counted:
+  // booked, capped, a blocked self-serve order and a record an earlier partial
+  // refund reversed. Only a booked record has points to reverse.
+  const visitCounted =
+    record.state === "booked" ||
+    record.state === "capped" ||
+    record.state === "reversed" ||
+    (record.state === "blocked" &&
+      record.outcomeReason === "blocked_self_serve");
+  if (!visitCounted) return;
+  const reversePoints = record.state === "booked";
+  // legend-wa4hp: replay guard for a refund or void already applied.
+  if (record.appliedReversalIds.includes(input.sourceId)) return;
 
   // Replay guard for a refund or void that posted no ledger row: its
   // shortfall anomaly names the source.
@@ -523,13 +536,11 @@ async function reverseForOrder(
 
   const eligible = Number(record.eligibleSpendIdr);
   const booked = Number(record.bookedPoints);
+  const previousRefunded = Number(record.refundedEligibleIdr);
   const refunded =
     input.refundEligibleIdr === null
       ? eligible
-      : Math.min(
-          eligible,
-          Number(record.refundedEligibleIdr) + input.refundEligibleIdr,
-        );
+      : Math.min(eligible, previousRefunded + input.refundEligibleIdr);
   // Cumulative target, rounded up against the member (full refund = all).
   const target =
     eligible === 0
@@ -541,7 +552,7 @@ async function reverseForOrder(
               BigInt(eligible),
           ),
         );
-  const delta = target - record.reversedPoints;
+  const delta = reversePoints ? target - record.reversedPoints : 0;
   const posted = Math.min(Math.max(0, delta), profile.pointsBalance);
 
   if (posted > 0 && record.earnEntryId) {
@@ -566,12 +577,64 @@ async function reverseForOrder(
   }
   const reversed = record.reversedPoints + posted;
   const shortfall = Math.max(0, target - reversed);
-  await settleRecord(tx, scope, record, {
-    refundedEligibleIdr: idr(refunded),
-    reversedPoints: reversed,
-    reversalShortfallPoints: shortfall,
-    state: reversed === booked ? "reversed" : "booked",
-  });
+  await settleRecord(
+    tx,
+    scope,
+    record,
+    reversePoints
+      ? {
+          refundedEligibleIdr: idr(refunded),
+          reversedPoints: reversed,
+          reversalShortfallPoints: shortfall,
+          state: reversed === booked ? "reversed" : "booked",
+          appliedReversalIds: [...record.appliedReversalIds, input.sourceId],
+        }
+      : {
+          refundedEligibleIdr: idr(refunded),
+          appliedReversalIds: [...record.appliedReversalIds, input.sourceId],
+        },
+  );
+
+  // legend-wa4hp: a void or refund also lowers the visit count and spend.
+  const spendDelta = refunded - previousRefunded;
+  const visitRemovedBefore = eligible > 0 && previousRefunded >= eligible;
+  const removesVisit =
+    !visitRemovedBefore &&
+    (input.refundEligibleIdr === null ||
+      (eligible > 0 && refunded >= eligible));
+  if (spendDelta > 0 || removesVisit) {
+    await tx
+      .update(customerProfiles)
+      .set({
+        lifetimeSpendIdr: sql`GREATEST(0, ${customerProfiles.lifetimeSpendIdr} - ${spendDelta})`,
+        ...(removesVisit
+          ? {
+              visitsCount: sql`GREATEST(0, ${customerProfiles.visitsCount} - 1)`,
+            }
+          : {}),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(customerProfiles.tenantId, tenantId as never),
+          eq(customerProfiles.id, profile.id),
+        ),
+      );
+  }
+  const visitWhere = and(
+    eq(customerVisits.tenantId, tenantId as never),
+    eq(customerVisits.orderId, input.orderId),
+  );
+  if (removesVisit) {
+    await tx.delete(customerVisits).where(visitWhere);
+  } else if (spendDelta > 0) {
+    await tx
+      .update(customerVisits)
+      .set({
+        spendIdr: sql`GREATEST(0, ${customerVisits.spendIdr} - ${spendDelta})`,
+      })
+      .where(visitWhere);
+  }
   if (delta > posted)
     await recordLoyaltyAnomaly(tx, {
       tenantId,

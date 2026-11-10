@@ -46,6 +46,7 @@ import { deliverPayrollGlEvent } from "./services/payroll-gl-consumer.ts";
 // legend-111j
 import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
+import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
@@ -496,6 +497,13 @@ const relay = createRelayRuntime({
         await runLoyaltyBalanceCheckSweep(context, new Date());
       } catch {
         console.error("Loyalty balance check failed");
+      }
+      // legend-m4p5: settle pending reward redemptions past their expiry
+      // (restore points and stock), once per tenant per day. Never blocks the relay.
+      try {
+        await runRedemptionExpirySweep(context, new Date());
+      } catch {
+        console.error("Redemption expiry sweep failed");
       }
     }
     // PRD §3 F11 e-receipt (legend-v3vo): send queued receipt emails. The

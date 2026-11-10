@@ -65,10 +65,10 @@ export const loyaltyPrograms = pgTable(
     expiryMonths: integer("expiry_months").notNull().default(12),
     rollingMonths: integer("rolling_months").notNull().default(12),
     pointValueIdr: idrColumn("point_value_idr").notNull().default(idr(100)),
-    /** Null = no daily cap. */
+    /** Null = no daily cap. Default 500 (founder Q69). */
     dailyPointCapPerCustomer: bigint("daily_point_cap_per_customer", {
       mode: "number",
-    }).default(1000),
+    }).default(500),
     phoneLookupDailyCapPerCashier: integer("phone_lookup_daily_cap_per_cashier")
       .notNull()
       .default(20),

@@ -23,6 +23,7 @@ import {
   loyaltyTierSchema,
   missionProgressSchema,
   missionSchema,
+  redemptionCodeSchema,
 } from "./loyalty.ts";
 import type {
   CustomerConsent,
@@ -523,6 +524,8 @@ export type MemberOverview = z.infer<typeof memberOverviewSchema>;
 export const missionWithProgressSchema = z.strictObject({
   mission: missionSchema,
   progress: missionProgressSchema.nullable(),
+  // legend-m4p5
+  voucherCode: redemptionCodeSchema.nullable(),
 });
 export type MissionWithProgress = z.infer<typeof missionWithProgressSchema>;
 

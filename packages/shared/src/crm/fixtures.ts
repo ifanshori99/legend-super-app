@@ -621,7 +621,14 @@ const rewards = [
     isActive: false,
     sortOrder: 4,
   },
-].map((reward) => rewardSchema.parse(reward));
+  // legend-m4p5: defaults for the new reward fields.
+].map((reward) =>
+  rewardSchema.parse({
+    perCustomerLimit: null,
+    redemptionValidDays: 30,
+    ...reward,
+  }),
+);
 
 const redemptions = [
   {
@@ -666,7 +673,19 @@ const redemptions = [
     cancelledAt: null,
     createdAt: "2026-08-01T02:00:00.000Z",
   },
-].map((redemption) => rewardRedemptionSchema.parse(redemption));
+  // legend-m4p5: defaults for the new redemption fields.
+].map((redemption) =>
+  rewardRedemptionSchema.parse({
+    rewardType: rewards.find((reward) => reward.id === redemption.rewardId)!
+      .type,
+    expiresAt: new Date(
+      Date.parse(redemption.redeemedAt) + 30 * 86_400_000,
+    ).toISOString(),
+    voucherId: null,
+    fulfilledOutletId: null,
+    ...redemption,
+  }),
+);
 
 // ---- Missions and progress ------------------------------------------------
 

@@ -122,6 +122,8 @@ import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.t
 // legend-111j
 import { memberRouter } from "./member.routes.ts";
 import { loyaltyProgramRouter } from "./loyalty-program.routes.ts";
+import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
+import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
 import { posOrderCustomerRouter } from "./pos-order-customer.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
@@ -265,8 +267,11 @@ apiRouter.use("/accounting", createAccountingLegalEntitiesRouter());
 apiRouter.use("/promotions", promotionsRouter);
 // WS-08 member PWA API, loyalty program, POS order customer attach (legend-111j).
 apiRouter.use("/member", memberRouter);
+// legend-m4p5: rewards, redemptions, missions, member vouchers; staff rewards/missions/fulfil.
+apiRouter.use("/member", memberRewardsRouter);
 // The next two keep full paths inside the router and guard each route.
 apiRouter.use(loyaltyProgramRouter);
+apiRouter.use(loyaltyRewardsRouter); // legend-m4p5
 apiRouter.use(posOrderCustomerRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.

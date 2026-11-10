@@ -461,7 +461,7 @@ export const defaultReferralRules: ReferralRules = referralRulesSchema.parse({
  * Program-level anti-fraud limits (legend-a8up). The service enforces the
  * daily cap when it books earn rows and blocks staff from earning points on
  * their own profile when `employeeSelfServeBan` is on.
- * A null cap means no daily limit. Defaults: 1.000 points per customer per
+ * A null cap means no daily limit. Defaults: 500 points per customer per
  * day, ban on.
  */
 export const loyaltyAntiFraudSchema = z.strictObject({
@@ -471,7 +471,7 @@ export const loyaltyAntiFraudSchema = z.strictObject({
 });
 export type LoyaltyAntiFraud = z.infer<typeof loyaltyAntiFraudSchema>;
 export const defaultLoyaltyAntiFraud: LoyaltyAntiFraud = {
-  dailyPointCapPerCustomer: 1000,
+  dailyPointCapPerCustomer: 500,
   employeeSelfServeBan: true,
 };
 
@@ -609,6 +609,10 @@ export const rewardObjectSchema = z.strictObject({
   voucherValueIdr: positiveIdr.nullable(),
   isActive: z.boolean(),
   sortOrder: z.number().int().refine(safeInt),
+  // legend-m4p5
+  /** null = no per-customer limit. */
+  perCustomerLimit: z.number().int().positive().refine(safeInt).nullable(),
+  redemptionValidDays: z.number().int().min(1).max(365),
 });
 export const rewardSchema = rewardObjectSchema.superRefine((reward, ctx) => {
   if (reward.validUntil !== null && before(reward.validUntil, reward.validFrom))
@@ -679,6 +683,11 @@ export const rewardRedemptionSchema = z
     pointsSpent: positivePointsSchema,
     status: rewardRedemptionStatusSchema,
     redemptionCode: redemptionCodeSchema,
+    // legend-m4p5
+    rewardType: rewardTypeSchema,
+    expiresAt: isoDateTimeSchema,
+    voucherId: uuidSchema.nullable(),
+    fulfilledOutletId: uuidSchema.nullable(),
     idempotencyKey: z.string().min(8).max(100),
     redeemedAt: isoDateTimeSchema,
     fulfilledAt: isoDateTimeSchema.nullable(),
