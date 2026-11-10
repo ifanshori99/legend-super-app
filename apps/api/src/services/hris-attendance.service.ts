@@ -189,13 +189,15 @@ function reachIncludes(reach: HrisReach | null, outletId: string): boolean {
 // ------------------------------------------------------------------ policy
 
 /**
- * Policy used when a tenant has configured nothing. Strict on purpose: HR-02
- * treats an unconfigured tenant as "reject", never as "accept".
+ * Policy used when a tenant has configured nothing (founder decision Q81):
+ * a clock outside the geofence or from an unbound device is ACCEPTED as
+ * "flagged" for supervisor review rather than rejected. The selfie stays
+ * required. A policy the tenant saved is never changed by this default.
  */
 export const DEFAULT_ATTENDANCE_POLICY: AttendancePolicy = {
   geofenceRadiusM: 100,
-  outsideGeofenceAction: "reject",
-  unboundDeviceAction: "reject",
+  outsideGeofenceAction: "flag",
+  unboundDeviceAction: "flag",
   requireSelfie: true,
   requireDeviceBinding: true,
   allowRotatingQr: true,
