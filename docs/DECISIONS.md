@@ -3,6 +3,16 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: ORD-09 refund item gagal: nominal dan jalur uang (legend-94q2l)
+
+Keputusan founder (Q85) dan CTO, desain architect tingkat K (`docs/briefs/94q2l-design-blocker.md`).
+
+1. **Nominal: pro-rata.** Refund = harga baris + bagian service charge dan PBJT baris itu, dikurangi bagian diskon order, sesuai yang dibayar tamu. Tiap komponen `orderRevenueSplit` dikali `lineTotal / subtotal`, dibulatkan half-up (BigInt); rounding kas order tidak ikut. PBJT dibalik sebesar bagian yang direfund. Satu fungsi: `recoveryRefundSplit` (`apps/api/src/services/order-recovery-refund-amount.ts`).
+2. **Batas.** Refund dipotong ke sisa yang bisa dikembalikan (`total - DP - yang sudah dilepas issue lain`; open bill: cap intent). Potongan diaudit `order_issue.refund_shortfall`, tidak pernah diam.
+3. **Jalur.** Konsumen `order_issue.manual_refund_approved` (`order-recovery-refund.ts`) hanya membuka permintaan refund (`system:recovery`, kunci `order-recovery-refund:<issueId>`); persetujuan dan payout tetap WS-05. QR pay-first: dalam transaksi yang sama `order.refunded` (refundId = issue id) membalik pendapatan, lalu refund dibuka; hold penjualan di intent dilepas sebesar refund, guard payout menguranginya hanya setelah jurnal `order.refunded` posted. Open bill tanpa `pos_orders`: refund biasa tanpa `order.refunded`. Bill kasir: tidak dibuka, audit `order_issue.refund_routed_pos` (kasir pakai refund POS). Split bill, tanpa intent, intent belum lunas: ditolak dengan audit `order_issue.refund_blocked`.
+4. **Four-eyes.** Penyetuju payout bukan resolver issue dan bukan approver ORD-09; tidak terbaca = ditolak.
+5. **Refund gagal.** Pendapatan sudah dibalik saat permintaan dibuka, jadi refund yang gagal karena `approval_expired` atau `approver_unauthorized` dibuka ulang otomatis (nominal sama, tanpa `order.refunded` baru, kunci `order-recovery-refund:<issueId>:<failedRefundId>`), maksimal sampai 3 refund gagal per issue (`refile_limit`). `provider_declined` (uang mungkin sudah terkirim), `cap_exceeded`, `source_document`: tidak dibuka ulang, audit `order_issue.refund_refile_blocked` untuk ditangani orang. `rejected` (keputusan CTO 10 Nov): penolakan final, tidak dibuka ulang, audit `order_issue.refund_rejected` tetap. Untuk QR pay-first, event `order_issue.refund_reversal_requested` membalik jurnal `aj:order-refund:<issueId>` otomatis dan idempoten (pendapatan, service, PBJT diakui lagi; `customer_deposit` kembali), dan hold `qrSaleInUse` menahan uangnya lagi. Perlu refund lagi: buat issue baru.
+
 ## 2026-11-10: Laporan harian tanpa pesanan latihan (legend-fbxzw)
 
 Konteks: rekap akhir hari (`computeRecap`, `pos-day.service.ts`) masih

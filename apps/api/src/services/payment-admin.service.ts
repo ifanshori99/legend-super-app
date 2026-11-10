@@ -174,6 +174,13 @@ async function posSaleInUseOfIntent(
  * A code whose money was all booked as a double payment holds nothing.
  * Read under the intent row lock the writers hold; the QR fire path takes it
  * too (qr-order-consumers.ts, legend-9vzvs).
+ * legend-94q2l: a refund opened for a failed item of the order
+ * (payment_refunds.order_issue_id, any status) releases its amount from the
+ * pinned code's hold: per issue the largest refund counts once, so a retried
+ * failed refund never releases twice. Only the pinned branch releases; the
+ * other codes of the link hold their own evidence. An issue with a refund
+ * `failed` as `rejected` releases nothing: the sale holds its money again
+ * (its journal is reversed).
  */
 async function qrSaleInUseOfIntent(
   tx: Tx,
@@ -183,7 +190,18 @@ async function qrSaleInUseOfIntent(
   const result = await tx.execute(sql`
     SELECT coalesce(sum(
       CASE WHEN o.payment_intent_id = ${intentId}::uuid
-        THEN o.total_idr - o.deposit_applied_idr
+        THEN greatest(o.total_idr - o.deposit_applied_idr - (
+          SELECT coalesce(sum(per_issue.amount_idr), 0)
+          FROM (
+            SELECT max(pr.amount_idr) AS amount_idr
+            FROM order_issues oi
+            JOIN payment_refunds pr
+              ON pr.tenant_id = oi.tenant_id AND pr.order_issue_id = oi.id
+            WHERE oi.tenant_id = o.tenant_id AND oi.order_id = o.id
+            GROUP BY oi.id
+            HAVING NOT coalesce(bool_or(
+              pr.status = 'failed' AND pr.failure_reason = 'rejected'), false)
+          ) per_issue), 0)
         ELSE least(
           o.total_idr - o.deposit_applied_idr,
           greatest(

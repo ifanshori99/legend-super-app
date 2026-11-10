@@ -58,6 +58,7 @@ import { db } from "../db/index.ts";
 import { apologyVouchers } from "../db/schema/apology-vouchers.ts";
 import { vouchers } from "../db/schema/crm-promo.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
+import { paymentIntents } from "../db/schema/payment.ts";
 import { menuItems } from "../db/schema/menu.ts";
 import { posOrderItems } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
@@ -135,6 +136,8 @@ type IssueContext = {
     status: string;
     paymentMode: string;
     paymentIntentId: string | null;
+    /** Status of `paymentIntentId` read in the same transaction; null when none. */
+    paymentIntentStatus: string | null;
   };
   line: {
     id: string;
@@ -148,18 +151,36 @@ type IssueContext = {
 };
 
 /**
+ * Intent statuses that mean the money arrived. A refunded intent still paid
+ * the bill first, so it stays settled (same set as the QR payment consumer).
+ */
+const SETTLED_INTENT_STATUSES: readonly string[] = [
+  "paid",
+  "partially_refunded",
+  "refunded",
+];
+
+/**
  * ORD-08: only a paid order can fail an item. `pay_first` is paid once sent;
- * an `open_bill` order only when it is completed (settled) or an intent paid
- * it. An unsettled open bill, a draft or a voided order is refused.
+ * an `open_bill` order only when it is completed (settled) or its intent is
+ * settled. An intent that is still pending, failed or expired is not money
+ * received (legend-mz15j). An unsettled open bill, a draft or a voided order
+ * is refused.
  */
 function isPaidOrder(order: {
   status: string;
   paymentMode: string;
   paymentIntentId: string | null;
+  paymentIntentStatus: string | null;
 }): boolean {
   if (order.status === "completed") return true;
   if (order.status !== "sent") return false;
-  return order.paymentMode === "pay_first" || order.paymentIntentId !== null;
+  if (order.paymentMode === "pay_first") return true;
+  return (
+    order.paymentIntentId !== null &&
+    order.paymentIntentStatus !== null &&
+    SETTLED_INTENT_STATUSES.includes(order.paymentIntentStatus)
+  );
 }
 
 /** A recovery needs a paid order and a line that is not voided (QR or POS). */
@@ -335,6 +356,7 @@ async function loadIssue(
       orderStatus: orders.status,
       paymentMode: orders.paymentMode,
       paymentIntentId: orders.paymentIntentId,
+      paymentIntentStatus: paymentIntents.status,
       lineStatus: orderItems.status,
       posVoidedAt: posOrderItems.voidedAt,
       lineId: orderItems.id,
@@ -366,6 +388,13 @@ async function loadIssue(
         eq(posOrderItems.itemId, orderItems.id),
       ),
     )
+    .leftJoin(
+      paymentIntents,
+      and(
+        eq(paymentIntents.tenantId, orders.tenantId),
+        eq(paymentIntents.id, orders.paymentIntentId),
+      ),
+    )
     .where(
       and(
         eq(orderIssues.tenantId, context.tenant.tenantId),
@@ -385,6 +414,7 @@ async function loadIssue(
       status: row.orderStatus,
       paymentMode: row.paymentMode,
       paymentIntentId: row.paymentIntentId,
+      paymentIntentStatus: row.paymentIntentStatus,
     },
     line: {
       id: row.lineId,
@@ -581,6 +611,7 @@ async function storeFailedItem(
         orderStatus: orders.status,
         paymentMode: orders.paymentMode,
         paymentIntentId: orders.paymentIntentId,
+        paymentIntentStatus: paymentIntents.status,
         posVoidedAt: posOrderItems.voidedAt,
         tableSessionId: orders.tableSessionId,
       })
@@ -597,6 +628,13 @@ async function storeFailedItem(
         and(
           eq(posOrderItems.tenantId, orderItems.tenantId),
           eq(posOrderItems.itemId, orderItems.id),
+        ),
+      )
+      .leftJoin(
+        paymentIntents,
+        and(
+          eq(paymentIntents.tenantId, orders.tenantId),
+          eq(paymentIntents.id, orders.paymentIntentId),
         ),
       )
       .where(
@@ -623,6 +661,7 @@ async function storeFailedItem(
         status: line.orderStatus,
         paymentMode: line.paymentMode,
         paymentIntentId: line.paymentIntentId,
+        paymentIntentStatus: line.paymentIntentStatus,
       })
     )
       throw unprocessable(
