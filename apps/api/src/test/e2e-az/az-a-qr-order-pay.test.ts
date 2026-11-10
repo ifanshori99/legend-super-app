@@ -16,9 +16,10 @@
 // - Alur Y endpoints follow the shared contract (qr-order/endpoints.ts):
 //   POST /api/order-items/:id/issues, GET /api/table-sessions/:id/order-issues,
 //   GET /api/order-issues/:id/options, POST /api/order-issues/:id/customer-choice,
-//   POST /api/order-issues/:id/resolve. Neither the split nor the order-issue
-//   routes exist on milestone/m1 or any ws/* branch at the time of writing, so
-//   those tests are expected to FAIL (404): candidate P1 bugs ORD-06, ORD-08.
+//   POST /api/order-issues/:id/resolve. A report carries `reason` (enum) and
+//   `reasonNote`. The guest may swap only to a menu costing the same or less
+//   than the failed line (dearer: 422); a cheaper swap credits the difference.
+//   The split routes do not exist yet: ORD-06 stays PENDING-CARD.
 
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
@@ -72,7 +73,7 @@ import {
   type IsolatedTenant,
   type Staff,
 } from "../floor-test-helpers.ts";
-import { describeUntilBuilt, itUntilBuilt } from "./pending-branch.ts";
+import { itUntilBuilt } from "./pending-branch.ts";
 
 let app: Express;
 let tenant: IsolatedTenant;
@@ -959,7 +960,7 @@ describe("Alur A webhook DOIT asli", () => {
 // Alur Y: item gagal setelah dibayar
 // --------------------------------------------------------------------------
 
-describeUntilBuilt("legend-cpq2", "Alur Y item gagal setelah dibayar", () => {
+describe("Alur Y item gagal setelah dibayar", () => {
   async function paidOrder() {
     const guest = await seat((await newTable()).qrToken);
     const order = await placeOrder(guest);
@@ -978,7 +979,8 @@ describeUntilBuilt("legend-cpq2", "Alur Y item gagal setelah dibayar", () => {
     const startedAt = Date.now();
     const reported = await staffCall(`/api/order-items/${failing.id}/issues`, {
       type: "unfulfillable",
-      reason: "Roti habis di dapur",
+      reason: "out_of_stock",
+      reasonNote: "Roti habis di dapur",
     });
     expect(reported.status).toBe(201);
     expect(reported.body.data).toMatchObject({
@@ -1016,30 +1018,85 @@ describeUntilBuilt("legend-cpq2", "Alur Y item gagal setelah dibayar", () => {
     expect(refundTry.status).toBe(422);
   });
 
-  it("Y ORD-08 pelanggan memilih ganti menu: item pengganti dengan selisih harga", async () => {
+  it("Y ORD-08 pelanggan ganti menu ke yang lebih murah: selisih harga dikreditkan", async () => {
     const { guest, order } = await paidOrder();
-    const failing = order.items.find((item) => item.menuItemId === ids.roti)!;
+    // Kopi Susu x2 + extra shot (60.000) fails; Roti Bakar x2 costs 36.000.
+    const failing = order.items.find((item) => item.menuItemId === ids.kopi)!;
     const reported = await staffCall(`/api/order-items/${failing.id}/issues`, {
       type: "unfulfillable",
-      reason: "Roti habis di dapur",
+      reason: "out_of_stock",
+      reasonNote: "Susu habis di dapur",
     });
+    expect(reported.status).toBe(201);
     const issueId = reported.body.data.id as string;
+
+    // The guest is only offered a replacement that costs the same or less.
+    const mine = (await as(guest).issues()).body.data.find(
+      (row: { id: string }) => row.id === issueId,
+    );
+    const offeredIds = mine.options.swap.items.map(
+      (item: { menuItemId: string }) => item.menuItemId,
+    );
+    expect(offeredIds).toContain(ids.roti);
+    expect(offeredIds).not.toContain(ids.kopi);
+    const lineTotal = mine.lineTotalIdr as number;
+    const options = await as(guest).issueOptions(issueId);
+    expect(options.body.data.swap.suggestedMenuItemIds).toContain(ids.roti);
 
     const swapWithoutItem = await as(guest).choose(issueId, { choice: "swap" });
     expect(swapWithoutItem.status).toBe(422);
 
     const chosen = await as(guest).choose(issueId, {
       choice: "swap",
-      replacementItemId: ids.kopi,
+      replacementItemId: ids.roti,
     });
     expect(chosen.status).toBe(200);
     expect(chosen.body.data).toMatchObject({
       status: "resolved",
       resolution: "swap",
-      replacementItemId: ids.kopi,
-      // Kopi 25.000 replaces Roti 18.000: the guest pays the 7.000 difference.
-      priceDifferenceIdr: PRICES.kopi - PRICES.roti,
+      replacementItemId: ids.roti,
+      // A cheaper replacement: the difference is negative and credited.
+      priceDifferenceIdr: PRICES.roti * 2 - lineTotal,
     });
+    expect(chosen.body.data.priceDifferenceIdr).toBeLessThan(0);
+    const credited = (await as(guest).issues()).body.data.find(
+      (row: { id: string }) => row.id === issueId,
+    );
+    expect(credited.voucher).toMatchObject({
+      valueIdr: lineTotal - PRICES.roti * 2,
+    });
+  });
+
+  it("Y ORD-08 pelanggan tidak boleh ganti ke menu yang lebih mahal dari item gagal (422)", async () => {
+    const { guest, order } = await paidOrder();
+    // Roti Bakar 18.000 fails; Kopi Susu 25.000 is dearer.
+    const failing = order.items.find((item) => item.menuItemId === ids.roti)!;
+    const reported = await staffCall(`/api/order-items/${failing.id}/issues`, {
+      type: "unfulfillable",
+      reason: "out_of_stock",
+      reasonNote: "Roti habis di dapur",
+    });
+    const issueId = reported.body.data.id as string;
+
+    const mine = (await as(guest).issues()).body.data.find(
+      (row: { id: string }) => row.id === issueId,
+    );
+    expect(
+      mine.options.swap.items.map(
+        (item: { menuItemId: string }) => item.menuItemId,
+      ),
+    ).not.toContain(ids.kopi);
+
+    const dearer = await as(guest).choose(issueId, {
+      choice: "swap",
+      replacementItemId: ids.kopi,
+    });
+    expect(dearer.status).toBe(422);
+    // The issue stays open: the guest can still pick voucher credit.
+    const after = (await as(guest).issues()).body.data.find(
+      (row: { id: string }) => row.id === issueId,
+    );
+    expect(after.status).toBe("open");
   });
 
   it("Y ORD-08 pelanggan memilih kredit voucher senilai item", async () => {
@@ -1047,7 +1104,8 @@ describeUntilBuilt("legend-cpq2", "Alur Y item gagal setelah dibayar", () => {
     const failing = order.items.find((item) => item.menuItemId === ids.roti)!;
     const reported = await staffCall(`/api/order-items/${failing.id}/issues`, {
       type: "unfulfillable",
-      reason: "Roti habis di dapur",
+      reason: "out_of_stock",
+      reasonNote: "Roti habis di dapur",
     });
     const issueId = reported.body.data.id as string;
 
@@ -1071,7 +1129,8 @@ describeUntilBuilt("legend-cpq2", "Alur Y item gagal setelah dibayar", () => {
     const failing = order.items.find((item) => item.menuItemId === ids.roti)!;
     const reported = await staffCall(`/api/order-items/${failing.id}/issues`, {
       type: "unfulfillable",
-      reason: "Roti habis di dapur",
+      reason: "out_of_stock",
+      reasonNote: "Roti habis di dapur",
     });
     const issueId = reported.body.data.id as string;
 
