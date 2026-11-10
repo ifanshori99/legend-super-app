@@ -86,6 +86,7 @@ export function deliveryErrorKey(error: unknown): MessageKey {
     case "DELIVERY_CHANNEL_CLOSED":
     case "DELIVERY_MAPPING_INCOMPLETE":
     case "DELIVERY_CHANNEL_UNKNOWN":
+    case "DELIVERY_SYNC_NOT_PENDING":
       return `deliveryOps.errors.${code}`;
     default:
       return "deliveryOps.errors.fallback";

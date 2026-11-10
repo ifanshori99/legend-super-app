@@ -25,7 +25,12 @@ import type {
   DeliveryOrderStatus,
 } from "@starter/shared/delivery";
 import type { MessageKey } from "@starter/shared/i18n";
-import { useDeliveryOrder, useUpdateOrderStatus } from "../hooks";
+import {
+  useDeliveryOrder,
+  useResendOrderSync,
+  useResolveOrderSync,
+  useUpdateOrderStatus,
+} from "../hooks";
 import {
   businessDateOf,
   deliveryErrorKey,
@@ -125,8 +130,167 @@ function LineList({ order }: { order: DeliveryChannelOrder }) {
   );
 }
 
+/**
+ * Founder Q58: two recovery buttons on a `needs_action` order. Resend is one
+ * request per press. Mark handled asks for an optional note first, because it
+ * clears the mark without the platform confirming anything. Both go through
+ * `mutateAsync`: a success clears the mark, the refetch unmounts this block,
+ * and a `mutate` callback would be dropped with it.
+ */
+function PlatformSyncActions({
+  outletId,
+  order,
+  platform,
+  disabled,
+}: {
+  outletId: string;
+  order: DeliveryChannelOrder;
+  platform: string;
+  disabled: boolean;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const resend = useResendOrderSync();
+  const resolve = useResolveOrderSync();
+  const [confirming, setConfirming] = React.useState(false);
+  const [note, setNote] = React.useState("");
+  const busy = resend.isPending || resolve.isPending;
+  const stillFailing =
+    resend.isSuccess && resend.data.platformSync === "needs_action";
+  const error = resend.error ?? resolve.error;
+
+  const onResend = async () => {
+    if (busy) return;
+    resolve.reset();
+    try {
+      const next = await resend.mutateAsync({
+        outletId,
+        deliveryOrderId: order.id,
+      });
+      if (next.platformSync === "ok")
+        toast({
+          title: t("deliveryOps.platformSync.resendSuccess", { platform }),
+          tone: "success",
+        });
+    } catch {
+      // Shown below from `resend.error`.
+    }
+  };
+
+  const onResolve = async () => {
+    if (busy) return;
+    resend.reset();
+    const reason = note.trim();
+    try {
+      await resolve.mutateAsync({
+        outletId,
+        deliveryOrderId: order.id,
+        body: reason === "" ? {} : { reason },
+      });
+      toast({
+        title: t("deliveryOps.platformSync.resolved"),
+        tone: "success",
+      });
+      setConfirming(false);
+      setNote("");
+    } catch {
+      // Shown below from `resolve.error`.
+    }
+  };
+
+  return (
+    <div
+      role="group"
+      aria-label={t("deliveryOps.platformSync.actionsLabel")}
+      className="grid gap-2 border-t border-warning/30 pt-3"
+    >
+      {confirming && (
+        <div className="grid gap-2 rounded-container border-(length:--border-w) bg-card p-card">
+          <FormField
+            label={t("deliveryOps.platformSync.resolveNoteLabel")}
+            hint={t("deliveryOps.platformSync.resolveNoteHint")}
+          >
+            <Textarea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder={t("deliveryOps.platformSync.resolveNotePlaceholder")}
+              rows={2}
+              maxLength={300}
+            />
+          </FormField>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false);
+                setNote("");
+                resolve.reset();
+              }}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              loading={resolve.isPending}
+              disabled={disabled || busy}
+              onClick={() => void onResolve()}
+            >
+              {t("deliveryOps.platformSync.resolveConfirm")}
+            </Button>
+          </div>
+        </div>
+      )}
+      {stillFailing && (
+        <p role="status" className="font-medium">
+          {t("deliveryOps.platformSync.resendStillFailing", { platform })}
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="font-medium text-danger">
+          {t(deliveryErrorKey(error))}
+        </p>
+      )}
+      {!confirming && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button
+            type="button"
+            loading={resend.isPending}
+            disabled={disabled || busy}
+            onClick={() => void onResend()}
+          >
+            {t("deliveryOps.platformSync.resend")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={disabled || busy}
+            onClick={() => {
+              resend.reset();
+              setConfirming(true);
+            }}
+          >
+            {t("deliveryOps.platformSync.resolve")}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Staff guidance for a platform sync that is not `ok` (legend-u37u3). */
-function PlatformSyncNote({ order }: { order: DeliveryChannelOrder }) {
+function PlatformSyncNote({
+  order,
+  outletId,
+  canAct,
+  online,
+}: {
+  order: DeliveryChannelOrder;
+  outletId: string;
+  canAct: boolean;
+  online: boolean;
+}) {
   const t = useT();
   if (order.platformSync === "ok") return null;
   const platform = t(platformKey(order.platform));
@@ -174,6 +338,14 @@ function PlatformSyncNote({ order }: { order: DeliveryChannelOrder }) {
       </ol>
       {final && (
         <p>{t("deliveryOps.platformSync.needsActionFinal", { platform })}</p>
+      )}
+      {canAct && (
+        <PlatformSyncActions
+          outletId={outletId}
+          order={order}
+          platform={platform}
+          disabled={!online}
+        />
       )}
     </div>
   );
@@ -331,7 +503,12 @@ function OrderDetailBody({
           )}
         </dl>
 
-        <PlatformSyncNote order={order} />
+        <PlatformSyncNote
+          order={order}
+          outletId={outletId}
+          canAct={canHandle}
+          online={online}
+        />
 
         {order.customerNote && (
           <div className="grid gap-1 rounded-container bg-surface-2 p-card">

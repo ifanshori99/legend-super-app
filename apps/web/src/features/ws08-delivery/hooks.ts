@@ -17,6 +17,7 @@ import type {
   DeliveryOrderStatus,
   DeliveryPlatform,
   DeliveryReconciliationQuery,
+  ResolveDeliveryOrderSyncInput,
   SetDeliveryChannelStateInput,
   UpdateDeliveryOrderStatusInput,
 } from "@starter/shared/delivery";
@@ -188,6 +189,39 @@ export function useUpdateOrderStatus() {
       body: UpdateDeliveryOrderStatusInput;
     }) =>
       api.updateOrderStatus(
+        {
+          outletId: input.outletId,
+          deliveryOrderId: input.deliveryOrderId,
+        },
+        input.body,
+      ),
+    onSettled: () => refresh(),
+  });
+}
+
+/** Q58: staff resend of a needs_action order. Resolves with the new order. */
+export function useResendOrderSync() {
+  const refresh = useInvalidate(ORDER_WRITES);
+  return useMutation({
+    mutationFn: (input: { outletId: string; deliveryOrderId: string }) =>
+      api.resendOrderSync({
+        outletId: input.outletId,
+        deliveryOrderId: input.deliveryOrderId,
+      }),
+    onSettled: () => refresh(),
+  });
+}
+
+/** Q58: staff marks a needs_action order as handled in the partner app. */
+export function useResolveOrderSync() {
+  const refresh = useInvalidate(ORDER_WRITES);
+  return useMutation({
+    mutationFn: (input: {
+      outletId: string;
+      deliveryOrderId: string;
+      body: ResolveDeliveryOrderSyncInput;
+    }) =>
+      api.resolveOrderSync(
         {
           outletId: input.outletId,
           deliveryOrderId: input.deliveryOrderId,

@@ -175,6 +175,18 @@ export const deliveryOpsMessages = {
       "Pesanan ini sudah ditutup di outlet, jadi tidak ada langkah status berikutnya. Tanda tetap tampil di layar ini meski status di {platform} sudah Anda samakan.",
     needsActionStep3:
       "Lanjutkan pesanan seperti biasa. Tanda ini hilang sendiri setelah {platform} menerima langkah status berikutnya.",
+    resend: "Kirim ulang",
+    resolve: "Tandai sudah ditangani",
+    resendSuccess: "Terkirim ke {platform}. Tanda belum sinkron dihapus.",
+    resendStillFailing:
+      "Kirim ulang belum berhasil: {platform} masih menolak. Cek aplikasi mitra, lalu tekan Tandai sudah ditangani.",
+    resolveNoteLabel: "Catatan (opsional)",
+    resolveNoteHint:
+      "Contoh: status sudah disamakan lewat aplikasi mitra. Tersimpan di catatan audit.",
+    resolveNotePlaceholder: "Tulis singkat bila perlu",
+    resolveConfirm: "Ya, sudah ditangani",
+    resolved: "Pesanan ditandai sudah ditangani.",
+    actionsLabel: "Tindakan untuk staf",
   },
   manual: {
     title: "Catat pesanan manual",

@@ -27,6 +27,8 @@ import {
   getDeliveryReconciliation,
   listDeliveryChannels,
   listDeliveryOrders,
+  resendDeliveryOrderSync,
+  resolveDeliveryOrderSync,
   setDeliveryChannelState,
   syncDeliveryChannelMenu,
   updateDeliveryOrderStatus,
@@ -45,7 +47,7 @@ import { registerMock } from "../../lib/mock/registry.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
-import { channelIsManual } from "./lib.ts";
+import { channelIsManual, orderIsFinal } from "./lib.ts";
 
 const fixtures = cafeLegendDeliveryFixtures;
 const outlet = cafeLegendFixtures.outlets[0];
@@ -346,6 +348,32 @@ registerMock(updateDeliveryOrderStatus, ({ params, body }) => {
     platformSync: "ok",
   });
   return { data: next };
+});
+
+// Q58 staff recovery of a needs_action order. The demo platform takes the
+// resend of an order that is still open and refuses one that is already
+// closed (a closed order has no next step to carry it), so both outcomes of
+// the real endpoint can be seen in mock mode.
+registerMock(resendDeliveryOrderSync, ({ params }) => {
+  requireOutlet(params.outletId);
+  const current = findOrder(params.deliveryOrderId);
+  if (current.platformSync !== "needs_action")
+    fail("DELIVERY_SYNC_NOT_PENDING");
+  const accepted = !orderIsFinal(current.status);
+  return {
+    data: saveOrder({
+      ...current,
+      platformSync: accepted ? "ok" : "needs_action",
+    }),
+  };
+});
+
+registerMock(resolveDeliveryOrderSync, ({ params }) => {
+  requireOutlet(params.outletId);
+  const current = findOrder(params.deliveryOrderId);
+  if (current.platformSync !== "needs_action")
+    fail("DELIVERY_SYNC_NOT_PENDING");
+  return { data: saveOrder({ ...current, platformSync: "ok" }) };
 });
 
 // ---- Commission reconciliation -------------------------------------------

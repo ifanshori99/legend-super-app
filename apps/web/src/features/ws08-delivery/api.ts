@@ -11,6 +11,8 @@ import {
   getDeliveryReconciliation as getDeliveryReconciliationEndpoint,
   listDeliveryChannels as listDeliveryChannelsEndpoint,
   listDeliveryOrders as listDeliveryOrdersEndpoint,
+  resendDeliveryOrderSync as resendDeliveryOrderSyncEndpoint,
+  resolveDeliveryOrderSync as resolveDeliveryOrderSyncEndpoint,
   setDeliveryChannelState as setDeliveryChannelStateEndpoint,
   syncDeliveryChannelMenu as syncDeliveryChannelMenuEndpoint,
   updateDeliveryOrderStatus as updateDeliveryOrderStatusEndpoint,
@@ -98,6 +100,33 @@ export const updateOrderStatus = async (
   (
     await callEndpoint(
       updateDeliveryOrderStatusEndpoint,
+      { params, body },
+      options,
+    )
+  ).data;
+
+/** Staff resend of the held step (Q58): one press, one request. */
+export const resendOrderSync = async (
+  params: Params<typeof resendDeliveryOrderSyncEndpoint>,
+  options?: CallOptions,
+) =>
+  (
+    await callEndpoint(
+      resendDeliveryOrderSyncEndpoint,
+      { params, body: {} },
+      options,
+    )
+  ).data;
+
+/** Staff marks the order handled in the partner app; the server audits it. */
+export const resolveOrderSync = async (
+  params: Params<typeof resolveDeliveryOrderSyncEndpoint>,
+  body: Body<typeof resolveDeliveryOrderSyncEndpoint>,
+  options?: CallOptions,
+) =>
+  (
+    await callEndpoint(
+      resolveDeliveryOrderSyncEndpoint,
       { params, body },
       options,
     )
