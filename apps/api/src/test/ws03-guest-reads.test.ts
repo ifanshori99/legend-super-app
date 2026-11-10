@@ -283,6 +283,50 @@ describe("guest suggestions (legend-cpq2)", () => {
     expect(closed.body.data).toEqual([]);
   });
 
+  it("does not count a free swap replacement line as popularity (legend-8igcm)", async () => {
+    // History so far: teh 2, roti 1; kopi 0. Three kopi lines that are free swap
+    // replacements must not lift kopi above teh.
+    for (let i = 0; i < 3; i += 1) await orderOnce(ids.kopi);
+    const lines = await owner.query<{
+      id: string;
+      order_id: string;
+    }>(
+      `SELECT id, order_id FROM order_items WHERE tenant_id = $1 AND menu_item_id = $2`,
+      [tenant.tenantId, ids.kopi],
+    );
+    expect(lines.rows.length).toBe(3);
+    await owner.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'Pelapor', $2)`,
+      [`gr-swap-${tenant.tenantId}`, `gr-swap-${tenant.tenantId}@example.test`],
+    );
+    for (const line of lines.rows) {
+      await owner.query(
+        "UPDATE order_items SET unit_price_idr = 0, line_total_idr = 0 WHERE id = $1",
+        [line.id],
+      );
+      // The issue's own line stands in for the swapped-out original.
+      await owner.query(
+        `INSERT INTO order_issues (tenant_id, outlet_id, order_id, order_item_id, type, reason,
+           reason_note, reported_by, resolution, replacement_item_id, replacement_order_item_id,
+           cost_idr, status, idempotency_key, resolved_at)
+         VALUES ($1, $2, $3, $4, 'unfulfillable', 'out_of_stock', 'Habis, ditukar', $5, 'swap',
+           $6, $4, 0, 'resolved', $7, now())`,
+        [
+          tenant.tenantId,
+          tenant.outletId,
+          line.order_id,
+          line.id,
+          `gr-swap-${tenant.tenantId}`,
+          ids.kopi,
+          `swap-${randomUUID()}`,
+        ],
+      );
+    }
+    const res = await as(await seat()).suggestions();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(idsOf(res.body)).toEqual([ids.teh, ids.roti, ids.kopi]);
+  });
+
   it("rejects a malformed menuItemId query", async () => {
     const guest = await seat();
     const res = await as(guest).suggestions("?menuItemId=not-a-uuid");

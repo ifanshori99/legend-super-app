@@ -68,6 +68,11 @@ import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { injectDeliveryOrder, voidQueuedKdsLines } from "./delivery-inject.ts";
 import {
+  evaluatePacingIfStale,
+  isLinePaused,
+  readPausedMenuLines,
+} from "./kds-pacing.service.ts";
+import {
   lockDeliveryOrder,
   toDeliveryChannelOrder,
   type DeliveryChannelOrderRow,
@@ -214,6 +219,8 @@ export async function createManualDeliveryOrder(
 ): Promise<DeliveryChannelOrder> {
   assertOutletInScope(context.outletScope, outletId);
   const request = input;
+  // KDS-05: refresh the pause rows before the transaction, never inside it.
+  await evaluatePacingIfStale(context, outletId, now);
   return withTenant(db, context, (tx) =>
     maybeIdempotent(
       tx,
@@ -239,7 +246,19 @@ export async function createManualDeliveryOrder(
           itemIds: input.lines.map((line) => line.menuItemId),
           now,
         });
+        const paused = await readPausedMenuLines(
+          tx,
+          context,
+          outletId,
+          input.platform,
+          now,
+        );
         const lines: DeliveryOrderLine[] = input.lines.map((line, index) => {
+          if (isLinePaused(paused, line.menuItemId, line.variantId ?? null))
+            throw new CoreError(
+              "CONFLICT",
+              `KDS-05: menu baris ${index + 1} sedang dijeda untuk ${input.platform}`,
+            );
           const item = catalogue.get(line.menuItemId);
           const resolution = resolveLine(item, {
             menuItemId: line.menuItemId,

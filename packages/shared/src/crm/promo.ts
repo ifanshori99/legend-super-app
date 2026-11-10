@@ -946,9 +946,16 @@ export type PromotionRoi = z.infer<typeof promotionRoiSchema>;
 
 // ---- Vouchers -------------------------------------------------------------
 
-/** Customer-typed code: normalized to uppercase before hashing. */
+/**
+ * Customer-typed code: normalized to uppercase and stripped of hyphens before
+ * hashing, so the grouped display form of an apology voucher (LEG-AB12-CD34)
+ * redeems like the stored hyphen-less code (legend-4qu).
+ */
 export const voucherCodeInputSchema = z.preprocess(
-  (value) => (typeof value === "string" ? value.trim().toUpperCase() : value),
+  (value) =>
+    typeof value === "string"
+      ? value.trim().toUpperCase().replaceAll("-", "")
+      : value,
   z.string().regex(/^[A-Z0-9]{6,32}$/, "Voucher codes use 6-32 letters/digits"),
 );
 export type VoucherCode = z.infer<typeof voucherCodeInputSchema>;

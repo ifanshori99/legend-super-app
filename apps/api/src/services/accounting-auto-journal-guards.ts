@@ -75,6 +75,11 @@ export type Backing =
   | { kind: "sale"; orderId: string }
   /** legend-hxpd5: the order.refunded journal of a POS refund (pos_order_refunds.id). */
   | { kind: "posRefund"; refundId: string }
+  /**
+   * legend-94q2l: the order.refunded journal of a QR refund opened from a failed
+   * order item (ORD-09). refundId is the order_issues.id (the event's refundId).
+   */
+  | { kind: "qrRefund"; refundId: string }
   /** legend-x1i1h: the order.voided journal of a completed-sale void (orders ULID). */
   | { kind: "void"; orderId: string };
 
@@ -90,6 +95,7 @@ export function backingKeyOf(backing: Backing): string {
     case "sale":
       return boundedKey(`aj:sale:${backing.orderId}`);
     case "posRefund":
+    case "qrRefund":
       return boundedKey(`aj:order-refund:${backing.refundId}`);
     case "void":
       return boundedKey(`aj:sale-void:${backing.orderId}`);
@@ -145,7 +151,8 @@ export async function backingStatesOf(
     else {
       reversibleKeys.add(backingKeyOf(backing));
       if (backing.kind === "sale") orderIds.add(backing.orderId);
-      else if (backing.kind === "posRefund") posRefundIds.add(backing.refundId);
+      else if (backing.kind === "posRefund" || backing.kind === "qrRefund")
+        posRefundIds.add(backing.refundId);
       else voidOrderIds.add(backing.orderId);
     }
   }
@@ -782,10 +789,82 @@ async function intentBackedAt(
     - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
       WHERE f.tenant_id = ${tenantId} AND f.payment_intent_id = ${id})`;
   const due = sql`(${orders.totalIdr} - ${orders.depositAppliedIdr})`;
+  const qrSaleScope = and(
+    eq(orders.tenantId, tenantId),
+    sql`(${orders.paymentIntentId} = ${intentId}::uuid
+      OR ${orders.paymentLinkId} = (SELECT pi.payment_link_id FROM payment_intents pi
+        WHERE pi.tenant_id = ${tenantId} AND pi.id = ${intentId}::uuid))`,
+    eq(orders.channel, "qr"),
+    eq(orders.paymentMode, "pay_first"),
+    sql`NOT EXISTS (SELECT 1 FROM pos_orders sp
+      WHERE sp.tenant_id = ${orders.tenantId} AND sp.order_id = ${orders.id})`,
+    salesAt(bound),
+  );
+  // legend-94q2l: a refund opened from a failed order item (ORD-09) gave part of
+  // a QR sale back (order.refunded credits it to customer_deposit). Like a POS
+  // refund, it releases the sale only once the journal of its issue posted: one
+  // that can still post makes the check wait (backingPending), one that never
+  // posts (or finance reversed) releases nothing (fail closed). Per issue the
+  // largest amount counts, whatever the refund status (as qrSaleInUseOfIntent).
+  // Judged at the bound like a POS refund (posRefundsAt): an issue whose first
+  // refund was opened after the bound releases nothing, and its journal
+  // does not make the check wait.
+  const issueOpenedAt = (issueId: SQL) => {
+    const openedAt = sql`(SELECT min(ia.created_at) FROM payment_refunds ia
+      WHERE ia.tenant_id = ${tenantId} AND ia.order_issue_id = ${issueId})`;
+    return bound.kind === "refund"
+      ? sql`${openedAt} <= ${timeOf(bound)}`
+      : sql`${openedAt} < ${timeOf(bound)}`;
+  };
+  const issueCandidates = (
+    await tx
+      .selectDistinct({
+        issueId: sql<string>`order_issues.id::text`,
+      })
+      .from(orders)
+      .innerJoin(
+        sql`order_issues`,
+        sql`order_issues.tenant_id = ${orders.tenantId} AND order_issues.order_id = ${orders.id}`,
+      )
+      .where(
+        and(
+          qrSaleScope,
+          sql`EXISTS (SELECT 1 FROM payment_refunds ir
+            WHERE ir.tenant_id = ${tenantId} AND ir.order_issue_id = order_issues.id)`,
+          issueOpenedAt(sql`order_issues.id`),
+        ),
+      )
+  ).map((row) => row.issueId);
+  const issueStates = await backingStatesOf(
+    tx,
+    tenantId,
+    issueCandidates.map((refundId) => ({ kind: "qrRefund", refundId })),
+  );
+  const issueStateOf = (id: string) =>
+    issueStates.get(backingKeyOf({ kind: "qrRefund", refundId: id })) ?? "none";
+  const issuesPosted = issueCandidates.filter(
+    (id) => issueStateOf(id) === "posted",
+  );
+  const qrRefundPending = issueCandidates.some(
+    (id) => issueStateOf(id) === "pending",
+  );
+  const releasedOf =
+    issuesPosted.length === 0
+      ? sql`0`
+      : sql`(SELECT coalesce(sum(m.amount), 0) FROM (
+          SELECT max(ir.amount_idr) AS amount FROM payment_refunds ir
+            JOIN order_issues oi ON oi.tenant_id = ir.tenant_id AND oi.id = ir.order_issue_id
+            WHERE ir.tenant_id = ${tenantId} AND oi.order_id = ${orders.id}
+              AND ${issueOpenedAt(sql`oi.id`)}
+              AND oi.id IN (${sql.join(
+                issuesPosted.map((id) => sql`${id}::uuid`),
+                sql`, `,
+              )})
+            GROUP BY ir.order_issue_id) m)`;
   const qrSales = await sumOf(
     tx
       .select({
-        total: sql<string>`coalesce(sum(
+        total: sql<string>`coalesce(sum(greatest(
           CASE WHEN ${orders.paymentIntentId} = ${intentId}::uuid
                 AND NOT EXISTS (
                   SELECT 1 FROM payment_intents other
@@ -796,22 +875,10 @@ async function intentBackedAt(
                     AND ${evidenceOf(sql`other.id`)} > 0)
             THEN ${due}
             ELSE least(${due}, greatest(${evidenceOf(sql`${intentId}::uuid`)}, 0))
-          END), 0)::text`,
+          END - ${releasedOf}, 0)), 0)::text`,
       })
       .from(orders)
-      .where(
-        and(
-          eq(orders.tenantId, tenantId),
-          sql`(${orders.paymentIntentId} = ${intentId}::uuid
-            OR ${orders.paymentLinkId} = (SELECT pi.payment_link_id FROM payment_intents pi
-              WHERE pi.tenant_id = ${tenantId} AND pi.id = ${intentId}::uuid))`,
-          eq(orders.channel, "qr"),
-          eq(orders.paymentMode, "pay_first"),
-          sql`NOT EXISTS (SELECT 1 FROM pos_orders sp
-            WHERE sp.tenant_id = ${orders.tenantId} AND sp.order_id = ${orders.id})`,
-          salesAt(bound),
-        ),
-      ),
+      .where(qrSaleScope),
   );
   const forfeits = await sumOf(
     tx
@@ -851,7 +918,7 @@ async function intentBackedAt(
   );
   return {
     backedIdr: tenders + qrSales + forfeits + payouts,
-    backingPending: posRefundPending || voidPending,
+    backingPending: posRefundPending || voidPending || qrRefundPending,
   };
 }
 

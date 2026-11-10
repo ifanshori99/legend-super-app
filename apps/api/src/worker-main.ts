@@ -44,11 +44,19 @@ import {
 
 import { deliverPayrollGlEvent } from "./services/payroll-gl-consumer.ts";
 // legend-111j
+import { deliverFacilityEntitlementEvent } from "./services/facility-entitlement-consumer.ts";
 import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
+import { deliverWifiQuotaEvent } from "./services/wifi-quota-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
+import { runSegmentMaterializeSweep } from "./worker/segment-materialize.job.ts"; // legend-ts50
+// legend-3zd1
+import { runLoyaltyTierSweep } from "./worker/loyalty-tier.job.ts";
+import { runLoyaltyExpirySweep } from "./worker/loyalty-expiry.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+import { deliverOrderRecoveryRefundEvent } from "./services/order-recovery-refund.ts";
+import { deliverSwapKitchenEvent } from "./services/order-recovery-swap-kitchen.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
 import { sweepInactiveOpenBillSessions } from "./services/open-bill-control.service.ts";
 import {
@@ -57,6 +65,8 @@ import {
 } from "./services/delivery-sync-consumer.ts";
 import { deliverRecipeDeductionEvent } from "./services/recipe-deduction.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { setAuditWriter } from "./services/audit-writer";
+import { coreAuditWriter } from "./services/core-audit-writer";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
@@ -67,6 +77,7 @@ import {
 import { handleAiActionApprovalResolved } from "./services/ai-action-request.service.ts";
 import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
 import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
+import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleProfitShareApprovalResolved } from "./services/profit-share-approval-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
@@ -103,11 +114,18 @@ import { runMetricsDailyJob } from "./worker/metrics-daily.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
-import { setPaymentGateway } from "./services/payment-gateway.ts";
-import { setPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
+import { createDuitkuGateway } from "./services/payment-duitku.ts";
+import { registerPaymentGateway } from "./services/payment-gateway.ts";
+import { registerPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
 import { env } from "./config/env";
+import {
+  consoleLikeLog,
+  createStorageRuntimeFromEnv,
+} from "./services/core-storage-runtime.ts";
+import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-purge.job.ts";
+import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sweep.job.ts";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -142,14 +160,29 @@ const maintenanceUrl = resolveMaintenanceDatabaseUrl({
 setReservationDepositPort(createPaymentReservationDepositPort());
 // INV-02 (legend-db6): recipe source for the stock deduction consumer.
 setInventoryRecipeSource(recipeBomSource);
+// legend-arj.6: the sensitive-write audit port (role-assignment end inside
+// exit clearance) fails closed with a 503 until a writer is installed, as in
+// app.ts. The worker never had one.
+setAuditWriter(coreAuditWriter);
 // PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
 // pending intents whose webhook never arrived. The refund payout sweep
 // (sweepApprovedRefundPayouts) sends approved refunds and polls pending ones
 // through the same adapter (PaymentRefundPort, legend-0ogy), only while
 // DOIT_REFUNDS_ENABLED is on; otherwise the refund port stays fail-closed.
 const doitGateway = createDoitGateway();
-setPaymentGateway(doitGateway);
-if (env.DOIT_REFUNDS_ENABLED) setPaymentRefundGateway(doitGateway);
+registerPaymentGateway(doitGateway);
+if (env.DOIT_REFUNDS_ENABLED) registerPaymentRefundGateway(doitGateway);
+// Sub-302 D3: Duitku joins the registry when its public callback origin and
+// return page are configured; without them no Duitku intent could be paid,
+// so the provider stays unregistered (fail closed, cannot be enabled on the
+// platform). Duitku has no refund API: no refund port (D6).
+if (env.DUITKU_CALLBACK_BASE_URL && env.DUITKU_RETURN_URL)
+  registerPaymentGateway(
+    createDuitkuGateway({
+      callbackBaseUrl: env.DUITKU_CALLBACK_BASE_URL,
+      returnUrl: env.DUITKU_RETURN_URL,
+    }),
+  );
 const registry = new Pool({
   connectionString: workerUrl,
   max: 1,
@@ -210,6 +243,13 @@ const runtime = createWorkerRuntime({
           // expired/failed QR payment re-offers a code or voids the order.
           // Each consumer re-reads its locked rows, so a replay is a no-op.
           await deliverOrderPaymentEvent(context, event, tx);
+          // legend-zm1e6: a resolved swap issue becomes a replacement order
+          // line, the old line is voided and the new one routed to its KDS
+          // station. Idempotent (issue row lock), no extra charge, not gated.
+          await deliverSwapKitchenEvent(context, event, tx);
+          // legend-94q2l: an approved manual refund of a failed item opens its
+          // payment refund request (not paid out; WS-05 approves). Idempotent.
+          await deliverOrderRecoveryRefundEvent(context, event, tx);
           // PRD §3.19 Jurnal Otomatis (legend-9pz9, legend-o9q9), cloud only:
           // sales, refunds, gateway receipts and payouts post their journal in
           // a savepoint; expected accounting failures park for the sweep and
@@ -221,6 +261,15 @@ const runtime = createWorkerRuntime({
           // reverses them, in a savepoint under the profile lock.
           if (postsInventoryGl)
             await deliverLoyaltyEarnEvent(context, event, tx);
+          // legend-fjk5 (WS-09 F25), cloud only: a paid order issues package
+          // and min-spend facility entitlements, a refund cancels what is
+          // left of them (savepoint, replay is a no-op).
+          if (postsInventoryGl)
+            await deliverFacilityEntitlementEvent(context, event, tx);
+          // legend-kmd3 (WS-09 Wi-Fi quota), cloud only: paid money and
+          // refunds of a member's order move the daily Wi-Fi quota of the
+          // account (ledger row + recompute of its open sessions) in a savepoint.
+          if (postsInventoryGl) await deliverWifiQuotaEvent(context, event, tx);
           // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
           // or sale posts its GL journal in a savepoint; a closed period or a
           // missing mapping parks the source for the sweep, never fails this.
@@ -309,6 +358,14 @@ const relay = createRelayRuntime({
       await runScheduledLeaveJobs(context);
     } catch {
       console.error("Scheduled leave jobs failed");
+    }
+    // legend-arj.6: exit clearance for offboardings past their last working
+    // day, as the system actor. Same fail-closed rule: a failed employee leaves
+    // no day marker, so the next tick retries; never blocks the relay.
+    try {
+      await runScheduledExitClearance(context);
+    } catch {
+      console.error("Scheduled exit clearance failed");
     }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
@@ -509,6 +566,25 @@ const relay = createRelayRuntime({
       } catch {
         console.error("Redemption expiry sweep failed");
       }
+      // legend-ts50: rebuild saved segment members once per tenant per day.
+      try {
+        await runSegmentMaterializeSweep(context, new Date());
+      } catch {
+        console.error("Segment materialize sweep failed");
+      }
+      // legend-3zd1: nightly tier evaluation first (the birthday bonus reads the
+      // tier), then expire due points + birthday bonus, once per tenant per day.
+      // Never blocks the relay.
+      try {
+        await runLoyaltyTierSweep(context, new Date());
+      } catch {
+        console.error("Loyalty tier sweep failed");
+      }
+      try {
+        await runLoyaltyExpirySweep(context, new Date());
+      } catch {
+        console.error("Loyalty expiry sweep failed");
+      }
     }
     // PRD §3 F11 e-receipt (legend-v3vo): send queued receipt emails. The
     // sealed address is opened only inside the job; nothing is logged here.
@@ -663,6 +739,31 @@ try {
     await probeMaintenanceConnection(maintenancePool);
     await registerAuditRetentionJob({ boss, pool: maintenancePool });
   }
+  // legend-dzh9q: the selfie purge deletes objects, so it needs the object
+  // storage. Without STORAGE_* the worker still starts, with the job off.
+  const storageRuntime = createStorageRuntimeFromEnv(
+    process.env,
+    db,
+    consoleLikeLog(logger),
+  );
+  if (storageRuntime) {
+    await registerAttendanceSelfiePurgeJob({
+      boss,
+      storage: storageRuntime.storage,
+      database: db,
+      log: consoleLikeLog(logger),
+    });
+    // legend-0wvoz: the orphan sweep of received edge selfies deletes objects too.
+    await registerEdgeSelfieOrphanSweepJob({
+      boss,
+      storage: storageRuntime.storage,
+      database: db,
+      log: consoleLikeLog(logger),
+    });
+  } else
+    logger.warn(
+      "Object storage is not configured (STORAGE_*): attendance selfie purge and edge selfie orphan sweep jobs not registered.",
+    );
   await relay.start();
   if (sweepsRefunds) {
     scheduleRefundPayoutRound();

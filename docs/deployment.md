@@ -115,6 +115,19 @@ TRUST_PROXY=2
 # TRUSTED_ORIGINS=https://admin.example.com
 # Optional direct connection when DATABASE_URL uses a pooler:
 # MIGRATION_DATABASE_URL=postgresql://user:password@direct-host:5432/app
+# Optional: member sign-in email over SMTP (legend-k2l). SMTP_HOST, SMTP_USER,
+# SMTP_PASS and EMAIL_FROM together or none; none = email sign-in answers 503.
+# Port 465 uses implicit TLS (SMTP_SECURE=true); SMTP_SECURE=false requires STARTTLS.
+# SMTP_HOST=smtp.example.com
+# SMTP_PORT=465
+# SMTP_SECURE=true
+# SMTP_USER=replace_me
+# SMTP_PASS=replace_me
+# EMAIL_FROM=masuk@example.com
+# Optional: member Google sign-in (legend-k2l). Both or neither; neither = off.
+# Redirect URI: <BETTER_AUTH_URL>/api/auth/callback/google
+# GOOGLE_CLIENT_ID=replace_me
+# GOOGLE_CLIENT_SECRET=replace_me
 ```
 
 **Web**:
@@ -249,6 +262,54 @@ The cloud sends staff PIN changes to each outlet's edge in commit order, using `
    - Keep its database for audit.
    - Enroll a new node, or rebuild the edge from empty so it gets a new instance.
    - Reconcile by hand any events that exist only on the restored database, from its outbound queue.
+
+## Staff PIN pepper on edge nodes (legend-ideif)
+
+The root `STAFF_PIN_PEPPER` lives only on the cloud. An edge node never holds it: the API refuses to start with `EDGE_MODE=true` and `STAFF_PIN_PEPPER` set (the log names the key, never the value). The cloud derives one pepper per tenant and pepper version (HKDF) and sends an edge only its own tenant's peppers, inside the staff PIN sync (`GET /api/edge-sync/staff-pin-records?peppers=<highest version held>`, TLS, `Cache-Control: private, no-store`). The edge seals them (AES-256-GCM, key derived from the node credential) in its table `edge_staff_pin_peppers` (migration `0225`). A stolen edge box therefore weakens one tenant, never the others.
+
+1. **Release order.** Cloud first (it must know the `peppers` query), then the edges. An edge on this release against an older cloud gets HTTP 400 for `peppers`, falls back to the older query, and never receives a pepper, so it cannot verify PINs. Check the cloud version before you touch an edge.
+2. **Upgrade an installed edge.** Do this with the outlet online:
+   - Deploy the cloud, then run migration `0225` on the edge database.
+   - Remove `STAFF_PIN_PEPPER` from the edge environment (secret store, compose file, systemd unit) and restart the edge. With the variable still set, the edge refuses to start.
+   - Within one sync interval the edge logs `Edge staff pin peppers updated`. Until then PIN checks on the edge fail closed (the PIN is refused, no attempt is counted against the staff member). Do not take the outlet offline in that window.
+3. **Rotate the pepper.** Set `STAFF_PIN_PEPPER_CURRENT_VERSION` on the cloud to the next number (for example `2`) and restart the cloud. Never lower it: an edge that already holds the higher version keeps hashing new PINs under it, and the cloud drops those PINs. Do NOT change `STAFF_PIN_PEPPER` for a routine rotation. Each edge fetches the new tenant pepper on its next sync; until then it still hashes new PINs under the old version, which stay valid. PINs hashed under an older version keep verifying, on the cloud and on every edge, until the owner sets a new PIN; a new PIN is hashed under the current version.
+   - **Suspected edge theft.** First revoke that node's credential (an edge with a valid credential fetches every new pepper on its next sync). Then rotate the version, and have that outlet's staff set new PINs.
+   - **Leak of the root.** Replace `STAFF_PIN_PEPPER` AND raise `STAFF_PIN_PEPPER_CURRENT_VERSION` in the same release. Every PIN then needs a reset. An edge keeps the peppers it already holds (derived from the old root) for the old versions, so a root replacement without a version bump leaves edges on stale peppers.
+4. **Credential rotation.** The seal key comes from the node credential. After you issue a new credential, the edge cannot open its stored peppers, treats them as missing, and fetches them again on the next sync (online).
+5. **Never** copy the root pepper to an edge to "fix" a verification problem, and never log or paste the `peppers` of a sync response.
+
+## Attendance selfie seal key (legend-0wvoz, founder decision Q88)
+
+An edge node seals each attendance selfie to a cloud public key (format `LSS1`, `docs/design/hris-edge-replication.md` section 5) and uploads it with `PUT /api/edge-sync/attendance-selfies/:objectId`. Only the cloud can open it, with the private key. Lose the private key and every selfie still waiting on an edge disk is unreadable. The key is a production secret with a founder backup.
+
+Environment (cloud API only, never on an edge):
+
+- `ATTENDANCE_SELFIE_SEAL_KEYS`: JSON `{"<kid>": "<PKCS#8 PEM>"}`, 3072-bit RSA. One entry per key still in use.
+- `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID`: the kid whose public half edges seal to.
+- Without the keys the endpoint answers 503 `SELFIE_SEAL_KEY_MISSING`; the edge keeps the file and retries.
+
+Create the first key (on a trusted machine, not in the repo, not in chat):
+
+1. `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out seal-k1.pem` (PKCS#8 PEM).
+2. Public half for the edge snapshot: `openssl pkey -in seal-k1.pem -pubout -out seal-k1.pub.pem`.
+3. Build the JSON value without printing it, for example `node -e 'process.stdout.write(JSON.stringify({k1: require("fs").readFileSync("seal-k1.pem","utf8")}))'`, and put it straight into the production secret store under `ATTENDANCE_SELFIE_SEAL_KEYS`. Set `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID=k1`.
+4. Founder backup: store `seal-k1.pem` as a secure note or document in the founder's 1Password vault, named `legend attendance selfie seal key k1`. The CTO asks for the value with `ghostex secret request`; nobody pastes it in chat.
+5. Delete the local `seal-k1.pem` after both stores are confirmed. Restore test: decrypt one sealed test file with the backup copy before the first real edge goes live.
+
+Rotation: add a new kid to `ATTENDANCE_SELFIE_SEAL_KEYS`, switch `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID`, and keep the old private key for 90 days after the switch (an edge cut off from the cloud keeps sealing with the old kid until its next snapshot). Retire the old key on that date, in both stores. An emergency retirement (key leaked) knowingly loses the backlog sealed with the old kid.
+
+Release order: cloud first (this endpoint and the `attendance.logged` v2 applier), then the edges. Cloud orphan sweep: a received selfie that no attendance log references after 14 days is deleted from storage (the receipt stays).
+
+## Edge host (outlet) (legend-svy91)
+
+Ringkasan untuk host edge di outlet. Langkah lengkap ada di `deploy/edge/README.md`, dan respons jika edge hilang atau dicuri ada di `docs/runbooks/edge-hilang-dicuri.md`.
+
+- **Volume selfie.** Selfie yang menunggu upload disimpan di `EDGE_SELFIE_DIR` (default `/var/lib/legend/edge-selfies`, volume Docker). Direktori tenant dibuat dengan mode 0700 dan file `.lss` dengan mode 0600. Batas `EDGE_SELFIE_MAX_BYTES` (default 2 GiB). Di atas batas itu edge menjawab 507 `EDGE_SELFIE_STORAGE_FULL`.
+- **NTP wajib.** Jam edge dan jam HP harus berada dalam satu jendela QR 30 detik, jadi edge memakai chrony (lihat `deploy/edge/chrony.conf.example`).
+- **HTTPS wajib untuk perangkat outlet.** Kamera butuh secure context. Origin edge di perangkat outlet memakai HTTPS dengan sertifikat dari CA internal yang dipercaya perangkat (lihat `deploy/edge/Caddyfile.edge.example`).
+- **Enkripsi disk penuh (FDE) dengan unlock TPM** pada mini PC edge sebagai lapisan tambahan. Wajib jika enkripsi selfie cadangan dengan AES dipakai.
+- **Kunci publik seal datang lewat snapshot.** Edge menyegel selfie dengan kunci publik cloud dari snapshot data orang (`edge_people_sync_state.selfie_seal_public_key`, `selfie_seal_kid`). Tidak ada kunci yang disalin manual ke disk edge.
+- **Edge tidak pernah memegang kunci privat.** `ATTENDANCE_SELFIE_SEAL_KEYS` dan `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID` hanya ada di cloud. Prosedur kunci produksi ada di section "Attendance selfie seal key" di atas, jangan diduplikasi.
 
 ## Support read_write owner approval release (legend-c9kbk)
 

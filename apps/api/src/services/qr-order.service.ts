@@ -126,6 +126,10 @@ import {
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { zoneOrderingOpen } from "./guest-menu.service.ts";
+import {
+  evaluatePacingIfStale,
+  readPausedMenuLines,
+} from "./kds-pacing.service.ts";
 import { routeFiredItemsToKitchen } from "./kds.service.ts";
 import {
   releaseMenuItemDailyLimit,
@@ -301,6 +305,40 @@ async function guestSession(
     throw unauthorized("ORD-04: sesi meja sudah ditutup; pindai QR meja lagi.");
   assertOutletInScope(context.outletScope, row.outletId);
   return row;
+}
+
+/**
+ * Refresh stale auto-pause state BEFORE the order transaction opens, so the
+ * in-tx `readPausedMenuLines` stays a plain read. The session's outlet is only
+ * known from the session row, so a short read-only tx resolves it first. Never
+ * throws: a bad credential or session surfaces from the real transaction.
+ */
+async function refreshPacingForSession(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  if (credential.length < 20 || credential.length > 256) return;
+  let outletId: string | undefined;
+  try {
+    const [found] = await withTenant(db, context, (tx) =>
+      tx
+        .select({ id: tableSessions.id, outletId: tableSessions.outletId })
+        .from(tableSessions)
+        .where(
+          and(
+            eq(tableSessions.tenantId, context.tenant.tenantId),
+            eq(tableSessions.sessionTokenHash, sha256(credential)),
+          ),
+        ),
+    );
+    if (found?.id === sessionId) outletId = found.outletId;
+  } catch {
+    return;
+  }
+  if (outletId === undefined) return;
+  await evaluatePacingIfStale(context, outletId as OutletId, now);
 }
 
 async function loadOutlet(
@@ -848,10 +886,18 @@ async function priceCartLines(
     itemIds: lines.map((line) => line.menuItemId),
     now,
   });
+  const paused = await readPausedMenuLines(
+    tx,
+    context,
+    outlet.id as OutletId,
+    QR_PRICE_CHANNEL,
+    now,
+  );
   const result: PricedCart = { sellable: [], removed: [], priceChanges: [] };
   for (const row of lines) {
     const item = catalogue.get(row.menuItemId);
     const resolution = resolveLine(item, {
+      paused,
       menuItemId: row.menuItemId,
       variantId: row.variantId,
       quantity: row.quantity,
@@ -1073,6 +1119,7 @@ export async function getTableSessionView(
   sessionId: string,
   now = new Date(),
 ): Promise<TableSessionView> {
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1166,6 +1213,7 @@ export async function addCartLine(
   now = new Date(),
 ): Promise<CartMutationResult> {
   const parsed = addCartLineInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1200,7 +1248,15 @@ export async function addCartLine(
           itemIds: [parsed.menuItemId],
           now,
         });
+        const paused = await readPausedMenuLines(
+          tx,
+          context,
+          outlet.id as OutletId,
+          QR_PRICE_CHANNEL,
+          now,
+        );
         const resolution = resolveLine(catalogue.get(parsed.menuItemId), {
+          paused,
           menuItemId: parsed.menuItemId,
           variantId: parsed.variantId ?? null,
           quantity: parsed.quantity,
@@ -1260,6 +1316,7 @@ export async function updateCartLine(
   now = new Date(),
 ): Promise<CartMutationResult> {
   const parsed = updateCartLineInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1307,7 +1364,15 @@ export async function updateCartLine(
             itemIds: [current.menuItemId],
             now,
           });
+          const paused = await readPausedMenuLines(
+            tx,
+            context,
+            outlet.id as OutletId,
+            QR_PRICE_CHANNEL,
+            now,
+          );
           const resolution = resolveLine(catalogue.get(current.menuItemId), {
+            paused,
             menuItemId: current.menuItemId,
             variantId: current.variantId,
             quantity,
@@ -1436,6 +1501,7 @@ export async function quoteTableSession(
   now = new Date(),
 ): Promise<OrderQuote> {
   const parsed = quoteInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   return withTenant(db, context, async (tx) => {
     const session = await guestSession(
       tx,
@@ -1614,6 +1680,7 @@ export async function placeQrOrder(
   memberUserId: string | null = null,
 ): Promise<PlaceOrderResult> {
   const parsed = placeOrderInputSchema.parse(input);
+  await refreshPacingForSession(context, credential, sessionId, now);
   const outcome = await withTenant(
     db,
     context,
@@ -2359,6 +2426,51 @@ export async function voidUnpaidQrOrderTx(
   );
   const items = await orderItemsOf(tx, context, [order.id]);
   return orderDto(voided, items.get(order.id) ?? []);
+}
+
+// ---- Shared with order-recovery.service.ts -------------------------------------------------------
+
+/** A menu item a guest can be moved to: plain price, no variant or required choice. */
+export type OutletMenuPrice = {
+  menuItemId: string;
+  name: string;
+  unitPriceIdr: number;
+};
+
+/**
+ * Current dine-in price of `menuItemIds` at one outlet, through the same
+ * catalogue the cart uses (ORD-05). Only items a single tap can order come
+ * back: sellable, no variants and no required modifier group. Anything else
+ * is missing from the map.
+ */
+export async function priceMenuItemForOutlet(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  menuItemIds: readonly string[],
+  now: Date,
+): Promise<Map<string, OutletMenuPrice>> {
+  const outlet = await loadOutlet(tx, context, outletId);
+  const catalogue = await loadCatalogue(tx, context, {
+    brandId: outlet.brandId,
+    outletId: outlet.id as OutletId,
+    timeZone: outlet.timezone,
+    businessDate: businessDateFor(outlet, now),
+    itemIds: menuItemIds,
+    now,
+  });
+  const priced = new Map<string, OutletMenuPrice>();
+  for (const [menuItemId, item] of catalogue) {
+    if (!item.sellable || item.plainPriceIdr === null) continue;
+    if (item.variants.size > 0) continue;
+    if (item.groups.some((group) => group.minSelect > 0)) continue;
+    priced.set(menuItemId, {
+      menuItemId,
+      name: item.name,
+      unitPriceIdr: item.plainPriceIdr,
+    });
+  }
+  return priced;
 }
 
 // ---- Shared with qr-order-payment.ts ------------------------------------------------------------

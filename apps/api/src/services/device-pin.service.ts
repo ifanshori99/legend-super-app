@@ -55,7 +55,10 @@ import {
   verifyStaffPinHash,
   type StaffPinBinding,
 } from "./device-pin-hash";
-import { STAFF_PIN_PEPPER_VERSION, staffPinPepper } from "./device-pin-pepper";
+import {
+  currentStaffPinPepperVersion,
+  staffPinPepperOrNull,
+} from "./device-pin-pepper";
 import {
   appendDevicePinEvent,
   isOutletMember,
@@ -182,8 +185,17 @@ export async function setStaffPin(
     outletId,
     userId,
   };
+  // legend-ideif: one generation for the hash and the stored version. An edge
+  // that was never sent a pepper has no generation yet: fail closed.
+  const pepperVersion = currentStaffPinPepperVersion();
+  const pepperForSet = staffPinPepperOrNull(tenant.tenantId, pepperVersion);
+  if (pepperForSet === null)
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "PIN belum bisa diatur: node edge belum menerima kunci PIN dari cloud.",
+    );
   const hashed = await hashStaffPin({
-    pepper: staffPinPepper(tenant.tenantId),
+    pepper: pepperForSet,
     binding,
     pin: input.pin,
   });
@@ -235,7 +247,7 @@ export async function setStaffPin(
       kdfN: hashed.params.N,
       kdfR: hashed.params.r,
       kdfP: hashed.params.p,
-      pepperVersion: STAFF_PIN_PEPPER_VERSION,
+      pepperVersion,
       failedAttempts: 0,
       lockedUntil: null,
       setBy: actorId,
@@ -318,7 +330,7 @@ export async function setStaffPin(
           salt: hashed.salt,
           pinHash: hashed.pinHash,
           params: hashed.params,
-          pepperVersion: STAFF_PIN_PEPPER_VERSION,
+          pepperVersion,
           setAt: row.pinGenerationAt.toISOString(),
         }
       : undefined;
@@ -388,7 +400,10 @@ export async function attemptStaffPin(
   const now = input.now ?? new Date();
   const outletId = outletIdSchema.parse(input.outletId);
   const parsedUser = userIdSchema.safeParse(input.userId);
-  const pepper = staffPinPepper(tenant.tenantId);
+  // The burn pepper only equalises timing; an edge without a pepper uses zeros.
+  const pepper =
+    staffPinPepperOrNull(tenant.tenantId, currentStaffPinPepperVersion()) ??
+    Buffer.alloc(32);
   if (!parsedUser.success) {
     await burnStaffPinCheck(pepper);
     return { kind: "invalid" };
@@ -407,7 +422,13 @@ export async function attemptStaffPin(
         ),
       )
       .for("update");
-    if (!row || row.pepperVersion !== STAFF_PIN_PEPPER_VERSION) {
+    // legend-ideif: a row hashed under an older generation still verifies
+    // with that generation's pepper (until its owner sets a new pin); a
+    // generation this process holds no pepper for fails closed.
+    const rowPepper = row
+      ? staffPinPepperOrNull(tenant.tenantId, row.pepperVersion)
+      : null;
+    if (!row || rowPepper === null) {
       await burnStaffPinCheck(pepper);
       return { kind: "invalid" };
     }
@@ -418,7 +439,7 @@ export async function attemptStaffPin(
     // §3 F6: a locked pin is refused without looking at the guess.
     if (isStaffPinLocked(state, now)) return { kind: "locked" };
     const correct = await verifyStaffPinHash({
-      pepper,
+      pepper: rowPepper,
       binding: bindingOf(row),
       pin: input.pin,
       stored: storedHashOf(row),

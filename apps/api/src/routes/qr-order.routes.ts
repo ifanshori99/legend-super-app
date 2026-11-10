@@ -33,6 +33,7 @@ import {
   updateCartLine,
 } from "@starter/shared/qr-order";
 import { CoreError, idempotencyKeySchema } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -52,6 +53,7 @@ import { guestSessionContext } from "../services/guest-session-scope.ts";
 import {
   createSessionSplits as createSessionSplitsService,
   getSplitClaim as getSplitClaimService,
+  getSplitClaimByToken as getSplitClaimByTokenService,
 } from "../services/bill-split.service.ts";
 import { getMenuSuggestions as getMenuSuggestionsService } from "../services/qr-guest-reads.service.ts";
 import {
@@ -65,12 +67,12 @@ import {
  * session its credential names (TEN-03, legend-7csf). The outlet comes from
  * the verified session row, never from the client.
  */
-function guestContext(req: Request, credential: string) {
+export function guestContext(req: Request, credential: string) {
   return guestSessionContext(getTenantContext(req), credential);
 }
 
 /** `Authorization: Bearer <sessionToken>`; anything else is 401. */
-function sessionCredential(req: Request): string {
+export function sessionCredential(req: Request): string {
   const header = req.get("authorization") ?? "";
   const match = /^Bearer ([A-Za-z0-9_-]{20,256})$/.exec(header);
   if (!match)
@@ -85,6 +87,22 @@ const read = [requireTenantContext];
 const write = [requireTenantContext, requireTrustedOrigin];
 
 export const qrOrderRouter = Router();
+
+// legend-ia54l: the claim token alone opens the claim code for 24 hours, also
+// after the table is closed. Registered before "/:sessionId" so the literal
+// segment wins. The guest rate limit on this mount covers it, but guessing is
+// bounded by the IP and tenant buckets only (a new token is a new bearer
+// bucket); the 256-bit token is the real defence. The read is tenant-wide like
+// payment link tokens: no outlet is known before the token is resolved.
+qrOrderRouter.get("/split-claims/current", ...read, async (req, res) => {
+  const rawToken = sessionCredential(req);
+  res.json({
+    data: await getSplitClaimByTokenService(
+      establishScopedTenantContext(getTenantContext(req), { kind: "tenant" }),
+      rawToken,
+    ),
+  });
+});
 
 qrOrderRouter.get("/:sessionId", ...read, async (req, res) => {
   const { sessionId } = getTableSession.params.parse(req.params);

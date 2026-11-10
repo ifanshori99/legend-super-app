@@ -19,6 +19,7 @@ export const ATTENDANCE_METHOD_KEY: Record<AttendanceMethod, MessageKey> = {
   selfie_geo: "attendanceQr.method.selfie_geo",
   rotating_qr: "attendanceQr.method.rotating_qr",
   manual_correction: "attendanceQr.method.manual_correction",
+  outlet_device: "attendanceQr.method.outlet_device",
 };
 
 export const ATTENDANCE_VALIDITY: Record<

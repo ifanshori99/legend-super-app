@@ -19,11 +19,11 @@ const CHANGE = "profit_share.share_allocation.change";
 
 function migrationStatements(): string[] {
   const sql = readFileSync(
-    resolve(drizzleFolder, "0221_profit_share_unabsorbed.sql"),
+    resolve(drizzleFolder, "0218_profit_share_unabsorbed.sql"),
     "utf8",
   );
   // Only the permission backfill (the roles statements); the schema half of
-  // 0221 is covered by the distribution tests.
+  // 0218 is covered by the distribution tests.
   return sql
     .split("--> statement-breakpoint")
     .map((part) => part.trim())
@@ -89,15 +89,15 @@ afterAll(async () => {
   await owner.end();
 });
 
-describe("legend-8s992 migration 0221 share allocation permission backfill", () => {
-  it("is registered in the journal after 0219 with the agreed timestamp", () => {
+describe("legend-8s992 migration 0218 share allocation permission backfill", () => {
+  it("is registered in the journal after 0217 with the agreed timestamp", () => {
     const journal = JSON.parse(
       readFileSync(resolve(drizzleFolder, "meta/_journal.json"), "utf8"),
     ) as { entries: { idx: number; when: number; tag: string }[] };
-    const entry = journal.entries.find((row) => row.idx === 221);
-    expect(entry?.tag).toBe("0221_profit_share_unabsorbed");
-    expect(entry?.when).toBe(1794300000000);
-    const previous = journal.entries.filter((row) => row.idx < 221);
+    const entry = journal.entries.find((row) => row.tag === "0218_profit_share_unabsorbed");
+    expect(entry?.tag).toBe("0218_profit_share_unabsorbed");
+    expect(entry?.when).toBe(1794299000000);
+    const previous = journal.entries.filter((row) => row.idx < 218);
     expect(Math.max(...previous.map((row) => row.when))).toBeLessThan(
       entry!.when,
     );

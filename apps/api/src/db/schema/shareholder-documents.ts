@@ -7,7 +7,7 @@
 //
 // `profit_entity_id` has a composite (tenant_id, profit_entity_id) foreign key
 // to profit_entities(tenant_id, id) on both tables; legend-2ljb added it in
-// drizzle/0219_profit_share.sql.
+// drizzle/0217_profit_share.sql.
 //
 // A document's (tenant, entity, file key) must match an uploaded file row, so
 // a document can only point at a file uploaded for the same entity.

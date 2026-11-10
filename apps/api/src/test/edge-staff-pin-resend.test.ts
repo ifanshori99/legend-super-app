@@ -25,6 +25,10 @@ import { sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { applyStaffPinSet } from "../edge/access-applier.ts";
+import {
+  activateEdgePepperRegistry,
+  resetEdgeStaffPinPeppers,
+} from "../edge/staff-pin-pepper-registry.ts";
 import { resendMateriallessStaffPinSets } from "../edge/staff-pin-resend.ts";
 import type { EdgeApplyMeta } from "../edge/ports.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
@@ -364,6 +368,20 @@ describe("legend-zclb edge job re-sending pre-material pin sets", () => {
     await resendMateriallessStaffPinSets(tenant, outletA);
 
     expect(await setEvents(userId)).toHaveLength(1);
+  });
+
+  // legend-ideif: first boot after the upgrade, before the first sync delivered
+  // any pepper (current version 0): the job must still re-send, not skip.
+  it("re-sends while this edge holds no pepper yet", async () => {
+    const userId = await newUser();
+    await setPinWithoutMaterial(userId, "135792", new Date());
+    activateEdgePepperRegistry(tenantId);
+    try {
+      await resendMateriallessStaffPinSets(tenant, outletA);
+    } finally {
+      resetEdgeStaffPinPeppers();
+    }
+    expect(await setEvents(userId)).toHaveLength(2);
   });
 
   // legend-gauz3: a reset that commits between the job's read and its append

@@ -1130,6 +1130,7 @@ export const id = {
       selfie_geo: "Selfie & GPS",
       rotating_qr: "QR outlet",
       manual_correction: "Koreksi manual",
+      outlet_device: "Layar absen outlet",
     },
     history: {
       title: "Riwayat absensi",

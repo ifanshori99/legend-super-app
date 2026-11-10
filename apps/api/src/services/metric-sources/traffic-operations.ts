@@ -377,6 +377,7 @@ const issueReader: DailyMetricReader = {
          AND outlet_id = ${input.outletId}::uuid
          AND business_date = ${input.businessDate}::date
          AND kind IN ('remake', 'comp')
+         AND idempotency_key NOT LIKE 'swap:issue:%'
        GROUP BY kind`);
     const byKind = new Map(
       result.rows.map((row) => [String(row.kind), Number(row.n)]),

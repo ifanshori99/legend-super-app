@@ -149,3 +149,10 @@ FOR EACH ROW EXECUTE FUNCTION app.reject_edge_sync_log_mutation();
 SELECT app.enforce_tenant_rls('public.edge_pull_checkpoints'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.edge_pull_checkpoints'::regclass);
+--> statement-breakpoint
+
+-- legend-ideif: edge-side sealed staff pin peppers, tenant + outlet owned
+-- like the other edge tables (see schema/edge-node.ts edgeStaffPinPeppers).
+SELECT app.enforce_tenant_rls('public.edge_staff_pin_peppers'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.edge_staff_pin_peppers'::regclass);

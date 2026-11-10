@@ -95,6 +95,7 @@ import {
 import { maskAuditChanges } from "@starter/shared/audit";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
+import { isTrainingOrder } from "./device-training";
 import { appendOutbox } from "./core-outbox";
 import type { Tx } from "./permission-resolver";
 // Per-outlet switch + same-day min-spend reward (bead legend-e5it).
@@ -1072,6 +1073,22 @@ export async function redeemPromotions(
   const orderId = orderIdSchema.parse(redeem.orderId);
   const fingerprint = fingerprintOf(redeem);
   await lockOrder(tx, tenantId, orderId);
+
+  // legend-dbrw3: a training sale prices the promotions (the cashier can
+  // rehearse) but consumes nothing: no voucher, quota, budget, customer use,
+  // facility reward, application row or event.
+  if (await isTrainingOrder(tx, tenantId, orderId)) {
+    const trained = await prepare(tx, context, redeem, false);
+    const quoted = applyPromotions(
+      trained.candidates,
+      trained.input,
+      trained.usage,
+      trained.policy,
+    );
+    if (redeem.expected && !sameApplication(redeem.expected, quoted))
+      throw changedError(redeem.expected, quoted);
+    return quoted;
+  }
 
   const [existing] = await tx
     .select()

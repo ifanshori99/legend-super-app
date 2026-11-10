@@ -160,6 +160,15 @@ const appInfection = buildApp(
     membership,
   }),
 );
+// Production scanner (noop, acceptsDocuments false): PDFs are refused (legend-0w2wy).
+const appNoDocScanner = buildApp(
+  tenantA,
+  createShareholderDocumentsRouter({
+    storage,
+    scanner: new NoopMalwareScanner({ acceptsDocuments: false }),
+    membership,
+  }),
+);
 const appNoScanner = buildApp(
   tenantA,
   createShareholderDocumentsRouter({ storage, membership }),
@@ -553,6 +562,21 @@ describe("legend-69yq shareholder documents", () => {
       [tenantA, entityId],
     );
     expect(rows.rowCount).toBe(1);
+  });
+
+  it("2c. a scanner that does not accept documents answers 503 and stores nothing (legend-0w2wy)", async () => {
+    const entityId = await entity();
+    const putsBefore = storage.puts;
+    const mgr = await manager(appNoDocScanner);
+    const res = await upload(mgr, entityId, pdf());
+    expect(res.status, JSON.stringify(res.body)).toBe(503);
+    expect(res.body.error.message).toContain("pemindai malware");
+    expect(storage.puts).toBe(putsBefore);
+    const rows = await owner.query(
+      "SELECT 1 FROM shareholder_document_files WHERE tenant_id = $1 AND profit_entity_id = $2",
+      [tenantA, entityId],
+    );
+    expect(rows.rowCount).toBe(0);
   });
 
   it("3. create rejects a file not uploaded, from another profit entity or already used (422)", async () => {

@@ -1,4 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
+  boolean,
+  check,
   index,
   pgTable,
   text,
@@ -7,6 +10,13 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { user } from "./user";
+
+// legend-k2l: how this session was opened (brief 290b, design ws08 M2 "Sign-in
+// method gate"). Only a `password` session may open a management surface;
+// `legacy` is every session that existed before migration 0204 (customer rows)
+// and the safe default for any path that does not set the column.
+export type SessionAuthMethod =
+  "password" | "whatsapp" | "email_magic_link" | "google" | "legacy";
 
 // Better Auth owns the session cookie and the `token` lookup column. PRD v1.7
 // §6 B lists `sessions` (global) with token_hash, device_label, tenant_id,
@@ -54,6 +64,23 @@ export const session = pgTable(
       .notNull(),
     mfaVerifiedAt: timestamp("mfa_verified_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    // legend-k2l: sign-in method gate. Set by the server only (Better Auth
+    // `additionalFields` with `input: false`), never by a client. Existing
+    // management rows are backfilled `password`, everything else `legacy`.
+    authMethod: varchar("auth_method", { length: 20 })
+      .$type<SessionAuthMethod>()
+      .notNull()
+      .default("legacy"),
+    // legend-k2l: true when the login was completed on another device than
+    // the one that asked for it (magic link opened elsewhere). Such a session
+    // may not request a WhatsApp link (IDENTITY_LINK_REAUTH_REQUIRED).
+    authCrossDevice: boolean("auth_cross_device").notNull().default(false),
   },
-  (table) => [index("session_user_id_idx").on(table.userId)],
+  (table) => [
+    index("session_user_id_idx").on(table.userId),
+    check(
+      "session_auth_method_check",
+      sql`${table.authMethod} IN ('password', 'whatsapp', 'email_magic_link', 'google', 'legacy')`,
+    ),
+  ],
 );

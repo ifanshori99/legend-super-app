@@ -42,7 +42,10 @@ import {
   type ShareholderDocumentViewer,
   type ShareholderMembership,
 } from "../services/shareholder-documents.service";
-import type { MalwareScanner } from "../services/core-image";
+import {
+  assertScannerAcceptsDocuments,
+  type MalwareScanner,
+} from "../services/core-image";
 
 const BASE = "/api/accounting";
 const route = (path: string) => path.slice(BASE.length) || "/";
@@ -155,10 +158,11 @@ export function createShareholderDocumentsRouter(
   router.post(
     route(uploadShareholderDocumentFile.path),
     manage,
-    // 503 before multer buffers up to 10 MiB when no storage or scanner is wired.
+    // 503 before multer buffers up to 10 MiB when no storage or scanner is
+    // wired, or the scanner cannot vet documents (legend-0w2wy).
     (_req, _res, next) => {
       storage();
-      scanner();
+      assertScannerAcceptsDocuments(scanner());
       next();
     },
     parseUpload,

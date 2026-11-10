@@ -18,8 +18,15 @@
 import { createHmac } from "node:crypto";
 import type { Response } from "express";
 import { getCookies } from "better-auth/cookies";
-import { CUSTOMER_SESSION_DAYS, DAY_MS } from "@starter/shared/identity";
+import { eq } from "drizzle-orm";
+import {
+  CUSTOMER_SESSION_DAYS,
+  DAY_MS,
+  IdentityError,
+} from "@starter/shared/identity";
 import { env } from "../config/env";
+import { db } from "../db";
+import { user } from "../db/schema";
 import { auth } from "./auth";
 
 export type IssuedSession = {
@@ -32,6 +39,11 @@ export type IssuedSession = {
  * Creates the server-side session §3 F6 asks for ("Sesi disimpan di server dan
  * dapat dicabut per perangkat"): a customer session lasts 90 days.
  *
+ * `authMethod` and `crossDevice` (legend-k2l, design ws08 M2 "Sign-in method
+ * gate") are stored on the row so the staff gate can refuse a session that
+ * never used a password, and the link flow can ask for a fresh WhatsApp proof
+ * after a cross-device sign-in.
+ *
  * `overrideAll` is true so the contract's TTL wins over Better Auth's default
  * session lifetime; nothing else is overridden.
  */
@@ -40,11 +52,29 @@ export async function createCustomerSession(input: {
   ipAddress: string | null;
   userAgent: string | null;
   now?: Date;
+  /** How the browser proved who it is; a gate input (design M2), never from the client. */
+  authMethod: "whatsapp" | "email_magic_link";
+  /** True when the browser that finished the sign-in is not the one that asked for it. */
+  crossDevice?: boolean;
 }): Promise<IssuedSession> {
+  const now = input.now ?? new Date();
+  // legend-k2l: this call has no Better Auth endpoint context, so the admin
+  // plugin's ban check never runs. Check it here; the refusal is generic and
+  // reveals nothing about the account.
+  const [account] = await db
+    .select({ banned: user.banned, banExpires: user.banExpires })
+    .from(user)
+    .where(eq(user.id, input.userId))
+    .limit(1);
+  if (
+    account?.banned === true &&
+    (account.banExpires === null ||
+      account.banExpires.getTime() > now.getTime())
+  ) {
+    throw new IdentityError("CHALLENGE_NOT_PENDING");
+  }
   const context = await auth.$context;
-  const expiresAt = new Date(
-    (input.now ?? new Date()).getTime() + CUSTOMER_SESSION_DAYS * DAY_MS,
-  );
+  const expiresAt = new Date(now.getTime() + CUSTOMER_SESSION_DAYS * DAY_MS);
   const session = await context.internalAdapter.createSession(
     input.userId,
     false,
@@ -52,6 +82,10 @@ export async function createCustomerSession(input: {
       expiresAt,
       ipAddress: input.ipAddress ?? "",
       userAgent: input.userAgent ?? "",
+      // legend-k2l: written in the INSERT; the auth.ts session hook keeps them
+      // when there is no Better Auth request path (this internal call).
+      authMethod: input.authMethod,
+      authCrossDevice: input.crossDevice ?? false,
     },
     true,
   );

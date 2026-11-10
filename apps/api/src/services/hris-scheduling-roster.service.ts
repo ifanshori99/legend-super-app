@@ -89,6 +89,7 @@ import {
   loadHrisAccess,
   notFound,
   type HrisAccess,
+  type HrisActor,
   type Tx,
 } from "./hris-access.ts";
 import {
@@ -307,7 +308,7 @@ async function findAssignment(
 async function auditShift(
   tx: Tx,
   context: ScopedTenantContext,
-  actor: string,
+  actor: string | HrisActor,
   now: Date,
   row: Pick<ShiftRow, "id" | "outletId" | "status">,
   action: string,
@@ -774,7 +775,7 @@ export async function cancelShiftAssignment(
 export async function cancelShiftAssignmentInTx(
   tx: Tx,
   context: ScopedTenantContext,
-  actorUserId: string,
+  actorUserId: string | HrisActor,
   assignmentId: string,
   now: Date,
 ): Promise<ShiftAssignment> {

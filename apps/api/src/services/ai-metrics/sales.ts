@@ -159,6 +159,10 @@ export async function queryMenuPerformance(
       JOIN orders o ON o.tenant_id = oi.tenant_id AND o.id = oi.order_id
       LEFT JOIN menu_items mi ON mi.tenant_id = oi.tenant_id AND mi.id = oi.menu_item_id
       WHERE ${where} AND oi.status <> 'voided'
+        AND NOT EXISTS (SELECT 1 FROM order_issues oi2
+          WHERE oi2.tenant_id = oi.tenant_id
+            AND oi2.replacement_order_item_id = oi.id
+            AND oi.line_total_idr = 0)
       GROUP BY oi.menu_item_id`);
     return result.rows.map((row) => ({
       menuItemId: String(row.id),

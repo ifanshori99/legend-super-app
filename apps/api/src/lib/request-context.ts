@@ -17,6 +17,8 @@ type RequestContext = {
   reqId: string;
   userId?: string;
   support?: RequestSupport;
+  // legend-k2l: how the authenticated session signed in (session.auth_method).
+  authMethod?: string;
 };
 
 const storage = new AsyncLocalStorage<RequestContext>();
@@ -31,6 +33,27 @@ export function getRequestContext() {
 export function setRequestUser(userId: string) {
   const store = storage.getStore();
   if (store) store.userId = userId;
+}
+
+// legend-k2l (design ws08 M2 "Sign-in method gate"): recorded by requireAuth.
+export function setRequestAuthMethod(authMethod: string) {
+  const store = storage.getStore();
+  if (store) store.authMethod = authMethod;
+}
+
+/**
+ * legend-k2l: may this request act on `userId`'s staff role assignments?
+ * Only a password sign-in may (design ws08 M2). A session opened by WhatsApp,
+ * an email magic link, Google or a pre-0204 `legacy` session is customer-only,
+ * so a staff person using the member app never carries staff access. Applies
+ * only to the authenticated caller's own access on an HTTP request: workers
+ * (no request context) and lookups of another user's access are unchanged.
+ */
+export function requestMayUseStaffRoles(userId: string): boolean {
+  const store = storage.getStore();
+  if (!store || store.userId !== userId || store.authMethod === undefined)
+    return true;
+  return store.authMethod === "password";
 }
 
 export function setRequestSupport(value: RequestSupport) {

@@ -188,6 +188,18 @@ function draw(
   pair("Porsi kepemilikan", formatShare(statement.shareBp));
   y -= 4;
   rule();
+  // The cut is read top to bottom: share before it, the cut, then the gross
+  // share left (the stored gross is already net of the cut).
+  if (statement.carryDeductedIdr > 0) {
+    pair(
+      "Bagian sebelum potongan",
+      formatRupiah(statement.grossIdr + statement.carryDeductedIdr),
+    );
+    pair(
+      "Potongan kekurangan koreksi",
+      formatRupiah(statement.carryDeductedIdr),
+    );
+  }
   pair("Bagian kotor", formatRupiah(statement.grossIdr));
   pair("Pajak dipotong", formatRupiah(statement.taxWithheldIdr));
   pair("Bagian bersih", formatRupiah(statement.netIdr), true, SIZE + 2);

@@ -14,7 +14,10 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { SystemRefundActor } from "@starter/shared/payment/admin";
-import { paymentGateway } from "./payment-gateway.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
+import { resolveRoutingRule } from "./payment-routing.service.ts";
 import { createPaymentLink } from "./payment.service.ts";
 import {
   depositUnavailable,
@@ -33,23 +36,29 @@ export function depositReference(reservationId: string): string {
 }
 
 /**
- * Fail closed unless a real gateway is installed and not reported down: a DP
- * booking must never hold a table it cannot collect the DP for. A health
- * check that throws counts as down.
+ * Fail closed unless a gateway is usable for the deposit and not reported
+ * down: a DP booking must never hold a table it cannot collect the DP for. The
+ * gateway is the one the outlet's QRIS rule selects (primary, or its fallback
+ * when the primary is down). A lookup that throws counts as down.
  */
 async function assertGatewayReady(
   context: ScopedTenantContext,
   outletId?: string,
 ): Promise<void> {
-  const gateway = paymentGateway();
-  if (gateway.provider === "unconfigured") throw depositUnavailable();
-  let status: string;
+  if (!outletId) throw depositUnavailable();
   try {
-    status = (await gateway.health(context, outletId)).status;
+    const routing = await withTenant(db, context, (tx) =>
+      resolveRoutingRule(tx, context, outletId, "qris"),
+    );
+    const selected = await selectGatewayForNewIntent(
+      context,
+      outletId,
+      routing,
+    );
+    if (selected.provider === null) throw depositUnavailable();
   } catch {
     throw depositUnavailable();
   }
-  if (status === "down") throw depositUnavailable();
 }
 
 export function createPaymentReservationDepositPort(): ReservationDepositPort {

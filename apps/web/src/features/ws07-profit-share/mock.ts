@@ -557,6 +557,13 @@ function runOfCalculation(input: {
     adjustmentReason: input.adjustmentReason ?? null,
     reversalJournalEntryId: input.reversalJournalEntryId ?? null,
     unabsorbedIdr: adjustment ? correction.unabsorbedIdr : 0,
+    // A positive top-up deducts carry like a regular run; a claw-back never does.
+    carryDeductedIdr: adjustment
+      ? correction.carryDeductedIdr
+      : regular.carryDeductedIdr,
+    carryDeductions: adjustment
+      ? correction.carryDeductions
+      : regular.carryDeductions,
   });
 }
 

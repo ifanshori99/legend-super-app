@@ -242,6 +242,24 @@ export const magicLinkRequestedSchema = z.strictObject({
 });
 export type MagicLinkRequested = z.infer<typeof magicLinkRequestedSchema>;
 
+// legend-k2l: body of POST /api/auth/login-challenges/email/verify. The token
+// comes from the link's URL fragment (it never reaches a server log), so the
+// page posts it instead of the API reading a query string.
+export const magicLinkVerifyBodySchema = z.strictObject({
+  token: magicLinkTokenSchema,
+});
+export type MagicLinkVerifyBody = z.infer<typeof magicLinkVerifyBodySchema>;
+
+// legend-k2l: what a verified magic link yields. The session itself travels in
+// the Set-Cookie header; `crossDevice` tells the page the link was opened in
+// another browser than the one that asked (design ws08 M2: such a session may
+// not start a WhatsApp link without a fresh proof).
+export const magicLinkVerifiedSchema = z.strictObject({
+  userId: userIdSchema,
+  crossDevice: z.boolean(),
+});
+export type MagicLinkVerified = z.infer<typeof magicLinkVerifiedSchema>;
+
 /** Google OAuth start: the API builds the URL including its state (browser-bound). */
 export const googleLoginStartSchema = z.strictObject({
   authorizationUrl: httpsUrlSchema,

@@ -69,7 +69,9 @@ import {
   type Refund,
 } from "./payment-admin.service.ts";
 import {
-  paymentRefundGateway,
+  paymentRefundGatewayFor,
+  paymentRefundGatewayLegacyMode,
+  registeredRefundProviders,
   UNCONFIGURED_REFUND_PROVIDER,
   type GatewayRefundLookup,
 } from "./payment-refund-gateway.ts";
@@ -313,16 +315,20 @@ async function heldAt(
 // ------------------------------------------------------------ transitions
 
 /**
- * Four-eyes for a gateway refund the POS filed itself (`system:pos`, key
+ * Four-eyes for a gateway refund the system filed itself. `system:pos` (key
  * `pos-refund-gateway:<posRefundId>:<intentId>`): the cashier and the approver
- * of the POS refund must not also approve its payout. Fails closed: a filed
- * refund whose POS refund cannot be read counts everyone as a party.
+ * of the POS refund must not also approve its payout. `system:recovery` (key
+ * `order-recovery-refund:<orderIssueId>`, legend-94q2l): the approver of the
+ * failed-item refund (ORD-09) and the resolver who filed it. Fails closed: a
+ * filed refund whose parties cannot be read counts everyone as a party.
  */
 async function isPosRefundParty(
   tx: Tx,
   refund: Refund,
   userId: string,
 ): Promise<boolean> {
+  if (refund.requestedBy === "system:recovery")
+    return isRecoveryRefundParty(tx, refund, userId);
   // Only the POS filer (pos-refund-gateway.ts) writes these keys.
   if (refund.requestedBy !== "system:pos") return false;
   const { rows } = await tx.execute<{ key: string }>(
@@ -349,6 +355,48 @@ async function isPosRefundParty(
       return true;
   }
   return false;
+}
+
+/**
+ * system:recovery refund (legend-94q2l): parties are the approver recorded on
+ * the order issue plus the resolver and approver kept on the idempotency row
+ * that opened the refund. Any missing piece makes everyone a party.
+ */
+async function isRecoveryRefundParty(
+  tx: Tx,
+  refund: Refund,
+  userId: string,
+): Promise<boolean> {
+  const who = userId.toLowerCase();
+  if (!refund.orderIssueId) return true;
+  const { rows: issues } = await tx.execute<{ approved_by: string | null }>(
+    sql`SELECT approved_by FROM order_issues
+        WHERE tenant_id = ${refund.tenantId} AND id = ${refund.orderIssueId}`,
+  );
+  const issue = issues[0];
+  if (!issue?.approved_by || issue.approved_by.toLowerCase() === who)
+    return true;
+  const { rows } = await tx.execute<{
+    resolved_by: string | null;
+    approved_by: string | null;
+  }>(
+    sql`SELECT response->>'resolvedBy' AS resolved_by,
+               response->>'approvedBy' AS approved_by
+        FROM payment_admin_idempotency
+        WHERE tenant_id = ${refund.tenantId}
+          AND (key = ${`order-recovery-refund:${refund.orderIssueId}`}
+               OR key LIKE ${`order-recovery-refund:${refund.orderIssueId}:%`})
+          AND response->>'refundId' = ${refund.id}`,
+  );
+  if (rows.length === 0) return true;
+  return rows.some(
+    (row) =>
+      !row.resolved_by ||
+      !row.approved_by ||
+      [row.resolved_by, row.approved_by].some(
+        (party) => party.toLowerCase() === who,
+      ),
+  );
 }
 
 /** isPosRefundParty for a direct approval: refused with APPROVER_IS_REQUESTER. */
@@ -570,6 +618,14 @@ async function failRefund(
     },
   });
   await refileQrLatePaymentAfterFailure(tx, context, updated, input.now);
+  // legend-94q2l: a failed-item refund that did not fail by a person's
+  // rejection is filed again. Lazy import: order-recovery-refund imports this
+  // module (cycle).
+  if (updated.requestedBy === "system:recovery") {
+    const { refileRecoveryRefundAfterFailure } =
+      await import("./order-recovery-refund.ts");
+    await refileRecoveryRefundAfterFailure(tx, context, updated, input.now);
+  }
   return updated;
 }
 
@@ -1401,9 +1457,15 @@ async function decideRefund(
       throw conflict("Approval level was already decided; refresh.");
     // Without a refund gateway nothing is claimed: the refund stays approved
     // and the sweep pays it once a gateway is installed.
-    if (settled.status === "approved" && refundGatewayInstalled())
+    if (
+      settled.status === "approved" &&
+      (await refundGatewayInstalledFor(context, refundId))
+    )
       await runRefundPayout(context, refundId);
-  } else if (first.kind === "payout" && refundGatewayInstalled()) {
+  } else if (
+    first.kind === "payout" &&
+    (await refundGatewayInstalledFor(context, refundId))
+  ) {
     await runRefundPayout(context, refundId);
   }
   return loadView(context, refundId, actor);
@@ -1589,6 +1651,8 @@ type PayoutClaim =
       /** Intent facts the refund port needs to pick credentials. */
       readonly integrationId: string | null;
       readonly outletId: string;
+      /** Provider of the payment intent: picks the refund port. */
+      readonly provider: string;
     };
 
 /** Rejects when the deadline signal fires, even if the adapter ignores it. */
@@ -1727,9 +1791,75 @@ async function takeSendRight(
   return rows.length > 0 ? deadline : null;
 }
 
-/** False while the fail-closed default port is installed (no adapter). */
-function refundGatewayInstalled(): boolean {
-  return paymentRefundGateway().provider !== UNCONFIGURED_REFUND_PROVIDER;
+/** False while the fail-closed default port stands in for `provider` (no
+ * adapter). A provider without a refund API (Duitku) never has one: its refunds
+ * stay `approved` and finance closes them with `settleRefundManually`. */
+function refundGatewayInstalled(provider: string): boolean {
+  return (
+    paymentRefundGatewayFor(provider).provider !== UNCONFIGURED_REFUND_PROVIDER
+  );
+}
+
+/** `refundGatewayInstalled` for the provider of the refunded payment. An
+ * unknown refund is judged like the empty provider (so the claim reports it as
+ * missing once a gateway exists). */
+async function refundGatewayInstalledFor(
+  context: ScopedTenantContext,
+  refundId: string,
+): Promise<boolean> {
+  // Test shim: one port answers for every provider, so no lookup is needed.
+  if (paymentRefundGatewayLegacyMode()) return refundGatewayInstalled("");
+  const provider = await withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select({ provider: paymentIntents.provider })
+      .from(paymentRefunds)
+      .innerJoin(
+        paymentIntents,
+        and(
+          eq(paymentIntents.tenantId, paymentRefunds.tenantId),
+          eq(paymentIntents.id, paymentRefunds.paymentIntentId),
+        ),
+      )
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, context.tenant.tenantId),
+          eq(paymentRefunds.id, refundId),
+        ),
+      );
+    return row?.provider ?? "";
+  });
+  return refundGatewayInstalled(provider);
+}
+
+/** True when at least one refund adapter is registered. */
+function anyRefundGatewayInstalled(): boolean {
+  return registeredRefundProviders().some(
+    (provider) => provider !== UNCONFIGURED_REFUND_PROVIDER,
+  );
+}
+
+/** SQL: refunds whose payment ran through a provider that has a refund port. */
+function refundPortInstalledSql(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+) {
+  if (paymentRefundGatewayLegacyMode()) return sql`true`;
+  const providers = registeredRefundProviders().filter(
+    (provider) => provider !== UNCONFIGURED_REFUND_PROVIDER,
+  );
+  if (providers.length === 0) return sql`false`;
+  return inArray(
+    paymentRefunds.paymentIntentId,
+    tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          inArray(paymentIntents.provider, [...providers]),
+        ),
+      ),
+  );
 }
 
 /**
@@ -1749,7 +1879,7 @@ export async function runRefundPayout(
 ): Promise<Refund> {
   // Before any claim or write: an attempt counted against no provider would
   // make a later first send look like a possible duplicate.
-  if (!refundGatewayInstalled())
+  if (!(await refundGatewayInstalledFor(context, refundId)))
     throw new CoreError(
       "SERVICE_UNAVAILABLE",
       "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",
@@ -1987,6 +2117,7 @@ export async function runRefundPayout(
         paymentProviderRef,
         integrationId: intent.gatewayIntegrationId,
         outletId: intent.outletId,
+        provider: intent.provider,
       };
     },
   );
@@ -1994,7 +2125,7 @@ export async function runRefundPayout(
 
   const { refund } = claim;
   const idempotencyKey = `refund:${refund.id}`;
-  const port = paymentRefundGateway();
+  const port = paymentRefundGatewayFor(claim.provider);
   let result = null as GatewayRefundLookup | null;
   let unknownCode: string | null = null;
   let unknownEvidence: Record<string, unknown> | null = null;
@@ -2266,22 +2397,21 @@ export async function escalateStaleRefunds(
       .select()
       .from(paymentRefundEscalationSettings)
       .where(eq(paymentRefundEscalationSettings.tenantId, tenantId));
-    const gatewayInstalled = refundGatewayInstalled();
+    // Per refund: one whose provider has no refund port counts as stalled.
+    const gatewayInstalled = refundPortInstalledSql(tx, tenantId);
     // coalesce keeps NOT(stalled) two-valued when last_payout_error is NULL.
     const stalled = and(
       eq(paymentRefunds.status, "approved"),
       sql`${paymentRefunds.payoutPendingPolls} = 0`,
-      gatewayInstalled
-        ? sql`coalesce(${paymentRefunds.lastPayoutError}, '') IN (${sql.join(
-            [
-              MANUAL_RECONCILIATION,
-              PAYOUT_QUARANTINED,
-              EVIDENCE_MAPPING_REQUIRED,
-              PAYOUT_IDENTITY_MISMATCH,
-            ].map((value) => sql`${value}`),
-            sql`, `,
-          )})`
-        : undefined,
+      sql`(NOT (${gatewayInstalled}) OR coalesce(${paymentRefunds.lastPayoutError}, '') IN (${sql.join(
+        [
+          MANUAL_RECONCILIATION,
+          PAYOUT_QUARANTINED,
+          EVIDENCE_MAPPING_REQUIRED,
+          PAYOUT_IDENTITY_MISMATCH,
+        ].map((value) => sql`${value}`),
+        sql`, `,
+      )}))`,
     );
     // Stall clock: reset where no longer stalled, then stamp where newly stalled.
     const resetGuard = and(
@@ -2477,7 +2607,7 @@ export async function sweepApprovedRefundPayouts(
     );
   }
   // No gateway: claim nothing and flag nothing (see runRefundPayout).
-  if (!refundGatewayInstalled())
+  if (!anyRefundGatewayInstalled())
     return { attempted: 0, exhausted: 0, escalated };
   const tenantId = context.tenant.tenantId;
   const leaseFree = sql`(${paymentRefunds.payoutClaimedUntil} IS NULL OR ${paymentRefunds.payoutClaimedUntil} <= ${now})`;
@@ -2491,6 +2621,8 @@ export async function sweepApprovedRefundPayouts(
         and(
           eq(paymentRefunds.tenantId, tenantId),
           eq(paymentRefunds.status, "approved"),
+          // Providers without a refund port (Duitku) are settled by hand.
+          refundPortInstalledSql(tx, tenantId),
           sql`${paymentRefunds.payoutAttempts} < ${PAYOUT_MAX_ATTEMPTS}`,
           sql`NOT ${pendingTooLong}`,
           // A quarantined refund is swept only for its lookup (maybe sent).
@@ -2563,7 +2695,7 @@ export async function retryRefundPayout(
   // The provider key is `refund:<id>`, so a retry is naturally idempotent.
   void key;
   // Before the evidence mapping below writes anything.
-  if (!refundGatewayInstalled())
+  if (!(await refundGatewayInstalledFor(context, params.refundId)))
     throw new CoreError(
       "SERVICE_UNAVAILABLE",
       "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",

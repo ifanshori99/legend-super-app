@@ -486,13 +486,53 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["petty_cash", "credit", "amountIdr"],
     ],
   ),
+  // legend-msqvi (D-msqvi, PSAK 72): points are a material right. Earning
+  // defers revenue into loyalty_points_deferral (contra revenue, never
+  // sales_revenue: 4101 keeps matching gross POS sales); a reversal, a
+  // redemption and a negative manual adjustment move it back. The consumer
+  // fills pointsValueIdr from the point_ledger row's signed liability_idr so
+  // every journal moves loyalty_liability exactly as the ledger did.
   rule(
     { event: "points.earned" },
     "loyalty",
     "Poin loyalty diperoleh (pendapatan ditangguhkan)",
-    "§3.20 Liabilitas Poin",
+    "§3.20 Liabilitas Poin; PSAK 72 (hak material)",
     [
-      ["sales_revenue", "debit", "pointsValueIdr"],
+      ["loyalty_points_deferral", "debit", "pointsValueIdr"],
+      ["loyalty_liability", "credit", "pointsValueIdr"],
+    ],
+  ),
+  rule(
+    { event: "points.reversed" },
+    "loyalty",
+    "Poin loyalty dibatalkan (refund atau void)",
+    "§3.20 Liabilitas Poin; PSAK 72 (hak material)",
+    [
+      ["loyalty_liability", "debit", "pointsValueIdr"],
+      ["loyalty_points_deferral", "credit", "pointsValueIdr"],
+    ],
+  ),
+  // Only reward redemptions: points used as tender move loyalty_liability on
+  // order.paid (paidPointsIdr), so the consumer ignores any other redeem row.
+  rule(
+    { event: "points.redeemed" },
+    "loyalty",
+    "Poin loyalty ditukar reward (pendapatan diakui)",
+    "§3.20 Liabilitas Poin; PSAK 72 (hak material)",
+    [
+      ["loyalty_liability", "debit", "pointsValueIdr"],
+      ["loyalty_points_deferral", "credit", "pointsValueIdr"],
+    ],
+  ),
+  // One rule for restore and manual adjustments: pointsValueIdr is signed, a
+  // negative amount books on the other side (buildJournalLinesFromRule).
+  rule(
+    { event: "points.adjusted" },
+    "loyalty",
+    "Penyesuaian poin loyalty (positif = tambah liabilitas)",
+    "§3.20 Liabilitas Poin; PSAK 72 (hak material)",
+    [
+      ["loyalty_points_deferral", "debit", "pointsValueIdr"],
       ["loyalty_liability", "credit", "pointsValueIdr"],
     ],
   ),

@@ -166,8 +166,12 @@ export type RecipeDeductionSkipReason = z.infer<
   typeof recipeDeductionSkipReasonSchema
 >;
 
-/** Why a sale deduction was reversed (legend-9w46). */
-export const recipeDeductionReversalReasonSchema = z.enum(["void"]);
+/**
+ * Why a sale deduction was reversed (legend-9w46), or, on a `remake` row,
+ * `swap`: the swapped-away line's stock return was refused and is parked for
+ * retry (legend-nzbi8).
+ */
+export const recipeDeductionReversalReasonSchema = z.enum(["void", "swap"]);
 export type RecipeDeductionReversalReason = z.infer<
   typeof recipeDeductionReversalReasonSchema
 >;

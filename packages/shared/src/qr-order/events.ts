@@ -12,7 +12,7 @@
 // `order.paid` is owned and defined by WS-04 (bead legend-4yp); QR consumers
 // use that definition, this module does not redefine its payload.
 
-import { z, idrSchema } from "../core/index.ts";
+import { z, idrSchema, isoDateTimeSchema } from "../core/index.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import {
@@ -145,6 +145,48 @@ export const itemFailedPayloadSchema = z.strictObject({
   offeredResolutions: z.tuple([z.literal("swap"), z.literal("voucher")]),
 });
 
+/** A failed item was settled: swap, voucher credit or approved manual refund. */
+export const orderIssueResolvedPayloadSchema = z.strictObject({
+  orderId: orderIdSchema,
+  orderItemId: orderItemIdSchema,
+  orderIssueId: orderIssueIdSchema,
+  resolution: z.enum(["swap", "voucher", "manual_refund"]),
+  resolvedBy: z.enum(["guest", "staff"]),
+  replacementItemId: z.string().uuid().nullable(),
+  voucherId: z.string().uuid().nullable(),
+  priceDifferenceIdr: idrSchema.nullable(),
+  /** Approval that allowed a dearer swap or a manual refund, when one applied. */
+  approvalRequestId: z.string().uuid().optional(),
+});
+
+/**
+ * ORD-09: a manual refund was approved for a failed item. The payment module
+ * consumes this; the recovery flow never moves money itself.
+ */
+export const orderIssueManualRefundApprovedPayloadSchema = z.strictObject({
+  orderId: orderIdSchema,
+  orderItemId: orderItemIdSchema,
+  orderIssueId: orderIssueIdSchema,
+  amountIdr: idrSchema.refine((value) => value > 0),
+  approvalRequestId: z.string().uuid(),
+  approvedBy: z.string().min(1),
+  reason: z.string().min(10).max(500),
+});
+
+/**
+ * legend-94q2l: the refund opened for a failed item was rejected for good
+ * (`rejected`), so its `order.refunded` journal is reversed. Appended once per
+ * issue, only when an `order.refunded` event of that issue exists.
+ */
+export const orderIssueRefundReversalRequestedPayloadSchema = z.strictObject({
+  orderId: orderIdSchema,
+  orderIssueId: orderIssueIdSchema,
+  /** The rejected `payment_refunds` row. */
+  refundId: z.string().uuid(),
+  amountIdr: idrSchema.refine((value) => value > 0),
+  rejectedAt: isoDateTimeSchema,
+});
+
 export const serviceRequestCreatedPayloadSchema = z.strictObject({
   serviceRequestId: serviceRequestIdSchema,
   sessionId: tableSessionIdSchema,
@@ -176,6 +218,9 @@ export const qrOrderEventNames = [
   "table_session.items_moved",
   "order.placed",
   "item.failed",
+  "order_issue.resolved",
+  "order_issue.manual_refund_approved",
+  "order_issue.refund_reversal_requested",
   "service_request.created",
   "service_request.overdue",
   "table.status_changed",
@@ -198,6 +243,11 @@ export const qrOrderEventPayloads: Record<
   "table_session.items_moved": tableSessionItemsMovedPayloadSchema,
   "order.placed": orderPlacedPayloadSchema,
   "item.failed": itemFailedPayloadSchema,
+  "order_issue.resolved": orderIssueResolvedPayloadSchema,
+  "order_issue.manual_refund_approved":
+    orderIssueManualRefundApprovedPayloadSchema,
+  "order_issue.refund_reversal_requested":
+    orderIssueRefundReversalRequestedPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,
   "service_request.overdue": serviceRequestOverduePayloadSchema,
   "table.status_changed": tableStatusChangedPayloadSchema,
@@ -249,6 +299,15 @@ export type TableSessionClosedPayload = z.infer<
 >;
 export type OrderPlacedPayload = z.infer<typeof orderPlacedPayloadSchema>;
 export type ItemFailedPayload = z.infer<typeof itemFailedPayloadSchema>;
+export type OrderIssueResolvedPayload = z.infer<
+  typeof orderIssueResolvedPayloadSchema
+>;
+export type OrderIssueManualRefundApprovedPayload = z.infer<
+  typeof orderIssueManualRefundApprovedPayloadSchema
+>;
+export type OrderIssueRefundReversalRequestedPayload = z.infer<
+  typeof orderIssueRefundReversalRequestedPayloadSchema
+>;
 export type ServiceRequestCreatedPayload = z.infer<
   typeof serviceRequestCreatedPayloadSchema
 >;

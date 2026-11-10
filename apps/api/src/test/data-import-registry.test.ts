@@ -126,6 +126,11 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "gives unverified custom tenant_domains rows a DNS verification token (legend-t57t); only rows with no token, idempotent",
   "0186_stock_ledger_posting_seq.sql":
     "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
+  // legend-k2l
+  "0218_profit_share_unabsorbed.sql":
+    "appends profit_share.share_allocation.change to the stored owner and finance template role rows of existing tenants (legend-8s992, founder Q84); idempotent, never touches a custom role, FORCE RLS lifted for this statement and restored",
+  "0221_k2l_member_signin_identity.sql":
+    "sets session.auth_method on the existing session rows (management sessions become password, every other row legacy) so the sign-in method gate keeps today's staff sessions working (legend-k2l); no other column changes, never inserts or deletes rows",
   "0187_audit_retention_maintenance.sql":
     "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
   // legend-111j
@@ -140,6 +145,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-m4p5
   "0207_loyalty_rewards_missions.sql":
     "before adding vouchers_profile_fk, sets customer_profile_id to NULL on vouchers whose profile has no customer_profiles row in the same tenant and cancels those still issued (cancelled_reason profile_missing_0207) (legend-m4p5); touches only orphan rows and edits only customer_profile_id, status and cancelled_reason, FORCE RLS lifted for that one statement and restored, never inserts or deletes rows",
+  // legend-l9rji (sub-302 D7/D27)
+  "0211_platform_payment_gateways.sql":
+    "seeds the two rows of the new global platform_payment_gateways table it creates (doit enabled and default, duitku off); touches no existing table or tenant row",
 };
 
 // Entrypoints that open a database pool but import no data.

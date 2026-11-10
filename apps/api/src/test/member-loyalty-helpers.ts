@@ -352,6 +352,20 @@ export async function seedOrder(
   return orderUlid;
 }
 
+/** Stamps a completed POS order as a training sale (the row is frozen, so bypass its trigger). */
+export async function markTraining(
+  tenantId: string,
+  orderUlid: string,
+): Promise<void> {
+  await asTenant(tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      "UPDATE pos_orders SET is_training = true WHERE tenant_id = $1 AND order_id = $2",
+      [tenantId, ulidToUuid(orderUlid)],
+    );
+  });
+}
+
 // ---- synthetic events -------------------------------------------------------
 
 function envelope(

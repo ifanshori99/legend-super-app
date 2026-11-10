@@ -406,6 +406,9 @@ export const distributionRuns = pgTable(
     totalNetIdr: idrColumn("total_net_idr").notNull(),
     /** Claw-back rest no shareholder's paid gross could absorb (Q83). */
     unabsorbedIdr: idrColumn("unabsorbed_idr").notNull().default(idr(0)),
+    /** Regular run or positive adjustment: earlier claw-back shortfalls cut from
+     * this split (Q83); `distributable = total_gross + carry_deducted`. */
+    carryDeductedIdr: idrColumn("carry_deducted_idr").notNull().default(idr(0)),
     /** Policy rate frozen with the run, so a later policy edit changes nothing. */
     taxWithholdingBp: integer("tax_withholding_bp").notNull(),
     requestedBy: text("requested_by").notNull(),
@@ -501,7 +504,11 @@ export const distributionRuns = pgTable(
     ),
     check(
       "distribution_runs_totals_check",
-      sql`${table.distributableIdr} = ${table.totalGrossIdr} AND ${table.totalGrossIdr} - ${table.totalTaxWithheldIdr} = ${table.totalNetIdr}`,
+      sql`${table.distributableIdr} = ${table.totalGrossIdr} + ${table.carryDeductedIdr} AND ${table.totalGrossIdr} - ${table.totalTaxWithheldIdr} = ${table.totalNetIdr}`,
+    ),
+    check(
+      "distribution_runs_carry_check",
+      sql`${table.carryDeductedIdr} >= 0 AND (${table.carryDeductedIdr} = 0 OR ${table.type} = 'regular' OR (${table.type} = 'adjustment' AND ${table.distributableIdr} > 0))`,
     ),
     check(
       "distribution_runs_unabsorbed_check",
@@ -533,7 +540,7 @@ export const distributionRuns = pgTable(
     ),
     check(
       "distribution_runs_journal_check",
-      sql`(${table.status} <> 'paid' AND ${table.journalEntryId} IS NULL AND ${table.reversalJournalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} > 0 AND ${table.journalEntryId} IS NOT NULL AND ${table.reversalJournalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} < 0 AND ${table.reversalJournalEntryId} IS NOT NULL AND ${table.journalEntryId} IS NULL)`,
+      sql`(${table.status} <> 'paid' AND ${table.journalEntryId} IS NULL AND ${table.reversalJournalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} > 0 AND ${table.journalEntryId} IS NOT NULL AND ${table.reversalJournalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} < 0 AND ${table.reversalJournalEntryId} IS NOT NULL AND ${table.journalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} = 0 AND ${table.journalEntryId} IS NULL AND ${table.reversalJournalEntryId} IS NULL)`,
     ),
   ],
 );
@@ -552,6 +559,9 @@ export const distributionLines = pgTable(
     grossIdr: idrColumn("gross_idr").notNull(),
     taxWithheldIdr: idrColumn("tax_withheld_idr").notNull(),
     netIdr: idrColumn("net_idr").notNull(),
+    /** This shareholder's part of the run's carry deduction (Q83). A line whose
+     * share the carry absorbs completely has gross 0 and this as its share. */
+    carryDeductedIdr: idrColumn("carry_deducted_idr").notNull().default(idr(0)),
     paymentStatus: text("payment_status")
       .$type<"pending" | "paid">()
       .notNull()
@@ -604,7 +614,7 @@ export const distributionLines = pgTable(
     ),
     check(
       "distribution_lines_amounts_check",
-      sql`${table.grossIdr} <> 0 AND ${table.grossIdr} - ${table.taxWithheldIdr} = ${table.netIdr} AND sign(${table.taxWithheldIdr}) * sign(${table.grossIdr}) >= 0 AND abs(${table.taxWithheldIdr}) <= abs(${table.grossIdr})`,
+      sql`(${table.grossIdr} <> 0 OR ${table.carryDeductedIdr} > 0) AND ${table.grossIdr} - ${table.taxWithheldIdr} = ${table.netIdr} AND sign(${table.taxWithheldIdr}) * sign(${table.grossIdr}) >= 0 AND abs(${table.taxWithheldIdr}) <= abs(${table.grossIdr})`,
     ),
     check(
       "distribution_lines_payment_status_check",
@@ -619,6 +629,142 @@ export const distributionLines = pgTable(
       sql`${table.statementFileKey} IS NULL OR ${table.paymentStatus} = 'paid'`,
     ),
     check("distribution_lines_position_check", sql`${table.position} >= 0`),
+    check(
+      "distribution_lines_carry_check",
+      sql`${table.carryDeductedIdr} >= 0 AND (${table.carryDeductedIdr} = 0 OR ${table.grossIdr} >= 0)`,
+    ),
+  ],
+);
+
+/**
+ * `distribution_run_shortfalls` (T): per shareholder, the part of an
+ * adjustment (claw-back) run that the shareholder's paid gross could not absorb
+ * (founder rule Q83). One row per shareholder and adjustment run, written with
+ * the run; the rows add up to `distribution_runs.unabsorbed_idr`. Effective
+ * once the adjustment run is approved or paid. Append-only.
+ */
+export const distributionRunShortfalls = pgTable(
+  "distribution_run_shortfalls",
+  {
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid("id").notNull().defaultRandom(),
+    /** The adjustment run that left the shortfall. */
+    distributionRunId: uuid("distribution_run_id").notNull(),
+    profitEntityId: uuid("profit_entity_id").notNull(),
+    shareholderId: uuid("shareholder_id").notNull(),
+    amountIdr: idrColumn("amount_idr").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.id] }),
+    foreignKey({
+      name: "distribution_run_shortfalls_run_fk",
+      columns: [table.tenantId, table.distributionRunId],
+      foreignColumns: [distributionRuns.tenantId, distributionRuns.id],
+    }),
+    foreignKey({
+      name: "distribution_run_shortfalls_entity_fk",
+      columns: [table.tenantId, table.profitEntityId],
+      foreignColumns: [profitEntities.tenantId, profitEntities.id],
+    }),
+    foreignKey({
+      name: "distribution_run_shortfalls_shareholder_fk",
+      columns: [table.tenantId, table.shareholderId],
+      foreignColumns: [shareholders.tenantId, shareholders.id],
+    }),
+    unique("distribution_run_shortfalls_run_shareholder_key").on(
+      table.tenantId,
+      table.distributionRunId,
+      table.shareholderId,
+    ),
+    // Target of the deduction's composite FK: a deduction is charged to the
+    // shareholder that owns the shortfall, never to another one.
+    unique("distribution_run_shortfalls_id_shareholder_key").on(
+      table.tenantId,
+      table.id,
+      table.shareholderId,
+    ),
+    // FIFO per shareholder: oldest first (created_at, id).
+    index("distribution_run_shortfalls_fifo_idx").on(
+      table.tenantId,
+      table.shareholderId,
+      table.createdAt,
+      table.id,
+    ),
+    check(
+      "distribution_run_shortfalls_amount_check",
+      sql`${table.amountIdr} > 0`,
+    ),
+  ],
+);
+
+/**
+ * `distribution_carry_deductions` (T): the part of a shortfall cut from one
+ * regular run's split of the same shareholder (founder rule Q83). Keeps the
+ * trail back to the originating adjustment. A shortfall's rest is its amount
+ * minus its deductions on runs that are not cancelled, so a rejected run
+ * releases its deduction without deleting a row. Append-only.
+ */
+export const distributionCarryDeductions = pgTable(
+  "distribution_carry_deductions",
+  {
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid("id").notNull().defaultRandom(),
+    /** The regular run whose split was reduced. */
+    distributionRunId: uuid("distribution_run_id").notNull(),
+    shortfallId: uuid("shortfall_id").notNull(),
+    profitEntityId: uuid("profit_entity_id").notNull(),
+    shareholderId: uuid("shareholder_id").notNull(),
+    amountIdr: idrColumn("amount_idr").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.id] }),
+    foreignKey({
+      name: "distribution_carry_deductions_run_fk",
+      columns: [table.tenantId, table.distributionRunId],
+      foreignColumns: [distributionRuns.tenantId, distributionRuns.id],
+    }),
+    foreignKey({
+      name: "distribution_carry_deductions_shortfall_fk",
+      columns: [table.tenantId, table.shortfallId, table.shareholderId],
+      foreignColumns: [
+        distributionRunShortfalls.tenantId,
+        distributionRunShortfalls.id,
+        distributionRunShortfalls.shareholderId,
+      ],
+    }),
+    foreignKey({
+      name: "distribution_carry_deductions_entity_fk",
+      columns: [table.tenantId, table.profitEntityId],
+      foreignColumns: [profitEntities.tenantId, profitEntities.id],
+    }),
+    foreignKey({
+      name: "distribution_carry_deductions_shareholder_fk",
+      columns: [table.tenantId, table.shareholderId],
+      foreignColumns: [shareholders.tenantId, shareholders.id],
+    }),
+    unique("distribution_carry_deductions_run_shortfall_key").on(
+      table.tenantId,
+      table.distributionRunId,
+      table.shortfallId,
+    ),
+    index("distribution_carry_deductions_shortfall_idx").on(
+      table.tenantId,
+      table.shortfallId,
+    ),
+    check(
+      "distribution_carry_deductions_amount_check",
+      sql`${table.amountIdr} > 0`,
+    ),
   ],
 );
 

@@ -24,10 +24,12 @@
 // - Tenant + outlet RLS and the update guard: edge-wifi.custom.sql.
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   check,
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   timestamp,
   unique,
@@ -35,7 +37,8 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { outletIdColumn, tenantIdColumn } from "../columns.ts";
+import type { EventEnvelope } from "@starter/shared/events";
+import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
 export const wifiDeviceGrants = pgTable(
@@ -180,3 +183,69 @@ export const wifiDeviceGrants = pgTable(
 );
 
 export type WifiDeviceGrantRow = typeof wifiDeviceGrants.$inferSelect;
+
+// Edge-local queue of `wifi_quota.updated` events waiting to be pushed to the
+// controller (bead legend-oeqme). The link receive transaction only writes a
+// row here (the controller or its agent may be down); the worker
+// (edge/wifi-quota-queue-worker.ts) applies it outside that transaction, with
+// backoff. A 503 from the agent therefore never holds the outlet link.
+//
+// - One row per cloud event; (tenant_id, event_id) is the replay guard.
+// - Order is per Wi-Fi session (one session = one device of one account): the
+//   event is full state, so only the newest pending row of a session is ever
+//   applied, older pending rows become `superseded`.
+// - Terminal states: applied, skipped (no live grant / session day over),
+//   superseded, refused (controller or domain said no, also recorded in
+//   edge_sync_conflicts) and failed (attempts used up, same conflict row).
+// - Edge-local operational table, never synced; same migration everywhere,
+//   empty on the cloud. Finished rows are pruned by the worker.
+// - Tenant + outlet RLS: edge-wifi.custom.sql.
+export const wifiQuotaApplyQueue = pgTable(
+  "wifi_quota_apply_queue",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    wifiSessionId: uuid("wifi_session_id").notNull(),
+    aggregateSequence: bigint("aggregate_sequence", {
+      mode: "number",
+    }).notNull(),
+    /** The forwarded envelope (no secrets: quota numbers and ids only). */
+    event: jsonb("event").$type<EventEnvelope>().notNull(),
+    status: varchar("status", { length: 12 }).notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    /** Error code of the last failed attempt (never a message or payload). */
+    lastError: varchar("last_error", { length: 100 }),
+    doneAt: timestamp("done_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    unique("wifi_quota_apply_queue_event_key").on(t.tenantId, t.eventId),
+    foreignKey({
+      name: "wifi_quota_apply_queue_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("wifi_quota_apply_queue_due_idx")
+      .on(t.tenantId, t.outletId, t.nextAttemptAt)
+      .where(sql`${t.status} = 'pending'`),
+    index("wifi_quota_apply_queue_session_idx").on(
+      t.tenantId,
+      t.outletId,
+      t.wifiSessionId,
+      t.aggregateSequence,
+    ),
+    check(
+      "wifi_quota_apply_queue_status_check",
+      sql`${t.status} IN ('pending','applied','skipped','superseded','refused','failed')`,
+    ),
+    check("wifi_quota_apply_queue_attempts_check", sql`${t.attempts} >= 0`),
+  ],
+);

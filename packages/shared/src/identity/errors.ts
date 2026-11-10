@@ -33,6 +33,15 @@ export const identityErrorHttpStatus = {
   APPROVAL_REQUEST_EXPIRED: 410,
   /** The user status change is not allowed (e.g. restoring a deleted account). */
   USER_STATUS_TRANSITION: 409,
+  // legend-k2l (ws08 M2/M3): member sign-in methods and identity merge.
+  /** Production has no email provider key yet, so no magic link can be sent. */
+  EMAIL_NOT_CONFIGURED: 503,
+  /** The other account is not WhatsApp-only; support must merge by hand. */
+  IDENTITY_MERGE_NEEDS_SUPPORT: 409,
+  /** A cross-device magic-link session cannot link WhatsApp or merge. */
+  IDENTITY_LINK_REAUTH_REQUIRED: 403,
+  /** This account already has another verified WhatsApp number. */
+  WHATSAPP_ALREADY_ON_ACCOUNT: 409,
 } as const satisfies Record<string, number>;
 
 export type IdentityErrorCode = keyof typeof identityErrorHttpStatus;
@@ -59,6 +68,15 @@ const defaultMessages: Record<IdentityErrorCode, string> = {
   APPROVAL_REQUEST_EXPIRED:
     "Batas waktu persetujuan sudah lewat. Ajukan ulang bila masih diperlukan.",
   USER_STATUS_TRANSITION: "Perubahan status akun ini tidak diizinkan.",
+  // legend-k2l
+  EMAIL_NOT_CONFIGURED:
+    "Masuk lewat email belum tersedia. Silakan masuk lewat WhatsApp.",
+  IDENTITY_MERGE_NEEDS_SUPPORT:
+    "Nomor ini sudah terhubung ke akun lain yang perlu diperiksa tim dukungan. Hubungi dukungan untuk menggabungkan akun.",
+  IDENTITY_LINK_REAUTH_REQUIRED:
+    "Link masuk dibuka di perangkat lain. Minta link baru dari perangkat ini sebelum menautkan WhatsApp.",
+  WHATSAPP_ALREADY_ON_ACCOUNT:
+    "Akun ini sudah terhubung ke nomor WhatsApp lain.",
 };
 
 export class IdentityError extends Error {

@@ -4,6 +4,8 @@ import { accessRouter } from "./access.routes";
 import { serviceRequestRouter } from "./service-request.routes";
 import { posOverrideRouter, staffPinRouter } from "./device-pin.routes";
 import { qrOrderRouter } from "./qr-order.routes";
+import { orderRecoveryRouter } from "./order-recovery.routes.ts";
+import { apologyVoucherRouter } from "./apology-voucher.routes.ts";
 import { healthRouter } from "./health.routes";
 import { inventoryRouter } from "./inventory.routes";
 import { createInventoryCountRouter } from "./inventory-count.routes.ts";
@@ -39,10 +41,9 @@ import { consentRouter, textOverridesRouter } from "./text-consent.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
+import { platformPaymentGatewaysRouter } from "./platform-payment-gateways.routes";
 import { createNotificationRouter } from "./notification.routes";
 import { taxRouter } from "./tax.routes";
-import { createMenuRouter } from "./menu.routes";
-import { createMenuImportRouter } from "./menu-import.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
 import { publicSiteRouter } from "./public-site.routes";
@@ -65,8 +66,10 @@ import { reservationRouter } from "./reservation.routes";
 import { reservationPolicyRouter } from "./reservation-policy.routes";
 import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityCustomerRouter } from "./facility-customer.routes";
+import { facilityEntitlementRouter } from "./facility-entitlement.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
+import { wifiGuestRouter } from "./wifi-guest.routes.ts";
 import { hrisRouter } from "./hris.routes";
 import { payrollLoanPolicyRouter } from "./payroll-loan-policy.routes";
 import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
@@ -102,12 +105,14 @@ import { hrisChecklistRouter } from "./hris-checklist.routes";
 import { hrisOffboardingRouter } from "./hris-offboarding.routes";
 import { hrisWorkCertificateRouter } from "./hris-work-certificate.routes";
 import { hrisKpiRouter } from "./hris-kpi.routes";
+import { hrisAttendanceCorrectionRouter } from "./hris-attendance-correction.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
+import { servingTimeRouter } from "./serving-time.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
 import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
@@ -119,6 +124,7 @@ import { deviceRouter } from "./device.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
 import { edgeWifiRouter } from "./edge-wifi.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
+import { edgePeopleSnapshotRouter } from "./edge-people-snapshot.routes.ts";
 import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
 import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
 import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
@@ -127,8 +133,13 @@ import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.t
 // legend-111j
 import { memberRouter } from "./member.routes.ts";
 import { loyaltyProgramRouter } from "./loyalty-program.routes.ts";
+import { customersRouter } from "./customers.routes.ts"; // legend-ts50
+import { segmentsRouter } from "./segments.routes.ts"; // legend-ts50
+import { feedbackRouter } from "./feedback.routes.ts"; // legend-ts50
+import { memberFeedbackRouter } from "./member-feedback.routes.ts"; // legend-ts50
 import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
 import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
+import { loyaltyTiersRouter } from "./loyalty-tiers.routes.ts"; // legend-3zd1
 import { posOrderCustomerRouter } from "./pos-order-customer.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
@@ -147,6 +158,7 @@ apiRouter.use(noStore);
 apiRouter.use("/health", healthRouter);
 // Panel Platform (Super Admin) and tenant organisation settings (WS-01).
 apiRouter.use("/platform", platformUsageRouter);
+apiRouter.use("/platform/payment-gateways", platformPaymentGatewaysRouter);
 apiRouter.use("/platform", platformRouter);
 apiRouter.use("/org", orgIntegrationsRouter);
 apiRouter.use("/org", orgRouter);
@@ -164,13 +176,12 @@ apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
 // Generic approval inbox for every module (WS-01 F7, legend-y5q).
 apiRouter.use("/approvals", approvalRouter);
-// Menu back office (WS-03, legend-lmk). No object-storage provider is wired
-// yet (WS-00 storage bead owns that), so the image upload answers 503 until
-// the bootstrap injects one; every other menu route is live.
-apiRouter.use("/menu", createMenuRouter());
-// Menu CSV/XLSX import + printable menu (WS-03, legend-dmi). Storage/PDF
-// renderer are deployment-injected; print answers 503 until they exist.
-apiRouter.use("/menu", createMenuImportRouter({}));
+// Menu back office (WS-03, legend-lmk). Mounted by createStorageApiRouter
+// (routes/storage-api.routes.ts, legend-7nv1) ahead of this router, because the
+// photo upload needs the object storage runtime: without one it answers 503;
+// every other menu route is live.
+// Menu CSV/XLSX import + printable menu (WS-03, legend-dmi): mounted by
+// createStorageApiRouter with the storage runtime (legend-0w2wy).
 // Inventory & warehouse (WS-06, bead legend-98t).
 apiRouter.use("/inventory", inventoryRouter);
 // Inventory setup writes + settings (WS-06, legend-gjmk).
@@ -213,6 +224,8 @@ apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 // WS-04 pickup display feed and call/picked-up (legend-mzhr0): per-route auth,
 // the prefix is shared with other outlet routers.
 apiRouter.use("/outlets/:outletId", pickupRouter);
+// WS-04 serving-time estimate (legend-gyc): per-route auth, shared prefix.
+apiRouter.use("/outlets/:outletId", servingTimeRouter);
 // WS-04 expo board, runner assignment and delivered (legend-him8j), same prefix.
 apiRouter.use("/outlets/:outletId", expoRouter);
 // WS-04 remake / comp log (legend-4b5): /api/outlets/:outletId/orders/:orderId/issues
@@ -236,6 +249,11 @@ apiRouter.use(serviceRequestRouter);
 apiRouter.use(openBillRouter);
 apiRouter.use("/tables", tablesRouter);
 apiRouter.use("/table-links", tableLinksRouter);
+// WS-04 failed paid item recovery (legend-4qu): full contract paths across
+// /order-items, /order-issues and /table-sessions, per-route guards. Before
+// /table-sessions so the guest order-issues list is not shadowed.
+apiRouter.use(orderRecoveryRouter);
+apiRouter.use("/apology-vouchers", apologyVoucherRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/table-sessions", qrOrderRouter);
 apiRouter.use("/qr", qrRouter);
@@ -284,9 +302,14 @@ apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/member", memberRouter);
 // legend-m4p5: rewards, redemptions, missions, member vouchers; staff rewards/missions/fulfil.
 apiRouter.use("/member", memberRewardsRouter);
+apiRouter.use("/member", memberFeedbackRouter); // legend-ts50
 // The next two keep full paths inside the router and guard each route.
 apiRouter.use(loyaltyProgramRouter);
+apiRouter.use(customersRouter); // legend-ts50
+apiRouter.use(segmentsRouter); // legend-ts50
+apiRouter.use(feedbackRouter); // legend-ts50
 apiRouter.use(loyaltyRewardsRouter); // legend-m4p5
+apiRouter.use(loyaltyTiersRouter); // legend-3zd1
 apiRouter.use(posOrderCustomerRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.
@@ -299,6 +322,10 @@ apiRouter.use(reservationPublicRouter);
 apiRouter.use("/facility", facilityCustomerRouter);
 // WS-09 facility slots (legend-nm4f).
 apiRouter.use("/facility", facilityRouter);
+// WS-09 staff entitlements (legend-fjk5), after facilityRouter.
+apiRouter.use("/facility", facilityEntitlementRouter);
+// WS-09 guest Wi-Fi sessions of a member (legend-kmd3). Before wifiConfigRouter, which requires a staff session on the same prefix.
+apiRouter.use("/wifi", wifiGuestRouter);
 // WS-09 Wi-Fi policy configuration writes (legend-8dpm).
 apiRouter.use("/wifi", wifiConfigRouter);
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp). Before `/hris`,
@@ -341,6 +368,11 @@ apiRouter.use(
   hrisWorkCertificateRouter,
   hrisKpiRouter,
 );
+// WS-10 attendance: selfie/geofence/device/QR clock, corrections, sampling
+// review, policy, duty meal (legend-wh71).
+// The employee and admin attendance routers need the storage signer, so
+// createApp mounts them (routes/storage-api.routes.ts) ahead of this router.
+apiRouter.use("/hris", hrisAttendanceCorrectionRouter);
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
 // legend-i57s equipment/maintenance/handovers). Two routers share the prefix;
 // each applies its middleware per route so unmatched paths pass through.
@@ -376,6 +408,8 @@ apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);
 apiRouter.use("/devices", deviceRouter);
 // Device registry replica feed for edge nodes: edge credential only.
 apiRouter.use("/edge-sync/device-records", deviceRecordSyncRouter);
+// People snapshot for edge clocking (WS-02/WS-10 C2, legend-ye4j1): edge credential only.
+apiRouter.use("/edge-sync/people-snapshot", edgePeopleSnapshotRouter);
 apiRouter.use("/edge-sync/bootstrap", edgeBootstrapRouter);
 apiRouter.use("/edge-sync-conflicts", edgeSyncConflictsRouter);
 

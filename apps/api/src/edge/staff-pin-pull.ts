@@ -21,6 +21,7 @@ import {
   applyStaffPinRecords,
   staffPinSyncPageSchema,
 } from "../services/staff-pin-sync.ts";
+import { logger } from "../lib/logger.ts";
 import { EdgeCloudHttpError } from "./cloud-http.ts";
 import { pullWithCursorRecovery } from "./device-registry-puller.ts";
 
@@ -43,13 +44,32 @@ export type PullStaffPinsOptions = {
   /** One page from the cloud for `cursor`; the raw JSON body. */
   readonly fetchPage: (cursor: string | null) => Promise<unknown>;
   readonly maxPages?: number;
+  /**
+   * legend-ideif: the tenant's derived peppers the page carried. Must store
+   * them durably (and install them) BEFORE the page is applied, so a record of
+   * a new pepper version never lands without the pepper that verifies it.
+   */
+  readonly onPeppers?: (
+    peppers: ReadonlyArray<{
+      readonly version: number;
+      readonly pepper: string;
+    }>,
+  ) => Promise<void>;
+  /** Default: the shared pool. Injected by tests that run a second database. */
+  readonly database?: Parameters<typeof applyStaffPinRecords>[2];
 };
 
 export type PullStaffPinsResult = {
   readonly applied: number;
   readonly skipped: number;
+  /** Records skipped because their user is not on this database yet. */
+  readonly missingUsers: number;
   readonly pages: number;
-  /** Store this after the pull; null = nothing replicated yet. */
+  /**
+   * Store this after the pull; null = nothing replicated yet. When a record
+   * was skipped for a missing user it stays at `since`, so the next cycle
+   * fetches those records again.
+   */
   readonly watermark: string | null;
 };
 
@@ -61,6 +81,7 @@ export async function pullStaffPins(
   let watermark = options.since;
   let applied = 0;
   let skipped = 0;
+  let missingUsers = 0;
   let pages = 0;
   for (;;) {
     if (pages >= maxPages)
@@ -75,9 +96,16 @@ export async function pullStaffPins(
     if (!parsed.success) throw new Error("Staff pin page has an unknown shape");
     const page = parsed.data;
     pages += 1;
-    const result = await applyStaffPinRecords(options.context, page.data);
+    if (page.meta.peppers !== undefined && page.meta.peppers.length > 0)
+      await options.onPeppers?.(page.meta.peppers);
+    const result = await applyStaffPinRecords(
+      options.context,
+      page.data,
+      options.database,
+    );
     applied += result.applied;
     skipped += result.skipped;
+    missingUsers += result.missingUsers ?? 0;
     // An empty page echoes the stored cursor, or has none: keep what we have.
     watermark = page.meta.watermark ?? watermark;
     if (page.meta.nextCursor === null) break;
@@ -88,7 +116,10 @@ export async function pullStaffPins(
       );
     cursor = page.meta.nextCursor;
   }
-  return { applied, skipped, pages, watermark };
+  // A record whose user the people snapshot has not delivered yet is retried:
+  // do not move the checkpoint past it (applying again is idempotent).
+  if (missingUsers > 0) watermark = options.since;
+  return { applied, skipped, missingUsers, pages, watermark };
 }
 
 /** True for the refusal of the stored cursor (see `createStaffPinPull`). */
@@ -104,6 +135,8 @@ export type StaffPinPullDeps = {
     signal: AbortSignal,
   ) => Promise<unknown>;
   readonly onRestart?: () => void;
+  /** See `PullStaffPinsOptions.onPeppers`. */
+  readonly onPeppers?: PullStaffPinsOptions["onPeppers"];
 };
 
 /**
@@ -126,6 +159,7 @@ export function createStaffPinPull(deps: StaffPinPullDeps): (
         return pullStaffPins({
           context: deps.context,
           since: from,
+          onPeppers: deps.onPeppers,
           fetchPage: async (cursor) => {
             const isFirst = first;
             first = false;
@@ -147,6 +181,12 @@ export function createStaffPinPull(deps: StaffPinPullDeps): (
       isStaffPinCursorRefused,
       deps.onRestart,
     );
+    // Count only, no ids: the people snapshot has not delivered these users.
+    if (result.missingUsers > 0)
+      logger.warn(
+        { missingUsers: result.missingUsers },
+        "Staff PIN records wait for their users from the people snapshot",
+      );
     return { watermark: result.watermark };
   };
 }

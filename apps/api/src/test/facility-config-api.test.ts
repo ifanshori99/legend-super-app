@@ -674,6 +674,61 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
       ).status,
     ).toBe(404);
 
+    // legend-kmd3: spendMode round-trips; absent in the body clears it (null in
+    // the DB) and reads back as no `spendMode` key.
+    const perOrder = await client
+      .put(`/api/wifi/policies/${policyId}`)
+      .set(originHeader)
+      .send({
+        ...body,
+        freeMinutes: 180,
+        peakFreeMinutes: 90,
+        spendMode: "per_order",
+        expectedUpdatedAt: replaced.body.data.updatedAt,
+      });
+    expect(perOrder.status, JSON.stringify(perOrder.body)).toBe(200);
+    putWifiPolicy.response.parse(perOrder.body);
+    expect(perOrder.body.data.spendMode).toBe("per_order");
+    const perDay = await client
+      .put(`/api/wifi/policies/${policyId}`)
+      .set(originHeader)
+      .send({
+        ...body,
+        freeMinutes: 180,
+        peakFreeMinutes: 90,
+        spendMode: "per_day_multiple",
+        expectedUpdatedAt: perOrder.body.data.updatedAt,
+      });
+    expect(perDay.status, JSON.stringify(perDay.body)).toBe(200);
+    expect(perDay.body.data.spendMode).toBe("per_day_multiple");
+    const cleared = await client
+      .put(`/api/wifi/policies/${policyId}`)
+      .set(originHeader)
+      .send({
+        ...body,
+        freeMinutes: 180,
+        peakFreeMinutes: 90,
+        expectedUpdatedAt: perDay.body.data.updatedAt,
+      });
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect(cleared.body.data.spendMode).toBeUndefined();
+    const modeAudit = (await auditEntries(policyId)).find(
+      (row) => row.after?.spendMode === "per_order",
+    );
+    expect(modeAudit?.before?.spendMode).toBeUndefined();
+    expect(
+      (
+        await client
+          .put(`/api/wifi/policies/${policyId}`)
+          .set(originHeader)
+          .send({
+            ...body,
+            spendMode: "weekly",
+            expectedUpdatedAt: cleared.body.data.updatedAt,
+          })
+      ).status,
+    ).toBe(422);
+
     const config = await client.get(
       `/api/facility/config?facilityId=${facilityId}`,
     );

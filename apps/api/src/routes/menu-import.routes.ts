@@ -67,6 +67,13 @@ export function createMenuImportRouter(options: {
         "SERVICE_UNAVAILABLE",
         "Penyimpanan belum tersedia.",
       );
+    // Fail closed: a PDF is never stored without a scanner (legend-0w2wy).
+    if (!options.scanner)
+      throw new HttpError(
+        503,
+        "SERVICE_UNAVAILABLE",
+        "Pemindai malware belum tersedia.",
+      );
     return {
       storage: options.storage,
       renderer: options.renderer ?? null,

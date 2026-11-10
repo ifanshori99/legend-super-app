@@ -6,8 +6,9 @@ import { env } from "./config/env";
 import { checkDatabase, pool } from "./db";
 import { logger } from "./lib/logger";
 import { createDoitGateway } from "./services/payment-doit.ts";
-import { setPaymentGateway } from "./services/payment-gateway.ts";
-import { setPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
+import { createDuitkuGateway } from "./services/payment-duitku.ts";
+import { registerPaymentGateway } from "./services/payment-gateway.ts";
+import { registerPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { installProfitShareStatementPorts } from "./services/profit-share-statement-ports.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -43,8 +44,19 @@ const app = createApp();
 // same adapter pays approved refunds (PaymentRefundPort, legend-0ogy) only
 // while DOIT_REFUNDS_ENABLED is on; otherwise the refund port stays fail-closed.
 const doitGateway = createDoitGateway();
-setPaymentGateway(doitGateway);
-if (env.DOIT_REFUNDS_ENABLED) setPaymentRefundGateway(doitGateway);
+registerPaymentGateway(doitGateway);
+if (env.DOIT_REFUNDS_ENABLED) registerPaymentRefundGateway(doitGateway);
+// Sub-302 D3: Duitku joins the registry when its public callback origin and
+// return page are configured; without them no Duitku intent could be paid,
+// so the provider stays unregistered (fail closed, cannot be enabled on the
+// platform). Duitku has no refund API: no refund port (D6).
+if (env.DUITKU_CALLBACK_BASE_URL && env.DUITKU_RETURN_URL)
+  registerPaymentGateway(
+    createDuitkuGateway({
+      callbackBaseUrl: env.DUITKU_CALLBACK_BASE_URL,
+      returnUrl: env.DUITKU_RETURN_URL,
+    }),
+  );
 // RSV-02 (legend-t8bz): DP links through WS-05 (fails closed without a gateway).
 setReservationDepositPort(createPaymentReservationDepositPort());
 // Staff device PIN (legend-obh5): a device names an outlet only through the

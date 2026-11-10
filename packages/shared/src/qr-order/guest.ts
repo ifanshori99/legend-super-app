@@ -442,6 +442,17 @@ export const getSplitClaim = defineEndpoint({
   response: dataResponseSchema(splitClaimSchema),
 });
 
+/**
+ * legend-ia54l: open the claim code with the claim token alone (header
+ * `Authorization: Bearer <claimToken>`), up to `claimableUntil`, also after the
+ * table session is closed. Unknown, used, expired or voided: 404.
+ */
+export const getSplitClaimByToken = defineEndpoint({
+  method: "GET",
+  path: "/api/table-sessions/split-claims/current",
+  response: dataResponseSchema(splitClaimSchema),
+});
+
 // ---- Order ETA (PRD "Status Pesanan ... dengan estimasi waktu") -----------------
 
 export const orderEtaSchema = z

@@ -5,10 +5,34 @@ import { HttpError } from "../lib/http-error.ts";
 export interface MalwareScanner {
   /** Resolves only when the object is accepted; rejects on detection or failure. */
   scan(bytes: Uint8Array): Promise<void>;
+  /** False when this scanner cannot vet non-image documents (PDF); uploads of
+   * those are refused. Absent means true. */
+  readonly acceptsDocuments?: boolean;
+}
+
+/**
+ * Refuses a document (PDF) upload when the scanner cannot vet documents: the
+ * production noop (legend-dzh9q). Call it BEFORE any blob is stored or any PDF
+ * is rendered, so a refusal leaves no orphan file (legend-0w2wy). Shared by the
+ * core-storage, menu print and shareholder document paths.
+ */
+export function assertScannerAcceptsDocuments(scanner: MalwareScanner): void {
+  if (scanner.acceptsDocuments === false)
+    throw new HttpError(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "Unggah dokumen PDF belum tersedia: pemindai malware belum dipasang.",
+    );
 }
 
 /** Development fake only; it does not detect malicious content. */
 export class NoopMalwareScanner implements MalwareScanner {
+  readonly acceptsDocuments: boolean;
+
+  constructor(options: { acceptsDocuments?: boolean } = {}) {
+    this.acceptsDocuments = options.acceptsDocuments ?? true;
+  }
+
   async scan(): Promise<void> {
     // Deliberately does not inspect content.
   }
@@ -58,6 +82,39 @@ export async function processImage(
   maxBytes: number,
   scanner: MalwareScanner,
 ): Promise<ProcessedImage> {
+  return processImageVariants(input, maxBytes, scanner, true);
+}
+
+/** Same checks and re-encode as `processImage`, full size only. The edge seals
+ * selfies without a thumbnail (design hris-edge-replication 5), so it skips
+ * the second encode. */
+export async function processImageFull(
+  input: Uint8Array,
+  maxBytes: number,
+  scanner: MalwareScanner,
+): Promise<{ full: ImageVariant }> {
+  const { full } = await processImageVariants(input, maxBytes, scanner, false);
+  return { full };
+}
+
+async function processImageVariants(
+  input: Uint8Array,
+  maxBytes: number,
+  scanner: MalwareScanner,
+  withThumbnail: true,
+): Promise<ProcessedImage>;
+async function processImageVariants(
+  input: Uint8Array,
+  maxBytes: number,
+  scanner: MalwareScanner,
+  withThumbnail: boolean,
+): Promise<{ full: ImageVariant; thumbnail: ImageVariant | null }>;
+async function processImageVariants(
+  input: Uint8Array,
+  maxBytes: number,
+  scanner: MalwareScanner,
+  withThumbnail: boolean,
+): Promise<{ full: ImageVariant; thumbnail: ImageVariant | null }> {
   if (
     !Number.isSafeInteger(maxBytes) ||
     maxBytes <= 0 ||
@@ -102,7 +159,10 @@ export async function processImage(
         height: info.height,
       };
     };
-    const [full, thumbnail] = await Promise.all([variant(2560), variant(480)]);
+    const [full, thumbnail] = await Promise.all([
+      variant(2560),
+      withThumbnail ? variant(480) : Promise.resolve(null),
+    ]);
     return { full, thumbnail };
   } catch {
     throw new HttpError(422, "INVALID_IMAGE", "Image could not be decoded.");

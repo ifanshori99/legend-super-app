@@ -33,6 +33,14 @@ export function installWifiEnforcement(impl: WifiEnforcement | null): void {
   enforcement = impl ?? notReadyEnforcement;
 }
 
+/**
+ * True while a real agent (or a test double) is installed: false on the cloud,
+ * on a standby, and while another process holds the outlet's agent lock.
+ */
+export function isWifiEnforcementInstalled(): boolean {
+  return enforcement !== notReadyEnforcement;
+}
+
 export function wifiEnforcement(): WifiEnforcement {
   return enforcement;
 }

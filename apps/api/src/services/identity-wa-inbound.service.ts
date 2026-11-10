@@ -23,8 +23,10 @@
 //   the receiving number that tenant's active `whatsapp` integration still
 //   maps. A message received on another tenant's number is rejected and the
 //   challenge stays pending.
-// - AUTH-03: nothing is ever sent back. There is no reply path here at all —
-//   the confirmation appears in the guest's browser.
+// - AUTH-03: nothing is sent back by default — the confirmation appears in the
+//   guest's browser. A tenant may opt in to a reply (`wa-login-reply.service`,
+//   default off, monthly quota). It is sent only after the transaction commits
+//   and never changes the outcome.
 // - "Pesan dari nomor yang tidak cocok dengan challenge ditolak tanpa membuka
 //   informasi akun" (§3 F6): an unknown, expired or already used code answers
 //   exactly like any other failed attempt, and the response never says whether
@@ -34,7 +36,7 @@
 // webhook pesan masuk tanpa isi pesan"); only the provider id, the keyed sender
 // digest and the outcome.
 
-import { and, eq, gt, ne, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, ne, isNull, sql } from "drizzle-orm";
 import {
   assertLoginMessageRateLimit,
   LOGIN_MESSAGE_RATE_WINDOW_MINUTES,
@@ -42,19 +44,22 @@ import {
   MINUTE_MS,
   normalizeWhatsAppNumber,
   identityLinkedEvent,
+  planIdentityMerge,
 } from "@starter/shared/identity";
-import { CoreError, createUlid, z } from "@starter/shared/core";
+import { CoreError, createUlid, z, type UserId } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { db } from "../db";
+import { domainEventOutbox } from "../db/schema/core-events";
 import {
   loginChallenges,
   tenants,
   waInboundMessages,
   userIdentities,
   session,
+  user,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import {
@@ -65,13 +70,23 @@ import {
 import { sealSecret } from "../lib/secrets.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { onWhatsAppVerified } from "./member-profile.service.ts";
 import { resolveWhatsAppAccount } from "./identity-account.service";
 import { resolveWhatsAppChannel } from "./identity-login.service";
 import {
+  mergeAbsorbedIntoSurvivor,
+  type MergeOutcome,
+} from "./identity-merge.service.ts";
+import {
+  LOGIN_AUDIT_SAFE_FIELDS,
   maskSenderForAudit,
   recordLoginAudit,
   type LoginAuditAction,
 } from "./identity-wa-audit.ts";
+import {
+  sendLoginReply,
+  type LoginReplySender,
+} from "./wa-login-reply.service.ts";
 
 /** One inbound text message, already reduced to the fields the flow needs. */
 export type InboundWhatsAppMessage = {
@@ -190,6 +205,15 @@ export type ProcessInboundDeps = {
   readonly resolveAccount?: typeof resolveWhatsAppAccount;
   /** Test seam to verify link, audit, outbox and claim roll back together. */
   readonly afterLinkWrite?: () => Promise<void>;
+  /** Optional WhatsApp reply sender; no sender means no reply (AUTH-03). */
+  readonly sendReply?: LoginReplySender;
+};
+
+type PendingReply = {
+  tenantId: string;
+  brandId: string | null;
+  kind: "success" | "error" | "merged";
+  maskedEmail: string | null;
 };
 
 /** Records the outcome of a claimed message; the claim itself is the dedupe. */
@@ -294,7 +318,10 @@ export async function processInboundWhatsApp(
     JSON.stringify([message.receivingNumber, message.sender, message.text]),
   );
 
-  return withInboundSlot(() =>
+  // Set inside the transaction, used only after it commits.
+  let pendingReply: PendingReply | null = null;
+
+  const outcome = await withInboundSlot<InboundOutcome>(() =>
     db.transaction(async (tx) => {
       // AUTH-04 serializes the quota check and insertion for each sender.
       await tx.execute(
@@ -351,6 +378,9 @@ export async function processInboundWhatsApp(
         };
       }
 
+      const merged: { value: { maskedEmail: string | null } | null } = {
+        value: null,
+      };
       const challenge = await pendingChallengeFor(
         tx,
         code,
@@ -372,9 +402,25 @@ export async function processInboundWhatsApp(
             now,
           },
           deps.afterLinkWrite,
+          (maskedEmail) => {
+            merged.value = { maskedEmail };
+          },
         );
-        const kind: InboundKind = completed ? "login" : "rejected";
-        if (!completed)
+        const kind: InboundKind =
+          completed === "completed" ? "login" : "rejected";
+        if (completed !== "unrouted")
+          pendingReply = {
+            tenantId: challenge.tenantId,
+            brandId: challenge.brandId,
+            kind:
+              completed === "refused"
+                ? "error"
+                : merged.value
+                  ? "merged"
+                  : "success",
+            maskedEmail: merged.value?.maskedEmail ?? null,
+          };
+        if (completed !== "completed")
           await auditRejected(tx, challenge, message.sender, now, true);
         await finish(tx, claim.id, {
           kind,
@@ -399,8 +445,16 @@ export async function processInboundWhatsApp(
         senderMasked: maskSenderForAudit(message.sender),
         now,
       });
-      const kind: InboundKind = completed ? "login" : "rejected";
-      if (!completed)
+      const kind: InboundKind =
+        completed === "completed" ? "login" : "rejected";
+      if (completed !== "unrouted")
+        pendingReply = {
+          tenantId: challenge.tenantId,
+          brandId: challenge.brandId,
+          kind: completed === "completed" ? "success" : "error",
+          maskedEmail: null,
+        };
+      if (completed !== "completed")
         await auditRejected(tx, challenge, message.sender, now, false);
       await finish(tx, claim.id, {
         kind,
@@ -410,6 +464,22 @@ export async function processInboundWhatsApp(
       return { eventId: message.eventId, duplicate: false, kind };
     }),
   );
+
+  // After commit, never inside the transaction. A reply failure is swallowed.
+  const reply = pendingReply as PendingReply | null;
+  if (reply && !outcome.duplicate)
+    await sendLoginReply({
+      sender: deps.sendReply,
+      tenantId: reply.tenantId,
+      brandId: reply.brandId,
+      receivingNumber: message.receivingNumber,
+      to: message.sender,
+      eventId: message.eventId,
+      kind: reply.kind,
+      maskedEmail: reply.maskedEmail,
+      now: deps.now ?? new Date(),
+    });
+  return outcome;
 }
 
 /** A found challenge whose completion was refused (inactive tenant, number
@@ -524,6 +594,13 @@ async function pendingChallengeFor(
 }
 
 /**
+ * Result of completing a challenge. `unrouted`: the tenant is not active or no
+ * longer routes this number, so no reply is owed. `refused`: refused after both
+ * checks passed (lost race, stale session, merge refusal): the guest is told.
+ */
+type Completion = "completed" | "refused" | "unrouted";
+
+/**
  * Completes the challenge inside the tenant's transaction: the tenant must
  * still be active and must still route this receiving number to itself. The
  * conditional UPDATE is what makes completion single-use.
@@ -539,7 +616,7 @@ async function completeChallenge(
     senderMasked: string | null;
     now: Date;
   },
-): Promise<boolean> {
+): Promise<Completion> {
   const tenant = establishTenantContext({
     tenantId: input.tenantId,
     brandId: input.brandId,
@@ -555,7 +632,7 @@ async function completeChallenge(
         .from(tenants)
         .where(eq(tenants.id, input.tenantId))
         .limit(1);
-      if (tenantRow?.status !== "active") return false;
+      if (tenantRow?.status !== "active") return "unrouted";
       // Resolve the tenant from the receiving number: the tenant's own active
       // integration must still name this number, otherwise this message is not
       // theirs to complete.
@@ -570,7 +647,7 @@ async function completeChallenge(
         },
       );
       if (!channel || channel.routingNumber !== input.receivingNumber)
-        return false;
+        return "unrouted";
       const updated = await tx
         .update(loginChallenges)
         .set({
@@ -585,7 +662,7 @@ async function completeChallenge(
           ),
         )
         .returning({ id: loginChallenges.id });
-      if (updated.length !== 1) return false;
+      if (updated.length !== 1) return "refused";
       await recordLoginAudit(tx, context, {
         action: "login_challenge.completed",
         challengeId: input.challengeId,
@@ -598,7 +675,7 @@ async function completeChallenge(
         },
         now: input.now,
       });
-      return true;
+      return "completed";
     },
   );
 }
@@ -617,8 +694,9 @@ async function completeLink(
     now: Date;
   },
   afterLinkWrite?: () => Promise<void>,
-): Promise<boolean> {
-  if (!input.linkUserId || !input.linkSessionId) return false;
+  onMerged?: (maskedEmail: string | null) => void,
+): Promise<Completion> {
+  if (!input.linkUserId || !input.linkSessionId) return "unrouted";
   const userId = input.linkUserId;
   const tenant = establishTenantContext({
     tenantId: input.tenantId,
@@ -631,6 +709,25 @@ async function completeLink(
     transaction as unknown as typeof db,
     context,
     async (tx) => {
+      // Refusals before these two checks are silent: a suspended tenant, or a
+      // number its integration no longer maps, is not theirs to answer on.
+      const [tenantRow] = await tx
+        .select({ status: tenants.status })
+        .from(tenants)
+        .where(eq(tenants.id, input.tenantId));
+      if (tenantRow?.status !== "active") return "unrouted";
+      const channel = await resolveWhatsAppChannel(tx, context).catch(
+        (error: unknown) => {
+          if (
+            error instanceof CoreError &&
+            error.code === "SERVICE_UNAVAILABLE"
+          )
+            return null;
+          throw error;
+        },
+      );
+      if (!channel || channel.routingNumber !== input.receivingNumber)
+        return "unrouted";
       // Serialize both the challenge and all attempts for this number.
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${digest}, 0))`,
@@ -647,9 +744,9 @@ async function completeLink(
         challenge.linkUserId !== userId ||
         challenge.linkSessionId !== input.linkSessionId
       )
-        return false;
+        return "refused";
       const [active] = await tx
-        .select({ id: session.id })
+        .select({ id: session.id, authCrossDevice: session.authCrossDevice })
         .from(session)
         .where(
           and(
@@ -660,24 +757,42 @@ async function completeLink(
           ),
         )
         .for("update");
-      if (!active) return false;
-      const [tenantRow] = await tx
-        .select({ status: tenants.status })
-        .from(tenants)
-        .where(eq(tenants.id, input.tenantId));
-      if (tenantRow?.status !== "active") return false;
-      const channel = await resolveWhatsAppChannel(tx, context).catch(
-        (error: unknown) => {
-          if (
-            error instanceof CoreError &&
-            error.code === "SERVICE_UNAVAILABLE"
-          )
-            return null;
-          throw error;
-        },
-      );
-      if (!channel || channel.routingNumber !== input.receivingNumber)
-        return false;
+      if (!active) return "refused";
+      // legend-k2l (design M2/M3 rule 2): a session opened through a magic link
+      // on another device may not prove a number. The challenge request already
+      // refuses it (IDENTITY_LINK_REAUTH_REQUIRED); this re-check covers a
+      // session whose flag changed meanwhile. Cancelled without a matched user
+      // so the poll shows no conflict. TBD-verify the poll mapping (slice C).
+      if (active.authCrossDevice) {
+        await tx
+          .update(loginChallenges)
+          .set({ status: "cancelled" })
+          .where(eq(loginChallenges.id, input.id));
+        return "refused";
+      }
+      // legend-k2l: one WhatsApp number per account
+      // (`user_identities_one_whatsapp_per_user`). A different number already
+      // on this account cancels with the caller as matched user, which the poll
+      // reads as WHATSAPP_ALREADY_ON_ACCOUNT. Any row counts, verified or not:
+      // an unverified one would still collide with the insert below.
+      const [otherNumber] = await tx
+        .select({ id: userIdentities.id })
+        .from(userIdentities)
+        .where(
+          and(
+            eq(userIdentities.userId, userId),
+            eq(userIdentities.type, "whatsapp"),
+            ne(userIdentities.valueHash, digest),
+          ),
+        )
+        .limit(1);
+      if (otherNumber) {
+        await tx
+          .update(loginChallenges)
+          .set({ status: "cancelled", matchedUserId: userId })
+          .where(eq(loginChallenges.id, input.id));
+        return "refused";
+      }
       const [existing] = await tx
         .select()
         .from(userIdentities)
@@ -687,18 +802,99 @@ async function completeLink(
             eq(userIdentities.valueHash, digest),
           ),
         );
+      // legend-k2l: the number belongs to another account V. Fold the two when
+      // V is WhatsApp-only; otherwise refuse as before. The OLDER account
+      // survives (`planIdentityMerge`: createdAt, tie: smaller id), so the
+      // survivor is V as often as it is the signed-in user U.
+      let merge: Extract<MergeOutcome, { kind: "merged" }> | null = null;
       if (existing && existing.userId !== userId) {
-        // Preserve the actual match without exposing it to the polling browser.
-        // A cancelled link with a different matched user is the conflict signal.
-        await tx
-          .update(loginChallenges)
-          .set({ status: "cancelled", matchedUserId: existing.userId })
-          .where(eq(loginChallenges.id, input.id));
-        return false;
+        const ages = await tx
+          .select({ id: user.id, createdAt: user.createdAt })
+          .from(user)
+          .where(inArray(user.id, [userId, existing.userId]));
+        const signedInAge = ages.find((row) => row.id === userId);
+        const holderAge = ages.find((row) => row.id === existing.userId);
+        const plan =
+          signedInAge && holderAge
+            ? planIdentityMerge({
+                a: {
+                  id: userId as UserId,
+                  createdAt: signedInAge.createdAt.toISOString(),
+                },
+                b: {
+                  id: existing.userId as UserId,
+                  createdAt: holderAge.createdAt.toISOString(),
+                },
+                identities: [],
+              })
+            : null;
+        const outcome: MergeOutcome = plan
+          ? await mergeAbsorbedIntoSurvivor(tx, {
+              survivorUserId: plan.survivorId,
+              absorbedUserId: plan.mergedId,
+              whatsappIdentityId: existing.id,
+              trigger: "whatsapp_link",
+              actorUserId: userId,
+              now: input.now,
+            })
+          : {
+              kind: "refused",
+              code: "IDENTITY_MERGE_NEEDS_SUPPORT",
+              reason: "account_unavailable",
+            };
+        if (outcome.kind === "refused") {
+          // Preserve the actual match without exposing it to the polling
+          // browser. A cancelled link with a different matched user is the
+          // conflict signal; the poll maps it to the refusal code.
+          await tx
+            .update(loginChallenges)
+            .set({ status: "cancelled", matchedUserId: existing.userId })
+            .where(eq(loginChallenges.id, input.id));
+          await recordAudit(
+            tx,
+            context,
+            {
+              id: createUlid(),
+              tenantId: input.tenantId,
+              outletId: null,
+              actorType: "user",
+              actorId: userId,
+              deviceId: null,
+              action: "identity.merge_refused",
+              objectType: "login_challenge",
+              objectId: input.id,
+              reason: null,
+              maskedChanges: {
+                before: null,
+                after: { cause: outcome.code, status: outcome.reason },
+              },
+              ipHash: null,
+              sensitiveAccess: false,
+              retentionClass: "audit_2y",
+              createdAt: input.now.toISOString(),
+            },
+            LOGIN_AUDIT_SAFE_FIELDS,
+          );
+          return "refused";
+        }
+        merge = outcome;
+        onMerged?.(outcome.maskedSurvivorEmail);
       }
-      let identity = existing;
-      if (!identity || identity.verifiedAt === null) {
-        if (identity) {
+      // The account that keeps the number and everything else from here on.
+      const survivorUserId = merge ? merge.survivorUserId : userId;
+      // After a merge the identity row already belongs to the survivor: moved
+      // there (V absorbed, no longer primary) or kept (V is the survivor).
+      const identityMoved =
+        merge !== null && merge.absorbedUserId === existing?.userId;
+      let identity = existing
+        ? {
+            ...existing,
+            userId: survivorUserId,
+            isPrimary: identityMoved ? false : existing.isPrimary,
+          }
+        : existing;
+      if (merge || !identity || identity.verifiedAt === null) {
+        if (identity && identity.verifiedAt === null) {
           const [verified] = await tx
             .update(userIdentities)
             .set({
@@ -711,7 +907,7 @@ async function completeLink(
             .returning();
           if (!verified) throw new Error("Identity could not be verified");
           identity = verified;
-        } else {
+        } else if (!identity) {
           const [inserted] = await tx
             .insert(userIdentities)
             .values({
@@ -727,11 +923,31 @@ async function completeLink(
             })
             .onConflictDoNothing()
             .returning();
-          if (!inserted) return false;
+          if (!inserted) return "refused";
           identity = inserted;
         }
+        if (!identity) throw new Error("Identity missing after link");
         await afterLinkWrite?.();
         const def = identityLinkedEvent;
+        // legend-k2l: a merged identity row already emitted identity.linked
+        // under the absorbed account, so the aggregate's next sequence and a
+        // merge-scoped idempotency key are needed (unique per aggregate).
+        let linkedSequence = 1;
+        if (merge) {
+          const [last] = await tx
+            .select({
+              max: sql<string | null>`max(${domainEventOutbox.sequence})`,
+            })
+            .from(domainEventOutbox)
+            .where(
+              and(
+                eq(domainEventOutbox.tenantId, input.tenantId),
+                eq(domainEventOutbox.aggregateType, def.entry.aggregateType),
+                eq(domainEventOutbox.aggregateId, identity.id),
+              ),
+            );
+          linkedSequence = last?.max ? Number(last.max) + 1 : 1;
+        }
         const event = def.envelopeSchema.parse({
           id: createUlid(),
           tenantId: input.tenantId,
@@ -740,15 +956,17 @@ async function completeLink(
           version: def.version,
           aggregateType: def.entry.aggregateType,
           aggregateId: identity.id,
-          sequence: 1,
+          sequence: linkedSequence,
           occurredAt: input.now.toISOString(),
-          actor: { type: "user", id: userId },
+          actor: { type: "user", id: survivorUserId },
           deviceId: null,
-          idempotencyKey: `identity.linked:${identity.id}`,
+          idempotencyKey: merge
+            ? `identity.linked:${identity.id}:merge:${merge.mergeId}`
+            : `identity.linked:${identity.id}`,
           payloadSchemaRef: def.payloadSchemaRef,
           payload: {
             identityId: identity.id,
-            userId,
+            userId: survivorUserId,
             type: "whatsapp",
             isPrimary: identity.isPrimary,
           },
@@ -765,7 +983,7 @@ async function completeLink(
           tenantId: input.tenantId,
           outletId: null,
           actorType: "user",
-          actorId: userId,
+          actorId: survivorUserId,
           deviceId: null,
           action: "identity.linked",
           objectType: "user_identity",
@@ -777,29 +995,65 @@ async function completeLink(
           retentionClass: "audit_2y",
           createdAt: input.now.toISOString(),
         });
+        if (merge) {
+          // The merge row is global; this is its tenant-visible trail: the
+          // trigger and the two account ids (survivor and absorbed), never an
+          // e-mail or a number.
+          await recordAudit(
+            tx,
+            context,
+            {
+              id: createUlid(),
+              tenantId: input.tenantId,
+              outletId: null,
+              actorType: "user",
+              actorId: userId,
+              deviceId: null,
+              action: "identity.merged",
+              objectType: "identity_merge",
+              objectId: merge.mergeId,
+              reason: null,
+              maskedChanges: {
+                before: null,
+                after: {
+                  cause: "whatsapp_link",
+                  status: "merged",
+                  survivorUserId: merge.survivorUserId,
+                  absorbedUserId: merge.absorbedUserId,
+                },
+              },
+              ipHash: null,
+              sensitiveAccess: false,
+              retentionClass: "audit_2y",
+              createdAt: input.now.toISOString(),
+            },
+            LOGIN_AUDIT_SAFE_FIELDS,
+          );
+        }
       }
+      await onWhatsAppVerified(tx, survivorUserId, digest);
       await tx
         .update(loginChallenges)
         .set({
           status: "completed",
-          matchedUserId: userId,
+          matchedUserId: survivorUserId,
           completedAt: input.now,
         })
         .where(eq(loginChallenges.id, input.id));
       await recordLoginAudit(tx, context, {
         action: "login_challenge.completed",
         challengeId: input.id,
-        actorUserId: userId,
+        actorUserId: survivorUserId,
         details: {
           channel: "whatsapp_inbound",
           status: "completed",
           linking: true,
-          matchedUserId: userId,
+          matchedUserId: survivorUserId,
           senderMasked: maskSenderForAudit(input.sender),
         },
         now: input.now,
       });
-      return true;
+      return "completed";
     },
   );
 }

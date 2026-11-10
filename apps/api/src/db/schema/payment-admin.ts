@@ -23,6 +23,7 @@ import {
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
 import { paymentIntents, paymentUnallocatedFunds } from "./payment";
+import { orderIssues } from "./kds-issues";
 
 export const paymentEdcTerminals = pgTable(
   "payment_edc_terminals",
@@ -131,6 +132,8 @@ export const paymentRefunds = pgTable(
     outletId: outletIdColumn(() => outlets.id).notNull(),
     paymentIntentId: uuid("payment_intent_id").notNull(),
     unallocatedFundId: uuid("unallocated_fund_id"),
+    /** Failed-item recovery issue this refund pays out (ORD-09, legend-94q2l); null for every other refund. */
+    orderIssueId: uuid("order_issue_id"),
     amountIdr: idrColumn("amount_idr").notNull(),
     reason: text("reason").notNull(),
     providerRef: varchar("provider_ref", { length: 100 }),
@@ -195,6 +198,11 @@ export const paymentRefunds = pgTable(
       columns: [t.tenantId, t.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
+    foreignKey({
+      name: "payment_refunds_order_issue_fk",
+      columns: [t.tenantId, t.orderIssueId],
+      foreignColumns: [orderIssues.tenantId, orderIssues.id],
+    }),
     index("payment_refunds_intent_idx").on(
       t.tenantId,
       t.paymentIntentId,
@@ -208,6 +216,13 @@ export const paymentRefunds = pgTable(
     uniqueIndex("payment_refunds_approval_chain_uq")
       .on(t.tenantId, t.approvalChainId)
       .where(sql`${t.approvalChainId} IS NOT NULL`),
+    index("payment_refunds_order_issue_idx")
+      .on(t.tenantId, t.orderIssueId)
+      .where(sql`${t.orderIssueId} IS NOT NULL`),
+    // One live refund per recovery issue; a failed one frees the issue for a retry.
+    uniqueIndex("payment_refunds_order_issue_unique")
+      .on(t.tenantId, t.orderIssueId)
+      .where(sql`${t.orderIssueId} IS NOT NULL AND ${t.status} <> 'failed'`),
     uniqueIndex("payment_refunds_provider_ref_idx")
       .on(t.tenantId, t.providerRef)
       .where(sql`${t.providerRef} IS NOT NULL`),

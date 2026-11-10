@@ -1,6 +1,6 @@
 -- Custom SQL migration file, put your code below! ---
 -- Profit share & dividends (WS-07, bead legend-2ljb; PRD v1.7 §3.37, §4 P,
--- §6 I; SH-03, SH-04). Appended to drizzle/0219_profit_share.sql.
+-- §6 I; SH-03, SH-04). Appended to drizzle/0217_profit_share.sql.
 --
 -- 1. Tenant RLS on every table (TEN-01/02). None is outlet-owned (an outlet
 --    profit entity is still tenant data managed by finance), so tenant RLS only.
@@ -378,7 +378,7 @@ BEGIN
     run_tenant := NEW.tenant_id;
     run_id := NEW.distribution_run_id;
   END IF;
-  SELECT r.type, r.total_gross_idr, r.total_tax_withheld_idr, r.total_net_idr INTO run_row
+  SELECT r.type, r.carry_deducted_idr, r.total_gross_idr, r.total_tax_withheld_idr, r.total_net_idr INTO run_row
   FROM public.distribution_runs r
   WHERE r.tenant_id = run_tenant AND r.id = run_id;
   IF NOT FOUND THEN
@@ -387,15 +387,18 @@ BEGIN
   SELECT count(*) AS n, coalesce(sum(l.gross_idr), 0) AS gross,
          coalesce(sum(l.tax_withheld_idr), 0) AS tax,
          coalesce(sum(l.net_idr), 0) AS net,
-         coalesce(sum(l.share_bp), 0) AS bp
+         coalesce(sum(l.share_bp), 0) AS bp,
+         coalesce(sum(l.carry_deducted_idr), 0) AS carry
   INTO sums
   FROM public.distribution_lines l
   WHERE l.tenant_id = run_tenant AND l.distribution_run_id = run_id;
   IF sums.n = 0 OR sums.gross <> run_row.total_gross_idr
      OR sums.tax <> run_row.total_tax_withheld_idr
      OR sums.net <> run_row.total_net_idr
-     -- A regular run carries every share (10000 bp). A claw-back (founder rule
-     -- Q83) leaves out a shareholder with nothing left to give back.
+     OR sums.carry <> run_row.carry_deducted_idr
+     -- A regular run carries every share (10000 bp), a share the carry absorbs
+     -- completely as a gross 0 line (founder rule Q83). A claw-back leaves out a
+     -- shareholder with nothing left to give back.
      OR (run_row.type = 'regular' AND sums.bp <> 10000)
      OR (run_row.type = 'adjustment' AND (sums.bp < 1 OR sums.bp > 10000)) THEN
     RAISE EXCEPTION 'SH-04: lines of distribution run % do not match its totals', run_id

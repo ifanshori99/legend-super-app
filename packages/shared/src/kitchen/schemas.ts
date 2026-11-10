@@ -522,6 +522,36 @@ export const channelPauseSchema = z.strictObject({
   createdBy: userIdSchema.nullable(),
 });
 
+/**
+ * legend-7svpq: kitchen config sets the load of a menu line. One row per
+ * outlet and line (item + optional variant); a repeated PUT with the same
+ * values is a no-op.
+ */
+export const menuLoadInputSchema = z.strictObject({
+  menuItemId: uuidSchema,
+  variantId: uuidSchema.nullable(),
+  loadPoints: z.number().int().positive().max(100),
+  prepSeconds: z.number().int().positive().max(7200),
+});
+
+/**
+ * legend-7svpq: a supervisor pauses a menu line for chosen channels. The
+ * automatic pacing never lifts or edits a manual pause. `pausedUntil` null =
+ * until released; a past instant is refused.
+ */
+export const manualChannelPauseInputSchema = z.strictObject({
+  menuItemId: uuidSchema,
+  variantId: uuidSchema.nullable(),
+  channels: z
+    .array(channelSchema)
+    .min(1)
+    .max(6)
+    .refine((channels) => new Set(channels).size === channels.length, {
+      message: "Duplicate channel",
+    }),
+  pausedUntil: isoDateTimeSchema.nullable(),
+});
+
 /* ----------------------------------------------------------- all-day count */
 
 /** F12 "All-Day Count": queued quantity per item on one station, for batch prep. */
@@ -1091,6 +1121,10 @@ export type CapacityRuleInput = z.infer<typeof capacityRuleInputSchema>;
 export type StationPacing = z.infer<typeof stationPacingSchema>;
 export type PacingSnapshot = z.infer<typeof pacingSnapshotSchema>;
 export type ChannelPause = z.infer<typeof channelPauseSchema>;
+export type MenuLoadInput = z.infer<typeof menuLoadInputSchema>;
+export type ManualChannelPauseInput = z.infer<
+  typeof manualChannelPauseInputSchema
+>;
 export type AllDayCountRow = z.infer<typeof allDayCountRowSchema>;
 export type AllDayCount = z.infer<typeof allDayCountSchema>;
 export type ExpoStationTicket = z.infer<typeof expoStationTicketSchema>;

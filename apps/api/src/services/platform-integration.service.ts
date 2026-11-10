@@ -26,9 +26,14 @@ import {
 } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
+  GATEWAY_CREDENTIAL_SPECS,
+  GATEWAY_PREVIOUS_VALID_UNTIL,
   PlatformError,
   canTransitionIntegration,
   featureFlagsSchema,
+  gatewayCredentialIssues,
+  isGatewayPreviousKey,
+  isGatewayProvider,
   isIntegrationProviderAvailable,
   resolveIntegration,
   tenantIntegrationSchema,
@@ -50,6 +55,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { newSecretRef, openSecret, sealSecret } from "../lib/secrets.ts";
 import { recordAudit, type AuditTransaction } from "./audit-writer.ts";
 import { clearDoitWebhookSecretCache } from "./payment-webhook.service.ts";
+import { gatewaySecretGraceMs } from "./platform-payment-gateway.service.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -94,6 +100,8 @@ function sealCredentials(
   tenantId: string,
   integrationId: string,
   credentials: Record<string, string>,
+  /** Fields the client sent; `previous*` keys of a rotation stay unlisted. */
+  clientFields: readonly string[] = Object.keys(credentials),
 ) {
   const sealed = sealSecret(
     canonicalJson(credentials),
@@ -102,7 +110,7 @@ function sealCredentials(
   return {
     credentialsEncrypted: sealed,
     credentialsKeyVersion: sealedVersion(sealed),
-    credentialFields: Object.keys(credentials).sort(),
+    credentialFields: [...clientFields].sort(),
   };
 }
 
@@ -123,6 +131,62 @@ function openCredentials(row: IntegrationRow): Record<string, string> {
   return parsed as Record<string, string>;
 }
 
+/** The fields a client sent: a gateway blob also holds server-written `previous*` keys. */
+function clientCredentialFields(
+  provider: IntegrationProvider,
+  credentials: Record<string, string>,
+): Record<string, string> {
+  if (!isGatewayProvider(provider)) return credentials;
+  return Object.fromEntries(
+    Object.entries(credentials).filter(([key]) => !isGatewayPreviousKey(key)),
+  );
+}
+
+/**
+ * Sealed blob of a replaced gateway credential set (sub-302 D17). When a
+ * rotating field changed, the old values ride along as `previous*` plus
+ * `previousValidUntil` (one generation only: older previous* keys are
+ * dropped). Otherwise an existing previous generation is carried through.
+ */
+function withPreviousGeneration(
+  provider: IntegrationProvider,
+  stored: Record<string, string> | null,
+  incoming: Record<string, string>,
+  graceMs: number,
+): { credentials: Record<string, string>; previousValidUntil: string | null } {
+  if (!isGatewayProvider(provider) || !stored)
+    return { credentials: incoming, previousValidUntil: null };
+  const spec = GATEWAY_CREDENTIAL_SPECS[provider as "doit" | "duitku"];
+  const previousKeys = spec.previous as Record<string, string>;
+  const rotatingChanged = spec.rotating.some(
+    (field) => stored[field] !== undefined && stored[field] !== incoming[field],
+  );
+  if (!rotatingChanged) {
+    const carried = Object.fromEntries(
+      Object.entries(stored).filter(([key]) => isGatewayPreviousKey(key)),
+    );
+    return {
+      credentials: { ...incoming, ...carried },
+      previousValidUntil: null,
+    };
+  }
+  const previousValidUntil = new Date(Date.now() + graceMs).toISOString();
+  const previous: Record<string, string> = {};
+  for (const field of spec.rotating) {
+    const key = previousKeys[field];
+    const value = stored[field];
+    if (key !== undefined && value !== undefined) previous[key] = value;
+  }
+  return {
+    credentials: {
+      ...incoming,
+      ...previous,
+      [GATEWAY_PREVIOUS_VALID_UNTIL]: previousValidUntil,
+    },
+    previousValidUntil,
+  };
+}
+
 /** True when `incoming` equals what is stored (idempotent PUT keeps the blob). */
 function sameStoredCredentials(
   row: IntegrationRow,
@@ -130,7 +194,11 @@ function sameStoredCredentials(
 ): boolean {
   if (!row.credentialsEncrypted) return false;
   try {
-    return canonicalJson(openCredentials(row)) === canonicalJson(incoming);
+    return (
+      canonicalJson(
+        clientCredentialFields(row.provider, openCredentials(row)),
+      ) === canonicalJson(incoming)
+    );
   } catch {
     // Unreadable blob (tampered, foreign key): replace it with the new one.
     return false;
@@ -207,6 +275,36 @@ async function audit(
       reason: null,
       before: entry.before ? auditSnapshot(entry.before) : null,
       after: auditSnapshot(entry.row),
+      sensitiveAccess: false,
+    },
+    { tx: tx as AuditTransaction, context },
+  );
+}
+
+/** Audit row whose `after` is a small named payload (no row snapshot, no secret). */
+async function auditDetail(
+  tx: Tx,
+  context: ScopedTenantContext,
+  entry: {
+    action: string;
+    actorUserId: string | null;
+    row: IntegrationRow;
+    detail: Record<string, unknown>;
+  },
+): Promise<void> {
+  await recordAudit(
+    {
+      tenantId: context.tenant.tenantId,
+      outletId: entry.row.outletId,
+      actorType: entry.actorUserId ? "user" : "system",
+      actorId: entry.actorUserId,
+      deviceId: null,
+      action: entry.action,
+      objectType: "tenant_integration",
+      objectId: entry.row.id,
+      reason: null,
+      before: null,
+      after: entry.detail,
       sensitiveAccess: false,
     },
     { tx: tx as AuditTransaction, context },
@@ -405,6 +503,12 @@ export async function upsertIntegration(
     rawInput.provider === "whatsapp"
       ? { ...rawInput, config: canonicalWhatsAppConfig(rawInput.config) }
       : rawInput;
+  // Super Admin's grace window for a replaced gateway secret (D17); read
+  // before the transaction so no second connection is taken inside it.
+  const graceMs =
+    input.credentials && isGatewayProvider(input.provider)
+      ? await gatewaySecretGraceMs(input.provider)
+      : 0;
   const result = await withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     if (input.outletId !== null) {
@@ -418,16 +522,45 @@ export async function upsertIntegration(
       );
     }
     await assertProviderAvailable(tx, tenantId, input.provider);
+    // Field names only: a refused body must not echo a value (PAY-06).
+    const issues = gatewayCredentialIssues(
+      input.provider,
+      input.config,
+      input.credentials,
+    );
+    if (issues.length > 0)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        `Invalid ${input.provider} settings: ${issues.join(", ")}.`,
+      );
 
-    const credentialColumns = (integrationId: string) =>
-      input.credentials
-        ? {
-            ...sealCredentials(tenantId, integrationId, input.credentials),
-            credentialSecretRef: newSecretRef(),
-            credentialsSetAt: new Date(),
-            credentialsSetBy: actorUserId,
-          }
-        : {};
+    const credentialColumns = (
+      integrationId: string,
+      stored: Record<string, string> | null = null,
+    ) => {
+      if (!input.credentials) return { sealed: {}, previousValidUntil: null };
+      const next = withPreviousGeneration(
+        input.provider,
+        stored,
+        input.credentials,
+        graceMs,
+      );
+      return {
+        sealed: {
+          ...sealCredentials(
+            tenantId,
+            integrationId,
+            next.credentials,
+            Object.keys(input.credentials),
+          ),
+          credentialSecretRef: newSecretRef(),
+          credentialsSetAt: new Date(),
+          credentialsSetBy: actorUserId,
+        },
+        previousValidUntil: next.previousValidUntil,
+      };
+    };
 
     let current = await lockByKey(tx, tenantId, input.outletId, input.provider);
     if (!current) {
@@ -441,7 +574,7 @@ export async function upsertIntegration(
           provider: input.provider,
           config: input.config,
           status: "draft",
-          ...credentialColumns(id),
+          ...credentialColumns(id).sealed,
         })
         // Explicit target: a bare DO NOTHING would also swallow a clash on
         // the WhatsApp number indexes and look like "a concurrent PUT won".
@@ -486,12 +619,23 @@ export async function upsertIntegration(
       !sameStoredCredentials(current, input.credentials);
     if (!configChanged && !credentialsChanged) return toIntegration(current);
 
+    let storedCredentials: Record<string, string> | null = null;
+    if (credentialsChanged && current.credentialsEncrypted) {
+      try {
+        storedCredentials = openCredentials(current);
+      } catch {
+        // Unreadable blob: nothing to keep as the previous generation.
+      }
+    }
+    const replacement = credentialsChanged
+      ? credentialColumns(current.id, storedCredentials)
+      : { sealed: {}, previousValidUntil: null };
     const [row] = await claimingWhatsAppNumber(() =>
       tx
         .update(tenantIntegrations)
         .set({
           ...(configChanged ? { config: input.config } : {}),
-          ...(credentialsChanged ? credentialColumns(current.id) : {}),
+          ...replacement.sealed,
         })
         .where(
           and(
@@ -510,6 +654,16 @@ export async function upsertIntegration(
       row,
       before: current,
     });
+    if (replacement.previousValidUntil)
+      await auditDetail(tx, context, {
+        action: "integration.credentials_rotated",
+        actorUserId,
+        row,
+        detail: {
+          provider: row.provider,
+          previousValidUntil: replacement.previousValidUntil,
+        },
+      });
     return toIntegration(row);
   });
   // After commit: the webhook secret cache must not outlive a change.
@@ -579,6 +733,73 @@ export async function setIntegrationStatus(
   // After commit: a disabled or activated secret applies at once.
   clearDoitWebhookSecretCache(context.tenant.tenantId);
   return result;
+}
+
+/**
+ * A row the caller may reach, for the gateway "test connection" action
+ * (sub-302 D16): same scope rules as a status change, any status (a draft is
+ * testable). Unknown id, other tenant or out of scope = 404.
+ */
+export async function getIntegrationForCheck(
+  context: ScopedTenantContext,
+  integrationId: string,
+): Promise<{
+  id: string;
+  provider: IntegrationProvider;
+  outletId: string | null;
+}> {
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(tenantIntegrations)
+      .where(
+        and(
+          eq(tenantIntegrations.tenantId, context.tenant.tenantId),
+          eq(tenantIntegrations.id, integrationId),
+        ),
+      )
+      .limit(1);
+    if (!row) throw new HttpError(404, "NOT_FOUND", "Integration not found.");
+    assertRowInScope(context, row);
+    return { id: row.id, provider: row.provider, outletId: row.outletId };
+  });
+}
+
+/**
+ * Stores the outcome of a connection test: `last_checked_at`,
+ * `last_error_code` (null on ok) and the `integration.connection_tested`
+ * audit row, in one transaction. The error code is a fixed adapter code,
+ * never provider text.
+ */
+export async function recordConnectionCheck(
+  context: ScopedTenantContext,
+  integrationId: string,
+  actorUserId: string,
+  outcome: { ok: boolean; errorCode: string | null },
+): Promise<{ checkedAt: string }> {
+  return withTenant(db, context, async (tx) => {
+    const checkedAt = new Date();
+    const [row] = await tx
+      .update(tenantIntegrations)
+      .set({ lastCheckedAt: checkedAt, lastErrorCode: outcome.errorCode })
+      .where(
+        and(
+          eq(tenantIntegrations.tenantId, context.tenant.tenantId),
+          eq(tenantIntegrations.id, integrationId),
+        ),
+      )
+      .returning();
+    if (!row) throw new HttpError(404, "NOT_FOUND", "Integration not found.");
+    await auditDetail(tx, context, {
+      action: "integration.connection_tested",
+      actorUserId,
+      row,
+      detail: { ok: outcome.ok, errorCode: outcome.errorCode },
+    });
+    return {
+      checkedAt: row.lastCheckedAt?.toISOString() ?? checkedAt.toISOString(),
+    };
+  });
 }
 
 /**

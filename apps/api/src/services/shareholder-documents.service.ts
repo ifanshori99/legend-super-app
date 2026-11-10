@@ -47,7 +47,10 @@ import {
   uniqueViolation,
   type TenantTransaction,
 } from "./accounting-shared";
-import type { MalwareScanner } from "./core-image";
+import {
+  assertScannerAcceptsDocuments,
+  type MalwareScanner,
+} from "./core-image";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 
@@ -58,7 +61,7 @@ const profitEntityNotFound = () =>
     "The profit entity does not exist.",
   );
 
-/** 23503 on a profit entity FK (0219): a race past the existence check. */
+/** 23503 on a profit entity FK (0217): a race past the existence check. */
 function profitEntityFkViolation(error: unknown, depth = 0): boolean {
   if (depth > 4 || typeof error !== "object" || error === null) return false;
   const candidate = error as {
@@ -180,6 +183,9 @@ export async function uploadShareholderDocumentFileService(
   await withTenant(db, context, (tx) =>
     assertProfitEntityExists(tx, context.tenant.tenantId, profitEntityId),
   );
+  // A scanner that cannot vet documents (production noop) refuses before any
+  // blob is stored (legend-0w2wy).
+  assertScannerAcceptsDocuments(deps.scanner);
   // Rejects on detection or scanner failure: nothing is stored either way.
   await deps.scanner.scan(bytes);
   const id = randomUUID();

@@ -888,6 +888,14 @@ export const peakWindowSchema = z
   );
 export type PeakWindow = z.infer<typeof peakWindowSchema>;
 
+/**
+ * How spend turns into extra hours (bead legend-kmd3). `per_day_multiple`
+ * (default when absent): net spend of the business day / step, so Rp20.000 +
+ * Rp20.000 = 1 hour. `per_order`: each order is floored on its own.
+ */
+export const wifiSpendModeSchema = z.enum(["per_day_multiple", "per_order"]);
+export type WifiSpendMode = z.infer<typeof wifiSpendModeSchema>;
+
 export const wifiPolicySchema = z
   .strictObject({
     id: wifiPolicyIdSchema,
@@ -913,6 +921,8 @@ export const wifiPolicySchema = z
     minSpendPerHourIdr: nonnegativeIdr.nullable(),
     /** Extra daily minutes per loyalty tier key (PRD §3 "tier Gold dan Platinum"). */
     tierBonusMinutes: z.record(z.string(), z.number().int().min(0).max(720)),
+    /** Absent reads as `per_day_multiple` (CTO default, legend-kmd3). */
+    spendMode: wifiSpendModeSchema.optional(),
   })
   .superRefine((policy, ctx) => {
     if (policy.peakFreeMinutes > policy.freeMinutes)

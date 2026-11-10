@@ -159,7 +159,10 @@ export async function touchSession(input: {
   readonly now: Date;
   readonly tx?: Pick<typeof db, "update">;
 }): Promise<void> {
-  const { row, management, now } = input;
+  const { row, now } = input;
+  // legend-k2l: a non-password session is never upgraded to management, even
+  // when a caller asks for it (design ws08 M2 "Sign-in method gate").
+  const management = input.management && row.authMethod === "password";
   const writer = input.tx ?? db;
   if (row.revokedAt !== null) return;
   if (row.expiresAt.getTime() <= now.getTime()) return;

@@ -30,6 +30,16 @@ export const crmErrorHttpStatus = {
   // legend-m4p5
   /** The redemption is not pending, or its voucher was already used. */
   REDEMPTION_NOT_CANCELLABLE: 409,
+  // legend-ts50
+  /** The member already left this kind of feedback for the order. */
+  FEEDBACK_DUPLICATE: 409,
+  /** The action is not allowed from the feedback item's current status. */
+  FEEDBACK_TRANSITION_INVALID: 409,
+  // legend-xzr10
+  /** The reward still has pending redemptions, so type, value or stock cannot change. */
+  REWARD_HAS_PENDING_REDEMPTIONS: 409,
+  /** A unique redemption code could not be generated after several tries. */
+  REDEMPTION_CODE_UNAVAILABLE: 503,
 } as const satisfies Record<string, number>;
 
 export type CrmErrorCode = keyof typeof crmErrorHttpStatus;
@@ -62,4 +72,12 @@ export const crmErrorMessages: Record<CrmErrorCode, string> = {
     "Batas cari nomor hari ini tercapai. Pakai QR member.",
   // legend-m4p5
   REDEMPTION_NOT_CANCELLABLE: "Penukaran ini tidak bisa dibatalkan.",
+  // legend-ts50
+  FEEDBACK_DUPLICATE: "Anda sudah mengirim masukan ini untuk pesanan tersebut.",
+  FEEDBACK_TRANSITION_INVALID:
+    "Masukan ini tidak bisa diubah ke status tersebut.",
+  // legend-xzr10
+  REWARD_HAS_PENDING_REDEMPTIONS:
+    "Hadiah masih punya penukaran yang belum selesai.",
+  REDEMPTION_CODE_UNAVAILABLE: "Kode penukaran belum bisa dibuat. Coba lagi.",
 };
