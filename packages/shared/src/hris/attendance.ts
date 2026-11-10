@@ -26,6 +26,8 @@ import {
   employeeIdSchema,
   attendanceLogIdSchema,
   attendanceCorrectionIdSchema,
+  attendanceDeviceIdSchema,
+  attendanceDutyMealIdSchema,
   shiftAssignmentIdSchema,
 } from "./ids.ts";
 
@@ -299,3 +301,136 @@ export function transitionAttendanceCorrection(
  * this helper only names the rule so every screen agrees on it.
  */
 export const attendanceBusinessDateSchema = businessDateSchema;
+
+// ---- Device binding, policy, sampling review, duty meals (WS-10) ----------
+// Additive contracts: nothing above changes. The raw device hash is never
+// returned (only the label), so a leaked list cannot be replayed as a binding.
+
+export const attendanceDeviceStatusSchema = z.enum(["active", "revoked"]);
+export type AttendanceDeviceStatus = z.infer<
+  typeof attendanceDeviceStatusSchema
+>;
+
+/** F25 "pengikatan perangkat": one active device per employee. */
+export const attendanceDeviceSchema = z
+  .strictObject({
+    id: attendanceDeviceIdSchema,
+    tenantId: tenantIdSchema,
+    employeeId: employeeIdSchema,
+    label: z.string().min(1).max(100),
+    status: attendanceDeviceStatusSchema,
+    boundAt: isoDateTimeSchema,
+    revokedAt: isoDateTimeSchema.nullable(),
+    revokedBy: uuidSchema.nullable(),
+  })
+  .superRefine((device, ctx) => {
+    if (device.status === "active" && device.revokedAt !== null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["revokedAt"],
+        message: "An active device has no revocation time",
+      });
+    if (device.status === "revoked" && device.revokedAt === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["revokedAt"],
+        message: "A revoked device needs a revocation time",
+      });
+  });
+export type AttendanceDevice = z.infer<typeof attendanceDeviceSchema>;
+
+/**
+ * Supervisor sampling configuration (F25): flagged logs always enter the
+ * queue when `flaggedAlways`; a deterministic share `rate` of the other valid
+ * logs is sampled on top.
+ */
+export const attendanceSamplingConfigSchema = z.strictObject({
+  rate: z.number().min(0).max(1),
+  flaggedAlways: z.boolean(),
+  minPerSupervisorPerWeek: z.number().int().min(0).max(1_000),
+});
+export type AttendanceSamplingConfig = z.infer<
+  typeof attendanceSamplingConfigSchema
+>;
+
+/**
+ * Policy as seen for one outlet. `outletId` null is the tenant default; an
+ * outlet row overrides it, and `inherited` says the value shown is the tenant
+ * default because the outlet has no override.
+ */
+export const attendancePolicyViewSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema.nullable(),
+  inherited: z.boolean(),
+  policy: attendancePolicySchema,
+  sampling: attendanceSamplingConfigSchema,
+  updatedAt: isoDateTimeSchema,
+});
+export type AttendancePolicyView = z.infer<typeof attendancePolicyViewSchema>;
+
+/**
+ * Flag reasons the server may attach to a stored log. A superset of
+ * `attendanceFlagReasonSchema`, kept separate so existing exhaustive
+ * consumers of the older enum stay valid.
+ */
+export const attendanceStoredFlagReasonSchema = z.enum([
+  ...attendanceFlagReasonSchema.options,
+  "offline_time_skew",
+  "offline_unverified",
+]);
+export type AttendanceStoredFlagReason = z.infer<
+  typeof attendanceStoredFlagReasonSchema
+>;
+
+export const attendanceReviewStatusSchema = z.enum([
+  "none",
+  "pending",
+  "accepted",
+  "rejected",
+]);
+export type AttendanceReviewStatus = z.infer<
+  typeof attendanceReviewStatusSchema
+>;
+
+export const attendanceReviewSourceSchema = z.enum(["flagged", "sampled"]);
+export type AttendanceReviewSource = z.infer<
+  typeof attendanceReviewSourceSchema
+>;
+
+export const attendanceReviewActionSchema = z.enum([
+  "flag",
+  "accept",
+  "reject",
+]);
+
+/** One entry of the supervisor review queue. */
+export const attendanceReviewItemSchema = z.strictObject({
+  log: attendanceLogSchema,
+  source: attendanceReviewSourceSchema,
+  flagReasons: z.array(attendanceStoredFlagReasonSchema).max(10),
+  reviewStatus: attendanceReviewStatusSchema,
+  reviewedBy: uuidSchema.nullable(),
+  reviewedAt: isoDateTimeSchema.nullable(),
+});
+export type AttendanceReviewItem = z.infer<typeof attendanceReviewItemSchema>;
+
+/** Duty meal ("makan dinas") taken during a shift; stock deduction is a separate consumer. */
+export const attendanceDutyMealSchema = z.strictObject({
+  id: attendanceDutyMealIdSchema,
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+  employeeId: employeeIdSchema,
+  shiftAssignmentId: shiftAssignmentIdSchema.nullable(),
+  businessDate: attendanceBusinessDateSchema,
+  mealCount: z.number().int().min(1).max(10),
+  recordedBy: uuidSchema,
+  recordedAt: isoDateTimeSchema,
+});
+export type AttendanceDutyMeal = z.infer<typeof attendanceDutyMealSchema>;
+
+/** Result of rotating an outlet QR secret; the old display stops validating. */
+export const attendanceQrRotationSchema = z.strictObject({
+  outletId: outletIdSchema,
+  rotatedAt: isoDateTimeSchema,
+});
+export type AttendanceQrRotation = z.infer<typeof attendanceQrRotationSchema>;

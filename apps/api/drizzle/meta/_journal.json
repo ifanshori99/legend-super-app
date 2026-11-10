@@ -1408,6 +1408,13 @@
       "when": 1794295000000,
       "tag": "0214_order_pacing",
       "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "7",
+      "when": 1794296000000,
+      "tag": "0215_hris_attendance",
+      "breakpoints": true
     }
   ]
 }

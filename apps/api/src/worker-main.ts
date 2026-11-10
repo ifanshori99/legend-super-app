@@ -117,6 +117,11 @@ import { registerPaymentRefundGateway } from "./services/payment-refund-gateway.
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
 import { env } from "./config/env";
+import {
+  consoleLikeLog,
+  createStorageRuntimeFromEnv,
+} from "./services/core-storage-runtime.ts";
+import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-purge.job.ts";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -720,6 +725,24 @@ try {
     await probeMaintenanceConnection(maintenancePool);
     await registerAuditRetentionJob({ boss, pool: maintenancePool });
   }
+  // legend-dzh9q: the selfie purge deletes objects, so it needs the object
+  // storage. Without STORAGE_* the worker still starts, with the job off.
+  const storageRuntime = createStorageRuntimeFromEnv(
+    process.env,
+    db,
+    consoleLikeLog(logger),
+  );
+  if (storageRuntime)
+    await registerAttendanceSelfiePurgeJob({
+      boss,
+      storage: storageRuntime.storage,
+      database: db,
+      log: consoleLikeLog(logger),
+    });
+  else
+    logger.warn(
+      "Object storage is not configured (STORAGE_*): attendance selfie purge job not registered.",
+    );
   await relay.start();
   if (sweepsRefunds) {
     scheduleRefundPayoutRound();
