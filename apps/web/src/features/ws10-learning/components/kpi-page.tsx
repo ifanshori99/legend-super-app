@@ -392,9 +392,11 @@ export function KpiPage() {
                           ? t("learning.common.none")
                           : formatWithUnit(definition.target, definition.unit);
                       const actual =
-                        definition === undefined
-                          ? formatDecimal(score.actual)
-                          : formatWithUnit(score.actual, definition.unit);
+                        score.actual === null
+                          ? t("learning.common.none")
+                          : definition === undefined
+                            ? formatDecimal(score.actual)
+                            : formatWithUnit(score.actual, definition.unit);
                       const achievement =
                         definition === undefined
                           ? null
@@ -438,7 +440,7 @@ export function KpiPage() {
                             <ScoreBar
                               value={score.score}
                               label={t("learning.kpi.scoreBar", {
-                                score: score.score,
+                                score: score.score ?? 0,
                               })}
                               fallback={t("learning.common.none")}
                             />

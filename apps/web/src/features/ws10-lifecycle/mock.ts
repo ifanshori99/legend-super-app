@@ -90,6 +90,10 @@ registerLocalTaskAction(({ taskId, action }) => {
     status,
     doneBy: status === "done" ? MOCK_ACTOR : null,
     doneAt: status === "done" ? new Date().toISOString() : null,
+    // The contract needs a reason on a blocked or waived task; the local
+    // action carries none, so the preview stores a fixed note.
+    blockReason: status === "blocked" ? "Ditandai terblokir (pratinjau)" : null,
+    waiveReason: status === "waived" ? "Dibebaskan (pratinjau)" : null,
   });
   lifecycleMockTasks.set(
     tasks.map((task) => (task.id === taskId ? next : task)),
