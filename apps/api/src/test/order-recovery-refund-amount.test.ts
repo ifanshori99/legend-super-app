@@ -64,6 +64,7 @@ const ZERO = {
   discountIdr: 0,
   serviceChargeIdr: 0,
   pbjtIdr: 0,
+  goodsIdr: 0,
 };
 
 describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
@@ -83,6 +84,7 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
       discountIdr: 0,
       serviceChargeIdr: 2_000,
       pbjtIdr: 4_200,
+      goodsIdr: 40_000,
     });
   });
 
@@ -164,6 +166,7 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
       discountIdr: 5_000,
       serviceChargeIdr: 2_250,
       pbjtIdr: 4_725,
+      goodsIdr: 45_000,
     });
   });
 
@@ -191,6 +194,7 @@ describe("legend-94q2l recoveryRefundSplit: pro-rata tanpa pemotongan", () => {
       discountIdr: 0,
       serviceChargeIdr: 2_000,
       pbjtIdr: 3_636, // 3.636,4 half-up
+      goodsIdr: 40_000, // inclusive: the amount,
     });
   });
 });
@@ -270,6 +274,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
       discountIdr: 0,
       serviceChargeIdr: 671, // 670,996 half-up
       pbjtIdr: 1_409, // 1.409,09 half-up
+      goodsIdr: 13_420,
     });
   });
 
@@ -295,6 +300,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
       discountIdr: 2_886,
       serviceChargeIdr: 1_299,
       pbjtIdr: 2_727,
+      goodsIdr: 25_974,
     });
   });
 
@@ -361,6 +367,7 @@ describe("legend-94q2l recoveryRefundSplit: room, selisih dan pemotongan", () =>
       discountIdr: 0,
       serviceChargeIdr: 2_000,
       pbjtIdr: 4_200,
+      goodsIdr: 40_000,
     });
   });
 });
@@ -587,6 +594,7 @@ describe("legend-h1dyy recoveryRefundSplit: promo dihitung ulang (CRM)", () => {
       discountIdr: 20_000,
       serviceChargeIdr: 0,
       pbjtIdr: 0,
+      goodsIdr: 30_000,
     });
   });
 
@@ -618,6 +626,7 @@ describe("legend-h1dyy recoveryRefundSplit: promo dihitung ulang (CRM)", () => {
       discountIdr: 20_000,
       serviceChargeIdr: 1_500,
       pbjtIdr: 3_150,
+      goodsIdr: 30_000,
     });
     // The rest of the goods (70.000 paid) refunds later: it takes the rest.
     const second = recoveryRefundSplit({
@@ -637,6 +646,7 @@ describe("legend-h1dyy recoveryRefundSplit: promo dihitung ulang (CRM)", () => {
       discountIdr: 0,
       serviceChargeIdr: 3_500,
       pbjtIdr: 7_350,
+      goodsIdr: 70_000,
     });
     for (const result of [first, second])
       expect(
@@ -677,6 +687,89 @@ describe("legend-h1dyy recoveryRefundSplit: promo dihitung ulang (CRM)", () => {
       discountIdr: 18_939,
       serviceChargeIdr: 0,
       pbjtIdr: 2_727,
+      goodsIdr: 30_000, // inclusive: the amount,
     });
+  });
+});
+
+describe("legend-h1dyy recoveryRefundSplit: goodsIdr untuk buku promo (refunded_paid_idr)", () => {
+  // Review H1: the promo ledger counts what the guest paid for the goods on
+  // the item-price basis. Inclusive prices hold the tax, so the goods money
+  // is the whole amount, not gross - discount.
+  it("inklusif 3 x 110.000, promo min-spend 10%, PBJT 10% inklusif: refund A 99.000 mencatat 99.000 (bukan 90.000)", () => {
+    const order = makeOrder({
+      subtotal: 330_000,
+      discount: 33_000,
+      tax: 27_000,
+      inclusive: true,
+    });
+    const result = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 110_000,
+      priorLinesIdr: 0,
+      releasedIdr: 0,
+      promo: {
+        refundedSubtotalIdr: 110_000,
+        goodsDueIdr: 99_000,
+        remainingPaidIdr: 297_000,
+      },
+    });
+    expect(result.amountIdr).toBe(99_000);
+    expect(result.goodsIdr).toBe(99_000);
+  });
+
+  it("eksklusif: goodsIdr = gross - diskon, juga setelah dipotong room", () => {
+    const order = makeOrder({
+      subtotal: 120_000,
+      discount: 20_000,
+      service: 5_000,
+      tax: 10_500,
+    });
+    const promo = {
+      refundedSubtotalIdr: 50_000,
+      goodsDueIdr: 30_000,
+      remainingPaidIdr: 100_000,
+    };
+    const full = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 50_000,
+      priorLinesIdr: 0,
+      releasedIdr: 0,
+      promo,
+    });
+    expect(full.goodsIdr).toBe(30_000);
+    expect(full.goodsIdr).toBe(full.grossSalesIdr - full.discountIdr);
+    const cut = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 50_000,
+      priorLinesIdr: 0,
+      releasedIdr: order.totalIdr - order.depositAppliedIdr - 20_000,
+      promo,
+    });
+    expect(cut.amountIdr).toBe(20_000);
+    expect(cut.goodsIdr).toBe(cut.grossSalesIdr - cut.discountIdr);
+    expect(cut.goodsIdr).toBeLessThan(full.goodsIdr);
+  });
+
+  it("inklusif dipotong room: goodsIdr = amount", () => {
+    const order = makeOrder({
+      subtotal: 330_000,
+      discount: 33_000,
+      tax: 27_000,
+      inclusive: true,
+    });
+    const result = recoveryRefundSplit({
+      order,
+      lineTotalIdr: 110_000,
+      priorLinesIdr: 0,
+      releasedIdr: 297_000 - 50_000,
+      promo: {
+        refundedSubtotalIdr: 110_000,
+        goodsDueIdr: 99_000,
+        remainingPaidIdr: 297_000,
+      },
+    });
+    expect(result.amountIdr).toBe(50_000);
+    expect(result.goodsIdr).toBe(50_000);
   });
 });

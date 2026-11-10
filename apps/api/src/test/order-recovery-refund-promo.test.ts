@@ -3,7 +3,7 @@
 // live promotion is re-priced by the promo port (founder Q41/Q19), not by the
 // plain pro-rata share. A returned free item pays Rp0; a returned item that
 // drops the bill below the promo condition pays what the guest paid minus what
-// the kept goods now cost. A rejected refund gives its promo payout back.
+// the kept goods now cost.
 //
 // World (order-recovery-helpers): service 5%, PBJT 10% on goods + service,
 // exclusive prices. Promotion "buy 2 of {kopi, teh}, get 1 roti free" (auto,
@@ -17,8 +17,18 @@
 //   roti = 30.000, paid 37.000 -> goods due 7.000; service and PBJT of that
 //   slice (350 + 735) -> refund 8.085, gross 25.000, discount 18.000 (old
 //   pro-rata opened 19.425). The promo ledger records 7.000 paid back.
-// - Rejection of that kopi refund: the 7.000 goes back on the promo ledger,
-//   once per issue.
+// Review of 99c11968 (CTO decision): a failed item was never delivered,
+// whatever happened to its refund, so the kept lines leave out the item of
+// every manual_refund issue of the order; a rejected refund keeps its promo
+// payout (the approver decided the money is not owed).
+// - H2: roti nothing_left, then kopi: kept teh only -> goods due 25.000,
+//   service 1.250, PBJT 2.625 -> 28.875 (not 8.085 with roti still kept).
+// - H3: kopi refunded (8.085, ledger 7.000) and rejected, then roti: no 422;
+//   kept teh -> goods due 18.000, slice [7.000, 25.000) -> 900 + 1.890 ->
+//   20.790; the kopi's 7.000 is not paid again.
+// - H4 (own promo: 5.000 off from 50.000, total 57.750): roti swapped to teh,
+//   then kopi: kept lines are the checkout lines teh + roti (not teh + the
+//   replacement teh) -> goods due 20.000, service 1.000, PBJT 2.100 -> 23.100.
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -44,6 +54,7 @@ import {
   deliverOrderRecoveryRefundEvent,
   refileRecoveryRefundAfterFailure,
 } from "../services/order-recovery-refund.ts";
+import { deliverSwapKitchenEvent } from "../services/order-recovery-swap-kitchen.ts";
 import { confirmPayment } from "../services/payment.service.ts";
 import { deliverQrOrderPaymentEvent } from "../services/qr-order-payment.ts";
 import {
@@ -54,6 +65,7 @@ import {
 import { owner } from "./floor-test-helpers.ts";
 
 let w: World;
+const freeRotiPromotion = randomUUID();
 
 beforeAll(async () => {
   w = await createWorld();
@@ -67,7 +79,7 @@ beforeAll(async () => {
        VALUES ($1, $2, 'Beli 2 minuman gratis roti', '', 'active', NULL, false,
                now() - interval '1 hour', NULL, $3, $4, 'g_h1dyy', true, 0, NULL, NULL, NULL)`,
       [
-        randomUUID(),
+        freeRotiPromotion,
         w.tenant.tenantId,
         JSON.stringify([
           {
@@ -136,8 +148,13 @@ async function payVerified(intentId: string, amountIdr: number) {
   );
 }
 
-/** A paid pay-first order kopi + teh + roti with the free-roti promo applied. */
-async function paidPromoOrder() {
+/** A paid pay-first order kopi + teh + roti with the live promo applied. */
+async function paidPromoOrder(
+  expected: { discount_idr: number; total_idr: number } = {
+    discount_idr: 18_000,
+    total_idr: ORDER_TOTAL,
+  },
+) {
   const guest = await w.seat();
   let version = 0;
   for (const menuItemId of [w.ids.kopi, w.ids.teh, w.ids.roti]) {
@@ -167,12 +184,13 @@ async function paidPromoOrder() {
   );
   expect(rows[0], "promo order amounts").toEqual({
     subtotal_idr: 55_000,
-    discount_idr: 18_000,
-    total_idr: ORDER_TOTAL,
+    ...expected,
   });
   const payment = await w.as(guest).pay({ kind: "order", orderId: order.id });
   expect(payment.status, JSON.stringify(payment.body)).toBe(201);
-  expect(await payVerified(payment.body.data.id, ORDER_TOTAL)).toBe(true);
+  expect(await payVerified(payment.body.data.id, expected.total_idr)).toBe(
+    true,
+  );
   const line = (menuItemId: string) =>
     order.items.find((item) => item.menuItemId === menuItemId)!;
   return {
@@ -326,13 +344,13 @@ describe("legend-h1dyy refund item gagal pada pesanan QR berpromo", () => {
     );
   });
 
-  it("kopi gagal: promo ditarik, refund 8.085 (bukan pro-rata 19.425), payout promo 7.000 tercatat; ditolak: payout promo dikembalikan sekali", async () => {
+  it("H3 kopi gagal: promo ditarik, refund 8.085 (bukan pro-rata 19.425), payout promo 7.000; ditolak lalu roti gagal: tanpa 422, refund 20.790, uang kopi tidak dibayar lagi", async () => {
     const paid = await paidPromoOrder();
-    const { issueId, event } = await approvedRefund(paid.kopi.id, 25_000);
+    const kopi = await approvedRefund(paid.kopi.id, 25_000);
 
-    await deliver(event);
+    await deliver(kopi.event);
 
-    const refunds = await issueRefunds(issueId);
+    const refunds = await issueRefunds(kopi.issueId);
     expect(refunds.map((row) => row.amount_idr)).toEqual([8_085]);
     const refunded = await w.outboxRows("order.refunded", paid.order.id);
     expect(refunded).toHaveLength(1);
@@ -340,7 +358,7 @@ describe("legend-h1dyy refund item gagal pada pesanan QR berpromo", () => {
       refunded[0]!.event.payload,
     );
     expect(payload).toMatchObject({
-      refundId: issueId,
+      refundId: kopi.issueId,
       amountIdr: 8_085,
       grossSalesIdr: 25_000,
       discountIdr: 18_000,
@@ -352,20 +370,164 @@ describe("legend-h1dyy refund item gagal pada pesanan QR berpromo", () => {
       refunded_paid_idr: 7_000,
       total_discount_idr: 0,
     });
-    expect(await idempotencyResponse(issueId)).toMatchObject({
+    expect(await idempotencyResponse(kopi.issueId)).toMatchObject({
       promoRecordedIdr: 7_000,
     });
 
-    // The refund is rejected: the promo ledger gets its 7.000 back, once.
+    // Rejected: the approver decided the money is not owed, so the promo
+    // ledger keeps the 7.000 (a later refund must not pay it).
     await failAndRunHook(refunds[0]!.id, "rejected");
-    expect((await application(paid.order.id)).refunded_paid_idr).toBe(0);
+    expect((await application(paid.order.id)).refunded_paid_idr).toBe(7_000);
+
+    const roti = await approvedRefund(paid.roti.id, 18_000);
+    await deliver(roti.event);
     expect(
-      await auditRows(issueId, "order_issue.refund_promo_payout_restored"),
-    ).toHaveLength(1);
-    await failAndRunHook(refunds[0]!.id, "rejected");
-    expect((await application(paid.order.id)).refunded_paid_idr).toBe(0);
+      (await issueRefunds(roti.issueId)).map((row) => row.amount_idr),
+    ).toEqual([20_790]);
+    const rotiRefunded = (
+      await w.outboxRows("order.refunded", paid.order.id)
+    ).map((row) => orderRefundedPayloadSchema.parse(row.event.payload));
     expect(
-      await auditRows(issueId, "order_issue.refund_promo_payout_restored"),
-    ).toHaveLength(1);
+      rotiRefunded.find((row) => row.refundId === roti.issueId),
+    ).toMatchObject({
+      amountIdr: 20_790,
+      serviceChargeIdr: 900,
+      pbjtIdr: 1_890,
+    });
+    expect(await application(paid.order.id)).toMatchObject({
+      refunded_subtotal_idr: 43_000,
+      refunded_paid_idr: 25_000,
+    });
+  });
+
+  it("H2 roti gratis gagal (nothing_left), lalu kopi gagal: roti tidak dihitung tetap dimiliki -> refund 28.875 (bukan 8.085)", async () => {
+    const paid = await paidPromoOrder();
+    const roti = await approvedRefund(paid.roti.id, 18_000);
+    await deliver(roti.event);
+    expect(await issueRefunds(roti.issueId)).toEqual([]);
+
+    const kopi = await approvedRefund(paid.kopi.id, 25_000);
+    await deliver(kopi.event);
+    expect(
+      (await issueRefunds(kopi.issueId)).map((row) => row.amount_idr),
+    ).toEqual([28_875]);
+    const refunded = await w.outboxRows("order.refunded", paid.order.id);
+    expect(refunded).toHaveLength(1);
+    expect(
+      orderRefundedPayloadSchema.parse(refunded[0]!.event.payload),
+    ).toMatchObject({
+      amountIdr: 28_875,
+      grossSalesIdr: 25_000,
+      discountIdr: 0,
+      serviceChargeIdr: 1_250,
+      pbjtIdr: 2_625,
+    });
+    expect(await application(paid.order.id)).toMatchObject({
+      refunded_subtotal_idr: 43_000,
+      refunded_paid_idr: 25_000,
+    });
+  });
+});
+
+describe("legend-h1dyy dua item gagal diselesaikan sebelum event mana pun berjalan", () => {
+  it("kopi lalu roti: event kopi merefund barisnya saja (8.085), event roti lalu 20.790; total 28.875", async () => {
+    const paid = await paidPromoOrder();
+    // Both resolved before either refund event runs.
+    const kopi = await approvedRefund(paid.kopi.id, 25_000);
+    const roti = await approvedRefund(paid.roti.id, 18_000);
+
+    // The roti issue is not processed yet: its item stays kept, so the kopi
+    // refund pays only the kopi (goods 7.000).
+    await deliver(kopi.event);
+    expect(
+      (await issueRefunds(kopi.issueId)).map((row) => row.amount_idr),
+    ).toEqual([8_085]);
+    expect((await application(paid.order.id)).refunded_paid_idr).toBe(7_000);
+
+    // The roti event then refunds its own line: kept teh only, goods 18.000.
+    await deliver(roti.event);
+    expect(
+      (await issueRefunds(roti.issueId)).map((row) => row.amount_idr),
+    ).toEqual([20_790]);
+    expect(await application(paid.order.id)).toMatchObject({
+      refunded_subtotal_idr: 43_000,
+      refunded_paid_idr: 25_000,
+    });
+    // Same total as the two refunds one after the other (H2): 28.875.
+    const refunded = (await w.outboxRows("order.refunded", paid.order.id)).map(
+      (row) => orderRefundedPayloadSchema.parse(row.event.payload),
+    );
+    expect(refunded.reduce((sum, row) => sum + row.amountIdr, 0)).toBe(28_875);
+  });
+});
+
+describe("legend-h1dyy H4 baris swap: kept lines dari baris checkout", () => {
+  beforeAll(async () => {
+    // Only this promotion is live here: 5.000 off from a 50.000 bill.
+    await asOwnerTenant(w.tenant.tenantId, async (client) => {
+      await client.query(
+        "UPDATE promotions SET status = 'paused' WHERE tenant_id = $1 AND id = $2",
+        [w.tenant.tenantId, freeRotiPromotion],
+      );
+      await client.query(
+        `INSERT INTO promotions
+           (id, tenant_id, name, description, status, code_hash, voucher_required, starts_at, ends_at,
+            conditions, benefit, stack_group, stackable, priority, quota_total, quota_per_customer,
+            budget_idr)
+         VALUES ($1, $2, 'Potongan 5.000 min 50.000', '', 'active', NULL, false,
+                 now() - interval '1 hour', NULL, $3, $4, 'g_h1dyy_min', true, 0, NULL, NULL, NULL)`,
+        [
+          randomUUID(),
+          w.tenant.tenantId,
+          JSON.stringify([{ kind: "min_spend", amountIdr: 50_000 }]),
+          JSON.stringify({ kind: "nominal_off", amountIdr: 5_000 }),
+        ],
+      );
+    });
+  });
+
+  it("roti ditukar teh, lalu kopi gagal: refund 23.100 (barang 20.000), bukan 26.000 dari teh pengganti", async () => {
+    // 55.000 - 5.000 = 50.000; service 2.500; PBJT 5.250; total 57.750.
+    const paid = await paidPromoOrder({
+      discount_idr: 5_000,
+      total_idr: 57_750,
+    });
+    const reported = await w.report(paid.roti.id);
+    expect(reported.status).toBe(201);
+    const swapIssue = reported.body.data.id as string;
+    const swapped = await w.staffPost(
+      w.supervisor,
+      `/api/order-issues/${swapIssue}/resolve`,
+      { resolution: "swap", replacementItemId: w.ids.teh },
+    );
+    expect(swapped.status, JSON.stringify(swapped.body)).toBe(200);
+    const resolved = await w.outboxRows("order_issue.resolved", swapIssue);
+    expect(resolved).toHaveLength(1);
+    const context = contextOf(w.tenant.tenantId);
+    await withTenant(db, context, (tx) =>
+      deliverSwapKitchenEvent(context, resolved[0]!.event, tx),
+    );
+    const { rows: replaced } = await owner.query<{ id: string | null }>(
+      "SELECT replacement_order_item_id AS id FROM order_issues WHERE tenant_id = $1 AND id = $2",
+      [w.tenant.tenantId, swapIssue],
+    );
+    expect(replaced[0]!.id, "replacement line written").not.toBeNull();
+
+    const kopi = await approvedRefund(paid.kopi.id, 25_000);
+    await deliver(kopi.event);
+    expect(
+      (await issueRefunds(kopi.issueId)).map((row) => row.amount_idr),
+    ).toEqual([23_100]);
+    const refunded = await w.outboxRows("order.refunded", paid.order.id);
+    expect(
+      orderRefundedPayloadSchema.parse(refunded[0]!.event.payload),
+    ).toMatchObject({
+      amountIdr: 23_100,
+      grossSalesIdr: 25_000,
+      discountIdr: 5_000,
+      serviceChargeIdr: 1_000,
+      pbjtIdr: 2_100,
+    });
+    expect((await application(paid.order.id)).refunded_paid_idr).toBe(20_000);
   });
 });

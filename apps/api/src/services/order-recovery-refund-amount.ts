@@ -30,6 +30,8 @@
 // cut refund scales discount, service and PBJT by `amount / wanted` and takes
 // gross as the rest, so `gross - discount + service + pbjt = amount` still
 // holds (the `order.refunded` payload checks it) and no component is negative.
+// `goodsIdr` is what the refund pays for the goods on the promo ledger basis
+// (exclusive: gross - discount; inclusive: the amount), after the cut.
 
 import {
   orderRevenueSplit,
@@ -45,6 +47,12 @@ export type RecoveryRefundSplit = {
   discountIdr: number;
   serviceChargeIdr: number;
   pbjtIdr: number;
+  /**
+   * Goods money of the refund on the promo ledger basis (`refunded_paid_idr`,
+   * the item price the guest paid): exclusive prices `gross - discount`,
+   * inclusive prices the whole amount (the item price already holds the tax).
+   */
+  goodsIdr: number;
 };
 
 const ZERO: RecoveryRefundSplit = {
@@ -55,6 +63,7 @@ const ZERO: RecoveryRefundSplit = {
   discountIdr: 0,
   serviceChargeIdr: 0,
   pbjtIdr: 0,
+  goodsIdr: 0,
 };
 
 /** round(value * numerator / denominator), half up; all operands >= 0. */
@@ -203,5 +212,6 @@ export function recoveryRefundSplit(input: {
     discountIdr: Number(discount),
     serviceChargeIdr: Number(service),
     pbjtIdr: Number(pbjt),
+    goodsIdr: Number(order.pricesIncludeTax ? amount : gross - discount),
   };
 }
