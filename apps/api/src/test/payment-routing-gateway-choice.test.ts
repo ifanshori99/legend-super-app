@@ -502,6 +502,45 @@ describe("new tenants and isolation (D8)", () => {
     }
   });
 
+  it("seeds rules on the platform default only when the tenant lists it, else on the first listed enabled gateway, else none", async () => {
+    const restore = async () => {
+      await owner.query(
+        "UPDATE platform_payment_gateways SET is_default = (provider = 'doit'), enabled = (provider = 'doit')",
+      );
+      resetPlatformGatewayCache();
+    };
+    try {
+      // Default doit; Super Admin listed only duitku, which is enabled.
+      await owner.query(
+        "UPDATE platform_payment_gateways SET enabled = true WHERE provider = 'duitku'",
+      );
+      resetPlatformGatewayCache();
+      const onlyDuitku = await newTenant(["duitku"]);
+      expect(onlyDuitku.featureFlags.integrationProviders).toEqual(["duitku"]);
+      expect((await rulesOf(onlyDuitku.id)).map((r) => r.provider)).toEqual([
+        "duitku",
+        "duitku",
+        "duitku",
+      ]);
+      // Lists the default too: the default wins.
+      const both = await newTenant(["duitku", "doit"]);
+      expect((await rulesOf(both.id)).map((r) => r.provider)).toEqual([
+        "doit",
+        "doit",
+        "doit",
+      ]);
+      // Lists only a gateway that is switched off: no rules seeded.
+      await owner.query(
+        "UPDATE platform_payment_gateways SET enabled = false WHERE provider = 'duitku'",
+      );
+      resetPlatformGatewayCache();
+      const offOnly = await newTenant(["duitku"]);
+      expect(await rulesOf(offOnly.id)).toEqual([]);
+    } finally {
+      await restore();
+    }
+  });
+
   it("tenant B cannot route to a gateway because tenant A has an integration", async () => {
     const other = await newTenant(["doit", "duitku"]);
     const bOwner = await user("Tenant B owner");

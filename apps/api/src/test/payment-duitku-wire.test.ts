@@ -322,7 +322,10 @@ describe("duitkuInquiry", () => {
       fetch: asFetch(
         mockFetch(() => jsonResponse({ Message: "key-current leaked" }, 500)),
       ),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => new Error("expected a rejection"),
+      (e: unknown) => e as Error,
+    );
     expect(error.message).not.toContain("key-current");
     expect(error.message).not.toContain("leaked");
   });

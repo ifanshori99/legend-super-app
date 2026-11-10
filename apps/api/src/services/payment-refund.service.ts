@@ -1785,7 +1785,10 @@ function anyRefundGatewayInstalled(): boolean {
 }
 
 /** SQL: refunds whose payment ran through a provider that has a refund port. */
-function refundPortInstalledSql(tx: Tx, tenantId: string) {
+function refundPortInstalledSql(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+) {
   if (paymentRefundGatewayLegacyMode()) return sql`true`;
   const providers = registeredRefundProviders().filter(
     (provider) => provider !== UNCONFIGURED_REFUND_PROVIDER,

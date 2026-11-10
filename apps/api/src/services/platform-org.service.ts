@@ -71,7 +71,10 @@ import { appendOutbox } from "./core-outbox.ts";
 import { toOutlet } from "./org.service.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
-import { platformDefaultGateway } from "./platform-payment-gateway.service.ts";
+import {
+  isPlatformGatewayEnabled,
+  platformDefaultGateway,
+} from "./platform-payment-gateway.service.ts";
 import { provisionLoyaltyDefaults } from "./loyalty-provisioning.service.ts"; // legend-111j
 import {
   provisionDefaultServiceChargeRule,
@@ -228,20 +231,34 @@ export async function createTenant(
   // Sub-302 D8: a new tenant gets the platform default gateway unless Super
   // Admin already listed a payment gateway for it. Changing the default later
   // never touches an existing tenant (PAY-05).
-  const defaultGateway = await platformDefaultGateway();
+  const platformDefault = await platformDefaultGateway();
+  const listed = input.featureFlags.integrationProviders.filter((provider) =>
+    (PAYMENT_GATEWAY_PROVIDERS as readonly string[]).includes(provider),
+  );
   const featureFlags =
-    defaultGateway &&
-    !input.featureFlags.integrationProviders.some((provider) =>
-      (PAYMENT_GATEWAY_PROVIDERS as readonly string[]).includes(provider),
-    )
+    platformDefault && listed.length === 0
       ? {
           ...input.featureFlags,
           integrationProviders: [
             ...input.featureFlags.integrationProviders,
-            defaultGateway as (typeof PAYMENT_GATEWAY_PROVIDERS)[number],
+            platformDefault as (typeof PAYMENT_GATEWAY_PROVIDERS)[number],
           ],
         }
       : input.featureFlags;
+  // Rules go on the platform default only if the tenant lists it; otherwise on
+  // the first listed gateway Super Admin has switched on; none -> no rules.
+  const tenantGateways = featureFlags.integrationProviders.filter((provider) =>
+    (PAYMENT_GATEWAY_PROVIDERS as readonly string[]).includes(provider),
+  );
+  let defaultGateway: (typeof PAYMENT_GATEWAY_PROVIDERS)[number] | null = null;
+  if (platformDefault && tenantGateways.includes(platformDefault as never))
+    defaultGateway = platformDefault as (typeof PAYMENT_GATEWAY_PROVIDERS)[number];
+  else
+    for (const provider of tenantGateways)
+      if (await isPlatformGatewayEnabled(provider)) {
+        defaultGateway = provider as (typeof PAYMENT_GATEWAY_PROVIDERS)[number];
+        break;
+      }
 
   const tenantId = randomUUID();
   const context = platformTenantScope(tenantId);

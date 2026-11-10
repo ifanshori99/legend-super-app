@@ -379,8 +379,10 @@ async function onlineMethods(
     const port = selection.provider
       ? selection.port
       : paymentGatewayFor(entry.routing.provider);
+    // A down gateway is not asked for channels: its adapter may throw, and the
+    // view must still render so the bill can fail over to the cashier.
     const channels =
-      entry.method === "qris"
+      entry.method === "qris" || !gatewayUsable
         ? []
         : await port.channels(context, entry.method, link.outletId);
     const configured = entry.method === "qris" || channels.length > 0;
@@ -2219,41 +2221,48 @@ export async function pollPendingGatewayIntents(
   // Claim atomically: rows another worker holds (a live lease, or a row lock
   // mid-claim) are skipped, so two workers never poll the same intent.
   const pending = await withTenant(db, context, async (tx) => {
-    const candidates = await tx
-      .select({ id: paymentIntents.id })
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.tenantId, context.tenant.tenantId),
-          or(
-            isNull(paymentIntents.gatewayPollLeaseUntil),
-            lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
-          ),
-          or(
-            eq(paymentIntents.status, "pending"),
-            and(
-              eq(paymentIntents.status, "expired"),
-              or(
-                gt(paymentIntents.expiresAt, cutoff),
-                and(
-                  lt(paymentIntents.updatedAt, paymentIntents.expiresAt),
-                  gt(paymentIntents.expiresAt, windowStart),
+    // One window per provider: rows of a provider at its error budget are
+    // skipped without a stamp, so a shared window would fill with them and
+    // starve the other providers.
+    const candidates: Array<{ id: string }> = [];
+    for (const provider of providers) {
+      const rows = await tx
+        .select({ id: paymentIntents.id })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            or(
+              isNull(paymentIntents.gatewayPollLeaseUntil),
+              lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
+            ),
+            or(
+              eq(paymentIntents.status, "pending"),
+              and(
+                eq(paymentIntents.status, "expired"),
+                or(
+                  gt(paymentIntents.expiresAt, cutoff),
+                  and(
+                    lt(paymentIntents.updatedAt, paymentIntents.expiresAt),
+                    gt(paymentIntents.expiresAt, windowStart),
+                  ),
                 ),
               ),
             ),
+            backoffDue,
+            eq(paymentIntents.provider, provider),
+            isNotNull(paymentIntents.providerRef),
+            lt(paymentIntents.createdAt, cutoff),
           ),
-          backoffDue,
-          inArray(paymentIntents.provider, [...providers]),
-          isNotNull(paymentIntents.providerRef),
-          lt(paymentIntents.createdAt, cutoff),
-        ),
-      )
-      .orderBy(
-        sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
-        asc(paymentIntents.createdAt),
-      )
-      .limit(limit)
-      .for("update", { skipLocked: true });
+        )
+        .orderBy(
+          sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
+          asc(paymentIntents.createdAt),
+        )
+        .limit(limit)
+        .for("update", { skipLocked: true });
+      candidates.push(...rows);
+    }
     if (candidates.length === 0) return [];
     const claimed = await tx
       .update(paymentIntents)

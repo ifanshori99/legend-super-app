@@ -69,6 +69,7 @@ import {
 import {
   createIntent,
   createPaymentLink,
+  getPaymentLinkView,
   pollPendingGatewayIntents,
 } from "../services/payment.service";
 
@@ -104,6 +105,7 @@ class FakeGateway implements PaymentGatewayPort {
   /** providerRef -> status reads. */
   readonly statusReads = new Map<string, number>();
   failStatus = false;
+  failChannels = false;
   private readonly refs = new Set<string>();
   constructor(readonly provider: string) {}
 
@@ -143,6 +145,7 @@ class FakeGateway implements PaymentGatewayPort {
     };
   }
   async channels() {
+    if (this.failChannels) throw new Error("channels down");
     return [{ code: "bca", name: "BCA" }];
   }
   totalReads() {
@@ -481,6 +484,24 @@ describe("poller across providers (D5)", () => {
     expect(result.checked).toBe(4);
   });
 
+  it("a down provider with a full batch never starves the other provider", async () => {
+    await setQrisRule("duitku", null);
+    for (let i = 0; i < 4; i += 1) await newQrisIntent();
+    await setQrisRule("doit", null);
+    const doitIntent = await newQrisIntent();
+    duitku.failStatus = true;
+
+    // Limit 3: the three oldest rows are all Duitku. One shared window would
+    // fill with them and never reach the DOIT intent.
+    await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(Date.now() + 120_000),
+      3,
+    );
+
+    expect(doit.statusReads.get(doitIntent.provider_ref)).toBe(1);
+  });
+
   it("returns at once when no gateway is registered", async () => {
     await setQrisRule("duitku", null);
     await newQrisIntent();
@@ -490,6 +511,33 @@ describe("poller across providers (D5)", () => {
       new Date(Date.now() + 120_000),
     );
     expect(result).toEqual({ checked: 0, settled: 0 });
+  });
+});
+
+describe("link view while every gateway is down (D4, D5 failover)", () => {
+  it("renders gateway_down and fails over without asking channels", async () => {
+    await setQrisRule("duitku", null);
+    for (const gateway of [doit, duitku]) {
+      gateway.healthValue = "down";
+      gateway.failChannels = true;
+    }
+    const { token, linkId } = await openBill();
+
+    const view = await getPaymentLinkView(outletContext(), token);
+
+    expect(view.gateway.status).toBe("down");
+    for (const method of view.methods)
+      expect(method).toMatchObject({
+        enabled: false,
+        unavailableReason: "gateway_down",
+      });
+    const { rows } = await owner.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'payment.link_failover_to_cashier'
+          AND event->>'objectId' = $2`,
+      [tenantId, linkId],
+    );
+    expect(rows[0]!.n).toBe(1);
   });
 });
 

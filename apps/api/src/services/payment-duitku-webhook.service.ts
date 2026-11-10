@@ -167,10 +167,13 @@ async function askStatus(
   | { kind: "mismatch" }
   | { kind: "error"; error: unknown }
 > {
+  // A transient error outranks a mismatch: if any call errored and none
+  // matched, report the error so the row is retried, not ignored.
   let result: { kind: "mismatch" } | { kind: "error"; error: unknown } = {
     kind: "error",
     error: new CoreError("SERVICE_UNAVAILABLE", "Duitku status unavailable."),
   };
+  let errored = false;
   for (const creds of credentials) {
     try {
       const answer = await duitkuTransactionStatus({
@@ -179,11 +182,12 @@ async function askStatus(
         fetch: fetchImpl,
       });
       if (answer.reference !== intent.providerRef) {
-        result = { kind: "mismatch" };
+        if (!errored) result = { kind: "mismatch" };
         continue;
       }
       return { kind: "answer", answer };
     } catch (error) {
+      errored = true;
       result = { kind: "error", error };
     }
   }

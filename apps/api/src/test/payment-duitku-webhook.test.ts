@@ -817,3 +817,41 @@ describe("D18 the previous key verifies inside its grace window only", () => {
     await expectPaidOnce(third);
   });
 });
+
+describe("a transient status error is not hidden by a later reference mismatch", () => {
+  it("current merchant code errors, previous one (in grace) answers another reference: the row stays failed for the worker", async () => {
+    const bill = await openIntent();
+    const rotated = await upsertIntegration(
+      contextFor("session"),
+      {
+        outletId: null,
+        provider: "duitku",
+        config: {
+          environment: "sandbox",
+          notificationEmail: "owner@example.test",
+        },
+        credentials: {
+          merchantCode: "DS5678",
+          apiKey: `duitku-key-rotated-${unique()}`,
+        },
+      },
+      actor,
+    );
+    expect(rotated.id).toBe(integrationId);
+    // Current generation (DS5678) fails; the previous one (DS1234) answers
+    // about another payment.
+    setAnswer(bill.intentId, "error", "DS5678");
+    setAnswer(bill.intentId, paid("SOMEONE-ELSES-REF"), MERCHANT);
+
+    const response = await callback(bill.intentId, bill.reference, {
+      key: newApiKey,
+    });
+
+    expect(response.status).toBe(200);
+    await expectUntouched(bill);
+    expect((await rowsFor(bill.intentId))[0]).toMatchObject({
+      status: "failed",
+      last_error_code: "SERVICE_UNAVAILABLE",
+    });
+  });
+});
