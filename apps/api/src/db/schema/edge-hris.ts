@@ -119,6 +119,8 @@ export const edgeSelfieUploads = pgTable(
       .notNull()
       .defaultNow(),
     uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+    /** When the row became rejected; NULL on rows rejected before this column. */
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.objectId] }),

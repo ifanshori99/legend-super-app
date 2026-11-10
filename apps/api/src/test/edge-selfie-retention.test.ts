@@ -149,14 +149,16 @@ async function insertUpload(
     objectId: string;
     state: string;
     ageDays: number;
+    /** Days since rejected_at; omitted leaves it NULL (legacy rows). */
+    rejectedAgeDays?: number;
     filePath?: string;
   },
 ) {
   await owner.query(
     `INSERT INTO edge_selfie_uploads
        (tenant_id, object_id, outlet_id, attendance_log_id, file_path, sealed_sha256,
-        sealed_bytes, seal_kid, state, created_at)
-     VALUES ($1, $2, $3, NULL, $4, $5, 10, 'kid-1', $6, $7)`,
+        sealed_bytes, seal_kid, state, created_at, rejected_at)
+     VALUES ($1, $2, $3, NULL, $4, $5, 10, 'kid-1', $6, $7, $8)`,
     [
       fx.tenantId,
       input.objectId,
@@ -165,6 +167,7 @@ async function insertUpload(
       randomBytes(32),
       input.state,
       ago(input.ageDays),
+      input.rejectedAgeDays === undefined ? null : ago(input.rejectedAgeDays),
     ],
   );
 }
@@ -297,6 +300,52 @@ describe("sweepEdgeSelfies: upload rows", () => {
     expect(await uploadState(fx, old)).toBe("expired");
     expect(await exists(youngFile)).toBe(true);
     expect(await uploadState(fx, young)).toBe("rejected");
+  });
+
+  it("counts the 7 days of a rejected row from rejected_at, falling back to created_at when it is NULL", async () => {
+    const fx = await fixture();
+    const recentlyRejected = randomUUID();
+    const longRejected = randomUUID();
+    const legacyOld = randomUUID();
+    const legacyYoung = randomUUID();
+    const recentFile = await writeLss(fx, recentlyRejected);
+    const longFile = await writeLss(fx, longRejected);
+    const legacyOldFile = await writeLss(fx, legacyOld);
+    const legacyYoungFile = await writeLss(fx, legacyYoung);
+    await insertUpload(fx, {
+      objectId: recentlyRejected,
+      state: "rejected",
+      ageDays: 8,
+      rejectedAgeDays: 2,
+    });
+    await insertUpload(fx, {
+      objectId: longRejected,
+      state: "rejected",
+      ageDays: 9,
+      rejectedAgeDays: 8,
+    });
+    await insertUpload(fx, {
+      objectId: legacyOld,
+      state: "rejected",
+      ageDays: 8,
+    });
+    await insertUpload(fx, {
+      objectId: legacyYoung,
+      state: "rejected",
+      ageDays: 3,
+    });
+
+    const result = await sweep(fx);
+
+    expect(result.expiredRejected).toBe(2);
+    expect(await exists(recentFile)).toBe(true);
+    expect(await uploadState(fx, recentlyRejected)).toBe("rejected");
+    expect(await exists(longFile)).toBe(false);
+    expect(await uploadState(fx, longRejected)).toBe("expired");
+    expect(await exists(legacyOldFile)).toBe(false);
+    expect(await uploadState(fx, legacyOld)).toBe("expired");
+    expect(await exists(legacyYoungFile)).toBe(true);
+    expect(await uploadState(fx, legacyYoung)).toBe("rejected");
   });
 
   it("removes the leftover file of an uploaded or expired row and keeps the row", async () => {

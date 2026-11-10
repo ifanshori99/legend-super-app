@@ -18,6 +18,7 @@ import {
   ne,
   notExists,
   or,
+  sql,
 } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulidToUuid, type ScopedTenantContext } from "@starter/shared/core";
@@ -120,7 +121,10 @@ function isStoredSealedPath(
   );
 }
 
-/** pending past maxAgeDays and rejected past 7 days: file gone, state expired. */
+/**
+ * pending past maxAgeDays and rejected past 7 days (from rejected_at, created_at
+ * for rows rejected before that column): file gone, state expired.
+ */
 async function expireUploads(
   database: Database,
   context: ScopedTenantContext,
@@ -149,7 +153,10 @@ async function expireUploads(
             ),
             and(
               eq(edgeSelfieUploads.state, "rejected"),
-              lt(edgeSelfieUploads.createdAt, rejectedCutoff),
+              lt(
+                sql`COALESCE(${edgeSelfieUploads.rejectedAt}, ${edgeSelfieUploads.createdAt})`,
+                rejectedCutoff,
+              ),
             ),
           ),
         ),

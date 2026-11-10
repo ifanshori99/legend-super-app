@@ -228,7 +228,11 @@ export async function uploadNextSelfie(
   if (signal.aborted) return "aborted";
 
   const reject = async (reason: string): Promise<EdgeSelfieUploadOutcome> => {
-    await update(row.objectId, { state: "rejected", lastError: reason });
+    await update(row.objectId, {
+      state: "rejected",
+      lastError: reason,
+      rejectedAt: now(),
+    });
     // Alert: object id and error class only, never the body or the meta.
     logger.warn(
       { objectId: row.objectId, reason },

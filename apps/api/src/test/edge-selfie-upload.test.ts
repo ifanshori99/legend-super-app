@@ -404,12 +404,17 @@ async function seedKeyed(publicKeyPem: string) {
 /** Owner-seeded upload row; `createdAtSql` is a SQL expression. */
 async function seedUploadRow(
   target: { tenantId: string; outletId: string },
-  columns: { state: string; createdAtSql: string; sealedBytes: number },
+  columns: {
+    state: string;
+    createdAtSql: string;
+    sealedBytes: number;
+    rejectedAtSql?: string;
+  },
 ) {
   await owner.query(
     `INSERT INTO edge_selfie_uploads
-       (tenant_id, outlet_id, object_id, state, sealed_bytes, sealed_sha256, file_path, seal_kid, created_at)
-     VALUES ($1, $2, $6, $3, $4, $5, 'seeded/none.lss', 'seed-kid', ${columns.createdAtSql})`,
+       (tenant_id, outlet_id, object_id, state, sealed_bytes, sealed_sha256, file_path, seal_kid, created_at, rejected_at)
+     VALUES ($1, $2, $6, $3, $4, $5, 'seeded/none.lss', 'seed-kid', ${columns.createdAtSql}, ${columns.rejectedAtSql ?? "NULL"})`,
     [
       target.tenantId,
       target.outletId,
@@ -476,6 +481,36 @@ it("T5 edge selfie upload budget ignores rejected rows older than 7 days but cou
     expect(filesIn(dir)).toEqual([]);
     expect(await objectRows(target.tenantId)).toEqual([]);
   }
+});
+
+// The 7 day window of a rejected row runs from rejected_at; created_at only
+// stands in for legacy rows where rejected_at is NULL.
+it("T5 edge selfie upload budget counts a rejected row by rejected_at, not created_at", async () => {
+  const image = await jpegWithExif();
+  const HUGE = 2_000_000_000;
+
+  const recent = await seedKeyed(publicKey);
+  await seedUploadRow(recent, {
+    state: "rejected",
+    createdAtSql: "now() - interval '30 days'",
+    rejectedAtSql: "now() - interval '1 day'",
+    sealedBytes: HUGE,
+  });
+  const dir = newDir();
+  await expect(upload(recent, image, { dir })).rejects.toMatchObject({
+    status: 507,
+    code: "EDGE_SELFIE_STORAGE_FULL",
+  });
+  expect(filesIn(dir)).toEqual([]);
+
+  const old = await seedKeyed(publicKey);
+  await seedUploadRow(old, {
+    state: "rejected",
+    createdAtSql: "now() - interval '1 day'",
+    rejectedAtSql: "now() - interval '8 days'",
+    sealedBytes: HUGE,
+  });
+  expect((await upload(old, image, { dir: newDir() })).purpose).toBe("selfie");
 });
 
 it("T5 edge selfie upload budget is tenant-wide, not limited to the caller's outlet scope", async () => {

@@ -57,9 +57,10 @@ export interface EdgeSelfieDeps {
 
 /**
  * Bytes of sealed files on this disk that have not left yet: pending uploads,
- * rejected ones still inside their 7 day keep window (counted from creation,
- * a slight undercount; the file is deleted after 7 days but the row stays, so
- * counting every rejected row would grow the sum for good), plus sealed
+ * rejected ones still inside their 7 day keep window (counted from
+ * rejected_at; only legacy rows with NULL rejected_at fall back to created_at.
+ * The file is deleted after 7 days but the row stays, so counting every
+ * rejected row would grow the sum for good), plus sealed
  * objects whose clock is not made (no upload row). `uploaded` and `expired`
  * files are already deleted. The sum covers the whole tenant, not the
  * caller's outlet scope: the disk is shared by every outlet of the tenant.
@@ -74,7 +75,8 @@ async function pendingSealedBytes(
       SELECT COALESCE(SUM(size), 0)::text AS total FROM (
         SELECT sealed_bytes::bigint AS size FROM edge_selfie_uploads
           WHERE state = 'pending'
-             OR (state = 'rejected' AND created_at > now() - interval '7 days')
+             OR (state = 'rejected'
+                 AND COALESCE(rejected_at, created_at) > now() - interval '7 days')
         UNION ALL
         SELECT o.size_bytes::bigint FROM core_storage_objects o
           WHERE o.purpose = 'selfie' AND o.object_key LIKE 'edge-sealed:%'

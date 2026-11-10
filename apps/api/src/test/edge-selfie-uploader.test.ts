@@ -144,12 +144,13 @@ type Row = {
   attempts: number;
   last_error: string | null;
   uploaded_at: Date | null;
+  rejected_at: Date | null;
   next_attempt_at: Date;
 };
 
 async function rowOf(env: Env, objectId: string): Promise<Row> {
   const { rows } = await owner.query(
-    `SELECT state, attempts, last_error, uploaded_at, next_attempt_at
+    `SELECT state, attempts, last_error, uploaded_at, rejected_at, next_attempt_at
      FROM edge_selfie_uploads WHERE tenant_id = $1 AND object_id = $2`,
     [env.tenantId, objectId],
   );
@@ -410,16 +411,20 @@ describe("edge selfie uploader", () => {
       const { objectId, filePath } = await queueSelfie(env);
       const rejected: unknown[] = [];
       const cloud = fakeCloud(status);
+      const clock = new Date(Date.now() + CLOCK_AHEAD_MS);
 
       const outcome = await uploaderFor(env, cloud.fetchImpl, {
         onRejected: (info) => rejected.push(info),
+        now: () => clock,
       }).runOnce();
 
       expect(outcome).toBe("rejected");
-      expect(await rowOf(env, objectId)).toMatchObject({
+      const row = await rowOf(env, objectId);
+      expect(row).toMatchObject({
         state: "rejected",
         last_error: `HTTP_${status}`,
       });
+      expect(row.rejected_at?.getTime()).toBe(clock.getTime());
       expect(await exists(filePath)).toBe(true);
       expect(rejected).toEqual([{ objectId, reason: `HTTP_${status}` }]);
       expect(JSON.stringify(rejected)).not.toContain("cloud-body-secret");
@@ -453,17 +458,21 @@ describe("edge selfie uploader", () => {
     await writeFile(filePath, Buffer.from("tampered"), { mode: 0o600 });
     const cloud = fakeCloud(201);
     const rejected: unknown[] = [];
+    const clock = new Date(Date.now() + CLOCK_AHEAD_MS);
 
     const outcome = await uploaderFor(env, cloud.fetchImpl, {
       onRejected: (info) => rejected.push(info),
+      now: () => clock,
     }).runOnce();
 
     expect(outcome).toBe("rejected");
     expect(cloud.calls).toHaveLength(0);
-    expect(await rowOf(env, objectId)).toMatchObject({
+    const row = await rowOf(env, objectId);
+    expect(row).toMatchObject({
       state: "rejected",
       last_error: "FILE_HASH_MISMATCH",
     });
+    expect(row.rejected_at?.getTime()).toBe(clock.getTime());
     expect(await exists(filePath)).toBe(true);
     expect(rejected).toEqual([{ objectId, reason: "FILE_HASH_MISMATCH" }]);
   });
