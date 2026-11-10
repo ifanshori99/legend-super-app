@@ -33,6 +33,7 @@ import {
   facilitySubscriptionViewSchema,
   facilityUnitBoardRowSchema,
   facilityUnitSchema,
+  entitlementLedgerEntrySchema,
   entitlementRuleSchema,
   subscriptionInvoiceSchema,
   subscriptionPlanSchema,
@@ -52,6 +53,8 @@ import {
   createFacilitySchema,
   createFacilityUnitSchema,
   createSubscriptionPlanSchema,
+  customerEntitlementsParamsSchema,
+  customerEntitlementsQuerySchema,
   facilityConfigQuerySchema,
   facilityUnitsQuerySchema,
   joinFacilityQueueSchema,
@@ -63,6 +66,7 @@ import {
   raiseFacilityIncidentSchema,
   refreshWifiQuotaSchema,
   respondFacilityIncidentSchema,
+  staffIssueEntitlementSchema,
   staffSellTicketSchema,
   startCleaningTaskSchema,
   startSubscriptionSchema,
@@ -93,6 +97,7 @@ import {
   subscriptionPlanIdSchema,
 } from "./ids.ts";
 import {
+  currentEntitlementsSchema,
   facilityCustomerEndpoints,
   publicSubscriptionPlanSchema,
 } from "./customer.ts";
@@ -479,6 +484,30 @@ export const putWifiPolicy = defineEndpoint({
   response: dataResponseSchema(wifiPolicySchema),
 });
 
+// ---- Staff: entitlements (legend-fjk5, FAC-04) ------------------------------
+
+/** Staff read of a customer's balance and redeemable grants at a facility. */
+export const getCustomerEntitlements = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/customers/:customerProfileId/entitlements",
+  params: customerEntitlementsParamsSchema,
+  query: customerEntitlementsQuerySchema,
+  response: dataResponseSchema(currentEntitlementsSchema),
+});
+
+/** `duplicate` = the same `requestId` was already issued (idempotent retry). */
+export const staffIssuedEntitlementSchema = z.strictObject({
+  status: z.enum(["issued", "duplicate"]),
+  entry: entitlementLedgerEntrySchema,
+});
+
+export const staffIssueEntitlement = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/entitlements/staff-issue",
+  body: staffIssueEntitlementSchema,
+  response: dataResponseSchema(staffIssuedEntitlementSchema),
+});
+
 /** Every facility endpoint, for the mock runtime and future route generation. */
 export const facilityEndpoints = [
   getFacilityAvailability,
@@ -523,5 +552,7 @@ export const facilityEndpoints = [
   createSubscriptionPlanEndpoint,
   updateSubscriptionPlan,
   putWifiPolicy,
+  getCustomerEntitlements,
+  staffIssueEntitlement,
   ...facilityCustomerEndpoints,
 ] as const;

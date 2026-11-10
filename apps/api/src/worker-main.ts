@@ -44,6 +44,7 @@ import {
 
 import { deliverPayrollGlEvent } from "./services/payroll-gl-consumer.ts";
 // legend-111j
+import { deliverFacilityEntitlementEvent } from "./services/facility-entitlement-consumer.ts";
 import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
@@ -248,6 +249,11 @@ const runtime = createWorkerRuntime({
           // reverses them, in a savepoint under the profile lock.
           if (postsInventoryGl)
             await deliverLoyaltyEarnEvent(context, event, tx);
+          // legend-fjk5 (WS-09 F25), cloud only: a paid order issues package
+          // and min-spend facility entitlements, a refund cancels what is
+          // left of them (savepoint, replay is a no-op).
+          if (postsInventoryGl)
+            await deliverFacilityEntitlementEvent(context, event, tx);
           // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
           // or sale posts its GL journal in a savepoint; a closed period or a
           // missing mapping parks the source for the sweep, never fails this.
