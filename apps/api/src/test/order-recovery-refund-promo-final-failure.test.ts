@@ -25,7 +25,13 @@
 // - PF-5 tenant isolation of the port.
 // - PF-6 port: released application -> 0 without throwing; no application -> 0;
 //   same key with another payout -> 409 IDEMPOTENCY_KEY_REUSED; replay gives
-//   back once; never returns more than the ledger holds.
+//   back once; never returns more than the ledger holds (paid and subtotal).
+// - PF-7 (architect review of dbe08344) the give-back also lowers
+//   `refunded_subtotal_idr` by the line's share (first filing response
+//   `promoRefundedSubtotalIdr`), so a re-report keeps the first filing's
+//   `order.refunded` gross and discount; a returned issue's item is not
+//   "processed" for another issue's recompute (roti does not absorb the kopi
+//   payout); the promo-return key is not a valid client Idempotency-Key.
 //
 // Assumptions where the brief is not exact:
 // - The audit `objectId` of `promo_application.payout_returned` is the order id
@@ -51,6 +57,8 @@ import {
   eventEnvelopeSchema,
   type EventEnvelope,
 } from "@starter/shared/events";
+import { idempotencyKeySchema } from "@starter/shared/core";
+import { orderRefundedPayloadSchema } from "@starter/shared/pos";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { paymentRefunds } from "../db/schema/payment-admin.ts";
@@ -59,6 +67,7 @@ import { promoPartialRefundPort } from "../services/crm-promo-refund.ts";
 import { orderPromoPartialRefundPort } from "../services/order-promo-refund.ts";
 import {
   deliverOrderRecoveryRefundEvent,
+  orderRecoveryPromoReturnKey,
   refileRecoveryRefundAfterFailure,
 } from "../services/order-recovery-refund.ts";
 import { confirmPayment } from "../services/payment.service.ts";
@@ -113,6 +122,7 @@ const ORDER_TOTAL = 42_735;
 const KOPI_REFUND = 8_085;
 const KOPI_PAYOUT = 7_000;
 const ROTI_PAYOUT_AFTER_KOPI = 18_000;
+const KOPI_SUBTOTAL = 25_000;
 
 function contextOf(tenantId: string): ScopedTenantContext {
   return establishScopedTenantContext(
@@ -261,6 +271,24 @@ const orderLedger = async (orderId: string) => {
   return value!;
 };
 
+async function subtotalLedger(orderId: string): Promise<number> {
+  const { rows } = await owner.query<{ refunded_subtotal_idr: number }>(
+    `SELECT refunded_subtotal_idr::int FROM promotion_order_applications
+      WHERE tenant_id = $1 AND order_id = $2`,
+    [w.tenant.tenantId, toUuid(orderId)],
+  );
+  return rows[0]!.refunded_subtotal_idr;
+}
+
+async function firstFilingSubtotal(issueId: string): Promise<number> {
+  const { rows } = await owner.query<{ response: Record<string, unknown> }>(
+    `SELECT response FROM payment_admin_idempotency
+      WHERE tenant_id = $1 AND key = $2`,
+    [w.tenant.tenantId, `order-recovery-refund:${issueId}`],
+  );
+  return Number(rows[0]?.response?.promoRefundedSubtotalIdr ?? 0);
+}
+
 async function firstFilingPayout(issueId: string): Promise<number> {
   const { rows } = await owner.query<{ response: Record<string, unknown> }>(
     `SELECT response FROM payment_admin_idempotency
@@ -274,7 +302,7 @@ async function promoReturnRows(tenantId: string, issueId: string) {
   const { rows } = await owner.query<{ key: string; response: unknown }>(
     `SELECT key, response FROM promo_command_idempotency
       WHERE tenant_id = $1 AND key = $2`,
-    [tenantId, `order-recovery-refund:${issueId}:promo-return`],
+    [tenantId, orderRecoveryPromoReturnKey(issueId)],
   );
   return rows;
 }
@@ -313,6 +341,8 @@ async function kopiRefundFiled() {
   expect(refunds.map((row) => row.amount_idr)).toEqual([KOPI_REFUND]);
   expect(await orderLedger(paid.order.id)).toBe(KOPI_PAYOUT);
   expect(await firstFilingPayout(kopi.issueId)).toBe(KOPI_PAYOUT);
+  expect(await firstFilingSubtotal(kopi.issueId)).toBe(KOPI_SUBTOTAL);
+  expect(await subtotalLedger(paid.order.id)).toBe(KOPI_SUBTOTAL);
   return { paid, kopi, refundId: refunds[0]!.id };
 }
 
@@ -326,12 +356,14 @@ describe("legend-pti5r PF-1 refund gagal final mengembalikan payout promo", () =
       await runHook(refundId);
 
       expect(await orderLedger(paid.order.id)).toBe(0);
+      expect(await subtotalLedger(paid.order.id)).toBe(0);
       const returned = await auditRows(
         [paid.order.id, toUuid(paid.order.id)],
         "promo_application.payout_returned",
       );
       expect(returned).toHaveLength(1);
       expect(JSON.stringify(returned[0])).toContain(`${KOPI_PAYOUT}`);
+      expect(JSON.stringify(returned[0])).toContain(`${KOPI_SUBTOTAL}`);
       expect(
         await promoReturnRows(w.tenant.tenantId, kopi.issueId),
       ).toHaveLength(1);
@@ -344,6 +376,7 @@ describe("legend-pti5r PF-1 refund gagal final mengembalikan payout promo", () =
         (await issueRefunds(again.issueId)).map((row) => row.amount_idr),
       ).toEqual([KOPI_REFUND]);
       expect(await orderLedger(paid.order.id)).toBe(KOPI_PAYOUT);
+      expect(await subtotalLedger(paid.order.id)).toBe(KOPI_SUBTOTAL);
     },
   );
 });
@@ -357,6 +390,7 @@ describe("legend-pti5r PF-2 idempotent", () => {
     await runHook(refundId);
 
     expect(await orderLedger(paid.order.id)).toBe(0);
+    expect(await subtotalLedger(paid.order.id)).toBe(0);
     expect(await promoReturnRows(w.tenant.tenantId, kopi.issueId)).toHaveLength(
       1,
     );
@@ -406,6 +440,7 @@ describe("legend-pti5r PF-3 payout tetap bila uang tidak terutang", () => {
     await runHook(refundId);
 
     expect(await orderLedger(paid.order.id)).toBe(KOPI_PAYOUT);
+    expect(await subtotalLedger(paid.order.id)).toBe(KOPI_SUBTOTAL);
     expect(await promoReturnRows(w.tenant.tenantId, kopi.issueId)).toHaveLength(
       0,
     );
@@ -469,15 +504,16 @@ async function seedApplication(input: {
   outletId: string;
   orderId: string;
   refundedPaidIdr: number;
+  refundedSubtotalIdr?: number;
   status?: "applied" | "released";
 }) {
   await asOwnerTenant(input.tenantId, (client) =>
     client.query(
       `INSERT INTO promotion_order_applications
          (tenant_id, outlet_id, order_id, request_fingerprint, channel, subtotal_idr,
-          total_discount_idr, paid_idr, refunded_paid_idr, result, status,
-          released_at, release_reason)
-       VALUES ($1, $2, $3, $4, 'dine_in', 50000, 10000, 40000, $5, '{}'::jsonb, $6,
+          total_discount_idr, paid_idr, refunded_paid_idr, refunded_subtotal_idr, result,
+          status, released_at, release_reason)
+       VALUES ($1, $2, $3, $4, 'dine_in', 50000, 10000, 40000, $5, $9, '{}'::jsonb, $6,
                $7::timestamptz, $8)`,
       [
         input.tenantId,
@@ -488,6 +524,7 @@ async function seedApplication(input: {
         input.status ?? "applied",
         input.status === "released" ? new Date().toISOString() : null,
         input.status === "released" ? "order dibatalkan" : null,
+        input.refundedSubtotalIdr ?? 0,
       ],
     ),
   );
@@ -495,7 +532,12 @@ async function seedApplication(input: {
 
 function giveBack(
   tenantId: string,
-  input: { orderId: string; key: string; payoutIdr: number },
+  input: {
+    orderId: string;
+    key: string;
+    payoutIdr: number;
+    refundedSubtotalIdr?: number;
+  },
   port: typeof orderPromoPartialRefundPort = orderPromoPartialRefundPort,
 ) {
   const context = contextOf(tenantId);
@@ -504,6 +546,7 @@ function giveBack(
       orderId: input.orderId,
       idempotencyKey: input.key,
       payoutIdr: input.payoutIdr,
+      refundedSubtotalIdr: input.refundedSubtotalIdr ?? 0,
       at: new Date(),
     }),
   );
@@ -581,7 +624,7 @@ describe("legend-pti5r PF-6 port returnPartialRefundPayout", () => {
       payoutIdr: 4_000,
     });
 
-    expect(result).toEqual({ returnedIdr: 0 });
+    expect(result).toEqual({ returnedIdr: 0, returnedSubtotalIdr: 0 });
     expect(await paidLedger(w.tenant.tenantId, orderId)).toBe(4_000);
   });
 
@@ -591,7 +634,7 @@ describe("legend-pti5r PF-6 port returnPartialRefundPayout", () => {
       key: `pti5r-none-${randomUUID()}`,
       payoutIdr: 1_000,
     });
-    expect(result).toEqual({ returnedIdr: 0 });
+    expect(result).toEqual({ returnedIdr: 0, returnedSubtotalIdr: 0 });
   });
 
   it("kunci sama dengan payout berbeda: 409 IDEMPOTENCY_KEY_REUSED, ledger tidak berubah", async () => {
@@ -605,7 +648,7 @@ describe("legend-pti5r PF-6 port returnPartialRefundPayout", () => {
     });
     expect(
       await giveBack(w.tenant.tenantId, { orderId, key, payoutIdr: 3_000 }),
-    ).toEqual({ returnedIdr: 3_000 });
+    ).toEqual({ returnedIdr: 3_000, returnedSubtotalIdr: 0 });
 
     await expect(
       giveBack(w.tenant.tenantId, { orderId, key, payoutIdr: 2_000 }),
@@ -634,8 +677,8 @@ describe("legend-pti5r PF-6 port returnPartialRefundPayout", () => {
       payoutIdr: 3_000,
     });
 
-    expect(first).toEqual({ returnedIdr: 3_000 });
-    expect(second).toEqual({ returnedIdr: 3_000 });
+    expect(first).toEqual({ returnedIdr: 3_000, returnedSubtotalIdr: 0 });
+    expect(second).toEqual({ returnedIdr: 3_000, returnedSubtotalIdr: 0 });
     expect(await paidLedger(w.tenant.tenantId, orderId)).toBe(3_000);
   });
 
@@ -654,7 +697,144 @@ describe("legend-pti5r PF-6 port returnPartialRefundPayout", () => {
       promoPartialRefundPort,
     );
 
-    expect(result).toEqual({ returnedIdr: 2_500 });
+    expect(result).toEqual({ returnedIdr: 2_500, returnedSubtotalIdr: 0 });
     expect(await paidLedger(w.tenant.tenantId, orderId)).toBe(0);
+  });
+});
+
+describe("legend-pti5r PF-6b port: subtotal yang dikembalikan", () => {
+  async function subtotalOf(tenantId: string, orderId: string) {
+    const { rows } = await owner.query<{ refunded_subtotal_idr: number }>(
+      `SELECT refunded_subtotal_idr::int FROM promotion_order_applications
+        WHERE tenant_id = $1 AND order_id = $2`,
+      [tenantId, toUuid(orderId)],
+    );
+    return rows[0]!.refunded_subtotal_idr;
+  }
+
+  it("menurunkan refunded_subtotal_idr sebesar min(input, ledger); ulang dengan kunci sama tidak menurunkan lagi", async () => {
+    const orderId = createUlid();
+    const key = `pti5r-sub-${randomUUID()}`;
+    await seedApplication({
+      tenantId: w.tenant.tenantId,
+      outletId: w.tenant.outletId,
+      orderId,
+      refundedPaidIdr: 6_000,
+      refundedSubtotalIdr: 10_000,
+    });
+    const input = {
+      orderId,
+      key,
+      payoutIdr: 6_000,
+      refundedSubtotalIdr: 25_000,
+    };
+
+    const first = await giveBack(w.tenant.tenantId, input);
+    const second = await giveBack(w.tenant.tenantId, input);
+
+    expect(first).toEqual({ returnedIdr: 6_000, returnedSubtotalIdr: 10_000 });
+    expect(second).toEqual(first);
+    expect(await paidLedger(w.tenant.tenantId, orderId)).toBe(0);
+    expect(await subtotalOf(w.tenant.tenantId, orderId)).toBe(0);
+  });
+
+  it("subtotal saja (payout 0) tetap dikembalikan; kunci sama dengan subtotal lain: 409", async () => {
+    const orderId = createUlid();
+    const key = `pti5r-subonly-${randomUUID()}`;
+    await seedApplication({
+      tenantId: w.tenant.tenantId,
+      outletId: w.tenant.outletId,
+      orderId,
+      refundedPaidIdr: 0,
+      refundedSubtotalIdr: 12_000,
+    });
+
+    expect(
+      await giveBack(w.tenant.tenantId, {
+        orderId,
+        key,
+        payoutIdr: 0,
+        refundedSubtotalIdr: 5_000,
+      }),
+    ).toEqual({ returnedIdr: 0, returnedSubtotalIdr: 5_000 });
+    expect(await subtotalOf(w.tenant.tenantId, orderId)).toBe(7_000);
+    await expect(
+      giveBack(w.tenant.tenantId, {
+        orderId,
+        key,
+        payoutIdr: 0,
+        refundedSubtotalIdr: 4_000,
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "IDEMPOTENCY_KEY_REUSED" });
+    expect(await subtotalOf(w.tenant.tenantId, orderId)).toBe(7_000);
+  });
+});
+
+describe("legend-pti5r PF-7 review arsitek", () => {
+  it("kunci promo-return ditolak validator Idempotency-Key klien (tidak bisa di-pre-claim)", () => {
+    const key = orderRecoveryPromoReturnKey(createUlid());
+    expect(key).toMatch(/^order-recovery-refund:.+#promo-return$/);
+    expect(idempotencyKeySchema.safeParse(key).success).toBe(false);
+    // The first-filing key itself is a plain valid key shape (a different
+    // table, payment_admin_idempotency), which is why this one differs.
+    expect(
+      idempotencyKeySchema.safeParse(`order-recovery-refund:${createUlid()}`)
+        .success,
+    ).toBe(true);
+  });
+
+  it("kopi gagal final lalu lapor ulang: order.refunded kedua punya gross dan diskon yang sama dengan filing pertama; ledger subtotal kembali lalu terisi lagi", async () => {
+    const { paid, kopi, refundId } = await kopiRefundFiled();
+    await setFailed(refundId, "provider_declined");
+    await runHook(refundId);
+    expect(await subtotalLedger(paid.order.id)).toBe(0);
+
+    const again = await approvedRefund(paid.kopi.id, 25_000);
+    await deliver(again.event);
+    expect(
+      (await issueRefunds(again.issueId)).map((row) => row.amount_idr),
+    ).toEqual([KOPI_REFUND]);
+    expect(await firstFilingSubtotal(again.issueId)).toBe(KOPI_SUBTOTAL);
+    expect(await subtotalLedger(paid.order.id)).toBe(KOPI_SUBTOTAL);
+
+    const events = (await w.outboxRows("order.refunded", paid.order.id)).map(
+      (row) => orderRefundedPayloadSchema.parse(row.event.payload),
+    );
+    expect(events).toHaveLength(2);
+    expect(events[0]!.refundId).toBe(kopi.issueId);
+    expect(events[1]!.refundId).toBe(again.issueId);
+    expect(events[0]!.grossSalesIdr).toBe(25_000);
+    expect(events[0]!.discountIdr).toBe(18_000);
+    expect(events[1]!.grossSalesIdr).toBe(events[0]!.grossSalesIdr);
+    expect(events[1]!.discountIdr).toBe(events[0]!.discountIdr);
+    expect(events[1]!.amountIdr).toBe(events[0]!.amountIdr);
+  });
+
+  it("kopi gagal final, lalu roti gratis dilaporkan: roti tidak menyerap uang kopi (nothing_left, bukan kopi+roti); kopi lapor ulang dibayar 28.875", async () => {
+    const { paid, refundId } = await kopiRefundFiled();
+    await setFailed(refundId, "provider_declined");
+    await runHook(refundId);
+    expect(await orderLedger(paid.order.id)).toBe(0);
+
+    // Kopi's item is a standing line again for roti's recompute: the free roti
+    // owes Rp0.
+    const roti = await approvedRefund(paid.roti.id, 18_000);
+    await deliver(roti.event);
+    expect(await issueRefunds(roti.issueId)).toEqual([]);
+    const blocked = await auditRows(
+      [roti.issueId],
+      "order_issue.refund_blocked",
+    );
+    expect(blocked).toHaveLength(1);
+    expect(JSON.stringify(blocked[0])).toContain("nothing_left");
+    expect(await orderLedger(paid.order.id)).toBe(0);
+
+    // Kopi is reported again: roti (nothing_left) is out of the kept lines, so
+    // kept = teh only, the same answer as legend-h1dyy H2.
+    const again = await approvedRefund(paid.kopi.id, 25_000);
+    await deliver(again.event);
+    expect(
+      (await issueRefunds(again.issueId)).map((row) => row.amount_idr),
+    ).toEqual([28_875]);
   });
 });

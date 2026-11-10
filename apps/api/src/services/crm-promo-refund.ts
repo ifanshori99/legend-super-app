@@ -126,6 +126,7 @@ const REFUND_AUDIT_FIELDS: readonly string[] = [
   "withdrawnDiscountIdr",
   "discountIdr",
   "returnedIdr",
+  "returnedSubtotalIdr",
   "refundedPaidIdr",
 ];
 
@@ -224,9 +225,13 @@ export type PromoPartialRefundPort = {
   /**
    * Gives back a payout recorded with `recordPartialRefundPayout` when the
    * refund that carried it failed for good (legend-pti5r), so the line can be
-   * reported again and refunded. Idempotent per `idempotencyKey`. Never throws
-   * for a missing or released application (`{ returnedIdr: 0 }`): the caller
-   * is a failure hook that must not roll back.
+   * reported again and refunded. Lowers `refunded_paid_idr` by
+   * `min(payoutIdr, current)` and `refunded_subtotal_idr` by
+   * `min(refundedSubtotalIdr, current)` (the line's own share of the refunded
+   * subtotal, so the re-report recompute counts it as refunded now again).
+   * Idempotent per `idempotencyKey`. Never throws for a missing or released
+   * application (`{ returnedIdr: 0, returnedSubtotalIdr: 0 }`): the caller is
+   * a failure hook that must not roll back.
    */
   returnPartialRefundPayout(
     tx: Tx,
@@ -235,9 +240,10 @@ export type PromoPartialRefundPort = {
       orderId: string;
       idempotencyKey: string;
       payoutIdr: number;
+      refundedSubtotalIdr: number;
       at: Date;
     },
-  ): Promise<{ returnedIdr: number }>;
+  ): Promise<{ returnedIdr: number; returnedSubtotalIdr: number }>;
 };
 
 /** Same key as the engine's per-order lock (crm-promo-engine `lockOrder`). */
@@ -887,11 +893,14 @@ const PAYOUT_RETURN_OPERATION = "promo_payout.return";
 
 /**
  * Gives back a payout whose refund failed for good (legend-pti5r): lowers
- * `refunded_paid_idr` by `min(payoutIdr, refunded_paid_idr)`. Same lock order
- * as `recordPartialRefundPayout`: per-order advisory lock, then the
- * application row. Idempotent per `(tenant, idempotencyKey)`, so a replay
+ * `refunded_paid_idr` by `min(payoutIdr, refunded_paid_idr)` and
+ * `refunded_subtotal_idr` by `min(refundedSubtotalIdr, refunded_subtotal_idr)`.
+ * Same lock order as `recordPartialRefundPayout`: per-order advisory lock, then
+ * the application row. Idempotent per `(tenant, idempotencyKey)`, so a replay
  * never gives back twice; the same key with another payout is 409
  * `IDEMPOTENCY_KEY_REUSED`. No application, or a released one: Rp0, no throw.
+ * The key must not be a valid client `Idempotency-Key` (`idempotencyKeySchema`
+ * rejects it), or a client could pre-claim it in the shared table.
  */
 export async function returnPartialRefundPayout(
   tx: Tx,
@@ -900,13 +909,19 @@ export async function returnPartialRefundPayout(
     orderId: string;
     idempotencyKey: string;
     payoutIdr: number;
+    refundedSubtotalIdr: number;
     at: Date;
   },
-): Promise<{ returnedIdr: number }> {
+): Promise<{ returnedIdr: number; returnedSubtotalIdr: number }> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
   const orderId = orderIdSchema.parse(input.orderId);
-  if (!Number.isSafeInteger(input.payoutIdr) || input.payoutIdr < 0)
+  if (
+    !Number.isSafeInteger(input.payoutIdr) ||
+    input.payoutIdr < 0 ||
+    !Number.isSafeInteger(input.refundedSubtotalIdr) ||
+    input.refundedSubtotalIdr < 0
+  )
     throw new HttpError(422, "VALIDATION_ERROR", "Jumlah refund tidak valid.");
   const key = input.idempotencyKey;
   if (typeof key !== "string" || key.length < 1 || key.length > 100)
@@ -920,7 +935,11 @@ export async function returnPartialRefundPayout(
       JSON.stringify([
         tenantId,
         PAYOUT_RETURN_OPERATION,
-        { orderId, payoutIdr: input.payoutIdr },
+        {
+          orderId,
+          payoutIdr: input.payoutIdr,
+          refundedSubtotalIdr: input.refundedSubtotalIdr,
+        },
       ]),
     )
     .digest("hex");
@@ -945,9 +964,18 @@ export async function returnPartialRefundPayout(
         "IDEMPOTENCY_KEY_REUSED",
         "Idempotency-Key sudah dipakai untuk permintaan yang berbeda.",
       );
-    const stored = (existing.response as { returnedIdr?: unknown } | null)
-      ?.returnedIdr;
-    return { returnedIdr: typeof stored === "number" ? stored : 0 };
+    const stored = existing.response as {
+      returnedIdr?: unknown;
+      returnedSubtotalIdr?: unknown;
+    } | null;
+    return {
+      returnedIdr:
+        typeof stored?.returnedIdr === "number" ? stored.returnedIdr : 0,
+      returnedSubtotalIdr:
+        typeof stored?.returnedSubtotalIdr === "number"
+          ? stored.returnedSubtotalIdr
+          : 0,
+    };
   }
   const [application] = await tx
     .select()
@@ -960,15 +988,23 @@ export async function returnPartialRefundPayout(
     )
     .limit(1)
     .for("update");
-  const returnedIdr =
-    !application || application.status === "released"
-      ? 0
-      : Math.min(input.payoutIdr, application.refundedPaidIdr);
-  if (application && returnedIdr > 0) {
+  const live = application && application.status !== "released";
+  const returnedIdr = live
+    ? Math.min(input.payoutIdr, application.refundedPaidIdr)
+    : 0;
+  const returnedSubtotalIdr = live
+    ? Math.min(input.refundedSubtotalIdr, application.refundedSubtotalIdr)
+    : 0;
+  if (application && (returnedIdr > 0 || returnedSubtotalIdr > 0)) {
     const refundedPaidIdr = application.refundedPaidIdr - returnedIdr;
+    const refundedSubtotalIdr =
+      application.refundedSubtotalIdr - returnedSubtotalIdr;
     await tx
       .update(promotionOrderApplications)
-      .set({ refundedPaidIdr: idr(refundedPaidIdr) })
+      .set({
+        refundedPaidIdr: idr(refundedPaidIdr),
+        refundedSubtotalIdr: idr(refundedSubtotalIdr),
+      })
       .where(
         and(
           eq(promotionOrderApplications.tenantId, tenantId),
@@ -991,7 +1027,13 @@ export async function returnPartialRefundPayout(
         reason: "Refund gagal permanen: payout promo dikembalikan",
         maskedChanges: {
           before: null,
-          after: { orderId, returnedIdr, refundedPaidIdr },
+          after: {
+            orderId,
+            returnedIdr,
+            returnedSubtotalIdr,
+            refundedPaidIdr,
+            refundedSubtotalIdr,
+          },
         },
         ipHash: null,
         sensitiveAccess: false,
@@ -1006,9 +1048,9 @@ export async function returnPartialRefundPayout(
     key,
     operation: PAYOUT_RETURN_OPERATION,
     fingerprint,
-    response: { returnedIdr },
+    response: { returnedIdr, returnedSubtotalIdr },
   });
-  return { returnedIdr };
+  return { returnedIdr, returnedSubtotalIdr };
 }
 
 /** Default port: the real recompute (the refund module injects it). */

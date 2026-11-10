@@ -42,7 +42,8 @@ type Seed = {
   /** A refund of the issue that is not failed. */
   live?: boolean;
   stamped?: boolean;
-  firstFiling?: false | { promoRecordedIdr?: number };
+  firstFiling?:
+    false | { promoRecordedIdr?: number; promoRefundedSubtotalIdr?: number };
   orderRefundedEvent?: boolean;
   reversalEvent?: boolean;
   promoApplication?: {
@@ -124,6 +125,12 @@ async function seed(tenant: Tenant, spec: Seed): Promise<Seeded> {
             ...(spec.firstFiling?.promoRecordedIdr === undefined
               ? {}
               : { promoRecordedIdr: spec.firstFiling.promoRecordedIdr }),
+            ...(spec.firstFiling?.promoRefundedSubtotalIdr === undefined
+              ? {}
+              : {
+                  promoRefundedSubtotalIdr:
+                    spec.firstFiling.promoRefundedSubtotalIdr,
+                }),
           }),
         ],
       );
@@ -185,10 +192,10 @@ async function seed(tenant: Tenant, spec: Seed): Promise<Seeded> {
     if (spec.promoReturnRow)
       await client.query(
         `INSERT INTO promo_command_idempotency (tenant_id, key, operation, fingerprint, response)
-         VALUES ($1, $2, 'promo_payout.return', $3, '{"returnedIdr":7000}'::jsonb)`,
+         VALUES ($1, $2, 'promo_payout.return', $3, '{"returnedIdr":7000,"returnedSubtotalIdr":0}'::jsonb)`,
         [
           tenant.id,
-          `order-recovery-refund:${issueId}:promo-return`,
+          `order-recovery-refund:${issueId}#promo-return`,
           "b".repeat(64),
         ],
       );
@@ -269,26 +276,29 @@ beforeAll(async () => {
   named.promoOwed = await seed(a, {
     failed: ["provider_declined"],
     stamped: true,
-    firstFiling: { promoRecordedIdr: 7_000 },
+    firstFiling: { promoRecordedIdr: 7_000, promoRefundedSubtotalIdr: 20_000 },
     promoApplication: PROMO,
   });
   named.promoOwedB = await seed(b, {
     failed: ["provider_declined"],
     stamped: true,
-    firstFiling: { promoRecordedIdr: 7_000 },
+    firstFiling: { promoRecordedIdr: 7_000, promoRefundedSubtotalIdr: 20_000 },
     promoApplication: PROMO,
   });
   named.promoReleased = await seed(a, {
     failed: ["cap_exceeded"],
     stamped: true,
-    firstFiling: { promoRecordedIdr: 3_000 },
+    firstFiling: { promoRecordedIdr: 3_000, promoRefundedSubtotalIdr: 10_000 },
     promoApplication: { refundedPaidIdr: 0, status: "released" },
   });
   clean.promoReturned = (
     await seed(a, {
       failed: ["provider_declined"],
       stamped: true,
-      firstFiling: { promoRecordedIdr: 7_000 },
+      firstFiling: {
+        promoRecordedIdr: 7_000,
+        promoRefundedSubtotalIdr: 20_000,
+      },
       promoApplication: PROMO,
       promoReturnRow: true,
     })
@@ -297,7 +307,10 @@ beforeAll(async () => {
     await seed(a, {
       failed: ["rejected"],
       stamped: true,
-      firstFiling: { promoRecordedIdr: 7_000 },
+      firstFiling: {
+        promoRecordedIdr: 7_000,
+        promoRefundedSubtotalIdr: 20_000,
+      },
       promoApplication: PROMO,
     })
   ).issueId;
@@ -305,7 +318,7 @@ beforeAll(async () => {
     await seed(a, {
       failed: ["provider_declined"],
       stamped: true,
-      firstFiling: { promoRecordedIdr: 0 },
+      firstFiling: { promoRecordedIdr: 0, promoRefundedSubtotalIdr: 0 },
       promoApplication: PROMO,
     })
   ).issueId;
@@ -317,11 +330,36 @@ beforeAll(async () => {
       promoApplication: PROMO,
     })
   ).issueId;
+  // ---- Query 3: old first filing (promoRecordedIdr, no promoRefundedSubtotalIdr)
+  named.oldRowOwed = await seed(a, {
+    failed: ["provider_declined"],
+    stamped: true,
+    firstFiling: { promoRecordedIdr: 7_000 },
+    promoApplication: PROMO,
+  });
+  named.oldRowReturned = await seed(a, {
+    failed: ["provider_declined"],
+    stamped: true,
+    firstFiling: { promoRecordedIdr: 7_000 },
+    promoApplication: PROMO,
+    promoReturnRow: true,
+  });
+  clean.oldRowRejected = (
+    await seed(a, {
+      failed: ["rejected"],
+      stamped: true,
+      firstFiling: { promoRecordedIdr: 7_000 },
+      promoApplication: PROMO,
+    })
+  ).issueId;
   clean.promoNoApplication = (
     await seed(a, {
       failed: ["provider_declined"],
       stamped: true,
-      firstFiling: { promoRecordedIdr: 7_000 },
+      firstFiling: {
+        promoRecordedIdr: 7_000,
+        promoRefundedSubtotalIdr: 20_000,
+      },
     })
   ).issueId;
 }, 120_000);
@@ -356,15 +394,15 @@ afterAll(async () => {
 
 type Row = Record<string, unknown>;
 
-/** Runs the whole file as one simple query; returns the rows of its 2 queries. */
-async function runCheck(): Promise<[Row[], Row[]]> {
+/** Runs the whole file as one simple query; returns the rows of its 3 queries. */
+async function runCheck(): Promise<[Row[], Row[], Row[]]> {
   const results = (await owner.query(checkSql)) as unknown as {
     command: string;
     rows: Row[];
   }[];
   const selects = results.filter((result) => result.command === "SELECT");
-  expect(selects).toHaveLength(2);
-  return [selects[0]!.rows, selects[1]!.rows];
+  expect(selects).toHaveLength(3);
+  return [selects[0]!.rows, selects[1]!.rows, selects[2]!.rows];
 }
 
 const ours = (rows: Row[]) =>
@@ -417,7 +455,12 @@ describe("recovery refund final failure check (legend-pti5r)", () => {
     const [, query2] = await runCheck();
     const rows = ours(query2);
     const ids = rows.map((row) => row.issue_id as string).sort();
-    const expected = [named.promoOwed, named.promoOwedB, named.promoReleased]
+    const expected = [
+      named.promoOwed,
+      named.promoOwedB,
+      named.promoReleased,
+      named.oldRowOwed,
+    ]
       .map((item) => item!.issueId)
       .sort();
     expect(ids).toEqual(expected);
@@ -442,6 +485,30 @@ describe("recovery refund final failure check (legend-pti5r)", () => {
     for (const id of Object.values(clean)) expect(ids).not.toContain(id);
   });
 
+  it("query 3 flags old first filings (no promoRefundedSubtotalIdr) for manual review", async () => {
+    const [, , query3] = await runCheck();
+    const rows = ours(query3);
+    const ids = rows.map((row) => row.issue_id as string).sort();
+    const expected = [named.oldRowOwed, named.oldRowReturned]
+      .map((item) => item!.issueId)
+      .sort();
+    expect(ids).toEqual(expected);
+    const byId = new Map(rows.map((row) => [row.issue_id as string, row]));
+    expect(byId.get(named.oldRowOwed!.issueId)).toMatchObject({
+      tenant_id: a.id,
+      order_id: named.oldRowOwed!.orderId,
+      payout_returned: false,
+    });
+    expect(
+      Number(byId.get(named.oldRowOwed!.issueId)!.promo_recorded_idr),
+    ).toBe(7_000);
+    // payout already given back, the subtotal still needs a manual look
+    expect(byId.get(named.oldRowReturned!.issueId)).toMatchObject({
+      payout_returned: true,
+    });
+    for (const id of Object.values(clean)) expect(ids).not.toContain(id);
+  });
+
   it("writes nothing: a second run returns the same rows and the data is unchanged", async () => {
     const count = async () => {
       const { rows } = await owner.query<{ n: string }>(
@@ -457,6 +524,7 @@ describe("recovery refund final failure check (legend-pti5r)", () => {
     const second = await runCheck();
     expect(ours(second[0])).toEqual(ours(first[0]));
     expect(ours(second[1])).toEqual(ours(first[1]));
+    expect(ours(second[2])).toEqual(ours(first[2]));
     expect(await count()).toBe(before);
   });
 });
