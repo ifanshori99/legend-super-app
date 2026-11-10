@@ -476,12 +476,12 @@ describe("legend-94q2l T5 refund rejected: the reversal request", () => {
     expect(await orderRefundedEvents(order.id)).toHaveLength(1);
   });
 
-  it("RJ-7 provider_declined needs a person (the money may have left): no reversal is requested", async () => {
+  it("RJ-7 provider_declined is final (legend-iu91r): not re-filed, audited as refund_refile_blocked, and the reversal is requested like rejected", async () => {
     const { issueId, first } = await deliveredRefund();
 
     await failAndRefile(first.id, "provider_declined");
 
-    expect(await reversalEvents(issueId)).toHaveLength(0);
+    expect(await reversalEvents(issueId)).toHaveLength(1);
     expect(await auditCount(issueId, "order_issue.refund_rejected")).toBe(0);
   });
 

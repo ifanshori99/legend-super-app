@@ -848,9 +848,13 @@ async function requestRecoveryRefundReversal(
  *   `order_issue.refund_reversal_requested` once, which reverses its journal,
  *   and the sale holds the money again (`qrSaleInUseOfIntent`);
  * - `provider_declined` (the money may already have left: a re-file would pay
- *   twice), `cap_exceeded` and `source_document` need a person: not re-filed,
+ *   twice), `cap_exceeded` and `source_document` are final too: not re-filed,
  *   audited `order_issue.refund_refile_blocked` (`failure_needs_person`);
  * - an issue with 3 failed refunds is not re-filed again (`refile_limit`).
+ * Every final failure (and the `no_first_filing` block) is treated like
+ * `rejected` (legend-iu91r): the refund journal is reversed, the points come
+ * back and the sale holds the money again, since a person cannot refund a
+ * source-document intent by hand and the money would be stuck.
  * No new `order.refunded`: the revenue was already reversed. Idempotent per
  * failed refund (key `order-recovery-refund:<issueId>:<failedRefundId>`); the
  * resolver and approver are copied from the first filing's idempotency row,
@@ -938,6 +942,13 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal tidak diajukan ulang: perlu keputusan orang",
     );
+    await requestRecoveryRefundReversal(
+      tx,
+      context,
+      failedRefund,
+      issueId,
+      now,
+    );
     return;
   }
   const [live] = await tx
@@ -974,6 +985,13 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal tidak diajukan ulang: sudah gagal 3 kali",
     );
+    await requestRecoveryRefundReversal(
+      tx,
+      context,
+      failedRefund,
+      issueId,
+      now,
+    );
     return;
   }
   const [first] = await tx
@@ -997,6 +1015,13 @@ export async function refileRecoveryRefundAfterFailure(
         failureReason,
       },
       "Refund item gagal tidak diajukan ulang: pihak asli tidak terbaca",
+    );
+    await requestRecoveryRefundReversal(
+      tx,
+      context,
+      failedRefund,
+      issueId,
+      now,
     );
     return;
   }
