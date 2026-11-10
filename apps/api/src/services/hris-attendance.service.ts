@@ -97,6 +97,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { linkStorageObjectSource } from "./core-storage.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { linkEdgeSelfie } from "./edge-selfie-link.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -407,6 +408,11 @@ export type RecordAttendanceInput = {
   qrToken: string | null;
   clientEventId: string;
   offline: boolean;
+  /**
+   * Flag reasons an edge attached to an offline event (attendance.logged v2);
+   * stored unioned with the cloud's own reasons.
+   */
+  edgeFlagReasons?: readonly AttendanceStoredFlagReason[];
 };
 
 /**
@@ -534,7 +540,27 @@ export async function recordAttendanceLog(
   scope: AttendanceScope,
   input: RecordAttendanceInput,
 ): Promise<LogRow> {
-  return (await storeAttendanceLog(tx, scope, input)).row;
+  const { row, created } = await storeAttendanceLog(tx, scope, input);
+  // An edge selfie (photo_key = the sealed object id) is linked to the new log
+  // once; a replay changes nothing. A link that cannot be made clears photo_key
+  // and flags the log `selfie_unlinked` (linkEdgeSelfie), so read the row again.
+  if (!created || !input.offline || input.photoKey === null) return row;
+  const outcome = await linkEdgeSelfie(tx, {
+    tenantId: scope.tenantId,
+    objectId: input.photoKey,
+  });
+  if (outcome !== "unlinked") return row;
+  const [relinked] = await tx
+    .select()
+    .from(attendanceLogs)
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, scope.tenantId),
+        eq(attendanceLogs.id, row.id),
+      ),
+    )
+    .limit(1);
+  return relinked ?? row;
 }
 
 /**
@@ -580,7 +606,30 @@ async function storeAttendanceLog(
     // Edge replay: the event carries none of the evidence the edge vetted
     // (device, QR, selfie, geofence), so it cannot be verified here. Store it
     // flagged for review; the client time is checked below.
-    decision = { validity: "flagged", reasons: ["offline_unverified"] };
+    const reasons: AttendanceStoredFlagReason[] = ["offline_unverified"];
+    for (const reason of input.edgeFlagReasons ?? [])
+      if (!reasons.includes(reason)) reasons.push(reason);
+    // The employee table keeps no status history: the current status stands in
+    // for the status at occurredAt. An inactive employee is flagged for review,
+    // never rejected (the edge already recorded the clock).
+    const [employee] = await tx
+      .select({ status: employees.status })
+      .from(employees)
+      .where(
+        and(
+          eq(employees.tenantId, tenantId),
+          eq(employees.id, input.employeeId),
+        ),
+      )
+      .limit(1);
+    if (
+      employee &&
+      employee.status !== "onboarding" &&
+      employee.status !== "active" &&
+      !reasons.includes("employee_inactive")
+    )
+      reasons.push("employee_inactive");
+    decision = { validity: "flagged", reasons };
   } else {
     if (input.method === "selfie_geo" && input.location !== null) {
       const distance = geofenceDistance(input.location, outlet.geofence);

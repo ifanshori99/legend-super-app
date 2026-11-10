@@ -7,6 +7,7 @@ import { requireTrustedOrigin } from "../middleware/origin";
 import { createCoreStorageRouterWithAccess } from "../services/core-storage-access";
 import type { StorageRuntime } from "../services/core-storage-runtime";
 import type * as schema from "../db/schema";
+import { createEdgeSelfieReceiveRouter } from "./edge-selfie-receive.routes";
 import { createHrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
 import { createHrisAttendanceRouter } from "./hris-attendance.routes";
 import { createMenuRouter } from "./menu.routes";
@@ -48,6 +49,16 @@ export function createStorageApiRouter(options: {
       scanner: runtime?.scanner,
     }),
   );
+
+  // Edge selfie upload (legend-0wvoz): edge credential, no session. Only its
+  // own prefix enters the router, so its pre-auth limiter never counts other
+  // /api/edge-sync traffic. Needs the storage and the scanner (503 without).
+  const edgeSelfies = createEdgeSelfieReceiveRouter({
+    database,
+    storage: runtime?.storage ?? null,
+    scanner: runtime?.scanner ?? null,
+  });
+  router.use("/edge-sync/attendance-selfies", edgeSelfies);
 
   // Only attendance paths enter these routers: each runs the session and
   // tenant guards on every request it sees, which would double that work for

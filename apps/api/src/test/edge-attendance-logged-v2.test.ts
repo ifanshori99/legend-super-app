@@ -252,14 +252,13 @@ describe("legend-0wvoz replay and linking inside the applier (6.3)", () => {
     expect((await fx.objectRow(objectId))!.source_id).toBeNull();
   });
 
-  it("selfie of another outlet than the log's: photo_key NULL, selfie_unlinked, log kept", async () => {
+  it("selfie object of another outlet: hidden from the node's outlet scope (RLS), so the log waits, is kept, and the object is never linked", async () => {
     const objectId = randomUUID();
     await seedSelfieObject(objectId, { outletId: fx.outletB });
     const { log } = await apply({ selfieObjectId: objectId });
     expect(log).toBeDefined();
-    expect(log!.photo_key).toBeNull();
-    expect(log!.flag_reasons).toContain("selfie_unlinked");
-    expect(log!.review_status).toBe("pending");
+    expect(log!.photo_key).toBe(objectId);
+    expect((await fx.objectRow(objectId))!.source_id).toBeNull();
   });
 
   it("selfie already linked to another record: photo_key NULL, selfie_unlinked, the other link untouched", async () => {

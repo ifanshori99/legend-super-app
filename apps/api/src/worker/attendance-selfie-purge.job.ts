@@ -21,7 +21,17 @@
 // app.active_tenant_registry and each tenant runs under a trusted job context
 // with tenant-wide scope, so RLS still applies. worker-main.ts registers it.
 
-import { and, asc, eq, gt, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  sql,
+} from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { ObjectStorage } from "@starter/shared/adapters";
 import {
@@ -41,6 +51,8 @@ import {
   attendancePolicies,
 } from "../db/schema/hris-attendance.ts";
 import { coreStorageObjects } from "../db/schema/core-storage.ts";
+import { edgeReceivedSelfies } from "../db/schema/edge-hris.ts";
+import { edgeNodes } from "../db/schema/edge-node.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
 import { withTenant } from "../db/tenant.ts";
 import { selfieRetentionDue } from "../services/hris-attendance-logic.ts";
@@ -260,6 +272,38 @@ async function purgeOne(
             eq(coreStorageObjects.id, object.id),
           ),
         );
+    } else {
+      // legend-0wvoz: the selfie never reached the cloud. When the log's
+      // outlet has an edge node the selfie may still arrive later; a
+      // `discarded` receipt (zero-filled hash) makes the receive endpoint
+      // answer 200 and store nothing. An existing receipt stays untouched.
+      const [node] = await tx
+        .select({ id: edgeNodes.id })
+        .from(edgeNodes)
+        .where(
+          and(
+            eq(edgeNodes.tenantId, tenantId),
+            eq(edgeNodes.outletId, candidate.outletId),
+          ),
+        )
+        .orderBy(
+          desc(sql`${edgeNodes.status} = 'active'`),
+          asc(edgeNodes.createdAt),
+        )
+        .limit(1);
+      if (node)
+        await tx
+          .insert(edgeReceivedSelfies)
+          .values({
+            tenantId,
+            objectId,
+            outletId: candidate.outletId,
+            edgeNodeId: node.id,
+            sealedSha256: Buffer.alloc(32, 0),
+            state: "discarded",
+            receivedAt: now,
+          })
+          .onConflictDoNothing();
     }
     await tx
       .update(attendanceLogs)

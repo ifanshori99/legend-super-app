@@ -328,6 +328,32 @@ describe("legend-0wvoz T6 receive: store, retry, conflict", () => {
     ).toBe(true);
     expect(await fx.receiptRow(objectId)).toBeUndefined();
   });
+
+  it("409 OBJECT_ID_TAKEN for an object id held at another outlet (hidden by RLS), nothing written to storage", async () => {
+    const objectId = randomUUID();
+    await fx.asTenant((client) =>
+      client.query(
+        `INSERT INTO core_storage_objects
+           (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes,
+            thumbnail_key, owner_user_id)
+         VALUES ($1, $2, $3, 'selfie', $4, 'image/webp', 21, $5, $6)`,
+        [
+          fx.tenantId,
+          fx.outletB,
+          objectId,
+          `${objectId}/original.webp`,
+          `${objectId}/thumbnail.webp`,
+          fx.employee.userId,
+        ],
+      ),
+    );
+    storage.puts = [];
+    const response = await put(objectId, await seal(objectId));
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("OBJECT_ID_TAKEN");
+    expect(storage.puts).toEqual([]);
+    expect(await fx.receiptRow(objectId)).toBeUndefined();
+  });
 });
 
 describe("legend-0wvoz T6 receive: scope refusals (403)", () => {
