@@ -242,3 +242,20 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0241, urut merge. `when
 - **SQL diubah oleh merge train (temuan architect):** 0244 memindahkan lima FK ke `outlets` dan 0246 memindahkan dua FK ke `employees` ke dalam `CREATE TABLE` (pola 1, `docs/plan/contracts.md`); tanpa itu migrasi gagal untuk pemilik tanpa BYPASSRLS (`tenant context is required`). 0245 menambah `REVOKE DELETE, TRUNCATE` pada `edge_print_alerts` dan `edge_print_jobs` (kode tidak pernah menghapus baris di sana). Komentar penomoran di `0245` dan `edge-print.custom.sql` diperbarui.
 - **Perubahan kode karena tabrakan semantik:** PIN slip gaji (hris-pii-pin) ditulis terhadap `staffPinPepper(tenant, version)` lama; di batch48b pepper menjadi per outlet. Slip gaji milik karyawan, bukan outlet, jadi `device-pin-pepper.ts` mendapat `payslipPinPepper(tenant, version)` (per tenant, label HKDF sendiri `legend:payslip-pin-pepper:v{n}:{tenant}`, hanya di cloud) dan `payslip-pin.service.ts` memakainya. PIN slip gaji belum pernah disimpan di database bersama.
 - **PERTANYAAN TERBUKA untuk CTO:** `packages/shared/src/platform/config-codecs.ts` (legend-tct8) dan `configSectionItemSchemas` di `config.ts` (tenant-config-export) menggambarkan item roles, approval_policies, dan chart_of_accounts dalam dua bentuk (cabang ekspor memakai diskriminator `kind`, codec tidak). Sementara itu `configBundleSchema` menjalankan pemeriksaan codec hanya untuk bagian yang itemnya tanpa `kind`; bagian dengan `kind` diperiksa oleh skema ketat di batas server. Satu bentuk perlu dipilih.
+
+## Tambahan batch48d (penomoran ulang 0247 sampai 0249)
+
+Nomor sementara dinomori ulang rapat sesudah 0246, urut merge. `when` naik 1000000 per migrasi mulai 1794328000000. `pnpm db:generate` kosong dan `node scripts/migration-renumber.mjs check --from-idx 242` hijau setelah tiap merge.
+
+| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
+|---|---|---|---|---|
+| 0247 | `0247_sole_owner_self_approval` | 0270 | ws/owner-self-approve (juga termuat di ws/inbox-self-approve dan ws/ps-405) | 1794328000000 |
+| 0248 | `0248_payroll_reseal_keys` | 0272 | ws/snhxw-payroll-keys | 1794329000000 |
+| 0249 | `0249_backfill_marketing_opt_in_from_consents` | 0242 | fix/codex-411-loyalty-consent | 1794330000000 |
+
+- Tanpa migrasi baru: ws/tenant-config-followups, ws/outlet-followups, ws/duitku-406, fix/codex-418-pin, fix/codex-414-hris-attendance, fix/codex-415-wifi, ws/ekxy2-void-line (memuat fix/codex-419-table-merge).
+- 0248 tidak punya perubahan skema (hanya GRANT kolom dan ganti fungsi), jadi snapshot 0248 disalin dari 0247 dengan `id`/`prevId` baru dan entri jurnal ditulis manual. Sama untuk 0249 (data saja).
+- **SQL diubah oleh merge train:** 0249 (backfill `customer_profiles.marketing_opt_in`) dibungkus `NO FORCE` / `FORCE ROW LEVEL SECURITY` untuk `consents` dan `customer_profiles`, pola 0068/0116/0140/0145/0241: migrator pemilik tabel biasa (tanpa BYPASSRLS) akan kena 42501 tanpa `app.tenant_id`. Entri baru di `data-import-registry.test.ts`.
+- **0239 diedit di tempat oleh ws/ps-405:** kolom `distribution_lines.recipient_unverified` dan indeksnya ditambah ke 0239; baris lama yang sudah dibayar ditandai `recipient_unverified` dan hanya Owner tenant yang bisa menetapkan penerimanya satu kali (dengan baris audit). Snapshot 0239 sampai 0248 diberi kolom dan indeks yang sama. **Database dev/test yang sudah menerapkan 0239 lama harus di-reset** (migrasi tidak dijalankan ulang); database produksi belum menerapkan 0239.
+- **Cabang uang (duitku-406, ps-405):** tidak ada konflik di file kode; hanya docs. Perilaku tidak diubah saat merge.
+- **Ditahan, tidak digabung:** ws/pti5r-promo-refund (kartu legend-fwe4l dan second opinion Codex refund), semua cabang WhatsApp (lgfru, s5rgo, 9h2oj, w8dfz.*).
