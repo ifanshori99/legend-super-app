@@ -35,3 +35,10 @@ Perbaikan:
 4. Audit `swapCapIdr` saat cap memotong.
 
 Test gagal-dulu (tambah ke `order-recovery-refund-swap-cap.test.ts` dan `order-recovery-refund-amount.test.ts`): swap langsung lalu gagal (pay-first promo, open bill promo) -> B = 3.885 persis, voucher + B <= 25.000, ledger paid +7.000 (pra-cap); rantai swap langsung -> B gagal final -> C -> C = 3.885; unit `recoveryRefundSplit` dengan capIdr. Order tanpa promo: swap langsung lalu gagal -> tidak berubah dari sekarang (nilai baris sendiri).
+
+## Putaran 3 (cek ulang architect atas 376d33a4)
+
+1. Rendah, regresi `order-recovery-refund.ts` ~603-609: cap juga memotong replay yang akarnya baris yang sama (teh B gagal final -> teh C; bila refund baris lain berubah di antaranya, `priorLinesIdr` baru membuat C Rp1-4 lebih kecil dari B dan split berubah). Perbaikan: syarat cap = `replay !== null ? replay.rootOrderItemId !== issue.orderItemId : originalOf.has(issue.orderItemId)`. B->C pada swap langsung tetap 3.885 (C replay B yang sudah dipotong).
+2. Rendah `order-recovery-refund-amount.ts` ~274-288: `goodsIdr` dipotong room terhadap jumlah PRA-cap. Bila room di antara cap dan pra-cap, refund tidak terpotong tetapi ledger mencatat < goods penuh -> selisih bisa dibayar lagi di item berikutnya. Perbaikan: goods dipotong room hanya bila room < jumlah PASCA-cap, dengan skala `amount / wanted pasca-cap`.
+
+Test (tambah ke `order-recovery-refund-swap-cap.test.ts`, assertion persis): swap berantai kopi->teh->air lalu air gagal -> dibatasi nilai air; refund roti setelah B (ledger pra-cap dicatat, roti dapat jumlahnya sendiri, tidak membayar ulang kopi); replay tanpa promo dengan refund baris lain di antara B dan C -> C = B persis (jumlah dan split). Unit di `order-recovery-refund-amount.test.ts`: room di antara cap dan pra-cap -> goods tidak dipotong.

@@ -270,23 +270,29 @@ export function recoveryRefundSplit(input: {
   const room = BigInt(
     Math.max(0, order.totalIdr - order.depositAppliedIdr - releasedIdr),
   );
-  // The goods money on the promo ledger basis is the one before the cap.
-  const uncut = cutToRoom(parts, uncappedWanted, room);
-  const goodsIdr = Number(
-    order.pricesIncludeTax
-      ? uncut.amount
-      : uncut.parts.gross - uncut.parts.discount,
-  );
   let wanted = uncappedWanted;
   let startParts = parts;
-  if (input.capIdr !== undefined && big(input.capIdr) < wanted) {
-    const capped = cutToRoom(startParts, wanted, big(input.capIdr));
-    wanted = capped.amount;
-    startParts = capped.parts;
+  const capped = input.capIdr !== undefined && big(input.capIdr) < wanted;
+  if (capped) {
+    const cutByCap = cutToRoom(startParts, wanted, big(input.capIdr as number));
+    wanted = cutByCap.amount;
+    startParts = cutByCap.parts;
     if (wanted <= 0n) return { ...ZERO };
   }
   const { amount, parts: cut } = cutToRoom(startParts, wanted, room);
   const { gross, discount, service, pbjt } = cut;
+  // The goods money on the promo ledger basis is the one before the cap (the
+  // ledger paid the original out in full). The room cuts it only when it is
+  // below the post-cap amount, scaled by `amount / wanted` of that amount.
+  const goodsOf = (p: Parts, total: bigint): bigint =>
+    order.pricesIncludeTax ? total : p.gross - p.discount;
+  const goodsIdr = Number(
+    capped
+      ? amount < wanted
+        ? mulDivHalfUp(goodsOf(parts, uncappedWanted), amount, wanted)
+        : goodsOf(parts, uncappedWanted)
+      : goodsOf(cut, amount),
+  );
   return {
     wantedIdr: Number(wanted),
     amountIdr: Number(amount),

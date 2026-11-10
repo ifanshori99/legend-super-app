@@ -1062,3 +1062,53 @@ describe("legend-fwe4l recoveryRefundSplit dengan capIdr", () => {
     });
   });
 });
+
+// legend-fwe4l round 3: `goodsIdr` (the promo ledger's goods) is the goods BEFORE the
+// cap and is cut by the room only when the room is below the amount AFTER the cap.
+// A room between the cap and the pre-cap amount leaves the refund at the cap and the
+// goods whole, so the difference is not paid again on the next item.
+// Promo order: subtotal 120.000, discount 20.000, service 5.000, PBJT 10.500, total
+// 115.500; line 50.000, goods due 30.000 -> pre-cap wanted 34.650, cap 3.465.
+describe("legend-fwe4l recoveryRefundSplit: goodsIdr dengan cap dan room", () => {
+  const order = makeOrder({
+    subtotal: 120_000,
+    discount: 20_000,
+    service: 5_000,
+    tax: 10_500,
+  });
+  const promo = {
+    refundedSubtotalIdr: 50_000,
+    goodsDueIdr: 30_000,
+    remainingPaidIdr: 100_000,
+  };
+  const base = {
+    order,
+    lineTotalIdr: 50_000,
+    priorLinesIdr: 0,
+    promo,
+    capIdr: 3_465,
+  };
+
+  it("room di antara cap dan jumlah pra-cap (10.000): jumlah = cap, tanpa selisih, goods tetap penuh 30.000", () => {
+    // room = 115.500 - 105.500 = 10.000: above the cap, below 34.650.
+    const result = recoveryRefundSplit({ ...base, releasedIdr: 105_500 });
+    expect(result.amountIdr).toBe(3_465);
+    expect(result.wantedIdr).toBe(3_465);
+    expect(result.shortfallIdr).toBe(0);
+    expect(result.goodsIdr).toBe(30_000);
+  });
+
+  it("room besar: goods pra-cap penuh 30.000 (kopi keluar penuh dari promo)", () => {
+    const result = recoveryRefundSplit({ ...base, releasedIdr: 0 });
+    expect(result.amountIdr).toBe(3_465);
+    expect(result.goodsIdr).toBe(30_000);
+  });
+
+  it("room di bawah jumlah pasca-cap (2.000): jumlah = room, selisih 1.465, goods ikut terpotong (di bawah 30.000, di atas 0)", () => {
+    const result = recoveryRefundSplit({ ...base, releasedIdr: 113_500 });
+    expect(result.amountIdr).toBe(2_000);
+    expect(result.shortfallIdr).toBe(1_465);
+    expect(result.goodsIdr).toBeGreaterThan(0);
+    expect(result.goodsIdr).toBeLessThan(30_000);
+  });
+});

@@ -432,13 +432,18 @@ async function filedRefund(itemId: string, amountIdr: number) {
 
 /** Reports the kopi line and swaps it to `air`; the kitchen event writes the replacement line. */
 async function swapKopiToAir(paid: PaidOrder) {
-  const swapIssue = await w.report(paid.line(w.ids.kopi).id);
+  return swapLineTo(paid.line(w.ids.kopi).id, airItem);
+}
+
+/** Reports one line and swaps it to `replacementItemId`; the kitchen event writes the replacement line. */
+async function swapLineTo(lineId: string, replacementItemId: string) {
+  const swapIssue = await w.report(lineId);
   expect(swapIssue.status, JSON.stringify(swapIssue.body)).toBe(201);
   const swapIssueId = swapIssue.body.data.id as string;
   const swapped = await w.staffPost(
     w.supervisor,
     `/api/order-issues/${swapIssueId}/resolve`,
-    { resolution: "swap", replacementItemId: airItem },
+    { resolution: "swap", replacementItemId },
   );
   expect(swapped.status, JSON.stringify(swapped.body)).toBe(200);
   const resolved = await w.outboxRows("order_issue.resolved", swapIssueId);
@@ -767,5 +772,155 @@ describe("legend-fwe4l putaran 2: swap langsung ke menu lebih murah lalu gagal (
       [],
     );
     expect(await voucherValues(swapIssueId)).toEqual([KOPI_PRICE - AIR_PRICE]);
+  });
+});
+
+// Round 3 (architect re-check of 376d33a4).
+//
+// 1. A swap chain kopi -> teh -> air: the air line fails; the refund is capped by the
+//    value of the air line (3.885), and the two swap vouchers (13.000 and 7.000) plus
+//    the refund stay within the 25.000 paid for the kopi.
+// 2. The kopi is swapped directly and B is filed (capped). A refund of ANOTHER line
+//    (roti) after B is paid as if the kopi had left the promo in full: the ledger
+//    holds the kopi goods BEFORE the cap (7.000), so the roti gets its own 20.790 (as
+//    in T3 of order-recovery-refund-promo-final-failure.test.ts) with goods 18.000
+//    and the ledger ends at 7.000 + 18.000 = 25.000: the kopi is not paid again.
+// 3. The cap must not cut a replay whose root is the same line: B (air) fails
+//    finally, a refund of another line (teh) is filed, then C for the air line
+//    replays B and must be B exactly (amount and split). In this world the cap of the
+//    air line recomputed with the teh refund as a prior line would be 3.884 (a Rp1
+//    rounding step below B), which is the regression.
+//
+// Assumptions:
+// - The teh refund between B and C is filed (amount not pinned: only that it exists
+//   and is positive); what is pinned is B and C.
+// - In the plain (no promo) variant the numbers are round, so the old behavior also
+//   gives B = C; it is a regression guard, not a fail-first case.
+const ROTI_PRICE = 18_000;
+const TEH_PRICE = 12_000;
+/** Roti refund after the kopi has left the promo (T3 of the promo final-failure tests). */
+const ROTI_REFUND_AFTER_KOPI = 20_790;
+
+describe("legend-fwe4l putaran 3: rantai swap, refund baris lain, replay tanpa pemotongan", () => {
+  it("swap berantai kopi -> teh -> air lalu air gagal: refund dibatasi nilai air (3.885), voucher + refund <= 25.000", async () => {
+    const paid = await paidPromoOrder("pay_first");
+    const first = await swapLineTo(paid.line(w.ids.kopi).id, w.ids.teh);
+    const second = await swapLineTo(first.replacementLineId, airItem);
+    expect(await voucherValues(first.swapIssueId)).toEqual([
+      KOPI_PRICE - TEH_PRICE,
+    ]);
+    expect(await voucherValues(second.swapIssueId)).toEqual([
+      TEH_PRICE - AIR_PRICE,
+    ]);
+
+    const b = await approvedRefund(second.replacementLineId, AIR_PRICE);
+    await deliver(b.event);
+
+    const refunds = await issueRefunds(b.issueId);
+    expect(refunds, "one refund for the air line").toHaveLength(1);
+    expect(refunds[0]!.amount_idr).toBe(SWAP_CAP);
+    expect(await auditRows([b.issueId], "order_issue.refund_blocked")).toEqual(
+      [],
+    );
+    const events = await refundedEvents(paid.order.id);
+    const filed = events.find((event) => event.refundId === b.issueId)!;
+    expect(filed.amountIdr).toBe(SWAP_CAP);
+    expect(
+      filed.grossSalesIdr -
+        filed.discountIdr +
+        filed.serviceChargeIdr +
+        filed.pbjtIdr,
+    ).toBe(SWAP_CAP);
+    expect(
+      KOPI_PRICE - TEH_PRICE + (TEH_PRICE - AIR_PRICE) + refunds[0]!.amount_idr,
+    ).toBeLessThanOrEqual(KOPI_PRICE);
+  });
+
+  it("refund roti setelah B (swap langsung): ledger pra-cap 7.000, roti dapat 20.790 sendiri (goods 18.000), ledger akhir 25.000, kopi tidak dibayar ulang", async () => {
+    const { paid, replacementLineId } = await kopiSwappedDirectly("pay_first");
+    const ledgerBefore = await ledgerOf(w.tenant.tenantId, paid.order.id);
+
+    const b = await filedRefund(replacementLineId, AIR_PRICE);
+    expect(b.refund.amount_idr).toBe(SWAP_CAP);
+    const ledgerAfterB = await ledgerOf(w.tenant.tenantId, paid.order.id);
+    expect(ledgerAfterB!.paid - (ledgerBefore?.paid ?? 0)).toBe(KOPI_PAYOUT);
+
+    const roti = await filedRefund(paid.line(w.ids.roti).id, ROTI_PRICE);
+    expect(roti.refund.amount_idr).toBe(ROTI_REFUND_AFTER_KOPI);
+    const ledgerAfterRoti = await ledgerOf(w.tenant.tenantId, paid.order.id);
+    expect(ledgerAfterRoti!.paid - (ledgerBefore?.paid ?? 0)).toBe(
+      KOPI_PAYOUT + ROTI_PRICE,
+    );
+    // B itself is unchanged.
+    expect(
+      (await issueRefunds(b.issueId)).map((row) => row.amount_idr),
+    ).toEqual([SWAP_CAP]);
+    const events = await refundedEvents(paid.order.id);
+    const rotiEvent = events.find((event) => event.refundId === roti.issueId)!;
+    expect(rotiEvent.amountIdr).toBe(ROTI_REFUND_AFTER_KOPI);
+  });
+
+  it("replay setelah refund baris lain (swap langsung, promo): B gagal final, refund teh, lalu C untuk air = B persis (jumlah dan split)", async () => {
+    const { paid, replacementLineId } = await kopiSwappedDirectly("pay_first");
+    const b = await filedRefund(replacementLineId, AIR_PRICE);
+    expect(b.refund.amount_idr).toBe(SWAP_CAP);
+    await failFinally(b.refund.id, "provider_declined");
+
+    const teh = await filedRefund(paid.line(w.ids.teh).id, TEH_PRICE);
+    expect(teh.refund.amount_idr).toBeGreaterThan(0);
+
+    const c = await approvedRefund(replacementLineId, AIR_PRICE);
+    expect(c.issueId).not.toBe(b.issueId);
+    await deliver(c.event);
+
+    const refunds = await issueRefunds(c.issueId);
+    expect(refunds, "one refund for the third filing").toHaveLength(1);
+    expect(refunds[0]!.amount_idr).toBe(SWAP_CAP);
+    expect(await auditRows([c.issueId], "order_issue.refund_blocked")).toEqual(
+      [],
+    );
+    const events = await refundedEvents(paid.order.id);
+    const first = events.find((event) => event.refundId === b.issueId)!;
+    const third = events.find((event) => event.refundId === c.issueId)!;
+    expect(third.amountIdr).toBe(first.amountIdr);
+    expect(third.grossSalesIdr).toBe(first.grossSalesIdr);
+    expect(third.discountIdr).toBe(first.discountIdr);
+    expect(third.serviceChargeIdr).toBe(first.serviceChargeIdr);
+    expect(third.pbjtIdr).toBe(first.pbjtIdr);
+  });
+
+  it("replay tanpa promo setelah refund baris lain: B 5.775 gagal final, refund roti 20.790, lalu C = B persis (jumlah dan split)", async () => {
+    const placed = await placeLines("pay_first", [w.ids.kopi, w.ids.roti]);
+    const payment = await w
+      .as(placed.guest)
+      .pay({ kind: "order", orderId: placed.order.id });
+    expect(payment.status, JSON.stringify(payment.body)).toBe(201);
+    expect(await payVerified(payment.body.data.id, placed.total)).toBe(true);
+    const { replacementLineId } = await swapKopiToAir({
+      order: placed.order,
+      line: placed.line,
+    });
+
+    const b = await filedRefund(replacementLineId, AIR_PRICE);
+    expect(b.refund.amount_idr).toBe(PLAIN_B);
+    await failFinally(b.refund.id, "provider_declined");
+
+    const roti = await filedRefund(placed.line(w.ids.roti).id, ROTI_PRICE);
+    expect(roti.refund.amount_idr).toBe(ROTI_REFUND_AFTER_KOPI);
+
+    const c = await approvedRefund(replacementLineId, AIR_PRICE);
+    await deliver(c.event);
+    const refunds = await issueRefunds(c.issueId);
+    expect(refunds, "one refund for the third filing").toHaveLength(1);
+    expect(refunds[0]!.amount_idr).toBe(PLAIN_B);
+
+    const events = await refundedEvents(placed.order.id);
+    const first = events.find((event) => event.refundId === b.issueId)!;
+    const third = events.find((event) => event.refundId === c.issueId)!;
+    expect(third.amountIdr).toBe(first.amountIdr);
+    expect(third.grossSalesIdr).toBe(first.grossSalesIdr);
+    expect(third.discountIdr).toBe(first.discountIdr);
+    expect(third.serviceChargeIdr).toBe(first.serviceChargeIdr);
+    expect(third.pbjtIdr).toBe(first.pbjtIdr);
   });
 });

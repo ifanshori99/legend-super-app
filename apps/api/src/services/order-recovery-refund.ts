@@ -600,7 +600,11 @@ export async function deliverOrderRecoveryRefundEvent(
     // voucher), whether the original's refund was replayed or the promo
     // recompute counted the original as failed. The replacement line carries
     // no promo price.
-    if (originalOf.has(issue.orderItemId))
+    if (
+      replay !== null
+        ? replay.rootOrderItemId !== issue.orderItemId
+        : originalOf.has(issue.orderItemId)
+    )
       swapCapIdr = recoveryRefundSplit({
         order,
         lineTotalIdr: line.lineTotalIdr,
