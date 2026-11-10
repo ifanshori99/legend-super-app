@@ -57,6 +57,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import {
   AutoJournalDepositCutoverMixed,
+  AutoJournalLoyaltyEntityAmbiguous,
   AutoJournalPayloadInvalid,
   AutoJournalReceiptDeadLettered,
   AutoJournalReceiptMissing,
@@ -65,6 +66,8 @@ import {
   autoJournalKeyOf,
   invalidEventKeyOf,
   isAutoJournalEvent,
+  isLoyaltyAutoJournalEvent,
+  loyaltyAnchorOf,
   storedEventOf,
   type AutoJournalEventName,
   type StoredAutoJournalEvent,
@@ -81,10 +84,17 @@ import {
 } from "./accounting-journal.service.ts";
 import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service.ts";
 import { recordAudit } from "./core-audit.ts";
+import { isTrainingOrder } from "./device-training.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
+
+const TRAINING_ORDER_EVENTS: ReadonlySet<string> = new Set([
+  "order.paid",
+  "order.refunded",
+  "order.voided",
+]);
 
 export type AutoJournalResult =
   | { status: "ignored" }
@@ -143,6 +153,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof AutoJournalSaleMissing) return error.code;
   if (error instanceof AutoJournalVoidUnsupported) return error.code;
   if (error instanceof AutoJournalDepositCutoverMixed) return error.code;
+  if (error instanceof AutoJournalLoyaltyEntityAmbiguous) return error.code;
   if (error instanceof ZodError) return PAYLOAD_INVALID;
   return null;
 }
@@ -305,6 +316,11 @@ export async function deliverAutoJournalEvent(
   if (!isAutoJournalEvent(event.name)) return { status: "ignored" };
   if (event.tenantId !== context.tenant.tenantId) return { status: "ignored" };
   if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
+  // legend-msqvi: a points event has no outlet; it is stored, dated and
+  // parked under the tenant's loyalty anchor outlet (D-msqvi section 7).
+  const loyaltyOutletId = isLoyaltyAutoJournalEvent(event.name)
+    ? ((await loyaltyAnchorOf(tx, context.tenant.tenantId))?.outletId ?? null)
+    : null;
   let stored: StoredAutoJournalEvent;
   try {
     stored = storedEventOf({
@@ -313,6 +329,8 @@ export async function deliverAutoJournalEvent(
       outletId: event.outletId,
       occurredAt: event.occurredAt,
       payload: event.payload,
+      idempotencyKey: event.idempotencyKey,
+      loyaltyOutletId,
     });
   } catch (error) {
     if (parkCodeOf(error) !== PAYLOAD_INVALID) throw error;
@@ -324,7 +342,7 @@ export async function deliverAutoJournalEvent(
       context,
       {
         key: invalidEventKeyOf(event.id),
-        outletCandidates: [event.outletId, raw?.outletId],
+        outletCandidates: [event.outletId, raw?.outletId, loyaltyOutletId],
         eventId: event.id,
         eventName: event.name,
         payload: { occurredAt: event.occurredAt },
@@ -490,6 +508,28 @@ async function latestClosedPeriod(
   return row?.period ?? null;
 }
 
+/** The `aj:sale:<orderId>` journal of the order of a void or refund exists. */
+async function saleJournalPosted(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: journalEntries.id })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        eq(
+          journalEntries.idempotencyKey,
+          autoJournalKeyOf({ ...stored, eventName: "order.paid" }),
+        ),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 async function postAutoJournal(
   tx: Tx,
   context: ScopedTenantContext,
@@ -498,6 +538,20 @@ async function postAutoJournal(
   now: Date,
 ): Promise<AutoJournalResult> {
   const tenantId = context.tenant.tenantId;
+  // legend-gkc6b: a training order never reaches the books. One check here
+  // covers every producer (POS, QR, delivery) and the sweep, and keeps the
+  // void/refund of a training sale from parking as SALE_MISSING. A void or
+  // refund still reverses a sale journal that was posted before this rule
+  // existed: those books are not left half reversed.
+  if (
+    TRAINING_ORDER_EVENTS.has(stored.eventName) &&
+    (await isTrainingOrder(tx, tenantId, String(stored.payload.orderId))) &&
+    !(
+      stored.eventName !== "order.paid" &&
+      (await saleJournalPosted(tx, tenantId, stored))
+    )
+  )
+    return { status: "ignored" };
   // order.voided reverses the sale journal; every other event posts a rule.
   const isVoid = stored.eventName === "order.voided";
   const voidFact = isVoid ? await voidFactOf(tx, tenantId, stored) : null;
@@ -567,7 +621,11 @@ async function postAutoJournal(
         eventName: fact.ruleEvent,
         amounts: fact.amounts,
         legalEntityId,
-        outletId: fact.outletId,
+        // legend-msqvi: a loyalty journal names its own outlet (or none).
+        outletId:
+          fact.journalOutletId === undefined
+            ? fact.outletId
+            : fact.journalOutletId,
         entryDate: entryDate as typeof naturalDate,
         sourceId: fact.sourceId,
         description: `${rule.description}${lateSuffix}`,

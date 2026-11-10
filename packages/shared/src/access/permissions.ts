@@ -152,6 +152,9 @@ const entries = [
   ["purchasing.order.create", []],
   ["purchasing.order.approve", ["approve"]],
   ["purchasing.invoice.match", ["finance"]],
+  ["purchasing.return.create", []],
+  ["purchasing.petty.record", []],
+  ["purchasing.petty_policy.manage", ["finance"]],
 
   // Accounting & finance (§3.16, F16)
   ["accounting.journal.view", ["finance"]],
@@ -177,6 +180,13 @@ const entries = [
   ["crm.customer.view", ["customer_pii"]],
   ["crm.consent.record", []],
   ["crm.segment.manage", ["customer_pii"]],
+  // legend-111j: member loyalty program, ledger review, redemption fulfilment,
+  // raw customer contacts and the feedback queue.
+  ["crm.loyalty.manage", []],
+  ["crm.loyalty.review", []],
+  ["crm.loyalty.fulfil", []],
+  ["crm.customer.pii.read", ["customer_pii"]],
+  ["crm.feedback.manage", []],
   ["promo.manage", []],
   ["campaign.manage", ["customer_pii"]],
   ["review.respond", []],

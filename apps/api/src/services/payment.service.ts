@@ -48,6 +48,7 @@ import {
   eq,
   gt,
   gte,
+  inArray,
   isNotNull,
   isNull,
   lt,
@@ -500,12 +501,14 @@ function assertIdempotencyFingerprint(
     readonly paymentLinkId: string;
     readonly method: CreatePaymentIntentInput["method"];
     readonly channelCode: string | null;
+    readonly billSplitId: string | null;
   },
 ): void {
   if (
     existing.paymentLinkId !== request.paymentLinkId ||
     existing.method !== request.method ||
-    existing.channelCode !== request.channelCode
+    existing.channelCode !== request.channelCode ||
+    (existing.billSplitId ?? null) !== request.billSplitId
   )
     throw new HttpError(
       409,
@@ -519,6 +522,7 @@ async function readIntentPlan(
   token: string,
   input: CreatePaymentIntentInput,
   now: Date,
+  part: SplitPartTarget | null,
 ): Promise<IntentPlan> {
   const link = await loadLink(context, token, now);
   return withTenant(db, context, async (tx) => {
@@ -536,11 +540,18 @@ async function readIntentPlan(
         paymentLinkId: link.id,
         method: input.method,
         channelCode: input.channelCode,
+        billSplitId: part?.billSplitId ?? null,
       });
       return { link, provider: existing.provider, existing };
     }
     if (outstandingIdr(link) <= 0)
       throw new HttpError(409, "CONFLICT", "This bill is already paid.");
+    if (part && !splitPartFits(part.amountIdr, link))
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "This part is larger than the remaining balance. Reload and try again.",
+      );
     const routing = await resolveRoutingRule(
       tx,
       context,
@@ -557,12 +568,24 @@ async function readIntentPlan(
   });
 }
 
-/** Supersedes the bill's pending codes; returns the ones a provider holds. */
+/** One split part a guest pays on its own (D4). */
+type SplitPartTarget = { billSplitId: string; amountIdr: number };
+
+/** A part is payable while `0 < amount <= outstanding`. */
+function splitPartFits(amountIdr: number, link: PaymentLinkRow): boolean {
+  return amountIdr > 0 && amountIdr <= outstandingIdr(link);
+}
+
+/**
+ * Supersedes the bill's pending codes; returns the ones a provider holds.
+ * With `billSplitId` only that part's pending code is superseded.
+ */
 async function supersedePending(
   tx: Tx,
   context: ScopedTenantContext,
   link: PaymentLinkRow,
   now: Date,
+  billSplitId?: string,
 ): Promise<GatewayCancelRequest[]> {
   const superseded: GatewayCancelRequest[] = [];
   // A gateway code already past its expiry is not live for the guest; it stays
@@ -580,6 +603,9 @@ async function supersedePending(
           isNull(paymentIntents.providerRef),
           gt(paymentIntents.expiresAt, now),
         ),
+        billSplitId === undefined
+          ? undefined
+          : eq(paymentIntents.billSplitId, billSplitId),
       ),
     );
   for (const row of pending) {
@@ -650,9 +676,35 @@ export async function createIntent(
   now = new Date(),
 ): Promise<CustomerPaymentIntent> {
   const parsed = createPaymentIntentInputSchema.parse(input);
-  const plan = await readIntentPlan(context, token, parsed, now);
+  return createIntentCore(context, token, parsed, now, null);
+}
+
+/**
+ * Creates one payable intent for a single split part (D4). The amount is the
+ * part's, which must fit the link's outstanding balance; only that part's
+ * pending code is superseded, so parts hold live codes side by side.
+ */
+export async function createSplitPartIntent(
+  context: ScopedTenantContext,
+  token: string,
+  input: CreatePaymentIntentInput,
+  part: { billSplitId: string; amountIdr: number },
+  now = new Date(),
+): Promise<CustomerPaymentIntent> {
+  const parsed = createPaymentIntentInputSchema.parse(input);
+  return createIntentCore(context, token, parsed, now, part);
+}
+
+async function createIntentCore(
+  context: ScopedTenantContext,
+  token: string,
+  parsed: CreatePaymentIntentInput,
+  now: Date,
+  part: SplitPartTarget | null,
+): Promise<CustomerPaymentIntent> {
+  const plan = await readIntentPlan(context, token, parsed, now, part);
   if (plan.existing) return toCustomerIntent(plan.existing);
-  const amountIdr = outstandingIdr(plan.link);
+  const amountIdr = part ? part.amountIdr : outstandingIdr(plan.link);
   if (amountIdr <= 0)
     throw new HttpError(409, "CONFLICT", "This bill is already paid.");
 
@@ -725,6 +777,7 @@ export async function createIntent(
           paymentLinkId: plan.link.id,
           method: parsed.method,
           channelCode: parsed.channelCode,
+          billSplitId: part?.billSplitId ?? null,
         });
         return toCustomerIntent(existing);
       }
@@ -759,13 +812,23 @@ export async function createIntent(
           "NOT_FOUND",
           "This payment link is not available.",
         );
-      if (outstandingIdr(lockedLink) !== amountIdr)
+      if (
+        part
+          ? !splitPartFits(amountIdr, lockedLink)
+          : outstandingIdr(lockedLink) !== amountIdr
+      )
         throw new HttpError(
           409,
           "CONFLICT",
           "This bill changed while the payment was prepared. Reload and try again.",
         );
-      superseded = await supersedePending(tx, context, plan.link, now);
+      superseded = await supersedePending(
+        tx,
+        context,
+        plan.link,
+        now,
+        part?.billSplitId,
+      );
       const [row] = await tx
         .insert(paymentIntents)
         .values({
@@ -775,7 +838,8 @@ export async function createIntent(
           paymentLinkId: plan.link.id,
           method: parsed.method,
           provider: plan.provider,
-          amountIdr,
+          amountIdr: idr(amountIdr),
+          billSplitId: part?.billSplitId ?? null,
           idempotencyKey: parsed.idempotencyKey,
           providerRef: created.providerRef,
           gatewayIntegrationId: created.integrationId ?? null,
@@ -827,6 +891,7 @@ export async function createIntent(
       paymentLinkId: plan.link.id,
       method: parsed.method,
       channelCode: parsed.channelCode,
+      billSplitId: part?.billSplitId ?? null,
     });
     return toCustomerIntent(existing);
   }
@@ -1908,6 +1973,11 @@ export const GATEWAY_POLL_MAX_BACKOFF_MS = 60 * 60_000;
 export const GATEWAY_POLL_BUDGET_MS = 20_000;
 export const GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS = 3;
 
+/** How long a worker holds the intents it claimed for a polling run. It is
+ * released when the run ends; this only matters when a worker dies mid-run, so
+ * it must outlast the run budget with room to spare. */
+export const GATEWAY_POLL_LEASE_MS = 2 * 60_000;
+
 /**
  * Applies a verified provider "expired"/"failed" outcome. It acts only while
  * the intent is still `pending`: the conditional UPDATE re-checks the status
@@ -2055,6 +2125,34 @@ async function markGatewayReconciled(
   );
 }
 
+/** Frees the polling lease of `ids`, but only where it is still the one this
+ * run took: a run that outlived its lease must not free a newer worker's.
+ * Best effort: a failure only means the lease lapses on its own after
+ * `GATEWAY_POLL_LEASE_MS`. */
+async function releasePollLease(
+  context: ScopedTenantContext,
+  ids: readonly string[],
+  leaseUntil: Date,
+): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    await withTenant(db, context, async (tx) =>
+      tx
+        .update(paymentIntents)
+        .set({ gatewayPollLeaseUntil: null })
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            inArray(paymentIntents.id, [...ids]),
+            eq(paymentIntents.gatewayPollLeaseUntil, leaseUntil),
+          ),
+        ),
+    );
+  } catch (error) {
+    logger.warn({ err: error }, "Payment: releasing the poll lease failed");
+  }
+}
+
 /**
  * Polling fallback for a lost webhook (PAY-02/03): asks the gateway about
  * pending intents that have a provider reference and are older than the grace
@@ -2083,13 +2181,23 @@ export async function pollPendingGatewayIntents(
     gt(paymentIntents.expiresAt, now),
     sql`${paymentIntents.gatewayPolledAt} <= ${nowAt} - least((${nowAt} - ${paymentIntents.expiresAt}) / 2, ${`${GATEWAY_POLL_MAX_BACKOFF_MS} milliseconds`}::interval)`,
   );
-  const pending = await withTenant(db, context, async (tx) =>
-    tx
-      .select()
+  // The lease runs on the wall clock, not on the caller's `now` (which the
+  // worker took before slower steps and tests move around).
+  const leaseNow = new Date();
+  const leaseUntil = new Date(leaseNow.getTime() + GATEWAY_POLL_LEASE_MS);
+  // Claim atomically: rows another worker holds (a live lease, or a row lock
+  // mid-claim) are skipped, so two workers never poll the same intent.
+  const pending = await withTenant(db, context, async (tx) => {
+    const candidates = await tx
+      .select({ id: paymentIntents.id })
       .from(paymentIntents)
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
+          or(
+            isNull(paymentIntents.gatewayPollLeaseUntil),
+            lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
+          ),
           or(
             eq(paymentIntents.status, "pending"),
             and(
@@ -2113,51 +2221,79 @@ export async function pollPendingGatewayIntents(
         sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
         asc(paymentIntents.createdAt),
       )
-      .limit(limit),
-  );
+      .limit(limit)
+      .for("update", { skipLocked: true });
+    if (candidates.length === 0) return [];
+    const claimed = await tx
+      .update(paymentIntents)
+      .set({ gatewayPollLeaseUntil: leaseUntil })
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          inArray(
+            paymentIntents.id,
+            candidates.map((row) => row.id),
+          ),
+        ),
+      )
+      .returning();
+    const byId = new Map(claimed.map((row) => [row.id, row]));
+    // `returning` has no order: keep the least-recently-polled-first order.
+    return candidates.flatMap((row) => byId.get(row.id) ?? []);
+  });
   let checked = 0;
   let settled = 0;
   let consecutiveErrors = 0;
   const startedAt = Date.now();
-  for (const row of pending) {
-    if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
-    if (consecutiveErrors >= GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS) break;
-    checked += 1;
-    try {
-      // Stamp the attempt first so an erroring intent rotates to the back.
-      await withTenant(db, context, async (tx) =>
-        tx
-          .update(paymentIntents)
-          .set({ gatewayPolledAt: now })
-          .where(
-            and(
-              eq(paymentIntents.tenantId, context.tenant.tenantId),
-              eq(paymentIntents.id, row.id),
+  try {
+    for (const row of pending) {
+      if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
+      if (consecutiveErrors >= GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS) break;
+      checked += 1;
+      try {
+        // Stamp the attempt first so an erroring intent rotates to the back.
+        await withTenant(db, context, async (tx) =>
+          tx
+            .update(paymentIntents)
+            .set({ gatewayPolledAt: now })
+            .where(
+              and(
+                eq(paymentIntents.tenantId, context.tenant.tenantId),
+                eq(paymentIntents.id, row.id),
+              ),
             ),
-          ),
-      );
-      // Narrow to the intent's outlet so the gateway reads that outlet's own
-      // DOIT credentials when it has them (outlet row wins over tenant row).
-      const outletContext =
-        context.outletScope.kind === "tenant"
-          ? establishScopedTenantContext(context.tenant, {
-              kind: "outlets",
-              outletIds: [row.outletId],
-            })
-          : context;
-      const result =
-        row.status === "expired"
-          ? await syncExpiredIntentPayment(outletContext, row, now)
-          : await syncPendingIntentDetailed(outletContext, row, now);
-      consecutiveErrors = result.gatewayError ? consecutiveErrors + 1 : 0;
-      if (
-        row.status !== result.intent.status &&
-        (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
-      )
-        settled += 1;
-    } catch {
-      // One intent's failure never blocks the others; the next run retries.
+        );
+        // Narrow to the intent's outlet so the gateway reads that outlet's own
+        // DOIT credentials when it has them (outlet row wins over tenant row).
+        const outletContext =
+          context.outletScope.kind === "tenant"
+            ? establishScopedTenantContext(context.tenant, {
+                kind: "outlets",
+                outletIds: [row.outletId],
+              })
+            : context;
+        const result =
+          row.status === "expired"
+            ? await syncExpiredIntentPayment(outletContext, row, now)
+            : await syncPendingIntentDetailed(outletContext, row, now);
+        consecutiveErrors = result.gatewayError ? consecutiveErrors + 1 : 0;
+        if (
+          row.status !== result.intent.status &&
+          (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
+        )
+          settled += 1;
+      } catch {
+        // One intent's failure never blocks the others; the next run retries.
+      }
     }
+  } finally {
+    // Release the claim (also the rows a break left unprocessed) so the next
+    // run, or another worker, can take them straight away.
+    await releasePollLease(
+      context,
+      pending.map((row) => row.id),
+      leaseUntil,
+    );
   }
   return { checked, settled };
 }

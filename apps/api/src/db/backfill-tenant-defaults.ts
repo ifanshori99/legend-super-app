@@ -14,6 +14,7 @@ import { eq } from "drizzle-orm";
 import { guardDataImport } from "../config/data-import";
 import { backfillTenantCharts } from "../services/accounting-provisioning.service";
 import { backfillTenantInventoryDefaults } from "../services/inventory-provisioning.service";
+import { backfillTenantLoyaltyDefaults } from "../services/loyalty-provisioning.service"; // legend-111j
 import { backfillTenantTaxDefaults } from "../services/tax-provisioning.service";
 import { databaseError } from "./connection";
 import { db, pool } from "./index";
@@ -72,6 +73,18 @@ try {
     } catch (error) {
       console.error(
         `tenant ${id}: tax defaults failed: ${databaseError(error)}`,
+      );
+      process.exitCode = 1;
+    }
+    // legend-111j: consent policy versions (no loyalty program row is created).
+    try {
+      const loyalty = await backfillTenantLoyaltyDefaults(id);
+      console.log(
+        `tenant ${id}: consent policy versions inserted ${loyalty.policiesInserted}`,
+      );
+    } catch (error) {
+      console.error(
+        `tenant ${id}: loyalty defaults failed: ${databaseError(error)}`,
       );
       process.exitCode = 1;
     }

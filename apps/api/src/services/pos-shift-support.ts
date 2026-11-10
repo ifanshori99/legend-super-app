@@ -4,7 +4,7 @@
 // DTO mappers.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
@@ -41,6 +41,7 @@ import {
   posOrderRefunds,
   posOrderTenders,
   posOrderVoids,
+  posOrders,
 } from "../db/schema/pos-order.ts";
 import {
   cashMovementOutcomes,
@@ -235,6 +236,16 @@ export const emptyAggregates: ShiftAggregates = {
 };
 
 /**
+ * legend-0v3b3: not a training order. A row with no `pos_orders` partner (QR
+ * pay-first sale) is real. Training cash never reached the drawer, so it must
+ * not count into the expected cash (a false shortage on close).
+ */
+const notTrainingOrder = or(
+  isNull(posOrders.orderId),
+  eq(posOrders.isTraining, false),
+);
+
+/**
  * The shift's cash figures. Cash rows carry the id of the drawer they went
  * into (`shift_id`, set under the shift row lock by pos-cash-guard), so the
  * figures are exactly the rows of this shift: no cashier or time window.
@@ -261,6 +272,13 @@ export async function computeShiftAggregates(
       total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)`,
     })
     .from(posOrderTenders)
+    .leftJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderTenders.tenantId),
+        eq(posOrders.orderId, posOrderTenders.orderId),
+      ),
+    )
     .where(
       and(
         eq(posOrderTenders.tenantId, tenantId),
@@ -268,14 +286,23 @@ export async function computeShiftAggregates(
         eq(posOrderTenders.shiftId, shift.id),
         eq(posOrderTenders.method, "cash"),
         eq(posOrderTenders.status, "captured"),
+        notTrainingOrder,
       ),
     );
 
   const refunds = await tx
     .select({ lines: posOrderRefunds.lines })
     .from(posOrderRefunds)
+    .leftJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderRefunds.tenantId),
+        eq(posOrders.orderId, posOrderRefunds.orderId),
+      ),
+    )
     .where(
       and(
+        notTrainingOrder,
         eq(posOrderRefunds.tenantId, tenantId),
         eq(posOrderRefunds.outletId, outletId),
         eq(posOrderRefunds.shiftId, shift.id),
@@ -299,8 +326,16 @@ export async function computeShiftAggregates(
         eq(posOrderTenders.orderId, posOrderVoids.orderId),
       ),
     )
+    .leftJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderVoids.tenantId),
+        eq(posOrders.orderId, posOrderVoids.orderId),
+      ),
+    )
     .where(
       and(
+        notTrainingOrder,
         eq(posOrderVoids.tenantId, tenantId),
         eq(posOrderVoids.outletId, outletId),
         eq(posOrderVoids.shiftId, shift.id),
@@ -381,8 +416,16 @@ async function heldCorrectionCashOf(tx: Tx, shift: ShiftRow): Promise<bigint> {
   const heldRefunds = await tx
     .select({ lines: posOrderRefunds.lines })
     .from(posOrderRefunds)
+    .leftJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderRefunds.tenantId),
+        eq(posOrders.orderId, posOrderRefunds.orderId),
+      ),
+    )
     .where(
       and(
+        notTrainingOrder,
         eq(posOrderRefunds.tenantId, shift.tenantId),
         eq(posOrderRefunds.outletId, shift.outletId),
         eq(posOrderRefunds.shiftId, shift.id),
@@ -405,8 +448,16 @@ async function heldCorrectionCashOf(tx: Tx, shift: ShiftRow): Promise<bigint> {
         eq(posOrderTenders.orderId, posOrderVoids.orderId),
       ),
     )
+    .leftJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderVoids.tenantId),
+        eq(posOrders.orderId, posOrderVoids.orderId),
+      ),
+    )
     .where(
       and(
+        notTrainingOrder,
         eq(posOrderVoids.tenantId, shift.tenantId),
         eq(posOrderVoids.outletId, shift.outletId),
         eq(posOrderVoids.shiftId, shift.id),

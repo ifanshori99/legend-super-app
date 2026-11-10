@@ -345,7 +345,7 @@ export async function recordOpsAudit(
   context: ScopedTenantContext,
   input: {
     actorUserId: string;
-    outletId: string;
+    outletId: string | null;
     action: string;
     objectType: string;
     objectId: string;

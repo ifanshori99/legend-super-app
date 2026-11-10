@@ -18,6 +18,9 @@ export const employmentContractIdSchema =
 export const employeeDocumentIdSchema = uuidIdSchema<"EmployeeDocumentId">();
 export const checklistTemplateIdSchema = uuidIdSchema<"ChecklistTemplateId">();
 export const checklistTaskIdSchema = uuidIdSchema<"ChecklistTaskId">();
+export const checklistTaskActionIdSchema =
+  uuidIdSchema<"ChecklistTaskActionId">();
+export const offboardingIdSchema = uuidIdSchema<"OffboardingId">();
 /** PRD §6 H `attendance_logs.id`: ULID (PK). */
 export const attendanceLogIdSchema = ulidIdSchema<"AttendanceLogId">();
 export const attendanceCorrectionIdSchema =
@@ -55,6 +58,8 @@ export type EmploymentContractId = z.infer<typeof employmentContractIdSchema>;
 export type EmployeeDocumentId = z.infer<typeof employeeDocumentIdSchema>;
 export type ChecklistTemplateId = z.infer<typeof checklistTemplateIdSchema>;
 export type ChecklistTaskId = z.infer<typeof checklistTaskIdSchema>;
+export type ChecklistTaskActionId = z.infer<typeof checklistTaskActionIdSchema>;
+export type OffboardingId = z.infer<typeof offboardingIdSchema>;
 export type AttendanceLogId = z.infer<typeof attendanceLogIdSchema>;
 export type AttendanceCorrectionId = z.infer<
   typeof attendanceCorrectionIdSchema

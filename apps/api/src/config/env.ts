@@ -185,6 +185,14 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Gate for supplier return posting (legend-65mgw). Off by default: a
+    // return moves stock out without a journal until the goods receipt journal
+    // (legend-29vw) runs, which would split the GL from the stock ledger. That
+    // work turns it on.
+    PURCHASE_RETURN_POSTING_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Keyed-digest secret for contact values (WhatsApp numbers, emails) that
     // must link across modules — identity rows, reservations, CRM (AUTH-01/07).
     // Optional so existing deployments start; it falls back to

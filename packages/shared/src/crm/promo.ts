@@ -967,6 +967,8 @@ export const voucherSourceSchema = z.enum([
   "referral",
   "campaign",
   "manual",
+  // legend-m4p5
+  "loyalty_reward",
 ]);
 export type VoucherSource = z.infer<typeof voucherSourceSchema>;
 

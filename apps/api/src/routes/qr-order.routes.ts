@@ -15,13 +15,17 @@
 // router, so neither router's middleware can reach the other's routes.
 
 import { Router, type Request } from "express";
+import { fromNodeHeaders } from "better-auth/node";
+import { auth } from "../lib/auth.ts";
 import {
   addCartLine,
   createGuestPayment,
+  createSessionSplits,
   getGuestPayment,
   getGuestPaymentOptions,
   getMenuSuggestions,
   getSessionBill,
+  getSplitClaim,
   getTableSession,
   placeQrOrder,
   quoteTableSession,
@@ -29,6 +33,7 @@ import {
   updateCartLine,
 } from "@starter/shared/qr-order";
 import { CoreError, idempotencyKeySchema } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -45,6 +50,11 @@ import {
   updateCartLine as updateCartLineService,
 } from "../services/qr-order.service.ts";
 import { guestSessionContext } from "../services/guest-session-scope.ts";
+import {
+  createSessionSplits as createSessionSplitsService,
+  getSplitClaim as getSplitClaimService,
+  getSplitClaimByToken as getSplitClaimByTokenService,
+} from "../services/bill-split.service.ts";
 import { getMenuSuggestions as getMenuSuggestionsService } from "../services/qr-guest-reads.service.ts";
 import {
   createGuestPayment as createGuestPaymentService,
@@ -77,6 +87,22 @@ const read = [requireTenantContext];
 const write = [requireTenantContext, requireTrustedOrigin];
 
 export const qrOrderRouter = Router();
+
+// legend-ia54l: the claim token alone opens the claim code for 24 hours, also
+// after the table is closed. Registered before "/:sessionId" so the literal
+// segment wins. The guest rate limit on this mount covers it, but guessing is
+// bounded by the IP and tenant buckets only (a new token is a new bearer
+// bucket); the 256-bit token is the real defence. The read is tenant-wide like
+// payment link tokens: no outlet is known before the token is resolved.
+qrOrderRouter.get("/split-claims/current", ...read, async (req, res) => {
+  const rawToken = sessionCredential(req);
+  res.json({
+    data: await getSplitClaimByTokenService(
+      establishScopedTenantContext(getTenantContext(req), { kind: "tenant" }),
+      rawToken,
+    ),
+  });
+});
 
 qrOrderRouter.get("/:sessionId", ...read, async (req, res) => {
   const { sessionId } = getTableSession.params.parse(req.params);
@@ -172,6 +198,22 @@ qrOrderRouter.post(
   },
 );
 
+// legend-111j (§5 QR auto-attach): a guest who is also signed in to the
+// member app attaches their profile to the order. The session is optional and
+// never required here; an impersonated (support) session never attaches.
+async function optionalMemberUserId(req: Request): Promise<string | null> {
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+    query: { disableCookieCache: true },
+  });
+  if (!session) return null;
+  const { impersonatedBy } = session.session as {
+    impersonatedBy?: string | null;
+  };
+  if (impersonatedBy) return null;
+  return session.user.id;
+}
+
 qrOrderRouter.post(
   "/:sessionId/orders",
   ...write,
@@ -186,6 +228,8 @@ qrOrderRouter.post(
         credential,
         sessionId,
         body,
+        new Date(),
+        await optionalMemberUserId(req),
       ),
     });
   },
@@ -202,6 +246,42 @@ qrOrderRouter.get("/:sessionId/bill", ...read, async (req, res) => {
     ),
   });
 });
+
+qrOrderRouter.post(
+  "/:sessionId/splits",
+  ...write,
+  jsonBody,
+  async (req, res) => {
+    const { sessionId } = createSessionSplits.params.parse(req.params);
+    const body = createSessionSplits.body.parse(req.body);
+    const credential = sessionCredential(req);
+    res.status(201).json({
+      data: await createSessionSplitsService(
+        await guestContext(req, credential),
+        credential,
+        sessionId,
+        body,
+      ),
+    });
+  },
+);
+
+qrOrderRouter.get(
+  "/:sessionId/splits/:splitId/claim",
+  ...read,
+  async (req, res) => {
+    const { sessionId, splitId } = getSplitClaim.params.parse(req.params);
+    const credential = sessionCredential(req);
+    res.json({
+      data: await getSplitClaimService(
+        await guestContext(req, credential),
+        credential,
+        sessionId,
+        splitId,
+      ),
+    });
+  },
+);
 
 qrOrderRouter.get("/:sessionId/payment-options", ...read, async (req, res) => {
   const { sessionId } = getGuestPaymentOptions.params.parse(req.params);

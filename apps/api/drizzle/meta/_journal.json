@@ -1270,10 +1270,108 @@
       "breakpoints": true
     },
     {
+      "idx": 187,
+      "version": "7",
+      "when": 1794266000000,
+      "tag": "0187_audit_retention_maintenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1794267000000,
+      "tag": "0188_ai_provider_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1794269000000,
+      "tag": "0190_poll_lease",
+      "breakpoints": true
+    },
+    {
+      "idx": 191,
+      "version": "7",
+      "when": 1794270000000,
+      "tag": "0191_cash_bank_recon",
+      "breakpoints": true
+    },
+    {
+      "idx": 198,
+      "version": "7",
+      "when": 1794277000000,
+      "tag": "0198_equipment_service_reminder",
+      "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1794279000000,
+      "tag": "0200_table_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 201,
+      "version": "7",
+      "when": 1794280000000,
+      "tag": "0201_brand_logo_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "7",
+      "when": 1794281000000,
+      "tag": "0202_bill_splits",
+      "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "7",
+      "when": 1794282000000,
+      "tag": "0203_member_loyalty_ledger",
+      "breakpoints": true
+    },
+    {
       "idx": 204,
       "version": "7",
       "when": 1794283000000,
-      "tag": "0204_k2l_member_signin_identity",
+      "tag": "0204_hris_scheduling",
+      "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
+      "when": 1794284000000,
+      "tag": "0205_purchase_return_posting",
+      "breakpoints": true
+    },
+    {
+      "idx": 206,
+      "version": "7",
+      "when": 1794285000000,
+      "tag": "0206_hris_lifecycle_kpi",
+      "breakpoints": true
+    },
+    {
+      "idx": 207,
+      "version": "7",
+      "when": 1794286000000,
+      "tag": "0207_loyalty_rewards_missions",
+      "breakpoints": true
+    },
+    {
+      "idx": 208,
+      "version": "7",
+      "when": 1794287000000,
+      "tag": "0208_supplier_return_petty",
+      "breakpoints": true
+    },
+    {
+      "idx": 220,
+      "version": "7",
+      "when": 1794297863874,
+      "tag": "0220_k2l_member_signin_identity",
       "breakpoints": true
     }
   ]

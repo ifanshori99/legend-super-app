@@ -981,7 +981,7 @@ test("CRM events are registered in the WS-00 catalog with typed payloads (PRD §
 // ---- Endpoints ------------------------------------------------------------
 
 test("CRM endpoints are unique, typed and tenant-free client input (docs/frontend.md)", () => {
-  assert.equal(crm.crmEndpoints.length, 42);
+  assert.equal(crm.crmEndpoints.length, 49);
   const ids = crm.crmEndpoints.map((endpoint) => endpoint.id);
   assert.equal(new Set(ids).size, ids.length);
   for (const endpoint of crm.crmEndpoints) {

@@ -641,6 +641,7 @@ test("WS-06 purchasing events are registered once and their payloads validate (P
   );
   assert.deepEqual([...shared.purchasingEventNames].sort(), [
     "goods_receipt.recorded",
+    "petty_purchase.recorded",
     "purchase_order.approved",
     "purchase_order.created",
     "purchase_return.recorded",

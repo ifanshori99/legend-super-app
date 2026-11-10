@@ -474,7 +474,7 @@ export const purchasingDocumentSequences = pgTable(
     }),
     check(
       "purchasing_document_sequences_kind_check",
-      sql`${table.kind} IN ('PO', 'GR')`,
+      sql`${table.kind} IN ('PO', 'GR', 'RT')`,
     ),
     check(
       "purchasing_document_sequences_period_check",

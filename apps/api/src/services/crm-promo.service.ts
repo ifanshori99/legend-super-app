@@ -898,6 +898,19 @@ async function mintVoucher(
         )
         .catch((error: unknown) => {
           if (uniqueViolation(error)) return null;
+          // legend-m4p5: vouchers_profile_fk (0207) refuses an unknown profile.
+          const pg = error as {
+            code?: string;
+            constraint?: string;
+            cause?: { code?: string; constraint?: string };
+          };
+          const fk = pg.cause ?? pg;
+          if (fk.code === "23503" && fk.constraint === "vouchers_profile_fk")
+            throw new HttpError(
+              404,
+              "CUSTOMER_NOT_FOUND",
+              "Pelanggan tidak ditemukan.",
+            );
           throw error;
         });
       const row = inserted?.[0];

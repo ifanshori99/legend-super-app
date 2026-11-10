@@ -441,6 +441,9 @@ const accessBaseMessages = {
         approve: "Setujui purchase order",
       },
       invoice: { match: "Cocokkan invoice supplier" },
+      return: { create: "Buat retur pembelian" },
+      petty: { record: "Catat pembelian kas kecil" },
+      petty_policy: { manage: "Atur kebijakan pembelian kas kecil" },
     },
     accounting: {
       journal: { view: "Lihat jurnal", post: "Posting jurnal" },
@@ -464,7 +467,16 @@ const accessBaseMessages = {
     },
     loyalty: { program: { manage: "Kelola program loyalitas" } },
     crm: {
-      customer: { view: "Lihat profil pelanggan" },
+      customer: {
+        view: "Lihat profil pelanggan",
+        pii: { read: "Lihat data pribadi pelanggan" },
+      },
+      loyalty: {
+        manage: "Kelola program loyalitas CRM",
+        review: "Tinjau penyesuaian poin",
+        fulfil: "Penuhi penukaran reward",
+      },
+      feedback: { manage: "Kelola umpan balik pelanggan" },
       consent: { record: "Catat persetujuan pelanggan" },
       segment: { manage: "Kelola segmen pelanggan" },
     },

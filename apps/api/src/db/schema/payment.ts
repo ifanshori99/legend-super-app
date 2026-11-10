@@ -13,11 +13,11 @@
 // amount, name or bill line — and its migration installs an open SELECT policy
 // with tenant-checked writes (see `payment_rls` and the RLS catalog test).
 //
-// The intent's aggregate references (order, bill split, reservation, access
-// ticket, subscription invoice) stay plain UUID columns: those aggregates land
-// with WS-03/04/08/09 and a foreign key across a table that does not exist yet
+// The intent's aggregate references (order, reservation, access ticket,
+// subscription invoice) stay plain UUID columns: those aggregates land with
+// WS-03/04/08/09 and a foreign key across a table that does not exist yet
 // would block every migration. The composite keys that exist today (outlet,
-// payment link) are declared.
+// payment link, bill split) are declared.
 
 import { sql } from "drizzle-orm";
 import {
@@ -42,6 +42,7 @@ import type {
   PaymentStatus,
 } from "@starter/shared/payment";
 import { idrColumn, outletIdColumn, tenantIdColumn } from "../columns";
+import { billSplits } from "./bill-splits";
 import { outlets, tenants } from "./platform-org";
 import { tenantIntegrations } from "./platform-integrations";
 
@@ -205,6 +206,12 @@ export const paymentIntents = pgTable(
     /** Last time the polling fallback asked the gateway; null = never. Lets
      * the poller rotate so an erroring intent cannot starve the others. */
     gatewayPolledAt: timestamp("gateway_polled_at", { withTimezone: true }),
+    /** Poller lease: a worker that claimed this intent holds it until then, so
+     * two workers never ask the gateway about the same intent at once. Null or
+     * in the past = free. A crashed worker's lease simply lapses. */
+    gatewayPollLeaseUntil: timestamp("gateway_poll_lease_until", {
+      withTimezone: true,
+    }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -228,6 +235,13 @@ export const paymentIntents = pgTable(
       name: "payment_intents_link_fk",
       columns: [table.tenantId, table.paymentLinkId],
       foreignColumns: [paymentLinks.tenantId, paymentLinks.id],
+    }),
+    // legend-ms3: a split part's intent. A null bill_split_id (every other
+    // intent) is not checked (MATCH SIMPLE).
+    foreignKey({
+      name: "payment_intents_bill_split_fk",
+      columns: [table.tenantId, table.billSplitId],
+      foreignColumns: [billSplits.tenantId, billSplits.id],
     }),
     // tenant_integrations has no (tenant_id, id) key, so a plain key; the
     // adapter only ever stores the id of a row it loaded in this tenant.

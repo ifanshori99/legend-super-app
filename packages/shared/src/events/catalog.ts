@@ -39,21 +39,21 @@ const namesByWorkstream = {
   "WS-02":
     "device.registered device.revoked print_job.created sync.batch_applied",
   "WS-03":
-    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed order.placed item.failed service_request.created service_request.overdue open_bill.inactive open_bill.limit_exceeded",
+    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed table_session.moved table_session.merged table_session.items_moved order.placed item.failed service_request.created service_request.overdue open_bill.inactive open_bill.limit_exceeded table.status_changed table_session.linked table_session.unlinked",
   "WS-04":
     "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed day.closed cash_movement.recorded",
   "WS-05":
     "payment_intent.created payment.paid payment.funds_unallocated payment.failed payment.refunded payment.refund_requested payment.refund_escalated payment_route.updated edc_terminal.created edc_terminal.updated cashier_payment_default.updated settlement.reconciled notification.created notification.sent payment.expired settlement.imported tax_rule.published service_charge_rule.published tax_settings.published notification.failed notification.read notification_preference.updated",
   "WS-06":
-    "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created purchase_order.approved goods_receipt.recorded supplier_invoice.recorded supplier_invoice.matched supplier_payment.paid purchase_return.recorded stock.moved stock.critical recipe.cost_changed order_issue.recorded",
+    "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created purchase_order.approved goods_receipt.recorded supplier_invoice.recorded supplier_invoice.matched supplier_payment.paid purchase_return.recorded petty_purchase.recorded stock.moved stock.critical recipe.cost_changed order_issue.recorded",
   "WS-07":
     "journal.posted fiscal_period.closed fiscal_period.reopened distribution.approved distribution.paid distribution.completed bank_statement.imported cash_deposit.recorded cash_deposit.matched reconciliation_case.opened reconciliation_case.resolved depreciation_run.posted tax_report.exported",
   "WS-08":
-    "customer.created reservation.created reservation.confirmed reservation.seated reservation.completed reservation.cancelled reservation.no_show reservation_preorder.placed waitlist_entry.called waitlist_entry.seated waitlist_entry.left delivery_order.received delivery_order.status_changed delivery_order.updated delivery_order.settled points.earned points.reversed points.redeemed points.expired tier.changed promotion.updated promo_application.redeemed promo_application.released voucher.issued promotion_outlet.changed promo_application.adjusted",
+    "customer.created reservation.created reservation.confirmed reservation.seated reservation.completed reservation.cancelled reservation.no_show reservation_preorder.placed waitlist_entry.called waitlist_entry.seated waitlist_entry.left delivery_order.received delivery_order.status_changed delivery_order.updated delivery_order.settled points.earned points.reversed points.redeemed points.expired tier.changed promotion.updated promo_application.redeemed promo_application.released voucher.issued promotion_outlet.changed promo_application.adjusted points.adjusted",
   "WS-09":
     "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised",
   "WS-10":
-    "employee.updated attendance.logged shift.published leave.approved payslip.created payroll.locked payroll.paid payroll.reversed employee_loan.disbursed reimbursement.paid",
+    "employee.updated attendance.logged shift.published shift.cancelled leave.approved payslip.created payroll.locked payroll.paid payroll.reversed employee_loan.disbursed reimbursement.paid",
   "WS-11": "metrics.aggregated report.generated",
   "WS-12":
     "ai_job.completed action_request.rejected action_request.failed action_request.expired ai_conversation.deleted mcp_client.registered mcp_client.approved mcp_client.revoked mcp_token.issued mcp_token.revoked ai_settings.updated ai_budget.threshold_reached ai_tool.invoked ai_insight.anomaly_detected ai_insight.daily_summary_ready",

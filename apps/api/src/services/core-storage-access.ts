@@ -85,6 +85,10 @@ export const storageSourcePermissionMap = {
     upload: ["menu.item.manage"],
     read: ["menu.item.view"],
   },
+  petty_purchase: {
+    upload: ["purchasing.petty.record"],
+    read: ["accounting.reconcile", "purchasing.petty_policy.manage"],
+  },
 } as const satisfies Record<
   StorageSourceKind,
   Record<StorageAction, readonly PermissionCode[]>
@@ -98,6 +102,8 @@ export const storageLegacyUploadMap = {
   // A receipt names its kind: an unclassified one would reach the wrong
   // reviewers (legend-pszrm review). Legacy rows keep the strict read list.
   receipt: [],
+  // Tenant-level: decided at tenant scope in the resolver, never per outlet.
+  brand_logo: [],
 } as const satisfies Record<StoragePurpose, readonly PermissionCode[]>;
 
 /** Strict read codes for an object with no source kind (legacy or
@@ -107,7 +113,12 @@ export const storageLegacyReadMap = {
   document: ["hr.employee.manage"],
   receipt: ["accounting.reconcile"],
   menu_photo: ["menu.item.manage"],
+  brand_logo: ["org.theme.manage"],
 } as const satisfies Record<StoragePurpose, readonly PermissionCode[]>;
+
+/** Code to upload the tenant-level brand logo, needed at tenant scope. */
+const brandLogoUploadCode =
+  "org.theme.manage" as const satisfies PermissionCode;
 
 type ResolveRequest = Parameters<
   typeof createStorageRouter
@@ -171,6 +182,8 @@ export function createStorageRequestResolver(): ResolveRequest {
       outletId: OutletId,
       sourceKind: StorageSourceKind | null,
     ) => {
+      // The brand logo has no outlet: only the tenant-scope path below.
+      if (purpose === "brand_logo") return false;
       if (sourceKind === null)
         return allowsAny(storageLegacyUploadMap[purpose], outletId);
       if (storageSourceKindPurpose[sourceKind] !== purpose) return false;
@@ -275,6 +288,25 @@ export function createStorageRequestResolver(): ResolveRequest {
       };
     }
 
+    // Brand logo: tenant-level, so a tenant scope is minted only when the
+    // multipart body purpose is exactly brand_logo and the caller holds the
+    // code at tenant scope. Anything else falls through to the outlet path.
+    const bodyPurpose = (req.body as { purpose?: unknown } | undefined)
+      ?.purpose;
+    if (bodyPurpose === "brand_logo") {
+      if (!snapshot.allows(brandLogoUploadCode, { type: "tenant" }))
+        throw denied();
+      return {
+        actorUserId,
+        context: establishScopedTenantContext(tenant, { kind: "tenant" }),
+        authorize: async (action, purpose, outletId, target) =>
+          action === "upload" &&
+          purpose === "brand_logo" &&
+          outletId === null &&
+          (target?.sourceKind ?? null) === null,
+      };
+    }
+
     // Scope is minted before the body is parsed by the service. Only the
     // outlets the caller can reach for an upload of these purposes go in it
     // (any kind of the purpose, or the no-kind list), so the service's scope
@@ -299,6 +331,8 @@ export function createStorageRequestResolver(): ResolveRequest {
       }),
       authorize: async (action, purpose, outletId, target) => {
         if (action !== "upload") return false;
+        // A null outlet is only valid for brand_logo (handled above).
+        if (outletId === null) return false;
         const purposeKey = storagePurposeSchema.safeParse(purpose);
         const outlet = outletIdSchema.safeParse(outletId);
         if (!purposeKey.success || !outlet.success) return false;

@@ -28,8 +28,11 @@ import {
   sessionParticipantIdSchema,
   tableIdSchema,
   tableSessionClosedReasonSchema,
+  tableLinkGroupIdSchema,
   tableSessionIdSchema,
+  tableStatusSchema,
 } from "./schemas.ts";
+import { TABLE_LINK_LEFT_REASONS } from "./table-link.ts";
 
 export const tableSessionOpenedPayloadSchema = z.strictObject({
   sessionId: tableSessionIdSchema,
@@ -62,6 +65,64 @@ export const tableSessionClosedPayloadSchema = z.strictObject({
   paidIdr: idrSchema.refine((value) => value >= 0),
   orderCount: z.number().int().nonnegative(),
   closedBy: z.enum(["staff", "system", "guest"]),
+});
+
+/** Staff moved a live session (and its bill) to another table. */
+export const tableSessionMovedPayloadSchema = z.strictObject({
+  sessionId: tableSessionIdSchema,
+  fromTableId: tableIdSchema,
+  toTableId: tableIdSchema,
+  billTotalIdr: idrSchema.refine((value) => value >= 0),
+});
+
+/** Staff merged the source session's orders into the target session's bill. */
+export const tableSessionMergedPayloadSchema = z.strictObject({
+  targetSessionId: tableSessionIdSchema,
+  sourceSessionId: tableSessionIdSchema,
+  targetTableId: tableIdSchema,
+  sourceTableId: tableIdSchema,
+  movedItemCount: z.number().int().nonnegative(),
+  movedTotalIdr: idrSchema.refine((value) => value >= 0),
+});
+
+/** Staff moved order items from one live session to another. */
+export const tableSessionItemsMovedPayloadSchema = z.strictObject({
+  fromSessionId: tableSessionIdSchema,
+  toSessionId: tableSessionIdSchema,
+  orderItemIds: z.array(orderItemIdSchema).min(1).max(50),
+  movedItemCount: z.number().int().positive(),
+  movedTotalIdr: idrSchema.refine((value) => value >= 0),
+});
+
+/** A table's floor status changed (staff action or session lifecycle). */
+export const tableStatusChangedPayloadSchema = z.strictObject({
+  tableId: tableIdSchema,
+  zoneId: floorZoneIdSchema,
+  from: tableStatusSchema,
+  to: tableStatusSchema,
+  cause: z.enum([
+    "staff_action",
+    "session_closed",
+    "session_expired",
+    "session_moved",
+    "session_merged",
+  ]),
+});
+
+/** A session joined a service-only table link group. */
+export const tableSessionLinkedPayloadSchema = z.strictObject({
+  groupId: tableLinkGroupIdSchema,
+  sessionId: tableSessionIdSchema,
+  tableId: tableIdSchema,
+  tableIds: z.array(tableIdSchema).min(2),
+});
+
+/** A session left a table link group (or the group dissolved around it). */
+export const tableSessionUnlinkedPayloadSchema = z.strictObject({
+  groupId: tableLinkGroupIdSchema,
+  sessionId: tableSessionIdSchema,
+  tableId: tableIdSchema,
+  reason: z.enum(TABLE_LINK_LEFT_REASONS),
 });
 
 export const orderPlacedPayloadSchema = z.strictObject({
@@ -110,10 +171,16 @@ export const qrOrderEventNames = [
   "table_session.opened",
   "table_session.joined",
   "table_session.closed",
+  "table_session.moved",
+  "table_session.merged",
+  "table_session.items_moved",
   "order.placed",
   "item.failed",
   "service_request.created",
   "service_request.overdue",
+  "table.status_changed",
+  "table_session.linked",
+  "table_session.unlinked",
 ] as const;
 export type QrOrderEventName = (typeof qrOrderEventNames)[number];
 /** Kept for compatibility: identical to qrOrderEventNames. */
@@ -126,10 +193,16 @@ export const qrOrderEventPayloads: Record<
   "table_session.opened": tableSessionOpenedPayloadSchema,
   "table_session.joined": tableSessionJoinedPayloadSchema,
   "table_session.closed": tableSessionClosedPayloadSchema,
+  "table_session.moved": tableSessionMovedPayloadSchema,
+  "table_session.merged": tableSessionMergedPayloadSchema,
+  "table_session.items_moved": tableSessionItemsMovedPayloadSchema,
   "order.placed": orderPlacedPayloadSchema,
   "item.failed": itemFailedPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,
   "service_request.overdue": serviceRequestOverduePayloadSchema,
+  "table.status_changed": tableStatusChangedPayloadSchema,
+  "table_session.linked": tableSessionLinkedPayloadSchema,
+  "table_session.unlinked": tableSessionUnlinkedPayloadSchema,
 };
 
 /**

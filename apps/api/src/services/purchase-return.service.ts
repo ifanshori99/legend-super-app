@@ -1,0 +1,758 @@
+// Supplier return of received goods (PRD v1.7 §3.18 "Retur Pembelian"; bead
+// legend-65mgw; design docs/briefs/301b-sub-return-petty-design.md).
+//
+// - A return is recorded against ONE goods receipt. Every line names the PO
+//   line it came from; its goods-receipt line is found through that PO line.
+// - Quantities are in the item BASE unit (the unit of the stock ledger), not
+//   the purchase unit of the PO line. The client must convert before sending.
+// - Stock leaves at the RECEIPT cost per base unit, not the moving average, so
+//   a full return clears exactly what the receipt put on GRNI.
+// - Line value is cumulative: the value of all returns so far is the receipt
+//   line value x returned base quantity / accepted base quantity, rounded once;
+//   each return books the difference. Full return = receipt line value, exact.
+// - The PO row of the receipt is locked FOR UPDATE first (the receipt itself is
+//   immutable and cannot be locked by the app role), so two returns of one
+//   receipt never run side by side and cannot over-return.
+// - No supplier invoice exists yet: `uninvoicedValueIdr = valueIdr`,
+//   `invoicedValueIdr = ppnIdr = 0`.
+// - Numbering `RT/<YYYYMM>/<0001>` from `purchasing_document_sequences`.
+// - Gate: while `PURCHASE_RETURN_POSTING_ENABLED` is off, every POST is refused
+//   (403 FEATURE_DISABLED) before anything is claimed or written. Stock would
+//   leave without a journal and split the GL from the stock ledger.
+//   `legend-29vw` (goods-receipt journal) turns it on. GET stays open.
+// - Event `purchase_return.recorded` goes through the transactional outbox.
+
+import { randomUUID } from "node:crypto";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  lt,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import { AccessError, type PermissionCode } from "@starter/shared/access";
+import {
+  businessDateOf,
+  CoreError,
+  createUlid,
+  divideRounded,
+  encodeCursor,
+  extendCostIdr,
+  formatDecimal4,
+  idr,
+  parseDecimal4,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  assertPurchaseReturnWithinReceipt,
+  purchaseReturnDetailSchema,
+  purchaseReturnSchema,
+  purchasingEvents,
+  type createPurchaseReturnInputSchema,
+  type purchaseReturnQuerySchema,
+  type PurchaseReturn,
+  type PurchaseReturnDetail,
+  type PurchaseReturnLine,
+} from "@starter/shared/inventory";
+import type { z } from "zod";
+import { env } from "../config/env.ts";
+import { db } from "../db/index.ts";
+import {
+  goodsReceiptLines,
+  goodsReceipts,
+} from "../db/schema/inventory-receiving.ts";
+import { stockBalances, stockLocations } from "../db/schema/inventory.ts";
+import {
+  purchaseReturnLines,
+  purchaseReturns,
+} from "../db/schema/purchase-returns.ts";
+import {
+  purchaseOrders,
+  purchasingDocumentSequences,
+} from "../db/schema/purchasing.ts";
+import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { appendOutbox } from "./core-outbox.ts";
+import { baseUnitCost } from "./inventory-receiving.service.ts";
+import { recordStockMovementInTransaction } from "./inventory.service.ts";
+import {
+  assertOutlet,
+  cursorInstant,
+  cursorKeys,
+  cursorUuid,
+  EVENT_DESTINATION,
+  insufficientStock,
+  loadOutletClock,
+  lockLocations,
+  outletTarget,
+  recordOpsAudit,
+  requestFingerprint,
+  requireOpsPermission,
+  ROUNDING_MODE,
+  translateInventoryError,
+  type CursorPage,
+  type Tx,
+} from "./inventory-ops.shared.ts";
+import { accessSnapshotInTransaction } from "./permission-resolver.ts";
+import {
+  claimPurchasingIdempotency,
+  completePurchasingIdempotency,
+  guardMoneyMath,
+  translatePurchasingError,
+} from "./purchasing-flow.shared.ts";
+
+export type CreatePurchaseReturnInput = z.infer<
+  typeof createPurchaseReturnInputSchema
+>;
+export type PurchaseReturnQuery = z.infer<typeof purchaseReturnQuerySchema>;
+
+const CREATE_OPERATION = "purchase_return.create";
+const CREATE_PERMISSION = "purchasing.return.create";
+const RETURN_AUDIT_FIELDS = [
+  "number",
+  "goodsReceiptId",
+  "purchaseOrderId",
+  "supplierId",
+  "reason",
+  "returnedOn",
+  "lineCount",
+  "valueIdr",
+] as const;
+
+/** Reads: the return permission or invoice matching (fail closed). */
+export const PURCHASE_RETURN_READ_PERMISSIONS: readonly PermissionCode[] = [
+  CREATE_PERMISSION,
+  "purchasing.invoice.match",
+];
+
+export const PURCHASE_RETURN_DISABLED_MESSAGE =
+  "Retur pembelian belum aktif sampai jurnal penerimaan barang (legend-29vw) berjalan";
+
+let postingEnabledOverride: boolean | null = null;
+
+/** Test seam: `null` goes back to the env flag. */
+export function setPurchaseReturnPostingEnabled(enabled: boolean | null): void {
+  postingEnabledOverride = enabled;
+}
+
+function postingEnabled(): boolean {
+  return postingEnabledOverride ?? env.PURCHASE_RETURN_POSTING_ENABLED;
+}
+
+type ReturnRow = typeof purchaseReturns.$inferSelect;
+type ReturnLineRow = typeof purchaseReturnLines.$inferSelect;
+type ReceiptLineRow = typeof goodsReceiptLines.$inferSelect;
+
+function invalid(message: string): HttpError {
+  return new HttpError(422, "VALIDATION_ERROR", message);
+}
+
+function toReturn(row: ReturnRow): PurchaseReturn {
+  return purchaseReturnSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    supplierId: row.supplierId,
+    purchaseOrderId: row.purchaseOrderId,
+    goodsReceiptId: row.goodsReceiptId,
+    number: row.number,
+    returnedOn: row.returnedOn,
+    returnedBy: row.returnedBy,
+    reason: row.reason,
+    valueIdr: row.valueIdr,
+    note: row.note,
+    createdAt: row.createdAt.toISOString(),
+  });
+}
+
+function toLine(row: ReturnLineRow) {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    purchaseReturnId: row.purchaseReturnId,
+    inventoryItemId: row.inventoryItemId,
+    purchaseOrderLineId: row.purchaseOrderLineId,
+    quantity: row.quantity,
+    unitCostIdr: row.unitCostIdr,
+    lineValueIdr: row.lineValueIdr,
+    batchCode: row.batchCode,
+  };
+}
+
+async function detailOf(tx: Tx, row: ReturnRow): Promise<PurchaseReturnDetail> {
+  const lines = await tx
+    .select()
+    .from(purchaseReturnLines)
+    .where(
+      and(
+        eq(purchaseReturnLines.tenantId, row.tenantId),
+        eq(purchaseReturnLines.purchaseReturnId, row.id),
+      ),
+    )
+    .orderBy(asc(purchaseReturnLines.lineNo));
+  return purchaseReturnDetailSchema.parse({
+    purchaseReturn: toReturn(row),
+    lines: lines.map(toLine),
+  });
+}
+
+/** `RT/<YYYYMM>/<0001>`: next value of the tenant's monthly counter. */
+async function nextRtNumber(
+  tx: Tx,
+  context: ScopedTenantContext,
+  businessDate: string,
+): Promise<string> {
+  const period = `${businessDate.slice(0, 4)}${businessDate.slice(5, 7)}`;
+  const [row] = await tx
+    .insert(purchasingDocumentSequences)
+    .values({
+      tenantId: context.tenant.tenantId,
+      kind: "RT",
+      period,
+      lastValue: 1,
+    })
+    .onConflictDoUpdate({
+      target: [
+        purchasingDocumentSequences.tenantId,
+        purchasingDocumentSequences.kind,
+        purchasingDocumentSequences.period,
+      ],
+      set: {
+        lastValue: sql`${purchasingDocumentSequences.lastValue} + 1`,
+      },
+    })
+    .returning({ value: purchasingDocumentSequences.lastValue });
+  return `RT/${period}/${String(row!.value).padStart(4, "0")}`;
+}
+
+function canonicalInput(input: CreatePurchaseReturnInput) {
+  return {
+    outletId: input.outletId,
+    supplierId: input.supplierId,
+    purchaseOrderId: input.purchaseOrderId ?? null,
+    goodsReceiptId: input.goodsReceiptId ?? null,
+    returnedOn: input.returnedOn,
+    reason: input.reason,
+    note: input.note ?? null,
+    lines: input.lines.map((line) => ({
+      purchaseOrderLineId: line.purchaseOrderLineId ?? null,
+      inventoryItemId: line.inventoryItemId,
+      quantity: formatDecimal4(parseDecimal4(line.quantity)),
+      locationId: line.locationId,
+      batchCode: line.batchCode ?? null,
+    })),
+  };
+}
+
+function acceptedOf(line: ReceiptLineRow) {
+  return formatDecimal4(
+    parseDecimal4(line.quantityReceived) - parseDecimal4(line.quantityRejected),
+  );
+}
+
+async function assertLocations(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  locationIds: readonly string[],
+): Promise<void> {
+  const unique = [...new Set(locationIds)];
+  const rows = await tx
+    .select({ id: stockLocations.id })
+    .from(stockLocations)
+    .where(
+      and(
+        eq(stockLocations.tenantId, context.tenant.tenantId),
+        eq(stockLocations.outletId, outletId),
+        inArray(stockLocations.id, unique),
+      ),
+    );
+  if (rows.length !== unique.length)
+    throw invalid("A stock location does not belong to this outlet.");
+}
+
+async function appendReturnRecordedEvent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: ReturnRow,
+): Promise<void> {
+  const name = "purchase_return.recorded";
+  const returnedAt = row.returnedAt.toISOString();
+  const event = purchasingEvents[name].envelopeSchema.parse({
+    id: createUlid(row.returnedAt.getTime()),
+    tenantId: context.tenant.tenantId,
+    outletId: row.outletId,
+    name,
+    version: 1,
+    aggregateType: "purchase_return",
+    aggregateId: row.id,
+    sequence: 1,
+    occurredAt: returnedAt,
+    actor: { type: "user", id: row.returnedBy },
+    deviceId: null,
+    idempotencyKey: `${name}:${row.id}:1`,
+    payloadSchemaRef: `${name}.v1`,
+    payload: {
+      purchaseReturnId: row.id,
+      supplierId: row.supplierId,
+      outletId: row.outletId,
+      number: row.number,
+      valueIdr: row.valueIdr,
+      uninvoicedValueIdr: row.uninvoicedValueIdr,
+      invoicedValueIdr: row.invoicedValueIdr,
+      ppnIdr: row.ppnIdr,
+      returnedBy: row.returnedBy,
+      returnedAt,
+    },
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(),
+    event,
+    destination: EVENT_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
+}
+
+/**
+ * POST purchase return. Needs `purchasing.return.create` at the outlet. Takes
+ * the stock out, writes the nota retur and the event in one transaction; a
+ * retry with the same key replays the first return. Refused with
+ * FEATURE_DISABLED while the posting gate is off.
+ */
+export async function createPurchaseReturn(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  input: CreatePurchaseReturnInput,
+): Promise<PurchaseReturnDetail> {
+  assertOutlet(context, input.outletId);
+  // Before the idempotency claim: a refused request leaves no trace.
+  if (!postingEnabled())
+    throw new CoreError("FEATURE_DISABLED", PURCHASE_RETURN_DISABLED_MESSAGE);
+  const claim = {
+    operation: CREATE_OPERATION,
+    key: input.idempotencyKey,
+    outletId: input.outletId,
+    fingerprint: requestFingerprint(
+      CREATE_OPERATION,
+      actorUserId,
+      canonicalInput(input),
+    ),
+  };
+  try {
+    return await withTenant(db, context, async (tx) => {
+      await requireOpsPermission(
+        tx,
+        context,
+        actorUserId,
+        CREATE_PERMISSION,
+        input.outletId,
+      );
+      const replay = await claimPurchasingIdempotency(tx, context, claim);
+      if (replay) return purchaseReturnDetailSchema.parse(replay.replay);
+
+      // The contract leaves these optional (manual adjustments); a return of
+      // received goods needs them.
+      if (!input.goodsReceiptId)
+        throw invalid("A goods receipt is required for a purchase return.");
+      const goodsReceiptId = input.goodsReceiptId;
+      const lineInputs = input.lines.map((line) => {
+        if (!line.purchaseOrderLineId)
+          throw invalid("Every return line needs its purchase order line.");
+        return { ...line, purchaseOrderLineId: line.purchaseOrderLineId };
+      });
+      const poLineIds = lineInputs.map((line) => line.purchaseOrderLineId);
+      if (new Set(poLineIds).size !== poLineIds.length)
+        throw invalid("A purchase order line appears twice in this return.");
+
+      // The receipt is immutable (the app role has no UPDATE on it, so it
+      // cannot be locked): read it, then lock its PO row FOR UPDATE, as goods
+      // receipts do. Every return of this PO's receipts runs in turn.
+      const [receipt] = await tx
+        .select()
+        .from(goodsReceipts)
+        .where(
+          and(
+            eq(goodsReceipts.tenantId, context.tenant.tenantId),
+            eq(goodsReceipts.id, goodsReceiptId),
+          ),
+        );
+      if (
+        !receipt ||
+        receipt.outletId.toLowerCase() !== input.outletId.toLowerCase()
+      )
+        throw new HttpError(404, "NOT_FOUND", "Goods receipt not found.");
+      if (receipt.supplierId.toLowerCase() !== input.supplierId.toLowerCase())
+        throw invalid("The supplier does not match the goods receipt.");
+      if (
+        input.purchaseOrderId &&
+        receipt.purchaseOrderId.toLowerCase() !==
+          input.purchaseOrderId.toLowerCase()
+      )
+        throw invalid("The purchase order does not match the goods receipt.");
+
+      // The PO row is the lock that serialises returns of one receipt; a
+      // missing row means nothing is locked, so refuse instead of racing.
+      const [lockedPo] = await tx
+        .select({ id: purchaseOrders.id })
+        .from(purchaseOrders)
+        .where(
+          and(
+            eq(purchaseOrders.tenantId, context.tenant.tenantId),
+            eq(purchaseOrders.id, receipt.purchaseOrderId),
+          ),
+        )
+        .for("update");
+      if (!lockedPo)
+        throw new HttpError(404, "NOT_FOUND", "Purchase order not found.");
+
+      const receiptLines = await tx
+        .select()
+        .from(goodsReceiptLines)
+        .where(
+          and(
+            eq(goodsReceiptLines.tenantId, context.tenant.tenantId),
+            eq(goodsReceiptLines.goodsReceiptId, receipt.id),
+          ),
+        );
+      const receiptLineByPoLine = new Map(
+        receiptLines.map((line) => [line.purchaseOrderLineId, line]),
+      );
+      const matched = lineInputs.map((line, index) => {
+        const receiptLine = receiptLineByPoLine.get(line.purchaseOrderLineId);
+        if (!receiptLine)
+          throw invalid("A return line is not on this goods receipt.");
+        if (
+          receiptLine.inventoryItemId.toLowerCase() !==
+          line.inventoryItemId.toLowerCase()
+        )
+          throw invalid("A return line item does not match the receipt line.");
+        if (
+          line.batchCode !== undefined &&
+          line.batchCode !== null &&
+          line.batchCode !== receiptLine.batchCode
+        )
+          throw invalid("A return line batch does not match the receipt line.");
+        return { input: line, receiptLine, lineNo: index + 1 };
+      });
+      await assertLocations(
+        tx,
+        context,
+        input.outletId,
+        matched.map((line) => line.input.locationId),
+      );
+
+      // Earlier returns of the same receipt lines (serial: the PO row is locked).
+      const priorRows = await tx
+        .select({
+          goodsReceiptLineId: purchaseReturnLines.goodsReceiptLineId,
+          quantity: purchaseReturnLines.quantity,
+          lineValueIdr: purchaseReturnLines.lineValueIdr,
+        })
+        .from(purchaseReturnLines)
+        .where(
+          and(
+            eq(purchaseReturnLines.tenantId, context.tenant.tenantId),
+            inArray(
+              purchaseReturnLines.goodsReceiptLineId,
+              matched.map((line) => line.receiptLine.id),
+            ),
+          ),
+        );
+      const priorQty = new Map<string, bigint>();
+      const priorValue = new Map<string, bigint>();
+      for (const prior of priorRows) {
+        priorQty.set(
+          prior.goodsReceiptLineId,
+          (priorQty.get(prior.goodsReceiptLineId) ?? 0n) +
+            parseDecimal4(prior.quantity),
+        );
+        priorValue.set(
+          prior.goodsReceiptLineId,
+          (priorValue.get(prior.goodsReceiptLineId) ?? 0n) +
+            BigInt(prior.lineValueIdr),
+        );
+      }
+      // Quantity limit per PO line: accepted base on the receipt vs returned.
+      assertPurchaseReturnWithinReceipt(
+        new Map(
+          matched.map((line) => [
+            line.input.purchaseOrderLineId,
+            line.receiptLine.acceptedBaseQuantity,
+          ]),
+        ),
+        new Map(
+          matched.map((line) => [
+            line.input.purchaseOrderLineId,
+            formatDecimal4(priorQty.get(line.receiptLine.id) ?? 0n),
+          ]),
+        ),
+        matched.map((line) => ({
+          purchaseOrderLineId: line.input.purchaseOrderLineId,
+          quantity: line.input.quantity,
+        })) as unknown as Pick<
+          PurchaseReturnLine,
+          "purchaseOrderLineId" | "quantity"
+        >[],
+      );
+
+      const now = new Date();
+      const businessDate = businessDateOf(
+        now,
+        await loadOutletClock(tx, input.outletId),
+      );
+      if (input.returnedOn < receipt.receivedOn)
+        throw invalid("The return date is before the goods receipt date.");
+      if (input.returnedOn > businessDate)
+        throw invalid("The return date is in the future.");
+
+      const number = await nextRtNumber(tx, context, businessDate);
+      const returnId = randomUUID();
+      const lineRows = matched.map((line) => {
+        const receiptLine = line.receiptLine;
+        const quantity = parseDecimal4(line.input.quantity);
+        const before = priorQty.get(receiptLine.id) ?? 0n;
+        const acceptedBase = parseDecimal4(receiptLine.acceptedBaseQuantity);
+        const { unitCostIdr, lineValueIdr } = guardMoneyMath(() => {
+          const receiptLineValue = BigInt(
+            extendCostIdr(
+              acceptedOf(receiptLine),
+              receiptLine.unitCostIdr,
+              ROUNDING_MODE,
+            ),
+          );
+          const cumulative = divideRounded(
+            receiptLineValue * (before + quantity),
+            acceptedBase,
+            ROUNDING_MODE,
+          );
+          return {
+            unitCostIdr: baseUnitCost(
+              receiptLine.unitCostIdr,
+              acceptedOf(receiptLine),
+              receiptLine.acceptedBaseQuantity,
+            ),
+            lineValueIdr: idr(
+              Number(cumulative - (priorValue.get(receiptLine.id) ?? 0n)),
+            ),
+          };
+        });
+        return {
+          id: randomUUID(),
+          tenantId: context.tenant.tenantId,
+          outletId: input.outletId,
+          purchaseReturnId: returnId,
+          goodsReceiptLineId: receiptLine.id,
+          purchaseOrderLineId: receiptLine.purchaseOrderLineId,
+          inventoryItemId: receiptLine.inventoryItemId,
+          locationId: line.input.locationId,
+          batchId: receiptLine.batchId,
+          batchCode: receiptLine.batchCode,
+          quantity: formatDecimal4(quantity),
+          unitCostIdr,
+          lineValueIdr,
+          lineNo: line.lineNo,
+        };
+      });
+      const valueIdr = guardMoneyMath(() =>
+        idr(lineRows.reduce((sum, line) => sum + line.lineValueIdr, 0)),
+      );
+
+      const [row] = await tx
+        .insert(purchaseReturns)
+        .values({
+          id: returnId,
+          tenantId: context.tenant.tenantId,
+          outletId: input.outletId,
+          goodsReceiptId: receipt.id,
+          purchaseOrderId: receipt.purchaseOrderId,
+          supplierId: receipt.supplierId,
+          number,
+          reason: input.reason,
+          returnedOn: input.returnedOn,
+          returnedAt: now,
+          returnedBy: actorUserId,
+          valueIdr,
+          // No supplier invoice exists yet: everything is still on GRNI.
+          uninvoicedValueIdr: valueIdr,
+          invoicedValueIdr: idr(0),
+          ppnIdr: idr(0),
+          note: input.note ? input.note : null,
+        })
+        .returning();
+      await tx.insert(purchaseReturnLines).values(lineRows);
+
+      // Same lock order for every document (location, item, line): no deadlocks.
+      const stockOrder = [...lineRows].sort(
+        (a, b) =>
+          a.locationId.localeCompare(b.locationId) ||
+          a.inventoryItemId.localeCompare(b.inventoryItemId) ||
+          a.lineNo - b.lineNo,
+      );
+      // The ledger helper lets a balance go negative; a return must not.
+      await lockLocations(
+        tx,
+        context.tenant.tenantId,
+        stockOrder.map((line) => line.locationId),
+      );
+      const wantedByStock = new Map<string, bigint>();
+      for (const line of stockOrder) {
+        const stockKey = `${line.locationId}:${line.inventoryItemId}`;
+        wantedByStock.set(
+          stockKey,
+          (wantedByStock.get(stockKey) ?? 0n) + parseDecimal4(line.quantity),
+        );
+      }
+      for (const [stockKey, wanted] of wantedByStock) {
+        const [locationId, itemId] = stockKey.split(":") as [string, string];
+        const [balance] = await tx
+          .select({ quantity: stockBalances.quantity })
+          .from(stockBalances)
+          .where(
+            and(
+              eq(stockBalances.tenantId, context.tenant.tenantId),
+              eq(stockBalances.locationId, locationId),
+              eq(stockBalances.inventoryItemId, itemId),
+            ),
+          );
+        if (!balance || parseDecimal4(balance.quantity) < wanted)
+          throw insufficientStock(itemId);
+      }
+      for (const line of stockOrder)
+        await recordStockMovementInTransaction(tx, context, {
+          outletId: input.outletId,
+          locationId: line.locationId,
+          inventoryItemId: line.inventoryItemId,
+          movementType: "return",
+          quantity: formatDecimal4(-parseDecimal4(line.quantity)),
+          unitCostIdr: line.unitCostIdr,
+          batchId: line.batchId,
+          sourceType: "purchase_return",
+          sourceId: returnId,
+          occurredAt: now.toISOString(),
+          idempotencyKey: `purchase_return:${returnId}:${line.id}`,
+          actor: { type: "user", id: actorUserId },
+        });
+
+      const detail = await detailOf(tx, row!);
+      await recordOpsAudit(tx, context, {
+        actorUserId,
+        outletId: input.outletId,
+        action: "purchasing.return_recorded",
+        objectType: "purchase_return",
+        objectId: returnId,
+        before: null,
+        after: {
+          number,
+          goodsReceiptId: receipt.id,
+          purchaseOrderId: receipt.purchaseOrderId,
+          supplierId: receipt.supplierId,
+          reason: input.reason,
+          returnedOn: input.returnedOn,
+          lineCount: detail.lines.length,
+          valueIdr,
+        },
+        safeFields: RETURN_AUDIT_FIELDS,
+      });
+      await appendReturnRecordedEvent(tx, context, row!);
+      await completePurchasingIdempotency(tx, context, claim, detail);
+      return detail;
+    });
+  } catch (error) {
+    throw translatePurchasingError(translateInventoryError(error));
+  }
+}
+
+function requireReturnRead(
+  snapshot: Awaited<ReturnType<typeof accessSnapshotInTransaction>>,
+  outletId: string,
+): void {
+  const allowed = PURCHASE_RETURN_READ_PERMISSIONS.some((permission) =>
+    snapshot.allows(permission, outletTarget(outletId)),
+  );
+  if (!allowed) throw new AccessError("PERMISSION_DENIED");
+}
+
+/** GET purchase returns of one outlet, newest first. */
+export async function listPurchaseReturns(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  query: PurchaseReturnQuery,
+): Promise<CursorPage<PurchaseReturn>> {
+  assertOutlet(context, query.outletId);
+  return withTenant(db, context, async (tx) => {
+    requireReturnRead(
+      await accessSnapshotInTransaction(tx, context, actorUserId, new Date()),
+      query.outletId,
+    );
+    const filters: SQL[] = [
+      eq(purchaseReturns.tenantId, context.tenant.tenantId),
+      eq(purchaseReturns.outletId, query.outletId),
+    ];
+    if (query.purchaseOrderId)
+      filters.push(eq(purchaseReturns.purchaseOrderId, query.purchaseOrderId));
+    if (query.supplierId)
+      filters.push(eq(purchaseReturns.supplierId, query.supplierId));
+    const [returnedAt, id] = cursorKeys(query.cursor, 2);
+    if (returnedAt !== undefined && id !== undefined) {
+      const at = cursorInstant(returnedAt);
+      filters.push(
+        or(
+          lt(purchaseReturns.returnedAt, at),
+          and(
+            eq(purchaseReturns.returnedAt, at),
+            sql`${purchaseReturns.id} < ${cursorUuid(id)}::uuid`,
+          ),
+        )!,
+      );
+    }
+    const rows = await tx
+      .select()
+      .from(purchaseReturns)
+      .where(and(...filters))
+      .orderBy(desc(purchaseReturns.returnedAt), desc(purchaseReturns.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      data: page.map(toReturn),
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.returnedAt.toISOString(), last.id])
+            : null,
+      },
+    };
+  });
+}
+
+/** GET one purchase return with lines; another outlet or tenant is a 404. */
+export async function getPurchaseReturn(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  purchaseReturnId: string,
+): Promise<PurchaseReturnDetail> {
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(purchaseReturns)
+      .where(
+        and(
+          eq(purchaseReturns.tenantId, context.tenant.tenantId),
+          eq(purchaseReturns.id, purchaseReturnId),
+        ),
+      );
+    if (!row)
+      throw new HttpError(404, "NOT_FOUND", "Purchase return not found.");
+    requireReturnRead(
+      await accessSnapshotInTransaction(tx, context, actorUserId, new Date()),
+      row.outletId,
+    );
+    return detailOf(tx, row);
+  });
+}

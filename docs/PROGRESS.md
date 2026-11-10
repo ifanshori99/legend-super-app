@@ -17,6 +17,52 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti putaran 2: typecheck api lulus; tes terarah 14 file 245 lulus, 8 todo (termasuk `email-sender.test.ts` baru dan tes worker notifikasi); db:generate kosong; e2e 18 lulus; eslint dan prettier bersih. Review architect: tidak ada cacat penghalang; satu temuan (log hanya `error.name`) dibetulkan.
 - Nomor migrasi: 0204 sudah dipakai hr-scheduling di m1; k2l tetap menulis 0204, merge train menomori ulang (when > 1794287000000).
 - Berikut: second-opinion Codex area identitas member sebelum gerbang rilis; isi slice profil sesudah 290a digabung; kunci SMTP SumoPod dan Google OAuth dari founder lewat `ghostex secret request`.
+## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
+
+- Tanpa migrasi (`db:generate` kosong). Role baru `loyalty_points_deferral` + akun `4105 Penangguhan Pendapatan Poin Loyalty` (kontra-pendapatan di bawah 4100). Tenant baru dari template; tenant lama lewat `pnpm db:backfill-defaults` (`addLoyaltyDeferralAccount`, lewati bila 4105 terpakai).
+- Jurnal otomatis untuk `points.earned/reversed/redeemed/adjusted/expired` di consumer jurnal otomatis yang ada (`accounting-auto-journal-amounts.ts`, `posting-rules.ts`). Earn: Dr 4105 / Cr 2105; reverse dan redeem: Dr 2105 / Cr 4105; adjust bertanda; expire: Dr 2105 / Cr 4104. Nilai = `liability_idr` baris buku poin (Rp100 per poin, asumsi tingkat penukaran 100%). Kunci `aj:loyalty:<ledgerId>` dari idempotencyKey envelope, tanpa ubah payload. Tanggal = `business_date` buku poin.
+- Keputusan: `docs/DECISIONS.md` "WS-08: loyalty points journal, PSAK 72"; redeem ke 4105, bukan 4103 seperti desain 290f. Hanya tenant satu legal entity (lainnya parkir `LOYALTY_LEGAL_ENTITY_AMBIGUOUS`). Gate: akuntansi menyala; buku poin hanya terisi bila program menyala.
+- Bukti: `loyalty-journal.test.ts` 16/17 merah sebelum kode, kini 20/20; 10 file terarah 354/354 (setelah perubahan terakhir); tsc api + shared (heavy) lulus; eslint dan prettier bersih.
+- Review architect (K, xhigh): tanggal jurnal (dibetulkan), tes pin redeem dan retry sweep (ditambah), poin pesanan latihan (kartu `legend-kbbma`, wajib sebelum dinyalakan), multi-entity (kartu `legend-6m1w1`).
+- Berikut: second-opinion Codex `docs/briefs/304c-second-opinion-points-journal.md` (xhigh, belum dijalankan); konfirmasi akuntan founder (Q7) sebelum dinyalakan; merge train.
+
+## legend-dwrr WS-12 provider AI OpenAI-compatible per tenant (engineer, cabang `ws/ai-provider-tenant` dari milestone/m1 d2080951, 2026-11-10)
+
+- Satu migrasi `0188_ai_provider_configs` (when 1794267000000, prevId 8948ed96 = id snapshot 0186): tabel `ai_provider_configs` satu baris per tenant, tenant RLS (`ai-provider.custom.sql`). Kunci API disegel `sealSecret` (AAD `ai_provider_config:<tenantId>:<rowId>`), hanya `hasKey` + `keyLast4` yang keluar. Tipe koneksi `api_key`; `chatgpt_oauth` dicadangkan dan ditolak (legend-z83k).
+- Rute `GET/PUT/DELETE /api/ai/provider`, `POST /api/ai/provider/test`, izin `ai.governance.manage` + back office (MFA). Kontrak `packages/shared/src/ai/provider.ts`. Keputusan: `docs/DECISIONS.md` "WS-12 provider AI per tenant".
+- URL tenant selalu strict, https port 443, redirect ditolak, fetch berjaga (`lib/ai/guarded-fetch.ts`) memblok IP privat saat connect (tutup DNS rebinding). Ganti base URL wajib kirim ulang kunci. Tenant punya baris tidak pernah jatuh ke kunci platform; tanpa baris pakai provider env + `AI_MODEL`. Anggaran 0 tetap memblokir.
+- Review architect (K): 1 tinggi (status di luar 200-599 mematikan proses API) dan 4 rendah, semua dibetulkan. Bukti gagal-dulu: 8 mutasi (izin, kunci di respons, URL longgar, fallback platform, anggaran, filter tenant, ganti host tanpa kunci), semua tertangkap test.
+- Bukti (setelah perubahan terakhir 4b47b040): 6 file api 115/115 (ai-provider-config, ai-provider-probe, ai-provider, migration-force-rls-guard, migration-fk-force-rls, db/rls); root `tests/ai-contract.test.mjs` 72/72 (node --test, tanpa DB); db:generate kosong; tsc shared + api exit 0 (heavy); eslint + prettier bersih.
+- Berikut: second-opinion Codex `docs/briefs/281b-second-opinion-ai-provider.md` (xhigh, belum dijalankan); UI Kelola legend-nnufz (butuh mockup, gerbang founder); merge train: gabung 0187 (`ws/audit-retention-purge`) dulu lalu rechain prevId 0188.
+- Subagent: 15 (Explore 3, architect 2, implementer 8, test-writer 1, test-runner 1), puncak bersamaan 4.
+
+## legend-1nmh WS-03 mode link meja (engineer, cabang `ws/table-link` dari ws/table-move-merge 6ef7034d, 2026-11-10)
+
+- Link = dua meja atau lebih dikelompokkan untuk layanan saja; tagihan, pesanan, dan sesi tidak disentuh. Anggota = (meja, sesi aktifnya); satu meja paling banyak di satu grup hidup. Grup dengan kurang dari 2 anggota hidup bubar; papan hanya menampilkan `linkGroup` untuk 2+ anggota.
+- Migrasi `0200_table_links` (idx 200, when 1794279000000): `table_link_groups`, `table_link_members`, RLS tenant+outlet, indeks unik parsial anggota hidup per meja dan per sesi.
+- Endpoint `POST /api/table-links` (opsional `groupId` untuk menambah ke grup) dan `POST /api/table-links/:groupId/unlink` (tanpa `tableIds` = bubarkan), izin `floor.table.operate`, filter tenant/outlet, ulang = 200 tanpa tulis ulang.
+- Sesi tutup, kedaluwarsa, atau jadi sumber gabung: anggota keluar (`session_closed` / `session_merged`). Pindah meja: anggota ikut ke meja baru. Event baru: `table_session.linked`, `table_session.unlinked`, `table.status_changed` (aksi staf, tutup, pindah, sumber gabung), audit link/unlink.
+- Bukti: tes gagal-dulu 19 merah dari 29 di `table-link-api.test.ts` (rute belum ada), kini 29/29; regresi 4 file 67/67 + qr-order-api; contract node 51/51; tsc api lulus (heavy); eslint dan prettier bersih. Review S: tanpa temuan nyata; tercatat: `note` diterima tapi tidak disimpan, perluasan grup hanya memberi event `linked` ke sesi baru.
+
+## legend-m4p5 + legend-wa4hp WS-08 hadiah, misi, voucher, pembalikan kunjungan (engineer Opus, cabang `ws/m4p5-rewards` dari `ws/ws08-111j` e15950fe, brief 290c, 2026-11-10)
+
+- Migrasi `0207_loyalty_rewards_missions` (when 1794286000000, prevId = snapshot 0203; merge train merangkai ulang). Tabel baru `rewards`, `reward_redemptions`, `missions`, `mission_progress`; `vouchers.source` tambah `loyalty_reward`, FK profil voucher pola 2 contracts.md didahului pembersihan voucher yatim (profil NULL, voucher `issued` jadi `cancelled` alasan `profile_missing_0207`); `point_earn_records.applied_reversal_ids`. Default `loyalty_programs.daily_point_cap_per_customer` jadi 500 (keputusan founder Q69), juga di kontrak `defaultLoyaltyAntiFraud`.
+- API member `/api/member/{rewards,redemptions,missions,vouchers}`: tukar hadiah atomik (kunci profil, hadiah, penukaran, voucher; idempotency key), batal penukaran dengan poin kembali (`points.adjusted` kind restore), misi bulanan/mingguan ISO/rentang tanggal dengan bonus poin atau voucher. API staf `/api/loyalty/{rewards,missions}` + `POST /api/loyalty/redemptions/fulfil`. Job worker `redemption-expiry` (satu transaksi per penukaran, hari dicatat selesai hanya bila tanpa gagal).
+- legend-wa4hp: void dan refund menurunkan jumlah kunjungan dan belanja seumur hidup (tidak di bawah 0, replay dijaga `applied_reversal_ids`), juga untuk record capped, blocked self-serve, dan reversed.
+- Bukti: gagal-dulu di c129293e (26 merah, 3 hijau kasus negatif); tes Q69 merah (1000 bukan 500) lalu hijau. Tes terarah 21 file 412/412 sebelum Q69; typecheck api+shared bersih (heavy), eslint + prettier bersih, `db:generate` kosong.
+- Review architect (K) 2 putaran: fulfil/expiry bercabang di voucher, wa4hp untuk record non-booked, misi tidak jalan di self-serve, expiry per penukaran, voucher yatim di 0207, job expiry menelan error, stok null/terbatas dikunci saat ada penukaran pending; semua dibetulkan. Restore kedaluwarsa tetap sesuai B13.
+- Belum diuji: baris item Rp0 di POS untuk hadiah item, migrasi pada data yatim nyata, job expiry di worker hidup.
+- Berikut: merge train (rangkai ulang 0207), second-opinion Codex area WS-08.
+
+## legend-111j WS-08 profil member, consent, buku poin (engineer Opus, cabang `ws/ws08-111j` dari `docs/arch-member-loyalty` b07b1032, brief 290a, 2026-11-10)
+
+- Migrasi `0203_member_loyalty_ledger` (when 1794282000000, prevId 8948ed96 = snapshot 0186 m1; merge train merangkai ulang). Tabel baru: `loyalty_programs`, `customer_profiles`, `member_profile_user_index`, `consent_policy_versions`, `point_ledger`, `point_earn_records`, `customer_visits`, `loyalty_anomalies`; kolom `orders.customer_attached_{by,via,at}` + FK komposit ke profil.
+- Jaminan DB: ledger append-only (trigger + revoke), saldo hanya lewat trigger SECURITY DEFINER, `point_value_idr` terkunci sejak baris ledger pertama, `orders_customer_lock` setelah completed/voided, RLS `member_self` (`app.enforce_member_rls`, GUC `app.customer_profile_id`) di profil, ledger, kunjungan, consent; backfill izin `crm.loyalty.*`, `crm.customer.pii.read`, `crm.feedback.manage` ke role yang ada.
+- Menyimpang dari desain: FK orders pakai pola 2 contracts.md (NO FORCE/ADD FK/FORCE, `lock_timeout` 5s disimpan dan dipulihkan), bukan NOT VALID (dilarang guard). INSERT `points_balance` tetap di-grant karena Drizzle menulis DEFAULT untuk semua kolom; trigger `customer_profile_zero_balance` menolak saldo awal bukan nol. Event `points.*` tenant-wide (`outletId` null) karena agregat profil lintas outlet (trigger outbox 0004).
+- API: `/api/member/*` (consent-policies, consents/signup, profil, ledger, qr-token), `/api/loyalty/program`, `/api/loyalty/anomalies`, `PUT /api/pos/orders/:orderId/customer` (QR member, nomor WA dengan batas harian kasir 429 `PHONE_LOOKUP_CAP_REACHED`, lepas). Auto-attach QR order lewat sesi member opsional (`pwa_session`). Consumer earn di rantai worker (cloud): earn dari `order.paid`, reverse dari void/refund, cap harian, larangan karyawan, anomali; cek saldo malam (`balance_mismatch`).
+- Bukti: tes terarah 13 file hijau (lihat laporan), root crm-contract + access-i18n hijau, typecheck api+shared bersih, eslint + prettier bersih, `db:generate` kosong. Gagal-dulu: 66 tes baru ditulis sebelum gabung slice, 6 merah pada run pertama (5 consent: 500 grant kolom, 1 setup tes), semua hijau sesudah perbaikan; tes cursor anomali merah lalu hijau.
+- Review architect (K): 0 kritis/tinggi, 4 sedang, 8 rendah. Dibetulkan: attach ke order delivery ditolak, cursor anomali presisi µs + 422, lock advisory batas lookup, tabrakan dedupe ledger dilempar, `FOR NO KEY UPDATE`, `lock_timeout` di 0203. Tidak dibetulkan (kartu lanjut): void/refund belum mengurangi kunjungan dan belanja seumur hidup (290c/290e), profil `suspended` bisa aktif lagi lewat consent ulang (sesuai brief; perlu alasan suspend saat aksi suspend staf ada), replay refund delta 0 (tertutup dedupe event_id), duplikat `balance_mismatch` antar worker, kode error lookup membocorkan status member, trigger kunci order belum cek jendela 24 jam receipt_claim.
+- Berikut: merge train (rangkai ulang 0203), second-opinion Codex area WS-08, lalu 290b/290c/290d/290e paralel.
 
 ## WS-08 fondasi member: desain identitas pelanggan dan buku poin (architect, cabang `docs/arch-member-loyalty` dari m1 d2080951, 2026-11-10)
 
@@ -25,6 +71,25 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Keputusan: satu tabel `user` untuk semua orang (member = baris `customer_profiles` per tenant, staf = role); login member WhatsApp + magic link email + Google, menolak akun staf; merge hanya akun WhatsApp-saja; saldo poin dijaga trigger database dan tidak bisa negatif; earn/reverse dari `order.paid`/`order.refunded`; RLS `member_self` lewat `app.customer_profile_id`.
 - Migrasi dipesan menurut urutan merge: 0193 111j, 0194 k2l, 0195 m4p5, 0196 ts50, 0197 3zd1 (`when` 1794272000000-1794276000000).
 - Berikut: 290a dan 290b paralel; sesudah 290a: 290c, 290d, 290e, 290f paralel; terakhir 290g. Pertanyaan founder (A15 dan lain-lain) di laporan architect; default dipakai lewat setting.
+
+## legend-ms3 WS-03 split bill dan pembayaran per tamu (engineer Opus, cabang `ws/split-bill` dari m1 d2080951, 2026-11-10)
+
+- Satu migrasi `0202_bill_splits` (when 1794281000000, prevId 8948ed96 = id snapshot 0186): tabel `bill_splits` (satu baris per bagian, `split_set_id` per pembagian, FK komposit ke orders, table_sessions, outlets, session_participants; RLS tenant + outlet), FK `payment_intents.bill_split_id` (FORCE RLS dilepas dan dipulihkan di sekitar FK). db:generate kedua kosong.
+- Bagi per pesanan (pesanan `awaiting_payment` sesi itu), mode rata, per orang, per item; pembulatan largest-remainder `splitBill()` atas `orders.total_idr` (pajak, servis, pembulatan ikut). Bayar per bagian lewat `createSplitPartIntent` (satu link, supersede hanya kode bagian itu); bagian lunas di consumer pembayaran; pesanan lunas lewat aturan lama (link lunas). Re-split ditolak `SPLIT_LOCKED` begitu ada uang atau kode yang masih bisa dibayar. Satu kode hidup per bagian (`SPLIT_CODE_ACTIVE`). Token klaim per bagian 24 jam sekali pakai, belum ada route tukar (legend-90na8 menunggu legend-111j).
+- Route: `POST /api/table-sessions/:sessionId/splits`, `POST .../payments` target `split`, `GET .../splits/:splitId/claim`; `GET .../bill` kini mengisi `splits`. Kontrak `splitClaimSchema` + `getSplitClaim` di shared.
+- Keputusan: `docs/DECISIONS.md` 2026-11-10 "Split bill per order...". Brief: `docs/briefs/sub-split-bill*.md`; second-opinion Codex belum dijalankan: `docs/briefs/294b-second-opinion-split-bill.md`.
+- Review K (architect): 3 sedang + 1 rendah; 3 dibetulkan dengan test gagal-dulu, 1 (klaim sesudah meja tutup) jadi keputusan produk di legend-arp35. Review delta (reviewer): 2 temuan dibetulkan.
+- Kartu baru: legend-90na8 (tukar token ke poin, tergantung legend-111j), legend-arp35 (UI split-panel ke API).
+
+## legend-ovxw WS-10 onboarding/offboarding, exit clearance, KPI (engineer Opus, cabang `ws/hr-lifecycle-kpi` dari ws/hr-scheduling 88cc626e, brief 299, 2026-11-10)
+
+- Satu migrasi `0206_hris_lifecycle_kpi` (when 1794285000000, prevId 9f64bc61 = id snapshot 0199): 7 tabel baru (template checklist, offboarding, task, log aksi append-only, definisi KPI, review KPI, skor KPI), RLS dipaksa di semua.
+- Slice: checklist (complete/block/unblock/waive + log), exit clearance (akhiri role assignment, cabut sesi staf, hapus push subscription, batalkan shift sesudah hari terakhir, PIN ditolak karena keanggotaan berakhir; idempoten), KPI dari `evaluateMetrics` + siklus review manajer, ringkasan hak akhir tanpa THR/BPJS/neto (beku saat selesai), surat keterangan kerja + PDF.
+- Keputusan: `docs/DECISIONS.md` entri "WS-10 lifecycle". Exit clearance hanya HR lingkup tenant; peran admin butuh `access.role.assign`; assignment mendatang diakhiri jadi jendela kosong (constraint `>=` di 0206); sesi tanpa tenant ikut dicabut; revoke hanya setelah hari terakhir; surat kerja hanya lewat HR; KPI sistem lintas outlet untuk satu karyawan.
+- Review architect (K): 3 tinggi, 5 sedang, 1 rendah, semua dibetulkan (brief `docs/briefs/299c-review-fixes.md`). Gagal-dulu: 6 test baru merah di kode lama (D1, D2 x2, D3, D4, D7); KPI D9 merah lalu hijau.
+- Bukti: lihat laporan akhir (6 file test, kontrak root, db:generate kosong, tsc shared/api/web, eslint, prettier).
+- Kartu baru: legend-arj.5 (angka hak akhir dari mesin payroll, tunggu legend-j2l2), legend-arj.6 (job clearance otomatis), legend-arj.7 (surat kerja mandiri mantan karyawan).
+- Berikut: second-opinion Codex `docs/briefs/299b-second-opinion-hr-lifecycle.md` (belum dijalankan), UI web.
 
 ## legend-pxcs + legend-dux2 kebijakan keuangan dan register aset tetap (engineer, cabang `ws/finance-policy-asset-register` dari m1 d8ea5e0b, 2026-11-10)
 
@@ -1357,3 +1422,88 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum ada pemanggil `createDoitPaymentReader`: resolver (reference Legend ke id DOIT) dan pemasangan ke worker/poller adalah langkah berikut.
 - Bukti merah dulu: 49 dari 54 tes gagal tanpa implementasi; cek outlet resolver: 1 gagal tanpa cek, 57/57 hijau dengan cek. Review K (architect): 1 sedang (outlet resolver tidak dicocokkan) dibetulkan + 2 tes celah; tidak ada migrasi.
 - Gelombang: sesi `21802f2a` 8 menit, 9 subagent (3 Explore, web-fetch, implementer, test-writer, doc-writer, architect, test-runner), puncak 3 bersamaan, biaya* 1446k; `parallel-report` 02:15: rata-rata 0,79 subagent berjalan, 15 langkah tanpa subagent (sesi `21802f`).
+
+## legend-rfiof DOIT poller: kunci kerja antar worker (engineer, cabang `ws/doit-pending-poller` dari d2080951, 2026-11-10)
+
+- Arah (keputusan CTO): poller yang ada (`pollPendingGatewayIntents`, legend-b9i) ditambah, bukan poller baru. Resolver id DOIT dan pemanggil `createDoitPaymentReader` tidak dibangun: id DOIT selalu tersimpan di `provider_ref`, pembayaran yatim tidak bisa dicari lewat reference (DOIT hanya `GET /v1/payments/{id}`), dan reader tanpa jumlah uang tidak cukup untuk melunasi.
+- Sudah: kolom `payment_intents.gateway_poll_lease_until` (migrasi 0190, when 1794269000000), klaim atomik `FOR UPDATE SKIP LOCKED`, lease 2 menit dari jam dinding, dilepas di `finally` hanya bila masih milik run itu. Tes baru `payment-poll-lease.test.ts` (10) dan `payment-terminal-paid.test.ts` (15).
+- Status akhir: poller hanya memilih `pending` dan `expired`. `failed`/`refunded`/`partially_refunded` tidak pernah ditanyakan. Webhook `paid` untuk `refunded` dengan id DOIT sama = `duplicate` (tidak ada catatan baru), id berbeda ditolak `REFERENCE_MISMATCH`. Webhook `paid` untuk `failed` hari ini menyelesaikan sebagai late payment (tes PAY-03, keputusan founder menunggu); `syncExpiredIntentPayment` tidak disentuh.
+- Review architect: dua temuan diperbaiki (lepas lease tanpa cek pemilik; lease dari `now` pemanggil). Risiko urutan merge migrasi 0190 vs 0187-0189 dicatat di laporan.
+- Langkah berikut: second opinion Codex (`docs/briefs/283b-second-opinion-doit-poller.md`, belum dijalankan), merge train.
+
+## WS-07 kas & bank (engineer, cabang `ws/cash-bank-recon` dari d2080951, 2026-11-10)
+
+- Dibangun (legend-fnxl.1–.7): migrasi 0191 (`when` 1794270000000, prevId 0186 `8948ed96`), 8 tabel kas-bank dengan FK inline, RLS tenant di semua tabel, RLS outlet di `cash_deposits`, log aksi kasus append-only (REVOKE). API: rekening bank (nomor tersegel + HMAC, hanya 4 digit terakhir keluar), impor CSV ketat (semua atau tidak sama sekali, dedupe per kemunculan, impor ulang tidak menggandakan), auto-match hanya jumlah pasti + tanggal dalam toleransi kebijakan dan unik dua arah, match/exclude/unmatch/ringkasan, setoran kas + alert ACC-05 dari `pos_shifts`, kasus dengan PIC dan log tiap aksi. Web `ws07-cash-bank` membaca `GET finance-policy` dan menampilkan pesan jelas untuk CSV yang ditolak.
+- Tidak ada posting jurnal otomatis (legend-9pz9), tidak ada gateway/EDC (legend-fnxl.8 menunggu legend-cs7).
+- Review K (satu architect): 4 sedang + 4 rendah, semua dibetulkan dengan tes gagal-dulu (DECISIONS #8, #12–15): koleksi ACC-05 memasukkan selisih kas shift, keunikan auto-match per akun GL, pasangan yang di-unmatch tidak dicocokkan otomatis lagi (tabel `bank_statement_match_rejections`), dokumen di kasus terbuka bukan kandidat dan kasus menolak dokumen yang sudah dicocokkan, buka kasus idempoten, urutan kunci setoran, impor ke rekening nonaktif ditolak, kunci dedupe > 400 karakter ditolak rapi.
+- Bukti akhir: 10 berkas API 106/106 hijau (termasuk RLS 28), tes root 172/172 (kontrak + ws07), tsc shared/api/web bersih lewat `heavy`, eslint + prettier bersih. Second generate drizzle kosong. Brief Codex `docs/briefs/271b-second-opinion-cash-bank.md` (xhigh) siap, belum dijalankan.
+- Merge train: `when` 0191 harus tetap paling besar sesudah 0187–0190 digabung (drizzle melewati migrasi dengan `when` lebih kecil tanpa error).
+- Gangguan: disk Mac penuh (ENOSPC) di tengah gelombang; tes, tsc dan review diulang sesudah CTO membebaskan 23 GB.
+- Gelombang: sesi `9cb2a25e` 36 menit tercatat sesudah compact, 21 subagent (implementer, test-writer, architect, test-runner, Explore), puncak 6 bersamaan, biaya* 8712k; `parallel-report` 05:00: rata-rata 1,34 subagent berjalan, 27 langkah tanpa subagent.
+
+## legend-o032 WS-14 peralatan dan perawatan (engineer, cabang `ws/equipment-maintenance` dari d2080951, 2026-11-10)
+
+- Temuan: registri peralatan, jadwal, tiket kerusakan dengan auto-86 (`disabled_item_ids`), dan gerbang serah terima (OPS-05) sudah ada di m1. Kurang: pengingat servis (event `equipment_service.reminded` ada di kontrak tetapi tidak dipancarkan siapa pun), aksi "servis selesai", tes isolasi tenant perilaku, tes izin, assert `disabled_item_ids`.
+- Dibangun: kolom `maintenance_schedules.reminded_for_due_at` (migrasi 0198, `when` 1794277000000, satu ALTER ADD COLUMN nullable); `sweepEquipmentServiceReminders` (horizon 7 hari, sekali per tanggal jatuh tempo, SKIP LOCKED, batas 200, peralatan retired dilewati) dipasang di relay worker; aturan notifikasi `equipment_service.reminded` (supervisor outlet, cadangan owner; tanpa aturan event dead-letter); `POST /api/operations/maintenance-schedules/:scheduleId/complete` (majukan `next_due_at`, idempoten, audit, `completedAt` masa depan dipotong ke sekarang).
+- Bukti: API 9 file 113 tes lulus (sebelum klem; sesudahnya 2 file 17 tes lulus), root `operations-contract.test.mjs` 13 lulus, tsc shared dan api lewat heavy bersih (api diulang setelah klem), eslint dan prettier bersih, `db:generate` kedua kosong, tes guard RLS migrasi lulus. Review S: 1 reviewer, 1 catatan nyata (completedAt masa depan membungkam pengingat), dibetulkan.
+- Biaya sesi dca0a2b2: total biaya* 1688k (utama 562k, subagent 1127k), 7 subagent (3 Explore, 2 implementer, 1 test-writer, 1 reviewer), puncak 3 bersamaan.
+
+## WS-03 operasi meja: pindah, gabung, pindah item (legend-685n, cabang `ws/table-move-merge`)
+- Dibangun: `POST /api/table-sessions/:id/move`, `/merge`, `/move-items` (`services/table-session-operations.service.ts`, route di `table-sessions.routes.ts`), event `table_session.moved|merged|items_moved` di katalog WS-03, audit tiap operasi. Tanpa migrasi.
+- Aturan: total tagihan tetap; pembayaran (tautan bayar, deposit, tender POS) mengunci gabung dan pindah item; sesi open bill yang lunas tidak dipindah; ulang permintaan dijawab dari event tersimpan tanpa tulis ulang.
+- Bukti: tanpa route 35 dari 38 tes gagal; dengan implementasi 84 dari 84 hijau di 5 file terkait; mutasi dua penjaga membuat 3 tes gagal. Review K (architect): 2 tinggi, 5 sedang, 3 rendah; 7 dibetulkan, sisanya dicatat sebagai risiko.
+- Keputusan: meja sumber setelah gabung jadi `dirty` (bukan `occupied`) supaya pindai ulang QR tidak membuka tagihan kedua.
+
+- 10 Nov 05:5x legend-9p0k selesai di ws/notification-outbox-events: notification.created/read dan notification_preference.updated masuk outbox cloud-sync satu transaksi dengan datanya, urutan agregat dari outbox (tanpa migrasi; 0192 tidak dipakai). 27 tes baru+lama lulus, tsc api bersih. 1 reviewer, 2 temuan dibetulkan (preferensi user outlet-terbatas, markAllRead massal).
+
+## legend-bjy6 snapshot pajak checkout (engineer, cabang `ws/tax-snapshot-facility` dari d2080951, 2026-11-10)
+
+- Temuan: `recordTaxSnapshots` sudah dipanggil di QR (`qr-order.service.ts:1548`, `:2038`) dan POS (`pos-order.service.ts:1225`). Checkout fasilitas belum ada di kode: `holdFacilitySlot` tanpa pemanggil, bayar tiket fasilitas ditunda ke `legend-bzih` (DEFERRED). Jadi tidak ada panggilan fasilitas yang ditambahkan; arsitek mengonfirmasi tidak ada jalur lain yang perlu mencatat `facility_ticket`.
+- Dibangun: `qr-tax-snapshot.test.ts` (2 tes) dan `pos-tax-snapshot.test.ts` (4 tes): snapshot tertulis sekali per aturan, jumlah cocok dengan total order dan per aturan, tidak ada baris sebelum bayar, ulang bayar/`payment.paid` tidak mengubah baris. Tanpa perubahan kode sumber, tanpa migrasi.
+- Bukti: mutasi (panggilan dimatikan) membuat tes gagal (POS 3 dari 4, QR tiap panggilan gagal di tesnya); 6 dari 6 hijau setelah perubahan terakhir; tsc api, eslint, prettier bersih. Review K (architect): 4 temuan nyata dibetulkan.
+- Sisa: pemasangan di checkout fasilitas menunggu `legend-bzih`.
+
+## legend-a30j unggah logo tenant (engineer, cabang `ws/brand-logo-upload` dari d2080951, 2026-11-10)
+
+- Dibangun: purpose `brand_logo` (publik, 2 MiB), `outletId` opsional dengan refine (brand_logo tanpa outlet, purpose lain wajib outlet), izin `org.theme.manage` di skala tenant, resolver hanya memberi scope tenant bila body purpose tepat `brand_logo`. Migrasi `0201_brand_logo_storage` (nomor dipesan, idx 201, when 1794280000000): `outlet_id` nullable, CHECK `(outlet_id IS NULL) = (purpose = 'brand_logo')`, kebijakan RLS: baca baris tanpa outlet boleh untuk staf outlet, tulis hanya scope tenant, UPDATE/DELETE tetap ketat (`outlet_isolation_update`, `outlet_isolation_delete`).
+- Review K (architect): HIGH (staf outlet bisa ubah/hapus/ambil alih baris logo lewat FOR ALL longgar) dan MEDIUM (CHECK terlalu longgar) dibetulkan + tes; LOW: `hris-sop.service.ts:320` dan `inventory-waste.service.ts:209` menerima id logo dari staf outlet (publik, dampak rendah, tidak diubah).
+- Bukti: 27 tes baru (10 resolver, 17 DB/RLS/service/skema), mutasi policy/izin tertangkap; 14 file 183 tes hijau termasuk storage lama, rls, outlet-rls, hris-leave, payroll-reimbursements; `db:generate` kedua kosong; tsc api dan shared, eslint, prettier bersih.
+- Sisa: belum ada rute/UI yang memanggil unggah brand_logo atau mengisi `brands.logo_media_id`; merge train merantai ulang 0201.
+
+## legend-jstx WS-10 penjadwalan karyawan (engineer, cabang `ws/hr-scheduling` dari d2080951, 2026-11-10)
+
+- Dibangun: 5 tabel (`shift_templates`, `shift_assignments`, `roster_publications`, `shift_swap_requests`, `shift_compliance_policies`), migrasi 0199 (satu berkas, RLS tenant di semua, RLS outlet di 4 tabel). 15 endpoint di `/api/hris` (template, kebijakan kepatuhan, draft jadwal, salin minggu, publikasi, tukar/gantikan dengan HR-05). Event `shift.published` ke outbox `cloud-sync` + `notification`; aturan penerima di `worker/notification-adapters.ts`.
+- Default yang bisa diubah (perlu konfirmasi founder): batas kepatuhan 600 menit per shift, 720 per hari, 2700 per minggu, istirahat 660 menit, maks 6 hari beruntun; karyawan hanya boleh dijadwalkan di outlet asalnya.
+- Bukti: API 7 file 125 tes lulus (3 file baru + guard migrasi/RLS), root hris+payroll 39 tes lulus, tsc shared dan api lewat heavy bersih, eslint + prettier bersih, `db:generate` kedua kosong. Review S (reviewer) 8 temuan dan K (architect) 5 temuan: HR-05 lintas outlet, bocor draft, idempotensi, urutan lock, cursor sudah dibetulkan.
+- Belum dikerjakan (lihat laporan): event/notifikasi saat shift terpublikasi dibatalkan, notifikasi untuk peminta cover, id assignment per publikasi, FK outlet komposit, aturan siapa boleh melonggarkan kebijakan outlet.
+
+### legend-jstx babak 2 (keputusan CTO, 2026-11-10)
+
+- Selesai: event `shift.cancelled` (payload `cause` = `cancelled` atau `swapped_away`, tanpa PII) ke outbox cloud-sync dan notification, penerima pemilik lama; cover/tukar disetujui memberi notifikasi ke peminta; `roster_publications` menyimpan `assignment_ids` dan `snapshot`, replay publikasi mengembalikan snapshot; kunci idempoten (unik tenant+kunci) untuk create shift dan copy minggu (tabel `roster_copies`), pencocokan replay lewat karyawan+hari+template dihapus; kebijakan jam kerja hanya bisa diubah pemegang `hr.schedule.manage` tingkat tenant dan tiap ubah diaudit; FK komposit (tenant, outlet, id) untuk swap ke assignment dan assignment ke template.
+- Alasan tanpa FK outlet komposit untuk stasiun: tabel `stations` tidak punya unique (tenant, outlet, id), jadi FK tetap (tenant, id).
+- Shift berstatus `swapped` tetap tidak bisa ditukar lagi (default, dicatat di bd comment). Angka batas jam bawaan tetap, menunggu founder.
+- Review architect delta: 3 temuan nyata dibetulkan (kunci idempoten outlet lain bocor 500 menjadi 409, approve tukar hari+template sama 500 menjadi 422/409, check cardinality di `roster_publications`) plus 1 temuan rendah (replay create dengan data beda 409).
+- Bukti: tes terarah 128 lulus di 6 berkas (setup 23, roster 52, swap 35, konkurensi 5, guard migrasi/RLS 13); root hris+payroll+core 95 lulus; tsc shared dan api lewat heavy bersih; eslint dan prettier bersih; `db:generate` kedua kosong.
+
+## 2026-11-10: WS-07 jurnal retur pembelian dan pembelian sederhana (legend-1xbs, legend-v3lh)
+- Sudah: aturan `purchase_return.recorded` (Dr GRNI bagian belum ditagih, Dr utang usaha plus PPN bagian sudah ditagih, Cr persediaan, Cr PPN masukan) dan `petty_purchase.recorded` (Dr 5104 beban pembelian langsung, Cr kas kecil 1102), fact builder di consumer auto-jurnal, event baru `petty_purchase.recorded`, source type jurnal baru, migrasi 0205 (constraint plus backfill 5104). Keputusan: `docs/DECISIONS.md`.
+- Bukti: merah dulu 9 dari 12 tes api gagal tanpa sumber; typecheck shared, api, web bersih; review K (architect) 1 temuan (label web) dibetulkan; brief Codex `docs/briefs/298b-second-opinion-purchase-return-posting.md` (belum dijalankan).
+- Belum: emitter retur dan pembelian sederhana tidak ada di m1 (kartu `legend-316`); jurnal `goods_receipt.recorded` (kartu `legend-29vw`) harus jadi sebelum emitter retur aktif, kalau tidak GRNI bersaldo debit.
+
+## 2026-11-10: WS-06 retur supplier dan pembelian sederhana (legend-65mgw)
+- Sudah: tabel `purchase_returns`, `purchase_return_lines`, `petty_purchases`, `petty_purchase_policies` (migrasi 0208), service dan route retur serta pembelian sederhana, izin baru, event `purchase_return.recorded` dengan split per baris dan `petty_purchase.recorded`, gerbang env `PURCHASE_RETURN_POSTING_ENABLED` (default mati), tes ujung ke ujung event ke jurnal. Keputusan: `docs/DECISIONS.md`.
+- Bukti: mutasi (batas qty mati, gerbang mati, batas petty mati) membuat tes gagal; 73 tes terarah lulus; tsc shared dan api bersih; review K (architect) 1 sedang dibetulkan (kunci PO kosong) plus normalisasi UUID.
+- Belum: retur aktif sesudah jurnal penerimaan barang (`legend-29vw`) menyalakan flag; UI; kas kecil `legend-4961`. Brief Codex: `docs/briefs/301c-second-opinion-supplier-return-petty.md` (belum dijalankan).
+
+## 2026-11-10: WS-03 kode klaim split bill sesudah meja ditutup (legend-ia54l)
+- Sudah: `GET /api/table-sessions/split-claims/current` dengan `Authorization: Bearer <kode klaim>`; hanya bagian itu yang terbaca, sampai `claimableUntil`, tanpa data tamu atau order lain. Tidak dikenal, dipakai, lewat 24 jam, atau order di-void: 404 yang sama. Tanpa migrasi. Cabang `ws/ia54l-claim-after-close`.
+- Bukti: 6 tes baru lulus (14 dari 14 di `bill-split-claim.test.ts`); typecheck shared dan api bersih; review tingkat S (reviewer) tanpa temuan berat. Catatan: kode ditulis sebelum tes, jadi bukti gagal-dulu tidak ada untuk kartu ini.
+
+## 2026-11-10: WS-10 exit clearance otomatis (legend-arj.6)
+- Sudah: job per tenant di sapuan relay worker (`services/hris-offboarding-jobs.ts`), memanggil `revokeOffboardingAccessAsSystem`; aktor sistem (audit `system`, kolom "siapa" berisi UUID nol), `canAssignRoles=false` (Owner dan peran tingkat perusahaan gagal, tetap open untuk HR, dicoba sekali per hari). Tanpa penanda harian: tiap tick memindai, karena exit bisa jatuh tempo kapan saja. Worker kini memasang audit writer (sebelumnya tidak, sehingga audit pencabutan peran gagal di worker). Tanpa migrasi. Cabang `ws/arj6-auto-clearance`.
+- Bukti: 10 tes baru lulus (dicabut sekali walau dua kali jalan, belum jatuh tempo tidak tersentuh, aktor sistem di audit, isolasi tenant, error satu karyawan tidak menghentikan yang lain); 161 tes terarah lulus sebelum perubahan terakhir, 41 sesudahnya; typecheck api bersih; review K (architect) 1 temuan berat (penanda harian menunda) dibetulkan.
+
+## 2026-11-10: worker tanpa audit writer (legend-j88cz)
+- Sudah: pemasangan `setAuditWriter(coreAuditWriter)` di `worker-main.ts` (dari `ws/arj6-auto-clearance`) kini punya tes `worker-audit-writer.test.ts`: tanpa writer sapuan support access, kedaluwarsa izin dan persetujuan melempar `AuditUnavailableError` dan tidak mengubah apa pun; dengan writer menulis sekali sebagai `system` dan idempoten; worker-main memasang writer di tingkat atas sebelum worker mulai. Runbook cek produksi (hanya baca): `docs/runbooks/worker-audit-writer-m1-window.md`.
+- Bukti: di m1 2 tes struktural gagal (4 tes mode-gagal lulus karena memasang writer sendiri); di cabang 6 dari 6 lulus plus `support-access-approval.test.ts` (43 tes); typecheck api bersih; review K (architect): perbaikan benar dan cukup awal, tidak ada entrypoint lain tanpa writer.
+- Dampak nyata di m1 (koreksi daftar kartu): hanya jalur yang memakai `audit-writer` gagal: kedaluwarsa persetujuan, kedaluwarsa support access (akses tetap ditolak, hanya catatan hilang), override POS lewat HP (outbox dicoba ulang lalu mati), event edge yang diparkir (ditandai `refused` permanen). Konsumen auto-jurnal, HRIS, pengiriman memakai `core-audit` dan tidak terpengaruh.

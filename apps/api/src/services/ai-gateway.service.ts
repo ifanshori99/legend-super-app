@@ -44,13 +44,16 @@ import {
 } from "../db/schema/ai.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
-import { getAiProvider } from "../lib/ai/provider-factory.ts";
 import { scanPii, type PiiKind } from "../lib/ai/pii.ts";
 import type {
   AiCompletionRequest,
   AiCompletionResult,
 } from "../lib/ai/types.ts";
 import { logger } from "../lib/logger.ts";
+import {
+  aiProviderVersionOf,
+  resolveTenantAiProvider,
+} from "./ai-provider-config.service.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { costMicroUsd, microUsdToIdr, USD_IDR_RATE } from "./ai-pricing.ts";
 import type { AccessSnapshot } from "./permission-resolver.ts";
@@ -536,13 +539,23 @@ async function recordUsage(
   outcome:
     | { status: "ok"; result: AiCompletionResult }
     | { status: "error"; errorCode: string },
+  // Provider and model that served (or failed) this call, from the tenant's
+  // resolution; `null` when no provider was available.
+  used: {
+    provider: string;
+    model: string;
+    source: "tenant" | "platform";
+  } | null,
 ): Promise<void> {
   const now = new Date();
   const context = gatewayContext(access);
   const ok = outcome.status === "ok";
   const usage = ok ? outcome.result.usage : { inputTokens: 0, outputTokens: 0 };
-  const model = ok ? outcome.result.model : env.AI_MODEL;
-  const micro = ok ? costMicroUsd(model, usage) : 0;
+  const model = ok ? outcome.result.model : (used?.model ?? env.AI_MODEL);
+  // A tenant's server names its own model in the answer: price the model the
+  // tenant configured, never the name the remote reports.
+  const priced = used?.source === "tenant" ? used.model : model;
+  const micro = ok ? costMicroUsd(priced, usage) : 0;
   const month = usageMonthOf(now);
   await withTenant(db, context, async (tx) => {
     await tx.insert(aiUsageEvents).values({
@@ -551,7 +564,7 @@ async function recordUsage(
       outletId: (meta.outletId ?? null) as OutletId | null,
       feature: featureColumn(meta.feature),
       channel: dbChannel(meta.channel),
-      provider: (getAiProvider()?.name ?? "none").slice(0, 30),
+      provider: (used?.provider ?? "none").slice(0, 30),
       model: model.slice(0, 100),
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
@@ -619,14 +632,33 @@ export async function aiComplete(
     outletId?: string | null;
   },
 ): Promise<AiCompletionResult> {
-  const provider = getAiProvider();
-  if (!provider) {
-    await recordUsage(access, meta, {
-      status: "error",
-      errorCode: "AI_PROVIDER_UNAVAILABLE",
-    }).catch(logBookkeepingFailure);
+  // Tenant's own provider first, platform env provider as the fallback. A
+  // lookup failure counts as "no provider": never a silent switch to the
+  // platform key.
+  const resolved = await resolveTenantAiProvider(gatewayContext(access)).catch(
+    (error: unknown) => {
+      logger.error(
+        { errorName: error instanceof Error ? error.name : "unknown" },
+        "ai provider resolution failed",
+      );
+      return null;
+    },
+  );
+  if (!resolved) {
+    await recordUsage(
+      access,
+      meta,
+      { status: "error", errorCode: "AI_PROVIDER_UNAVAILABLE" },
+      null,
+    ).catch(logBookkeepingFailure);
     throw new AiError("AI_PROVIDER_UNAVAILABLE");
   }
+  const { provider } = resolved;
+  const used = {
+    provider: provider.name,
+    model: resolved.model,
+    source: resolved.source,
+  };
   let result: AiCompletionResult;
   try {
     result = await provider.complete(req, {
@@ -640,14 +672,16 @@ export async function aiComplete(
       },
       "ai provider call failed",
     );
-    await recordUsage(access, meta, {
-      status: "error",
-      errorCode: "AI_PROVIDER_UNAVAILABLE",
-    }).catch(logBookkeepingFailure);
+    await recordUsage(
+      access,
+      meta,
+      { status: "error", errorCode: "AI_PROVIDER_UNAVAILABLE" },
+      used,
+    ).catch(logBookkeepingFailure);
     throw new AiError("AI_PROVIDER_UNAVAILABLE");
   }
   // The answer is already paid for: a bookkeeping failure is logged, not thrown.
-  await recordUsage(access, meta, { status: "ok", result }).catch(
+  await recordUsage(access, meta, { status: "ok", result }, used).catch(
     logBookkeepingFailure,
   );
   return result;
@@ -748,7 +782,8 @@ async function settingsVersionOf(
     .from(aiSettings)
     .where(eq(aiSettings.tenantId, access.tenant.tenantId))
     .limit(1);
-  return row?.version ?? "none";
+  // A provider change must also drop older cached answers.
+  return `${row?.version ?? "none"}|${await aiProviderVersionOf(tx, access.tenant.tenantId)}`;
 }
 
 export async function aiCacheGet(

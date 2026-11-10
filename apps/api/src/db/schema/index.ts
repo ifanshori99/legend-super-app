@@ -46,10 +46,14 @@ export * from "./facility";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";
+// WS-10 shift scheduling: templates, roster, swaps, compliance (legend-jstx).
+export * from "./hris-scheduling";
+export * from "./hris-lifecycle";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
 export * from "./accounting-auto-journal";
 export * from "./accounting-journal-requests";
+export * from "./accounting-cash-bank";
 // WS-06 inventory setup writes (legend-gjmk).
 export * from "./inventory-setup";
 // WS-03 menu import + printable menu (legend-dmi).
@@ -114,9 +118,24 @@ export * from "./delivery";
 export * from "./recipe";
 // WS-06 goods receipts: partial receiving, QC, photos (legend-o1o4s).
 export * from "./inventory-receiving";
+// WS-06 supplier returns and simple petty purchases (legend-65mgw).
+export * from "./purchase-returns";
+export * from "./petty-purchases";
 // WS-11 metrics_daily pre-aggregates (kartu A, legend-5wzoc).
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
 // legend-k2l
 export * from "./identity-merge";
+// WS-12 per-tenant AI provider config (legend-dwrr).
+export * from "./ai-provider";
+// WS-03 table link groups (legend-1nmh).
+export * from "./table-links";
+// WS-03 per-order bill splits (legend-ms3).
+export * from "./bill-splits";
+// WS-08 member profiles, consent policy versions, loyalty program, point
+// ledger, earn records, visits, anomalies (legend-111j).
+export * from "./crm-member";
+export * from "./crm-ledger";
+// WS-08 rewards, redemptions, missions (legend-m4p5).
+export * from "./crm-rewards";

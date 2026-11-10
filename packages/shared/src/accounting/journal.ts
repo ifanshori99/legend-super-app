@@ -54,6 +54,8 @@ export const JOURNAL_SOURCE_TYPES = [
   "purchase",
   "supplier_invoice",
   "supplier_payment",
+  "purchase_return",
+  "petty_purchase",
   "production",
   "payroll",
   "loyalty",

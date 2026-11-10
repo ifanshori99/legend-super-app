@@ -27,7 +27,34 @@ import {
 } from "drizzle-orm";
 import { deviceTrainingPeriods } from "../db/schema/device.ts";
 import { posOrders } from "../db/schema/pos-order.ts";
+import { ulidSchema, type ScopedTenantContext } from "@starter/shared/core";
 import type { Tx } from "./permission-resolver.ts";
+
+type TenantId = ScopedTenantContext["tenant"]["tenantId"];
+
+/**
+ * legend-gkc6b: true when the order is a stamped training order of the tenant.
+ * Ledger consumers (auto-journal, stock GL) call this so a training sale never
+ * reaches the books. No `pos_orders` row (QR pay-first sale, unknown id) is not
+ * a training order. `orderId` is the domain (ULID) form.
+ */
+export async function isTrainingOrder(
+  tx: Tx,
+  tenantId: TenantId,
+  orderId: string,
+): Promise<boolean> {
+  // A malformed id is no order: the column would throw on it, and the consumers
+  // used to ignore such events (zero-amount paid, void of an open order).
+  if (!ulidSchema.safeParse(orderId).success) return false;
+  const [row] = await tx
+    .select({ isTraining: posOrders.isTraining })
+    .from(posOrders)
+    .where(
+      and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, orderId)),
+    )
+    .limit(1);
+  return row?.isTraining === true;
+}
 
 /** SQL boolean for `pos_orders` report WHERE clauses: not a training order. */
 export function reportablePosOrders(): SQL {

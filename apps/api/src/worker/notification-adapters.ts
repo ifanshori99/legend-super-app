@@ -51,6 +51,7 @@ import {
   type NotificationPreference,
   type Reachability,
 } from "@starter/shared/notification";
+import { shiftCancelled, shiftPublished } from "@starter/shared/hris";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
 import { PLATFORM_EVENT_PAYLOADS } from "@starter/shared/platform";
 import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
@@ -67,6 +68,7 @@ import {
   whatsappReservations,
 } from "../db/schema/notification.ts";
 import { facilityIncidents } from "../db/schema/facility.ts";
+import { employees } from "../db/schema/hris.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets } from "../db/schema/platform-org.ts";
@@ -537,6 +539,42 @@ async function checklistRule(
   };
 }
 
+/** OPS-04: a maintenance schedule is coming due. Same audience as the
+ * checklist alerts: active supervisor and outlet-manager holders whose scope
+ * covers the outlet, owners (tenant-wide) when nobody holds those roles. */
+async function equipmentServiceRemindedRule(input: RuleInput): Promise<Rule> {
+  operationsEventPayloadSchemas["equipment_service.reminded"].parse(
+    input.event.payload,
+  );
+  if (!input.event.outletId)
+    throw new Error("Equipment service notification requires an outlet");
+  const audience = await audienceOf(input.tx, input.event);
+  const supervisors = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, OPS_ALERT_TEMPLATE_KEYS as never[]),
+    audience,
+  );
+  const userIds =
+    supervisors.length > 0
+      ? supervisors
+      : await activeAssignees(
+          input.tx,
+          input.tenantId,
+          eq(roles.templateKey, "owner"),
+          { kind: "tenant" },
+        );
+  return {
+    userIds,
+    content: {
+      category: "schedule_update",
+      title: "Servis peralatan segera jatuh tempo",
+      body: "Ada peralatan outlet yang jadwal servisnya jatuh tempo dalam 7 hari. Hubungi vendor servis.",
+      link: null,
+    },
+  };
+}
+
 /** FAC-08: the staff on duty answer the emergency button. No on-duty source
  * exists yet, so the audience is active holders of `facility.booth.operate`
  * whose scope covers the incident's outlet. The `emergency` category is the
@@ -818,6 +856,57 @@ async function tenantOwnerChangedRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+/** F26 "Notifikasi Jadwal": the employee who owns a published (or swapped)
+ * shift hears about it. Ids only in the event; the name never leaves the DB. */
+async function shiftPublishedRule(input: RuleInput): Promise<Rule> {
+  const payload = shiftPublished.payloadSchema.parse(input.event.payload);
+  const [row] = await input.tx
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, input.tenantId),
+        eq(employees.id, payload.employeeId),
+      ),
+    );
+  return {
+    userIds: row?.userId ? [row.userId] : [],
+    content: {
+      category: "schedule_update",
+      title: "Jadwal shift diperbarui",
+      body: `Jadwal shift kamu untuk ${payload.businessDate} sudah tersedia atau berubah. Buka Jadwal untuk melihat jamnya.`,
+      link: null,
+    },
+  };
+}
+
+/** F26: the employee who no longer works a shift hears it too, whether the
+ * manager cancelled it or an approved swap/cover moved it to someone else. */
+async function shiftCancelledRule(input: RuleInput): Promise<Rule> {
+  const payload = shiftCancelled.payloadSchema.parse(input.event.payload);
+  const [row] = await input.tx
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, input.tenantId),
+        eq(employees.id, payload.employeeId),
+      ),
+    );
+  const swapped = payload.cause === "swapped_away";
+  return {
+    userIds: row?.userId ? [row.userId] : [],
+    content: {
+      category: "schedule_update",
+      title: swapped ? "Shift kamu dialihkan" : "Shift dibatalkan",
+      body: swapped
+        ? `Shift kamu untuk ${payload.businessDate} dialihkan lewat tukar atau gantikan shift. Kamu tidak perlu masuk di shift itu.`
+        : `Shift kamu untuk ${payload.businessDate} dibatalkan. Kamu tidak perlu masuk di shift itu.`,
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -833,6 +922,12 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
     case "checklist.missed":
     case "checklist.failed":
       return checklistRule(input, input.event.name);
+    case "equipment_service.reminded":
+      return equipmentServiceRemindedRule(input);
+    case "shift.published":
+      return shiftPublishedRule(input);
+    case "shift.cancelled":
+      return shiftCancelledRule(input);
     case "facility_incident.raised":
       return facilityIncidentRaisedRule(input);
     case "ai_insight.anomaly_detected":

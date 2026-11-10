@@ -6,6 +6,7 @@ export * from "./ids.ts";
 export * from "./pii.ts";
 export * from "./organization.ts";
 export * from "./checklists.ts";
+export * from "./lifecycle.ts";
 export * from "./attendance.ts";
 export * from "./scheduling.ts";
 export * from "./leave.ts";

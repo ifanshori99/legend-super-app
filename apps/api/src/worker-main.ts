@@ -1,7 +1,10 @@
 import "./load-env";
 import { Pool } from "pg";
 import { assertDeploymentEnv } from "@starter/shared/env";
-import { loadWorkerConfig } from "./worker/production-config.ts";
+import {
+  loadWorkerConfig,
+  resolveMaintenanceDatabaseUrl,
+} from "./worker/production-config.ts";
 import { sql } from "drizzle-orm";
 import {
   assertTrustedScopedContext,
@@ -10,7 +13,7 @@ import {
   uuidToUlid,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
-import { verifyQueueConnection } from "./db/role";
+import { verifyMaintenanceConnection, verifyQueueConnection } from "./db/role";
 import { withTenant } from "./db/tenant.ts";
 import { db, pool } from "./db";
 import {
@@ -40,6 +43,10 @@ import {
 } from "./services/accounting-auto-journal-consumer.ts";
 
 import { deliverPayrollGlEvent } from "./services/payroll-gl-consumer.ts";
+// legend-111j
+import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
+import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
+import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
@@ -50,6 +57,8 @@ import {
 } from "./services/delivery-sync-consumer.ts";
 import { deliverRecipeDeductionEvent } from "./services/recipe-deduction.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { setAuditWriter } from "./services/audit-writer";
+import { coreAuditWriter } from "./services/core-audit-writer";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
@@ -60,6 +69,7 @@ import {
 import { handleAiActionApprovalResolved } from "./services/ai-action-request.service.ts";
 import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
 import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
+import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
@@ -70,6 +80,7 @@ import { sweepOverdueServiceRequests } from "./services/service-request.service.
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import { generateScheduledChecklistRuns } from "./services/operations-checklist-scheduler.service.ts";
 import { sweepMissedChecklistRuns } from "./services/operations-escalation.service.ts";
+import { sweepEquipmentServiceReminders } from "./services/operations-equipment-reminder.service.ts";
 import { sweepExpiredPrepLabels } from "./services/operations-food-safety.service.ts";
 import { createPgBoss, createWorkerRuntime } from "./worker/runtime";
 import {
@@ -79,6 +90,11 @@ import {
 } from "./worker/relay";
 import { touchHeartbeat } from "./worker/heartbeat";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
+import {
+  createMaintenancePool,
+  probeMaintenanceConnection,
+  registerAuditRetentionJob,
+} from "./worker/audit-retention.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { sweepParkedAccessEvents } from "./worker/access-drain.job.ts";
 import { startGatewayProbeSweep } from "./worker/payment-failover-probe.job.ts";
@@ -116,11 +132,22 @@ const sendsReceiptEmails = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // escalate them (duplicate alerts, provider calls from the edge); same
 // fail-closed rule.
 const sweepsRefunds = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
+// legend-usyi: the audit retention purge runs on the cloud only, as its own
+// maintenance login. A production cloud worker without the URL fails here at
+// startup; an edge worker skips the job (follow-up: edge retention).
+const maintenanceUrl = resolveMaintenanceDatabaseUrl({
+  env: process.env,
+  cloud: postsInventoryGl,
+});
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
 // INV-02 (legend-db6): recipe source for the stock deduction consumer.
 setInventoryRecipeSource(recipeBomSource);
+// legend-arj.6: the sensitive-write audit port (role-assignment end inside
+// exit clearance) fails closed with a 503 until a writer is installed, as in
+// app.ts. The worker never had one.
+setAuditWriter(coreAuditWriter);
 // PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
 // pending intents whose webhook never arrived. The refund payout sweep
 // (sweepApprovedRefundPayouts) sends approved refunds and polls pending ones
@@ -150,8 +177,12 @@ async function resolveContext(tenantId: string) {
     throw new Error("Worker tenant context mismatch");
   return context;
 }
+const boss = createPgBoss(workerUrl);
+const maintenancePool = maintenanceUrl
+  ? createMaintenancePool(maintenanceUrl, verifyMaintenanceConnection)
+  : null;
 const runtime = createWorkerRuntime({
-  boss: createPgBoss(workerUrl),
+  boss,
   resolveContext,
   authorize: handlers.authorize,
   deliver: async (context, job) => {
@@ -191,6 +222,11 @@ const runtime = createWorkerRuntime({
           // never fail this delivery.
           if (postsInventoryGl)
             await deliverAutoJournalEvent(context, event, tx);
+          // legend-111j (WS-08 member loyalty), cloud only: a paid order earns
+          // points for its attached member, a refund or final-order void
+          // reverses them, in a savepoint under the profile lock.
+          if (postsInventoryGl)
+            await deliverLoyaltyEarnEvent(context, event, tx);
           // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
           // or sale posts its GL journal in a savepoint; a closed period or a
           // missing mapping parks the source for the sweep, never fails this.
@@ -276,6 +312,14 @@ const relay = createRelayRuntime({
       await runScheduledLeaveJobs(context);
     } catch {
       console.error("Scheduled leave jobs failed");
+    }
+    // legend-arj.6: exit clearance for offboardings past their last working
+    // day, as the system actor. Same fail-closed rule: a failed employee leaves
+    // no day marker, so the next tick retries; never blocks the relay.
+    try {
+      await runScheduledExitClearance(context);
+    } catch {
+      console.error("Scheduled exit clearance failed");
     }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
@@ -460,6 +504,23 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Checklist run generation failed");
     }
+    // legend-111j (LOY-02), cloud only: after 02:00 Asia/Jakarta compare every
+    // member balance with its ledger sum, once per tenant per day. A mismatch
+    // writes a `balance_mismatch` anomaly; a sweep error never blocks the relay.
+    if (postsInventoryGl) {
+      try {
+        await runLoyaltyBalanceCheckSweep(context, new Date());
+      } catch {
+        console.error("Loyalty balance check failed");
+      }
+      // legend-m4p5: settle pending reward redemptions past their expiry
+      // (restore points and stock), once per tenant per day. Never blocks the relay.
+      try {
+        await runRedemptionExpirySweep(context, new Date());
+      } catch {
+        console.error("Redemption expiry sweep failed");
+      }
+    }
     // PRD §3 F11 e-receipt (legend-v3vo): send queued receipt emails. The
     // sealed address is opened only inside the job; nothing is logged here.
     // Cloud only: the public receipt link resolves on the cloud, and a token
@@ -483,6 +544,16 @@ const relay = createRelayRuntime({
       );
     } catch {
       console.error("Checklist missed-run sweep failed");
+    }
+    // OPS-04 (legend-o032): remind the outlet supervisors once per due date
+    // when a maintenance schedule is within 7 days of service. Fail closed
+    // like the other sweeps.
+    try {
+      await withTenant(db, context, (tx) =>
+        sweepEquipmentServiceReminders(tx, context),
+      );
+    } catch {
+      console.error("Equipment service reminder sweep failed");
     }
     // OPS-03 (legend-sdet): raise the expiry alert for prep labels past their
     // use-by exactly once. Fail closed like the other sweeps.
@@ -597,6 +668,12 @@ async function stopRefundPayoutSweep() {
 }
 try {
   await runtime.start();
+  if (maintenancePool) {
+    // Fail the start on a wrong maintenance login (pool verify guard runs on
+    // this first connection); the catch below cleans up.
+    await probeMaintenanceConnection(maintenancePool);
+    await registerAuditRetentionJob({ boss, pool: maintenancePool });
+  }
   await relay.start();
   if (sweepsRefunds) {
     scheduleRefundPayoutRound();
@@ -604,6 +681,7 @@ try {
 } catch (error) {
   refundSweepStopped = true;
   await runtime.stop().catch(() => {});
+  await maintenancePool?.end().catch(() => {});
   await registry.end();
   throw error;
 }
@@ -614,6 +692,7 @@ async function stop() {
   await stopRefundPayoutSweep();
   await relay.stop();
   await runtime.stop();
+  await maintenancePool?.end();
   await registry.end();
   await pool.end();
 }

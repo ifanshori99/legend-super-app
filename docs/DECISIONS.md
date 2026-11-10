@@ -3,6 +3,452 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Laporan harian tanpa pesanan latihan (legend-fbxzw)
+
+Konteks: rekap akhir hari (`computeRecap`, `pos-day.service.ts`) masih
+menjumlahkan pesanan latihan, tidak sejalan dengan kas shift (legend-0v3b3) dan
+laporan WS-11. Tingkat S.
+
+Keputusan: rekap mengecualikan pesanan latihan dari SEMUA bagiannya (himpunan
+penjualan, tender captured per metode, void, refund) lewat `reportablePosOrders()`.
+Bila hanya tender yang dikecualikan, pemeriksaan keseimbangan (tender sama
+dengan total penjualan) melempar CONFLICT, jadi keempatnya harus sama.
+Lanjutan (keputusan CTO, Q63: latihan tidak boleh memengaruhi operasi nyata):
+
+1. **Pesanan latihan yang menggantung tidak menahan tutup hari.** Pemeriksaan
+   "masih ada pesanan yang belum selesai" di `closePosDay` memakai
+   `reportablePosOrders()`. Pesanan nyata yang belum selesai tetap menahan.
+2. **Bagian shift dan kas rekap tidak difilter latihan, dengan bukti.** Shift
+   khusus latihan memang bisa ada: `pos_shifts` tidak punya penanda latihan
+   (`db/schema/pos-shift.ts:49-75`), buka shift tidak memeriksa mode latihan
+   (`pos-shift.service.ts:161-249`), dan `setDeviceTrainingMode`
+   (`device.service.ts:507-556`) tidak melihat shift terbuka, jadi mode bisa
+   dialihkan di tengah shift dan satu shift berisi pesanan nyata dan latihan
+   (`pos_orders.shift_id` tidak dicek terhadap `is_training`,
+   `pos-order.service.ts:719-744`). `cash_movements` (`pos-shift.ts:341-375`)
+   tidak punya penanda latihan dan tidak punya `device_id`. Baris shift, selisih,
+   dan kas kedaluwarsa adalah keadaan laci uang sungguhan: kasir menghitung dan
+   memindahkan uang fisik. Selisih itu sudah dihitung tanpa tunai latihan
+   (legend-0v3b3) dan dijurnal saat tutup shift
+   (`cashier_shift.closed`). Menyembunyikan shift dari rekap akan membuat rekap
+   tidak sejalan dengan buku besar dan bisa menyembunyikan kas nyata pada shift
+   campuran, jadi bagian ini dibiarkan. Bila founder ingin shift latihan murni
+   disembunyikan, perlu penanda latihan pada `pos_shifts` (migrasi) lebih dulu.
+
+## 2026-11-10: Pesanan latihan: kas shift dan stok (legend-0v3b3, legend-13avp)
+
+Konteks: lanjutan legend-gkc6b. Review architect menemukan tutup shift masih
+menghitung tender tunai pesanan latihan ke kas yang diharapkan, dan founder
+(Q63) memutuskan pesanan latihan tidak memotong stok. Tingkat K (uang).
+
+1. **Kas shift (legend-0v3b3).** `computeShiftAggregates` mengecualikan tender
+   tunai, refund tunai, dan void tunai milik pesanan latihan lewat `LEFT JOIN
+   pos_orders` dan `is_training = false`. Baris tanpa pasangan `pos_orders`
+   (QR bayar-dulu) tetap dihitung. Alasan: uang latihan tidak pernah masuk laci,
+   jadi shift campuran tidak boleh mencatat selisih palsu. Satu fungsi ini juga
+   dipakai hitung buta, penjaga kas, dan tutup paksa, jadi semuanya ikut benar.
+   Laporan harian (`pos-day.service.ts`) hanya tampilan dan tidak diubah.
+2. **Stok (legend-13avp).** Konsumen `recipe-deduction` melewati pesanan
+   latihan: `order.paid` dan `order_issue.recorded` (remake, comp) tidak
+   membuat baris `recipe_deductions`, `stock_ledger`, maupun `stock.moved`;
+   `order.voided` pesanan latihan tanpa deduksi tidak meninggalkan tombstone.
+   Pemeriksaan di konsumen (bukan penerbit) dengan alasan yang sama seperti
+   legend-gkc6b.
+3. **Data lama.** Void pesanan latihan yang sudah punya deduksi tetap
+   membalik. Deduksi `pending` milik pesanan latihan dilewati saat `day.closed`
+   dan tetap `pending`. Deduksi latihan yang sudah `posted` tidak dikoreksi.
+
+## 2026-11-10: Pesanan latihan tidak boleh menjurnal (legend-gkc6b)
+
+Konteks: `accounting-auto-journal` dan jembatan stok ke buku besar
+(`inventory-gl-consumer`) tidak memeriksa `pos_orders.is_training`. Event
+`order.paid` terbit untuk tiap penjualan, jadi penjualan Mode Latihan masuk
+buku besar sebagai pendapatan dan HPP, sedangkan laporan WS-11 sudah
+mengecualikannya (legend-fr62g). Selisihnya muncul sebagai baris "Penyesuaian
+buku besar". Tingkat K (uang), ditinjau satu architect.
+
+Keputusan: pemeriksaan ada di sisi konsumen, bukan di sisi penerbit event.
+
+1. **Satu titik per konsumen.** `isTrainingOrder` (`services/device-training.ts`)
+   dipanggil di `postAutoJournal` untuk `order.paid`, `order.refunded`,
+   `order.voided`, dan di `postStockSourceToGl` untuk sumber `order`. Hasilnya
+   `ignored`: tidak ada jurnal, tidak ada baris parkir.
+2. **Alasan di konsumen.** Penerbit ada banyak (POS, QR, delivery, koreksi) dan
+   payload event tidak membawa penanda latihan. Penerbit baru yang lupa
+   menandai akan lolos. Konsumen membaca `is_training` dari `pos_orders` per
+   orderId, jadi semua penerbit, pengiriman ulang, dan sweep ikut tertutup
+   (sweep dan pengiriman pertama lewat fungsi yang sama). Tanpa kolom atau
+   migrasi baru.
+3. **Void dan refund ikut diabaikan, kecuali jurnal penjualannya sudah ada.**
+   Tanpa pengabaian, keduanya diparkir `AUTO_JOURNAL_SALE_MISSING` selamanya
+   karena jurnal penjualannya memang tidak ada. Bila jurnal `aj:sale:<id>` dari
+   sebelum aturan ini sudah ada, void dan refund tetap membaliknya (juga
+   `return` stok yang sumbernya sudah terposting), supaya buku tidak setengah
+   terbalik. Sumber stok latihan yang dulu terblokir dilepas dari
+   `inventory_gl_blocked`, supaya sweep tidak mengulanginya terus.
+4. **Tidak ada baris `pos_orders`** (QR bayar-dulu, id tidak dikenal) bukan
+   latihan: tetap menjurnal seperti biasa. Pesanan QR tidak punya mode latihan.
+5. **Tidak diubah:** pemotongan stok `recipe-deduction` untuk pesanan latihan
+   (PRD dan kode tidak punya aturan; hanya jurnal HPP-nya yang ditutup),
+   `payment.*` (uang gateway sungguhan, bukan pesanan), settlement (berbasis
+   bank). `cashier_shift.closed` tidak diperiksa di sini, tetapi
+   `computeShiftAggregates` (`pos-shift-support.ts`) menghitung tender tunai
+   pesanan latihan ke kas yang diharapkan, sehingga satu shift campuran bisa
+   mencatat selisih kas palsu. Dilaporkan sebagai kartu terpisah.
+6. **Data lama:** jurnal latihan yang sudah terbentuk sebelum perbaikan ini
+   tidak dihapus atau dikoreksi otomatis; perlu keputusan finance.
+
+## 2026-11-10: Audit retention purge with a dedicated maintenance identity (legend-usyi)
+
+Context: `app.purge_expired_audit_logs(tenant)` (migration 0008) existed but
+nothing scheduled it, and it only ran as the table owner. Audit rows are
+append-only; only the owner may delete, and only rows 2 years or older
+(PRD 2: "audit log ... 2 tahun"). Reviewed with an architect consult.
+
+1. **Dedicated identity.** Group role `legend_maintenance` (NOLOGIN, NOBYPASSRLS,
+   no table or sequence grant) plus login `legend_maint_<16hex>`, member only of
+   that group, never of `legend_app`, owning nothing. Not a superuser, not a
+   user identity. It reaches `audit_logs` only through two SECURITY DEFINER
+   functions: `app.audit_retention_due_tenants()` and
+   `app.purge_audit_retention_batch(tenant, batch)`.
+2. **Passing FORCE RLS and the owner-only guard.** The functions are owned by the
+   `audit_logs` owner, so `current_user` inside them is the owner and the
+   existing guard trigger accepts the DELETE. The guard is unchanged: it still
+   refuses rows younger than 2 years. Each function also sets
+   `app.tenant_id` and filters on `tenant_id`, so it stays correct if the owner
+   ever loses BYPASSRLS. Hardening: `search_path = pg_catalog, pg_temp`,
+   schema-qualified names, no dynamic SQL, `REVOKE ALL FROM PUBLIC`, EXECUTE only
+   to `legend_maintenance`. The old `purge_expired_audit_logs` is dropped.
+3. **Per tenant, bounded batches.** Tenants with expired rows are listed (all
+   statuses, so archived tenants are purged too). Each batch deletes at most
+   1000 rows (`FOR UPDATE SKIP LOCKED`), one transaction per call; about 200
+   batches per tenant and a 20 minute budget per run, the rest waits for the
+   next day. A rerun deletes nothing and writes nothing.
+4. **Trail.** Each batch that deletes rows inserts one `audit.retention_purged`
+   row in the same transaction (actor type `system`; deleted count, cutoff,
+   class). No ids, actors or content of deleted rows. A delete cannot land
+   without its summary. The summary expires after its own 2 years.
+5. **Scheduling and concurrency.** pg-boss queue `audit-retention-purge`, policy
+   `exclusive`, cron `30 2 * * *` Asia/Jakarta, cloud worker only. `SKIP LOCKED`
+   keeps two overlapping runs from double deleting, so no advisory lock.
+6. **Config.** `MAINTENANCE_DATABASE_URL` in `worker.env` only (same host and
+   database as the migration URL, different user from app and worker). Required
+   at production start on the cloud worker; `verifyMaintenanceConnection`
+   refuses a login that is in `legend_app`, has elevated attributes, owns an
+   RLS table or is not in `legend_maintenance`.
+7. **Not done.** Edge databases are not purged (follow-up bead). The only
+   retention class is `audit_2y`; a class-to-days map is not introduced because
+   the CHECK constraint allows one class.
+
+## 2026-11-10: WS-12 provider AI per tenant (legend-dwrr)
+
+Konteks: provider AI saat ini satu untuk seluruh platform (`AI_PROVIDER`,
+`AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL` di `config/env.ts`, dibangun sekali
+oleh `lib/ai/provider-factory.ts`). Semua panggilan model lewat `aiComplete`
+(`services/ai-gateway.service.ts`) dengan `AccessSnapshot` yang membawa
+tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
+(rahasia, akses): review architect, second-opinion Codex sebelum rilis.
+
+1. **Tabel baru `ai_provider_configs`** di file baru
+   `apps/api/src/db/schema/ai-provider.ts` (bukan di `ai.ts`, supaya tidak
+   bertabrakan dengan cabang WS-12 lain). Satu baris per tenant:
+   - `id` uuid PK `defaultRandom()`;
+   - `tenant_id` `tenantIdColumn(() => tenants.id).notNull()`, `uniqueIndex`
+     `ai_provider_configs_tenant_key` (satu config per tenant);
+   - `connection_type` varchar(20) `$type<AiConnectionType>()` NOT NULL
+     default `'api_key'`, CHECK `IN ('api_key','chatgpt_oauth')`.
+     `chatgpt_oauth` hanya dicadangkan: service menolaknya, OAuth tidak dibangun;
+   - `base_url` varchar(500) NOT NULL (sudah dinormalisasi, tanpa `/` akhir);
+   - `default_model` varchar(200) NOT NULL;
+   - `api_key_encrypted` text NULL (amplop `sealSecret`, base64);
+   - `api_key_key_version` smallint NULL (byte versi amplop, untuk rotasi);
+   - `api_key_last4` varchar(4) NULL;
+   - `api_key_set_at` timestamptz NULL, `api_key_set_by` text NULL (user id);
+   - `last_test_status` varchar(10) NULL, CHECK `IN ('ok','failed')`;
+   - `last_tested_at` timestamptz NULL;
+   - `last_test_error_code` varchar(40) NULL: **kode** dari katalog tetap
+     (butir 9), bukan teks galat provider. Pesan untuk UI diambil dari katalog;
+   - `created_at`, `updated_at` (`$onUpdate`).
+   CHECK `ai_provider_configs_key_check`: `connection_type <> 'api_key' OR
+   (api_key_encrypted IS NOT NULL AND api_key_key_version IS NOT NULL AND
+   api_key_last4 IS NOT NULL)`. CHECK `ai_provider_configs_test_check`:
+   `last_test_status IS NULL OR last_tested_at IS NOT NULL`.
+2. **RLS** di `apps/api/src/db/schema/ai-provider.custom.sql`:
+   `SELECT app.enforce_tenant_rls('public.ai_provider_configs'::regclass);`.
+   Baris tingkat tenant, tanpa `outlet_id`, jadi tanpa outlet RLS. Tanpa
+   SECURITY DEFINER: semua pembaca punya tenant dari `withTenant`.
+3. **Migrasi** `apps/api/drizzle/0188_ai_provider_configs.sql`, satu migrasi:
+   DDL hasil drizzle lalu isi `.custom.sql` di bawahnya (pola 0184). Journal
+   `idx` 188, `when` 1794267000000, plus `meta/0188_snapshot.json`.
+4. **Enkripsi: pakai `lib/secrets.ts`**, tanpa helper baru. AES-256-GCM dengan
+   `DATA_ENCRYPTION_KEY` (wajib di production). AAD
+   `ai_provider_config:<tenantId>:<rowId>`, jadi blob yang disalin ke baris
+   atau tenant lain gagal dibuka. Id baris dibuat di service (`randomUUID()`)
+   sebelum seal, untuk insert pertama. Versi: tambahkan ke `lib/secrets.ts`
+   ekspor `sealedVersion(sealed)` dan `currentSealVersion()` (logika yang sama
+   dengan `platform-integration.service.ts`; file itu tidak disentuh di cabang
+   ini). Rotasi: `rotateAiProviderKeys()` di service membuka lalu menyegel ulang
+   setiap baris yang `api_key_key_version` berbeda dari versi sekarang, pola
+   `rotateIntegrationCredentials`. Dipasang di tempat yang sama dengan
+   pemanggil `rotateIntegrationCredentials`.
+   `api_key_last4` = 4 karakter terakhir kunci yang sudah di-trim. Kunci minimal
+   16 karakter, jadi 4 karakter tidak membuka bagian berarti.
+5. **Izin: pakai `ai.governance.manage`**, tanpa kode baru (kode baru =
+   perubahan kontrak WS-00). Kode ini dipegang `tenant_admin` dan owner, bertag
+   `access_admin`. Tidak ada rute Panel Platform di cabang ini (lihat
+   pertanyaan founder).
+6. **Kontrak** di file baru `packages/shared/src/ai/provider.ts`, diekspor dari
+   `packages/shared/src/ai/index.ts`:
+   - `AI_CONNECTION_TYPES = ["api_key","chatgpt_oauth"]`,
+     `aiConnectionTypeSchema`, `AiConnectionType`;
+   - `AI_PROVIDER_TEST_ERROR_CODES = ["URL_BLOCKED","REDIRECT_REFUSED",
+     "TIMEOUT","AUTH_FAILED","NOT_FOUND","REQUEST_REJECTED","RATE_LIMITED",
+     "PROVIDER_ERROR","NETWORK_ERROR","BAD_RESPONSE","KEY_UNREADABLE"]`,
+     `aiProviderTestErrorCodeSchema`, plus `aiProviderTestErrorMessages`
+     (teks Indonesia tetap, aman ditampilkan);
+   - `aiProviderConfigSchema` (strict): `connectionType`, `baseUrl`,
+     `defaultModel`, `hasKey: boolean`, `keyLast4: string(4) | null`,
+     `keySetAt: isoDateTime | null`, `lastTest: { status: "ok"|"failed",
+     testedAt, errorCode: code | null } | null`, `updatedAt`. **Tidak ada
+     field kunci** di skema baca mana pun;
+   - `aiProviderViewSchema` = `{ config: aiProviderConfigSchema | null,
+     fallbackAvailable: boolean }` (`fallbackAvailable` = provider env ada);
+   - `upsertAiProviderConfigInputSchema` (strict): `connectionType`,
+     `baseUrl` (trim, 1..500), `defaultModel` (trim, 1..200,
+     `/^[\w.:/@+-]+$/`), `apiKey?` (trim, 16..500, `/^\S+$/`). Tanpa
+     `tenantId` (TEN-02);
+   - `aiProviderTestResultSchema` = `{ status, testedAt, errorCode | null }`;
+   - endpoint `getAiProviderConfig` GET `/api/ai/provider`,
+     `upsertAiProviderConfig` PUT `/api/ai/provider`, `deleteAiProviderConfig`
+     DELETE `/api/ai/provider`, `testAiProviderConfig` POST
+     `/api/ai/provider/test` (body `z.strictObject({})`). Semua respons
+     `dataResponseSchema(...)`; DELETE mengembalikan `{ data: view }` dengan
+     `config: null`. Nama sengaja tidak `getAiProvider` (bentrok dengan
+     factory). Fixture mock ditambahkan bila tes cakupan kontrak memintanya.
+   Kode galat baru di `packages/shared/src/ai/errors.ts` (status + pesan
+   default): `AI_PROVIDER_URL_BLOCKED` 422, `AI_PROVIDER_KEY_REQUIRED` 422,
+   `AI_PROVIDER_CONNECTION_UNSUPPORTED` 422, `AI_PROVIDER_NOT_CONFIGURED` 404,
+   `AI_PROVIDER_TEST_TOO_SOON` 429.
+7. **Rute** di file baru `apps/api/src/routes/ai-provider.routes.ts`, dipasang
+   di `routes/index.ts` dengan `apiRouter.use("/ai", aiProviderRouter)` di
+   sebelah `aiGovernanceRouter`. Gate per rute (bukan `router.use`), urutan:
+   `requireAuth, requireTrustedOrigin, requireTenantContext,
+   requireBackOfficeSurface(), requireTenantPermission("ai.governance.manage")`,
+   lalu `jsonBody` untuk PUT dan POST. `requireBackOfficeSurface` memaksa MFA
+   untuk peran `mfaRequired`. `requireTenantPermission` sudah memasang
+   `Cache-Control: private, no-store`. Service dipanggil dengan
+   `getScopedTenantContext(req)` dan `getAuth(req).user.id`.
+8. **Aturan simpan (PUT)** di `apps/api/src/services/ai-provider-config.service.ts`:
+   - `chatgpt_oauth` ditolak `AI_PROVIDER_CONNECTION_UNSUPPORTED`;
+   - `baseUrl` dinormalisasi (buang `/` akhir), lalu `checkAiUrl(url, true,
+     resolve)`. **URL milik tenant selalu strict, juga di dev dan test**:
+     tenant tidak pernah dipercaya menunjuk jaringan internal. Model lokal
+     (Ollama) di dev tetap lewat env. Alasan ditolak dikirim sebagai pesan
+     `AI_PROVIDER_URL_BLOCKED` (teks url-guard, tanpa kunci);
+   - config baru tanpa `apiKey`, atau `baseUrl` berubah tanpa `apiKey` baru:
+     `AI_PROVIDER_KEY_REQUIRED`. Jadi admin tidak bisa memindahkan kunci lama ke
+     host lain untuk mencurinya;
+   - `apiKey` absen dan `baseUrl` sama: kunci lama dipertahankan;
+   - setiap perubahan `baseUrl`, `defaultModel` atau kunci mengosongkan
+     `last_test_*`;
+   - `recordAudit` untuk simpan dan hapus. Snapshot hanya `connectionType`,
+     `baseUrl`, `defaultModel`, `hasKey`, `keyLast4`;
+   - DELETE menghapus baris (hard delete, tanpa riwayat), 404
+     `AI_PROVIDER_NOT_CONFIGURED` bila tidak ada.
+9. **Uji koneksi (POST /test)** menguji config **tersimpan**. Body kosong, jadi
+   kunci tidak lewat jalur ini lagi. File baru `apps/api/src/lib/ai/provider-probe.ts`,
+   `probeOpenAiCompatible({ baseUrl, apiKey, model, timeoutMs, fetch?,
+   resolve? })`, mengembalikan `{ status, errorCode }`, tidak pernah throw:
+   - `checkAiUrl(url, true, resolve)` dulu; ditolak = `URL_BLOCKED`, tanpa fetch;
+   - satu `POST <baseUrl>/chat/completions` berisi `{ model, messages: [{ role:
+     "user", content: "Reply with OK." }], stream: false }` tanpa parameter
+     token (cocok untuk semua server, tanpa adaptasi), `redirect: "manual"`,
+     `AbortSignal.timeout(min(env.AI_TIMEOUT_MS, 15000))`, `maxAttempts` 1;
+   - klasifikasi: 2xx dengan `choices` = ok; 2xx lain atau JSON rusak =
+     `BAD_RESPONSE`; 3xx = `REDIRECT_REFUSED` (tidak diikuti); 401/403 =
+     `AUTH_FAILED`; 404 = `NOT_FOUND`; 400/422 = `REQUEST_REJECTED`; 429 =
+     `RATE_LIMITED`; 5xx dan lainnya = `PROVIDER_ERROR`; `TimeoutError` atau
+     `AbortError` = `TIMEOUT`; throw lain = `NETWORK_ERROR`. Badan respons galat
+     **tidak dibaca** (`body.cancel()`), tidak dicatat, tidak dikembalikan;
+   - blob tidak bisa dibuka = `KEY_UNREADABLE`, tanpa fetch;
+   - hasil ditulis ke `last_test_*`. Uji kurang dari 10 detik setelah uji
+     sebelumnya ditolak `AI_PROVIDER_TEST_TOO_SOON`;
+   - uji tidak lewat `aiComplete`, tidak dihitung anggaran (beberapa token, di
+     kunci tenant sendiri).
+   DNS rebinding: `checkAiUrl` me-resolve lalu fetch me-resolve ulang. Bila
+   `undici` sudah ada di dependensi `apps/api`, probe dan provider tenant
+   memakai `dispatcher: new Agent({ connect: { lookup } })` dengan lookup yang
+   menolak alamat `isBlockedIp`. Bila belum ada, celah ini tetap tercatat
+   (sama dengan `AI_BASE_URL` env) dan masuk daftar second-opinion.
+10. **Resolusi provider.** `provider-factory.ts` mendapat:
+    - `buildTenantAiProvider({ baseUrl, apiKey, model })` →
+      `createOpenAiCompatibleProvider` dengan `timeoutMs: env.AI_TIMEOUT_MS`
+      dan `checkUrl: (url) => checkAiUrl(url, true)`. Redirect sudah ditolak
+      di provider (`redirect: "error"`);
+    - `isAiProviderOverridden(): boolean` untuk `setAiProviderForTests`.
+    Service mengekspor `resolveTenantAiProvider(context): Promise<{ provider,
+    model, source: "tenant" | "platform" } | null>`, urutannya:
+    1) override test aktif → `getAiProvider()`;
+    2) ada baris tenant → `connection_type` `api_key` dan blob terbuka →
+       provider tenant; `chatgpt_oauth` atau blob gagal dibuka → `null`
+       (`AI_PROVIDER_UNAVAILABLE`). **Tidak jatuh ke kunci platform** bila
+       tenant punya baris: salah konfigurasi tidak tersembunyi, dan platform
+       tidak diam-diam membayar;
+    3) tanpa baris → `getAiProvider()` (env, cadangan) dengan `env.AI_MODEL`.
+    Status uji terakhir tidak memblokir pemakaian. Tanpa cache: satu query
+    berindeks plus satu dekripsi per panggilan, kecil dibanding panggilan
+    model, dan DELETE langsung berlaku di semua proses.
+    `aiComplete` memanggil `resolveTenantAiProvider(gatewayContext(access))`
+    sebagai ganti `getAiProvider()`. `recordUsage` menerima nama provider dan
+    model hasil resolusi (bukan `getAiProvider()?.name` dan `env.AI_MODEL`).
+    `ai-governance.service.ts` `providerAvailable` memakai resolusi yang sama.
+    `settingsVersionOf` digabung dengan `updated_at` config provider, supaya
+    cache jawaban lama gugur saat provider diganti.
+11. **Anggaran tidak berubah.** `aiPreflight` tetap berjalan sebelum resolusi
+    provider. `monthlyBudgetIdr` default `idr(0)` tetap memblokir
+    (`AI_BUDGET_EXCEEDED`), apa pun sumber providernya. Pemakaian dengan kunci
+    tenant tetap dicatat di `ai_usage_*` dan dihitung ke anggaran tenant
+    dengan `priceFor(model)`. Model tak dikenal dihargai Opus (tidak pernah
+    kurang hitung). Lihat pertanyaan founder 1.
+12. **Kunci tidak bocor.** Kunci hanya ada di memori: saat seal di PUT dan
+    saat membangun provider atau probe. Tidak ada di respons, audit, log,
+    pesan galat, `ai_usage_events`, atau objek `AiError`. Galat Zod dari PUT
+    tidak boleh menggemakan nilai `apiKey`: handler galat sudah membuang
+    `input`; test membuktikannya.
+13. **Test wajib, gagal dulu,** di file baru
+    `apps/api/src/test/ai-provider-config.test.ts` (fetch dan resolver
+    disuntik, tanpa jaringan):
+    - kunci tidak muncul di body respons GET, PUT, POST test, galat 422, baris
+      audit, maupun log (spy logger, `JSON.stringify` semuanya);
+    - isolasi: config tenant A tidak terlihat dan tidak dipakai tenant B; blob A
+      yang disalin ke baris B gagal dibuka (AAD);
+    - pengguna tanpa `ai.governance.manage` (hanya `ai.ask`) mendapat 403 di
+      keempat rute;
+    - PUT dan test menolak `https://127.0.0.1`, `https://10.0.0.5`,
+      `https://169.254.169.254`, `http://` publik, `https://localhost`, dan nama
+      yang di-resolve ke IP privat; respons 302 dari probe = `REDIRECT_REFUSED`
+      dan URL tujuan tidak pernah di-fetch;
+    - timeout probe = `TIMEOUT`;
+    - `baseUrl` berubah tanpa `apiKey` = `AI_PROVIDER_KEY_REQUIRED`;
+    - anggaran 0 memblokir walau tenant punya config;
+    - tenant tanpa config memakai provider cadangan dan `env.AI_MODEL`; tenant
+      dengan config memanggil `baseUrl` dan `defaultModel` miliknya;
+    - `chatgpt_oauth` ditolak `AI_PROVIDER_CONNECTION_UNSUPPORTED`;
+    - rotasi menyegel ulang baris versi lama.
+14. **Daftar file.** Buat: `apps/api/src/db/schema/ai-provider.ts`,
+    `apps/api/src/db/schema/ai-provider.custom.sql`,
+    `apps/api/drizzle/0188_ai_provider_configs.sql`,
+    `apps/api/drizzle/meta/0188_snapshot.json`,
+    `packages/shared/src/ai/provider.ts`,
+    `apps/api/src/lib/ai/provider-probe.ts`,
+    `apps/api/src/services/ai-provider-config.service.ts`,
+    `apps/api/src/routes/ai-provider.routes.ts`,
+    `apps/api/src/test/ai-provider-config.test.ts`. Ubah:
+    `apps/api/drizzle/meta/_journal.json`, `apps/api/src/db/schema/index.ts`,
+    `packages/shared/src/ai/index.ts`, `packages/shared/src/ai/errors.ts`,
+    `packages/shared/src/ai/fixtures.ts` (bila tes cakupan meminta),
+    `apps/api/src/lib/secrets.ts`, `apps/api/src/lib/ai/provider-factory.ts`,
+    `apps/api/src/services/ai-gateway.service.ts`,
+    `apps/api/src/services/ai-governance.service.ts`,
+    `apps/api/src/routes/index.ts`. UI Kelola menyusul di slice terpisah
+    mengikuti `ui-standard.md`.
+15. **Pertanyaan founder** (default dipakai sampai dijawab):
+    1) Pemakaian dengan kunci AI milik tenant tetap dihitung ke anggaran AI
+       bulanan tenant (dengan harga platform)? Default: ya, supaya anggaran 0
+       tetap menghentikan semua AI.
+    2) Super Admin di Panel Platform boleh melihat atau mengatur provider AI
+       tenant? Default: tidak; hanya admin tenant dan owner.
+
+Celah yang diketahui: DNS rebinding (butir 9) bila `undici` tidak tersedia;
+model tenant di luar daftar harga dihitung dengan harga Opus.
+
+## 2026-11-10: WS-07 cash & bank reconciliation (legend-fnxl)
+
+Context: PRD v1.7 §3.19 "Kas & Bank [P0]", ACC-04 (auto-match ≥ 99%, every
+difference a case with a PIC), ACC-05 (undeposited-cash alert). The contract
+(`packages/shared/src/accounting/banking.ts`, endpoints) already existed
+without tables or handlers. Kas-bank only; gateway/EDC settlement matching
+waits for legend-cs7 (card legend-fnxl.8). Reviewed by one architect
+subagent before the schema landed.
+
+1. **One migration, `0191_cash_bank_recon`** (`when` 1794270000000, prevId =
+   0186 snapshot). Every foreign key sits inside its `CREATE TABLE`
+   (contracts.md FK-into-FORCE pattern 1); tables are created in dependency
+   order. Tenant RLS on all seven tables; `cash_deposits` (outlet_id NOT
+   NULL) also gets outlet RLS. Bank accounts, imports, lines, matches and
+   cases (nullable outlet) rely on the service layer for outlet reach.
+2. **Entity-level work needs tenant scope.** Import, match, exclude, unmatch,
+   case open and bank-account writes call `assertTenantScope`: outlet RLS on
+   deposits would hide documents from an outlet-scoped caller and could turn
+   an ambiguous hit into a wrong automatic match.
+3. **Account numbers are sealed** (lib/secrets.ts AES-GCM, AAD binds tenant,
+   row, field and key version), indexed by a tenant-separated HMAC for
+   "one number per legal entity", and only the last 4 digits are kept in
+   clear for the mask. The GL account FK is (tenant, legal entity, account),
+   so a bank account cannot post to another entity's CoA.
+4. **Re-import adds nothing.** `bank_statement_lines` is UNIQUE (tenant, bank
+   account, `dedupe_key`); lines insert with ON CONFLICT DO NOTHING and the
+   skipped rows count as duplicates. The dedupe key keeps identical rows in
+   one file apart by occurrence. A file with one unreadable row is refused
+   whole, with a message naming the row and column.
+5. **One document, one line.** Matches live in `bank_statement_line_matches`
+   with UNIQUE (tenant, ref_type, ref_id), not in a jsonb column on the line.
+   A collision during auto-match is skipped (ON CONFLICT DO NOTHING); in a
+   manual match it is `STATEMENT_LINE_ALREADY_MATCHED`.
+6. **Automatic match never guesses.** Exact amount, date within the tenant's
+   `matchingPolicy.dateToleranceDays`, and unique both ways: the line has one
+   candidate (shared `findStatementMatch`) and the document is wanted by one
+   line. Candidates: `recorded` cash deposits into the account (local business
+   date in the outlet's time zone) and journals whose net movement on the
+   account's GL account equals the line, excluding reversals, reversed
+   entries, journals behind a cash deposit and write-off adjustment journals.
+   Matching runs over every unmatched line of the account after an import and
+   after a cash deposit is recorded, so late deposits still match.
+7. **Entity lock.** Every write that touches lines, matches or deposits takes
+   one advisory lock per (tenant, legal entity), then row locks. Journals
+   belong to the entity and its GL account, and two bank accounts may share a
+   GL account, so a per-account lock would let them race for one journal.
+8. **Cash collections are not stored.** ACC-05 collections are derived from
+   closed `pos_shifts` per (outlet, business date):
+   `cash_sales − cash_refunds − cash_out + variance`, floored at 0. The
+   variance (counted minus expected) is in, so a short shift does not show
+   cash that never existed as undeposited, and extra cash does show. Cash
+   drops stay in the outlet (not banked) and cash in is float, so neither
+   counts. Deposits in every status cover cash
+   FIFO (shared `undepositedCashAlerts`); alerts are computed on read with
+   `loadCashDepositPolicy`, no alert table.
+9. **Cases** live in `bank_reconciliation_cases` (the gateway-specific
+   `payment_reconciliation_cases` is untouched). Every action (open, start,
+   reassign, resolve, write_off) writes one row in the append-only
+   `bank_reconciliation_case_events` (the app role has no UPDATE/DELETE).
+   A write-off only links an existing journal (same entity, not reversed,
+   debit total = |difference|, used by one case: partial unique index); this
+   bead posts nothing (legend-9pz9 owns automatic journals).
+10. **Case due date is a server default of 7 days** (`reconciliationPolicySchema`)
+    until the finance policy carries `caseDueDays`: adding it now would change
+    the strict PUT contract. Follow-up card filed.
+11. **A line in a case stays `in_case` after the case closes.** Resolving or
+    writing off the case is how that line is reconciled; unmatch refuses
+    `in_case` lines, and deposits in a case stay `discrepancy`. Refs of type
+    `gateway_settlement`, `edc_settlement` and `supplier_payment` are stored
+    on a case as given until legend-cs7 can validate them; nothing acts on them.
+12. **An unmatched pair is never auto-matched again.** Unmatch writes the
+    (line, document) pair to `bank_statement_match_rejections`; automatic
+    matching skips it. A person can still match that pair by hand, which
+    clears the row (review finding, 2026-11-10).
+13. **Uniqueness is counted per GL account, not per bank account.** Two bank
+    accounts of one entity may share a GL account, so the "only one line
+    wants this document" test counts candidate lines of every bank account on
+    that GL account. A document named in a case that is still open is no
+    candidate, cannot be matched by hand, and a case cannot name a document
+    that is already matched (one document, one place).
+14. **Opening a case is idempotent** (`idempotencyKey` added to the
+    open-case body, stored in `bank_reconciliation_cases.idempotency_key`),
+    like every other cash-bank command.
+15. **The dedupe key keeps its readable format** (the web preview compares
+    keys); a row whose normalized key exceeds 400 characters is refused with
+    STATEMENT_VALUE_INVALID instead of failing the insert.
+
 ## 2026-11-10: Member identity and point ledger (legend-k2l, legend-111j, legend-u57q)
 
 Context: the member page (legend-u57q) has a UI but no backend. Customers
@@ -56,6 +502,175 @@ authorization. Full design and card plan: `docs/design/ws08-member-loyalty.md`.
 9. **Restore keeps the original expiry.** A cancelled or expired redemption
    puts its points back as a positive `adjust` row that points at the redeem
    row, so the restored points keep the expiry of their grant.
+
+## 2026-11-10: Split bill per order, per-part payment and claim tokens (legend-ms3)
+
+Context: PRD v1.7 §3 F10 Split Bill and "Klaim Poin per Orang", §6.D
+`bill_splits`, ORD-06. The shared contract (`splitBill`, `billSplitSchema`,
+`createSessionSplits`, pay target `split`) existed; the API side did not.
+
+1. Scope is one order: the session's single `awaiting_payment` order (pay-first).
+   No awaiting order answers 422 `NOTHING_TO_SPLIT`; more than one answers 409;
+   an order with an applied reservation deposit answers 422. Session-level
+   splits stay reserved in the contract (`orderId` nullable) until a
+   session-level payment flow exists.
+2. One table `bill_splits`, one row per part, grouped by `split_set_id`
+   (no header table; `qrOrderIdempotent` handles the request key). by_item
+   assignments are a `uuid[]` of order item ids, checked under the order lock.
+   A partial unique index on live parts stops two concurrent live sets.
+   `payment_intents.bill_split_id` gets a composite FK to it.
+3. Rounding reuses `splitBill()` (largest remainder) on `orders.total_idr`, which
+   already holds tax, service and rounding, so parts sum exactly to what the
+   payment link collects. A zero part is refused (an intent must be above 0).
+4. Each part pays through its own payment intent on the order's single payment
+   link (`createSplitPartIntent`): the amount is the part, bounded by the link's
+   outstanding balance, and only that part's pending code is superseded, so
+   several guests can pay at once. The order turns paid through the existing
+   rule (link paid >= link total); the part turns paid in the payment consumer
+   from `intent.bill_split_id`, replay-safe by a conditional update.
+5. Re-split is refused (409 `SPLIT_LOCKED`) once any part is paid, any money
+   reached the link, or any code on the link is still payable. Otherwise the
+   live parts are voided and a new set is written.
+6. Unpaid-order sweep counts payment attempts per part, so a 4-way split is not
+   voided for attempts; when an order with money on it is voided, each paid
+   intent goes through the existing late-payment refund request.
+7. Claim token per part: issued when the part is paid, valid 24 hours from
+   that moment, stored as a sha256 hash plus a sealed copy so the guest can
+   read it again; redeemed once by a conditional update. No public redeem
+   route and no points until the member point ledger (legend-111j) lands.
+   When the order is voided, its unpaid parts are voided and the paid parts'
+   claims end at once; redeeming needs a paid part on an order not voided.
+8. One payable code per part (architect review K). A superseded code stays
+   payable at the gateway until its own expiry, and a second payment on one
+   part would not show as an overpayment of the bill. So a part answers 409
+   `SPLIT_CODE_ACTIVE` to a different method while its code, or a superseded
+   code still inside its expiry plus the late-payment grace, can be paid; the
+   same method returns the same code. Re-split also waits for such codes.
+   Trade-off: a guest who switches from VA to QRIS waits for the VA code to
+   lapse (up to the VA lifetime).
+9. A guest reads the claim only while the table session credential is valid;
+   after the table closes, the receipt carries the token (legend-arp35,
+   legend-90na8).
+
+## 2026-11-10: WS-10 lifecycle: checklists, exit clearance, settlement summary, KPI (legend-ovxw)
+
+Context: PRD F24 (onboarding/offboarding: checklist per jabatan, exit
+clearance with asset return and access/device revocation, final entitlements,
+work certificate) and F29 (KPI per jabatan from system data or manager
+judgement, monthly or quarterly review). Nothing existed on m1. Designed with
+an architect consult; tier K (access revocation, money summary).
+
+1. **Seven tenant tables, one migration (0206).** `hris_checklist_templates`
+   (items as jsonb validated by `checklistTemplateSchema`, one active template
+   per tenant+kind+position, null position = default), `hris_checklist_tasks`
+   (instances; `block_reason` / `waive_reason` required by CHECK when the
+   status says so; `system_managed` tasks cannot be completed by hand),
+   `hris_checklist_task_actions` (append only, `UPDATE`/`DELETE` revoked from
+   `legend_app`; block and waive need a reason), `hris_offboardings` (one
+   non-cancelled row per employee; status open → revoked → completed, or open
+   → cancelled), `hris_kpi_definitions` (`metric_code` set exactly when
+   `source = system`), `hris_kpi_reviews` (one per employee, cycle and period
+   start), `hris_kpi_scores` (definition snapshot, system actual with its
+   availability, manager actual and score). Every table has tenant RLS
+   forced; none has a NOT NULL `outlet_id`, so outlet reach is checked in the
+   service through the employee's home outlet, like `employees`.
+2. **The login account is shared across tenants, so it is never banned.**
+   Exit clearance (`POST /api/hris/offboardings/:id/revoke-access`) runs in
+   one tenant transaction, after the last working day only (on the last day
+   itself: 409 `EXIT_NOT_DUE`, the employee still works that shift). It is a
+   tenant-wide action: the caller needs `hr.employee.manage` held tenant-wide
+   (an outlet-scoped HR manager gets 403 `CLEARANCE_NEEDS_TENANT_HR`), so the
+   leaver's role assignments and shifts at every outlet are in reach. Steps:
+   1. the tenant role-assignment advisory lock
+      (`legend:role-assignment-end:<tenant>`, the key `endRoleAssignment`
+      takes), then `now` is read, then the offboarding row `FOR UPDATE`; a
+      row already revoked returns its stored `revocation_result` without
+      writing anything, so a second call equals the first;
+   2. every active or future role assignment of the employee's user in this
+      tenant is ended with reason `offboarding`, each with the
+      `role_assignment.ended` event and audit row. A future assignment gets
+      an empty window (`valid_until = valid_from`, never valid because
+      `valid_until` is exclusive); `role_assignments_window_check` becomes
+      `>=` for that. An employee who holds an Owner assignment is refused
+      (409 `OFFBOARDING_OWNER`): the Owner is replaced through the access flow
+      first. An employee with a tenant-scoped assignment needs a caller who
+      also holds `access.role.assign` tenant-wide (else 409
+      `OFFBOARDING_ADMIN_ROLE`), so HR alone cannot strip an admin. The helper
+      is a new function appended to `access.service.ts`; `endRoleAssignment`
+      itself is not touched, because `ws/end-role-assignment-lock` is changing
+      it;
+   3. the user's staff sessions are revoked (`revoked_at`, expiry moved to
+      creation + 1 ms): non-customer, non-impersonated sessions with this
+      tenant or with no tenant (nothing fills `session.tenant_id` yet). The
+      person signs in again for any other tenant. Customer and impersonated
+      sessions are left alone;
+   4. the user's web push subscriptions in this tenant are deleted, so the
+      phone stops receiving this tenant's notifications;
+   5. shifts after the last working day that are not cancelled are locked,
+      re-checked to still belong to the leaver (a swap may have moved them),
+      and cancelled through `cancelShiftAssignmentInTx`, split out of
+      `cancelShiftAssignment` without changing it (swap withdrawal,
+      `shift.cancelled` event and audit stay);
+   6. staff PIN rows are kept. `attemptStaffPin` already answers `not_member`
+      once the role assignments end, a deleted row would never reach an edge
+      node (the export has no tombstone), and a rehire reuses the key;
+   7. outlet devices are not revoked: `devices` are outlet hardware with no
+      user. The person's own devices are their sessions and push
+      subscriptions (steps 3 and 4);
+   8. the employee becomes `terminated` (termination) or `resigned`
+      (resignation, contract end), `end_date` = last working day; open
+      `access_revocation` tasks become done with an action row; the
+      offboarding row stores the result; one audit row with counts only.
+      An offline edge node keeps accepting the PIN until it pulls the ended
+      assignments. Revocation does not run by itself on the last day: a job is a
+      follow-up bead.
+
+   Automatic clearance (legend-arj.6) runs the same steps from the worker as
+   the **system actor**, `{type:"system"}` (same shape as `hris-leave`):
+   - audit rows get `actor_type = 'system'`, `actor_id = NULL`; the event
+     envelope actor is `{type:"system"}`;
+   - every uuid/text column that records "who" (`ended_by` in the event
+     payload, `cancelled_by`, `access_revoked_by`, `done_by`, the task action
+     `actor_user_id`) holds the nil UUID
+     `00000000-0000-0000-0000-000000000000` (`SYSTEM_ACTOR_ID`). The UI shows
+     it as "Sistem". No migration: the columns are text;
+   - the system run uses `canAssignRoles = false`. An Owner leaver
+     (`OFFBOARDING_OWNER`) or one with a tenant-scoped role
+     (`OFFBOARDING_ADMIN_ROLE`) rolls back, is logged, and the offboarding
+     stays open for a human with `access.role.assign`. A job must never strip
+     a company-level role by itself;
+   - the worker never installed an audit writer (only `app.ts` called
+     `setAuditWriter`), so the role-assignment end inside clearance would have
+     failed closed with 503. `worker-main.ts` now installs `coreAuditWriter`
+     at startup.
+3. **KPI system actuals go through `evaluateMetrics`.** The `employee`
+   dimension value of `metrics_daily` is the user id (`orders.cashier_id`,
+   `pos_shifts.cashier_id`), so an employee without a user account gets
+   `no_user_account`. A definition may only name a catalog metric that
+   declares the `employee` dimension, with the catalog unit. Actuals are
+   computed when a review is created and on refresh while it is a draft; a
+   submitted review is frozen. An unavailable metric stores null with its
+   reason and the reviewer enters a manual actual. `kpiScoreSchema.actual`
+   becomes signed and nullable (cash variance can be negative; a draft has no
+   value yet); submit needs a score on every row. The system actual of one
+   employee is computed tenant-wide (every outlet the person worked at),
+   whoever refreshes it; the caller still needs reach over the employee.
+4. **The final settlement is a summary of recorded data, not a payment or
+   a calculation.** Running salary (last payroll run covering the employee,
+   its period end, and the unpaid business days from the day after it up to
+   the last working day; no amount), outstanding kasbon, approved unpaid
+   reimbursements, leave balances (days only, no cash value), and a
+   `pendingPayrollEngine` list naming what is not computed yet (prorated
+   salary, THR, BPJS, leave cash-out, net payout). No THR or BPJS arithmetic
+   runs here and no net is shown: those wait for the payroll engine
+   (legend-j2l2, follow-up bead). The pure kasbon and reimbursement helpers
+   move from the web preview into `packages/shared/src/hris/lifecycle.ts`.
+   Completing the offboarding freezes the summary in `settlement_snapshot`.
+5. **Work certificate: render data plus a PDF on the existing pdf-lib
+   pattern** (`purchasing-po-pdf.ts`). Available to HR (`hr.employee.manage`) once
+   access is revoked; numbered once per offboarding. The leaver has no access
+   left after clearance, so HR hands the PDF over; self-service for former
+   employees is legend-arj.7.
 
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
@@ -142,9 +757,9 @@ in parallel. Reviewed with an architect consult before implementation.
    value, finality or definition version changes, so a rerun leaves
    `updated_at` unchanged. Rows of that code whose dimension no longer exists
    are deleted. A changed `final` row is logged as `metrics_daily final row
-   changed` (late data) and still written. Dates older than the window are
+changed` (late data) and still written. Dates older than the window are
    recomputed only through `recomputeMetricsDaily(context, outletId, from,
-   to)`. A family card that bumps a definition version runs it over the
+to)`. A family card that bumps a definition version runs it over the
    history it changes. A family card that ships a new reader also runs it
    over the history its reports cover, before its reports leave the mock.
    Every reader writes a total row (no dimension) per outlet-day, zero when
@@ -164,7 +779,7 @@ in parallel. Reviewed with an architect consult before implementation.
    `METRIC_DIMENSION_NOT_SUPPORTED` for a split the metric does not declare
    (unchanged). A split the metric declares but no card has built yet is
    marked `unavailable` by the engine and by report runs; `GET
-   /api/metrics/query` keeps its m1 answer (400) for that case too, so the
+/api/metrics/query` keeps its m1 answer (400) for that case too, so the
    existing ledger regression tests stay unchanged. A split of a percent
    ledger metric is `dimension_not_supported` until a family card builds its
    numerator and denominator splits. Report run rows carry their bucket
@@ -326,7 +941,7 @@ terjual" dan NULL = tidak diketahui. Ditinjau architect sebelum implementasi
    ke log.
 8. **Bentuk.** Berkas baru `apps/api/src/services/order-cost-snapshot.service.ts`:
    `computeLineCostSnapshots(tx, context, outletId, lines) -> Promise<(number |
-   null)[]>` (urutan sama dengan `lines`; baris =
+null)[]>` (urutan sama dengan `lines`; baris =
    `{menuItemId, variantId, modifierIds, quantity}`). Nama tidak bentrok dengan
    `estimateDeductionCostIdr` (cabang KDS, yang mengembalikan 0, kontrak
    berbeda), dan tidak mengimpor dari `recipe-deduction.service.ts`. Satu
@@ -461,3 +1076,73 @@ Reviewed with an architect consult before implementation.
    table (30 s, 2 min, 10 min, 1 h; tenant policy may change it) only the
    last retry falls outside the window. A duplicate notification email is accepted as the lesser failure
    compared with a lost one.
+
+## WS-07: purchase return and petty purchase journals (legend-1xbs, legend-v3lh)
+
+Decided 10 Nov 2026 (architect, tier K money). Design brief: `docs/briefs/298a-sub-purchase-return-posting-design.md`.
+
+1. **Return payload carries the split.** `purchase_return.recorded` adds
+   `outletId`, `uninvoicedValueIdr`, `invoicedValueIdr` and `ppnIdr`;
+   `valueIdr = uninvoicedValueIdr + invoicedValueIdr`, and `ppnIdr > 0` only
+   when `invoicedValueIdr > 0`. A split (not one flag) keeps a mixed return
+   balanced. The emitter sums per-line rounded values; it never prorates the
+   total.
+2. **Return journal.** Dr `grni` for the uninvoiced part (receipt not yet
+   billed), Dr `accounts_payable` for the invoiced part plus PPN (debit note),
+   Cr `inventory` for `valueIdr`, Cr `ppn_input` for `ppnIdr`. A return with
+   `valueIdr = 0` posts nothing.
+3. **Petty purchase** is an expense, never stock (the contract says it is not
+   a stock document, so debiting `inventory` would break the GL to stock
+   ledger tie). New event `petty_purchase.recorded` (id-only payload), new role
+   `petty_purchase_expense`, default account `5104 Pembelian Langsung (Kas
+   Kecil)` (tenant can remap). Credit goes to `petty_cash` (1102), not
+   `cash_on_hand` (1101 is the POS drawer, settled at shift close). This
+   overrides the card text "kredit kas". No PPN input on petty purchases.
+4. **New journal source types** `purchase_return` and `petty_purchase`
+   (check constraint widened in migration 0205, which also backfills 5104).
+5. **Goods receipt is NOT posted here.** `goods_receipt.recorded` has a rule
+   but no consumer yet (legend-29vw). A return that debits GRNI is only
+   correct once receipts credit GRNI, so legend-29vw must ship before the
+   purchase return emitter goes live. No emitter exists today, so nothing
+   posts and no balance drifts.
+6. **Known gaps (follow-up beads):** a debit note reduces AP in the ledger but
+   creates no AP open item; invoice-vs-receipt price differences on returns;
+   receipts recorded before go-live need a finance cutover entry; no PPN input
+   on petty purchases; `supplier_invoice.recorded` still unposted.
+
+## WS-06: supplier return and petty purchase backend (legend-65mgw)
+
+Decided 10 Nov 2026 (architect, tier K). Design: `docs/briefs/301b-sub-return-petty-design.md`.
+
+1. **Return gate.** `PURCHASE_RETURN_POSTING_ENABLED` (env, default off). While off the whole `POST /api/inventory/purchase-returns` is refused with 403 `FEATURE_DISABLED` before the idempotency claim: a stock-out without a GRNI journal would split the GL from stock. Reads stay open. `legend-29vw` (goods receipt journal) turns it on and adds a cutover guard.
+2. **Return value.** Stock leaves at the receipt cost, not the moving average, so GRNI clears exactly. Each line books the cumulative rounded value minus earlier returns; `valueIdr` is the sum of line values. Split is `uninvoiced = valueIdr`, `invoiced = 0`, `ppn = 0` until supplier invoices exist.
+3. **Over-return race.** Returns of one receipt are serialised by a row lock on the receipt's purchase order (`legend_app` has no UPDATE on `goods_receipts`, so locking the receipt fails). Own location lock and balance check give `INSUFFICIENT_STOCK` because the stock ledger allows negative balances.
+4. **Petty purchase** is rejected, not approved, when over the limit or when no policy exists (409 `PETTY_PURCHASE_LIMIT_EXCEEDED`). Photo is mandatory, stored in `core_storage_objects` with source kind `petty_purchase`, linked once. Business date is the outlet business date; no back-dating. Policy writes: `PUT /api/inventory/petty-purchase-policy`, permission `purchasing.petty_policy.manage` (owner, finance).
+5. **Permissions:** `purchasing.return.create` (owner, purchasing, warehouse), `purchasing.petty.record` (owner, general_manager, outlet_manager, kitchen_lead, purchasing), `purchasing.petty_policy.manage` (owner, finance).
+6. **Known gaps (beads):** moving average not re-averaged on return; petty limit is per transaction only (daily cap bead); invoiced debit notes need AP open items (`legend-179bw`); batch returns from another location than received give a generic 422.
+
+## WS-08: loyalty points journal, PSAK 72 (legend-msqvi)
+
+Decided 10 Nov 2026 (architect, tier K money). Status: proposed. Needs the founder accountant (Q7) and a Codex second opinion (xhigh) before release. Design: `docs/briefs/sub-304c-arch-decision.md`; slices: `docs/briefs/sub-304c-points-journal.md`.
+
+1. **Policy.** Points are a material right, a separate performance obligation. Earn defers the fair value of the points: points x Rp100 (Q68) x expected redemption rate. The rate stays at **100%** in v1 (no history yet), so no breakage is estimated up front; breakage is recognised only at `points.expired`. A rate below 100% needs the rate stored per ledger row (migration) plus breakage-pattern recognition, so it can never change silently. IAI renumbered PSAK 72 as PSAK 115 from 2024 (same content as IFRS 15); a private entity may report under SAK EP. Q7: the accountant confirms which standard applies **before the journal is enabled**.
+2. **Allocation at face value.** Earn is 1 point per Rp10.000 and 1 point = Rp100, so the deferral is 1.00% of the sale; relative standalone selling price would be 0.990%. The gap is about 1% of the deferral, immaterial. Q7 confirms. Bonus points (mission, referral, birthday) are consideration payable to the customer (PSAK 72 para 70) and also reduce revenue; referral points could instead be marketing expense (Q7 decides).
+3. **Accounts.** New role `loyalty_points_deferral` (type revenue), seed account `4105 Penangguhan Pendapatan Poin Loyalty`, parent 4100, a contra-revenue account. Existing: `loyalty_liability` 2105, `loyalty_breakage_revenue` 4104. `sales_revenue` 4101 stays equal to gross POS sales. `sales_discount` 4103 is not used for redemptions (this replaces the 290f design): a free item fulfilled without an order would leave 4103 with a credit balance, and a voucher used on an order already debits 4103 through `order.paid` `discountIdr`. 4105 net = earned - redeemed. No migration: roles are varchar without a CHECK and `'loyalty'` is already in the `source_type` check. If code 4105 is taken by another account the backfill skips it and posting parks retryable `ACCOUNT_MAPPING_MISSING`.
+4. **Entries.** Amount is the signed `liability_idr` of the `point_ledger` row (the row is the authority, never the payload).
+   - `points.earned`: Dr 4105, Cr 2105.
+   - `points.reversed` (refund, void): Dr 2105, Cr 4105, exact mirror of the reversed amount.
+   - `points.redeemed`: Dr 2105, Cr 4105.
+   - `points.adjusted`: one rule, Dr 4105, Cr 2105, `pointsValueIdr` signed; a negative amount flips the sides. Restore mirrors the redeem; manual + and - both use it.
+   - `points.expired`: Dr 2105, Cr 4104.
+     The old `points.earned` rule (Dr `sales_revenue`) was never wired and is replaced.
+5. **Recognition at redeem.** Recognition happens at `points.redeemed`, when points become a voucher or free item. Only ledger rows with `source_type = 'reward_redemption'` are journaled; other redeem rows are ignored. Points tender stays refused, and if it ships it needs a distinct `source_type`, because the sale journal already moves 2105 through `paidPointsIdr` / `refundPointsIdr` (both 0 today). A pin test covers this, so there is no double count with `order.paid` / `order.refunded`.
+6. **Idempotency, no payload change (engineer override).** `events.ts` and `point-ledger.service.ts` are not changed (the architect proposed an additive `ledgerEntryId`). The ledger entry id comes from the envelope: `event.idempotencyKey` is `"<event name>:<ledgerEntryId>"`, parsed after the first `:`. Missing or unparseable key, or ledger row not found for the tenant: park `AUTO_JOURNAL_PAYLOAD_INVALID`. Journal key `aj:loyalty:<ledgerEntryId>`, `source_type = 'loyalty'`, `source_id` = ledger id; same advisory lock, lookup-first, savepoint and park path as other auto-journal events. One ledger row = one journal.
+7. **Guards.** Gate on accounting enabled only, not on `loyalty_programs.is_active`: switching a program off would strand the liability on later expire, redeem and reverse events. Training orders: `points.earned` with an order source is skipped when `isTrainingOrder(sourceId)`; `points.reversed` checks the order of the reversed earn row.
+8. **Legal entity and outlet.** Points events have no outlet and `auto_journal_parked.outlet_id` is NOT NULL, so v1 supports only a tenant with exactly one legal entity; all loyalty journals post there. Journal outlet: ledger outlet for earn, reversed row's outlet for reverse, else null (entity level). Business date comes from the ledger `created_at` with the oldest outlet of that entity as clock anchor, also used for parking. More than one entity parks non-retryable `LOYALTY_LEGAL_ENTITY_AMBIGUOUS`. Follow-up: `loyalty_programs.legal_entity_id` (needs migration 0212).
+9. **Known gaps.**
+   - Redemptions still pending at period end (`redemptionValidDays`, default 30, max 365) are recognised early; the `points.adjusted` restore reverses it on cancel or expiry.
+   - `loyalty-earn-consumer.ts` does not skip training orders, so training orders award real points (`legend-kbbma`, must ship before the journal is enabled: their later redeem or expiry would post real revenue).
+   - A `bonus` row with `source_type` `adjustment` emits no event and is never journaled; positive manual adjustments must use type `adjust` (no producer today).
+   - Accounting switched on after points already exist pushes 2105 into a debit balance on redeem and expire; finance must post an opening balance for 2105.
+   - Multi-entity tenants are parked until the follow-up card (`legend-6m1w1`: `loyalty_programs.legal_entity_id` plus an unpark path; parking is non-retryable and closed outlets count today).
+10. **Release steps.** Existing tenants get 4105 and its mapping only through `pnpm db:backfill-defaults` (new tenants get it from the template). Until the backfill runs, points events park retryable `ACCOUNT_MAPPING_MISSING` and post on the next sweep. Journals are dated by the ledger `business_date` when the row has one (earn copies the order business date), else by the anchor outlet clock.

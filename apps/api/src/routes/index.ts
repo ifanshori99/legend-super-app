@@ -11,6 +11,8 @@ import { createInventoryOpsRouter } from "./inventory-ops.routes.ts";
 import { createPurchasingSupplierRouter } from "./purchasing-supplier.routes.ts";
 import { createPurchasingOrderRouter } from "./purchasing-order.routes.ts";
 import { createInventoryReceivingRouter } from "./inventory-receiving.routes.ts";
+import { createPurchaseReturnRouter } from "./purchase-return.routes.ts";
+import { createPettyPurchaseRouter } from "./petty-purchase.routes.ts";
 import {
   createPurchasingSendRouter,
   publicPurchaseOrderRouter,
@@ -19,6 +21,11 @@ import { createInventorySetupRouter } from "./inventory-setup.routes";
 import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { createAccountingFinancePolicyRouter } from "./accounting-finance-policy.routes";
+import { createAccountingBankAccountsRouter } from "./accounting-bank-accounts.routes";
+import { createAccountingBankStatementsRouter } from "./accounting-bank-statements.routes";
+import { createAccountingBankLinesRouter } from "./accounting-bank-lines.routes";
+import { createAccountingCashDepositsRouter } from "./accounting-cash-deposits.routes";
+import { createAccountingBankReconCasesRouter } from "./accounting-bank-recon-cases.routes";
 import { createAccountingLegalEntitiesRouter } from "./accounting-legal-entities.routes";
 import { meRouter } from "./me.routes";
 import { orgRouter } from "./org.routes";
@@ -42,6 +49,7 @@ import { publicSiteRouter } from "./public-site.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
 import { openBillRouter } from "./open-bill.routes";
 import { salesTargetsRouter } from "./sales-targets.routes";
+import { tableLinksRouter } from "./table-links.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
@@ -83,8 +91,14 @@ import { aiChatRouter } from "./ai-chat.routes";
 import { aiGovernanceRouter } from "./ai-governance.routes";
 import { aiGuidelinesRouter } from "./ai-guidelines.routes";
 import { aiMcpAdminRouter } from "./ai-mcp-admin.routes";
+import { aiProviderRouter } from "./ai-provider.routes";
 import { aiInsightsRouter } from "./ai-insights.routes";
 import { hrisLeaveRouter } from "./hris-leave.routes";
+import { hrisSchedulingRouter } from "./hris-scheduling.routes";
+import { hrisChecklistRouter } from "./hris-checklist.routes";
+import { hrisOffboardingRouter } from "./hris-offboarding.routes";
+import { hrisWorkCertificateRouter } from "./hris-work-certificate.routes";
+import { hrisKpiRouter } from "./hris-kpi.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
@@ -107,6 +121,12 @@ import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
 import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
 import { deliveryOrdersRouter } from "./delivery-orders.routes.ts";
 import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.ts";
+// legend-111j
+import { memberRouter } from "./member.routes.ts";
+import { loyaltyProgramRouter } from "./loyalty-program.routes.ts";
+import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
+import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
+import { posOrderCustomerRouter } from "./pos-order-customer.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -160,6 +180,9 @@ apiRouter.use("/inventory", createPurchasingSupplierRouter());
 apiRouter.use("/inventory", createPurchasingOrderRouter());
 // Goods receipt: partial receiving, QC, photos (PRD §3.18 INV-05, legend-o1o4s).
 apiRouter.use("/inventory", createInventoryReceivingRouter());
+// Supplier returns and simple petty purchases (legend-65mgw).
+apiRouter.use("/inventory", createPurchaseReturnRouter());
+apiRouter.use("/inventory", createPettyPurchaseRouter());
 // Send PO by email or share link (PRD §3.18 "Kirim PO", legend-9yz).
 apiRouter.use("/inventory", createPurchasingSendRouter());
 // Stock opname / stok opname with blind count and approval (legend-j5x, INV-03).
@@ -209,6 +232,7 @@ apiRouter.use(serviceRequestRouter);
 // Open-bill convert, approvers and outlet policy (legend-8cm4, legend-2zb5).
 apiRouter.use(openBillRouter);
 apiRouter.use("/tables", tablesRouter);
+apiRouter.use("/table-links", tableLinksRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/table-sessions", qrOrderRouter);
 apiRouter.use("/qr", qrRouter);
@@ -236,10 +260,24 @@ apiRouter.use("/accounting", accountingJournalRouter);
 apiRouter.use("/accounting", createAccountingApFaRouter());
 // Per-tenant finance policy: bank matching tolerance, ACC-05 day limit (legend-pxcs).
 apiRouter.use("/accounting", createAccountingFinancePolicyRouter());
+// WS-07 cash & bank (legend-fnxl).
+apiRouter.use("/accounting", createAccountingBankAccountsRouter());
+apiRouter.use("/accounting", createAccountingBankStatementsRouter());
+apiRouter.use("/accounting", createAccountingBankLinesRouter());
+apiRouter.use("/accounting", createAccountingCashDepositsRouter());
+apiRouter.use("/accounting", createAccountingBankReconCasesRouter());
 // Legal-entity picker for finance screens, accounting.journal.view (legend-bddb).
 apiRouter.use("/accounting", createAccountingLegalEntitiesRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
 apiRouter.use("/promotions", promotionsRouter);
+// WS-08 member PWA API, loyalty program, POS order customer attach (legend-111j).
+apiRouter.use("/member", memberRouter);
+// legend-m4p5: rewards, redemptions, missions, member vouchers; staff rewards/missions/fulfil.
+apiRouter.use("/member", memberRewardsRouter);
+// The next two keep full paths inside the router and guard each route.
+apiRouter.use(loyaltyProgramRouter);
+apiRouter.use(loyaltyRewardsRouter); // legend-m4p5
+apiRouter.use(posOrderCustomerRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.
 apiRouter.use(reservationRouter);
@@ -281,6 +319,18 @@ apiRouter.use(
   hrisAnnouncementRouter,
 );
 apiRouter.use("/hris", hrisLeaveRouter);
+// WS-10 employee scheduling: shift templates, roster, publication, swaps
+// (legend-jstx).
+apiRouter.use("/hris", hrisSchedulingRouter);
+// WS-10 lifecycle: onboarding/offboarding checklists, exit clearance, final
+// settlement summary, work certificate, KPI (legend-ovxw).
+apiRouter.use(
+  "/hris",
+  hrisChecklistRouter,
+  hrisOffboardingRouter,
+  hrisWorkCertificateRouter,
+  hrisKpiRouter,
+);
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
 // legend-i57s equipment/maintenance/handovers). Two routers share the prefix;
 // each applies its middleware per route so unmatched paths pass through.
@@ -294,6 +344,7 @@ apiRouter.use("/ai", aiGuidelinesRouter);
 apiRouter.use("/ai", aiChatRouter);
 apiRouter.use("/ai", aiActionsRouter);
 apiRouter.use("/ai", aiGovernanceRouter);
+apiRouter.use("/ai", aiProviderRouter);
 apiRouter.use("/ai", aiMcpAdminRouter);
 // WS-12 AI insights: forecasts, purchase/roster inputs, anomalies, daily
 // summaries, promo copy and expense account drafts (legend-hkd4, legend-lely).

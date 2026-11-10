@@ -100,6 +100,7 @@ import {
   type CursorPage,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import { isTrainingOrder } from "./device-training.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 import { explodeMenuLines } from "./recipe-bom.service.ts";
 
@@ -554,21 +555,46 @@ export async function postPendingDeductions(
   context: ScopedTenantContext,
   input: { outletId: string; businessDate: string },
 ): Promise<string[]> {
-  const pending = await tx
-    .select({ id: recipeDeductions.id })
-    .from(recipeDeductions)
-    .where(
-      and(
-        eq(recipeDeductions.tenantId, context.tenant.tenantId),
-        eq(recipeDeductions.outletId, input.outletId),
-        eq(recipeDeductions.status, "pending"),
-        lte(recipeDeductions.businessDate, input.businessDate),
-      ),
-    )
-    .orderBy(recipeDeductions.occurredAt, recipeDeductions.id)
-    .limit(MAX_POSTED_PER_DAY_CLOSE);
+  // legend-13avp: a pending deduction of a training order (recorded before
+  // training orders stopped deducting) never posts and stays pending. The page
+  // walk keeps those rows from taking the places of real ones in the batch.
+  const pending: string[] = [];
+  for (
+    let offset = 0;
+    pending.length < MAX_POSTED_PER_DAY_CLOSE;
+    offset += MAX_POSTED_PER_DAY_CLOSE
+  ) {
+    const page = await tx
+      .select({
+        id: recipeDeductions.id,
+        sourceType: recipeDeductions.sourceType,
+        sourceId: recipeDeductions.sourceId,
+      })
+      .from(recipeDeductions)
+      .where(
+        and(
+          eq(recipeDeductions.tenantId, context.tenant.tenantId),
+          eq(recipeDeductions.outletId, input.outletId),
+          eq(recipeDeductions.status, "pending"),
+          lte(recipeDeductions.businessDate, input.businessDate),
+        ),
+      )
+      .orderBy(recipeDeductions.occurredAt, recipeDeductions.id)
+      .limit(MAX_POSTED_PER_DAY_CLOSE)
+      .offset(offset);
+    for (const { id, sourceType, sourceId } of page) {
+      if (pending.length >= MAX_POSTED_PER_DAY_CLOSE) break;
+      if (
+        (sourceType === "order" || sourceType === "order_issue") &&
+        (await isTrainingOrder(tx, context.tenant.tenantId, sourceId))
+      )
+        continue;
+      pending.push(id);
+    }
+    if (page.length < MAX_POSTED_PER_DAY_CLOSE) break;
+  }
   const posted: string[] = [];
-  for (const { id } of pending) {
+  for (const id of pending) {
     try {
       await tx.transaction(async (savepoint) => {
         await postRecipeDeduction(savepoint, context, id);
@@ -842,6 +868,25 @@ async function paidOrderLines(
   }));
 }
 
+/** A `sale:order:<orderId>` deduction row exists (any status). */
+async function saleDeductionExists(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: recipeDeductions.id })
+    .from(recipeDeductions)
+    .where(
+      and(
+        eq(recipeDeductions.tenantId, tenantId),
+        eq(recipeDeductions.idempotencyKey, `sale:order:${orderId}`),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 async function consumeInTransaction(
   tx: Tx,
   context: ScopedTenantContext,
@@ -851,6 +896,9 @@ async function consumeInTransaction(
     const parsed = orderPaidPayloadSchema.safeParse(event.payload);
     if (!parsed.success) return;
     const payload = parsed.data;
+    // legend-13avp (founder Q63): a training order never deducts stock.
+    if (await isTrainingOrder(tx, context.tenant.tenantId, payload.orderId))
+      return;
     await recordRecipeDeduction(tx, context, {
       outletId: payload.outletId,
       kind: "sale",
@@ -875,6 +923,8 @@ async function consumeInTransaction(
     const parsed = orderIssueRecordedPayloadSchema.safeParse(event.payload);
     if (!parsed.success) return;
     const payload = parsed.data;
+    if (await isTrainingOrder(tx, context.tenant.tenantId, payload.orderId))
+      return;
     await recordRecipeDeduction(tx, context, {
       outletId: payload.outletId,
       kind: payload.type,
@@ -901,6 +951,14 @@ async function consumeInTransaction(
     const payload = parsed.data;
     // A void before payment never drew stock; only a final-order void reverses.
     if (!payload.voidedFinalOrder || payload.voidId === null) return;
+    // legend-13avp: a training order drew no stock, so its void has nothing to
+    // reverse (and must not leave a tombstone). A sale deduction made before
+    // this rule existed is still reversed.
+    if (
+      (await isTrainingOrder(tx, context.tenant.tenantId, payload.orderId)) &&
+      !(await saleDeductionExists(tx, context.tenant.tenantId, payload.orderId))
+    )
+      return;
     await reverseSafely(tx, context, {
       outletId: payload.outletId,
       orderId: payload.orderId,

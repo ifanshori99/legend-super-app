@@ -37,6 +37,8 @@ for (const [address, prefix] of [
   // NAT64 could hide any IPv4 address. (IPv4-mapped ::ffff:0:0/96 is refused
   // in isBlockedIp: BlockList would match it against plain IPv4.)
   ["64:ff9b::", 96],
+  // Local-use NAT64 (RFC 8215): also able to hide any IPv4 address.
+  ["64:ff9b:1::", 48],
   ["fc00::", 7],
   ["fe80::", 10],
   ["ff00::", 8],

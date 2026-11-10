@@ -63,6 +63,51 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Konflik hanya di `docs/DECISIONS.md` dan `docs/PROGRESS.md` (keep-both). Rantai migrasi tetap 0186 terakhir.
 - ws/audit-retention-purge (0187) menyusul sesudah tes migrasi pemilik non-superuser.
 
+## Tambahan batch42
+
+- ws/training-orders-no-journal (1a21d857, legend-gkc6b, tanpa migrasi): pesanan latihan tidak pernah memposting jurnal penjualan atau HPP (consumer jurnal otomatis dan consumer GL stok melewati pesanan latihan).
+- Tanpa konflik. Rantai migrasi tetap berujung di 0186.
+- ws/audit-retention-purge (0187) masuk batch43 sesudah tes migrasi 0187.
+
+## Tambahan batch43
+
+- 0187 `0187_audit_retention_maintenance` (ws/audit-retention-purge cdb624b9, when 1794266000000): peran `legend_maintenance` NOLOGIN dan dua fungsi SECURITY DEFINER untuk purge retensi audit. `MAINTENANCE_DATABASE_URL` wajib di worker cloud produksi (rahasia, diatur founder).
+- 0188 `0188_ai_provider_configs` (ws/ai-provider-tenant 97d02ab6, when 1794267000000): konfigurasi provider AI per tenant.
+- 0190 `0190_poll_lease` (ws/doit-pending-poller 895e4312, when 1794269000000): lease untuk poller pembayaran DOIT yang masih pending.
+- 0191 `0191_cash_bank_recon` (ws/cash-bank-recon afd6cab3, when 1794270000000): rekening bank, impor mutasi, kasus rekonsiliasi, setoran kas.
+- 0198 `0198_equipment_service_reminder` (ws/equipment-maintenance f9afff77, when 1794277000000).
+- 0200 `0200_table_links` (ws/table-link 1ead4c4d, memuat 685n 6ef7034d, when 1794279000000): `table_link_groups` dan `table_link_members`. SQL diubah oleh merge train: semua FK dipindah ke dalam `CREATE TABLE` (sebelumnya `ALTER TABLE ... ADD CONSTRAINT`). Tanpa itu migrasi gagal 42501 (tenant context is required) untuk migrator non-superuser, karena validasi FK membaca `outlets` yang FORCE RLS. Pemilik cabang perlu mengonfirmasi. Snapshot tidak berubah dan `db:generate` kosong.
+- Tanpa migrasi: ws/ws11-f5-posting-seq 6353e2f8, ws/training-orders-followup ffe54e37, ws/notification-outbox-events 56b8c157, docs/arch-member-loyalty b07b1032 (dokumen saja).
+- Rantai: 0186 -> 0187 -> 0188 -> 0190 -> 0191 -> 0198 -> 0200. `prevId` disusun ulang untuk 0188 sampai 0200. Nomor 0189, 0192 sampai 0197 dan 0199 belum dikirim.
+- Registry impor: 0187 dan `worker/audit-retention.job.ts` didaftarkan di `data-import-registry.test.ts`.
+- Test `accounting-bank-accounts`: cleanup `afterAll` kini hanya menghapus rekening bank miliknya. Tenant fixture dipakai bersama lima file test bank/kas yang jalan paralel, dan `cash_deposits` merujuk rekening itu.
+- Flaky `platform-org-api` TEN-06 Q39 (409 saat buat outlet) muncul sekali di run penuh pertama, lulus sendiri dan lulus di run penuh berikutnya. Kartu terpisah sudah ada.
+
+## Tambahan batch44
+
+- 0201 `0201_brand_logo_storage` (ws/brand-logo-upload 52f4242a, when 1794280000000).
+- 0202 `0202_bill_splits` (ws/split-bill c6916247, when 1794281000000): `bill_splits` dan FK dari `payment_intents`.
+- 0203 `0203_member_loyalty_ledger` (ws/ws08-111j e15950fe, when 1794282000000): buku besar poin, profil member, FK `orders_customer_profile_fk`. **Jalankan 0203 di jendela sepi: migrasi ini mengambil ACCESS EXCLUSIVE pada `orders`.**
+- 0204 `0204_hris_scheduling` (ws/hr-scheduling 88cc626e, when 1794283000000): **dinomori ulang dari 0199 ke 0204.** Alasannya: `when` lama (1794278000000) sudah di bawah 0200 yang terpasang, jadi Drizzle tidak akan menjalankannya. Selain itu `drizzle-kit generate` membandingkan dengan snapshot berkas bernomor tertinggi, sehingga berkas bernomor lebih rendah yang ditaruh sesudah 0205 diabaikan dan `db:generate` ingin membuat ulang tabelnya. Berkas SQL, snapshot dan tag jurnal sudah diganti nama.
+- 0205 `0205_purchase_return_posting` (ws/purchase-return-posting 58d79c20, when 1794284000000): akun 5104 Pembelian Langsung (Kas Kecil) dan mapping `petty_purchase_expense` untuk entitas yang sudah punya mapping. **Flag `PURCHASE_RETURN_POSTING_ENABLED` default mati; jangan dinyalakan.**
+- 0206 `0206_hris_lifecycle_kpi` (ws/hr-lifecycle-kpi 5f864932, when 1794285000000): `role_assignments_window_check` dilonggarkan dari `>` ke `>=`.
+- 0207 `0207_loyalty_rewards_missions` (ws/m4p5-rewards 911846ad, when 1794286000000).
+- 0208 `0208_supplier_return_petty` (ws/supplier-return-petty f2bd63f5, when 1794287000000): retur pembelian, kas kecil, tiga kode izin baru untuk peran template.
+- Nomor 0209 sampai 0212 dipesan untuk cabang yang belum selesai. Jangan dipakai.
+- Rantai: 0200 -> 0201 -> 0202 -> 0203 -> 0204 -> 0205 -> 0206 -> 0207 -> 0208. `prevId` disusun ulang untuk semuanya. `pnpm db:generate` kosong.
+- SQL diubah oleh merge train: semua FK dari tabel baru ke tabel yang sudah ada (mis. `outlets`, `employees`, `tenants`) di 0204, 0206, 0207, 0208 dipindah ke dalam `CREATE TABLE`. Migrator non-superuser dengan FORCE RLS gagal 42501 "tenant context is required" pada `ALTER TABLE ... ADD CONSTRAINT` yang membaca tabel ber-RLS (sama seperti 0200). DDL akhirnya setara; snapshot tidak berubah.
+- Registry impor: 0205 dan 0208 didaftarkan di `data-import-registry.test.ts`.
+- Tanpa migrasi: ws/tax-snapshot-facility 09a124b2.
+- Perbaikan isi di luar konflik: label `loyalty_reward` ("Hadiah poin") di i18n member dan promo, dan default mock web ws08 (`voucherCode`, `perCustomerLimit`, `redemptionValidDays`) mengikuti kontrak m4p5. Test `platform-access-db` mengikuti batas `>=` dari 0206; test `provisioning-race` kini mengharapkan 64 akun (5104).
+
+## Tambahan batch45
+
+- Tanpa migrasi baru. `pnpm db:generate` kosong. Urutan merge: `ws/ia54l-claim-after-close` e4efc823 (legend-ia54l), `ws/worker-audit-writer` 5391163c (berisi `ws/arj6-auto-clearance`; legend-arj.6, legend-j88cz), `ws/msqvi-points-journal` babb3174 (legend-msqvi). Tanpa konflik, `docs/PROGRESS.md` tergabung otomatis.
+- Worker audit writer: sebelum deploy, jalankan query 3 di `docs/runbooks/worker-audit-writer-m1-window.md` (persetujuan lewat tenggat). Deploy di jendela sepi bersama 0203: sapuan pertama mengedarkan semua persetujuan kedaluwarsa sekaligus.
+- Jurnal poin: tenant lama perlu `pnpm db:backfill-defaults` (akun 4105). Jurnal poin tetap tidak dinyalakan sampai `legend-kbbma` selesai dan akuntan founder konfirmasi (`docs/DECISIONS.md` "WS-08: loyalty points journal, PSAK 72").
+- Perbaikan isi di luar konflik: `provisioning-race.test.ts` (legend-usa4b) menunggu 64 akun bagan standar; kini 65 sesudah akun 4105.
+- Flaky `platform-org-api` TEN-06 Q39 (409 saat buat outlet, kartu legend-23tbw) gagal di run penuh 3 dan 4, lulus sendiri dan lulus di run penuh 5.
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).

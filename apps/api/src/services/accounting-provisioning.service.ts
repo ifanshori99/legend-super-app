@@ -20,7 +20,7 @@
 // inserted, so rows go in level by level, parents first.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   accountMappingIssues,
   accountMappingSchema,
@@ -147,6 +147,80 @@ function insertionLevels(accounts: readonly Account[]): Account[][] {
 }
 
 /**
+ * legend-msqvi: gives an entity whose chart predates the points journal the
+ * 4105 account and its `loyalty_points_deferral` mapping. Runs inside the
+ * entity chart lock. Only for a standard-provisioned chart (the entity already
+ * maps `loyalty_liability`) with the 4100 parent present; skipped when code
+ * 4105 is taken or the role is already mapped, so tenant edits win. Returns
+ * whether it inserted.
+ */
+async function addLoyaltyDeferralAccount(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  legalEntityId: string,
+  actorId: UserId | null,
+  mappedRoles: ReadonlySet<string>,
+): Promise<boolean> {
+  if (
+    !mappedRoles.has("loyalty_liability") ||
+    mappedRoles.has("loyalty_points_deferral")
+  )
+    return false;
+  const tenantId = context.tenant.tenantId;
+  const row = standardFnbChartTemplate.find((candidate) =>
+    candidate.roles.includes("loyalty_points_deferral"),
+  );
+  if (!row || row.parentCode === null)
+    throw new Error("Standard chart template: loyalty deferral row missing");
+  const existing = await tx
+    .select({ id: chartOfAccounts.id, code: chartOfAccounts.code })
+    .from(chartOfAccounts)
+    .where(
+      and(
+        eq(chartOfAccounts.tenantId, tenantId),
+        eq(chartOfAccounts.legalEntityId, legalEntityId),
+        inArray(chartOfAccounts.code, [row.code, row.parentCode]),
+      ),
+    );
+  const parent = existing.find((account) => account.code === row.parentCode);
+  if (!parent || existing.some((account) => account.code === row.code))
+    return false;
+  const accountId = randomUUID();
+  await tx.insert(chartOfAccounts).values({
+    id: accountId,
+    tenantId,
+    legalEntityId,
+    code: row.code,
+    name: row.name,
+    type: row.type,
+    reportGroup: row.reportGroup,
+    parentId: parent.id,
+    isActive: true,
+  });
+  await tx.insert(accountMappings).values({
+    tenantId,
+    legalEntityId,
+    role: "loyalty_points_deferral",
+    accountId,
+  });
+  await auditAccountingChange(tx, context, {
+    actorId,
+    action: "accounting.chart.provisioned",
+    objectType: "legal_entity",
+    objectId: legalEntityId,
+    before: null,
+    after: {
+      chart: { count: 1 },
+      mappings: {
+        count: 1,
+        roles: [{ role: "loyalty_points_deferral", glCode: row.code }],
+      },
+    },
+  });
+  return true;
+}
+
+/**
  * Copies the standard F&B chart and default mappings into an entity with an
  * empty chart, inside the caller's transaction. Idempotent: serialised per
  * entity by an advisory lock shared with the owner's chart writers, and a
@@ -182,11 +256,21 @@ export async function provisionStandardChart(
         ),
       );
     const mappedRoles = new Set<string>(mappedRows.map((row) => row.role));
+    // legend-msqvi: add the loyalty deferral account to a standard chart made
+    // before it existed. Nothing else in an existing chart is touched.
+    const addedLoyaltyDeferral = await addLoyaltyDeferralAccount(
+      tx,
+      context,
+      legalEntityId,
+      actorId,
+      mappedRoles,
+    );
+    if (addedLoyaltyDeferral) mappedRoles.add("loyalty_points_deferral");
     return {
       legalEntityId,
       status: "already_present",
-      accounts: 0,
-      mappings: 0,
+      accounts: addedLoyaltyDeferral ? 1 : 0,
+      mappings: addedLoyaltyDeferral ? 1 : 0,
       missingRoles: ALL_POSTING_ROLES.filter((role) => !mappedRoles.has(role))
         .length,
     };

@@ -78,6 +78,7 @@ const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
 export const floorZoneIdSchema = uuidIdSchema<"FloorZoneId">();
 export const tableIdSchema = uuidIdSchema<"TableId">();
 export const tableSessionIdSchema = uuidIdSchema<"TableSessionId">();
+export const tableLinkGroupIdSchema = uuidIdSchema<"TableLinkGroupId">();
 export const sessionParticipantIdSchema =
   uuidIdSchema<"SessionParticipantId">();
 export const cartLineIdSchema = uuidIdSchema<"CartLineId">();
@@ -1825,10 +1826,18 @@ export const tableSessionSummarySchema = z.strictObject({
 });
 export type TableSessionSummary = z.infer<typeof tableSessionSummarySchema>;
 
+/** Service-only link: 2+ tables grouped, bills stay separate. */
+export const tableLinkGroupRefSchema = z.strictObject({
+  id: tableLinkGroupIdSchema,
+  tableIds: z.array(tableIdSchema).min(2),
+});
+export type TableLinkGroupRef = z.infer<typeof tableLinkGroupRefSchema>;
+
 export const tableLiveStatusSchema = z
   .strictObject({
     table: tableSchema,
     session: tableSessionSummarySchema.nullable(),
+    linkGroup: tableLinkGroupRefSchema.nullable().optional(),
     openServiceRequestCount: z.number().int().nonnegative(),
     outstandingIdr: nonnegativeIdr,
   })
@@ -1858,6 +1867,7 @@ export const closeTableSessionInputSchema = clientInputSchema({
 export type FloorZoneId = z.infer<typeof floorZoneIdSchema>;
 export type TableId = z.infer<typeof tableIdSchema>;
 export type TableSessionId = z.infer<typeof tableSessionIdSchema>;
+export type TableLinkGroupId = z.infer<typeof tableLinkGroupIdSchema>;
 export type SessionParticipantId = z.infer<typeof sessionParticipantIdSchema>;
 export type CartLineId = z.infer<typeof cartLineIdSchema>;
 export type BillSplitId = z.infer<typeof billSplitIdSchema>;

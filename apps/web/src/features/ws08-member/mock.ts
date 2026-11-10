@@ -70,6 +70,7 @@ const missions = createMockStore(() =>
             progress.missionId === mission.id &&
             progress.customerProfileId === memberId,
         ) ?? null,
+      voucherCode: null,
     })),
 );
 

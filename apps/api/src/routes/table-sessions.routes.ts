@@ -11,6 +11,9 @@
 import { Router } from "express";
 import {
   closeTableSessionInputSchema,
+  mergeTableSessionsInputSchema,
+  moveSessionItemsInputSchema,
+  moveTableSessionInputSchema,
   tableSessionIdSchema,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
@@ -22,6 +25,11 @@ import {
   closeTableSession,
   confirmOpenBillSession,
 } from "../services/table-session.service";
+import {
+  mergeTableSessionsOperation,
+  moveSessionItemsOperation,
+  moveTableSessionOperation,
+} from "../services/table-session-operations.service";
 import { resolveFloorContext } from "./floor-access";
 
 const sessionParams = z.strictObject({ sessionId: tableSessionIdSchema });
@@ -57,6 +65,65 @@ tableSessionsRouter.post(
     const { context } = await resolveFloorContext(req, "floor.table.operate");
     res.json({
       data: await closeTableSession(
+        context,
+        sessionId,
+        input,
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
+
+// Staff table operations (PRD "Operasi Meja", legend-685n): pindah meja, gabung
+// meja, pindah item. Same guard and permission as confirm and close.
+tableSessionsRouter.post(
+  "/:sessionId/move",
+  ...staffGuard,
+  jsonBody,
+  async (req, res) => {
+    const { sessionId } = sessionParams.parse(req.params);
+    const input = moveTableSessionInputSchema.parse(req.body);
+    const { context } = await resolveFloorContext(req, "floor.table.operate");
+    res.json({
+      data: await moveTableSessionOperation(
+        context,
+        sessionId,
+        input,
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
+
+tableSessionsRouter.post(
+  "/:sessionId/merge",
+  ...staffGuard,
+  jsonBody,
+  async (req, res) => {
+    const { sessionId } = sessionParams.parse(req.params);
+    const input = mergeTableSessionsInputSchema.parse(req.body);
+    const { context } = await resolveFloorContext(req, "floor.table.operate");
+    res.json({
+      data: await mergeTableSessionsOperation(
+        context,
+        sessionId,
+        input,
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
+
+tableSessionsRouter.post(
+  "/:sessionId/move-items",
+  ...staffGuard,
+  jsonBody,
+  async (req, res) => {
+    const { sessionId } = sessionParams.parse(req.params);
+    const input = moveSessionItemsInputSchema.parse(req.body);
+    const { context } = await resolveFloorContext(req, "floor.table.operate");
+    res.json({
+      data: await moveSessionItemsOperation(
         context,
         sessionId,
         input,

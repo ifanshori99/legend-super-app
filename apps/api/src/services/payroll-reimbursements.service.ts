@@ -216,7 +216,7 @@ async function assertReceiptUsable(
   if (
     !object ||
     object.purpose !== "receipt" ||
-    object.outletId.toLowerCase() !== homeOutletId.toLowerCase() ||
+    object.outletId?.toLowerCase() !== homeOutletId.toLowerCase() ||
     object.createdAt.getTime() < now.getTime() - RECEIPT_MAX_AGE_MS
   )
     throw invalid();

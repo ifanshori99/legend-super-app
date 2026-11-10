@@ -127,8 +127,22 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0186_stock_ledger_posting_seq.sql":
     "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
   // legend-k2l
-  "0204_k2l_member_signin_identity.sql":
+  "0220_k2l_member_signin_identity.sql":
     "sets session.auth_method on the existing session rows (management sessions become password, every other row legacy) so the sign-in method gate keeps today's staff sessions working (legend-k2l); no other column changes, never inserts or deletes rows",
+  "0187_audit_retention_maintenance.sql":
+    "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
+  // legend-111j
+  "0203_member_loyalty_ledger.sql":
+    "appends crm.loyalty.manage, crm.loyalty.review, crm.loyalty.fulfil, crm.customer.pii.read and crm.feedback.manage to the stored template role rows of existing tenants (legend-111j); idempotent, never touches a custom role, FORCE RLS on roles lifted and restored; the other INSERT/UPDATE text is inside trigger function bodies (ledger balance, point value lock, profile index), no rows written at migration time",
+  // purchase-return-posting
+  "0205_purchase_return_posting.sql":
+    "adds the cogs expense account 5104 (Pembelian Langsung, Kas Kecil) under 5100 for every legal entity that already has account mappings, and maps it to the petty_purchase_expense role; idempotent (WHERE NOT EXISTS plus ON CONFLICT DO NOTHING), never edits or deletes an existing account or mapping, FORCE RLS on chart_of_accounts and account_mappings lifted and restored",
+  // supplier-return-petty
+  "0208_supplier_return_petty.sql":
+    "appends purchasing.return.create, purchasing.petty.record and purchasing.petty_policy.manage to the stored template role rows of existing tenants; idempotent (skips rows that already hold the code), never touches a custom role, FORCE RLS on roles lifted and restored",
+  // legend-m4p5
+  "0207_loyalty_rewards_missions.sql":
+    "before adding vouchers_profile_fk, sets customer_profile_id to NULL on vouchers whose profile has no customer_profiles row in the same tenant and cancels those still issued (cancelled_reason profile_missing_0207) (legend-m4p5); touches only orphan rows and edits only customer_profile_id, status and cancelled_reason, FORCE RLS lifted for that one statement and restored, never inserts or deletes rows",
 };
 
 // Entrypoints that open a database pool but import no data.
@@ -143,6 +157,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
   "scripts/doctor.mjs": "read-only health query",
   "scripts/test-setup.mjs":
     "writes a marker table into a disposable test database only",
+  "apps/api/src/worker/audit-retention.job.ts":
+    "maintenance pool for the daily audit retention purge: calls two SECURITY DEFINER functions that delete expired audit rows, imports nothing (legend-usyi)",
 };
 
 // package.json script names matching /seed|import|backfill/ that are not

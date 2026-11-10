@@ -171,6 +171,8 @@ describe("legend-m007 FORCE ROW LEVEL SECURITY after all migrations", () => {
   // context exists. Anything else lifted and never restored lands here.
   const enableOnly = [
     "delivery_store_index",
+    // legend-111j: member_profile_user_index (0203), same TEN-02 exception.
+    "member_profile_user_index",
     "payment_link_tokens",
     "tenant_domains",
   ];

@@ -202,6 +202,8 @@ export const POSTING_ACCOUNT_ROLES = {
   sales_revenue: "revenue",
   sales_discount: "revenue",
   loyalty_breakage_revenue: "revenue",
+  /** legend-msqvi: deferred revenue for loyalty points (PSAK 72), contra of the points liability. */
+  loyalty_points_deferral: "revenue",
   rounding: "revenue",
   /** Forfeited DP (reservation cancelled late or no-show) recognised as other income. */
   deposit_forfeit_income: "revenue",
@@ -211,6 +213,8 @@ export const POSTING_ACCOUNT_ROLES = {
   cogs: "expense",
   waste_expense: "expense",
   inventory_adjustment: "expense",
+  /** Direct cash purchases paid from petty cash (PRD §3.18 pembelian sederhana). */
+  petty_purchase_expense: "expense",
   salary_expense: "expense",
   /** Employee reimbursements (PRD §3 reimbursement via payroll or kas). */
   reimbursement_expense: "expense",
@@ -452,10 +456,25 @@ const standardRows: Row[] = [
     "4100",
     ["loyalty_breakage_revenue"],
   ],
+  // legend-msqvi: points earned defer revenue here; redemption releases it.
+  [
+    "4105",
+    "Penangguhan Pendapatan Poin Loyalty",
+    "revenue",
+    "4100",
+    ["loyalty_points_deferral"],
+  ],
   ["5100", "Harga Pokok Penjualan", "cogs", null],
   ["5101", "HPP Makanan dan Minuman", "cogs", "5100", ["cogs"]],
   ["5102", "Waste dan Spoilage", "cogs", "5100", ["waste_expense"]],
   ["5103", "Selisih Stok Opname", "cogs", "5100", ["inventory_adjustment"]],
+  [
+    "5104",
+    "Pembelian Langsung (Kas Kecil)",
+    "cogs",
+    "5100",
+    ["petty_purchase_expense"],
+  ],
   ["6100", "Beban Operasional", "operating_expense", null],
   [
     "6101",

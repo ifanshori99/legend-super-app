@@ -5,6 +5,7 @@
 // an AI guess: one candidate = one-click match, several = the person chooses.
 import * as React from "react";
 import { Ban, FolderOpen, Link2, Undo2 } from "lucide-react";
+import { DEFAULT_FINANCE_POLICY } from "@starter/shared/accounting";
 import type {
   BankAccount,
   BankStatementLine,
@@ -55,6 +56,7 @@ import {
 import {
   useCashDeposits,
   useExcludeStatementLine,
+  useFinancePolicy,
   useMatchJournals,
   useMatchStatementLine,
   useStatementLinesForPeriod,
@@ -127,6 +129,7 @@ export function MatchWorkspace({
   const journals = useMatchJournals(legalEntityId, range.from, range.to);
   const deposits = useCashDeposits(legalEntityId, range.from, range.to);
   const match = useMatchStatementLine();
+  const financePolicy = useFinancePolicy();
   const exclude = useExcludeStatementLine();
   const unmatch = useUnmatchStatementLine();
 
@@ -183,7 +186,11 @@ export function MatchWorkspace({
   };
 
   const suggestionOf = (line: BankStatementLine): MatchOutcome =>
-    suggestMatch(line, candidates);
+    suggestMatch(
+      line,
+      candidates,
+      (financePolicy.data ?? DEFAULT_FINANCE_POLICY).matchingPolicy,
+    );
 
   const renderSuggestion = (line: BankStatementLine) => {
     const outcome = suggestionOf(line);

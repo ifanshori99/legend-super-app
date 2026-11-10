@@ -247,9 +247,15 @@ export const pointSourceTypeSchema = z.enum([
   "reward_redemption",
   "expiry",
   "refund",
+  // legend-111j: a voided final order reverses its points like a refund.
+  "void",
   "adjustment",
 ]);
 export type PointSourceType = z.infer<typeof pointSourceTypeSchema>;
+
+// legend-111j: names the ledger services use for the same enums.
+export type PointLedgerType = PointEntryType;
+export type PointLedgerSourceType = PointSourceType;
 
 const pointLedgerEntryObjectSchema = z.strictObject({
   /** ULID primary key (PRD §6.G.19); time order gives the ledger its order. */
@@ -319,10 +325,11 @@ export const pointLedgerEntrySchema = pointLedgerEntryObjectSchema.superRefine(
           reject("Expiry rows come from the expiry job", ["sourceType"]);
         break;
       case "reverse":
-        // LOY-02: a refund reverses the points of the paid transaction.
+        // LOY-02: a refund reverses the points of the paid transaction; a
+        // voided final order does the same (legend-111j).
         if (entry.points >= 0) reject("Reversal rows are negative");
-        if (entry.sourceType !== "refund")
-          reject("Reversal rows come from a refund", ["sourceType"]);
+        if (entry.sourceType !== "refund" && entry.sourceType !== "void")
+          reject("Reversal rows come from a refund or a void", ["sourceType"]);
         break;
       case "adjust":
         if (entry.points === 0) reject("Adjustments must change the balance");
@@ -454,7 +461,7 @@ export const defaultReferralRules: ReferralRules = referralRulesSchema.parse({
  * Program-level anti-fraud limits (legend-a8up). The service enforces the
  * daily cap when it books earn rows and blocks staff from earning points on
  * their own profile when `employeeSelfServeBan` is on.
- * A null cap means no daily limit. Defaults: 1.000 points per customer per
+ * A null cap means no daily limit. Defaults: 500 points per customer per
  * day, ban on.
  */
 export const loyaltyAntiFraudSchema = z.strictObject({
@@ -464,7 +471,7 @@ export const loyaltyAntiFraudSchema = z.strictObject({
 });
 export type LoyaltyAntiFraud = z.infer<typeof loyaltyAntiFraudSchema>;
 export const defaultLoyaltyAntiFraud: LoyaltyAntiFraud = {
-  dailyPointCapPerCustomer: 1000,
+  dailyPointCapPerCustomer: 500,
   employeeSelfServeBan: true,
 };
 
@@ -481,6 +488,7 @@ export const loyaltyProgramSchema = z.strictObject({
   pointValueIdr: positiveIdr,
   referral: referralRulesSchema.default(defaultReferralRules),
   antiFraud: loyaltyAntiFraudSchema.default(defaultLoyaltyAntiFraud),
+  isActive: z.boolean().default(false),
   updatedAt: isoDateTimeSchema,
 });
 export type LoyaltyProgram = z.infer<typeof loyaltyProgramSchema>;
@@ -601,6 +609,10 @@ export const rewardObjectSchema = z.strictObject({
   voucherValueIdr: positiveIdr.nullable(),
   isActive: z.boolean(),
   sortOrder: z.number().int().refine(safeInt),
+  // legend-m4p5
+  /** null = no per-customer limit. */
+  perCustomerLimit: z.number().int().positive().refine(safeInt).nullable(),
+  redemptionValidDays: z.number().int().min(1).max(365),
 });
 export const rewardSchema = rewardObjectSchema.superRefine((reward, ctx) => {
   if (reward.validUntil !== null && before(reward.validUntil, reward.validFrom))
@@ -671,6 +683,11 @@ export const rewardRedemptionSchema = z
     pointsSpent: positivePointsSchema,
     status: rewardRedemptionStatusSchema,
     redemptionCode: redemptionCodeSchema,
+    // legend-m4p5
+    rewardType: rewardTypeSchema,
+    expiresAt: isoDateTimeSchema,
+    voucherId: uuidSchema.nullable(),
+    fulfilledOutletId: uuidSchema.nullable(),
     idempotencyKey: z.string().min(8).max(100),
     redeemedAt: isoDateTimeSchema,
     fulfilledAt: isoDateTimeSchema.nullable(),

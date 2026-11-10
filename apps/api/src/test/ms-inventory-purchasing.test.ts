@@ -966,6 +966,58 @@ describe("stock_value and critical_stock_count (point in time)", () => {
   });
 });
 
+// legend-5ymew: a past day replays the ledger in posting order (posting_seq),
+// the order the live balance was folded in, not by occurred_at.
+describe("stock_value replays in posting order (backdated and same-instant rows)", () => {
+  let w: World;
+
+  beforeAll(async () => {
+    w = await makeWorld("c");
+    const row = (
+      item: string,
+      type: "receipt" | "sale",
+      quantity: number,
+      cost: number,
+      day: string,
+      afterMs: number,
+    ) =>
+      ledger(w, { location: w.loc1, item, type, quantity, cost, day, afterMs });
+    // Beras on D1, posted R1, sale, then a backdated R2 (occurred earliest).
+    // Posting order: 10@1000, sale -10 (qty 0), then 10@3000 -> 10 x 3000.
+    // occurred_at order would give R2, R1, sale -> 10 x 2000 instead.
+    await row(w.item.beras, "receipt", 10, 1000, D1, 600_000);
+    await row(w.item.beras, "sale", -10, 1000, D1, 1_200_000);
+    await row(w.item.beras, "receipt", 10, 3000, D1, 0);
+    // Gula on D2: three rows with the very same occurred_at, posted receipt,
+    // sale, receipt. The old (occurred_at, id) tie-break was random ids.
+    await row(w.item.gula, "receipt", 10, 1000, D2, 0);
+    await row(w.item.gula, "sale", -10, 1000, D2, 0);
+    await row(w.item.gula, "receipt", 10, 3000, D2, 0);
+  });
+
+  it("folds a backdated posting after the rows posted before it", async () => {
+    const d1 = await compute(
+      w,
+      dailyReaderOf("stock_value"),
+      D1,
+      w.outlet1,
+      w.tenantId,
+    );
+    expect(d1.stock_value).toBe(10 * 3000);
+  });
+
+  it("folds rows with the same occurred_at in posting order", async () => {
+    const d2 = await compute(
+      w,
+      dailyReaderOf("stock_value"),
+      D2,
+      w.outlet1,
+      w.tenantId,
+    );
+    expect(d2.stock_value).toBe(10 * 3000 + 10 * 3000);
+  });
+});
+
 describe("purchase_total", () => {
   const reader = () => dailyReaderOf("purchase_total");
 
