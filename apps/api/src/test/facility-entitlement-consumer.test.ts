@@ -1271,4 +1271,44 @@ describe("Q78 package operating_day paid after closing", () => {
     });
     expect(current.balance.availableSessions).toBe(0);
   });
+
+  // Q78 edge 1 (assumption): a facility without operating hours, paid after
+  // midnight but before the 04:00 cutoff (Tue 01:00, businessDate Monday), must
+  // not be born expired. The old end-of-business-day instant (Tue 00:00) is
+  // already in the past, so the grant must last past paidAt and be redeemable.
+  it("Q78 no operating hours, paid Tuesday 01:00 for Monday's business date: expires after paidAt and is redeemable", async () => {
+    const paidAt = jakarta("2026-11-10", "01:00");
+    const { world, facilityId, member, row } = await payPackage({
+      businessDate: "2026-11-09",
+      paidAt,
+      hours: [],
+    });
+    expect(row.expires_at!.getTime()).toBeGreaterThan(paidAt.getTime());
+
+    const at = new Date(paidAt.getTime() + 60_000);
+    const result = await entitlementsOf(world).redeem({
+      facilityId,
+      customerProfileId: member.id,
+      at,
+    });
+    expect(result.grantEntryId).toBe(row.id);
+  });
+
+  // Q78 edge 2 (assumption): a stale businessDate (10 days before payment) must
+  // not yield an expired grant. Paid Thu 2026-11-19 15:00 (open Mon-Sat
+  // 10:00-22:00), so expiry is the closing of paidAt's operating day (Thu 22:00)
+  // or, at the latest, of the next one (Fri 22:00); never before paidAt.
+  it("Q78 stale businessDate 10 days before payment: expires at the closing of paidAt's operating day or the next", async () => {
+    const paidAt = jakarta("2026-11-19", "15:00");
+    const { row } = await payPackage({
+      businessDate: "2026-11-09",
+      paidAt,
+    });
+    const expiresAt = row.expires_at!;
+    expect(expiresAt.getTime()).toBeGreaterThan(paidAt.getTime());
+    expect([
+      jakarta("2026-11-19", "22:00").toISOString(),
+      jakarta("2026-11-20", "22:00").toISOString(),
+    ]).toContain(expiresAt.toISOString());
+  });
 });

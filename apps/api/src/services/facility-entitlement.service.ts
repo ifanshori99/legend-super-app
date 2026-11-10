@@ -374,7 +374,16 @@ export function operatingDayEndAfter(
   timeZone: string,
   notBefore: Date,
 ): Date {
-  const [year, month, day] = businessDate.split("-").map(Number);
+  // A stale business date (an open bill paid days later) starts the search at
+  // the day before the sale, so the last day an overnight closing could still
+  // cover the sale is not skipped.
+  const sale = localDate(notBefore, timeZone);
+  const [sy, sm, sd] = sale.split("-").map(Number);
+  const dayBeforeSale = new Date(Date.UTC(sy, sm - 1, sd - 1))
+    .toISOString()
+    .slice(0, 10);
+  const start = dayBeforeSale > businessDate ? dayBeforeSale : businessDate;
+  const [year, month, day] = start.split("-").map(Number);
   for (let offset = 0; offset < 8 && hours.length > 0; offset += 1) {
     const date = new Date(Date.UTC(year, month - 1, day + offset));
     if (!hours.some((entry) => entry.daysOfWeek.includes(date.getUTCDay())))
@@ -386,7 +395,12 @@ export function operatingDayEndAfter(
     );
     if (end.getTime() > notBefore.getTime()) return end;
   }
-  return operatingDayEnd(hours, businessDate, timeZone);
+  // No usable hours: the end of the business date, but never before the sale
+  // (a cutoff past midnight puts the sale after that date's midnight).
+  const fallback = operatingDayEnd(hours, businessDate, timeZone);
+  return fallback.getTime() > notBefore.getTime()
+    ? fallback
+    : operatingDayEnd([], sale, timeZone);
 }
 
 /** Expiry of a grant from the rule validity (contract `entitlementExpiresAt`). */
