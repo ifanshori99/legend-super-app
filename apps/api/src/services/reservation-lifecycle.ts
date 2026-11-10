@@ -49,6 +49,7 @@ import {
   loadDepositStatuses,
   loadHeldDeposit,
   loadHolds,
+  lockDepositLink,
   lockOutletHolds,
   lockReservation,
   mapHoldViolation,
@@ -69,6 +70,7 @@ import {
   zonedInstant,
 } from "./reservation-plan.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { cancelPaymentLinkInTx } from "./payment.service.ts";
 import { sessionDepositCredit } from "./reservation-deposit-credit.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
 import { openStaffSeatedSession } from "./table-session.service.ts";
@@ -449,6 +451,13 @@ async function closeReservation(
         refund: null,
       };
     let row = await lockReservation(tx, context, outletId, reservationId);
+    // Payment lock order (payment-late-settlement.ts, "Urutan kunci
+    // pembayaran"): reservation -> DP link -> its intents (ascending id). A
+    // settlement of that link locks the reservation first, so it either
+    // committed before this point (reconcileDeposit below then sees the paid
+    // intent and the paid-deposit path applies) or waits for this transaction
+    // and finds the booking closed.
+    const dpLink = await lockDepositLink(tx, context, row);
     row = await reconcileDeposit(tx, context, row, now);
     // legend-em6p: the DP intent is locked after the reservation row
     // (reservations -> payment_intents) and the close time taken under it, so
@@ -466,6 +475,11 @@ async function closeReservation(
             now,
           );
     assertReservationTransition(row.status, kind);
+    // A paid intent on the DP link that reconcileDeposit did not record means
+    // the unpaid-deposit path would drop real money: refuse, the caller
+    // retries once the payment consumer has booked the deposit.
+    if (row.depositPaymentId === null && dpLink.heldIntentId !== null)
+      throw new ReservationError("RESERVATION_DEPOSIT_PAYMENT_PENDING");
     // RSV-03: always the snapshot taken at booking, never the live policy.
     const policy = reservationPolicySnapshotSchema.parse(row.policySnapshot);
     let paid = idr(0);
@@ -511,6 +525,15 @@ async function closeReservation(
       )
       .returning();
     if (!updated) throw new Error("Reservation update returned no row");
+    // The DP link stops taking money and its pending intents expire (link
+    // already locked above). A code past its expiry stays `pending` for the
+    // poller; the closed reservation parks that late payment.
+    if (row.depositPaymentLinkId !== null)
+      await cancelPaymentLinkInTx(tx, context, {
+        linkId: row.depositPaymentLinkId,
+        now,
+        reason: "cancelled",
+      });
     await releaseHolds(tx, context, row.id, now);
     await appendReservationEvent(
       tx,

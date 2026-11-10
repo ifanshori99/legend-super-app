@@ -1267,3 +1267,18 @@ Order: A, B, C, E in parallel; D after C (needs `payment-duitku.ts` cred helper 
 - Legacy shim (D2) is a catch-all; production must never call `setPaymentGateway`.
 - Routing permission change (D14) hides nothing in UI today but API refuses edc-only actors: UI bead needed before release.
 - Duitku refunds are manual (D6) until a refund API exists.
+
+# Payment lock order (legend-s0u8c, Codex 406 Duitku rerun)
+
+Source of truth: the comment at the top of `apps/api/src/services/payment-late-settlement.ts`. Every writer that settles, fails or cancels money for a bill takes row locks in one order:
+
+1. Bill owner: the `reservations` row of a deposit link, or the `orders` rows (by id) then their `pos_orders` rows.
+2. `payment_links` (the bill).
+3. `payment_intents` (by id when several).
+4. Funds and refunds.
+
+- Settlement (the Duitku webhook through `confirmPayment`, the poller, a held amount mismatch) calls `lockBillOwner` first and reads the business status only after holding the locks. Under READ COMMITTED a cancel that is still uncommitted makes settlement wait, and settlement then sees the cancelled status and parks the money as unallocated.
+- POS cancel (`mutatePosOrder`) already locks order, pos_order, then link. Reservation cancel (`closeReservation`) locks reservation, then the deposit link and its intents. It refuses with 409 `RESERVATION_DEPOSIT_PAYMENT_PENDING` when an intent is paid but not yet recorded as the deposit (the deposit consumer runs after the payment event), and it expires the pending intents.
+- The closed-bill guard (`billClosedForLateSettlement`) also covers `pending` intents. A cancel leaves a gateway code that is past its expiry `pending` so the poller can still reconcile it.
+- Amount mismatch (s5jup D2): the intent is held as `failed`, marked by the audit row `payment.amount_mismatch_held`. The money is parked in the same transaction. The callback row is `failed` with `REJECTED_AMOUNT_MISMATCH` and is not retried, and the log line is a warning that carries ids and the code only. A held intent never settles from the poller or a later callback.
+- paidAt is chosen from the intent status read under the lock: `pending` gives min(now, first receipt), anything else gives now.

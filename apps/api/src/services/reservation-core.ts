@@ -25,6 +25,7 @@ import {
 import {
   domainEventOutbox,
   paymentIntents,
+  paymentLinks,
   paymentRefunds,
 } from "../db/schema/index.ts";
 import {
@@ -718,6 +719,48 @@ export async function loadDepositState(
     if (intent.status === "pending" && intent.expiresAt > payableUntil)
       payableUntil = intent.expiresAt;
   return { settledIntentId: settled?.id ?? null, payableUntil };
+}
+
+/**
+ * Payment lock protocol (see `payment-late-settlement.ts`, "Urutan kunci
+ * pembayaran"): the reservation row is the bill owner, so it is locked first
+ * (`lockReservation`), then the DP link, then the link's intents in ascending
+ * id. Call it right after `lockReservation`, before reading the DP state, so a
+ * settlement that committed first is visible and one that has not yet locked
+ * the reservation waits behind this transaction. Returns the first intent of
+ * the link that still holds money (`paid` / `partially_refunded`), if any.
+ * No-op without a DP link (legacy rows keep `deposit_payment_id` only).
+ */
+export async function lockDepositLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: ReservationRow,
+): Promise<{ heldIntentId: string | null }> {
+  if (row.depositPaymentLinkId === null) return { heldIntentId: null };
+  const tenantId = context.tenant.tenantId;
+  await tx
+    .select({ id: paymentLinks.id })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, tenantId),
+        eq(paymentLinks.id, row.depositPaymentLinkId),
+      ),
+    )
+    .for("update");
+  const intents = await tx
+    .select({ id: paymentIntents.id, status: paymentIntents.status })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, row.depositPaymentLinkId),
+      ),
+    )
+    .orderBy(asc(paymentIntents.id))
+    .for("update");
+  const held = intents.find((intent) => depositHoldsFunds(intent.status));
+  return { heldIntentId: held?.id ?? null };
 }
 
 /**

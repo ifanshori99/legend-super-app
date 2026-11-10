@@ -47,10 +47,10 @@ import { logger } from "../lib/logger";
 import {
   applyGatewayFailure,
   confirmPayment,
+  holdGatewayAmountMismatch,
   PaymentConfirmationRejected,
   recordUnsettledGatewayFunds,
 } from "./payment.service";
-import { plausiblePaidAt } from "./payment-paid-at";
 import {
   duitkuTransactionStatus,
   parseDuitkuCallback,
@@ -366,39 +366,37 @@ async function processStoredCallback(
     let outcome: ProcessOutcome = "processed";
     let code: string | null = null;
     if (answer.status === "paid") {
-      // Duitku gives no paid time. A still-open intent was paid no later than
-      // the first receipt, so a worker retry hours later must not push paidAt
-      // past the bill's expiry or into the next business day (a false
-      // late_payment). A closed intent (failed or expired) was paid after it
-      // closed, and its row may be an older failure callback that shares this
-      // event key, so it keeps `now`.
-      const at = plausiblePaidAt(
-        null,
-        intent.createdAt,
-        intent.status === "pending" && row.receivedAt.getTime() < now.getTime()
-          ? row.receivedAt
-          : now,
-      );
+      // Duitku gives no paid time. confirmPayment picks paidAt from the
+      // intent status it reads under the bill lock (pending: no later than
+      // the first receipt, so a worker retry hours later cannot push paidAt
+      // past the bill's expiry; closed: now), so only the receipt time goes
+      // along, never a choice made from a status read before the lock.
+      const at = now.toISOString();
       // Money settles only when the signed callback amount, Duitku's status
       // amount and the bill agree. Any difference (over or under, by even one
-      // rupiah) is parked for reconciliation; the intent stays unpaid.
+      // rupiah) holds the intent as failed for review and parks the money as
+      // unallocated funds, under the same lock order as a settlement.
       const amountsAgree =
         Number(fields.amount) === answer.amountIdr &&
         answer.amountIdr === Number(intent.amountIdr);
       if (!amountsAgree) {
-        outcome = "ignored";
+        outcome = "failed";
         code = "REJECTED_AMOUNT_MISMATCH";
-        await recordUnsettledGatewayFunds(
+        await holdGatewayAmountMismatch(
           context,
-          intent,
+          intent.id,
           {
-            provider: PROVIDER,
             providerRef: intent.providerRef,
-            source: "verified_webhook",
             paidAmountIdr: answer.amountIdr,
-            receivedAt: new Date(at),
+            eventId: row.eventId ?? undefined,
+            source: "webhook",
           },
           now,
+        );
+        // Ids and a code only: no signature, key or payload.
+        logger.warn(
+          { intentId: intent.id, eventId: row.eventId, code },
+          "Duitku callback amount differs from the intent; held for review",
         );
       } else
         try {
@@ -411,6 +409,7 @@ async function processStoredCallback(
               amountIdr: answer.amountIdr,
               providerRef: intent.providerRef,
               at,
+              receivedAt: row.receivedAt,
             },
             { type: "system" },
             now,
@@ -449,7 +448,12 @@ async function processStoredCallback(
       {
         status: outcome,
         lastErrorCode: code,
-        processedAt: outcome === "failed" ? null : now,
+        // A held amount mismatch is a final verdict for review, not a retry:
+        // retrying would re-ask Duitku and repeat the warning for 24 hours.
+        processedAt:
+          outcome === "failed" && code !== "REJECTED_AMOUNT_MISMATCH"
+            ? null
+            : now,
         providerRef: intent.providerRef,
         ...bound,
       },
@@ -629,6 +633,8 @@ export async function reprocessDuitkuWebhookEvents(
           eq(gatewayWebhookEvents.signatureValid, true),
           inArray(gatewayWebhookEvents.status, ["received", "failed"]),
           isNotNull(gatewayWebhookEvents.payload),
+          // A held amount mismatch is parked for review, never retried.
+          sql`${gatewayWebhookEvents.lastErrorCode} is distinct from 'REJECTED_AMOUNT_MISMATCH'`,
           gt(gatewayWebhookEvents.receivedAt, windowStart),
           sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
         ),

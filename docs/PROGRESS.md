@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-s0u8c perbaikan temuan Codex 406 Duitku (engineer Opus, cabang `ws/duitku-406` dari `ws/s5jup-duitku` 008cbd93, 2026-11-11)
+
+- Sudah: satu urutan kunci pembayaran (pemilik tagihan → link → intent → dana), tertulis di `payment-late-settlement.ts` dan `docs/DECISIONS.md` "Payment lock order". F1 tahan mismatch atomik (audit `payment.amount_mismatch_held`, intent `failed`, dana diparkir dalam tx yang sama, poller dan callback berikut ditolak). F2 guard tagihan tertutup juga untuk intent `pending`. F3 settlement mengunci reservasi dulu; batal reservasi mengunci link dan intent, menolak 409 bila deposit baru terbayar. F4 paidAt dipilih dari status terkunci. F5 baris callback `failed` REJECTED_AMOUNT_MISMATCH, tidak diulang worker, `logger.warn` tanpa rahasia. Review architect xhigh: P0 (schema strict menolak `receivedAt`) dan dua P2 sudah dibetulkan.
+- Terverifikasi: typecheck API, eslint, prettier, `db:generate` kosong.
+- Belum: semua test DB (dua berkas baru `payment-duitku-406-{webhook,cancel}.test.ts` dan regresi). Mac tidak bisa menyalakan Colima atau Postgres karena layanan direktori macOS rusak (`id -un` → 501, `dscl` eServerError). Bukti gagal-dulu di basis 008cbd93 juga belum.
+- Keputusan: tahan mismatch dicatat SETELAH jawaban status Duitku (status Duitku satu-satunya sumber tepercaya). Bila hanya nominal callback yang beda dan poller lebih dulu, intent tetap paid; mismatch tetap dicatat (baris gagal, audit, warn).
+- Langkah berikut: pulihkan layanan direktori (restart Mac atau `sudo killall opendirectoryd`), jalankan test terarah, perbaiki fixture webhook di test F2/F3 bila masih 503.
+
 ## legend-rgddb perbaikan temuan second-opinion Codex gateway Duitku (engineer Opus, cabang `ws/duitku-codex-fix` dari milestone/m1 29ddcbf7, brief 374, 2026-11-10)
 
 - Tanpa migrasi. Berkas: `payment-duitku-webhook.service.ts`, `payment-duitku.ts`, `platform-integration.service.ts` (opsi `forStoredIntent`), `payment.service.ts` (opsi `closedIntentNeedsOpenBill`, kode tolak `BILL_CLOSED`, aturan ketat Duitku di poller), baru `payment-late-settlement.ts`, test `payment-duitku-webhook.test.ts`.
