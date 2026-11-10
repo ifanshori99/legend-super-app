@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-iu91r + legend-8kilj refund recovery: edge, kegagalan final, four-eyes payout, release pin (engineer, cabang `ws/refund-recovery-fix` dari ws/94q2l-impl 3b94e7ad + merge milestone/m1 0f2802e7, 2026-11-10)
+
+- R1: `worker-main.ts` menjalankan `deliverOrderRecoveryRefundEvent` hanya bila `sweepsRefunds` (cloud), seperti refund lain (legend-jm5c).
+- R2: kegagalan final (`provider_declined`, `cap_exceeded`, `source_document`, blok `refile_limit`/`no_first_filing`) diperlakukan seperti `rejected`: event pembalik (jurnal `aj:order-refund` dibalik, poin kembali), cap `refund_rejected_at` (wumm8), hold `qrSaleInUseOfIntent` dan `released` di consumer hanya melepas isu yang punya refund hidup. Jalur lanjutan = lapor ulang baris sebagai isu baru (kunci jurnal baru, tanpa dobel). Keputusan: `docs/briefs/sub-refund-recovery-final-failure.md`.
+- R3: four-eyes payout menolak semua `decided_by` rantai ORD-09 isu (bukan hanya penyetuju terakhir). R4: guard `releasedOf` dikurangkan hanya untuk kode yang dipin.
+- Bukti: gagal-dulu per temuan (R1 regex, FE-2b, SPLIT-R4, FF-1..FF-10); test terarah 49 file 939 lulus 8 skip; ulang setelah perubahan terakhir 3 file 75/75; tsc api lulus (heavy); eslint + prettier bersih; `db:generate` kosong. Review architect (K): tanpa bug di diff; 3 catatan di luar scope (promo payout tetap tercatat saat lapor ulang, data kegagalan final sebelum deploy, provider sukses setelah decline).
+- Subagent: 11 (Explore 4, implementer 3, test-runner 3, architect 1), puncak bersamaan 5.
+
 ## legend-k2l WS-01 login email, Google, dan graf identitas member (engineer, cabang `ws/ws01-k2l` dari `docs/arch-member-loyalty` b07b1032, brief 290b, 2026-11-10)
 
 - Sudah: migrasi `0220_k2l_member_signin_identity` (sebelumnya 0204; digeser ke ujung, when 1794297863874, snapshot 0220 mengikuti 0208; lihat putaran 3). Isi: `session.auth_method` + `auth_cross_device` (backfill `password` untuk sesi management, sisanya `legacy`), `login_challenges.email_encrypted`, indeks unik satu WhatsApp per user (berhenti bila ada duplikat), tabel append-only `identity_merges`, fungsi SECURITY DEFINER `app.user_has_role_assignment` (hanya role yang masih berlaku).
