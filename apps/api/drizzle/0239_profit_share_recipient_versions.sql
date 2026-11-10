@@ -1,6 +1,7 @@
--- A non-superuser table owner (0068) validates the foreign keys and runs the
--- backfill below under forced RLS without a tenant: lift it on the parents for
--- this migration only (contracts.md pattern 2), restored at the end.
+-- A non-superuser table owner (0068) runs the backfill below under forced RLS
+-- without a tenant: lift it on the parents for this migration only
+-- (contracts.md pattern 2), restored at the end. The foreign keys of the new
+-- table are inline in CREATE TABLE, so they need no validation scan.
 ALTER TABLE public.shareholders NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.distribution_lines NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "shareholder_recipient_versions" (
@@ -49,11 +50,18 @@ REVOKE DELETE, TRUNCATE ON public.shareholder_recipient_versions FROM legend_app
 --> statement-breakpoint
 ALTER TABLE public.distribution_lines DISABLE TRIGGER distribution_lines_guard_trg;
 --> statement-breakpoint
+-- The deferred totals check (0217) would otherwise be queued by the UPDATE and
+-- run at commit, after FORCE RLS is back on, without a tenant context. The
+-- UPDATE changes only recipient_user_id, so no total moves.
+ALTER TABLE public.distribution_lines DISABLE TRIGGER distribution_lines_totals_trg;
+--> statement-breakpoint
 UPDATE public.distribution_lines l
 SET recipient_user_id = s.user_id
 FROM public.shareholders s
 WHERE s.tenant_id = l.tenant_id AND s.id = l.shareholder_id
   AND l.recipient_user_id IS NULL AND s.user_id IS NOT NULL;
+--> statement-breakpoint
+ALTER TABLE public.distribution_lines ENABLE TRIGGER distribution_lines_totals_trg;
 --> statement-breakpoint
 ALTER TABLE public.distribution_lines ENABLE TRIGGER distribution_lines_guard_trg;
 --> statement-breakpoint

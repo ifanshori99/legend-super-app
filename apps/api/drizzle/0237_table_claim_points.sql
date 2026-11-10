@@ -4,7 +4,7 @@
 -- Keep this file and the schema (crm-ledger.ts, qr-order.ts) in step.
 -- orders is hot (POS): wait at most 5s for its ACCESS EXCLUSIVE lock, then
 -- restore the migrator's value (contracts.md, bead legend-76azz).
-SELECT set_config('legend.lock_timeout_before_0236', current_setting('lock_timeout'), true);--> statement-breakpoint
+SELECT set_config('legend.lock_timeout_before_0237', current_setting('lock_timeout'), true);--> statement-breakpoint
 SELECT set_config('lock_timeout', '5s', true);--> statement-breakpoint
 ALTER TABLE "point_ledger" DROP CONSTRAINT "point_ledger_source_type_check";--> statement-breakpoint
 ALTER TABLE "orders" ADD COLUMN "claim_token_hash" varchar(64);--> statement-breakpoint
@@ -25,4 +25,4 @@ ALTER TABLE "point_ledger" ADD CONSTRAINT "point_ledger_source_type_check" CHECK
             ELSE "point_ledger"."source_type" = 'adjustment' END) NOT VALID;--> statement-breakpoint
 ALTER TABLE "point_ledger" VALIDATE CONSTRAINT "point_ledger_source_type_check";
 --> statement-breakpoint
-SELECT set_config('lock_timeout', COALESCE(NULLIF(current_setting('legend.lock_timeout_before_0236', true), ''), current_setting('lock_timeout')), true);
+SELECT set_config('lock_timeout', COALESCE(NULLIF(current_setting('legend.lock_timeout_before_0237', true), ''), current_setting('lock_timeout')), true);

@@ -202,3 +202,25 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0228, urut merge. `when
 - **SQL diubah oleh merge train:** 0230 kini mengangkat FORCE RLS `order_issue_charges` dan `cash_movements` sebelum menambah FK, lalu memulihkannya di akhir (pola 2, `docs/plan/contracts.md`): tanpa itu migrasi gagal untuk pemilik tabel non-superuser (`edge-received-events-migration.test.ts`). 0232 menulis semua FK `pos_acting_staff` inline di `CREATE TABLE` (pola legend-436yt), tanpa angkat NO FORCE/FORCE; skema akhir identik.
 - Perubahan kode di luar nomor: `device-pin.service.ts` (`attemptStaffPinVersioned` dari aruta memakai pepper per generasi dari ideif), `order-recovery-refund-amount.ts` (pro-rata kumulatif 94q2l; `lineShareSplit` tetap diekspor untuk tagihan swap), `order-recovery-refund.ts` (import `inArray` dan `isNull`).
 - Test yang bergantung nomor: `order-issue-charge-cash-migration.test.ts` (idx 230), `accounting-tax-report-revisions.test.ts` (journal dipotong di idx 230), `uom-is-system-migration.test.ts` (dipotong di idx 233), `inventory-uom-backfill-migration.test.ts`.
+
+## Tambahan batch48b (penomoran ulang 0235 sampai 0241)
+
+Nomor sementara dari cabang dinomori ulang rapat sesudah 0234, urut merge. `when` naik 1000000 per migrasi mulai 1794316000000; snapshot dibuat ulang dari skema gabungan dengan `scripts/migration-renumber.mjs` (`node scripts/migration-renumber.mjs check --from-idx 235` memeriksa nomor, `when` dan rantai `prevId`). `db:generate` kosong sesudah tiap merge.
+
+| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
+|---|---|---|---|---|
+| 0235 | `0235_staff_pin_proofs` | 0241 | ws/u7g9w-pin-proof | 1794316000000 |
+| 0236 | `0236_user_pin_throttle` | 0258 | ws/jmsdx-pepper (memuat vfj7z) | 1794317000000 |
+| 0237 | `0237_table_claim_points` | 0236 | ws/split-claim-hide (juga ada di claim-payer-secret dan cpq2) | 1794318000000 |
+| 0238 | `0238_claim_payer_secret` | 0255 | ws/claim-payer-secret | 1794319000000 |
+| 0239 | `0239_profit_share_recipient_versions` | 0252 | ws/tm6pp-seed-policy (memuat 33im6) | 1794320000000 |
+| 0240 | `0240_share_version_approval` | 0256 | ws/tm6pp-seed-policy | 1794321000000 |
+| 0241 | `0241_shareholder_version_approval_policy` | 0259 | ws/tm6pp-seed-policy | 1794322000000 |
+
+- Tanpa migrasi baru: ws/ptn11-acting-staff-w2, ws/kxoyf-pos-swap, ws/w5by9-expiry-fifo. ws/cpq2-qr-read-models sudah termuat lewat split-claim-hide (migrasi `table_claim_points` yang sama di tiga cabang, isinya identik, satu salinan dipakai).
+- **SQL diubah oleh merge train:** 0239 memindahkan dua FK `shareholder_recipient_versions` (tenant dan shareholder) ke dalam `CREATE TABLE` (pola 1, `docs/plan/contracts.md`). Pengangkatan dan pemulihan FORCE RLS di 0239, 0241 dan 0217 sudah dari cabang asal dan dipertahankan. Temuan architect: backfill 0239 juga mematikan sementara trigger `distribution_lines_totals_trg` (trigger tertunda dari 0217), karena kalau tidak dia berjalan saat commit tanpa konteks tenant dan membatalkan migrasi untuk pemilik non-superuser yang sudah punya baris `distribution_lines`; nama pengaturan sementara di 0237 kini `legend.lock_timeout_before_0237`.
+- **0217 diedit di tempat** oleh ws/33im6 (isi ulang `profit_entities` dari id lama dokumen; FORCE RLS `outlets` dan `legal_entities` diangkat lalu dipulihkan). Database dev dan test yang sudah menerapkan 0217 lama harus di-reset. m1 belum pernah diterapkan ke database bersama.
+- ws/claim-payer-secret: web dan API harus dirilis bersamaan (createGuestPayment untuk bagian split wajib membawa `payerSecret`).
+- Perubahan kode di luar nomor: `device-pin.service.ts` dan `device-pin.routes.ts` (pepper per outlet, reset dan rehash dari jmsdx digabung dengan bukti versi PIN dan cek outlet kasir aktif dari u7g9w/aruta), `packages/shared/src/qr-order/guest.ts` (`payerSecret` bersama `requireBankForVaOnly`), `qr-order.service.ts` (satu impor `orderIssueCharges` dan `orderIssues`), `app.ts` (CORS membawa `X-Acting-Staff`, `X-Device-Token`, `X-Pin-Proof`).
+- Test dan docs yang bergantung nomor: `shareholder-version-policy-seed.test.ts` (idx 241, `when` 1794322000000), `data-import-registry.test.ts` (entri baru untuk 0217, 0239, 0241), komentar di `seed-dev-tenant.ts`, `access.service.ts`, `approval.ts`, `qr-order.ts`.
+- Lint dibersihkan setelah merge: impor tak terpakai di `open-bill.routes.ts` dan `order-recovery-charge-pos.ts`, tipe `any` di `order-issue-charge-cash-migration.test.ts`, variabel tak terpakai di `tests/ws07-profit-share-carry.test.mjs`.
