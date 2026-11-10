@@ -340,7 +340,11 @@ export const viewMyPayslipInputSchema = clientInputSchema({
 /** Same limits as the staff device pin (identity/limits.ts), kept separate. */
 export const PAYSLIP_PIN_MAX_ATTEMPTS = 5;
 export const PAYSLIP_PIN_LOCK_MINUTES = 15;
-/** WhatsApp one-time code that lets an employee set a new PIN without HR. */
+/**
+ * @deprecated legend-ur82k removes with the new screen. The outbound WhatsApp
+ * code is gone from the API (legend-9h2oj); reset runs through an inbound
+ * WhatsApp message (`reset-wa`).
+ */
 export const PAYSLIP_PIN_OTP_LENGTH = 6;
 export const PAYSLIP_PIN_OTP_TTL_MINUTES = 5;
 export const PAYSLIP_PIN_OTP_MAX_ATTEMPTS = 5;
@@ -377,6 +381,7 @@ export const resetPayslipPinInputSchema = clientInputSchema({
 });
 export type ResetPayslipPinInput = z.infer<typeof resetPayslipPinInputSchema>;
 
+/** @deprecated legend-ur82k removes with the new screen. */
 export const requestPayslipPinResetOtpInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
@@ -384,6 +389,7 @@ export type RequestPayslipPinResetOtpInput = z.infer<
   typeof requestPayslipPinResetOtpInputSchema
 >;
 
+/** @deprecated legend-ur82k removes with the new screen. */
 export const payslipPinResetOtpRequestedSchema = z.strictObject({
   expiresAt: isoDateTimeSchema,
 });
@@ -391,6 +397,7 @@ export type PayslipPinResetOtpRequested = z.infer<
   typeof payslipPinResetOtpRequestedSchema
 >;
 
+/** @deprecated legend-ur82k removes with the new screen. */
 export const verifyPayslipPinResetOtpInputSchema = clientInputSchema({
   code: z
     .string()
@@ -404,6 +411,53 @@ export const verifyPayslipPinResetOtpInputSchema = clientInputSchema({
 export type VerifyPayslipPinResetOtpInput = z.infer<
   typeof verifyPayslipPinResetOtpInputSchema
 >;
+
+// ---- Payslip PIN reset by an inbound WhatsApp message (bead legend-9h2oj) --
+
+/** POST reset-wa: no input; the proof is for the signed-in employee. */
+export const requestPayslipPinResetWaInputSchema = clientInputSchema({});
+export type RequestPayslipPinResetWaInput = z.infer<
+  typeof requestPayslipPinResetWaInputSchema
+>;
+
+/** The code is shown once and never stored (design D-WA6). */
+export const payslipPinResetWaIssuedSchema = z.strictObject({
+  challengeId: z.string().uuid(),
+  /** `K7Q4-M2XD`. */
+  code: z.string(),
+  /** `https://wa.me/<number>?text=RESET%20PIN%20K7Q4-M2XD`. */
+  waLink: z.string(),
+  /** Last four digits of the employee's own number. */
+  senderHint: z.string().regex(/^\d{4}$/),
+  expiresAt: isoDateTimeSchema,
+});
+export type PayslipPinResetWaIssued = z.infer<
+  typeof payslipPinResetWaIssuedSchema
+>;
+
+export const payslipPinResetWaStatusSchema = z.strictObject({
+  status: z.enum(["pending", "verified", "used", "expired", "cancelled"]),
+  expiresAt: isoDateTimeSchema,
+  grantExpiresAt: isoDateTimeSchema.nullable(),
+});
+export type PayslipPinResetWaStatus = z.infer<
+  typeof payslipPinResetWaStatusSchema
+>;
+
+export const payslipPinResetWaParamsSchema = z.strictObject({
+  challengeId: z.string().uuid(),
+});
+
+/** New PIN after the number was verified; the proof is used once. */
+export const completePayslipPinResetWaInputSchema = clientInputSchema({
+  pin: payslipPinSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+export type CompletePayslipPinResetWaInput = z.infer<
+  typeof completePayslipPinResetWaInputSchema
+>;
+
+export const cancelPayslipPinResetWaInputSchema = clientInputSchema({});
 
 // ---- Run totals -----------------------------------------------------------
 

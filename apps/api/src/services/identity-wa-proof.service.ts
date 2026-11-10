@@ -37,7 +37,7 @@ import {
 } from "@starter/shared/core";
 import type { db } from "../db";
 import { loginChallenges, tenants, userIdentities } from "../db/schema";
-import { loginCodeDigest } from "../lib/identity-digest";
+import { loginCodeDigest, whatsAppDigest } from "../lib/identity-digest";
 import { openSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit.ts";
 import {
@@ -334,12 +334,12 @@ const openProof = or(
 /**
  * The owner cancels their proof ("Batal"). NOT_FOUND when the id is not this
  * user's and session's in this tenant; a proof that is already final stays
- * as it is.
+ * as it is. Returns how many rows were cancelled (0 for a final proof).
  */
 export async function cancelWhatsAppProof(
   tx: Transaction,
   input: Omit<WhatsAppProofBinding, "bindingHash">,
-): Promise<void> {
+): Promise<number> {
   const owned = and(
     eq(loginChallenges.id, input.challengeId),
     eq(loginChallenges.purpose, input.purpose),
@@ -353,10 +353,12 @@ export async function cancelWhatsAppProof(
     .where(owned)
     .limit(1);
   if (!row) throw new CoreError("NOT_FOUND", "Verifikasi tidak ditemukan.");
-  await tx
+  const cancelled = await tx
     .update(loginChallenges)
     .set({ status: "cancelled" })
-    .where(and(owned, openProof));
+    .where(and(owned, openProof))
+    .returning({ id: loginChallenges.id });
+  return cancelled.length;
 }
 
 /**
@@ -398,6 +400,22 @@ export async function findWhatsAppProofIdentity(
   tx: Transaction,
   input: { readonly userId: string; readonly now: Date },
 ): Promise<{ valueHash: string; senderHint: string } | null> {
+  const found = await findWhatsAppProofSender(tx, input);
+  return found && { valueHash: found.valueHash, senderHint: found.senderHint };
+}
+
+/**
+ * Same rule as `findWhatsAppProofIdentity`, plus `senderHash`: the digest the
+ * webhook computes for this number, i.e. the proof's `expected_sender_hash`.
+ */
+export async function findWhatsAppProofSender(
+  tx: Transaction,
+  input: { readonly userId: string; readonly now: Date },
+): Promise<{
+  valueHash: string;
+  senderHash: string;
+  senderHint: string;
+} | null> {
   const linkedBefore = new Date(
     input.now.getTime() - WA_PROOF_IDENTITY_MIN_AGE_DAYS * DAY_MS,
   );
@@ -421,7 +439,11 @@ export async function findWhatsAppProofIdentity(
     row.valueEncrypted,
     `user_identity:whatsapp:${row.valueHash}`,
   );
-  return { valueHash: row.valueHash, senderHint: number.slice(-4) };
+  return {
+    valueHash: row.valueHash,
+    senderHash: await whatsAppDigest(number),
+    senderHint: number.slice(-4),
+  };
 }
 
 /** Result of a webhook message on a proof row. */

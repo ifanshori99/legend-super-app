@@ -42,6 +42,10 @@ export const payrollErrorHttpStatus = {
   PAYSLIP_PIN_LOCKED: 423,
   /** The employee has not set a payslip PIN yet; set one before opening. */
   PAYSLIP_PIN_NOT_SET: 409,
+  /** No verified WhatsApp number linked long enough; only HR can reset. */
+  PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE: 409,
+  /** The WhatsApp proof is missing, used, expired or not this session's. */
+  PAYSLIP_PIN_RESET_PROOF_INVALID: 403,
 } as const satisfies Record<string, number>;
 
 export type PayrollErrorCode = keyof typeof payrollErrorHttpStatus;
@@ -84,6 +88,10 @@ const defaultMessages: Record<PayrollErrorCode, string> = {
   PAYSLIP_PIN_LOCKED:
     "PIN slip gaji terkunci sementara karena terlalu banyak percobaan.",
   PAYSLIP_PIN_NOT_SET: "PIN slip gaji belum dibuat. Buat PIN terlebih dahulu.",
+  PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE:
+    "Reset lewat WhatsApp belum tersedia untuk akun ini. Hubungi HR untuk reset PIN.",
+  PAYSLIP_PIN_RESET_PROOF_INVALID:
+    "Verifikasi WhatsApp tidak berlaku. Mulai ulang reset PIN.",
 };
 
 export class PayrollError extends Error {

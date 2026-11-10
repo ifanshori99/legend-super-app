@@ -1639,6 +1639,13 @@
       "when": 1794353039377,
       "tag": "0272_wa_proof_purpose",
       "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1794353309224,
+      "tag": "0273_drop_payslip_pin_reset_challenges",
+      "breakpoints": true
     }
   ]
 }

@@ -338,12 +338,16 @@ async function sendWhatsapp(input: {
     phoneNumberId: input.phoneNumberId ?? RECEIVING_NUMBER,
   });
   const signature = await signKirimWebhook({ rawBody: body, secret: SECRET });
-  return agent(app)
-    .host(fixtures.domains[0]!.hostname)
-    .post("/api/webhooks/whatsapp")
-    .set("Content-Type", "application/json")
-    .set("X-Kirim-Signature", signature)
-    .send(body);
+  return (
+    agent(app)
+      .host(fixtures.domains[0]!.hostname)
+      .post("/api/webhooks/whatsapp")
+      .set("Content-Type", "application/json")
+      .set("X-Kirim-Signature", signature)
+      // Kirimdev always sends it and verifyKirimWebhook requires it.
+      .set("X-Kirim-Event-Id", `evt-${randomUUID()}`)
+      .send(body)
+  );
 }
 
 /** The employee sends `RESET PIN <code>` from their own number. */
@@ -902,6 +906,23 @@ describe("PIN reset by WhatsApp: saving the new PIN (POST reset-wa/:id/pin)", ()
     expect(await pinHash(staff.employeeId)).toBe(hashBefore);
   });
 
+  it("403 when the number's link is renewed after the proof was verified; the proof stays verified and the PIN stays", async () => {
+    const staff = await seedStaff("Staf WA Tautan Diperbarui");
+    const issued = await verifiedReset(staff);
+    const hashBefore = await pinHash(staff.employeeId);
+    // A merge or re-verification restarts linked_at (trigger); the identity no
+    // longer qualifies, so the recheck in /pin must refuse.
+    await owner.query(
+      `UPDATE user_identities SET linked_at = now() WHERE user_id = $1`,
+      [staff.userId],
+    );
+    const response = await savePin(staff.client, issued.challengeId);
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error.code).toBe("PAYSLIP_PIN_RESET_PROOF_INVALID");
+    expect(await pinHash(staff.employeeId)).toBe(hashBefore);
+    expect((await statusOf(staff, issued.challengeId)).status).toBe("verified");
+  });
+
   it("403 for a proof that does not exist", async () => {
     const staff = await seedStaff("Staf WA Bukti Tak Ada");
     const response = await savePin(staff.client, randomUUID());
@@ -942,6 +963,18 @@ describe("PIN reset by WhatsApp: cancelling (POST reset-wa/:id/cancel)", () => {
       "cancelled",
     );
     expect((await savePin(staff.client, issued.challengeId)).status).toBe(403);
+  });
+
+  it("cancelling a proof that was already used changes nothing and writes no audit", async () => {
+    const staff = await seedStaff("Staf WA Batal Sudah Dipakai");
+    const issued = await verifiedReset(staff);
+    expect((await savePin(staff.client, issued.challengeId)).status).toBe(200);
+    const before = await auditCount("payslip_pin.wa_proof_cancelled");
+    expect((await cancelProof(staff.client, issued.challengeId)).status).toBe(
+      204,
+    );
+    expect(await auditCount("payslip_pin.wa_proof_cancelled")).toBe(before);
+    expect((await statusOf(staff, issued.challengeId)).status).toBe("used");
   });
 
   it("404 for an unknown id and for someone else's proof, which stays pending", async () => {
