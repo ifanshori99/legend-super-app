@@ -244,7 +244,7 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
     const user = await staffWithPin(ago(60_000));
     const page = await pullAll(bandungNode, undefined);
     const serialized = JSON.stringify(page);
-    const pepper = staffPinPepper(tenantId);
+    const pepper = staffPinPepper(tenantId, bandung);
     for (const secret of [
       `"${PIN}"`,
       pepper.toString("hex"),
@@ -503,7 +503,7 @@ describe("legend-obh5 staff pin edge apply (cloud wins, ordered by the generatio
     );
     // The supervisor resets the pin on the cloud at t1 + 10 min.
     const hashed = await hashStaffPin({
-      pepper: staffPinPepper(tenantId),
+      pepper: staffPinPepper(tenantId, bandung),
       binding: { tenantId, outletId: bandung, userId: user },
       pin: NEW_PIN,
     });

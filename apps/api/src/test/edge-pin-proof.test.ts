@@ -43,10 +43,18 @@
 //   no MFA and no session at all in that flow.
 // - GET /api/hris/attendance/logs with only the proof headers is checked on a
 //   cloud-style app (route served there): 401, because a proof is not a session.
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import sharp from "sharp";
 
 // Must run before ../config/env is first imported (imports are hoisted).
@@ -97,6 +105,10 @@ import {
   cafeLegendPlatformFixtures,
 } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import {
+  installEdgeStaffPinPeppers,
+  resetEdgeStaffPinPeppers,
+} from "../edge/staff-pin-pepper-registry.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
@@ -208,6 +220,21 @@ async function grantRole(
         [tenant.id, userId, roleId, scope.type, scopeId],
       );
   });
+}
+
+// An edge node holds only its own outlet's peppers (legend-jmsdx). One pepper
+// per outlet, kept for the whole file so a pin set earlier still verifies when
+// the outlet is installed again.
+const outletPeppers = new Map<string, Buffer>();
+
+function holdEdgePepper(outlet: string) {
+  let pepper = outletPeppers.get(outlet);
+  if (pepper === undefined) {
+    pepper = randomBytes(32);
+    outletPeppers.set(outlet, pepper);
+  }
+  resetEdgeStaffPinPeppers();
+  installEdgeStaffPinPeppers(tenant.id, outlet, [{ version: 2, pepper }]);
 }
 
 async function seedOutlet(label: string) {
@@ -490,6 +517,7 @@ beforeAll(async () => {
     .jpeg()
     .toBuffer();
   outletId = await seedOutlet("Outlet bukti PIN");
+  holdEdgePepper(outletId);
   const first = await enrollAt(outletId, "Layar satu");
   deviceToken = first.token;
   deviceId = first.id;
@@ -531,7 +559,12 @@ beforeAll(async () => {
   expect(response.status, JSON.stringify(response.body)).toBe(200);
 }, 90_000);
 
+afterEach(() => {
+  holdEdgePepper(outletId);
+});
+
 afterAll(async () => {
+  resetEdgeStaffPinPeppers();
   setAuditWriter(null);
   setDeviceOutletResolver(null);
   await asTenant(async (client) => {
@@ -888,6 +921,7 @@ describe("(e) a second proof on the same device ends the first", () => {
 describe("(f) 10 wrong PINs from one device across staff", () => {
   it("(f) 11th request -> 429 PIN_DEVICE_THROTTLED with Retry-After for that device only; one audit, one alert, staff counters untouched", async () => {
     const throttleOutlet = await seedOutlet("Outlet throttle PIN");
+    holdEdgePepper(throttleOutlet);
     const flooded = await enrollAt(throttleOutlet, "Layar banjir");
     const calm = await enrollAt(throttleOutlet, "Layar tenang");
     await seedSupervisor(throttleOutlet);
@@ -977,6 +1011,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) 20 wrong PINs at once from one device -> at most 10 answer 401, the rest 429, staff counters rise by at most 10", async () => {
     const throttleOutlet = await seedOutlet("Outlet salah serentak");
+    holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar serentak");
     const options = { outlet: throttleOutlet };
     const crowd: Staff[] = [];
@@ -1008,6 +1043,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) a failing alert does not change the answers: 10th wrong PIN stays 401, 11th stays 429", async () => {
     const throttleOutlet = await seedOutlet("Outlet alarm gagal");
+    holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar alarm gagal");
     await seedSupervisor(throttleOutlet);
     const options = { outlet: throttleOutlet };
@@ -1041,6 +1077,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) 9 wrong PINs do not throttle: the next correct PIN still works", async () => {
     const throttleOutlet = await seedOutlet("Outlet sembilan salah");
+    holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar sembilan");
     const options = { outlet: throttleOutlet };
     const staff1 = await newStaff("Staf Sembilan Satu", options);

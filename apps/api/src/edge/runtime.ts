@@ -80,7 +80,7 @@ import {
 import { createStaffPinPull } from "./staff-pin-pull.ts";
 import {
   activateEdgePepperRegistry,
-  edgeStaffPinPepperContiguous,
+  edgeStaffPinPepperVersionsHeld,
   installEdgeStaffPinPeppers,
 } from "./staff-pin-pepper-registry.ts";
 import {
@@ -641,7 +641,7 @@ export async function startEdgeRuntime(
   // guard covers a `source` that is not process.env. Names only, no value.
   if (source.STAFF_PIN_PEPPER !== undefined && source.STAFF_PIN_PEPPER !== "")
     throw new EdgeBootError(
-      "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the tenant pepper over the sync.",
+      "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the outlet pepper over the sync.",
     );
   await assertEdgeSchemaReady();
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
@@ -663,16 +663,17 @@ export async function startEdgeRuntime(
   }
   const identity = { context: local.context, scope: local.scope };
   state = { edgeMode: true, identity, link: disconnected };
-  // legend-ideif: from here on pin hashing uses only the tenant peppers the
+  // legend-ideif: from here on pin hashing uses only the outlet peppers the
   // cloud sent (none yet = fail closed). Restore the sealed ones from the
   // database so a restart verifies pins offline; rows sealed under a rotated
   // credential do not open and are fetched again on the next sync.
   const pepperSealKey = deriveEdgePepperSealKey(
     config.credential.split(".")[4] ?? "",
   );
-  activateEdgePepperRegistry(local.scope.tenantId);
+  activateEdgePepperRegistry(local.scope.tenantId, local.scope.outletId);
   installEdgeStaffPinPeppers(
     local.scope.tenantId,
+    local.scope.outletId,
     [
       ...(
         await loadEdgePeppers(
@@ -852,7 +853,7 @@ export async function startEdgeRuntime(
       fetchPage: createStaffPinRecordsFetcher({
         cloudUrl: config.cloudUrl,
         credential: config.credential,
-        pepperHave: edgeStaffPinPepperContiguous,
+        pepperHave: edgeStaffPinPepperVersionsHeld,
       }),
       onPeppers: async (peppers) => {
         const decoded = peppers.map(({ version, pepper }) => ({
@@ -867,7 +868,11 @@ export async function startEdgeRuntime(
           pepperSealKey,
           decoded,
         );
-        installEdgeStaffPinPeppers(local.scope.tenantId, decoded);
+        installEdgeStaffPinPeppers(
+          local.scope.tenantId,
+          local.scope.outletId,
+          decoded,
+        );
         logger.info(
           { versions: decoded.map((entry) => entry.version) },
           "Edge staff pin peppers updated",

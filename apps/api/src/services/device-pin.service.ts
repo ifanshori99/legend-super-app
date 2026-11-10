@@ -14,6 +14,11 @@
 //   A locked row is refused without checking the pin (no oracle while
 //   locked). An unknown user or missing row costs the same scrypt and answers
 //   the same PIN_INVALID.
+// - Pepper (bead legend-jmsdx): versions >= 2 are per outlet. A correct pin on
+//   the cloud rehashes a row of an older version to the current one in the same
+//   locked transaction (generation keys untouched, so the edge applies it by
+//   the same key). An edge never rehashes, and a version 1 row there answers
+//   STAFF_PIN_RESET_REQUIRED without counting a failed attempt.
 // - Edge: `exportStaffPinRecords` is the replication shape (hash only).
 //
 // Never log, audit or emit a pin. Audit and events carry ids only.
@@ -188,7 +193,11 @@ export async function setStaffPin(
   // legend-ideif: one generation for the hash and the stored version. An edge
   // that was never sent a pepper has no generation yet: fail closed.
   const pepperVersion = currentStaffPinPepperVersion();
-  const pepperForSet = staffPinPepperOrNull(tenant.tenantId, pepperVersion);
+  const pepperForSet = staffPinPepperOrNull(
+    tenant.tenantId,
+    outletId,
+    pepperVersion,
+  );
   if (pepperForSet === null)
     throw new CoreError(
       "SERVICE_UNAVAILABLE",
@@ -380,7 +389,11 @@ export type PinAttemptOutcome =
   | { readonly kind: "ok"; readonly userId: string }
   | { readonly kind: "invalid" }
   | { readonly kind: "locked" }
-  | { readonly kind: "not_member" };
+  | { readonly kind: "not_member" }
+  // legend-jmsdx: an edge holds no pepper for a version 1 (tenant-wide) row,
+  // so the pin cannot be checked there: the pin must be set again. Not a
+  // wrong guess, so it never counts and never locks.
+  | { readonly kind: "reset_required" };
 
 /**
  * One pin attempt for (outlet, user), counted and committed on its own
@@ -402,8 +415,11 @@ export async function attemptStaffPin(
   const parsedUser = userIdSchema.safeParse(input.userId);
   // The burn pepper only equalises timing; an edge without a pepper uses zeros.
   const pepper =
-    staffPinPepperOrNull(tenant.tenantId, currentStaffPinPepperVersion()) ??
-    Buffer.alloc(32);
+    staffPinPepperOrNull(
+      tenant.tenantId,
+      outletId,
+      currentStaffPinPepperVersion(),
+    ) ?? Buffer.alloc(32);
   if (!parsedUser.success) {
     await burnStaffPinCheck(pepper);
     return { kind: "invalid" };
@@ -422,11 +438,20 @@ export async function attemptStaffPin(
         ),
       )
       .for("update");
+    // legend-jmsdx: a version 1 row (pepper per tenant, cloud only) cannot be
+    // checked on an edge, which never holds a version 1 pepper. Answer "pin
+    // must be set again" before any check: no guess, no counter, no lock.
+    // The edge never rehashes (it would need a new generation key, which
+    // could revive an old pin over a cloud reset that has not arrived yet).
+    const edge = isEdgeProcess();
+    if (row && edge && row.pepperVersion === 1)
+      return { kind: "reset_required" };
     // legend-ideif: a row hashed under an older generation still verifies
     // with that generation's pepper (until its owner sets a new pin); a
-    // generation this process holds no pepper for fails closed.
+    // generation this process holds no pepper for fails closed. The pepper
+    // is the one of the row's own outlet (legend-jmsdx).
     const rowPepper = row
-      ? staffPinPepperOrNull(tenant.tenantId, row.pepperVersion)
+      ? staffPinPepperOrNull(tenant.tenantId, row.outletId, row.pepperVersion)
       : null;
     if (!row || rowPepper === null) {
       await burnStaffPinCheck(pepper);
@@ -445,6 +470,30 @@ export async function attemptStaffPin(
       stored: storedHashOf(row),
     });
     const next = recordStaffPinAttempt({ state, correct, now });
+    // legend-jmsdx: a correct pin on the cloud holds the real pin for this
+    // request, so a row under an older pepper version moves to the current one
+    // in the same locked transaction (fresh salt). Only the hash material
+    // changes: `pin_generation_at`, `pin_set_at`, the `generation_edge_*`
+    // columns and `cloud_generation_at` stay, so this is no new generation.
+    // The row's `sync_xid` still moves with the update, so the next edge pull
+    // resends it under the same key (the edge applies a same-key record,
+    // `record key >= local key`), while a newer pin set on the edge keeps a
+    // larger key and wins. No rehash on an edge.
+    let rehashed: Awaited<ReturnType<typeof hashStaffPin>> | null = null;
+    let rehashVersion = row.pepperVersion;
+    if (correct && !edge) {
+      rehashVersion = currentStaffPinPepperVersion();
+      const currentPepper =
+        rehashVersion > row.pepperVersion
+          ? staffPinPepperOrNull(tenant.tenantId, row.outletId, rehashVersion)
+          : null;
+      if (currentPepper !== null)
+        rehashed = await hashStaffPin({
+          pepper: currentPepper,
+          binding: bindingOf(row),
+          pin: input.pin,
+        });
+    }
     await tx
       .update(staffPins)
       .set({
@@ -452,6 +501,16 @@ export async function attemptStaffPin(
         lockedUntil:
           next.lockedUntil === null ? null : new Date(next.lockedUntil),
         updatedAt: staffPinVersionStamp(input.now),
+        ...(rehashed
+          ? {
+              pinHash: rehashed.pinHash,
+              pinSalt: rehashed.salt,
+              kdfN: rehashed.params.N,
+              kdfR: rehashed.params.r,
+              kdfP: rehashed.params.p,
+              pepperVersion: rehashVersion,
+            }
+          : {}),
       })
       .where(eq(staffPins.id, row.id));
     if (!correct) {
@@ -508,6 +567,8 @@ export function assertPinAttemptOk(
   outcome: PinAttemptOutcome,
 ): asserts outcome is { kind: "ok"; userId: string } {
   if (outcome.kind === "locked") throw new IdentityError("PIN_LOCKED");
+  if (outcome.kind === "reset_required")
+    throw new IdentityError("STAFF_PIN_RESET_REQUIRED");
   if (outcome.kind === "not_member")
     throw new AccessError(
       "PERMISSION_DENIED",

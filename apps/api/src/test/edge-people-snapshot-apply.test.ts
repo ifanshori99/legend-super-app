@@ -45,7 +45,7 @@ import {
 import { pullStaffPins } from "../edge/staff-pin-pull.ts";
 import { hashStaffPin } from "../services/device-pin-hash.ts";
 import {
-  STAFF_PIN_PEPPER_VERSION,
+  currentStaffPinPepperVersion,
   staffPinPepper,
 } from "../services/device-pin-pepper.ts";
 import { applyStaffPinRecords } from "../services/staff-pin-sync.ts";
@@ -806,7 +806,7 @@ describe("legend-tkycp T2 people snapshot apply on the edge", () => {
 
     async function pinRecord(userId: string) {
       const hashed = await hashStaffPin({
-        pepper: staffPinPepper(tenantId),
+        pepper: staffPinPepper(tenantId, outletId),
         binding: { tenantId, outletId, userId },
         pin: "482916",
       });
@@ -820,7 +820,7 @@ describe("legend-tkycp T2 people snapshot apply on the edge", () => {
         salt: hashed.salt,
         pinHash: hashed.pinHash,
         params: hashed.params,
-        pepperVersion: STAFF_PIN_PEPPER_VERSION,
+        pepperVersion: currentStaffPinPepperVersion(),
         failedAttempts: 0,
         lockedUntil: null,
         updatedAt: at,

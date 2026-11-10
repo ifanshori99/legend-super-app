@@ -1,5 +1,5 @@
 // Edge staff pin pull hands the page's peppers over BEFORE it applies records
-// (bead legend-ideif; PRD v1.7 §3 F6 "Staf — PIN Perangkat", EDG-02). A record
+// (beads legend-ideif, legend-jmsdx; PRD v1.7 §3 F6 "Staf — PIN Perangkat", EDG-02). A record
 // hashed under a new pepper version must never land on the edge without the
 // pepper that verifies it. The record applier is replaced by a spy that logs
 // the order of events, so no database is needed here.
@@ -36,11 +36,11 @@ beforeEach(() => {
   events.length = 0;
 });
 
-describe("legend-ideif the edge pull stores peppers before applying records", () => {
+describe("legend-jmsdx the edge pull stores peppers before applying records", () => {
   it("calls onPeppers with the page's peppers, then applies the page", async () => {
     const delivered = [
-      { version: 1, pepper: pepper() },
       { version: 2, pepper: pepper() },
+      { version: 3, pepper: pepper() },
     ];
     const received: unknown[] = [];
     await pullStaffPins({
@@ -73,7 +73,7 @@ describe("legend-ideif the edge pull stores peppers before applying records", ()
     const result = await pullStaffPins({
       context,
       since: null,
-      fetchPage: async () => page([{ version: 1, pepper: pepper() }]),
+      fetchPage: async () => page([{ version: 2, pepper: pepper() }]),
     });
     expect(result.pages).toBe(1);
   });
@@ -83,7 +83,7 @@ describe("legend-ideif the edge pull stores peppers before applying records", ()
     const error = await pullStaffPins({
       context,
       since: null,
-      fetchPage: async () => page([{ version: 1, pepper: delivered }]),
+      fetchPage: async () => page([{ version: 2, pepper: delivered }]),
       onPeppers: async () => {
         throw new Error("could not seal the peppers");
       },
@@ -97,12 +97,25 @@ describe("legend-ideif the edge pull stores peppers before applying records", ()
     const error = await pullStaffPins({
       context,
       since: null,
-      fetchPage: async () => page([{ version: 1, pepper: "too-short-pepper" }]),
+      fetchPage: async () => page([{ version: 2, pepper: "too-short-pepper" }]),
       onPeppers: async () => {
         events.push("peppers");
       },
     }).catch((caught: unknown) => caught as Error);
     expect(String((error as Error).message)).not.toContain("too-short-pepper");
+    expect(events).toEqual([]);
+  });
+
+  it("a version 1 pepper is refused as an unknown page shape (an edge never gets one)", async () => {
+    const error = await pullStaffPins({
+      context,
+      since: null,
+      fetchPage: async () => page([{ version: 1, pepper: pepper() }]),
+      onPeppers: async () => {
+        events.push("peppers");
+      },
+    }).catch((caught: unknown) => caught as Error);
+    expect(error).toBeInstanceOf(Error);
     expect(events).toEqual([]);
   });
 });

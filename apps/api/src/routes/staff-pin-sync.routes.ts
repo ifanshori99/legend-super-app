@@ -10,9 +10,10 @@
 //     No session, no cookie, read-only (no Origin check needed). Tenant and
 //     outlet come from the verified credential; a tenant resolved from the
 //     domain or a device token must be the same one. Hash-only records, never
-//     a pin. With `peppers=<n>` the response also carries the pepper(s) the
-//     cloud derived for this credential's tenant above version n (never the
-//     root; legend-ideif, see services/staff-pin-sync.ts).
+//     a pin. With `peppers=<versions held, e.g. 2,3>` the response also
+//     carries the pepper(s) the cloud derived for this credential's outlet that
+//     the edge lacks (never version 1, never the root; legend-ideif,
+//     legend-jmsdx, see services/staff-pin-sync.ts).
 //     Rate limited BEFORE the credential check (which reads the database):
 //     per client IP and per presented credential (a digest of a well-formed
 //     bearer, no database read), 429 RATE_LIMITED + Retry-After (legend-wg5t

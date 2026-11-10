@@ -1,7 +1,8 @@
-// Staff pin sync export carries the tenant's DERIVED peppers (bead legend-ideif;
-// PRD v1.7 §3 F5 Server Lokal, §3 F6 "Staf — PIN Perangkat", EDG-02, TEN-02).
-// An edge asks with `peppers=<highest version it holds>`; the cloud answers
-// `meta.peppers` for the credential's tenant only, never the root secret.
+// Staff pin sync export carries the outlet's DERIVED peppers (beads
+// legend-ideif, legend-jmsdx; PRD v1.7 §3 F5 Server Lokal, §3 F6 "Staf — PIN
+// Perangkat", EDG-02, TEN-02). An edge asks with `peppers=<versions it holds>`
+// (`2,3`; empty = none); the cloud answers `meta.peppers` for the credential's
+// outlet only (version >= 2), never version 1 and never the root secret.
 // Assumption: an invalid query value is refused with 422, like the other
 // invalid query values of this route (limit=0, revision=2); the brief said 400.
 import { randomUUID } from "node:crypto";
@@ -26,7 +27,7 @@ import {
 } from "../services/staff-pin-sync.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const otherTenantId = randomUUID();
+const otherOutletId = randomUUID();
 const node: VerifiedEdgeNode = {
   tenantId,
   outletId: cafeLegendAccessFixtures.outletIds.bandung,
@@ -59,33 +60,44 @@ afterAll(() => {
   setEdgeCredentialVerifier(null);
 });
 
-describe("legend-ideif staff pin sync export delivers the tenant pepper", () => {
-  it("peppers=0 lists the credential tenant's derived peppers, base64 of 32 bytes", async () => {
+const outletId = node.outletId;
+
+/** Versions in the page's peppers, ascending. */
+const versionsOf = (page: { meta: { peppers?: Array<{ version: number }> } }) =>
+  (page.meta.peppers ?? []).map((entry) => entry.version);
+
+describe("legend-jmsdx staff pin sync export delivers the outlet pepper", () => {
+  it("an empty holding lists the credential outlet's derived peppers, base64 of 32 bytes, never version 1", async () => {
     const page = await listStaffPinRecordsSince(node, {
       limit: 100,
-      peppers: 0,
+      peppers: [],
     });
-    const expected = staffPinPeppersForEdge(tenantId, 0);
-    expect(expected.length).toBe(currentStaffPinPepperVersion());
-    expect(page.meta.peppers).toEqual(expected);
+    const versions = versionsOf(page);
+    expect(versions).toContain(currentStaffPinPepperVersion());
+    expect(versions).not.toContain(1);
+    expect(versions).toEqual([...versions].sort((a, b) => a - b));
     for (const entry of page.meta.peppers ?? []) {
       expect(Buffer.from(entry.pepper, "base64")).toHaveLength(32);
       expect(
         Buffer.from(entry.pepper, "base64").equals(
-          staffPinPepper(tenantId, entry.version),
+          staffPinPepper(tenantId, outletId, entry.version),
         ),
       ).toBe(true);
     }
   });
 
-  it("never carries another tenant's pepper", async () => {
+  it("never carries another outlet's pepper", async () => {
     const page = await listStaffPinRecordsSince(node, {
       limit: 100,
-      peppers: 0,
+      peppers: [],
     });
-    const others = staffPinPeppersForEdge(otherTenantId, 0).map(
-      (entry) => entry.pepper,
-    );
+    const others = staffPinPeppersForEdge(
+      tenantId,
+      otherOutletId,
+      [],
+      [currentStaffPinPepperVersion()],
+    ).map((entry) => entry.pepper);
+    expect(others.length).toBeGreaterThan(0);
     for (const entry of page.meta.peppers ?? [])
       expect(others).not.toContain(entry.pepper);
   });
@@ -98,30 +110,59 @@ describe("legend-ideif staff pin sync export delivers the tenant pepper", () => 
     expect(Object.keys(response.body.meta)).not.toContain("peppers");
   });
 
-  it("an edge that already holds the current version gets an empty list", async () => {
+  it("an edge that holds every version it needs gets an empty list", async () => {
+    const first = await listStaffPinRecordsSince(node, {
+      limit: 100,
+      peppers: [],
+    });
     const page = await listStaffPinRecordsSince(node, {
       limit: 100,
-      peppers: currentStaffPinPepperVersion(),
+      peppers: versionsOf(first),
     });
     expect(page.meta.peppers).toEqual([]);
   });
 
-  it("over HTTP: peppers=0 answers 200, private and no-store, with the same peppers", async () => {
+  it("only sends the versions the edge lacks", async () => {
+    const current = currentStaffPinPepperVersion();
+    const page = await listStaffPinRecordsSince(node, {
+      limit: 100,
+      peppers: [current],
+    });
+    expect(versionsOf(page)).not.toContain(current);
+  });
+
+  it("over HTTP: peppers= (empty) answers 200, private and no-store, with the same peppers", async () => {
+    const direct = await listStaffPinRecordsSince(node, {
+      limit: 100,
+      peppers: [],
+    });
     const response = await request(app)
       .get(path)
-      .query({ peppers: 0 })
+      .query({ peppers: "" })
       .set(bearer);
     expect(response.status).toBe(200);
     expect(response.headers["cache-control"]).toBe("private, no-store");
-    expect(response.body.meta.peppers).toEqual(
-      staffPinPeppersForEdge(tenantId, 0),
-    );
+    expect(response.body.meta.peppers).toEqual(direct.meta.peppers);
+  });
+
+  it("over HTTP: peppers=<list> parses the held versions", async () => {
+    const current = currentStaffPinPepperVersion();
+    const response = await request(app)
+      .get(path)
+      .query({ peppers: `${current}` })
+      .set(bearer);
+    expect(response.status).toBe(200);
+    expect(
+      (response.body.meta.peppers as Array<{ version: number }>).map(
+        (entry) => entry.version,
+      ),
+    ).not.toContain(current);
   });
 
   it("the body never contains the root secret", async () => {
     const response = await request(app)
       .get(path)
-      .query({ peppers: 0 })
+      .query({ peppers: "" })
       .set(bearer);
     const body = response.text;
     expect(body).not.toContain("STAFF_PIN_PEPPER");
@@ -134,20 +175,24 @@ describe("legend-ideif staff pin sync export delivers the tenant pepper", () => 
   });
 
   it("an invalid peppers value is refused with no pepper in the answer", async () => {
-    for (const value of ["-1", "abc", "1.5", "1001"]) {
+    const pepper = staffPinPeppersForEdge(
+      tenantId,
+      outletId,
+      [],
+      [currentStaffPinPepperVersion()],
+    )[0]?.pepper;
+    for (const value of ["-1", "abc", "1.5", "1001", "0", "2,,3", "2,x"]) {
       const response = await request(app)
         .get(path)
         .query({ peppers: value })
         .set(bearer);
       expect(response.status).toBe(422);
-      expect(response.text).not.toContain(
-        staffPinPeppersForEdge(tenantId, 0)[0]!.pepper,
-      );
+      if (pepper !== undefined) expect(response.text).not.toContain(pepper);
     }
   });
 
   it("no credential still answers 401, with no peppers", async () => {
-    const response = await request(app).get(path).query({ peppers: 0 });
+    const response = await request(app).get(path).query({ peppers: "" });
     expect(response.status).toBe(401);
     expect(response.body.meta).toBeUndefined();
   });

@@ -23,6 +23,8 @@ export const identityErrorHttpStatus = {
   PIN_INVALID: 401,
   /** Too many wrong pins; a supervisor override or the lock window releases it. */
   PIN_LOCKED: 423,
+  /** The pin was hashed under a pepper this edge never holds (version 1, cloud only); it must be set again (bead legend-jmsdx). Not a wrong pin: it never counts. */
+  STAFF_PIN_RESET_REQUIRED: 409,
   /** The attendance PIN proof is unknown, expired, superseded, used on upload, or from another device (bead legend-u7g9w). */
   PIN_PROOF_INVALID: 401,
   /** The attendance PIN proof was already consumed by a clock request. */
@@ -58,6 +60,7 @@ const defaultMessages: Record<IdentityErrorCode, string> = {
     "Verifikasi nomor WhatsApp diperlukan sebelum mengumpulkan atau menukar poin.",
   PIN_INVALID: "PIN salah.",
   PIN_LOCKED: "PIN terkunci. Minta supervisor membuka atau coba lagi nanti.",
+  STAFF_PIN_RESET_REQUIRED: "PIN perlu diatur ulang.",
   PIN_PROOF_INVALID: "Bukti PIN tidak berlaku. Masukkan PIN lagi.",
   PIN_PROOF_USED: "Bukti PIN ini sudah dipakai. Masukkan PIN lagi.",
   PIN_DEVICE_THROTTLED:
