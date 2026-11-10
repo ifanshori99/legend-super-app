@@ -1139,3 +1139,4 @@ Langkah berikut CTO baru:
 - 05:18 Duitku nits selesai: 10c6e338 di ws/duitku-406 (DECISIONS paidAt, expectNothingPaid ketat, flake F4 2ms dibetulkan), 15/15. Founder menambah akun Codex.
 - 05:18 Serah terima CTO tertunda: hook RAM menolak 'coordinator create' (Claude 8/8). Lakukan begitu satu thread di-resolve, sebelum mengisi slot itu.
 - 05:24 RAM merah/kuning (Claude 8/4). G3hrs merge train: full test dihentikan sistem karena RAM, worktree bersih edacffd2, m1 masih 46352cd5 -> ditidurkan. Q8 jadi kartu legend-5cwrq. Aturan: slot pertama yang lowong dipakai serah terima CTO + bangunkan merge train ('lanjut') sebelum mengisi kartu baru. G4bs0 restart sendiri (sesi mati).
+- 05:28 Founder: Codex #2 dilarang dipakai Legend (proyek lain). Rute Codex: #3, #4, #5.
