@@ -67,10 +67,31 @@ export function paidOrdersWhere(
     AND ${outletIn(sql`o.outlet_id`, outletIds)}`;
 }
 
-/** Refund total per order (`pos_order_refunds`), aliased `r`. */
+/**
+ * Recovery refunds that paid out (legend-n6fek): `payment_refunds` of a failed
+ * item (`order_issue_id` set, requested by `system:recovery`), `completed`
+ * only. A pending, approved or failed (rejected, declined) refund gave no money
+ * back, so a rejected refund's reversed journal never turns into a second,
+ * negative figure. POS refunds filed through the gateway have no
+ * `order_issue_id`, so a refund never counts in both tables. Columns: tenant,
+ * order, amount, intent method (the `payment_method` split of refund_amount).
+ */
+export const RECOVERY_REFUNDS_SQL = sql`SELECT pr.tenant_id, oi.order_id,
+      pr.amount_idr AS amount, pi.method AS method
+    FROM payment_refunds pr
+    JOIN order_issues oi ON oi.tenant_id = pr.tenant_id AND oi.id = pr.order_issue_id
+    LEFT JOIN payment_intents pi ON pi.tenant_id = pr.tenant_id AND pi.id = pr.payment_intent_id
+    WHERE pr.order_issue_id IS NOT NULL
+      AND pr.requested_by = 'system:recovery'
+      AND pr.status = 'completed'`;
+
+/** Refund total per order (`pos_order_refunds` plus recovery refunds), aliased `r`. */
 export const REFUNDS_JOIN = sql`LEFT JOIN (
-    SELECT tenant_id, order_id, SUM(amount_idr) AS amount
-    FROM pos_order_refunds GROUP BY tenant_id, order_id
+    SELECT tenant_id, order_id, SUM(amount) AS amount FROM (
+      SELECT tenant_id, order_id, amount_idr AS amount FROM pos_order_refunds
+      UNION ALL
+      SELECT tenant_id, order_id, amount FROM (${RECOVERY_REFUNDS_SQL}) rec
+    ) all_refunds GROUP BY tenant_id, order_id
   ) r ON r.tenant_id = o.tenant_id AND r.order_id = o.id`;
 
 /** Net sales of one order row (aliases `o`, `r`). */
@@ -173,6 +194,12 @@ async function loadFacts(
     FROM pos_order_refunds rf
     JOIN orders o ON o.tenant_id = rf.tenant_id AND o.id = rf.order_id
     CROSS JOIN LATERAL jsonb_array_elements(rf.lines) AS l(line)
+    WHERE ${scope} AND o.status = 'completed'
+    UNION ALL
+    SELECT rec.order_id::text AS order_id, rec.method AS method,
+      rec.amount AS amount
+    FROM (${RECOVERY_REFUNDS_SQL}) rec
+    JOIN orders o ON o.tenant_id = rec.tenant_id AND o.id = rec.order_id
     WHERE ${scope} AND o.status = 'completed'`);
   // Only the target reader needs `sales_targets`; the others never touch it.
   const target = withTarget
