@@ -21,3 +21,11 @@ Worktree: `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/pti5r-
 - Jangan jalankan `pnpm test` (DB test berbagi container per worktree; CTO-agent yang menjalankan). Typecheck: `heavy pnpm --filter @starter/api typecheck`. Prettier: `pnpm exec prettier --check <file>`.
 - Jangan commit. Jangan sentuh file di luar bagianmu. Jangan baca `.env*`.
 - Laporan: file yang diubah, ringkasan perubahan, hal yang ragu.
+
+## Putaran 2 (temuan architect atas 2b42c788)
+
+P1 `apps/api/src/services/order-recovery-refund.ts` ~783: pendahulu dicocokkan lewat `toOriginal(row.orderItemId) === original`, sekarang juga di order tanpa promo. Skenario: QR pay-first tanpa promo, kopi Rp30.000 issue A gagal final (provider_declined); kopi dilaporkan ulang dan di-swap ke teh Rp20.000 (+voucher selisih Rp10.000, `order-recovery.service.ts` ~1135); teh gagal, manual_refund B Rp20.000 (ORD-09: approval = total baris teh). Consumer me-replay A Rp30.000 -> bayar lebih. Varian rejected: A rejected -> swap -> teh gagal -> B salah jadi nothing_left.
+
+Perbaikan: hitung `hasLivePromo` sebelum `findRecoveryRefundReplay`, kirim ke fungsi itu; tanpa promo, pendahulu (replay maupun penanda rejected) harus baris yang sama (`row.orderItemId === issue.orderItemId`); dengan promo, `toOriginal` tetap (desain Round 3, keputusan swap promo diangkat ke CTO).
+
+Test gagal-dulu (tambah ke `apps/api/src/test/order-recovery-refund-codex422.test.ts`, describe T6): tanpa promo, swap ke item lebih murah setelah gagal final -> B dibayar jumlah normal baris teh (bukan replay A, tanpa `replayOfIssueId`); varian rejected -> B dibayar normal, bukan nothing_left. Cari cara swap di test yang ada (grep `replacementOrderItemId` / `legend-zm1e6` di `apps/api/src/test`).

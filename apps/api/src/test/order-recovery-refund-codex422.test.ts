@@ -13,6 +13,10 @@
 //   finally, then B filed -> B replays A.
 // - T5 (finding 5) the failure hook run again for the same failed refund writes
 //   nothing new: audit rows per action, outbox events and the issue stamp stay.
+// - T6 (round 2) without a promo the predecessor must be the SAME order line: an
+//   item swapped to a cheaper menu after a final failure is a new line with its own
+//   money, so its refund is the normal amount of that line (never a replay of the
+//   old line's failed amount, never `nothing_left` from the old line's rejection).
 // - Tenant isolation: one assertion inside T3 (promo variant).
 //
 // Assumptions where the brief is not exact:
@@ -33,6 +37,15 @@
 //   reporting API replays an open issue for the same line, so two open issues on one
 //   line cannot be made through it; order-recovery-rereport.test.ts does the same).
 //   B is resolved only after A's refund failed finally (else resolve answers 409).
+// - T6: `mahal` (Rp30.000) and `besar` (Rp20.000) are in no promotion. The failed
+//   line is reported again, swapped by the supervisor to `besar` (credit Rp10.000
+//   is below the Rp100.000 voucher approval floor, so no approval), the swap
+//   kitchen event is delivered by hand (it writes the replacement line), then the
+//   replacement line is reported and resolved `manual_refund` with an approval of
+//   its line subtotal (ORD-09: Rp20.000). Its normal refund is 20.000 + service
+//   5% + PBJT 10% = Rp23.100 (same figures as pti5r H4). "Not a replay" is read from
+//   the missing `replayOfIssueId` of the filing. The replacement line id is read from
+//   the DB as a UUID and sent to the API as a ULID (`uuidToUlid`).
 // - T5: "unknown" is a NULL `failure_reason` (check constraint), as in the pti5r
 //   test. The footprint of a hook run is every audit_logs / domain_event_outbox
 //   row whose JSON mentions the issue id, the refund id or the order id, grouped
@@ -44,6 +57,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   tenantIdSchema,
   ulidToUuid,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -66,6 +80,7 @@ import {
 } from "../services/order-recovery-refund.ts";
 import { settleRefundFromChain } from "../services/payment-refund.service.ts";
 import { confirmPayment } from "../services/payment.service.ts";
+import { deliverSwapKitchenEvent } from "../services/order-recovery-swap-kitchen.ts";
 import { deliverQrOrderPaymentEvent } from "../services/qr-order-payment.ts";
 import {
   asOwnerTenant,
@@ -83,8 +98,11 @@ const freeRotiPromotion = randomUUID();
 const bulatA = randomUUID();
 const bulatB = randomUUID();
 const besar = randomUUID();
+const mahal = randomUUID();
 const BULAT_PRICE = 1_003;
 const BESAR_PRICE = 20_000;
+const MAHAL_PRICE = 30_000;
+const BESAR_REFUND = 23_100;
 
 beforeAll(async () => {
   w = await createWorld();
@@ -118,6 +136,7 @@ beforeAll(async () => {
       [bulatA, "Kue Bulat A", BULAT_PRICE],
       [bulatB, "Kue Bulat B", BULAT_PRICE],
       [besar, "Nasi Besar", BESAR_PRICE],
+      [mahal, "Nasi Mahal", MAHAL_PRICE],
     ] as const) {
       await client.query(
         `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
@@ -347,7 +366,7 @@ async function resolveForRefund(issueId: string, amountIdr: number) {
 /** Reports one line as failed and resolves it with an approved ORD-09 refund. */
 async function approvedRefund(itemId: string, amountIdr: number) {
   const reported = await w.report(itemId);
-  expect(reported.status).toBe(201);
+  expect(reported.status, JSON.stringify(reported.body)).toBe(201);
   const issueId = reported.body.data.id as string;
   return { issueId, event: await resolveForRefund(issueId, amountIdr) };
 }
@@ -741,6 +760,76 @@ async function paidPromoOrder() {
   expect(rows[0]!.total_idr, "promo order total").toBe(42_735);
   return { ...paid, kopi: paid.line(w.ids.kopi) };
 }
+
+// ---- T6: no promo, the predecessor is the same line, not the swapped one -----
+
+/**
+ * The `mahal` line failed finally (`reason`). It is reported again, swapped to
+ * `besar` and the replacement line fails: reported and resolved `manual_refund`.
+ * Returns the filing of the replacement line, delivered.
+ */
+async function swapAfterFailure(reason: string) {
+  const paid = await paidOrder("pay_first", [mahal, bulatA]);
+  const a = await filedRefund(paid.line(mahal).id, MAHAL_PRICE);
+  await failFinally(a.refund.id, reason);
+
+  const swapIssue = await w.report(paid.line(mahal).id);
+  expect(swapIssue.status, JSON.stringify(swapIssue.body)).toBe(201);
+  const swapIssueId = swapIssue.body.data.id as string;
+  const swapped = await w.staffPost(
+    w.supervisor,
+    `/api/order-issues/${swapIssueId}/resolve`,
+    { resolution: "swap", replacementItemId: besar },
+  );
+  expect(swapped.status, JSON.stringify(swapped.body)).toBe(200);
+  const resolved = await w.outboxRows("order_issue.resolved", swapIssueId);
+  expect(resolved).toHaveLength(1);
+  const context = contextOf(w.tenant.tenantId);
+  await withTenant(db, context, (tx) =>
+    deliverSwapKitchenEvent(context, resolved[0]!.event, tx),
+  );
+  const { rows } = await owner.query<{ id: string | null }>(
+    "SELECT replacement_order_item_id AS id FROM order_issues WHERE tenant_id = $1 AND id = $2",
+    [w.tenant.tenantId, swapIssueId],
+  );
+  expect(rows[0]!.id, "replacement line written").not.toBeNull();
+
+  const b = await approvedRefund(uuidToUlid(rows[0]!.id!), BESAR_PRICE);
+  await deliver(b.event);
+  return { paid, a, b };
+}
+
+describe("legend-pbwzq T6 tanpa promo: item ditukar ke menu lebih murah setelah gagal final", () => {
+  it("provider_declined: refund lini pengganti sebesar lini itu (23.100), bukan replay jumlah lini lama", async () => {
+    const { paid, a, b } = await swapAfterFailure("provider_declined");
+
+    expect(a.refund.amount_idr).not.toBe(BESAR_REFUND);
+    expect(
+      (await issueRefunds(b.issueId)).map((row) => row.amount_idr),
+    ).toEqual([BESAR_REFUND]);
+    expect(await auditRows([b.issueId], "order_issue.refund_blocked")).toEqual(
+      [],
+    );
+    expect([undefined, null]).toContain(await replayOf(b.issueId));
+    const replay = (await refundedEvents(paid.order.id)).find(
+      (event) => event.refundId === b.issueId,
+    )!;
+    expect(replay.amountIdr).toBe(BESAR_REFUND);
+    expect(replay.grossSalesIdr).toBe(BESAR_PRICE);
+  });
+
+  it("rejected: refund lini pengganti tetap dibayar normal (23.100), bukan nothing_left", async () => {
+    const { b } = await swapAfterFailure("rejected");
+
+    expect(
+      (await issueRefunds(b.issueId)).map((row) => row.amount_idr),
+    ).toEqual([BESAR_REFUND]);
+    expect(await auditRows([b.issueId], "order_issue.refund_blocked")).toEqual(
+      [],
+    );
+    expect([undefined, null]).toContain(await replayOf(b.issueId));
+  });
+});
 
 // ---- T5: the failure hook is idempotent --------------------------------------
 

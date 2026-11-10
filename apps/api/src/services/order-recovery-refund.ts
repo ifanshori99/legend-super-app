@@ -39,6 +39,15 @@
 //   pay-first earlier refund without an `order.refunded` split. An open bill
 //   files no split: it replays the failed amount whole. A chain of replays
 //   follows `replayOfIssueId` back to the root issue.
+// - Swap (replacement item): the predecessor of a replay (or a `rejected`
+//   marker) is matched through the swap chain (`toOriginal`) only on an order
+//   with a live promo (Round 3 design; the swap decision on a promo order is
+//   with the CTO). Without a promo it must be the same line
+//   (`row.orderItemId === issue.orderItemId`): a replacement item is another
+//   line with its own price, so a swap to a cheaper item that then fails is
+//   paid its own normal amount, never the earlier failed line's amount, and a
+//   rejected refund of the original does not turn the replacement into
+//   `nothing_left`.
 // Events of another tenant or outlet, and every other event, are ignored.
 
 import { and, desc, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -425,6 +434,12 @@ export async function deliverOrderRecoveryRefundEvent(
       return id;
     };
     const swappedOriginals = new Set(originalOf.values());
+    // A live promo: the port re-prices the order without the failed lines
+    // (founder Q41/Q19). It records no payout here (`deferPayout`): the
+    // refund records what it files below.
+    const hasLivePromo = Boolean(
+      await livePromoApplicationOf(tx, context, order.id),
+    );
     const found = await findRecoveryRefundReplay(
       tx,
       tenantId,
@@ -433,14 +448,9 @@ export async function deliverOrderRecoveryRefundEvent(
       issues,
       toOriginal,
       payFirst,
+      hasLivePromo,
     );
     if (found !== REPLAY_REJECTED) replay = found;
-    // A live promo: the port re-prices the order without the failed lines
-    // (founder Q41/Q19). It records no payout here (`deferPayout`): the
-    // refund records what it files below.
-    const hasLivePromo = Boolean(
-      await livePromoApplicationOf(tx, context, order.id),
-    );
     // legend-h1dyy: the earlier refund of this item was `rejected`: the money
     // is not owed, so a re-report gives nothing back. A promo order reaches
     // the same end below: the rejected item stays out of the kept lines.
@@ -758,6 +768,9 @@ const REPLAY_REJECTED = "rejected" as const;
  * recovered; the caller caps it by the room again. The source reports the
  * root. The caller holds the intent lock, which serializes this read with the
  * failure hook that stamps `refund_rejected_at`.
+ * `hasLivePromo`: with a live promo the items match through `toOriginal`
+ * (swaps); without one only the same line (`orderItemId`) counts as the
+ * predecessor, for a replay source and for a `rejected` marker alike.
  */
 async function findRecoveryRefundReplay(
   tx: Tx,
@@ -773,6 +786,7 @@ async function findRecoveryRefundReplay(
   }[],
   toOriginal: (itemId: string) => string,
   payFirst: boolean,
+  hasLivePromo: boolean,
 ): Promise<RecoveryRefundReplaySource | typeof REPLAY_REJECTED | null> {
   const original = toOriginal(issue.orderItemId);
   const others = issues.filter(
@@ -780,7 +794,9 @@ async function findRecoveryRefundReplay(
       row.id !== issue.id &&
       row.status === "resolved" &&
       row.resolution === "manual_refund" &&
-      toOriginal(row.orderItemId) === original,
+      (hasLivePromo
+        ? toOriginal(row.orderItemId) === original
+        : row.orderItemId === issue.orderItemId),
   );
   if (others.length === 0) return null;
   const refunds = await tx
