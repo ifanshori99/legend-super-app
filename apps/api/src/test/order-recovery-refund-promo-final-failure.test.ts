@@ -38,6 +38,8 @@
 //   ledger unchanged.
 // - T10 (round 4) chain A -> B (replay cut by room) -> B final-fails -> C: C asks the
 //   ROOT's (A's) full amount, capped by the room at that time (shortfall audited).
+//   Variant on the open-bill order (T10 open bill): same chain, no split and no
+//   order.refunded; C's stored replayOfIssueId is A.
 // - T11 (round 4) `refile_limit` (3 expired approval chains) is a final failure too:
 //   re-report replays. Its describe is LAST in the file because it inserts a
 //   refund approval policy for the tenant (needed to open approval chains).
@@ -52,6 +54,8 @@
 //   ledger; exact amounts are read from the first filing, not hard-coded.
 // - T10: the replay of an earlier replay follows back to the root: C's amount is
 //   A's 8.085 capped by the room, stored `replayOfIssueId` is A's issue (root).
+// - T10 open bill: A's amount and the order total are read from the DB; rooms are
+//   set relative to A's amount (B: half of it; C: A's amount +1.000 or -1.000).
 // - T8: a final-failed refund of an issue stamped `refund_rejected_at` holds no
 //   room (the money is not leaving), so room = intent total - other live issues'
 //   refunds. Another issue's pending refund of 38.000 leaves 4.735.
@@ -954,6 +958,97 @@ describe("legend-pti5r T10 rantai A -> B (dipotong room) -> B gagal final -> C",
         paid: KOPI_PAYOUT,
         subtotal: KOPI_SUBTOTAL,
       });
+    },
+  );
+});
+
+describe("legend-pti5r T10 varian open bill: rantai A -> B (dipotong room) -> B gagal final -> C", () => {
+  // Amounts are read from the first filing and the order total, not hard-coded:
+  // the open-bill figures are not fixed by the brief. Room offsets are relative
+  // to A's amount (`wanted`).
+  it.each([
+    { name: "room cukup", capDelta: 1_000, capped: false },
+    { name: "room terpotong lagi", capDelta: -1_000, capped: true },
+  ])(
+    "$name: C meminta jumlah A (root) penuh dibatasi room saat itu; replayOfIssueId = A",
+    async ({ capDelta, capped }) => {
+      const paid = await paidPromoOpenBill();
+      const teh = paid.order.items.find(
+        (item) => item.menuItemId === w.ids.teh,
+      )!;
+      const { rows: totals } = await owner.query<{ total_idr: number }>(
+        "SELECT total_idr::int FROM orders WHERE tenant_id = $1 AND id = $2",
+        [w.tenant.tenantId, toUuid(paid.order.id)],
+      );
+      const total = totals[0]!.total_idr;
+
+      // A: first filing refunds `wanted`, then fails finally.
+      const a = await approvedRefund(paid.kopi.id, 25_000);
+      await deliver(a.event);
+      const aRefunds = await issueRefunds(a.issueId);
+      expect(aRefunds).toHaveLength(1);
+      const wanted = aRefunds[0]!.amount_idr;
+      // Needed so that B's cut (wanted / 2) is below both rooms for C.
+      expect(wanted, "first filing refunds money").toBeGreaterThan(2_000);
+      const ledgerAfterFirst = await ledger(paid.order.id);
+      expect(ledgerAfterFirst.paid, "payout recorded").toBeGreaterThan(0);
+      await failFinally(aRefunds[0]!.id, "provider_declined");
+
+      // B: another issue holds the rest of the intent, leaving a room of
+      // `cutB` < wanted, so B's replay is cut by room.
+      const cutB = Math.floor(wanted / 2);
+      const holderRefundId = await holdRoom(
+        paid.order.id,
+        teh.id,
+        total - cutB,
+      );
+      const b = await approvedRefund(paid.kopi.id, 25_000);
+      await deliver(b.event);
+      const bRefunds = await issueRefunds(b.issueId);
+      expect(bRefunds.map((row) => row.amount_idr)).toEqual([cutB]);
+      expect(await filingResponse(b.issueId)).toMatchObject({
+        replayOfIssueId: a.issueId,
+      });
+
+      // B fails finally too; meanwhile the other issue's hold changes the room.
+      await failFinally(bRefunds[0]!.id, "provider_declined");
+      const roomForC = wanted + capDelta;
+      const expected = Math.min(wanted, roomForC);
+      await owner.query(
+        `UPDATE payment_refunds SET amount_idr = $3 WHERE tenant_id = $1 AND id = $2`,
+        [w.tenant.tenantId, holderRefundId, total - roomForC],
+      );
+
+      const c = await approvedRefund(paid.kopi.id, 25_000);
+      expect(c.issueId).not.toBe(b.issueId);
+      await deliver(c.event);
+
+      // C asks the root's full amount (not B's cut), capped by the room now.
+      expect(
+        (await issueRefunds(c.issueId)).map((row) => row.amount_idr),
+      ).toEqual([expected]);
+      expect(
+        await auditRows([c.issueId], "order_issue.refund_blocked"),
+      ).toEqual([]);
+      const shortfall = await auditRows(
+        [c.issueId],
+        "order_issue.refund_shortfall",
+      );
+      if (capped) {
+        expect(shortfall).toHaveLength(1);
+        expect(JSON.stringify(shortfall[0])).toContain(`${wanted - expected}`);
+      } else {
+        expect(shortfall).toEqual([]);
+      }
+      // The root is stored, not the intermediate replay.
+      expect(await filingResponse(c.issueId)).toMatchObject({
+        replayOfIssueId: a.issueId,
+      });
+      // Open bill files no split and no order.refunded, replay or not.
+      expect(await refundedEvents(paid.order.id)).toHaveLength(0);
+      expect(await ledger(paid.order.id)).toEqual(ledgerAfterFirst);
+      expect(await filingPayout(b.issueId)).toBe(0);
+      expect(await filingPayout(c.issueId)).toBe(0);
     },
   );
 });
