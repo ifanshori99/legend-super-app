@@ -20,6 +20,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { useSupportReadOnly } from "@/features/ws01-support-access/read-only";
 import type {
   DeliveryChannelOrder,
   DeliveryOrderStatus,
@@ -130,6 +131,14 @@ function LineList({ order }: { order: DeliveryChannelOrder }) {
   );
 }
 
+function isStaleSync(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "DELIVERY_SYNC_NOT_PENDING"
+  );
+}
+
 /**
  * Founder Q58: two recovery buttons on a `needs_action` order. Resend is one
  * request per press. Mark handled asks for an optional note first, because it
@@ -142,11 +151,13 @@ function PlatformSyncActions({
   order,
   platform,
   disabled,
+  onBusyChange,
 }: {
   outletId: string;
   order: DeliveryChannelOrder;
   platform: string;
   disabled: boolean;
+  onBusyChange: (busy: boolean) => void;
 }) {
   const t = useT();
   const toast = useToast();
@@ -155,6 +166,15 @@ function PlatformSyncActions({
   const [confirming, setConfirming] = React.useState(false);
   const [note, setNote] = React.useState("");
   const busy = resend.isPending || resolve.isPending;
+  const readOnly = useSupportReadOnly();
+  const locked = disabled || readOnly;
+  const resolveButton = React.useRef<HTMLButtonElement>(null);
+  // The status buttons below lock while a sync write is in flight, so the two
+  // never race on one order. Release on unmount: the mark clearing unmounts us.
+  React.useEffect(() => {
+    onBusyChange(busy);
+    return () => onBusyChange(false);
+  }, [busy, onBusyChange]);
   const stillFailing =
     resend.isSuccess && resend.data.platformSync === "needs_action";
   const error = resend.error ?? resolve.error;
@@ -172,8 +192,11 @@ function PlatformSyncActions({
           title: t("deliveryOps.platformSync.resendSuccess", { platform }),
           tone: "success",
         });
-    } catch {
-      // Shown below from `resend.error`.
+    } catch (caught) {
+      // Another staff member got there first: the refetch removes this block,
+      // so the inline error would never be seen. Say it in a toast instead.
+      if (isStaleSync(caught))
+        toast({ title: t(deliveryErrorKey(caught)), tone: "info" });
     }
   };
 
@@ -193,8 +216,9 @@ function PlatformSyncActions({
       });
       setConfirming(false);
       setNote("");
-    } catch {
-      // Shown below from `resolve.error`.
+    } catch (caught) {
+      if (isStaleSync(caught))
+        toast({ title: t(deliveryErrorKey(caught)), tone: "info" });
     }
   };
 
@@ -216,6 +240,7 @@ function PlatformSyncActions({
               placeholder={t("deliveryOps.platformSync.resolveNotePlaceholder")}
               rows={2}
               maxLength={300}
+              autoFocus
             />
           </FormField>
           <div className="flex flex-wrap gap-2">
@@ -227,14 +252,17 @@ function PlatformSyncActions({
                 setConfirming(false);
                 setNote("");
                 resolve.reset();
+                // The confirm area unmounts this button: hand focus back.
+                requestAnimationFrame(() => resolveButton.current?.focus());
               }}
             >
               {t("common.cancel")}
             </Button>
             <Button
               type="button"
+              variant="outline"
               loading={resolve.isPending}
-              disabled={disabled || busy}
+              disabled={locked || busy}
               onClick={() => void onResolve()}
             >
               {t("deliveryOps.platformSync.resolveConfirm")}
@@ -242,11 +270,20 @@ function PlatformSyncActions({
           </div>
         </div>
       )}
-      {stillFailing && (
-        <p role="status" className="font-medium">
-          {t("deliveryOps.platformSync.resendStillFailing", { platform })}
-        </p>
-      )}
+      <p
+        role="status"
+        className="flex items-start gap-1.5 font-medium text-warning empty:hidden"
+      >
+        {stillFailing && (
+          <>
+            <TriangleAlert
+              className="mt-0.5 size-4 shrink-0"
+              aria-hidden="true"
+            />
+            {t("deliveryOps.platformSync.resendStillFailing", { platform })}
+          </>
+        )}
+      </p>
       {error && (
         <p role="alert" className="font-medium text-danger">
           {t(deliveryErrorKey(error))}
@@ -256,16 +293,18 @@ function PlatformSyncActions({
         <div className="grid gap-2 sm:grid-cols-2">
           <Button
             type="button"
+            variant="outline"
             loading={resend.isPending}
-            disabled={disabled || busy}
+            disabled={locked || busy}
             onClick={() => void onResend()}
           >
             {t("deliveryOps.platformSync.resend")}
           </Button>
           <Button
+            ref={resolveButton}
             type="button"
             variant="outline"
-            disabled={disabled || busy}
+            disabled={locked || busy}
             onClick={() => {
               resend.reset();
               setConfirming(true);
@@ -285,11 +324,13 @@ function PlatformSyncNote({
   outletId,
   canAct,
   online,
+  onBusyChange,
 }: {
   order: DeliveryChannelOrder;
   outletId: string;
   canAct: boolean;
   online: boolean;
+  onBusyChange: (busy: boolean) => void;
 }) {
   const t = useT();
   if (order.platformSync === "ok") return null;
@@ -345,6 +386,7 @@ function PlatformSyncNote({
           order={order}
           platform={platform}
           disabled={!online}
+          onBusyChange={onBusyChange}
         />
       )}
     </div>
@@ -373,6 +415,7 @@ function OrderDetailBody({
   );
   const [reason, setReason] = React.useState("");
   const [showError, setShowError] = React.useState(false);
+  const [syncBusy, setSyncBusy] = React.useState(false);
 
   if (orderQuery.isPending) return <OrderSkeleton />;
   if (orderQuery.isError || !orderQuery.data)
@@ -395,7 +438,7 @@ function OrderDetailBody({
       ? t("deliveryOps.detail.reasonRequired")
       : undefined;
   const mutationError = update.error ? t(deliveryErrorKey(update.error)) : null;
-  const disabled = !canHandle || !online || update.isPending;
+  const disabled = !canHandle || !online || update.isPending || syncBusy;
 
   const moments: { labelKey: MessageKey; instant: string }[] = [
     { labelKey: "deliveryOps.detail.received", instant: order.receivedAt },
@@ -508,6 +551,7 @@ function OrderDetailBody({
           outletId={outletId}
           canAct={canHandle}
           online={online}
+          onBusyChange={setSyncBusy}
         />
 
         {order.customerNote && (

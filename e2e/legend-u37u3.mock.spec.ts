@@ -55,7 +55,8 @@ const RESEND_OK_TOAST = "Terkirim ke GoFood. Tanda belum sinkron dihapus.";
 const RESEND_FAIL_TEXT =
   "Kirim ulang belum berhasil: GoFood masih menolak. Cek aplikasi mitra, lalu tekan Tandai sudah ditangani.";
 const HANDLED_TOAST = "Pesanan ditandai sudah ditangani.";
-const NOTE_LABEL = "Catatan (opsional)";
+// The label renders "Catatan" + "(opsional)" in separate spans (no space).
+const NOTE_LABEL = /^Catatan\s*\(opsional\)$/;
 const CONFIRM_HANDLED = "Ya, sudah ditangani";
 const RETRYING_NOTE =
   "Sistem sedang mengirim ulang status pesanan ini ke GoFood. Tidak ada yang perlu Anda lakukan.";

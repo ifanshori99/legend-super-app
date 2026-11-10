@@ -180,7 +180,7 @@ export const deliveryOpsMessages = {
     resendSuccess: "Terkirim ke {platform}. Tanda belum sinkron dihapus.",
     resendStillFailing:
       "Kirim ulang belum berhasil: {platform} masih menolak. Cek aplikasi mitra, lalu tekan Tandai sudah ditangani.",
-    resolveNoteLabel: "Catatan (opsional)",
+    resolveNoteLabel: "Catatan",
     resolveNoteHint:
       "Contoh: status sudah disamakan lewat aplikasi mitra. Tersimpan di catatan audit.",
     resolveNotePlaceholder: "Tulis singkat bila perlu",
