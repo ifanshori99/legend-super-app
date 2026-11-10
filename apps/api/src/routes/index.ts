@@ -39,6 +39,7 @@ import { orgThemesRouter } from "./org-themes.routes";
 import { opsOutboxRouter } from "./ops-outbox.routes";
 import { consentRouter, textOverridesRouter } from "./text-consent.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
+import { platformTextOverridesRouter } from "./platform-text-overrides.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { platformConfigRouter } from "./platform-config.routes";
@@ -169,6 +170,9 @@ apiRouter.use("/org/text-overrides", textOverridesRouter);
 apiRouter.use("/consents", consentRouter);
 // Operator outbox replay (legend-m119).
 apiRouter.use("/ops", opsOutboxRouter);
+// Public terms.* text overrides for SSR, same host resolution (legend-it6p4).
+// Before the brand router: its host guard would answer first otherwise.
+apiRouter.use("/tenant/text-overrides", platformTextOverridesRouter);
 // Whitelabel brand context for SSR (TEN-08), resolved from the request host.
 apiRouter.use("/tenant", platformBrandRouter);
 // Reverse-proxy endpoints (Caddy on-demand TLS ask). Not for browsers.

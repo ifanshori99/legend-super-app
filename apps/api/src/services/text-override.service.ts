@@ -5,14 +5,25 @@
 // override. Each (tenant, locale, key) has one row whose `version` increments
 // on every change; every change is audited with before/after.
 
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
-import { createUlid, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  createUlid,
+  type ScopedTenantContext,
+  type TenantContext,
+} from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   textOverrideRecordSchema,
   type TextOverrideRecord,
 } from "@starter/shared/platform";
-import type { TextLocale, TextOverrideInput } from "@starter/shared/text";
+import {
+  TERM_DEFINITIONS,
+  toPublicTextOverrides,
+  type PublicTextOverrides,
+  type TextLocale,
+  type TextOverrideInput,
+} from "@starter/shared/text";
 import { db } from "../db/index.ts";
 import { textOverrides } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -57,6 +68,38 @@ export async function listTextOverrides(
       )
       .orderBy(asc(textOverrides.locale), asc(textOverrides.key));
     return { data: rows.map(toRecord) };
+  });
+}
+
+/**
+ * Overrides the web server may read with no session (legend-it6p4): the
+ * `terms.*` dictionary of the tenant the request host resolved to, grouped by
+ * locale. Filtered in SQL and again by the shared allowlist; carries no ids,
+ * versions or authors.
+ */
+export async function getPublicTextOverrides(
+  tenant: TenantContext,
+): Promise<PublicTextOverrides> {
+  const scoped = establishScopedTenantContext(tenant, { kind: "tenant" });
+  return withTenant(db, scoped, async (tx) => {
+    const rows = await tx
+      .select({
+        locale: textOverrides.locale,
+        key: textOverrides.key,
+        value: textOverrides.value,
+      })
+      .from(textOverrides)
+      .where(
+        and(
+          eq(textOverrides.tenantId, tenant.tenantId),
+          inArray(
+            textOverrides.key,
+            TERM_DEFINITIONS.map((term) => term.key),
+          ),
+        ),
+      )
+      .orderBy(asc(textOverrides.locale), asc(textOverrides.key));
+    return toPublicTextOverrides(rows);
   });
 }
 

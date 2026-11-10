@@ -10,7 +10,7 @@ import {
   useMatch,
   useRouter,
 } from "@tanstack/react-router";
-import { createTranslator } from "@starter/shared/i18n";
+import { createTranslator, type MessageOverrides } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Providers } from "@/components/providers";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import type { AreaAccess } from "@/lib/areas/access";
 import { getSessionFn, type Session } from "@/lib/session";
 import { getTenantBrandFn } from "@/lib/tenant-brand-fn";
 import { brandContextToThemeConfig } from "@/lib/tenant-brand";
+import { getTenantTextOverridesFn } from "@/lib/tenant-text-overrides-fn";
 import { TenantThemeStyle } from "@/lib/theme";
 import type { TenantThemeConfig } from "@starter/shared/theme";
 import globalsCss from "@/styles/globals.css?url";
@@ -39,6 +40,8 @@ export type RouterContext = {
    * with no tenant or no active theme, so the Base Theme applies.
    */
   tenantTheme: TenantThemeConfig | null;
+  /** Public `terms.*` text overrides of the request host; empty when none. */
+  textOverrides: MessageOverrides;
 };
 
 export const Route = createRootRouteWithContext<RouterContext>()({
@@ -46,9 +49,10 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   // with every route as context. Layouts decide what to do with it; the API
   // still authenticates every request on its own.
   beforeLoad: async () => {
-    const [session, brand] = await Promise.all([
+    const [session, brand, textOverrides] = await Promise.all([
       getSessionFn(),
       getTenantBrandFn(),
+      getTenantTextOverridesFn(),
     ]);
     const isBrowser = typeof window !== "undefined";
     let tenantTheme: TenantThemeConfig | null;
@@ -66,6 +70,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       session,
       access: await loadAreaAccess(session),
       tenantTheme,
+      textOverrides,
     };
   },
   head: () => ({
@@ -106,19 +111,20 @@ function RootDocument({ children }: { children: ReactNode }) {
     shouldThrow: false,
     select: (match) => match.context.tenantTheme ?? null,
   });
+  const overrides = useMatch({
+    from: rootRouteId,
+    shouldThrow: false,
+    select: (match) => match.context.textOverrides,
+  });
   return (
-    <html
-      lang="id"
-      data-tenant={tenantTheme?.id}
-      suppressHydrationWarning
-    >
+    <html lang="id" data-tenant={tenantTheme?.id} suppressHydrationWarning>
       <head>
         <HeadContent />
         {tenantTheme ? <TenantThemeStyle tenant={tenantTheme} /> : null}
       </head>
       <body>
         <HydrationMarker />
-        <Providers>
+        <Providers overrides={overrides}>
           <a
             href="#main-content"
             className="sr-only z-50 rounded-md bg-foreground p-3 text-background focus:not-sr-only focus:fixed focus:top-4 focus:left-4"
