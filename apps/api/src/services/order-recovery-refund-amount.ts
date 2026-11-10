@@ -35,7 +35,9 @@
 //
 // Replay (legend-pti5r): a line reported again after a final failure of its
 // refund (not `rejected`) pays the failed refund's amount with its split, cut
-// to the room the same way (`recoveryRefundReplaySplit`).
+// to the room the same way (`recoveryRefundReplaySplit`). When the chain holds
+// a swap to a cheaper line (legend-fwe4l) the replay is first cut to that
+// line's value (`capIdr`): the guest already got the difference as a voucher.
 
 import {
   orderRevenueSplit,
@@ -295,25 +297,34 @@ export function recoveryRefundReplaySplit(input: {
   pbjtIdr: number;
   /** Already released by other issues of this order. */
   releasedIdr: number;
+  /**
+   * legend-fwe4l: value of the line this refund pays for (a swap replacement).
+   * Below `wantedIdr` it replaces the amount; the parts are cut like a room
+   * cut. Not a shortfall: that money was never owed.
+   */
+  capIdr?: number;
 }): RecoveryRefundSplit {
-  const wanted = big(input.wantedIdr);
+  let wanted = big(input.wantedIdr);
   if (wanted <= 0n) return { ...ZERO };
+  let startParts: Parts = {
+    gross: big(input.grossSalesIdr),
+    discount: big(input.discountIdr),
+    service: big(input.serviceChargeIdr),
+    pbjt: big(input.pbjtIdr),
+  };
+  if (input.capIdr !== undefined && big(input.capIdr) < wanted) {
+    const capped = cutToRoom(startParts, wanted, big(input.capIdr));
+    wanted = capped.amount;
+    startParts = capped.parts;
+    if (wanted <= 0n) return { ...ZERO };
+  }
   const room = BigInt(
     Math.max(
       0,
       input.order.totalIdr - input.order.depositAppliedIdr - input.releasedIdr,
     ),
   );
-  const { amount, parts } = cutToRoom(
-    {
-      gross: big(input.grossSalesIdr),
-      discount: big(input.discountIdr),
-      service: big(input.serviceChargeIdr),
-      pbjt: big(input.pbjtIdr),
-    },
-    wanted,
-    room,
-  );
+  const { amount, parts } = cutToRoom(startParts, wanted, room);
   return {
     wantedIdr: Number(wanted),
     amountIdr: Number(amount),

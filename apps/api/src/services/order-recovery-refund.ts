@@ -117,6 +117,7 @@ const AUDIT_SAFE_FIELDS = [
   "blockedReason",
   "failureReason",
   "replayOfIssueId",
+  "swapCapIdr",
 ];
 
 const REVERSAL_EVENT = "order_issue.refund_reversal_requested";
@@ -391,6 +392,7 @@ export async function deliverOrderRecoveryRefundEvent(
   let split: ReturnType<typeof recoveryRefundSplit>;
   let promo: RecoveryRefundPromo | undefined;
   let replay: RecoveryRefundReplaySource | null = null;
+  let swapCapIdr: number | undefined;
   try {
     // Order amounts that fail their tax-mode identity are refused before the
     // promo port changes anything.
@@ -592,6 +594,16 @@ export async function deliverOrderRecoveryRefundEvent(
           };
       }
     }
+    // legend-fwe4l: the chain's root is another item (a swap): this line pays
+    // its own value, not the root's amount (the guest got the difference as a
+    // voucher). The replacement line carries no promo price.
+    if (replay !== null && replay.rootOrderItemId !== issue.orderItemId)
+      swapCapIdr = recoveryRefundSplit({
+        order,
+        lineTotalIdr: line.lineTotalIdr,
+        priorLinesIdr,
+        releasedIdr,
+      }).wantedIdr;
     split =
       replay === null
         ? recoveryRefundSplit({
@@ -604,6 +616,7 @@ export async function deliverOrderRecoveryRefundEvent(
         : recoveryRefundReplaySplit({
             order,
             wantedIdr: replay.amountIdr,
+            ...(swapCapIdr === undefined ? {} : { capIdr: swapCapIdr }),
             grossSalesIdr: replay.grossSalesIdr,
             discountIdr: replay.discountIdr,
             serviceChargeIdr: replay.serviceChargeIdr,
@@ -718,6 +731,11 @@ export async function deliverOrderRecoveryRefundEvent(
           amountIdr: row.amountIdr,
           status: row.status,
           ...(replay === null ? {} : { replayOfIssueId: replay.issueId }),
+          ...(replay === null ||
+          swapCapIdr === undefined ||
+          swapCapIdr >= replay.amountIdr
+            ? {}
+            : { swapCapIdr }),
         },
         REFUND_REASON,
       );
@@ -742,6 +760,8 @@ type RecoveryRefundReplaySource = {
   discountIdr: number;
   serviceChargeIdr: number;
   pbjtIdr: number;
+  /** Item of the root issue of the chain (another item = a swap in between). */
+  rootOrderItemId: string;
 };
 
 /** The earlier refund of the item was `rejected`: no replay, nothing owed. */
@@ -864,6 +884,9 @@ async function findRecoveryRefundReplay(
     rootId = next;
   }
   const isRoot = rootId === previous.id;
+  const rootOrderItemId =
+    issues.find((row) => row.id === rootId)?.orderItemId ??
+    previous.orderItemId;
   if (!payFirst) {
     // Open bill: no split to read; the root's filed amount is what to replay.
     let amountIdr = failedRefund.amountIdr;
@@ -889,6 +912,7 @@ async function findRecoveryRefundReplay(
       discountIdr: 0,
       serviceChargeIdr: 0,
       pbjtIdr: 0,
+      rootOrderItemId,
     };
   }
   const [refunded] = await tx
@@ -935,6 +959,7 @@ async function findRecoveryRefundReplay(
     discountIdr,
     serviceChargeIdr,
     pbjtIdr,
+    rootOrderItemId,
   };
 }
 

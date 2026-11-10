@@ -16,7 +16,10 @@
 // - Half-up on a positive value: floor(x + 1/2); ties go up.
 
 import { describe, expect, it } from "vitest";
-import { recoveryRefundSplit } from "../services/order-recovery-refund-amount.ts";
+import {
+  recoveryRefundReplaySplit,
+  recoveryRefundSplit,
+} from "../services/order-recovery-refund-amount.ts";
 
 type OrderInput = Parameters<typeof recoveryRefundSplit>[0]["order"];
 
@@ -771,5 +774,119 @@ describe("legend-h1dyy recoveryRefundSplit: goodsIdr untuk buku promo (refunded_
     });
     expect(result.amountIdr).toBe(50_000);
     expect(result.goodsIdr).toBe(50_000);
+  });
+});
+
+// legend-fwe4l (Q17): the replay of a failed refund is capped by the value of the
+// replacement line (`capIdr`), so a swap to a cheaper item never pays the old
+// item's money again next to the voucher for the difference. Contract:
+// docs/briefs/sub-fwe4l-swap-cap.md. Cap below wanted: the amount asked is the
+// cap and discount, service and PBJT scale by cap / wanted (gross is the rest),
+// like a cut to the room; the room applies afterwards; `shortfallIdr` comes only
+// from the room, never from the cap.
+describe("legend-fwe4l recoveryRefundReplaySplit dengan capIdr", () => {
+  // gross 20.000 - discount 12.000 + service 500 + PBJT 1.500 = wanted 10.000.
+  const failed = {
+    wantedIdr: 10_000,
+    grossSalesIdr: 20_000,
+    discountIdr: 12_000,
+    serviceChargeIdr: 500,
+    pbjtIdr: 1_500,
+  };
+  const roomy = { totalIdr: 100_000, depositAppliedIdr: 0 };
+
+  it("cap di bawah wanted: jumlah = cap, bagian proporsional, shortfall 0", () => {
+    const result = recoveryRefundReplaySplit({
+      order: roomy,
+      ...failed,
+      releasedIdr: 0,
+      capIdr: 5_000,
+    });
+    expect(result).toMatchObject({
+      wantedIdr: 5_000,
+      amountIdr: 5_000,
+      shortfallIdr: 0,
+      grossSalesIdr: 10_000,
+      discountIdr: 6_000,
+      serviceChargeIdr: 250,
+      pbjtIdr: 750,
+    });
+  });
+
+  it("cap yang tidak membagi rata: jumlah bagian tetap = jumlah, tidak ada bagian negatif, tiap bagian mendekati proporsi", () => {
+    const result = recoveryRefundReplaySplit({
+      order: roomy,
+      ...failed,
+      releasedIdr: 0,
+      capIdr: 3_333,
+    });
+    expect(result.amountIdr).toBe(3_333);
+    expect(result.wantedIdr).toBe(3_333);
+    expect(result.shortfallIdr).toBe(0);
+    expect(
+      result.grossSalesIdr -
+        result.discountIdr +
+        result.serviceChargeIdr +
+        result.pbjtIdr,
+    ).toBe(3_333);
+    for (const part of [
+      result.grossSalesIdr,
+      result.discountIdr,
+      result.serviceChargeIdr,
+      result.pbjtIdr,
+    ])
+      expect(part).toBeGreaterThanOrEqual(0);
+    // discount 12.000, service 500, PBJT 1.500 scaled by 3.333 / 10.000.
+    expect(Math.abs(result.discountIdr - 3_999.6)).toBeLessThanOrEqual(1);
+    expect(Math.abs(result.serviceChargeIdr - 166.65)).toBeLessThanOrEqual(1);
+    expect(Math.abs(result.pbjtIdr - 499.95)).toBeLessThanOrEqual(1);
+  });
+
+  it("cap sama dengan atau di atas wanted: hasil tidak berubah dari tanpa cap", () => {
+    const without = recoveryRefundReplaySplit({
+      order: roomy,
+      ...failed,
+      releasedIdr: 0,
+    });
+    expect(without.amountIdr).toBe(10_000);
+    for (const capIdr of [10_000, 10_001, 500_000])
+      expect(
+        recoveryRefundReplaySplit({
+          order: roomy,
+          ...failed,
+          releasedIdr: 0,
+          capIdr,
+        }),
+      ).toEqual(without);
+  });
+
+  it("cap dan room: room yang lebih kecil menang; shortfall dihitung dari wanted setelah cap", () => {
+    // room = 12.000 - 0 - 10.000 = 2.000, below the cap of 5.000.
+    const result = recoveryRefundReplaySplit({
+      order: { totalIdr: 12_000, depositAppliedIdr: 0 },
+      ...failed,
+      releasedIdr: 10_000,
+      capIdr: 5_000,
+    });
+    expect(result).toMatchObject({
+      wantedIdr: 5_000,
+      amountIdr: 2_000,
+      shortfallIdr: 3_000,
+      grossSalesIdr: 4_000,
+      discountIdr: 2_400,
+      serviceChargeIdr: 100,
+      pbjtIdr: 300,
+    });
+  });
+
+  it("cap dan room: room yang lebih besar dari cap tidak mengubah apa pun (tanpa shortfall)", () => {
+    const result = recoveryRefundReplaySplit({
+      order: { totalIdr: 12_000, depositAppliedIdr: 0 },
+      ...failed,
+      releasedIdr: 4_000,
+      capIdr: 5_000,
+    });
+    expect(result.amountIdr).toBe(5_000);
+    expect(result.shortfallIdr).toBe(0);
   });
 });
