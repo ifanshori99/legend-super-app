@@ -1007,3 +1007,4 @@ Langkah berikut CTO baru:
 - Codex jalan: 377 profit share bagian A (akun #2).
 - Rekap Codex hari ini: 5 run selesai, 16 temuan (8 P1) yang lolos review Claude.
 - 19:52 Codex 377 profit share A: P1 approval lewati matriks, P2 clawback pajak berlebih. Kartu legend-33im6, brief 378. 8s992 ditahan dari merge. Codex 379 profit share B jalan (#2).
+- 19:58 Codex 379 profit share B: 2 P1 (ganti userId alihkan akses statement historis; 0219 gagal bila dokumen sudah ada) + 1 P2 (penerbit statement tak dipasang). Masuk brief 378 (legend-33im6). Codex 380 split bill jalan (#2).
