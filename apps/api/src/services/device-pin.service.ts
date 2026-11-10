@@ -388,7 +388,9 @@ export async function setStaffPin(
 export type PinAttemptOutcome =
   | { readonly kind: "ok"; readonly userId: string }
   | { readonly kind: "invalid" }
-  | { readonly kind: "locked" }
+  // `fresh`: THIS guess was the one that locked the pin (a real wrong guess);
+  // absent: the pin was already locked and the guess was never checked.
+  | { readonly kind: "locked"; readonly fresh?: true }
   | { readonly kind: "not_member" }
   // legend-jmsdx: an edge holds no pepper for a version 1 (tenant-wide) row,
   // so the pin cannot be checked there: the pin must be set again. Not a
@@ -548,7 +550,7 @@ export async function attemptStaffPin(
         },
         { tx, context },
       );
-      return { kind: "locked" };
+      return { kind: "locked", fresh: true };
     }
     // A correct pin of someone who no longer works here, or a disabled
     // account, never switches in.
@@ -562,11 +564,26 @@ export async function attemptStaffPin(
   });
 }
 
+/**
+ * `PIN_LOCKED` for the guess that itself locked the pin (legend-sp9vq): still a
+ * wrong guess, so the per-device throttle must keep counting it. A pin that was
+ * already locked throws the plain `IdentityError`.
+ */
+export class PinNewlyLockedError extends IdentityError {
+  constructor() {
+    super("PIN_LOCKED");
+    this.name = "PinNewlyLockedError";
+  }
+}
+
 /** Maps a failed attempt to the identity error the device shows. */
 export function assertPinAttemptOk(
   outcome: PinAttemptOutcome,
 ): asserts outcome is { kind: "ok"; userId: string } {
-  if (outcome.kind === "locked") throw new IdentityError("PIN_LOCKED");
+  if (outcome.kind === "locked")
+    throw outcome.fresh
+      ? new PinNewlyLockedError()
+      : new IdentityError("PIN_LOCKED");
   if (outcome.kind === "reset_required")
     throw new IdentityError("STAFF_PIN_RESET_REQUIRED");
   if (outcome.kind === "not_member")

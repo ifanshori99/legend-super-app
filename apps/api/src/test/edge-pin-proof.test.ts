@@ -1075,6 +1075,68 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
     }
   });
 
+  it("(f) legend-sp9vq: guesses that newly lock a staff PIN still count on the device; an already locked PIN does not", async () => {
+    const throttleOutlet = await seedOutlet("Outlet kunci baru");
+    holdEdgePepper(throttleOutlet);
+    const device = await enrollAt(throttleOutlet, "Layar kunci baru");
+    await seedSupervisor(throttleOutlet);
+    const options = { outlet: throttleOutlet };
+    const crowd: Staff[] = [];
+    for (let i = 0; i < 12; i += 1)
+      crowd.push(await newStaff(`Staf Kunci ${i + 1}`, options));
+    // Each staff sits at 4 wrong PINs (as after earlier device windows): the
+    // next wrong guess is the 5th and locks the PIN.
+    await owner.query(
+      `UPDATE staff_pins SET failed_attempts = 4
+        WHERE tenant_id = $1 AND outlet_id = $2 AND user_id = ANY($3::text[])`,
+      [tenant.id, throttleOutlet, crowd.map((s) => s.userId)],
+    );
+    for (const staff of crowd.slice(0, 10)) {
+      const response = await verify(device.token, staff.userId, WRONG, null);
+      expect(response.status, JSON.stringify(response.body)).not.toBe(429);
+      expect(codeOf(response.body)).toBe("PIN_LOCKED");
+    }
+    // 10 locking guesses used the 10 device slots: the 11th is refused 429
+    // before any staff counter moves, and the window alert was written once.
+    const blocked = await verify(device.token, crowd[10]!.userId, WRONG, null);
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(429);
+    expect(codeOf(blocked.body)).toBe("PIN_DEVICE_THROTTLED");
+    expect(
+      (await pinRow(crowd[10]!.userId, throttleOutlet))?.failed_attempts,
+    ).toBe(4);
+    expect(await throttleAudits(throttleOutlet, device.id)).toBe(1);
+
+    // A PIN that was already locked never looks at the guess: it gives the
+    // slot back, so on a calm device many tries stay PIN_LOCKED.
+    const calm = await enrollAt(throttleOutlet, "Layar sudah terkunci");
+    for (let i = 0; i < 15; i += 1) {
+      const response = await verify(calm.token, crowd[0]!.userId, WRONG, null);
+      expect(response.status, JSON.stringify(response.body)).not.toBe(429);
+      expect(codeOf(response.body)).toBe("PIN_LOCKED");
+    }
+  });
+
+  it("(f) legend-sp9vq: 12 locking guesses at once -> exactly 10 answer PIN_LOCKED, 2 answer 429", async () => {
+    const throttleOutlet = await seedOutlet("Outlet kunci serentak");
+    holdEdgePepper(throttleOutlet);
+    const device = await enrollAt(throttleOutlet, "Layar kunci serentak");
+    const options = { outlet: throttleOutlet };
+    const crowd: Staff[] = [];
+    for (let i = 0; i < 12; i += 1)
+      crowd.push(await newStaff(`Staf Serentak Kunci ${i + 1}`, options));
+    await owner.query(
+      `UPDATE staff_pins SET failed_attempts = 4
+        WHERE tenant_id = $1 AND outlet_id = $2 AND user_id = ANY($3::text[])`,
+      [tenant.id, throttleOutlet, crowd.map((s) => s.userId)],
+    );
+    const answers = await Promise.all(
+      crowd.map((s) => verify(device.token, s.userId, WRONG, null)),
+    );
+    const statuses = JSON.stringify(answers.map((r) => r.status));
+    expect(answers.filter((r) => r.status === 423).length, statuses).toBe(10);
+    expect(answers.filter((r) => r.status === 429).length, statuses).toBe(2);
+  });
+
   it("(f) 9 wrong PINs do not throttle: the next correct PIN still works", async () => {
     const throttleOutlet = await seedOutlet("Outlet sembilan salah");
     holdEdgePepper(throttleOutlet);

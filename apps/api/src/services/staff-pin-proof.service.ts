@@ -40,6 +40,7 @@ import { logger } from "../lib/logger";
 import { toLoggableError } from "../lib/safe-error";
 import { recordAudit } from "./audit-writer";
 import {
+  PinNewlyLockedError,
   resolveDeviceOutlet,
   verifyStaffPinOnDevice,
 } from "./device-pin.service";
@@ -207,7 +208,8 @@ async function issuePinProof(
 // Atomic slot reservation (legend-u7g9w): a request takes one of the window's
 // 10 slots BEFORE its PIN is checked, in its own committed transaction, so
 // parallel guesses cannot all pass a stale count. A correct PIN or any error
-// other than `PIN_INVALID` gives the slot back; `PIN_INVALID` keeps it.
+// other than `PIN_INVALID` gives the slot back; `PIN_INVALID` and the guess
+// that newly locks a staff PIN (`PinNewlyLockedError`) keep it.
 
 /**
  * Takes one slot (upsert: an ended window restarts at 1, otherwise +1). Over
@@ -293,7 +295,8 @@ async function releaseDeviceSlot(
  * After a confirmed wrong PIN: the first miss to see the window at 10 or more
  * claims the window's alert (`alerted_window_started_at`) and writes one audit
  * row and one supervisor alert, in its own transaction. A failure here is
- * logged and never changes the client's answer (still 401 PIN_INVALID).
+ * logged and never changes the client's answer (still 401 PIN_INVALID, or
+ * 423 PIN_LOCKED for the guess that locked the staff PIN).
  */
 async function alertDeviceThrottled(
   context: ScopedTenantContext,
@@ -381,8 +384,9 @@ export type VerifyWithProofInput = {
  * 1. reserve one of the device's window slots (429 before anything else, staff
  *    counters untouched);
  * 2. with a purpose: the staff member may clock (403 before the PIN is checked);
- * 3. the existing verify; a wrong PIN (`PIN_INVALID`) keeps the slot, a correct
- *    PIN or any other error gives it back;
+ * 3. the existing verify; a wrong PIN (`PIN_INVALID`) and the guess that newly
+ *    locks the staff PIN (`PinNewlyLockedError`) keep the slot, a correct PIN
+ *    or any other error (including an already locked PIN) gives it back;
  * 4. with a purpose and a correct PIN: a new proof in the answer.
  * Without a purpose the answer is exactly the old one.
  */
@@ -410,7 +414,13 @@ export async function verifyStaffPinWithProof(
       );
     result = await verifyStaffPinOnDevice(tenant, verifyInput);
   } catch (error) {
-    if (error instanceof IdentityError && error.code === "PIN_INVALID")
+    // A guess that itself locked the staff PIN is still a wrong guess: keep
+    // its slot and alert (legend-sp9vq). A pin locked before never looked at
+    // the guess, so that one gives the slot back.
+    if (
+      (error instanceof IdentityError && error.code === "PIN_INVALID") ||
+      error instanceof PinNewlyLockedError
+    )
       await alertDeviceThrottled(
         context,
         outletId,
