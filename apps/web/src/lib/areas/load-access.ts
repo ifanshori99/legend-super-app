@@ -1,16 +1,18 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getCookie } from "@tanstack/react-start/server";
-import type { MyAccessView } from "@starter/shared/access";
-import { apiFetch } from "@/lib/api/client";
+import { getMyAccess } from "@starter/shared/access";
+import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import {
   accessForMockRole,
-  accessFromSession,
+  resolveAreaAccess,
   MOCK_ROLE_COOKIE,
   MOCK_SUPPORT_COOKIE,
   parseMockRole,
   type AreaAccess,
 } from "./access.ts";
+
+const ACCESS_TIMEOUT_MS = 3000;
 
 // Mock mode only: the role cookie lives on the web origin, so the server reads
 // it. A real build compiles API_MOCK to false and never calls this.
@@ -44,15 +46,20 @@ export async function loadAreaAccess(
       },
     };
   }
-  const access = accessFromSession(session);
-  // Only an impersonated session (Super Admin support, TEN-04) needs the
-  // access view today; normal sessions cost no extra request.
-  if (!session?.session?.impersonatedBy) return access;
-  try {
-    const view = await apiFetch<{ data: MyAccessView }>("/api/me/access");
-    return { ...access, supportSession: view.data.supportSession };
-  } catch {
-    // The API enforces read-only either way; the notice is presentation.
-    return access;
-  }
+  // Real session: the API answers with the caller's effective permissions.
+  // Failures fail closed (see resolveAreaAccess). The timeout keeps a hung API
+  // from stalling every navigation: an abort throws and fails closed too.
+  return resolveAreaAccess(
+    session,
+    async () =>
+      (
+        await callEndpoint(
+          getMyAccess,
+          {},
+          {
+            signal: AbortSignal.timeout(ACCESS_TIMEOUT_MS),
+          },
+        )
+      ).data,
+  );
 }

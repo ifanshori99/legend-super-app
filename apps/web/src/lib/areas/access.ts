@@ -1,16 +1,18 @@
 // What the web app knows about the visitor's reach, enough to decide which
 // areas to show (presentation only; the API authorizes every request).
 //
-// Source today: the Better Auth session carries no Legend role assignments
-// yet, so a real session is authenticated with NO permissions — every guarded
-// area fails closed until the API exposes the caller's effective permissions
-// (follow-up bead). In mock mode (VITE_API_MOCK=true) a cookie picks a role
+// Source: the Better Auth session carries no Legend role assignments, so a real
+// session is authenticated from GET /api/me/access (`resolveAreaAccess`). When
+// that call fails or answers something unexpected, every guarded area fails
+// closed (`accessFromSession`). In mock mode (VITE_API_MOCK=true) a cookie picks a role
 // template so every area can be reviewed.
 import {
   ROLE_TEMPLATE_KEYS,
   PERMISSION_CODES,
+  myAccessViewSchema,
   roleTemplate,
   stationIdSchema,
+  type MyAccessView,
   type PermissionCode,
   type RoleTemplateKey,
   type StationId,
@@ -67,6 +69,40 @@ export function accessFromSession(
     mfaVerified: false,
     stations: [],
   };
+}
+
+/** Maps the validated GET /api/me/access view to the visitor's reach. */
+export function accessFromView(view: MyAccessView): AreaAccess {
+  return {
+    authenticated: true,
+    permissions: view.permissions,
+    mfaRequired: view.mfaRequired,
+    mfaVerified: view.mfaVerified,
+    stations: view.stations,
+    supportSession: view.supportSession,
+  };
+}
+
+/**
+ * Real-session access (legend-oldg): ask the API for the caller's effective
+ * permissions. A missing session is anonymous without a request. Any failure
+ * (401, 403, network, a body that does not match the contract) falls back to
+ * `accessFromSession`: authenticated, no permissions, MFA assumed required.
+ * The API authorizes every request again, so this only decides what to show.
+ */
+export async function resolveAreaAccess(
+  session: { user: object } | null | undefined,
+  fetchView: () => Promise<unknown>,
+): Promise<AreaAccess> {
+  if (!session) return ANONYMOUS_ACCESS;
+  try {
+    const parsed = myAccessViewSchema.safeParse(await fetchView());
+    return parsed.success
+      ? accessFromView(parsed.data)
+      : accessFromSession(session);
+  } catch {
+    return accessFromSession(session);
+  }
 }
 
 export const MOCK_ROLE_COOKIE = "legend-mock-role";
