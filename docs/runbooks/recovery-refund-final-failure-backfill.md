@@ -8,11 +8,18 @@ menunggu persetujuan CTO dan founder.
 Refund pemulihan (ORD-09, `payment_refunds.requested_by = 'system:recovery'`)
 yang gagal final seharusnya "membebaskan" penjualannya lagi: baris item boleh
 dilaporkan ulang (`order_issues.refund_rejected_at`), jurnal refund dibalik
-(event `order_issue.refund_reversal_requested`), dan, sejak legend-pti5r,
-potongan promo yang sudah dicatat saat pengajuan pertama dikembalikan
-(`promotion_order_applications.refunded_paid_idr` berkurang). Kode lama tidak
-selalu melakukan semua itu, jadi uang tamu bisa tertahan: laporan ulang
-menghitung "tidak ada yang tersisa" (`nothing_left`).
+(event `order_issue.refund_reversal_requested`). Kode lama tidak selalu
+melakukan itu, jadi uang tamu bisa tertahan: laporan ulang menghitung "tidak
+ada yang tersisa" (`nothing_left`).
+
+Sejak legend-pti5r ledger promo TIDAK disentuh saat gagal final: potongan
+(`promotion_order_applications.refunded_paid_idr` dan `refunded_subtotal_idr`)
+tetap tersimpan untuk baris itu, jadi tidak ada issue lain yang bisa
+menyerapnya. Aturan ulang-lapor: bila baris item YANG SAMA dilaporkan ulang
+setelah gagal final selain `rejected`, issue baru mengajukan ulang jumlah dan
+rincian refund yang gagal (tanpa hitung promo baru dan tanpa mencatat potongan
+lagi), dibatasi sisa ruang intent saat itu. Issue `rejected` tetap
+`nothing_left` (legend-h1dyy).
 
 Gagal final berarti salah satu:
 
@@ -31,7 +38,7 @@ Berkas: `apps/api/scripts/recovery-refund-final-failure-check.sql`. Isinya
 `BEGIN READ ONLY ... ROLLBACK`, tidak menulis apa pun. Ujinya:
 `apps/api/src/test/recovery-refund-final-failure-check-db.test.ts`.
 
-Tiga query:
+Satu query:
 
 1. Gagal final yang belum diselesaikan: kolom `missing_stamp` (cap
    `refund_rejected_at` belum ada) dan/atau `missing_reversal` (ada event
@@ -39,20 +46,13 @@ Tiga query:
    `order_issue.refund_reversal_requested`). Refund tagihan terbuka tidak punya
    `order.refunded`, jadi tidak ada jurnal yang perlu dibalik dan tidak
    ditandai.
-2. Gagal final BUKAN `rejected` pada order promo yang pengajuan pertamanya
-   mencatat `promoRecordedIdr` lebih dari 0 dan belum punya baris
-   `promo_command_idempotency` berkunci
-   `order-recovery-refund:<issueId>#promo-return`. Issue `rejected` sengaja
-   tidak masuk: potongan promonya memang dibiarkan (legend-h1dyy).
-3. Tinjauan manual: gagal final BUKAN `rejected` yang pengajuan pertamanya
-   ditulis SEBELUM perubahan ini, yaitu respons punya `promoRecordedIdr` lebih
-   dari 0 tetapi tidak punya `promoRefundedSubtotalIdr`. Kolom
-   `payout_returned` menunjukkan apakah potongannya sudah kembali. Baris ini
-   masuk daftar ini walau sudah punya baris `...#promo-return`.
 
-Kolom hasil: `tenant_id`, `issue_id`, `order_id`, jumlah refund terakhir, alasan
-gagal terakhir; query 2 juga `promo_recorded_idr`, `refunded_paid_idr`,
-`application_status`; query 3 juga `promo_recorded_idr` dan `payout_returned`.
+Ledger promo tidak diperiksa dan tidak perlu backfill: sengaja tidak disentuh,
+dan laporan ulang memutar ulang refund yang gagal (lihat aturan di atas).
+
+Kolom hasil: `tenant_id`, `issue_id`, `order_id`, `last_refund_id`, jumlah
+refund terakhir, alasan gagal terakhir, `failed_count`, `missing_stamp`,
+`missing_reversal`.
 
 ## Cara menjalankan
 
@@ -63,7 +63,7 @@ gagal terakhir; query 2 juga `promo_recorded_idr`, `refunded_paid_idr`,
 2. Dari mesin operator yang punya repo:
    `psql "$ADMIN_DATABASE_URL" -f apps/api/scripts/recovery-refund-final-failure-check.sql > /tmp/cek-refund.txt`
    (simpan hasil di luar repo, hasilnya memuat id tenant dan jumlah uang).
-3. Simpan jumlah baris per query dan per tenant untuk perbandingan nanti.
+3. Simpan jumlah baris per tenant untuk perbandingan nanti.
 
 ## Rencana backfill per kategori
 
@@ -73,8 +73,7 @@ diulang. Jangan menulis SQL langsung ke `order_issues`, outbox, atau tabel
 promo.
 
 Untuk tiap baris (urut `tenant_id`, `issue_id`), dalam satu transaksi tenant
-(`withTenant`, urutan kunci: intent, issue, promo, persis seperti kode
-hidup):
+(`withTenant`, kunci intent lebih dulu, persis seperti kode hidup):
 
 1. Baca refund `failed` terakhir issue itu (`last_refund_id`), kunci intent-nya
    lebih dulu (`lockIntentsForFact`).
@@ -82,31 +81,23 @@ hidup):
    (`apps/api/src/services/order-recovery-refund.ts`). Satu panggilan
    menyelesaikan semua kategori di bawah.
 
-| Kategori                               | Yang dilakukan panggilan itu                                                                                                                                                                                 |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `missing_stamp` (query 1)              | Mengisi `refund_rejected_at` (hanya jika masih kosong), sehingga baris item boleh dilaporkan ulang.                                                                                                          |
-| `missing_reversal` (query 1)           | Menambah satu event `order_issue.refund_reversal_requested` (sekali per issue, hanya jika ada `order.refunded`).                                                                                             |
-| Potongan promo belum kembali (query 2) | Memanggil `returnPartialRefundPayout` dengan kunci `order-recovery-refund:<issueId>#promo-return` dan `payoutIdr = promoRecordedIdr`. Kunci yang sama dengan kode hidup, jadi tidak pernah kembali dua kali. |
-| `rejected`                             | Cap dan jurnal saja. Potongan promo tetap (keputusan legend-h1dyy).                                                                                                                                          |
+| Kategori                     | Yang dilakukan panggilan itu                                                                                     |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `missing_stamp` (query 1)    | Mengisi `refund_rejected_at` (hanya jika masih kosong), sehingga baris item boleh dilaporkan ulang.              |
+| `missing_reversal` (query 1) | Menambah satu event `order_issue.refund_reversal_requested` (sekali per issue, hanya jika ada `order.refunded`). |
+| `rejected`                   | Cap dan jurnal saja. Laporan ulang tetap `nothing_left` (keputusan legend-h1dyy).                                |
 
-`returnPartialRefundPayout` mengembalikan dua hal: `returnedIdr` (potongan
-`refunded_paid_idr`) dan `returnedSubtotalIdr` (`refunded_subtotal_idr`). Input
-`payoutIdr` dari `promoRecordedIdr` dan `refundedSubtotalIdr` dari
-`promoRefundedSubtotalIdr` pada respons pengajuan pertama.
-
-Baris lama (query 3): pengajuan pertamanya ditulis sebelum
-`promoRefundedSubtotalIdr` disimpan, jadi hanya potongan (`refunded_paid_idr`)
-yang bisa dikembalikan; `refunded_subtotal_idr` tidak ikut turun dan baris item
-tetap dianggap sudah diproses (tetap dikecualikan dari laporan ulang). Baris
-seperti ini tidak dibackfill otomatis: tinjau satu per satu secara manual
-(CTO) dan koreksi lewat penyesuaian terpisah yang disetujui.
+Tidak ada backfill promo. Ledger promo sengaja tidak disentuh saat gagal final:
+`refunded_paid_idr` dan `refunded_subtotal_idr` tetap menahan potongan baris
+itu. Setelah cap terisi, staf melaporkan ulang baris item yang SAMA sebagai
+issue baru; issue baru memutar ulang jumlah dan rincian refund yang gagal
+(dari payload `order.refunded` issue lama), tanpa hitung promo dan tanpa
+`recordPartialRefundPayout`, dibatasi sisa ruang intent. Itu langkah manusia
+yang biasa; backfill hanya membuat laporan ulang tidak lagi `nothing_left`.
+Item lain pada order yang sama dihitung dari baris miliknya sendiri.
 
 Bila kode hidup (kartu legend-pti5r) belum ter-deploy, jangan backfill: skrip
-akan menandai ulang issue yang sama dan potongan promo tidak kembali.
-
-Setelah potongan promo kembali, tamu belum otomatis mendapat uangnya: staf
-melaporkan ulang baris itu sebagai issue baru. Itu langkah manusia yang
-biasa; backfill hanya membuat laporan ulang tidak lagi `nothing_left`.
+akan menandai ulang issue yang sama.
 
 ### Dry-run dulu
 
@@ -114,29 +105,25 @@ biasa; backfill hanya membuat laporan ulang tidak lagi `nothing_left`.
   kecil: hanya refund pemulihan yang gagal final sebelum perbaikan).
 - Jalankan skrip backfill (belum ditulis, ditulis setelah rencana disetujui)
   dengan mode dry-run: tiap transaksi tenant di-`ROLLBACK` di akhir dan hanya
-  mencetak apa yang akan terjadi per issue (cap, event, jumlah promo kembali).
+  mencetak apa yang akan terjadi per issue (cap dan event).
 - Uji dulu di staging dengan salinan data, bukan di production.
 
 ### Verifikasi
 
-- Jalankan ulang pemeriksaan: query 1 dan 2 harus kosong (query 3 tetap berisi baris lama sampai ditinjau) untuk issue yang
-  diproses (batch bertahap: kosong untuk batch itu).
-- Per issue promo: `refunded_paid_idr` turun tepat sebesar `promo_recorded_idr`
-  dan tidak pernah di bawah 0; `refunded_subtotal_idr` turun sebesar
-  `promoRefundedSubtotalIdr` (hanya baris baru); baris `promo_command_idempotency` berkunci
-  `...#promo-return` ada tepat satu.
+- Jalankan ulang pemeriksaan: query 1 harus kosong untuk issue yang diproses
+  (batch bertahap: kosong untuk batch itu).
 - Per issue dengan `order.refunded`: tepat satu event
   `order_issue.refund_reversal_requested`, jurnal `aj:order-refund:<issueId>`
   punya pembalik.
+- Ledger promo (`refunded_paid_idr`, `refunded_subtotal_idr`) tidak berubah
+  oleh backfill.
 - Jalankan ulang backfill pada issue yang sama: tidak ada perubahan (idempoten).
 
 ### Rollback
 
 - Pemeriksaan tidak menulis apa pun, tidak perlu rollback.
 - Backfill dijalankan per transaksi; transaksi yang gagal batal sendiri. Untuk
-  batch yang sudah commit tidak ada tombol "urungkan" otomatis: cap, event
-  pembalik, dan pengembalian promo tidak dihapus. Koreksi, bila perlu,
+  batch yang sudah commit tidak ada tombol "urungkan" otomatis: cap dan event
+  pembalik tidak dihapus. Koreksi, bila perlu,
   dilakukan lewat penyesuaian terpisah yang disetujui CTO. Karena itu
   jalankan per tenant, mulai dari satu issue, lalu naikkan jumlahnya.
-- Jangan menghapus baris `promo_command_idempotency` untuk "mengulang": itu
-  membuka jalan pengembalian ganda.

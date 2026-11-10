@@ -2,10 +2,12 @@
 // recovery refunds (ORD-09) that ended in a final failure before the fix and
 // were never settled. It is read-only and is run by hand with an admin
 // connection (docs/runbooks/recovery-refund-final-failure-backfill.md).
-// The test seeds one row per category and several clean rows in two tenants
+// The test seeds one row per category and several clean rows in a tenant
 // (foreign keys skipped with session_replication_role = replica, as the other
 // recovery refund tests do), runs the whole file as one simple query (as
-// `psql -f` would) and asserts exactly the flagged issue ids per query.
+// `psql -f` would) and asserts exactly the flagged issue ids. The promo
+// ledger is not checked (a final failure leaves it untouched, a re-report
+// replays the failed refund).
 // It also checks that the script wrote nothing (a read-only transaction).
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -42,20 +44,14 @@ type Seed = {
   /** A refund of the issue that is not failed. */
   live?: boolean;
   stamped?: boolean;
-  firstFiling?:
-    false | { promoRecordedIdr?: number; promoRefundedSubtotalIdr?: number };
+  firstFiling?: false;
   orderRefundedEvent?: boolean;
   reversalEvent?: boolean;
-  promoApplication?: {
-    refundedPaidIdr: number;
-    status?: "applied" | "released";
-  };
-  promoReturnRow?: boolean;
 };
 
 type Seeded = { issueId: string; orderId: string };
 
-/** One issue with its refunds, events and promo rows, in one replica-mode tx. */
+/** One issue with its refunds and events, in one replica-mode tx. */
 async function seed(tenant: Tenant, spec: Seed): Promise<Seeded> {
   const issueId = randomUUID();
   const orderId = randomUUID();
@@ -122,15 +118,6 @@ async function seed(tenant: Tenant, spec: Seed): Promise<Seeded> {
             refundId: randomUUID(),
             resolvedBy: null,
             approvedBy: randomUUID(),
-            ...(spec.firstFiling?.promoRecordedIdr === undefined
-              ? {}
-              : { promoRecordedIdr: spec.firstFiling.promoRecordedIdr }),
-            ...(spec.firstFiling?.promoRefundedSubtotalIdr === undefined
-              ? {}
-              : {
-                  promoRefundedSubtotalIdr:
-                    spec.firstFiling.promoRefundedSubtotalIdr,
-                }),
           }),
         ],
       );
@@ -172,33 +159,6 @@ async function seed(tenant: Tenant, spec: Seed): Promise<Seeded> {
           refundId: issueId,
         },
       );
-    if (spec.promoApplication)
-      await client.query(
-        `INSERT INTO promotion_order_applications
-           (tenant_id, outlet_id, order_id, request_fingerprint, channel, subtotal_idr,
-            total_discount_idr, paid_idr, refunded_paid_idr, result, status, released_at, release_reason)
-         VALUES ($1, $2, $3, $4, 'qr', 50000, 10000, 40000, $5, '{}'::jsonb, $6::varchar,
-                 CASE WHEN $6::varchar = 'released' THEN now() END,
-                 CASE WHEN $6::varchar = 'released' THEN 'uji' END)`,
-        [
-          tenant.id,
-          tenant.outletId,
-          orderId,
-          "a".repeat(64),
-          spec.promoApplication.refundedPaidIdr,
-          spec.promoApplication.status ?? "applied",
-        ],
-      );
-    if (spec.promoReturnRow)
-      await client.query(
-        `INSERT INTO promo_command_idempotency (tenant_id, key, operation, fingerprint, response)
-         VALUES ($1, $2, 'promo_payout.return', $3, '{"returnedIdr":7000,"returnedSubtotalIdr":0}'::jsonb)`,
-        [
-          tenant.id,
-          `order-recovery-refund:${issueId}#promo-return`,
-          "b".repeat(64),
-        ],
-      );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -210,45 +170,36 @@ async function seed(tenant: Tenant, spec: Seed): Promise<Seeded> {
 }
 
 let a: Tenant;
-let b: Tenant;
 const clean: Record<string, string> = {};
 const named: Record<string, Seeded> = {};
 
-const PROMO = { refundedPaidIdr: 7_000 };
-
 beforeAll(async () => {
   a = await makeTenant();
-  b = await makeTenant();
-  const base = { firstFiling: {} as Seed["firstFiling"] };
 
   // ---- Query 1: flagged
-  named.unstamped = await seed(a, { ...base, failed: ["provider_declined"] });
+  named.unstamped = await seed(a, { failed: ["provider_declined"] });
   named.noReversal = await seed(a, {
-    ...base,
     failed: ["cap_exceeded"],
     stamped: true,
     orderRefundedEvent: true,
   });
   named.refileLimit = await seed(a, {
-    ...base,
     failed: ["approval_expired", "approval_expired", "approver_unauthorized"],
   });
   named.noFirstFiling = await seed(a, {
     failed: ["approval_expired"],
     firstFiling: false,
   });
-  named.rejectedUnstamped = await seed(a, { ...base, failed: ["rejected"] });
-  named.unknownReason = await seed(a, { ...base, failed: [null] });
+  named.rejectedUnstamped = await seed(a, { failed: ["rejected"] });
+  named.unknownReason = await seed(a, { failed: [null] });
   // a final failure after an earlier approval_expired
   named.expiredThenDeclined = await seed(a, {
-    ...base,
     failed: ["approval_expired", "source_document"],
   });
 
   // ---- Query 1: clean
   clean.settled = (
     await seed(a, {
-      ...base,
       failed: ["provider_declined"],
       stamped: true,
       orderRefundedEvent: true,
@@ -256,110 +207,18 @@ beforeAll(async () => {
     })
   ).issueId;
   clean.openBill = (
-    await seed(a, { ...base, failed: ["provider_declined"], stamped: true })
+    await seed(a, { failed: ["provider_declined"], stamped: true })
   ).issueId;
   clean.live = (
-    await seed(a, { ...base, failed: ["approval_expired"], live: true })
+    await seed(a, { failed: ["approval_expired"], live: true })
   ).issueId;
   clean.waitingRefile = (
-    await seed(a, { ...base, failed: ["approval_expired"] })
+    await seed(a, { failed: ["approval_expired"] })
   ).issueId;
   clean.notRecovery = (
     await seed(a, {
-      ...base,
       failed: ["provider_declined"],
       requestedBy: "user:manual",
-    })
-  ).issueId;
-
-  // ---- Query 2
-  named.promoOwed = await seed(a, {
-    failed: ["provider_declined"],
-    stamped: true,
-    firstFiling: { promoRecordedIdr: 7_000, promoRefundedSubtotalIdr: 20_000 },
-    promoApplication: PROMO,
-  });
-  named.promoOwedB = await seed(b, {
-    failed: ["provider_declined"],
-    stamped: true,
-    firstFiling: { promoRecordedIdr: 7_000, promoRefundedSubtotalIdr: 20_000 },
-    promoApplication: PROMO,
-  });
-  named.promoReleased = await seed(a, {
-    failed: ["cap_exceeded"],
-    stamped: true,
-    firstFiling: { promoRecordedIdr: 3_000, promoRefundedSubtotalIdr: 10_000 },
-    promoApplication: { refundedPaidIdr: 0, status: "released" },
-  });
-  clean.promoReturned = (
-    await seed(a, {
-      failed: ["provider_declined"],
-      stamped: true,
-      firstFiling: {
-        promoRecordedIdr: 7_000,
-        promoRefundedSubtotalIdr: 20_000,
-      },
-      promoApplication: PROMO,
-      promoReturnRow: true,
-    })
-  ).issueId;
-  clean.promoRejected = (
-    await seed(a, {
-      failed: ["rejected"],
-      stamped: true,
-      firstFiling: {
-        promoRecordedIdr: 7_000,
-        promoRefundedSubtotalIdr: 20_000,
-      },
-      promoApplication: PROMO,
-    })
-  ).issueId;
-  clean.promoZero = (
-    await seed(a, {
-      failed: ["provider_declined"],
-      stamped: true,
-      firstFiling: { promoRecordedIdr: 0, promoRefundedSubtotalIdr: 0 },
-      promoApplication: PROMO,
-    })
-  ).issueId;
-  clean.promoOldRow = (
-    await seed(a, {
-      failed: ["provider_declined"],
-      stamped: true,
-      firstFiling: {},
-      promoApplication: PROMO,
-    })
-  ).issueId;
-  // ---- Query 3: old first filing (promoRecordedIdr, no promoRefundedSubtotalIdr)
-  named.oldRowOwed = await seed(a, {
-    failed: ["provider_declined"],
-    stamped: true,
-    firstFiling: { promoRecordedIdr: 7_000 },
-    promoApplication: PROMO,
-  });
-  named.oldRowReturned = await seed(a, {
-    failed: ["provider_declined"],
-    stamped: true,
-    firstFiling: { promoRecordedIdr: 7_000 },
-    promoApplication: PROMO,
-    promoReturnRow: true,
-  });
-  clean.oldRowRejected = (
-    await seed(a, {
-      failed: ["rejected"],
-      stamped: true,
-      firstFiling: { promoRecordedIdr: 7_000 },
-      promoApplication: PROMO,
-    })
-  ).issueId;
-  clean.promoNoApplication = (
-    await seed(a, {
-      failed: ["provider_declined"],
-      stamped: true,
-      firstFiling: {
-        promoRecordedIdr: 7_000,
-        promoRefundedSubtotalIdr: 20_000,
-      },
     })
   ).issueId;
 }, 120_000);
@@ -371,8 +230,6 @@ afterAll(async () => {
       await client.query("BEGIN");
       await client.query("SET LOCAL session_replication_role = replica");
       for (const table of [
-        "promo_command_idempotency",
-        "promotion_order_applications",
         "domain_event_outbox",
         "payment_admin_idempotency",
         "payment_refunds",
@@ -394,15 +251,15 @@ afterAll(async () => {
 
 type Row = Record<string, unknown>;
 
-/** Runs the whole file as one simple query; returns the rows of its 3 queries. */
-async function runCheck(): Promise<[Row[], Row[], Row[]]> {
+/** Runs the whole file as one simple query; returns the rows of its query. */
+async function runCheck(): Promise<Row[]> {
   const results = (await owner.query(checkSql)) as unknown as {
     command: string;
     rows: Row[];
   }[];
   const selects = results.filter((result) => result.command === "SELECT");
-  expect(selects).toHaveLength(3);
-  return [selects[0]!.rows, selects[1]!.rows, selects[2]!.rows];
+  expect(selects).toHaveLength(1);
+  return selects[0]!.rows;
 }
 
 const ours = (rows: Row[]) =>
@@ -410,8 +267,7 @@ const ours = (rows: Row[]) =>
 
 describe("recovery refund final failure check (legend-pti5r)", () => {
   it("query 1 flags exactly the final failures the live settlement missed", async () => {
-    const [query1] = await runCheck();
-    const rows = ours(query1);
+    const rows = ours(await runCheck());
     const ids = rows.map((row) => row.issue_id as string).sort();
     const expected = [
       named.unstamped,
@@ -451,69 +307,10 @@ describe("recovery refund final failure check (legend-pti5r)", () => {
     for (const id of Object.values(clean)) expect(ids).not.toContain(id);
   });
 
-  it("query 2 flags exactly the unreturned promo payouts, with tenant ids", async () => {
-    const [, query2] = await runCheck();
-    const rows = ours(query2);
-    const ids = rows.map((row) => row.issue_id as string).sort();
-    const expected = [
-      named.promoOwed,
-      named.promoOwedB,
-      named.promoReleased,
-      named.oldRowOwed,
-    ]
-      .map((item) => item!.issueId)
-      .sort();
-    expect(ids).toEqual(expected);
-    const byId = new Map(rows.map((row) => [row.issue_id as string, row]));
-    expect(byId.get(named.promoOwed!.issueId)).toMatchObject({
-      tenant_id: a.id,
-      order_id: named.promoOwed!.orderId,
-      application_status: "applied",
-    });
-    expect(Number(byId.get(named.promoOwed!.issueId)!.promo_recorded_idr)).toBe(
-      7_000,
-    );
-    expect(Number(byId.get(named.promoOwed!.issueId)!.refunded_paid_idr)).toBe(
-      7_000,
-    );
-    expect(byId.get(named.promoOwedB!.issueId)).toMatchObject({
-      tenant_id: b.id,
-    });
-    expect(byId.get(named.promoReleased!.issueId)).toMatchObject({
-      application_status: "released",
-    });
-    for (const id of Object.values(clean)) expect(ids).not.toContain(id);
-  });
-
-  it("query 3 flags old first filings (no promoRefundedSubtotalIdr) for manual review", async () => {
-    const [, , query3] = await runCheck();
-    const rows = ours(query3);
-    const ids = rows.map((row) => row.issue_id as string).sort();
-    const expected = [named.oldRowOwed, named.oldRowReturned]
-      .map((item) => item!.issueId)
-      .sort();
-    expect(ids).toEqual(expected);
-    const byId = new Map(rows.map((row) => [row.issue_id as string, row]));
-    expect(byId.get(named.oldRowOwed!.issueId)).toMatchObject({
-      tenant_id: a.id,
-      order_id: named.oldRowOwed!.orderId,
-      payout_returned: false,
-    });
-    expect(
-      Number(byId.get(named.oldRowOwed!.issueId)!.promo_recorded_idr),
-    ).toBe(7_000);
-    // payout already given back, the subtotal still needs a manual look
-    expect(byId.get(named.oldRowReturned!.issueId)).toMatchObject({
-      payout_returned: true,
-    });
-    for (const id of Object.values(clean)) expect(ids).not.toContain(id);
-  });
-
   it("writes nothing: a second run returns the same rows and the data is unchanged", async () => {
     const count = async () => {
       const { rows } = await owner.query<{ n: string }>(
-        `SELECT (SELECT count(*) FROM promo_command_idempotency WHERE tenant_id = ANY($1))
-              + (SELECT count(*) FROM order_issues WHERE tenant_id = ANY($1) AND refund_rejected_at IS NOT NULL)
+        `SELECT (SELECT count(*) FROM order_issues WHERE tenant_id = ANY($1) AND refund_rejected_at IS NOT NULL)
               + (SELECT count(*) FROM domain_event_outbox WHERE tenant_id = ANY($1)) AS n`,
         [tenants.map((tenant) => tenant.id)],
       );
@@ -522,9 +319,7 @@ describe("recovery refund final failure check (legend-pti5r)", () => {
     const before = await count();
     const first = await runCheck();
     const second = await runCheck();
-    expect(ours(second[0])).toEqual(ours(first[0]));
-    expect(ours(second[1])).toEqual(ours(first[1]));
-    expect(ours(second[2])).toEqual(ours(first[2]));
+    expect(ours(second)).toEqual(ours(first));
     expect(await count()).toBe(before);
   });
 });

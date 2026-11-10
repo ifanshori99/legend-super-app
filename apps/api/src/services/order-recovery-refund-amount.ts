@@ -32,6 +32,10 @@
 // holds (the `order.refunded` payload checks it) and no component is negative.
 // `goodsIdr` is what the refund pays for the goods on the promo ledger basis
 // (exclusive: gross - discount; inclusive: the amount), after the cut.
+//
+// Replay (legend-pti5r): a line reported again after a final failure of its
+// refund (not `rejected`) pays the failed refund's amount with its split, cut
+// to the room the same way (`recoveryRefundReplaySplit`).
 
 import {
   orderRevenueSplit,
@@ -192,6 +196,37 @@ function promoParts(
   return { gross, discount: gross - net, service, pbjt };
 }
 
+/**
+ * Cuts parts that want `wanted` to `room`: the amount is the smaller of the
+ * two. A cut scales discount, service and PBJT by `amount / wanted` and takes
+ * gross as the rest, so `gross - discount + service + pbjt = amount` still
+ * holds and no component is negative.
+ */
+function cutToRoom(
+  parts: Parts,
+  wanted: bigint,
+  room: bigint,
+): { amount: bigint; parts: Parts } {
+  const amount = wanted < room ? wanted : room;
+  if (amount >= wanted) return { amount, parts };
+  let { gross, discount, service, pbjt } = parts;
+  discount = mulDivHalfUp(discount, amount, wanted);
+  service = mulDivHalfUp(service, amount, wanted);
+  pbjt = mulDivHalfUp(pbjt, amount, wanted);
+  gross = amount + discount - service - pbjt;
+  if (gross < 0n) {
+    // Rounding pushed the taxes past what the amount carries: take the
+    // excess from PBJT first, then from the service charge.
+    let excess = -gross;
+    const fromPbjt = excess < pbjt ? excess : pbjt;
+    pbjt -= fromPbjt;
+    excess -= fromPbjt;
+    service -= excess;
+    gross = 0n;
+  }
+  return { amount, parts: { gross, discount, service, pbjt } };
+}
+
 /** The CRM promo port result for this refund (`recomputeAfterPartialRefund`). */
 export type RecoveryRefundPromo = {
   /** Item-price subtotal of the refunded line(s). */
@@ -225,23 +260,12 @@ export function recoveryRefundSplit(input: {
   const room = BigInt(
     Math.max(0, order.totalIdr - order.depositAppliedIdr - releasedIdr),
   );
-  const amount = wanted < room ? wanted : room;
-  if (amount < wanted) {
-    discount = mulDivHalfUp(discount, amount, wanted);
-    service = mulDivHalfUp(service, amount, wanted);
-    pbjt = mulDivHalfUp(pbjt, amount, wanted);
-    gross = amount + discount - service - pbjt;
-    if (gross < 0n) {
-      // Rounding pushed the taxes past what the amount carries: take the
-      // excess from PBJT first, then from the service charge.
-      let excess = -gross;
-      const fromPbjt = excess < pbjt ? excess : pbjt;
-      pbjt -= fromPbjt;
-      excess -= fromPbjt;
-      service -= excess;
-      gross = 0n;
-    }
-  }
+  const { amount, parts: cut } = cutToRoom(
+    { gross, discount, service, pbjt },
+    wanted,
+    room,
+  );
+  ({ gross, discount, service, pbjt } = cut);
   return {
     wantedIdr: Number(wanted),
     amountIdr: Number(amount),
@@ -251,6 +275,54 @@ export function recoveryRefundSplit(input: {
     serviceChargeIdr: Number(service),
     pbjtIdr: Number(pbjt),
     goodsIdr: Number(order.pricesIncludeTax ? amount : gross - discount),
+  };
+}
+
+/**
+ * legend-pti5r: the refund of a line reported again after a final failure
+ * (not `rejected`) pays what the failed refund asked, with the same split
+ * (`wantedIdr` and the `order.refunded` parts of the first filing). The promo
+ * ledger already holds that line's payout, so nothing is recomputed. Cut to
+ * the order's current room like `recoveryRefundSplit`; `goodsIdr` is 0
+ * because a replay records no payout.
+ */
+export function recoveryRefundReplaySplit(input: {
+  order: { totalIdr: number; depositAppliedIdr: number };
+  wantedIdr: number;
+  grossSalesIdr: number;
+  discountIdr: number;
+  serviceChargeIdr: number;
+  pbjtIdr: number;
+  /** Already released by other issues of this order. */
+  releasedIdr: number;
+}): RecoveryRefundSplit {
+  const wanted = big(input.wantedIdr);
+  if (wanted <= 0n) return { ...ZERO };
+  const room = BigInt(
+    Math.max(
+      0,
+      input.order.totalIdr - input.order.depositAppliedIdr - input.releasedIdr,
+    ),
+  );
+  const { amount, parts } = cutToRoom(
+    {
+      gross: big(input.grossSalesIdr),
+      discount: big(input.discountIdr),
+      service: big(input.serviceChargeIdr),
+      pbjt: big(input.pbjtIdr),
+    },
+    wanted,
+    room,
+  );
+  return {
+    wantedIdr: Number(wanted),
+    amountIdr: Number(amount),
+    shortfallIdr: Number(wanted - amount),
+    grossSalesIdr: Number(parts.gross),
+    discountIdr: Number(parts.discount),
+    serviceChargeIdr: Number(parts.service),
+    pbjtIdr: Number(parts.pbjt),
+    goodsIdr: 0,
   };
 }
 

@@ -837,9 +837,6 @@ describe("legend-9be7 refund idempotency, last item and refusals", () => {
       recordPartialRefundPayout: async () => {
         throw new Error("promo port down");
       },
-      returnPartialRefundPayout: async () => {
-        throw new Error("promo port down");
-      },
     };
     setPosPromoRefundPort(failing);
     try {
