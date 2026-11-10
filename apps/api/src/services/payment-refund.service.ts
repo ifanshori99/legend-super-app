@@ -394,8 +394,7 @@ async function isRecoveryRefundParty(
                OR (object_type = 'order_issue'
                    AND object_id = ${refund.orderIssueId}::text))`,
   );
-  if (deciders.some((row) => row.decided_by.toLowerCase() === who))
-    return true;
+  if (deciders.some((row) => row.decided_by.toLowerCase() === who)) return true;
   const { rows } = await tx.execute<{
     resolved_by: string | null;
     approved_by: string | null;

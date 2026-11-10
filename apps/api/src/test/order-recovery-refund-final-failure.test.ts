@@ -47,7 +47,6 @@ import { paymentRefunds } from "../db/schema/payment-admin.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   deliverAutoJournalEvent,
-  retryParkedAutoJournals,
   type AutoJournalResult,
 } from "../services/accounting-auto-journal-consumer.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
@@ -392,9 +391,9 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
       expect(payload.orderIssueId).toBe(issueId);
       expect(payload.refundId).toBe(first.id);
       expect(payload.amountIdr).toBe(ROTI_WANTED);
-      expect(await auditCount(issueId, "order_issue.refund_refile_blocked")).toBe(
-        1,
-      );
+      expect(
+        await auditCount(issueId, "order_issue.refund_refile_blocked"),
+      ).toBe(1);
       expect(await auditCount(issueId, "order_issue.refund_refiled")).toBe(0);
       expect(await issueRefunds(issueId)).toHaveLength(1);
       expect(await orderRefundedEvents(order.id)).toHaveLength(1);
@@ -544,11 +543,9 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
 // ============================================================================
 
 const NOW = new Date("2026-11-08T03:00:00Z");
-const SWEEP_AT = new Date(NOW.getTime() + 24 * 60 * 60 * 1000);
 /** 2026-10-15 12:00 in Jakarta; the order fires and the money arrives here. */
 const DAY = "2026-10-15T05:00:00.000Z";
 const T_RECOVERY = "2026-10-15T08:00:00.000Z";
-const REFUND_DAY = "2026-10-16T05:00:00.000Z";
 const REJECTED_AT = "2026-10-16T09:00:00.000Z";
 
 const FLAGS_ON = JSON.stringify({
@@ -855,33 +852,6 @@ async function seedFailedRefund(
   return refundId;
 }
 
-/** A completed manual gateway payout of the intent (no issue). */
-async function seedManualPayout(
-  world: LedgerWorld,
-  intentId: string,
-  amountIdr: number,
-): Promise<string> {
-  const refundId = randomUUID();
-  await asTenant(world.tenant, (client) =>
-    client.query(
-      `INSERT INTO payment_refunds
-         (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
-          requested_by, approved_by, decided_at, completed_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', 'completed', 'requester', 'approver', $6, $6,
-               $6::timestamptz - interval '1 minute')`,
-      [
-        refundId,
-        world.tenant.id,
-        world.outletId,
-        intentId,
-        amountIdr,
-        REFUND_DAY,
-      ],
-    ),
-  );
-  return refundId;
-}
-
 // ---- events -----------------------------------------------------------------
 
 function envelope(
@@ -966,21 +936,6 @@ function qrOrderPaid(world: LedgerWorld, orderUlid: string) {
   });
 }
 
-function paymentRefunded(
-  world: LedgerWorld,
-  refundId: string,
-  intentId: string,
-  amountIdr: number,
-) {
-  return envelope(world, {
-    name: "payment.refunded",
-    aggregateType: "payment",
-    aggregateId: refundId,
-    occurredAt: REFUND_DAY,
-    payload: { refundId, paymentIntentId: intentId, amountIdr },
-  });
-}
-
 /** The order.refunded the recovery writes for an issue (refundId = issue id), 44k. */
 function recoveryRefunded(
   world: LedgerWorld,
@@ -1039,40 +994,6 @@ function reversalRequested(
   });
 }
 
-/** An event as a pending outbox row ("emitted but not consumed yet"). */
-async function seedOutboxEvent(
-  world: LedgerWorld,
-  event: EventEnvelope,
-  aggregateUuid: string,
-): Promise<string> {
-  const outboxId = randomUUID();
-  await owner.query(
-    `INSERT INTO domain_event_outbox
-       (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination, status)
-     VALUES ($1, $2, $3, $4, $5, $6, 1, $7, 'cloud-sync', 'pending')`,
-    [
-      world.tenant.id,
-      outboxId,
-      world.outletId,
-      randomUUID(),
-      event.aggregateType,
-      aggregateUuid,
-      JSON.stringify(event),
-    ],
-  );
-  return outboxId;
-}
-
-async function markDelivered(
-  world: LedgerWorld,
-  outboxId: string,
-): Promise<void> {
-  await owner.query(
-    "UPDATE domain_event_outbox SET status = 'delivered', delivered_at = now() WHERE tenant_id = $1 AND id = $2",
-    [world.tenant.id, outboxId],
-  );
-}
-
 function deliver(
   tenant: Tenant,
   event: EventEnvelope,
@@ -1088,10 +1009,6 @@ async function post(world: LedgerWorld, event: EventEnvelope) {
   expect(result.status).toBe("posted");
   if (result.status !== "posted") throw new Error("not posted");
   return result;
-}
-
-function sweep(tenant: Tenant) {
-  return retryParkedAutoJournals(ledgerContext(tenant), SWEEP_AT);
 }
 
 async function balanceOf(world: LedgerWorld, role: Role): Promise<number> {
@@ -1154,14 +1071,6 @@ async function reversalOf(world: LedgerWorld, entryId: string) {
   );
   expect(rows).toHaveLength(1);
   return rows[0]!;
-}
-
-async function parkedOf(tenant: Tenant, idempotencyKey: string) {
-  const { rows } = await owner.query<{ retryable: boolean }>(
-    "SELECT retryable FROM auto_journal_parked WHERE tenant_id = $1 AND idempotency_key = $2",
-    [tenant.id, idempotencyKey],
-  );
-  return rows;
 }
 
 describe("legend-iu91r R2 the refund journal of a finally failed recovery refund is reversed", () => {

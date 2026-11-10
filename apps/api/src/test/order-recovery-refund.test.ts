@@ -1008,7 +1008,9 @@ describe("legend-94q2l selisih dan sisa habis (cabang 5)", () => {
     await deliver(roti.event);
 
     expect((await issueRefunds(roti.issueId))[0]!.amount_idr).toBe(ROTI_WANTED);
-    expect(await auditCount(roti.issueId, "order_issue.refund_blocked")).toBe(0);
+    expect(await auditCount(roti.issueId, "order_issue.refund_blocked")).toBe(
+      0,
+    );
   });
 });
 

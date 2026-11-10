@@ -30,6 +30,7 @@ Money is stuck.
 
 Decision, part 1 (implemented here): a final failure is treated like
 `rejected`.
+
 - Keep the `order_issue.refund_refile_blocked` audit (same `blockedReason`).
 - Call `requestRecoveryRefundReversal` too (once per issue, only when an
   `order.refunded` of the issue exists, so open-bill refunds append nothing).
@@ -44,24 +45,35 @@ Decision, part 1 (implemented here): a final failure is treated like
   (`accounting-auto-journal-guards.ts` `releasedOf`) follows the journal state
   (reversed = "none"), so it already agrees.
 
-Decision, part 2 (manual follow-up path): open, see "Follow-up options" below.
-The per-issue keys (`aj:order-refund:<issueId>`,
-`aj:order-refund-reversal:<issueId>`, reversal once per issue, loyalty restore
-per issue) mean that after a reversal a second revenue reversal for the same
-issue cannot be journalled without new per-attempt keys, and a person action
-needs a route plus a shared schema field (both outside this scope).
+Decision, part 2 (manual follow-up path), after merging milestone/m1
+(legend-wumm8): the follow-up is the re-report. A final failure stamps
+`order_issues.refund_rejected_at` like `rejected`, so staff report the line
+again as a NEW issue, ORD-09 approves it, and the consumer files a fresh
+`system:recovery` refund with the new `order_issue_id`. Its journal keys
+(`aj:order-refund:<newIssueId>`) are new, the old issue's journal is already
+reversed: one live revenue reversal, never two. No route, no schema change,
+four-eyes as for any recovery refund.
 
-Follow-up options (for the CTO):
-1. Per-attempt journal keys: a person (payment.reconcile, not resolver or any
-   ORD-09 approver) re-files a `system:recovery` refund for the issue with a
-   fresh `order.refunded` keyed by the new refund id. Needs guard, auto-journal
-   reversal and loyalty changes plus a route. Large.
-2. Delay the reversal: a final failure parks the issue as "needs person" with
-   journal and hold as they are (the money is still owed). The person either
-   re-files (new `system:recovery` refund with `order_issue_id`, no new
-   journal: exempt from `source_document`, four-eyes kept) or closes it (same
-   reversal as `rejected`). Smaller and keeps the books right while the guest
-   is owed, but contradicts "final failure = rejected". Still needs a route.
+`provider_declined` is the provider's definitive decline (payment-refund
+header): the money did not leave; an unknown outcome stays `approved`.
+
+Rejected alternatives: per-attempt journal keys on the same issue (guard,
+auto-journal and loyalty rework plus a route), and delaying the reversal until
+a person decides (keeps the books right meanwhile, but needs a route and
+contradicts "final failure = rejected").
+
+Open after the tier-K review (outside this scope, see the report):
+
+- Promo order: the first filing's promo payout
+  (`promotion_order_applications.refunded_paid_idr`) stays recorded, so the
+  re-reported issue computes ~0 and ends `nothing_left`. Same gap already
+  existed for `rejected` (h1dyy kept the payout because the money was not
+  owed); for a final failure the money is owed. Fix needs
+  `crm-promo-refund.ts`.
+- Final failures recorded before this deploy have no reversal and no stamp:
+  check production, backfill if any.
+- A provider that reports `succeeded` after its own decline is only audited
+  as a conflict; the line is now open to re-report.
 
 ## R3 four-eyes payout (implementer)
 

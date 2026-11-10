@@ -514,7 +514,16 @@ describe("legend-94q2l T2 four-eyes: the payout of a recovery refund", () => {
                    $6, 'user', $7, 2, '[]'::jsonb, 'approved',
                    'Refund manual item gagal', $8, now(), 'Sesuai bukti item gagal.',
                    now() + interval '1 day', now())`,
-          [id, seededTenantId, seededOutletA, level1, issueId, resolver(), level, decidedBy],
+          [
+            id,
+            seededTenantId,
+            seededOutletA,
+            level1,
+            issueId,
+            resolver(),
+            level,
+            decidedBy,
+          ],
         );
       await insertLevel(level1, 1, thirdId());
       await insertLevel(level2, 2, ord09Approver());
