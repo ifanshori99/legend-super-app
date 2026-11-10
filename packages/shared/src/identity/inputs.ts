@@ -40,6 +40,8 @@ import { isStrongStaffPin } from "./machines.ts";
 /** Mobile/desktop WhatsApp login. No body fields: tenant and brand are the domain. */
 export const createWhatsAppLoginChallengeSchema = clientInputSchema({
   returnTo: returnPathSchema.optional(),
+  /** Card w8dfz.1: show the masked sender and wait for a confirm. */
+  requireConfirm: z.boolean().optional(),
 });
 export type CreateWhatsAppLoginChallengeInput = z.infer<
   typeof createWhatsAppLoginChallengeSchema

@@ -42,6 +42,7 @@ import {
 } from "../services/identity-email-login.service";
 import {
   cancelWhatsAppChallenge,
+  confirmWhatsAppChallenge,
   issueWhatsAppChallenge,
   pollWhatsAppChallenge,
 } from "../services/identity-login.service";
@@ -82,7 +83,7 @@ loginChallengeRouter.post(
   async (req, res) => {
     // The contract's body is `{ returnTo? }` and nothing else: returnTo stays
     // in the browser and is never stored server-side.
-    createWhatsAppLoginChallengeSchema.parse(req.body);
+    const body = createWhatsAppLoginChallengeSchema.parse(req.body);
     const signedIn = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),
       query: { disableCookieCache: true },
@@ -99,6 +100,7 @@ loginChallengeRouter.post(
         link: signedIn
           ? { userId: signedIn.user.id, sessionId: signedIn.session.id }
           : null,
+        requireConfirm: body.requireConfirm === true,
         ip: req.ip ?? null,
         userAgent: req.get("user-agent") ?? null,
       },
@@ -131,6 +133,13 @@ loginChallengeRouter.get("/:challengeId", async (req, res) => {
     setCustomerSessionCookie(res, polled.session);
   }
   res.json({ data: polled.view });
+});
+
+/** Card w8dfz.1: the same browser confirms the masked number it was shown. */
+loginChallengeRouter.post("/:challengeId/confirm", async (req, res) => {
+  const { challengeId } = loginChallengeParamsSchema.parse(req.params);
+  await confirmWhatsAppChallenge(challengeId, readBindingNonce(req));
+  res.status(204).end();
 });
 
 /** "Bukan saya": cancel from the same browser. */
