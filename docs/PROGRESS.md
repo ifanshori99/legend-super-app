@@ -1089,3 +1089,4 @@ Langkah berikut CTO baru:
 - 22:14 heavy: typecheck/tsc kedua di worktree sama ditolak exit 74 (override HEAVY_ALLOW_OVERLAP=1). test-heavy 124 PASS. Celah: dua masuk bersamaan persis bisa lolos.
 - 22:14 Audit UI outlet picker: 2 temuan menengah (kilas outlet salah saat muat, 0 outlet buntu) wajib dibetulkan sebelum merge; dikirim ke G1sxd (docs/briefs/397a).
 - 22:15 Founder Q4: Owner tunggal boleh setujui sendiri (dengan audit). Kartu legend-b8y6l, brief 399, mulai setelah batch48b masuk m1 (Opus, uang+akses).
+- 22:16 Founder setuju Q5-Q8: architect effort high (xhigh uang/migrasi/akses), maxTurns 45 (architect.md sudah diubah); perbaikan temuan Codex ke Sonnet; target paralel per peran (engineer rata2 1,5 puncak 4) + hook tegur 8 baca beruntun; merge train hanya terima cabang yang sudah disesuaikan ke m1 dengan rentang migrasi sendiri. Teks aturan + hook dikerjakan 2 implementer. G0muc: rerun coverage di latar sejak 22:16.
