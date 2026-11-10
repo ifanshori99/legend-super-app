@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-shrlc desain replikasi master HRIS ke edge + selfie offline (architect, cabang `ws/hris-edge-design` dari ws/storage-wire 62ef1e11, 2026-11-10)
+
+- Dokumen: `docs/design/hris-edge-replication.md`. Hanya desain, tanpa kode produk.
+- Temuan: tidak ada replikasi `user`/`roles`/`role_assignments` ke edge sama sekali; `applyStaffPinRecords` akan gagal FK `staff_pins.user_id` di DB edge terpisah (test memakai satu DB bersama, jadi tidak pernah tertangkap). Edge juga memegang root `STAFF_PIN_PEPPER` (kartu bug `legend-ideif`).
+- Keputusan: (D-01) saat internet outlet putus, HP tetap ke cloud lewat data seluler; QR layar outlet dibuat edge; karyawan tanpa kuota absen di "layar absen outlet" (PIN staf + selfie, metode baru `outlet_device`), tidak ada HP ke edge di tahap ini. (D-02/03) satu snapshot penuh per outlet `GET /api/edge-sync/people-snapshot` tiap 60 s dengan ETag; kolom minimum, tanpa hash password, tanpa PII tersegel, email diganti `<id>@edge.invalid`, proyeksi `home_outlet_id=O` dan `assigned_by=assignee`; keluar scope = detach. (D-04) edge tidak menyimpan seed QR, hanya kunci harian D-1..D+3; token QR v2 bisa diverifikasi cloud. (D-05) selfie disegel ke kunci publik cloud (RSA-OAEP-256 + AES-256-GCM, meta terenkripsi), diunggah idempoten `PUT /api/edge-sync/attendance-selfies/:objectId`, file lokal dihapus setelah cloud konfirmasi, kedaluwarsa 30 hari. (D-06) dampak edge dicuri + runbook.
+- Review: reviewer konteks segar 15 temuan (5 tinggi: FK home outlet, FK `assigned_by`, bentrok natural key karyawan yang ditahan, link selfie gagal menghilangkan log, prefix edge buta metode membuka `/qr/rotate`); review ulang 5 sisa (placeholder `employee_no` melanggar CHECK, shift untuk karyawan yang tidak dikirim, bentrok kunci unik dengan state lama edge, batas pensiun kunci segel, ETag memuat waktu); semua dibetulkan di dokumen (apply dua tahap, pensiun kunci 90 hari).
+- Kartu: C1 `legend-hwn02`, C2 `legend-ye4j1`, C3 `legend-tkycp`, C4 `legend-cku1m`, C5 `legend-we0yc`, C6 `legend-0wvoz`, C7 `legend-hubzo`, C8 UI `legend-tvkuz`, C9 ops `legend-svy91`, bug pepper `legend-ideif`. `legend-j6cyb` sekarang bergantung pada C1-C7. Mulai paralel: C1 dan C4.
+- Pertanyaan founder (di laporan): Q1 jalur absen saat internet putus, Q2 layar outlet setiap hari atau hanya saat putus, Q3 tempat simpan kunci segel selfie production.
+- Subagent: 11 (Explore 9, reviewer 2), puncak bersamaan 4.
+
 ## legend-dwrr WS-12 provider AI OpenAI-compatible per tenant (engineer, cabang `ws/ai-provider-tenant` dari milestone/m1 d2080951, 2026-11-10)
 
 - Satu migrasi `0188_ai_provider_configs` (when 1794267000000, prevId 8948ed96 = id snapshot 0186): tabel `ai_provider_configs` satu baris per tenant, tenant RLS (`ai-provider.custom.sql`). Kunci API disegel `sealSecret` (AAD `ai_provider_config:<tenantId>:<rowId>`), hanya `hasKey` + `keyLast4` yang keluar. Tipe koneksi `api_key`; `chatgpt_oauth` dicadangkan dan ditolak (legend-z83k).
@@ -1425,6 +1435,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Biaya sesi dca0a2b2: total biaya* 1688k (utama 562k, subagent 1127k), 7 subagent (3 Explore, 2 implementer, 1 test-writer, 1 reviewer), puncak 3 bersamaan.
 
 ## WS-03 operasi meja: pindah, gabung, pindah item (legend-685n, cabang `ws/table-move-merge`)
+
 - Dibangun: `POST /api/table-sessions/:id/move`, `/merge`, `/move-items` (`services/table-session-operations.service.ts`, route di `table-sessions.routes.ts`), event `table_session.moved|merged|items_moved` di katalog WS-03, audit tiap operasi. Tanpa migrasi.
 - Aturan: total tagihan tetap; pembayaran (tautan bayar, deposit, tender POS) mengunci gabung dan pindah item; sesi open bill yang lunas tidak dipindah; ulang permintaan dijawab dari event tersimpan tanpa tulis ulang.
 - Bukti: tanpa route 35 dari 38 tes gagal; dengan implementasi 84 dari 84 hijau di 5 file terkait; mutasi dua penjaga membuat 3 tes gagal. Review K (architect): 2 tinggi, 5 sedang, 3 rendah; 7 dibetulkan, sisanya dicatat sebagai risiko.
@@ -1462,16 +1473,19 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti: tes terarah 128 lulus di 6 berkas (setup 23, roster 52, swap 35, konkurensi 5, guard migrasi/RLS 13); root hris+payroll+core 95 lulus; tsc shared dan api lewat heavy bersih; eslint dan prettier bersih; `db:generate` kedua kosong.
 
 ## 2026-11-10: WS-07 jurnal retur pembelian dan pembelian sederhana (legend-1xbs, legend-v3lh)
+
 - Sudah: aturan `purchase_return.recorded` (Dr GRNI bagian belum ditagih, Dr utang usaha plus PPN bagian sudah ditagih, Cr persediaan, Cr PPN masukan) dan `petty_purchase.recorded` (Dr 5104 beban pembelian langsung, Cr kas kecil 1102), fact builder di consumer auto-jurnal, event baru `petty_purchase.recorded`, source type jurnal baru, migrasi 0205 (constraint plus backfill 5104). Keputusan: `docs/DECISIONS.md`.
 - Bukti: merah dulu 9 dari 12 tes api gagal tanpa sumber; typecheck shared, api, web bersih; review K (architect) 1 temuan (label web) dibetulkan; brief Codex `docs/briefs/298b-second-opinion-purchase-return-posting.md` (belum dijalankan).
 - Belum: emitter retur dan pembelian sederhana tidak ada di m1 (kartu `legend-316`); jurnal `goods_receipt.recorded` (kartu `legend-29vw`) harus jadi sebelum emitter retur aktif, kalau tidak GRNI bersaldo debit.
 
 ## 2026-11-10: WS-06 retur supplier dan pembelian sederhana (legend-65mgw)
+
 - Sudah: tabel `purchase_returns`, `purchase_return_lines`, `petty_purchases`, `petty_purchase_policies` (migrasi 0208), service dan route retur serta pembelian sederhana, izin baru, event `purchase_return.recorded` dengan split per baris dan `petty_purchase.recorded`, gerbang env `PURCHASE_RETURN_POSTING_ENABLED` (default mati), tes ujung ke ujung event ke jurnal. Keputusan: `docs/DECISIONS.md`.
 - Bukti: mutasi (batas qty mati, gerbang mati, batas petty mati) membuat tes gagal; 73 tes terarah lulus; tsc shared dan api bersih; review K (architect) 1 sedang dibetulkan (kunci PO kosong) plus normalisasi UUID.
 - Belum: retur aktif sesudah jurnal penerimaan barang (`legend-29vw`) menyalakan flag; UI; kas kecil `legend-4961`. Brief Codex: `docs/briefs/301c-second-opinion-supplier-return-petty.md` (belum dijalankan).
 
 ## 2026-11-10: WS-10 absensi karyawan (legend-wh71)
+
 - Sudah: 6 tabel `attendance_*` (migrasi 0217, RLS tenant + outlet), clock selfie/geofence/QR 30 detik/ikat perangkat, terlambat/pulang cepat/lembur dari shift, idempoten, koreksi lewat approval `hris_attendance`, antrean review sampling + config kebijakan, duty meal (catat saja), applier edge `attendance.logged`, job purge selfie 90 hari sesudah payroll tutup (per badan hukum).
 - Bukti: tes terarah 153 lulus di 8 berkas; typecheck api dan shared, eslint, prettier bersih; `db:generate` kedua kosong; review K (architect xhigh) 8 temuan (1 kritis: method manual_correction di clock) dibetulkan dengan tes gagal-dulu.
 - Belum: provider object storage prod belum ada (legend-7nv1), jadi job purge belum didaftarkan di `worker-main.ts` dan upload selfie belum bisa; pemotongan stok duty meal (konsumen event) dan event duty meal belum ada; FE legend-0z5k; second-opinion Codex per area.
