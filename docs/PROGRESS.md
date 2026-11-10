@@ -1129,3 +1129,4 @@ Langkah berikut CTO baru:
 - 04:58 G2q9m ps-405 selesai: 83/83, gagal-dulu terbukti, push 9457f79e -> kandidat batch48d. Mulai fjwxo (421). 423 dikirim ke G2i7n.
 - 04:59 G05um duitku-406 selesai: 97/97, gagal-dulu 13 gagal di 008cbd93, push ac046b6e -> kandidat batch48d (setelah reviewer cek paidAt). Mulai whiwv (416).
 - 05:03 Founder: WhatsApp via Kirimdev; verifikasi masuk (pelanggan kirim kode ke nomor kita, web popup sukses), bukan OTP keluar. Riset docs Kirimdev + repo 119connect antre (RAM merah).
+- 05:07 Founder Q10: reset PIN slip gaji pakai verifikasi WhatsApp masuk. Layar lupa-pin/kode-whatsapp perlu dirombak (mockup baru). Retro 13: batas subagent kuning 24->12 (test-ram-guard 115 lulus), cek sampler RAM di cto.md. G3q1s PIN UI: e2e 32/32, ui-check 38/38 axe bersih, push c1b9d4cd -> gerbang review UI founder.
