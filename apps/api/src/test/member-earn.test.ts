@@ -25,6 +25,7 @@
 //   tenant's program row.
 
 import { randomUUID } from "node:crypto";
+import { ulidToUuid } from "@starter/shared/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { createApp } from "../app";
@@ -360,6 +361,92 @@ describe("LOY-02 refunds and voids", () => {
   });
 });
 
+/** Stamps a completed POS order as a training sale (the row is frozen, so bypass its trigger). */
+async function markTraining(world: World, orderUlid: string): Promise<void> {
+  await asTenant(world.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      "UPDATE pos_orders SET is_training = true WHERE tenant_id = $1 AND order_id = $2",
+      [world.tenantId, ulidToUuid(orderUlid)],
+    );
+  });
+}
+
+describe("LOY-02 training orders earn nothing (legend-kbbma)", () => {
+  async function trainingOrder(world: World, member: { id: string }) {
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: member.id,
+    });
+    await markTraining(world, orderUlid);
+    return orderUlid;
+  }
+
+  it("LOY-02 a paid training order books no points, record, visit or event", async () => {
+    const world = await worldWith();
+    const member = await seedMember(world.tenantId);
+    const orderUlid = await trainingOrder(world, member);
+    await deliver(
+      world,
+      orderPaidEvent(world, { orderUlid, outletId: world.outletA }),
+    );
+    expect(await ledgerOf(world.tenantId, member.id)).toHaveLength(0);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    expect(await recordOf(world.tenantId, orderUlid)).toBeNull();
+    expect(await visitCount(world.tenantId, member.id)).toBe(0);
+    expect(
+      await outboxEvents(world.tenantId, "points.earned", member.id),
+    ).toHaveLength(0);
+  });
+
+  it("LOY-02 a void or refund of a training order writes no ledger row", async () => {
+    const world = await worldWith();
+    const member = await seedMember(world.tenantId);
+    const orderUlid = await trainingOrder(world, member);
+    await deliver(
+      world,
+      orderPaidEvent(world, { orderUlid, outletId: world.outletA }),
+    );
+    await deliver(
+      world,
+      orderRefundedEvent(world, {
+        orderUlid,
+        outletId: world.outletA,
+        grossSalesIdr: 100_000,
+      }),
+    );
+    await deliver(
+      world,
+      orderVoidedEvent(world, {
+        orderUlid,
+        outletId: world.outletA,
+        voidId: randomUUID(),
+        voidedFinalOrder: true,
+      }),
+    );
+    expect(await ledgerOf(world.tenantId, member.id)).toHaveLength(0);
+    expect(await recordOf(world.tenantId, orderUlid)).toBeNull();
+  });
+
+  it("LOY-02 a void of a training order leaves a booked record of a real order untouched", async () => {
+    const world = await worldWith();
+    const member = await seedMember(world.tenantId);
+    const { orderUlid: real } = await pay(world, member);
+    const training = await trainingOrder(world, member);
+    await deliver(
+      world,
+      orderVoidedEvent(world, {
+        orderUlid: training,
+        outletId: world.outletA,
+        voidId: randomUUID(),
+        voidedFinalOrder: true,
+      }),
+    );
+    expect(await balanceOf(world.tenantId, member.id)).toBe(10);
+    expect((await recordOf(world.tenantId, real))?.state).toBe("booked");
+  });
+});
+
 describe("LOY-02 QR member session is not self-serve", () => {
   it("LOY-02 a QR order attached by pwa_session (attached_by NULL) earns", async () => {
     const world = await worldWith();
@@ -601,6 +688,47 @@ describe("LOY-02 cashier phone lookup cap", () => {
       .send({ whatsappNumber: number });
     expect(response.status).toBe(200);
     expect(response.body.data.customerProfileId).toBe(member.id);
+  });
+
+  it("LOY-02 an unknown number and a registered-but-not-active number get the same refusal (legend-9ehr6)", async () => {
+    // The cap is 2 per cashier: one fresh cashier per lookup.
+    const attach = async (number: string) => {
+      const cashier = await staffWithRole(app, {
+        template: "cashier",
+        scopeType: "outlet",
+        scopeId: seededOutletA,
+        label: `Kasir Selidik ${number.slice(-4)}`,
+      });
+      await verifySessionMfa(cashier.email);
+      const response = await cashier.client
+        .put(`/api/pos/orders/${await draftOrder()}/customer`)
+        .set(headers)
+        .set(originHeader)
+        .send({ whatsappNumber: number });
+      return {
+        status: response.status,
+        code: response.body.error?.code,
+        message: response.body.error?.message,
+      };
+    };
+    const unknown = randomNumber();
+    const pendingNumber = randomNumber();
+    const suspendedNumber = randomNumber();
+    const closedNumber = randomNumber();
+    for (const [number, status] of [
+      [pendingNumber, "pending_verification"],
+      [suspendedNumber, "suspended"],
+      [closedNumber, "closed"],
+    ] as const)
+      await seedProfile(seededTenantId, {
+        whatsappHash: await whatsAppDigest(number),
+        status,
+      });
+    const baseline = await attach(unknown);
+    expect(baseline.status).toBe(404);
+    expect(baseline.code).toBe("CUSTOMER_NOT_FOUND");
+    for (const number of [pendingNumber, suspendedNumber, closedNumber])
+      expect(await attach(number)).toEqual(baseline);
   });
 });
 
