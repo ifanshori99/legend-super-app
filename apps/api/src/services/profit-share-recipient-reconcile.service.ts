@@ -1,6 +1,6 @@
 // Profit-share recipient reconciliation (bead legend-9t04v, Codex finding 405).
 // Migration 0239 cannot know who received a pre-snapshot distribution line, so
-// it flags the lines whose shareholder has a login today as
+// it flags every paid pre-snapshot line as
 // `recipient_unverified` (recipient_user_id stays NULL). No shareholder login
 // reads such a line. Only a tenant Owner lists them here and assigns the
 // recipient (a login, or null for "no login"), once; the audit row records it.

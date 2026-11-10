@@ -2004,6 +2004,6 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum: batch48c (fe-small-tests, u37u3, fe-badge-theme, tenant-config-export, print-agent) menunggu perintah CTO.
 
 ## ps-405 (legend-9t04v, 11 Nov 2026): temuan Codex 405 profit share
-- Sudah: 0239 tidak lagi menyalin login saat migrasi ke laporan lama. Baris lama yang SUDAH dibayar dan pemegang sahamnya punya login ditandai `recipient_unverified`, penerima tetap NULL, tidak terbaca login mana pun. Owner merekonsiliasi lewat `GET/POST /api/tenant/profit-share/recipient-reconciliation` (audit `profit_share.recipient_reconciled`). Audit `approval.decided` kini memuat `status`, `level`, `actionType`.
-- Belum terverifikasi: test DB (layanan direktori macOS mati, Colima dan initdb gagal). Typecheck, prettier, eslint, `db:generate` kosong: hijau.
+- Sudah: 0239 tidak lagi menyalin login saat migrasi ke laporan lama. Semua baris lama yang SUDAH dibayar ditandai `recipient_unverified`, penerima tetap NULL, tidak terbaca login mana pun. Owner merekonsiliasi lewat `GET/POST /api/tenant/profit-share/recipient-reconciliation` (audit `profit_share.recipient_reconciled`). Audit `approval.decided` kini memuat `status`, `level`, `actionType`.
+- Bukti: 4 file test (reconcile, sole-owner-self-approval, data-import-registry, recipient-version) 83 lulus; test audit gagal-dulu terbukti (baris dikembalikan: 1 gagal); typecheck, prettier (ts), eslint, `db:generate` kosong: hijau.
 - Perhatian rilis: 0239 diedit di tempat; DB dev/test yang sudah menerapkan 0239 harus di-reset.

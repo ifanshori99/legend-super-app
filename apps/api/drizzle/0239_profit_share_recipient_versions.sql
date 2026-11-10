@@ -46,8 +46,9 @@ CREATE INDEX "distribution_lines_recipient_unverified_idx" ON "distribution_line
 --    exists before this migration (recipient_user_id is new here), and the
 --    shareholder's login today may differ from the one at creation time, so
 --    copying it would hand a later login the old statements. Old lines keep
---    recipient_user_id NULL; only PAID ones whose shareholder has a login now
---    are marked recipient_unverified. They are visible to no login until an
+--    recipient_user_id NULL; every PAID one (with or without a login on its
+--    shareholder today: a login-less line still needs an Owner decision) is
+--    marked recipient_unverified. They are visible to no login until an
 --    Owner reconciles them. An unpaid line is unreadable anyway (statements
 --    exist only for paid lines), and flagging it would block its payment
 --    recipient: it stays NULL, unflagged, and gets the login at payment time
@@ -69,7 +70,7 @@ UPDATE public.distribution_lines l
 SET recipient_unverified = true
 FROM public.shareholders s
 WHERE s.tenant_id = l.tenant_id AND s.id = l.shareholder_id
-  AND l.recipient_user_id IS NULL AND s.user_id IS NOT NULL
+  AND l.recipient_user_id IS NULL
   AND l.payment_status = 'paid';
 --> statement-breakpoint
 ALTER TABLE public.distribution_lines ENABLE TRIGGER distribution_lines_totals_trg;

@@ -1,7 +1,6 @@
 // Profit-share recipient reconciliation contract (bead legend-9t04v, Codex
 // finding 405). Distribution lines from before the recipient snapshot exist
-// have no trusted recipient login: those whose shareholder has a login today
-// are flagged `recipient_unverified` and are visible to no shareholder login
+// have no trusted recipient login: the paid ones are flagged `recipient_unverified` and are visible to no shareholder login
 // until a tenant Owner assigns the recipient (or marks "no login") here.
 // The tenant comes from the session (TEN-02); schemas are strict.
 import {

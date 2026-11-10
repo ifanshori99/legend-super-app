@@ -5,7 +5,8 @@
 // A -> B before the migration, B got permanent access to A's old statements.
 //
 // Decision under test: no blind backfill. Old lines keep recipient_user_id NULL.
-// Old PAID lines whose shareholder currently has a login are marked
+// ALL old PAID lines with recipient NULL (whether or not the shareholder has a
+// login today; CTO decision 11 Nov) are marked
 // `recipient_unverified = true`: no shareholder login can read them, and only a
 // tenant Owner can list and resolve them (GET/POST
 // /api/tenant/profit-share/recipient-reconciliation[...]).
@@ -131,7 +132,11 @@ const get = (who: Person, path: string) => who.client.get(path);
 // ---- Fixtures (same shape as profit-share-recipient-version.test.ts) ----------
 
 const baseContext = () =>
-  establishTenantContext({ tenantId: tenantA, brandId: null, source: "session" });
+  establishTenantContext({
+    tenantId: tenantA,
+    brandId: null,
+    source: "session",
+  });
 const scopedContext = (): ScopedTenantContext =>
   establishScopedTenantContext(baseContext(), { kind: "tenant" });
 
@@ -415,8 +420,7 @@ async function lineRow(lineId: string) {
 
 function listed(body: { data: unknown }): { lineId: string }[] {
   const data = body.data as
-    | { lineId: string }[]
-    | Record<string, { lineId: string }[]>;
+    { lineId: string }[] | Record<string, { lineId: string }[]>;
   if (Array.isArray(data)) return data;
   return data.lines ?? data.items ?? data.rows ?? [];
 }
@@ -495,9 +499,10 @@ describe("3 only an Owner resolves, once, to a real login", () => {
       recipientUserId: alice.userId,
       note: NOTE,
     });
-    expect(resolved.status, JSON.stringify(resolved.body)).toBeGreaterThanOrEqual(
-      200,
-    );
+    expect(
+      resolved.status,
+      JSON.stringify(resolved.body),
+    ).toBeGreaterThanOrEqual(200);
     expect(resolved.status).toBeLessThan(300);
     expect(await lineRow(line.lineId)).toEqual({
       recipient_user_id: alice.userId,
@@ -727,13 +732,14 @@ describe("4 migration 0239 backfill flags, and never assigns, a recipient", () =
     expect(updates[0]).not.toMatch(/recipient_user_id\s*=\s*s\.user_id/i);
   });
 
-  it("run on constructed rows: flags only paid recipient-null lines whose shareholder has a login", async () => {
+  it("run on constructed rows: flags every paid recipient-null line, with or without a shareholder login", async () => {
     const alice = await shareholderUser("Alice Migrasi");
     const bob = await shareholderUser("Bob Migrasi");
     const dina = await shareholderUser("Dina Migrasi");
     // L1: recipient NULL, shareholder has a login now -> flagged.
     const l1 = await legacyLine(bob, false);
-    // L2: recipient NULL, shareholder has no login -> not flagged.
+    // L2: paid, recipient NULL, shareholder has NO login -> flagged too (no
+    // trusted recipient either; the Owner must be able to reconcile it).
     const world2 = await makeWorld(null);
     const l2 = await paidRun(world2);
     // L3: recipient already set (created with a login) -> untouched.
@@ -741,6 +747,7 @@ describe("4 migration 0239 backfill flags, and never assigns, a recipient", () =
     const l3 = await paidRun(world3);
     expect((await lineRow(l3.lineId)).recipient_user_id).toBe(alice.userId);
     // L4: recipient NULL, shareholder has a login now, but NOT paid -> unflagged.
+    // (L3 above: recipient already set -> not flagged.)
     const world4 = await makeWorld(null);
     const l4 = await approvedRun(world4);
     await pg.query(
@@ -756,7 +763,7 @@ describe("4 migration 0239 backfill flags, and never assigns, a recipient", () =
     });
     expect(await lineRow(l2.lineId)).toEqual({
       recipient_user_id: null,
-      recipient_unverified: false,
+      recipient_unverified: true,
     });
     expect(await lineRow(l3.lineId)).toEqual({
       recipient_user_id: alice.userId,
@@ -766,5 +773,51 @@ describe("4 migration 0239 backfill flags, and never assigns, a recipient", () =
       recipient_user_id: null,
       recipient_unverified: false,
     });
+  });
+});
+
+describe("4b old PAID line of a shareholder WITHOUT a login is flagged and the Owner can resolve it", () => {
+  it("backfill flags it, the Owner lists it and resolves it to A; A reads the statement; a second resolve is 404", async () => {
+    const alice = await shareholderUser("Alice Pemegang Tanpa Login");
+    // Shareholder never had a login: paid line, recipient NULL, no link added.
+    const world = await makeWorld(null);
+    const line = await paidRun(world);
+    expect(await lineRow(line.lineId)).toEqual({
+      recipient_user_id: null,
+      recipient_unverified: false,
+    });
+
+    await runBackfill([line.lineId]);
+    expect(await lineRow(line.lineId)).toEqual({
+      recipient_user_id: null,
+      recipient_unverified: true,
+    });
+
+    const listing = await get(tenantOwner, RECON);
+    expect(listing.status, JSON.stringify(listing.body)).toBe(200);
+    expect(listed(listing.body).map((e) => e.lineId)).toContain(line.lineId);
+
+    const resolved = await post(tenantOwner, resolvePath(line.lineId), {
+      recipientUserId: alice.userId,
+      note: NOTE,
+    });
+    expect(
+      resolved.status,
+      JSON.stringify(resolved.body),
+    ).toBeGreaterThanOrEqual(200);
+    expect(resolved.status).toBeLessThan(300);
+    expect(await lineRow(line.lineId)).toEqual({
+      recipient_user_id: alice.userId,
+      recipient_unverified: false,
+    });
+
+    const asAlice = await get(alice, statementPath(line));
+    expect(asAlice.status, JSON.stringify(asAlice.body)).toBe(200);
+
+    const again = await post(tenantOwner, resolvePath(line.lineId), {
+      recipientUserId: alice.userId,
+      note: NOTE,
+    });
+    expect(again.status, JSON.stringify(again.body)).toBe(404);
   });
 });

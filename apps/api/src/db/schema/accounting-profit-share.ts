@@ -590,9 +590,8 @@ export const distributionLines = pgTable(
      */
     recipientUserId: text("recipient_user_id"),
     /**
-     * Set by migration 0239 on a line created before recipient snapshots whose
-     * shareholder has a login today (Codex 405): the original recipient is
-     * unknown, so no login sees it until an Owner reconciles it.
+     * Set by migration 0239 on a paid line created before recipient snapshots
+     * (Codex 405): the original recipient is unknown, so no login sees it until an Owner reconciles it.
      */
     recipientUnverified: boolean("recipient_unverified")
       .notNull()
