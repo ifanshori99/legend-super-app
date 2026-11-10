@@ -556,4 +556,127 @@ describe("legend-wh71 selfie purge after payroll close", () => {
     expect((await purge(after(91))).purged).toBe(1);
     expectPurged(await logState(defaultLog));
   });
+  // Finding 4 of bead 414 (P2). Assumptions from the brief, not from the
+  // implementation: the job scans a bounded number of rows per tenant per run
+  // (10,000), in a stable ascending order, with a coarse filter on the
+  // shortest retention of the tenant and an exact check per outlet. Photos of
+  // an outlet with a longer retention (an outlet-level attendance policy that
+  // overrides the 30-day tenant default) are not due yet, yet they pass the
+  // coarse filter. They must not use up the scan budget, and a run must not
+  // restart from the beginning of the same not-due rows every time. Either fix
+  // (filter due rows per outlet in SQL, or persist the cursor) satisfies this
+  // test: due photos behind the not-due ones are purged within a few runs. The
+  // not-due rows sort before the due ones by id, business date and occurred_at.
+  it("purges due selfies even when more than 10,000 not-yet-due photos sort before them", async () => {
+    const bulk = await seedTenant("attpurgebulk");
+    createdTenants.push(bulk.tenant);
+    const { tenantId, outletId } = bulk.tenant;
+    const longOutletId = randomUUID();
+    const policyJson = (days: number) =>
+      JSON.stringify({
+        geofenceRadiusM: 100,
+        outsideGeofenceAction: "flag",
+        unboundDeviceAction: "flag",
+        requireSelfie: true,
+        requireDeviceBinding: false,
+        allowRotatingQr: true,
+        selfieRetentionDays: days,
+      });
+    const sampling = JSON.stringify({
+      rate: 0.1,
+      flaggedAlways: true,
+      minPerSupervisorPerWeek: 0,
+    });
+    await ownerTx(tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+         VALUES ($1, $2, $3, $4, $5, 'Outlet Panjang', 'Jl. P', '{}')`,
+        [
+          longOutletId,
+          tenantId,
+          bulk.tenant.brandId,
+          bulk.tenant.legalEntityId,
+          `LNG-${randomBytes(4).toString("hex")}`.toUpperCase(),
+        ],
+      );
+      // Tenant default 30 days (the shortest), one outlet keeps selfies 365.
+      for (const [outlet, days] of [
+        [null, 30],
+        [longOutletId, 365],
+      ] as const)
+        await client.query(
+          `INSERT INTO attendance_policies (tenant_id, outlet_id, policy, sampling, updated_by)
+           VALUES ($1, $2, $3, $4, 'attendance-purge-test')`,
+          [tenantId, outlet, policyJson(days), sampling],
+        );
+    });
+    const stuckPeriod = nextPeriod();
+    const duePeriod = nextPeriod();
+    await seedRun(bulk, stuckPeriod, "locked");
+    await seedRun(bulk, duePeriod, "locked");
+
+    const NOT_DUE = 10_400;
+    await ownerTx(tenantId, async (client) => {
+      const ids = `generate_series(1, $3::int) AS n`;
+      await client.query(
+        `INSERT INTO core_storage_objects
+           (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes,
+            thumbnail_key, source_kind, source_id)
+         SELECT $1, $2,
+                ('11111111-0000-4000-8000-' || lpad(n::text, 12, '0'))::uuid,
+                'selfie',
+                'attendance/bulk-' || n || '/original.webp', 'image/webp', 2048,
+                'attendance/bulk-' || n || '/thumbnail.webp', 'attendance',
+                ('00000000-0000-4000-8000-' || lpad(n::text, 12, '0'))::uuid
+           FROM ${ids}`,
+        [tenantId, longOutletId, NOT_DUE],
+      );
+      await client.query(
+        `INSERT INTO attendance_logs
+           (id, tenant_id, outlet_id, employee_id, type, method, occurred_at, received_at,
+            geo_distance_m, validity, business_date, client_event_id, photo_key)
+         SELECT ('00000000-0000-4000-8000-' || lpad(n::text, 12, '0'))::uuid,
+                $1, $2, $4, 'in', 'selfie_geo', $5::timestamptz, $5::timestamptz, 12,
+                'valid', $6::date, 'BULK' || lpad(n::text, 22, '0'),
+                ('11111111-0000-4000-8000-' || lpad(n::text, 12, '0'))::uuid
+           FROM ${ids}`,
+        [
+          tenantId,
+          longOutletId,
+          NOT_DUE,
+          bulk.employeeId,
+          new Date(`${stuckPeriod.businessDate}T01:00:00.000Z`),
+          stuckPeriod.businessDate,
+        ],
+      );
+    });
+
+    // Created after the bulk rows: later ids, later business date, default outlet.
+    const dueLogs = [
+      await seedLog(bulk, duePeriod.businessDate),
+      await seedLog(bulk, duePeriod.businessDate),
+      await seedLog(bulk, duePeriod.businessDate),
+    ];
+    expect(dueLogs[0]!.outletId).toBe(outletId);
+
+    // Day 31 after the close: the 30-day logs are due, the 365-day outlet's
+    // are not. Three daily runs: every due selfie must be gone by then,
+    // whichever way the job avoids the not-due rows.
+    let purged = 0;
+    for (let run = 0; run < 3; run++) purged += (await purge(after(31))).purged;
+
+    for (const log of dueLogs) expectPurged(await logState(log));
+    expect(purged).toBe(dueLogs.length);
+
+    // The not-due photos are untouched.
+    const remaining = await ownerTx(tenantId, (client) =>
+      client.query<{ count: string }>(
+        `SELECT count(*) FROM attendance_logs
+          WHERE tenant_id = $1 AND outlet_id = $2 AND photo_key IS NOT NULL
+            AND photo_purged_at IS NULL`,
+        [tenantId, longOutletId],
+      ),
+    );
+    expect(Number(remaining.rows[0]!.count)).toBe(NOT_DUE);
+  }, 180_000);
 });
