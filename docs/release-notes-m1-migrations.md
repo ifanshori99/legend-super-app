@@ -177,8 +177,9 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0216, urut merge. `when
 | 0225 | `0225_edge_staff_pin_peppers` | 0225 | ws/ideif-edge-pepper | 1794306000000 |
 | 0226 | `0226_hris_edge_replication` | 0227 | ws/hwn02-hris-edge-schema (lewat ye4j1) | 1794307000000 |
 | 0227 | `0227_edge_selfie_rejected_at` | 0233 | ws/hubzo-selfie-worker | 1794308000000 |
+| 0228 | `0228_tax_reports` | 0235 | ws/gmww-accounting-deltas | 1794309000000 |
 
-- Tanpa migrasi baru: ws/0w2wy-docs-storage, ws/n6fek-recovery-refund-metrics, ws/mz15j-paid-check, ws/eirhm-menu-print-cleanup, ws/5tmye-whitelabel-flaky, ws/hris-edge-design, ws/cku1m-qr-v2, ws/tkycp-people-pull. Tidak ikut: ws/u37u3 (menunggu review founder), tip j6cyb/svy91/i83ls (svy91 ikut lewat hubzo).
+- Tanpa migrasi baru: ws/0w2wy-docs-storage, ws/n6fek-recovery-refund-metrics, ws/mz15j-paid-check, ws/eirhm-menu-print-cleanup, ws/5tmye-whitelabel-flaky, ws/hris-edge-design, ws/cku1m-qr-v2, ws/tkycp-people-pull. Tidak ikut: ws/u37u3 (menunggu review founder), tip j6cyb dan i83ls. ws/svy91-edge-ops (94db22c1, tanpa migrasi) ikut.
 - `ws/94q2l-impl` mengubah `failed_item_recovery` di tempat; di m1 berkas itu `0212_failed_item_recovery.sql`, dan versi m1 (FK inline) dipakai. m1 tidak tercatat pernah diterapkan ke DB bersama, jadi ubah di tempat aman; kalau ternyata sudah diterapkan ke satu DB, DB itu harus dibuat ulang atau diperbaiki manual.
 - 0217 GAGAL (`0217: ...`) bila `shareholder_document_files` atau `shareholder_documents` sudah berisi baris (lihat catatan 0217 di atas).
 - 0218 mem-backfill izin `profit_share.share_allocation.change` ke template owner dan finance (lihat bagian legend-8s992).

@@ -57,6 +57,7 @@ export * from "./accounting-ap-fa";
 export * from "./accounting-auto-journal";
 export * from "./accounting-journal-requests";
 export * from "./accounting-cash-bank";
+export * from "./accounting-tax";
 // WS-06 inventory setup writes (legend-gjmk).
 export * from "./inventory-setup";
 // WS-03 menu import + printable menu (legend-dmi).
