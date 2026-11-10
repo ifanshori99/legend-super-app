@@ -475,7 +475,10 @@ export async function createGuestPayment(
             ? await partLiveCodeTx(tx, context, part.id, now)
             : null;
           if (live !== null) {
+            // No payer hash yet means no payer: a live code here is an orphan
+            // (its creating transaction rolled back), so nobody gets it.
             if (
+              part.payerSecretHash !== null &&
               live.status === "pending" &&
               live.method === parsed.method &&
               (parsed.method !== "va" || live.channelCode === bankCode)

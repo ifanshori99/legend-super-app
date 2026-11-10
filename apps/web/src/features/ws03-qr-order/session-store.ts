@@ -114,9 +114,16 @@ function fillRandom(bytes: Uint8Array): Uint8Array {
   return crypto.getRandomValues(bytes);
 }
 
+// Fallback when storage is blocked: a retry on the same page keeps its secret.
+const memoryPayerSecrets = new Map<string, string>();
+
+function memoryKey(sessionId: string, splitId: string): string {
+  return `${sessionId}:${splitId}`;
+}
+
 /**
  * The payer secret for one split part: read, or made and kept. If storage is
- * blocked (private mode) the secret lives for this payment only.
+ * blocked (private mode) the secret lives in memory for this page.
  */
 export function payerSecretForSplit(
   sessionId: string,
@@ -127,10 +134,16 @@ export function payerSecretForSplit(
     try {
       return payerSecretFor(store, sessionId, splitId, fillRandom);
     } catch {
-      // Storage full or blocked: fall through to a one-off secret.
+      // Storage full or blocked: fall through to the in-memory secret.
     }
   }
-  return newPayerSecret(fillRandom);
+  const key = memoryKey(sessionId, splitId);
+  let secret = memoryPayerSecrets.get(key);
+  if (secret === undefined) {
+    secret = newPayerSecret(fillRandom);
+    memoryPayerSecrets.set(key, secret);
+  }
+  return secret;
 }
 
 /** The kept payer secret of a split part, or null (other device, cleared). */
@@ -139,10 +152,13 @@ export function storedPayerSecret(
   splitId: string,
 ): string | null {
   const store = storage();
-  if (!store) return null;
-  try {
-    return readPayerSecret(store, sessionId, splitId);
-  } catch {
-    return null;
+  if (store) {
+    try {
+      const kept = readPayerSecret(store, sessionId, splitId);
+      if (kept !== null) return kept;
+    } catch {
+      // Blocked: fall through to the in-memory secret.
+    }
   }
+  return memoryPayerSecrets.get(memoryKey(sessionId, splitId)) ?? null;
 }

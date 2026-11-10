@@ -784,6 +784,60 @@ describe("Split part payer secret (legend-r77pq)", () => {
     expect(JSON.stringify(old.body)).not.toContain(taken.body.data.id);
   });
 
+  it("PAYER-SECRET-07 an old intent settling after a takeover pays the part and clears the payer hash: no secret opens the claim", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const secretA = secretFor(p0.id);
+    const intentA = await openCode(w.guest, p0);
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, intentA],
+    );
+    const secretB = newPayerSecret();
+    const taken = await as(w.guest).paySplit(p0.id, { secret: secretB });
+    expect(taken.status, JSON.stringify(taken.body)).toBe(201);
+    expect(taken.body.data.id).not.toBe(intentA);
+
+    await settle(intentA, p0.amountIdr);
+    await deliverToQr(await onlyPaidEvent(intentA));
+
+    const row = await splitRow(p0.id);
+    expect(row.status).toBe("paid");
+    expect(row.payment_intent_id).toBe(intentA);
+    expect(await payerHash(p0.id)).toBeNull();
+
+    const client = agent(app);
+    for (const payerSecret of [secretB, secretA]) {
+      const claim = await client
+        .post(`/api/table-sessions/${w.guest.sessionId}/splits/${p0.id}/claim`)
+        .set("Host", tenant.hostname)
+        .set("Authorization", `Bearer ${w.guest.token}`)
+        .set(originHeader)
+        .send({ payerSecret });
+      expect(claim.status, JSON.stringify(claim.body)).toBe(404);
+    }
+  });
+
+  it("PAYER-SECRET-08 a part without a payer hash but with a live code (orphan intent) answers 409 SPLIT_CODE_ACTIVE to anyone, no intent returned", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const orphan = await openCode(w.guest, p0);
+    await owner.query(
+      "UPDATE bill_splits SET payer_secret_hash = NULL, payment_intent_id = NULL WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, p0.id],
+    );
+
+    for (const secret of [newPayerSecret(), secretFor(p0.id)]) {
+      const response = await as(w.guest).paySplit(p0.id, { secret });
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      expect(response.body.error.code).toBe("SPLIT_CODE_ACTIVE");
+      expect(JSON.stringify(response.body)).not.toContain(orphan);
+      expect(response.body.data).toBeUndefined();
+    }
+    expect(await intentCount(p0.id)).toBe(1);
+    expect(await payerHash(p0.id)).toBeNull();
+  });
+
   it("PAYER-SECRET-06 a split payment without payerSecret is a validation error (422), no intent", async () => {
     const w = await splitOrder(2);
     const [p0] = w.parts as [Part, Part];

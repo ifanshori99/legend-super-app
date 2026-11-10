@@ -80,6 +80,8 @@ export function createLogger({
           "*.currentPassword",
           "*.token",
           "*.secret",
+          "*.payerSecret",
+          "req.body.payerSecret",
           // Card data (legend-8gsj): never logged on purpose, redacted in case
           // a terminal answer or request object ever is.
           ...cardFieldPaths,

@@ -297,4 +297,17 @@ describe("Log redaction of database errors and card fields", () => {
     expect(JSON.stringify(line)).not.toContain(PAN);
     expect(line.msg).toBe("terminal answer");
   });
+
+  it("redacts a payer secret one level down and in a request body (legend-r77pq)", () => {
+    const { lines, logger } = capture();
+    const secret = "ps_do-not-log";
+
+    logger.info(
+      { body: { payerSecret: secret }, req: { body: { payerSecret: secret } } },
+      "payer",
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.stringify(lines[0])).not.toContain(secret);
+  });
 });

@@ -657,6 +657,12 @@ export async function markSplitPartPaidTx(
       claimTokenHash: sha256(raw),
       claimTokenSealed: sealSecret(raw, claimAad(tenantId, part.id)),
       claimExpiresAt: new Date(input.now.getTime() + CLAIM_TTL_MS),
+      // legend-r77pq: the hash only survives when the part's own intent paid.
+      // An old intent settling after a takeover leaves no one holding a
+      // matching secret: the token then reaches the guest only via the receipt.
+      ...(part.paymentIntentId === input.intentId
+        ? {}
+        : { payerSecretHash: null }),
       updatedAt: input.now,
     })
     .where(
