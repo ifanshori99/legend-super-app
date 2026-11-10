@@ -976,3 +976,4 @@ Langkah berikut CTO baru:
 - 18:32 CTO: sesi CTO lama G5ior ditutup (founder Q95). ie6m UOM write mulai (359, migrasi 0245-0246).
 - 18:34 i83ls-fix 3b3e2be3 G9f7b resolved (architect: tidak ada tinggi; F1-F4 dibetulkan), untuk batch48; tsc pasca-F1-F4 dicek test-runner. Kartu baru: pc51h (bill 422 setelah swap, G4yoi brief 360), gt98h (collect-at-pos EDC/QRIS), shabi (UI Tagih selisih, gate-ui). Catatan: 0229 diubah di tempat.
 - 18:35 test-runner: tsc api ws/i83ls-fix 3b3e2be3 lulus (exit 0).
+- 18:40 pc51h: akar masalah = qrOrderSchema menjumlah line void; swap apa pun (bukan hanya lebih mahal) bikin /bill 422. CTO pilih opsi A (cek schema hitung line non-void + penyesuaian recovery; total order tetap beku, selisih via order_issue_charges). pc51h merge ws/i83ls-fix dulu.
