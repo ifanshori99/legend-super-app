@@ -238,6 +238,8 @@ describe("WhatsApp reverse-OTP login", () => {
       received: 1,
       duplicates: 0,
       completed: 1,
+      proofs: 0,
+      conflicts: 0,
     });
 
     const claimed = await browser.get(path);
@@ -407,7 +409,7 @@ describe("WhatsApp reverse-OTP login", () => {
     ).toBe(0);
   });
 
-  it("AUTH-02 rejects a provider id replayed with different content", async () => {
+  it("AUTH-02 reports a provider id replayed with different content and keeps going", async () => {
     const eventId = `wamid.${randomUUID()}`;
     expect(
       (
@@ -416,13 +418,51 @@ describe("WhatsApp reverse-OTP login", () => {
         )
       ).status,
     ).toBe(200);
-    expect(
-      (
-        await postWebhook(
-          loginMessage({ eventId, text: "MASUK LEGEND AAAAAA01" }),
-        )
-      ).status,
-    ).toBe(409);
+    // legend-lgfru: the conflict belongs to that one message; the webhook
+    // answers 200 with the count so KirimDev does not drop the rest.
+    const conflicted = await postWebhook(
+      loginMessage({ eventId, text: "MASUK LEGEND AAAAAA01" }),
+    );
+    expect(conflicted.status).toBe(200);
+    expect(conflicted.body.data).toEqual({
+      received: 1,
+      duplicates: 0,
+      completed: 0,
+      proofs: 0,
+      conflicts: 1,
+    });
+
+    // A later message of the same delivery is still processed.
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const issued = await browser
+      .post("/api/auth/login-challenges/whatsapp")
+      .set(originHeader)
+      .send({});
+    const first = JSON.parse(
+      loginMessage({ eventId, text: "MASUK LEGEND AAAAAA02" }),
+    );
+    const second = JSON.parse(
+      loginMessage({
+        eventId: `wamid.${randomUUID()}`,
+        text: `MASUK LEGEND ${issued.body.data.codeFormatted}`,
+      }),
+    );
+    first.entry[0].changes[0].value.messages.push(
+      ...second.entry[0].changes[0].value.messages,
+    );
+    const mixed = await postWebhook(JSON.stringify(first));
+    expect(mixed.status).toBe(200);
+    expect(mixed.body.data).toEqual({
+      received: 2,
+      duplicates: 0,
+      completed: 1,
+      proofs: 0,
+      conflicts: 1,
+    });
+    const claimed = await browser.get(
+      `/api/auth/login-challenges/${issued.body.data.challenge.id}`,
+    );
+    expect(claimed.body.data.challenge.status).toBe("completed");
   });
 
   it("AUTH-02 treats a redelivery of a pre-fingerprint claim as a duplicate", async () => {
@@ -684,6 +724,8 @@ describe("WhatsApp reverse-OTP login", () => {
       received: 1,
       duplicates: 0,
       completed: 1,
+      proofs: 0,
+      conflicts: 0,
     });
     // A provider retry is signed again but carries the same message id.
     const retry = await postWebhook(body);
@@ -692,6 +734,8 @@ describe("WhatsApp reverse-OTP login", () => {
       received: 1,
       duplicates: 1,
       completed: 0,
+      proofs: 0,
+      conflicts: 0,
     });
     const completions = await owner.query(
       "SELECT count(*)::int AS count FROM login_challenges WHERE status = 'completed'",

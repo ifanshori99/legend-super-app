@@ -24,6 +24,25 @@ export const GOOGLE_CHALLENGE_TTL_MINUTES = 10;
 export const CHALLENGE_RATE_LIMIT = 5;
 export const CHALLENGE_RATE_WINDOW_MINUTES = 15;
 
+/**
+ * legend-lgfru (design D-WA1): a WhatsApp proof for another purpose (payslip
+ * PIN reset) uses the same code window as a login code.
+ */
+export const WA_PROOF_TTL_MINUTES = LOGIN_CODE_TTL_MINUTES;
+
+/** After the proof is verified, the new PIN must be saved within 10 minutes. */
+export const PAYSLIP_PIN_PROOF_GRANT_MINUTES = 10;
+
+/** At most 5 payslip PIN reset proofs per user per hour (not per IP). */
+export const PAYSLIP_PIN_PROOF_PER_USER_PER_HOUR = 5;
+
+/**
+ * D-WA3: the sending number must have been linked to (and verified on) this
+ * account at least this many days. Founder decision 2026-11-11: 3 days. Every
+ * check and test reads this constant, never a literal.
+ */
+export const WA_PROOF_IDENTITY_MIN_AGE_DAYS = 3;
+
 /** AUTH-04: at most 10 login messages per WhatsApp number per hour. */
 export const LOGIN_MESSAGE_RATE_LIMIT = 10;
 export const LOGIN_MESSAGE_RATE_WINDOW_MINUTES = 60;
