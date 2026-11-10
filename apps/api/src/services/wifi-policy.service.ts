@@ -74,6 +74,8 @@ export function toWifiPolicy(row: PolicyRow): WifiPolicy {
     fullSpeedKbps: row.fullSpeedKbps,
     minSpendPerHourIdr: row.minSpendPerHourIdr,
     tierBonusMinutes: row.tierBonusMinutes,
+    // A null column reads as no mode (the contract default, per_day_multiple).
+    spendMode: row.spendMode ?? undefined,
     updatedAt: row.updatedAt.toISOString(),
   });
 }
@@ -158,6 +160,7 @@ export async function putWifiPolicy(
       fullSpeedKbps: input.fullSpeedKbps,
       minSpendPerHourIdr: input.minSpendPerHourIdr,
       tierBonusMinutes: input.tierBonusMinutes,
+      spendMode: input.spendMode,
       updatedAt: now.toISOString(),
     });
     const [existing] = await tx
@@ -199,6 +202,7 @@ export async function putWifiPolicy(
       fullSpeedKbps: input.fullSpeedKbps,
       minSpendPerHourIdr: input.minSpendPerHourIdr,
       tierBonusMinutes: input.tierBonusMinutes,
+      spendMode: input.spendMode ?? null,
       updatedAt: now,
     };
     const [row] = await guardingZonePolicyWrite(() =>
@@ -243,6 +247,8 @@ function policyAuditValues(row: PolicyRow): Record<string, unknown> {
     minSpendPerHourIdr: row.minSpendPerHourIdr,
     baseSpeedKbps: row.baseSpeedKbps,
     fullSpeedKbps: row.fullSpeedKbps,
+    // Audit values are JSON: the key is left out while the mode is unset.
+    ...(row.spendMode ? { spendMode: row.spendMode } : {}),
   };
 }
 

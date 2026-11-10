@@ -108,6 +108,7 @@ export * from "./ai-insights";
 export * from "./inventory-gl";
 // WS-09 edge Wi-Fi agent grant ledger (legend-hsk).
 export * from "./edge-wifi";
+export * from "./wifi-quota";
 // WS-03 open-bill controls per outlet (legend-cqrw).
 export * from "./open-bill";
 // WS-08 public brand website content (legend-qgr6).
