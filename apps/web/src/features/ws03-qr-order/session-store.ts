@@ -12,6 +12,11 @@ import {
   writeGuestSession,
   type StoredGuestSession,
 } from "./lib/guest-session.ts";
+import {
+  newPayerSecret,
+  payerSecretFor,
+  readPayerSecret,
+} from "./lib/payer-secret.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const listeners = new Set<() => void>();
@@ -103,4 +108,57 @@ export function currentDeviceHash(): string {
   } catch {
     return random().replace(/-/g, "").slice(0, 32).toLowerCase();
   }
+}
+
+function fillRandom(bytes: Uint8Array): Uint8Array {
+  return crypto.getRandomValues(bytes);
+}
+
+// Fallback when storage is blocked: a retry on the same page keeps its secret.
+const memoryPayerSecrets = new Map<string, string>();
+
+function memoryKey(sessionId: string, splitId: string): string {
+  return `${sessionId}:${splitId}`;
+}
+
+/**
+ * The payer secret for one split part: read, or made and kept. If storage is
+ * blocked (private mode) the secret lives in memory for this page.
+ */
+export function payerSecretForSplit(
+  sessionId: string,
+  splitId: string,
+): string {
+  const store = storage();
+  if (store) {
+    try {
+      return payerSecretFor(store, sessionId, splitId, fillRandom);
+    } catch {
+      // Storage full or blocked: fall through to the in-memory secret.
+    }
+  }
+  const key = memoryKey(sessionId, splitId);
+  let secret = memoryPayerSecrets.get(key);
+  if (secret === undefined) {
+    secret = newPayerSecret(fillRandom);
+    memoryPayerSecrets.set(key, secret);
+  }
+  return secret;
+}
+
+/** The kept payer secret of a split part, or null (other device, cleared). */
+export function storedPayerSecret(
+  sessionId: string,
+  splitId: string,
+): string | null {
+  const store = storage();
+  if (store) {
+    try {
+      const kept = readPayerSecret(store, sessionId, splitId);
+      if (kept !== null) return kept;
+    } catch {
+      // Blocked: fall through to the in-memory secret.
+    }
+  }
+  return memoryPayerSecrets.get(memoryKey(sessionId, splitId)) ?? null;
 }

@@ -55,6 +55,7 @@ import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { getSplitClaimByToken } from "../services/bill-split.service.ts";
 import { agent, originHeader } from "./helpers.ts";
+import { secretFor } from "./payer-secret-helpers.ts";
 import {
   createIsolatedTenant,
   createTable,
@@ -204,12 +205,15 @@ function as(guest: Guest) {
         parts,
         idempotencyKey: randomUUID(),
       }),
-    claim: (splitId: string) =>
-      auth(client.get(`${base}/splits/${splitId}/claim`)),
+    claim: (splitId: string, payerSecret: string) =>
+      auth(client.post(`${base}/splits/${splitId}/claim`)).send({
+        payerSecret,
+      }),
     paySplit: (billSplitId: string) =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "split", billSplitId },
         method: "qris",
+        payerSecret: secretFor(billSplitId),
         idempotencyKey: randomUUID(),
       }),
   };
@@ -461,7 +465,7 @@ describe("Split bill sweep (legend-ms3, ORD-06)", () => {
 
     const tokens: string[] = [];
     for (const part of [p0, p1]) {
-      const claim = await as(w.guest).claim(part.id);
+      const claim = await as(w.guest).claim(part.id, secretFor(part.id));
       expect(claim.status, JSON.stringify(claim.body)).toBe(200);
       expect(claim.body.data.status).toBe("available");
       tokens.push(claim.body.data.claimToken as string);

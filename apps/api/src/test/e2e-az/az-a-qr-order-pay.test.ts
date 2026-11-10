@@ -60,6 +60,7 @@ import { deliverQrOrderPaymentEvent } from "../../services/qr-order-payment.ts";
 import { qrOrderSettlementLookup } from "../../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../../services/table-session.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "../helpers.ts";
+import { secretFor } from "../payer-secret-helpers.ts";
 import {
   createIsolatedTenant,
   createTable,
@@ -242,6 +243,9 @@ function as(guest: Guest) {
       auth(client.post(`${base}/payments`)).send({
         target,
         method: "qris",
+        ...(target.kind === "split"
+          ? { payerSecret: secretFor(String(target.billSplitId)) }
+          : {}),
         idempotencyKey: key,
       }),
     payment: (paymentId: string) =>

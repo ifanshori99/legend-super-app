@@ -22,7 +22,7 @@
 // - Only the order status, the `order.paid` outbox count and the bill_splits
 //   rows are asserted for "fires"; the consumer outcome name is not pinned.
 
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
@@ -59,6 +59,7 @@ import { confirmPayment } from "../services/payment.service.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { agent, originHeader } from "./helpers.ts";
+import { newPayerSecret, secretFor } from "./payer-secret-helpers.ts";
 import {
   createIsolatedTenant,
   createTable,
@@ -227,11 +228,12 @@ function as(guest: Guest) {
       }),
     paySplit: (
       billSplitId: string,
-      opts: { key?: string; method?: "qris" | "va" } = {},
+      opts: { key?: string; method?: "qris" | "va"; secret?: string } = {},
     ) =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "split", billSplitId },
         method: opts.method ?? "qris",
+        payerSecret: opts.secret ?? secretFor(billSplitId),
         ...(opts.method === "va" ? { bankCode: "bmri" } : {}),
         idempotencyKey: opts.key ?? randomUUID(),
       }),
@@ -647,5 +649,210 @@ describe("Split bill payment (legend-ms3, ORD-06)", () => {
     expect(again.body.data.id).toBe(intentId);
     expect(again.body.data.status).toBe("paid");
     expect((await splitRow(p0.id)).payment_intent_id).toBe(intentId);
+  });
+
+  it("ORD-06-PAY-12 two parts settled before either event is consumed: both end paid with a claim token, none voided", async () => {
+    const w = await splitOrder(2);
+    const [p0, p1] = w.parts as [Part, Part];
+    const code0 = await openCode(w.guest, p0);
+    const code1 = await openCode(w.guest, p1);
+    await settle(code0, p0.amountIdr);
+    await settle(code1, p1.amountIdr);
+    const event0 = await onlyPaidEvent(code0);
+    const event1 = await onlyPaidEvent(code1);
+
+    await deliverToQr(event0);
+    await deliverToQr(event1);
+
+    expect((await orderRow(w.orderId)).status).toBe("sent");
+    expect(await orderPaidCount(w.orderId)).toBe(1);
+    const rows = await splitRows(w.orderId);
+    expect(rows.map((row) => row.status)).toEqual(["paid", "paid"]);
+    for (const row of rows) {
+      expect(row.claim_token_hash).not.toBeNull();
+      expect(row.paid_at).not.toBeNull();
+    }
+    expect(rows.map((row) => row.payment_intent_id)).toEqual([code0, code1]);
+  });
+});
+
+// legend-r77pq: the part ids and intent ids are visible to the whole table, so
+// the payer secret (only its hash is stored) is what makes a guest the payer of
+// a part. Everyone shares the table's session credential; "guest B" is a
+// different secret on the same session.
+describe("Split part payer secret (legend-r77pq)", () => {
+  async function payerHash(partId: string): Promise<string | null> {
+    const { rows } = await owner.query<{ payer_secret_hash: string | null }>(
+      "SELECT payer_secret_hash FROM bill_splits WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, partId],
+    );
+    return rows[0]!.payer_secret_hash;
+  }
+
+  async function intentCount(partId: string): Promise<number> {
+    const { rows } = await owner.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM payment_intents
+        WHERE tenant_id = $1 AND bill_split_id = $2`,
+      [tenant.tenantId, partId],
+    );
+    return Number(rows[0]!.n);
+  }
+
+  it("PAYER-SECRET-01 another guest opening a pending part gets 409 SPLIT_CODE_ACTIVE and never the intent id", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const mine = await openCode(w.guest, p0);
+
+    const other = await as(w.guest).paySplit(p0.id, {
+      secret: newPayerSecret(),
+    });
+    expect(other.status, JSON.stringify(other.body)).toBe(409);
+    expect(other.body.error.code).toBe("SPLIT_CODE_ACTIVE");
+    expect(JSON.stringify(other.body)).not.toContain(mine);
+    expect(other.body.data).toBeUndefined();
+    expect(await intentCount(p0.id)).toBe(1);
+  });
+
+  it("PAYER-SECRET-02 another guest opening a paid part gets 409 SPLIT_PART_PAID and never the intent id", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const { intentId } = await payPart(w.guest, p0);
+
+    const other = await as(w.guest).paySplit(p0.id, {
+      secret: newPayerSecret(),
+    });
+    expect(other.status, JSON.stringify(other.body)).toBe(409);
+    expect(other.body.error.code).toBe("SPLIT_PART_PAID");
+    expect(JSON.stringify(other.body)).not.toContain(intentId);
+    expect(other.body.data).toBeUndefined();
+    expect(await intentCount(p0.id)).toBe(1);
+  });
+
+  it("PAYER-SECRET-03 the first intent stores only the hash; the same payer retrying gets the same intent", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const first = await as(w.guest).paySplit(p0.id);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+
+    const hash = await payerHash(p0.id);
+    expect(hash).toBe(
+      createHash("sha256").update(secretFor(p0.id)).digest("hex"),
+    );
+    expect(hash).not.toContain("ps_");
+
+    const retry = await as(w.guest).paySplit(p0.id);
+    expect(retry.status, JSON.stringify(retry.body)).toBeLessThan(300);
+    expect(retry.body.data.id).toBe(first.body.data.id);
+    expect(await intentCount(p0.id)).toBe(1);
+  });
+
+  it("PAYER-SECRET-04 the raw secret is nowhere in the idempotency record", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    expect((await as(w.guest).paySplit(p0.id)).status).toBe(201);
+    const { rows } = await owner.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM qr_order_idempotency
+        WHERE tenant_id = $1 AND (response::text LIKE $2 OR fingerprint LIKE $2 OR key LIKE $2)`,
+      [tenant.tenantId, `%${secretFor(p0.id)}%`],
+    );
+    expect(Number(rows[0]!.n)).toBe(0);
+  });
+
+  it("PAYER-SECRET-05 once the old code is dead another guest takes the part over: the hash changes, the old payer is out", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const oldCode = await openCode(w.guest, p0);
+    const oldHash = await payerHash(p0.id);
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, oldCode],
+    );
+
+    const newSecret = newPayerSecret();
+    const taken = await as(w.guest).paySplit(p0.id, { secret: newSecret });
+    expect(taken.status, JSON.stringify(taken.body)).toBe(201);
+    expect(taken.body.data.id).not.toBe(oldCode);
+    const newHash = await payerHash(p0.id);
+    expect(newHash).toBe(createHash("sha256").update(newSecret).digest("hex"));
+    expect(newHash).not.toBe(oldHash);
+    expect((await splitRow(p0.id)).payment_intent_id).toBe(taken.body.data.id);
+
+    // The old payer now looks like any other guest: the new code is live.
+    const old = await as(w.guest).paySplit(p0.id);
+    expect(old.status, JSON.stringify(old.body)).toBe(409);
+    expect(old.body.error.code).toBe("SPLIT_CODE_ACTIVE");
+    expect(JSON.stringify(old.body)).not.toContain(taken.body.data.id);
+  });
+
+  it("PAYER-SECRET-07 an old intent settling after a takeover pays the part and clears the payer hash: no secret opens the claim", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const secretA = secretFor(p0.id);
+    const intentA = await openCode(w.guest, p0);
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, intentA],
+    );
+    const secretB = newPayerSecret();
+    const taken = await as(w.guest).paySplit(p0.id, { secret: secretB });
+    expect(taken.status, JSON.stringify(taken.body)).toBe(201);
+    expect(taken.body.data.id).not.toBe(intentA);
+
+    await settle(intentA, p0.amountIdr);
+    await deliverToQr(await onlyPaidEvent(intentA));
+
+    const row = await splitRow(p0.id);
+    expect(row.status).toBe("paid");
+    expect(row.payment_intent_id).toBe(intentA);
+    expect(await payerHash(p0.id)).toBeNull();
+
+    const client = agent(app);
+    for (const payerSecret of [secretB, secretA]) {
+      const claim = await client
+        .post(`/api/table-sessions/${w.guest.sessionId}/splits/${p0.id}/claim`)
+        .set("Host", tenant.hostname)
+        .set("Authorization", `Bearer ${w.guest.token}`)
+        .set(originHeader)
+        .send({ payerSecret });
+      expect(claim.status, JSON.stringify(claim.body)).toBe(404);
+    }
+  });
+
+  it("PAYER-SECRET-08 a part without a payer hash but with a live code (orphan intent) answers 409 SPLIT_CODE_ACTIVE to anyone, no intent returned", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const orphan = await openCode(w.guest, p0);
+    await owner.query(
+      "UPDATE bill_splits SET payer_secret_hash = NULL, payment_intent_id = NULL WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, p0.id],
+    );
+
+    for (const secret of [newPayerSecret(), secretFor(p0.id)]) {
+      const response = await as(w.guest).paySplit(p0.id, { secret });
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      expect(response.body.error.code).toBe("SPLIT_CODE_ACTIVE");
+      expect(JSON.stringify(response.body)).not.toContain(orphan);
+      expect(response.body.data).toBeUndefined();
+    }
+    expect(await intentCount(p0.id)).toBe(1);
+    expect(await payerHash(p0.id)).toBeNull();
+  });
+
+  it("PAYER-SECRET-06 a split payment without payerSecret is a validation error (422), no intent", async () => {
+    const w = await splitOrder(2);
+    const [p0] = w.parts as [Part, Part];
+    const response = await agent(app)
+      .post(`/api/table-sessions/${w.guest.sessionId}/payments`)
+      .set("Host", tenant.hostname)
+      .set("Authorization", `Bearer ${w.guest.token}`)
+      .set(originHeader)
+      .send({
+        target: { kind: "split", billSplitId: p0.id },
+        method: "qris",
+        idempotencyKey: randomUUID(),
+      });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await intentCount(p0.id)).toBe(0);
+    expect(await payerHash(p0.id)).toBeNull();
   });
 });

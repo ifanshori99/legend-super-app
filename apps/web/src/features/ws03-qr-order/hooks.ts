@@ -24,6 +24,7 @@ import {
   claimPoints,
   createSplits,
   deleteCartLine,
+  fetchSplitClaim,
   placeOrder,
   scanTable,
   sendServiceRequest,
@@ -305,6 +306,13 @@ export function useStartPayment(sessionId: string) {
       bankCode?: string;
       idempotencyKey: string;
     }) => startPayment(sessionId, input),
+  });
+}
+
+/** Fetches the claim token of one paid split part with the kept payer secret. */
+export function useSplitClaim(sessionId: string) {
+  return useMutation({
+    mutationFn: (splitId: string) => fetchSplitClaim(sessionId, splitId),
   });
 }
 

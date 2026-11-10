@@ -78,7 +78,10 @@ export const orderIssuesQuery = (sessionId: string) =>
   });
 
 export const pointClaimQuery = (sessionId: string) =>
-  endpointQueryOptions(pointClaimEndpoint, { params: { sessionId } });
+  endpointQueryOptions(pointClaimEndpoint, {
+    params: { sessionId },
+    query: {},
+  });
 
 /** Polls until the gateway confirms (ORD-02: only a verified webhook marks paid). */
 export const paymentQuery = (sessionId: string, paymentId: string) =>

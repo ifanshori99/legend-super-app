@@ -53,6 +53,7 @@ import {
 import { confirmPayment } from "../services/payment.service.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
+import { newPayerSecret, secretFor } from "./payer-secret-helpers.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -199,10 +200,13 @@ function as(guest: Guest) {
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "split", billSplitId },
         method: "qris",
+        payerSecret: secretFor(billSplitId),
         idempotencyKey: randomUUID(),
       }),
-    claim: (splitId: string) =>
-      auth(client.get(`${base}/splits/${splitId}/claim`)),
+    claim: (splitId: string, payerSecret?: string) =>
+      auth(client.post(`${base}/splits/${splitId}/claim`)).send(
+        payerSecret === undefined ? {} : { payerSecret },
+      ),
   };
 }
 
@@ -249,12 +253,29 @@ async function payPart(guest: Guest, part: SplitDto): Promise<EventEnvelope> {
   return event;
 }
 
+/** The payment intent of a part (the id is no proof of anything). */
+async function intentOf(splitId: string): Promise<string> {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM payment_intents
+      WHERE tenant_id = $1 AND bill_split_id = $2::uuid ORDER BY created_at LIMIT 1`,
+    [tenant.tenantId, splitId],
+  );
+  expect(rows).toHaveLength(1);
+  return rows[0]!.id;
+}
+
+/** HTTP claim read with the secret the part's payer used to pay it. */
+async function claimFor(guest: Guest, splitId: string) {
+  return as(guest).claim(splitId, secretFor(splitId));
+}
+
 async function readClaim(guest: Guest, splitId: string, now = new Date()) {
   return getSplitClaim(
     contextOf(tenant.tenantId),
     guest.token,
     guest.sessionId,
     splitId,
+    secretFor(splitId),
     now,
   ) as Promise<Claim>;
 }
@@ -376,16 +397,20 @@ afterAll(async () => {
 });
 
 describe("split part claim token (legend-ms3)", () => {
-  it("SPLIT-CLAIM-UNAVAILABLE an unpaid part has no token", async () => {
+  it("SPLIT-CLAIM-UNAVAILABLE an unpaid part has no token: the payer sees it unavailable", async () => {
     const part = orderParts[0]!;
-    const response = await as(guest).claim(part.id);
+    // The guest opened a code for the part but has not paid it yet. The part
+    // is theirs (their secret) but the token only exists once it is paid.
+    const pay = await as(guest).paySplit(part.id);
+    expect(pay.status, JSON.stringify(pay.body)).toBe(201);
+    const response = await as(guest).claim(part.id, secretFor(part.id));
     expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(response.body.data).toEqual({
-      billSplitId: part.id,
+    expect(response.body.data).toMatchObject({
       status: "unavailable",
       claimToken: null,
       claimableUntil: null,
     });
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
     const row = await claimRow(part.id);
     expect(row.status).toBe("pending");
     expect(row.claim_token_hash).toBeNull();
@@ -393,7 +418,7 @@ describe("split part claim token (legend-ms3)", () => {
 
   it("SPLIT-CLAIM-ISSUED a paid part issues a token valid 24 hours, stored only as hash and sealed copy", async () => {
     const part = orderParts[1]!;
-    const response = await as(guest).claim(part.id);
+    const response = await claimFor(guest, part.id);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     const claim: Claim = response.body.data;
     expect(claim.billSplitId).toBe(part.id);
@@ -419,32 +444,32 @@ describe("split part claim token (legend-ms3)", () => {
     ).toBeLessThanOrEqual(1000);
 
     // Reading again returns the same token (it is not re-issued).
-    const again = await as(guest).claim(part.id);
+    const again = await claimFor(guest, part.id);
     expect(again.body.data.claimToken).toBe(claim.claimToken);
   });
 
   it("SPLIT-CLAIM-REPLAY replaying the paid event does not change the issued token", async () => {
     const part = orderParts[1]!;
-    const before = (await as(guest).claim(part.id)).body.data as Claim;
+    const before = (await claimFor(guest, part.id)).body.data as Claim;
     const { rows } = await owner.query<{ id: string }>(
       `SELECT payment_intent_id AS id FROM bill_splits WHERE tenant_id = $1 AND id = $2::uuid`,
       [tenant.tenantId, part.id],
     );
     await deliver(await paidEvent(rows[0]!.id));
-    const after = (await as(guest).claim(part.id)).body.data as Claim;
+    const after = (await claimFor(guest, part.id)).body.data as Claim;
     expect(after.claimToken).toBe(before.claimToken);
     expect(after.claimableUntil).toBe(before.claimableUntil);
   });
 
   it("SPLIT-CLAIM-REDEEMED a redeemed part reads claimed and shows no token", async () => {
     const part = orderParts[2]!;
-    const claim = (await as(guest).claim(part.id)).body.data as Claim;
+    const claim = (await claimFor(guest, part.id)).body.data as Claim;
     expect(claim.status).toBe("available");
 
     await markRedeemed(part.id);
 
     expect((await claimRow(part.id)).claim_redeemed_at).not.toBeNull();
-    const after = await as(guest).claim(part.id);
+    const after = await claimFor(guest, part.id);
     expect(after.status).toBe(200);
     expect(after.body.data.status).toBe("claimed");
     expect(after.body.data.claimToken).toBeNull();
@@ -452,7 +477,7 @@ describe("split part claim token (legend-ms3)", () => {
 
   it("SPLIT-CLAIM-EXPIRED after 24 hours the guest session read is closed", async () => {
     const part = orderParts[3]!;
-    const claim = (await as(guest).claim(part.id)).body.data as Claim;
+    const claim = (await claimFor(guest, part.id)).body.data as Claim;
     expect(claim.status).toBe("available");
     const late = new Date(Date.now() + 24 * HOUR + 60_000);
 
@@ -473,9 +498,76 @@ describe("split part claim token (legend-ms3)", () => {
 
   it("SPLIT-CLAIM-SESSION a guest of another table session cannot read the part's claim (404)", async () => {
     const stranger = await seatAtNewTable();
-    const response = await as(stranger).claim(orderParts[1]!.id);
+    const response = await claimFor(stranger, orderParts[1]!.id);
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(response.body.data?.claimToken).toBeUndefined();
+  });
+
+  // Codex 380 P1#2 / legend-r77pq: the part ids and intent ids are public to
+  // the whole table, so the claim read needs the payer secret of that part.
+  it("SPLIT-CLAIM-PROOF a guest cannot read another part's token with their own secret (404)", async () => {
+    const mine = orderParts[1]!;
+    const theirs = orderParts[3]!;
+    const response = await as(guest).claim(theirs.id, secretFor(mine.id));
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body.error?.message).toBe(
+      "Bagian tagihan tidak ditemukan.",
+    );
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
+
+    const own = await as(guest).claim(theirs.id, secretFor(theirs.id));
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.data.claimToken).toMatch(/^sc_/);
+  });
+
+  it("SPLIT-CLAIM-PROOF an unknown part answers the same 404 message", async () => {
+    const response = await as(guest).claim(
+      randomUUID(),
+      secretFor(orderParts[1]!.id),
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body.error?.message).toBe(
+      "Bagian tagihan tidak ditemukan.",
+    );
+  });
+
+  it("SPLIT-CLAIM-PROOF a random secret answers the same 404", async () => {
+    const response = await as(guest).claim(orderParts[1]!.id, newPayerSecret());
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body.error?.message).toBe(
+      "Bagian tagihan tidak ditemukan.",
+    );
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
+  });
+
+  // legend-r77pq: an intent id (even the part's own, even one that settled it)
+  // is not a payer secret. It is not even the right shape.
+  it("SPLIT-CLAIM-PROOF the part's payment intent id is no proof (422, no token)", async () => {
+    const part = orderParts[4]!;
+    const response = await as(guest).claim(part.id, await intentOf(part.id));
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
+
+    const own = await as(guest).claim(part.id, secretFor(part.id));
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.data.claimToken).toMatch(/^sc_/);
+  });
+
+  it("SPLIT-CLAIM-PROOF a part without a payer secret hash (older part) answers 404", async () => {
+    const part = orderParts[4]!;
+    await owner.query(
+      "UPDATE bill_splits SET payer_secret_hash = NULL WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, part.id],
+    );
+    const response = await as(guest).claim(part.id, secretFor(part.id));
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
+  });
+
+  it("SPLIT-CLAIM-PROOF a read without the payer secret is a validation error (422)", async () => {
+    const response = await as(guest).claim(orderParts[1]!.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
   });
 });
 
@@ -562,7 +654,7 @@ describe("claim by token after table close (legend-ia54l)", () => {
     const before = claims[0]!;
     await closeTable(world.sessionId);
 
-    const session = await as(world).claim(part.id);
+    const session = await claimFor(world, part.id);
     expect(session.status).toBeGreaterThanOrEqual(400);
     expect(session.body.data?.claimToken).toBeUndefined();
 

@@ -657,6 +657,12 @@ export async function markSplitPartPaidTx(
       claimTokenHash: sha256(raw),
       claimTokenSealed: sealSecret(raw, claimAad(tenantId, part.id)),
       claimExpiresAt: new Date(input.now.getTime() + CLAIM_TTL_MS),
+      // legend-r77pq: the hash only survives when the part's own intent paid.
+      // An old intent settling after a takeover leaves no one holding a
+      // matching secret: the token then reaches the guest only via the receipt.
+      ...(part.paymentIntentId === input.intentId
+        ? {}
+        : { payerSecretHash: null }),
       updatedAt: input.now,
     })
     .where(
@@ -702,15 +708,21 @@ async function orderBlocksClaim(
 }
 
 /**
- * GET .../splits/:splitId/claim. `unavailable` until the part is paid;
+ * GET .../splits/:splitId/claim. `unavailable` when the paid part shows no
+ * code (no token, or its order is voided, refunded, a member's or practice);
  * `available` shows the token for 24 hours; `claimed` once redeemed;
- * `expired` after the deadline.
+ * `expired` after the deadline. The part ids are public to the table, so the
+ * read also needs the payer secret given when the part was paid
+ * (legend-r77pq): compared as a SHA-256 in the same query, so a wrong secret,
+ * a foreign part, an unknown part and a part nobody started paying answer the
+ * same NOT_FOUND. The token itself shows only while the part is `paid`.
  */
 export async function getSplitClaim(
   context: ScopedTenantContext,
   credential: string,
   sessionId: string,
   splitId: string,
+  payerSecret: string,
   now = new Date(),
 ): Promise<SplitClaim> {
   const tenantId = context.tenant.tenantId;
@@ -731,6 +743,7 @@ export async function getSplitClaim(
           eq(billSplits.tenantId, tenantId),
           eq(billSplits.id, splitId),
           eq(billSplits.tableSessionId, session.id),
+          eq(billSplits.payerSecretHash, sha256(payerSecret)),
         ),
       );
     if (!part)

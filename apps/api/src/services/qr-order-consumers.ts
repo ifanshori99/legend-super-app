@@ -49,6 +49,7 @@ import type { EventEnvelope } from "@starter/shared/events";
 import type { PaymentStatus } from "@starter/shared/payment";
 import { db } from "../db/index.ts";
 import {
+  billSplits,
   domainEventOutbox,
   paymentIntents,
   paymentLinks,
@@ -466,6 +467,41 @@ async function voidAndNotify(
 
 // ---- payment.paid ---------------------------------------------------------------
 
+/**
+ * Marks every still-pending part of the order whose own code has settled
+ * (`paid`) as paid, so `voidLiveSplitsTx` only voids parts nobody paid. Money
+ * flow untouched: only the part status and claim token change. Replay safe
+ * (`markSplitPartPaidTx` answers "already").
+ */
+async function reconcileSettledSplitPartsTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  now: Date,
+): Promise<void> {
+  const settled = await tx
+    .select({ intentId: paymentIntents.id })
+    .from(billSplits)
+    .innerJoin(
+      paymentIntents,
+      and(
+        eq(paymentIntents.tenantId, billSplits.tenantId),
+        eq(paymentIntents.billSplitId, billSplits.id),
+      ),
+    )
+    .where(
+      and(
+        eq(billSplits.tenantId, context.tenant.tenantId),
+        eq(billSplits.orderId, orderId),
+        eq(billSplits.status, "pending"),
+        eq(paymentIntents.status, "paid"),
+      ),
+    )
+    .orderBy(asc(paymentIntents.id));
+  for (const { intentId } of settled)
+    await markSplitPartPaidTx(tx, context, { intentId, now });
+}
+
 /** ORD-02: fires a pay-first QR order on verified payment. Replay safe. */
 export async function handleQrOrderPaymentPaid(
   context: ScopedTenantContext,
@@ -729,6 +765,11 @@ export async function handleQrOrderPaymentPaid(
     reason: "verified_payment",
     paidIntentId: payerIntentId,
   });
+  // Split bill: a part whose code settled before its own event was consumed
+  // is still `pending` here; mark it paid (and issue its claim token) before
+  // the leftovers are voided, or the guest who paid loses the part and the
+  // points claim (its event later stops at the paid-order guard).
+  await reconcileSettledSplitPartsTx(tx, context, order.id, at);
   // Split bill: the paid parts covered the bill; a part still pending (a
   // different code settled the whole bill) can no longer be paid.
   const voidedParts = await voidLiveSplitsTx(tx, context, order.id, at);
