@@ -2,7 +2,9 @@
 -- Number 0214 and its `when` were assigned by the coordinator (0209-0213 belong
 -- to other branches). The generated part creates apology_vouchers with every
 -- foreign key inline (the table is empty, so FORCE RLS needs no lift), adds
--- the nullable order_issues.approval_request_id and three partial unique
+-- the nullable order_issues.approval_request_id, order_issues.replacement_order_item_id
+-- (swap result line, composite FK to order_items, once-only unique index and
+-- two CHECKs incl. order_issues_swap_approval_check) and partial unique
 -- indexes. The custom part at the end adds RLS and makes the new table
 -- append-only for legend_app.
 --
@@ -70,6 +72,16 @@ CREATE UNIQUE INDEX "apology_vouchers_approval_once_idx" ON "apology_vouchers" U
 CREATE INDEX "apology_vouchers_outlet_issued_idx" ON "apology_vouchers" USING btree ("tenant_id","outlet_id","issued_at","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "order_issues_resolved_item_once_idx" ON "order_issues" USING btree ("tenant_id","order_item_id") WHERE "order_issues"."type" = 'unfulfillable' AND "order_issues"."resolution" IS NOT NULL AND "order_issues"."status" <> 'cancelled';--> statement-breakpoint
 CREATE UNIQUE INDEX "order_issues_voucher_once_idx" ON "order_issues" USING btree ("tenant_id","voucher_id") WHERE "order_issues"."voucher_id" IS NOT NULL;
+--> statement-breakpoint
+ALTER TABLE "order_issues" ADD COLUMN "replacement_order_item_id" uuid;
+--> statement-breakpoint
+ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_replacement_order_item_fk" FOREIGN KEY ("tenant_id","replacement_order_item_id") REFERENCES "public"."order_items"("tenant_id","id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+CREATE UNIQUE INDEX "order_issues_replacement_item_once_idx" ON "order_issues" USING btree ("tenant_id","replacement_order_item_id") WHERE "order_issues"."replacement_order_item_id" IS NOT NULL;
+--> statement-breakpoint
+ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_swap_approval_check" CHECK ("order_issues"."resolution" IS DISTINCT FROM 'swap' OR "order_issues"."price_difference_idr" IS NULL OR "order_issues"."price_difference_idr" <= 0 OR "order_issues"."approval_request_id" IS NOT NULL);
+--> statement-breakpoint
+ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_replacement_order_item_check" CHECK ("order_issues"."replacement_order_item_id" IS NULL OR "order_issues"."resolution" = 'swap');
 --> statement-breakpoint
 -- ---------------------------------------------------------------------------
 -- legend-4qu hand SQL (copied from src/db/schema/apology-vouchers.custom.sql).

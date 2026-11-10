@@ -45015,6 +45015,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "replacement_order_item_id": {
+          "name": "replacement_order_item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "voucher_id": {
           "name": "voucher_id",
           "type": "uuid",
@@ -45135,6 +45141,28 @@
           ],
           "isUnique": true,
           "where": "\"order_issues\".\"voucher_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "order_issues_replacement_item_once_idx": {
+          "name": "order_issues_replacement_item_once_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "replacement_order_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"order_issues\".\"replacement_order_item_id\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -45290,6 +45318,21 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
+        "order_issues_replacement_order_item_fk": {
+          "name": "order_issues_replacement_order_item_fk",
+          "tableFrom": "order_issues",
+          "tableTo": "order_items",
+          "columnsFrom": [
+            "tenant_id",
+            "replacement_order_item_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "order_issues_station_fk": {
           "name": "order_issues_station_fk",
           "tableFrom": "order_issues",
@@ -45377,6 +45420,14 @@
         "order_issues_swap_check": {
           "name": "order_issues_swap_check",
           "value": "\"order_issues\".\"resolution\" IS DISTINCT FROM 'swap' OR \"order_issues\".\"replacement_item_id\" IS NOT NULL"
+        },
+        "order_issues_swap_approval_check": {
+          "name": "order_issues_swap_approval_check",
+          "value": "\"order_issues\".\"resolution\" IS DISTINCT FROM 'swap' OR \"order_issues\".\"price_difference_idr\" IS NULL OR \"order_issues\".\"price_difference_idr\" <= 0 OR \"order_issues\".\"approval_request_id\" IS NOT NULL"
+        },
+        "order_issues_replacement_order_item_check": {
+          "name": "order_issues_replacement_order_item_check",
+          "value": "\"order_issues\".\"replacement_order_item_id\" IS NULL OR \"order_issues\".\"resolution\" = 'swap'"
         },
         "order_issues_resolved_check": {
           "name": "order_issues_resolved_check",

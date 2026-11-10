@@ -1,0 +1,333 @@
+// legend-zm1e6 / legend-v32bv: the kitchen side of a failed-item swap. The
+// resolve step (order-recovery.service.ts) only settles the issue and appends
+// `order_issue.resolved`; this consumer, wired in worker-main.ts, turns a
+// `swap` resolution into order lines: a replacement line on the same order
+// (priced from today's catalogue, daily limit reserved, cost frozen), the old
+// line voided, and the replacement routed to its KDS station.
+//
+// Idempotent: the issue row is locked and `replacement_order_item_id` is the
+// once-only marker, so a replayed or concurrent event changes nothing. No
+// extra charge: order totals and payments are NOT recalculated (a credit goes
+// through the apology voucher; a dearer swap is only recorded, legend-i83ls).
+// Events of another tenant or outlet, and every other event, are ignored.
+
+import { and, eq, ne } from "drizzle-orm";
+import {
+  createUlid,
+  idr,
+  toIsoDateTime,
+  z,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import type { EventEnvelope } from "@starter/shared/events";
+import { orderIssues } from "../db/schema/kds-issues.ts";
+import { posOrderItems, posOrders } from "../db/schema/pos-order.ts";
+import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { recordAudit } from "./core-audit.ts";
+import {
+  cancelKitchenItemsForVoidedLines,
+  routeFiredItemsToKitchen,
+} from "./kds.service.ts";
+import {
+  releaseMenuItemDailyLimit,
+  reserveMenuItemDailyLimit,
+} from "./menu-availability.ts";
+import type { Tx } from "./menu-internals.ts";
+import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
+import { priceMenuItemForOutlet } from "./qr-order.service.ts";
+
+const SWAP_VOID_REASON = "item_failed_swap";
+const AUDIT_ACTION = "order_issue.swap_kitchen_applied";
+const AUDIT_BLOCKED_ACTION = "order_issue.swap_kitchen_blocked";
+const AUDIT_SKIPPED_ACTION = "order_issue.swap_kitchen_skipped";
+const AUDIT_SAFE_FIELDS = [
+  "id",
+  "orderItemId",
+  "replacementItemId",
+  "replacementOrderItemId",
+  "oldLine",
+  "orderStatus",
+  "blockedReason",
+];
+
+const payloadSchema = z.looseObject({
+  resolution: z.string(),
+  orderIssueId: z.string().min(1),
+});
+
+/**
+ * Applies one `order_issue.resolved` swap event in the consumption
+ * transaction `tx`. Anything that is not a swap of this tenant and outlet is
+ * a no-op. A replacement that is not orderable (sold out, out of schedule,
+ * limit full, price gone) and a voided order do not throw, as a retry cannot
+ * fix them and would dead-letter the event: the old line stays, the issue keeps
+ * no replacement, and an audit row says why. Technical errors still throw so
+ * the outbox retries the event.
+ */
+export async function deliverSwapKitchenEvent(
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  tx: Tx,
+): Promise<void> {
+  if (event.name !== "order_issue.resolved") return;
+  const tenantId = context.tenant.tenantId;
+  if (event.tenantId !== tenantId) return;
+  const payload = payloadSchema.safeParse(event.payload);
+  if (!payload.success || payload.data.resolution !== "swap") return;
+  const issueId = payload.data.orderIssueId;
+
+  const [issue] = await tx
+    .select()
+    .from(orderIssues)
+    .where(and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issueId)))
+    .for("update");
+  if (!issue) return;
+  if (
+    issue.resolution !== "swap" ||
+    issue.status !== "resolved" ||
+    issue.replacementItemId === null ||
+    event.outletId !== issue.outletId
+  )
+    return;
+  // The once-only marker: a replayed event finds the line already created.
+  if (issue.replacementOrderItemId !== null) return;
+
+  const [order] = await tx
+    .select({
+      id: orders.id,
+      outletId: orders.outletId,
+      status: orders.status,
+      businessDate: orders.businessDate,
+    })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, issue.orderId)));
+  if (!order || order.outletId !== issue.outletId) return;
+  const [oldLine] = await tx
+    .select()
+    .from(orderItems)
+    .where(
+      and(
+        eq(orderItems.tenantId, tenantId),
+        eq(orderItems.orderId, order.id),
+        eq(orderItems.id, issue.orderItemId),
+      ),
+    );
+  if (!oldLine) return;
+
+  const now = new Date();
+  const actorUserId = event.actor.type === "user" ? event.actor.id : null;
+  const auditSwap = (
+    action: string,
+    after: Record<string, string>,
+  ): Promise<void> =>
+    recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: order.outletId,
+        actorType: actorUserId === null ? "system" : "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action,
+        objectType: "order",
+        objectId: order.id,
+        reason: null,
+        maskedChanges: { before: null, after },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: toIsoDateTime(now),
+      },
+      AUDIT_SAFE_FIELDS,
+    );
+
+  // A voided order takes no new line: nothing to cook or to reserve.
+  if (order.status === "voided") {
+    await auditSwap(AUDIT_SKIPPED_ACTION, {
+      id: issue.id,
+      orderItemId: oldLine.id,
+      replacementItemId: issue.replacementItemId,
+      orderStatus: order.status,
+    });
+    return;
+  }
+
+  const priced = (
+    await priceMenuItemForOutlet(
+      tx,
+      context,
+      order.outletId,
+      [issue.replacementItemId],
+      now,
+    )
+  ).get(issue.replacementItemId);
+  if (!priced) {
+    // Sold out, out of schedule, limit full, price gone: the catalogue gives no
+    // finer reason, and a retry cannot fix it.
+    await auditSwap(AUDIT_BLOCKED_ACTION, {
+      id: issue.id,
+      orderItemId: oldLine.id,
+      replacementItemId: issue.replacementItemId,
+      blockedReason: "not_orderable",
+    });
+    return;
+  }
+  const reservation = await reserveMenuItemDailyLimit(tx, context, {
+    outletId: order.outletId,
+    menuItemId: priced.menuItemId,
+    businessDate: order.businessDate,
+    quantity: oldLine.quantity,
+    now,
+  });
+  if (!reservation.allowed) {
+    await auditSwap(AUDIT_BLOCKED_ACTION, {
+      id: issue.id,
+      orderItemId: oldLine.id,
+      replacementItemId: priced.menuItemId,
+      blockedReason: reservation.reason,
+    });
+    return;
+  }
+  const [costSnapshot] = await computeLineCostSnapshots(
+    tx,
+    context,
+    order.outletId,
+    [
+      {
+        menuItemId: priced.menuItemId,
+        variantId: null,
+        modifierIds: [],
+        quantity: oldLine.quantity,
+      },
+    ],
+  );
+
+  const replacementId = createUlid(now.getTime());
+  await tx.insert(orderItems).values({
+    id: replacementId,
+    tenantId,
+    outletId: order.outletId,
+    orderId: order.id,
+    menuItemId: priced.menuItemId,
+    variantId: null,
+    name: priced.name,
+    quantity: oldLine.quantity,
+    unitPriceIdr: idr(priced.unitPriceIdr),
+    modifiersTotalIdr: idr(0),
+    lineTotalIdr: idr(priced.unitPriceIdr * oldLine.quantity),
+    costSnapshotIdr:
+      costSnapshot === null || costSnapshot === undefined
+        ? null
+        : idr(costSnapshot),
+    modifiers: [],
+    note: null,
+    course: oldLine.course,
+    fireStatus: "fired",
+    status: "queued",
+    reservedBusinessDate: order.businessDate,
+    createdAt: now,
+    updatedAt: now,
+  });
+  // A POS bill keeps its per-line POS state beside the line.
+  const [pos] = await tx
+    .select({ orderId: posOrders.orderId })
+    .from(posOrders)
+    .where(
+      and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, order.id)),
+    );
+  if (pos)
+    await tx.insert(posOrderItems).values({
+      itemId: replacementId,
+      tenantId,
+      outletId: order.outletId,
+      orderId: order.id,
+      heldByCashier: false,
+      firedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+  // The trigger freezes the lines of a completed order: the old
+  // line then stays as it is and the audit row says so.
+  const frozen = order.status === "completed";
+  let oldLineOutcome = frozen ? "kept_final_order" : "already_voided";
+  if (!frozen) {
+    const voided = await tx
+      .update(orderItems)
+      .set({
+        status: "voided",
+        voidReason: SWAP_VOID_REASON,
+        voidedBy: actorUserId,
+        voidApprovedBy: issue.approvedBy,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(orderItems.tenantId, tenantId),
+          eq(orderItems.id, oldLine.id),
+          ne(orderItems.status, "voided"),
+        ),
+      )
+      .returning({ id: orderItems.id });
+    if (voided.length > 0) {
+      oldLineOutcome = "voided";
+      await releaseMenuItemDailyLimit(tx, context, {
+        outletId: order.outletId,
+        menuItemId: oldLine.menuItemId,
+        businessDate: oldLine.reservedBusinessDate,
+        quantity: oldLine.quantity,
+        now,
+      });
+      await tx
+        .update(posOrderItems)
+        .set({
+          voidedAt: now,
+          voidReasonNote: SWAP_VOID_REASON,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(posOrderItems.tenantId, tenantId),
+            eq(posOrderItems.itemId, oldLine.id),
+          ),
+        );
+      await cancelKitchenItemsForVoidedLines(tx, context, {
+        outletId: order.outletId,
+        orderId: order.id,
+        itemIds: [oldLine.id],
+        reason: SWAP_VOID_REASON,
+        actor:
+          actorUserId === null ? null : { userId: actorUserId, deviceId: null },
+        now,
+      });
+    }
+  }
+
+  // A menu without a station is not a kitchen item: the line stays unrouted.
+  await routeFiredItemsToKitchen(tx, context, {
+    outletId: order.outletId,
+    orderId: order.id,
+    itemIds: [replacementId],
+    actor:
+      actorUserId === null ? null : { userId: actorUserId, deviceId: null },
+    now,
+    onUnresolved: "skip",
+  });
+
+  await tx
+    .update(orderIssues)
+    .set({ replacementOrderItemId: replacementId })
+    .where(
+      and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issue.id)),
+    );
+
+  await auditSwap(AUDIT_ACTION, {
+    id: issue.id,
+    orderItemId: oldLine.id,
+    replacementItemId: priced.menuItemId,
+    replacementOrderItemId: replacementId,
+    oldLine: oldLineOutcome,
+  });
+}

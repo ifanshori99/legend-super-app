@@ -49,6 +49,7 @@ import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+import { deliverSwapKitchenEvent } from "./services/order-recovery-swap-kitchen.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
 import { sweepInactiveOpenBillSessions } from "./services/open-bill-control.service.ts";
 import {
@@ -209,6 +210,10 @@ const runtime = createWorkerRuntime({
           // expired/failed QR payment re-offers a code or voids the order.
           // Each consumer re-reads its locked rows, so a replay is a no-op.
           await deliverOrderPaymentEvent(context, event, tx);
+          // legend-zm1e6: a resolved swap issue becomes a replacement order
+          // line, the old line is voided and the new one routed to its KDS
+          // station. Idempotent (issue row lock), no extra charge, not gated.
+          await deliverSwapKitchenEvent(context, event, tx);
           // PRD §3.19 Jurnal Otomatis (legend-9pz9, legend-o9q9), cloud only:
           // sales, refunds, gateway receipts and payouts post their journal in
           // a savepoint; expected accounting failures park for the sweep and

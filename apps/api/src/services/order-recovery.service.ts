@@ -66,7 +66,12 @@ import { domainEventOutbox, outlets } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret } from "../lib/secrets.ts";
-import { mintApologyVoucher, sealAad } from "./apology-voucher.service.ts";
+import {
+  approvalRequiredMessage,
+  mintApologyVoucher,
+  requireSwapCreditApproval,
+  sealAad,
+} from "./apology-voucher.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -1040,7 +1045,15 @@ async function priceCorrectionApproval(
   return { approvedBy: last.decidedBy };
 }
 
-/** Swap: replacement priced by the QR catalogue, a cheaper one credited. */
+/** A staff swap credit waiting for its `apology_voucher` approval. */
+type SwapPendingApproval = { pendingApprovalRequestId: string };
+
+/**
+ * Swap: replacement priced by the QR catalogue, a cheaper one credited. A staff
+ * credit follows the `apology_voucher` matrix: when it needs an approval that is
+ * not given yet the opened request is returned, not thrown, so the caller can
+ * commit it before answering 409.
+ */
 async function swapSettlement(
   tx: Tx,
   context: ScopedTenantContext,
@@ -1048,7 +1061,7 @@ async function swapSettlement(
   replacementItemId: string,
   actor: SwapActor,
   now: Date,
-): Promise<Settlement> {
+): Promise<Settlement | SwapPendingApproval> {
   assertRecoverable(found);
   if (replacementItemId === found.line.menuItemId)
     throw unprocessable("Menu pengganti harus berbeda dari item yang gagal.");
@@ -1065,7 +1078,10 @@ async function swapSettlement(
   // Against the whole old line (modifiers included): negative is credited.
   const difference =
     replacement.unitPriceIdr * found.line.quantity - found.line.lineTotalIdr;
-  let approval: { approvedBy: string; approvalRequestId: string } | null = null;
+  let approval: {
+    approvedBy: string | null;
+    approvalRequestId: string;
+  } | null = null;
   if (difference > 0) {
     if (actor.type === "guest")
       throw unprocessable(
@@ -1090,15 +1106,37 @@ async function swapSettlement(
   }
   let voucherId: string | null = null;
   if (difference < 0) {
+    const creditReason =
+      `Kredit selisih harga penukaran ${found.line.name}`.slice(0, 500);
+    let creditApprovalId: string | null = null;
+    if (actor.type === "staff") {
+      const matrix = await requireSwapCreditApproval(tx, context, {
+        orderIssueId: found.issue.id,
+        outletId: found.issue.outletId,
+        valueIdr: -difference,
+        reason: creditReason,
+        requestedBy: actor.userId,
+        approvalRequestId: actor.approvalRequestId,
+        now,
+      });
+      if (matrix.kind === "pending")
+        return { pendingApprovalRequestId: matrix.requestId };
+      creditApprovalId = matrix.approvalRequestId;
+      if (creditApprovalId !== null)
+        approval = {
+          approvedBy: matrix.approvedBy,
+          approvalRequestId: creditApprovalId,
+        };
+    }
     // One issue, one voucher: the credit rides on the issue's own voucher.
     const credit = await mintApologyVoucher(tx, context, {
       outletId: found.issue.outletId,
       issuedBy: found.issue.reportedBy,
       valueIdr: -difference,
-      reason: `Kredit selisih harga penukaran ${found.line.name}`.slice(0, 500),
+      reason: creditReason,
       orderIssueId: found.issue.id,
       customerProfileId: found.order.customerProfileId,
-      approvalRequestId: null,
+      approvalRequestId: creditApprovalId,
       expiresInDays: CREDIT_VOUCHER_DAYS,
       now,
     });
@@ -1201,6 +1239,9 @@ export async function chooseOrderIssueResolution(
             now,
           )
         : await systemVoucherSettlement(tx, guest, found, now);
+    // The guest swap never opens an approval request.
+    if ("pendingApprovalRequestId" in settlement)
+      throw new Error("Guest swap returned a pending approval");
     return settleIssue(tx, guest, found, settlement, { type: "system" }, now);
   });
 }
@@ -1267,165 +1308,183 @@ export async function resolveOrderIssue(
   input: StaffResolutionInput,
   now: Date,
 ): Promise<OrderIssue> {
-  return inRecoveryTransaction(context, async (tx) => {
-    const tenantId = context.tenant.tenantId;
-    const snapshot = await accessSnapshotInTransaction(
-      tx,
-      context,
-      actorUserId,
-      now,
-    );
-    const found = await loadIssue(tx, context, issueId, true);
-    if (!found) throw issueNotFound();
-    if (!snapshot.allows(HANDLE, { type: "outlet", id: found.issue.outletId }))
-      throw deniedOutlet();
-    const { issue } = found;
-
-    if (issue.status !== "open") {
-      const same =
-        issue.status === "resolved" &&
-        issue.resolution === input.resolution &&
-        (input.resolution !== "swap" ||
-          issue.replacementItemId === input.replacementItemId) &&
-        (input.resolution !== "voucher" ||
-          issue.voucherId === input.voucherId) &&
-        (input.resolution !== "manual_refund" ||
-          issue.approvalRequestId === input.approvalRequestId);
-      if (same) return toIssue(issue);
-      throw new CoreError(
-        "CONFLICT",
-        "Laporan ini sudah diselesaikan dengan pilihan lain.",
-      );
-    }
-
-    let settlement: Settlement;
-    if (input.resolution === "swap") {
-      settlement = await swapSettlement(
+  const outcome = await inRecoveryTransaction<OrderIssue | SwapPendingApproval>(
+    context,
+    async (tx) => {
+      const tenantId = context.tenant.tenantId;
+      const snapshot = await accessSnapshotInTransaction(
         tx,
         context,
-        found,
-        input.replacementItemId ?? "",
-        {
-          type: "staff",
-          userId: actorUserId,
-          approvalRequestId: input.approvalRequestId,
-        },
+        actorUserId,
         now,
       );
-    } else if (input.resolution === "voucher") {
-      assertRecoverable(found);
-      const [apology] = await tx
-        .select({
-          id: apologyVouchers.id,
-          outletId: apologyVouchers.outletId,
-          orderIssueId: apologyVouchers.orderIssueId,
-          status: vouchers.status,
-          validUntil: vouchers.validUntil,
-        })
-        .from(apologyVouchers)
-        .innerJoin(
-          vouchers,
-          and(
-            eq(vouchers.tenantId, apologyVouchers.tenantId),
-            eq(vouchers.id, apologyVouchers.voucherId),
-          ),
-        )
-        .where(
-          and(
-            eq(apologyVouchers.tenantId, tenantId),
-            eq(apologyVouchers.id, input.voucherId ?? ""),
-          ),
-        );
-      if (!apology || apology.outletId !== issue.outletId)
-        throw unprocessable("Voucher maaf tidak ditemukan di outlet ini.");
-      if (apology.orderIssueId !== null && apology.orderIssueId !== issue.id)
-        throw new CoreError("CONFLICT", "Voucher maaf ini milik laporan lain.");
+      const found = await loadIssue(tx, context, issueId, true);
+      if (!found) throw issueNotFound();
       if (
-        apology.status !== "issued" ||
-        apology.validUntil === null ||
-        apology.validUntil.getTime() <= now.getTime()
+        !snapshot.allows(HANDLE, { type: "outlet", id: found.issue.outletId })
       )
-        throw unprocessable(
-          "Voucher maaf ini sudah dipakai, dibatalkan, atau kedaluwarsa.",
-        );
-      const [taken] = await tx
-        .select({ id: orderIssues.id })
-        .from(orderIssues)
-        .where(
-          and(
-            eq(orderIssues.tenantId, tenantId),
-            eq(orderIssues.voucherId, apology.id),
-          ),
-        )
-        .limit(1);
-      if (taken)
+        throw deniedOutlet();
+      const { issue } = found;
+
+      if (issue.status !== "open") {
+        const same =
+          issue.status === "resolved" &&
+          issue.resolution === input.resolution &&
+          (input.resolution !== "swap" ||
+            issue.replacementItemId === input.replacementItemId) &&
+          (input.resolution !== "voucher" ||
+            issue.voucherId === input.voucherId) &&
+          (input.resolution !== "manual_refund" ||
+            issue.approvalRequestId === input.approvalRequestId);
+        if (same) return toIssue(issue);
         throw new CoreError(
           "CONFLICT",
-          "Voucher maaf ini sudah dipakai laporan lain.",
+          "Laporan ini sudah diselesaikan dengan pilihan lain.",
         );
-      settlement = {
-        resolution: "voucher",
-        replacementItemId: null,
-        voucherId: apology.id,
-        priceDifferenceIdr: null,
-        approvedBy: null,
-        approvalRequestId: null,
-        reasonNote: null,
-      };
-    } else {
-      const reason = (input.reason ?? "").trim();
-      if (input.approvalRequestId === undefined || reason.length < 10)
-        throw unprocessable(
-          "ORD-09: refund manual butuh approval dan alasan tertulis minimal 10 karakter.",
+      }
+
+      let settlement: Settlement;
+      if (input.resolution === "swap") {
+        const swapped = await swapSettlement(
+          tx,
+          context,
+          found,
+          input.replacementItemId ?? "",
+          {
+            type: "staff",
+            userId: actorUserId,
+            approvalRequestId: input.approvalRequestId,
+          },
+          now,
         );
-      const approval = await refundApproval(
+        // The request stays stored: commit, then answer 409 below.
+        if ("pendingApprovalRequestId" in swapped) return swapped;
+        settlement = swapped;
+      } else if (input.resolution === "voucher") {
+        assertRecoverable(found);
+        const [apology] = await tx
+          .select({
+            id: apologyVouchers.id,
+            outletId: apologyVouchers.outletId,
+            orderIssueId: apologyVouchers.orderIssueId,
+            status: vouchers.status,
+            validUntil: vouchers.validUntil,
+          })
+          .from(apologyVouchers)
+          .innerJoin(
+            vouchers,
+            and(
+              eq(vouchers.tenantId, apologyVouchers.tenantId),
+              eq(vouchers.id, apologyVouchers.voucherId),
+            ),
+          )
+          .where(
+            and(
+              eq(apologyVouchers.tenantId, tenantId),
+              eq(apologyVouchers.id, input.voucherId ?? ""),
+            ),
+          );
+        if (!apology || apology.outletId !== issue.outletId)
+          throw unprocessable("Voucher maaf tidak ditemukan di outlet ini.");
+        if (apology.orderIssueId !== null && apology.orderIssueId !== issue.id)
+          throw new CoreError(
+            "CONFLICT",
+            "Voucher maaf ini milik laporan lain.",
+          );
+        if (
+          apology.status !== "issued" ||
+          apology.validUntil === null ||
+          apology.validUntil.getTime() <= now.getTime()
+        )
+          throw unprocessable(
+            "Voucher maaf ini sudah dipakai, dibatalkan, atau kedaluwarsa.",
+          );
+        const [taken] = await tx
+          .select({ id: orderIssues.id })
+          .from(orderIssues)
+          .where(
+            and(
+              eq(orderIssues.tenantId, tenantId),
+              eq(orderIssues.voucherId, apology.id),
+            ),
+          )
+          .limit(1);
+        if (taken)
+          throw new CoreError(
+            "CONFLICT",
+            "Voucher maaf ini sudah dipakai laporan lain.",
+          );
+        settlement = {
+          resolution: "voucher",
+          replacementItemId: null,
+          voucherId: apology.id,
+          priceDifferenceIdr: null,
+          approvedBy: null,
+          approvalRequestId: null,
+          reasonNote: null,
+        };
+      } else {
+        const reason = (input.reason ?? "").trim();
+        if (input.approvalRequestId === undefined || reason.length < 10)
+          throw unprocessable(
+            "ORD-09: refund manual butuh approval dan alasan tertulis minimal 10 karakter.",
+          );
+        const approval = await refundApproval(
+          tx,
+          context,
+          found,
+          actorUserId,
+          input.approvalRequestId,
+        );
+        settlement = {
+          resolution: "manual_refund",
+          replacementItemId: null,
+          voucherId: null,
+          priceDifferenceIdr: null,
+          approvedBy: approval.approvedBy,
+          approvalRequestId: input.approvalRequestId,
+          reasonNote: reason,
+        };
+      }
+
+      const actor = { type: "user", id: actorUserId } as const;
+      const settled = await settleIssue(
         tx,
         context,
         found,
-        actorUserId,
-        input.approvalRequestId,
+        settlement,
+        actor,
+        now,
       );
-      settlement = {
-        resolution: "manual_refund",
-        replacementItemId: null,
-        voucherId: null,
-        priceDifferenceIdr: null,
-        approvedBy: approval.approvedBy,
-        approvalRequestId: input.approvalRequestId,
-        reasonNote: reason,
-      };
-    }
-
-    const actor = { type: "user", id: actorUserId } as const;
-    const settled = await settleIssue(
-      tx,
-      context,
-      found,
-      settlement,
-      actor,
-      now,
-    );
-    if (settlement.resolution === "manual_refund")
-      await appendRecoveryEvent(
-        tx,
-        context,
-        "order_issue.manual_refund_approved",
-        {
-          aggregateId: issue.id,
-          outletId: issue.outletId,
-          payload: {
-            orderId: issue.orderId,
-            orderItemId: issue.orderItemId,
-            orderIssueId: issue.id,
-            amountIdr: found.line.lineTotalIdr,
-            approvalRequestId: settlement.approvalRequestId,
-            approvedBy: settlement.approvedBy,
-            reason: settlement.reasonNote,
+      if (settlement.resolution === "manual_refund")
+        await appendRecoveryEvent(
+          tx,
+          context,
+          "order_issue.manual_refund_approved",
+          {
+            aggregateId: issue.id,
+            outletId: issue.outletId,
+            payload: {
+              orderId: issue.orderId,
+              orderItemId: issue.orderItemId,
+              orderIssueId: issue.id,
+              amountIdr: found.line.lineTotalIdr,
+              approvalRequestId: settlement.approvalRequestId,
+              approvedBy: settlement.approvedBy,
+              reason: settlement.reasonNote,
+            },
+            actor,
+            now,
           },
-          actor,
-          now,
-        },
-      );
-    return settled;
-  });
+        );
+      return settled;
+    },
+  );
+  if ("pendingApprovalRequestId" in outcome)
+    throw new HttpError(
+      409,
+      "APPROVAL_REQUIRED",
+      approvalRequiredMessage(outcome.pendingApprovalRequestId),
+    );
+  return outcome;
 }

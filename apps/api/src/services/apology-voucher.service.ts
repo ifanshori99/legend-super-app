@@ -23,7 +23,7 @@
 //   idempotency table); another request under the same key is a 409.
 
 import { createHash, randomInt } from "node:crypto";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
@@ -88,6 +88,8 @@ export type MintedApologyVoucher = {
 const ISSUE = "order.apology_voucher.issue";
 const RECOVERY = "order.recovery.handle";
 const APPROVAL_MODULE = "apology_voucher";
+/** Dead (rejected, expired, cancelled) requests skipped before refusing a swap credit. */
+const MAX_DEAD_APPROVALS = 10;
 const EVENT_DESTINATION = "cloud-sync";
 const APPROVAL_ONCE_INDEX = "apology_vouchers_approval_once_idx";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -114,6 +116,9 @@ const issueNotFound = () =>
   new CoreError("NOT_FOUND", "Laporan item gagal tidak ditemukan.");
 const unprocessable = (message: string) =>
   new HttpError(422, "VALIDATION_ERROR", message);
+
+export const approvalRequiredMessage = (requestId: string) =>
+  `Voucher maaf bernilai ini butuh persetujuan. Permintaan approval: ${requestId}.`;
 
 type ApologyRow = typeof apologyVouchers.$inferSelect;
 type VoucherRow = typeof vouchers.$inferSelect;
@@ -415,7 +420,7 @@ async function assertApprovedRequest(
   approvalRequestId: string,
   expected: ApprovalCheck,
   orderIssueId: string | null,
-): Promise<void> {
+): Promise<{ decidedBy: string | null }> {
   const [row] = await tx
     .select({ chainId: approvalRequests.chainId })
     .from(approvalRequests)
@@ -463,6 +468,131 @@ async function assertApprovedRequest(
   // The same approval may be replayed for the same order issue only.
   if (used && (orderIssueId === null || used.orderIssueId !== orderIssueId))
     throw approvalAlreadyUsed();
+  return { decidedBy: last.decidedBy };
+}
+
+/** A chain that ended without approval (or lapsed past its deadline) can never be approved. */
+async function approvalChainIsDead(
+  tx: Tx,
+  tenantId: TenantId,
+  chainId: string,
+  now: Date,
+): Promise<boolean> {
+  const [last] = await tx
+    .select({
+      status: approvalRequests.status,
+      deadlineAt: approvalRequests.deadlineAt,
+    })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.chainId, chainId),
+      ),
+    )
+    .orderBy(desc(approvalRequests.level))
+    .limit(1);
+  if (!last) return false;
+  if (last.status === "pending") return last.deadlineAt <= now;
+  return (
+    last.status === "rejected" ||
+    last.status === "expired" ||
+    last.status === "cancelled"
+  );
+}
+
+export type SwapCreditApproval =
+  | { kind: "pending"; requestId: string }
+  | {
+      kind: "clear";
+      approvalRequestId: string | null;
+      /** Last decider of the approved chain; null when no approval was needed. */
+      approvedBy: string | null;
+    };
+
+/**
+ * The `apology_voucher` matrix for the credit of a staff swap to a cheaper
+ * menu (object = the order issue, value = the credit). With an approval id the
+ * request must be approved, matching and unused by another issue. Without one
+ * the request is opened (idempotent): `pending` means the caller must commit
+ * and answer 409 APPROVAL_REQUIRED; `clear` with a null id means the credit is
+ * under the threshold and needs none. A replayed request whose chain is
+ * rejected, expired or cancelled is never returned: a new request is opened
+ * under a key that also hashes the dead request ids.
+ */
+export async function requireSwapCreditApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    orderIssueId: string;
+    outletId: string;
+    valueIdr: number;
+    reason: string;
+    requestedBy: string;
+    approvalRequestId: string | undefined;
+    now: Date;
+  },
+): Promise<SwapCreditApproval> {
+  const tenantId = context.tenant.tenantId;
+  if (input.approvalRequestId !== undefined) {
+    const approved = await assertApprovedRequest(
+      tx,
+      tenantId,
+      input.approvalRequestId,
+      {
+        objectType: "order_issue",
+        objectId: input.orderIssueId,
+        valueIdr: input.valueIdr,
+      },
+      input.orderIssueId,
+    );
+    return {
+      kind: "clear",
+      approvalRequestId: input.approvalRequestId,
+      approvedBy: approved.decidedBy,
+    };
+  }
+  const deadIds: string[] = [];
+  for (let attempt = 0; attempt < MAX_DEAD_APPROVALS; attempt += 1) {
+    const digest = createHash("sha256")
+      .update(
+        JSON.stringify([
+          "order_issue",
+          input.orderIssueId,
+          input.valueIdr,
+          input.reason,
+          ...deadIds,
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 40);
+    const opened = await openApprovalRequest(tx, context, {
+      sourceModule: APPROVAL_MODULE,
+      actionType: "apology_voucher",
+      objectType: "order_issue",
+      objectId: input.orderIssueId,
+      amountIdr: input.valueIdr,
+      outletId: outletIdSchema.parse(input.outletId),
+      requestedBy: userIdSchema.parse(input.requestedBy),
+      source: "user",
+      requestReason: input.reason,
+      payload: {
+        valueIdr: input.valueIdr,
+        orderIssueId: input.orderIssueId,
+        customerProfileId: null,
+      },
+      idempotencyKey: `apology:${digest}`,
+      now: input.now,
+    });
+    if (!opened.required)
+      return { kind: "clear", approvalRequestId: null, approvedBy: null };
+    if (!(await approvalChainIsDead(tx, tenantId, opened.chainId, input.now)))
+      return { kind: "pending", requestId: opened.request.id };
+    deadIds.push(opened.request.id);
+  }
+  throw unprocessable(
+    "Terlalu banyak permintaan approval kredit yang ditolak atau kedaluwarsa untuk laporan ini; hubungi pengelola.",
+  );
 }
 
 type IssueLock = {
@@ -895,7 +1025,7 @@ export async function issueApologyVoucherForStaff(
     throw new HttpError(
       409,
       "APPROVAL_REQUIRED",
-      `Voucher maaf bernilai ini butuh persetujuan. Permintaan approval: ${outcome.requestId}.`,
+      approvalRequiredMessage(outcome.requestId),
     );
   return outcome.voucher;
 }
