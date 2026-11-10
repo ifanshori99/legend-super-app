@@ -43,7 +43,7 @@ menghitung tender tunai pesanan latihan ke kas yang diharapkan, dan founder
 
 1. **Kas shift (legend-0v3b3).** `computeShiftAggregates` mengecualikan tender
    tunai, refund tunai, dan void tunai milik pesanan latihan lewat `LEFT JOIN
-   pos_orders` dan `is_training = false`. Baris tanpa pasangan `pos_orders`
+pos_orders` dan `is_training = false`. Baris tanpa pasangan `pos_orders`
    (QR bayar-dulu) tetap dihitung. Alasan: uang latihan tidak pernah masuk laci,
    jadi shift campuran tidak boleh mencatat selisih palsu. Satu fungsi ini juga
    dipakai hitung buta, penjaga kas, dan tutup paksa, jadi semuanya ikut benar.
@@ -169,10 +169,10 @@ tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
    - `last_test_error_code` varchar(40) NULL: **kode** dari katalog tetap
      (butir 9), bukan teks galat provider. Pesan untuk UI diambil dari katalog;
    - `created_at`, `updated_at` (`$onUpdate`).
-   CHECK `ai_provider_configs_key_check`: `connection_type <> 'api_key' OR
-   (api_key_encrypted IS NOT NULL AND api_key_key_version IS NOT NULL AND
-   api_key_last4 IS NOT NULL)`. CHECK `ai_provider_configs_test_check`:
-   `last_test_status IS NULL OR last_tested_at IS NOT NULL`.
+     CHECK `ai_provider_configs_key_check`: `connection_type <> 'api_key' OR
+(api_key_encrypted IS NOT NULL AND api_key_key_version IS NOT NULL AND
+api_key_last4 IS NOT NULL)`. CHECK `ai_provider_configs_test_check`:
+     `last_test_status IS NULL OR last_tested_at IS NOT NULL`.
 2. **RLS** di `apps/api/src/db/schema/ai-provider.custom.sql`:
    `SELECT app.enforce_tenant_rls('public.ai_provider_configs'::regclass);`.
    Baris tingkat tenant, tanpa `outlet_id`, jadi tanpa outlet RLS. Tanpa
@@ -202,17 +202,17 @@ tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
    - `AI_CONNECTION_TYPES = ["api_key","chatgpt_oauth"]`,
      `aiConnectionTypeSchema`, `AiConnectionType`;
    - `AI_PROVIDER_TEST_ERROR_CODES = ["URL_BLOCKED","REDIRECT_REFUSED",
-     "TIMEOUT","AUTH_FAILED","NOT_FOUND","REQUEST_REJECTED","RATE_LIMITED",
-     "PROVIDER_ERROR","NETWORK_ERROR","BAD_RESPONSE","KEY_UNREADABLE"]`,
+"TIMEOUT","AUTH_FAILED","NOT_FOUND","REQUEST_REJECTED","RATE_LIMITED",
+"PROVIDER_ERROR","NETWORK_ERROR","BAD_RESPONSE","KEY_UNREADABLE"]`,
      `aiProviderTestErrorCodeSchema`, plus `aiProviderTestErrorMessages`
      (teks Indonesia tetap, aman ditampilkan);
    - `aiProviderConfigSchema` (strict): `connectionType`, `baseUrl`,
      `defaultModel`, `hasKey: boolean`, `keyLast4: string(4) | null`,
      `keySetAt: isoDateTime | null`, `lastTest: { status: "ok"|"failed",
-     testedAt, errorCode: code | null } | null`, `updatedAt`. **Tidak ada
+testedAt, errorCode: code | null } | null`, `updatedAt`. **Tidak ada
      field kunci** di skema baca mana pun;
    - `aiProviderViewSchema` = `{ config: aiProviderConfigSchema | null,
-     fallbackAvailable: boolean }` (`fallbackAvailable` = provider env ada);
+fallbackAvailable: boolean }` (`fallbackAvailable` = provider env ada);
    - `upsertAiProviderConfigInputSchema` (strict): `connectionType`,
      `baseUrl` (trim, 1..500), `defaultModel` (trim, 1..200,
      `/^[\w.:/@+-]+$/`), `apiKey?` (trim, 16..500, `/^\S+$/`). Tanpa
@@ -225,15 +225,15 @@ tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
      `dataResponseSchema(...)`; DELETE mengembalikan `{ data: view }` dengan
      `config: null`. Nama sengaja tidak `getAiProvider` (bentrok dengan
      factory). Fixture mock ditambahkan bila tes cakupan kontrak memintanya.
-   Kode galat baru di `packages/shared/src/ai/errors.ts` (status + pesan
-   default): `AI_PROVIDER_URL_BLOCKED` 422, `AI_PROVIDER_KEY_REQUIRED` 422,
-   `AI_PROVIDER_CONNECTION_UNSUPPORTED` 422, `AI_PROVIDER_NOT_CONFIGURED` 404,
-   `AI_PROVIDER_TEST_TOO_SOON` 429.
+     Kode galat baru di `packages/shared/src/ai/errors.ts` (status + pesan
+     default): `AI_PROVIDER_URL_BLOCKED` 422, `AI_PROVIDER_KEY_REQUIRED` 422,
+     `AI_PROVIDER_CONNECTION_UNSUPPORTED` 422, `AI_PROVIDER_NOT_CONFIGURED` 404,
+     `AI_PROVIDER_TEST_TOO_SOON` 429.
 7. **Rute** di file baru `apps/api/src/routes/ai-provider.routes.ts`, dipasang
    di `routes/index.ts` dengan `apiRouter.use("/ai", aiProviderRouter)` di
    sebelah `aiGovernanceRouter`. Gate per rute (bukan `router.use`), urutan:
    `requireAuth, requireTrustedOrigin, requireTenantContext,
-   requireBackOfficeSurface(), requireTenantPermission("ai.governance.manage")`,
+requireBackOfficeSurface(), requireTenantPermission("ai.governance.manage")`,
    lalu `jsonBody` untuk PUT dan POST. `requireBackOfficeSurface` memaksa MFA
    untuk peran `mfaRequired`. `requireTenantPermission` sudah memasang
    `Cache-Control: private, no-store`. Service dipanggil dengan
@@ -241,7 +241,7 @@ tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
 8. **Aturan simpan (PUT)** di `apps/api/src/services/ai-provider-config.service.ts`:
    - `chatgpt_oauth` ditolak `AI_PROVIDER_CONNECTION_UNSUPPORTED`;
    - `baseUrl` dinormalisasi (buang `/` akhir), lalu `checkAiUrl(url, true,
-     resolve)`. **URL milik tenant selalu strict, juga di dev dan test**:
+resolve)`. **URL milik tenant selalu strict, juga di dev dan test**:
      tenant tidak pernah dipercaya menunjuk jaringan internal. Model lokal
      (Ollama) di dev tetap lewat env. Alasan ditolak dikirim sebagai pesan
      `AI_PROVIDER_URL_BLOCKED` (teks url-guard, tanpa kunci);
@@ -258,10 +258,10 @@ tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
 9. **Uji koneksi (POST /test)** menguji config **tersimpan**. Body kosong, jadi
    kunci tidak lewat jalur ini lagi. File baru `apps/api/src/lib/ai/provider-probe.ts`,
    `probeOpenAiCompatible({ baseUrl, apiKey, model, timeoutMs, fetch?,
-   resolve? })`, mengembalikan `{ status, errorCode }`, tidak pernah throw:
+resolve? })`, mengembalikan `{ status, errorCode }`, tidak pernah throw:
    - `checkAiUrl(url, true, resolve)` dulu; ditolak = `URL_BLOCKED`, tanpa fetch;
    - satu `POST <baseUrl>/chat/completions` berisi `{ model, messages: [{ role:
-     "user", content: "Reply with OK." }], stream: false }` tanpa parameter
+"user", content: "Reply with OK." }], stream: false }` tanpa parameter
      token (cocok untuk semua server, tanpa adaptasi), `redirect: "manual"`,
      `AbortSignal.timeout(min(env.AI_TIMEOUT_MS, 15000))`, `maxAttempts` 1;
    - klasifikasi: 2xx dengan `choices` = ok; 2xx lain atau JSON rusak =
@@ -275,35 +275,35 @@ tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
      sebelumnya ditolak `AI_PROVIDER_TEST_TOO_SOON`;
    - uji tidak lewat `aiComplete`, tidak dihitung anggaran (beberapa token, di
      kunci tenant sendiri).
-   DNS rebinding: `checkAiUrl` me-resolve lalu fetch me-resolve ulang. Bila
-   `undici` sudah ada di dependensi `apps/api`, probe dan provider tenant
-   memakai `dispatcher: new Agent({ connect: { lookup } })` dengan lookup yang
-   menolak alamat `isBlockedIp`. Bila belum ada, celah ini tetap tercatat
-   (sama dengan `AI_BASE_URL` env) dan masuk daftar second-opinion.
+     DNS rebinding: `checkAiUrl` me-resolve lalu fetch me-resolve ulang. Bila
+     `undici` sudah ada di dependensi `apps/api`, probe dan provider tenant
+     memakai `dispatcher: new Agent({ connect: { lookup } })` dengan lookup yang
+     menolak alamat `isBlockedIp`. Bila belum ada, celah ini tetap tercatat
+     (sama dengan `AI_BASE_URL` env) dan masuk daftar second-opinion.
 10. **Resolusi provider.** `provider-factory.ts` mendapat:
     - `buildTenantAiProvider({ baseUrl, apiKey, model })` →
       `createOpenAiCompatibleProvider` dengan `timeoutMs: env.AI_TIMEOUT_MS`
       dan `checkUrl: (url) => checkAiUrl(url, true)`. Redirect sudah ditolak
       di provider (`redirect: "error"`);
     - `isAiProviderOverridden(): boolean` untuk `setAiProviderForTests`.
-    Service mengekspor `resolveTenantAiProvider(context): Promise<{ provider,
-    model, source: "tenant" | "platform" } | null>`, urutannya:
-    1) override test aktif → `getAiProvider()`;
-    2) ada baris tenant → `connection_type` `api_key` dan blob terbuka →
+      Service mengekspor `resolveTenantAiProvider(context): Promise<{ provider,
+model, source: "tenant" | "platform" } | null>`, urutannya:
+    1. override test aktif → `getAiProvider()`;
+    2. ada baris tenant → `connection_type` `api_key` dan blob terbuka →
        provider tenant; `chatgpt_oauth` atau blob gagal dibuka → `null`
        (`AI_PROVIDER_UNAVAILABLE`). **Tidak jatuh ke kunci platform** bila
        tenant punya baris: salah konfigurasi tidak tersembunyi, dan platform
        tidak diam-diam membayar;
-    3) tanpa baris → `getAiProvider()` (env, cadangan) dengan `env.AI_MODEL`.
-    Status uji terakhir tidak memblokir pemakaian. Tanpa cache: satu query
-    berindeks plus satu dekripsi per panggilan, kecil dibanding panggilan
-    model, dan DELETE langsung berlaku di semua proses.
-    `aiComplete` memanggil `resolveTenantAiProvider(gatewayContext(access))`
-    sebagai ganti `getAiProvider()`. `recordUsage` menerima nama provider dan
-    model hasil resolusi (bukan `getAiProvider()?.name` dan `env.AI_MODEL`).
-    `ai-governance.service.ts` `providerAvailable` memakai resolusi yang sama.
-    `settingsVersionOf` digabung dengan `updated_at` config provider, supaya
-    cache jawaban lama gugur saat provider diganti.
+    3. tanpa baris → `getAiProvider()` (env, cadangan) dengan `env.AI_MODEL`.
+       Status uji terakhir tidak memblokir pemakaian. Tanpa cache: satu query
+       berindeks plus satu dekripsi per panggilan, kecil dibanding panggilan
+       model, dan DELETE langsung berlaku di semua proses.
+       `aiComplete` memanggil `resolveTenantAiProvider(gatewayContext(access))`
+       sebagai ganti `getAiProvider()`. `recordUsage` menerima nama provider dan
+       model hasil resolusi (bukan `getAiProvider()?.name` dan `env.AI_MODEL`).
+       `ai-governance.service.ts` `providerAvailable` memakai resolusi yang sama.
+       `settingsVersionOf` digabung dengan `updated_at` config provider, supaya
+       cache jawaban lama gugur saat provider diganti.
 11. **Anggaran tidak berubah.** `aiPreflight` tetap berjalan sebelum resolusi
     provider. `monthlyBudgetIdr` default `idr(0)` tetap memblokir
     (`AI_BUDGET_EXCEEDED`), apa pun sumber providernya. Pemakaian dengan kunci
@@ -353,10 +353,10 @@ tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
     `apps/api/src/routes/index.ts`. UI Kelola menyusul di slice terpisah
     mengikuti `ui-standard.md`.
 15. **Pertanyaan founder** (default dipakai sampai dijawab):
-    1) Pemakaian dengan kunci AI milik tenant tetap dihitung ke anggaran AI
+    1. Pemakaian dengan kunci AI milik tenant tetap dihitung ke anggaran AI
        bulanan tenant (dengan harga platform)? Default: ya, supaya anggaran 0
        tetap menghentikan semua AI.
-    2) Super Admin di Panel Platform boleh melihat atau mengatur provider AI
+    2. Super Admin di Panel Platform boleh melihat atau mengatur provider AI
        tenant? Default: tidak; hanya admin tenant dan owner.
 
 Celah yang diketahui: DNS rebinding (butir 9) bila `undici` tidak tersedia;
@@ -1076,7 +1076,7 @@ Decided 10 Nov 2026 (architect, tier K money). Design brief: `docs/briefs/298a-s
    a stock document, so debiting `inventory` would break the GL to stock
    ledger tie). New event `petty_purchase.recorded` (id-only payload), new role
    `petty_purchase_expense`, default account `5104 Pembelian Langsung (Kas
-   Kecil)` (tenant can remap). Credit goes to `petty_cash` (1102), not
+Kecil)` (tenant can remap). Credit goes to `petty_cash` (1102), not
    `cash_on_hand` (1101 is the POS drawer, settled at shift close). This
    overrides the card text "kredit kas". No PPN input on petty purchases.
 4. **New journal source types** `purchase_return` and `petty_purchase`
@@ -1101,3 +1101,11 @@ Decided 10 Nov 2026 (architect, tier K). Design: `docs/briefs/301b-sub-return-pe
 4. **Petty purchase** is rejected, not approved, when over the limit or when no policy exists (409 `PETTY_PURCHASE_LIMIT_EXCEEDED`). Photo is mandatory, stored in `core_storage_objects` with source kind `petty_purchase`, linked once. Business date is the outlet business date; no back-dating. Policy writes: `PUT /api/inventory/petty-purchase-policy`, permission `purchasing.petty_policy.manage` (owner, finance).
 5. **Permissions:** `purchasing.return.create` (owner, purchasing, warehouse), `purchasing.petty.record` (owner, general_manager, outlet_manager, kitchen_lead, purchasing), `purchasing.petty_policy.manage` (owner, finance).
 6. **Known gaps (beads):** moving average not re-averaged on return; petty limit is per transaction only (daily cap bead); invoiced debit notes need AP open items (`legend-179bw`); batch returns from another location than received give a generic 422.
+
+## WS-07: bagi hasil pemegang saham, aturan founder (legend-8s992)
+
+Decided by the founder 10 Nov 2026 (answers Q82-Q84). Applies to `profit-share.ts`, `profit-share-distribution.service.ts` and the share-version routes.
+
+1. **Rounding remainder (Q82).** The rupiah left over after the integer split goes to the largest fractions (largest remainder method, `allocateIdr`). A tie on the fraction goes to the lowest shareholder id, whatever order the rows come in, so the result is deterministic. The lines always add up to the profit that is split, exactly. Already in the code (`buildCalculationLines`); proven by tests in `tests/ws07-profit-share.test.mjs` (hand-computed remainders, an exact tie with all input orders, a 400-round property loop).
+2. **Negative correction (Q83).** A claw-back never takes a shareholder below zero: each line is capped at what that shareholder still holds of the corrected run's paid gross (the run's line plus every live adjustment of it). The part that does not fit is recorded open as `distribution_runs.unabsorbed_idr` (migration 0221) and is never charged to another shareholder. A shareholder with nothing left gets no line (an adjustment run may carry less than 10000 bp; a regular run still carries all of it). `distributable_idr` and the totals are the amount actually absorbed, so the automatic reversal journal mirrors exactly that. When nothing at all can be absorbed the request is 422 `ADJUSTMENT_EXCEEDS_PAID`. Before this rule the whole request was refused when any one shareholder would go below zero; a replay of the same idempotency key compares the requested amount (`distributable_idr - unabsorbed_idr`).
+3. **Changing share percentages (Q84).** New permission `profit_share.share_allocation.change`, separate from `profit_share.distribution.approve` (which still approves share versions and distribution runs) and from `profit_share.registry.manage` (entities and shareholders). It guards create, update and submit of a share allocation version. Granted to owner and finance; not to cashier, shareholder or any other role.

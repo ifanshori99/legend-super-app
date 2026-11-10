@@ -4,7 +4,9 @@
 // objects the FE client uses. The tenant comes from the server-minted context
 // (TEN-02), never from params or bodies.
 //
-// - everything but the decision: `profit_share.registry.manage`;
+// - entities, shareholders and reads: `profit_share.registry.manage`;
+// - create / edit / submit a share allocation version (the percentages):
+//   `profit_share.share_allocation.change`;
 // - approve/reject a version: `profit_share.distribution.approve` (four-eyes is
 //   enforced by the contract state machine).
 //
@@ -68,6 +70,9 @@ export function createProfitShareRegistryRouter() {
   );
 
   const manage = requireTenantPermission("profit_share.registry.manage");
+  const changeShares = requireTenantPermission(
+    "profit_share.share_allocation.change",
+  );
   const approve = requireTenantPermission("profit_share.distribution.approve");
 
   // ---- profit entities ----------------------------------------------------
@@ -192,7 +197,7 @@ export function createProfitShareRegistryRouter() {
 
   router.post(
     route(createShareAllocationVersion.path),
-    manage,
+    changeShares,
     jsonBody,
     async (req, res) => {
       const { profitEntityId } = createShareAllocationVersion.params.parse(
@@ -211,7 +216,7 @@ export function createProfitShareRegistryRouter() {
 
   router.patch(
     route(updateShareAllocationVersion.path),
-    manage,
+    changeShares,
     jsonBody,
     async (req, res) => {
       const { profitEntityId, version } =
@@ -230,7 +235,7 @@ export function createProfitShareRegistryRouter() {
 
   router.post(
     route(submitShareAllocationVersion.path),
-    manage,
+    changeShares,
     jsonBody,
     async (req, res) => {
       const { profitEntityId, version } =

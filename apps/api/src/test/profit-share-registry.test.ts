@@ -138,6 +138,7 @@ async function grant(tenantId: string, userId: string, permissions: string[]) {
 
 const MANAGE = "profit_share.registry.manage";
 const APPROVE = "profit_share.distribution.approve";
+const SHARE_CHANGE = "profit_share.share_allocation.change";
 
 async function person(
   app: express.Express,
@@ -323,22 +324,41 @@ let approver: Person;
 /** Holds both permissions: the four-eyes test needs a requester who could approve. */
 let lead: Person;
 let nobody: Person;
+/** registry.manage only: may not change share percentages. */
+let managerOnly: Person;
+/** share_allocation.change only: may not manage entities or shareholders. */
+let changerOnly: Person;
 let managerB: Person;
 let approverB: Person;
 
 beforeAll(async () => {
   requireDisposableDatabase();
   tenantB = await createSecondTenant(owner, "ps-registry");
-  [manager, manager2, approver, lead, nobody, managerB, approverB] =
-    await Promise.all([
-      person(appA, tenantA, "PS Manager", [MANAGE]),
-      person(appA, tenantA, "PS Manager 2", [MANAGE]),
-      person(appA, tenantA, "PS Approver", [APPROVE]),
-      person(appA, tenantA, "PS Lead", [MANAGE, APPROVE]),
-      person(appA, tenantA, "PS Nobody", []),
-      person(appB, tenantB.tenantId, "PS Manager B", [MANAGE, APPROVE]),
-      person(appB, tenantB.tenantId, "PS Approver B", [APPROVE]),
-    ]);
+  [
+    manager,
+    manager2,
+    approver,
+    lead,
+    nobody,
+    managerOnly,
+    changerOnly,
+    managerB,
+    approverB,
+  ] = await Promise.all([
+    person(appA, tenantA, "PS Manager", [MANAGE, SHARE_CHANGE]),
+    person(appA, tenantA, "PS Manager 2", [MANAGE, SHARE_CHANGE]),
+    person(appA, tenantA, "PS Approver", [APPROVE]),
+    person(appA, tenantA, "PS Lead", [MANAGE, SHARE_CHANGE, APPROVE]),
+    person(appA, tenantA, "PS Nobody", []),
+    person(appA, tenantA, "PS Manager Only", [MANAGE]),
+    person(appA, tenantA, "PS Changer Only", [SHARE_CHANGE]),
+    person(appB, tenantB.tenantId, "PS Manager B", [
+      MANAGE,
+      SHARE_CHANGE,
+      APPROVE,
+    ]),
+    person(appB, tenantB.tenantId, "PS Approver B", [APPROVE]),
+  ]);
 }, 60_000);
 
 afterAll(async () => {
@@ -1483,5 +1503,77 @@ describe("SH-03 database guards (raw SQL as the app role)", () => {
       [tenantA, entity.id, holder],
     );
     expect(left.rows[0]).toEqual({ e: 1, s: 1 });
+  });
+});
+
+describe("share percentage changes need profit_share.share_allocation.change", () => {
+  it("registry.manage alone is refused on create, update and submit", async () => {
+    const entity = await newEntity(manager);
+    const allocations = await split6040(manager);
+
+    const created = await createVersion(managerOnly, entity.id, allocations);
+    expect(created.status, JSON.stringify(created.body)).toBe(403);
+
+    const draft = await draftVersion(manager, entity.id, allocations);
+    const path = versionPath(entity.id, draft.version);
+    const edited = await patch(managerOnly, path, {
+      effectiveFrom: "2025-02-01",
+    });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(403);
+    const submitted = await submit(managerOnly, entity.id, draft.version);
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(403);
+
+    // Nothing moved, and the manager may still read the draft.
+    const read = await get(managerOnly, path);
+    expect(read.status).toBe(200);
+    expect(read.body.data.status).toBe("draft");
+    expect(read.body.data.effectiveFrom).toBe("2025-01-01");
+  });
+
+  it("the new permission alone passes create, update and submit", async () => {
+    const entity = await newEntity(manager);
+    const allocations = await split6040(manager);
+    const draft = await draftVersion(changerOnly, entity.id, allocations);
+    const edited = await patch(
+      changerOnly,
+      versionPath(entity.id, draft.version),
+      { effectiveFrom: "2025-02-01" },
+    );
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    const submitted = await submit(changerOnly, entity.id, draft.version);
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+  });
+
+  it("the new permission does not open entities, shareholders or reads", async () => {
+    const entity = await newEntity(manager);
+    expect(
+      (
+        await post(changerOnly, createShareholder.path, {
+          name: "Tanpa izin kelola",
+          type: "person",
+          userId: null,
+          npwp: null,
+          payoutAccount: null,
+        })
+      ).status,
+    ).toBe(403);
+    expect((await get(changerOnly, versionsPath(entity.id))).status).toBe(403);
+    expect((await get(changerOnly, listProfitEntities.path)).status).toBe(403);
+  });
+
+  it("deciding stays on distribution.approve, not on the new permission", async () => {
+    const entity = await newEntity(manager);
+    const draft = await draftVersion(
+      manager,
+      entity.id,
+      await split6040(manager),
+    );
+    expect((await submit(manager, entity.id, draft.version)).status).toBe(200);
+    expect((await approve(changerOnly, entity.id, draft.version)).status).toBe(
+      403,
+    );
+    expect((await approve(approver, entity.id, draft.version)).status).toBe(
+      200,
+    );
   });
 });

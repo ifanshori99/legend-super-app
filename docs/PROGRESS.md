@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-8s992 aturan founder bagi hasil + sisa test (engineer Sonnet, cabang `ws/8s992-profit-rules` dari `ws/profit-share` 9e3d3928, 2026-11-10)
+
+- Q82 pembulatan: sudah ada (`allocateIdr`, seri ke shareholderId terendah); dibuktikan 3 test baru di `tests/ws07-profit-share.test.mjs` (sisa hitung tangan, seri dengan semua urutan input, loop properti 400 putaran). Mutasi balik urutan seri: 3 test merah.
+- Q83 koreksi minus: baru. Baris klaw-bek dibatasi per pemegang saham (gross dan pajak yang masih dipegang), sisa dicatat terbuka di `distribution_runs.unabsorbed_idr` (migrasi 0221, when 1794300000000), tidak dibebankan ke pemegang lain; pemegang yang sudah nol tidak dapat baris (run koreksi boleh <10000 bp, trigger totals diubah); jurnal balik mengikuti jumlah yang terserap; tidak ada yang terserap: 422 `ADJUSTMENT_EXCEEDS_PAID`. Dahulu seluruh permintaan ditolak.
+- Q84 izin baru `profit_share.share_allocation.change` (finance + owner turunan; bukan kasir) untuk buat/ubah/ajukan versi porsi; putusan tetap `profit_share.distribution.approve`. Backfill role tenant lama di 0221.
+- Review architect K, 4 temuan nyata dibetulkan: backfill izin untuk tenant lama; koreksi hanya boleh menargetkan run reguler (kode + trigger); top-up yang belum approved bukan ruang klaw-bek; pajak tidak menyisakan -1 saat klaw-bek habis. Belum: UI web masih memakai `accounting.journal.post` untuk tombol ubah porsi (kartu terpisah, butuh review UI founder); role kustom pemegang `registry.manage` tidak otomatis dapat izin baru.
+- Test balapan: FK menolak sesudah file tersimpan, blob dihapus (test 14 `shareholder-documents.test.ts`).
+- Bukti: 10 file API 162 test + 4 file root 127 test hijau sesudah prettier; tsc shared/api/web, eslint bersih; `db:generate` kosong.
+
 ## legend-2ljb WS-07 bagi hasil backend (engineer Opus, cabang `ws/profit-share` dari milestone/m1 7d388b02, brief 318, 2026-11-10)
 
 - Migrasi `0219_profit_share` (idx 219, when 1794298000000; 0209-0218 dipesan cabang lain, merge train merangkai ulang idx/prevId). Tabel baru `profit_entities`, `shareholders` (NPWP + rekening disegel `sealSecret`, hanya 4 digit akhir), `share_allocation_versions`, `share_allocations`, `distribution_runs`, `distribution_lines`, `profit_share_commands` (kunci idempotensi perintah). Semua tenant RLS, FK komposit (tenant_id, id), tanpa DELETE untuk app role. Sumber SQL kustom: `apps/api/src/db/schema/accounting-profit-share.custom.sql`.

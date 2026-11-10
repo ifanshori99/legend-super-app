@@ -514,6 +514,7 @@ const templates: readonly RoleTemplate[] = [
       "inventory.cost.view",
       "recipe.cost.view",
       "profit_share.registry.manage",
+      "profit_share.share_allocation.change",
       "payroll.view",
       "payroll.approve",
       "payroll.lock",

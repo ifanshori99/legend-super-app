@@ -38,6 +38,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { idr } from "@starter/shared/core";
 import { businessDate, idrColumn } from "../columns.ts";
 import { fiscalPeriods, journalEntries } from "./accounting.ts";
 import { legalEntities, outlets, tenants } from "./platform-org.ts";
@@ -317,6 +318,8 @@ export const distributionRuns = pgTable(
     totalGrossIdr: idrColumn("total_gross_idr").notNull(),
     totalTaxWithheldIdr: idrColumn("total_tax_withheld_idr").notNull(),
     totalNetIdr: idrColumn("total_net_idr").notNull(),
+    /** Claw-back rest no shareholder's paid gross could absorb (Q83). */
+    unabsorbedIdr: idrColumn("unabsorbed_idr").notNull().default(idr(0)),
     /** Policy rate frozen with the run, so a later policy edit changes nothing. */
     taxWithholdingBp: integer("tax_withholding_bp").notNull(),
     requestedBy: text("requested_by").notNull(),
@@ -413,6 +416,10 @@ export const distributionRuns = pgTable(
     check(
       "distribution_runs_totals_check",
       sql`${table.distributableIdr} = ${table.totalGrossIdr} AND ${table.totalGrossIdr} - ${table.totalTaxWithheldIdr} = ${table.totalNetIdr}`,
+    ),
+    check(
+      "distribution_runs_unabsorbed_check",
+      sql`${table.unabsorbedIdr} >= 0 AND (${table.unabsorbedIdr} = 0 OR (${table.type} = 'adjustment' AND ${table.distributableIdr} < 0))`,
     ),
     check(
       "distribution_runs_fiscal_period_version_check",

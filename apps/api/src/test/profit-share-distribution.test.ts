@@ -1988,45 +1988,149 @@ describe("review (e)-(g) database guards", () => {
   });
 });
 
-describe("review (h) a claw-back cannot exceed what was paid", () => {
-  it("(h) refuses a negative adjustment above the cumulative paid gross with ADJUSTMENT_EXCEEDS_PAID", async () => {
+describe("review (h) founder rule Q83: a claw-back never takes a shareholder below zero", () => {
+  const fixedKey = key("adj-fixed");
+  const adjustWithKey = (runId: string, periodId: string, amount: number) =>
+    post(manager, `/distributions/${runId}/adjustment`, {
+      reason: "Koreksi angka",
+      idempotencyKey: fixedKey,
+      fiscalPeriodId: periodId,
+      adjustmentIdr: amount,
+    });
+
+  it("(h1) a claw-back above the paid total is clamped per shareholder, the rest is recorded open and the reversal journal mirrors only what was absorbed", async () => {
     const world = await makeWorld(roundingPolicy, roundingShares());
     const { run: original, period } = await paidRun(world);
-    // Paid gross is 900,001 in total: far above any line's share of -2,000,000.
-    const tooMuch = await adjust(manager, original.id, {
+    const paidGross = original.lines.reduce(
+      (sum, line) => sum + line.grossIdr,
+      0,
+    );
+    expect(paidGross).toBe(900_001);
+    const response = await adjust(manager, original.id, {
       fiscalPeriodId: period.id,
-      adjustmentIdr: -2_000_000,
+      adjustmentIdr: -1_500_000,
     });
-    expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(422);
-    expect(errorCode(tooMuch)).toBe("ADJUSTMENT_EXCEEDS_PAID");
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const adjustment = parseRun(response.body);
+    // Each line is clamped to that shareholder's own paid gross; nothing is
+    // moved to another shareholder.
+    for (const line of original.lines) {
+      const clamped = adjustment.lines.find(
+        (item) => item.shareholderId === line.shareholderId,
+      );
+      expect(clamped?.grossIdr).toBe(-line.grossIdr);
+    }
+    expect(adjustment.distributableIdr).toBe(-900_001);
+    expect(adjustment.totalGrossIdr).toBe(-900_001);
+    expect(adjustment.unabsorbedIdr).toBe(599_999);
 
-    // An approved earlier claw-back counts: -500,000 fits, a second -500,000 does not.
-    const first = await adjust(manager, original.id, {
-      fiscalPeriodId: period.id,
-      adjustmentIdr: -500_000,
+    await submitRun(manager, adjustment.id);
+    const approved = parseRun((await decideRun(approver, adjustment.id)).body);
+    const paid = await payAll(manager, approved);
+    expect(paid.status).toBe("paid");
+    expect(paid.unabsorbedIdr).toBe(599_999);
+    expect(paid.reversalJournalEntryId).not.toBeNull();
+    const journal = await journalOf(paid.reversalJournalEntryId as string);
+    expect(journal.totalDebit).toBe(journal.totalCredit);
+    expect(journal.byAccount(world.accounts.retainedEarnings)).toEqual({
+      debit: 0,
+      credit: 900_001,
     });
+
+    // Nothing is left to claw back: the next request is refused.
+    const more = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -1000,
+    });
+    expect(more.status, JSON.stringify(more.body)).toBe(422);
+    expect(errorCode(more)).toBe("ADJUSTMENT_EXCEEDS_PAID");
+  });
+
+  it("(h2) a shareholder with nothing left gets no line and the remainder is not charged to the others", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: original, period } = await paidRun(world);
+    const gross = new Map(
+      original.lines.map((line) => [line.shareholderId, line.grossIdr]),
+    );
+    // -300,000 and -600,000 split exactly 33.33/33.33/33.34 %: they leave
+    // 0, 0 and 1 rupiah of paid gross.
+    for (const amount of [-300_000, -600_000]) {
+      const step = await adjust(manager, original.id, {
+        fiscalPeriodId: period.id,
+        adjustmentIdr: amount,
+      });
+      expect(step.status, JSON.stringify(step.body)).toBe(201);
+      expect(parseRun(step.body).unabsorbedIdr).toBe(0);
+    }
+    const third = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -300_000,
+    });
+    expect(third.status, JSON.stringify(third.body)).toBe(201);
+    const adjustment = parseRun(third.body);
+    const holderWithRupiahLeft = [...gross.entries()].find(
+      ([, value]) => value === 300_061,
+    )![0];
+    expect(adjustment.lines).toHaveLength(1);
+    expect(adjustment.lines[0]).toMatchObject({
+      shareholderId: holderWithRupiahLeft,
+      grossIdr: -1,
+    });
+    expect(adjustment.distributableIdr).toBe(-1);
+    expect(adjustment.unabsorbedIdr).toBe(299_999);
+  });
+
+  it("(h4) an adjustment can only correct a regular run, so a top-up's room is never counted twice", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: original, period } = await paidRun(world);
+    const topUp = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 500_000,
+    });
+    expect(topUp.status, JSON.stringify(topUp.body)).toBe(201);
+    const topUpRun = parseRun(topUp.body);
+    await submitRun(manager, topUpRun.id);
+    expect((await decideRun(approver, topUpRun.id)).status).toBe(200);
+    // Correcting the approved top-up itself is refused: its room is counted
+    // against the regular run only.
+    const onTopUp = await adjust(manager, topUpRun.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -100_000,
+    });
+    expect(onTopUp.status, JSON.stringify(onTopUp.body)).toBe(422);
+    expect(errorCode(onTopUp)).toBe("ADJUSTMENT_TARGET_INVALID");
+  });
+
+  it("(h5) a top-up that is not approved yet is no room for a claw-back", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: original, period } = await paidRun(world);
+    const draftTopUp = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 500_000,
+    });
+    expect(draftTopUp.status, JSON.stringify(draftTopUp.body)).toBe(201);
+    const clawBack = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -1_500_000,
+    });
+    expect(clawBack.status, JSON.stringify(clawBack.body)).toBe(201);
+    const run = parseRun(clawBack.body);
+    // Room is the 900,001 paid, not 1,400,001.
+    expect(run.distributableIdr).toBe(-900_001);
+    expect(run.unabsorbedIdr).toBe(599_999);
+  });
+
+  it("(h3) the same clamped request replays to the same run", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: original, period } = await paidRun(world);
+    const first = await adjustWithKey(original.id, period.id, -1_500_000);
+    const again = await adjustWithKey(original.id, period.id, -1_500_000);
     expect(first.status, JSON.stringify(first.body)).toBe(201);
-    const firstRun = parseRun(first.body);
-    expect((await submitRun(manager, firstRun.id)).status).toBe(200);
-    expect((await decideRun(approver, firstRun.id)).status).toBe(200);
-    const second = await adjust(manager, original.id, {
-      fiscalPeriodId: period.id,
-      adjustmentIdr: -500_000,
-    });
-    expect(second.status, JSON.stringify(second.body)).toBe(422);
-    expect(errorCode(second)).toBe("ADJUSTMENT_EXCEEDS_PAID");
-
-    const list = listDistributionRuns.response.parse(
-      (
-        await get(
-          manager,
-          `/profit-entities/${world.profitEntityId}/distributions`,
-        )
-      ).body,
-    );
-    expect(list.data.filter((row) => row.type === "adjustment")).toHaveLength(
-      1,
-    );
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    expect(parseRun(again.body).id).toBe(parseRun(first.body).id);
+    // A different amount under the same key is still a reuse error.
+    const other = await adjustWithKey(original.id, period.id, -1_400_000);
+    expect(errorCode(other)).toBe("IDEMPOTENCY_KEY_REUSED");
   });
 });
 

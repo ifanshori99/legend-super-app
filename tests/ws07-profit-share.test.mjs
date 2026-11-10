@@ -15,6 +15,7 @@ import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
 import "../apps/web/src/features/ws07-profit-share/mock.ts";
 import * as share from "../apps/web/src/features/ws07-profit-share/lib.ts";
 import * as accounting from "../packages/shared/src/accounting/index.ts";
+import { idr } from "../packages/shared/src/core/money.ts";
 import { cafeLegendAccountingFixtures as fixtures } from "../packages/shared/src/accounting/fixtures.ts";
 
 const profitEntities = fixtures.profitShare.entities;
@@ -542,5 +543,232 @@ describe("mock handlers", () => {
       }),
     );
     assert.equal(backwards.code, "SHARE_VERSION_EFFECTIVE_DATE_ORDER");
+  });
+});
+
+describe("distribution rounding: remainder to the largest fraction", () => {
+  const shId = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+  const policy = {
+    basis: "closed_period_net_profit",
+    reserveBp: 0,
+    frequency: legalEntity.policy.frequency,
+    taxWithholdingBp: 0,
+  };
+  const distribute = (totalIdr, allocations) =>
+    accounting.calculateDistribution({
+      profitEntityId: septemberRun.profitEntityId,
+      fiscalPeriodId: septemberRun.fiscalPeriodId,
+      period: septemberRun.period,
+      periodStatus: "closed",
+      periodNetProfitIdr: idr(totalIdr),
+      policy,
+      allocations,
+    });
+  const grossById = (calc) =>
+    Object.fromEntries(calc.lines.map((l) => [l.shareholderId, l.grossIdr]));
+
+  test("remainder rupiah go to the largest fractional parts, sum is exact", () => {
+    // Hand computed, total 1.000: 3333 bp = 333,3 and 3334 bp = 333,4. The
+    // floors give 999, so one rupiah is left and the .4 fraction (the highest
+    // id, so not an id-order artefact) takes it.
+    const one = distribute(1_000, [
+      { shareholderId: shId(1), shareBp: 3_333 },
+      { shareholderId: shId(2), shareBp: 3_333 },
+      { shareholderId: shId(3), shareBp: 3_334 },
+    ]);
+    assert.deepEqual(grossById(one), {
+      [shId(1)]: 333,
+      [shId(2)]: 333,
+      [shId(3)]: 334,
+    });
+    assert.equal(one.distributableIdr, 1_000);
+    assert.equal(one.totalGrossIdr, 1_000);
+
+    // Total 1.001: 333,6333 / 333,6333 / 333,7334, floors 999, two rupiah left:
+    // the .7334 fraction first, then the tie of .6333 goes to the lowest id.
+    const two = distribute(1_001, [
+      { shareholderId: shId(1), shareBp: 3_333 },
+      { shareholderId: shId(2), shareBp: 3_333 },
+      { shareholderId: shId(3), shareBp: 3_334 },
+    ]);
+    assert.deepEqual(grossById(two), {
+      [shId(1)]: 334,
+      [shId(2)]: 333,
+      [shId(3)]: 334,
+    });
+    assert.equal(two.totalGrossIdr, 1_001);
+
+    // Total 7 with 5.000 / 3.000 / 2.000 bp: 3,5 / 2,1 / 1,4. One rupiah left
+    // and the .5 fraction wins over .4 and .1.
+    const three = distribute(7, [
+      { shareholderId: shId(1), shareBp: 2_000 },
+      { shareholderId: shId(2), shareBp: 3_000 },
+      { shareholderId: shId(3), shareBp: 5_000 },
+    ]);
+    assert.deepEqual(grossById(three), {
+      [shId(1)]: 1,
+      [shId(2)]: 2,
+      [shId(3)]: 4,
+    });
+  });
+
+  test("an exact tie in fractions goes to the lowest shareholder id, whatever the input order", () => {
+    // Four equal shares of 1.002: 250,5 each, floors 1.000, two rupiah left
+    // and every fraction ties, so the two lowest ids take them.
+    const allocations = [1, 2, 3, 4].map((n) => ({
+      shareholderId: shId(n),
+      shareBp: 2_500,
+    }));
+    const expected = {
+      [shId(1)]: 251,
+      [shId(2)]: 251,
+      [shId(3)]: 250,
+      [shId(4)]: 250,
+    };
+    const permutations = (items) =>
+      items.length <= 1
+        ? [items]
+        : items.flatMap((item, i) =>
+            permutations([...items.slice(0, i), ...items.slice(i + 1)]).map(
+              (rest) => [item, ...rest],
+            ),
+          );
+    const reference = distribute(1_002, allocations);
+    assert.deepEqual(grossById(reference), expected);
+    const all = permutations(allocations);
+    assert.equal(all.length, 24);
+    for (const order of all) {
+      assert.deepEqual(distribute(1_002, order), reference);
+    }
+  });
+
+  test("property: lines always sum to the total and the largest fractions took the remainder", () => {
+    // Deterministic LCG so a failure is reproducible.
+    let state = 20_261_110;
+    const next = (max) => {
+      state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return state % max;
+    };
+    for (let round = 0; round < 400; round += 1) {
+      const holders = 2 + next(6);
+      // Cut 10.000 bp into `holders` positive parts.
+      const cuts = new Set();
+      while (cuts.size < holders - 1) cuts.add(1 + next(9_999));
+      const edges = [0, ...[...cuts].sort((a, b) => a - b), 10_000];
+      const allocations = edges
+        .slice(1)
+        .map((edge, i) => ({
+          shareholderId: shId(i + 1),
+          shareBp: edge - edges[i],
+        }))
+        // Input order must not matter.
+        .sort(() => next(3) - 1);
+      // At least 10.000 so every positive share gets a whole rupiah.
+      const total = 10_000 + next(900_000_000);
+      const calc = distribute(total, allocations);
+      assert.equal(calc.totalGrossIdr, total);
+      assert.equal(
+        calc.lines.reduce((sum, line) => sum + line.grossIdr, 0),
+        total,
+      );
+      const fractions = calc.lines.map((line) => {
+        const exact = total * line.shareBp;
+        const floor = Math.floor(exact / 10_000);
+        assert.ok(
+          line.grossIdr === floor || line.grossIdr === floor + 1,
+          "a line is the floor or the floor plus one rupiah",
+        );
+        return {
+          id: line.shareholderId,
+          rest: exact % 10_000,
+          extra: line.grossIdr - floor,
+        };
+      });
+      // Anyone who got the extra rupiah beats everyone who did not: larger
+      // fraction, or an equal fraction and a lower id.
+      for (const got of fractions.filter((f) => f.extra === 1))
+        for (const missed of fractions.filter((f) => f.extra === 0))
+          assert.ok(
+            got.rest > missed.rest ||
+              (got.rest === missed.rest && got.id < missed.id),
+            `round ${round}: ${got.id} should not lose the extra rupiah to ${missed.id}`,
+          );
+    }
+  });
+});
+
+describe("founder rule Q83: claw-back is capped per shareholder and leaves no tax residue", () => {
+  const base = {
+    profitEntityId:
+      fixtures.profitEntityId ?? "00000000-0000-4000-8000-000000000001",
+    fiscalPeriodId: "00000000-0000-4000-8000-000000000002",
+    period: "2026-10",
+    periodStatus: "closed",
+    adjustsRunId: "00000000-0000-4000-8000-000000000003",
+    reason: "Koreksi",
+    taxWithholdingBp: 1000,
+  };
+  const holder = "00000000-0000-4000-8000-0000000000a1";
+  const allocations = [{ shareholderId: holder, shareBp: 10_000 }];
+
+  test("giving everything back in steps gives back all the tax too", () => {
+    // Held: gross 15, tax 2 (10% of 15 half-up). Three claw-backs of 5, each
+    // rounding to tax 1, must end at gross 0 and tax 0, not tax -1.
+    let held = { grossIdr: 15, taxWithheldIdr: 2 };
+    let totalTax = held.taxWithheldIdr;
+    let totalGross = held.grossIdr;
+    for (let step = 0; step < 3; step += 1) {
+      const calc = accounting.calculateAdjustmentDistribution({
+        ...base,
+        adjustmentIdr: idr(-5),
+        allocations,
+        held: new Map([[holder, held]]),
+      });
+      const line = calc.lines[0];
+      totalGross += line.grossIdr;
+      totalTax += line.taxWithheldIdr;
+      held = { grossIdr: totalGross, taxWithheldIdr: totalTax };
+    }
+    assert.equal(totalGross, 0);
+    assert.equal(totalTax, 0);
+  });
+
+  test("a request above what is held is capped and the rest is unabsorbed, none moved to others", () => {
+    const other = "00000000-0000-4000-8000-0000000000a2";
+    const calc = accounting.calculateAdjustmentDistribution({
+      ...base,
+      adjustmentIdr: idr(-1000),
+      allocations: [
+        { shareholderId: holder, shareBp: 5000 },
+        { shareholderId: other, shareBp: 5000 },
+      ],
+      held: new Map([
+        [holder, { grossIdr: 100, taxWithheldIdr: 10 }],
+        [other, { grossIdr: 900, taxWithheldIdr: 90 }],
+      ]),
+    });
+    // Each side's part is -500: the first holds 100, the second 900.
+    assert.deepEqual(
+      calc.lines.map((line) => [line.shareholderId, line.grossIdr]),
+      [
+        [holder, -100],
+        [other, -500],
+      ],
+    );
+    assert.equal(calc.adjustmentIdr, -600);
+    assert.equal(calc.unabsorbedIdr, 400);
+  });
+
+  test("nothing held means ADJUSTMENT_EXCEEDS_PAID", () => {
+    assert.throws(
+      () =>
+        accounting.calculateAdjustmentDistribution({
+          ...base,
+          adjustmentIdr: idr(-100),
+          allocations,
+          held: new Map([[holder, { grossIdr: 0, taxWithheldIdr: 0 }]]),
+        }),
+      (error) => error.code === "ADJUSTMENT_EXCEEDS_PAID",
+    );
   });
 });

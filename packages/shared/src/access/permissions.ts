@@ -173,6 +173,7 @@ const entries = [
   // Profit share & dividends (§3 Kelompok E, F34)
   ["profit_share.own.view", ["self"]],
   ["profit_share.registry.manage", ["finance"]],
+  ["profit_share.share_allocation.change", ["finance"]],
   ["profit_share.distribution.approve", ["finance", "approve"]],
 
   // Loyalty, CRM, promo, reservations, delivery, website (§3 Kelompok C, F17–F21)
