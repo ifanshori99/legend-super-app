@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 // Member PWA bottom nav (bead legend-oibk): DESIGN.md v2 §5 caps the
 // CustomerShell bar at five slots, so the member area's extra destinations
@@ -10,9 +11,7 @@ import { expect, test, type Page } from "@playwright/test";
  * a click in that window is dropped. Retry until the dialog shows up.
  */
 async function openMore(page: Page) {
-  await page.waitForFunction(() =>
-    Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
-  );
+  await waitForHydration(page);
   const more = page.getByRole("button", { name: "Lainnya" });
   await expect(async () => {
     await more.click();

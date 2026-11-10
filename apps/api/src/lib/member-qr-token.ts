@@ -1,0 +1,87 @@
+// Short-lived member QR token (legend-111j, design §M4). The member PWA shows
+// it as a QR code; the cashier scans it to attach the member to an unpaid
+// order. It is a bearer for 120 seconds, so it carries the tenant and the
+// profile and nothing else:
+//   token = base64url(payload).base64url(HMAC-SHA256(key, base64url(payload)))
+//   payload = { t: tenantId, p: customerProfileId, e: expiry (Unix seconds),
+//               n: random nonce }
+// The key is derived from BETTER_AUTH_SECRET with a fixed label (like device
+// tokens), so no extra deployment variable is needed. Every failure verifies
+// to the same null so the answer is not an oracle.
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
+import { env } from "../config/env";
+
+export const MEMBER_QR_TOKEN_TTL_SECONDS = 120;
+
+const KEY_LABEL = "legend-member-qr-v1";
+
+const payloadSchema = z.strictObject({
+  t: z.string().min(1).max(64),
+  p: z.string().min(1).max(64),
+  e: z.number().int().positive(),
+  n: z.string().min(1).max(64),
+});
+
+let cachedKey: Buffer | undefined;
+
+function key(): Buffer {
+  cachedKey ??= createHmac("sha256", env.BETTER_AUTH_SECRET)
+    .update(KEY_LABEL)
+    .digest();
+  return cachedKey;
+}
+
+function sign(body: string): string {
+  return createHmac("sha256", key()).update(body).digest("base64url");
+}
+
+export function issueMemberQrToken(
+  input: { tenantId: string; customerProfileId: string },
+  now: Date,
+): { token: string; expiresAt: string } {
+  const expiresAtSeconds =
+    Math.floor(now.getTime() / 1000) + MEMBER_QR_TOKEN_TTL_SECONDS;
+  const body = Buffer.from(
+    JSON.stringify({
+      t: input.tenantId,
+      p: input.customerProfileId,
+      e: expiresAtSeconds,
+      n: randomBytes(12).toString("base64url"),
+    }),
+    "utf8",
+  ).toString("base64url");
+  return {
+    token: `${body}.${sign(body)}`,
+    expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
+  };
+}
+
+/**
+ * The profile named by a valid, unexpired token of this tenant, else null
+ * (malformed, bad signature, other tenant, expired).
+ */
+export function verifyMemberQrToken(
+  token: string,
+  tenantId: string,
+  now: Date,
+): { customerProfileId: string } | null {
+  const parts = token.split(".");
+  const [body, signature] = parts;
+  if (parts.length !== 2 || !body || !signature) return null;
+  const expected = Buffer.from(sign(body), "utf8");
+  const actual = Buffer.from(signature, "utf8");
+  if (expected.length !== actual.length) return null;
+  if (!timingSafeEqual(expected, actual)) return null;
+  let payload: z.infer<typeof payloadSchema>;
+  try {
+    payload = payloadSchema.parse(
+      JSON.parse(Buffer.from(body, "base64url").toString("utf8")),
+    );
+  } catch {
+    return null;
+  }
+  if (payload.t !== tenantId) return null;
+  if (payload.e * 1000 <= now.getTime()) return null;
+  return { customerProfileId: payload.p };
+}

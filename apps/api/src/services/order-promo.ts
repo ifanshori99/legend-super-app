@@ -168,6 +168,9 @@ function engineInput(input: OrderPromoInput, lines: PromoLine[]) {
     customer: input.customer,
     voucherCode: input.voucherCode,
     at: input.at,
+    ...(input.minSpendSubtotalIdr === undefined
+      ? {}
+      : { minSpendSubtotalIdr: input.minSpendSubtotalIdr }),
   };
 }
 

@@ -12,8 +12,13 @@
 // same numbers (bead legend-g9r3).
 
 import { FacilityError } from "./errors.ts";
-import type { WifiPolicy, WifiSession, WifiSpeedTier } from "./schemas.ts";
-import { minutesOfDay, wallClockAt } from "./slots.ts";
+import type {
+  WifiPolicy,
+  WifiSession,
+  WifiSpeedTier,
+  WifiSpendMode,
+} from "./schemas.ts";
+import { minutesOfDay, wallClockAt, windowEndMinutes } from "./slots.ts";
 
 /** PRD §3 F39 / D38 defaults, used by the Legend fixtures and the BE seed. */
 export const WIFI_POLICY_DEFAULTS = Object.freeze({
@@ -38,7 +43,7 @@ export function isPeakAt(
     (window) =>
       window.daysOfWeek.includes(clock.dayOfWeek) &&
       clock.minutesOfDay >= minutesOfDay(window.startsAt) &&
-      clock.minutesOfDay < minutesOfDay(window.endsAt),
+      clock.minutesOfDay < windowEndMinutes(window.endsAt),
   );
 }
 
@@ -80,6 +85,31 @@ export function wifiExtraMinutesForSpend(
 }
 
 /**
+ * Extra minutes for a day's paid spend under the policy's `spendMode`
+ * (legend-kmd3). `per_day_multiple` (the default when the policy has no mode)
+ * floors the whole day's net spend; `per_order` floors each order's net spend
+ * (paid minus its refunds) on its own, so Rp20.000 + Rp20.000 earns nothing.
+ * Net amounts below zero count as zero.
+ */
+export function wifiExtraMinutesForOrders(
+  policy: Pick<WifiPolicy, "spendPerExtraHourIdr" | "extraMinutes"> & {
+    spendMode?: WifiSpendMode | undefined;
+  },
+  orderNetSpendIdr: readonly number[],
+): number {
+  const nets = orderNetSpendIdr.map((net) => Math.max(0, net));
+  if (policy.spendMode === "per_order")
+    return nets.reduce(
+      (sum, net) => sum + wifiExtraMinutesForSpend(policy, net),
+      0,
+    );
+  return wifiExtraMinutesForSpend(
+    policy,
+    nets.reduce((sum, net) => sum + net, 0),
+  );
+}
+
+/**
  * A daily allowance never exceeds one day. Without the cap a large bill
  * (Rp1.000.000 = 33 extra hours at the default rule) would produce a quota the
  * session row and the `wifi_quota.updated` payload (0..1440) reject.
@@ -102,6 +132,24 @@ export function wifiQuotaMinutes(
     WIFI_MAX_DAILY_MINUTES,
     wifiFreeMinutes(policy, input) +
       wifiExtraMinutesForSpend(policy, input.sameDaySpendIdr),
+  );
+}
+
+/** Like `wifiQuotaMinutes`, from per-order net spend and the policy's mode. */
+export function wifiQuotaMinutesForOrders(
+  policy: Parameters<typeof wifiQuotaMinutes>[0] & {
+    spendMode?: WifiSpendMode | undefined;
+  },
+  input: {
+    isPeak: boolean;
+    tierKey?: string;
+    orderNetSpendIdr: readonly number[];
+  },
+): number {
+  return Math.min(
+    WIFI_MAX_DAILY_MINUTES,
+    wifiFreeMinutes(policy, input) +
+      wifiExtraMinutesForOrders(policy, input.orderNetSpendIdr),
   );
 }
 

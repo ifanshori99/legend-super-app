@@ -12,6 +12,7 @@ import {
   draftHasPersonalData,
   emptyDraft,
   queryToDraft,
+  aggregateOnlyCaller,
   reconcileDraft,
   todayIn,
   usableMetrics,
@@ -45,6 +46,8 @@ export function ReportBuilderPage({
   const timeZone = outlets[0]?.timeZone;
   const today = useMemo(() => todayIn(timeZone), [timeZone]);
   const metrics = useMemo(() => usableMetrics(permissions), [permissions]);
+  // SH-01: aggregate-only callers never get a person split or filter.
+  const hidePersonal = aggregateOnlyCaller(permissions);
   const outletNames = useMemo(
     () => new Map(outlets.map((outlet) => [outlet.id, outlet.name] as const)),
     [outlets],
@@ -60,7 +63,7 @@ export function ReportBuilderPage({
     const metricCodes = draft.metricCodes.includes(code)
       ? draft.metricCodes.filter((item) => item !== code)
       : [...draft.metricCodes, code];
-    const next = reconcileDraft({ ...draft, metricCodes });
+    const next = reconcileDraft({ ...draft, metricCodes }, hidePersonal);
     setDraft(next.draft);
     setDropped(next.dropped);
   };
@@ -88,9 +91,12 @@ export function ReportBuilderPage({
         : { status: "ready", result: preview.data };
 
   const open = (report: SavedReport) => {
+    // SH-01: a saved report may hold a person split an aggregate-only caller
+    // is not offered; drop it like any split the metrics no longer offer.
+    const next = reconcileDraft(queryToDraft(report.query), hidePersonal);
     setLoaded(report);
-    setDraft(queryToDraft(report.query));
-    setDropped([]);
+    setDraft(next.draft);
+    setDropped(next.dropped);
   };
 
   return (
@@ -130,7 +136,12 @@ export function ReportBuilderPage({
             title={t("reportBuilder.steps.dimension.title")}
             hint={t("reportBuilder.steps.dimension.hint")}
           >
-            <DimensionStep draft={draft} metrics={metrics} onChange={change} />
+            <DimensionStep
+              draft={draft}
+              metrics={metrics}
+              hidePersonal={hidePersonal}
+              onChange={change}
+            />
             {dropped.length > 0 && (
               <p
                 role="status"
@@ -149,7 +160,11 @@ export function ReportBuilderPage({
             title={t("reportBuilder.steps.filter.title")}
             hint={t("reportBuilder.steps.filter.hint")}
           >
-            <FilterStep draft={draft} onChange={change} />
+            <FilterStep
+              draft={draft}
+              hidePersonal={hidePersonal}
+              onChange={change}
+            />
             <div className="grid gap-2 border-t pt-4">
               <h3 className="type-eyebrow text-muted-foreground">
                 {t("reportBuilder.outlet.title")}

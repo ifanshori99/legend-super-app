@@ -1,0 +1,585 @@
+○ legend-cpq2 · WS-03 BE: ratify and implement QR guest read models (getQrMenu, suggestions, guest order issues, guest payment, point claim, order ETAs)   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  FE built against packages/shared/src/qr-order/guest.ts + mock               
+  (docs/plan/contracts.md section 'QR order guest read models'). Backend must 
+  serve them, with the same schemas, behind Bearer session token (ORD-        
+  03/04/08). PRD §3 F10.                                                      
+
+
+
+LABELS: be, contract, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-2m4: WS-03 FE: QR menu SSR: scan entry /t/[token], guest count / join session, browse/search/filter, item detail with variants/modifiers, AI-01 suggestions shelf P1
+
+
+#####
+○ legend-7csf · TEN-03: mint the QR/public guest context outlet-scoped so outlet RLS also backstops guest reads   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-02 · Updated: 2026-11-02
+
+DESCRIPTION
+
+  Found in the legend-tjey cross-model review. routes/qr.routes.ts (POST      
+  /api/qr/sessions, GET /api/qr/menu/:qrToken) and routes/public-             
+  site.routes.ts mint {kind:'tenant'} ('*'), so the new outlet_isolation      
+  policy does not narrow guest reads; only the service layer filters by the   
+  token's outlet. routes/payment.routes.ts already mints outlet-scoped from   
+  the resolved link token — the same two-step (resolve token -> outlet-scoped 
+  context) can apply to the QR token and, where the host pins a brand, to the 
+  public site read. No client-supplied outlet exists on those routes, so this 
+  is defence-in-depth, not an open hole. PRD v1.7 §2 'Cakupan outlet          
+  ditegakkan', TEN-03, contracts.md 'TEN-03 outlet isolation layers'.         
+
+
+
+NOTES
+
+  Also tighten the outlet-rls catalog guard: require p.polqual IS NOT NULL AND
+  p.polwithcheck IS NOT NULL (a hand-written FOR SELECT policy would pass     
+  today).                                                                     
+
+
+
+LABELS: be, contract, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-tjey: TEN-03: outlet isolation is app-layer only — decide/implement outlet-level RLS + fix doc over-claims P1
+
+
+#####
+○ legend-6ipw · Mount the public rate limiter on guest table-session reads when WS-03 guest auth lands   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-02 · Updated: 2026-11-02
+
+DESCRIPTION
+
+  The guest side of /api/table-sessions/:sessionId (cart, quote, bill, service
+  requests) is still unimplemented; when the opaque guest session credential  
+  lands it becomes an unauthenticated public surface polled every 2-5 s per   
+  guest (features/ws03-qr-order/queries.ts SESSION_POLL_MS/STATUS_POLL_MS).   
+  Add its prefix to PUBLIC_RATE_LIMIT_PATHS in apps/api/src/middleware/public-
+  rate-limit.ts and size the per-IP limit for venue NAT (all guests share one 
+  address). Follow-up from legend-wd4b.                                       
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-wd4b: Rate limit public unauthenticated API reads (QR scan, QR menu, public site menu, sitemap) P1
+
+
+#####
+○ legend-fpi9 · WS-03 BE: rate-limit public QR scan and guest session endpoints   [P3 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  POST /api/qr/sessions is public (no staff session) and now opens/joins table
+  sessions; the guest session endpoints that follow use the bearer session    
+  token. Add per-IP/per-device rate limiting and abuse guards (device-hash    
+  cardinality per session, scan flood) without blocking a whole venue on a    
+  shared NAT. Follow the existing starter middleware style; do not invent     
+  limits without an owner decision (PRD §2 security, rate limits table).      
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-irw: WS-03 BE: Zones/tables + signed QR tokens + table session lifecycle (rotate per session, close on paid+clean, open-bill waiter confirm, guards) P2
+
+
+#####
+○ legend-otyi · WS-03/WS-08 BE: remaining guest menu reads must apply the Q23 photo filter (POS picker, /api/public/site home)   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-02 · Updated: 2026-11-02
+
+DESCRIPTION
+
+  legend-qf0i implemented the Q23 guest visibility rule                       
+  (menuItemVisibleToGuests in packages/shared/src/menu/errors.ts +            
+  guestMenuItemCondition in apps/api/src/services/menu-internals.ts) and      
+  applied it in GET /api/qr/menu/:qrToken and GET /api/public/site/menu. Two  
+  guest reads named by the brief have no backend yet and must use the same    
+  helper when they land: (1) the POS item picker read (no POS catalogue       
+  service on main yet; WS-03 BE channel price lists legend-h2a owns the       
+  price/availability side); (2) GET /api/public/site home featuredMenuItems   
+  (publicSiteSchema.featuredMenuItems), whose read is still FE-mock-only. Each
+  needs a test named Q23 + legend-qf0i. PRD v1.7 §10 QR Order, §8 Konten Menu;
+  owner Q17/Q23.                                                              
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-qf0i: WS-03 BE: guest/public menu reads must hide active items without a photo (Q23) P2
+
+
+#####
+○ legend-lf8g · Guest menu tax note: derive from the WS-05 resolver, not a parallel rule filter   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-02 · Updated: 2026-11-02
+
+DESCRIPTION
+
+  guest-menu.service.ts readGuestTaxes lists every published F&B dine-in rule 
+  (merged by code, tenant-wide then outlet) and ignores regionCode and        
+  item/category specificity. WS-05 resolveTaxRule                             
+  (packages/shared/src/tax/calculate.ts) picks ONE most-specific rule per line
+  and fails on ambiguity. A tenant-wide PB1 plus an outlet rule with a        
+  different code would print two taxes, and the QR menu note shows taxes[0]   
+  (possibly the overridden tenant-wide one). Derive the note by resolving a   
+  representative food_beverage dine-in line through the WS-05 resolver (export
+  the row mapper + region logic from tax.service). Display only today; no     
+  money is computed from it. PRD §3 F10, WS-05 §3.14.                         
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-qf0i: WS-03 BE: guest/public menu reads must hide active items without a photo (Q23) P2
+
+
+#####
+○ legend-2nb9 · WS-03 BE: seed item_availability rows for outlets created after menu items exist   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  legend-lmk creates item_availability rows for every outlet of the brand when
+  an item is created. An outlet added later (org panel) has no rows, so its 86
+  screen does not list existing items. Add a hook on outlet creation (or a    
+  lazy upsert in the availability list) and a test; PRD §8 Ketersediaan, §6 C 
+  item_availability.                                                          
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-lmk: WS-03 BE: Menu schema + CRUD API (categories, items, variants, modifiers, combos, routing, content) with edge replication flags P2
+
+
+#####
+○ legend-1am2 · WS-03 BE: schedule the 86 deadline sweep per tenant in the worker   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-02 · Updated: 2026-11-02
+
+DESCRIPTION
+
+  legend-h2a leaves restoreExpiredSoldOut callable per tenant (menu-          
+  availability.ts) but only the availability board runs it; a worker schedule 
+  should sweep every active tenant so a passed soldOutUntil restores +        
+  broadcasts even with no staff board open. PRD §8 Ketersediaan.              
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-h2a: WS-03 BE: Channel price lists + availability schedules + daily limits + 86 broadcast (QR, POS, ojol) P2
+
+
+#####
+○ legend-ogzf · Menu image upload: body exceeds API 100 kB JSON cap   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  uploadMenuImage (packages/shared/src/menu/endpoints.ts) accepts up to ~800  
+  KB base64 JSON, but apps/api/src/middleware/body.ts caps every body at 100  
+  kB. When implementing POST /api/menu/media: mount a path-scoped larger limit
+  or switch to presigned PUT to Biznet Gio S3 (owner note 7). PRD §8 Konten   
+  Menu.                                                                       
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-xx9: WS-03 FE: Menu back office CRUD: categories, items, variants, modifier groups, content/labels/allergens, display order P1
+
+
+#####
+○ legend-dcz0 · WS-03 CT: decide outlet/brand scope for menu image upload (contract body has no outlet)   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  menuImageUploadInputSchema carries no outletId, but WS-00 storage rows are  
+  (tenant, outlet, purpose). legend-lmk stores the object under the first     
+  outlet the caller reaches. Decide whether menu media is brand-level (storage
+  key without outlet) or outlet-level (contract gains outletId), then update  
+  the contract + storage purpose policy; PRD §8 Konten Menu (foto).           
+
+
+
+LABELS: contract, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-lmk: WS-03 BE: Menu schema + CRUD API (categories, items, variants, modifiers, combos, routing, content) with edge replication flags P2
+
+
+#####
+○ legend-n1p1 · WS-03 BE/INT: implement menu back-office endpoints added by legend-xx9   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  packages/shared/src/menu/endpoints.ts (new, 33 endpoints) defines the FE    
+  contract: categories/stations/items/variants/modifier                       
+  groups/modifiers/combos/price lists (+bulk price grid)/availability (+86    
+  status with idempotencyKey)/media upload. Implement route+service+RLS per   
+  TEN-02 (optional brandId/outletId fall back to the trusted context) so      
+  legend-4jm can wire the screens. PRD v1.7 §8 Master Menu & Harga.           
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-xx9: WS-03 FE: Menu back office CRUD: categories, items, variants, modifier groups, content/labels/allergens, display order P1
+
+
+#####
+○ legend-un0j · WS-03 CT: menu item↔modifier-group link schema + fixtures (plus reorder scope)   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  The FE back office needs an item↔modifier-group link (PRD v1.7 §8 'modifier 
+  group per item'). The contract has modifier groups but no link              
+  table/fixture, so features/ws03-menu/mock.ts seeds the link locally. Add the
+  link schema + fixture (itemId, groupId, sortOrder) and confirm              
+  reorderItems/reorderCategories semantics: orderedIds currently renumber only
+  the ids sent (the FE sends one category's items at a time). Also add the    
+  fixture for menu media so admin mediaUrl has data.                          
+
+
+
+LABELS: contract, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-xx9: WS-03 FE: Menu back office CRUD: categories, items, variants, modifier groups, content/labels/allergens, display order P1
+
+
+#####
+○ legend-rml8 · WS-03: guest scanning the QR of a SECONDARY table of a multi-table party must join the party's session   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-03 · Updated: 2026-11-03
+
+DESCRIPTION
+  (none)
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-0twq: WS-08 refactor: reservation seating must reuse table-session.service helpers (no duplicated private logic) P2
+
+
+#####
+○ legend-khiv · Close/void table session cancels its open service requests; zone-waiter assignment admin API   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-03 · Updated: 2026-11-03
+
+DESCRIPTION
+
+  Found in Opus review of legend-7qg (PRD §3 F10, ORD-07): (1) closing/voiding
+  a table session leaves pending/acknowledged service_requests open, so the   
+  next session's call at that table dedupes into the stale one (message now   
+  redacted). Cancel pending ones on close; decide acknowledged. (2)           
+  zone_waiter_assignments has no CRUD route/permission (only seed/SQL) and    
+  user_id has no FK to tenant membership; add manager API with membership     
+  check. (3) Resolve retry by a different staff after another staff resolved  
+  returns 409 (idempotent only for same actor); consider resolved_by column.  
+  (4) /api/table-sessions guest routes are not under the shared per-IP public 
+  limiter (per-session limiter only, after token auth).                       
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-7qg: WS-03 BE: Waiter call / bill request realtime routing to zone waiters (<=3 s) P2
+
+
+#####
+○ legend-xlzl · Zone-waiter assignment management endpoint + overdue sweep scheduler   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-03 · Updated: 2026-11-03
+
+DESCRIPTION
+
+  zone_waiter_assignments has no management API; sweepOverdueServiceRequests  
+  needs a per-tenant scheduler; read notification preferences. ORD-07.        
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-7qg: WS-03 BE: Waiter call / bill request realtime routing to zone waiters (<=3 s) P2
+
+
+#####
+○ legend-6ohy · QR cart realtime: relay legend_qr_cart_wakeup to guest sockets   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-03 · Updated: 2026-11-03
+
+DESCRIPTION
+
+  Cart updates emit pg_notify; guest WebSocket relay needed (legend-4jm).     
+
+
+
+NOTES
+
+  Implemented under legend-x4qy: apps/api/src/services/qr-order-realtime.ts   
+  attachQrOrderRealtime + listenQrCartWakeups (needs lead wiring in           
+  server.ts).                                                                 
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-e2x: WS-03 BE: QR order API: shared cart (realtime), server-side quote, checkout, pay-first gate (fire only after verified payment), open-bill fire P2
+
+
+#####
+○ legend-cqrw · WS-03 BE: open-bill value limit + inactivity and bill-request alerts   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  PRD v1.7 §3 F10 'Kontrol Open Bill' (line 613): a per-session open-bill     
+  value limit, a waiter warning when an open-bill session has no activity for 
+  a configured duration, and an alert when a bill request is not resolved in  
+  time. legend-irw stores sessions/payment_mode but the limiter and alert job 
+  need: per-outlet policy storage (max open-bill value, inactivity minutes,   
+  bill SLO) in tenant settings; a worker scan (pg-boss) over active open_bill 
+  sessions; notification/realtime delivery to zone waiters (legend-7qg); and  
+  the order total that legend-e2x adds. Fail closed when the policy is        
+  missing; audit threshold breaches. PRD runner: after legend-e2x and legend- 
+  7qg.                                                                        
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-irw: WS-03 BE: Zones/tables + signed QR tokens + table session lifecycle (rotate per session, close on paid+clean, open-bill waiter confirm, guards) P2
+
+
+#####
+○ legend-685n · WS-03 BE: floor board + table operations API (poll, status transitions, move/merge/items, ORD-10 close)   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  PRD v1.7 §3 '9. Denah & Meja' (Operasi Meja, Papan Status), '10. QR Order   
+  Pelanggan' (Kontrol Open Bill), ORD-10. Contracts landed in legend-7ko:     
+  packages/shared/src/qr-order/table-operations.ts (updateTableStatus,        
+  moveTableSession, mergeTableSessions, moveSessionItems) and getFloorBoard   
+  from legend-6li. Scope: services + routes under apps/api for GET            
+  /api/outlets/:outletId/floor (tenant/outlet scoped, poll payload), POST     
+  /api/tables/:tableId/status, POST /api/table-sessions/:sessionId/move,      
+  .../merge, .../move-items, plus close/confirm already specified; emit       
+  table.status_changed/table_session.moved/merged/items_moved (add to         
+  events/catalog.ts WS-03 line) and audit entries. Reuse the fixtures in      
+  apps/web/src/features/ws03-floor/mock.ts as behaviour reference.            
+
+
+
+NOTES
+
+  legend-irw (branch ws/legend-irw) now implements GET                        
+  /api/outlets/:outletId/floor, GET /api/floor + floor CRUD, POST             
+  /api/tables/:tableId/status (ORD-10 guard), table-session confirm/close     
+  (ORD-10). Remaining for 685n: move/merge/move-items services+routes;        
+  operation events live in legend-1nmh. Coordinate with coordinator before    
+  starting to avoid duplicate work.                                           
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-7ko: WS-03 FE: Live table status board + table operations (merge/link, move table, move items, split, transfer session) P1
+
+
+#####
+○ legend-1nmh · WS-03 CT: table 'link' (service-only grouping) mode and operation events   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  PRD §3 '9. Denah & Meja' says 'Gabung meja (merge/link)'. legend-7ko        
+  implemented merge to one shared bill only; a link that keeps two separate   
+  bills has no stored meaning yet. Scope: model link groups on the floor      
+  board, decide settlement rules, and register the missing table operation    
+  events on the WS-03 catalog line (table.status_changed, table_session.moved,
+  table_session.merged, items_moved).                                         
+
+
+
+LABELS: contract, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-7ko: WS-03 FE: Live table status board + table operations (merge/link, move table, move items, split, transfer session) P1
+
+
+#####
+○ legend-l8zb · WS-03: menu import/print endpoint contracts in packages/shared + HTML->PDF renderer adapter   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-03 · Updated: 2026-11-03
+
+DESCRIPTION
+
+  dmi implemented /api/menu/import/{validate,preview,commit}, GET             
+  /api/menu/print, POST /api/menu/print/refresh with local Zod schemas; move  
+  to shared menu contract. No HTML->PDF engine in repo: print returns 503     
+  until a MenuPdfRenderer adapter + storage are injected in routes/index.ts   
+  (mounted with {}). Also: wire the menu-print outbox consumer (dedicated     
+  consumer name) + schedule runMenuPrintSweepJob every 30s; delete old PDF    
+  objects (retention). PRD F8.                                                
+
+
+
+LABELS: be, contract, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-dmi: WS-03 BE: Menu CSV/XLSX import + printable menu PDF generation (auto-refresh on price/availability change) P2
+
+
+#####
+○ legend-ra7s · WS-01/WS-03 BE: station-aware RBAC context (stations in the org index)   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  Role templates already allow station scope (Barista/Cook: allowedScopeTypes 
+  [station]) and the access contract authorizes station targets, but          
+  apps/api/src/services/permission-resolver.ts reports stations: [] because   
+  the menu/KDS stations table belongs to WS-03. Until it lands station-scoped 
+  assignments grant nothing (fail closed) and contextFor() cannot mint an     
+  outlet scope for a station-only holder. Add the stations query to           
+  loadTenantAccess, decide the station context shape for KDS routes (outlet   
+  from station, station id passed separately), and add TEN-03 tests. PRD v1.7 
+  §3.7 role table, §6, TEN-03.                                                
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-4f9: WS-01 BE: RBAC engine: role templates seed, custom roles, scoped/time-bound assignments, re-auth, no self-elevation, outlet/station scope enforcement P2
+
+
+#####
+○ legend-49pw · WS-03/WS-05: QR quote must honour inclusive price mode   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-01 · Updated: 2026-11-01
+
+DESCRIPTION
+
+  computeQuote (packages/shared/src/qr-order/pricing.ts) always adds service +
+  tax on top of menu prices. A tenant that opts into inclusive prices         
+  (tax_settings.prices_include_tax = true, optional per PRD 'Opsi             
+  Perhitungan') would be charged twice at QR checkout. Route the QR quote     
+  through the WS-05 tax engine or add an inclusive back-out path, with tests  
+  for both modes. PRD §3.14 Opsi Perhitungan, ORD-03.                         
+
+
+
+LABELS: contract, ws-03, ws-05
+
+DISCOVERED FROM
+  ◊ ✓ legend-u6ia: WS-05 CT fix: tenant default = prices exclusive of tax + service (owner decision); fixtures + docs P1
+
+
+#####
+○ legend-gjf1 · QR order: refund partial payments already settled when an unpaid order is voided   [P2 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-08 · Updated: 2026-11-08
+
+DESCRIPTION
+
+  Review 8 Nov 2026 (round 2). A QR pay-first link with several intents:      
+  intent A settles part of the bill (link.paidIdr < totalIdr, handler returns 
+  not_settled; same on amount_mismatch). Then sweepUnpaidQrOrders / staff void
+  (voidUnpaidQrOrderTx, qr-order.service.ts ~1964-1973) voids the order       
+  without looking at paid intents; payment.paid for A was already consumed, so
+  A's money is never refunded. Fix: on void (or in the voided branch) loop    
+  over the link's paid intents and call requestQrLatePaymentRefund for each   
+  (idempotent per intent). Pre-existing gap, not introduced by ws/pos-payment-
+  fixes.                                                                      
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-b0au: POS: QRIS tender lifecycle - route payment.expired/failed to POS tenders, cancel WS-05 link when a pending QRIS tender is voided P2
+
+
+#####
+○ legend-8pye · QR order: retire qr-order-payment deliverQrOrderPaymentEvent, move realtime message schema to shared   [P3 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-03 · Updated: 2026-11-03
+
+DESCRIPTION
+
+  legend-x4qy added order-payment-consumers deliverOrderPaymentEvent + qr-    
+  order-consumers handleQrOrderPaymentPaid (stricter: event intent, quote     
+  amount, currency). Make the old deliverQrOrderPaymentEvent delegate (qr-    
+  order-api.test.ts uses it) and move qrRealtimeMessageSchema / qr signal     
+  schemas from qr-order-realtime*.ts into @starter/shared/qr-order for the web
+  client (legend-4jm).                                                        
+
+
+
+LABELS: be, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-x4qy: QR order: payment.paid worker consumer + void unpaid orders on payment.expired P2
+
+
+#####
+○ legend-nx3f · QR guest menu: distinguish 'available later today' (outside schedule) from 'sold out' (86/daily limit)   [P3 · OPEN]
+Created by: ifanshori99 · Type: task
+Created: 2026-11-02 · Updated: 2026-11-02
+
+DESCRIPTION
+
+  Guest QR contract has only sold_out as unavailable state, so outside-       
+  schedule items look gone. Add an 'unavailable_until' (next window start)    
+  state to the QR menu contract + FE label 'Tersedia mulai HH:mm'.            
+
+
+
+LABELS: contract, fe, ws-03
+
+DISCOVERED FROM
+  ◊ ✓ legend-h2a: WS-03 BE: Channel price lists + availability schedules + daily limits + 86 broadcast (QR, POS, ojol) P2
+
+
+#####

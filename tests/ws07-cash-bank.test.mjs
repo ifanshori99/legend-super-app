@@ -112,9 +112,9 @@ describe("ACC-04: matching target and suggestions", () => {
     };
     const policy = fixtures.matchingPolicy;
     assert.equal(policy.dateToleranceDays, 2);
-    // The screens use the sample tenant's window until the policy endpoint
-    // exists; the matcher itself always takes the policy as an argument.
-    assert.deepEqual(cash.MATCHING_POLICY, { dateToleranceDays: 2 });
+    // The screens read the tenant's window from GET finance-policy; the
+    // matcher itself always takes the policy as an argument.
+    assert.equal("MATCHING_POLICY" in cash, false);
 
     assert.deepEqual(
       findStatementMatch(
@@ -312,6 +312,7 @@ describe("ACC-04: matching target and suggestions", () => {
       differenceIdr: -23_500,
       ownerId: fixtures.users.finance,
       refs: [ref("bank_statement_line", lineId)],
+      idempotencyKey: "open-case-test-0001",
     });
     assert.equal(created.data.status, "open");
     assert.equal(created.data.ownerId, fixtures.users.finance);
@@ -364,6 +365,7 @@ describe("ACC-04: matching target and suggestions", () => {
         differenceIdr: matchedLine.amountIdr,
         ownerId: fixtures.users.finance,
         refs: [ref("bank_statement_line", matchedLine.id)],
+        idempotencyKey: "open-case-test-0002",
       }),
     );
     assert.equal(refused.status, 409);
@@ -423,6 +425,16 @@ describe("ACC-04: matching target and suggestions", () => {
 });
 
 // ---- ACC-05: cash deposits and undeposited cash ---------------------------
+
+describe("finance policy", () => {
+  test("GET finance-policy serves the default tenant policy in mock mode", async () => {
+    const response = await get("/api/accounting/finance-policy");
+    assert.deepEqual(response.data.matchingPolicy, { dateToleranceDays: 2 });
+    assert.deepEqual(response.data.cashDepositPolicy, {
+      maxDaysUndeposited: 2,
+    });
+  });
+});
 
 describe("ACC-05: deposits and undeposited cash", () => {
   test("ACC-05: cash undeposited beyond the tenant day limit raises an alert per business date", async () => {
@@ -724,7 +736,59 @@ describe("CSV import helpers", () => {
       debit_credit: "accounting.cash.import.preview.errorDebitCredit",
       description: "accounting.cash.import.preview.errorDescription",
       reference: "accounting.cash.import.preview.errorReference",
+      dedupe_key: "accounting.cash.import.preview.errorDedupeKey",
     });
+  });
+
+  test("CSV: preview refuses a row whose dedupe key passes the server limit", () => {
+    const mapping = cash.defaultCsvMapping();
+    assert.equal(cash.MAX_DEDUPE_KEY_LENGTH, 400);
+    // "ß".toUpperCase() is "SS": 250 characters become 500 in the key.
+    const long = cash.buildImportPreview(
+      [
+        "Tanggal,Keterangan,Nominal",
+        `01/11/2026,${"ß".repeat(250)},250000`,
+        "01/11/2026,Setoran kas,250000",
+      ].join("\n"),
+      mapping,
+    );
+    assert.equal(long.rows[0].status, "error");
+    assert.equal(long.rows[0].errorCode, "dedupe_key");
+    assert.equal(long.rows[1].status, "ready");
+    assert.equal(long.readyCount, 1);
+    assert.equal(long.errorCount, 1);
+  });
+
+  test("open case: one idempotency key per dialog session", () => {
+    let n = 0;
+    const session = cash.createIdempotencyKeySession(() => `key-${(n += 1)}`);
+    const first = session.current();
+    // A resend from the same dialog (failed or slow first attempt) reuses it.
+    assert.equal(session.current(), first);
+    // Success or close ends the session; the next dialog gets a new key.
+    session.reset();
+    assert.notEqual(session.current(), first);
+    // The default factory mints real, distinct ULIDs.
+    const real = cash.createIdempotencyKeySession();
+    const a = real.current();
+    assert.equal(real.current(), a);
+    real.reset();
+    assert.notEqual(real.current(), a);
+  });
+
+  test("open case: a changed request gets its own key; going back reuses the first", () => {
+    let n = 0;
+    const session = cash.createIdempotencyKeySession(() => `key-${(n += 1)}`);
+    const ownerA = session.current(JSON.stringify({ ownerId: "a" }));
+    assert.equal(session.current(JSON.stringify({ ownerId: "a" })), ownerA);
+    // Another PIC after a failed submit: the server would refuse the old key
+    // for a different body, so the new body gets a new key.
+    const ownerB = session.current(JSON.stringify({ ownerId: "b" }));
+    assert.notEqual(ownerB, ownerA);
+    // Back to the first PIC (its request may have reached the server): reuse.
+    assert.equal(session.current(JSON.stringify({ ownerId: "a" })), ownerA);
+    session.reset();
+    assert.notEqual(session.current(JSON.stringify({ ownerId: "a" })), ownerA);
   });
 
   test("CSV: the contract parsers refuse impossible dates and fractional rupiah", () => {
@@ -751,6 +815,60 @@ describe("CSV import helpers", () => {
       () => parseBankCsvDate("31/02/2026", "DD/MM/YYYY"),
       "STATEMENT_VALUE_INVALID",
     );
+  });
+
+  test("CSV: parseBankCsvAmount grammar table (valid and ambiguous input)", () => {
+    // [text, separator, whole rupiah]
+    const valid = [
+      ["1.234.567,00", ",", 1_234_567],
+      ["1234567,0", ",", 1_234_567],
+      ["(1.234,00)", ",", -1_234],
+      ["Rp 1.000", ",", 1_000],
+      ["-0,00", ",", 0],
+      ["1.234,00", ",", 1_234],
+      ["1,234,567.00", ".", 1_234_567],
+      ["1.234", ",", 1_234],
+      ["( 1.000 )", ",", -1_000],
+      ["-Rp 1.000", ",", -1_000],
+      ["Rp -1.000", ",", -1_000],
+      ["rp1.000", ",", 1_000],
+    ];
+    for (const [text, separator, expected] of valid) {
+      assert.equal(parseBankCsvAmount(text, separator), expected, text);
+    }
+    // Misplaced groups, 3+ decimals, non-zero fraction, mixed separators,
+    // dangling or leading separator, empty.
+    const invalid = [
+      ["1.2.3", ","],
+      ["12.34.567", ","],
+      ["12..3", ","],
+      ["1.234,567", ","],
+      ["1.234,000", ","],
+      ["1.234,50", ","],
+      ["1234567,5", ","],
+      ["1,234,56", ","],
+      ["1,234.56", ","],
+      ["1,", ","],
+      [",5", ","],
+      ["", ","],
+      // "1.234" with "." is a 3-digit fraction, never thousands.
+      ["1.234", "."],
+      // Double sign, spaces or "Rp" inside the number (misread columns).
+      ["(-1.000)", ","],
+      ["-(1.000)", ","],
+      ["--1.000", ","],
+      ["12 34", ","],
+      ["1 2 3", ","],
+      ["100 200", ","],
+      ["1Rp000", ","],
+      ["1.000 Rp", ","],
+    ];
+    for (const [text, separator] of invalid) {
+      throwsWithCode(
+        () => parseBankCsvAmount(text, separator),
+        "STATEMENT_VALUE_INVALID",
+      );
+    }
   });
 
   test("CSV: statementLineDedupeKey normalizes the description and keeps occurrences apart", () => {
@@ -962,6 +1080,20 @@ describe("display helpers", () => {
       cash.matchErrorKey("STATEMENT_LINE_ALREADY_MATCHED"),
       "accounting.cash.match.error.alreadyMatched",
     );
+    assert.equal(
+      cash.matchErrorKey("CONFLICT"),
+      "accounting.cash.match.error.alreadyMatched",
+    );
+    assert.equal(
+      cash.importErrorKey("CONFLICT"),
+      "accounting.cash.import.error.conflict",
+    );
+    assert.equal(
+      cash.importErrorKey("SOMETHING_ELSE"),
+      "accounting.cash.import.failed",
+    );
+    assert.equal(cash.isStatementValueInvalid("STATEMENT_VALUE_INVALID"), true);
+    assert.equal(cash.isStatementValueInvalid("CONFLICT"), false);
     assert.equal(
       cash.matchErrorKey("MATCH_AMOUNT_MISMATCH"),
       "accounting.cash.match.error.amountMismatch",

@@ -21,6 +21,7 @@ export function ConfirmDialog({
   pending = false,
   onConfirm,
   destructive = true,
+  error,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -30,6 +31,8 @@ export function ConfirmDialog({
   pending?: boolean;
   onConfirm: () => void;
   destructive?: boolean;
+  /** Failure shown inside the dialog (a toast would sit above it and take Escape). */
+  error?: string;
 }) {
   const t = useT();
   return (
@@ -39,6 +42,14 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
+        {error && (
+          <p
+            role="alert"
+            className="rounded-control border-(length:--border-w) border-danger bg-danger-subtle px-3 py-2 text-sm font-medium text-danger"
+          >
+            {error}
+          </p>
+        )}
         <DialogFooter>
           <Button
             type="button"

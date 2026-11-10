@@ -1,0 +1,1602 @@
+// Auto-journal facts (F19, design docs/design/auto-journals.md sections 3-4).
+// Turns one outbox event into the posting-rule input of the auto-journal
+// consumer: rule event name, exact amount keys, business-fact idempotency key,
+// source id, outlet and the moment the money moved. Payloads are parsed with
+// consumer-local, non-strict schemas (emitter additions never break them), and
+// only ids, amounts and times are kept: that subset is what
+// `auto_journal_parked.payload` stores, so the sweep rebuilds the same fact
+// without an outbox replay.
+//
+// Slice 1 handles order.paid (POS), order.refunded, payment.paid,
+// payment.funds_unallocated and payment.refunded. Gateway money is
+// receipt-first: payment.paid (one receipt per intent) and
+// payment.funds_unallocated (money no payment.paid counts: closed intent,
+// second payment) book the receipt into customer_deposit, order.paid moves the
+// intent-backed gateway tenders whose receipt is booked out of it and waits
+// (AutoJournalReceiptPending) while a receipt can still post. EDC-linked
+// intents are skipped (EDC money posts through edc_clearing on the sale); an
+// EDC-linked gateway tender fails closed.
+//
+// Slice 2 adds the reservation DP and the cashier shift: order.paid moves the
+// DP applied (paidDepositIdr, checked against the order row) out of
+// customer_deposit when the DP receipt is booked, or books it as gateway money
+// when the DP was paid before the cutover; reservation.cancelled /
+// reservation.no_show book the forfeited DP the same way; cashier_shift.closed
+// books the signed drawer difference checked against the shift row.
+//
+// Slice 4 adds the bank settlements: settlement.reconciled (gateway) and
+// edc_transaction.settled (EDC) post Dr bank net, Dr gateway_fee_expense fee,
+// Cr clearing gross, dated settledOn (AutoJournalFact.entryDate). The payload
+// is the whole fact; there is no backing guard (see autoJournalFactOf).
+//
+// legend-9pz9 (design section 10): a payout, a forfeit and a sale are judged
+// at their own moment (accounting-auto-journal-guards.ts), never against
+// current state, so the verdict does not depend on event delivery order.
+// order.voided is only stored and keyed here; the consumer rebuilds its fact
+// in accounting-auto-journal-void.ts. order_issue.refund_reversal_requested
+// (legend-94q2l, a rejected recovery refund) is the same: its fact is rebuilt
+// in accounting-auto-journal-recovery-refund.ts.
+//
+// Slice 3 (legend-9pz9, legend-kej3, legend-fbms): a QR pay-first order (no
+// pos_orders row) emits order.paid when it fires. It has no tenders: what
+// is left after the DP (total - DP) was paid by the intent pinned on
+// orders.payment_intent_id, receipt-first like a POS gateway tender. An
+// order.paid with every amount 0 books nothing (null).
+//
+// legend-msqvi (D-msqvi, PSAK 72): the five points.* events post the loyalty
+// journal. The ledger entry id comes from the envelope idempotency key
+// (`<event name>:<ledgerEntryId>`, point-ledger.service.ts), and the amount is
+// the signed liability_idr of that point_ledger row, never the payload. The
+// tenant must have exactly one legal entity; the anchor outlet (oldest outlet
+// of that entity) gives the business-day clock and owns a parked row.
+//
+// A payload, row or method that can never post as sent throws
+// AutoJournalPayloadInvalid (or a ZodError): the consumer parks it as
+// non-retryable AUTO_JOURNAL_PAYLOAD_INVALID instead of failing the outbox
+// consumption.
+
+import { createHash } from "node:crypto";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { z } from "zod";
+import { AccountingError } from "@starter/shared/accounting";
+import type { ScopedTenantContext } from "@starter/shared/core";
+import { tenderBucket } from "@starter/shared/pos";
+import {
+  edcTransactionSettledPayloadSchema,
+  settlementReconciledPayloadSchema,
+} from "@starter/shared/payment";
+import {
+  domainEventOutbox,
+  orders,
+  outlets,
+  paymentIntents,
+  paymentRefunds,
+  paymentUnallocatedFunds,
+  pointLedger,
+  posOrders,
+  posOrderTenders,
+  posShifts,
+  reservations,
+} from "../db/schema/index.ts";
+import {
+  assertForfeitWithinIntent,
+  assertPayoutWithinReceipt,
+  assertSaleWithinReceipt,
+  type Bound,
+  backingKeyOf,
+  backingStateOf,
+  backingStatesOf,
+  DP_INTENT_STATUSES,
+  payoutBackingOf,
+  saleBoundOf,
+  sessionDepositAt,
+} from "./accounting-auto-journal-guards.ts";
+import {
+  AutoJournalSaleMissing,
+  AutoJournalSalePending,
+} from "./accounting-auto-journal-void.ts";
+import { isTrainingOrder } from "./device-training.ts";
+import type { Tx } from "./inventory-ops.shared.ts";
+import { EVENT_DESTINATION } from "./payment-support.ts";
+import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
+
+type TenantId = ScopedTenantContext["tenant"]["tenantId"];
+
+/** legend-msqvi: points.* events journaled from their point_ledger row. */
+export const LOYALTY_AUTO_JOURNAL_EVENTS = [
+  "points.earned",
+  "points.reversed",
+  "points.redeemed",
+  "points.adjusted",
+  "points.expired",
+] as const;
+export type LoyaltyAutoJournalEventName =
+  (typeof LOYALTY_AUTO_JOURNAL_EVENTS)[number];
+
+export function isLoyaltyAutoJournalEvent(
+  name: string,
+): name is LoyaltyAutoJournalEventName {
+  return (LOYALTY_AUTO_JOURNAL_EVENTS as readonly string[]).includes(name);
+}
+
+export const AUTO_JOURNAL_EVENTS = [
+  "order.paid",
+  "order.refunded",
+  "order.voided",
+  "order_issue.refund_reversal_requested",
+  "payment.paid",
+  "payment.funds_unallocated",
+  "payment.refunded",
+  "reservation.cancelled",
+  "reservation.no_show",
+  "cashier_shift.closed",
+  "settlement.reconciled",
+  "edc_transaction.settled",
+  "purchase_return.recorded",
+  "petty_purchase.recorded",
+  // legend-msqvi
+  ...LOYALTY_AUTO_JOURNAL_EVENTS,
+] as const;
+export type AutoJournalEventName = (typeof AUTO_JOURNAL_EVENTS)[number];
+
+export function isAutoJournalEvent(name: string): name is AutoJournalEventName {
+  return (AUTO_JOURNAL_EVENTS as readonly string[]).includes(name);
+}
+
+/** The event can never post as sent: parked, never retried. */
+export class AutoJournalPayloadInvalid extends Error {
+  readonly code = "AUTO_JOURNAL_PAYLOAD_INVALID";
+}
+
+/**
+ * order.paid met a gateway tender whose receipt has not posted yet: parked
+ * retryable, the sweep posts the sale once the receipt is booked.
+ */
+export class AutoJournalReceiptPending extends Error {
+  readonly code = "AUTO_JOURNAL_RECEIPT_PENDING";
+}
+
+/**
+ * legend-3r6r: order.paid met a gateway tender whose payment.paid has sat dead-
+ * lettered past DEAD_LETTERED_RECEIPT_BOUND_MS. Parked non-retryable (the sweep
+ * stops, finance sees the distinct code). It is NOT booked through
+ * gateway_clearing: replaying the dead letter would then count the money twice.
+ * Replaying and booking the receipt releases the row (requeueReceiptDependents).
+ */
+export class AutoJournalReceiptDeadLettered extends Error {
+  readonly code = "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED";
+}
+
+/**
+ * payment.refunded paid out of a receipt that will never post (payment.paid
+ * consumed before the consumer went live, never emitted, or parked non-
+ * retryable): parked, never retried.
+ */
+export class AutoJournalReceiptMissing extends Error {
+  readonly code = "AUTO_JOURNAL_RECEIPT_MISSING";
+}
+
+/**
+ * A reservation DP whose intents are partly receipt-booked and partly
+ * pre-cutover: no single account holds it, finance must decide. Parked, never
+ * retried.
+ */
+export class AutoJournalDepositCutoverMixed extends Error {
+  readonly code = "AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED";
+}
+
+/**
+ * legend-msqvi: a points event of a tenant whose outlets belong to more than
+ * one legal entity. v1 cannot tell which entity owes the points (follow-up:
+ * loyalty_programs.legal_entity_id). Parked, never retried.
+ */
+export class AutoJournalLoyaltyEntityAmbiguous extends Error {
+  readonly code = "LOYALTY_LEGAL_ENTITY_AMBIGUOUS";
+}
+
+const idr = z.number().int().safe();
+const id = z.string().min(1).max(64);
+const time = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((value) => !Number.isNaN(Date.parse(value)), "Not a timestamp");
+
+const orderPaidSchema = z.object({
+  orderId: id,
+  outletId: z.string().uuid(),
+  grossSalesIdr: idr,
+  discountIdr: idr,
+  serviceChargeIdr: idr,
+  pbjtIdr: idr,
+  roundingIdr: idr,
+  paidCashIdr: idr,
+  paidGatewayIdr: idr,
+  paidEdcIdr: idr,
+  paidPointsIdr: idr,
+  /** Reservation DP applied (slice 2); absent means no DP applied. */
+  paidDepositIdr: idr.nonnegative().default(0),
+  paidAt: time,
+});
+
+const orderRefundedSchema = z.object({
+  refundId: id,
+  orderId: id,
+  outletId: z.string().uuid(),
+  grossSalesIdr: idr,
+  discountIdr: idr,
+  serviceChargeIdr: idr,
+  pbjtIdr: idr,
+  refundCashIdr: idr,
+  refundGatewayIdr: idr,
+  refundEdcIdr: idr,
+  refundPointsIdr: idr,
+  refundedAt: time,
+});
+
+/**
+ * order.voided as the consumer stores it. Only a void of a completed sale
+ * (voidedFinalOrder) is journaled; an open-order void books nothing.
+ */
+export const orderVoidedStoredSchema = z.object({
+  orderId: id,
+  outletId: z.string().uuid(),
+  voidId: id.nullable(),
+  amountIdr: idr,
+  voidedFinalOrder: z.boolean(),
+  voidedAt: time,
+});
+
+/**
+ * order_issue.refund_reversal_requested as the consumer stores it (legend-94q2l):
+ * the payment module rejected the refund of a failed order item, so the
+ * `aj:order-refund:<orderIssueId>` journal is reversed. The outlet is the
+ * event envelope outlet.
+ */
+export const orderIssueRefundReversalStoredSchema = z.object({
+  orderId: id,
+  orderIssueId: z.string().uuid(),
+  refundId: z.string().uuid(),
+  amountIdr: idr.refine((value) => value > 0),
+  rejectedAt: time,
+});
+
+const paymentPaidSchema = z.object({
+  intentId: z.string().uuid(),
+  receivedIdr: idr,
+  paidAt: time.nullable().optional(),
+});
+
+const fundsUnallocatedSchema = z.object({
+  unallocatedFundId: z.string().uuid(),
+  intentId: z.string().uuid(),
+  receivedIdr: idr,
+  receivedAt: time,
+});
+
+const paymentRefundedSchema = z.object({
+  refundId: z.string().uuid(),
+  paymentIntentId: z.string().uuid(),
+  amountIdr: idr,
+});
+
+const reservationClosedSchema = z.object({
+  reservationId: z.string().uuid(),
+  depositForfeitedIdr: idr.nonnegative(),
+});
+
+const shiftClosedSchema = z.object({
+  shiftId: z.string().uuid(),
+  outletId: z.string().uuid(),
+  /** countedIdr - expectedIdr: positive = over, negative = short. */
+  differenceIdr: idr,
+  closedAt: time,
+});
+
+// Purchasing (legend-1xbs, legend-v3lh). The payload is the whole fact, there
+// is no backing guard: the emitting transaction already split the value.
+// goods_receipt.recorded is not journaled here (legend-29vw).
+const purchaseReturnRecordedSchema = z.object({
+  purchaseReturnId: z.string().uuid(),
+  outletId: z.string().uuid(),
+  valueIdr: idr.nonnegative(),
+  uninvoicedValueIdr: idr.nonnegative(),
+  invoicedValueIdr: idr.nonnegative(),
+  ppnIdr: idr.nonnegative(),
+  returnedAt: time,
+});
+
+const pettyPurchaseRecordedSchema = z.object({
+  pettyPurchaseId: z.string().uuid(),
+  outletId: z.string().uuid(),
+  amountIdr: idr.nonnegative(),
+  businessDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((value) => !Number.isNaN(Date.parse(value))),
+  paidAt: time,
+});
+
+// legend-msqvi: the stored loyalty fact is the ledger entry id only; the rest
+// is re-read from the point_ledger row (the authority).
+const ledgerEntryIdSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+const loyaltyStoredSchema = z.object({ ledgerEntryId: ledgerEntryIdSchema });
+
+const PAYMENT_SCHEMAS = {
+  "payment.paid": paymentPaidSchema,
+  "payment.funds_unallocated": fundsUnallocatedSchema,
+  "payment.refunded": paymentRefundedSchema,
+} as const;
+
+/**
+ * What the consumer stores and rebuilds from: the event identity plus the
+ * picked payload (ids, amounts, times; never personal data).
+ */
+export type StoredAutoJournalEvent = {
+  readonly eventId: string;
+  readonly eventName: AutoJournalEventName;
+  readonly outletId: string;
+  readonly occurredAt: string;
+  readonly payload: Record<string, unknown>;
+};
+
+export type AutoJournalFact = {
+  readonly ruleEvent: AutoJournalEventName;
+  readonly amounts: Record<string, number>;
+  readonly sourceId: string;
+  readonly outletId: string;
+  readonly moneyTime: Date;
+  /**
+   * Business date of the journal when the fact is a date, not an instant
+   * (bank settlement date). The consumer uses it as is, instead of deriving a
+   * date from `moneyTime` (timezone and business-day cutoff would shift it).
+   */
+  readonly entryDate?: string;
+  /**
+   * legend-msqvi: outlet of the journal and its lines when it differs from
+   * `outletId` (which then only gives the legal entity and the business-day
+   * clock); null posts an entity-level journal.
+   */
+  readonly journalOutletId?: string | null;
+};
+
+/**
+ * Picks the stored subset of an event; throws a ZodError or
+ * AutoJournalPayloadInvalid on a payload it cannot read.
+ */
+export function storedEventOf(event: {
+  id: string;
+  name: AutoJournalEventName;
+  outletId: string | null;
+  occurredAt: string;
+  payload: unknown;
+  /** legend-msqvi: envelope key, carries the point_ledger entry id. */
+  idempotencyKey?: string | null;
+  /** legend-msqvi: anchor outlet of a points event (loyaltyAnchorOf). */
+  loyaltyOutletId?: string | null;
+}): StoredAutoJournalEvent {
+  const base = { eventId: event.id, eventName: event.name };
+  const occurredAt = event.occurredAt;
+  switch (event.name) {
+    case "order.paid": {
+      const payload = orderPaidSchema.parse(event.payload);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "order.refunded": {
+      const payload = orderRefundedSchema.parse(event.payload);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "order.voided": {
+      const payload = orderVoidedStoredSchema.parse(event.payload);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "order_issue.refund_reversal_requested": {
+      const payload = orderIssueRefundReversalStoredSchema.parse(event.payload);
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      return { ...base, outletId: event.outletId, occurredAt, payload };
+    }
+    case "payment.paid":
+    case "payment.funds_unallocated":
+    case "payment.refunded": {
+      const payload = PAYMENT_SCHEMAS[event.name].parse(event.payload);
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      return { ...base, outletId: event.outletId, occurredAt, payload };
+    }
+    case "reservation.cancelled":
+    case "reservation.no_show": {
+      const payload = reservationClosedSchema.parse(event.payload);
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      return { ...base, outletId: event.outletId, occurredAt, payload };
+    }
+    case "cashier_shift.closed": {
+      const payload = shiftClosedSchema.parse(event.payload);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "settlement.reconciled": {
+      const payload = settlementReconciledPayloadSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "edc_transaction.settled": {
+      const payload = edcTransactionSettledPayloadSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "purchase_return.recorded": {
+      const payload = purchaseReturnRecordedSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "petty_purchase.recorded": {
+      const payload = pettyPurchaseRecordedSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    // legend-msqvi
+    case "points.earned":
+    case "points.reversed":
+    case "points.redeemed":
+    case "points.adjusted":
+    case "points.expired": {
+      const ledgerEntryId = ledgerEntryIdOf(event.name, event.idempotencyKey);
+      if (!event.loyaltyOutletId)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} has no outlet to post under`,
+        );
+      return {
+        ...base,
+        outletId: event.loyaltyOutletId,
+        occurredAt,
+        payload: { ledgerEntryId },
+      };
+    }
+  }
+}
+
+/**
+ * legend-msqvi: the point_ledger entry id of a points event, from its
+ * envelope key `<event name>:<ledgerEntryId>` (appendPointsEvent).
+ */
+function ledgerEntryIdOf(
+  eventName: string,
+  idempotencyKey: string | null | undefined,
+): string {
+  const separator = idempotencyKey?.indexOf(":") ?? -1;
+  const parsed =
+    idempotencyKey && separator > 0
+      ? idempotencyKey.slice(0, separator) === eventName
+        ? ledgerEntryIdSchema.safeParse(idempotencyKey.slice(separator + 1))
+        : null
+      : null;
+  if (!parsed?.success)
+    throw new AutoJournalPayloadInvalid(
+      `${eventName} idempotency key carries no ledger entry id`,
+    );
+  return parsed.data;
+}
+
+/**
+ * legend-msqvi (D-msqvi section 7): where a tenant's loyalty journals post.
+ * One legal entity across the tenant's outlets: that entity, anchored on its
+ * oldest outlet. More than one: legalEntityId null (ambiguous), anchored on
+ * the tenant's oldest outlet so the event can still be parked. No outlet: null.
+ */
+export async function loyaltyAnchorOf(
+  tx: Tx,
+  tenantId: TenantId,
+): Promise<{ outletId: string; legalEntityId: string | null } | null> {
+  const rows = await tx
+    .select({ id: outlets.id, legalEntityId: outlets.legalEntityId })
+    .from(outlets)
+    .where(eq(outlets.tenantId, tenantId))
+    .orderBy(asc(outlets.createdAt), asc(outlets.id));
+  const [oldest] = rows;
+  if (!oldest) return null;
+  const entities = new Set(rows.map((row) => row.legalEntityId));
+  return {
+    outletId: oldest.id,
+    legalEntityId: entities.size === 1 ? oldest.legalEntityId : null,
+  };
+}
+
+/** An envelope outlet, when set, must be the payload outlet. */
+function assertEnvelopeOutlet(
+  event: { name: string; outletId: string | null },
+  payloadOutletId: string,
+): void {
+  if (event.outletId !== null && event.outletId !== payloadOutletId)
+    throw new AutoJournalPayloadInvalid(
+      `${event.name} envelope outlet differs from the payload outlet`,
+    );
+}
+
+const IDEMPOTENCY_KEY_MAX = 100;
+
+export function boundedKey(key: string): string {
+  if (key.length <= IDEMPOTENCY_KEY_MAX) return key;
+  return `aj:${createHash("sha256").update(key).digest("hex")}`;
+}
+
+/**
+ * Receipt key of a gateway intent: one per intent, so payment.paid replayed
+ * under another event id posts once, and order.paid can look it up.
+ */
+export function receiptKeyOf(intentId: string): string {
+  return boundedKey(`aj:receipt:${intentId}`);
+}
+
+/** Parking key of an event whose payload cannot be read at all. */
+export function invalidEventKeyOf(eventId: string): string {
+  return boundedKey(`aj:invalid:${eventId}`);
+}
+
+/** Business-fact key (design section 4), sha256 above 100 characters. */
+export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
+  const p = stored.payload;
+  switch (stored.eventName) {
+    case "order.paid":
+      return boundedKey(`aj:sale:${String(p.orderId)}`);
+    case "order.refunded":
+      return boundedKey(`aj:order-refund:${String(p.refundId)}`);
+    case "order.voided":
+      return boundedKey(`aj:sale-void:${String(p.orderId)}`);
+    case "order_issue.refund_reversal_requested":
+      return boundedKey(`aj:order-refund-reversal:${String(p.orderIssueId)}`);
+    case "payment.paid":
+      return receiptKeyOf(String(p.intentId));
+    case "payment.funds_unallocated":
+      return boundedKey(`aj:receipt-fund:${String(p.unallocatedFundId)}`);
+    case "payment.refunded":
+      return boundedKey(`aj:payout:${String(p.refundId)}`);
+    case "reservation.cancelled":
+    case "reservation.no_show":
+      return boundedKey(`aj:dp-forfeit:${String(p.reservationId)}`);
+    case "cashier_shift.closed":
+      return boundedKey(`aj:shift:${String(p.shiftId)}`);
+    case "settlement.reconciled":
+      return boundedKey(`aj:settlement:${String(p.settlementId)}`);
+    case "edc_transaction.settled":
+      return boundedKey(`aj:edc-settlement:${String(p.settlementBatchId)}`);
+    case "purchase_return.recorded":
+      return boundedKey(`aj:purchase-return:${String(p.purchaseReturnId)}`);
+    case "petty_purchase.recorded":
+      return boundedKey(`aj:petty-purchase:${String(p.pettyPurchaseId)}`);
+    // legend-msqvi: one ledger row, one journal.
+    case "points.earned":
+    case "points.reversed":
+    case "points.redeemed":
+    case "points.adjusted":
+    case "points.expired":
+      return boundedKey(`aj:loyalty:${String(p.ledgerEntryId)}`);
+  }
+}
+
+type ReceiptState = "posted" | "pending" | "none";
+
+/**
+ * Receipt state of each intent in `intentIds` (cutover/ordering guard):
+ * - "posted": the receipt journal exists, the tender debits customer_deposit;
+ * - "pending": payment.paid is still in the outbox (pending, retrying, dead
+ *   letter) or its receipt is parked retryable; the sale must wait, or the
+ *   gateway money would be counted twice;
+ * - "none": the receipt will never post by itself (payment.paid consumed
+ *   before the consumer went live or with accounting off, never emitted, or
+ *   parked non-retryable), so the tender books the money once, the
+ *   pre-deposit way, Dr gateway_clearing.
+ * Read order and ordering note: backingStatesOf. Fails closed on an unknown or EDC-linked intent (EDC money is not gateway
+ * money).
+ */
+async function receiptStatesOf(
+  tx: Tx,
+  tenantId: TenantId,
+  intentIds: readonly string[],
+): Promise<Map<string, ReceiptState>> {
+  const ids = [...new Set(intentIds)];
+  const states = new Map<string, ReceiptState>(
+    ids.map((intentId) => [intentId, "none"]),
+  );
+  if (ids.length === 0) return states;
+  const intents = await tx
+    .select({
+      id: paymentIntents.id,
+      edcTransactionId: paymentIntents.edcTransactionId,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        inArray(paymentIntents.id, ids),
+      ),
+    );
+  if (intents.length !== ids.length)
+    throw new AutoJournalPayloadInvalid(
+      "Payment intent of a gateway tender not found",
+    );
+  if (intents.some((intent) => intent.edcTransactionId !== null))
+    throw new AutoJournalPayloadInvalid(
+      "Gateway tender is linked to an EDC transaction",
+    );
+  const backingStates = await backingStatesOf(
+    tx,
+    tenantId,
+    ids.map((intentId) => ({ kind: "intent", intentId })),
+  );
+  for (const intentId of ids)
+    states.set(
+      intentId,
+      backingStates.get(backingKeyOf({ kind: "intent", intentId })) ?? "none",
+    );
+  const pendingIds = ids.filter(
+    (intentId) => states.get(intentId) === "pending",
+  );
+  if (pendingIds.length > 0)
+    await assertNotDeadLettered(tx, tenantId, pendingIds);
+  return states;
+}
+
+/**
+ * legend-3r6r: how long a payment.paid may sit dead-lettered before a sale
+ * waiting on it stops retrying (3 days: covers a weekend before an operator
+ * replays it).
+ */
+export const DEAD_LETTERED_RECEIPT_BOUND_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * Throws AutoJournalReceiptDeadLettered when a pending intent's payment.paid
+ * is held back by a dead letter older than the bound (the head of the intent's
+ * undelivered events, see below). A live (ready/queued) head, a young dead
+ * letter, or a receipt parked retryable (no outbox row) keeps the plain wait.
+ */
+async function assertNotDeadLettered(
+  tx: Tx,
+  tenantId: TenantId,
+  intentIds: readonly string[],
+): Promise<void> {
+  const rows = await tx
+    .select({
+      intentId: domainEventOutbox.aggregateId,
+      sequence: domainEventOutbox.sequence,
+      name: sql<string>`${domainEventOutbox.event}->>'name'`,
+      dispatchState: domainEventOutbox.dispatchState,
+      deadLetteredAt: domainEventOutbox.deadLetteredAt,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        ne(domainEventOutbox.status, "delivered"),
+        eq(domainEventOutbox.aggregateType, "payment"),
+        inArray(domainEventOutbox.aggregateId, [...intentIds]),
+      ),
+    );
+  const cutoff = Date.now() - DEAD_LETTERED_RECEIPT_BOUND_MS;
+  for (const intentId of intentIds) {
+    const own = rows
+      .filter((row) => row.intentId === intentId)
+      .sort((a, b) => a.sequence - b.sequence);
+    // The relay delivers an aggregate in sequence order: the first undelivered
+    // event (payment.paid or an earlier one such as payment.expired) gates
+    // payment.paid, so a dead head holds the receipt back for good.
+    const head = own[0];
+    if (
+      head !== undefined &&
+      own.some((row) => row.name === "payment.paid") &&
+      head.dispatchState === "dead" &&
+      head.deadLetteredAt !== null &&
+      head.deadLetteredAt.getTime() <= cutoff
+    )
+      throw new AutoJournalReceiptDeadLettered(
+        "Gateway receipt is dead-lettered; replay it or book the sale by hand",
+      );
+  }
+}
+
+/**
+ * Where a DP is booked (the cutover guard of receiptStatesOf, applied to the
+ * exact DP intents behind the money: the session's allocation intents for a
+ * DP applied, reservations.deposit_payment_id for a forfeit; a second or
+ * duplicate intent of the reservation never counts):
+ * - "deposit": every receipt posted, the DP sits in customer_deposit;
+ * - "gateway": no receipt will ever post (DP paid before the cutover), the DP
+ *   was never booked and still sits in gateway_clearing only;
+ * - any receipt pending: AutoJournalReceiptPending (retryable);
+ * - posted and none mixed: AutoJournalDepositCutoverMixed (not retryable);
+ * - an intent missing or that never took money: AutoJournalPayloadInvalid;
+ * - an EDC-linked intent fails closed (receiptStatesOf).
+ */
+export async function depositReceiptOf(
+  tx: Tx,
+  tenantId: TenantId,
+  intentIds: readonly string[],
+): Promise<"deposit" | "gateway"> {
+  const ids = [...new Set(intentIds)];
+  if (ids.length === 0)
+    throw new AutoJournalPayloadInvalid("DP has no payment intent");
+  const intents = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        inArray(paymentIntents.id, ids),
+        inArray(paymentIntents.status, [...DP_INTENT_STATUSES]),
+      ),
+    );
+  if (intents.length !== ids.length)
+    throw new AutoJournalPayloadInvalid(
+      "DP payment intent not found or never paid",
+    );
+  const states = [...(await receiptStatesOf(tx, tenantId, ids)).values()];
+  if (states.includes("pending"))
+    throw new AutoJournalReceiptPending("DP receipt is not booked yet");
+  if (states.every((state) => state === "posted")) return "deposit";
+  if (states.every((state) => state === "none")) return "gateway";
+  throw new AutoJournalDepositCutoverMixed(
+    "DP receipts are partly booked and partly before the cutover",
+  );
+}
+
+/**
+ * Where the DP applied to an order is booked: the order row must carry exactly
+ * the DP the event reports, the session's sales completed by this sale
+ * (bound S, this one included) together may not apply more DP than the
+ * allocation intents still held right before it (a DP refunded or forfeited
+ * before the sale would otherwise leave customer_deposit twice), and the
+ * allocation intents must agree (depositReceiptOf). Facts after S never count.
+ */
+async function orderDepositReceiptOf(
+  tx: Tx,
+  tenantId: TenantId,
+  orderId: string,
+  paidDepositIdr: number,
+): Promise<"deposit" | "gateway"> {
+  const [order] = await tx
+    .select({
+      depositAppliedIdr: orders.depositAppliedIdr,
+      tableSessionId: orders.tableSessionId,
+    })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+  if (!order)
+    throw new AutoJournalPayloadInvalid("Order of the event not found");
+  if (Number(order.depositAppliedIdr) !== paidDepositIdr)
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "paidDepositIdr does not match the DP applied to the order",
+    );
+  if (order.tableSessionId === null)
+    throw new AutoJournalPayloadInvalid("Order with a DP has no table session");
+  const sale = await saleBoundOf(tx, tenantId, orderId);
+  const { intentIds, heldIdr, appliedIdr } = await sessionDepositAt(
+    tx,
+    tenantId,
+    order.tableSessionId,
+    sale,
+  );
+  if (intentIds.length === 0)
+    throw new AutoJournalPayloadInvalid(
+      "Order with a DP has no reservation deposit on its session",
+    );
+  if (appliedIdr > heldIdr)
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "DP applied by the session exceeds what its DP intents still hold",
+    );
+  return depositReceiptOf(tx, tenantId, intentIds);
+}
+
+type OrderPaid = z.infer<typeof orderPaidSchema>;
+
+/**
+ * Gateway amount of a QR sale (an order.paid whose order has no pos_orders
+ * row and channel qr), as { gatewayIdr, withReceipt } like the POS tender
+ * loop, or null when the order is not a QR order (the tender path applies):
+ * - the order is a fired QR pay-first order of the event outlet;
+ * - the payload carries exactly the revenue split of the order row, no cash,
+ *   EDC or points, and paidGatewayIdr = total - DP;
+ * - money left after the DP was paid by the pinned intent: one that took
+ *   money through the order's payment link; its receipt state decides (posted:
+ *   out of customer_deposit; none: pre-cutover gateway money; pending: wait).
+ */
+async function qrSaleGatewayOf(
+  tx: Tx,
+  tenantId: TenantId,
+  p: OrderPaid,
+): Promise<{ gatewayIdr: number; withReceipt: number } | null> {
+  const [order] = await tx
+    .select({
+      outletId: orders.outletId,
+      channel: orders.channel,
+      paymentMode: orders.paymentMode,
+      firedAt: orders.firedAt,
+      subtotalIdr: orders.subtotalIdr,
+      discountIdr: orders.discountIdr,
+      serviceChargeIdr: orders.serviceChargeIdr,
+      taxIdr: orders.taxIdr,
+      roundingIdr: orders.roundingIdr,
+      totalIdr: orders.totalIdr,
+      pricesIncludeTax: orders.pricesIncludeTax,
+      depositAppliedIdr: orders.depositAppliedIdr,
+      paymentLinkId: orders.paymentLinkId,
+      paymentIntentId: orders.paymentIntentId,
+    })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, p.orderId)));
+  if (!order || order.channel !== "qr") return null;
+  if (
+    order.paymentMode !== "pay_first" ||
+    order.firedAt === null ||
+    order.outletId !== p.outletId
+  )
+    throw new AutoJournalPayloadInvalid(
+      "QR sale order is not a fired pay-first order of the outlet",
+    );
+  let split: ReturnType<typeof orderRevenueSplit>;
+  try {
+    split = orderRevenueSplit({
+      subtotalIdr: Number(order.subtotalIdr),
+      discountIdr: Number(order.discountIdr),
+      serviceChargeIdr: Number(order.serviceChargeIdr),
+      taxIdr: Number(order.taxIdr),
+      roundingIdr: Number(order.roundingIdr),
+      totalIdr: Number(order.totalIdr),
+      pricesIncludeTax: order.pricesIncludeTax,
+    });
+  } catch (error) {
+    if (error instanceof OrderRevenueMismatch)
+      throw new AutoJournalPayloadInvalid(error.message);
+    throw error;
+  }
+  const gatewayIdr = split.totalIdr - Number(order.depositAppliedIdr);
+  if (
+    p.grossSalesIdr !== split.grossSalesIdr ||
+    p.discountIdr !== split.discountIdr ||
+    p.serviceChargeIdr !== split.serviceChargeIdr ||
+    p.pbjtIdr !== split.pbjtIdr ||
+    p.roundingIdr !== split.roundingIdr ||
+    p.paidCashIdr !== 0 ||
+    p.paidEdcIdr !== 0 ||
+    p.paidPointsIdr !== 0 ||
+    p.paidGatewayIdr !== gatewayIdr
+  )
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "QR sale payload does not match the order row",
+    );
+  if (gatewayIdr === 0) return { gatewayIdr, withReceipt: 0 };
+  const intentId = order.paymentIntentId;
+  if (intentId === null || order.paymentLinkId === null)
+    throw new AutoJournalPayloadInvalid(
+      "QR sale with money to pay has no pinned payment intent",
+    );
+  const [intent] = await tx
+    .select({ id: paymentIntents.id, amountIdr: paymentIntents.amountIdr })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, intentId),
+        eq(paymentIntents.paymentLinkId, order.paymentLinkId),
+        // Took money (a status that never reverts: a later refund keeps it).
+        inArray(paymentIntents.status, [...DP_INTENT_STATUSES]),
+      ),
+    );
+  if (!intent)
+    throw new AutoJournalPayloadInvalid(
+      "Pinned payment intent of the QR sale is not paid on its payment link",
+    );
+  // legend-gzu54: a bill split over several codes of the link is paid by
+  // every code that put money toward it, each for its part.
+  const shares = await qrSaleSharesOf(tx, tenantId, {
+    paymentLinkId: order.paymentLinkId,
+    pinnedIntentId: intentId,
+    dueIdr: gatewayIdr,
+  });
+  if (shares.size === 1) {
+    if (Number(intent.amountIdr) < gatewayIdr)
+      throw new AutoJournalPayloadInvalid(
+        "Pinned payment intent of the QR sale took less than total - DP",
+      );
+  } else {
+    let partsIdr = 0;
+    for (const share of shares.values()) partsIdr += share;
+    if (partsIdr < gatewayIdr)
+      throw new AutoJournalPayloadInvalid(
+        "Payment intents of the QR sale took less than total - DP together",
+      );
+  }
+  const states = await receiptStatesOf(tx, tenantId, [...shares.keys()]);
+  if ([...states.values()].includes("pending"))
+    throw new AutoJournalReceiptPending(
+      "Gateway receipt of the QR sale is not booked yet",
+    );
+  // A refund of an intent final before the sale may have taken it back.
+  let withReceipt = 0;
+  let saleBound: Bound | null = null;
+  for (const [id, share] of shares) {
+    if (states.get(id) !== "posted") continue;
+    saleBound ??= await saleBoundOf(tx, tenantId, p.orderId);
+    await assertSaleWithinReceipt(tx, tenantId, id, saleBound);
+    withReceipt += share;
+  }
+  return { gatewayIdr, withReceipt: Math.min(gatewayIdr, withReceipt) };
+}
+
+/**
+ * legend-gzu54: what each code of the order's payment link put toward a QR
+ * sale of `dueIdr` (total - DP), keyed by intent. A code paying alone (the
+ * pinned intent, no other code with money toward the bill) is the whole sale.
+ * On a split bill every code that put money toward it (evidence less its
+ * unallocated funds, a status that never reverts) backs `min(due, that)`,
+ * the pinned one included; same parts as the payout guard (intentBackedAt,
+ * legend-05cm9) and allocatedIdrByIntent (qr-order-consumers.ts).
+ * qrSaleInUseOfIntent (payment-admin.service.ts) holds the pinned code's whole
+ * due instead, which is stricter.
+ */
+async function qrSaleSharesOf(
+  tx: Tx,
+  tenantId: TenantId,
+  input: { paymentLinkId: string; pinnedIntentId: string; dueIdr: number },
+): Promise<Map<string, number>> {
+  const result = await tx.execute<{ id: string; allocated: string }>(sql`
+    SELECT i.id,
+           (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+                       WHERE e.tenant_id = i.tenant_id
+                         AND e.payment_intent_id = i.id), 0)
+          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
+                       WHERE f.tenant_id = i.tenant_id
+                         AND f.payment_intent_id = i.id), 0))::text AS allocated
+      FROM payment_intents i
+     WHERE i.tenant_id = ${tenantId}
+       AND i.payment_link_id = ${input.paymentLinkId}
+       AND i.status IN (${sql.join(
+         DP_INTENT_STATUSES.map((status) => sql`${status}`),
+         sql`, `,
+       )})`);
+  const allocated = new Map(
+    result.rows.map((row) => [row.id, Number(row.allocated)]),
+  );
+  const others = [...allocated].filter(
+    ([id, amount]) => id !== input.pinnedIntentId && amount > 0,
+  );
+  if (others.length === 0)
+    return new Map([[input.pinnedIntentId, input.dueIdr]]);
+  const shares = new Map<string, number>();
+  const own = allocated.get(input.pinnedIntentId) ?? 0;
+  shares.set(input.pinnedIntentId, Math.min(input.dueIdr, Math.max(own, 0)));
+  for (const [id, amount] of others)
+    shares.set(id, Math.min(input.dueIdr, amount));
+  return shares;
+}
+
+/** EDC-linked intents post through edc_clearing, never as gateway receipts. */
+async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
+  const [intent] = await tx
+    .select({
+      outletId: paymentIntents.outletId,
+      edcTransactionId: paymentIntents.edcTransactionId,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    );
+  if (!intent)
+    throw new AutoJournalPayloadInvalid(
+      "Payment intent of the event not found",
+    );
+  return intent;
+}
+
+/**
+ * Rule input of one stored event, or null when the event books nothing
+ * (EDC-linked intent on a payment event, zero receipt, zero forfeit, zero
+ * shift difference, order.paid with every amount 0). Re-reads only rows that
+ * are final once the event exists (captured tenders, the intent, the
+ * completed refund, a fired order).
+ */
+export async function autoJournalFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<AutoJournalFact | null> {
+  switch (stored.eventName) {
+    case "order.paid": {
+      const p = orderPaidSchema.parse(stored.payload);
+      // legend-fbms: a total-0 order.paid is emitted for recipe deduction; it
+      // books nothing unless it carries a revenue pair (a full comp still
+      // posts gross sales against the discount).
+      if (
+        [
+          p.grossSalesIdr,
+          p.discountIdr,
+          p.serviceChargeIdr,
+          p.pbjtIdr,
+          p.roundingIdr,
+          p.paidCashIdr,
+          p.paidGatewayIdr,
+          p.paidEdcIdr,
+          p.paidPointsIdr,
+          p.paidDepositIdr,
+        ].every((amount) => amount === 0)
+      )
+        return null;
+      const [posOrder] = await tx
+        .select({ orderId: posOrders.orderId })
+        .from(posOrders)
+        .where(
+          and(
+            eq(posOrders.tenantId, tenantId),
+            eq(posOrders.orderId, p.orderId),
+          ),
+        );
+      // QR pay-first sale: no pos_orders row, channel qr, no tenders.
+      const qrSale =
+        posOrder === undefined ? await qrSaleGatewayOf(tx, tenantId, p) : null;
+      const tenders = qrSale
+        ? []
+        : await tx
+            .select({
+              method: posOrderTenders.method,
+              amountIdr: posOrderTenders.amountIdr,
+              paymentIntentId: posOrderTenders.paymentIntentId,
+            })
+            .from(posOrderTenders)
+            .where(
+              and(
+                eq(posOrderTenders.tenantId, tenantId),
+                eq(posOrderTenders.orderId, p.orderId),
+                eq(posOrderTenders.status, "captured"),
+              ),
+            );
+      let gatewayIdr = qrSale?.gatewayIdr ?? 0;
+      const intentTenders: { intentId: string; amountIdr: number }[] = [];
+      for (const tender of tenders) {
+        let bucket: ReturnType<typeof tenderBucket>;
+        try {
+          bucket = tenderBucket(tender.method as never);
+        } catch {
+          throw new AutoJournalPayloadInvalid(
+            "Captured tender has an unknown method",
+          );
+        }
+        if (bucket !== "gateway") continue;
+        gatewayIdr += tender.amountIdr;
+        if (tender.paymentIntentId !== null)
+          intentTenders.push({
+            intentId: tender.paymentIntentId,
+            amountIdr: tender.amountIdr,
+          });
+      }
+      if (gatewayIdr !== p.paidGatewayIdr)
+        throw new AccountingError(
+          "POSTING_AMOUNTS_MISMATCH",
+          "Captured gateway tenders do not match paidGatewayIdr",
+        );
+      const states = await receiptStatesOf(
+        tx,
+        tenantId,
+        intentTenders.map((tender) => tender.intentId),
+      );
+      let withReceipt = qrSale?.withReceipt ?? 0;
+      for (const tender of intentTenders) {
+        const state = states.get(tender.intentId);
+        if (state === "pending")
+          throw new AutoJournalReceiptPending(
+            "Gateway receipt of a tender is not booked yet",
+          );
+        if (state === "posted") withReceipt += tender.amountIdr;
+      }
+      // legend-6bq2: like a QR sale, a POS sale may not use more of an
+      // intent than its posted receipt still holds at the sale's bound
+      // (earlier sales, forfeits and payouts of that intent counted), so a
+      // refund completed before the sale cannot leave customer_deposit twice.
+      const postedIntents = [
+        ...new Set(
+          intentTenders
+            .filter((tender) => states.get(tender.intentId) === "posted")
+            .map((tender) => tender.intentId),
+        ),
+      ];
+      if (postedIntents.length > 0) {
+        const saleBound = await saleBoundOf(tx, tenantId, p.orderId);
+        for (const intentId of postedIntents)
+          await assertSaleWithinReceipt(tx, tenantId, intentId, saleBound);
+      }
+      // DP applied: out of customer_deposit when its receipt is booked, else
+      // (paid before the cutover) gateway money like a tender without receipt.
+      let paidDepositIdr = 0;
+      let depositGatewayIdr = 0;
+      if (p.paidDepositIdr > 0) {
+        const source = await orderDepositReceiptOf(
+          tx,
+          tenantId,
+          p.orderId,
+          p.paidDepositIdr,
+        );
+        if (source === "deposit") paidDepositIdr = p.paidDepositIdr;
+        else depositGatewayIdr = p.paidDepositIdr;
+      }
+      return {
+        ruleEvent: "order.paid",
+        amounts: {
+          paidCashIdr: p.paidCashIdr,
+          paidGatewayIntentIdr: withReceipt,
+          paidDepositIdr,
+          paidGatewayIdr: gatewayIdr - withReceipt + depositGatewayIdr,
+          paidEdcIdr: p.paidEdcIdr,
+          paidPointsIdr: p.paidPointsIdr,
+          discountIdr: p.discountIdr,
+          grossSalesIdr: p.grossSalesIdr,
+          serviceChargeIdr: p.serviceChargeIdr,
+          pbjtIdr: p.pbjtIdr,
+          roundingIdr: p.roundingIdr,
+        },
+        sourceId: p.orderId,
+        outletId: p.outletId,
+        moneyTime: new Date(p.paidAt),
+      };
+    }
+    case "order.refunded": {
+      const p = orderRefundedSchema.parse(stored.payload);
+      // legend-ni6o: the refund mirrors the sale journal, so it waits for it
+      // like the void does. A parked or missing sale would leave the refund
+      // reversing revenue never booked (its gateway part as customer_deposit).
+      const saleState = await backingStateOf(tx, tenantId, {
+        kind: "sale",
+        orderId: p.orderId,
+      });
+      if (saleState === "pending")
+        throw new AutoJournalSalePending("Sale journal is not posted yet");
+      if (saleState === "none")
+        throw new AutoJournalSaleMissing("Sale journal will never post");
+      return {
+        ruleEvent: "order.refunded",
+        amounts: {
+          grossSalesIdr: p.grossSalesIdr,
+          serviceChargeIdr: p.serviceChargeIdr,
+          pbjtIdr: p.pbjtIdr,
+          discountIdr: p.discountIdr,
+          refundCashIdr: p.refundCashIdr,
+          refundGatewayIdr: p.refundGatewayIdr,
+          refundEdcIdr: p.refundEdcIdr,
+          refundPointsIdr: p.refundPointsIdr,
+        },
+        sourceId: p.refundId,
+        outletId: p.outletId,
+        moneyTime: new Date(p.refundedAt),
+      };
+    }
+    case "order.voided":
+      throw new Error("order.voided is handled by voidFactOf");
+    case "order_issue.refund_reversal_requested":
+      throw new Error(
+        "order_issue.refund_reversal_requested is handled by recoveryRefundFactOf",
+      );
+    case "payment.paid": {
+      const p = paymentPaidSchema.parse(stored.payload);
+      if (p.receivedIdr <= 0) return null;
+      const intent = await intentOf(tx, tenantId, p.intentId);
+      if (intent.edcTransactionId !== null) return null;
+      return {
+        ruleEvent: "payment.paid",
+        amounts: { receivedIdr: p.receivedIdr },
+        sourceId: p.intentId,
+        outletId: intent.outletId,
+        moneyTime: new Date(p.paidAt ?? stored.occurredAt),
+      };
+    }
+    case "payment.funds_unallocated": {
+      const p = fundsUnallocatedSchema.parse(stored.payload);
+      if (p.receivedIdr <= 0) return null;
+      const [fund] = await tx
+        .select({
+          outletId: paymentUnallocatedFunds.outletId,
+          paymentIntentId: paymentUnallocatedFunds.paymentIntentId,
+          amountIdr: paymentUnallocatedFunds.amountIdr,
+        })
+        .from(paymentUnallocatedFunds)
+        .where(
+          and(
+            eq(paymentUnallocatedFunds.tenantId, tenantId),
+            eq(paymentUnallocatedFunds.id, p.unallocatedFundId),
+          ),
+        );
+      if (
+        !fund ||
+        fund.paymentIntentId !== p.intentId ||
+        Number(fund.amountIdr) !== p.receivedIdr
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Unallocated fund of the event not found or different",
+        );
+      const intent = await intentOf(tx, tenantId, p.intentId);
+      // Same as payment.refunded: the payout of a fund on an EDC-linked
+      // intent books nothing, so its receipt books nothing either.
+      if (intent.edcTransactionId !== null) return null;
+      return {
+        ruleEvent: "payment.funds_unallocated",
+        amounts: { receivedIdr: p.receivedIdr },
+        sourceId: p.unallocatedFundId,
+        outletId: fund.outletId,
+        moneyTime: new Date(p.receivedAt),
+      };
+    }
+    case "payment.refunded": {
+      const p = paymentRefundedSchema.parse(stored.payload);
+      if (p.amountIdr <= 0) return null;
+      const intent = await intentOf(tx, tenantId, p.paymentIntentId);
+      if (intent.edcTransactionId !== null) return null;
+      const [refund] = await tx
+        .select({
+          outletId: paymentRefunds.outletId,
+          status: paymentRefunds.status,
+          completedAt: paymentRefunds.completedAt,
+          amountIdr: paymentRefunds.amountIdr,
+          paymentIntentId: paymentRefunds.paymentIntentId,
+          unallocatedFundId: paymentRefunds.unallocatedFundId,
+        })
+        .from(paymentRefunds)
+        .where(
+          and(
+            eq(paymentRefunds.tenantId, tenantId),
+            eq(paymentRefunds.id, p.refundId),
+          ),
+        );
+      if (!refund)
+        throw new AutoJournalPayloadInvalid(
+          "Payment refund of the event not found",
+        );
+      // The refund is judged at its own completion: it must be final and be
+      // the one the event reports.
+      if (
+        refund.status !== "completed" ||
+        refund.completedAt === null ||
+        Number(refund.amountIdr) !== p.amountIdr ||
+        refund.paymentIntentId !== p.paymentIntentId
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Payment refund is not completed or differs from the event",
+        );
+      // The payout leaves the receipt that holds its money: the fund's own
+      // receipt, else the intent's (an intent refund, or a fund the intent's
+      // payment.paid already counts).
+      const backing = await payoutBackingOf(tx, tenantId, {
+        intentId: p.paymentIntentId,
+        unallocatedFundId: refund.unallocatedFundId,
+      });
+      const backingState = await backingStateOf(tx, tenantId, backing);
+      if (backingState === "pending")
+        throw new AutoJournalReceiptPending(
+          "Receipt behind a payout is not booked yet",
+        );
+      if (backingState === "none")
+        throw new AutoJournalReceiptMissing(
+          "Receipt behind a payout will never be booked",
+        );
+      await assertPayoutWithinReceipt(tx, tenantId, backing, {
+        refundId: p.refundId,
+        completedAt: refund.completedAt,
+        intentId: p.paymentIntentId,
+        unallocatedFundId: refund.unallocatedFundId,
+      });
+      return {
+        ruleEvent: "payment.refunded",
+        amounts: { amountIdr: p.amountIdr },
+        sourceId: p.refundId,
+        outletId: refund.outletId,
+        moneyTime: refund.completedAt,
+      };
+    }
+    case "reservation.cancelled":
+    case "reservation.no_show": {
+      const p = reservationClosedSchema.parse(stored.payload);
+      if (p.depositForfeitedIdr === 0) return null;
+      const [reservation] = await tx
+        .select({
+          outletId: reservations.outletId,
+          status: reservations.status,
+          depositForfeitedIdr: reservations.depositForfeitedIdr,
+          depositPaymentId: reservations.depositPaymentId,
+          closedAt: reservations.closedAt,
+        })
+        .from(reservations)
+        .where(
+          and(
+            eq(reservations.tenantId, tenantId),
+            eq(reservations.id, p.reservationId),
+          ),
+        );
+      const closedAs =
+        stored.eventName === "reservation.cancelled" ? "cancelled" : "no_show";
+      if (
+        !reservation ||
+        reservation.outletId !== stored.outletId ||
+        reservation.status !== closedAs
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Reservation of the event not found, of another outlet or not closed so",
+        );
+      // The close writes the forfeit to the row in the same transaction as
+      // the event, and nothing changes it afterwards.
+      if (Number(reservation.depositForfeitedIdr) !== p.depositForfeitedIdr)
+        throw new AccountingError(
+          "POSTING_AMOUNTS_MISMATCH",
+          "depositForfeitedIdr does not match the reservation",
+        );
+      // Only the DP intent the close split (deposit_payment_id) decides.
+      if (reservation.depositPaymentId === null)
+        throw new AutoJournalPayloadInvalid(
+          "Reservation with a forfeit has no DP payment intent",
+        );
+      const source = await depositReceiptOf(tx, tenantId, [
+        reservation.depositPaymentId,
+      ]);
+      // The forfeit and the refunds that were final before it may not take
+      // more than the DP intent took (a later refund parks itself instead).
+      if (reservation.closedAt === null)
+        throw new AutoJournalPayloadInvalid(
+          "Closed reservation has no close time",
+        );
+      await assertForfeitWithinIntent(
+        tx,
+        tenantId,
+        reservation.depositPaymentId,
+        p.depositForfeitedIdr,
+        p.reservationId,
+      );
+      return {
+        ruleEvent: stored.eventName,
+        amounts: {
+          forfeitedIdr: source === "deposit" ? p.depositForfeitedIdr : 0,
+          forfeitedGatewayIdr: source === "gateway" ? p.depositForfeitedIdr : 0,
+        },
+        sourceId: p.reservationId,
+        outletId: stored.outletId,
+        moneyTime: new Date(stored.occurredAt),
+      };
+    }
+    case "cashier_shift.closed": {
+      const p = shiftClosedSchema.parse(stored.payload);
+      if (p.differenceIdr === 0) return null;
+      const [shift] = await tx
+        .select({
+          outletId: posShifts.outletId,
+          status: posShifts.status,
+          varianceIdr: posShifts.varianceIdr,
+          differenceIdr: posShifts.differenceIdr,
+        })
+        .from(posShifts)
+        .where(
+          and(eq(posShifts.tenantId, tenantId), eq(posShifts.id, p.shiftId)),
+        );
+      if (!shift || shift.status !== "closed" || shift.outletId !== p.outletId)
+        throw new AutoJournalPayloadInvalid(
+          "Shift of the event not found, open or of another outlet",
+        );
+      // legend-y9bf: the close stores the difference it booked. A shift
+      // closed before that (null) keeps the old check against the variance,
+      // so a legacy event that added held cash outs stays parked.
+      const booked = shift.differenceIdr ?? shift.varianceIdr;
+      if (booked === null || Number(booked) !== p.differenceIdr)
+        throw new AccountingError(
+          "POSTING_AMOUNTS_MISMATCH",
+          "differenceIdr does not match the shift difference",
+        );
+      return {
+        ruleEvent: "cashier_shift.closed",
+        amounts: { differenceIdr: p.differenceIdr },
+        sourceId: p.shiftId,
+        outletId: shift.outletId,
+        moneyTime: new Date(p.closedAt),
+      };
+    }
+    // No backing guard (design section 10): the bank statement is the fact,
+    // finance reconciles the clearing account, so an over-settlement is a
+    // reconciliation case, not a park. A zero fee posts Dr bank / Cr clearing
+    // only (buildJournalLinesFromRule skips a zero amount). The journal is
+    // dated settledOn exactly: entryDate, not a date derived from an instant.
+    case "settlement.reconciled": {
+      const p = settlementReconciledPayloadSchema.parse(stored.payload);
+      return {
+        ruleEvent: "settlement.reconciled",
+        amounts: {
+          grossIdr: p.grossIdr,
+          feeIdr: p.feeIdr,
+          netSettledIdr: p.netSettledIdr,
+        },
+        sourceId: p.settlementId,
+        outletId: p.outletId,
+        moneyTime: new Date(`${p.settledOn}T00:00:00.000Z`),
+        entryDate: p.settledOn,
+      };
+    }
+    case "edc_transaction.settled": {
+      const p = edcTransactionSettledPayloadSchema.parse(stored.payload);
+      return {
+        ruleEvent: "edc_transaction.settled",
+        amounts: {
+          grossIdr: p.grossIdr,
+          feeIdr: p.feeIdr,
+          netSettledIdr: p.netSettledIdr,
+        },
+        sourceId: p.settlementBatchId,
+        outletId: p.outletId,
+        moneyTime: new Date(`${p.settledOn}T00:00:00.000Z`),
+        entryDate: p.settledOn,
+      };
+    }
+    // The posting rule reads debitNoteIdr (accounts payable cleared by the
+    // return: the invoiced value plus its PPN), the emitter sends the parts.
+    // Nothing returned books nothing (ignored). The journal date is the
+    // outlet business date of returnedAt.
+    case "purchase_return.recorded": {
+      const p = purchaseReturnRecordedSchema.parse(stored.payload);
+      if (p.valueIdr === 0) return null;
+      if (p.valueIdr !== p.uninvoicedValueIdr + p.invoicedValueIdr)
+        throw new AutoJournalPayloadInvalid(
+          "purchase_return valueIdr differs from its uninvoiced and invoiced parts",
+        );
+      if (p.ppnIdr > 0 && p.invoicedValueIdr === 0)
+        throw new AutoJournalPayloadInvalid(
+          "purchase_return ppnIdr without an invoiced value",
+        );
+      return {
+        ruleEvent: "purchase_return.recorded",
+        amounts: {
+          uninvoicedValueIdr: p.uninvoicedValueIdr,
+          debitNoteIdr: p.invoicedValueIdr + p.ppnIdr,
+          valueIdr: p.valueIdr,
+          ppnIdr: p.ppnIdr,
+        },
+        sourceId: p.purchaseReturnId,
+        outletId: p.outletId,
+        moneyTime: new Date(p.returnedAt),
+      };
+    }
+    // Dated by the petty purchase business date as is (entryDate), like a
+    // bank settlement: the outlet already decided which day it belongs to.
+    case "petty_purchase.recorded": {
+      const p = pettyPurchaseRecordedSchema.parse(stored.payload);
+      if (p.amountIdr === 0) return null;
+      return {
+        ruleEvent: "petty_purchase.recorded",
+        amounts: { amountIdr: p.amountIdr },
+        sourceId: p.pettyPurchaseId,
+        outletId: p.outletId,
+        moneyTime: new Date(p.paidAt),
+        entryDate: p.businessDate,
+      };
+    }
+    case "points.earned":
+    case "points.reversed":
+    case "points.redeemed":
+    case "points.adjusted":
+    case "points.expired":
+      return loyaltyFactOf(tx, tenantId, stored.eventName, stored.payload);
+  }
+}
+
+/** legend-msqvi: ledger row types each points event is emitted for. */
+const LOYALTY_ROW_TYPES: Record<
+  LoyaltyAutoJournalEventName,
+  readonly string[]
+> = {
+  "points.earned": ["earn", "bonus"],
+  "points.reversed": ["reverse"],
+  "points.redeemed": ["redeem"],
+  "points.adjusted": ["adjust"],
+  "points.expired": ["expire"],
+};
+
+/**
+ * legend-msqvi (D-msqvi sections 3-7): the loyalty fact of one point_ledger
+ * row. pointsValueIdr keeps the row's sign: earned and adjusted rules credit
+ * loyalty_liability, the others debit it, so the amount is liability_idr or
+ * its negation and the journal always moves loyalty_liability exactly as the
+ * ledger did (a negative manual adjustment flips to Dr liability / Cr
+ * deferral). Ignored (null): a redeem row that is not a reward redemption
+ * (points tender belongs to order.paid paidPointsIdr), an earn on a training
+ * order or the reversal of one, a zero liability.
+ */
+async function loyaltyFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  eventName: LoyaltyAutoJournalEventName,
+  payload: Record<string, unknown>,
+): Promise<AutoJournalFact | null> {
+  const { ledgerEntryId } = loyaltyStoredSchema.parse(payload);
+  const row = await ledgerRowOf(tx, tenantId, ledgerEntryId);
+  if (!row || !LOYALTY_ROW_TYPES[eventName].includes(row.type))
+    throw new AutoJournalPayloadInvalid(
+      `Ledger entry of ${eventName} not found or of another type`,
+    );
+  if (eventName === "points.redeemed" && row.sourceType !== "reward_redemption")
+    return null;
+  let journalOutletId: string | null = null;
+  if (eventName === "points.earned") {
+    if (
+      row.sourceType === "order" &&
+      row.sourceId !== null &&
+      (await isTrainingOrder(tx, tenantId, row.sourceId))
+    )
+      return null;
+    journalOutletId = row.outletId;
+  }
+  if (eventName === "points.reversed") {
+    const reversed =
+      row.reversesEntryId === null
+        ? undefined
+        : await ledgerRowOf(tx, tenantId, row.reversesEntryId);
+    if (!reversed)
+      throw new AutoJournalPayloadInvalid(
+        "Reversed ledger entry of points.reversed not found",
+      );
+    if (
+      reversed.sourceType === "order" &&
+      reversed.sourceId !== null &&
+      (await isTrainingOrder(tx, tenantId, reversed.sourceId))
+    )
+      return null;
+    journalOutletId = reversed.outletId;
+  }
+  const liabilityIdr = Number(row.liabilityIdr);
+  if (liabilityIdr === 0) return null;
+  const anchor = await loyaltyAnchorOf(tx, tenantId);
+  if (!anchor)
+    throw new AutoJournalPayloadInvalid("Tenant has no outlet for loyalty");
+  if (anchor.legalEntityId === null)
+    throw new AutoJournalLoyaltyEntityAmbiguous(
+      "Tenant outlets belong to more than one legal entity",
+    );
+  const raisesLiability =
+    eventName === "points.earned" || eventName === "points.adjusted";
+  return {
+    ruleEvent: eventName,
+    amounts: { pointsValueIdr: raisesLiability ? liabilityIdr : -liabilityIdr },
+    sourceId: row.id,
+    outletId: anchor.outletId,
+    journalOutletId,
+    moneyTime: row.createdAt,
+    // Dated like the sale that earned the points (the earn consumer copies the
+    // order business date), so an offline order synced after midnight or
+    // month end defers in the same period as its revenue. Rows without one
+    // (expire, redeem, manual) fall back to the anchor outlet clock.
+    ...(row.businessDate ? { entryDate: row.businessDate } : {}),
+  };
+}
+
+async function ledgerRowOf(tx: Tx, tenantId: TenantId, ledgerEntryId: string) {
+  const [row] = await tx
+    .select({
+      id: pointLedger.id,
+      type: pointLedger.type,
+      outletId: pointLedger.outletId,
+      sourceType: pointLedger.sourceType,
+      sourceId: pointLedger.sourceId,
+      reversesEntryId: pointLedger.reversesEntryId,
+      liabilityIdr: pointLedger.liabilityIdr,
+      createdAt: pointLedger.createdAt,
+      businessDate: pointLedger.businessDate,
+    })
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenantId),
+        eq(pointLedger.id, ledgerEntryId),
+      ),
+    );
+  return row;
+}

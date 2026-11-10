@@ -7,10 +7,11 @@
 // the fixtures exercise the same code the BE runs and always balance.
 
 import { cafeLegendFixtures, idr } from "../core/index.ts";
-import type { OutletId, UserId } from "../core/index.ts";
+import type { Idr, OutletId, UserId } from "../core/index.ts";
 import { cafeLegendAccessFixtures } from "../access/fixtures.ts";
 import {
   straightLineSchedule,
+  fixedAssetDerivedFields,
   fixedAssetSchema,
   depreciationRunSchema,
 } from "./assets.ts";
@@ -43,6 +44,7 @@ import type {
   JournalSourceType,
 } from "./journal.ts";
 import { openItemSchema } from "./payables.ts";
+import { payrollJournalAmounts } from "./payroll-journal.ts";
 import {
   fiscalPeriodSchema,
   periodCloseSnapshotSchema,
@@ -72,6 +74,7 @@ import type {
   DistributionCalculation,
   DistributionRun,
 } from "./profit-share.ts";
+import { statementBasisFields } from "./statement-basis.ts";
 import {
   buildBalanceSheet,
   buildProfitAndLoss,
@@ -287,14 +290,29 @@ post({
   sourceId: fixedId("9a000000", 1),
   description: "Payroll Oktober 2026",
   lines: fromRule(
-    { eventName: "payroll_run.completed" },
-    {
-      grossPayIdr: 42_000_000,
-      employerBpjsIdr: 2_184_000,
-      netPayIdr: 40_530_000,
-      totalBpjsIdr: 3_024_000,
-      pph21Idr: 630_000,
-    },
+    { eventName: "payroll.locked" },
+    payrollJournalAmounts({
+      employeeCount: 3,
+      grossIdr: idr(42_000_000),
+      deductionsIdr: idr(1_470_000),
+      netIdr: idr(40_530_000),
+      bpjsEmployeeIdr: idr(840_000),
+      bpjsCompanyIdr: idr(2_184_000),
+      pph21Idr: idr(630_000),
+      pph21WithheldIdr: idr(630_000),
+      pph21EmployerBorneIdr: idr(0),
+      pph21RefundIdr: idr(0),
+      pph21EmployerRefundIdr: idr(0),
+      pph21EmployerAllowanceRefundIdr: idr(0),
+      loanRepaymentIdr: idr(0),
+      pph21ReceivableIdr: idr(0),
+      pph21ReceivableCollectedIdr: idr(0),
+      otherDeductionsIdr: idr(0),
+      serviceChargeIdr: idr(0),
+      reimbursementIdr: idr(0),
+      bankTransferIdr: idr(40_530_000),
+      cashIdr: idr(0),
+    }),
     null,
   ),
 });
@@ -337,6 +355,8 @@ const cashSale = post({
     { eventName: "order.paid" },
     {
       paidCashIdr: 137_500,
+      paidGatewayIntentIdr: 0,
+      paidDepositIdr: 0,
       paidGatewayIdr: 0,
       paidEdcIdr: 0,
       paidPointsIdr: 0,
@@ -361,7 +381,21 @@ post({
     bandung,
   ),
 });
-// QRIS sale through the gateway, then its settlement with MDR (illustrative 0.7%).
+// QRIS sale through the gateway: the receipt books first (payment.paid), the
+// sale then moves it out of customer_deposit, and settlement with MDR
+// (illustrative 0.7%) clears gateway_clearing.
+post({
+  entryDate: "2026-11-01",
+  sourceType: "customer_deposit",
+  sourceId: fixedId("9b000000", 1),
+  description: "Penerimaan QRIS BDG-01",
+  outletId: bandung,
+  lines: fromRule(
+    { eventName: "payment.paid" },
+    { receivedIdr: 275_000 },
+    bandung,
+  ),
+});
 post({
   entryDate: "2026-11-01",
   sourceType: "sale",
@@ -372,7 +406,9 @@ post({
     { eventName: "order.paid" },
     {
       paidCashIdr: 0,
-      paidGatewayIdr: 275_000,
+      paidGatewayIntentIdr: 275_000,
+      paidDepositIdr: 0,
+      paidGatewayIdr: 0,
       paidEdcIdr: 0,
       paidPointsIdr: 0,
       discountIdr: 0,
@@ -780,12 +816,23 @@ const payablesAndReceivables = openItems.map(
 
 // ---- Fixed assets + depreciation --------------------------------------------------
 
-const assetRow = (n: number, extra: Record<string, unknown>) =>
+const assetRow = (
+  n: number,
+  extra: Record<string, unknown> & {
+    costIdr: Idr;
+    accumulatedDepreciationIdr: Idr;
+  },
+) =>
   fixedAssetSchema.parse({
     id: fixedId("fa000000", n),
     tenantId,
     legalEntityId,
     outletId: bandung,
+    code: `FA-${String(n).padStart(5, "0")}`,
+    categoryId: null,
+    categoryName: null,
+    revaluationSurplusIdr: idr(0),
+    revaluationLossIdr: idr(0),
     method: "straight_line",
     depreciationStartPeriod: "2026-10",
     sourceDocumentId: null,
@@ -793,6 +840,8 @@ const assetRow = (n: number, extra: Record<string, unknown>) =>
     disposedOn: null,
     disposalProceedsIdr: null,
     ...extra,
+    originalCostIdr: extra.costIdr,
+    ...fixedAssetDerivedFields({ ...extra, disposalProceedsIdr: null }),
   });
 const fixedAssets = [
   assetRow(1, {
@@ -930,27 +979,36 @@ const trialBalance = buildTrialBalance(
   ledgerLines,
   legalEntityId,
   "2026-11-30",
+  fiscalPeriods,
 );
 const profitAndLossNovember = buildProfitAndLoss(accounts, ledgerLines, {
   legalEntityId,
   from: "2026-11-01",
   to: "2026-11-30",
+  periods: fiscalPeriods,
 });
 const profitAndLossBandungNovember = buildProfitAndLoss(accounts, ledgerLines, {
   legalEntityId,
   from: "2026-11-01",
   to: "2026-11-30",
   outletId: bandung,
+  periods: fiscalPeriods,
 });
 const balanceSheet = buildBalanceSheet(accounts, ledgerLines, {
   legalEntityId,
   asOf: "2026-11-30",
+  periods: fiscalPeriods,
 });
 
 const cashFlowNovember = cashFlowStatementSchema.parse({
   legalEntityId,
   from: "2026-11-01",
   to: "2026-11-30",
+  ...statementBasisFields(fiscalPeriods, {
+    from: "2026-11-01",
+    to: "2026-11-30",
+    cumulative: true,
+  }),
   method: "direct",
   sections: [
     {
@@ -975,6 +1033,11 @@ const equityChangesOctober = equityChangesSchema.parse({
   legalEntityId,
   from: "2026-10-01",
   to: "2026-10-31",
+  ...statementBasisFields(fiscalPeriods, {
+    from: "2026-10-01",
+    to: "2026-10-31",
+    cumulative: true,
+  }),
   rows: [
     {
       accountId: acc("3101"),
@@ -1265,6 +1328,9 @@ function draftDistributionRun(input: {
     adjustsRunId: input.adjustsRunId ?? null,
     adjustmentReason: input.adjustmentReason ?? null,
     reversalJournalEntryId: null,
+    unabsorbedIdr: 0,
+    carryDeductedIdr: calc.carryDeductedIdr,
+    carryDeductions: [],
   });
 }
 

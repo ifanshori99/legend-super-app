@@ -61,6 +61,40 @@ export const openItemSchema = z
   });
 export type OpenItem = z.infer<typeof openItemSchema>;
 
+/**
+ * One row of the open-item list behind an aging cell: an invoice that still
+ * has money outstanding (outstanding > 0), as of the requested date. Carries
+ * no tenant id: the tenant is the caller's.
+ */
+export const openItemListRowSchema = z
+  .strictObject({
+    id: uuidSchema,
+    outletId: outletIdSchema.nullable(),
+    counterpartyId: uuidSchema,
+    counterpartyName: z.string().trim().min(1).max(150),
+    documentNumber: z.string().trim().min(1).max(60),
+    documentDate: businessDateSchema,
+    dueOn: businessDateSchema,
+    originalIdr: idrSchema.refine((v) => v > 0, "Amount must be > 0"),
+    settledIdr: idrSchema.refine((v) => v >= 0, "Amount must be >= 0"),
+    outstandingIdr: idrSchema.refine((v) => v > 0, "Amount must be > 0"),
+  })
+  .superRefine((item, ctx) => {
+    if (item.originalIdr - item.settledIdr !== item.outstandingIdr)
+      ctx.addIssue({
+        code: "custom",
+        path: ["outstandingIdr"],
+        message: "outstanding = original - settled",
+      });
+    if (item.dueOn < item.documentDate)
+      ctx.addIssue({
+        code: "custom",
+        path: ["dueOn"],
+        message: "dueOn must not be before documentDate",
+      });
+  });
+export type OpenItemListRow = z.infer<typeof openItemListRowSchema>;
+
 /** Ascending day limits of the overdue buckets, e.g. [30, 60, 90] (tenant data). */
 export const agingBucketLimitsSchema = z
   .array(z.number().int().min(1).max(3650))

@@ -8,6 +8,7 @@ import {
   CalendarClock,
   CheckCheck,
   DoorClosed,
+  HandCoins,
   Merge,
   MoveRight,
   Power,
@@ -34,6 +35,7 @@ import type {
   FloorZone,
   TableLiveStatus,
 } from "@starter/shared/qr-order";
+import { ConvertOpenBillDialog } from "../../open-bill/components/convert-open-bill-dialog";
 import { useIssueTableQr } from "../hooks";
 import {
   paymentModeLabel,
@@ -64,7 +66,8 @@ type DialogKind =
   | "release"
   | "clean"
   | "deactivate"
-  | "activate";
+  | "activate"
+  | "openBill";
 
 function MenuButton({
   icon: Icon,
@@ -225,6 +228,16 @@ export function TableActionsPanel({
               />
               {t("floor.actions.openBillGuard")}
             </p>
+          )}
+
+          {/* Outside the manage gate: the supervisor on duty may not hold
+              floor.table.manage; the server checks the PIN. */}
+          {actions.convertOpenBill && (
+            <MenuButton
+              icon={HandCoins}
+              label={t("openBillConvert.action")}
+              onClick={() => setDialog("openBill")}
+            />
           )}
 
           {!canManage ? (
@@ -444,6 +457,15 @@ export function TableActionsPanel({
           action="activate"
           title={t("floor.actions.activate")}
           hint={t("floor.dialogs.activateHint")}
+          open
+          onOpenChange={closeDialog}
+          onDone={done}
+        />
+      )}
+      {dialog === "openBill" && (
+        <ConvertOpenBillDialog
+          row={row}
+          outletId={board.outletId}
           open
           onOpenChange={closeDialog}
           onDone={done}

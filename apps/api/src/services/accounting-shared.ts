@@ -42,6 +42,8 @@ export type JournalFingerprintInput = {
     readonly outletId: string | null;
     readonly costCenter: string | null;
   }[];
+  /** Original business date of a late adjustment; null for a normal entry. */
+  readonly lateAdjustmentFrom?: string | null;
 };
 
 /**
@@ -52,7 +54,7 @@ export type JournalFingerprintInput = {
 export function journalRequestFingerprint(
   input: JournalFingerprintInput,
 ): string {
-  const canonical = JSON.stringify([
+  const fields: unknown[] = [
     input.legalEntityId.toLowerCase(),
     input.outletId?.toLowerCase() ?? null,
     input.entryDate,
@@ -66,7 +68,11 @@ export function journalRequestFingerprint(
       line.outletId?.toLowerCase() ?? null,
       line.costCenter ?? null,
     ]),
-  ]);
+  ];
+  // Only a late adjustment adds a field, so every existing fingerprint (and so
+  // every stored idempotency binding) stays unchanged.
+  if (input.lateAdjustmentFrom) fields.push(["late", input.lateAdjustmentFrom]);
+  const canonical = JSON.stringify(fields);
   return createHash("sha256").update(canonical).digest("hex");
 }
 
@@ -113,9 +119,11 @@ const AUDIT_SAFE_FIELDS = [
   "role",
   "glCode",
   "count",
+  "carryDeductedIdr",
   "entryDate",
   "sourceType",
   "reversalEntryId",
+  "version",
 ] as const;
 
 /** Writes one append-only audit row inside the caller's transaction. */
@@ -123,7 +131,8 @@ export async function auditAccountingChange(
   tx: TenantTransaction,
   context: ScopedTenantContext,
   input: {
-    actorId: UserId;
+    /** Null records a system decision (actorType "system"). */
+    actorId: UserId | null;
     action: string;
     objectType: string;
     objectId: string | null;
@@ -140,7 +149,7 @@ export async function auditAccountingChange(
       id: createUlid(),
       tenantId: context.tenant.tenantId,
       outletId: input.outletId ?? null,
-      actorType: "user",
+      actorType: input.actorId === null ? "system" : "user",
       actorId: input.actorId,
       deviceId: null,
       action: input.action,

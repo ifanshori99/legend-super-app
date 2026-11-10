@@ -11,6 +11,7 @@ export const qrGlassItemMessages = {
   soldOut: {
     title: "Menu ini sedang habis",
     hint: "Belum bisa ditambahkan ke pesanan. Pilih menu lain dari daftar.",
+    hintUntil: "Bisa dipesan lagi pada jam itu.",
   },
   error: {
     chooseBefore: "Pilih {group} sebelum menambahkan.",

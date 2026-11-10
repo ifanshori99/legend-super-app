@@ -767,8 +767,16 @@ test("voucher lifecycle blocks expired, redeemed and mismatched codes (LOY-03)",
 test("voucher codes normalize before hashing and validation", () => {
   assert.equal(crm.voucherCodeInputSchema.parse("  legend25  "), "LEGEND25");
   assert.equal(crm.voucherCodeInputSchema.safeParse("abc").success, false);
+  // legend-4qu: the grouped display form of an apology voucher redeems too.
+  assert.equal(crm.voucherCodeInputSchema.parse("legend-25"), "LEGEND25");
   assert.equal(
-    crm.voucherCodeInputSchema.safeParse("LEGEND-25").success,
+    crm.voucherCodeInputSchema.parse(" leg-ab12-cd34 "),
+    "LEGAB12CD34",
+  );
+  assert.equal(crm.voucherCodeInputSchema.safeParse("a-b-c").success, false);
+  assert.equal(crm.voucherCodeInputSchema.safeParse("------").success, false);
+  assert.equal(
+    crm.voucherCodeInputSchema.safeParse("LEGEND_25").success,
     false,
   );
   assert.equal(
@@ -981,7 +989,7 @@ test("CRM events are registered in the WS-00 catalog with typed payloads (PRD §
 // ---- Endpoints ------------------------------------------------------------
 
 test("CRM endpoints are unique, typed and tenant-free client input (docs/frontend.md)", () => {
-  assert.equal(crm.crmEndpoints.length, 42);
+  assert.equal(crm.crmEndpoints.length, 49);
   const ids = crm.crmEndpoints.map((endpoint) => endpoint.id);
   assert.equal(new Set(ids).size, ids.length);
   for (const endpoint of crm.crmEndpoints) {

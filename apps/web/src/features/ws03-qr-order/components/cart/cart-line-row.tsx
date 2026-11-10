@@ -17,6 +17,7 @@ export function CartLineRow({
   token,
   photoUrl,
   soldOut,
+  availableLabel = null,
   mine,
   busy,
   onQuantity,
@@ -28,6 +29,8 @@ export function CartLineRow({
   /** Photo of the menu item today; null when it has none (quiet plate). */
   photoUrl: string | null;
   soldOut: boolean;
+  /** "Tersedia mulai HH:mm" for a line outside its sales window; null: sold out. */
+  availableLabel?: string | null;
   /** True: added from this phone. False: another guest. Null: unknown. */
   mine: boolean | null;
   busy: boolean;
@@ -64,7 +67,7 @@ export function CartLineRow({
             <p className="text-sm leading-5 text-muted-foreground">
               {soldOut && (
                 <Badge tone="danger" className="me-1.5">
-                  {t("qrCart.cart.soldOut")}
+                  {availableLabel ?? t("qrCart.cart.soldOut")}
                 </Badge>
               )}
               {details}
@@ -124,7 +127,14 @@ export function CartLineRow({
         </div>
       </div>
       {soldOut && (
-        <Notice tone="warning" title={t("qrCart.cart.soldOutLine")} />
+        <Notice
+          tone="warning"
+          title={t(
+            availableLabel
+              ? "qrCart.cart.soldOutLineUntil"
+              : "qrCart.cart.soldOutLine",
+          )}
+        />
       )}
     </li>
   );

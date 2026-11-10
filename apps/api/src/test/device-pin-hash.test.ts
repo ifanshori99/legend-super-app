@@ -42,6 +42,7 @@ async function edgeRecord(
     failedAttempts: state.failedAttempts ?? 0,
     lockedUntil: state.lockedUntil ?? null,
     updatedAt: new Date().toISOString(),
+    pinGenerationAt: new Date().toISOString(),
   });
 }
 
@@ -187,6 +188,7 @@ describe("legend-dxb §3 F6 offline verify on the edge", () => {
         "outletId",
         "params",
         "pepperVersion",
+        "pinGenerationAt",
         "pinHash",
         "salt",
         "tenantId",

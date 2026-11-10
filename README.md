@@ -6,11 +6,11 @@ A monorepo starter with an **Express 5 API** and a **TanStack Start web app**, s
 - **Web** (`apps/web`): TanStack Start (Vite + Nitro), Better Auth client, an SSR auth middleware, TanStack Query custom hooks, Tailwind CSS v4, shadcn/ui, Motion.
 - **Shared** (`packages/shared`): zod validators, permissions, API types, app identity.
 
-It includes working accounts, a blank protected app page, a Notes feature that shows the full path from Express route to React hook, an admin page guarded by roles, project skills, and Context7 configuration.
+It includes working accounts, a signed-in app area, role-guarded API routes, project skills, and Context7 configuration. Feature code is added following the patterns in [backend](docs/backend.md) and [frontend](docs/frontend.md).
 
 ## Start here
 
-Install **Node.js 22.12 or newer** and **Docker Desktop**, then start Docker Desktop. Run `corepack enable` once if you don't have pnpm. Open this project folder in your AI editor and prompt:
+Install **Node.js 22.18 or newer** and **Docker Desktop**, then start Docker Desktop. Run `corepack enable` once if you don't have pnpm. Open this project folder in your AI editor and prompt:
 
 > Build a personal reading list with accounts. Set up this project, run it, and let each person manage their own books.
 
@@ -50,7 +50,7 @@ Browser ──cookies + Origin──▶ Express API :4000 ── routes → serv
 ```
 
 - The browser signs in with Better Auth on the API (a different origin) using `credentials: "include"`. CORS and Better Auth's `trustedOrigins` allow exactly the web app's origin, and every cookie-authenticated mutation must come from it.
-- The web server reads the session from the API in a TanStack Start **auth middleware** and prefetches page data into **TanStack Query**, so pages render with data; the browser then uses **custom hooks** (`useNotes`, `useCreateNote`, …).
+- The web server reads the session from the API in a TanStack Start **auth middleware** and prefetches page data into **TanStack Query**, so pages render with data; the browser then uses **custom hooks** (`useX`, `useCreateX`, …).
 - Locally both apps share the session cookie because cookies ignore ports. In production put them on subdomains (`app.example.com`, `api.example.com`) and set `COOKIE_DOMAIN=.example.com`.
 
 Read [architecture](docs/architecture.md), the [backend standard](docs/backend.md), and the [frontend standard](docs/frontend.md).
@@ -59,27 +59,27 @@ Read [architecture](docs/architecture.md), the [backend standard](docs/backend.m
 
 Enable Context7 once in your editor; see [AI editor setup](docs/ai-workflow.md). Then try:
 
-> Read AGENTS.md and use build-feature. Create a personal reading list. Let me add books, mark them finished, and delete them. Each account should only see its own books. Follow the Notes example from Express route to React hook, and use Context7 for current documentation. Build the smallest working version and test it.
+> Read AGENTS.md and use build-feature. Create a personal reading list. Let me add books, mark them finished, and delete them. Each account should only see its own books. Follow the backend and frontend standards from Express route to React hook, and use Context7 for current documentation. Build the smallest working version and test it.
 
 More in [prompts](docs/prompts.md). No model API key is required by the app.
 
 ## What is included
 
-| Area           | Included                                                                                   |
-| -------------- | ------------------------------------------------------------------------------------------ |
-| Monorepo       | pnpm workspaces + catalog, Turborepo, shared TypeScript contract package                   |
-| API            | Express 5, routes → services, zod validation, JSON error envelope, helmet, CORS            |
-| Data           | Drizzle ORM, node-postgres pool, committed PostgreSQL migrations                           |
-| Accounts       | Better Auth email/password on the API; browser client + SSR auth middleware on the web app |
-| Roles          | Better Auth access control shared by both apps; permission-guarded routes and admin page   |
-| Web data       | Isomorphic `apiFetch`, query options, custom TanStack Query hooks, SSR prefetch/hydration  |
-| Logging        | pino on both servers, request IDs across services, AsyncLocalStorage context, redaction    |
-| Dev loop       | API restarts on change (tsx watch, graceful shutdown), Vite HMR, one `pnpm dev`            |
-| Local database | PostgreSQL 17 in Docker, persistent volume, random credentials, healthcheck                |
-| UI             | Tailwind v4, shadcn/ui primitives, Lucide icons, Motion with reduced motion                |
-| AI workflow    | AGENTS.md + agent.md, four project skills, Context7 configs for four editors               |
-| Quality        | Lint, types, API integration tests, browser tests, all on disposable PostgreSQL; CI        |
-| Deployment     | Per-app Dockerfiles (turbo prune), self-contained API bundle, migrator image               |
+| Area           | Included                                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| Monorepo       | pnpm workspaces + catalog, Turborepo, shared TypeScript contract package                                  |
+| API            | Express 5, routes → services, zod validation, JSON error envelope, helmet, CORS                           |
+| Data           | Drizzle ORM, node-postgres pool, committed PostgreSQL migrations                                          |
+| Accounts       | Better Auth email/password on the API; browser client + SSR auth middleware on the web app                |
+| Roles          | Better Auth access control shared by both apps; permission-guarded routes, platform-admin routes with MFA |
+| Web data       | Isomorphic `apiFetch`, query options, custom TanStack Query hooks, SSR prefetch/hydration                 |
+| Logging        | pino on both servers, request IDs across services, AsyncLocalStorage context, redaction                   |
+| Dev loop       | API restarts on change (tsx watch, graceful shutdown), Vite HMR, one `pnpm dev`                           |
+| Local database | PostgreSQL 17 in Docker, persistent volume, random credentials, healthcheck                               |
+| UI             | Tailwind v4, shadcn/ui primitives, Lucide icons, Motion with reduced motion                               |
+| AI workflow    | AGENTS.md + agent.md, four project skills, Context7 configs for four editors                              |
+| Quality        | Lint, types, API integration tests, browser tests, all on disposable PostgreSQL; CI                       |
+| Deployment     | Per-app Dockerfiles (turbo prune), self-contained API bundle, migrator image                              |
 
 ## Commands
 

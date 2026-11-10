@@ -49,6 +49,8 @@ export const serviceRequests = pgTable(
       .default("pending"),
     /** Zone waiter (or manager) who acknowledged / resolved it. */
     assignedTo: uuid("assigned_to"),
+    /** Staff who resolved it; may differ from `assignedTo`. */
+    resolvedBy: uuid("resolved_by"),
     resolutionNote: varchar("resolution_note", { length: 200 }),
     /** Guest-supplied key, unique per session, bound to the fingerprint. */
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),

@@ -140,7 +140,7 @@ export const DASHBOARD_QUEUES = [
 export const dashboardQueueSchema = z.enum(DASHBOARD_QUEUES);
 export type DashboardQueue = z.infer<typeof dashboardQueueSchema>;
 
-const tileKeySchema = z
+export const tileKeySchema = z
   .string()
   .min(3)
   .max(80)
@@ -293,6 +293,12 @@ export type DashboardLayout = z.infer<typeof dashboardLayoutSchema>;
 
 export const dashboardQuerySchema = clientInputSchema({
   outletIds: z.array(outletIdSchema).min(1).max(50).optional(),
+  /**
+   * Management home only: narrows the tiles to this role's plus the shared
+   * ones (`dashboardTilesFor`). Unknown roles are a 422; other dashboards
+   * ignore it. Absent keeps every management tile.
+   */
+  managerRole: managementRoleSchema.optional(),
 });
 export type DashboardQuery = z.infer<typeof dashboardQuerySchema>;
 

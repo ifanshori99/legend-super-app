@@ -520,14 +520,16 @@ test("leave balances cannot overdraw and overtime hours stay exact", () => {
   assert.equal(hris.leaveDaysRemaining(balance), "11.0000");
   assert.equal(hris.canApproveLeave(balance, "11.0000"), true);
   assert.equal(hris.canApproveLeave(balance, "11.0001"), false);
-  assert.equal(
-    hris.leaveBalanceSchema.safeParse({
-      ...balance,
-      usedDays: "13.0000",
-      pendingDays: "2.0000",
-    }).success,
-    false,
-  );
+  // legend-hggk: a leave type's policy.negativeAllowanceDays lets a balance go
+  // below zero; the API enforces that limit under a row lock, so the DTO
+  // itself carries an overdrawn balance instead of refusing it.
+  const overdrawn = {
+    ...balance,
+    usedDays: "13.0000",
+    pendingDays: "2.0000",
+  };
+  assert.equal(hris.leaveBalanceSchema.safeParse(overdrawn).success, true);
+  assert.equal(hris.leaveDaysRemaining(overdrawn), "-1.0000");
   assert.equal(hris.overtimeHours(90), "1.5000");
   assert.equal(hris.overtimeHours(45), "0.7500");
   assert.throws(() => hris.overtimeHours(0));
@@ -555,6 +557,23 @@ test("attendance corrections and leave decisions reject inconsistent rows", () =
       status: "approved",
       decidedBy: null,
       decidedAt: null,
+    }).success,
+    false,
+  );
+  // An approval always has a deciding user, even with a decision time.
+  assert.equal(
+    hris.leaveRequestSchema.safeParse({
+      ...fixtures.leaveRequests[0],
+      status: "approved",
+      decidedBy: null,
+      decidedAt: "2026-10-25T02:00:00.000Z",
+    }).success,
+    false,
+  );
+  assert.equal(
+    hris.overtimeRequestSchema.safeParse({
+      ...fixtures.overtimeRequests[1],
+      decidedBy: null,
     }).success,
     false,
   );
@@ -693,6 +712,7 @@ test("HR event payloads are catalogued on WS-10 and carry no PII", () => {
   assert.deepEqual(hris.hrisEventNames, [
     "attendance.logged",
     "shift.published",
+    "shift.cancelled",
     "leave.approved",
   ]);
   for (const name of hris.hrisEventNames) {
@@ -705,6 +725,7 @@ test("HR event payloads are catalogued on WS-10 and carry no PII", () => {
   const events = fixtures.events;
   hris.attendanceLogged.envelopeSchema.parse(events.attendanceLogged);
   hris.shiftPublished.envelopeSchema.parse(events.shiftPublished);
+  hris.shiftCancelled.envelopeSchema.parse(events.shiftCancelled);
   hris.leaveApproved.envelopeSchema.parse(events.leaveApproved);
 
   for (const event of Object.values(events)) {
@@ -763,6 +784,63 @@ test("HRIS endpoints are unique, GET-safe and reject client tenant ids", () => {
   assert.equal(
     createLeave.body.safeParse({ ...validBody, tenantId }).success,
     false,
+  );
+
+  // Founder decision Q7 (cuti bersama): tenant leave settings.
+  assert.ok(ids.includes("GET /api/hris/leave/settings"));
+  const putSettings = hris.hrisEndpoints.find(
+    (endpoint) => endpoint.id === "PUT /api/hris/leave/settings",
+  );
+  const settingsBody = {
+    collectiveLeaveDeductsAnnual: true,
+    annualLeaveTypeId: null,
+    idempotencyKey: "leave-settings-001",
+  };
+  assert.equal(putSettings.body.safeParse(settingsBody).success, true);
+  assert.equal(
+    putSettings.body.safeParse({ ...settingsBody, tenantId }).success,
+    false,
+  );
+  assert.equal(
+    putSettings.body.safeParse({
+      ...settingsBody,
+      annualLeaveTypeId: uuid(8101),
+    }).success,
+    true,
+  );
+  // Effective-from: optional (null = server default), a valid date >= 2000.
+  assert.equal(
+    putSettings.body.parse(settingsBody).collectiveLeaveEffectiveFrom,
+    null,
+  );
+  for (const [value, ok] of [
+    ["2027-01-01", true],
+    ["2000-01-01", true],
+    [null, true],
+    ["1999-12-31", false],
+    ["2027-13-01", false],
+    ["01/01/2027", false],
+  ]) {
+    assert.equal(
+      putSettings.body.safeParse({
+        ...settingsBody,
+        collectiveLeaveEffectiveFrom: value,
+      }).success,
+      ok,
+      String(value),
+    );
+  }
+  assert.equal(
+    hris.leaveSettingsSchema.safeParse({
+      tenantId,
+      collectiveLeaveDeductsAnnual: true,
+      annualLeaveTypeId: null,
+      effectiveAnnualLeaveTypeId: uuid(8101),
+      collectiveLeaveEffectiveFrom: "2027-01-01",
+      updatedBy: null,
+      updatedAt: null,
+    }).success,
+    true,
   );
 
   const updatePii = hris.hrisEndpoints.find(

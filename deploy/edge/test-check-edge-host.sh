@@ -1,0 +1,258 @@
+#!/bin/sh
+# Exercise check-edge-host.sh with stubbed host tools. Nothing here touches the
+# real clock, disks or network, and no environment values are printed.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+tmp=$(mktemp -d /tmp/legend-edge-host-test.XXXXXXXX)
+trap 'chmod -R u+rwx "$tmp" 2>/dev/null || true; rm -rf "$tmp"' EXIT HUP INT TERM
+bin="$tmp/bin"
+mkdir "$bin"
+
+# The script under test sees only these tools plus the stubs below.
+for tool in sh awk grep sed ls tr find openssl wc head tail cat; do
+  real=$(command -v "$tool")
+  ln -s "$real" "$bin/$tool"
+done
+
+stub() {
+  name=$1
+  shift
+  printf '#!/bin/sh\n%s\n' "$*" > "$bin/$name"
+  chmod +x "$bin/$name"
+}
+unstub() { rm -f "$bin/$1"; }
+
+stub uname 'printf "%s\n" "$TEST_OS"'
+stub df 'for a; do last=$a; done
+dev=/dev/sdb1
+[ "$last" = / ] && dev=/dev/mapper/root
+printf "Filesystem 1024-blocks Used Available Capacity Mounted on\n%s 999999999 1 %s 1%% /\n" "$dev" "$TEST_AVAIL_KB"'
+stub chronyc '[ "$1" = tracking ] || exit 1
+printf "Reference ID    : C0A80001 (ntp.example.invalid)\nStratum         : 3\nSystem time     : %s seconds %s of NTP time\nLeap status     : %s\n" "$TEST_OFFSET" "${TEST_DIRECTION:-fast}" "$TEST_LEAP"'
+stub timedatectl 'printf "NTPSynchronized=%s\n" "$TEST_NTPSYNC"'
+stub lsblk 'for a; do last=$a; done
+if [ "$last" = /dev/sdb1 ]; then printf "%s\n" "$TEST_LSBLK_SELFIE"; else printf "%s\n" "$TEST_LSBLK"; fi'
+stub fdesetup 'printf "%s\n" "$TEST_FDE"'
+
+me=$(id -un)
+selfies="$tmp/selfies"
+cert="$tmp/edge.crt"
+key="$tmp/edge.key"
+envfile="$tmp/edge.env"
+secret='sealsecretvalue0123456789'
+
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$key" -out "$cert" -days 90 -subj '/CN=edge.invalid' >/dev/null 2>&1
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$tmp/short.key" -out "$tmp/short.crt" -days 5 -subj '/CN=edge.invalid' >/dev/null 2>&1
+
+reset() {
+  rm -rf "$selfies"
+  mkdir "$selfies"
+  chmod 700 "$selfies"
+  mkdir "$selfies/tenant-a"
+  chmod 700 "$selfies/tenant-a"
+  printf 'EDGE_MODE=true\n# ATTENDANCE_SELFIE_SEAL_KEYS=%s\nATTENDANCE_SELFIE_SEAL_ACTIVE_KID=\nEDGE_SELFIE_DIR=%s\nEDGE_SELFIE_MAX_BYTES=1073741824\n' "$secret" "$selfies" > "$envfile"
+  export TEST_OS=Linux TEST_AVAIL_KB=4194304 TEST_OFFSET=0.000123456 TEST_LEAP=Normal \
+    TEST_NTPSYNC=yes TEST_LSBLK='crypt' TEST_LSBLK_SELFIE='crypt' TEST_FDE='FileVault is On.'
+  unset TEST_DIRECTION || true
+  stub chronyc '[ "$1" = tracking ] || exit 1
+printf "Reference ID    : C0A80001 (ntp.example.invalid)\nStratum         : 3\nSystem time     : %s seconds %s of NTP time\nLeap status     : %s\n" "$TEST_OFFSET" "${TEST_DIRECTION:-fast}" "$TEST_LEAP"'
+  stub timedatectl 'printf "NTPSynchronized=%s\n" "$TEST_NTPSYNC"'
+  cert_path=$cert
+}
+
+# run_check [extra args]: sets $status and $out; the default arguments are valid.
+run_check() {
+  status=0
+  out=$(PATH="$bin" sh "$root/check-edge-host.sh" --env-file "$envfile" --service-user "$me" --cert "$cert_path" --selfie-dir "$selfies" "$@" 2>&1) || status=$?
+}
+
+expect_ok() {
+  if [ "$status" -ne 0 ]; then
+    printf 'FAIL test %s: expected exit 0, got %s\n%s\n' "$1" "$status" "$out" >&2
+    exit 1
+  fi
+}
+expect_fail() {
+  if [ "$status" -ne 1 ]; then
+    printf 'FAIL test %s: expected exit 1, got %s\n%s\n' "$1" "$status" "$out" >&2
+    exit 1
+  fi
+}
+expect_out() {
+  if ! printf '%s\n' "$out" | grep -F -- "$2" >/dev/null; then
+    printf 'FAIL test %s: output lacks "%s"\n%s\n' "$1" "$2" "$out" >&2
+    exit 1
+  fi
+}
+no_secret() {
+  if printf '%s\n' "$out" | grep -F -- "$secret" >/dev/null; then
+    printf 'FAIL test %s: an env value was printed\n' "$1" >&2
+    exit 1
+  fi
+}
+
+# 1. Healthy host passes and prints no env values.
+reset
+run_check
+expect_ok healthy
+expect_out healthy 'PASS'
+no_secret healthy
+
+# 2. Clock offset: warn above 2 s, fail above 10 s, fail when unsynchronised.
+reset
+TEST_OFFSET=3.5 run_check
+expect_ok offset-warn
+expect_out offset-warn 'WARN'
+reset
+TEST_OFFSET=12 TEST_DIRECTION=slow run_check
+expect_fail offset-fail
+expect_out offset-fail 'FAIL'
+reset
+TEST_LEAP='Not synchronised' run_check
+expect_fail unsynchronised
+
+# 3. Without chronyc: timedatectl decides; with neither, fail.
+reset
+unstub chronyc
+run_check
+expect_ok timedatectl-yes
+reset
+unstub chronyc
+TEST_NTPSYNC=no run_check
+expect_fail timedatectl-no
+reset
+unstub chronyc
+unstub timedatectl
+run_check
+expect_fail no-ntp-tool
+
+# 4. Selfie volume: missing, loose mode, wrong owner, loose entry below it.
+reset
+rm -rf "$selfies"
+run_check
+expect_fail dir-missing
+reset
+chmod 755 "$selfies"
+run_check
+expect_fail dir-loose
+reset
+run_check --service-user no-such-user-xyz
+expect_fail dir-wrong-owner
+reset
+chmod 755 "$selfies/tenant-a"
+run_check
+expect_fail child-loose
+reset
+: > "$selfies/tenant-a/obj.lss"
+chmod 600 "$selfies/tenant-a/obj.lss"
+run_check
+expect_ok child-ok
+reset
+: > "$selfies/tenant-a/obj.lss"
+chmod 644 "$selfies/tenant-a/obj.lss"
+run_check
+expect_fail file-loose
+
+# 5. Free space must cover EDGE_SELFIE_MAX_BYTES (1 GiB in the env file) plus margin.
+reset
+TEST_AVAIL_KB=1048576 run_check
+expect_fail space-low
+reset
+TEST_AVAIL_KB=1048576 run_check --max-bytes 1024 --margin-bytes 1024
+expect_ok space-override
+
+# 6. Full-disk encryption.
+reset
+TEST_LSBLK='disk' run_check
+expect_fail fde-linux-off
+reset
+TEST_OS=Darwin TEST_FDE='FileVault is Off.' run_check
+expect_fail fde-mac-off
+reset
+TEST_OS=Darwin TEST_FDE='FileVault is On.' run_check
+expect_ok fde-mac-on
+
+# 7. HTTPS certificate: missing and expiring within 30 days both fail.
+reset
+cert_path="$tmp/absent.crt" run_check
+expect_fail cert-missing
+reset
+cert_path="$tmp/short.crt" run_check
+expect_fail cert-expiring
+
+# 8. The edge env file must never carry the cloud seal private key.
+reset
+printf 'EDGE_MODE=true\nATTENDANCE_SELFIE_SEAL_KEYS=%s\n' "$secret" > "$envfile"
+run_check
+expect_fail seal-keys
+no_secret seal-keys
+reset
+printf 'EDGE_MODE=true\nexport ATTENDANCE_SELFIE_SEAL_ACTIVE_KID="k1"\n' > "$envfile"
+run_check
+expect_fail seal-kid
+reset
+printf 'EDGE_MODE=true\nATTENDANCE_SELFIE_SEAL_KEYS=""\n' > "$envfile"
+run_check
+expect_ok seal-empty
+
+# 9. Usage: --env-file is required; an unreadable one fails.
+status=0
+out=$(PATH="$bin" sh "$root/check-edge-host.sh" --cert "$cert" 2>&1) || status=$?
+[ "$status" -eq 2 ] || { printf 'FAIL test usage: expected exit 2, got %s\n' "$status" >&2; exit 1; }
+reset
+rm -f "$envfile"
+run_check
+expect_fail env-missing
+
+# 10. Review findings. An unreadable subtree must fail, never pass silently.
+if [ "$(id -u)" -ne 0 ]; then
+  reset
+  chmod 000 "$selfies/tenant-a"
+  run_check
+  chmod 700 "$selfies/tenant-a"
+  expect_fail find-unreadable
+  expect_out find-unreadable 'cannot inspect'
+fi
+
+# The selfie volume (not only /) must be encrypted; root too.
+reset
+TEST_LSBLK_SELFIE='disk' run_check
+expect_fail fde-selfie-volume-off
+expect_out fde-selfie-volume-off 'selfie'
+reset
+TEST_LSBLK='disk' run_check
+expect_fail fde-root-off
+
+# Space: free >= max(max_bytes - bytes stored in *.lss, 0) + margin.
+reset
+dd if=/dev/zero of="$selfies/tenant-a/obj.lss" bs=6000 count=1 2>/dev/null
+chmod 600 "$selfies/tenant-a/obj.lss"
+TEST_AVAIL_KB=5 run_check --max-bytes 10000 --margin-bytes 0
+expect_ok space-minus-stored
+TEST_AVAIL_KB=3 run_check --max-bytes 10000 --margin-bytes 0
+expect_fail space-minus-stored-short
+TEST_AVAIL_KB=1 run_check --max-bytes 1000 --margin-bytes 0
+expect_ok space-stored-over-max
+TEST_AVAIL_KB=1 run_check --max-bytes 1000 --margin-bytes 2000
+expect_fail space-margin-added
+
+# Env parsing: inline comments, quotes and whitespace around numbers; a
+# symlinked directory is judged by its target; a bad number is a FAIL, not a
+# half-finished usage error.
+reset
+printf 'EDGE_SELFIE_MAX_BYTES="1000"  # one thousand\nEDGE_SELFIE_DIR=%s # dir\n' "$selfies" > "$envfile"
+TEST_AVAIL_KB=4 run_check --selfie-dir '' --margin-bytes 0
+expect_ok env-number-comment
+reset
+printf 'EDGE_SELFIE_MAX_BYTES=lots\n' > "$envfile"
+run_check
+expect_fail env-number-bad
+expect_out env-number-bad 'check(s) failed'
+reset
+chmod 755 "$selfies"
+ln -s "$selfies" "$tmp/selfies-link"
+run_check --selfie-dir "$tmp/selfies-link"
+rm -f "$tmp/selfies-link"
+expect_fail symlink-target-mode
+
+echo 'check-edge-host tests passed'

@@ -110,9 +110,17 @@ export function AvailabilityPage() {
   const [search, setSearch] = React.useState("");
   const [status, setStatus] = React.useState(ALL);
   const [editing, setEditing] = React.useState<Availability | null>(null);
+  const [toggleError, setToggleError] = React.useState<string | undefined>();
   const [toggleTarget, setToggleTarget] = React.useState<Availability | null>(
     null,
   );
+  // Whether the dialog is still open when a late mutation result arrives.
+  const toggleOpen = React.useRef(false);
+  function openToggle(row: Availability | null) {
+    toggleOpen.current = row !== null;
+    setToggleError(undefined);
+    setToggleTarget(row);
+  }
 
   const items = React.useMemo(
     () => itemsQuery.data?.data ?? [],
@@ -139,6 +147,7 @@ export function AvailabilityPage() {
 
   function applyToggle() {
     if (!toggleTarget) return;
+    setToggleError(undefined);
     const item = itemsById.get(toggleTarget.menuItemId);
     toggleAvailability.mutate(
       {
@@ -161,17 +170,20 @@ export function AvailabilityPage() {
                   }),
             tone: "success",
           });
-          setToggleTarget(null);
+          openToggle(null);
         },
-        onError: (error) =>
-          toast({
-            // Q23: a restore republishes the item, so it needs its photo.
-            title:
-              error instanceof ApiError && error.code === "MENU_PHOTO_REQUIRED"
-                ? t("menu.errors.photoRequired")
-                : t("menu.errors.saveFailed"),
-            tone: "danger",
-          }),
+        onError: (error) => {
+          // Q23: a restore republishes the item, so it needs its photo.
+          const message =
+            error instanceof ApiError && error.code === "MENU_PHOTO_REQUIRED"
+              ? t("menu.errors.photoRequired")
+              : t("menu.errors.saveFailed");
+          // Shown inside the dialog, not as a toast: a toast layer would take
+          // the Escape key before the dialog sees it. A dialog already closed
+          // has nowhere to show it, so that case falls back to a toast.
+          if (toggleOpen.current) setToggleError(message);
+          else toast({ title: message, tone: "danger" });
+        },
       },
     );
   }
@@ -296,7 +308,7 @@ export function AvailabilityPage() {
                         <AvailabilityActions
                           row={row}
                           pending={toggleAvailability.isPending}
-                          onToggle={() => setToggleTarget(row)}
+                          onToggle={() => openToggle(row)}
                           onManage={() => setEditing(row)}
                         />
                       </TableCell>
@@ -344,7 +356,7 @@ export function AvailabilityPage() {
                   <AvailabilityActions
                     row={row}
                     pending={toggleAvailability.isPending}
-                    onToggle={() => setToggleTarget(row)}
+                    onToggle={() => openToggle(row)}
                     onManage={() => setEditing(row)}
                   />
                 )}
@@ -384,7 +396,12 @@ export function AvailabilityPage() {
 
       <ConfirmDialog
         open={canToggleAvailability && toggleTarget !== null}
-        onOpenChange={(open) => !open && setToggleTarget(null)}
+        onOpenChange={(open) => {
+          // Keep the dialog while the request runs, so its result has a place.
+          if (open || toggleAvailability.isPending) return;
+          openToggle(null);
+        }}
+        error={toggleError}
         title={
           toggleTarget?.status === "sold_out"
             ? t("menu.availability.confirmRestoreTitle", {

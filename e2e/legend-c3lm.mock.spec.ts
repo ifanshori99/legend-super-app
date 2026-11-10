@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 // Member PWA (bead legend-c3lm) against mock mode: the fixtures from
 // @starter/shared/crm, the same contract validation the API applies, and the
@@ -44,7 +45,7 @@ test("member navigates points, missions, vouchers, visits and favorites (LOY-03)
   // Misi sits in the "Lainnya" sheet: the bar is capped at five slots
   // (DESIGN.md v2 §5, bead legend-oibk). The sheet is client-only, so retry
   // until hydration has taken over the button.
-  await page.waitForFunction(() => Boolean(window.__TSR_ROUTER__));
+  await waitForHydration(page);
   const more = page.getByRole("button", { name: "Lainnya" });
   await expect(async () => {
     await more.click();
@@ -81,7 +82,7 @@ test("redeeming a reward spends points once and shows a pickup code (LOY-03)", a
   // Reach the catalog through the router (client navigation), which is also
   // how a member gets there from a push notification or the bottom nav.
   await page.goto("/");
-  await page.waitForFunction(() => Boolean(window.__TSR_ROUTER__));
+  await waitForHydration(page);
   await page.evaluate(() =>
     window.__TSR_ROUTER__?.navigate({ to: "/member/reward" }),
   );
@@ -125,7 +126,7 @@ test("membership screen verifies WhatsApp and saves versioned consents (AUTH-07)
   page,
 }) => {
   await page.goto("/member/daftar");
-  await page.waitForFunction(() => Boolean(window.__TSR_ROUTER__));
+  await waitForHydration(page);
   await expect(
     page.getByRole("heading", { name: "Keanggotaan Legend" }),
   ).toBeVisible();
@@ -158,7 +159,7 @@ test("member lists keep their empty state (LOY-03)", async ({ page }) => {
     localStorage.setItem("legend-mock-scenario", "empty"),
   );
   await page.goto("/");
-  await page.waitForFunction(() => Boolean(window.__TSR_ROUTER__));
+  await waitForHydration(page);
   await page.evaluate(() =>
     window.__TSR_ROUTER__?.navigate({ to: "/member/misi" }),
   );

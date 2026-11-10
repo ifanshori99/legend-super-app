@@ -10,26 +10,44 @@
 // Tenant-owned rows are only reached through org.service.ts, under RLS.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, ilike, lt, or } from "drizzle-orm";
-import { PlatformError, platformEvents } from "@starter/shared/platform";
+import { and, count, desc, eq, ilike, lt, or } from "drizzle-orm";
+import {
+  PAYMENT_GATEWAY_PROVIDERS,
+  PlatformError,
+  platformEvents,
+} from "@starter/shared/platform";
 import type {
   CreateTenantInput,
+  Outlet,
+  OutletRestoreWindow,
+  RestoreOutletInput,
+  RestoreTenantInput,
   SetTenantPackageInput,
   SetTenantStatusInput,
   Tenant,
+  TenantRestoreWindow,
   PlatformPackage,
   PackageKey,
 } from "@starter/shared/platform";
 import {
+  canRestoreFrom,
   canTransitionTenant,
   modulesOutsidePackage,
+  outletRestoreStatusSchema,
+  outletRestoreWindowSchema,
   platformPackageSchema,
+  restoreDeadline,
+  tenantRestoreStatusSchema,
+  tenantRestoreWindowSchema,
   tenantSchema,
 } from "@starter/shared/platform";
 import {
   createUlid,
   decodeCursor,
   encodeCursor,
+  outletIdSchema,
+  tenantIdSchema,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -38,13 +56,30 @@ import {
 } from "@starter/shared/core/server";
 import type { TenantStatus } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
-import { platformPackages, tenants } from "../db/schema/index.ts";
+import {
+  edgeNodes,
+  outlets,
+  paymentRoutingRules,
+  platformPackages,
+  tenants,
+} from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { seedTenantRoleTemplates } from "./access.service.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { toOutlet } from "./org.service.ts";
+import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
+import {
+  isPlatformGatewayEnabled,
+  platformDefaultGateway,
+} from "./platform-payment-gateway.service.ts";
+import { provisionLoyaltyDefaults } from "./loyalty-provisioning.service.ts"; // legend-111j
+import {
+  provisionDefaultServiceChargeRule,
+  provisionDefaultTaxConfig,
+} from "./tax-provisioning.service.ts";
 
 type TenantRow = typeof tenants.$inferSelect;
 type PackageRow = typeof platformPackages.$inferSelect;
@@ -193,6 +228,39 @@ export async function createTenant(
   const outside = modulesOutsidePackage(input.featureFlags.modules, pkg);
   if (outside.length > 0) throw new PlatformError("MODULE_NOT_IN_PACKAGE");
 
+  // Sub-302 D8: a new tenant gets the platform default gateway unless Super
+  // Admin already listed a payment gateway for it. Changing the default later
+  // never touches an existing tenant (PAY-05).
+  const platformDefault = await platformDefaultGateway();
+  const listed = input.featureFlags.integrationProviders.filter((provider) =>
+    (PAYMENT_GATEWAY_PROVIDERS as readonly string[]).includes(provider),
+  );
+  const featureFlags =
+    platformDefault && listed.length === 0
+      ? {
+          ...input.featureFlags,
+          integrationProviders: [
+            ...input.featureFlags.integrationProviders,
+            platformDefault as (typeof PAYMENT_GATEWAY_PROVIDERS)[number],
+          ],
+        }
+      : input.featureFlags;
+  // Rules go on the platform default only if the tenant lists it; otherwise on
+  // the first listed gateway Super Admin has switched on; none -> no rules.
+  const tenantGateways = featureFlags.integrationProviders.filter((provider) =>
+    (PAYMENT_GATEWAY_PROVIDERS as readonly string[]).includes(provider),
+  );
+  let defaultGateway: (typeof PAYMENT_GATEWAY_PROVIDERS)[number] | null = null;
+  if (platformDefault && tenantGateways.includes(platformDefault as never))
+    defaultGateway =
+      platformDefault as (typeof PAYMENT_GATEWAY_PROVIDERS)[number];
+  else
+    for (const provider of tenantGateways)
+      if (await isPlatformGatewayEnabled(provider)) {
+        defaultGateway = provider as (typeof PAYMENT_GATEWAY_PROVIDERS)[number];
+        break;
+      }
+
   const tenantId = randomUUID();
   const context = platformTenantScope(tenantId);
   return withTenant(db, context, async (tx) => {
@@ -204,7 +272,7 @@ export async function createTenant(
         name: input.name,
         plan: input.plan,
         deploymentMode: input.deploymentMode,
-        featureFlags: input.featureFlags,
+        featureFlags,
         limits: input.limits,
         createdBy: actorUserId,
       })
@@ -217,6 +285,38 @@ export async function createTenant(
         "That tenant slug is already taken.",
       );
     await seedTenantRoleTemplates(tx, row.id);
+    // Tenant-wide online-method rules on the default gateway, same transaction.
+    if (defaultGateway)
+      await tx.insert(paymentRoutingRules).values(
+        (["qris", "va", "bank_transfer"] as const).map((method) => ({
+          tenantId: context.tenant.tenantId,
+          outletId: null,
+          method,
+          provider: defaultGateway,
+          fallbackProvider: null,
+          enabled: true,
+          updatedBy: actorUserId,
+        })),
+      );
+    // Standard UOM catalog, same transaction (PRD v1.7 §3.19, legend-4ryw).
+    const actor = userIdSchema.safeParse(actorUserId);
+    await provisionStandardUoms(tx, context, actor.success ? actor.data : null);
+    // Default PBJT rule + exclusive tax settings, same transaction, so the
+    // tenant can price orders at once (legend-9obf, founder decision Q13).
+    await provisionDefaultTaxConfig(
+      tx,
+      context,
+      actor.success ? actor.data : null,
+    );
+    // Consent policy versions `2026-01`, same transaction (legend-111j).
+    await provisionLoyaltyDefaults(tx, context);
+    // Default 5% dine-in service charge, same transaction (legend-2qz7, Q25).
+    await provisionDefaultServiceChargeRule(
+      tx,
+      context,
+      actor.success ? actor.data : null,
+      null,
+    );
     const admin = await provisionFirstTenantAdmin(
       tx,
       context,
@@ -284,11 +384,17 @@ export async function createTenant(
   });
 }
 
-/** Suspension is reversible, archiving is final (contract state machine). */
+/**
+ * Suspension is reversible. Archiving is final through this endpoint (contract
+ * state machine) except for the platform restore within 30 days (Q40,
+ * `restoreTenant`); archiving records when and from which status, so a restore
+ * can return there.
+ */
 export async function setTenantStatus(
   tenantId: string,
   input: SetTenantStatusInput,
   actorUserId: string,
+  now: Date = new Date(),
 ): Promise<Tenant> {
   const context = platformTenantScope(tenantId);
   return withTenant(db, context, async (tx) => {
@@ -304,7 +410,17 @@ export async function setTenantStatus(
       throw new PlatformError("INVALID_TRANSITION");
     const [row] = await tx
       .update(tenants)
-      .set({ status: input.status })
+      .set({
+        status: input.status,
+        ...(input.status === "archived"
+          ? {
+              archivedAt: now,
+              statusBeforeArchive: tenantRestoreStatusSchema.parse(
+                current.status,
+              ),
+            }
+          : {}),
+      })
       .where(eq(tenants.id, tenantId))
       .returning();
     await recordAudit(
@@ -325,6 +441,218 @@ export async function setTenantStatus(
       { tx, context },
     );
     return toTenant(row);
+  });
+}
+
+/**
+ * Q40 (legend-umzos): a Super Admin restores an archived tenant to the status
+ * it had before archiving, within 30 days of archiving (deadline inclusive).
+ * Legacy rows without a recorded archive time stay final.
+ */
+export async function restoreTenant(
+  tenantId: string,
+  input: RestoreTenantInput,
+  actorUserId: string,
+  now: Date = new Date(),
+): Promise<Tenant> {
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1)
+      .for("update");
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+    if (current.status !== "archived")
+      throw new PlatformError(
+        "RESTORE_NOT_AVAILABLE",
+        "Tenant ini tidak berstatus diarsipkan.",
+      );
+    const check = canRestoreFrom(
+      current.archivedAt,
+      current.statusBeforeArchive,
+      now,
+    );
+    if (!check.ok) throw new PlatformError(check.code);
+    const [row] = await tx
+      .update(tenants)
+      .set({
+        status: tenantRestoreStatusSchema.parse(current.statusBeforeArchive),
+        archivedAt: null,
+        statusBeforeArchive: null,
+      })
+      .where(eq(tenants.id, tenantId))
+      .returning();
+    await recordAudit(
+      {
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "tenant.restored",
+        objectType: "tenant",
+        objectId: tenantId,
+        reason: input.reason,
+        before: {
+          status: "archived",
+          archivedAt: current.archivedAt?.toISOString() ?? null,
+        },
+        after: { status: row.status },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    return toTenant(row);
+  });
+}
+
+/** Panel read model: can this tenant be restored, to what, until when. */
+export async function getTenantRestoreWindow(
+  tenantId: string,
+  now: Date = new Date(),
+): Promise<TenantRestoreWindow> {
+  const [row] = await db
+    .select()
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  if (!row) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+  const check = canRestoreFrom(row.archivedAt, row.statusBeforeArchive, now);
+  return tenantRestoreWindowSchema.parse({
+    tenantId: row.id,
+    status: row.status,
+    archivedAt: row.archivedAt?.toISOString() ?? null,
+    restoreTo: row.statusBeforeArchive,
+    restorableUntil: row.archivedAt
+      ? restoreDeadline(row.archivedAt).toISOString()
+      : null,
+    restorable: row.status === "archived" && check.ok,
+  });
+}
+
+/**
+ * Q40: restores a closed outlet to its status before closing, within 30 days.
+ * The tenant must not be archived (restore the tenant first). Edge credentials
+ * were never revoked on close, so the outlet's edge nodes reconnect without
+ * re-registration; the audit row counts the active ones.
+ */
+export async function restoreOutlet(
+  tenantId: string,
+  outletId: string,
+  input: RestoreOutletInput,
+  actorUserId: string,
+  now: Date = new Date(),
+): Promise<Outlet> {
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
+    const [tenant] = await tx
+      .select({ status: tenants.status })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1)
+      .for("update");
+    if (!tenant) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+    if (tenant.status === "archived")
+      throw new PlatformError(
+        "INVALID_TRANSITION",
+        "Pulihkan tenant terlebih dahulu sebelum memulihkan outlet.",
+      );
+    const [current] = await tx
+      .select()
+      .from(outlets)
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+      .limit(1)
+      .for("update");
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+    if (current.status !== "closed")
+      throw new PlatformError(
+        "RESTORE_NOT_AVAILABLE",
+        "Outlet ini tidak berstatus ditutup.",
+      );
+    const check = canRestoreFrom(
+      current.closedAt,
+      current.statusBeforeClose,
+      now,
+    );
+    if (!check.ok) throw new PlatformError(check.code);
+    const [row] = await tx
+      .update(outlets)
+      .set({
+        status: outletRestoreStatusSchema.parse(current.statusBeforeClose),
+        closedAt: null,
+        statusBeforeClose: null,
+      })
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+      .returning();
+    const [edge] = await tx
+      .select({ total: count() })
+      .from(edgeNodes)
+      .where(
+        and(
+          eq(edgeNodes.tenantId, tenantIdSchema.parse(tenantId)),
+          eq(edgeNodes.outletId, outletIdSchema.parse(outletId)),
+          eq(edgeNodes.status, "active"),
+        ),
+      );
+    await recordAudit(
+      {
+        tenantId,
+        outletId,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "outlet.restored",
+        objectType: "outlet",
+        objectId: outletId,
+        reason: input.reason,
+        before: {
+          status: "closed",
+          closedAt: current.closedAt?.toISOString() ?? null,
+        },
+        after: { status: row.status, activeEdgeNodes: edge?.total ?? 0 },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    return toOutlet(row);
+  });
+}
+
+/** Panel read model for a closed outlet. Needs the tenant not archived. */
+export async function getOutletRestoreWindow(
+  tenantId: string,
+  outletId: string,
+  now: Date = new Date(),
+): Promise<OutletRestoreWindow> {
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
+    const [tenant] = await tx
+      .select({ status: tenants.status })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    if (!tenant) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+    const [row] = await tx
+      .select()
+      .from(outlets)
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+      .limit(1);
+    if (!row) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+    const check = canRestoreFrom(row.closedAt, row.statusBeforeClose, now);
+    return outletRestoreWindowSchema.parse({
+      tenantId,
+      outletId,
+      status: row.status,
+      closedAt: row.closedAt?.toISOString() ?? null,
+      restoreTo: row.statusBeforeClose,
+      restorableUntil: row.closedAt
+        ? restoreDeadline(row.closedAt).toISOString()
+        : null,
+      restorable:
+        row.status === "closed" && check.ok && tenant.status !== "archived",
+    });
   });
 }
 

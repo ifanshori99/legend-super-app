@@ -28,6 +28,9 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "requestedBy",
     "approvedBy",
     "valueIdr",
+    "expectedIdr",
+    "countedIdr",
+    "varianceIdr",
     "reasonCode",
     "objectType",
     "objectId",
@@ -42,6 +45,11 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "adminProvisioning",
   ],
   "tenant.status_changed": ["status"],
+  // legend-dn4 (AUTH-03): opt-in flag and free-quota ceiling, no PII.
+  "wa_login_reply.settings_updated": ["enabled", "freeMonthlyQuota"],
+  // Q40 (legend-umzos): platform restore within 30 days.
+  "tenant.restored": ["status", "archivedAt"],
+  "outlet.restored": ["status", "closedAt", "activeEdgeNodes"],
   "tenant.package_changed": [
     "plan",
     "modules",
@@ -61,6 +69,43 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
   "support_access.ended": ["status", "endedAt", "superAdminUserId"],
   "support_access.expired": ["status", "expiresAt", "superAdminUserId"],
   "support_access.denied": ["cause", "accessMode", "durationMinutes"],
+  "support_access.impersonation_started": [
+    "impersonatedUserId",
+    "impersonationId",
+    "accessMode",
+    "impersonationEndsAt",
+    "grantExpiresAt",
+  ],
+  "support_access.impersonation_ended": [
+    "impersonatedUserId",
+    "impersonationId",
+    "accessMode",
+    "cause",
+    "grantExpiresAt",
+  ],
+
+  "tenant_owner.assigned": [
+    "userId",
+    "assignmentId",
+    "replacedAssignmentId",
+    "account",
+  ],
+  "tenant_owner.replaced": [
+    "userId",
+    "assignmentId",
+    "replacedAssignmentId",
+    "account",
+  ],
+  "tenant_owner.denied": ["cause", "impersonatedBy"],
+  "tenant_owner.notify_failed": ["assignmentId", "kind", "error"],
+  "platform.access.denied": [
+    "cause",
+    "code",
+    "impersonatedBy",
+    "impersonatedUserId",
+    "method",
+    "route",
+  ],
   "integration.created": ["provider", "outletId", "status", "configKeys"],
   "integration.config.updated": [
     "provider",
@@ -86,6 +131,9 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "status",
     "configKeys",
   ],
+  // sub-302 D16/D17: gateway secret replaced with a grace window; test button.
+  "integration.credentials_rotated": ["provider", "previousValidUntil"],
+  "integration.connection_tested": ["ok", "errorCode"],
   "outbox.replayed": ["dispatchState", "generation"],
   "role.created": ["permissions", "mfaRequired", "allowedScopeTypes"],
   "role.updated": ["permissions", "mfaRequired", "allowedScopeTypes"],

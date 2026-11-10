@@ -54,6 +54,22 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
+  # First-boot job (legend-zoqc): creates the restricted application and queue
+  # logins with the migration credentials. Run only through provision-roles.sh,
+  # which passes the restricted URLs (and the optional maintenance login, legend-usyi)
+  # from api.env/worker.env via the shell.
+  provision-roles:
+    image: ${MIGRATOR_IMAGE:?Set MIGRATOR_IMAGE}
+    profiles: ["provisioning"]
+    env_file: ["${MIGRATOR_ENV_FILE:?Set MIGRATOR_ENV_FILE}"]
+    environment:
+      - APP_DATABASE_URL
+      - WORKER_DATABASE_URL
+      - MAINTENANCE_DATABASE_URL
+    command: ["node", "dist/provision-roles.js"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
   api:
     image: ${API_IMAGE:?Set API_IMAGE}
     logging: *bounded-logging
@@ -84,6 +100,20 @@ services:
       # Built-in outbox transport (legend-18qw); notification channel providers
       # come from worker.env and are required (disabled is an explicit value).
       WORKER_TRANSPORT: builtin
+    # legend-z649: the relay touches /tmp/worker-heartbeat every tick (scheduled
+    # every minute). Unhealthy when the file is older than 180 s, which catches a
+    # hung relay or dead scheduler; restart: unless-stopped alone does not act on
+    # unhealthy, so the status shows in `docker ps` and in monitoring.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');try{process.exit(Date.now()-fs.statSync('/tmp/worker-heartbeat').mtimeMs<=180000?0:1)}catch{process.exit(1)}"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
     depends_on:
       postgres: { condition: service_healthy }
     mem_limit: 384m

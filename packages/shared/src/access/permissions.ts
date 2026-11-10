@@ -59,7 +59,12 @@ const entries = [
   ["org.integration.manage", []],
   ["org.theme.manage", []],
   ["org.config.export", []],
+  // owner only (Q37, legend-c9kbk)
+  ["org.support_access.approve", ["approve"]],
   ["org.tax_config.manage", []],
+  // Covers PUT /api/notifications/policy and the notification template
+  // endpoints in notification/endpoints.ts (legend-kz1m). Not wired to a route yet.
+  ["org.notification_policy.manage", []],
   ["device.registry.manage", []],
   ["device.registry.revoke", []],
 
@@ -84,6 +89,13 @@ const entries = [
   // "dikonfirmasi waiter atau kasir", ORD-10): confirm/close a session, move,
   // merge, move items, table status. Layout editing stays floor.table.manage.
   ["floor.table.operate", []],
+  // Founder Q33/Q34: approve turning a running pay-first session into an open
+  // bill (supervisor PIN step-up). Not for tenant_admin (no money authority).
+  ["floor.session.open_bill", ["approve"]],
+  // Change the outlet open-bill policy: bill limit, idle alert, bill-request SLO.
+  ["floor.open_bill_policy.manage", []],
+  // Who receives a zone's waiter calls: assign and remove zone waiters (ORD-07).
+  ["service_request.zone.manage", []],
   ["order.view", []],
   ["order.create", []],
   ["order.recovery.handle", []],
@@ -100,9 +112,16 @@ const entries = [
   ["pos.refund.approve", ["approve", "payment"]],
   ["pos.cash_drawer.approve", ["approve"]],
   ["pos.price_correction.approve", ["approve", "sell_price"]],
+  ["pos.edc_standalone.approve", ["approve", "payment"]],
   ["shift.cash.operate", ["payment"]],
   ["shift.cash.approve_close", ["approve", "payment"]],
   ["shift.cash.view_all", ["payment"]],
+  // Founder Q9 (2026-11-08): the business day is closed by the outlet
+  // manager, not by a shift supervisor (POS-05, legend-6c0).
+  ["pos.day.close", ["approve", "payment"]],
+  // Writes off one lost receipt number so Tutup Hari can proceed (legend-0hzqw,
+  // owner only: it removes a gap from the audit trail of numbered receipts).
+  ["pos.receipt.writeoff", ["approve"]],
   ["wifi.voucher.issue", []],
 
   // Kitchen (§3.11, F9, F40)
@@ -119,6 +138,7 @@ const entries = [
   // Inventory, recipes, purchasing (§3.14–3.15, F13–F15)
   ["inventory.stock.view", []],
   ["inventory.stock.receive", []],
+  ["inventory.item.manage", []],
   ["inventory.stock.transfer", []],
   ["inventory.opname.count", []],
   ["inventory.waste.record", []],
@@ -132,6 +152,9 @@ const entries = [
   ["purchasing.order.create", []],
   ["purchasing.order.approve", ["approve"]],
   ["purchasing.invoice.match", ["finance"]],
+  ["purchasing.return.create", []],
+  ["purchasing.petty.record", []],
+  ["purchasing.petty_policy.manage", ["finance"]],
 
   // Accounting & finance (§3.16, F16)
   ["accounting.journal.view", ["finance"]],
@@ -150,6 +173,7 @@ const entries = [
   // Profit share & dividends (§3 Kelompok E, F34)
   ["profit_share.own.view", ["self"]],
   ["profit_share.registry.manage", ["finance"]],
+  ["profit_share.share_allocation.change", ["finance"]],
   ["profit_share.distribution.approve", ["finance", "approve"]],
 
   // Loyalty, CRM, promo, reservations, delivery, website (§3 Kelompok C, F17–F21)
@@ -157,6 +181,13 @@ const entries = [
   ["crm.customer.view", ["customer_pii"]],
   ["crm.consent.record", []],
   ["crm.segment.manage", ["customer_pii"]],
+  // legend-111j: member loyalty program, ledger review, redemption fulfilment,
+  // raw customer contacts and the feedback queue.
+  ["crm.loyalty.manage", []],
+  ["crm.loyalty.review", []],
+  ["crm.loyalty.fulfil", []],
+  ["crm.customer.pii.read", ["customer_pii"]],
+  ["crm.feedback.manage", []],
   ["promo.manage", []],
   ["campaign.manage", ["customer_pii"]],
   ["review.respond", []],
@@ -184,6 +215,7 @@ const entries = [
   ["hr.reimbursement.approve", ["approve"]],
   ["hr.loan.approve", ["approve", "payroll"]],
   ["hr.sop.manage", []],
+  ["hr.announcement.manage", []],
   ["hr.training.manage", []],
   ["hr.kpi.manage", []],
 
@@ -201,6 +233,7 @@ const entries = [
   ["self.leave.request", ["self"]],
   ["self.payslip.view", ["self"]],
   ["self.reimbursement.request", ["self"]],
+  ["self.loan.request", ["self"]],
   ["self.shift_swap.request", ["self"]],
   ["self.sop.read", ["self"]],
 

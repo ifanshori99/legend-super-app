@@ -51,6 +51,8 @@ import {
   defaultCsvMapping,
   detectMapping,
   formatBusinessDate,
+  importErrorKey,
+  isStatementValueInvalid,
   type ImportPreview,
 } from "../lib";
 import { useImportBankStatement, useStatementLineDedupeKeys } from "../hooks";
@@ -121,7 +123,10 @@ function StatementImportWizard({
   const [mapping, setMapping] =
     React.useState<BankCsvMapping>(defaultCsvMapping());
   const [preview, setPreview] = React.useState<ImportPreview | null>(null);
-  const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [submitError, setSubmitError] = React.useState<{
+    heading: MessageKey | null;
+    message: string;
+  } | null>(null);
   const dedupeKeys = useStatementLineDedupeKeys(accountId || undefined);
 
   const delimiter = mapping.delimiter;
@@ -214,11 +219,23 @@ function StatementImportWizard({
           onClose();
         },
         onError: (error) => {
-          setSubmitError(
-            error instanceof ApiError
-              ? error.message
-              : t("accounting.cash.import.failed"),
-          );
+          if (
+            error instanceof ApiError &&
+            isStatementValueInvalid(error.code)
+          ) {
+            // The server names the row and the column of the first bad cell.
+            setSubmitError({
+              heading: "accounting.cash.import.error.valueTitle",
+              message: error.message,
+            });
+            return;
+          }
+          setSubmitError({
+            heading: null,
+            message: t(
+              importErrorKey(error instanceof ApiError ? error.code : ""),
+            ),
+          });
         },
       },
     );
@@ -734,12 +751,14 @@ function StatementImportWizard({
             </p>
           )}
           {submitError && (
-            <p
-              role="alert"
-              className="text-sm leading-5 font-medium text-danger"
-            >
-              {submitError}
-            </p>
+            <div role="alert" className="grid gap-1 text-sm leading-5">
+              {submitError.heading && (
+                <p className="font-semibold text-danger">
+                  {t(submitError.heading)}
+                </p>
+              )}
+              <p className="font-medium text-danger">{submitError.message}</p>
+            </div>
           )}
         </div>
       )}

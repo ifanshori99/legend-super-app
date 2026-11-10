@@ -90,7 +90,7 @@ export function formatDays(
 
 /**
  * Every peak window of the zone, grouped by its days so the same weekdays are
- * not repeated: "Sen–Jum 11.30–14.00, 18.00–21.00 · Min, Sab 00.00–23.59".
+ * not repeated: "Sen–Jum 11.30–14.00, 18.00–21.00 · Min, Sab 00.00–24.00".
  */
 export function formatPeakWindows(
   windows: readonly PeakWindow[],

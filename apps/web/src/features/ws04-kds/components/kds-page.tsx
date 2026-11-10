@@ -39,7 +39,7 @@ import type { AreaAccess } from "@/lib/areas/access";
 import {
   useBoard,
   useKdsActions,
-  useMenuStations,
+  useStationLabels,
   useStations,
 } from "../hooks.ts";
 import { boardQuery } from "../queries.ts";
@@ -83,7 +83,7 @@ export function KdsPage() {
     access: AreaAccess;
   };
   const stations = useStations();
-  const names = useMenuStations();
+  const names = useStationLabels();
   const [selected, setSelected] = useState<StationId | null>(null);
   // Station authorization (legend-fsb7): a station-scoped account only polls
   // and shows the stations in its reach. The API denies the rest with 403, so
@@ -96,7 +96,7 @@ export function KdsPage() {
     selected !== null && permitted.has(selected)
       ? selected
       : active[0]?.stationId;
-  const station = names.data?.find((row) => row.id === stationId);
+  const station = names.data?.find((row) => row.stationId === stationId);
   // The station switch carries each station's live queue (DESIGN.md §5: zones
   // and stations are a group with counts). The open station's count reuses its
   // own 2 s board poll (same query key, no extra request); the other stations
@@ -114,7 +114,7 @@ export function KdsPage() {
     })),
   });
   const stationLabel = (id: StationId) => {
-    const name = names.data?.find((row) => row.id === id)?.name ?? id;
+    const name = names.data?.find((row) => row.stationId === id)?.name ?? id;
     const index = active.findIndex((item) => item.stationId === id);
     const count = index === -1 ? undefined : stationBoards[index]?.data;
     // No count until the board is read — never a fake "(0)".
@@ -323,12 +323,23 @@ function StationBoard({
                     icon={band.icon}
                     label={band.label}
                   >
-                    <p className="text-sm leading-5 font-semibold">
-                      {t("kds.orderCode")}{" "}
-                      <span className="font-mono tracking-wider">
-                        {ticket.orderId.slice(-6)}
-                      </span>
-                    </p>
+                    <div className="flex min-w-0 flex-col">
+                      <p className="text-sm leading-5 font-semibold">
+                        {ticket.tableLabel !== null && (
+                          <>
+                            {t("kds.table", { label: ticket.tableLabel })}
+                            {" · "}
+                          </>
+                        )}
+                        {t("kds.orderCode")}{" "}
+                        <span className="font-mono tracking-wider">
+                          {ticket.orderId.slice(-6)}
+                        </span>
+                      </p>
+                      <p className="text-xs leading-4">
+                        {t(`kds.channel.${ticket.channel}`)}
+                      </p>
+                    </div>
                     {elapsed !== null && (
                       <p className="text-[30px] leading-9 font-bold tabular">
                         {formatElapsedSeconds(elapsed)}

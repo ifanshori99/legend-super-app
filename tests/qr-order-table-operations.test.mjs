@@ -341,3 +341,53 @@ test("legend-4rmk legend-2l6k floor operations are a waiter/cashier task, layout
   // legend-2l6k: the outlet manager edits the floor plan; supervisor does not.
   assert.equal(holds("outlet_manager", "floor.table.manage"), true);
 });
+
+test("legend-1nmh table link: strict inputs, request shape guard, endpoints, events", () => {
+  const [a, b] = [f.tables[0].id, f.tables[1].id];
+  assert.equal(
+    qr.linkTablesInputSchema.safeParse({ tableIds: [a, b] }).success,
+    true,
+  );
+  assert.equal(
+    qr.linkTablesInputSchema.safeParse({ tableIds: [a], tenantId: "x" })
+      .success,
+    false,
+  );
+  assert.equal(qr.unlinkTablesInputSchema.safeParse({}).success, true);
+  assert.equal(
+    qr.linkTablesInputSchema.safeParse({ tableIds: [] }).success,
+    false,
+  );
+  const shapeError = (error) =>
+    error instanceof CoreError && error.code === "VALIDATION_ERROR";
+  assert.throws(() => qr.assertLinkRequestShape({ tableIds: [a] }), shapeError);
+  assert.throws(
+    () => qr.assertLinkRequestShape({ tableIds: [a, a] }),
+    shapeError,
+  );
+  assert.doesNotThrow(() => qr.assertLinkRequestShape({ tableIds: [a, b] }));
+  assert.doesNotThrow(() =>
+    qr.assertLinkRequestShape({ groupId: "g", tableIds: [a] }),
+  );
+  assert.equal(qr.linkTables.path, "/api/table-links");
+  assert.equal(qr.unlinkTables.path, "/api/table-links/:groupId/unlink");
+  assert.equal(
+    qr.tableLiveStatusSchema.safeParse({
+      ...f.floorBoard.tables[0],
+      linkGroup: { id: f.tables[0].id, tableIds: [a] },
+    }).success,
+    false,
+  );
+  for (const name of [
+    "table.status_changed",
+    "table_session.linked",
+    "table_session.unlinked",
+  ]) {
+    assert.ok(qr.qrOrderEventNames.includes(name), name);
+    assert.equal(qr.qrOrderEvents[name].entry.workstream, "WS-03");
+  }
+  assert.equal(
+    qr.qrOrderEvents["table.status_changed"].entry.aggregateType,
+    "table",
+  );
+});

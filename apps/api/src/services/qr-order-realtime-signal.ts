@@ -11,45 +11,38 @@
 //   qr-order.service.ts `publishCartChange` on every cart write and checkout.
 // - Order signal `{tenantId, sessionId, orderId, status}`: written by the
 //   payment consumers (qr-order-consumers.ts) when a verified payment fires
-//   an order or an unpaid order is voided.
+//   an order or an unpaid order is voided, and by order-recovery.service.ts
+//   (`item_failed`) when staff report a paid item as unfulfillable (ORD-08).
 
 import { sql } from "drizzle-orm";
+import type { ScopedTenantContext } from "@starter/shared/core";
 import {
-  tenantIdSchema,
-  ulidSchema,
-  uuidSchema,
-  z,
-  type ScopedTenantContext,
-} from "@starter/shared/core";
+  qrCartSignalSchema,
+  qrOrderSignalSchema,
+  qrRealtimeSignalSchema,
+  type QrRealtimeSignal,
+} from "@starter/shared/qr-order";
 import type { Tx } from "./menu-internals.ts";
 import { QR_CART_WAKE_CHANNEL } from "./qr-order.service.ts";
 
 export { QR_CART_WAKE_CHANNEL };
 
-export const qrCartSignalSchema = z.strictObject({
-  tenantId: tenantIdSchema,
-  sessionId: uuidSchema,
-  version: z.number().int().nonnegative(),
-});
-
-export const qrOrderSignalSchema = z.strictObject({
-  tenantId: tenantIdSchema,
-  sessionId: uuidSchema,
-  orderId: ulidSchema,
-  status: z.enum(["sent", "voided"]),
-});
-
-export const qrRealtimeSignalSchema = z.union([
+export {
   qrCartSignalSchema,
   qrOrderSignalSchema,
-]);
-export type QrRealtimeSignal = z.infer<typeof qrRealtimeSignalSchema>;
+  qrRealtimeSignalSchema,
+  type QrRealtimeSignal,
+};
 
 /** Queues an order wake-up in the caller's transaction (sent at commit). */
 export async function notifyQrOrderChange(
   tx: Tx,
   context: ScopedTenantContext,
-  input: { sessionId: string; orderId: string; status: "sent" | "voided" },
+  input: {
+    sessionId: string;
+    orderId: string;
+    status: "sent" | "voided" | "item_failed";
+  },
 ): Promise<void> {
   const signal = qrOrderSignalSchema.parse({
     tenantId: context.tenant.tenantId,

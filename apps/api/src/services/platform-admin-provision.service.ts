@@ -150,7 +150,7 @@ export async function provisionFirstTenantAdmin(
   return { userId, assignmentId: assignment.id, roleId: role.id, account };
 }
 
-async function resolveAdminAccount(
+export async function resolveAdminAccount(
   tx: Tx,
   firstAdmin: CreateTenantInput["firstAdmin"],
   now: Date,

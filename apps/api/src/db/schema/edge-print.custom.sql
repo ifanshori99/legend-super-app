@@ -1,7 +1,7 @@
 -- Edge Print Agent tables (bead legend-46p; PRD v1.7 §3 F5 "Print Agent",
 -- §3 F12 "Fallback Cetak", EDG-05). Fold into the generated migration after
--- the CREATE TABLE statements (generated as 0063_edge_print, this file as
--- 0064_edge_print_rls). CHECK constraints live in the drizzle schema
+-- the CREATE TABLE statements (generated as 0261_edge_print, this file as
+-- 0262_edge_print_rls). CHECK constraints live in the drizzle schema
 -- (edge-print.ts); this file holds RLS and the invariants drizzle cannot
 -- express. Same migration on the cloud and on every edge node.
 

@@ -217,6 +217,7 @@ const domains = [
     ...row,
     tenantId: tenant.id,
     brandId: brand.id,
+    verification: null,
     createdAt: SEEDED_AT,
   }),
 );
@@ -228,6 +229,7 @@ const suspendedDomain = tenantDomainSchema.parse({
   kind: "platform_subdomain",
   tlsStatus: "active",
   verifiedAt: SEEDED_AT,
+  verification: null,
   createdAt: SEEDED_AT,
 });
 

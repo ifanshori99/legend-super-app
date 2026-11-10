@@ -57,6 +57,17 @@ export const auditEventSchema = z
       .regex(/^[a-f0-9]{64}$/)
       .nullable(),
     sensitiveAccess: z.boolean(),
+    // Set when the write ran on a support (impersonated) session, so the tenant
+    // can see which tenant user the platform admin was acting as (legend-6yfhc).
+    // Optional: rows written before this field stay valid.
+    support: z
+      .strictObject({
+        grantId: uuidSchema,
+        impersonatorUserId: uuidSchema,
+        impersonatedUserId: uuidSchema,
+        accessMode: z.enum(["read_only", "read_write"]),
+      })
+      .optional(),
     retentionClass: z.literal("audit_2y"),
     createdAt: isoDateTimeSchema,
   })

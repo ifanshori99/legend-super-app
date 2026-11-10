@@ -155,9 +155,24 @@ function toDto(row: Row): ApprovalRequest {
   });
 }
 
-/** Inbox view: a pending row past its deadline reads as expired before the sweep. */
-function toView(row: Row, now: Date): ApprovalRequest {
-  return expireApprovalRequest(toDto(row), now);
+/**
+ * Inbox view: a pending row past its deadline reads as expired before the
+ * sweep. A blind cash count (`cash_shift_close`) hides its amount (the
+ * |variance|) from the requester, so the cashier never learns the expected
+ * cash; other viewers (approvers) still see it.
+ */
+function toView(row: Row, now: Date, viewerId?: string): ApprovalRequest {
+  const view = expireApprovalRequest(toDto(row), now);
+  if (
+    row.actionType !== "cash_shift_close" ||
+    viewerId === undefined ||
+    viewerId.toLowerCase() !== row.requestedBy.toLowerCase()
+  )
+    return view;
+  const payload = Object.fromEntries(
+    Object.entries(view.payload).filter(([key]) => key !== "valueIdr"),
+  );
+  return { ...view, amountIdr: null, payload };
 }
 
 function targetOf(outletId: string | null): AccessTarget {
@@ -704,6 +719,79 @@ export async function getApprovalChainOutcome(
 }
 
 /**
+ * Announces a level that just became `expired`: `approval.resolved` (expired,
+ * system) to the source module and notifications, plus the audit row. Shared by
+ * the deadline sweep and `resolveApprovalChainOutcome`.
+ */
+async function announceExpired(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: Row,
+  now: Date,
+): Promise<void> {
+  await emitResolved(tx, context, row, "expired", { type: "system" }, now);
+  await recordAudit(
+    {
+      tenantId: context.tenant.tenantId,
+      outletId: row.outletId,
+      actorType: "system",
+      actorId: null,
+      deviceId: null,
+      action: "approval.expired",
+      objectType: "approval_request",
+      objectId: row.id,
+      reason: null,
+      before: {
+        status: "pending",
+        deadlineAt: row.deadlineAt.toISOString(),
+      },
+      after: { status: "expired" },
+      sensitiveAccess: false,
+    },
+    { tx, context },
+  );
+}
+
+/**
+ * The chain's outcome for a source module that settles synchronously, with
+ * the deadline applied atomically: locks the chain head (the lock every
+ * decide takes), re-reads, and when the open level is still pending past its
+ * deadline expires it here (conditional on status 'pending'), emitting
+ * approval.resolved (expired, system) + audit approval.expired like the sweep.
+ * An inbox decision already in flight commits first and wins.
+ */
+export async function resolveApprovalChainOutcome(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    readonly chainId: string;
+    readonly sourceModule: string;
+    readonly now: Date;
+  },
+): Promise<ApprovalOutcome> {
+  await lockChain(tx, input.chainId);
+  const rows = await chainRows(tx, input.chainId);
+  if (rows[0]?.sourceModule !== input.sourceModule) throw notFound();
+  const open = rows.find((row) => row.status === "pending");
+  if (!open) return chainOutcome(rows);
+  if (open.deadlineAt.getTime() > input.now.getTime()) return "pending";
+  const [expired] = await tx
+    .update(approvalRequests)
+    .set({ status: "expired", updatedAt: input.now })
+    .where(
+      and(
+        eq(approvalRequests.id, open.id),
+        eq(approvalRequests.status, "pending"),
+      ),
+    )
+    .returning();
+  // The sweep won between our read and write: report what it left behind.
+  if (!expired) return chainOutcome(await chainRows(tx, input.chainId));
+  await announceExpired(tx, context, expired, input.now);
+  return "expired";
+}
+
+/**
  * The source module withdraws its request (e.g. the order was voided first).
  * Idempotent: an already-ended chain returns its outcome unchanged.
  */
@@ -904,7 +992,7 @@ export async function listApprovalRequests(
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {
-      data: page.map((row) => toView(row, now)),
+      data: page.map((row) => toView(row, now, actorUserId)),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -949,7 +1037,7 @@ export async function getApprovalRequest(
         );
       return found;
     });
-    if (row) return toView(row, now);
+    if (row) return toView(row, now, actorUserId);
   }
   throw notFound();
 }
@@ -1243,29 +1331,7 @@ export async function expireDueApprovalRequests(
         ),
       )
       .returning();
-    for (const row of expired) {
-      await emitResolved(tx, context, row, "expired", { type: "system" }, now);
-      await recordAudit(
-        {
-          tenantId: context.tenant.tenantId,
-          outletId: row.outletId,
-          actorType: "system",
-          actorId: null,
-          deviceId: null,
-          action: "approval.expired",
-          objectType: "approval_request",
-          objectId: row.id,
-          reason: null,
-          before: {
-            status: "pending",
-            deadlineAt: row.deadlineAt.toISOString(),
-          },
-          after: { status: "expired" },
-          sensitiveAccess: false,
-        },
-        { tx, context },
-      );
-    }
+    for (const row of expired) await announceExpired(tx, context, row, now);
     return expired.length;
   });
 }

@@ -700,6 +700,7 @@ const serviceRequests: ServiceRequest[] = [
     createdAt: "2026-11-01T05:03:00.000Z",
     acknowledgedAt: "2026-11-01T05:03:20.000Z",
     resolvedAt: "2026-11-01T05:04:00.000Z",
+    resolvedBy: staffUserId,
   },
 ].map((request) => serviceRequestSchema.parse(request));
 
@@ -714,7 +715,10 @@ const orderIssues: OrderIssue[] = [
     orderId: order.id,
     orderItemId: orderItems[1].id,
     type: "unfulfillable" as const,
-    reason: "Bahan nasi goreng habis mendadak saat pesanan diproses",
+    reason: "out_of_stock" as const,
+    reasonNote: "Bahan nasi goreng habis mendadak saat pesanan diproses",
+    stationId: null,
+    employeeId: null,
     resolution: null,
     replacementItemId: null,
     voucherId: null,
@@ -732,8 +736,11 @@ const orderIssues: OrderIssue[] = [
     orderId: order.id,
     orderItemId: orderItems[2].id,
     type: "remake" as const,
-    reason:
+    reason: "quality" as const,
+    reasonNote:
       "Croissant gosong dan tamu menolak remake, disetujui kredit voucher",
+    stationId: null,
+    employeeId: staffUserId,
     resolution: "voucher" as const,
     replacementItemId: null,
     voucherId,

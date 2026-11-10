@@ -15,7 +15,9 @@
 // and the database refuses an approver equal to the requester.
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   check,
+  customType,
   foreignKey,
   index,
   integer,
@@ -37,6 +39,14 @@ import {
 import { approvalRequests } from "./platform-approval";
 import { outlets, tenants } from "./platform-org";
 import { user } from "./user";
+
+/**
+ * PostgreSQL `xid8`: a 64-bit transaction id. Kept as its decimal text, which
+ * is what the driver returns and what the edge export puts in its cursor.
+ */
+const xid8 = customType<{ data: string; driverData: string }>({
+  dataType: () => "xid8",
+});
 
 export const staffPins = pgTable(
   "staff_pins",
@@ -61,6 +71,89 @@ export const staffPins = pgTable(
     setBy: text("set_by")
       .notNull()
       .references(() => user.id),
+    /**
+     * When the current pin generation (hash material) was set (legend-kyie).
+     * `updated_at` moves on every attempt, `created_at` not on a reset, so an
+     * edge `staff_pin.set` is ordered against this column only.
+     */
+    pinSetAt: timestamp("pin_set_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    /**
+     * Ordering key of pin generations (legend-kyie, Codex 160 C1). An edge set
+     * stores its raw `setAt` here (edge clock, never clamped) so two edge sets
+     * keep their order even when the edge clock runs ahead; `pin_set_at`
+     * keeps the clamped time. A cloud set takes the later of the database
+     * clock and the current key + 1 ms, so it still wins over an edge set
+     * stamped in the future.
+     */
+    pinGenerationAt: timestamp("pin_generation_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    /**
+     * Commit-ordered sync version (legend-t9ii): the id of the transaction
+     * that last wrote the row. The default covers an insert, the
+     * `staff_pins_sync_xid` trigger every update (no application code sets
+     * it). The edge export reads only rows below the oldest transaction still
+     * open, so a late commit is never passed by a watermark and no clock is
+     * involved.
+     */
+    syncXid: xid8("sync_xid")
+      .notNull()
+      .default(sql`pg_current_xact_id()`),
+    /**
+     * Edge copy only (legend-t9ii review K F2): the highest generation key
+     * this edge received from the cloud (`applyStaffPinRecords`). The edge's
+     * own next set caps the carried key at `GREATEST(edge now, this) + 5 min`,
+     * so an edge clock far behind a recent cloud reset still stamps after it.
+     * Never written by the cloud's own paths, so null there.
+     */
+    cloudGenerationAt: timestamp("cloud_generation_at", { withTimezone: true }),
+    /**
+     * Edge copy only (legend-7vv8h): the cloud lock state of the last record
+     * applied. The edge merges a record's counter or lock only where it moved
+     * past these, so a full resync replaying an old cloud counter never brings
+     * back a counter or lock the edge already cleared. Null on the cloud.
+     */
+    cloudFailedAttempts: integer("cloud_failed_attempts"),
+    cloudLockedUntil: timestamp("cloud_locked_until", { withTimezone: true }),
+    /**
+     * Counter revision (legend-r11j7): bumped by the `staff_pins_attempt_revision`
+     * trigger on every change of `failed_attempts`, `pin_hash` or `pin_salt`,
+     * not on a lock-only change (no application code sets it). The cloud exports it, so
+     * the edge sees a counter that went 3 -> 0 -> 3 between two pulls as moved
+     * although the value is the same.
+     */
+    attemptRevision: bigint("attempt_revision", { mode: "number" })
+      .notNull()
+      .default(0),
+    /**
+     * Edge copy only (legend-r11j7): `attempt_revision` of the last record
+     * applied, the revision twin of `cloud_failed_attempts`. Null on the cloud,
+     * for a row from before the column and for a record of an older cloud
+     * export without a revision.
+     */
+    cloudAttemptRevision: bigint("cloud_attempt_revision", { mode: "number" }),
+    /**
+     * Cloud only (legend-rucdm): the edge node and its outbox aggregate
+     * sequence whose `staff_pin.set` gave the current generation. A later set
+     * of the same node (higher sequence) is newer whatever its key, so an
+     * edge clock stepping back while offline cannot make the node's own newer
+     * pin lose. Null after a cloud set, and on the edge.
+     */
+    generationEdgeNodeId: uuid("generation_edge_node_id"),
+    generationEdgeSequence: bigint("generation_edge_sequence", {
+      mode: "number",
+    }),
+    /**
+     * Cloud only (legend-o839h): the edge database (`edge_nodes.instance_id`
+     * of the sending edge) that gave the current generation. A rebuilt edge
+     * database keeps its node id but restarts its sequences, so a set from
+     * another instance of the same node compares by key, not by sequence.
+     * Null when the edge did not report an instance (old edge), after a cloud
+     * set, and on the edge.
+     */
+    generationEdgeInstanceId: uuid("generation_edge_instance_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -74,6 +167,12 @@ export const staffPins = pgTable(
       table.tenantId,
       table.outletId,
       table.userId,
+    ),
+    index("staff_pins_sync_idx").on(
+      table.tenantId,
+      table.outletId,
+      table.syncXid,
+      table.id,
     ),
     foreignKey({
       name: "staff_pins_outlet_fk",
@@ -157,7 +256,7 @@ export const posOverrides = pgTable(
     ),
     check(
       "pos_overrides_action_check",
-      sql`${table.action} IN ('void', 'discount', 'refund', 'cash_drawer_open', 'price_correction')`,
+      sql`${table.action} IN ('void', 'discount', 'refund', 'cash_drawer_open', 'price_correction', 'cash_shift_close', 'edc_standalone')`,
     ),
     check(
       "pos_overrides_method_check",

@@ -1,0 +1,5 @@
+ALTER TABLE "pos_overrides" DROP CONSTRAINT "pos_overrides_action_check";--> statement-breakpoint
+ALTER TABLE "pos_order_approval_uses" DROP CONSTRAINT "pos_order_approval_uses_purpose_check";--> statement-breakpoint
+CREATE UNIQUE INDEX "pos_order_tenders_edc_transaction_key" ON "pos_order_tenders" USING btree ("tenant_id","edc_transaction_id") WHERE "pos_order_tenders"."edc_transaction_id" IS NOT NULL AND "pos_order_tenders"."status" NOT IN ('voided', 'failed');--> statement-breakpoint
+ALTER TABLE "pos_overrides" ADD CONSTRAINT "pos_overrides_action_check" CHECK ("pos_overrides"."action" IN ('void', 'discount', 'refund', 'cash_drawer_open', 'price_correction', 'cash_shift_close', 'edc_standalone'));--> statement-breakpoint
+ALTER TABLE "pos_order_approval_uses" ADD CONSTRAINT "pos_order_approval_uses_purpose_check" CHECK ("pos_order_approval_uses"."purpose" IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone'));

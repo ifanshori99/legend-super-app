@@ -13,16 +13,26 @@
 // - the amounts given must be exactly the rule's keys (no silent leftovers),
 //   and the result must balance; anything else fails closed.
 //
-// One business fact posts once: sales and refunds post on `order.paid` /
-// `order.refunded` (per payment method), so `payment.paid` and
-// `payment.refunded` post nothing; gateway and EDC fees post on settlement.
+// One business fact posts once, receipt-first for gateway money: every gateway
+// receipt (`payment.paid`: sale, DP or late payment, overpayment included;
+// `payment.funds_unallocated`: money on a closed intent or a second payment on
+// a settled one) books Dr gateway_clearing / Cr customer_deposit on the day the
+// money arrived, so gateway_clearing equals what the gateway received and
+// settlement reconciles.
+// `order.paid` then moves the intent-backed gateway part and any DP applied
+// out of customer_deposit into the sale. `order.refunded` credits
+// customer_deposit for the gateway part (owed to the guest until payout) and
+// `payment.refunded` pays it out of gateway_clearing. A forfeited DP moves
+// from customer_deposit to deposit_forfeit_income on reservation.cancelled /
+// reservation.no_show (from gateway_clearing when its receipt predates the
+// cutover). Gateway and EDC fees post on settlement.
 // Gateway switching changes only which clearing amount is filled (PAY-05).
 
 import { z } from "zod";
 import type { Idr, OutletId } from "../core/index.ts";
 import { eventCatalogByName } from "../events/catalog.ts";
 import { postingAccountRoleSchema } from "./coa.ts";
-import type { PostingAccountRole } from "./coa.ts";
+import type { AccountType, PostingAccountRole } from "./coa.ts";
 import { AccountingError } from "./errors.ts";
 import type { AccountId } from "./ids.ts";
 import { assertJournalBalanced, journalSourceTypeSchema } from "./journal.ts";
@@ -119,6 +129,64 @@ const rule = (
 
 const AUTO = "§3.19 Jurnal Otomatis";
 
+/** Amount keys come from `payrollJournalAmounts` (payroll-journal.ts). */
+const PAYROLL_JOURNAL_LINES: L[] = [
+  ["salary_expense", "debit", "salaryExpenseIdr"],
+  ["pph21_borne_expense", "debit", "pph21EmployerBorneIdr"],
+  ["service_charge", "debit", "serviceChargeIdr"],
+  ["reimbursement_expense", "debit", "reimbursementIdr"],
+  ["bpjs_expense", "debit", "bpjsCompanyIdr"],
+  // Founder B8: an employee's PPh 21 shortfall is a receivable, not a
+  // company cost. New receivable debits; collection from this run's pay
+  // credits (it reduces salaries_payable's net, see netIdr).
+  ["employee_receivable", "debit", "pph21ReceivableIdr"],
+  ["salaries_payable", "credit", "netIdr"],
+  ["bpjs_payable", "credit", "bpjsTotalIdr"],
+  ["pph21_payable", "credit", "pph21Idr"],
+  ["employee_receivable", "credit", "pph21ReceivableCollectedIdr"],
+  ["employee_receivable", "credit", "loanRepaymentIdr"],
+  // Other deductions that are not custom (today: late) credit salary_expense;
+  // custom ones (koperasi dues etc.) have their own role so a tenant can map
+  // them to a liability (legend-75kr).
+  ["salary_expense", "credit", "lateDeductionsIdr"],
+  ["payroll_custom_deduction", "credit", "customDeductionsIdr"],
+  // Employer lebih potong (legend-w6vah): the part that returns an earlier
+  // gross-up allowance credits salary_expense (6101, where the allowance was
+  // booked); the part that returns borne tax credits pph21_borne_expense.
+  ["salary_expense", "credit", "pph21EmployerAllowanceRefundIdr"],
+  ["pph21_borne_expense", "credit", "pph21EmployerBorneRefundIdr"],
+];
+
+/**
+ * `payroll.locked#service_charge_expense`: the service charge payout debits
+ * salary_expense instead of the service_charge account. Same amount keys as
+ * the base rule, so the reversal cross-check still matches.
+ */
+const PAYROLL_JOURNAL_LINES_SC_EXPENSE: L[] = PAYROLL_JOURNAL_LINES.map(
+  (line): L =>
+    line[0] === "service_charge" && line[1] === "debit"
+      ? ["salary_expense", "debit", line[2]]
+      : line,
+);
+
+/**
+ * Variant of `payroll.locked` for the entity's service_charge mapping: the
+ * payout of service charge must never debit revenue. A revenue mapping (PRD
+ * F11: service charge kept as income) posts the payout on salary_expense: it is
+ * an employee cost. Every other type keeps the base rule, debiting the mapped
+ * account: a liability clears, and a legacy expense/asset/equity mapping saved
+ * before the type guard is debited where the POS credited it, so it clears
+ * too. No mapping (null): base rule (posting fails ACCOUNT_MAPPING_MISSING
+ * when the service charge is above zero).
+ */
+export function payrollLockedVariant(
+  serviceChargeAccountType: AccountType | null,
+): "service_charge_expense" | undefined {
+  return serviceChargeAccountType === "revenue"
+    ? "service_charge_expense"
+    : undefined;
+}
+
 /** Default rules (system data; tenants change accounts through mappings, not rules). */
 export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
   rule(
@@ -128,6 +196,12 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     `${AUTO} (penjualan, pembayaran per metode); §3.20 Liabilitas Poin; POS-05`,
     [
       ["cash_on_hand", "debit", "paidCashIdr"],
+      // Gateway tender backed by a payment intent: its receipt already sits in
+      // customer_deposit (payment.paid). Tender without an intent: straight to
+      // gateway_clearing. DP applied to the order also leaves customer_deposit
+      // (a DP whose receipt predates the cutover counts as paidGatewayIdr).
+      ["customer_deposit", "debit", "paidGatewayIntentIdr"],
+      ["customer_deposit", "debit", "paidDepositIdr"],
       ["gateway_clearing", "debit", "paidGatewayIdr"],
       ["edc_clearing", "debit", "paidEdcIdr"],
       ["loyalty_liability", "debit", "paidPointsIdr"],
@@ -149,11 +223,68 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["tax_payable_pbjt", "debit", "pbjtIdr"],
       ["sales_discount", "credit", "discountIdr"],
       ["cash_on_hand", "credit", "refundCashIdr"],
-      ["gateway_clearing", "credit", "refundGatewayIdr"],
+      // Owed to the guest until the gateway pays it out (payment.refunded).
+      ["customer_deposit", "credit", "refundGatewayIdr"],
       ["edc_clearing", "credit", "refundEdcIdr"],
       // Points returned to the member restore the liability the sale used
       // (mirror of the order.paid loyalty_liability debit, §3.20).
       ["loyalty_liability", "credit", "refundPointsIdr"],
+    ],
+  ),
+  rule(
+    { event: "payment.paid" },
+    "customer_deposit",
+    "Penerimaan dana payment gateway (uang muka pelanggan)",
+    `${AUTO} (pembayaran per metode); §3.13 Orkestrasi Pembayaran`,
+    [
+      ["gateway_clearing", "debit", "receivedIdr"],
+      ["customer_deposit", "credit", "receivedIdr"],
+    ],
+  ),
+  rule(
+    { event: "payment.funds_unallocated" },
+    "customer_deposit",
+    "Dana payment gateway belum teralokasi (bayar ganda atau intent tertutup)",
+    `${AUTO} (pembayaran per metode); §3.13 Orkestrasi Pembayaran (PAY-04)`,
+    [
+      ["gateway_clearing", "debit", "receivedIdr"],
+      ["customer_deposit", "credit", "receivedIdr"],
+    ],
+  ),
+  rule(
+    { event: "payment.refunded" },
+    "refund",
+    "Refund dibayarkan kembali lewat payment gateway",
+    `${AUTO}; ORD-09; §3.13 Orkestrasi Pembayaran`,
+    [
+      ["customer_deposit", "debit", "amountIdr"],
+      ["gateway_clearing", "credit", "amountIdr"],
+    ],
+  ),
+  rule(
+    { event: "reservation.cancelled" },
+    "customer_deposit",
+    "Uang muka reservasi hangus (batal)",
+    `${AUTO}; §3.25 Reservasi (uang muka)`,
+    [
+      // DP whose receipt is booked leaves customer_deposit; a DP paid before
+      // the auto-journal cutover (no receipt) leaves gateway_clearing.
+      ["customer_deposit", "debit", "forfeitedIdr"],
+      ["gateway_clearing", "debit", "forfeitedGatewayIdr"],
+      ["deposit_forfeit_income", "credit", "forfeitedIdr"],
+      ["deposit_forfeit_income", "credit", "forfeitedGatewayIdr"],
+    ],
+  ),
+  rule(
+    { event: "reservation.no_show" },
+    "customer_deposit",
+    "Uang muka reservasi hangus (tidak datang)",
+    `${AUTO}; §3.25 Reservasi (uang muka)`,
+    [
+      ["customer_deposit", "debit", "forfeitedIdr"],
+      ["gateway_clearing", "debit", "forfeitedGatewayIdr"],
+      ["deposit_forfeit_income", "credit", "forfeitedIdr"],
+      ["deposit_forfeit_income", "credit", "forfeitedGatewayIdr"],
     ],
   ),
   rule(
@@ -232,6 +363,31 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["accounts_payable", "credit", "payableIdr"],
     ],
   ),
+  // debitNoteIdr = invoicedValueIdr + ppnIdr, reduced by the fact builder.
+  // valueIdr = uninvoicedValueIdr + invoicedValueIdr (event refine), so the
+  // journal balances; a zero amount drops its line.
+  rule(
+    { event: "purchase_return.recorded" },
+    "purchase_return",
+    "Retur pembelian",
+    `${AUTO} (pembelian); INV-05; §3.18 Retur Pembelian`,
+    [
+      ["grni", "debit", "uninvoicedValueIdr"],
+      ["accounts_payable", "debit", "debitNoteIdr"],
+      ["inventory", "credit", "valueIdr"],
+      ["ppn_input", "credit", "ppnIdr"],
+    ],
+  ),
+  rule(
+    { event: "petty_purchase.recorded" },
+    "petty_purchase",
+    "Pembelian sederhana dari kas kecil",
+    `${AUTO} (pembelian); §3.18 Pembelian Sederhana`,
+    [
+      ["petty_purchase_expense", "debit", "amountIdr"],
+      ["petty_cash", "credit", "amountIdr"],
+    ],
+  ),
   rule(
     { event: "production.completed" },
     "production",
@@ -243,25 +399,140 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     ],
   ),
   rule(
-    { event: "payroll_run.completed" },
+    { event: "payroll.locked" },
     "payroll",
     "Payroll dikunci",
     `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-04`,
+    PAYROLL_JOURNAL_LINES,
+  ),
+  rule(
+    { event: "payroll.locked", variant: "service_charge_expense" },
+    "payroll",
+    "Payroll dikunci (service charge dibayarkan sebagai beban gaji)",
+    `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-04; PRD F11 service charge`,
+    PAYROLL_JOURNAL_LINES_SC_EXPENSE,
+  ),
+  rule(
+    { event: "payroll.reversed" },
+    "payroll",
+    "Payroll dibatalkan (jurnal balik)",
+    `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-05`,
+    // Same amounts as the locked totals in the payload, sides swapped. Not
+    // posted by the payroll GL consumer: it reverses the locked entry itself
+    // (legend-4n3r), so the reversal mirrors what was really posted, after
+    // checking the payload amounts against that entry line by line.
+    PAYROLL_JOURNAL_LINES.map(([role, side, amount]): L => [
+      role,
+      side === "debit" ? "credit" : "debit",
+      amount,
+    ]),
+  ),
+  rule(
+    { event: "payroll.paid" },
+    "payroll",
+    "Gaji dibayar",
+    `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-04`,
     [
-      ["salary_expense", "debit", "grossPayIdr"],
-      ["bpjs_expense", "debit", "employerBpjsIdr"],
-      ["salaries_payable", "credit", "netPayIdr"],
-      ["bpjs_payable", "credit", "totalBpjsIdr"],
-      ["pph21_payable", "credit", "pph21Idr"],
+      ["salaries_payable", "debit", "netIdr"],
+      ["bank", "credit", "bankTransferIdr"],
+      ["petty_cash", "credit", "cashIdr"],
     ],
   ),
+  // No variant: events emitted before legend-1coh (no disbursedVia), petty cash.
+  rule(
+    { event: "employee_loan.disbursed" },
+    "payroll",
+    "Kasbon karyawan dicairkan (piutang karyawan)",
+    `${AUTO} (payroll); §3 Jurnal Payroll`,
+    [
+      ["employee_receivable", "debit", "principalIdr"],
+      // petty_cash (1102 Kas Kecil), not cash_on_hand: 1101 is the POS drawer
+      // reconciled by shift close, so crediting it here would double count.
+      ["petty_cash", "credit", "principalIdr"],
+    ],
+  ),
+  rule(
+    { event: "employee_loan.disbursed", variant: "cash" },
+    "payroll",
+    "Kasbon karyawan dicairkan tunai (piutang karyawan)",
+    `${AUTO} (payroll); §3 Jurnal Payroll`,
+    [
+      ["employee_receivable", "debit", "principalIdr"],
+      // petty_cash, not cash_on_hand: see the base rule above.
+      ["petty_cash", "credit", "principalIdr"],
+    ],
+  ),
+  rule(
+    { event: "employee_loan.disbursed", variant: "bank" },
+    "payroll",
+    "Kasbon karyawan dicairkan via bank (piutang karyawan)",
+    `${AUTO} (payroll); §3 Jurnal Payroll`,
+    [
+      ["employee_receivable", "debit", "principalIdr"],
+      ["bank", "credit", "principalIdr"],
+    ],
+  ),
+  // Payout `payroll` posts nothing here: the run's journal carries it
+  // (reimbursement_expense on payroll.locked). Only a cash payout posts.
+  rule(
+    { event: "reimbursement.paid", variant: "cash" },
+    "payroll",
+    "Reimbursement dibayar tunai",
+    `${AUTO} (payroll); §3 reimbursement via payroll atau kas`,
+    [
+      ["reimbursement_expense", "debit", "amountIdr"],
+      // petty_cash (1102 Kas Kecil), not cash_on_hand: 1101 is the POS drawer
+      // reconciled by shift close, so crediting it here would double count.
+      ["petty_cash", "credit", "amountIdr"],
+    ],
+  ),
+  // legend-msqvi (D-msqvi, PSAK 72): points are a material right. Earning
+  // defers revenue into loyalty_points_deferral (contra revenue, never
+  // sales_revenue: 4101 keeps matching gross POS sales); a reversal, a
+  // redemption and a negative manual adjustment move it back. The consumer
+  // fills pointsValueIdr from the point_ledger row's signed liability_idr so
+  // every journal moves loyalty_liability exactly as the ledger did.
   rule(
     { event: "points.earned" },
     "loyalty",
     "Poin loyalty diperoleh (pendapatan ditangguhkan)",
-    "§3.20 Liabilitas Poin",
+    "§3.20 Liabilitas Poin; PSAK 72 (hak material)",
     [
-      ["sales_revenue", "debit", "pointsValueIdr"],
+      ["loyalty_points_deferral", "debit", "pointsValueIdr"],
+      ["loyalty_liability", "credit", "pointsValueIdr"],
+    ],
+  ),
+  rule(
+    { event: "points.reversed" },
+    "loyalty",
+    "Poin loyalty dibatalkan (refund atau void)",
+    "§3.20 Liabilitas Poin; PSAK 72 (hak material)",
+    [
+      ["loyalty_liability", "debit", "pointsValueIdr"],
+      ["loyalty_points_deferral", "credit", "pointsValueIdr"],
+    ],
+  ),
+  // Only reward redemptions: points used as tender move loyalty_liability on
+  // order.paid (paidPointsIdr), so the consumer ignores any other redeem row.
+  rule(
+    { event: "points.redeemed" },
+    "loyalty",
+    "Poin loyalty ditukar reward (pendapatan diakui)",
+    "§3.20 Liabilitas Poin; PSAK 72 (hak material)",
+    [
+      ["loyalty_liability", "debit", "pointsValueIdr"],
+      ["loyalty_points_deferral", "credit", "pointsValueIdr"],
+    ],
+  ),
+  // One rule for restore and manual adjustments: pointsValueIdr is signed, a
+  // negative amount books on the other side (buildJournalLinesFromRule).
+  rule(
+    { event: "points.adjusted" },
+    "loyalty",
+    "Penyesuaian poin loyalty (positif = tambah liabilitas)",
+    "§3.20 Liabilitas Poin; PSAK 72 (hak material)",
+    [
+      ["loyalty_points_deferral", "debit", "pointsValueIdr"],
       ["loyalty_liability", "credit", "pointsValueIdr"],
     ],
   ),

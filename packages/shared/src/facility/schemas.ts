@@ -23,7 +23,12 @@ import {
   ulidSchema,
   uuidSchema,
 } from "../core/index.ts";
-import { facilityHoursSchema, minutesOfDay } from "./slots.ts";
+import {
+  facilityHoursSchema,
+  minutesOfDay,
+  windowEndMinutes,
+  windowEndSchema,
+} from "./slots.ts";
 import {
   accessEventIdSchema,
   accessTicketIdSchema,
@@ -66,6 +71,12 @@ const nonnegativeIdr = idrSchema.refine((value) => value >= 0);
 const positiveIdr = idrSchema.refine((value) => value > 0);
 const minuteCount = z.number().int().min(0).max(1440);
 const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
+/**
+ * Version stamp of an admin-editable config row. Writers echo it back as
+ * `expectedUpdatedAt`; a mismatch is a 409 instead of a silent overwrite
+ * (bead legend-6jms).
+ */
+const configStamp = { updatedAt: isoDateTimeSchema };
 
 // ---- Facility configuration (PRD §6 K facilities / facility_areas / units) --
 
@@ -133,6 +144,7 @@ export type CancellationPolicy = z.infer<typeof cancellationPolicySchema>;
 export const facilitySchema = z.strictObject({
   id: facilityIdSchema,
   ...scope,
+  ...configStamp,
   name: nameSchema,
   type: facilityTypeSchema,
   /** Default session length; Legend ships 20 minutes (PRD §3 F22 Konfigurasi Legend). */
@@ -148,10 +160,26 @@ export const facilitySchema = z.strictObject({
 });
 export type Facility = z.infer<typeof facilitySchema>;
 
+/**
+ * A facility row of the config index with the sizes of its children, so the
+ * list needs no per-facility reads (bead legend-34fu). Counts cover every
+ * area, unit and product of the facility, active or not. `activeUnitCount`
+ * is the units whose status is not `maintenance` (the same rule as the
+ * admin's unit summary).
+ */
+export const facilityListItemSchema = facilitySchema.extend({
+  areaCount: z.number().int().min(0),
+  unitCount: z.number().int().min(0),
+  activeUnitCount: z.number().int().min(0),
+  productCount: z.number().int().min(0),
+});
+export type FacilityListItem = z.infer<typeof facilityListItemSchema>;
+
 /** One separated area inside a facility, e.g. Area Pria / Area Wanita. */
 export const facilityAreaSchema = z.strictObject({
   id: facilityAreaIdSchema,
   ...scope,
+  ...configStamp,
   facilityId: facilityIdSchema,
   name: nameSchema,
   /** Lock that opens the area entrance; null when the area has no own door. */
@@ -173,6 +201,7 @@ export type FacilityUnitStatus = z.infer<typeof facilityUnitStatusSchema>;
 export const facilityUnitSchema = z.strictObject({
   id: facilityUnitIdSchema,
   ...scope,
+  ...configStamp,
   facilityId: facilityIdSchema,
   areaId: facilityAreaIdSchema,
   /** Unique per facility, e.g. `P1`, `W2` (PRD §6 K). */
@@ -211,6 +240,7 @@ export type FacilityProductType = z.infer<typeof facilityProductTypeSchema>;
 export const facilityProductSchema = z.strictObject({
   id: facilityProductIdSchema,
   ...scope,
+  ...configStamp,
   facilityId: facilityIdSchema,
   name: nameSchema,
   type: facilityProductTypeSchema,
@@ -234,6 +264,7 @@ export type FacilityProduct = z.infer<typeof facilityProductSchema>;
 export const facilityAddonSchema = z.strictObject({
   id: facilityAddonIdSchema,
   ...scope,
+  ...configStamp,
   facilityId: facilityIdSchema,
   name: nameSchema,
   priceIdr: nonnegativeIdr,
@@ -272,6 +303,7 @@ export type EntitlementRuleType = z.infer<typeof entitlementRuleTypeSchema>;
 const entitlementRuleBase = {
   id: entitlementRuleIdSchema,
   ...scope,
+  ...configStamp,
   facilityId: facilityIdSchema,
   /** Sessions one qualification grants. */
   sessions: z.number().int().min(1).max(100),
@@ -736,6 +768,7 @@ export type SubscriptionInterval = z.infer<typeof subscriptionIntervalSchema>;
 export const subscriptionPlanSchema = z.strictObject({
   id: subscriptionPlanIdSchema,
   ...scope,
+  ...configStamp,
   facilityId: facilityIdSchema,
   name: nameSchema,
   priceIdr: nonnegativeIdr,
@@ -835,23 +868,39 @@ export type SubscriptionQuota = z.infer<typeof subscriptionQuotaSchema>;
 
 // ---- Wi-Fi and WFC (PRD §6 K wifi_policies / wifi_sessions, §3 F39) ---------
 
-/** Recurring local window, e.g. weekday peak 11:30–14:00 (PRD §3 F39 Jam Ramai). */
+/**
+ * Recurring local window, e.g. weekday peak 11:30–14:00 (PRD §3 F39 Jam Ramai).
+ * `endsAt` may be `24:00` (end of day); `startsAt` may not.
+ */
 export const peakWindowSchema = z
   .strictObject({
     daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7),
     startsAt: timeOfDaySchema,
-    endsAt: timeOfDaySchema,
+    endsAt: windowEndSchema,
   })
   .refine(
-    (window) => minutesOfDay(window.endsAt) > minutesOfDay(window.startsAt),
+    (window) =>
+      // Field errors are already reported; do not throw from the refinement.
+      !timeOfDaySchema.safeParse(window.startsAt).success ||
+      !windowEndSchema.safeParse(window.endsAt).success ||
+      windowEndMinutes(window.endsAt) > minutesOfDay(window.startsAt),
     { path: ["endsAt"], message: "endsAt must be after startsAt" },
   );
 export type PeakWindow = z.infer<typeof peakWindowSchema>;
+
+/**
+ * How spend turns into extra hours (bead legend-kmd3). `per_day_multiple`
+ * (default when absent): net spend of the business day / step, so Rp20.000 +
+ * Rp20.000 = 1 hour. `per_order`: each order is floored on its own.
+ */
+export const wifiSpendModeSchema = z.enum(["per_day_multiple", "per_order"]);
+export type WifiSpendMode = z.infer<typeof wifiSpendModeSchema>;
 
 export const wifiPolicySchema = z
   .strictObject({
     id: wifiPolicyIdSchema,
     ...scope,
+    ...configStamp,
     /** Floor zone the policy applies to (PRD §6 C floor_zones, WS-03). */
     zoneId: uuidSchema,
     /** Free minutes per day per account outside peak hours (PRD default 120). */
@@ -872,6 +921,8 @@ export const wifiPolicySchema = z
     minSpendPerHourIdr: nonnegativeIdr.nullable(),
     /** Extra daily minutes per loyalty tier key (PRD §3 "tier Gold dan Platinum"). */
     tierBonusMinutes: z.record(z.string(), z.number().int().min(0).max(720)),
+    /** Absent reads as `per_day_multiple` (CTO default, legend-kmd3). */
+    spendMode: wifiSpendModeSchema.optional(),
   })
   .superRefine((policy, ctx) => {
     if (policy.peakFreeMinutes > policy.freeMinutes)

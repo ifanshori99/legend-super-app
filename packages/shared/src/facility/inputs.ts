@@ -14,6 +14,7 @@ import {
   idempotencyKeySchema,
   idrSchema,
   isoDateTimeSchema,
+  outletIdSchema,
   ulidSchema,
   uuidSchema,
 } from "../core/index.ts";
@@ -28,6 +29,7 @@ import {
   overtimePolicySchema,
   peakWindowSchema,
   subscriptionIntervalSchema,
+  wifiSpendModeSchema,
 } from "./schemas.ts";
 import { facilityHoursSchema } from "./slots.ts";
 import {
@@ -99,6 +101,32 @@ export const staffSellTicketSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 export type StaffSellTicketInput = z.infer<typeof staffSellTicketSchema>;
+
+/** Staff read of one customer's entitlement balance at one facility. */
+export const customerEntitlementsParamsSchema = z.strictObject({
+  customerProfileId: uuidSchema,
+});
+export const customerEntitlementsQuerySchema = z.strictObject({
+  facilityId: facilityIdSchema,
+});
+
+/**
+ * Staff grants sessions without a sale (source `staff_issue`, FAC-04): the
+ * reason is mandatory and the request id makes a retry a no-op (it becomes the
+ * ledger `sourceRef`, so it must be a UUID).
+ */
+export const staffIssueEntitlementSchema = clientInputSchema({
+  facilityId: facilityIdSchema,
+  customerProfileId: uuidSchema,
+  sessions: z.number().int().min(1).max(100),
+  /** Null or absent = the grant never expires. */
+  expiresAt: isoDateTimeSchema.nullable().optional(),
+  reason: z.string().trim().min(3).max(500),
+  requestId: uuidSchema,
+});
+export type StaffIssueEntitlementInput = z.infer<
+  typeof staffIssueEntitlementSchema
+>;
 
 export const cancelAccessTicketSchema = clientInputSchema({
   reason: z.string().trim().min(3).max(500),
@@ -184,6 +212,18 @@ export const startWifiSessionSchema = clientInputSchema({
    * it (SHA-256) before storing it; the raw value is never persisted.
    */
   deviceFingerprint: z.string().min(8).max(512),
+  /**
+   * The id the controller knows the device by (a MAC), taken from the
+   * controller's portal redirect. Optional: without it the quota is computed
+   * but no controller grant is requested. Never stored in `wifi_sessions`.
+   */
+  controllerDeviceId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9:._-]+$/)
+    .optional(),
 });
 export type StartWifiSessionInput = z.infer<typeof startWifiSessionSchema>;
 
@@ -224,14 +264,50 @@ export const subscriptionParamsSchema = z.strictObject({
 
 // ---- Admin configuration ----------------------------------------------------
 
-/** PATCH bodies must change something; an empty object is a client bug. */
+/**
+ * Optimistic-lock stamp of every config write (bead legend-6jms): the
+ * `updatedAt` the editor last read. The API answers 409 when the row changed
+ * since, so two admins cannot silently overwrite each other.
+ */
+const expectedUpdatedAt = isoDateTimeSchema;
+
+/**
+ * PUT upsert variant: `null` states "this row does not exist yet" (create), so
+ * a PUT cannot replace a row the editor never saw.
+ */
+const expectedUpdatedAtOrNew = isoDateTimeSchema.nullable();
+
+/**
+ * PATCH bodies must change something; an empty object is a client bug. The
+ * concurrency stamp is not a change.
+ */
 function nonEmptyUpdate<Shape extends z.ZodRawShape>(
   schema: z.ZodObject<Shape>,
 ) {
-  return schema.refine((value) => Object.keys(value).length > 0, {
-    message: "At least one field is required",
-  });
+  return schema.refine(
+    (value) =>
+      Object.keys(value).filter((key) => key !== "expectedUpdatedAt").length >
+      0,
+    {
+      message: "At least one field is required",
+    },
+  );
 }
+
+/** One facility of an outlet; the outlet is named, the tenant never (TEN-02). */
+export const createFacilitySchema = clientInputSchema({
+  outletId: outletIdSchema,
+  name: z.string().trim().min(1).max(150),
+  type: z.enum(["shower", "locker", "meeting_room", "coworking"]),
+  sessionMinutes: z.number().int().min(1).max(480),
+  cleaningMinutes: minuteCount,
+  arrivalGraceMinutes: minuteCount,
+  operatingHours: facilityHoursSchema,
+  overtimePolicy: overtimePolicySchema,
+  cancellationPolicy: cancellationPolicySchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+export type CreateFacilityInput = z.infer<typeof createFacilitySchema>;
 
 export const updateFacilitySchema = nonEmptyUpdate(
   clientInputSchema({
@@ -243,6 +319,7 @@ export const updateFacilitySchema = nonEmptyUpdate(
     operatingHours: facilityHoursSchema.optional(),
     overtimePolicy: overtimePolicySchema.optional(),
     cancellationPolicy: cancellationPolicySchema.optional(),
+    expectedUpdatedAt,
   }),
 );
 export type UpdateFacilityInput = z.infer<typeof updateFacilitySchema>;
@@ -252,6 +329,7 @@ export const createFacilityAreaSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150),
   entranceLockDeviceId: uuidSchema.nullable().optional(),
   sortOrder: sortOrder.optional(),
+  idempotencyKey: idempotencyKeySchema,
 });
 export type CreateFacilityAreaInput = z.infer<typeof createFacilityAreaSchema>;
 
@@ -260,6 +338,7 @@ export const updateFacilityAreaSchema = nonEmptyUpdate(
     name: z.string().trim().min(1).max(150).optional(),
     entranceLockDeviceId: uuidSchema.nullable().optional(),
     sortOrder: sortOrder.optional(),
+    expectedUpdatedAt,
   }),
 );
 
@@ -270,8 +349,27 @@ export const createFacilityUnitSchema = clientInputSchema({
   lockDeviceId: uuidSchema.nullable().optional(),
   panicDeviceId: uuidSchema.nullable().optional(),
   sortOrder: sortOrder.optional(),
+  idempotencyKey: idempotencyKeySchema,
 });
 export type CreateFacilityUnitInput = z.infer<typeof createFacilityUnitSchema>;
+
+/**
+ * Changes how a unit is configured (code, area, devices, order). Its
+ * operational state is `updateFacilityUnitSchema` on the same resource.
+ */
+export const updateFacilityUnitConfigSchema = nonEmptyUpdate(
+  clientInputSchema({
+    areaId: facilityAreaIdSchema.optional(),
+    code: z.string().trim().min(1).max(20).optional(),
+    lockDeviceId: uuidSchema.nullable().optional(),
+    panicDeviceId: uuidSchema.nullable().optional(),
+    sortOrder: sortOrder.optional(),
+    expectedUpdatedAt,
+  }),
+);
+export type UpdateFacilityUnitConfigInput = z.infer<
+  typeof updateFacilityUnitConfigSchema
+>;
 
 export const createFacilityProductSchema = clientInputSchema({
   facilityId: facilityIdSchema,
@@ -283,6 +381,7 @@ export const createFacilityProductSchema = clientInputSchema({
   maxPerDay: positiveInt.max(10).nullable().optional(),
   menuItemId: uuidSchema.nullable().optional(),
   isActive: z.boolean().optional(),
+  idempotencyKey: idempotencyKeySchema,
 });
 export type CreateFacilityProductInput = z.infer<
   typeof createFacilityProductSchema
@@ -297,6 +396,7 @@ export const updateFacilityProductSchema = nonEmptyUpdate(
     maxPerDay: positiveInt.max(10).nullable().optional(),
     menuItemId: uuidSchema.nullable().optional(),
     isActive: z.boolean().optional(),
+    expectedUpdatedAt,
   }),
 );
 
@@ -307,6 +407,7 @@ export const createFacilityAddonSchema = clientInputSchema({
   inventoryItemId: uuidSchema.nullable().optional(),
   isEnabled: z.boolean().optional(),
   sortOrder: sortOrder.optional(),
+  idempotencyKey: idempotencyKeySchema,
 });
 export type CreateFacilityAddonInput = z.infer<
   typeof createFacilityAddonSchema
@@ -319,6 +420,7 @@ export const updateFacilityAddonSchema = nonEmptyUpdate(
     inventoryItemId: uuidSchema.nullable().optional(),
     isEnabled: z.boolean().optional(),
     sortOrder: sortOrder.optional(),
+    expectedUpdatedAt,
   }),
 );
 
@@ -327,6 +429,7 @@ const entitlementRuleInputBase = {
   sessions: positiveInt.max(100),
   validity: entitlementValiditySchema,
   isEnabled: z.boolean(),
+  expectedUpdatedAt: expectedUpdatedAtOrNew,
 };
 
 /**
@@ -365,6 +468,7 @@ export const createSubscriptionPlanSchema = clientInputSchema({
   maxPerDay: positiveInt.max(10).nullable().optional(),
   providerPlanId: z.string().min(1).max(100).nullable().optional(),
   isActive: z.boolean().optional(),
+  idempotencyKey: idempotencyKeySchema,
 });
 export type CreateSubscriptionPlanInput = z.infer<
   typeof createSubscriptionPlanSchema
@@ -379,6 +483,7 @@ export const updateSubscriptionPlanSchema = nonEmptyUpdate(
     maxPerDay: positiveInt.max(10).nullable().optional(),
     providerPlanId: z.string().min(1).max(100).nullable().optional(),
     isActive: z.boolean().optional(),
+    expectedUpdatedAt,
   }),
 );
 
@@ -396,6 +501,8 @@ export const putWifiPolicySchema = clientInputSchema({
   fullSpeedKbps: z.number().int().min(1).max(1_000_000),
   minSpendPerHourIdr: nonnegativeIdr.nullable(),
   tierBonusMinutes: z.record(z.string(), z.number().int().min(0).max(720)),
+  spendMode: wifiSpendModeSchema.optional(),
+  expectedUpdatedAt: expectedUpdatedAtOrNew,
 });
 export type PutWifiPolicyInput = z.infer<typeof putWifiPolicySchema>;
 

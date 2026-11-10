@@ -8,38 +8,49 @@ import {
   pathParamNames,
 } from "../packages/shared/src/api/endpoint.ts";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import * as sample from "../packages/shared/src/qr-order/sample.ts";
 
 const f = qr.qrOrderFixtures;
 const uuid = "00000000-0000-4000-8000-000000000401";
 
 test("ORD-01 the sample QR tokens are well formed and map to distinct tables", () => {
-  const tokens = Object.values(qr.qrTokenFixtures);
+  const tokens = Object.values(sample.qrTokenFixtures);
   assert.equal(new Set(tokens).size, tokens.length);
   for (const token of tokens) {
     assert.ok(qr.signedQrTokenSchema.safeParse(token).success, token);
-    assert.ok(qr.qrTokenTableCodes[token], token);
+    assert.ok(sample.qrTokenTableCodes[token], token);
   }
-  assert.equal(qr.qrTokenFixtures.indoor, f.tableQr.token);
+  assert.equal(sample.qrTokenFixtures.indoor, f.tableQr.token);
 });
 
 test("ORD-03 the QR menu states that prices exclude tax and service charge", () => {
-  const menu = qr.qrMenuFixtures.indoor;
+  const menu = sample.qrMenuFixtures.indoor;
   assert.equal(menu.pricing.pricesIncludeTaxAndService, false);
   assert.equal(menu.pricing.serviceChargeBp, f.zones[0].serviceChargeBp);
   assert.ok(menu.pricing.taxes.length >= 1);
   assert.ok(menu.items.every((item) => item.priceIdr > 0));
-  // A client cannot pass a flipped flag through the contract.
+  // An outlet that opted into inclusive prices says so; the flag stays a boolean.
+  assert.ok(
+    qr.qrMenuSchema.safeParse({
+      ...menu,
+      pricing: {
+        ...menu.pricing,
+        pricesIncludeTaxAndService: true,
+        taxPriceMode: "inclusive",
+      },
+    }).success,
+  );
   assert.equal(
     qr.qrMenuSchema.safeParse({
       ...menu,
-      pricing: { ...menu.pricing, pricesIncludeTaxAndService: true },
+      pricing: { ...menu.pricing, pricesIncludeTaxAndService: "yes" },
     }).success,
     false,
   );
 });
 
 test("ORD-05 the QR menu carries sold-out items and sold-out modifiers", () => {
-  const menu = qr.qrMenuFixtures.indoor;
+  const menu = sample.qrMenuFixtures.indoor;
   const soldOut = menu.items.filter((item) => item.status === "sold_out");
   assert.ok(soldOut.length >= 2);
   assert.ok(
@@ -53,7 +64,7 @@ test("ORD-05 the QR menu carries sold-out items and sold-out modifiers", () => {
 });
 
 test("ORD-01 modifier groups keep min/max coherent and items stay orderable", () => {
-  const menu = qr.qrMenuFixtures.indoor;
+  const menu = sample.qrMenuFixtures.indoor;
   const required = menu.items.filter((item) =>
     item.modifierGroups.some((group) => group.minSelect > 0),
   );
@@ -71,7 +82,7 @@ test("ORD-01 modifier groups keep min/max coherent and items stay orderable", ()
 });
 
 test("ORD-01 variant prices drive the item base price and ids stay unique", () => {
-  const menu = qr.qrMenuFixtures.indoor;
+  const menu = sample.qrMenuFixtures.indoor;
   const withVariants = menu.items.filter((item) => item.variants.length > 0);
   assert.ok(withVariants.length > 0);
   for (const item of withVariants)
@@ -88,7 +99,7 @@ test("ORD-01 variant prices drive the item base price and ids stay unique", () =
 test("ORD-01 the menu of a table in an open-bill zone says so", () => {
   const zone = f.zones[2];
   const table = f.tables.find((entry) => entry.code === "P1");
-  const menu = qr.buildQrMenu({ table, zone });
+  const menu = sample.buildQrMenu({ table, zone });
   assert.equal(menu.zone.paymentMode, "open_bill");
   assert.equal(menu.zone.minimumSpendIdr, zone.minimumSpendIdr);
   assert.equal(menu.table.code, "P1");
@@ -97,18 +108,18 @@ test("ORD-01 the menu of a table in an open-bill zone says so", () => {
 test("ORD-01 a menu outside the zone's hours is readable but not orderable", () => {
   const zone = f.zones[0];
   const table = f.tables.find((entry) => entry.code === "A03");
-  const night = qr.buildQrMenu({
+  const night = sample.buildQrMenu({
     table,
     zone,
     at: new Date("2026-11-01T20:00:00.000Z"),
   });
   assert.equal(night.orderingOpen, false);
   assert.ok(night.items.length > 0);
-  assert.equal(qr.qrMenuFixtures.indoor.orderingOpen, true);
+  assert.equal(sample.qrMenuFixtures.indoor.orderingOpen, true);
 });
 
 test("ORD-08 the guest failed-item view offers swap and voucher only, no cost", () => {
-  const issue = qr.guestOrderIssueFixtures[0];
+  const issue = sample.guestOrderIssueFixtures[0];
   assert.deepEqual(Object.keys(issue.options).sort(), ["swap", "voucher"]);
   assert.equal("costIdr" in issue, false);
   assert.equal("reportedBy" in issue, false);
@@ -138,6 +149,9 @@ test("ORD-02 a guest payment is paid only with paidAt and never carries a client
     status: "pending",
     qrisPayload: "00020101021226690014ID.CO.QRIS",
     redirectUrl: null,
+    vaNumber: null,
+    bankCode: null,
+    bankName: null,
     expiresAt: "2026-11-01T05:25:00.000Z",
     paidAt: null,
   };
@@ -173,10 +187,10 @@ test("ORD-02 a guest payment is paid only with paidAt and never carries a client
 });
 
 test("ORD-06 the point claim has a deadline while available and fixtures parse", () => {
-  assert.ok(qr.pointClaimSchema.safeParse(qr.pointClaimFixture).success);
+  assert.ok(qr.pointClaimSchema.safeParse(sample.pointClaimFixture).success);
   assert.equal(
     qr.pointClaimSchema.safeParse({
-      ...qr.pointClaimFixture,
+      ...sample.pointClaimFixture,
       claimableUntil: null,
     }).success,
     false,
@@ -203,8 +217,8 @@ test("ORD-01 guest endpoints use absolute paths with schemas for every param", (
   }
   assert.equal(
     buildEndpointPath(qr.getQrMenu.path, {
-      qrToken: qr.qrTokenFixtures.indoor,
+      qrToken: sample.qrTokenFixtures.indoor,
     }),
-    `/api/qr/menu/${encodeURIComponent(qr.qrTokenFixtures.indoor)}`,
+    `/api/qr/menu/${encodeURIComponent(sample.qrTokenFixtures.indoor)}`,
   );
 });

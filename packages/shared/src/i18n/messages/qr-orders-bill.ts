@@ -22,12 +22,18 @@ export const qrOrdersBillMessages = {
   discount: "Diskon",
   service: "Service charge",
   tax: "Pajak",
+  serviceIncluded: "Termasuk service charge",
+  taxIncluded: "Termasuk pajak",
+  // Mixed bill: marks an amount already inside the subtotal.
+  includedMark: "(termasuk)",
   rounding: "Pembulatan",
   total: "Total",
   paid: "Sudah dibayar",
   outstanding: "Sisa tagihan",
   taxNote:
     "Harga di menu belum termasuk pajak dan service charge. Keduanya sudah dihitung di atas.",
+  taxNoteInclusive:
+    "Harga di menu sudah termasuk pajak dan service charge. Keduanya hanya dirinci di atas, tidak ditambahkan lagi.",
   minSpendTitle: "Minimum spend zona",
   minSpendMet: "Tercapai: {required}",
   minSpendShort: "Kurang {shortfall} dari minimum {required}",

@@ -418,3 +418,90 @@ test("F12 template links reject browser-normalized external hosts", () => {
     assert.throws(() => n.renderTemplate({ title: "t", body: "b", link }, {}));
   }
 });
+
+test("legend-307w3 security email ignores the tenant email switch and the user opt-out", () => {
+  const emailOff = { ...f.policy, emailEnabled: false };
+  const optedOut = {
+    ...f.baristaPreference,
+    categories: {
+      security: { web_push: false, email: false, whatsapp: false },
+    },
+  };
+  for (const preference of [null, f.baristaPreference, optedOut]) {
+    const result = plan({
+      category: "security",
+      policy: emailOff,
+      preference,
+      now: lateNight,
+    });
+    assert.equal(decision(result, "email").decision, "send");
+    assert.equal(decision(result, "email").notBefore, null);
+    assert.equal(result.inApp, true);
+  }
+  // The user's own opt-out still wins for the other channels.
+  assert.equal(
+    decision(
+      plan({ category: "security", policy: emailOff, preference: optedOut }),
+      "web_push",
+    ).reason,
+    "opted_out",
+  );
+});
+
+test("legend-307w3 security email still needs a verified address", () => {
+  const result = plan({
+    category: "security",
+    policy: { ...f.policy, emailEnabled: false },
+    preference: null,
+    reachability: { ...reachable, hasVerifiedEmail: false },
+  });
+  assert.equal(decision(result, "email").reason, "unreachable");
+});
+
+test("legend-307w3 other categories keep the tenant email switch and the user opt-out", () => {
+  for (const category of n.NOTIFICATION_CATEGORIES) {
+    if (category === "security") continue;
+    assert.equal(
+      decision(
+        plan({
+          category,
+          policy: { ...f.policy, emailEnabled: false },
+          preference: null,
+        }),
+        "email",
+      ).reason,
+      "policy_disabled",
+      category,
+    );
+    assert.equal(
+      decision(
+        plan({
+          category,
+          preference: {
+            ...f.baristaPreference,
+            categories: {
+              [category]: { web_push: true, email: false, whatsapp: false },
+            },
+          },
+        }),
+        "email",
+      ).reason,
+      "opted_out",
+      category,
+    );
+  }
+});
+
+test("legend-md0zx the no-policy fallback is one shared, valid policy: web push only, email off, 3 tries", () => {
+  const tenantId = f.policy.tenantId;
+  const now = new Date("2026-11-09T10:00:00.000Z");
+  const policy = n.defaultNotificationPolicy(tenantId, now);
+  assert.deepEqual(n.notificationPolicySchema.parse(policy), policy);
+  assert.equal(policy.tenantId, tenantId);
+  assert.equal(policy.webPushEnabled, true);
+  assert.equal(policy.emailEnabled, false);
+  assert.equal(policy.whatsapp.enabled, false);
+  assert.equal(policy.maxAttempts, 3);
+  assert.deepEqual(policy.retryBackoffSeconds, [30, 120]);
+  assert.equal(policy.updatedAt, now.toISOString());
+});

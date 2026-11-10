@@ -1,0 +1,260 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "screens": [
+    {
+      "file": "cashier-code-found.png",
+      "source": "cashier-code.html",
+      "state": "found",
+      "clipped": [],
+      "contrast": {
+        "checked": 40,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "cashier-code-invalid.png",
+      "source": "cashier-code.html",
+      "state": "invalid",
+      "clipped": [],
+      "contrast": {
+        "checked": 30,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "edc-select.png",
+      "source": "edc.html",
+      "state": "select",
+      "clipped": [],
+      "contrast": {
+        "checked": 38,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "edc-waiting.png",
+      "source": "edc.html",
+      "state": "waiting",
+      "clipped": [],
+      "contrast": {
+        "checked": 35,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "edc-unknown.png",
+      "source": "edc.html",
+      "state": "unknown",
+      "clipped": [],
+      "contrast": {
+        "checked": 37,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "edc-standalone.png",
+      "source": "edc.html",
+      "state": "standalone",
+      "clipped": [],
+      "contrast": {
+        "checked": 33,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "edc-success.png",
+      "source": "edc.html",
+      "state": "success",
+      "clipped": [],
+      "contrast": {
+        "checked": 36,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "payment-methods.png",
+      "source": "payment.html",
+      "state": "methods",
+      "clipped": [],
+      "contrast": {
+        "checked": 43,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "payment-split.png",
+      "source": "payment.html",
+      "state": "split",
+      "clipped": [],
+      "contrast": {
+        "checked": 56,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "payment-cash.png",
+      "source": "payment.html",
+      "state": "cash",
+      "clipped": [],
+      "contrast": {
+        "checked": 51,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "payment-qris-active.png",
+      "source": "payment.html",
+      "state": "qris-active",
+      "clipped": [],
+      "contrast": {
+        "checked": 35,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "payment-qris-expired.png",
+      "source": "payment.html",
+      "state": "qris-expired",
+      "clipped": [],
+      "contrast": {
+        "checked": 34,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "payment-failed.png",
+      "source": "payment.html",
+      "state": "failed",
+      "clipped": [],
+      "contrast": {
+        "checked": 35,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "payment-va.png",
+      "source": "payment.html",
+      "state": "va",
+      "clipped": [],
+      "contrast": {
+        "checked": 37,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "payment-success.png",
+      "source": "payment.html",
+      "state": "success",
+      "clipped": [],
+      "contrast": {
+        "checked": 46,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "shift-open.png",
+      "source": "shift.html",
+      "state": "open",
+      "clipped": [],
+      "contrast": {
+        "checked": 39,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "shift-active.png",
+      "source": "shift.html",
+      "state": "active",
+      "clipped": [],
+      "contrast": {
+        "checked": 31,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "shift-blind.png",
+      "source": "shift.html",
+      "state": "blind",
+      "clipped": [],
+      "contrast": {
+        "checked": 34,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "supervisor-approval.png",
+      "source": "supervisor.html",
+      "state": "approval",
+      "clipped": [],
+      "contrast": {
+        "checked": 39,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "supervisor-day-close.png",
+      "source": "supervisor.html",
+      "state": "day-close",
+      "clipped": [],
+      "contrast": {
+        "checked": 53,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    },
+    {
+      "file": "supervisor-day-closed.png",
+      "source": "supervisor.html",
+      "state": "day-closed",
+      "clipped": [],
+      "contrast": {
+        "checked": 26,
+        "min": 4.77,
+        "failures": []
+      },
+      "font": "Jakarta, sans-serif"
+    }
+  ]
+}

@@ -22,6 +22,8 @@ import {
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
   employeeIdSchema,
+  attendanceCorrectionIdSchema,
+  attendanceDeviceIdSchema,
   attendanceLogIdSchema,
   orgUnitIdSchema,
   positionIdSchema,
@@ -29,9 +31,16 @@ import {
   leaveTypeIdSchema,
   shiftAssignmentIdSchema,
   shiftSwapRequestIdSchema,
+  shiftTemplateIdSchema,
   leaveRequestIdSchema,
   overtimeRequestIdSchema,
+  overtimeFormulaIdSchema,
+  holidayIdSchema,
+  kpiDefinitionIdSchema,
   kpiReviewIdSchema,
+  checklistTemplateIdSchema,
+  checklistTaskIdSchema,
+  offboardingIdSchema,
   sopDocumentIdSchema,
   trainingIdSchema,
   announcementIdSchema,
@@ -50,34 +59,83 @@ import {
   updateEmployeePiiInputSchema,
 } from "./organization.ts";
 import {
+  checklistTaskActionInputSchema,
+  checklistTaskActionSchema,
   checklistTaskSchema,
+  checklistTemplateSchema,
   checklistKindSchema,
   checklistTaskStatusSchema,
+  createChecklistTemplateInputSchema,
+  updateChecklistTemplateInputSchema,
 } from "./checklists.ts";
+import {
+  cancelOffboardingInputSchema,
+  createOffboardingInputSchema,
+  finalSettlementSummarySchema,
+  offboardingSchema,
+  updateOffboardingInputSchema,
+  workCertificateSchema,
+} from "./lifecycle.ts";
 import {
   attendanceCorrectionSchema,
   attendanceCorrectionStatusSchema,
+  attendanceDeviceSchema,
+  attendanceDeviceStatusSchema,
+  attendanceDutyMealSchema,
+  attendancePolicySchema,
+  attendancePolicyViewSchema,
+  attendanceQrRotationSchema,
+  attendanceReviewActionSchema,
+  attendanceReviewItemSchema,
+  attendanceReviewStatusSchema,
+  attendanceSamplingConfigSchema,
   attendanceLogSchema,
   attendanceMethodSchema,
   attendanceQrTokenSchema,
   attendanceTypeSchema,
 } from "./attendance.ts";
 import {
+  refineShiftCompliancePolicyLimits,
   rosterPublicationSchema,
+  rosterViewSchema,
   shiftAssignmentSchema,
+  shiftCompliancePolicyBaseSchema,
+  shiftCompliancePolicyViewSchema,
   shiftSwapRequestSchema,
+  shiftSwapStatusSchema,
+  shiftTemplateSchema,
+  shiftTemplateSegmentsSchema,
 } from "./scheduling.ts";
 import {
   holidaySchema,
+  holidayTypeSchema,
+  leaveAccrualRunResultSchema,
   leaveBalanceSchema,
   leaveRequestSchema,
   leaveRequestStatusSchema,
+  leaveSettingsInputSchema,
+  leaveSettingsSchema,
+  leaveTypeInputSchema,
+  leaveTypeSchema,
+  overtimeFormulaSchema,
   overtimeRequestSchema,
+  overtimeRequestStatusSchema,
+  overtimeRestDayTypeSchema,
 } from "./leave.ts";
+import {
+  overtimeDayTypeSchema,
+  overtimeParametersSchema,
+} from "./payroll/statutory.ts";
 import {
   announcementReceiptSchema,
   announcementSchema,
+  createKpiDefinitionInputSchema,
+  createKpiReviewInputSchema,
+  kpiDefinitionSchema,
   kpiReviewSchema,
+  kpiSourceSchema,
+  updateKpiDefinitionInputSchema,
+  updateKpiScoresInputSchema,
   sopAcknowledgementSchema,
   sopDocumentSchema,
   trainingCompletionSchema,
@@ -210,6 +268,137 @@ export const listChecklistTasks = defineEndpoint({
   response: cursorPageSchema(checklistTaskSchema),
 });
 
+export const listChecklistTemplates = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/checklist-templates",
+  query: cursorPageQuerySchema.extend({
+    kind: checklistKindSchema.optional(),
+    positionId: positionIdSchema.optional(),
+    isActive: z.enum(["true", "false"]).optional(),
+  }),
+  response: cursorPageSchema(checklistTemplateSchema),
+});
+
+/** Writing a template needs tenant-wide reach (a template is not per outlet). */
+export const createChecklistTemplate = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/checklist-templates",
+  body: createChecklistTemplateInputSchema,
+  response: dataResponseSchema(checklistTemplateSchema),
+});
+
+export const updateChecklistTemplate = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/checklist-templates/:templateId",
+  params: z.strictObject({ templateId: checklistTemplateIdSchema }),
+  body: updateChecklistTemplateInputSchema,
+  response: dataResponseSchema(checklistTemplateSchema),
+});
+
+/**
+ * Creates the onboarding tasks from the active template of the employee's
+ * position (else the default one). A repeat call returns the existing tasks.
+ */
+export const startEmployeeOnboarding = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/employees/:employeeId/onboarding",
+  params: employeeIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(z.array(checklistTaskSchema)),
+});
+
+const checklistTaskIdParams = z.strictObject({ taskId: checklistTaskIdSchema });
+
+export const actOnChecklistTask = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/checklist-tasks/:taskId/actions",
+  params: checklistTaskIdParams,
+  body: checklistTaskActionInputSchema,
+  response: dataResponseSchema(checklistTaskSchema),
+});
+
+export const listChecklistTaskActions = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/checklist-tasks/:taskId/actions",
+  params: checklistTaskIdParams,
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(checklistTaskActionSchema),
+});
+
+const offboardingIdParams = z.strictObject({
+  offboardingId: offboardingIdSchema,
+});
+
+export const createOffboarding = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/employees/:employeeId/offboarding",
+  params: employeeIdParams,
+  body: createOffboardingInputSchema,
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const getOffboarding = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/offboardings/:offboardingId",
+  params: offboardingIdParams,
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const updateOffboarding = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/offboardings/:offboardingId",
+  params: offboardingIdParams,
+  body: updateOffboardingInputSchema,
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const cancelOffboarding = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/offboardings/:offboardingId/cancel",
+  params: offboardingIdParams,
+  body: cancelOffboardingInputSchema,
+  response: dataResponseSchema(offboardingSchema),
+});
+
+/** Cuts access (roles, sessions, devices, PIN, future shifts); idempotent. */
+export const revokeOffboardingAccess = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/offboardings/:offboardingId/revoke-access",
+  params: offboardingIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const completeOffboarding = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/offboardings/:offboardingId/complete",
+  params: offboardingIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const getOffboardingSettlement = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/offboardings/:offboardingId/settlement",
+  params: offboardingIdParams,
+  response: dataResponseSchema(finalSettlementSummarySchema),
+});
+
+/** The first call assigns the certificate number; repeats return the same. */
+export const getWorkCertificate = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/offboardings/:offboardingId/work-certificate",
+  params: offboardingIdParams,
+  response: dataResponseSchema(workCertificateSchema),
+});
+
+/** Same data as `getWorkCertificate`, answered as `application/pdf` bytes. */
+export const getWorkCertificatePdf = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/offboardings/:offboardingId/work-certificate.pdf",
+  params: offboardingIdParams,
+});
+
 // ---- Attendance ----------------------------------------------------------
 
 export const clockAttendance = defineEndpoint({
@@ -290,7 +479,270 @@ export const listAttendanceCorrections = defineEndpoint({
   response: cursorPageSchema(attendanceCorrectionSchema),
 });
 
+// Device binding, policy, sampling review, duty meals (WS-10). Additive.
+
+const attendanceDeviceIdParams = z.strictObject({
+  deviceId: attendanceDeviceIdSchema,
+});
+const attendanceLogIdParams = z.strictObject({ logId: attendanceLogIdSchema });
+const attendanceCorrectionIdParams = z.strictObject({
+  correctionId: attendanceCorrectionIdSchema,
+});
+
+/** The employee binds their own phone; the employee comes from the session. */
+export const bindAttendanceDevice = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/devices/bind",
+  body: clientInputSchema({
+    deviceIdHash: z.string().regex(/^[0-9a-f]{64}$/),
+    label: z.string().min(1).max(100),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceDeviceSchema),
+});
+
+export const listAttendanceDevices = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/attendance/devices",
+  query: cursorPageQuerySchema.extend({
+    employeeId: employeeIdSchema.optional(),
+    status: attendanceDeviceStatusSchema.optional(),
+  }),
+  response: cursorPageSchema(attendanceDeviceSchema),
+});
+
+/** HR reset (hr.attendance.manage); the employee can bind a new device after. */
+export const revokeAttendanceDevice = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/devices/:deviceId/revoke",
+  params: attendanceDeviceIdParams,
+  body: clientInputSchema({
+    reason: z.string().min(1).max(500).optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceDeviceSchema),
+});
+
+/** Without `outletId`, the tenant default; with one, the outlet view. */
+export const getAttendancePolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/attendance/policy",
+  query: z.strictObject({ outletId: outletIdSchema.optional() }),
+  response: dataResponseSchema(attendancePolicyViewSchema),
+});
+
+/** `outletId` null writes the tenant default; otherwise an outlet override. */
+export const updateAttendancePolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/attendance/policy",
+  body: clientInputSchema({
+    outletId: outletIdSchema.nullable(),
+    policy: attendancePolicySchema,
+    sampling: attendanceSamplingConfigSchema,
+  }),
+  response: dataResponseSchema(attendancePolicyViewSchema),
+});
+
+/** Flagged logs plus the deterministic random sample (F25 supervisor review). */
+export const listAttendanceReviewQueue = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/attendance/review-queue",
+  query: cursorPageQuerySchema.extend({
+    outletId: outletIdSchema.optional(),
+    businessDate: businessDateSchema.optional(),
+    reviewStatus: attendanceReviewStatusSchema.optional(),
+  }),
+  response: cursorPageSchema(attendanceReviewItemSchema),
+});
+
+export const decideAttendanceReview = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/logs/:logId/review",
+  params: attendanceLogIdParams,
+  body: clientInputSchema({
+    action: attendanceReviewActionSchema,
+    note: z.string().min(1).max(500).optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceReviewItemSchema),
+});
+
+/** hr.attendance_correction.approve; approving creates a manual_correction log. */
+export const decideAttendanceCorrection = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/corrections/:correctionId/decision",
+  params: attendanceCorrectionIdParams,
+  body: clientInputSchema({
+    action: z.enum(["approve", "reject"]),
+    note: z.string().min(1).max(500).optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceCorrectionSchema),
+});
+
+export const recordAttendanceDutyMeal = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/duty-meals",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    employeeId: employeeIdSchema,
+    shiftAssignmentId: shiftAssignmentIdSchema.nullable(),
+    businessDate: businessDateSchema,
+    mealCount: z.number().int().min(1).max(10),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceDutyMealSchema),
+});
+
+export const listAttendanceDutyMeals = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/attendance/duty-meals",
+  query: cursorPageQuerySchema.extend({
+    employeeId: employeeIdSchema.optional(),
+    outletId: outletIdSchema.optional(),
+    businessDate: businessDateSchema.optional(),
+  }),
+  response: cursorPageSchema(attendanceDutyMealSchema),
+});
+
+/** Manual rotation of the outlet QR secret; invalidates the current display. */
+export const rotateAttendanceQrSecret = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/qr/rotate",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceQrRotationSchema),
+});
+
 // ---- Roster, shifts, swaps ---------------------------------------------
+
+const queryBooleanSchema = z
+  .enum(["true", "false"])
+  .transform((value) => value === "true");
+
+export const listShiftTemplates = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/shift-templates",
+  query: cursorPageQuerySchema.extend({
+    outletId: outletIdSchema.optional(),
+    includeInactive: queryBooleanSchema.optional(),
+  }),
+  response: cursorPageSchema(shiftTemplateSchema),
+});
+
+export const createShiftTemplate = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shift-templates",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    name: shiftTemplateSchema.shape.name,
+    segments: shiftTemplateSegmentsSchema,
+    breakMinutes: shiftTemplateSchema.shape.breakMinutes,
+    stationId: stationIdSchema.nullable(),
+    positionId: positionIdSchema.nullable(),
+  }),
+  response: dataResponseSchema(shiftTemplateSchema),
+});
+
+export const updateShiftTemplate = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/shift-templates/:templateId",
+  params: z.strictObject({ templateId: shiftTemplateIdSchema }),
+  body: z
+    .strictObject({
+      name: shiftTemplateSchema.shape.name,
+      segments: shiftTemplateSegmentsSchema,
+      breakMinutes: shiftTemplateSchema.shape.breakMinutes,
+      stationId: stationIdSchema.nullable(),
+      positionId: positionIdSchema.nullable(),
+      isActive: z.boolean(),
+    })
+    .partial()
+    .refine((body) => Object.keys(body).length > 0, {
+      message: "Provide at least one field to update",
+    }),
+  response: dataResponseSchema(shiftTemplateSchema),
+});
+
+export const getShiftCompliancePolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/shift-compliance-policy",
+  query: z.strictObject({ outletId: outletIdSchema.optional() }),
+  response: dataResponseSchema(shiftCompliancePolicyViewSchema),
+});
+
+export const updateShiftCompliancePolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/shift-compliance-policy",
+  body: shiftCompliancePolicyBaseSchema
+    .omit({ tenantId: true })
+    .superRefine(refineShiftCompliancePolicyLimits),
+  response: dataResponseSchema(shiftCompliancePolicyViewSchema),
+});
+
+export const createShiftAssignment = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shifts",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    employeeId: employeeIdSchema,
+    businessDate: businessDateSchema,
+    shiftTemplateId: shiftTemplateIdSchema,
+    stationId: stationIdSchema.nullable(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(shiftAssignmentSchema),
+});
+
+export const updateShiftAssignment = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/shifts/:assignmentId",
+  params: z.strictObject({ assignmentId: shiftAssignmentIdSchema }),
+  body: z
+    .strictObject({
+      employeeId: employeeIdSchema,
+      shiftTemplateId: shiftTemplateIdSchema,
+      stationId: stationIdSchema.nullable(),
+      businessDate: businessDateSchema,
+    })
+    .partial()
+    .refine((body) => Object.keys(body).length > 0, {
+      message: "Provide at least one field to update",
+    }),
+  response: dataResponseSchema(shiftAssignmentSchema),
+});
+
+export const cancelShiftAssignment = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shifts/:assignmentId/cancel",
+  params: z.strictObject({ assignmentId: shiftAssignmentIdSchema }),
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(shiftAssignmentSchema),
+});
+
+export const copyRosterWeek = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/rosters/copy",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    fromWeekStart: businessDateSchema,
+    toWeekStart: businessDateSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(rosterViewSchema),
+});
+
+export const getRoster = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/rosters",
+  query: z.strictObject({
+    outletId: outletIdSchema,
+    weekStart: businessDateSchema,
+  }),
+  response: dataResponseSchema(rosterViewSchema),
+});
 
 export const listShiftAssignments = defineEndpoint({
   method: "GET",
@@ -326,6 +778,25 @@ export const createShiftSwapRequest = defineEndpoint({
     toAssignmentId: shiftAssignmentIdSchema.nullable(),
     idempotencyKey: idempotencyKeySchema,
   }),
+  response: dataResponseSchema(shiftSwapRequestSchema),
+});
+
+export const listShiftSwapRequests = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/shift-swaps",
+  query: cursorPageQuerySchema.extend({
+    outletId: outletIdSchema.optional(),
+    status: shiftSwapStatusSchema.optional(),
+    mine: queryBooleanSchema.optional(),
+  }),
+  response: cursorPageSchema(shiftSwapRequestSchema),
+});
+
+export const cancelShiftSwapRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shift-swaps/:swapId/cancel",
+  params: z.strictObject({ swapId: shiftSwapRequestIdSchema }),
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
   response: dataResponseSchema(shiftSwapRequestSchema),
 });
 
@@ -389,6 +860,73 @@ export const listLeaveBalances = defineEndpoint({
   response: cursorPageSchema(leaveBalanceSchema),
 });
 
+export const listLeaveTypes = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/leave/types",
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(leaveTypeSchema),
+});
+
+export const createLeaveType = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/leave/types",
+  body: leaveTypeInputSchema.extend({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(leaveTypeSchema),
+});
+
+export const updateLeaveType = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/leave/types/:leaveTypeId",
+  params: z.strictObject({ leaveTypeId: leaveTypeIdSchema }),
+  body: leaveTypeInputSchema
+    .omit({ code: true })
+    .partial()
+    .extend({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(leaveTypeSchema),
+});
+
+export const runLeaveAccrual = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/leave/accruals/run",
+  body: clientInputSchema({
+    period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM"),
+  }),
+  response: dataResponseSchema(leaveAccrualRunResultSchema),
+});
+
+export const runLeaveCarryOver = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/leave/carry-over/run",
+  body: clientInputSchema({
+    fromYear: z.number().int().min(2000).max(2099),
+  }),
+  response: dataResponseSchema(leaveAccrualRunResultSchema),
+});
+
+export const expireLeaveCarryOver = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/leave/carry-over/expire",
+  body: clientInputSchema({ asOf: businessDateSchema }),
+  response: dataResponseSchema(leaveAccrualRunResultSchema),
+});
+
+/** Collective-leave policy (founder decision Q7); HR manage, tenant-wide. */
+export const getLeaveSettings = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/leave/settings",
+  response: dataResponseSchema(leaveSettingsSchema),
+});
+
+export const updateLeaveSettings = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/leave/settings",
+  body: clientInputSchema({
+    ...leaveSettingsInputSchema.shape,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(leaveSettingsSchema),
+});
+
 export const listHolidays = defineEndpoint({
   method: "GET",
   path: "/api/hris/holidays",
@@ -396,6 +934,52 @@ export const listHolidays = defineEndpoint({
     year: z.coerce.number().int().min(2000).max(2100).optional(),
   }),
   response: cursorPageSchema(holidaySchema),
+});
+
+export const createHoliday = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/holidays",
+  body: clientInputSchema({
+    date: businessDateSchema,
+    name: z.string().min(1).max(150),
+    type: holidayTypeSchema,
+    /** null = the whole tenant. */
+    outletId: outletIdSchema.nullable(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(holidaySchema),
+});
+
+export const updateHoliday = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/holidays/:holidayId",
+  params: z.strictObject({ holidayId: holidayIdSchema }),
+  body: clientInputSchema({
+    date: businessDateSchema.optional(),
+    name: z.string().min(1).max(150).optional(),
+    type: holidayTypeSchema.optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(holidaySchema),
+});
+
+export const deleteHoliday = defineEndpoint({
+  method: "DELETE",
+  path: "/api/hris/holidays/:holidayId",
+  params: z.strictObject({ holidayId: holidayIdSchema }),
+  response: dataResponseSchema(z.strictObject({ id: holidayIdSchema })),
+});
+
+export const listOvertimeRequests = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/overtime-requests",
+  query: cursorPageQuerySchema.extend({
+    employeeId: employeeIdSchema.optional(),
+    status: overtimeRequestStatusSchema.optional(),
+    from: businessDateSchema.optional(),
+    to: businessDateSchema.optional(),
+  }),
+  response: cursorPageSchema(overtimeRequestSchema),
 });
 
 export const createOvertimeRequest = defineEndpoint({
@@ -406,6 +990,8 @@ export const createOvertimeRequest = defineEndpoint({
     date: businessDateSchema,
     minutes: z.number().int().min(1).max(720),
     reason: z.string().min(1).max(500),
+    /** Employee's rest day; a holiday on `date` overrides it server side. */
+    dayType: overtimeDayTypeSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(overtimeRequestSchema),
@@ -422,6 +1008,34 @@ export const decideOvertimeRequest = defineEndpoint({
   response: dataResponseSchema(overtimeRequestSchema),
 });
 
+export const listOvertimeFormulas = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/overtime-formulas",
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(overtimeFormulaSchema),
+});
+
+export const createOvertimeFormula = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/overtime-formulas",
+  body: clientInputSchema({
+    effectiveFrom: businessDateSchema,
+    parameters: overtimeParametersSchema,
+    restDayType: overtimeRestDayTypeSchema,
+    legalBasis: z.string().min(1).max(200),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(overtimeFormulaSchema),
+});
+
+export const publishOvertimeFormula = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/overtime-formulas/:overtimeFormulaId/publish",
+  params: z.strictObject({ overtimeFormulaId: overtimeFormulaIdSchema }),
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(overtimeFormulaSchema),
+});
+
 // ---- KPI, SOP, training, announcements ---------------------------------
 
 export const listKpiReviews = defineEndpoint({
@@ -433,6 +1047,68 @@ export const listKpiReviews = defineEndpoint({
     reviewId: kpiReviewIdSchema.optional(),
   }),
   response: cursorPageSchema(kpiReviewSchema),
+});
+
+export const listKpiDefinitions = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/kpi-definitions",
+  query: cursorPageQuerySchema.extend({
+    positionId: positionIdSchema.optional(),
+    source: kpiSourceSchema.optional(),
+    isActive: z.enum(["true", "false"]).optional(),
+  }),
+  response: cursorPageSchema(kpiDefinitionSchema),
+});
+
+/** A system KPI must name a metric of the catalog that has an employee split. */
+export const createKpiDefinition = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/kpi-definitions",
+  body: createKpiDefinitionInputSchema,
+  response: dataResponseSchema(kpiDefinitionSchema),
+});
+
+export const updateKpiDefinition = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/kpi-definitions/:kpiDefinitionId",
+  params: z.strictObject({ kpiDefinitionId: kpiDefinitionIdSchema }),
+  body: updateKpiDefinitionInputSchema,
+  response: dataResponseSchema(kpiDefinitionSchema),
+});
+
+/** Opens a draft review and computes the system actuals for the period. */
+export const createKpiReview = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/kpi-reviews",
+  body: createKpiReviewInputSchema,
+  response: dataResponseSchema(kpiReviewSchema),
+});
+
+const kpiReviewIdParams = z.strictObject({ reviewId: kpiReviewIdSchema });
+
+export const updateKpiScores = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/kpi-reviews/:reviewId/scores",
+  params: kpiReviewIdParams,
+  body: updateKpiScoresInputSchema,
+  response: dataResponseSchema(kpiReviewSchema),
+});
+
+/** Recomputes the system actuals of a draft review; a submitted one is frozen. */
+export const refreshKpiActuals = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/kpi-reviews/:reviewId/refresh-actuals",
+  params: kpiReviewIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(kpiReviewSchema),
+});
+
+export const submitKpiReview = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/kpi-reviews/:reviewId/submit",
+  params: kpiReviewIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(kpiReviewSchema),
 });
 
 export const listSopDocuments = defineEndpoint({
@@ -515,23 +1191,72 @@ export const hrisEndpoints = [
   getEmploymentContract,
   listEmployeeDocuments,
   listChecklistTasks,
+  listChecklistTemplates,
+  createChecklistTemplate,
+  updateChecklistTemplate,
+  startEmployeeOnboarding,
+  actOnChecklistTask,
+  listChecklistTaskActions,
+  createOffboarding,
+  getOffboarding,
+  updateOffboarding,
+  cancelOffboarding,
+  revokeOffboardingAccess,
+  completeOffboarding,
+  getOffboardingSettlement,
+  getWorkCertificate,
+  getWorkCertificatePdf,
   clockAttendance,
   listAttendanceLogs,
   getAttendanceQr,
   requestAttendanceCorrection,
   listAttendanceCorrections,
+  listShiftTemplates,
+  createShiftTemplate,
+  updateShiftTemplate,
+  getShiftCompliancePolicy,
+  updateShiftCompliancePolicy,
+  createShiftAssignment,
+  updateShiftAssignment,
+  cancelShiftAssignment,
+  copyRosterWeek,
+  getRoster,
   listShiftAssignments,
   publishRoster,
+  listShiftSwapRequests,
+  cancelShiftSwapRequest,
   createShiftSwapRequest,
   decideShiftSwapRequest,
   listLeaveRequests,
   createLeaveRequest,
   decideLeaveRequest,
   listLeaveBalances,
+  listLeaveTypes,
+  createLeaveType,
+  updateLeaveType,
+  runLeaveAccrual,
+  runLeaveCarryOver,
+  expireLeaveCarryOver,
+  getLeaveSettings,
+  updateLeaveSettings,
   listHolidays,
+  createHoliday,
+  updateHoliday,
+  deleteHoliday,
+  listOvertimeRequests,
   createOvertimeRequest,
   decideOvertimeRequest,
+  listOvertimeFormulas,
+  createOvertimeFormula,
+  publishOvertimeFormula,
   listKpiReviews,
+  listKpiDefinitions,
+  createKpiDefinition,
+  updateKpiDefinition,
+  createKpiReview,
+  updateKpiScores,
+  refreshKpiActuals,
+  submitKpiReview,
   listSopDocuments,
   acknowledgeSopDocument,
   listTrainings,

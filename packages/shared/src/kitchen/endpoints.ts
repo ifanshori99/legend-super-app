@@ -22,6 +22,10 @@ import {
   allDayCountSchema,
   capacityRuleInputSchema,
   capacityRuleSchema,
+  channelPauseSchema,
+  manualChannelPauseInputSchema,
+  menuLoadInputSchema,
+  menuLoadSchema,
   createOrderIssueInputSchema,
   expoBoardSchema,
   expoRunnerSchema,
@@ -33,6 +37,7 @@ import {
   kitchenTicketItemSchema,
   orderIdSchema,
   orderIssueSchema,
+  orderIssueViewSchema,
   orderIssueTypeSchema,
   pacingSnapshotSchema,
   pickupCallSchema,
@@ -41,8 +46,11 @@ import {
   servingTimeGroupSchema,
   servingTimeSummarySchema,
   stationBoardSchema,
+  stationCapacityRuleSchema,
   stationConfigSchema,
   stationIdSchema,
+  stationLabelSchema,
+  stationSummarySchema,
 } from "./schemas.ts";
 
 const outletParams = z.strictObject({ outletId: outletIdSchema });
@@ -67,12 +75,47 @@ export const listKitchenStations = defineEndpoint({
   response: dataResponseSchema(z.array(stationConfigSchema)),
 });
 
+/**
+ * Station labels for the KDS switch and timer (legend-gt7f). Needs only
+ * `kds.ticket.process`, so a cook reads the name and target time without
+ * `menu.item.view`. Lists the active stations the caller reaches, by name.
+ */
+export const listKitchenStationLabels = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/station-labels",
+  params: outletParams,
+  response: dataResponseSchema(z.array(stationLabelSchema)),
+});
+
+/**
+ * A cook reads the capacity rules of one station they reach (legend-gt7f).
+ * Slim rows: the config screen's `listCapacityRules` keeps the full rows and
+ * `kds.station.manage`. Ordered by window, then rule.
+ */
+export const getStationCapacityRules = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/stations/:stationId/capacity-rules",
+  params: stationParams,
+  response: dataResponseSchema(z.array(stationCapacityRuleSchema)),
+});
+
 /** One KDS station tab: open tickets, all-day count, current pacing (F12). */
 export const getKitchenBoard = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/kitchen/stations/:stationId/board",
   params: stationParams,
   response: dataResponseSchema(stationBoardSchema),
+});
+
+/**
+ * KDS station switch: open-ticket count per station in one small payload, so
+ * the tablet does not poll every station's board (legend-tsp5).
+ */
+export const getKitchenStationSummary = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/station-summary",
+  params: outletParams,
+  response: dataResponseSchema(stationSummarySchema),
 });
 
 /** "Aksi Tiket": start, bump, recall, void. */
@@ -143,12 +186,31 @@ export const getExpoBoard = defineEndpoint({
   response: dataResponseSchema(expoBoardSchema),
 });
 
-/** Expo runner assignment (F12). */
+/**
+ * Expo runner assignment (F12). Once the order is delivered, naming a
+ * different runner fails 409 EXPO_ORDER_DELIVERED; naming the same runner is a
+ * repeat (200, unchanged). Before delivery, reassigning replaces the runner.
+ */
 export const assignExpoRunner = defineEndpoint({
   method: "POST",
   path: "/api/outlets/:outletId/expo/:orderId/runner",
   params: orderParams,
   body: clientInputSchema({ runnerId: userIdSchema }),
+  response: dataResponseSchema(expoTicketSchema),
+});
+
+/**
+ * "Diantar": the runner marks the order delivered from their phone (PRD §4
+ * flow D step 4, flow G step 3; bead legend-usw3). No body: the server stamps
+ * `deliveredAt` and the acting user from the session. Allowed when the ticket
+ * is complete and has a runner (`expoDeliveryBlock`); otherwise 409
+ * EXPO_ORDER_NOT_COMPLETE or EXPO_RUNNER_NOT_ASSIGNED. Idempotent: repeating
+ * answers 200 with the ticket unchanged and the first `deliveredAt`.
+ */
+export const markExpoOrderDelivered = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/expo/:orderId/delivered",
+  params: orderParams,
   response: dataResponseSchema(expoTicketSchema),
 });
 
@@ -173,10 +235,31 @@ export const getPickupDisplay = defineEndpoint({
   response: dataResponseSchema(pickupDisplaySchema),
 });
 
-/** "Panggil": show and announce a pickup number. */
+/**
+ * "Panggil": show and announce a pickup number (assigned -> called). Calling a
+ * called number re-announces it and keeps the first `calledAt`; a picked-up
+ * number fails 409 PICKUP_CALL_CLOSED.
+ */
 export const callPickupNumber = defineEndpoint({
   method: "POST",
   path: "/api/outlets/:outletId/pickup-calls/:callId/call",
+  params: z.strictObject({
+    outletId: outletIdSchema,
+    callId: uuidSchema,
+  }),
+  response: dataResponseSchema(pickupCallSchema),
+});
+
+/**
+ * "Diambil": the customer or delivery driver collected the order, closing the
+ * number (called -> picked_up; bead legend-usw3). No body: the server stamps
+ * `pickedUpAt`. `PICKUP_CALL_TRANSITIONS` is the rule: from `assigned` it
+ * fails 409 PICKUP_CALL_NOT_CALLED; repeating on `picked_up` answers 200 with
+ * the call unchanged and the first `pickedUpAt`.
+ */
+export const markPickupPickedUp = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pickup-calls/:callId/picked-up",
   params: z.strictObject({
     outletId: outletIdSchema,
     callId: uuidSchema,
@@ -213,6 +296,71 @@ export const updateCapacityRules = defineEndpoint({
     rules: z.array(capacityRuleInputSchema).min(1).max(24),
   }),
   response: dataResponseSchema(z.array(capacityRuleSchema)),
+});
+
+/**
+ * legend-7svpq: menu load admin. `listMenuLoads` reads the load of every menu
+ * line of the outlet; `setMenuLoads` upserts lines (same values = no change,
+ * no audit); `deleteMenuLoad` removes one line and answers `removed: false`
+ * when it was already gone.
+ */
+export const listMenuLoads = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/menu-loads",
+  params: outletParams,
+  response: dataResponseSchema(z.array(menuLoadSchema)),
+});
+
+export const setMenuLoads = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/kitchen/menu-loads",
+  params: outletParams,
+  body: clientInputSchema({
+    loads: z.array(menuLoadInputSchema).min(1).max(100),
+  }),
+  response: dataResponseSchema(z.array(menuLoadSchema)),
+});
+
+export const deleteMenuLoad = defineEndpoint({
+  method: "DELETE",
+  path: "/api/outlets/:outletId/kitchen/menu-loads/:loadId",
+  params: z.strictObject({ outletId: outletIdSchema, loadId: uuidSchema }),
+  response: dataResponseSchema(
+    z.strictObject({ id: uuidSchema, removed: z.boolean() }),
+  ),
+});
+
+/**
+ * legend-7svpq: live channel pauses of the outlet, automatic and manual (the
+ * `reason` tells them apart). Only a `manual` pause can be set or lifted here.
+ */
+export const listChannelPauses = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/channel-pauses",
+  params: outletParams,
+  response: dataResponseSchema(z.array(channelPauseSchema)),
+});
+
+/**
+ * Pauses a menu line manually. One live manual pause per line: a repeated PUT
+ * replaces its channels and end time.
+ */
+export const setManualChannelPause = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/kitchen/channel-pauses",
+  params: outletParams,
+  body: clientInputSchema(manualChannelPauseInputSchema.shape),
+  response: dataResponseSchema(channelPauseSchema),
+});
+
+/** Lifts a manual pause. An automatic pause answers 404; a lifted one `released: false`. */
+export const releaseManualChannelPause = defineEndpoint({
+  method: "DELETE",
+  path: "/api/outlets/:outletId/kitchen/channel-pauses/:pauseId",
+  params: z.strictObject({ outletId: outletIdSchema, pauseId: uuidSchema }),
+  response: dataResponseSchema(
+    z.strictObject({ id: uuidSchema, released: z.boolean() }),
+  ),
 });
 
 /**
@@ -256,7 +404,10 @@ export const reportOrderIssue = defineEndpoint({
   response: dataResponseSchema(orderIssueSchema),
 });
 
-/** Remake/comp log for the kitchen analytics screen. */
+/**
+ * Remake/comp log for the kitchen analytics screen. Rows carry the order label,
+ * item name and staff names (legend-0eq7), so the UI shows no id.
+ */
 export const listOrderIssues = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/order-issues",
@@ -265,5 +416,5 @@ export const listOrderIssues = defineEndpoint({
     type: orderIssueTypeSchema.optional(),
     stationId: stationIdSchema.optional(),
   }),
-  response: cursorPageSchema(orderIssueSchema),
+  response: cursorPageSchema(orderIssueViewSchema),
 });

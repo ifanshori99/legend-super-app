@@ -13,6 +13,7 @@ export * from "./builder.ts";
 export * from "./exports.ts";
 export * from "./transitions.ts";
 export * from "./values.ts";
+export * from "./tile-values.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
 export * from "./fixtures.ts";

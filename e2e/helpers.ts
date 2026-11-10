@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { Pool } from "pg";
 import { expect, type APIRequestContext } from "@playwright/test";
 import { API_URL, WEB_URL } from "../playwright.config";
 
 export { API_URL, WEB_URL };
+export { waitForHydration } from "./hydration.ts";
 
 // Cookie-authenticated mutations must come from the web app's origin.
 export const headers = { Origin: WEB_URL };
@@ -33,23 +33,6 @@ export async function signUp(client: APIRequestContext, name = "Test User") {
   }
   expect(response.status()).toBe(200);
   return data.email;
-}
-
-// Roles are granted out of band, the way pnpm role:set does it.
-export async function setRole(email: string, role: string | null) {
-  const pool = new Pool({
-    connectionString: process.env.STARTER_TEST_DATABASE_URL,
-    max: 1,
-  });
-  try {
-    const { rowCount } = await pool.query(
-      'UPDATE "user" SET role = $1 WHERE email = $2',
-      [role, email],
-    );
-    expect(rowCount).toBe(1);
-  } finally {
-    await pool.end();
-  }
 }
 
 export async function fitsWidth(page: import("@playwright/test").Page) {

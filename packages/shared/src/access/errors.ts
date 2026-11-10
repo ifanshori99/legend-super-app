@@ -17,6 +17,8 @@ export const accessErrorHttpStatus = {
   ROLE_NOT_ASSIGNABLE: 422,
   /** Unknown permission code, or a platform permission in a tenant custom role. */
   PERMISSION_NOT_IN_CATALOG: 422,
+  /** An Owner-template-only permission (e.g. receipt write-off) in a custom role (legend-7vsby). */
+  PERMISSION_OWNER_ONLY: 422,
   /** Approver is the requester (AUTH-06, PRD §3.7 Matriks Approval). */
   APPROVER_IS_REQUESTER: 403,
   /** The same person tried to approve two levels of one request. */
@@ -46,6 +48,8 @@ const defaultMessages: Record<AccessErrorCode, string> = {
   ROLE_NOT_ASSIGNABLE: "Role ini tidak dapat diberikan di tingkat tenant.",
   PERMISSION_NOT_IN_CATALOG:
     "Izin tidak dikenal atau tidak boleh dipakai di role tenant.",
+  PERMISSION_OWNER_ONLY:
+    "Izin ini hanya milik role Owner dan tidak dapat dimasukkan ke role kustom.",
   APPROVER_IS_REQUESTER: "Penyetuju tidak boleh sama dengan pemohon.",
   APPROVER_ALREADY_DECIDED: "Anda sudah memberi keputusan pada permintaan ini.",
   APPROVER_ROLE_MISMATCH: "Role Anda tidak berwenang menyetujui tingkat ini.",

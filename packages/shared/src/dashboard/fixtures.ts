@@ -14,6 +14,7 @@ import type { z } from "../core/index.ts";
 import { eventEnvelopeSchema } from "../events/index.ts";
 import {
   cafeLegendMetricDefinitions,
+  METRIC_UNAVAILABLE_MESSAGES,
   metricDefinitionRefSchema,
   metricPeriodSchema,
   metricQueryPeriodSchema,
@@ -131,7 +132,8 @@ export const cafeLegendManagementLayoutFixture = dashboardLayoutSchema.parse({
   businessDate: "2026-11-01",
   availableOutlets: [outlet.id],
   tiles: MANAGEMENT_DASHBOARD_TILES,
-  generatedAt: "2026-11-01T22:45:00.000Z",
+  // Same instant as the owner board: both describe 1 Nov at 11:40 WIB.
+  generatedAt: ownerBoardGeneratedAt,
   monitoringPeriod: {
     startDate: "2026-11-01",
     endDate: "2026-11-01",
@@ -140,6 +142,28 @@ export const cafeLegendManagementLayoutFixture = dashboardLayoutSchema.parse({
     accountingPeriodClosed: false,
   },
 });
+
+/**
+ * Metrics of the owner board and the role KPI runs that the API answers `unavailable` / `source_not_built` (the metric
+ * registry, apps/api/src/services/metric-sources): those runs show no
+ * number for them. apps/api/src/test/ws11-mock-drift.test.ts reads the
+ * registry and fails when this list drifts from it.
+ */
+const OWNER_BOARD_UNAVAILABLE: ReadonlySet<string> = new Set([
+  "avg_spend_per_pax",
+  "table_occupancy_pct",
+  "sold_out_menu_count",
+  "review_rating",
+  "review_count",
+  "shower_revenue",
+  "active_subscriptions",
+  "shower_fnb_conversion_pct",
+  "shower_sessions_with_fnb",
+  "revpash",
+  "seat_occupancy_pct",
+  "wifi_quota_used",
+  "wifi_sessions",
+]);
 
 /** One total row for a role KPI report (DASH-02: the tile runs this report). */
 function kpiRun(
@@ -159,22 +183,38 @@ function kpiRun(
       status: "open",
       accountingPeriodClosed: false,
     },
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: cells.map((cell) => metricRef(cell.metricCode)),
+    availability: cells.map((cell) =>
+      OWNER_BOARD_UNAVAILABLE.has(cell.metricCode)
+        ? {
+            metricCode: cell.metricCode,
+            status: "unavailable",
+            reason: "source_not_built",
+            message: METRIC_UNAVAILABLE_MESSAGES.source_not_built,
+          }
+        : { metricCode: cell.metricCode, status: "available" },
+    ),
     groupBy: [],
     rows: [
       {
+        bucketStart: period.startDate,
+        bucketEnd: period.endDate,
         dimensions: [],
         values: cells.map((cell) => ({
           metricCode: cell.metricCode,
-          value: cell.value,
+          value: OWNER_BOARD_UNAVAILABLE.has(cell.metricCode)
+            ? null
+            : cell.value,
           // The fixture period is open: every figure is an estimate (SH-02).
           finality: "estimate",
         })),
       },
     ],
-    generatedAt: "2026-11-01T22:46:00.000Z",
+    generatedAt: ownerBoardGeneratedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 
@@ -236,7 +276,9 @@ export const managementDashboardKpiRuns: Readonly<
       },
       {
         metricCode: "purchase_total",
-        value: { unit: "idr", valueIdr: 38_600_000 },
+        // One business day: 35% of the day's net sales (7.420.000), the same
+        // figure the report viewer's purchasing reports give for 1 Nov.
+        value: { unit: "idr", valueIdr: 2_597_000 },
       },
     ],
   ),
@@ -298,36 +340,79 @@ export const reportRunResultFixture = reportResultSchema.parse({
     status: "closed",
     accountingPeriodClosed: true,
   }),
+  bucket: "total",
   outletFilter: { kind: "outlets", outletIds: [outlet.id] },
   definitions: [metricRef("net_sales"), metricRef("transaction_count")],
+  availability: [
+    { metricCode: "net_sales", status: "available" },
+    { metricCode: "transaction_count", status: "available" },
+  ],
   groupBy: ["channel"],
   rows: [
     {
+      bucketStart: "2026-10-01",
+      bucketEnd: "2026-10-31",
       dimensions: [{ key: "channel", value: "qr" }],
       values: [
         {
           metricCode: "net_sales",
-          value: { unit: "idr", valueIdr: 18_450_000 },
+          value: { unit: "idr", valueIdr: 230_878_706 },
           finality: "final",
         },
         {
           metricCode: "transaction_count",
-          value: { unit: "count", value: 412 },
+          value: { unit: "count", value: 2_893 },
           finality: "final",
         },
       ],
     },
     {
+      bucketStart: "2026-10-01",
+      bucketEnd: "2026-10-31",
       dimensions: [{ key: "channel", value: "pos" }],
       values: [
         {
           metricCode: "net_sales",
-          value: { unit: "idr", valueIdr: 26_300_000 },
+          value: { unit: "idr", valueIdr: 110_154_178 },
           finality: "final",
         },
         {
           metricCode: "transaction_count",
-          value: { unit: "count", value: 388 },
+          value: { unit: "count", value: 1_558 },
+          finality: "final",
+        },
+      ],
+    },
+    {
+      bucketStart: "2026-10-01",
+      bucketEnd: "2026-10-31",
+      dimensions: [{ key: "channel", value: "gofood" }],
+      values: [
+        {
+          metricCode: "net_sales",
+          value: { unit: "idr", valueIdr: 43_394_070 },
+          finality: "final",
+        },
+        {
+          metricCode: "transaction_count",
+          value: { unit: "count", value: 556 },
+          finality: "final",
+        },
+      ],
+    },
+    {
+      bucketStart: "2026-10-01",
+      bucketEnd: "2026-10-31",
+      dimensions: [{ key: "channel", value: "grabfood" }],
+      values: [
+        {
+          metricCode: "net_sales",
+          value: { unit: "idr", valueIdr: 28_373_046 },
+          finality: "final",
+        },
+        {
+          metricCode: "transaction_count",
+          value: { unit: "count", value: 334 },
           finality: "final",
         },
       ],
@@ -335,6 +420,7 @@ export const reportRunResultFixture = reportResultSchema.parse({
   ],
   generatedAt: "2026-11-01T22:46:00.000Z",
   rowLimit: 100,
+  truncated: false,
 });
 
 export const reportBuilderQueryFixture = reportBuilderQuerySchema.parse({
@@ -385,7 +471,7 @@ export const reportScheduleFixture = reportScheduleSchema.parse({
   dayOfWeek: 1,
   dayOfMonth: null,
   format: "pdf",
-  recipients: ["owner@cafelegend.id"],
+  recipientUserIds: [userId],
   isEnabled: true,
   nextRunAt: "2026-11-09T00:30:00.000Z",
   lastRunAt: null,
@@ -566,10 +652,23 @@ function ownerBoardRun(
   return reportResultSchema.parse({
     reportCode: code,
     period: ownerBoardPeriod,
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: report.metrics.map(ownerBoardMetricRef),
+    availability: report.metrics.map((metricCode) =>
+      OWNER_BOARD_UNAVAILABLE.has(metricCode)
+        ? {
+            metricCode,
+            status: "unavailable",
+            reason: "source_not_built",
+            message: METRIC_UNAVAILABLE_MESSAGES.source_not_built,
+          }
+        : { metricCode, status: "available" },
+    ),
     groupBy,
     rows: rows.map((row) => ({
+      bucketStart: ownerBoardPeriod.startDate,
+      bucketEnd: ownerBoardPeriod.endDate,
       dimensions: (row.dims ?? []).map(([key, value]) => ({ key, value })),
       values: report.metrics.map((metricCode) => ({
         metricCode,
@@ -579,6 +678,7 @@ function ownerBoardRun(
     })),
     generatedAt: ownerBoardGeneratedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 
@@ -606,7 +706,6 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
         {
           values: {
             pax: { unit: "count", value: 148 },
-            avg_spend_per_pax: { unit: "idr", valueIdr: 50_135 },
           },
         },
       ],
@@ -631,7 +730,6 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
         {
           values: {
             table_turnover: { unit: "decimal", value: "1.8400" },
-            table_occupancy_pct: { unit: "percent", value: "62.5000" },
           },
         },
       ],
@@ -773,11 +871,7 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
         },
       ],
     ),
-    "menu.sold_out": ownerBoardRun(
-      "menu.sold_out",
-      [],
-      [{ values: { sold_out_menu_count: { unit: "count", value: 2 } } }],
-    ),
+    "menu.sold_out": ownerBoardRun("menu.sold_out", [], [{ values: {} }]),
     "operations.waiter_calls": ownerBoardRun(
       "operations.waiter_calls",
       ["zone"],
@@ -801,10 +895,7 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
       [],
       [
         {
-          values: {
-            review_rating: { unit: "decimal", value: "4.7000" },
-            review_count: { unit: "count", value: 128 },
-          },
+          values: {},
         },
       ],
     ),
@@ -828,7 +919,6 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
       [
         {
           values: {
-            shower_revenue: { unit: "idr", valueIdr: 1_350_000 },
             shower_sessions: { unit: "count", value: 18 },
           },
         },
@@ -839,10 +929,7 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
       [],
       [
         {
-          values: {
-            active_subscriptions: { unit: "count", value: 23 },
-            shower_revenue: { unit: "idr", valueIdr: 1_350_000 },
-          },
+          values: {},
         },
       ],
     ),
@@ -851,10 +938,7 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
       [],
       [
         {
-          values: {
-            shower_fnb_conversion_pct: { unit: "percent", value: "61.1100" },
-            shower_sessions_with_fnb: { unit: "count", value: 11 },
-          },
+          values: {},
         },
       ],
     ),
@@ -866,31 +950,19 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
       [
         {
           dims: [["zone", "Indoor Reguler"]],
-          values: {
-            revpash: { unit: "idr", valueIdr: 18_500 },
-            seat_occupancy_pct: { unit: "percent", value: "68.7500" },
-          },
+          values: {},
         },
         {
           dims: [["zone", "Taman Outdoor"]],
-          values: {
-            revpash: { unit: "idr", valueIdr: 9_200 },
-            seat_occupancy_pct: { unit: "percent", value: "42.5000" },
-          },
+          values: {},
         },
         {
           dims: [["zone", "Private Room Nusantara"]],
-          values: {
-            revpash: { unit: "idr", valueIdr: 26_400 },
-            seat_occupancy_pct: { unit: "percent", value: "75.0000" },
-          },
+          values: {},
         },
         {
           dims: [["zone", "WFC Corner"]],
-          values: {
-            revpash: { unit: "idr", valueIdr: 12_800 },
-            seat_occupancy_pct: { unit: "percent", value: "55.0000" },
-          },
+          values: {},
         },
       ],
     ),
@@ -902,7 +974,6 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
           dims: [["zone", "Indoor Reguler"]],
           values: {
             avg_dwell_minutes: { unit: "decimal", value: "68.5000" },
-            avg_spend_per_pax: { unit: "idr", valueIdr: 48_200 },
             table_turnover: { unit: "decimal", value: "1.9000" },
           },
         },
@@ -910,7 +981,6 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
           dims: [["zone", "Taman Outdoor"]],
           values: {
             avg_dwell_minutes: { unit: "decimal", value: "82.0000" },
-            avg_spend_per_pax: { unit: "idr", valueIdr: 41_800 },
             table_turnover: { unit: "decimal", value: "1.6000" },
           },
         },
@@ -918,7 +988,6 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
           dims: [["zone", "Private Room Nusantara"]],
           values: {
             avg_dwell_minutes: { unit: "decimal", value: "96.5000" },
-            avg_spend_per_pax: { unit: "idr", valueIdr: 88_400 },
             table_turnover: { unit: "decimal", value: "1.2000" },
           },
         },
@@ -926,7 +995,6 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
           dims: [["zone", "WFC Corner"]],
           values: {
             avg_dwell_minutes: { unit: "decimal", value: "110.0000" },
-            avg_spend_per_pax: { unit: "idr", valueIdr: 52_600 },
             table_turnover: { unit: "decimal", value: "1.1000" },
           },
         },
@@ -937,10 +1005,7 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
       [],
       [
         {
-          values: {
-            wifi_quota_used: { unit: "decimal", value: "42.7000" },
-            wifi_sessions: { unit: "count", value: 210 },
-          },
+          values: {},
         },
       ],
     ),

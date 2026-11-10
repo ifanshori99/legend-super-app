@@ -37,6 +37,10 @@ export const PAYROLL_ERROR_MESSAGE_KEYS = {
   PAYSLIP_PIN_INVALID: "payrollConfig.errors.PAYSLIP_PIN_INVALID",
   PAYSLIP_PIN_LOCKED: "payrollConfig.errors.PAYSLIP_PIN_LOCKED",
   PAYROLL_BANK_FILE_MISMATCH: "payrollConfig.errors.PAYROLL_BANK_FILE_MISMATCH",
+  PAYROLL_PPH21_STATUS_UNSUPPORTED:
+    "payrollConfig.errors.PAYROLL_PPH21_STATUS_UNSUPPORTED",
+  PAYROLL_PPH21_POLICY_CONFLICT:
+    "payrollConfig.errors.PAYROLL_PPH21_POLICY_CONFLICT",
 } as const satisfies Record<PayrollErrorCode, MessageKey>;
 
 export function payrollErrorMessageKey(code: string): MessageKey | null {

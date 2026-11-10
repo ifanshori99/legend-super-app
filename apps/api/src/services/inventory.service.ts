@@ -29,11 +29,13 @@ import {
   gt,
   lt,
   lte,
+  ne,
   or,
   sql,
   type SQL,
 } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import {
   assertOutletInScope,
   createUlid,
@@ -55,6 +57,10 @@ import {
   type PermissionCode,
 } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { outletBusinessDayClock } from "./outlet-clock";
 import type {
   BusinessDate,
@@ -79,29 +85,36 @@ import {
   type InventoryItem,
   type StockBatch,
   type StockLedgerEntry,
+  type StockMovedEventPayload,
   type StockMovementType,
   type StockSourceType,
   type StockTransfer,
   type Uom,
   type UomConversion,
 } from "@starter/shared/inventory";
+import type { EventEnvelope } from "@starter/shared/events";
 import type { z } from "zod";
 import type * as schema from "../db/schema";
 import {
   inventoryItems,
+  orders,
+  productionOrders,
   stockBalances,
   stockBatches,
   stockLedger,
   stockLocations,
   stockTransferLines,
   stockTransfers,
+  stockCounts,
   uomConversions,
   uoms,
+  wasteLogs,
 } from "../db/schema";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
+import { blindCountHiddenFilter } from "./inventory-count.visibility";
 import { appendOutbox } from "./core-outbox";
 import {
   loadTenantAccessInTransaction,
@@ -158,6 +171,30 @@ async function assertPermission(
     throw new AccessError("PERMISSION_DENIED");
 }
 
+/**
+ * Catalog read (items, UOMs; legend-1ozj): a tenant-wide `inventory.stock.view`
+ * OR the permission on at least one outlet the caller reaches. The catalog is
+ * tenant master data with no outlet column, so an outlet-scoped role (warehouse,
+ * outlet manager) reads it without widening what it may write or see per outlet.
+ */
+async function assertCatalogRead(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+): Promise<void> {
+  const snapshot = await loadAccessSnapshot(tx, context, actorUserId);
+  if (snapshot.allows("inventory.stock.view", { type: "tenant" })) return;
+  const scope = context.outletScope;
+  if (
+    scope.kind === "outlets" &&
+    scope.outletIds.some((id) =>
+      snapshot.allows("inventory.stock.view", outletTarget(id)),
+    )
+  )
+    return;
+  throw new AccessError("PERMISSION_DENIED");
+}
+
 function outletTarget(outletId: string): AccessTarget {
   return { type: "outlet", id: outletId };
 }
@@ -186,11 +223,11 @@ function cursorKeys(
   return keys as string[];
 }
 
-function sourceIdFromDb(type: StockSourceType, value: string): string {
+export function sourceIdFromDb(type: StockSourceType, value: string): string {
   return ULID_SOURCE_TYPES.has(type) ? uuidToUlid(value) : value;
 }
 
-function sourceIdToDb(value: string): string {
+export function sourceIdToDb(value: string): string {
   return ulidSchema.safeParse(value).success ? ulidToUuid(value) : value;
 }
 
@@ -225,6 +262,36 @@ async function lockInventoryLocations(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${inventoryLocationLockKey(tenantId, locationId)}, 0))`,
     );
+}
+
+/**
+ * Transaction lock on one stock source document (bead legend-ddoy). Two
+ * outlets posting the same (tenant, source_type, source_id) hold different
+ * location locks, so nothing else serialises them and each would pass the
+ * other-outlet check on committed rows only. The second poster blocks here
+ * until the first commits, then reads its rows and is refused.
+ *
+ * Order is source lock first, then location locks. That removes the cycle of
+ * one document posted over two locations in one batch (primary and standby of
+ * one outlet): both take the same source lock before any location. It does
+ * not remove every deadlock: db-link-store applies a batch in one
+ * transaction, so a batch that already holds locks from earlier events (a
+ * source or a location) can wait on another batch that waits on it.
+ * PostgreSQL aborts one of them (40P01), which is not a domain refusal, so
+ * that batch rolls back and is resent, and the retry is applied, replayed,
+ * or refused with 409.
+ */
+async function lockStockSource(
+  tx: Tx,
+  tenantId: string,
+  sourceType: string,
+  sourceId: string,
+): Promise<void> {
+  const key =
+    `stock-source:${tenantId}:${sourceType}:${sourceIdToDb(sourceId)}`.toLowerCase();
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+  );
 }
 
 // ------------------------------------------------------------------ mappers
@@ -363,9 +430,7 @@ export async function listInventoryItems(
   },
 ): Promise<CursorPage<InventoryItem>> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.stock.view", {
-      type: "tenant",
-    });
+    await assertCatalogRead(tx, context, actorUserId);
     const filters: SQL[] = [];
     if (query.category)
       filters.push(eq(inventoryItems.category, query.category));
@@ -406,9 +471,7 @@ export async function getInventoryItem(
   itemId: string,
 ): Promise<InventoryItem> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.stock.view", {
-      type: "tenant",
-    });
+    await assertCatalogRead(tx, context, actorUserId);
     const [row] = await tx
       .select()
       .from(inventoryItems)
@@ -419,24 +482,16 @@ export async function getInventoryItem(
   });
 }
 
-/**
- * Item master write. The permission catalog has no `inventory.item.manage`
- * code yet, so the receive permission (the operation that introduces an item)
- * gates master-data writes; see the bead report for the follow-up.
- */
+/** Item master write: needs the tenant-wide `inventory.item.manage` code. */
 export async function createInventoryItem(
   context: ScopedTenantContext,
   actorUserId: string,
   input: CreateInventoryItemInput,
 ): Promise<InventoryItem> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(
-      tx,
-      context,
-      actorUserId,
-      "inventory.stock.receive",
-      { type: "tenant" },
-    );
+    await assertPermission(tx, context, actorUserId, "inventory.item.manage", {
+      type: "tenant",
+    });
     const [uom] = await tx
       .select()
       .from(uoms)
@@ -510,13 +565,9 @@ export async function updateInventoryItem(
   input: UpdateInventoryItemInput,
 ): Promise<InventoryItem> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(
-      tx,
-      context,
-      actorUserId,
-      "inventory.stock.receive",
-      { type: "tenant" },
-    );
+    await assertPermission(tx, context, actorUserId, "inventory.item.manage", {
+      type: "tenant",
+    });
     const [existing] = await tx
       .select()
       .from(inventoryItems)
@@ -625,9 +676,7 @@ export async function listUoms(
   query: { limit: number; cursor?: string },
 ): Promise<CursorPage<Uom>> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.stock.view", {
-      type: "tenant",
-    });
+    await assertCatalogRead(tx, context, actorUserId);
     const filters: SQL[] = [];
     const [code, id] = cursorKeys(query.cursor, 2);
     if (code !== undefined && id !== undefined)
@@ -661,9 +710,7 @@ export async function listUomConversions(
   itemId: string,
 ): Promise<UomConversion[]> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.stock.view", {
-      type: "tenant",
-    });
+    await assertCatalogRead(tx, context, actorUserId);
     const [item] = await tx
       .select({ id: inventoryItems.id })
       .from(inventoryItems)
@@ -773,14 +820,15 @@ export async function listStockBatches(
 ): Promise<CursorPage<StockBatch>> {
   assertOutlet(context, query.outletId);
   return withTenant(db, context, async (tx) => {
-    await assertPermission(
-      tx,
-      context,
-      actorUserId,
-      "inventory.stock.view",
-      outletTarget(query.outletId),
-    );
-    const filters: SQL[] = [eq(stockBatches.outletId, query.outletId)];
+    const snapshot = await loadAccessSnapshot(tx, context, actorUserId);
+    const target = outletTarget(query.outletId);
+    if (!snapshot.allows("inventory.stock.view", target))
+      throw new AccessError("PERMISSION_DENIED");
+    // Open blind counts hide their pairs from everyone (stock opname T1).
+    const filters: SQL[] = [
+      eq(stockBatches.outletId, query.outletId),
+      blindCountHiddenFilter(stockBatches),
+    ];
     if (query.locationId)
       filters.push(eq(stockBatches.locationId, query.locationId));
     if (query.inventoryItemId)
@@ -1118,6 +1166,268 @@ async function appendStockMovedEvent(
   });
 }
 
+/**
+ * Stock sources an edge node may post (bead legend-s4r6): the outlet flows the
+ * edge runs, all single-outlet: POS / QR sales and sales returns (`order`),
+ * waste logs, stock counts, transfers between locations of one outlet and
+ * production batches. Purchasing (`goods_receipt`, `purchase_return`) and
+ * `duty_meal` have no edge-side producer, so the cloud refuses them.
+ */
+export const EDGE_STOCK_SOURCE_TYPES: ReadonlySet<StockSourceType> = new Set([
+  "order",
+  "waste_log",
+  "stock_count",
+  "stock_transfer",
+  "production_order",
+]);
+
+/** The columns of a source document's own table that the owner check reads. */
+interface SourceDocumentTable {
+  table: PgTable;
+  tenantId: AnyPgColumn;
+  id: AnyPgColumn;
+  outletId: AnyPgColumn;
+}
+
+function sourceDocumentOf(
+  table: PgTable & {
+    tenantId: AnyPgColumn;
+    id: AnyPgColumn;
+    outletId: AnyPgColumn;
+  },
+): SourceDocumentTable {
+  return {
+    table,
+    tenantId: table.tenantId,
+    id: table.id,
+    outletId: table.outletId,
+  };
+}
+
+/**
+ * Own table of each source document an edge posts (EDGE_STOCK_SOURCE_TYPES).
+ * Typed columns, so a table without `outlet_id` fails tsc instead of throwing
+ * at runtime (a throw would be a 503 and the edge batch would retry forever).
+ * `stock_transfers` has one `outlet_id`: both its locations are FK-bound to
+ * that same outlet (stock_transfers_from/to_location_fk), so there is no
+ * separate sending or receiving outlet to choose between.
+ */
+const EDGE_SOURCE_DOCUMENT_TABLES: Readonly<
+  Record<string, SourceDocumentTable>
+> = {
+  order: sourceDocumentOf(orders),
+  waste_log: sourceDocumentOf(wasteLogs),
+  stock_count: sourceDocumentOf(stockCounts),
+  stock_transfer: sourceDocumentOf(stockTransfers),
+  production_order: sourceDocumentOf(productionOrders),
+};
+
+/** Any hex 8-4-4-4-12 value; ULID-derived ids are not RFC-versioned uuids. */
+const DB_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether the source document already belongs to another outlet: either
+ * another outlet holds ledger rows of it, or the cloud holds the document
+ * itself (bead legend-ddoy) under another outlet, so the check does not
+ * depend on a ledger row being posted first. A document the cloud does not
+ * hold passes: an edge document never reaches the cloud before its stock does.
+ * The node's own context only sees its outlet (outlet RLS), so this reads
+ * through a tenant-wide trusted job context in its own short transaction,
+ * like the worker jobs. It sees committed rows only, so callers must hold the
+ * `lockStockSource` claim first: the claim lasts until the caller's commit,
+ * which makes a concurrent posting of the same document by another outlet
+ * wait and then see that outlet's committed rows here.
+ */
+async function sourceBelongsToOtherOutlet(
+  entry: StockLedgerEntry,
+): Promise<boolean> {
+  const tenantWide = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: entry.tenantId,
+      brandId: null,
+      source: "job",
+    }),
+    { kind: "tenant" },
+  );
+  return withTenant(db, tenantWide, async (tx) => {
+    const rows = await tx
+      .select({ id: stockLedger.id })
+      .from(stockLedger)
+      .where(
+        and(
+          eq(stockLedger.tenantId, entry.tenantId),
+          eq(stockLedger.sourceType, entry.sourceType),
+          eq(stockLedger.sourceId, sourceIdToDb(entry.sourceId)),
+          ne(stockLedger.outletId, entry.outletId),
+        ),
+      )
+      .limit(1);
+    if (rows.length > 0) return true;
+    const document = EDGE_SOURCE_DOCUMENT_TABLES[entry.sourceType];
+    const documentId = sourceIdToDb(entry.sourceId);
+    // A malformed id would make the `::uuid` cast throw; it cannot name a
+    // cloud document, so there is nothing to compare.
+    if (!document || !DB_UUID_PATTERN.test(documentId)) return false;
+    const documents = await tx
+      .select({ outletId: document.outletId })
+      .from(document.table)
+      .where(
+        and(
+          eq(document.tenantId, entry.tenantId),
+          // Raw compare: the ULID-in-uuid columns would re-encode a uuid.
+          sql`${document.id} = ${documentId}::uuid`,
+          ne(document.outletId, entry.outletId),
+        ),
+      )
+      .limit(1);
+    return documents.length > 0;
+  });
+}
+
+/** True when the stored ledger row is exactly the replicated movement. */
+function sameReplicatedMovement(
+  row: LedgerRow,
+  entry: StockLedgerEntry,
+): boolean {
+  const stored = toLedgerEntry(row);
+  const id = (value: string | null) => value?.toLowerCase() ?? null;
+  return (
+    id(stored.outletId) === id(entry.outletId) &&
+    id(stored.locationId) === id(entry.locationId) &&
+    id(stored.inventoryItemId) === id(entry.inventoryItemId) &&
+    stored.movementType === entry.movementType &&
+    parseDecimal4(stored.quantity) === parseDecimal4(entry.quantity) &&
+    parseDecimal4(stored.unitCostIdr) === parseDecimal4(entry.unitCostIdr) &&
+    id(stored.batchId) === id(entry.batchId) &&
+    stored.sourceType === entry.sourceType &&
+    id(row.sourceId) === id(sourceIdToDb(entry.sourceId)) &&
+    Date.parse(stored.occurredAt) === Date.parse(entry.occurredAt)
+  );
+}
+
+/**
+ * Cloud side of an edge `stock.moved` (bead legend-s4r6, edge/stock-moved-
+ * applier.ts): writes the edge's ledger row with its own id, quantity, cost,
+ * source and time (the cost is never recomputed), applies it to the cloud
+ * balance like the local path and re-emits the same `stock.moved` on the
+ * cloud outbox so the GL bridge consumes it. `cloud-sync` is a local sink on
+ * the cloud (worker/transport.ts), so the event never goes back to the edge.
+ * Returns false and writes nothing when the identical row is already there
+ * (replay); a different movement under the same id throws.
+ */
+export async function recordReplicatedStockMovementInTransaction(
+  tx: Tx,
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  payload: StockMovedEventPayload,
+): Promise<boolean> {
+  if (!event.outletId)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Stock event needs an outlet.",
+    );
+  assertOutlet(context, event.outletId);
+  if (!EDGE_STOCK_SOURCE_TYPES.has(payload.sourceType))
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "An edge node cannot post this stock source.",
+    );
+  const tenantId = context.tenant.tenantId;
+  const parsed = stockLedgerEntrySchema.safeParse({
+    id: payload.ledgerEntryId,
+    tenantId,
+    outletId: event.outletId,
+    locationId: payload.locationId,
+    inventoryItemId: payload.inventoryItemId,
+    movementType: payload.movementType,
+    quantity: payload.quantity,
+    unitCostIdr: payload.unitCostIdr,
+    batchId: payload.batchId,
+    sourceType: payload.sourceType,
+    sourceId: payload.sourceId,
+    occurredAt: payload.occurredAt,
+  });
+  // A 4xx, not a ZodError: the link records a reviewable conflict instead of
+  // stalling the node's sync (db-link-store.ts applyOrRefuse).
+  if (!parsed.success)
+    throw new HttpError(422, "VALIDATION_ERROR", "Invalid stock movement.");
+  const entry = parsed.data;
+  await requireLocation(tx, entry.outletId, entry.locationId);
+  await requireItem(tx, entry.inventoryItemId);
+  if (entry.batchId !== null)
+    await requireBatch(tx, entry.outletId, entry.batchId, entry);
+
+  // legend-ddoy: claim the source first, then the location, and only then the
+  // cross-outlet read below (lock order is explained on lockStockSource).
+  await lockStockSource(tx, tenantId, entry.sourceType, entry.sourceId);
+  await lockInventoryLocations(tx, tenantId, [entry.locationId]);
+  // The GL bridge re-reads a document's rows by (tenant, sourceType,
+  // sourceId) across outlets: a source already posted by another outlet is
+  // never extended from this edge.
+  if (await sourceBelongsToOtherOutlet(entry))
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "This stock source belongs to another outlet.",
+    );
+  const inserted = await tx
+    .insert(stockLedger)
+    .values({
+      id: entry.id,
+      tenantId,
+      outletId: entry.outletId,
+      locationId: entry.locationId,
+      inventoryItemId: entry.inventoryItemId,
+      movementType: entry.movementType,
+      quantity: entry.quantity,
+      unitCostIdr: entry.unitCostIdr,
+      batchId: entry.batchId,
+      sourceType: entry.sourceType,
+      sourceId: sourceIdToDb(entry.sourceId),
+      idempotencyKey: null,
+      requestFingerprint: null,
+      occurredAt: new Date(entry.occurredAt),
+    })
+    .onConflictDoNothing({ target: stockLedger.id })
+    .returning({ id: stockLedger.id });
+  if (inserted.length === 0) {
+    // Only an identical row is a replay. A row of another tenant (invisible
+    // here) or a different movement under the same id is refused, so the
+    // receipt fails and the edge keeps the event instead of losing it.
+    const [existing] = await tx
+      .select()
+      .from(stockLedger)
+      .where(
+        and(eq(stockLedger.tenantId, tenantId), eq(stockLedger.id, entry.id)),
+      );
+    if (!existing || !sameReplicatedMovement(existing, entry))
+      throw new HttpError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "This stock ledger id was used for a different movement.",
+      );
+    return false;
+  }
+
+  const balance = await lockStockBalance(tx, context, entry);
+  await applyMovementToLockedBalance(tx, balance, entry);
+  const cloudEvent = inventoryEvents["stock.moved"].envelopeSchema.parse({
+    ...event,
+    idempotencyKey: `stock.moved:${entry.id}`,
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(),
+    event: cloudEvent,
+    destination: EVENT_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
+  return true;
+}
+
 export async function listStockLedger(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -1142,7 +1452,11 @@ export async function listStockLedger(
     if (!snapshot.allows("inventory.stock.view", target))
       throw new AccessError("PERMISSION_DENIED");
     const withCost = snapshot.allows("inventory.cost.view", target);
-    const filters: SQL[] = [eq(stockLedger.outletId, query.outletId)];
+    // Open blind counts hide their pairs from everyone (stock opname T1).
+    const filters: SQL[] = [
+      eq(stockLedger.outletId, query.outletId),
+      blindCountHiddenFilter(stockLedger),
+    ];
     if (query.locationId)
       filters.push(eq(stockLedger.locationId, query.locationId));
     if (query.inventoryItemId)
@@ -1231,7 +1545,11 @@ export async function listStockBalances(
     if (!snapshot.allows("inventory.stock.view", target))
       throw new AccessError("PERMISSION_DENIED");
     const withCost = snapshot.allows("inventory.cost.view", target);
-    const filters: SQL[] = [eq(stockBalances.outletId, query.outletId)];
+    // Open blind counts hide their pairs from everyone (stock opname T1).
+    const filters: SQL[] = [
+      eq(stockBalances.outletId, query.outletId),
+      blindCountHiddenFilter(stockBalances),
+    ];
     if (query.locationId)
       filters.push(eq(stockBalances.locationId, query.locationId));
     if (query.inventoryItemId)
@@ -1304,10 +1622,16 @@ export async function rebuildStockBalances(
       .select()
       .from(stockLedger)
       .where(eq(stockLedger.outletId, outletId))
-      .orderBy(asc(stockLedger.occurredAt), asc(stockLedger.id));
+      // Posting order, not occurredAt: live posting applies the moving
+      // average in insertion order (legend-bsw9), so the repair must too.
+      .orderBy(asc(stockLedger.postingSeq));
     const derived = foldStockLedger(
-      rows.map((row) => toLedgerEntry(row)),
+      rows.map((row) => ({
+        ...toLedgerEntry(row),
+        postingSeq: row.postingSeq,
+      })),
       ROUNDING_MODE,
+      "posting",
     );
     await tx.delete(stockBalances).where(eq(stockBalances.outletId, outletId));
     if (derived.length > 0)

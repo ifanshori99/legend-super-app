@@ -1,5 +1,6 @@
 import { Client } from "pg";
 import { PgBoss } from "pg-boss";
+import { assertQueueRole, queueBossOptions } from "../db/role";
 
 const RELAY_QUEUE = "domain-event-relay";
 export const WAKE_CHANNEL = "legend_outbox_wakeup";
@@ -16,6 +17,8 @@ export function createRelayRuntime<Context>(options: {
   listActiveTenantIds: () => Promise<string[]>;
   resolveContext: (tenantId: string) => Promise<Context>;
   relay: (context: Context) => Promise<unknown>;
+  /** Liveness hook (legend-z649): called as the sweep makes progress. */
+  onProgress?: () => void;
 }) {
   let active: Promise<void> | undefined;
   let repeat = false;
@@ -29,12 +32,15 @@ export function createRelayRuntime<Context>(options: {
     active = (async () => {
       do {
         repeat = false;
-        for (const tenantId of await options.listActiveTenantIds()) {
+        const tenantIds = await options.listActiveTenantIds();
+        options.onProgress?.();
+        for (const tenantId of tenantIds) {
           try {
             await options.relay(await options.resolveContext(tenantId));
           } catch {
             console.error("Tenant outbox relay failed");
           }
+          options.onProgress?.();
         }
       } while (repeat && !stopping);
     })();
@@ -69,7 +75,7 @@ export function createRelayRuntime<Context>(options: {
 }
 
 export function createRelayScheduler(url: string): Scheduler {
-  const boss = new PgBoss({ connectionString: url, createSchema: false });
+  const boss = new PgBoss(queueBossOptions(url));
   boss.on("error", () => console.error("pg-boss relay scheduler error"));
   return {
     start: () => boss.start(),
@@ -104,6 +110,16 @@ export function createWakeListener(url: string): Listener {
         }, 5000);
     });
     await next.connect();
+    try {
+      await assertQueueRole(next);
+    } catch (error) {
+      // A refused role must not be retried in the background. On a reconnect
+      // the error is swallowed, so say so (fixed text, no connection details).
+      console.error("Wake listener refused an unsafe queue role");
+      stopped = true;
+      await next.end().catch(() => {});
+      throw error;
+    }
     await next.query(`LISTEN ${WAKE_CHANNEL}`);
   }
   return {

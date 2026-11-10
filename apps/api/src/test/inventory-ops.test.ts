@@ -37,6 +37,7 @@ import {
 } from "@starter/shared/core/server";
 import {
   createProductionOrderInputSchema,
+  createStockCountInputSchema,
   createStockTransferInputSchema,
   createWasteLogInputSchema,
   productionOrderQuerySchema,
@@ -59,6 +60,7 @@ import {
   setInventoryRecipeSource,
   type RecipeForStock,
 } from "../services/inventory-ops.shared.ts";
+import { createStockCount } from "../services/inventory-count.service.ts";
 import { listStockAlerts } from "../services/inventory-par-alerts.service.ts";
 import {
   createProductionOrder,
@@ -629,6 +631,43 @@ describe("F16 waste & spoilage (PRD §16 Waste & Spoilage)", () => {
     expect((await balanceOf(location, item))?.quantity).toBe("8.0000");
   });
 
+  it("legend-tk7i WASTE-06 a waste photo must be a stored object of this tenant", async () => {
+    const location = await insertLocation("Gudang Foto");
+    const item = await insertItem("Susu Foto", gramId);
+    await receive(location, item, "10.0000", "10.0000");
+    const body = (mediaId: string) =>
+      createWasteLogInputSchema.parse({
+        outletId: outletA,
+        locationId: location,
+        targetType: "inventory_item",
+        targetId: item,
+        quantity: "1.0000",
+        reason: "spoiled",
+        mediaId,
+        idempotencyKey: key("photo"),
+      });
+
+    await rejectsWithStatus(
+      createWasteLog(tenantContext(), ownerUserId, body(randomUUID())),
+      422,
+      "WASTE_MEDIA_NOT_FOUND",
+    );
+    expect((await balanceOf(location, item))?.quantity).toBe("10.0000");
+
+    const mediaId = randomUUID();
+    await owner.query(
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+       VALUES ($1, $2, $3, 'document', $4, 'image/jpeg', 1024)`,
+      [tenantA, outletA, mediaId, `private/${tenantA}/${mediaId}.jpg`],
+    );
+    const log = await createWasteLog(
+      tenantContext(),
+      ownerUserId,
+      body(mediaId),
+    );
+    expect(log.mediaId).toBe(mediaId);
+  });
+
   it("F16 WASTE-05 a menu portion wastes its recipe ingredients; no recipe fails closed", async () => {
     const location = await insertLocation("Bar Waste");
     const espresso = await insertItem("Biji Kopi", gramId);
@@ -845,7 +884,25 @@ describe("F17 production batches (PRD §17 Produksi Batch, INV-02)", () => {
     );
     await receive(kitchen, coffee, "5000.0000", "2.0000");
     await receive(kitchen, sugar, "1000.0000", "5.0000");
-    const recipeId = randomUUID();
+    // production_orders.recipe_id has a real FK (legend-tk7i): the recipe row
+    // must exist; the in-memory source still supplies its lines.
+    const { rows: brandRows } = await owner.query<{ id: string }>(
+      "SELECT id FROM brands WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+      [tenantA],
+    );
+    const { rows: recipeRows } = await owner.query<{ id: string }>(
+      `INSERT INTO recipes (tenant_id, brand_id, name, output_item_id, yield_quantity, yield_uom_id, is_active, updated_by)
+       VALUES ($1, $2, $3, $4, '1000.0000', $5, true, $6) RETURNING id`,
+      [
+        tenantA,
+        brandRows[0]!.id,
+        `Cold Brew ${randomUUID().slice(0, 8)}`,
+        coldBrew,
+        gramId,
+        ownerUserId,
+      ],
+    );
+    const recipeId = recipeRows[0]!.id;
     recipes.set(recipeId, {
       recipeId,
       isActive: true,
@@ -1144,6 +1201,53 @@ describe("F16 par levels, critical alerts and AI-08 suggestions", () => {
       { resolved: false },
     ]);
     expect(await criticalEventsOf(item)).toBe(2);
+  });
+
+  it("legend-r2zv stock.critical withholds quantity while a blind count of the pair is open", async () => {
+    const location = await insertLocation("Gudang Buta");
+    const item = await insertItem("Kopi Buta", gramId);
+    const free = await insertItem("Teh Bebas", gramId);
+    await insertParLevel(location, item, "5.0000", "20.0000");
+    await insertParLevel(location, free, "5.0000", "20.0000");
+    await receive(location, item, "10.0000", "100.0000");
+    await receive(location, free, "10.0000", "100.0000");
+    const { rows: outletRows } = await owner.query<{
+      timezone: string;
+      business_day_cutoff: string;
+    }>(
+      "SELECT timezone, business_day_cutoff FROM outlets WHERE tenant_id = $1 AND id = $2",
+      [tenantA, outletA],
+    );
+    await createStockCount(
+      tenantContext(),
+      ownerUserId,
+      createStockCountInputSchema.parse({
+        outletId: outletA,
+        locationId: location,
+        type: "cycle",
+        blind: true,
+        businessDate: businessDateOf(new Date(), {
+          timeZone: outletRows[0]!.timezone,
+          cutoff: outletRows[0]!.business_day_cutoff,
+        }),
+        inventoryItemIds: [item],
+        idempotencyKey: key("r2zv-count"),
+      }),
+    );
+
+    await waste(location, item, "6.0000");
+    await waste(location, free, "6.0000");
+    const quantityOf = async (itemId: string) => {
+      const { rows } = await owner.query<{ quantity: string | null }>(
+        "SELECT event->'payload'->>'quantity' AS quantity FROM domain_event_outbox WHERE tenant_id = $1 AND event->>'name' = 'stock.critical' AND event->'payload'->>'inventoryItemId' = $2",
+        [tenantA, itemId],
+      );
+      return rows.map((row) => row.quantity);
+    };
+    // The event still fires (the alert is real) but carries no quantity for
+    // the pair under blind count; an unrelated pair keeps its quantity.
+    expect(await quantityOf(item)).toEqual([null]);
+    expect(await quantityOf(free)).toEqual(["4.0000"]);
   });
 
   it("AI-08 SUGGEST-01 refills below-min pairs to parMax, location par over item default", async () => {

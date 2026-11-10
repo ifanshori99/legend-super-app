@@ -57,6 +57,7 @@ import "../../lib/mock/handlers/login-challenge.ts";
 import "../../lib/mock/handlers/subscription-plans.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
+import { readFacilityAdminConfig } from "../facility-admin/mock.ts";
 import { businessDateInOutletZone } from "./flow.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
@@ -602,6 +603,10 @@ registerMock(bookAccessTicket, ({ body }) => {
 // catalog endpoint does not exist yet, so the admin config contract is served
 // with the same fixtures).
 registerMock(getFacilityConfig, ({ query }) => {
+  // Admin edits live in the facility-admin store; reading from it keeps them
+  // across a refetch (bead legend-wbwl). Unknown ids fall back to fixtures.
+  const edited = readFacilityAdminConfig(query.facilityId);
+  if (edited) return { data: edited };
   const facility = facilityById(query.facilityId);
   return {
     data: {

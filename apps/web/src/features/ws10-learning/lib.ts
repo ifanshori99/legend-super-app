@@ -78,11 +78,17 @@ export function formatWithUnit(value: string, unit: string): string {
   return `${formatDecimal(value)} ${unit}`;
 }
 
-/** The review's headline score: the rounded mean of its indicator scores. */
+/**
+ * The review's headline score: the rounded mean of its indicator scores.
+ * Indicators not scored yet (null) are skipped; none scored gives 0.
+ */
 export function reviewAverageScore(review: Pick<KpiReview, "scores">): number {
-  if (review.scores.length === 0) return 0;
-  const total = review.scores.reduce((sum, score) => sum + score.score, 0);
-  return Math.round(total / review.scores.length);
+  const scored = review.scores.flatMap((score) =>
+    score.score === null ? [] : [score.score],
+  );
+  if (scored.length === 0) return 0;
+  const total = scored.reduce((sum, value) => sum + value, 0);
+  return Math.round(total / scored.length);
 }
 
 /**
@@ -113,9 +119,9 @@ export function reviewSources(
 export function achievementPercent(
   direction: KpiDirection,
   target: string | null,
-  actual: string,
+  actual: string | null,
 ): number | null {
-  if (target === null) return null;
+  if (target === null || actual === null) return null;
   const targetValue = Number(target);
   const actualValue = Number(actual);
   if (!Number.isFinite(targetValue) || !Number.isFinite(actualValue))

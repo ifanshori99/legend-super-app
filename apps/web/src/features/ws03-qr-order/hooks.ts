@@ -37,6 +37,7 @@ import {
   orderIssuesEndpointId,
   orderEtasQuery,
   orderIssuesQuery,
+  paymentOptionsQuery,
   paymentQuery,
   pointClaimEndpointId,
   pointClaimQuery,
@@ -127,6 +128,14 @@ export function useGuestPayment(sessionId: string, paymentId: string | null) {
   return useQuery({
     ...paymentQuery(sessionId, paymentId ?? "none"),
     enabled: paymentId !== null,
+  });
+}
+
+/** Which online methods are on and, for VA, the provider's bank list. */
+export function useGuestPaymentOptions(sessionId: string | null) {
+  return useQuery({
+    ...paymentOptionsQuery(sessionId ?? "none"),
+    enabled: sessionId !== null,
   });
 }
 
@@ -293,6 +302,7 @@ export function useStartPayment(sessionId: string) {
     mutationFn: (input: {
       target: GuestPaymentTarget;
       method: GuestPaymentMethod;
+      bankCode?: string;
       idempotencyKey: string;
     }) => startPayment(sessionId, input),
   });

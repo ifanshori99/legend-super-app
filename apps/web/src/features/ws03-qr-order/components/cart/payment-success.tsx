@@ -1,5 +1,5 @@
-// "Pembayaran berhasil" (final arah A, legend-2re1): shared by the QRIS /
-// e-wallet page and the cashier page. It only renders once the server says
+// "Pembayaran berhasil" (final arah A, legend-2re1): shared by the QRIS
+// page and the cashier page. It only renders once the server says
 // so (payment paid, or the order left awaiting_payment); it never decides
 // success itself (ORD-02). No upsell here, only the receipt and next steps.
 import { useState } from "react";
@@ -21,8 +21,7 @@ import {
   qrTextLink,
 } from "../glass/qr-primitives";
 
-export type PaymentSuccessMethod =
-  "qris" | "va" | "ewallet" | "card" | "cashier";
+export type PaymentSuccessMethod = "qris" | "va" | "cashier";
 
 function Points({
   sessionId,
@@ -124,11 +123,7 @@ export function PaymentSuccess({
       ? t("qrGlass.pay.success.methodQris")
       : method === "va"
         ? t("qrGlass.pay.success.methodVa")
-        : method === "ewallet"
-          ? t("qrGlass.pay.success.methodEwallet")
-          : method === "card"
-            ? t("qrGlass.pay.success.methodCard")
-            : t("qrGlass.pay.success.methodCashier");
+        : t("qrGlass.pay.success.methodCashier");
 
   return (
     <div className="grid gap-4 lg:mx-auto lg:w-full lg:max-w-xl">

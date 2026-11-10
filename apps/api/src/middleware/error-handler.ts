@@ -7,11 +7,13 @@ import {
 } from "@starter/shared/core";
 import { AccessError } from "@starter/shared/access";
 import { AccountingError } from "@starter/shared/accounting";
+import { AiError } from "@starter/shared/ai";
 import {
   DeliveryError,
   deliveryErrorHttpStatus,
 } from "@starter/shared/delivery";
 import { FacilityError } from "@starter/shared/facility";
+import { PayrollError } from "@starter/shared/hris/payroll";
 import { IdentityError } from "@starter/shared/identity";
 import { NotificationError } from "@starter/shared/notification";
 import { OperationsError } from "@starter/shared/operations";
@@ -24,6 +26,7 @@ import {
 import { TaxError } from "@starter/shared/tax";
 import { HttpError } from "../lib/http-error";
 import { AuditUnavailableError } from "../services/audit-writer";
+import { toLoggableError } from "../lib/safe-error";
 
 export const notFound: RequestHandler = () => {
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
@@ -53,10 +56,12 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     error instanceof CoreError ||
     error instanceof AccessError ||
     error instanceof AccountingError ||
+    error instanceof AiError ||
     error instanceof FacilityError ||
     error instanceof IdentityError ||
     error instanceof NotificationError ||
     error instanceof OperationsError ||
+    error instanceof PayrollError ||
     error instanceof PlatformError ||
     error instanceof PosError ||
     error instanceof TaxError
@@ -92,12 +97,28 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       })),
     );
 
+  // The router rejects a malformed percent-encoding in a route param with a
+  // URIError whose message echoes the raw param (it can be a bearer token).
+  // Answer a fixed message and keep the error out of the log. Only the
+  // router's decode error matches: a URIError thrown by application code is a
+  // server bug and still takes the logged 500 path below.
+  if (
+    error instanceof URIError &&
+    (error as URIError & { status?: unknown }).status === 400 &&
+    error.message.startsWith("Failed to decode param")
+  )
+    return send(400, "VALIDATION_ERROR", "The request URL is malformed.");
+
   const parserError = error as ParserError | null;
   if (parserError?.type === "entity.parse.failed")
     return send(400, "INVALID_JSON", "Send valid JSON.");
   if (parserError?.type === "entity.too.large")
     return send(413, "PAYLOAD_TOO_LARGE", "The request body is too large.");
 
-  res.err = error instanceof Error ? error : new Error(String(error));
+  // pino-http logs res.err with its own serializer: hand it a copy without
+  // database row values (bound parameters, "Failing row contains ...").
+  res.err = toLoggableError(
+    error instanceof Error ? error : new Error(String(error)),
+  ) as Error;
   return send(500, "INTERNAL_ERROR", "Something went wrong. Try again.");
 };

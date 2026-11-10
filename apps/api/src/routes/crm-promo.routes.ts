@@ -28,6 +28,7 @@ import {
   updatePromotion as updatePromotionEndpoint,
   validateVoucher as validateVoucherEndpoint,
 } from "@starter/shared/crm";
+import { idempotencyKeySchema } from "@starter/shared/core";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -43,6 +44,12 @@ import * as promoOutlets from "../services/crm-promo-outlets.service";
 const manage = requireTenantPermission("promo.manage");
 const outletOf = (req: Request) => String(req.query.outletId ?? "");
 const checkout = requireOutletPermission("order.create", outletOf);
+
+/** Optional `Idempotency-Key` header (legend-nloi); a malformed key is a 422. */
+function idempotencyKeyOf(req: Request): string | null {
+  const raw = req.get("Idempotency-Key");
+  return raw === undefined ? null : idempotencyKeySchema.parse(raw);
+}
 
 // ------------------------------------------------------------ promotions
 
@@ -66,6 +73,8 @@ promotionsRouter.post("/", manage, jsonBody, async (req, res) => {
     getScopedTenantContext(req),
     getAuth(req).user.id,
     input,
+    undefined,
+    idempotencyKeyOf(req),
   );
   res
     .status(201)
@@ -200,6 +209,8 @@ vouchersRouter.post("/", manage, jsonBody, async (req, res) => {
     getScopedTenantContext(req),
     getAuth(req).user.id,
     input,
+    undefined,
+    idempotencyKeyOf(req),
   );
   res
     .status(201)

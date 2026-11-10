@@ -14,8 +14,13 @@
 // - the POS override request (PIN on the device, or approval from the
 //   supervisor's phone through the generic approval inbox) and its view;
 // - the edge replication record of a staff pin (hash only, never the pin);
-// - the domain events. Payloads carry ids and enums only, never the pin or
-//   the free-text reason (the audit log holds the reason).
+// - the domain events. Payloads carry ids and enums, never the pin.
+//   `pos_override.recorded` also carries the reason (legend-kyie: the cloud
+//   writes the audit row of an override recorded offline on an edge), and an
+//   EDGE node's `staff_pin.set` carries the hash material (never the pin) so
+//   the cloud can take over a pin set on the edge. That material only travels
+//   edge -> cloud and is stripped before any event is stored for review
+//   (edge/access-applier.ts `redactEdgeEnvelopeSecrets`).
 
 import {
   clientInputSchema,
@@ -60,6 +65,8 @@ export const POS_OVERRIDE_APPROVE_PERMISSION = {
   refund: "pos.refund.approve",
   cash_drawer_open: "pos.cash_drawer.approve",
   price_correction: "pos.price_correction.approve",
+  cash_shift_close: "shift.cash.approve_close",
+  edc_standalone: "pos.edc_standalone.approve",
 } as const satisfies Record<PosOverrideAction, PermissionCode>;
 
 // -------------------------------------------------------------- staff pins
@@ -112,6 +119,22 @@ export const staffPinEdgeRecordSchema = z.strictObject({
   failedAttempts: z.number().int().min(0).max(MAX_STAFF_PIN_ATTEMPTS),
   lockedUntil: isoDateTimeSchema.nullable(),
   updatedAt: isoDateTimeSchema,
+  /**
+   * Order key of the pin generation (`staff_pins.pin_generation_at`,
+   * legend-t9ii), exact to the microsecond. The edge orders a cloud reset
+   * against its own generation with this key, never with a node clock, and
+   * stores it so its next set is stamped after it.
+   */
+  pinGenerationAt: isoDateTimeSchema,
+  /**
+   * Counter revision (`staff_pins.attempt_revision`, legend-r11j7): bumped on
+   * every change of the counter or the hash material, so the edge sees a
+   * counter that went 3 -> 0 -> 3 between two pulls as moved. Optional: the
+   * cloud sends it only to an edge that asks (`revision=1`), since an older
+   * edge parses this record strictly; without it the edge compares the
+   * counter by value.
+   */
+  attemptRevision: z.number().int().nonnegative().optional(),
 });
 export type StaffPinEdgeRecord = z.infer<typeof staffPinEdgeRecordSchema>;
 
@@ -190,7 +213,8 @@ export const posOverrideViewSchema = z
     approvedBy: userIdSchema.nullable(),
     reasonCode: z.string().min(1).max(50).nullable(),
     reason: overrideReasonSchema,
-    valueIdr: overrideValueSchema,
+    /** Null when hidden from this viewer (blind cash count: the requester never sees the variance). */
+    valueIdr: overrideValueSchema.nullable(),
     objectType: objectTypeSchema,
     objectId: objectIdSchema,
     approvalRequestId: z.uuid().toLowerCase().nullable(),
@@ -230,9 +254,17 @@ export const posOverrideViewSchema = z
   });
 export type PosOverrideView = z.infer<typeof posOverrideViewSchema>;
 
-/** The AUTH-06 record of an approved override; null for anything else. */
+/**
+ * The AUTH-06 record of an approved override; null for anything else, and
+ * null when the value is hidden from this view (a record needs its value).
+ */
 export function posOverrideRecordOf(view: PosOverrideView): PosOverride | null {
-  if (view.status !== "approved" || view.approvedBy === null) return null;
+  if (
+    view.status !== "approved" ||
+    view.approvedBy === null ||
+    view.valueIdr === null
+  )
+    return null;
   return posOverrideSchema.parse({
     id: view.id,
     outletId: view.outletId,
@@ -279,6 +311,25 @@ export const getPosOverride = defineEndpoint({
 
 // ------------------------------------------------------------------- events
 
+/**
+ * Hash material of a pin set on an edge node (legend-kyie), so the cloud can
+ * adopt it. Same shape as the edge replication record: hash, salt, cost and
+ * pepper version, never the pin or the pepper. `setAt` is the edge's
+ * `pin_set_at`, the ordering key of pin generations.
+ */
+export const staffPinSetMaterialSchema = z.strictObject({
+  algorithm: z.literal(STAFF_PIN_HASH_ALGORITHM),
+  /** Random per-pin salt, base64 (16 bytes). */
+  salt: z
+    .string()
+    .regex(/^[A-Za-z0-9+/]{22}==$/, "Expected a 16-byte base64 salt"),
+  pinHash: identityDigestSchema,
+  params: staffPinKdfParamsSchema,
+  pepperVersion: z.number().int().min(1),
+  setAt: isoDateTimeSchema,
+});
+export type StaffPinSetMaterial = z.infer<typeof staffPinSetMaterialSchema>;
+
 /** A pin was set or reset (the counter and lock are cleared with it). */
 export const staffPinSetEvent = defineDomainEvent({
   name: "staff_pin.set",
@@ -288,6 +339,8 @@ export const staffPinSetEvent = defineDomainEvent({
     setBy: userIdSchema,
     /** True when the staff member set their own pin. */
     self: z.boolean(),
+    /** Edge node only (legend-kyie); absent on the cloud and on old events. */
+    material: staffPinSetMaterialSchema.optional(),
   }),
 });
 
@@ -301,18 +354,66 @@ export const staffPinLockedEvent = defineDomainEvent({
   }),
 });
 
-/** AUTH-06: an approved override, with requester, approver and value. */
+/**
+ * AUTH-06: an approved override, with requester, approver and value. For
+ * `cash_shift_close` the value is the variance of the cashier's blind count,
+ * which is secret from the cashier (legend-o0w6): the event never carries it
+ * (`valueIdr` null). The value stays in the supervisor-only audit and the
+ * override row. The refine acts when the event is written; edge-to-cloud
+ * ingest checks only the generic envelope, so v1 rows written before this
+ * change (with the number) still sync, and still hold the number in the
+ * outbox, edge queue and conflict tables (database access only).
+ *
+ * legend-7iti: an override approved on an edge node carries the count's
+ * figures in `shiftCloseVariance`, edge process only, so the cloud audit row
+ * shows them as a cloud override's audit does. The edge event travels edge ->
+ * cloud only (never to a cashier device); `valueIdr` stays null.
+ */
 export const posOverrideRecordedEvent = defineDomainEvent({
   name: "pos_override.recorded",
-  payload: z.strictObject({
-    overrideId: posOverrideIdSchema,
-    action: z.enum(POS_OVERRIDE_ACTIONS),
-    method: z.enum(POS_OVERRIDE_METHODS),
-    requestedBy: userIdSchema,
-    approvedBy: userIdSchema,
-    valueIdr: overrideValueSchema,
-    objectType: objectTypeSchema,
-    objectId: objectIdSchema,
-    approvalRequestId: z.uuid().toLowerCase().nullable(),
-  }),
+  payload: z
+    .strictObject({
+      overrideId: posOverrideIdSchema,
+      action: z.enum(POS_OVERRIDE_ACTIONS),
+      method: z.enum(POS_OVERRIDE_METHODS),
+      requestedBy: userIdSchema,
+      approvedBy: userIdSchema,
+      valueIdr: overrideValueSchema.nullable(),
+      objectType: objectTypeSchema,
+      objectId: objectIdSchema,
+      approvalRequestId: z.uuid().toLowerCase().nullable(),
+      /** legend-kyie: for the cloud audit row; optional on old events. */
+      reasonCode: z.string().min(1).max(50).nullable().optional(),
+      reason: z.string().trim().min(3).max(500).optional(),
+      /**
+       * legend-7iti: the blind-count figures of a `cash_shift_close` override
+       * approved on an edge node, so the cloud audit row carries them like a
+       * cloud override's audit. Edge process only (it travels edge -> cloud;
+       * the cloud's own event never carries it); absent on old events.
+       */
+      shiftCloseVariance: z
+        .strictObject({
+          expectedIdr: idrSchema,
+          countedIdr: idrSchema,
+          varianceIdr: idrSchema,
+        })
+        .optional(),
+    })
+    .refine(
+      (payload) =>
+        payload.action !== "cash_shift_close" || payload.valueIdr === null,
+      {
+        message: "cash_shift_close must not carry valueIdr (blind count)",
+        path: ["valueIdr"],
+      },
+    )
+    .refine(
+      (payload) =>
+        payload.shiftCloseVariance === undefined ||
+        payload.action === "cash_shift_close",
+      {
+        message: "shiftCloseVariance belongs to cash_shift_close only",
+        path: ["shiftCloseVariance"],
+      },
+    ),
 });

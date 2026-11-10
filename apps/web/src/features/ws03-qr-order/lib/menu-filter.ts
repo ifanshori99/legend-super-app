@@ -75,7 +75,7 @@ export function filterMenu(menu: QrMenu, filter: MenuFilter): MenuSection[] {
       )
       .sort(
         (a, b) =>
-          Number(a.status === "sold_out") - Number(b.status === "sold_out") ||
+          Number(a.status !== "available") - Number(b.status !== "available") ||
           a.sortOrder - b.sortOrder,
       );
     if (items.length > 0) sections.push({ category, items });

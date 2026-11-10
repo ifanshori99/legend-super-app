@@ -14,6 +14,15 @@
 // cells. Figures are mock-only, plausible Cafe Legend numbers; nothing is
 // predicted.
 //
+// The other families (menu, payments, tax, inventory, cogs, purchasing,
+// finance, loyalty, crm, reservation, attendance, payroll, performance) derive
+// their figures from the same atoms: money lines are shares of net sales (and
+// of the other atoms, with the owner insights' cost structure per period) and
+// balances are the open day's amounts, so a P&L, a payroll cost and a tax
+// report of one period always agree with the sales reports of that period and
+// with the dashboards (I1/I4). The report builder's previews only
+// know the sales metrics; the other families show "no data" there.
+//
 // `?mock=empty` returns runs without rows and an empty catalog;
 // `?mock=slow|error|offline` are handled by the runtime.
 //
@@ -41,17 +50,32 @@ import {
   type ReportExport,
   type ReportResult,
 } from "@starter/shared/dashboard";
-import { metricDefinitionRefSchema } from "@starter/shared/metrics";
+import {
+  METRIC_UNAVAILABLE_MESSAGES,
+  metricDefinitionRefSchema,
+  type MetricAvailability,
+  type MetricUnavailableReason,
+} from "@starter/shared/metrics";
 import { ApiError } from "../../lib/api/errors.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
-import { registerMockReportRuns } from "../../lib/mock/handlers/report-runs.ts";
+import {
+  hasMockReportRun,
+  registerMockReportRuns,
+} from "../../lib/mock/handlers/report-runs.ts";
+import {
+  MONTH_FIGURES,
+  ownerMonthIncomes,
+} from "../ws11-owner-dashboard/insights-mock.ts";
 import { namedPresets, resolvePreset, type DateRange } from "./lib.ts";
 import {
   ATOM_KEYS,
+  BASE_DAY,
   BUSINESS_DATE,
+  LAST_MONTH,
   MONTH_START,
+  dayAtoms,
   distribute,
   outletSplit,
   periodAtoms,
@@ -60,6 +84,17 @@ import {
   type Atoms,
   type SplitSpec,
 } from "./mock-day-model.ts";
+import { type Cell, type DerivedSpec } from "./mock-families/cells.ts";
+import * as facility from "./mock-families/facility.ts";
+import * as finance from "./mock-families/finance.ts";
+import * as hr from "./mock-families/hr.ts";
+import * as inventoryPurchasing from "./mock-families/inventory-purchasing.ts";
+import * as loyaltyCrm from "./mock-families/loyalty-crm.ts";
+import * as menuCogs from "./mock-families/menu-cogs.ts";
+import * as paymentsTax from "./mock-families/payments-tax.ts";
+import * as reservationDelivery from "./mock-families/reservation-delivery.ts";
+import * as sales from "./mock-families/sales.ts";
+import * as trafficOperations from "./mock-families/traffic-operations.ts";
 
 const outlet = cafeLegendFixtures.outlets[0];
 
@@ -69,56 +104,240 @@ const outlet = cafeLegendFixtures.outlets[0];
 // split weights; only the outlet label is this feature's own (rows show the
 // name, while the builder's query carries the id).
 
+// Splits the shared model does not know (supplier, station, zone, member tier);
+// net sales is the fallback weight of every figure.
+const EXTRA_SPLITS: Readonly<Record<string, SplitSpec>> = {
+  customer_tier: {
+    values: ["Bronze", "Silver", "Gold", "Platinum"],
+    weights: { net: [3_100_000, 2_300_000, 1_500_000, 520_000] },
+  },
+  supplier: {
+    values: [
+      "CV Sumber Pangan",
+      "UD Kopi Nusantara",
+      "PT Susu Segar Lestari",
+      "Toko Bahan Kue Maju",
+    ],
+    weights: { net: [4_200_000, 2_100_000, 900_000, 220_000] },
+  },
+  station: {
+    values: ["Bar", "Dapur panas", "Dapur dingin", "Kasir"],
+    weights: { net: [3_000_000, 2_600_000, 1_100_000, 720_000] },
+  },
+  zone: {
+    values: ["Indoor", "Outdoor", "Area merokok", "Ruang VIP"],
+    weights: { net: [3_400_000, 2_300_000, 1_200_000, 520_000] },
+  },
+};
+
 function splitFor(key: string, range: DateRange): SplitSpec | null {
   if (key === "outlet") return outletSplit(outlet.name);
-  return splitSpecFor(key, range);
+  return splitSpecFor(key, range) ?? EXTRA_SPLITS[key] ?? null;
+}
+
+// ---- Derived figures ---------------------------------------------------------
+//
+// Beyond the sales atoms, every other family's number is a fixed share of one
+// atom (`ratio`) or, for a balance, a fixed amount of the open business day
+// scaled by the weekday of the period's last day (`snapshot`). Each derived
+// column is split with the weights of the atom it derives from, so rows still
+// add up to the total whatever the split (DASH-02), and the money lines
+// (cogs, payroll, tax, profit) all hang off the same net sales as the sales
+// reports (I1/I4).
+
+// Each family owns its derived columns (`mock-families/<family>.ts`).
+const DERIVED = {
+  ...sales.derived,
+  ...trafficOperations.derived,
+  ...menuCogs.derived,
+  ...paymentsTax.derived,
+  ...inventoryPurchasing.derived,
+  ...finance.derived,
+  ...loyaltyCrm.derived,
+  ...reservationDelivery.derived,
+  ...hr.derived,
+  ...facility.derived,
+} as const satisfies Record<string, DerivedSpec>;
+
+type DerivedKey = keyof typeof DERIVED;
+const DERIVED_KEYS = Object.keys(DERIVED) as DerivedKey[];
+type Figures = Atoms & Record<DerivedKey, number>;
+type FigureKey = AtomKey | DerivedKey;
+const FIGURE_KEYS: readonly FigureKey[] = [...ATOM_KEYS, ...DERIVED_KEYS];
+
+/** Weights of one figure in a split: its source atom's, else net sales. */
+function weightsFor(key: FigureKey, spec: SplitSpec): readonly number[] {
+  const source = key in DERIVED ? DERIVED[key as DerivedKey].from : key;
+  return (
+    spec.weights[key as AtomKey] ??
+    spec.weights[source as AtomKey] ??
+    spec.weights.net
+  );
+}
+
+/** The weekday scaling of a balance, 1 on the open business day. */
+function dayFactor(day: string): number {
+  return dayAtoms(day).net / BASE_DAY.net;
+}
+
+/**
+ * Cost structure of a period. The closed month is the owner insights' and the
+ * shareholder board's October (COGS 33,7%, payroll 24,5%, net profit of the
+ * October profit-share run, Rp21.000.000 below EBITDA); every other period
+ * is the running month's structure (COGS 31,2%, payroll 27,5%), so a report
+ * and the dashboard tile of the same period show one number (DASH-02, I4).
+ */
+type Profile = {
+  food: number;
+  labor: number;
+  waste: number;
+  promo: number;
+  below: number;
+  netProfit: number;
+  cash?: number;
+  bank?: number;
+};
+
+// The owner insights' month table (`MONTH_FIGURES`) is the one source of the
+// cost structure of the closed October and of the running month, so a report,
+// the owner board and the shareholder board never keep their own copy
+// (legend-3nuv, DASH-02).
+const OCTOBER = MONTH_FIGURES[
+  ownerMonthIncomes.findIndex((month) => month.startDate === LAST_MONTH.start)
+] as (typeof MONTH_FIGURES)[number];
+const RUNNING = MONTH_FIGURES[
+  MONTH_FIGURES.length - 1
+] as (typeof MONTH_FIGURES)[number];
+
+function profileOf(range: DateRange, atoms: Atoms): Profile {
+  const closedMonth =
+    range.startDate === LAST_MONTH.start && range.endDate === LAST_MONTH.end;
+  // Any range inside the closed October is final, so it carries October's cost
+  // structure (COGS 33,7%), scaled by its share of the month's net sales; the
+  // whole month is exactly the owner insights' figures.
+  if (range.startDate >= LAST_MONTH.start && range.endDate <= LAST_MONTH.end) {
+    const share = closedMonth ? 1 : atoms.net / OCTOBER.netSales;
+    const atMonthEnd = range.endDate === LAST_MONTH.end;
+    return {
+      food: OCTOBER.food / 100,
+      labor: OCTOBER.labor / 100,
+      waste: Math.round(OCTOBER.waste * share),
+      promo: Math.round(OCTOBER.promo * share),
+      below: Math.round(21_000_000 * share),
+      netProfit: Math.round(OCTOBER.net * share),
+      // Balances are the month-end ones, only on the month's last day.
+      ...(atMonthEnd ? { cash: 34_600_000, bank: 512_300_000 } : {}),
+    };
+  }
+  const share = atoms.net / BASE_DAY.net;
+  return {
+    food: RUNNING.food / 100,
+    labor: RUNNING.labor / 100,
+    waste: Math.round(RUNNING.waste * share),
+    promo: Math.round(RUNNING.promo * (atoms.discount / BASE_DAY.discount)),
+    below: Math.round(atoms.net * 0.04),
+    netProfit: Math.round(RUNNING.net * share),
+  };
+}
+
+/** Exported for tests/ws11-fixture-reconcile.test.mjs. */
+export function periodFigures(range: DateRange): Figures {
+  const atoms = periodAtoms(range);
+  const figures = { ...atoms } as Figures;
+  for (const key of DERIVED_KEYS) {
+    const spec: DerivedSpec = DERIVED[key];
+    figures[key] =
+      spec.snapshot !== undefined
+        ? Math.round(spec.snapshot * dayFactor(range.endDate))
+        : Math.round(atoms[spec.from] * (spec.ratio ?? 0));
+  }
+  const profile = profileOf(range, atoms);
+  figures.cogs = Math.round(atoms.net * profile.food);
+  figures.labor = Math.round(atoms.net * profile.labor);
+  figures.waste = profile.waste;
+  figures.promo = profile.promo;
+  figures.below = profile.below;
+  // Operating expenses are what is left between EBITDA and the books' profit.
+  figures.opex =
+    atoms.net -
+    figures.cogs -
+    figures.labor -
+    (profile.netProfit + profile.below);
+  if (profile.cash !== undefined) figures.cash = profile.cash;
+  if (profile.bank !== undefined) figures.bank = profile.bank;
+  return figures;
 }
 
 // ---- Metric cells ------------------------------------------------------------
 
-function decimal4(numerator: number, denominator: number): string {
-  return ((numerator * 100) / denominator).toFixed(4);
+/** Each family owns the cells of its metrics (`mock-families/<family>.ts`). */
+const FAMILY_CELLS: readonly ((
+  metricCode: string,
+  atoms: Figures,
+  totals: Figures,
+) => Cell | undefined)[] = [
+  sales.cellFor,
+  trafficOperations.cellFor,
+  menuCogs.cellFor,
+  paymentsTax.cellFor,
+  inventoryPurchasing.cellFor,
+  finance.cellFor,
+  loyaltyCrm.cellFor,
+  reservationDelivery.cellFor,
+  hr.cellFor,
+  facility.cellFor,
+];
+
+function cellFor(metricCode: string, atoms: Figures, totals: Figures): Cell {
+  for (const familyCell of FAMILY_CELLS) {
+    const cell = familyCell(metricCode, atoms, totals);
+    if (cell !== undefined) return cell;
+  }
+  return null;
 }
 
-// Plain wire values; the registry and the node test validate them against the
-// branded schema, so no brand is faked here.
-type Cell = { unit: string; valueIdr?: number; value?: number | string } | null;
+// ---- Availability ------------------------------------------------------------
+//
+// What the API answers `unavailable`, per family (`unavailableMetrics`, kept
+// exact by apps/api/src/test/ws11-mock-drift.test.ts) and per split
+// (`unsupportedSplits`): the run carries the same availability entry and no
+// number for it, never a mock figure for what the API cannot compute.
 
-function cellFor(metricCode: string, atoms: Atoms): Cell {
-  const ratio = (num: number, den: number) =>
-    den === 0 ? null : { unit: "percent" as const, value: decimal4(num, den) };
-  const idr = (valueIdr: number) => ({ unit: "idr" as const, valueIdr });
-  const count = (value: number) => ({ unit: "count" as const, value });
-  switch (metricCode) {
-    case "net_sales":
-      return idr(atoms.net);
-    case "gross_sales":
-      return idr(atoms.gross);
-    case "discount_amount":
-      return idr(atoms.discount);
-    case "refund_amount":
-      return idr(atoms.refund);
-    case "void_amount":
-      return idr(atoms.voided);
-    case "transaction_count":
-      return count(atoms.tx);
-    case "pax":
-      return count(atoms.pax);
-    case "menu_sold_qty":
-      return count(atoms.qty);
-    case "avg_ticket":
-      return atoms.tx === 0 ? null : idr(Math.round(atoms.net / atoms.tx));
-    case "avg_spend_per_pax":
-      return atoms.pax === 0 ? null : idr(Math.round(atoms.net / atoms.pax));
-    case "discount_rate_pct":
-      return ratio(atoms.discount, atoms.gross);
-    case "refund_rate_pct":
-      return ratio(atoms.refund, atoms.net);
-    case "void_rate_pct":
-      return ratio(atoms.voided, atoms.net);
-    default:
-      return null;
-  }
+const UNAVAILABLE_METRICS: ReadonlySet<string> = new Set([
+  ...sales.unavailableMetrics,
+  ...trafficOperations.unavailableMetrics,
+  ...menuCogs.unavailableMetrics,
+  ...paymentsTax.unavailableMetrics,
+  ...inventoryPurchasing.unavailableMetrics,
+  ...finance.unavailableMetrics,
+  ...loyaltyCrm.unavailableMetrics,
+  ...reservationDelivery.unavailableMetrics,
+  ...hr.unavailableMetrics,
+  ...facility.unavailableMetrics,
+]);
+
+const UNSUPPORTED_SPLITS: Readonly<Record<string, readonly string[]>> =
+  paymentsTax.unsupportedSplits;
+
+function availabilityOf(
+  metricCode: string,
+  groupBy: string | null,
+): MetricAvailability {
+  const reason: MetricUnavailableReason | null = UNAVAILABLE_METRICS.has(
+    metricCode,
+  )
+    ? "source_not_built"
+    : groupBy !== null && UNSUPPORTED_SPLITS[metricCode]?.includes(groupBy)
+      ? "dimension_not_supported"
+      : null;
+  return reason === null
+    ? { metricCode, status: "available" }
+    : {
+        metricCode,
+        status: "unavailable",
+        reason,
+        message: METRIC_UNAVAILABLE_MESSAGES[reason],
+      };
 }
 
 function metricRef(code: string) {
@@ -142,6 +361,8 @@ function metricRef(code: string) {
 }
 
 type LooseRow = {
+  bucketStart: string;
+  bucketEnd: string;
   dimensions: { key: string; value: string }[];
   values: { metricCode: string; value: Cell; finality: "final" | "estimate" }[];
 };
@@ -151,19 +372,31 @@ function buildRun(
   groupBy: string | null,
   range: DateRange,
 ): ReportResult | null {
-  const totals = periodAtoms(range);
+  const totals = periodFigures(range);
   const closed = range.endDate < BUSINESS_DATE;
   const accountingClosed = closed && range.endDate < MONTH_START;
   const refs = report.metrics.map(metricRef);
+  const availability = report.metrics.map((metricCode) =>
+    availabilityOf(metricCode, groupBy),
+  );
+  const unavailable = new Set(
+    availability
+      .filter((entry) => entry.status === "unavailable")
+      .map((entry) => entry.metricCode),
+  );
 
   function row(
     dims: readonly (readonly [string, string])[],
-    atoms: Atoms,
+    atoms: Figures,
   ): LooseRow {
     return {
+      bucketStart: range.startDate,
+      bucketEnd: range.endDate,
       dimensions: dims.map(([key, value]) => ({ key, value })),
       values: refs.map((ref) => {
-        const value = cellFor(ref.code, atoms);
+        const value = unavailable.has(ref.code)
+          ? null
+          : cellFor(ref.code, atoms, totals);
         // SH-02: final only for a closed period, and for closed-period-only
         // figures only once the books of that period are closed.
         const official =
@@ -185,19 +418,18 @@ function buildRun(
   else {
     const spec = splitFor(groupBy, range);
     if (spec === null) return null;
-    const atomKeys = ATOM_KEYS;
     const columns = Object.fromEntries(
-      atomKeys.map((key) => [
+      FIGURE_KEYS.map((key) => [
         key,
-        distribute(totals[key], spec.weights[key] ?? spec.weights.net),
+        distribute(totals[key], weightsFor(key, spec)),
       ]),
-    ) as Record<AtomKey, number[]>;
+    ) as Record<FigureKey, number[]>;
     rows = spec.values.map((value, index) =>
       row(
         [[groupBy, value]],
         Object.fromEntries(
-          atomKeys.map((key) => [key, columns[key][index] ?? 0]),
-        ) as Atoms,
+          FIGURE_KEYS.map((key) => [key, columns[key][index] ?? 0]),
+        ) as Figures,
       ),
     );
   }
@@ -211,33 +443,59 @@ function buildRun(
       status: closed ? "closed" : "open",
       accountingPeriodClosed: accountingClosed,
     },
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: refs,
+    availability,
     groupBy: groupBy === null ? [] : [groupBy],
     rows,
     generatedAt: "2026-11-01T04:40:00.000Z",
     rowLimit: 100,
+    truncated: false,
   } as unknown as ReportResult;
 }
 
 // ---- Run registration --------------------------------------------------------
 
-/** Sales reports this feature serves runs for (catalog families add theirs). */
-const SERVED_REPORTS = [
-  "sales.daily",
-  "sales.per_hour",
-  "sales.per_channel",
-  "sales.per_menu",
-  "sales.per_employee",
-  "sales.transactions",
-  "sales.per_pax",
-  "sales.void",
-  "sales.discount",
-  "sales.refund",
-] as const;
+/**
+ * Reports this feature serves runs for: the sales family, batch A (menu,
+ * payments, tax, inventory, cogs, purchasing) and batch B (finance, loyalty,
+ * crm, reservation, attendance, payroll, performance). Each has a route file
+ * (); the rest of the catalog adds its own.
+ */
+const SALES_REPORTS = sales.SALES_REPORTS;
 
-function runKey(result: ReportResult): string {
-  return `${result.reportCode}|${result.groupBy.join(",")}|${result.period.startDate}|${result.period.endDate}`;
+const SERVED_REPORTS: readonly string[] = [
+  ...SALES_REPORTS,
+  ...menuCogs.reportsByPrefix.menu,
+  ...paymentsTax.reportsByPrefix.payments,
+  ...paymentsTax.reportsByPrefix.tax,
+  ...inventoryPurchasing.reportsByPrefix.inventory,
+  ...menuCogs.reportsByPrefix.cogs,
+  ...inventoryPurchasing.reportsByPrefix.purchasing,
+  ...finance.reportsByPrefix.finance,
+  ...loyaltyCrm.reportsByPrefix.loyalty,
+  ...loyaltyCrm.reportsByPrefix.crm,
+  ...reservationDelivery.reportsByPrefix.reservation,
+  ...reservationDelivery.reportsByPrefix.delivery,
+  ...hr.reportsByPrefix.attendance,
+  ...hr.reportsByPrefix.payroll,
+  ...hr.reportsByPrefix.performance,
+  ...trafficOperations.reportsByPrefix.traffic,
+  ...trafficOperations.reportsByPrefix.operations,
+];
+
+/**
+ * One run per report, split, period and outlet scope: two outlets are two
+ * questions (legend-3nuv), so a run another owner serves for one outlet never
+ * hides this feature's run for another.
+ */
+export function runKey(result: ReportResult): string {
+  const outlets =
+    result.outletFilter.kind === "outlets"
+      ? [...result.outletFilter.outletIds].sort().join(",")
+      : "*";
+  return `${result.reportCode}|${result.groupBy.join(",")}|${result.period.startDate}|${result.period.endDate}|${outlets}`;
 }
 
 function periodsOf(report: ReportDefinition): DateRange[] {
@@ -262,9 +520,9 @@ const OTHER_OWNERS = new Set(
   ].map(runKey),
 );
 
-export function buildSalesRuns(): ReportResult[] {
+function buildRuns(codes: readonly string[]): ReportResult[] {
   const runs: ReportResult[] = [];
-  for (const code of SERVED_REPORTS) {
+  for (const code of codes) {
     const report = reportByCode(code);
     if (report === undefined) continue;
     for (const range of periodsOf(report))
@@ -276,8 +534,38 @@ export function buildSalesRuns(): ReportResult[] {
   return runs;
 }
 
+/**
+ * The sales runs; the report builder's previews know exactly these metrics
+ * and tests compare them run by run (DASH-02).
+ */
+export function buildSalesRuns(): ReportResult[] {
+  return buildRuns(SALES_REPORTS);
+}
+
+/** Every run this feature serves: sales plus batch A and B. */
+export function buildReportRuns(): ReportResult[] {
+  return buildRuns(SERVED_REPORTS);
+}
+
+// A run another screen registered first (the owner insights, the facility
+// report) stays theirs, like the owner board's and the management KPIs' runs.
 registerMockReportRuns(
-  Object.fromEntries(buildSalesRuns().map((run) => [runKey(run), run])),
+  Object.fromEntries(
+    buildReportRuns()
+      .filter(
+        (run) =>
+          run.reportCode !== null &&
+          !hasMockReportRun(
+            run.reportCode,
+            run.groupBy,
+            run.period,
+            run.outletFilter.kind === "outlets"
+              ? run.outletFilter.outletIds
+              : undefined,
+          ),
+      )
+      .map((run) => [runKey(run), run]),
+  ),
 );
 
 // ---- Catalog -----------------------------------------------------------------

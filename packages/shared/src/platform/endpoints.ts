@@ -32,6 +32,7 @@ import { addDomainInputSchema, tenantDomainSchema } from "./domains.ts";
 import {
   legalEntityIdSchema,
   supportAccessGrantIdSchema,
+  supportAccessRequestIdSchema,
   tenantDomainIdSchema,
   tenantIntegrationIdSchema,
   tenantThemeIdSchema,
@@ -56,10 +57,14 @@ import {
   createOutletInputSchema,
   createTenantInputSchema,
   legalEntitySchema,
+  outletRestoreWindowSchema,
   outletSchema,
+  restoreOutletInputSchema,
+  restoreTenantInputSchema,
   setOutletStatusInputSchema,
   setTenantPackageInputSchema,
   setTenantStatusInputSchema,
+  tenantRestoreWindowSchema,
   tenantSchema,
   tenantStatusSchema,
   updateBrandInputSchema,
@@ -67,8 +72,17 @@ import {
   updateOutletInputSchema,
 } from "./org.ts";
 import {
+  assignTenantOwnerInputSchema,
+  replaceTenantOwnerInputSchema,
+  tenantOwnerAssignmentIdSchema,
+  tenantOwnerAssignmentSchema,
+} from "./tenant-owner.ts";
+import {
+  decideSupportAccessRequestInputSchema,
   requestSupportAccessInputSchema,
+  requestSupportWriteAccessInputSchema,
   supportAccessGrantSchema,
+  supportAccessRequestSchema,
 } from "./support-access.ts";
 import {
   createThemeDraftInputSchema,
@@ -77,6 +91,10 @@ import {
 } from "./themes.ts";
 
 const tenantParams = z.strictObject({ tenantId: tenantIdSchema });
+const tenantOutletParams = z.strictObject({
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+});
 // Contrast failures may name derived tokens (e.g. primary-hover) too.
 const themeToken = z.enum([
   ...COLOR_TOKENS,
@@ -161,6 +179,33 @@ export const platformEndpoints = {
     body: setTenantStatusInputSchema,
     response: dataResponseSchema(tenantSchema),
   }),
+  // Q40 (legend-umzos): restore within 30 days of archive / close.
+  restoreTenant: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/restore",
+    params: tenantParams,
+    body: restoreTenantInputSchema,
+    response: dataResponseSchema(tenantSchema),
+  }),
+  getTenantRestoreWindow: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/restore-window",
+    params: tenantParams,
+    response: dataResponseSchema(tenantRestoreWindowSchema),
+  }),
+  restoreOutlet: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/outlets/:outletId/restore",
+    params: tenantOutletParams,
+    body: restoreOutletInputSchema,
+    response: dataResponseSchema(outletSchema),
+  }),
+  getOutletRestoreWindow: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/outlets/:outletId/restore-window",
+    params: tenantOutletParams,
+    response: dataResponseSchema(outletRestoreWindowSchema),
+  }),
   setTenantPackage: defineEndpoint({
     method: "PUT",
     path: "/api/platform/tenants/:tenantId/package",
@@ -180,6 +225,30 @@ export const platformEndpoints = {
     params: tenantParams,
     body: requestSupportAccessInputSchema,
     response: dataResponseSchema(supportAccessGrantSchema),
+  }),
+  requestSupportWriteAccess: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/support-access-requests",
+    params: tenantParams,
+    body: requestSupportWriteAccessInputSchema,
+    response: dataResponseSchema(supportAccessRequestSchema),
+  }),
+  assignTenantOwner: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/owners",
+    params: tenantParams,
+    body: assignTenantOwnerInputSchema,
+    response: dataResponseSchema(tenantOwnerAssignmentSchema),
+  }),
+  replaceTenantOwner: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/owners/:assignmentId/replace",
+    params: z.strictObject({
+      tenantId: tenantIdSchema,
+      assignmentId: tenantOwnerAssignmentIdSchema,
+    }),
+    body: replaceTenantOwnerInputSchema,
+    response: dataResponseSchema(tenantOwnerAssignmentSchema),
   }),
   listSupportAccess: defineEndpoint({
     method: "GET",
@@ -323,6 +392,12 @@ export const orgEndpoints = {
     body: addDomainInputSchema,
     response: dataResponseSchema(tenantDomainSchema),
   }),
+  verifyDomain: defineEndpoint({
+    method: "POST",
+    path: "/api/org/domains/:domainId/verify",
+    params: z.strictObject({ domainId: tenantDomainIdSchema }),
+    response: dataResponseSchema(tenantDomainSchema),
+  }),
   removeDomain: defineEndpoint({
     method: "DELETE",
     path: "/api/org/domains/:domainId",
@@ -375,6 +450,26 @@ export const orgEndpoints = {
     path: "/api/org/support-access",
     query: cursorPageQuerySchema,
     response: cursorPageSchema(supportAccessGrantSchema),
+  }),
+  listSupportAccessRequests: defineEndpoint({
+    method: "GET",
+    path: "/api/org/support-access/requests",
+    query: cursorPageQuerySchema,
+    response: cursorPageSchema(supportAccessRequestSchema),
+  }),
+  approveSupportAccessRequest: defineEndpoint({
+    method: "POST",
+    path: "/api/org/support-access/requests/:requestId/approve",
+    params: z.strictObject({ requestId: supportAccessRequestIdSchema }),
+    body: decideSupportAccessRequestInputSchema,
+    response: dataResponseSchema(supportAccessRequestSchema),
+  }),
+  rejectSupportAccessRequest: defineEndpoint({
+    method: "POST",
+    path: "/api/org/support-access/requests/:requestId/reject",
+    params: z.strictObject({ requestId: supportAccessRequestIdSchema }),
+    body: decideSupportAccessRequestInputSchema,
+    response: dataResponseSchema(supportAccessRequestSchema),
   }),
   exportConfig: defineEndpoint({
     method: "POST",

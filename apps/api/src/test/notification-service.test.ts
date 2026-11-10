@@ -63,6 +63,19 @@ describe("notification center (PRD §3.15)", () => {
       await service.execute(scope(tenantA), user, "unreadCount", {}),
     ).toEqual({ data: { unread: 0 } });
   });
+  it("legend-cz6aq reports the same no-policy default as the worker: web push only, email off", async () => {
+    expect(
+      await service.execute(scope(tenantA), user, "getPolicy", {}),
+    ).toMatchObject({
+      data: {
+        webPushEnabled: true,
+        emailEnabled: false,
+        whatsapp: { enabled: false },
+        maxAttempts: 3,
+        retryBackoffSeconds: [30, 120],
+      },
+    });
+  });
   it("PRD §3.15 stores preferences per recipient and keeps WhatsApp off by default", async () => {
     const pref = {
       categories: {

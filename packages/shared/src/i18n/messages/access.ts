@@ -265,6 +265,7 @@ const accessBaseMessages = {
     cash_drawer_open: "Buka laci tanpa transaksi",
     price_correction: "Koreksi harga di POS",
     cash_shift_close: "Tutup shift kasir",
+    edc_standalone: "Pembayaran EDC standalone",
     apology_voucher: "Voucher permintaan maaf",
     unallocated_funds: "Dana belum teralokasi",
     purchase_request: "Purchase request",
@@ -292,6 +293,7 @@ const accessBaseMessages = {
     menu: "Menu",
     floor: "Denah & meja",
     order: "Pesanan",
+    service_request: "Panggilan pelayanan",
     pos: "POS & kasir",
     shift: "Shift kasir",
     wifi: "Wi-Fi",
@@ -338,6 +340,11 @@ const accessBaseMessages = {
       theme: { manage: "Ubah tema & tampilan" },
       config: { export: "Ekspor konfigurasi tenant" },
       tax_config: { manage: "Kelola konfigurasi pajak" },
+      notification_policy: {
+        manage: "Kelola kebijakan & template notifikasi",
+      },
+
+      support_access: { approve: "Setujui akses dukungan baca-tulis" },
     },
     device: {
       registry: {
@@ -369,12 +376,17 @@ const accessBaseMessages = {
         manage: "Edit denah & meja",
         operate: "Operasikan meja (gabung, pindah, tutup)",
       },
+      session: { open_bill: "Setujui perubahan sesi jadi open bill" },
+      open_bill_policy: { manage: "Atur kebijakan open bill outlet" },
     },
     order: {
       view: "Lihat pesanan",
       create: "Buat pesanan",
       recovery: { handle: "Tangani pemulihan pesanan" },
       apology_voucher: { issue: "Terbitkan voucher permintaan maaf" },
+    },
+    service_request: {
+      zone: { manage: "Atur penerima panggilan per zona" },
     },
     pos: {
       sale: { create: "Buat penjualan di POS" },
@@ -384,6 +396,9 @@ const accessBaseMessages = {
       refund: { request: "Ajukan refund", approve: "Setujui refund" },
       cash_drawer: { approve: "Setujui buka laci kas" },
       price_correction: { approve: "Setujui koreksi harga" },
+      edc_standalone: { approve: "Setujui pembayaran EDC standalone" },
+      day: { close: "Tutup hari usaha" },
+      receipt: { writeoff: "Hapus buku nomor struk yang hilang" },
     },
     shift: {
       cash: {
@@ -410,6 +425,7 @@ const accessBaseMessages = {
         receive: "Terima stok masuk",
         transfer: "Transfer stok antar outlet",
       },
+      item: { manage: "Kelola master data bahan dan satuan" },
       opname: { count: "Hitung stok opname" },
       waste: { record: "Catat waste" },
       production: { record: "Catat produksi batch" },
@@ -425,6 +441,9 @@ const accessBaseMessages = {
         approve: "Setujui purchase order",
       },
       invoice: { match: "Cocokkan invoice supplier" },
+      return: { create: "Buat retur pembelian" },
+      petty: { record: "Catat pembelian kas kecil" },
+      petty_policy: { manage: "Atur kebijakan pembelian kas kecil" },
     },
     accounting: {
       journal: { view: "Lihat jurnal", post: "Posting jurnal" },
@@ -444,11 +463,21 @@ const accessBaseMessages = {
     profit_share: {
       own: { view: "Lihat bagi hasil milik sendiri" },
       registry: { manage: "Kelola daftar pemegang saham" },
+      share_allocation: { change: "Ubah porsi saham pemegang saham" },
       distribution: { approve: "Setujui distribusi bagi hasil" },
     },
     loyalty: { program: { manage: "Kelola program loyalitas" } },
     crm: {
-      customer: { view: "Lihat profil pelanggan" },
+      customer: {
+        view: "Lihat profil pelanggan",
+        pii: { read: "Lihat data pribadi pelanggan" },
+      },
+      loyalty: {
+        manage: "Kelola program loyalitas CRM",
+        review: "Tinjau penyesuaian poin",
+        fulfil: "Penuhi penukaran reward",
+      },
+      feedback: { manage: "Kelola umpan balik pelanggan" },
       consent: { record: "Catat persetujuan pelanggan" },
       segment: { manage: "Kelola segmen pelanggan" },
     },
@@ -478,6 +507,7 @@ const accessBaseMessages = {
       reimbursement: { approve: "Setujui reimbursement" },
       loan: { approve: "Setujui kasbon" },
       sop: { manage: "Kelola SOP" },
+      announcement: { manage: "Kelola pengumuman internal" },
       training: { manage: "Kelola pelatihan" },
       kpi: { manage: "Kelola KPI" },
     },
@@ -495,6 +525,7 @@ const accessBaseMessages = {
       leave: { request: "Ajukan cuti atau izin" },
       payslip: { view: "Lihat slip gaji sendiri" },
       reimbursement: { request: "Ajukan reimbursement" },
+      loan: { request: "Ajukan kasbon" },
       shift_swap: { request: "Ajukan tukar shift" },
       sop: { read: "Baca SOP" },
     },
@@ -558,6 +589,8 @@ const accessBaseMessages = {
     ROLE_NOT_ASSIGNABLE: "Peran ini tidak dapat diberikan di tingkat tenant.",
     PERMISSION_NOT_IN_CATALOG:
       "Izin tidak dikenal atau tidak boleh dipakai di peran tenant.",
+    PERMISSION_OWNER_ONLY:
+      "Izin ini hanya milik peran Owner dan tidak dapat dimasukkan ke peran kustom.",
     APPROVER_IS_REQUESTER: "Penyetuju tidak boleh sama dengan pemohon.",
     APPROVER_ALREADY_DECIDED:
       "Anda sudah memberi keputusan pada permintaan ini.",

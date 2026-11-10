@@ -1,6 +1,7 @@
 // Tenant Theme storage + activation gate (PRD v1.7 §3 F4 "Whitelabel", §6 A
 // `tenant_themes`). TEN-10: a theme below WCAG 2.2 AA cannot be activated,
 // checked again on the server for light AND dark mode.
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { outletIdSchema } from "@starter/shared/core";
 import {
@@ -19,6 +20,7 @@ import {
   createTestTenant,
   owner,
   removeTestTenant,
+  storedMedia,
   type TestTenant,
 } from "./platform-theme-helpers";
 
@@ -40,13 +42,17 @@ const goodTokens = {
   dark: {},
 };
 
-function draft(t: TestTenant, tokens: unknown) {
+function draft(
+  t: TestTenant,
+  tokens: unknown,
+  logoMediaId: string | null = null,
+) {
   return createThemeDraft(
     t.context,
     {
       brandId: t.brandId,
       tokens,
-      logoMediaId: null,
+      logoMediaId,
       fontFamily: "inter",
       corners: "lembut",
     } as unknown as CreateThemeDraftInput,
@@ -203,6 +209,36 @@ describe("TEN-10 theme contrast gate", () => {
     );
     await expect(listThemes(scoped, a.brandId)).rejects.toMatchObject({
       code: "PERMISSION_DENIED",
+    });
+  });
+});
+
+describe("legend-iiqx / TEN-10 logoMediaId belongs to the tenant", () => {
+  it("legend-iiqx a draft may use a logo from the tenant's own media library", async () => {
+    const mediaId = await storedMedia(a);
+    const created = await draft(a, goodTokens, mediaId);
+    expect(created.logoMediaId).toBe(mediaId);
+  });
+
+  it("legend-iiqx a draft with no logo is still accepted", async () => {
+    const created = await draft(a, goodTokens, null);
+    expect(created.logoMediaId).toBeNull();
+  });
+
+  it("legend-iiqx a draft cannot point at another tenant's media (422, nothing stored)", async () => {
+    const foreign = await storedMedia(b);
+    const before = (await listThemes(a.context, a.brandId)).data.length;
+    await expect(draft(a, goodTokens, foreign)).rejects.toMatchObject({
+      status: 422,
+      code: "VALIDATION_ERROR",
+    });
+    expect((await listThemes(a.context, a.brandId)).data).toHaveLength(before);
+  });
+
+  it("legend-iiqx a draft cannot point at a media id that does not exist (422)", async () => {
+    await expect(draft(a, goodTokens, randomUUID())).rejects.toMatchObject({
+      status: 422,
+      code: "VALIDATION_ERROR",
     });
   });
 });

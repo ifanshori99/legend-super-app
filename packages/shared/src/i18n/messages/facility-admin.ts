@@ -458,6 +458,7 @@ export const facilityAdminMessages = {
     peakDays: "Hari untuk jam ramai {index}",
     peakStartsAt: "Mulai jam ramai {index}",
     peakEndsAt: "Selesai jam ramai {index}",
+    peakEndsAtHint: "00.00 = tengah malam",
     addPeak: "Tambah jam ramai",
     removePeak: "Hapus jam ramai {index}",
     addTier: "Tambah bonus tier",

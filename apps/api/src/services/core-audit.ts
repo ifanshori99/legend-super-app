@@ -6,11 +6,44 @@ import {
   ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { getRequestSupport } from "../lib/request-context.ts";
 import type * as schema from "../db/schema/index.ts";
 import { auditLogs } from "../db/schema/core-audit.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/*
+ * Single attribution point for support sessions (TEN-04, legend-6yfhc).
+ * When the request runs on an impersonated session under a grant, every audit
+ * row for that grant's tenant is tagged `support`. A row written as the
+ * impersonated user is re-attributed to the platform admin, flagged as
+ * sensitive access, and carries the grant reason when it has none. System and
+ * device rows keep their actor and only get the tag. Rows of other tenants are
+ * never touched.
+ */
+function attributeToSupport(input: unknown): unknown {
+  const support = getRequestSupport();
+  if (!support || typeof input !== "object" || input === null) return input;
+  const row = input as Record<string, unknown>;
+  if (row.tenantId !== support.tenantId) return input;
+  const tagged: Record<string, unknown> = {
+    ...row,
+    support: {
+      grantId: support.grantId,
+      impersonatorUserId: support.impersonatorUserId,
+      impersonatedUserId: support.impersonatedUserId,
+      accessMode: support.accessMode,
+    },
+  };
+  if (row.actorType === "user" && row.actorId === support.impersonatedUserId) {
+    const own = typeof row.reason === "string" ? row.reason : "";
+    tagged.actorId = support.impersonatorUserId;
+    tagged.sensitiveAccess = true;
+    tagged.reason = (own.trim() ? own : support.reason).slice(0, 1000);
+  }
+  return tagged;
+}
 
 /** Append in the same tenant transaction as the operation being audited. */
 export async function recordAudit(
@@ -20,7 +53,7 @@ export async function recordAudit(
   safeFields: readonly string[] = [],
 ) {
   assertTrustedScopedContext(context);
-  const event = auditEventSchema.parse(input);
+  const event = auditEventSchema.parse(attributeToSupport(input));
   if (event.tenantId !== context.tenant.tenantId)
     throw new Error("Audit tenant does not match context");
   if (event.outletId) assertOutletInScope(context.outletScope, event.outletId);

@@ -12,6 +12,12 @@
 // Chart and mapping changes are sensitive master-data writes: each one records
 // an audit row in the same transaction. The database repeats the structural
 // rules (migration 0025), so a direct SQL write cannot bypass them either.
+//
+// Owner writers (`createAccount`, `updateAccount`,
+// `replaceAccountMappingsForEntity`) take the per-entity chart advisory lock
+// (`lockChartOfAccounts`) first, the same lock standard-chart provisioning
+// holds, so a backfill never sees the chart as empty while an owner write is
+// about to commit.
 
 import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
@@ -39,6 +45,7 @@ import {
   uniqueViolation,
   type TenantTransaction,
 } from "./accounting-shared";
+import { lockChartOfAccounts } from "./tenant-config-locks";
 
 export type CreateAccountInput = z.infer<typeof createAccountInputSchema>;
 export type UpdateAccountInput = z.infer<typeof updateAccountEndpoint.body>;
@@ -127,6 +134,7 @@ export async function createAccount(
   actorId: UserId,
 ): Promise<Account> {
   return withTenant(db, context, async (tx) => {
+    await lockChartOfAccounts(tx, context.tenant.tenantId, legalEntityId);
     await requireLegalEntity(tx, context.tenant.tenantId, legalEntityId);
     const existing = (
       await chartRows(tx, context.tenant.tenantId, legalEntityId)
@@ -185,6 +193,23 @@ export async function updateAccount(
   actorId: UserId,
 ): Promise<Account> {
   return withTenant(db, context, async (tx) => {
+    // Plain read only to learn the entity; the row is read again under the lock.
+    const [entityRow] = await tx
+      .select({ legalEntityId: chartOfAccounts.legalEntityId })
+      .from(chartOfAccounts)
+      .where(
+        and(
+          eq(chartOfAccounts.tenantId, context.tenant.tenantId),
+          eq(chartOfAccounts.id, accountId),
+        ),
+      )
+      .limit(1);
+    if (!entityRow) throw new HttpError(404, "NOT_FOUND", "Account not found.");
+    await lockChartOfAccounts(
+      tx,
+      context.tenant.tenantId,
+      entityRow.legalEntityId,
+    );
     const [row] = await tx
       .select()
       .from(chartOfAccounts)
@@ -270,6 +295,7 @@ export async function replaceAccountMappingsForEntity(
   actorId: UserId,
 ): Promise<{ data: AccountMapping[] }> {
   return withTenant(db, context, async (tx) => {
+    await lockChartOfAccounts(tx, context.tenant.tenantId, legalEntityId);
     await requireLegalEntity(tx, context.tenant.tenantId, legalEntityId);
     const chart = (
       await chartRows(tx, context.tenant.tenantId, legalEntityId)

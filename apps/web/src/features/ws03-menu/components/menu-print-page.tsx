@@ -17,10 +17,10 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOnline } from "@/lib/use-online";
 import {
-  useCategories,
-  useItems,
+  useAllCategories,
+  useAllItems,
+  useAllPriceLists,
   usePriceListItems,
-  usePriceLists,
 } from "../hooks";
 import { printableSections } from "../import-lib";
 import {
@@ -57,9 +57,9 @@ const PRINT_STYLE = `@page { margin: 12mm; }
 export function MenuPrintPage() {
   const t = useT();
   const online = useOnline();
-  const itemsQuery = useItems({ limit: 100 });
-  const categoriesQuery = useCategories({ limit: 100 });
-  const priceListsQuery = usePriceLists({ limit: 100 });
+  const itemsQuery = useAllItems({ limit: 100 });
+  const categoriesQuery = useAllCategories({ limit: 100 });
+  const priceListsQuery = useAllPriceLists({ limit: 100 });
   const [size, setSize] = React.useState<PrintSize>("normal");
   const [refreshing, setRefreshing] = React.useState(false);
 

@@ -126,10 +126,12 @@ export async function assertBrandReadPermission(
 }
 
 /**
- * Permission held with any reach. Modifier groups and modifiers are shared per
- * tenant (the PRD gives them no brand column), so there is no narrower target
- * to judge; data stays inside the tenant. Reads may use this reach check;
- * writes must use assertSharedMasterDataPermission.
+ * Permission held at the tenant or at some outlet (a brand grant reaches its
+ * outlets). Modifier groups and modifiers are shared per tenant (the PRD gives
+ * them no brand column), so there is no narrower target to judge; data stays
+ * inside the tenant. A station-only grant is denied: it reaches one station,
+ * not the menu. Reads may use this reach check; writes must use
+ * assertSharedMasterDataPermission.
  */
 export async function assertAnyPermission(
   tx: Tx,
@@ -139,11 +141,19 @@ export async function assertAnyPermission(
   now: Date,
 ): Promise<void> {
   const snapshot = await accessSnapshot(tx, context, actorUserId, now);
-  if (!snapshot.permissions.includes(permission))
-    throw new AccessError(
-      "PERMISSION_DENIED",
-      "Anda tidak memiliki izin untuk mengelola menu ini.",
-    );
+  // The flat union also holds station grants, which reach one station only:
+  // require the tenant target, or some outlet of the tenant (legend-dak5).
+  if (snapshot.allows(permission, { type: "tenant" })) return;
+  const rows = await tx
+    .select({ id: outlets.id })
+    .from(outlets)
+    .where(eq(outlets.tenantId, context.tenant.tenantId));
+  for (const row of rows)
+    if (snapshot.allows(permission, { type: "outlet", id: row.id })) return;
+  throw new AccessError(
+    "PERMISSION_DENIED",
+    "Anda tidak memiliki izin untuk mengelola menu ini.",
+  );
 }
 
 /**
@@ -544,7 +554,8 @@ export async function appendMenuEvent(
   },
   input: {
     aggregateId: string;
-    actorUserId: string;
+    /** `null` is the system actor (worker sweeps with no signed-in user). */
+    actorUserId: string | null;
     payload: Record<string, unknown>;
     affects: MenuEventAffects;
     now: Date;
@@ -575,7 +586,10 @@ export async function appendMenuEvent(
       aggregateId: input.aggregateId,
       sequence,
       occurredAt: input.now.toISOString(),
-      actor: { type: "user", id: input.actorUserId },
+      actor:
+        input.actorUserId === null
+          ? { type: "system" }
+          : { type: "user", id: input.actorUserId },
       deviceId: null,
       // Unique per event; a client-supplied 86 key overrides this.
       idempotencyKey: eventId,

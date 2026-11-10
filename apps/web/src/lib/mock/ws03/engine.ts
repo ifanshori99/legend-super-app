@@ -10,8 +10,6 @@
 // no `@/` alias) so the Node contract test can load it directly.
 import { createUlid, idr } from "@starter/shared/core";
 import {
-  cafeLegendQrOrderFixtures,
-  cafeLegendTaxRules,
   canApplyTableStatusAction,
   canCloseTableSession,
   computeQuote,
@@ -20,8 +18,6 @@ import {
   floorBoardSchema,
   floorZoneSchema,
   qrOrderSchema,
-  qrTokenTableCodes,
-  quoteConfigForZone,
   saveFloorLayoutInputSchema,
   sessionBillSchema,
   tableLiveStatusSchema,
@@ -43,6 +39,12 @@ import {
   type TableSession,
   type TableStatusAction,
 } from "@starter/shared/qr-order";
+import {
+  cafeLegendQrOrderFixtures,
+  cafeLegendTaxRules,
+  qrTokenTableCodes,
+  quoteConfigForZone,
+} from "@starter/shared/qr-order/sample";
 import type { z } from "zod";
 import { ApiError } from "../../api/errors.ts";
 import { newIdempotencyKey } from "../../idempotency.ts";
@@ -141,12 +143,39 @@ function seedState(clock: () => number): FloorState {
     const template = fixtures.orders[0];
     if (template) {
       const orderId = createUlid() as QrOrder["id"];
+      // W02 runs inclusive prices (harga nett, legend-zmc2) so the guest bill
+      // and receipt show service and tax as "termasuk" in mock mode.
+      const inclusiveQuote = computeQuote({
+        sessionId: extra.id,
+        cartVersion: 1,
+        lines: template.items.map((item) => ({
+          cartLineId: crypto.randomUUID(),
+          menuItemId: item.menuItemId,
+          name: item.name,
+          quantity: item.quantity,
+          unitPriceIdr: item.unitPriceIdr,
+          modifiersTotalIdr: item.modifiersTotalIdr,
+          taxRuleId: cafeLegendTaxRules[0].id,
+        })),
+        config: {
+          ...quoteConfigForZone(zones[0]),
+          pricesIncludeTaxAndService: true,
+        },
+        computedAt: new Date(nowMs).toISOString(),
+      });
       orders[extra.id] = [
         qrOrderSchema.parse({
           ...structuredClone(template),
           id: orderId,
           number: "QR-20261101-0043",
           tableSessionId: extra.id,
+          subtotalIdr: inclusiveQuote.subtotalIdr,
+          discountIdr: inclusiveQuote.discountIdr,
+          serviceChargeIdr: inclusiveQuote.serviceCharge.amountIdr,
+          taxIdr: inclusiveQuote.taxIdr,
+          roundingIdr: inclusiveQuote.rounding.adjustmentIdr,
+          totalIdr: inclusiveQuote.totalIdr,
+          pricesIncludeTaxAndService: true,
           items: template.items.map((item) => ({
             ...structuredClone(item),
             id: createUlid() as QrOrderItem["id"],
@@ -155,6 +184,112 @@ function seedState(clock: () => number): FloorState {
         }),
       ];
     }
+  }
+
+  // Open-bill conversion (bead legend-8cm4) needs running pay-first tables to
+  // review: B01 owes a small bill (below the Rp3.000.000 default limit) and A02
+  // owes one over it. The shared fixtures have no pay-first order or session
+  // for either table.
+  const payFirstTemplate = fixtures.orders[0];
+  const seedPayFirstOrder = (
+    sessionId: string,
+    zone: FloorZone,
+    number: string,
+    scale: number,
+  ) => {
+    if (!payFirstTemplate) return;
+    const orderId = createUlid() as QrOrder["id"];
+    const quote = computeQuote({
+      sessionId,
+      cartVersion: 1,
+      lines: payFirstTemplate.items.map((item) => ({
+        cartLineId: crypto.randomUUID(),
+        menuItemId: item.menuItemId,
+        name: item.name,
+        quantity: item.quantity * scale,
+        unitPriceIdr: item.unitPriceIdr,
+        modifiersTotalIdr: item.modifiersTotalIdr,
+        taxRuleId: cafeLegendTaxRules[0].id,
+      })),
+      config: quoteConfigForZone(zone),
+      computedAt: payFirstTemplate.createdAt,
+    });
+    orders[sessionId] = [
+      qrOrderSchema.parse({
+        ...structuredClone(payFirstTemplate),
+        id: orderId,
+        number,
+        tableSessionId: sessionId,
+        subtotalIdr: quote.subtotalIdr,
+        discountIdr: quote.discountIdr,
+        serviceChargeIdr: quote.serviceCharge.amountIdr,
+        taxIdr: quote.taxIdr,
+        roundingIdr: quote.rounding.adjustmentIdr,
+        totalIdr: quote.totalIdr,
+        items: payFirstTemplate.items.map((item) => ({
+          ...structuredClone(item),
+          id: createUlid() as QrOrderItem["id"],
+          orderId,
+          quantity: item.quantity * scale,
+          lineTotalIdr: idr(
+            (item.unitPriceIdr + item.modifiersTotalIdr) *
+              item.quantity *
+              scale,
+          ),
+        })),
+      }),
+    ];
+  };
+  const seedPayFirstSession = (
+    table: Table,
+    sessionId: string,
+    orderNumber: string,
+    scale: number,
+  ) => {
+    const zone = zones.find((entry) => entry.id === table.zoneId) ?? zones[0];
+    const scope = { tenantId: zones[0].tenantId, outletId };
+    const joinedAt = "2026-11-01T04:00:00.000Z";
+    const lastSeenAt = "2026-11-01T05:08:00.000Z";
+    sessions[sessionId] = tableSessionSchema.parse({
+      id: sessionId,
+      ...scope,
+      tableId: table.id,
+      pax: 2,
+      paymentMode: "pay_first",
+      status: "open",
+      confirmedBy: null,
+      reservationId: null,
+      participants: [
+        {
+          id: mintUuid(),
+          tenantId: zones[0].tenantId,
+          tableSessionId: sessionId,
+          deviceHash: `device-${table.code.toLowerCase()}-guest-1`,
+          userId: null,
+          joinedAt,
+          lastSeenAt,
+        },
+      ],
+      openedAt: joinedAt,
+      closedAt: null,
+      lastActivityAt: lastSeenAt,
+      billRequestedAt: null,
+      closedReason: null,
+    });
+    table.status = "occupied";
+    seedPayFirstOrder(sessionId, zone, orderNumber, scale);
+  };
+  const b01 = tables.find((table) => table.code === "B01");
+  let b01SessionId: string | null = null;
+  if (b01) {
+    b01SessionId = "00000000-0000-4000-8000-000000000408";
+    seedPayFirstSession(b01, b01SessionId, "QR-20261101-0044", 1);
+  }
+  const a02 = tables.find((table) => table.code === "A02");
+  let a02SessionId: string | null = null;
+  if (a02) {
+    a02SessionId = "00000000-0000-4000-8000-000000000407";
+    seedPayFirstSession(a02, a02SessionId, "QR-20261101-0045", 16);
   }
 
   for (const row of fixtures.floorBoard.tables) {
@@ -166,6 +301,8 @@ function seedState(clock: () => number): FloorState {
     );
     if (extra) bindings[w02.id] = extra.id;
   }
+  if (a02 && a02SessionId) bindings[a02.id] = a02SessionId;
+  if (b01 && b01SessionId) bindings[b01.id] = b01SessionId;
 
   for (const session of Object.values(sessions)) {
     if (!isActive(session)) continue;
@@ -291,8 +428,8 @@ export function createWs03Engine(clock: () => number = Date.now) {
     const quote = computeQuote({
       sessionId: order.tableSessionId,
       cartVersion: 1,
-      lines: items.map((item, index) => ({
-        cartLineId: `move-${item.id}-${index}`,
+      lines: items.map((item) => ({
+        cartLineId: crypto.randomUUID(),
         menuItemId: item.menuItemId,
         name: item.name,
         quantity: item.quantity,
@@ -300,7 +437,10 @@ export function createWs03Engine(clock: () => number = Date.now) {
         modifiersTotalIdr: item.modifiersTotalIdr,
         taxRuleId: cafeLegendTaxRules[0].id,
       })),
-      config: quoteConfigForZone(zoneOf(table)),
+      config: {
+        ...quoteConfigForZone(zoneOf(table)),
+        pricesIncludeTaxAndService: order.pricesIncludeTaxAndService,
+      },
       computedAt: nowIso(),
     });
     return qrOrderSchema.parse({
@@ -530,6 +670,39 @@ export function createWs03Engine(clock: () => number = Date.now) {
     return confirmed;
   }
 
+  /**
+   * Founder Q31/Q32: pay-first -> open bill for a running session. Eligibility
+   * and the outlet's bill limit are checked here; the PIN is the feature
+   * mock's job (the real API checks it against the staff PINs).
+   */
+  function convertSessionToOpenBill(
+    sessionId: string,
+    maxBillValueIdr: number,
+  ): TableSession {
+    const session = sessionOf(sessionId);
+    if (session.paymentMode !== "pay_first" || !isActive(session))
+      throw new ApiError(
+        409,
+        "OPEN_BILL_NOT_ELIGIBLE",
+        "Sesi ini bukan sesi bayar dulu yang sedang berjalan.",
+      );
+    if (billFor(sessionId).totals.outstandingIdr >= maxBillValueIdr)
+      throw new ApiError(
+        409,
+        "OPEN_BILL_CONVERT_LIMIT",
+        "Tagihan belum dibayar sudah mencapai batas open bill outlet.",
+      );
+    const converted = tableSessionSchema.parse({
+      ...session,
+      paymentMode: "open_bill",
+      // The approving supervisor; an open-bill session needs one on record.
+      confirmedBy: staffUserId,
+      lastActivityAt: nowIso(),
+    });
+    state.sessions[converted.id] = converted;
+    return converted;
+  }
+
   function closeTableSession(
     sessionId: string,
     body: { tableCleaned: boolean; waiterConfirmedEmpty: boolean },
@@ -735,6 +908,7 @@ export function createWs03Engine(clock: () => number = Date.now) {
         taxIdr: idr(0),
         roundingIdr: idr(0),
         totalIdr: idr(0),
+        pricesIncludeTaxAndService: false,
         status: "sent",
         items: [],
         createdAt: now,
@@ -993,6 +1167,7 @@ export function createWs03Engine(clock: () => number = Date.now) {
     openOrJoinTableSession,
     createServiceRequest,
     confirmOpenBillSession,
+    convertSessionToOpenBill,
     closeTableSession,
     updateTableStatus,
     moveTableSession,

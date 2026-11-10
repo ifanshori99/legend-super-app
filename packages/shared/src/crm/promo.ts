@@ -61,11 +61,24 @@ export const promotionStatusSchema = z.enum([
 ]);
 export type PromotionStatus = z.infer<typeof promotionStatusSchema>;
 
+/**
+ * Which outlets a promotion runs at (legend-jh27). `all_except` (default) =
+ * every outlet of the tenant unless an outlet has a `promotion_outlets` row
+ * with `enabled = false` (opt-out). `only` = only outlets with a row that has
+ * `enabled = true` (allowlist); an outlet with no row, or an `enabled = false`
+ * row, does not run it.
+ */
+export const promotionOutletScopeSchema = z.enum(["all_except", "only"]);
+export type PromotionOutletScope = z.infer<typeof promotionOutletScopeSchema>;
+
 // ---- Rule DSL: conditions and benefits ------------------------------------
 
 /**
  * Conditions are ANDed. `min_spend` uses the bill value after item discounts
- * and before promo, tax and service charge, matching the loyalty earn basis.
+ * and before promo, tax and service charge (owner Q53). The evaluator reads it
+ * from `minSpendSubtotalIdr` when the caller supplies it (an outlet whose
+ * prices include tax and service, where `subtotalIdr` still carries them), and
+ * from `subtotalIdr` otherwise (exclusive pricing, where the two are equal).
  */
 export const promotionConditionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("min_spend"), amountIdr: positiveIdr }),
@@ -156,6 +169,12 @@ export const promotionObjectSchema = z.strictObject({
   /** Promo budget (PRD §3.21); spent is maintained by the service. */
   budgetIdr: nonnegativeIdr.nullable(),
   spentIdr: nonnegativeIdr,
+  /**
+   * Opt-out (`all_except`) or allowlist (`only`) per-outlet reading. Absent =
+   * `all_except`; the API always returns it. Optional so existing fixtures and
+   * evaluator inputs stay valid.
+   */
+  outletScope: promotionOutletScopeSchema.optional(),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
 });
@@ -231,6 +250,13 @@ export const promoEvaluationInputSchema = z.strictObject({
   localDayOfWeek: z.number().int().min(0).max(6),
   localTime: timeOfDaySchema,
   subtotalIdr: nonnegativeIdr,
+  /**
+   * Bill value after item discounts, before promo, tax and service charge:
+   * the `min_spend` basis (owner Q53). Only an outlet whose prices include tax
+   * fills it; absent means `subtotalIdr` is already that value. The discount,
+   * `paidIdr` and revenue keep using `subtotalIdr`.
+   */
+  minSpendSubtotalIdr: nonnegativeIdr.optional(),
   lines: z.array(promoLineSchema).min(1),
   customer: promoCustomerSchema.nullable(),
   /** Set when the checkout presented a voucher for this promotion. */
@@ -354,7 +380,10 @@ function conditionFailure(
   for (const condition of promotion.conditions) {
     switch (condition.kind) {
       case "min_spend":
-        if (input.subtotalIdr < condition.amountIdr) return "min_spend_not_met";
+        if (
+          (input.minSpendSubtotalIdr ?? input.subtotalIdr) < condition.amountIdr
+        )
+          return "min_spend_not_met";
         break;
       case "channel":
         if (!condition.channels.includes(input.channel))
@@ -674,6 +703,12 @@ export const defaultPromoStackingPolicy: PromoStackingPolicy = Object.freeze({
 export const promotionApplicationResultSchema = z.strictObject({
   evaluations: z.array(promotionEvaluationSchema),
   totalDiscountIdr: nonnegativeIdr,
+  /**
+   * Stored with the application row only (never in a quote): the `min_spend`
+   * basis the order redeemed with, before tax and service (owner Q53). Absent
+   * on older rows and on exclusive-price orders: `subtotalIdr` is the basis.
+   */
+  minSpendSubtotalIdr: nonnegativeIdr.optional(),
 });
 export type PromotionApplicationResult = z.infer<
   typeof promotionApplicationResultSchema
@@ -911,9 +946,16 @@ export type PromotionRoi = z.infer<typeof promotionRoiSchema>;
 
 // ---- Vouchers -------------------------------------------------------------
 
-/** Customer-typed code: normalized to uppercase before hashing. */
+/**
+ * Customer-typed code: normalized to uppercase and stripped of hyphens before
+ * hashing, so the grouped display form of an apology voucher (LEG-AB12-CD34)
+ * redeems like the stored hyphen-less code (legend-4qu).
+ */
 export const voucherCodeInputSchema = z.preprocess(
-  (value) => (typeof value === "string" ? value.trim().toUpperCase() : value),
+  (value) =>
+    typeof value === "string"
+      ? value.trim().toUpperCase().replaceAll("-", "")
+      : value,
   z.string().regex(/^[A-Z0-9]{6,32}$/, "Voucher codes use 6-32 letters/digits"),
 );
 export type VoucherCode = z.infer<typeof voucherCodeInputSchema>;
@@ -932,6 +974,8 @@ export const voucherSourceSchema = z.enum([
   "referral",
   "campaign",
   "manual",
+  // legend-m4p5
+  "loyalty_reward",
 ]);
 export type VoucherSource = z.infer<typeof voucherSourceSchema>;
 

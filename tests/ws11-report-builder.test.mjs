@@ -13,6 +13,10 @@ import { buildPreviewResult } from "../apps/web/src/features/ws11-report-builder
 import { setScenario } from "../apps/web/src/lib/mock/control.ts";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
 
+// Tenant user ids a schedule is sent to (the server resolves their emails).
+const USER_A = "0d0c4f6a-5a39-4c0a-9f43-2f1d8e5b7a01";
+const USER_B = "5b7e2c91-6d84-4e1b-8a52-9c3f0d4e6b02";
+
 afterEach(() => {
   resetMocks();
   setScenario("normal");
@@ -150,7 +154,7 @@ describe("builder rules · DASH-01", () => {
   test("DASH-01: schedule settings carry only the day field of their frequency", () => {
     const base = {
       ...builder.emptyScheduleDraft(),
-      recipientsText: "A@x.id; a@x.id, b@x.id",
+      recipientUserIds: [USER_A, USER_A, USER_B],
     };
     assert.deepEqual(
       builder.scheduleSettings({ ...base, frequency: "daily" }),
@@ -160,7 +164,7 @@ describe("builder rules · DASH-01", () => {
         dayOfWeek: null,
         dayOfMonth: null,
         format: "pdf",
-        recipients: ["a@x.id", "b@x.id"],
+        recipientUserIds: [USER_A, USER_B],
       },
     );
     const weekly = builder.scheduleSettings({ ...base, frequency: "weekly" });
@@ -185,12 +189,20 @@ describe("builder mock · DASH-02", () => {
     );
     assert.ok(data.rows.length > 0);
     assert.equal(data.rows[0].dimensions[0].key, "hour");
-    // Sorted by net_sales desc as asked.
-    const sales = data.rows.map((row) => row.values[0].value.valueIdr);
-    assert.deepEqual(
-      sales,
-      [...sales].sort((a, b) => b - a),
-    );
+    // Day buckets run in date order; net_sales sorts desc inside each bucket.
+    assert.equal(data.bucket, "day");
+    const starts = data.rows.map((row) => row.bucketStart);
+    assert.deepEqual(starts, [...starts].sort());
+    for (const row of data.rows) assert.equal(row.bucketStart, row.bucketEnd);
+    for (const start of new Set(starts)) {
+      const sales = data.rows
+        .filter((row) => row.bucketStart === start)
+        .map((row) => row.values[0].value.valueIdr);
+      assert.deepEqual(
+        sales,
+        [...sales].sort((x, y) => y - x),
+      );
+    }
     // The same query always shows the same table.
     const again = await post("/api/reports/builder/preview", query);
     assert.deepEqual(again.data.rows, data.rows);
@@ -255,14 +267,18 @@ describe("builder mock · same figures as the viewer · DASH-02", () => {
       });
       if (!parsed.success) continue;
       const preview = buildPreviewResult(parsed.data);
+      // The viewer shows no number for a metric the API answers unavailable
+      // (brief 284 T4); the preview's own list is not this test's concern.
+      const shown = (_, index) =>
+        run.availability[index].status === "available";
       assert.deepEqual(
         preview.rows.map((row) => ({
           dimensions: row.dimensions,
-          values: row.values.map((cell) => cell.value),
+          values: row.values.filter(shown).map((cell) => cell.value),
         })),
         run.rows.map((row) => ({
           dimensions: row.dimensions,
-          values: row.values.map((cell) => cell.value),
+          values: row.values.filter(shown).map((cell) => cell.value),
         })),
         `${run.reportCode} ${run.groupBy.join(",")} ${run.period.startDate}..${run.period.endDate}`,
       );
@@ -339,7 +355,7 @@ describe("saved reports and schedules · F36", () => {
       timeOfDay: "08:00",
       dayOfMonth: 1,
       format: "xlsx",
-      recipients: ["owner@cafelegend.id"],
+      recipientUserIds: [USER_A],
     });
     assert.equal(created.data.isEnabled, true);
     assert.ok(created.data.nextRunAt);
@@ -350,7 +366,7 @@ describe("saved reports and schedules · F36", () => {
       timeOfDay: "08:00",
       dayOfMonth: 1,
       format: "xlsx",
-      recipients: ["owner@cafelegend.id"],
+      recipientUserIds: [USER_A],
       isEnabled: false,
     });
     assert.equal(paused.data.isEnabled, false);
@@ -374,7 +390,7 @@ describe("saved reports and schedules · F36", () => {
         frequency: "daily",
         timeOfDay: "07:00",
         format: "csv",
-        recipients: ["owner@cafelegend.id"],
+        recipientUserIds: [USER_A],
       }),
     );
     assert.equal(error.code, "EXPORT_PII_APPROVAL_REQUIRED");
@@ -387,7 +403,7 @@ describe("DASH-04 on every path that mails a report", () => {
     frequency: "daily",
     timeOfDay: "07:00",
     format: "csv",
-    recipients: ["owner@cafelegend.id"],
+    recipientUserIds: [USER_A],
   };
   const personalQuery = {
     ...dashboard.reportBuilderQueryFixture,
@@ -416,7 +432,7 @@ describe("DASH-04 on every path that mails a report", () => {
       dayOfWeek: fixture.dayOfWeek,
       dayOfMonth: fixture.dayOfMonth,
       format: fixture.format,
-      recipients: [...fixture.recipients],
+      recipientUserIds: [...fixture.recipientUserIds],
     };
     await patch(`/api/reports/schedules/${id}`, {
       ...settings,

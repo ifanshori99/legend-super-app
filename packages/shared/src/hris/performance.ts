@@ -15,6 +15,7 @@
 
 import {
   z,
+  clientInputSchema,
   tenantIdSchema,
   outletIdSchema,
   userIdSchema,
@@ -61,29 +62,58 @@ export type KpiDirection = z.infer<typeof kpiDirectionSchema>;
 export const kpiReviewCycleSchema = z.enum(["monthly", "quarterly"]);
 export type KpiReviewCycle = z.infer<typeof kpiReviewCycleSchema>;
 
+const metricCode = z.string().min(1).max(60);
+
 /** PRD §6 H `kpi_definitions`: position, name, source, target. */
-export const kpiDefinitionSchema = z.strictObject({
-  id: kpiDefinitionIdSchema,
-  tenantId: tenantIdSchema,
-  positionId: positionIdSchema.nullable(),
-  name: z.string().min(1).max(150),
-  source: kpiSourceSchema,
-  /** Null when the KPI is purely qualitative (manager's judgement). */
-  target: nonnegativeDecimal.nullable(),
-  unit: z.string().min(1).max(20),
-  direction: kpiDirectionSchema,
-  isActive: z.boolean(),
-});
+export const kpiDefinitionSchema = z
+  .strictObject({
+    id: kpiDefinitionIdSchema,
+    tenantId: tenantIdSchema,
+    positionId: positionIdSchema.nullable(),
+    name: z.string().min(1).max(150),
+    source: kpiSourceSchema,
+    /** Metric catalog code that fills a system KPI; null for a manager KPI. */
+    metricCode: metricCode.nullable(),
+    /** Null when the KPI is purely qualitative (manager's judgement). */
+    target: nonnegativeDecimal.nullable(),
+    unit: z.string().min(1).max(20),
+    direction: kpiDirectionSchema,
+    isActive: z.boolean(),
+  })
+  .superRefine(refineKpiMetricCode);
 export type KpiDefinition = z.infer<typeof kpiDefinitionSchema>;
 
-export const kpiScoreSchema = z
-  .strictObject({
-    kpiDefinitionId: kpiDefinitionIdSchema,
-    actual: nonnegativeDecimal,
-    /** Reviewer score, 0–100. */
-    score: z.number().int().min(0).max(100),
-  })
-  .strict();
+/** A metric code is set exactly when the KPI is filled from system data. */
+function refineKpiMetricCode(
+  definition: { source: KpiSource; metricCode?: string | null | undefined },
+  ctx: z.RefinementCtx,
+): void {
+  const hasCode =
+    definition.metricCode !== null && definition.metricCode !== undefined;
+  if ((definition.source === "system") !== hasCode)
+    ctx.addIssue({
+      code: "custom",
+      path: ["metricCode"],
+      message: "A metric code is required for, and only for, a system KPI",
+    });
+}
+
+const signedDecimal = decimal4Schema;
+
+/** One KPI line of a review: system value, manual actual and reviewer score. */
+export const kpiScoreSchema = z.strictObject({
+  kpiDefinitionId: kpiDefinitionIdSchema,
+  /** Value the score is judged on; signed (a cash variance can be negative). */
+  actual: signedDecimal.nullable(),
+  /** Reviewer score, 0–100. */
+  score: z.number().int().min(0).max(100).nullable(),
+  /** Last value the metric engine computed for the period. */
+  systemActual: signedDecimal.nullable(),
+  /** Why the engine has no value (e.g. no data), when systemActual is null. */
+  systemAvailability: z.string().min(1).max(30).nullable(),
+  actualSource: z.enum(["system", "manual"]).nullable(),
+  comment: z.string().min(1).max(1000).nullable(),
+});
 export type KpiScore = z.infer<typeof kpiScoreSchema>;
 
 export const kpiReviewStatusSchema = z.enum(["draft", "submitted"]);
@@ -102,6 +132,9 @@ export const kpiReviewSchema = z
     reviewerId: userIdSchema.nullable(),
     status: kpiReviewStatusSchema,
     submittedAt: isoDateTimeSchema.nullable(),
+    note: z.string().min(1).max(2000).nullable(),
+    /** Rounded mean of the scores; set when the review is submitted. */
+    overallScore: z.number().min(0).max(100).nullable(),
   })
   .superRefine((review, ctx) => {
     if (review.periodEnd < review.periodStart)
@@ -132,8 +165,94 @@ export const kpiReviewSchema = z
         path: ["submittedAt"],
         message: "A draft review has no submission time",
       });
+    if (review.status === "submitted") {
+      if (review.reviewerId === null)
+        ctx.addIssue({
+          code: "custom",
+          path: ["reviewerId"],
+          message: "A submitted review needs a reviewer",
+        });
+      if (review.scores.some((score) => score.score === null))
+        ctx.addIssue({
+          code: "custom",
+          path: ["scores"],
+          message: "A submitted review needs a score on every KPI",
+        });
+    }
   });
 export type KpiReview = z.infer<typeof kpiReviewSchema>;
+
+export const createKpiDefinitionInputSchema = clientInputSchema({
+  positionId: positionIdSchema.nullable().default(null),
+  name: z.string().trim().min(1).max(150),
+  source: kpiSourceSchema,
+  metricCode: metricCode.nullable().default(null),
+  target: nonnegativeDecimal.nullable().default(null),
+  unit: z.string().trim().min(1).max(20),
+  direction: kpiDirectionSchema,
+}).superRefine(refineKpiMetricCode);
+export type CreateKpiDefinitionInput = z.infer<
+  typeof createKpiDefinitionInputSchema
+>;
+
+/** Source and position are fixed at creation; the metric code may change. */
+export const updateKpiDefinitionInputSchema = clientInputSchema({
+  name: z.string().trim().min(1).max(150).optional(),
+  metricCode: metricCode.optional(),
+  target: nonnegativeDecimal.nullable().optional(),
+  unit: z.string().trim().min(1).max(20).optional(),
+  direction: kpiDirectionSchema.optional(),
+  isActive: z.boolean().optional(),
+}).refine(
+  (input) => Object.values(input).some((value) => value !== undefined),
+  "Nothing to update",
+);
+export type UpdateKpiDefinitionInput = z.infer<
+  typeof updateKpiDefinitionInputSchema
+>;
+
+/** Opens a draft review; the period must be a full calendar month or quarter. */
+export const createKpiReviewInputSchema = clientInputSchema({
+  employeeId: employeeIdSchema,
+  cycle: kpiReviewCycleSchema,
+  periodStart: businessDateSchema,
+});
+export type CreateKpiReviewInput = z.infer<typeof createKpiReviewInputSchema>;
+
+export const updateKpiScoresInputSchema = clientInputSchema({
+  scores: z
+    .array(
+      z
+        .strictObject({
+          kpiDefinitionId: kpiDefinitionIdSchema,
+          actual: signedDecimal.optional(),
+          score: z.number().int().min(0).max(100).optional(),
+          comment: z.string().trim().max(1000).optional(),
+        })
+        .refine(
+          (line) =>
+            line.actual !== undefined ||
+            line.score !== undefined ||
+            line.comment !== undefined,
+          "A score line needs an actual, a score or a comment",
+        ),
+    )
+    .min(1)
+    .max(100),
+  note: z.string().trim().max(2000).optional(),
+}).superRefine((input, ctx) => {
+  const ids = new Set<string>();
+  for (const line of input.scores) {
+    if (ids.has(line.kpiDefinitionId))
+      ctx.addIssue({
+        code: "custom",
+        path: ["scores"],
+        message: "A KPI appears twice in one update",
+      });
+    ids.add(line.kpiDefinitionId);
+  }
+});
+export type UpdateKpiScoresInput = z.infer<typeof updateKpiScoresInputSchema>;
 
 /** Draft → submitted; a submitted review is what the employee sees. */
 export function transitionKpiReview(

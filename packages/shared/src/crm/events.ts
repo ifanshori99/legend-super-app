@@ -49,6 +49,8 @@ export const crmEventNames = [
   // Per-outlet switch and partial-refund withdrawal (bead legend-e5it).
   "promotion_outlet.changed",
   "promo_application.adjusted",
+  // legend-m4p5
+  "points.adjusted",
 ] as const;
 export type CrmEventName = (typeof crmEventNames)[number];
 
@@ -79,7 +81,8 @@ export const pointsReversedPayloadSchema = z.strictObject({
   customerProfileId: uuidSchema,
   /** Magnitude of the points removed by the refund (LOY-02). */
   points: positivePointsSchema,
-  sourceType: z.literal("refund"),
+  // legend-111j: `void` for a voided final order.
+  sourceType: z.enum(["refund", "void"]),
   sourceId: z.union([uuidSchema, ulidIdSchema<"PointsEventSourceId">()]),
   /** The earn row this reversal cancels. */
   reversesLedgerId: ulidIdSchema<"PointLedgerEntryId">(),
@@ -97,6 +100,23 @@ export const pointsRedeemedPayloadSchema = z.strictObject({
   balanceAfter: nonnegativePointsSchema,
 });
 export type PointsRedeemedPayload = z.infer<typeof pointsRedeemedPayloadSchema>;
+
+// legend-m4p5
+export const pointsAdjustedPayloadSchema = z.strictObject({
+  customerProfileId: uuidSchema,
+  /** Magnitude of the points added back. */
+  points: positivePointsSchema,
+  kind: z.enum(["restore", "manual"]),
+  reversesEntryId: ulidIdSchema<"PointLedgerEntryId">().nullable(),
+  sourceType: z.literal("adjustment"),
+  sourceId: z
+    .union([uuidSchema, ulidIdSchema<"PointsEventSourceId">()])
+    .nullable(),
+  reason: z.string().nullable(),
+  liabilityIdr: nonnegativeIdr,
+  balanceAfter: nonnegativePointsSchema,
+});
+export type PointsAdjustedPayload = z.infer<typeof pointsAdjustedPayloadSchema>;
 
 export const pointsExpiredPayloadSchema = z.strictObject({
   customerProfileId: uuidSchema,
@@ -246,6 +266,8 @@ const payloadSchemas: Record<
   "voucher.issued": voucherIssuedPayloadSchema,
   "promotion_outlet.changed": promotionOutletChangedPayloadSchema,
   "promo_application.adjusted": promoApplicationAdjustedPayloadSchema,
+  // legend-m4p5
+  "points.adjusted": pointsAdjustedPayloadSchema,
 };
 
 /**

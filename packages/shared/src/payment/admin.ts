@@ -22,6 +22,7 @@ import {
   uuidSchema,
   cafeLegendFixtures,
 } from "../core/index.ts";
+import { refundEscalationReasonSchema } from "./refund-events.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
   edcTerminalSchema,
@@ -189,16 +190,35 @@ export const refundStatusSchema = z.enum([
 ]);
 export type RefundStatus = z.infer<typeof refundStatusSchema>;
 
+/** Why a refund ended `failed` (null for legacy failed rows). */
+export const refundFailureReasonSchema = z.enum([
+  "rejected",
+  "approval_expired",
+  "provider_declined",
+  "cap_exceeded",
+  "source_document",
+  "approver_unauthorized",
+]);
+export type RefundFailureReason = z.infer<typeof refundFailureReasonSchema>;
+
 /**
  * Non-human requesters: a module that files the refund request by rule (e.g.
  * the reservation DP refund decided from the policy snapshot, PRD §3.22). The
  * approval still needs a person with `payment.reconcile` (never the system).
  */
-export const systemRefundActorSchema = z.enum(["system:reservation"]);
+export const systemRefundActorSchema = z.enum([
+  "system:reservation",
+  "system:pos",
+  "system:qr",
+  "system:recovery",
+]);
 export type SystemRefundActor = z.infer<typeof systemRefundActorSchema>;
 /** Display names for system requesters (no `user` row exists for them). */
 export const systemRefundActorNames: Record<SystemRefundActor, string> = {
   "system:reservation": "Sistem (reservasi)",
+  "system:pos": "Sistem (kasir)",
+  "system:qr": "Sistem (pesanan QR)",
+  "system:recovery": "Sistem (pemulihan pesanan)",
 };
 
 export const refundViewSchema = z.strictObject({
@@ -220,6 +240,14 @@ export const refundViewSchema = z.strictObject({
   note: z.string().max(500).nullable(),
   createdAt: isoDateTimeSchema,
   decidedAt: isoDateTimeSchema.nullable(),
+  failureReason: refundFailureReasonSchema.nullable().optional(),
+  /** Provider payout tries so far; an `approved` refund with a last error is awaiting retry. */
+  payoutAttempts: z.number().int().nonnegative().optional(),
+  lastPayoutError: z.string().max(100).nullable().optional(),
+  /** Set once when the refund waited past the tenant threshold; never changes money state. */
+  escalatedAt: isoDateTimeSchema.nullable().optional(),
+  escalationReason: refundEscalationReasonSchema.nullable().optional(),
+  completedAt: isoDateTimeSchema.nullable().optional(),
 });
 export type RefundView = z.infer<typeof refundViewSchema>;
 
@@ -279,6 +307,77 @@ export const approveRefundInputSchema = clientInputSchema({
 });
 export type ApproveRefundInput = z.infer<typeof approveRefundInputSchema>;
 
+export const rejectRefundInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  reason: z.string().trim().min(3).max(500),
+});
+export type RejectRefundInput = z.infer<typeof rejectRefundInputSchema>;
+
+export const retryRefundPayoutInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  sourceEvidenceId: uuidSchema.optional(),
+});
+export type RetryRefundPayoutInput = z.infer<
+  typeof retryRefundPayoutInputSchema
+>;
+
+/** Ops note on a quarantine action: 3 to 500 code points once trimmed. */
+const quarantineNoteSchema = z
+  .string()
+  .trim()
+  .refine((note) => {
+    const length = Array.from(note).length;
+    return length >= 3 && length <= 500;
+  }, "Note must be 3 to 500 characters.");
+
+/** Body of a quarantine release or re-open (legend-e8z5). */
+export const quarantinedRefundActionInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  note: quarantineNoteSchema,
+});
+export type QuarantinedRefundActionInput = z.infer<
+  typeof quarantinedRefundActionInputSchema
+>;
+
+/** Where finance paid a refund by hand (legend-xd2q). */
+export const manualRefundSettlementChannelSchema = z.enum([
+  "bank_transfer",
+  "cash",
+  "ewallet",
+  "provider_dashboard",
+  "other",
+]);
+export type ManualRefundSettlementChannel = z.infer<
+  typeof manualRefundSettlementChannelSchema
+>;
+
+/**
+ * Body of a manual refund settlement (legend-xd2q): finance paid the customer
+ * by hand and no provider payout is ever sent. `externalReference` is the
+ * transfer or receipt reference of that payment, never the customer's account
+ * number: it is stored in the audit trail as is.
+ */
+export const manualRefundSettlementInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  paidAt: isoDateTimeSchema,
+  channel: manualRefundSettlementChannelSchema,
+  externalReference: z
+    .string()
+    .trim()
+    .min(3)
+    .max(100)
+    .refine(
+      // eslint-disable-next-line no-control-regex
+      (value) => !/[\u0000-\u001f\u007f]/.test(value),
+      "Reference must not contain control characters.",
+    ),
+  amountIdr: positiveIdr,
+  note: quarantineNoteSchema,
+});
+export type ManualRefundSettlementInput = z.infer<
+  typeof manualRefundSettlementInputSchema
+>;
+
 // ---- Unallocated funds (PAY-04) -----------------------------------------
 
 export const unallocatedStatusSchema = z.enum(["open", "resolved"]);
@@ -298,10 +397,13 @@ export const unallocatedFundViewSchema = z
     resolvedAt: isoDateTimeSchema.nullable(),
     note: z.string().max(500).nullable(),
   })
-  // PAY-04: the unallocated amount is exactly what arrived above the bill.
-  .refine((f) => f.paidAmountIdr - f.billTotalIdr === f.amountIdr, {
+  // PAY-04: a fund holds money that arrived but was not applied to the bill
+  // (overpaid, double-paid or underpaid). A bill may carry several funds, one
+  // per provider evidence (legend-knev); the server refuses a bill whose funds
+  // do not add up to exactly what arrived minus what was applied.
+  .refine((f) => f.amountIdr <= f.paidAmountIdr, {
     path: ["amountIdr"],
-    message: "amount must equal paid − bill total",
+    message: "amount must not exceed the amount paid",
   });
 export type UnallocatedFundView = z.infer<typeof unallocatedFundViewSchema>;
 
@@ -438,6 +540,7 @@ export const listRefunds = defineEndpoint({
   query: cursorPageQuerySchema.extend({
     ...outletFilter,
     status: refundStatusSchema.optional(),
+    escalated: z.enum(["true", "false"]).optional(),
   }),
   response: cursorPageSchema(refundViewSchema),
 });
@@ -452,11 +555,78 @@ export const createRefund = defineEndpoint({
   body: createRefundInputSchema,
   response: dataResponseSchema(refundViewSchema),
 });
+/**
+ * Runs the refund through the approval matrix (every level needs a distinct
+ * approver, never the requester). Once approved the provider payout starts;
+ * the refund becomes `completed` only on provider success. A payout whose
+ * outcome is unknown stays `approved` and is retried with the same key.
+ */
 export const approveRefund = defineEndpoint({
   method: "POST",
   path: `${ADMIN}/refunds/:refundId/approve`,
   params: refundParams,
   body: approveRefundInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/** Rejects a `pending` refund: it ends `failed` (`rejected`) and frees the reserved amount. */
+export const rejectRefund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/reject`,
+  params: refundParams,
+  body: rejectRefundInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/** Retries the provider payout of an `approved` refund (same provider idempotency key). */
+export const retryRefundPayout = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/retry`,
+  params: refundParams,
+  body: retryRefundPayoutInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/**
+ * Ops action on a never-sent quarantined refund (`approved`,
+ * PAYOUT_QUARANTINED, no attempt, no poll, no provider ref): it ends `failed`
+ * (`approver_unauthorized`), which frees the reserved amount. Needs
+ * payment.reconcile plus pos.refund.approve at the outlet, never the
+ * requester, MFA when a role requires it. 409 REFUND_NOT_QUARANTINED, or
+ * REFUND_PAYOUT_MAYBE_SENT when an attempt may have reached the provider.
+ * Never use it after paying the customer by hand at the provider.
+ */
+export const releaseQuarantinedRefund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/quarantine/release`,
+  params: refundParams,
+  body: quarantinedRefundActionInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/**
+ * Same actor, preconditions and answers as releaseQuarantinedRefund, but the
+ * refund returns to `pending` without its approval (the old chain stays as
+ * history): approveRefund / rejectRefund then decide it again.
+ */
+export const reopenQuarantinedRefund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/quarantine/reopen`,
+  params: refundParams,
+  body: quarantinedRefundActionInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/**
+ * Closes an `approved` refund finance paid by hand (legend-xd2q): it ends
+ * `completed` with no provider payout, ever. Only a refund that never reached
+ * the provider (no provider ref, no poll; any attempt count or payout flag).
+ * Same actor as the quarantine actions (payment.reconcile plus
+ * pos.refund.approve at the outlet, never the requester, dashboard MFA). 409
+ * REFUND_NOT_SETTLEABLE, REFUND_AT_PROVIDER, REFUND_PAYOUT_IN_FLIGHT or
+ * SETTLEMENT_AMOUNT_MISMATCH; 422 when paidAt is before the refund or in the
+ * future. A later provider success on it is recorded as a conflict.
+ */
+export const settleRefundManually = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/settle-manually`,
+  params: refundParams,
+  body: manualRefundSettlementInputSchema,
   response: dataResponseSchema(refundViewSchema),
 });
 

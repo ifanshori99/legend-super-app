@@ -833,6 +833,82 @@ describe("ACC-04 bank and gateway reconciliation", () => {
   });
 });
 
+describe("legend-pxcs finance policy contract (ACC-04 tolerance, ACC-05 batas hari)", () => {
+  const body = (maxDaysUndeposited, dateToleranceDays) => ({
+    cashDepositPolicy: { maxDaysUndeposited },
+    matchingPolicy: { dateToleranceDays },
+  });
+
+  test("defaults are 2 days / 2 days and satisfy the strict policy schema", () => {
+    assert.deepEqual(acc.DEFAULT_FINANCE_POLICY, body(2, 2));
+    assert.deepEqual(
+      acc.financePolicySchema.parse(acc.DEFAULT_FINANCE_POLICY),
+      body(2, 2),
+    );
+  });
+
+  test("bounds reuse the banking limits: 0..30 undeposited days, 0..14 tolerance days", () => {
+    const ok = (value) => acc.putFinancePolicyInputSchema.safeParse(value);
+    assert.equal(ok(body(0, 0)).success, true);
+    assert.equal(ok(body(30, 14)).success, true);
+    for (const bad of [body(31, 2), body(-1, 2), body(2, 15), body(2, -1)])
+      assert.equal(ok(bad).success, false);
+    assert.equal(ok(body(1.5, 2)).success, false);
+    assert.equal(ok(body("2", 2)).success, false);
+  });
+
+  test("the body is strict: no tenantId (TEN-02), no foreign or missing sections", () => {
+    const ok = (value) => acc.putFinancePolicyInputSchema.safeParse(value);
+    assert.equal(
+      ok({ ...body(2, 2), tenantId: fx.users.owner.id }).success,
+      false,
+    );
+    assert.equal(
+      ok({
+        cashDepositPolicy: { maxDaysUndeposited: 2, extra: 1 },
+        matchingPolicy: { dateToleranceDays: 2 },
+      }).success,
+      false,
+    );
+    assert.equal(
+      ok({ cashDepositPolicy: { maxDaysUndeposited: 2 } }).success,
+      false,
+    );
+    assert.equal(
+      ok({ matchingPolicy: { dateToleranceDays: 2 } }).success,
+      false,
+    );
+    assert.equal(ok({}).success, false);
+  });
+
+  test("endpoints: GET/PUT /api/accounting/finance-policy, registered once, PUT body is the policy", () => {
+    assert.equal(acc.getFinancePolicy.method, "GET");
+    assert.equal(acc.putFinancePolicy.method, "PUT");
+    assert.equal(acc.getFinancePolicy.path, "/api/accounting/finance-policy");
+    assert.equal(acc.putFinancePolicy.path, "/api/accounting/finance-policy");
+    const registered = Object.values(acc.accountingEndpoints);
+    assert.ok(registered.includes(acc.getFinancePolicy));
+    assert.ok(registered.includes(acc.putFinancePolicy));
+    assert.equal(acc.getFinancePolicy.body, undefined);
+    assert.deepEqual(
+      acc.putFinancePolicy.response.parse({ data: body(5, 3) }),
+      { data: body(5, 3) },
+    );
+  });
+
+  test("ACC-05 the saved limit drives the alert: the policy's cashDepositPolicy plugs into undepositedCashAlerts", () => {
+    const run = (policy) =>
+      acc.undepositedCashAlerts(
+        fx.cashCollections,
+        fx.cashDeposits,
+        fx.asOf,
+        policy.cashDepositPolicy,
+      );
+    assert.equal(run(body(2, 2)).length, 1);
+    assert.deepEqual(run(body(5, 2)), []);
+  });
+});
+
 describe("ACC-05 cash deposits are matched and overdue cash raises alerts", () => {
   test("ACC-05 undeposited cash older than the tenant limit raises an alert (FIFO)", () => {
     const alerts = acc.undepositedCashAlerts(
@@ -889,6 +965,8 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
   });
   const saleAmounts = {
     paidCashIdr: 137_500,
+    paidGatewayIntentIdr: 0,
+    paidDepositIdr: 0,
     paidGatewayIdr: 0,
     paidEdcIdr: 0,
     paidPointsIdr: 0,
@@ -972,30 +1050,78 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
     throwsCode(
       () =>
         acc.resolvePostingRule(acc.defaultPostingRules, {
-          eventName: "payment.paid",
-        }),
-      "POSTING_RULE_MISSING",
-    );
-    throwsCode(
-      () =>
-        acc.resolvePostingRule(acc.defaultPostingRules, {
           eventName: "stock.adjusted",
         }),
       "POSTING_RULE_MISSING",
     );
   });
 
-  test("ACC-01 payroll rule matches PAYR-04 identity", () => {
-    const rule = acc.resolvePostingRule(acc.defaultPostingRules, {
-      eventName: "payroll_run.completed",
-    });
-    assert.deepEqual(acc.postingRuleAmountKeys(rule), [
-      "employerBpjsIdr",
-      "grossPayIdr",
-      "netPayIdr",
+  test("ACC-01 payroll rules are fed by payrollJournalAmounts and balance", () => {
+    const keys = [
+      "bpjsCompanyIdr",
+      "bpjsTotalIdr",
+      "customDeductionsIdr",
+      "lateDeductionsIdr",
+      "loanRepaymentIdr",
+      "netIdr",
+      "pph21EmployerAllowanceRefundIdr",
+      "pph21EmployerBorneIdr",
+      "pph21EmployerBorneRefundIdr",
       "pph21Idr",
-      "totalBpjsIdr",
-    ]);
+      "pph21ReceivableCollectedIdr",
+      "pph21ReceivableIdr",
+      "reimbursementIdr",
+      "salaryExpenseIdr",
+      "serviceChargeIdr",
+    ];
+    for (const eventName of ["payroll.locked", "payroll.reversed"]) {
+      const rule = acc.resolvePostingRule(acc.defaultPostingRules, {
+        eventName,
+      });
+      assert.deepEqual(acc.postingRuleAmountKeys(rule), keys);
+    }
+    throwsCode(
+      () =>
+        acc.resolvePostingRule(acc.defaultPostingRules, {
+          eventName: "payroll_run.completed",
+        }),
+      "POSTING_RULE_MISSING",
+    );
+    const amounts = acc.payrollJournalAmounts({
+      employeeCount: 1,
+      grossIdr: 42_000_000,
+      deductionsIdr: 1_470_000,
+      netIdr: 40_530_000,
+      bpjsEmployeeIdr: 840_000,
+      bpjsCompanyIdr: 2_184_000,
+      pph21Idr: 630_000,
+      pph21WithheldIdr: 630_000,
+      pph21EmployerBorneIdr: 0,
+      pph21RefundIdr: 0,
+      pph21EmployerRefundIdr: 0,
+      pph21EmployerAllowanceRefundIdr: 0,
+      loanRepaymentIdr: 0,
+      pph21ReceivableIdr: 0,
+      pph21ReceivableCollectedIdr: 0,
+      otherDeductionsIdr: 0,
+      serviceChargeIdr: 0,
+      reimbursementIdr: 0,
+      bankTransferIdr: 40_530_000,
+      cashIdr: 0,
+    });
+    assert.deepEqual(Object.keys(amounts).sort(), keys);
+    for (const eventName of ["payroll.locked", "payroll.reversed"]) {
+      const lines = acc.buildJournalLinesFromRule(
+        acc.resolvePostingRule(acc.defaultPostingRules, { eventName }),
+        amounts,
+        map,
+        { outletId: null },
+      );
+      assert.equal(
+        lines.reduce((sum, l) => sum + l.debitIdr, 0),
+        lines.reduce((sum, l) => sum + l.creditIdr, 0),
+      );
+    }
   });
 
   test("every default rule has a unique key, catalogued event and fully mapped roles", () => {
@@ -1014,6 +1140,135 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
       }).success,
       false,
     );
+  });
+});
+
+describe("Auto-journal receipt-first rules and late adjustment", () => {
+  const map = acc.accountMapFor(fx.accountMappings, fx.legalEntity.id);
+  const linesFor = (eventName, amounts) => {
+    const rule = acc.resolvePostingRule(acc.defaultPostingRules, { eventName });
+    return acc.buildJournalLinesFromRule(rule, amounts, map, {
+      outletId: null,
+    });
+  };
+  const sum = (lines, accountCode, side) =>
+    lines
+      .filter((l) => l.accountId === code(accountCode))
+      .reduce((total, l) => total + l[side], 0);
+
+  test("payment.paid receives into customer_deposit; payment.refunded pays it out of gateway_clearing", () => {
+    const received = linesFor("payment.paid", { receivedIdr: 275_000 });
+    assert.equal(sum(received, "1202", "debitIdr"), 275_000);
+    assert.equal(sum(received, "2107", "creditIdr"), 275_000);
+    const paidOut = linesFor("payment.refunded", { amountIdr: 50_000 });
+    assert.equal(sum(paidOut, "2107", "debitIdr"), 50_000);
+    assert.equal(sum(paidOut, "1202", "creditIdr"), 50_000);
+    assert.equal(
+      acc.resolvePostingRule(acc.defaultPostingRules, {
+        eventName: "payment.paid",
+      }).sourceType,
+      "customer_deposit",
+    );
+  });
+
+  test("payment.funds_unallocated receives into customer_deposit like payment.paid", () => {
+    const received = linesFor("payment.funds_unallocated", {
+      receivedIdr: 125_000,
+    });
+    assert.equal(sum(received, "1202", "debitIdr"), 125_000);
+    assert.equal(sum(received, "2107", "creditIdr"), 125_000);
+    assert.equal(received.length, 2);
+    assert.equal(
+      acc.resolvePostingRule(acc.defaultPostingRules, {
+        eventName: "payment.funds_unallocated",
+      }).sourceType,
+      "customer_deposit",
+    );
+  });
+
+  test("order.paid draws intent-backed gateway and applied DP from customer_deposit", () => {
+    const lines = linesFor("order.paid", {
+      paidCashIdr: 0,
+      paidGatewayIntentIdr: 100_000,
+      paidDepositIdr: 37_500,
+      paidGatewayIdr: 0,
+      paidEdcIdr: 0,
+      paidPointsIdr: 0,
+      discountIdr: 0,
+      grossSalesIdr: 125_000,
+      serviceChargeIdr: 0,
+      pbjtIdr: 12_500,
+      roundingIdr: 0,
+    });
+    assert.equal(sum(lines, "2107", "debitIdr"), 137_500);
+    assert.equal(sum(lines, "1202", "debitIdr"), 0);
+  });
+
+  test("order.refunded gateway part is owed in customer_deposit", () => {
+    const lines = linesFor("order.refunded", {
+      grossSalesIdr: 50_000,
+      serviceChargeIdr: 0,
+      pbjtIdr: 5_000,
+      discountIdr: 0,
+      refundCashIdr: 0,
+      refundGatewayIdr: 55_000,
+      refundEdcIdr: 0,
+      refundPointsIdr: 0,
+    });
+    assert.equal(sum(lines, "2107", "creditIdr"), 55_000);
+    assert.equal(sum(lines, "1202", "creditIdr"), 0);
+  });
+
+  test("reservation.cancelled and reservation.no_show move a forfeited DP to income", () => {
+    for (const eventName of ["reservation.cancelled", "reservation.no_show"]) {
+      const lines = linesFor(eventName, {
+        forfeitedIdr: 200_000,
+        forfeitedGatewayIdr: 0,
+      });
+      assert.equal(sum(lines, "2107", "debitIdr"), 200_000);
+      assert.equal(sum(lines, "7103", "creditIdr"), 200_000);
+      assert.equal(lines.length, 2);
+      // A DP paid before the cutover never reached customer_deposit: it is
+      // forfeited out of gateway_clearing.
+      const early = linesFor(eventName, {
+        forfeitedIdr: 0,
+        forfeitedGatewayIdr: 150_000,
+      });
+      assert.equal(sum(early, "1202", "debitIdr"), 150_000);
+      assert.equal(sum(early, "2107", "debitIdr"), 0);
+      assert.equal(sum(early, "7103", "creditIdr"), 150_000);
+      assert.equal(early.length, 2);
+      assert.deepEqual(
+        acc.postingRuleAmountKeys(
+          acc.resolvePostingRule(acc.defaultPostingRules, { eventName }),
+        ),
+        ["forfeitedGatewayIdr", "forfeitedIdr"],
+      );
+    }
+  });
+
+  test("resolveAutoJournalDate keeps an open date and rolls a closed one to the next open period", () => {
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-11-05", null), {
+      entryDate: "2026-11-05",
+      lateAdjustmentFrom: null,
+    });
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-11-05", "2026-10"), {
+      entryDate: "2026-11-05",
+      lateAdjustmentFrom: null,
+    });
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-10-31", "2026-10"), {
+      entryDate: "2026-11-01",
+      lateAdjustmentFrom: "2026-10-31",
+    });
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-08-15", "2026-10"), {
+      entryDate: "2026-11-01",
+      lateAdjustmentFrom: "2026-08-15",
+    });
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-12-20", "2026-12"), {
+      entryDate: "2027-01-01",
+      lateAdjustmentFrom: "2026-12-20",
+    });
+    assert.throws(() => acc.resolveAutoJournalDate("2026-13-01", null));
   });
 });
 

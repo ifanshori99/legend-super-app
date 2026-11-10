@@ -63,7 +63,10 @@ export type PaymentConfirmationSource = z.infer<
 const transitions: Record<PaymentStatus, readonly PaymentStatus[]> = {
   pending: ["paid", "expired", "failed"],
   expired: ["paid"],
-  failed: [],
+  // legend-b0au: a verified gateway settlement may still land after the intent
+  // failed (the guest paid the code the gateway had reported failed); the
+  // source check below keeps every other source refused.
+  failed: ["paid"],
   paid: ["partially_refunded", "refunded"],
   partially_refunded: ["refunded"],
   refunded: [],
@@ -77,6 +80,13 @@ export function canTransitionPayment(
 ): boolean {
   if (!transitions[from]?.includes(to)) return false;
   if (to !== "paid") return true;
+  // Only the gateway can prove money arrived for an intent it reported failed.
+  if (
+    from === "failed" &&
+    source !== "verified_webhook" &&
+    source !== "gateway_status"
+  )
+    return false;
 
   switch (source) {
     case "verified_webhook":
@@ -242,6 +252,7 @@ export const paymentEventNames = [
   "payment.expired",
   "payment.failed",
   "payment.refunded",
+  "payment.funds_unallocated",
   "settlement.imported",
 ] as const;
 export const paymentEventCatalogEntries = paymentEventNames.map((name) =>
@@ -256,6 +267,26 @@ export const paymentEventCatalogEntries = paymentEventNames.map((name) =>
 export const paymentEventSchema = eventEnvelopeSchema.refine((event) =>
   (paymentEventNames as readonly string[]).includes(event.name),
 );
+/**
+ * Gateway money recorded as unallocated funds with no `payment.paid` beside it
+ * (PAY-04): money on a failed/expired/cancelled intent, or a second payment on
+ * an already settled intent. Overpayment on the settling confirmation is not
+ * emitted here: its `payment.paid.receivedIdr` already counts it. Aggregate is
+ * the unallocated-funds row; WS-07 books Dr gateway_clearing / Cr
+ * customer_deposit on `receivedAt`.
+ */
+export const paymentFundsUnallocatedEventPayloadSchema = z.strictObject({
+  unallocatedFundId: id,
+  intentId: id,
+  method: paymentMethodSchema,
+  provider: ref,
+  receivedIdr: positiveIdr,
+  receivedAt: isoDateTimeSchema,
+  reason: z.enum(["overpayment", "double_payment"]),
+});
+export type PaymentFundsUnallocatedEventPayload = z.infer<
+  typeof paymentFundsUnallocatedEventPayloadSchema
+>;
 export type PaymentIntent = z.infer<typeof paymentIntentSchema>;
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
 export type PaymentRouting = z.infer<typeof paymentRoutingSchema>;
@@ -640,6 +671,9 @@ export const createPaymentIntentInputSchema = z
     /** Bank/channel code for `va` and `bank_transfer`; null for QRIS. */
     channelCode: z.string().min(1).max(40).nullable(),
     idempotencyKey: idempotencyKeySchema,
+    /** Optional earlier expiry (e.g. the QR guest session ends sooner); the
+     * server caps it at the method's default lifetime. */
+    expiresAt: isoDateTimeSchema.optional(),
   })
   .superRefine((input, ctx) => {
     const needsChannel = input.method !== "qris";
@@ -926,3 +960,6 @@ export const customerPaymentIntentFixtures = [
   [customerPaymentIntentSchema, expiredQrisIntentFixture],
   [customerPaymentIntentSchema, failedVaIntentFixture],
 ] as const;
+export * from "./refund-events.ts";
+
+export * from "./settlement-events.ts";

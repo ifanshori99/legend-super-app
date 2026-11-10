@@ -17,10 +17,10 @@ import { Route as KitchenRouteImport } from './routes/_kitchen'
 import { Route as OpsRouteImport } from './routes/_ops'
 import { Route as OwnerRouteImport } from './routes/_owner'
 import { Route as PlatformRouteImport } from './routes/_platform'
-import { Route as ProtectedRouteImport } from './routes/_protected'
 import { Route as PublicRouteImport } from './routes/_public'
 import { Route as ShareholderRouteImport } from './routes/_shareholder'
 import { Route as DesignSystemRouteImport } from './routes/design-system'
+import { Route as ManifestDotwebmanifestRouteImport } from './routes/manifest[.]webmanifest'
 import { Route as RobotsDottxtRouteImport } from './routes/robots[.]txt'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as VerifikasiRouteImport } from './routes/verifikasi'
@@ -31,8 +31,6 @@ import { Route as CustomerWifiRouteImport } from './routes/_customer/wifi'
 import { Route as KelolaAuditRouteImport } from './routes/_kelola/audit'
 import { Route as KitchenExpoRouteImport } from './routes/_kitchen/expo'
 import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
-import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
-import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
 import { Route as PublicMenuRouteImport } from './routes/_public/menu'
 import { Route as PublicReservasiRouteImport } from './routes/_public/reservasi'
@@ -78,7 +76,9 @@ import { Route as OpsOperasionalSuhuRouteImport } from './routes/_ops/operasiona
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OpsPosCustomerDisplayRouteImport } from './routes/_ops/pos.customer-display'
 import { Route as OpsPosGantiPenggunaRouteImport } from './routes/_ops/pos.ganti-pengguna'
+import { Route as OpsPosKodeRouteImport } from './routes/_ops/pos.kode'
 import { Route as OpsPosReservasiRouteImport } from './routes/_ops/pos.reservasi'
+import { Route as OpsPosTutupHariRouteImport } from './routes/_ops/pos.tutup-hari'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
 import { Route as PlatformPlatformAksesDukunganRouteImport } from './routes/_platform/platform.akses-dukungan'
@@ -184,6 +184,7 @@ import { Route as KelolaKelolaPengadaanReturRouteImport } from './routes/_kelola
 import { Route as KelolaKelolaPengaturanIntegrasiRouteImport } from './routes/_kelola/kelola.pengaturan_.integrasi'
 import { Route as KelolaKelolaPengaturanIstilahRouteImport } from './routes/_kelola/kelola.pengaturan_.istilah'
 import { Route as KelolaKelolaPengaturanKonfigurasiRouteImport } from './routes/_kelola/kelola.pengaturan_.konfigurasi'
+import { Route as KelolaKelolaPengaturanOpenBillRouteImport } from './routes/_kelola/kelola.pengaturan_.open-bill'
 import { Route as KelolaKelolaPengaturanOutletRouteImport } from './routes/_kelola/kelola.pengaturan_.outlet'
 import { Route as KelolaKelolaPengaturanTemaRouteImport } from './routes/_kelola/kelola.pengaturan_.tema'
 import { Route as KelolaKelolaPengumumanIndexRouteImport } from './routes/_kelola/kelola.pengumuman.index'
@@ -197,12 +198,96 @@ import { Route as KelolaKelolaPromoVoucherRouteImport } from './routes/_kelola/k
 import { Route as KelolaKelolaRosterIndexRouteImport } from './routes/_kelola/kelola.roster.index'
 import { Route as KelolaKelolaRosterTemplateRouteImport } from './routes/_kelola/kelola.roster.template'
 import { Route as KelolaKelolaSopIndexRouteImport } from './routes/_kelola/kelola.sop.index'
+import { Route as KelolaReportsAttendanceByStationRouteImport } from './routes/_kelola/reports.attendance.by-station'
+import { Route as KelolaReportsAttendanceDailyRouteImport } from './routes/_kelola/reports.attendance.daily'
+import { Route as KelolaReportsAttendanceLateRouteImport } from './routes/_kelola/reports.attendance.late'
+import { Route as KelolaReportsAttendanceOvertimeRouteImport } from './routes/_kelola/reports.attendance.overtime'
+import { Route as KelolaReportsCogsPerMenuRouteImport } from './routes/_kelola/reports.cogs.per-menu'
+import { Route as KelolaReportsCogsProductionRouteImport } from './routes/_kelola/reports.cogs.production'
+import { Route as KelolaReportsCogsRecipeRouteImport } from './routes/_kelola/reports.cogs.recipe'
+import { Route as KelolaReportsCogsTrendRouteImport } from './routes/_kelola/reports.cogs.trend'
+import { Route as KelolaReportsCrmCampaignPerformanceRouteImport } from './routes/_kelola/reports.crm.campaign-performance'
+import { Route as KelolaReportsCrmCustomersRouteImport } from './routes/_kelola/reports.crm.customers'
+import { Route as KelolaReportsCrmPromoCostRouteImport } from './routes/_kelola/reports.crm.promo-cost'
+import { Route as KelolaReportsCrmRepeatVisitRouteImport } from './routes/_kelola/reports.crm.repeat-visit'
+import { Route as KelolaReportsCrmReviewsRouteImport } from './routes/_kelola/reports.crm.reviews'
+import { Route as KelolaReportsCrmSegmentsRouteImport } from './routes/_kelola/reports.crm.segments'
+import { Route as KelolaReportsDeliveryByMenuRouteImport } from './routes/_kelola/reports.delivery.by-menu'
+import { Route as KelolaReportsDeliveryChannelSalesRouteImport } from './routes/_kelola/reports.delivery.channel-sales'
+import { Route as KelolaReportsDeliveryOrdersRouteImport } from './routes/_kelola/reports.delivery.orders'
+import { Route as KelolaReportsDeliverySettlementRouteImport } from './routes/_kelola/reports.delivery.settlement'
+import { Route as KelolaReportsFacilityCleaningTimeRouteImport } from './routes/_kelola/reports.facility.cleaning-time'
 import { Route as KelolaReportsFacilityFnbConversionRouteImport } from './routes/_kelola/reports.facility.fnb-conversion'
+import { Route as KelolaReportsFacilityIncidentsRouteImport } from './routes/_kelola/reports.facility.incidents'
 import { Route as KelolaReportsFacilityOccupancyRouteImport } from './routes/_kelola/reports.facility.occupancy'
+import { Route as KelolaReportsFacilityOvertimeRouteImport } from './routes/_kelola/reports.facility.overtime'
+import { Route as KelolaReportsFacilityProductRevenueRouteImport } from './routes/_kelola/reports.facility.product-revenue'
 import { Route as KelolaReportsFacilityRevenueRouteImport } from './routes/_kelola/reports.facility.revenue'
 import { Route as KelolaReportsFacilityRevpashRouteImport } from './routes/_kelola/reports.facility.revpash'
 import { Route as KelolaReportsFacilitySubscriptionsRouteImport } from './routes/_kelola/reports.facility.subscriptions'
+import { Route as KelolaReportsFacilityUnitUtilizationRouteImport } from './routes/_kelola/reports.facility.unit-utilization'
 import { Route as KelolaReportsFacilityWifiRouteImport } from './routes/_kelola/reports.facility.wifi'
+import { Route as KelolaReportsFinanceCashPositionRouteImport } from './routes/_kelola/reports.finance.cash-position'
+import { Route as KelolaReportsFinanceEbitdaRouteImport } from './routes/_kelola/reports.finance.ebitda'
+import { Route as KelolaReportsFinanceGrossMarginRouteImport } from './routes/_kelola/reports.finance.gross-margin'
+import { Route as KelolaReportsFinanceIncomeStatementRouteImport } from './routes/_kelola/reports.finance.income-statement'
+import { Route as KelolaReportsFinancePendingSettlementRouteImport } from './routes/_kelola/reports.finance.pending-settlement'
+import { Route as KelolaReportsFinancePrimeCostRouteImport } from './routes/_kelola/reports.finance.prime-cost'
+import { Route as KelolaReportsFinanceProfitTrendRouteImport } from './routes/_kelola/reports.finance.profit-trend'
+import { Route as KelolaReportsFinanceSupplierDueRouteImport } from './routes/_kelola/reports.finance.supplier-due'
+import { Route as KelolaReportsInventoryCriticalStockRouteImport } from './routes/_kelola/reports.inventory.critical-stock'
+import { Route as KelolaReportsInventoryFoodCostRouteImport } from './routes/_kelola/reports.inventory.food-cost'
+import { Route as KelolaReportsInventoryMovementRouteImport } from './routes/_kelola/reports.inventory.movement'
+import { Route as KelolaReportsInventoryStockUsageRouteImport } from './routes/_kelola/reports.inventory.stock-usage'
+import { Route as KelolaReportsInventoryStockValueRouteImport } from './routes/_kelola/reports.inventory.stock-value'
+import { Route as KelolaReportsInventoryWasteRouteImport } from './routes/_kelola/reports.inventory.waste'
+import { Route as KelolaReportsInventoryWasteByCategoryRouteImport } from './routes/_kelola/reports.inventory.waste-by-category'
+import { Route as KelolaReportsLoyaltyMembersRouteImport } from './routes/_kelola/reports.loyalty.members'
+import { Route as KelolaReportsLoyaltyNewMembersRouteImport } from './routes/_kelola/reports.loyalty.new-members'
+import { Route as KelolaReportsLoyaltyPointsRouteImport } from './routes/_kelola/reports.loyalty.points'
+import { Route as KelolaReportsLoyaltyTierMixRouteImport } from './routes/_kelola/reports.loyalty.tier-mix'
+import { Route as KelolaReportsLoyaltyVisitsRouteImport } from './routes/_kelola/reports.loyalty.visits'
+import { Route as KelolaReportsMenuBestSellersRouteImport } from './routes/_kelola/reports.menu.best-sellers'
+import { Route as KelolaReportsMenuCategorySalesRouteImport } from './routes/_kelola/reports.menu.category-sales'
+import { Route as KelolaReportsMenuEngineeringRouteImport } from './routes/_kelola/reports.menu.engineering'
+import { Route as KelolaReportsMenuMarginRouteImport } from './routes/_kelola/reports.menu.margin'
+import { Route as KelolaReportsMenuRecipeCostRouteImport } from './routes/_kelola/reports.menu.recipe-cost'
+import { Route as KelolaReportsMenuSlowMoversRouteImport } from './routes/_kelola/reports.menu.slow-movers'
+import { Route as KelolaReportsMenuSoldOutRouteImport } from './routes/_kelola/reports.menu.sold-out'
+import { Route as KelolaReportsOperationsAlertsRouteImport } from './routes/_kelola/reports.operations.alerts'
+import { Route as KelolaReportsOperationsDevicesRouteImport } from './routes/_kelola/reports.operations.devices'
+import { Route as KelolaReportsOperationsFailedItemsRouteImport } from './routes/_kelola/reports.operations.failed-items'
+import { Route as KelolaReportsOperationsKitchenQueueRouteImport } from './routes/_kelola/reports.operations.kitchen-queue'
+import { Route as KelolaReportsOperationsOccupancyRouteImport } from './routes/_kelola/reports.operations.occupancy'
+import { Route as KelolaReportsOperationsRemakeCompRouteImport } from './routes/_kelola/reports.operations.remake-comp'
+import { Route as KelolaReportsOperationsServingTimeRouteImport } from './routes/_kelola/reports.operations.serving-time'
+import { Route as KelolaReportsOperationsTableTurnoverRouteImport } from './routes/_kelola/reports.operations.table-turnover'
+import { Route as KelolaReportsOperationsWaiterCallsRouteImport } from './routes/_kelola/reports.operations.waiter-calls'
+import { Route as KelolaReportsPaymentsCashVarianceRouteImport } from './routes/_kelola/reports.payments.cash-variance'
+import { Route as KelolaReportsPaymentsEdcSettlementRouteImport } from './routes/_kelola/reports.payments.edc-settlement'
+import { Route as KelolaReportsPaymentsFailedRouteImport } from './routes/_kelola/reports.payments.failed'
+import { Route as KelolaReportsPaymentsFeesRouteImport } from './routes/_kelola/reports.payments.fees'
+import { Route as KelolaReportsPaymentsGatewaySettlementRouteImport } from './routes/_kelola/reports.payments.gateway-settlement'
+import { Route as KelolaReportsPaymentsMethodsRouteImport } from './routes/_kelola/reports.payments.methods'
+import { Route as KelolaReportsPayrollCostTrendRouteImport } from './routes/_kelola/reports.payroll.cost-trend'
+import { Route as KelolaReportsPayrollGrossRouteImport } from './routes/_kelola/reports.payroll.gross'
+import { Route as KelolaReportsPayrollLaborCostRouteImport } from './routes/_kelola/reports.payroll.labor-cost'
+import { Route as KelolaReportsPayrollOvertimeRouteImport } from './routes/_kelola/reports.payroll.overtime'
+import { Route as KelolaReportsPerformanceChecklistRouteImport } from './routes/_kelola/reports.performance.checklist'
+import { Route as KelolaReportsPerformanceEmployeeRouteImport } from './routes/_kelola/reports.performance.employee'
+import { Route as KelolaReportsPerformanceServiceQualityRouteImport } from './routes/_kelola/reports.performance.service-quality'
+import { Route as KelolaReportsPerformanceStationRouteImport } from './routes/_kelola/reports.performance.station'
+import { Route as KelolaReportsPurchasingOrdersRouteImport } from './routes/_kelola/reports.purchasing.orders'
+import { Route as KelolaReportsPurchasingPriceHistoryRouteImport } from './routes/_kelola/reports.purchasing.price-history'
+import { Route as KelolaReportsPurchasingReceiptsRouteImport } from './routes/_kelola/reports.purchasing.receipts'
+import { Route as KelolaReportsPurchasingRequestsRouteImport } from './routes/_kelola/reports.purchasing.requests'
+import { Route as KelolaReportsPurchasingSupplierDueRouteImport } from './routes/_kelola/reports.purchasing.supplier-due'
+import { Route as KelolaReportsReservationBookingsRouteImport } from './routes/_kelola/reports.reservation.bookings'
+import { Route as KelolaReportsReservationByZoneRouteImport } from './routes/_kelola/reports.reservation.by-zone'
+import { Route as KelolaReportsReservationNoShowRouteImport } from './routes/_kelola/reports.reservation.no-show'
+import { Route as KelolaReportsReservationPeakHoursRouteImport } from './routes/_kelola/reports.reservation.peak-hours'
+import { Route as KelolaReportsSalesByCategoryRouteImport } from './routes/_kelola/reports.sales.by-category'
+import { Route as KelolaReportsSalesByDayRouteImport } from './routes/_kelola/reports.sales.by-day'
 import { Route as KelolaReportsSalesDailyRouteImport } from './routes/_kelola/reports.sales.daily'
 import { Route as KelolaReportsSalesDiscountRouteImport } from './routes/_kelola/reports.sales.discount'
 import { Route as KelolaReportsSalesPerChannelRouteImport } from './routes/_kelola/reports.sales.per-channel'
@@ -211,13 +296,26 @@ import { Route as KelolaReportsSalesPerHourRouteImport } from './routes/_kelola/
 import { Route as KelolaReportsSalesPerMenuRouteImport } from './routes/_kelola/reports.sales.per-menu'
 import { Route as KelolaReportsSalesPerPaxRouteImport } from './routes/_kelola/reports.sales.per-pax'
 import { Route as KelolaReportsSalesRefundRouteImport } from './routes/_kelola/reports.sales.refund'
+import { Route as KelolaReportsSalesTargetRouteImport } from './routes/_kelola/reports.sales.target'
 import { Route as KelolaReportsSalesTransactionsRouteImport } from './routes/_kelola/reports.sales.transactions'
 import { Route as KelolaReportsSalesVoidRouteImport } from './routes/_kelola/reports.sales.void'
+import { Route as KelolaReportsTaxByRuleRouteImport } from './routes/_kelola/reports.tax.by-rule'
+import { Route as KelolaReportsTaxPbjtRouteImport } from './routes/_kelola/reports.tax.pbjt'
+import { Route as KelolaReportsTaxReceivableRouteImport } from './routes/_kelola/reports.tax.receivable'
+import { Route as KelolaReportsTaxServiceChargeRouteImport } from './routes/_kelola/reports.tax.service-charge'
+import { Route as KelolaReportsTrafficByZoneRouteImport } from './routes/_kelola/reports.traffic.by-zone'
+import { Route as KelolaReportsTrafficDwellTimeRouteImport } from './routes/_kelola/reports.traffic.dwell-time'
+import { Route as KelolaReportsTrafficNewVsReturningRouteImport } from './routes/_kelola/reports.traffic.new-vs-returning'
+import { Route as KelolaReportsTrafficPaxRouteImport } from './routes/_kelola/reports.traffic.pax'
+import { Route as KelolaReportsTrafficPeakHoursRouteImport } from './routes/_kelola/reports.traffic.peak-hours'
 import { Route as OpsOperasionalChecklistIndexRouteImport } from './routes/_ops/operasional.checklist.index'
 import { Route as OpsOperasionalChecklistRunIdRouteImport } from './routes/_ops/operasional.checklist.$runId'
 import { Route as OpsOperasionalPeralatanIndexRouteImport } from './routes/_ops/operasional.peralatan.index'
 import { Route as OpsOperasionalPeralatanEquipmentIdRouteImport } from './routes/_ops/operasional.peralatan.$equipmentId'
+import { Route as OpsPosBayarOrderIdRouteImport } from './routes/_ops/pos.bayar.$orderId'
 import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
+import { Route as OpsPosShiftIndexRouteImport } from './routes/_ops/pos.shift.index'
+import { Route as OpsPosShiftTutupRouteImport } from './routes/_ops/pos.shift.tutup'
 import { Route as PlatformPlatformTenantIndexRouteImport } from './routes/_platform/platform.tenant.index'
 import { Route as PlatformPlatformTenantTenantIdRouteImport } from './routes/_platform/platform.tenant.$tenantId'
 import { Route as PlatformPlatformTenantBaruRouteImport } from './routes/_platform/platform.tenant.baru'
@@ -246,6 +344,7 @@ import { Route as KelolaKelolaPengadaanSupplierIndexRouteImport } from './routes
 import { Route as KelolaKelolaPengadaanSupplierSupplierIdRouteImport } from './routes/_kelola/kelola.pengadaan_.supplier.$supplierId'
 import { Route as OpsOperasionalChecklistTemplateIndexRouteImport } from './routes/_ops/operasional.checklist.template.index'
 import { Route as OpsOperasionalChecklistTemplateTemplateIdRouteImport } from './routes/_ops/operasional.checklist.template.$templateId'
+import { Route as OpsPosSupervisorShiftShiftIdRouteImport } from './routes/_ops/pos.supervisor.shift.$shiftId'
 import { Route as KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.$manualJournalId.index'
 import { Route as KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.$manualJournalId.ubah'
 import { Route as KelolaKelolaPengadaanPoIdCetakRouteImport } from './routes/_kelola/kelola.pengadaan_.po.$id.cetak'
@@ -282,10 +381,6 @@ const PlatformRoute = PlatformRouteImport.update({
   id: '/_platform',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ProtectedRoute = ProtectedRouteImport.update({
-  id: '/_protected',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const PublicRoute = PublicRouteImport.update({
   id: '/_public',
   getParentRoute: () => rootRouteImport,
@@ -297,6 +392,11 @@ const ShareholderRoute = ShareholderRouteImport.update({
 const DesignSystemRoute = DesignSystemRouteImport.update({
   id: '/design-system',
   path: '/design-system',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ManifestDotwebmanifestRoute = ManifestDotwebmanifestRouteImport.update({
+  id: '/manifest.webmanifest',
+  path: '/manifest.webmanifest',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RobotsDottxtRoute = RobotsDottxtRouteImport.update({
@@ -348,16 +448,6 @@ const KitchenPickupRoute = KitchenPickupRouteImport.update({
   id: '/pickup',
   path: '/pickup',
   getParentRoute: () => KitchenRoute,
-} as any)
-const ProtectedAdminRoute = ProtectedAdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
-  getParentRoute: () => ProtectedRoute,
-} as any)
-const ProtectedNotesRoute = ProtectedNotesRouteImport.update({
-  id: '/notes',
-  path: '/notes',
-  getParentRoute: () => ProtectedRoute,
 } as any)
 const PublicIndexRoute = PublicIndexRouteImport.update({
   id: '/',
@@ -587,9 +677,19 @@ const OpsPosGantiPenggunaRoute = OpsPosGantiPenggunaRouteImport.update({
   path: '/pos/ganti-pengguna',
   getParentRoute: () => OpsRoute,
 } as any)
+const OpsPosKodeRoute = OpsPosKodeRouteImport.update({
+  id: '/pos/kode',
+  path: '/pos/kode',
+  getParentRoute: () => OpsRoute,
+} as any)
 const OpsPosReservasiRoute = OpsPosReservasiRouteImport.update({
   id: '/pos/reservasi',
   path: '/pos/reservasi',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosTutupHariRoute = OpsPosTutupHariRouteImport.update({
+  id: '/pos/tutup-hari',
+  path: '/pos/tutup-hari',
   getParentRoute: () => OpsRoute,
 } as any)
 const OwnerOwnerIndexRoute = OwnerOwnerIndexRouteImport.update({
@@ -1188,6 +1288,12 @@ const KelolaKelolaPengaturanKonfigurasiRoute =
     path: '/kelola/pengaturan/konfigurasi',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaPengaturanOpenBillRoute =
+  KelolaKelolaPengaturanOpenBillRouteImport.update({
+    id: '/kelola/pengaturan_/open-bill',
+    path: '/kelola/pengaturan/open-bill',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaPengaturanOutletRoute =
   KelolaKelolaPengaturanOutletRouteImport.update({
     id: '/kelola/pengaturan_/outlet',
@@ -1262,16 +1368,145 @@ const KelolaKelolaSopIndexRoute = KelolaKelolaSopIndexRouteImport.update({
   path: '/kelola/sop/',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaReportsAttendanceByStationRoute =
+  KelolaReportsAttendanceByStationRouteImport.update({
+    id: '/reports/attendance/by-station',
+    path: '/reports/attendance/by-station',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsAttendanceDailyRoute =
+  KelolaReportsAttendanceDailyRouteImport.update({
+    id: '/reports/attendance/daily',
+    path: '/reports/attendance/daily',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsAttendanceLateRoute =
+  KelolaReportsAttendanceLateRouteImport.update({
+    id: '/reports/attendance/late',
+    path: '/reports/attendance/late',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsAttendanceOvertimeRoute =
+  KelolaReportsAttendanceOvertimeRouteImport.update({
+    id: '/reports/attendance/overtime',
+    path: '/reports/attendance/overtime',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsCogsPerMenuRoute =
+  KelolaReportsCogsPerMenuRouteImport.update({
+    id: '/reports/cogs/per-menu',
+    path: '/reports/cogs/per-menu',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsCogsProductionRoute =
+  KelolaReportsCogsProductionRouteImport.update({
+    id: '/reports/cogs/production',
+    path: '/reports/cogs/production',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsCogsRecipeRoute = KelolaReportsCogsRecipeRouteImport.update({
+  id: '/reports/cogs/recipe',
+  path: '/reports/cogs/recipe',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaReportsCogsTrendRoute = KelolaReportsCogsTrendRouteImport.update({
+  id: '/reports/cogs/trend',
+  path: '/reports/cogs/trend',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaReportsCrmCampaignPerformanceRoute =
+  KelolaReportsCrmCampaignPerformanceRouteImport.update({
+    id: '/reports/crm/campaign-performance',
+    path: '/reports/crm/campaign-performance',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsCrmCustomersRoute =
+  KelolaReportsCrmCustomersRouteImport.update({
+    id: '/reports/crm/customers',
+    path: '/reports/crm/customers',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsCrmPromoCostRoute =
+  KelolaReportsCrmPromoCostRouteImport.update({
+    id: '/reports/crm/promo-cost',
+    path: '/reports/crm/promo-cost',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsCrmRepeatVisitRoute =
+  KelolaReportsCrmRepeatVisitRouteImport.update({
+    id: '/reports/crm/repeat-visit',
+    path: '/reports/crm/repeat-visit',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsCrmReviewsRoute = KelolaReportsCrmReviewsRouteImport.update({
+  id: '/reports/crm/reviews',
+  path: '/reports/crm/reviews',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaReportsCrmSegmentsRoute =
+  KelolaReportsCrmSegmentsRouteImport.update({
+    id: '/reports/crm/segments',
+    path: '/reports/crm/segments',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsDeliveryByMenuRoute =
+  KelolaReportsDeliveryByMenuRouteImport.update({
+    id: '/reports/delivery/by-menu',
+    path: '/reports/delivery/by-menu',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsDeliveryChannelSalesRoute =
+  KelolaReportsDeliveryChannelSalesRouteImport.update({
+    id: '/reports/delivery/channel-sales',
+    path: '/reports/delivery/channel-sales',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsDeliveryOrdersRoute =
+  KelolaReportsDeliveryOrdersRouteImport.update({
+    id: '/reports/delivery/orders',
+    path: '/reports/delivery/orders',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsDeliverySettlementRoute =
+  KelolaReportsDeliverySettlementRouteImport.update({
+    id: '/reports/delivery/settlement',
+    path: '/reports/delivery/settlement',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFacilityCleaningTimeRoute =
+  KelolaReportsFacilityCleaningTimeRouteImport.update({
+    id: '/reports/facility/cleaning-time',
+    path: '/reports/facility/cleaning-time',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaReportsFacilityFnbConversionRoute =
   KelolaReportsFacilityFnbConversionRouteImport.update({
     id: '/reports/facility/fnb-conversion',
     path: '/reports/facility/fnb-conversion',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaReportsFacilityIncidentsRoute =
+  KelolaReportsFacilityIncidentsRouteImport.update({
+    id: '/reports/facility/incidents',
+    path: '/reports/facility/incidents',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaReportsFacilityOccupancyRoute =
   KelolaReportsFacilityOccupancyRouteImport.update({
     id: '/reports/facility/occupancy',
     path: '/reports/facility/occupancy',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFacilityOvertimeRoute =
+  KelolaReportsFacilityOvertimeRouteImport.update({
+    id: '/reports/facility/overtime',
+    path: '/reports/facility/overtime',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFacilityProductRevenueRoute =
+  KelolaReportsFacilityProductRevenueRouteImport.update({
+    id: '/reports/facility/product-revenue',
+    path: '/reports/facility/product-revenue',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaReportsFacilityRevenueRoute =
@@ -1292,12 +1527,382 @@ const KelolaReportsFacilitySubscriptionsRoute =
     path: '/reports/facility/subscriptions',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaReportsFacilityUnitUtilizationRoute =
+  KelolaReportsFacilityUnitUtilizationRouteImport.update({
+    id: '/reports/facility/unit-utilization',
+    path: '/reports/facility/unit-utilization',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaReportsFacilityWifiRoute =
   KelolaReportsFacilityWifiRouteImport.update({
     id: '/reports/facility/wifi',
     path: '/reports/facility/wifi',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaReportsFinanceCashPositionRoute =
+  KelolaReportsFinanceCashPositionRouteImport.update({
+    id: '/reports/finance/cash-position',
+    path: '/reports/finance/cash-position',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFinanceEbitdaRoute =
+  KelolaReportsFinanceEbitdaRouteImport.update({
+    id: '/reports/finance/ebitda',
+    path: '/reports/finance/ebitda',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFinanceGrossMarginRoute =
+  KelolaReportsFinanceGrossMarginRouteImport.update({
+    id: '/reports/finance/gross-margin',
+    path: '/reports/finance/gross-margin',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFinanceIncomeStatementRoute =
+  KelolaReportsFinanceIncomeStatementRouteImport.update({
+    id: '/reports/finance/income-statement',
+    path: '/reports/finance/income-statement',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFinancePendingSettlementRoute =
+  KelolaReportsFinancePendingSettlementRouteImport.update({
+    id: '/reports/finance/pending-settlement',
+    path: '/reports/finance/pending-settlement',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFinancePrimeCostRoute =
+  KelolaReportsFinancePrimeCostRouteImport.update({
+    id: '/reports/finance/prime-cost',
+    path: '/reports/finance/prime-cost',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFinanceProfitTrendRoute =
+  KelolaReportsFinanceProfitTrendRouteImport.update({
+    id: '/reports/finance/profit-trend',
+    path: '/reports/finance/profit-trend',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFinanceSupplierDueRoute =
+  KelolaReportsFinanceSupplierDueRouteImport.update({
+    id: '/reports/finance/supplier-due',
+    path: '/reports/finance/supplier-due',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsInventoryCriticalStockRoute =
+  KelolaReportsInventoryCriticalStockRouteImport.update({
+    id: '/reports/inventory/critical-stock',
+    path: '/reports/inventory/critical-stock',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsInventoryFoodCostRoute =
+  KelolaReportsInventoryFoodCostRouteImport.update({
+    id: '/reports/inventory/food-cost',
+    path: '/reports/inventory/food-cost',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsInventoryMovementRoute =
+  KelolaReportsInventoryMovementRouteImport.update({
+    id: '/reports/inventory/movement',
+    path: '/reports/inventory/movement',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsInventoryStockUsageRoute =
+  KelolaReportsInventoryStockUsageRouteImport.update({
+    id: '/reports/inventory/stock-usage',
+    path: '/reports/inventory/stock-usage',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsInventoryStockValueRoute =
+  KelolaReportsInventoryStockValueRouteImport.update({
+    id: '/reports/inventory/stock-value',
+    path: '/reports/inventory/stock-value',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsInventoryWasteRoute =
+  KelolaReportsInventoryWasteRouteImport.update({
+    id: '/reports/inventory/waste',
+    path: '/reports/inventory/waste',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsInventoryWasteByCategoryRoute =
+  KelolaReportsInventoryWasteByCategoryRouteImport.update({
+    id: '/reports/inventory/waste-by-category',
+    path: '/reports/inventory/waste-by-category',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsLoyaltyMembersRoute =
+  KelolaReportsLoyaltyMembersRouteImport.update({
+    id: '/reports/loyalty/members',
+    path: '/reports/loyalty/members',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsLoyaltyNewMembersRoute =
+  KelolaReportsLoyaltyNewMembersRouteImport.update({
+    id: '/reports/loyalty/new-members',
+    path: '/reports/loyalty/new-members',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsLoyaltyPointsRoute =
+  KelolaReportsLoyaltyPointsRouteImport.update({
+    id: '/reports/loyalty/points',
+    path: '/reports/loyalty/points',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsLoyaltyTierMixRoute =
+  KelolaReportsLoyaltyTierMixRouteImport.update({
+    id: '/reports/loyalty/tier-mix',
+    path: '/reports/loyalty/tier-mix',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsLoyaltyVisitsRoute =
+  KelolaReportsLoyaltyVisitsRouteImport.update({
+    id: '/reports/loyalty/visits',
+    path: '/reports/loyalty/visits',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsMenuBestSellersRoute =
+  KelolaReportsMenuBestSellersRouteImport.update({
+    id: '/reports/menu/best-sellers',
+    path: '/reports/menu/best-sellers',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsMenuCategorySalesRoute =
+  KelolaReportsMenuCategorySalesRouteImport.update({
+    id: '/reports/menu/category-sales',
+    path: '/reports/menu/category-sales',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsMenuEngineeringRoute =
+  KelolaReportsMenuEngineeringRouteImport.update({
+    id: '/reports/menu/engineering',
+    path: '/reports/menu/engineering',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsMenuMarginRoute = KelolaReportsMenuMarginRouteImport.update({
+  id: '/reports/menu/margin',
+  path: '/reports/menu/margin',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaReportsMenuRecipeCostRoute =
+  KelolaReportsMenuRecipeCostRouteImport.update({
+    id: '/reports/menu/recipe-cost',
+    path: '/reports/menu/recipe-cost',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsMenuSlowMoversRoute =
+  KelolaReportsMenuSlowMoversRouteImport.update({
+    id: '/reports/menu/slow-movers',
+    path: '/reports/menu/slow-movers',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsMenuSoldOutRoute =
+  KelolaReportsMenuSoldOutRouteImport.update({
+    id: '/reports/menu/sold-out',
+    path: '/reports/menu/sold-out',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsAlertsRoute =
+  KelolaReportsOperationsAlertsRouteImport.update({
+    id: '/reports/operations/alerts',
+    path: '/reports/operations/alerts',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsDevicesRoute =
+  KelolaReportsOperationsDevicesRouteImport.update({
+    id: '/reports/operations/devices',
+    path: '/reports/operations/devices',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsFailedItemsRoute =
+  KelolaReportsOperationsFailedItemsRouteImport.update({
+    id: '/reports/operations/failed-items',
+    path: '/reports/operations/failed-items',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsKitchenQueueRoute =
+  KelolaReportsOperationsKitchenQueueRouteImport.update({
+    id: '/reports/operations/kitchen-queue',
+    path: '/reports/operations/kitchen-queue',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsOccupancyRoute =
+  KelolaReportsOperationsOccupancyRouteImport.update({
+    id: '/reports/operations/occupancy',
+    path: '/reports/operations/occupancy',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsRemakeCompRoute =
+  KelolaReportsOperationsRemakeCompRouteImport.update({
+    id: '/reports/operations/remake-comp',
+    path: '/reports/operations/remake-comp',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsServingTimeRoute =
+  KelolaReportsOperationsServingTimeRouteImport.update({
+    id: '/reports/operations/serving-time',
+    path: '/reports/operations/serving-time',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsTableTurnoverRoute =
+  KelolaReportsOperationsTableTurnoverRouteImport.update({
+    id: '/reports/operations/table-turnover',
+    path: '/reports/operations/table-turnover',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsOperationsWaiterCallsRoute =
+  KelolaReportsOperationsWaiterCallsRouteImport.update({
+    id: '/reports/operations/waiter-calls',
+    path: '/reports/operations/waiter-calls',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPaymentsCashVarianceRoute =
+  KelolaReportsPaymentsCashVarianceRouteImport.update({
+    id: '/reports/payments/cash-variance',
+    path: '/reports/payments/cash-variance',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPaymentsEdcSettlementRoute =
+  KelolaReportsPaymentsEdcSettlementRouteImport.update({
+    id: '/reports/payments/edc-settlement',
+    path: '/reports/payments/edc-settlement',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPaymentsFailedRoute =
+  KelolaReportsPaymentsFailedRouteImport.update({
+    id: '/reports/payments/failed',
+    path: '/reports/payments/failed',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPaymentsFeesRoute =
+  KelolaReportsPaymentsFeesRouteImport.update({
+    id: '/reports/payments/fees',
+    path: '/reports/payments/fees',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPaymentsGatewaySettlementRoute =
+  KelolaReportsPaymentsGatewaySettlementRouteImport.update({
+    id: '/reports/payments/gateway-settlement',
+    path: '/reports/payments/gateway-settlement',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPaymentsMethodsRoute =
+  KelolaReportsPaymentsMethodsRouteImport.update({
+    id: '/reports/payments/methods',
+    path: '/reports/payments/methods',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPayrollCostTrendRoute =
+  KelolaReportsPayrollCostTrendRouteImport.update({
+    id: '/reports/payroll/cost-trend',
+    path: '/reports/payroll/cost-trend',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPayrollGrossRoute =
+  KelolaReportsPayrollGrossRouteImport.update({
+    id: '/reports/payroll/gross',
+    path: '/reports/payroll/gross',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPayrollLaborCostRoute =
+  KelolaReportsPayrollLaborCostRouteImport.update({
+    id: '/reports/payroll/labor-cost',
+    path: '/reports/payroll/labor-cost',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPayrollOvertimeRoute =
+  KelolaReportsPayrollOvertimeRouteImport.update({
+    id: '/reports/payroll/overtime',
+    path: '/reports/payroll/overtime',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPerformanceChecklistRoute =
+  KelolaReportsPerformanceChecklistRouteImport.update({
+    id: '/reports/performance/checklist',
+    path: '/reports/performance/checklist',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPerformanceEmployeeRoute =
+  KelolaReportsPerformanceEmployeeRouteImport.update({
+    id: '/reports/performance/employee',
+    path: '/reports/performance/employee',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPerformanceServiceQualityRoute =
+  KelolaReportsPerformanceServiceQualityRouteImport.update({
+    id: '/reports/performance/service-quality',
+    path: '/reports/performance/service-quality',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPerformanceStationRoute =
+  KelolaReportsPerformanceStationRouteImport.update({
+    id: '/reports/performance/station',
+    path: '/reports/performance/station',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPurchasingOrdersRoute =
+  KelolaReportsPurchasingOrdersRouteImport.update({
+    id: '/reports/purchasing/orders',
+    path: '/reports/purchasing/orders',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPurchasingPriceHistoryRoute =
+  KelolaReportsPurchasingPriceHistoryRouteImport.update({
+    id: '/reports/purchasing/price-history',
+    path: '/reports/purchasing/price-history',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPurchasingReceiptsRoute =
+  KelolaReportsPurchasingReceiptsRouteImport.update({
+    id: '/reports/purchasing/receipts',
+    path: '/reports/purchasing/receipts',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPurchasingRequestsRoute =
+  KelolaReportsPurchasingRequestsRouteImport.update({
+    id: '/reports/purchasing/requests',
+    path: '/reports/purchasing/requests',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsPurchasingSupplierDueRoute =
+  KelolaReportsPurchasingSupplierDueRouteImport.update({
+    id: '/reports/purchasing/supplier-due',
+    path: '/reports/purchasing/supplier-due',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsReservationBookingsRoute =
+  KelolaReportsReservationBookingsRouteImport.update({
+    id: '/reports/reservation/bookings',
+    path: '/reports/reservation/bookings',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsReservationByZoneRoute =
+  KelolaReportsReservationByZoneRouteImport.update({
+    id: '/reports/reservation/by-zone',
+    path: '/reports/reservation/by-zone',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsReservationNoShowRoute =
+  KelolaReportsReservationNoShowRouteImport.update({
+    id: '/reports/reservation/no-show',
+    path: '/reports/reservation/no-show',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsReservationPeakHoursRoute =
+  KelolaReportsReservationPeakHoursRouteImport.update({
+    id: '/reports/reservation/peak-hours',
+    path: '/reports/reservation/peak-hours',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsSalesByCategoryRoute =
+  KelolaReportsSalesByCategoryRouteImport.update({
+    id: '/reports/sales/by-category',
+    path: '/reports/sales/by-category',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsSalesByDayRoute = KelolaReportsSalesByDayRouteImport.update({
+  id: '/reports/sales/by-day',
+  path: '/reports/sales/by-day',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaReportsSalesDailyRoute = KelolaReportsSalesDailyRouteImport.update({
   id: '/reports/sales/daily',
   path: '/reports/sales/daily',
@@ -1345,6 +1950,12 @@ const KelolaReportsSalesRefundRoute =
     path: '/reports/sales/refund',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaReportsSalesTargetRoute =
+  KelolaReportsSalesTargetRouteImport.update({
+    id: '/reports/sales/target',
+    path: '/reports/sales/target',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaReportsSalesTransactionsRoute =
   KelolaReportsSalesTransactionsRouteImport.update({
     id: '/reports/sales/transactions',
@@ -1356,6 +1967,57 @@ const KelolaReportsSalesVoidRoute = KelolaReportsSalesVoidRouteImport.update({
   path: '/reports/sales/void',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaReportsTaxByRuleRoute = KelolaReportsTaxByRuleRouteImport.update({
+  id: '/reports/tax/by-rule',
+  path: '/reports/tax/by-rule',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaReportsTaxPbjtRoute = KelolaReportsTaxPbjtRouteImport.update({
+  id: '/reports/tax/pbjt',
+  path: '/reports/tax/pbjt',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaReportsTaxReceivableRoute =
+  KelolaReportsTaxReceivableRouteImport.update({
+    id: '/reports/tax/receivable',
+    path: '/reports/tax/receivable',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsTaxServiceChargeRoute =
+  KelolaReportsTaxServiceChargeRouteImport.update({
+    id: '/reports/tax/service-charge',
+    path: '/reports/tax/service-charge',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsTrafficByZoneRoute =
+  KelolaReportsTrafficByZoneRouteImport.update({
+    id: '/reports/traffic/by-zone',
+    path: '/reports/traffic/by-zone',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsTrafficDwellTimeRoute =
+  KelolaReportsTrafficDwellTimeRouteImport.update({
+    id: '/reports/traffic/dwell-time',
+    path: '/reports/traffic/dwell-time',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsTrafficNewVsReturningRoute =
+  KelolaReportsTrafficNewVsReturningRouteImport.update({
+    id: '/reports/traffic/new-vs-returning',
+    path: '/reports/traffic/new-vs-returning',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsTrafficPaxRoute = KelolaReportsTrafficPaxRouteImport.update({
+  id: '/reports/traffic/pax',
+  path: '/reports/traffic/pax',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaReportsTrafficPeakHoursRoute =
+  KelolaReportsTrafficPeakHoursRouteImport.update({
+    id: '/reports/traffic/peak-hours',
+    path: '/reports/traffic/peak-hours',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const OpsOperasionalChecklistIndexRoute =
   OpsOperasionalChecklistIndexRouteImport.update({
     id: '/operasional/checklist/',
@@ -1380,9 +2042,24 @@ const OpsOperasionalPeralatanEquipmentIdRoute =
     path: '/operasional/peralatan/$equipmentId',
     getParentRoute: () => OpsRoute,
   } as any)
+const OpsPosBayarOrderIdRoute = OpsPosBayarOrderIdRouteImport.update({
+  id: '/pos/bayar/$orderId',
+  path: '/pos/bayar/$orderId',
+  getParentRoute: () => OpsRoute,
+} as any)
 const OpsPosMejaIndexRoute = OpsPosMejaIndexRouteImport.update({
   id: '/pos/meja/',
   path: '/pos/meja/',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosShiftIndexRoute = OpsPosShiftIndexRouteImport.update({
+  id: '/pos/shift/',
+  path: '/pos/shift/',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosShiftTutupRoute = OpsPosShiftTutupRouteImport.update({
+  id: '/pos/shift/tutup',
+  path: '/pos/shift/tutup',
   getParentRoute: () => OpsRoute,
 } as any)
 const PlatformPlatformTenantIndexRoute =
@@ -1553,6 +2230,12 @@ const OpsOperasionalChecklistTemplateTemplateIdRoute =
     path: '/operasional/checklist/template/$templateId',
     getParentRoute: () => OpsRoute,
   } as any)
+const OpsPosSupervisorShiftShiftIdRoute =
+  OpsPosSupervisorShiftShiftIdRouteImport.update({
+    id: '/pos/supervisor/shift/$shiftId',
+    path: '/pos/supervisor/shift/$shiftId',
+    getParentRoute: () => OpsRoute,
+  } as any)
 const KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute =
   KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRouteImport.update({
     id: '/kelola/akuntansi/jurnal-manual/$manualJournalId/',
@@ -1575,6 +2258,7 @@ const KelolaKelolaPengadaanPoIdCetakRoute =
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
@@ -1585,8 +2269,6 @@ export interface FileRoutesByFullPath {
   '/audit': typeof KelolaAuditRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
-  '/admin': typeof ProtectedAdminRoute
-  '/notes': typeof ProtectedNotesRoute
   '/menu': typeof PublicMenuRoute
   '/reservasi': typeof PublicReservasiRoute
   '/reservation': typeof PublicReservationRoute
@@ -1624,7 +2306,9 @@ export interface FileRoutesByFullPath {
   '/operasional/suhu': typeof OpsOperasionalSuhuRoute
   '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
+  '/pos/kode': typeof OpsPosKodeRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
+  '/pos/tutup-hari': typeof OpsPosTutupHariRoute
   '/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
   '/platform/audit': typeof PlatformPlatformAuditRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
@@ -1717,6 +2401,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
   '/kelola/pengaturan/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/kelola/pengaturan/open-bill': typeof KelolaKelolaPengaturanOpenBillRoute
   '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/kelola/pengaturan/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
@@ -1725,12 +2410,96 @@ export interface FileRoutesByFullPath {
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
   '/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/kelola/roster/template': typeof KelolaKelolaRosterTemplateRoute
+  '/reports/attendance/by-station': typeof KelolaReportsAttendanceByStationRoute
+  '/reports/attendance/daily': typeof KelolaReportsAttendanceDailyRoute
+  '/reports/attendance/late': typeof KelolaReportsAttendanceLateRoute
+  '/reports/attendance/overtime': typeof KelolaReportsAttendanceOvertimeRoute
+  '/reports/cogs/per-menu': typeof KelolaReportsCogsPerMenuRoute
+  '/reports/cogs/production': typeof KelolaReportsCogsProductionRoute
+  '/reports/cogs/recipe': typeof KelolaReportsCogsRecipeRoute
+  '/reports/cogs/trend': typeof KelolaReportsCogsTrendRoute
+  '/reports/crm/campaign-performance': typeof KelolaReportsCrmCampaignPerformanceRoute
+  '/reports/crm/customers': typeof KelolaReportsCrmCustomersRoute
+  '/reports/crm/promo-cost': typeof KelolaReportsCrmPromoCostRoute
+  '/reports/crm/repeat-visit': typeof KelolaReportsCrmRepeatVisitRoute
+  '/reports/crm/reviews': typeof KelolaReportsCrmReviewsRoute
+  '/reports/crm/segments': typeof KelolaReportsCrmSegmentsRoute
+  '/reports/delivery/by-menu': typeof KelolaReportsDeliveryByMenuRoute
+  '/reports/delivery/channel-sales': typeof KelolaReportsDeliveryChannelSalesRoute
+  '/reports/delivery/orders': typeof KelolaReportsDeliveryOrdersRoute
+  '/reports/delivery/settlement': typeof KelolaReportsDeliverySettlementRoute
+  '/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
+  '/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
   '/reports/facility/occupancy': typeof KelolaReportsFacilityOccupancyRoute
+  '/reports/facility/overtime': typeof KelolaReportsFacilityOvertimeRoute
+  '/reports/facility/product-revenue': typeof KelolaReportsFacilityProductRevenueRoute
   '/reports/facility/revenue': typeof KelolaReportsFacilityRevenueRoute
   '/reports/facility/revpash': typeof KelolaReportsFacilityRevpashRoute
   '/reports/facility/subscriptions': typeof KelolaReportsFacilitySubscriptionsRoute
+  '/reports/facility/unit-utilization': typeof KelolaReportsFacilityUnitUtilizationRoute
   '/reports/facility/wifi': typeof KelolaReportsFacilityWifiRoute
+  '/reports/finance/cash-position': typeof KelolaReportsFinanceCashPositionRoute
+  '/reports/finance/ebitda': typeof KelolaReportsFinanceEbitdaRoute
+  '/reports/finance/gross-margin': typeof KelolaReportsFinanceGrossMarginRoute
+  '/reports/finance/income-statement': typeof KelolaReportsFinanceIncomeStatementRoute
+  '/reports/finance/pending-settlement': typeof KelolaReportsFinancePendingSettlementRoute
+  '/reports/finance/prime-cost': typeof KelolaReportsFinancePrimeCostRoute
+  '/reports/finance/profit-trend': typeof KelolaReportsFinanceProfitTrendRoute
+  '/reports/finance/supplier-due': typeof KelolaReportsFinanceSupplierDueRoute
+  '/reports/inventory/critical-stock': typeof KelolaReportsInventoryCriticalStockRoute
+  '/reports/inventory/food-cost': typeof KelolaReportsInventoryFoodCostRoute
+  '/reports/inventory/movement': typeof KelolaReportsInventoryMovementRoute
+  '/reports/inventory/stock-usage': typeof KelolaReportsInventoryStockUsageRoute
+  '/reports/inventory/stock-value': typeof KelolaReportsInventoryStockValueRoute
+  '/reports/inventory/waste': typeof KelolaReportsInventoryWasteRoute
+  '/reports/inventory/waste-by-category': typeof KelolaReportsInventoryWasteByCategoryRoute
+  '/reports/loyalty/members': typeof KelolaReportsLoyaltyMembersRoute
+  '/reports/loyalty/new-members': typeof KelolaReportsLoyaltyNewMembersRoute
+  '/reports/loyalty/points': typeof KelolaReportsLoyaltyPointsRoute
+  '/reports/loyalty/tier-mix': typeof KelolaReportsLoyaltyTierMixRoute
+  '/reports/loyalty/visits': typeof KelolaReportsLoyaltyVisitsRoute
+  '/reports/menu/best-sellers': typeof KelolaReportsMenuBestSellersRoute
+  '/reports/menu/category-sales': typeof KelolaReportsMenuCategorySalesRoute
+  '/reports/menu/engineering': typeof KelolaReportsMenuEngineeringRoute
+  '/reports/menu/margin': typeof KelolaReportsMenuMarginRoute
+  '/reports/menu/recipe-cost': typeof KelolaReportsMenuRecipeCostRoute
+  '/reports/menu/slow-movers': typeof KelolaReportsMenuSlowMoversRoute
+  '/reports/menu/sold-out': typeof KelolaReportsMenuSoldOutRoute
+  '/reports/operations/alerts': typeof KelolaReportsOperationsAlertsRoute
+  '/reports/operations/devices': typeof KelolaReportsOperationsDevicesRoute
+  '/reports/operations/failed-items': typeof KelolaReportsOperationsFailedItemsRoute
+  '/reports/operations/kitchen-queue': typeof KelolaReportsOperationsKitchenQueueRoute
+  '/reports/operations/occupancy': typeof KelolaReportsOperationsOccupancyRoute
+  '/reports/operations/remake-comp': typeof KelolaReportsOperationsRemakeCompRoute
+  '/reports/operations/serving-time': typeof KelolaReportsOperationsServingTimeRoute
+  '/reports/operations/table-turnover': typeof KelolaReportsOperationsTableTurnoverRoute
+  '/reports/operations/waiter-calls': typeof KelolaReportsOperationsWaiterCallsRoute
+  '/reports/payments/cash-variance': typeof KelolaReportsPaymentsCashVarianceRoute
+  '/reports/payments/edc-settlement': typeof KelolaReportsPaymentsEdcSettlementRoute
+  '/reports/payments/failed': typeof KelolaReportsPaymentsFailedRoute
+  '/reports/payments/fees': typeof KelolaReportsPaymentsFeesRoute
+  '/reports/payments/gateway-settlement': typeof KelolaReportsPaymentsGatewaySettlementRoute
+  '/reports/payments/methods': typeof KelolaReportsPaymentsMethodsRoute
+  '/reports/payroll/cost-trend': typeof KelolaReportsPayrollCostTrendRoute
+  '/reports/payroll/gross': typeof KelolaReportsPayrollGrossRoute
+  '/reports/payroll/labor-cost': typeof KelolaReportsPayrollLaborCostRoute
+  '/reports/payroll/overtime': typeof KelolaReportsPayrollOvertimeRoute
+  '/reports/performance/checklist': typeof KelolaReportsPerformanceChecklistRoute
+  '/reports/performance/employee': typeof KelolaReportsPerformanceEmployeeRoute
+  '/reports/performance/service-quality': typeof KelolaReportsPerformanceServiceQualityRoute
+  '/reports/performance/station': typeof KelolaReportsPerformanceStationRoute
+  '/reports/purchasing/orders': typeof KelolaReportsPurchasingOrdersRoute
+  '/reports/purchasing/price-history': typeof KelolaReportsPurchasingPriceHistoryRoute
+  '/reports/purchasing/receipts': typeof KelolaReportsPurchasingReceiptsRoute
+  '/reports/purchasing/requests': typeof KelolaReportsPurchasingRequestsRoute
+  '/reports/purchasing/supplier-due': typeof KelolaReportsPurchasingSupplierDueRoute
+  '/reports/reservation/bookings': typeof KelolaReportsReservationBookingsRoute
+  '/reports/reservation/by-zone': typeof KelolaReportsReservationByZoneRoute
+  '/reports/reservation/no-show': typeof KelolaReportsReservationNoShowRoute
+  '/reports/reservation/peak-hours': typeof KelolaReportsReservationPeakHoursRoute
+  '/reports/sales/by-category': typeof KelolaReportsSalesByCategoryRoute
+  '/reports/sales/by-day': typeof KelolaReportsSalesByDayRoute
   '/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
   '/reports/sales/per-channel': typeof KelolaReportsSalesPerChannelRoute
@@ -1739,10 +2508,22 @@ export interface FileRoutesByFullPath {
   '/reports/sales/per-menu': typeof KelolaReportsSalesPerMenuRoute
   '/reports/sales/per-pax': typeof KelolaReportsSalesPerPaxRoute
   '/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
+  '/reports/sales/target': typeof KelolaReportsSalesTargetRoute
   '/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/reports/sales/void': typeof KelolaReportsSalesVoidRoute
+  '/reports/tax/by-rule': typeof KelolaReportsTaxByRuleRoute
+  '/reports/tax/pbjt': typeof KelolaReportsTaxPbjtRoute
+  '/reports/tax/receivable': typeof KelolaReportsTaxReceivableRoute
+  '/reports/tax/service-charge': typeof KelolaReportsTaxServiceChargeRoute
+  '/reports/traffic/by-zone': typeof KelolaReportsTrafficByZoneRoute
+  '/reports/traffic/dwell-time': typeof KelolaReportsTrafficDwellTimeRoute
+  '/reports/traffic/new-vs-returning': typeof KelolaReportsTrafficNewVsReturningRoute
+  '/reports/traffic/pax': typeof KelolaReportsTrafficPaxRoute
+  '/reports/traffic/peak-hours': typeof KelolaReportsTrafficPeakHoursRoute
   '/operasional/checklist/$runId': typeof OpsOperasionalChecklistRunIdRoute
   '/operasional/peralatan/$equipmentId': typeof OpsOperasionalPeralatanEquipmentIdRoute
+  '/pos/bayar/$orderId': typeof OpsPosBayarOrderIdRoute
+  '/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
@@ -1773,6 +2554,7 @@ export interface FileRoutesByFullPath {
   '/operasional/checklist/': typeof OpsOperasionalChecklistIndexRoute
   '/operasional/peralatan/': typeof OpsOperasionalPeralatanIndexRoute
   '/pos/meja/': typeof OpsPosMejaIndexRoute
+  '/pos/shift/': typeof OpsPosShiftIndexRoute
   '/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
   '/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
@@ -1789,6 +2571,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pengadaan/penerimaan/baru': typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   '/kelola/pengadaan/supplier/$supplierId': typeof KelolaKelolaPengadaanSupplierSupplierIdRoute
   '/operasional/checklist/template/$templateId': typeof OpsOperasionalChecklistTemplateTemplateIdRoute
+  '/pos/supervisor/shift/$shiftId': typeof OpsPosSupervisorShiftShiftIdRoute
   '/kelola/akuntansi/bagi-hasil/': typeof KelolaKelolaAkuntansiBagiHasilIndexRoute
   '/kelola/akuntansi/jurnal-manual/': typeof KelolaKelolaAkuntansiJurnalManualIndexRoute
   '/kelola/akuntansi/jurnal/': typeof KelolaKelolaAkuntansiJurnalIndexRoute
@@ -1806,6 +2589,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
@@ -1815,8 +2599,6 @@ export interface FileRoutesByTo {
   '/audit': typeof KelolaAuditRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
-  '/admin': typeof ProtectedAdminRoute
-  '/notes': typeof ProtectedNotesRoute
   '/menu': typeof PublicMenuRoute
   '/reservasi': typeof PublicReservasiRoute
   '/reservation': typeof PublicReservationRoute
@@ -1853,7 +2635,9 @@ export interface FileRoutesByTo {
   '/operasional/suhu': typeof OpsOperasionalSuhuRoute
   '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
+  '/pos/kode': typeof OpsPosKodeRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
+  '/pos/tutup-hari': typeof OpsPosTutupHariRoute
   '/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
   '/platform/audit': typeof PlatformPlatformAuditRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
@@ -1945,6 +2729,7 @@ export interface FileRoutesByTo {
   '/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
   '/kelola/pengaturan/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/kelola/pengaturan/open-bill': typeof KelolaKelolaPengaturanOpenBillRoute
   '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/kelola/pengaturan/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
@@ -1953,12 +2738,96 @@ export interface FileRoutesByTo {
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
   '/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/kelola/roster/template': typeof KelolaKelolaRosterTemplateRoute
+  '/reports/attendance/by-station': typeof KelolaReportsAttendanceByStationRoute
+  '/reports/attendance/daily': typeof KelolaReportsAttendanceDailyRoute
+  '/reports/attendance/late': typeof KelolaReportsAttendanceLateRoute
+  '/reports/attendance/overtime': typeof KelolaReportsAttendanceOvertimeRoute
+  '/reports/cogs/per-menu': typeof KelolaReportsCogsPerMenuRoute
+  '/reports/cogs/production': typeof KelolaReportsCogsProductionRoute
+  '/reports/cogs/recipe': typeof KelolaReportsCogsRecipeRoute
+  '/reports/cogs/trend': typeof KelolaReportsCogsTrendRoute
+  '/reports/crm/campaign-performance': typeof KelolaReportsCrmCampaignPerformanceRoute
+  '/reports/crm/customers': typeof KelolaReportsCrmCustomersRoute
+  '/reports/crm/promo-cost': typeof KelolaReportsCrmPromoCostRoute
+  '/reports/crm/repeat-visit': typeof KelolaReportsCrmRepeatVisitRoute
+  '/reports/crm/reviews': typeof KelolaReportsCrmReviewsRoute
+  '/reports/crm/segments': typeof KelolaReportsCrmSegmentsRoute
+  '/reports/delivery/by-menu': typeof KelolaReportsDeliveryByMenuRoute
+  '/reports/delivery/channel-sales': typeof KelolaReportsDeliveryChannelSalesRoute
+  '/reports/delivery/orders': typeof KelolaReportsDeliveryOrdersRoute
+  '/reports/delivery/settlement': typeof KelolaReportsDeliverySettlementRoute
+  '/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
+  '/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
   '/reports/facility/occupancy': typeof KelolaReportsFacilityOccupancyRoute
+  '/reports/facility/overtime': typeof KelolaReportsFacilityOvertimeRoute
+  '/reports/facility/product-revenue': typeof KelolaReportsFacilityProductRevenueRoute
   '/reports/facility/revenue': typeof KelolaReportsFacilityRevenueRoute
   '/reports/facility/revpash': typeof KelolaReportsFacilityRevpashRoute
   '/reports/facility/subscriptions': typeof KelolaReportsFacilitySubscriptionsRoute
+  '/reports/facility/unit-utilization': typeof KelolaReportsFacilityUnitUtilizationRoute
   '/reports/facility/wifi': typeof KelolaReportsFacilityWifiRoute
+  '/reports/finance/cash-position': typeof KelolaReportsFinanceCashPositionRoute
+  '/reports/finance/ebitda': typeof KelolaReportsFinanceEbitdaRoute
+  '/reports/finance/gross-margin': typeof KelolaReportsFinanceGrossMarginRoute
+  '/reports/finance/income-statement': typeof KelolaReportsFinanceIncomeStatementRoute
+  '/reports/finance/pending-settlement': typeof KelolaReportsFinancePendingSettlementRoute
+  '/reports/finance/prime-cost': typeof KelolaReportsFinancePrimeCostRoute
+  '/reports/finance/profit-trend': typeof KelolaReportsFinanceProfitTrendRoute
+  '/reports/finance/supplier-due': typeof KelolaReportsFinanceSupplierDueRoute
+  '/reports/inventory/critical-stock': typeof KelolaReportsInventoryCriticalStockRoute
+  '/reports/inventory/food-cost': typeof KelolaReportsInventoryFoodCostRoute
+  '/reports/inventory/movement': typeof KelolaReportsInventoryMovementRoute
+  '/reports/inventory/stock-usage': typeof KelolaReportsInventoryStockUsageRoute
+  '/reports/inventory/stock-value': typeof KelolaReportsInventoryStockValueRoute
+  '/reports/inventory/waste': typeof KelolaReportsInventoryWasteRoute
+  '/reports/inventory/waste-by-category': typeof KelolaReportsInventoryWasteByCategoryRoute
+  '/reports/loyalty/members': typeof KelolaReportsLoyaltyMembersRoute
+  '/reports/loyalty/new-members': typeof KelolaReportsLoyaltyNewMembersRoute
+  '/reports/loyalty/points': typeof KelolaReportsLoyaltyPointsRoute
+  '/reports/loyalty/tier-mix': typeof KelolaReportsLoyaltyTierMixRoute
+  '/reports/loyalty/visits': typeof KelolaReportsLoyaltyVisitsRoute
+  '/reports/menu/best-sellers': typeof KelolaReportsMenuBestSellersRoute
+  '/reports/menu/category-sales': typeof KelolaReportsMenuCategorySalesRoute
+  '/reports/menu/engineering': typeof KelolaReportsMenuEngineeringRoute
+  '/reports/menu/margin': typeof KelolaReportsMenuMarginRoute
+  '/reports/menu/recipe-cost': typeof KelolaReportsMenuRecipeCostRoute
+  '/reports/menu/slow-movers': typeof KelolaReportsMenuSlowMoversRoute
+  '/reports/menu/sold-out': typeof KelolaReportsMenuSoldOutRoute
+  '/reports/operations/alerts': typeof KelolaReportsOperationsAlertsRoute
+  '/reports/operations/devices': typeof KelolaReportsOperationsDevicesRoute
+  '/reports/operations/failed-items': typeof KelolaReportsOperationsFailedItemsRoute
+  '/reports/operations/kitchen-queue': typeof KelolaReportsOperationsKitchenQueueRoute
+  '/reports/operations/occupancy': typeof KelolaReportsOperationsOccupancyRoute
+  '/reports/operations/remake-comp': typeof KelolaReportsOperationsRemakeCompRoute
+  '/reports/operations/serving-time': typeof KelolaReportsOperationsServingTimeRoute
+  '/reports/operations/table-turnover': typeof KelolaReportsOperationsTableTurnoverRoute
+  '/reports/operations/waiter-calls': typeof KelolaReportsOperationsWaiterCallsRoute
+  '/reports/payments/cash-variance': typeof KelolaReportsPaymentsCashVarianceRoute
+  '/reports/payments/edc-settlement': typeof KelolaReportsPaymentsEdcSettlementRoute
+  '/reports/payments/failed': typeof KelolaReportsPaymentsFailedRoute
+  '/reports/payments/fees': typeof KelolaReportsPaymentsFeesRoute
+  '/reports/payments/gateway-settlement': typeof KelolaReportsPaymentsGatewaySettlementRoute
+  '/reports/payments/methods': typeof KelolaReportsPaymentsMethodsRoute
+  '/reports/payroll/cost-trend': typeof KelolaReportsPayrollCostTrendRoute
+  '/reports/payroll/gross': typeof KelolaReportsPayrollGrossRoute
+  '/reports/payroll/labor-cost': typeof KelolaReportsPayrollLaborCostRoute
+  '/reports/payroll/overtime': typeof KelolaReportsPayrollOvertimeRoute
+  '/reports/performance/checklist': typeof KelolaReportsPerformanceChecklistRoute
+  '/reports/performance/employee': typeof KelolaReportsPerformanceEmployeeRoute
+  '/reports/performance/service-quality': typeof KelolaReportsPerformanceServiceQualityRoute
+  '/reports/performance/station': typeof KelolaReportsPerformanceStationRoute
+  '/reports/purchasing/orders': typeof KelolaReportsPurchasingOrdersRoute
+  '/reports/purchasing/price-history': typeof KelolaReportsPurchasingPriceHistoryRoute
+  '/reports/purchasing/receipts': typeof KelolaReportsPurchasingReceiptsRoute
+  '/reports/purchasing/requests': typeof KelolaReportsPurchasingRequestsRoute
+  '/reports/purchasing/supplier-due': typeof KelolaReportsPurchasingSupplierDueRoute
+  '/reports/reservation/bookings': typeof KelolaReportsReservationBookingsRoute
+  '/reports/reservation/by-zone': typeof KelolaReportsReservationByZoneRoute
+  '/reports/reservation/no-show': typeof KelolaReportsReservationNoShowRoute
+  '/reports/reservation/peak-hours': typeof KelolaReportsReservationPeakHoursRoute
+  '/reports/sales/by-category': typeof KelolaReportsSalesByCategoryRoute
+  '/reports/sales/by-day': typeof KelolaReportsSalesByDayRoute
   '/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
   '/reports/sales/per-channel': typeof KelolaReportsSalesPerChannelRoute
@@ -1967,10 +2836,22 @@ export interface FileRoutesByTo {
   '/reports/sales/per-menu': typeof KelolaReportsSalesPerMenuRoute
   '/reports/sales/per-pax': typeof KelolaReportsSalesPerPaxRoute
   '/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
+  '/reports/sales/target': typeof KelolaReportsSalesTargetRoute
   '/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/reports/sales/void': typeof KelolaReportsSalesVoidRoute
+  '/reports/tax/by-rule': typeof KelolaReportsTaxByRuleRoute
+  '/reports/tax/pbjt': typeof KelolaReportsTaxPbjtRoute
+  '/reports/tax/receivable': typeof KelolaReportsTaxReceivableRoute
+  '/reports/tax/service-charge': typeof KelolaReportsTaxServiceChargeRoute
+  '/reports/traffic/by-zone': typeof KelolaReportsTrafficByZoneRoute
+  '/reports/traffic/dwell-time': typeof KelolaReportsTrafficDwellTimeRoute
+  '/reports/traffic/new-vs-returning': typeof KelolaReportsTrafficNewVsReturningRoute
+  '/reports/traffic/pax': typeof KelolaReportsTrafficPaxRoute
+  '/reports/traffic/peak-hours': typeof KelolaReportsTrafficPeakHoursRoute
   '/operasional/checklist/$runId': typeof OpsOperasionalChecklistRunIdRoute
   '/operasional/peralatan/$equipmentId': typeof OpsOperasionalPeralatanEquipmentIdRoute
+  '/pos/bayar/$orderId': typeof OpsPosBayarOrderIdRoute
+  '/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
@@ -2001,6 +2882,7 @@ export interface FileRoutesByTo {
   '/operasional/checklist': typeof OpsOperasionalChecklistIndexRoute
   '/operasional/peralatan': typeof OpsOperasionalPeralatanIndexRoute
   '/pos/meja': typeof OpsPosMejaIndexRoute
+  '/pos/shift': typeof OpsPosShiftIndexRoute
   '/platform/tenant': typeof PlatformPlatformTenantIndexRoute
   '/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
@@ -2017,6 +2899,7 @@ export interface FileRoutesByTo {
   '/kelola/pengadaan/penerimaan/baru': typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   '/kelola/pengadaan/supplier/$supplierId': typeof KelolaKelolaPengadaanSupplierSupplierIdRoute
   '/operasional/checklist/template/$templateId': typeof OpsOperasionalChecklistTemplateTemplateIdRoute
+  '/pos/supervisor/shift/$shiftId': typeof OpsPosSupervisorShiftShiftIdRoute
   '/kelola/akuntansi/bagi-hasil': typeof KelolaKelolaAkuntansiBagiHasilIndexRoute
   '/kelola/akuntansi/jurnal-manual': typeof KelolaKelolaAkuntansiJurnalManualIndexRoute
   '/kelola/akuntansi/jurnal': typeof KelolaKelolaAkuntansiJurnalIndexRoute
@@ -2041,10 +2924,10 @@ export interface FileRoutesById {
   '/_ops': typeof OpsRouteWithChildren
   '/_owner': typeof OwnerRouteWithChildren
   '/_platform': typeof PlatformRouteWithChildren
-  '/_protected': typeof ProtectedRouteWithChildren
   '/_public': typeof PublicRouteWithChildren
   '/_shareholder': typeof ShareholderRouteWithChildren
   '/design-system': typeof DesignSystemRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
@@ -2055,8 +2938,6 @@ export interface FileRoutesById {
   '/_kelola/audit': typeof KelolaAuditRoute
   '/_kitchen/expo': typeof KitchenExpoRoute
   '/_kitchen/pickup': typeof KitchenPickupRoute
-  '/_protected/admin': typeof ProtectedAdminRoute
-  '/_protected/notes': typeof ProtectedNotesRoute
   '/_public/menu': typeof PublicMenuRoute
   '/_public/reservasi': typeof PublicReservasiRoute
   '/_public/reservation': typeof PublicReservationRoute
@@ -2095,7 +2976,9 @@ export interface FileRoutesById {
   '/_ops/operasional/suhu': typeof OpsOperasionalSuhuRoute
   '/_ops/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/_ops/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
+  '/_ops/pos/kode': typeof OpsPosKodeRoute
   '/_ops/pos/reservasi': typeof OpsPosReservasiRoute
+  '/_ops/pos/tutup-hari': typeof OpsPosTutupHariRoute
   '/_platform/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
   '/_platform/platform/audit': typeof PlatformPlatformAuditRoute
   '/_platform/platform/keamanan': typeof PlatformPlatformKeamananRoute
@@ -2188,6 +3071,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pengaturan_/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/_kelola/kelola/pengaturan_/istilah': typeof KelolaKelolaPengaturanIstilahRoute
   '/_kelola/kelola/pengaturan_/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/_kelola/kelola/pengaturan_/open-bill': typeof KelolaKelolaPengaturanOpenBillRoute
   '/_kelola/kelola/pengaturan_/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/_kelola/kelola/pengaturan_/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/_kelola/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
@@ -2196,12 +3080,96 @@ export interface FileRoutesById {
   '/_kelola/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
   '/_kelola/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/_kelola/kelola/roster/template': typeof KelolaKelolaRosterTemplateRoute
+  '/_kelola/reports/attendance/by-station': typeof KelolaReportsAttendanceByStationRoute
+  '/_kelola/reports/attendance/daily': typeof KelolaReportsAttendanceDailyRoute
+  '/_kelola/reports/attendance/late': typeof KelolaReportsAttendanceLateRoute
+  '/_kelola/reports/attendance/overtime': typeof KelolaReportsAttendanceOvertimeRoute
+  '/_kelola/reports/cogs/per-menu': typeof KelolaReportsCogsPerMenuRoute
+  '/_kelola/reports/cogs/production': typeof KelolaReportsCogsProductionRoute
+  '/_kelola/reports/cogs/recipe': typeof KelolaReportsCogsRecipeRoute
+  '/_kelola/reports/cogs/trend': typeof KelolaReportsCogsTrendRoute
+  '/_kelola/reports/crm/campaign-performance': typeof KelolaReportsCrmCampaignPerformanceRoute
+  '/_kelola/reports/crm/customers': typeof KelolaReportsCrmCustomersRoute
+  '/_kelola/reports/crm/promo-cost': typeof KelolaReportsCrmPromoCostRoute
+  '/_kelola/reports/crm/repeat-visit': typeof KelolaReportsCrmRepeatVisitRoute
+  '/_kelola/reports/crm/reviews': typeof KelolaReportsCrmReviewsRoute
+  '/_kelola/reports/crm/segments': typeof KelolaReportsCrmSegmentsRoute
+  '/_kelola/reports/delivery/by-menu': typeof KelolaReportsDeliveryByMenuRoute
+  '/_kelola/reports/delivery/channel-sales': typeof KelolaReportsDeliveryChannelSalesRoute
+  '/_kelola/reports/delivery/orders': typeof KelolaReportsDeliveryOrdersRoute
+  '/_kelola/reports/delivery/settlement': typeof KelolaReportsDeliverySettlementRoute
+  '/_kelola/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/_kelola/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
+  '/_kelola/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
   '/_kelola/reports/facility/occupancy': typeof KelolaReportsFacilityOccupancyRoute
+  '/_kelola/reports/facility/overtime': typeof KelolaReportsFacilityOvertimeRoute
+  '/_kelola/reports/facility/product-revenue': typeof KelolaReportsFacilityProductRevenueRoute
   '/_kelola/reports/facility/revenue': typeof KelolaReportsFacilityRevenueRoute
   '/_kelola/reports/facility/revpash': typeof KelolaReportsFacilityRevpashRoute
   '/_kelola/reports/facility/subscriptions': typeof KelolaReportsFacilitySubscriptionsRoute
+  '/_kelola/reports/facility/unit-utilization': typeof KelolaReportsFacilityUnitUtilizationRoute
   '/_kelola/reports/facility/wifi': typeof KelolaReportsFacilityWifiRoute
+  '/_kelola/reports/finance/cash-position': typeof KelolaReportsFinanceCashPositionRoute
+  '/_kelola/reports/finance/ebitda': typeof KelolaReportsFinanceEbitdaRoute
+  '/_kelola/reports/finance/gross-margin': typeof KelolaReportsFinanceGrossMarginRoute
+  '/_kelola/reports/finance/income-statement': typeof KelolaReportsFinanceIncomeStatementRoute
+  '/_kelola/reports/finance/pending-settlement': typeof KelolaReportsFinancePendingSettlementRoute
+  '/_kelola/reports/finance/prime-cost': typeof KelolaReportsFinancePrimeCostRoute
+  '/_kelola/reports/finance/profit-trend': typeof KelolaReportsFinanceProfitTrendRoute
+  '/_kelola/reports/finance/supplier-due': typeof KelolaReportsFinanceSupplierDueRoute
+  '/_kelola/reports/inventory/critical-stock': typeof KelolaReportsInventoryCriticalStockRoute
+  '/_kelola/reports/inventory/food-cost': typeof KelolaReportsInventoryFoodCostRoute
+  '/_kelola/reports/inventory/movement': typeof KelolaReportsInventoryMovementRoute
+  '/_kelola/reports/inventory/stock-usage': typeof KelolaReportsInventoryStockUsageRoute
+  '/_kelola/reports/inventory/stock-value': typeof KelolaReportsInventoryStockValueRoute
+  '/_kelola/reports/inventory/waste': typeof KelolaReportsInventoryWasteRoute
+  '/_kelola/reports/inventory/waste-by-category': typeof KelolaReportsInventoryWasteByCategoryRoute
+  '/_kelola/reports/loyalty/members': typeof KelolaReportsLoyaltyMembersRoute
+  '/_kelola/reports/loyalty/new-members': typeof KelolaReportsLoyaltyNewMembersRoute
+  '/_kelola/reports/loyalty/points': typeof KelolaReportsLoyaltyPointsRoute
+  '/_kelola/reports/loyalty/tier-mix': typeof KelolaReportsLoyaltyTierMixRoute
+  '/_kelola/reports/loyalty/visits': typeof KelolaReportsLoyaltyVisitsRoute
+  '/_kelola/reports/menu/best-sellers': typeof KelolaReportsMenuBestSellersRoute
+  '/_kelola/reports/menu/category-sales': typeof KelolaReportsMenuCategorySalesRoute
+  '/_kelola/reports/menu/engineering': typeof KelolaReportsMenuEngineeringRoute
+  '/_kelola/reports/menu/margin': typeof KelolaReportsMenuMarginRoute
+  '/_kelola/reports/menu/recipe-cost': typeof KelolaReportsMenuRecipeCostRoute
+  '/_kelola/reports/menu/slow-movers': typeof KelolaReportsMenuSlowMoversRoute
+  '/_kelola/reports/menu/sold-out': typeof KelolaReportsMenuSoldOutRoute
+  '/_kelola/reports/operations/alerts': typeof KelolaReportsOperationsAlertsRoute
+  '/_kelola/reports/operations/devices': typeof KelolaReportsOperationsDevicesRoute
+  '/_kelola/reports/operations/failed-items': typeof KelolaReportsOperationsFailedItemsRoute
+  '/_kelola/reports/operations/kitchen-queue': typeof KelolaReportsOperationsKitchenQueueRoute
+  '/_kelola/reports/operations/occupancy': typeof KelolaReportsOperationsOccupancyRoute
+  '/_kelola/reports/operations/remake-comp': typeof KelolaReportsOperationsRemakeCompRoute
+  '/_kelola/reports/operations/serving-time': typeof KelolaReportsOperationsServingTimeRoute
+  '/_kelola/reports/operations/table-turnover': typeof KelolaReportsOperationsTableTurnoverRoute
+  '/_kelola/reports/operations/waiter-calls': typeof KelolaReportsOperationsWaiterCallsRoute
+  '/_kelola/reports/payments/cash-variance': typeof KelolaReportsPaymentsCashVarianceRoute
+  '/_kelola/reports/payments/edc-settlement': typeof KelolaReportsPaymentsEdcSettlementRoute
+  '/_kelola/reports/payments/failed': typeof KelolaReportsPaymentsFailedRoute
+  '/_kelola/reports/payments/fees': typeof KelolaReportsPaymentsFeesRoute
+  '/_kelola/reports/payments/gateway-settlement': typeof KelolaReportsPaymentsGatewaySettlementRoute
+  '/_kelola/reports/payments/methods': typeof KelolaReportsPaymentsMethodsRoute
+  '/_kelola/reports/payroll/cost-trend': typeof KelolaReportsPayrollCostTrendRoute
+  '/_kelola/reports/payroll/gross': typeof KelolaReportsPayrollGrossRoute
+  '/_kelola/reports/payroll/labor-cost': typeof KelolaReportsPayrollLaborCostRoute
+  '/_kelola/reports/payroll/overtime': typeof KelolaReportsPayrollOvertimeRoute
+  '/_kelola/reports/performance/checklist': typeof KelolaReportsPerformanceChecklistRoute
+  '/_kelola/reports/performance/employee': typeof KelolaReportsPerformanceEmployeeRoute
+  '/_kelola/reports/performance/service-quality': typeof KelolaReportsPerformanceServiceQualityRoute
+  '/_kelola/reports/performance/station': typeof KelolaReportsPerformanceStationRoute
+  '/_kelola/reports/purchasing/orders': typeof KelolaReportsPurchasingOrdersRoute
+  '/_kelola/reports/purchasing/price-history': typeof KelolaReportsPurchasingPriceHistoryRoute
+  '/_kelola/reports/purchasing/receipts': typeof KelolaReportsPurchasingReceiptsRoute
+  '/_kelola/reports/purchasing/requests': typeof KelolaReportsPurchasingRequestsRoute
+  '/_kelola/reports/purchasing/supplier-due': typeof KelolaReportsPurchasingSupplierDueRoute
+  '/_kelola/reports/reservation/bookings': typeof KelolaReportsReservationBookingsRoute
+  '/_kelola/reports/reservation/by-zone': typeof KelolaReportsReservationByZoneRoute
+  '/_kelola/reports/reservation/no-show': typeof KelolaReportsReservationNoShowRoute
+  '/_kelola/reports/reservation/peak-hours': typeof KelolaReportsReservationPeakHoursRoute
+  '/_kelola/reports/sales/by-category': typeof KelolaReportsSalesByCategoryRoute
+  '/_kelola/reports/sales/by-day': typeof KelolaReportsSalesByDayRoute
   '/_kelola/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/_kelola/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
   '/_kelola/reports/sales/per-channel': typeof KelolaReportsSalesPerChannelRoute
@@ -2210,10 +3178,22 @@ export interface FileRoutesById {
   '/_kelola/reports/sales/per-menu': typeof KelolaReportsSalesPerMenuRoute
   '/_kelola/reports/sales/per-pax': typeof KelolaReportsSalesPerPaxRoute
   '/_kelola/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
+  '/_kelola/reports/sales/target': typeof KelolaReportsSalesTargetRoute
   '/_kelola/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/_kelola/reports/sales/void': typeof KelolaReportsSalesVoidRoute
+  '/_kelola/reports/tax/by-rule': typeof KelolaReportsTaxByRuleRoute
+  '/_kelola/reports/tax/pbjt': typeof KelolaReportsTaxPbjtRoute
+  '/_kelola/reports/tax/receivable': typeof KelolaReportsTaxReceivableRoute
+  '/_kelola/reports/tax/service-charge': typeof KelolaReportsTaxServiceChargeRoute
+  '/_kelola/reports/traffic/by-zone': typeof KelolaReportsTrafficByZoneRoute
+  '/_kelola/reports/traffic/dwell-time': typeof KelolaReportsTrafficDwellTimeRoute
+  '/_kelola/reports/traffic/new-vs-returning': typeof KelolaReportsTrafficNewVsReturningRoute
+  '/_kelola/reports/traffic/pax': typeof KelolaReportsTrafficPaxRoute
+  '/_kelola/reports/traffic/peak-hours': typeof KelolaReportsTrafficPeakHoursRoute
   '/_ops/operasional/checklist/$runId': typeof OpsOperasionalChecklistRunIdRoute
   '/_ops/operasional/peralatan/$equipmentId': typeof OpsOperasionalPeralatanEquipmentIdRoute
+  '/_ops/pos/bayar/$orderId': typeof OpsPosBayarOrderIdRoute
+  '/_ops/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/_platform/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/_platform/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
@@ -2244,6 +3224,7 @@ export interface FileRoutesById {
   '/_ops/operasional/checklist/': typeof OpsOperasionalChecklistIndexRoute
   '/_ops/operasional/peralatan/': typeof OpsOperasionalPeralatanIndexRoute
   '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
+  '/_ops/pos/shift/': typeof OpsPosShiftIndexRoute
   '/_platform/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
   '/_customer/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
@@ -2260,6 +3241,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pengadaan_/penerimaan/baru': typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   '/_kelola/kelola/pengadaan_/supplier/$supplierId': typeof KelolaKelolaPengadaanSupplierSupplierIdRoute
   '/_ops/operasional/checklist/template/$templateId': typeof OpsOperasionalChecklistTemplateTemplateIdRoute
+  '/_ops/pos/supervisor/shift/$shiftId': typeof OpsPosSupervisorShiftShiftIdRoute
   '/_kelola/kelola/akuntansi/bagi-hasil/': typeof KelolaKelolaAkuntansiBagiHasilIndexRoute
   '/_kelola/kelola/akuntansi/jurnal-manual/': typeof KelolaKelolaAkuntansiJurnalManualIndexRoute
   '/_kelola/kelola/akuntansi/jurnal/': typeof KelolaKelolaAkuntansiJurnalIndexRoute
@@ -2279,6 +3261,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/design-system'
+    | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/verifikasi'
@@ -2289,8 +3272,6 @@ export interface FileRouteTypes {
     | '/audit'
     | '/expo'
     | '/pickup'
-    | '/admin'
-    | '/notes'
     | '/menu'
     | '/reservasi'
     | '/reservation'
@@ -2328,7 +3309,9 @@ export interface FileRouteTypes {
     | '/operasional/suhu'
     | '/pos/customer-display'
     | '/pos/ganti-pengguna'
+    | '/pos/kode'
     | '/pos/reservasi'
+    | '/pos/tutup-hari'
     | '/platform/akses-dukungan'
     | '/platform/audit'
     | '/platform/keamanan'
@@ -2421,6 +3404,7 @@ export interface FileRouteTypes {
     | '/kelola/pengaturan/integrasi'
     | '/kelola/pengaturan/istilah'
     | '/kelola/pengaturan/konfigurasi'
+    | '/kelola/pengaturan/open-bill'
     | '/kelola/pengaturan/outlet'
     | '/kelola/pengaturan/tema'
     | '/kelola/persetujuan/$requestId'
@@ -2429,12 +3413,96 @@ export interface FileRouteTypes {
     | '/kelola/promo/tumpang-tindih'
     | '/kelola/promo/voucher'
     | '/kelola/roster/template'
+    | '/reports/attendance/by-station'
+    | '/reports/attendance/daily'
+    | '/reports/attendance/late'
+    | '/reports/attendance/overtime'
+    | '/reports/cogs/per-menu'
+    | '/reports/cogs/production'
+    | '/reports/cogs/recipe'
+    | '/reports/cogs/trend'
+    | '/reports/crm/campaign-performance'
+    | '/reports/crm/customers'
+    | '/reports/crm/promo-cost'
+    | '/reports/crm/repeat-visit'
+    | '/reports/crm/reviews'
+    | '/reports/crm/segments'
+    | '/reports/delivery/by-menu'
+    | '/reports/delivery/channel-sales'
+    | '/reports/delivery/orders'
+    | '/reports/delivery/settlement'
+    | '/reports/facility/cleaning-time'
     | '/reports/facility/fnb-conversion'
+    | '/reports/facility/incidents'
     | '/reports/facility/occupancy'
+    | '/reports/facility/overtime'
+    | '/reports/facility/product-revenue'
     | '/reports/facility/revenue'
     | '/reports/facility/revpash'
     | '/reports/facility/subscriptions'
+    | '/reports/facility/unit-utilization'
     | '/reports/facility/wifi'
+    | '/reports/finance/cash-position'
+    | '/reports/finance/ebitda'
+    | '/reports/finance/gross-margin'
+    | '/reports/finance/income-statement'
+    | '/reports/finance/pending-settlement'
+    | '/reports/finance/prime-cost'
+    | '/reports/finance/profit-trend'
+    | '/reports/finance/supplier-due'
+    | '/reports/inventory/critical-stock'
+    | '/reports/inventory/food-cost'
+    | '/reports/inventory/movement'
+    | '/reports/inventory/stock-usage'
+    | '/reports/inventory/stock-value'
+    | '/reports/inventory/waste'
+    | '/reports/inventory/waste-by-category'
+    | '/reports/loyalty/members'
+    | '/reports/loyalty/new-members'
+    | '/reports/loyalty/points'
+    | '/reports/loyalty/tier-mix'
+    | '/reports/loyalty/visits'
+    | '/reports/menu/best-sellers'
+    | '/reports/menu/category-sales'
+    | '/reports/menu/engineering'
+    | '/reports/menu/margin'
+    | '/reports/menu/recipe-cost'
+    | '/reports/menu/slow-movers'
+    | '/reports/menu/sold-out'
+    | '/reports/operations/alerts'
+    | '/reports/operations/devices'
+    | '/reports/operations/failed-items'
+    | '/reports/operations/kitchen-queue'
+    | '/reports/operations/occupancy'
+    | '/reports/operations/remake-comp'
+    | '/reports/operations/serving-time'
+    | '/reports/operations/table-turnover'
+    | '/reports/operations/waiter-calls'
+    | '/reports/payments/cash-variance'
+    | '/reports/payments/edc-settlement'
+    | '/reports/payments/failed'
+    | '/reports/payments/fees'
+    | '/reports/payments/gateway-settlement'
+    | '/reports/payments/methods'
+    | '/reports/payroll/cost-trend'
+    | '/reports/payroll/gross'
+    | '/reports/payroll/labor-cost'
+    | '/reports/payroll/overtime'
+    | '/reports/performance/checklist'
+    | '/reports/performance/employee'
+    | '/reports/performance/service-quality'
+    | '/reports/performance/station'
+    | '/reports/purchasing/orders'
+    | '/reports/purchasing/price-history'
+    | '/reports/purchasing/receipts'
+    | '/reports/purchasing/requests'
+    | '/reports/purchasing/supplier-due'
+    | '/reports/reservation/bookings'
+    | '/reports/reservation/by-zone'
+    | '/reports/reservation/no-show'
+    | '/reports/reservation/peak-hours'
+    | '/reports/sales/by-category'
+    | '/reports/sales/by-day'
     | '/reports/sales/daily'
     | '/reports/sales/discount'
     | '/reports/sales/per-channel'
@@ -2443,10 +3511,22 @@ export interface FileRouteTypes {
     | '/reports/sales/per-menu'
     | '/reports/sales/per-pax'
     | '/reports/sales/refund'
+    | '/reports/sales/target'
     | '/reports/sales/transactions'
     | '/reports/sales/void'
+    | '/reports/tax/by-rule'
+    | '/reports/tax/pbjt'
+    | '/reports/tax/receivable'
+    | '/reports/tax/service-charge'
+    | '/reports/traffic/by-zone'
+    | '/reports/traffic/dwell-time'
+    | '/reports/traffic/new-vs-returning'
+    | '/reports/traffic/pax'
+    | '/reports/traffic/peak-hours'
     | '/operasional/checklist/$runId'
     | '/operasional/peralatan/$equipmentId'
+    | '/pos/bayar/$orderId'
+    | '/pos/shift/tutup'
     | '/platform/tenant/$tenantId'
     | '/platform/tenant/baru'
     | '/member/fasilitas/'
@@ -2477,6 +3557,7 @@ export interface FileRouteTypes {
     | '/operasional/checklist/'
     | '/operasional/peralatan/'
     | '/pos/meja/'
+    | '/pos/shift/'
     | '/platform/tenant/'
     | '/t/$token/bayar/$orderId'
     | '/t/$token/issue/$issueId'
@@ -2493,6 +3574,7 @@ export interface FileRouteTypes {
     | '/kelola/pengadaan/penerimaan/baru'
     | '/kelola/pengadaan/supplier/$supplierId'
     | '/operasional/checklist/template/$templateId'
+    | '/pos/supervisor/shift/$shiftId'
     | '/kelola/akuntansi/bagi-hasil/'
     | '/kelola/akuntansi/jurnal-manual/'
     | '/kelola/akuntansi/jurnal/'
@@ -2510,6 +3592,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/design-system'
+    | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/verifikasi'
@@ -2519,8 +3602,6 @@ export interface FileRouteTypes {
     | '/audit'
     | '/expo'
     | '/pickup'
-    | '/admin'
-    | '/notes'
     | '/menu'
     | '/reservasi'
     | '/reservation'
@@ -2557,7 +3638,9 @@ export interface FileRouteTypes {
     | '/operasional/suhu'
     | '/pos/customer-display'
     | '/pos/ganti-pengguna'
+    | '/pos/kode'
     | '/pos/reservasi'
+    | '/pos/tutup-hari'
     | '/platform/akses-dukungan'
     | '/platform/audit'
     | '/platform/keamanan'
@@ -2649,6 +3732,7 @@ export interface FileRouteTypes {
     | '/kelola/pengaturan/integrasi'
     | '/kelola/pengaturan/istilah'
     | '/kelola/pengaturan/konfigurasi'
+    | '/kelola/pengaturan/open-bill'
     | '/kelola/pengaturan/outlet'
     | '/kelola/pengaturan/tema'
     | '/kelola/persetujuan/$requestId'
@@ -2657,12 +3741,96 @@ export interface FileRouteTypes {
     | '/kelola/promo/tumpang-tindih'
     | '/kelola/promo/voucher'
     | '/kelola/roster/template'
+    | '/reports/attendance/by-station'
+    | '/reports/attendance/daily'
+    | '/reports/attendance/late'
+    | '/reports/attendance/overtime'
+    | '/reports/cogs/per-menu'
+    | '/reports/cogs/production'
+    | '/reports/cogs/recipe'
+    | '/reports/cogs/trend'
+    | '/reports/crm/campaign-performance'
+    | '/reports/crm/customers'
+    | '/reports/crm/promo-cost'
+    | '/reports/crm/repeat-visit'
+    | '/reports/crm/reviews'
+    | '/reports/crm/segments'
+    | '/reports/delivery/by-menu'
+    | '/reports/delivery/channel-sales'
+    | '/reports/delivery/orders'
+    | '/reports/delivery/settlement'
+    | '/reports/facility/cleaning-time'
     | '/reports/facility/fnb-conversion'
+    | '/reports/facility/incidents'
     | '/reports/facility/occupancy'
+    | '/reports/facility/overtime'
+    | '/reports/facility/product-revenue'
     | '/reports/facility/revenue'
     | '/reports/facility/revpash'
     | '/reports/facility/subscriptions'
+    | '/reports/facility/unit-utilization'
     | '/reports/facility/wifi'
+    | '/reports/finance/cash-position'
+    | '/reports/finance/ebitda'
+    | '/reports/finance/gross-margin'
+    | '/reports/finance/income-statement'
+    | '/reports/finance/pending-settlement'
+    | '/reports/finance/prime-cost'
+    | '/reports/finance/profit-trend'
+    | '/reports/finance/supplier-due'
+    | '/reports/inventory/critical-stock'
+    | '/reports/inventory/food-cost'
+    | '/reports/inventory/movement'
+    | '/reports/inventory/stock-usage'
+    | '/reports/inventory/stock-value'
+    | '/reports/inventory/waste'
+    | '/reports/inventory/waste-by-category'
+    | '/reports/loyalty/members'
+    | '/reports/loyalty/new-members'
+    | '/reports/loyalty/points'
+    | '/reports/loyalty/tier-mix'
+    | '/reports/loyalty/visits'
+    | '/reports/menu/best-sellers'
+    | '/reports/menu/category-sales'
+    | '/reports/menu/engineering'
+    | '/reports/menu/margin'
+    | '/reports/menu/recipe-cost'
+    | '/reports/menu/slow-movers'
+    | '/reports/menu/sold-out'
+    | '/reports/operations/alerts'
+    | '/reports/operations/devices'
+    | '/reports/operations/failed-items'
+    | '/reports/operations/kitchen-queue'
+    | '/reports/operations/occupancy'
+    | '/reports/operations/remake-comp'
+    | '/reports/operations/serving-time'
+    | '/reports/operations/table-turnover'
+    | '/reports/operations/waiter-calls'
+    | '/reports/payments/cash-variance'
+    | '/reports/payments/edc-settlement'
+    | '/reports/payments/failed'
+    | '/reports/payments/fees'
+    | '/reports/payments/gateway-settlement'
+    | '/reports/payments/methods'
+    | '/reports/payroll/cost-trend'
+    | '/reports/payroll/gross'
+    | '/reports/payroll/labor-cost'
+    | '/reports/payroll/overtime'
+    | '/reports/performance/checklist'
+    | '/reports/performance/employee'
+    | '/reports/performance/service-quality'
+    | '/reports/performance/station'
+    | '/reports/purchasing/orders'
+    | '/reports/purchasing/price-history'
+    | '/reports/purchasing/receipts'
+    | '/reports/purchasing/requests'
+    | '/reports/purchasing/supplier-due'
+    | '/reports/reservation/bookings'
+    | '/reports/reservation/by-zone'
+    | '/reports/reservation/no-show'
+    | '/reports/reservation/peak-hours'
+    | '/reports/sales/by-category'
+    | '/reports/sales/by-day'
     | '/reports/sales/daily'
     | '/reports/sales/discount'
     | '/reports/sales/per-channel'
@@ -2671,10 +3839,22 @@ export interface FileRouteTypes {
     | '/reports/sales/per-menu'
     | '/reports/sales/per-pax'
     | '/reports/sales/refund'
+    | '/reports/sales/target'
     | '/reports/sales/transactions'
     | '/reports/sales/void'
+    | '/reports/tax/by-rule'
+    | '/reports/tax/pbjt'
+    | '/reports/tax/receivable'
+    | '/reports/tax/service-charge'
+    | '/reports/traffic/by-zone'
+    | '/reports/traffic/dwell-time'
+    | '/reports/traffic/new-vs-returning'
+    | '/reports/traffic/pax'
+    | '/reports/traffic/peak-hours'
     | '/operasional/checklist/$runId'
     | '/operasional/peralatan/$equipmentId'
+    | '/pos/bayar/$orderId'
+    | '/pos/shift/tutup'
     | '/platform/tenant/$tenantId'
     | '/platform/tenant/baru'
     | '/member/fasilitas'
@@ -2705,6 +3885,7 @@ export interface FileRouteTypes {
     | '/operasional/checklist'
     | '/operasional/peralatan'
     | '/pos/meja'
+    | '/pos/shift'
     | '/platform/tenant'
     | '/t/$token/bayar/$orderId'
     | '/t/$token/issue/$issueId'
@@ -2721,6 +3902,7 @@ export interface FileRouteTypes {
     | '/kelola/pengadaan/penerimaan/baru'
     | '/kelola/pengadaan/supplier/$supplierId'
     | '/operasional/checklist/template/$templateId'
+    | '/pos/supervisor/shift/$shiftId'
     | '/kelola/akuntansi/bagi-hasil'
     | '/kelola/akuntansi/jurnal-manual'
     | '/kelola/akuntansi/jurnal'
@@ -2744,10 +3926,10 @@ export interface FileRouteTypes {
     | '/_ops'
     | '/_owner'
     | '/_platform'
-    | '/_protected'
     | '/_public'
     | '/_shareholder'
     | '/design-system'
+    | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/verifikasi'
@@ -2758,8 +3940,6 @@ export interface FileRouteTypes {
     | '/_kelola/audit'
     | '/_kitchen/expo'
     | '/_kitchen/pickup'
-    | '/_protected/admin'
-    | '/_protected/notes'
     | '/_public/menu'
     | '/_public/reservasi'
     | '/_public/reservation'
@@ -2798,7 +3978,9 @@ export interface FileRouteTypes {
     | '/_ops/operasional/suhu'
     | '/_ops/pos/customer-display'
     | '/_ops/pos/ganti-pengguna'
+    | '/_ops/pos/kode'
     | '/_ops/pos/reservasi'
+    | '/_ops/pos/tutup-hari'
     | '/_platform/platform/akses-dukungan'
     | '/_platform/platform/audit'
     | '/_platform/platform/keamanan'
@@ -2891,6 +4073,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pengaturan_/integrasi'
     | '/_kelola/kelola/pengaturan_/istilah'
     | '/_kelola/kelola/pengaturan_/konfigurasi'
+    | '/_kelola/kelola/pengaturan_/open-bill'
     | '/_kelola/kelola/pengaturan_/outlet'
     | '/_kelola/kelola/pengaturan_/tema'
     | '/_kelola/kelola/persetujuan/$requestId'
@@ -2899,12 +4082,96 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/promo/tumpang-tindih'
     | '/_kelola/kelola/promo/voucher'
     | '/_kelola/kelola/roster/template'
+    | '/_kelola/reports/attendance/by-station'
+    | '/_kelola/reports/attendance/daily'
+    | '/_kelola/reports/attendance/late'
+    | '/_kelola/reports/attendance/overtime'
+    | '/_kelola/reports/cogs/per-menu'
+    | '/_kelola/reports/cogs/production'
+    | '/_kelola/reports/cogs/recipe'
+    | '/_kelola/reports/cogs/trend'
+    | '/_kelola/reports/crm/campaign-performance'
+    | '/_kelola/reports/crm/customers'
+    | '/_kelola/reports/crm/promo-cost'
+    | '/_kelola/reports/crm/repeat-visit'
+    | '/_kelola/reports/crm/reviews'
+    | '/_kelola/reports/crm/segments'
+    | '/_kelola/reports/delivery/by-menu'
+    | '/_kelola/reports/delivery/channel-sales'
+    | '/_kelola/reports/delivery/orders'
+    | '/_kelola/reports/delivery/settlement'
+    | '/_kelola/reports/facility/cleaning-time'
     | '/_kelola/reports/facility/fnb-conversion'
+    | '/_kelola/reports/facility/incidents'
     | '/_kelola/reports/facility/occupancy'
+    | '/_kelola/reports/facility/overtime'
+    | '/_kelola/reports/facility/product-revenue'
     | '/_kelola/reports/facility/revenue'
     | '/_kelola/reports/facility/revpash'
     | '/_kelola/reports/facility/subscriptions'
+    | '/_kelola/reports/facility/unit-utilization'
     | '/_kelola/reports/facility/wifi'
+    | '/_kelola/reports/finance/cash-position'
+    | '/_kelola/reports/finance/ebitda'
+    | '/_kelola/reports/finance/gross-margin'
+    | '/_kelola/reports/finance/income-statement'
+    | '/_kelola/reports/finance/pending-settlement'
+    | '/_kelola/reports/finance/prime-cost'
+    | '/_kelola/reports/finance/profit-trend'
+    | '/_kelola/reports/finance/supplier-due'
+    | '/_kelola/reports/inventory/critical-stock'
+    | '/_kelola/reports/inventory/food-cost'
+    | '/_kelola/reports/inventory/movement'
+    | '/_kelola/reports/inventory/stock-usage'
+    | '/_kelola/reports/inventory/stock-value'
+    | '/_kelola/reports/inventory/waste'
+    | '/_kelola/reports/inventory/waste-by-category'
+    | '/_kelola/reports/loyalty/members'
+    | '/_kelola/reports/loyalty/new-members'
+    | '/_kelola/reports/loyalty/points'
+    | '/_kelola/reports/loyalty/tier-mix'
+    | '/_kelola/reports/loyalty/visits'
+    | '/_kelola/reports/menu/best-sellers'
+    | '/_kelola/reports/menu/category-sales'
+    | '/_kelola/reports/menu/engineering'
+    | '/_kelola/reports/menu/margin'
+    | '/_kelola/reports/menu/recipe-cost'
+    | '/_kelola/reports/menu/slow-movers'
+    | '/_kelola/reports/menu/sold-out'
+    | '/_kelola/reports/operations/alerts'
+    | '/_kelola/reports/operations/devices'
+    | '/_kelola/reports/operations/failed-items'
+    | '/_kelola/reports/operations/kitchen-queue'
+    | '/_kelola/reports/operations/occupancy'
+    | '/_kelola/reports/operations/remake-comp'
+    | '/_kelola/reports/operations/serving-time'
+    | '/_kelola/reports/operations/table-turnover'
+    | '/_kelola/reports/operations/waiter-calls'
+    | '/_kelola/reports/payments/cash-variance'
+    | '/_kelola/reports/payments/edc-settlement'
+    | '/_kelola/reports/payments/failed'
+    | '/_kelola/reports/payments/fees'
+    | '/_kelola/reports/payments/gateway-settlement'
+    | '/_kelola/reports/payments/methods'
+    | '/_kelola/reports/payroll/cost-trend'
+    | '/_kelola/reports/payroll/gross'
+    | '/_kelola/reports/payroll/labor-cost'
+    | '/_kelola/reports/payroll/overtime'
+    | '/_kelola/reports/performance/checklist'
+    | '/_kelola/reports/performance/employee'
+    | '/_kelola/reports/performance/service-quality'
+    | '/_kelola/reports/performance/station'
+    | '/_kelola/reports/purchasing/orders'
+    | '/_kelola/reports/purchasing/price-history'
+    | '/_kelola/reports/purchasing/receipts'
+    | '/_kelola/reports/purchasing/requests'
+    | '/_kelola/reports/purchasing/supplier-due'
+    | '/_kelola/reports/reservation/bookings'
+    | '/_kelola/reports/reservation/by-zone'
+    | '/_kelola/reports/reservation/no-show'
+    | '/_kelola/reports/reservation/peak-hours'
+    | '/_kelola/reports/sales/by-category'
+    | '/_kelola/reports/sales/by-day'
     | '/_kelola/reports/sales/daily'
     | '/_kelola/reports/sales/discount'
     | '/_kelola/reports/sales/per-channel'
@@ -2913,10 +4180,22 @@ export interface FileRouteTypes {
     | '/_kelola/reports/sales/per-menu'
     | '/_kelola/reports/sales/per-pax'
     | '/_kelola/reports/sales/refund'
+    | '/_kelola/reports/sales/target'
     | '/_kelola/reports/sales/transactions'
     | '/_kelola/reports/sales/void'
+    | '/_kelola/reports/tax/by-rule'
+    | '/_kelola/reports/tax/pbjt'
+    | '/_kelola/reports/tax/receivable'
+    | '/_kelola/reports/tax/service-charge'
+    | '/_kelola/reports/traffic/by-zone'
+    | '/_kelola/reports/traffic/dwell-time'
+    | '/_kelola/reports/traffic/new-vs-returning'
+    | '/_kelola/reports/traffic/pax'
+    | '/_kelola/reports/traffic/peak-hours'
     | '/_ops/operasional/checklist/$runId'
     | '/_ops/operasional/peralatan/$equipmentId'
+    | '/_ops/pos/bayar/$orderId'
+    | '/_ops/pos/shift/tutup'
     | '/_platform/platform/tenant/$tenantId'
     | '/_platform/platform/tenant/baru'
     | '/_customer/member/fasilitas/'
@@ -2947,6 +4226,7 @@ export interface FileRouteTypes {
     | '/_ops/operasional/checklist/'
     | '/_ops/operasional/peralatan/'
     | '/_ops/pos/meja/'
+    | '/_ops/pos/shift/'
     | '/_platform/platform/tenant/'
     | '/_customer/t/$token/bayar/$orderId'
     | '/_customer/t/$token/issue/$issueId'
@@ -2963,6 +4243,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pengadaan_/penerimaan/baru'
     | '/_kelola/kelola/pengadaan_/supplier/$supplierId'
     | '/_ops/operasional/checklist/template/$templateId'
+    | '/_ops/pos/supervisor/shift/$shiftId'
     | '/_kelola/kelola/akuntansi/bagi-hasil/'
     | '/_kelola/kelola/akuntansi/jurnal-manual/'
     | '/_kelola/kelola/akuntansi/jurnal/'
@@ -2987,10 +4268,10 @@ export interface RootRouteChildren {
   OpsRoute: typeof OpsRouteWithChildren
   OwnerRoute: typeof OwnerRouteWithChildren
   PlatformRoute: typeof PlatformRouteWithChildren
-  ProtectedRoute: typeof ProtectedRouteWithChildren
   PublicRoute: typeof PublicRouteWithChildren
   ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
+  ManifestDotwebmanifestRoute: typeof ManifestDotwebmanifestRoute
   RobotsDottxtRoute: typeof RobotsDottxtRoute
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
   VerifikasiRoute: typeof VerifikasiRoute
@@ -3054,13 +4335,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlatformRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_protected': {
-      id: '/_protected'
-      path: ''
-      fullPath: '/'
-      preLoaderRoute: typeof ProtectedRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/_public': {
       id: '/_public'
       path: ''
@@ -3080,6 +4354,13 @@ declare module '@tanstack/react-router' {
       path: '/design-system'
       fullPath: '/design-system'
       preLoaderRoute: typeof DesignSystemRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/manifest.webmanifest': {
+      id: '/manifest.webmanifest'
+      path: '/manifest.webmanifest'
+      fullPath: '/manifest.webmanifest'
+      preLoaderRoute: typeof ManifestDotwebmanifestRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/robots.txt': {
@@ -3151,20 +4432,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/pickup'
       preLoaderRoute: typeof KitchenPickupRouteImport
       parentRoute: typeof KitchenRoute
-    }
-    '/_protected/admin': {
-      id: '/_protected/admin'
-      path: '/admin'
-      fullPath: '/admin'
-      preLoaderRoute: typeof ProtectedAdminRouteImport
-      parentRoute: typeof ProtectedRoute
-    }
-    '/_protected/notes': {
-      id: '/_protected/notes'
-      path: '/notes'
-      fullPath: '/notes'
-      preLoaderRoute: typeof ProtectedNotesRouteImport
-      parentRoute: typeof ProtectedRoute
     }
     '/_public/': {
       id: '/_public/'
@@ -3481,11 +4748,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OpsPosGantiPenggunaRouteImport
       parentRoute: typeof OpsRoute
     }
+    '/_ops/pos/kode': {
+      id: '/_ops/pos/kode'
+      path: '/pos/kode'
+      fullPath: '/pos/kode'
+      preLoaderRoute: typeof OpsPosKodeRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_ops/pos/reservasi': {
       id: '/_ops/pos/reservasi'
       path: '/pos/reservasi'
       fullPath: '/pos/reservasi'
       preLoaderRoute: typeof OpsPosReservasiRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/tutup-hari': {
+      id: '/_ops/pos/tutup-hari'
+      path: '/pos/tutup-hari'
+      fullPath: '/pos/tutup-hari'
+      preLoaderRoute: typeof OpsPosTutupHariRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_owner/owner/': {
@@ -4223,6 +5504,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPengaturanKonfigurasiRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pengaturan_/open-bill': {
+      id: '/_kelola/kelola/pengaturan_/open-bill'
+      path: '/kelola/pengaturan/open-bill'
+      fullPath: '/kelola/pengaturan/open-bill'
+      preLoaderRoute: typeof KelolaKelolaPengaturanOpenBillRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/pengaturan_/outlet': {
       id: '/_kelola/kelola/pengaturan_/outlet'
       path: '/kelola/pengaturan/outlet'
@@ -4314,6 +5602,139 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaSopIndexRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/reports/attendance/by-station': {
+      id: '/_kelola/reports/attendance/by-station'
+      path: '/reports/attendance/by-station'
+      fullPath: '/reports/attendance/by-station'
+      preLoaderRoute: typeof KelolaReportsAttendanceByStationRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/attendance/daily': {
+      id: '/_kelola/reports/attendance/daily'
+      path: '/reports/attendance/daily'
+      fullPath: '/reports/attendance/daily'
+      preLoaderRoute: typeof KelolaReportsAttendanceDailyRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/attendance/late': {
+      id: '/_kelola/reports/attendance/late'
+      path: '/reports/attendance/late'
+      fullPath: '/reports/attendance/late'
+      preLoaderRoute: typeof KelolaReportsAttendanceLateRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/attendance/overtime': {
+      id: '/_kelola/reports/attendance/overtime'
+      path: '/reports/attendance/overtime'
+      fullPath: '/reports/attendance/overtime'
+      preLoaderRoute: typeof KelolaReportsAttendanceOvertimeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/cogs/per-menu': {
+      id: '/_kelola/reports/cogs/per-menu'
+      path: '/reports/cogs/per-menu'
+      fullPath: '/reports/cogs/per-menu'
+      preLoaderRoute: typeof KelolaReportsCogsPerMenuRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/cogs/production': {
+      id: '/_kelola/reports/cogs/production'
+      path: '/reports/cogs/production'
+      fullPath: '/reports/cogs/production'
+      preLoaderRoute: typeof KelolaReportsCogsProductionRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/cogs/recipe': {
+      id: '/_kelola/reports/cogs/recipe'
+      path: '/reports/cogs/recipe'
+      fullPath: '/reports/cogs/recipe'
+      preLoaderRoute: typeof KelolaReportsCogsRecipeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/cogs/trend': {
+      id: '/_kelola/reports/cogs/trend'
+      path: '/reports/cogs/trend'
+      fullPath: '/reports/cogs/trend'
+      preLoaderRoute: typeof KelolaReportsCogsTrendRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/crm/campaign-performance': {
+      id: '/_kelola/reports/crm/campaign-performance'
+      path: '/reports/crm/campaign-performance'
+      fullPath: '/reports/crm/campaign-performance'
+      preLoaderRoute: typeof KelolaReportsCrmCampaignPerformanceRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/crm/customers': {
+      id: '/_kelola/reports/crm/customers'
+      path: '/reports/crm/customers'
+      fullPath: '/reports/crm/customers'
+      preLoaderRoute: typeof KelolaReportsCrmCustomersRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/crm/promo-cost': {
+      id: '/_kelola/reports/crm/promo-cost'
+      path: '/reports/crm/promo-cost'
+      fullPath: '/reports/crm/promo-cost'
+      preLoaderRoute: typeof KelolaReportsCrmPromoCostRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/crm/repeat-visit': {
+      id: '/_kelola/reports/crm/repeat-visit'
+      path: '/reports/crm/repeat-visit'
+      fullPath: '/reports/crm/repeat-visit'
+      preLoaderRoute: typeof KelolaReportsCrmRepeatVisitRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/crm/reviews': {
+      id: '/_kelola/reports/crm/reviews'
+      path: '/reports/crm/reviews'
+      fullPath: '/reports/crm/reviews'
+      preLoaderRoute: typeof KelolaReportsCrmReviewsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/crm/segments': {
+      id: '/_kelola/reports/crm/segments'
+      path: '/reports/crm/segments'
+      fullPath: '/reports/crm/segments'
+      preLoaderRoute: typeof KelolaReportsCrmSegmentsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/delivery/by-menu': {
+      id: '/_kelola/reports/delivery/by-menu'
+      path: '/reports/delivery/by-menu'
+      fullPath: '/reports/delivery/by-menu'
+      preLoaderRoute: typeof KelolaReportsDeliveryByMenuRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/delivery/channel-sales': {
+      id: '/_kelola/reports/delivery/channel-sales'
+      path: '/reports/delivery/channel-sales'
+      fullPath: '/reports/delivery/channel-sales'
+      preLoaderRoute: typeof KelolaReportsDeliveryChannelSalesRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/delivery/orders': {
+      id: '/_kelola/reports/delivery/orders'
+      path: '/reports/delivery/orders'
+      fullPath: '/reports/delivery/orders'
+      preLoaderRoute: typeof KelolaReportsDeliveryOrdersRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/delivery/settlement': {
+      id: '/_kelola/reports/delivery/settlement'
+      path: '/reports/delivery/settlement'
+      fullPath: '/reports/delivery/settlement'
+      preLoaderRoute: typeof KelolaReportsDeliverySettlementRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/facility/cleaning-time': {
+      id: '/_kelola/reports/facility/cleaning-time'
+      path: '/reports/facility/cleaning-time'
+      fullPath: '/reports/facility/cleaning-time'
+      preLoaderRoute: typeof KelolaReportsFacilityCleaningTimeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/facility/fnb-conversion': {
       id: '/_kelola/reports/facility/fnb-conversion'
       path: '/reports/facility/fnb-conversion'
@@ -4321,11 +5742,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaReportsFacilityFnbConversionRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/reports/facility/incidents': {
+      id: '/_kelola/reports/facility/incidents'
+      path: '/reports/facility/incidents'
+      fullPath: '/reports/facility/incidents'
+      preLoaderRoute: typeof KelolaReportsFacilityIncidentsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/facility/occupancy': {
       id: '/_kelola/reports/facility/occupancy'
       path: '/reports/facility/occupancy'
       fullPath: '/reports/facility/occupancy'
       preLoaderRoute: typeof KelolaReportsFacilityOccupancyRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/facility/overtime': {
+      id: '/_kelola/reports/facility/overtime'
+      path: '/reports/facility/overtime'
+      fullPath: '/reports/facility/overtime'
+      preLoaderRoute: typeof KelolaReportsFacilityOvertimeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/facility/product-revenue': {
+      id: '/_kelola/reports/facility/product-revenue'
+      path: '/reports/facility/product-revenue'
+      fullPath: '/reports/facility/product-revenue'
+      preLoaderRoute: typeof KelolaReportsFacilityProductRevenueRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/reports/facility/revenue': {
@@ -4349,11 +5791,445 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaReportsFacilitySubscriptionsRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/reports/facility/unit-utilization': {
+      id: '/_kelola/reports/facility/unit-utilization'
+      path: '/reports/facility/unit-utilization'
+      fullPath: '/reports/facility/unit-utilization'
+      preLoaderRoute: typeof KelolaReportsFacilityUnitUtilizationRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/facility/wifi': {
       id: '/_kelola/reports/facility/wifi'
       path: '/reports/facility/wifi'
       fullPath: '/reports/facility/wifi'
       preLoaderRoute: typeof KelolaReportsFacilityWifiRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/finance/cash-position': {
+      id: '/_kelola/reports/finance/cash-position'
+      path: '/reports/finance/cash-position'
+      fullPath: '/reports/finance/cash-position'
+      preLoaderRoute: typeof KelolaReportsFinanceCashPositionRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/finance/ebitda': {
+      id: '/_kelola/reports/finance/ebitda'
+      path: '/reports/finance/ebitda'
+      fullPath: '/reports/finance/ebitda'
+      preLoaderRoute: typeof KelolaReportsFinanceEbitdaRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/finance/gross-margin': {
+      id: '/_kelola/reports/finance/gross-margin'
+      path: '/reports/finance/gross-margin'
+      fullPath: '/reports/finance/gross-margin'
+      preLoaderRoute: typeof KelolaReportsFinanceGrossMarginRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/finance/income-statement': {
+      id: '/_kelola/reports/finance/income-statement'
+      path: '/reports/finance/income-statement'
+      fullPath: '/reports/finance/income-statement'
+      preLoaderRoute: typeof KelolaReportsFinanceIncomeStatementRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/finance/pending-settlement': {
+      id: '/_kelola/reports/finance/pending-settlement'
+      path: '/reports/finance/pending-settlement'
+      fullPath: '/reports/finance/pending-settlement'
+      preLoaderRoute: typeof KelolaReportsFinancePendingSettlementRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/finance/prime-cost': {
+      id: '/_kelola/reports/finance/prime-cost'
+      path: '/reports/finance/prime-cost'
+      fullPath: '/reports/finance/prime-cost'
+      preLoaderRoute: typeof KelolaReportsFinancePrimeCostRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/finance/profit-trend': {
+      id: '/_kelola/reports/finance/profit-trend'
+      path: '/reports/finance/profit-trend'
+      fullPath: '/reports/finance/profit-trend'
+      preLoaderRoute: typeof KelolaReportsFinanceProfitTrendRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/finance/supplier-due': {
+      id: '/_kelola/reports/finance/supplier-due'
+      path: '/reports/finance/supplier-due'
+      fullPath: '/reports/finance/supplier-due'
+      preLoaderRoute: typeof KelolaReportsFinanceSupplierDueRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/inventory/critical-stock': {
+      id: '/_kelola/reports/inventory/critical-stock'
+      path: '/reports/inventory/critical-stock'
+      fullPath: '/reports/inventory/critical-stock'
+      preLoaderRoute: typeof KelolaReportsInventoryCriticalStockRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/inventory/food-cost': {
+      id: '/_kelola/reports/inventory/food-cost'
+      path: '/reports/inventory/food-cost'
+      fullPath: '/reports/inventory/food-cost'
+      preLoaderRoute: typeof KelolaReportsInventoryFoodCostRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/inventory/movement': {
+      id: '/_kelola/reports/inventory/movement'
+      path: '/reports/inventory/movement'
+      fullPath: '/reports/inventory/movement'
+      preLoaderRoute: typeof KelolaReportsInventoryMovementRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/inventory/stock-usage': {
+      id: '/_kelola/reports/inventory/stock-usage'
+      path: '/reports/inventory/stock-usage'
+      fullPath: '/reports/inventory/stock-usage'
+      preLoaderRoute: typeof KelolaReportsInventoryStockUsageRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/inventory/stock-value': {
+      id: '/_kelola/reports/inventory/stock-value'
+      path: '/reports/inventory/stock-value'
+      fullPath: '/reports/inventory/stock-value'
+      preLoaderRoute: typeof KelolaReportsInventoryStockValueRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/inventory/waste': {
+      id: '/_kelola/reports/inventory/waste'
+      path: '/reports/inventory/waste'
+      fullPath: '/reports/inventory/waste'
+      preLoaderRoute: typeof KelolaReportsInventoryWasteRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/inventory/waste-by-category': {
+      id: '/_kelola/reports/inventory/waste-by-category'
+      path: '/reports/inventory/waste-by-category'
+      fullPath: '/reports/inventory/waste-by-category'
+      preLoaderRoute: typeof KelolaReportsInventoryWasteByCategoryRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/loyalty/members': {
+      id: '/_kelola/reports/loyalty/members'
+      path: '/reports/loyalty/members'
+      fullPath: '/reports/loyalty/members'
+      preLoaderRoute: typeof KelolaReportsLoyaltyMembersRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/loyalty/new-members': {
+      id: '/_kelola/reports/loyalty/new-members'
+      path: '/reports/loyalty/new-members'
+      fullPath: '/reports/loyalty/new-members'
+      preLoaderRoute: typeof KelolaReportsLoyaltyNewMembersRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/loyalty/points': {
+      id: '/_kelola/reports/loyalty/points'
+      path: '/reports/loyalty/points'
+      fullPath: '/reports/loyalty/points'
+      preLoaderRoute: typeof KelolaReportsLoyaltyPointsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/loyalty/tier-mix': {
+      id: '/_kelola/reports/loyalty/tier-mix'
+      path: '/reports/loyalty/tier-mix'
+      fullPath: '/reports/loyalty/tier-mix'
+      preLoaderRoute: typeof KelolaReportsLoyaltyTierMixRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/loyalty/visits': {
+      id: '/_kelola/reports/loyalty/visits'
+      path: '/reports/loyalty/visits'
+      fullPath: '/reports/loyalty/visits'
+      preLoaderRoute: typeof KelolaReportsLoyaltyVisitsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/menu/best-sellers': {
+      id: '/_kelola/reports/menu/best-sellers'
+      path: '/reports/menu/best-sellers'
+      fullPath: '/reports/menu/best-sellers'
+      preLoaderRoute: typeof KelolaReportsMenuBestSellersRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/menu/category-sales': {
+      id: '/_kelola/reports/menu/category-sales'
+      path: '/reports/menu/category-sales'
+      fullPath: '/reports/menu/category-sales'
+      preLoaderRoute: typeof KelolaReportsMenuCategorySalesRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/menu/engineering': {
+      id: '/_kelola/reports/menu/engineering'
+      path: '/reports/menu/engineering'
+      fullPath: '/reports/menu/engineering'
+      preLoaderRoute: typeof KelolaReportsMenuEngineeringRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/menu/margin': {
+      id: '/_kelola/reports/menu/margin'
+      path: '/reports/menu/margin'
+      fullPath: '/reports/menu/margin'
+      preLoaderRoute: typeof KelolaReportsMenuMarginRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/menu/recipe-cost': {
+      id: '/_kelola/reports/menu/recipe-cost'
+      path: '/reports/menu/recipe-cost'
+      fullPath: '/reports/menu/recipe-cost'
+      preLoaderRoute: typeof KelolaReportsMenuRecipeCostRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/menu/slow-movers': {
+      id: '/_kelola/reports/menu/slow-movers'
+      path: '/reports/menu/slow-movers'
+      fullPath: '/reports/menu/slow-movers'
+      preLoaderRoute: typeof KelolaReportsMenuSlowMoversRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/menu/sold-out': {
+      id: '/_kelola/reports/menu/sold-out'
+      path: '/reports/menu/sold-out'
+      fullPath: '/reports/menu/sold-out'
+      preLoaderRoute: typeof KelolaReportsMenuSoldOutRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/alerts': {
+      id: '/_kelola/reports/operations/alerts'
+      path: '/reports/operations/alerts'
+      fullPath: '/reports/operations/alerts'
+      preLoaderRoute: typeof KelolaReportsOperationsAlertsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/devices': {
+      id: '/_kelola/reports/operations/devices'
+      path: '/reports/operations/devices'
+      fullPath: '/reports/operations/devices'
+      preLoaderRoute: typeof KelolaReportsOperationsDevicesRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/failed-items': {
+      id: '/_kelola/reports/operations/failed-items'
+      path: '/reports/operations/failed-items'
+      fullPath: '/reports/operations/failed-items'
+      preLoaderRoute: typeof KelolaReportsOperationsFailedItemsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/kitchen-queue': {
+      id: '/_kelola/reports/operations/kitchen-queue'
+      path: '/reports/operations/kitchen-queue'
+      fullPath: '/reports/operations/kitchen-queue'
+      preLoaderRoute: typeof KelolaReportsOperationsKitchenQueueRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/occupancy': {
+      id: '/_kelola/reports/operations/occupancy'
+      path: '/reports/operations/occupancy'
+      fullPath: '/reports/operations/occupancy'
+      preLoaderRoute: typeof KelolaReportsOperationsOccupancyRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/remake-comp': {
+      id: '/_kelola/reports/operations/remake-comp'
+      path: '/reports/operations/remake-comp'
+      fullPath: '/reports/operations/remake-comp'
+      preLoaderRoute: typeof KelolaReportsOperationsRemakeCompRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/serving-time': {
+      id: '/_kelola/reports/operations/serving-time'
+      path: '/reports/operations/serving-time'
+      fullPath: '/reports/operations/serving-time'
+      preLoaderRoute: typeof KelolaReportsOperationsServingTimeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/table-turnover': {
+      id: '/_kelola/reports/operations/table-turnover'
+      path: '/reports/operations/table-turnover'
+      fullPath: '/reports/operations/table-turnover'
+      preLoaderRoute: typeof KelolaReportsOperationsTableTurnoverRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/operations/waiter-calls': {
+      id: '/_kelola/reports/operations/waiter-calls'
+      path: '/reports/operations/waiter-calls'
+      fullPath: '/reports/operations/waiter-calls'
+      preLoaderRoute: typeof KelolaReportsOperationsWaiterCallsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payments/cash-variance': {
+      id: '/_kelola/reports/payments/cash-variance'
+      path: '/reports/payments/cash-variance'
+      fullPath: '/reports/payments/cash-variance'
+      preLoaderRoute: typeof KelolaReportsPaymentsCashVarianceRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payments/edc-settlement': {
+      id: '/_kelola/reports/payments/edc-settlement'
+      path: '/reports/payments/edc-settlement'
+      fullPath: '/reports/payments/edc-settlement'
+      preLoaderRoute: typeof KelolaReportsPaymentsEdcSettlementRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payments/failed': {
+      id: '/_kelola/reports/payments/failed'
+      path: '/reports/payments/failed'
+      fullPath: '/reports/payments/failed'
+      preLoaderRoute: typeof KelolaReportsPaymentsFailedRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payments/fees': {
+      id: '/_kelola/reports/payments/fees'
+      path: '/reports/payments/fees'
+      fullPath: '/reports/payments/fees'
+      preLoaderRoute: typeof KelolaReportsPaymentsFeesRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payments/gateway-settlement': {
+      id: '/_kelola/reports/payments/gateway-settlement'
+      path: '/reports/payments/gateway-settlement'
+      fullPath: '/reports/payments/gateway-settlement'
+      preLoaderRoute: typeof KelolaReportsPaymentsGatewaySettlementRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payments/methods': {
+      id: '/_kelola/reports/payments/methods'
+      path: '/reports/payments/methods'
+      fullPath: '/reports/payments/methods'
+      preLoaderRoute: typeof KelolaReportsPaymentsMethodsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payroll/cost-trend': {
+      id: '/_kelola/reports/payroll/cost-trend'
+      path: '/reports/payroll/cost-trend'
+      fullPath: '/reports/payroll/cost-trend'
+      preLoaderRoute: typeof KelolaReportsPayrollCostTrendRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payroll/gross': {
+      id: '/_kelola/reports/payroll/gross'
+      path: '/reports/payroll/gross'
+      fullPath: '/reports/payroll/gross'
+      preLoaderRoute: typeof KelolaReportsPayrollGrossRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payroll/labor-cost': {
+      id: '/_kelola/reports/payroll/labor-cost'
+      path: '/reports/payroll/labor-cost'
+      fullPath: '/reports/payroll/labor-cost'
+      preLoaderRoute: typeof KelolaReportsPayrollLaborCostRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/payroll/overtime': {
+      id: '/_kelola/reports/payroll/overtime'
+      path: '/reports/payroll/overtime'
+      fullPath: '/reports/payroll/overtime'
+      preLoaderRoute: typeof KelolaReportsPayrollOvertimeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/performance/checklist': {
+      id: '/_kelola/reports/performance/checklist'
+      path: '/reports/performance/checklist'
+      fullPath: '/reports/performance/checklist'
+      preLoaderRoute: typeof KelolaReportsPerformanceChecklistRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/performance/employee': {
+      id: '/_kelola/reports/performance/employee'
+      path: '/reports/performance/employee'
+      fullPath: '/reports/performance/employee'
+      preLoaderRoute: typeof KelolaReportsPerformanceEmployeeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/performance/service-quality': {
+      id: '/_kelola/reports/performance/service-quality'
+      path: '/reports/performance/service-quality'
+      fullPath: '/reports/performance/service-quality'
+      preLoaderRoute: typeof KelolaReportsPerformanceServiceQualityRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/performance/station': {
+      id: '/_kelola/reports/performance/station'
+      path: '/reports/performance/station'
+      fullPath: '/reports/performance/station'
+      preLoaderRoute: typeof KelolaReportsPerformanceStationRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/purchasing/orders': {
+      id: '/_kelola/reports/purchasing/orders'
+      path: '/reports/purchasing/orders'
+      fullPath: '/reports/purchasing/orders'
+      preLoaderRoute: typeof KelolaReportsPurchasingOrdersRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/purchasing/price-history': {
+      id: '/_kelola/reports/purchasing/price-history'
+      path: '/reports/purchasing/price-history'
+      fullPath: '/reports/purchasing/price-history'
+      preLoaderRoute: typeof KelolaReportsPurchasingPriceHistoryRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/purchasing/receipts': {
+      id: '/_kelola/reports/purchasing/receipts'
+      path: '/reports/purchasing/receipts'
+      fullPath: '/reports/purchasing/receipts'
+      preLoaderRoute: typeof KelolaReportsPurchasingReceiptsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/purchasing/requests': {
+      id: '/_kelola/reports/purchasing/requests'
+      path: '/reports/purchasing/requests'
+      fullPath: '/reports/purchasing/requests'
+      preLoaderRoute: typeof KelolaReportsPurchasingRequestsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/purchasing/supplier-due': {
+      id: '/_kelola/reports/purchasing/supplier-due'
+      path: '/reports/purchasing/supplier-due'
+      fullPath: '/reports/purchasing/supplier-due'
+      preLoaderRoute: typeof KelolaReportsPurchasingSupplierDueRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/reservation/bookings': {
+      id: '/_kelola/reports/reservation/bookings'
+      path: '/reports/reservation/bookings'
+      fullPath: '/reports/reservation/bookings'
+      preLoaderRoute: typeof KelolaReportsReservationBookingsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/reservation/by-zone': {
+      id: '/_kelola/reports/reservation/by-zone'
+      path: '/reports/reservation/by-zone'
+      fullPath: '/reports/reservation/by-zone'
+      preLoaderRoute: typeof KelolaReportsReservationByZoneRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/reservation/no-show': {
+      id: '/_kelola/reports/reservation/no-show'
+      path: '/reports/reservation/no-show'
+      fullPath: '/reports/reservation/no-show'
+      preLoaderRoute: typeof KelolaReportsReservationNoShowRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/reservation/peak-hours': {
+      id: '/_kelola/reports/reservation/peak-hours'
+      path: '/reports/reservation/peak-hours'
+      fullPath: '/reports/reservation/peak-hours'
+      preLoaderRoute: typeof KelolaReportsReservationPeakHoursRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/sales/by-category': {
+      id: '/_kelola/reports/sales/by-category'
+      path: '/reports/sales/by-category'
+      fullPath: '/reports/sales/by-category'
+      preLoaderRoute: typeof KelolaReportsSalesByCategoryRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/sales/by-day': {
+      id: '/_kelola/reports/sales/by-day'
+      path: '/reports/sales/by-day'
+      fullPath: '/reports/sales/by-day'
+      preLoaderRoute: typeof KelolaReportsSalesByDayRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/reports/sales/daily': {
@@ -4412,6 +6288,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaReportsSalesRefundRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/reports/sales/target': {
+      id: '/_kelola/reports/sales/target'
+      path: '/reports/sales/target'
+      fullPath: '/reports/sales/target'
+      preLoaderRoute: typeof KelolaReportsSalesTargetRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/sales/transactions': {
       id: '/_kelola/reports/sales/transactions'
       path: '/reports/sales/transactions'
@@ -4424,6 +6307,69 @@ declare module '@tanstack/react-router' {
       path: '/reports/sales/void'
       fullPath: '/reports/sales/void'
       preLoaderRoute: typeof KelolaReportsSalesVoidRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/tax/by-rule': {
+      id: '/_kelola/reports/tax/by-rule'
+      path: '/reports/tax/by-rule'
+      fullPath: '/reports/tax/by-rule'
+      preLoaderRoute: typeof KelolaReportsTaxByRuleRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/tax/pbjt': {
+      id: '/_kelola/reports/tax/pbjt'
+      path: '/reports/tax/pbjt'
+      fullPath: '/reports/tax/pbjt'
+      preLoaderRoute: typeof KelolaReportsTaxPbjtRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/tax/receivable': {
+      id: '/_kelola/reports/tax/receivable'
+      path: '/reports/tax/receivable'
+      fullPath: '/reports/tax/receivable'
+      preLoaderRoute: typeof KelolaReportsTaxReceivableRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/tax/service-charge': {
+      id: '/_kelola/reports/tax/service-charge'
+      path: '/reports/tax/service-charge'
+      fullPath: '/reports/tax/service-charge'
+      preLoaderRoute: typeof KelolaReportsTaxServiceChargeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/traffic/by-zone': {
+      id: '/_kelola/reports/traffic/by-zone'
+      path: '/reports/traffic/by-zone'
+      fullPath: '/reports/traffic/by-zone'
+      preLoaderRoute: typeof KelolaReportsTrafficByZoneRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/traffic/dwell-time': {
+      id: '/_kelola/reports/traffic/dwell-time'
+      path: '/reports/traffic/dwell-time'
+      fullPath: '/reports/traffic/dwell-time'
+      preLoaderRoute: typeof KelolaReportsTrafficDwellTimeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/traffic/new-vs-returning': {
+      id: '/_kelola/reports/traffic/new-vs-returning'
+      path: '/reports/traffic/new-vs-returning'
+      fullPath: '/reports/traffic/new-vs-returning'
+      preLoaderRoute: typeof KelolaReportsTrafficNewVsReturningRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/traffic/pax': {
+      id: '/_kelola/reports/traffic/pax'
+      path: '/reports/traffic/pax'
+      fullPath: '/reports/traffic/pax'
+      preLoaderRoute: typeof KelolaReportsTrafficPaxRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/traffic/peak-hours': {
+      id: '/_kelola/reports/traffic/peak-hours'
+      path: '/reports/traffic/peak-hours'
+      fullPath: '/reports/traffic/peak-hours'
+      preLoaderRoute: typeof KelolaReportsTrafficPeakHoursRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_ops/operasional/checklist/': {
@@ -4454,11 +6400,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OpsOperasionalPeralatanEquipmentIdRouteImport
       parentRoute: typeof OpsRoute
     }
+    '/_ops/pos/bayar/$orderId': {
+      id: '/_ops/pos/bayar/$orderId'
+      path: '/pos/bayar/$orderId'
+      fullPath: '/pos/bayar/$orderId'
+      preLoaderRoute: typeof OpsPosBayarOrderIdRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_ops/pos/meja/': {
       id: '/_ops/pos/meja/'
       path: '/pos/meja'
       fullPath: '/pos/meja/'
       preLoaderRoute: typeof OpsPosMejaIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/shift/': {
+      id: '/_ops/pos/shift/'
+      path: '/pos/shift'
+      fullPath: '/pos/shift/'
+      preLoaderRoute: typeof OpsPosShiftIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/shift/tutup': {
+      id: '/_ops/pos/shift/tutup'
+      path: '/pos/shift/tutup'
+      fullPath: '/pos/shift/tutup'
+      preLoaderRoute: typeof OpsPosShiftTutupRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_platform/platform/tenant/': {
@@ -4655,6 +6622,13 @@ declare module '@tanstack/react-router' {
       path: '/operasional/checklist/template/$templateId'
       fullPath: '/operasional/checklist/template/$templateId'
       preLoaderRoute: typeof OpsOperasionalChecklistTemplateTemplateIdRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/supervisor/shift/$shiftId': {
+      id: '/_ops/pos/supervisor/shift/$shiftId'
+      path: '/pos/supervisor/shift/$shiftId'
+      fullPath: '/pos/supervisor/shift/$shiftId'
+      preLoaderRoute: typeof OpsPosSupervisorShiftShiftIdRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/': {
@@ -4894,6 +6868,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPengaturanIntegrasiRoute: typeof KelolaKelolaPengaturanIntegrasiRoute
   KelolaKelolaPengaturanIstilahRoute: typeof KelolaKelolaPengaturanIstilahRoute
   KelolaKelolaPengaturanKonfigurasiRoute: typeof KelolaKelolaPengaturanKonfigurasiRoute
+  KelolaKelolaPengaturanOpenBillRoute: typeof KelolaKelolaPengaturanOpenBillRoute
   KelolaKelolaPengaturanOutletRoute: typeof KelolaKelolaPengaturanOutletRoute
   KelolaKelolaPengaturanTemaRoute: typeof KelolaKelolaPengaturanTemaRoute
   KelolaKelolaPersetujuanRequestIdRoute: typeof KelolaKelolaPersetujuanRequestIdRoute
@@ -4902,12 +6877,96 @@ interface KelolaRouteChildren {
   KelolaKelolaPromoTumpangTindihRoute: typeof KelolaKelolaPromoTumpangTindihRoute
   KelolaKelolaPromoVoucherRoute: typeof KelolaKelolaPromoVoucherRoute
   KelolaKelolaRosterTemplateRoute: typeof KelolaKelolaRosterTemplateRoute
+  KelolaReportsAttendanceByStationRoute: typeof KelolaReportsAttendanceByStationRoute
+  KelolaReportsAttendanceDailyRoute: typeof KelolaReportsAttendanceDailyRoute
+  KelolaReportsAttendanceLateRoute: typeof KelolaReportsAttendanceLateRoute
+  KelolaReportsAttendanceOvertimeRoute: typeof KelolaReportsAttendanceOvertimeRoute
+  KelolaReportsCogsPerMenuRoute: typeof KelolaReportsCogsPerMenuRoute
+  KelolaReportsCogsProductionRoute: typeof KelolaReportsCogsProductionRoute
+  KelolaReportsCogsRecipeRoute: typeof KelolaReportsCogsRecipeRoute
+  KelolaReportsCogsTrendRoute: typeof KelolaReportsCogsTrendRoute
+  KelolaReportsCrmCampaignPerformanceRoute: typeof KelolaReportsCrmCampaignPerformanceRoute
+  KelolaReportsCrmCustomersRoute: typeof KelolaReportsCrmCustomersRoute
+  KelolaReportsCrmPromoCostRoute: typeof KelolaReportsCrmPromoCostRoute
+  KelolaReportsCrmRepeatVisitRoute: typeof KelolaReportsCrmRepeatVisitRoute
+  KelolaReportsCrmReviewsRoute: typeof KelolaReportsCrmReviewsRoute
+  KelolaReportsCrmSegmentsRoute: typeof KelolaReportsCrmSegmentsRoute
+  KelolaReportsDeliveryByMenuRoute: typeof KelolaReportsDeliveryByMenuRoute
+  KelolaReportsDeliveryChannelSalesRoute: typeof KelolaReportsDeliveryChannelSalesRoute
+  KelolaReportsDeliveryOrdersRoute: typeof KelolaReportsDeliveryOrdersRoute
+  KelolaReportsDeliverySettlementRoute: typeof KelolaReportsDeliverySettlementRoute
+  KelolaReportsFacilityCleaningTimeRoute: typeof KelolaReportsFacilityCleaningTimeRoute
   KelolaReportsFacilityFnbConversionRoute: typeof KelolaReportsFacilityFnbConversionRoute
+  KelolaReportsFacilityIncidentsRoute: typeof KelolaReportsFacilityIncidentsRoute
   KelolaReportsFacilityOccupancyRoute: typeof KelolaReportsFacilityOccupancyRoute
+  KelolaReportsFacilityOvertimeRoute: typeof KelolaReportsFacilityOvertimeRoute
+  KelolaReportsFacilityProductRevenueRoute: typeof KelolaReportsFacilityProductRevenueRoute
   KelolaReportsFacilityRevenueRoute: typeof KelolaReportsFacilityRevenueRoute
   KelolaReportsFacilityRevpashRoute: typeof KelolaReportsFacilityRevpashRoute
   KelolaReportsFacilitySubscriptionsRoute: typeof KelolaReportsFacilitySubscriptionsRoute
+  KelolaReportsFacilityUnitUtilizationRoute: typeof KelolaReportsFacilityUnitUtilizationRoute
   KelolaReportsFacilityWifiRoute: typeof KelolaReportsFacilityWifiRoute
+  KelolaReportsFinanceCashPositionRoute: typeof KelolaReportsFinanceCashPositionRoute
+  KelolaReportsFinanceEbitdaRoute: typeof KelolaReportsFinanceEbitdaRoute
+  KelolaReportsFinanceGrossMarginRoute: typeof KelolaReportsFinanceGrossMarginRoute
+  KelolaReportsFinanceIncomeStatementRoute: typeof KelolaReportsFinanceIncomeStatementRoute
+  KelolaReportsFinancePendingSettlementRoute: typeof KelolaReportsFinancePendingSettlementRoute
+  KelolaReportsFinancePrimeCostRoute: typeof KelolaReportsFinancePrimeCostRoute
+  KelolaReportsFinanceProfitTrendRoute: typeof KelolaReportsFinanceProfitTrendRoute
+  KelolaReportsFinanceSupplierDueRoute: typeof KelolaReportsFinanceSupplierDueRoute
+  KelolaReportsInventoryCriticalStockRoute: typeof KelolaReportsInventoryCriticalStockRoute
+  KelolaReportsInventoryFoodCostRoute: typeof KelolaReportsInventoryFoodCostRoute
+  KelolaReportsInventoryMovementRoute: typeof KelolaReportsInventoryMovementRoute
+  KelolaReportsInventoryStockUsageRoute: typeof KelolaReportsInventoryStockUsageRoute
+  KelolaReportsInventoryStockValueRoute: typeof KelolaReportsInventoryStockValueRoute
+  KelolaReportsInventoryWasteRoute: typeof KelolaReportsInventoryWasteRoute
+  KelolaReportsInventoryWasteByCategoryRoute: typeof KelolaReportsInventoryWasteByCategoryRoute
+  KelolaReportsLoyaltyMembersRoute: typeof KelolaReportsLoyaltyMembersRoute
+  KelolaReportsLoyaltyNewMembersRoute: typeof KelolaReportsLoyaltyNewMembersRoute
+  KelolaReportsLoyaltyPointsRoute: typeof KelolaReportsLoyaltyPointsRoute
+  KelolaReportsLoyaltyTierMixRoute: typeof KelolaReportsLoyaltyTierMixRoute
+  KelolaReportsLoyaltyVisitsRoute: typeof KelolaReportsLoyaltyVisitsRoute
+  KelolaReportsMenuBestSellersRoute: typeof KelolaReportsMenuBestSellersRoute
+  KelolaReportsMenuCategorySalesRoute: typeof KelolaReportsMenuCategorySalesRoute
+  KelolaReportsMenuEngineeringRoute: typeof KelolaReportsMenuEngineeringRoute
+  KelolaReportsMenuMarginRoute: typeof KelolaReportsMenuMarginRoute
+  KelolaReportsMenuRecipeCostRoute: typeof KelolaReportsMenuRecipeCostRoute
+  KelolaReportsMenuSlowMoversRoute: typeof KelolaReportsMenuSlowMoversRoute
+  KelolaReportsMenuSoldOutRoute: typeof KelolaReportsMenuSoldOutRoute
+  KelolaReportsOperationsAlertsRoute: typeof KelolaReportsOperationsAlertsRoute
+  KelolaReportsOperationsDevicesRoute: typeof KelolaReportsOperationsDevicesRoute
+  KelolaReportsOperationsFailedItemsRoute: typeof KelolaReportsOperationsFailedItemsRoute
+  KelolaReportsOperationsKitchenQueueRoute: typeof KelolaReportsOperationsKitchenQueueRoute
+  KelolaReportsOperationsOccupancyRoute: typeof KelolaReportsOperationsOccupancyRoute
+  KelolaReportsOperationsRemakeCompRoute: typeof KelolaReportsOperationsRemakeCompRoute
+  KelolaReportsOperationsServingTimeRoute: typeof KelolaReportsOperationsServingTimeRoute
+  KelolaReportsOperationsTableTurnoverRoute: typeof KelolaReportsOperationsTableTurnoverRoute
+  KelolaReportsOperationsWaiterCallsRoute: typeof KelolaReportsOperationsWaiterCallsRoute
+  KelolaReportsPaymentsCashVarianceRoute: typeof KelolaReportsPaymentsCashVarianceRoute
+  KelolaReportsPaymentsEdcSettlementRoute: typeof KelolaReportsPaymentsEdcSettlementRoute
+  KelolaReportsPaymentsFailedRoute: typeof KelolaReportsPaymentsFailedRoute
+  KelolaReportsPaymentsFeesRoute: typeof KelolaReportsPaymentsFeesRoute
+  KelolaReportsPaymentsGatewaySettlementRoute: typeof KelolaReportsPaymentsGatewaySettlementRoute
+  KelolaReportsPaymentsMethodsRoute: typeof KelolaReportsPaymentsMethodsRoute
+  KelolaReportsPayrollCostTrendRoute: typeof KelolaReportsPayrollCostTrendRoute
+  KelolaReportsPayrollGrossRoute: typeof KelolaReportsPayrollGrossRoute
+  KelolaReportsPayrollLaborCostRoute: typeof KelolaReportsPayrollLaborCostRoute
+  KelolaReportsPayrollOvertimeRoute: typeof KelolaReportsPayrollOvertimeRoute
+  KelolaReportsPerformanceChecklistRoute: typeof KelolaReportsPerformanceChecklistRoute
+  KelolaReportsPerformanceEmployeeRoute: typeof KelolaReportsPerformanceEmployeeRoute
+  KelolaReportsPerformanceServiceQualityRoute: typeof KelolaReportsPerformanceServiceQualityRoute
+  KelolaReportsPerformanceStationRoute: typeof KelolaReportsPerformanceStationRoute
+  KelolaReportsPurchasingOrdersRoute: typeof KelolaReportsPurchasingOrdersRoute
+  KelolaReportsPurchasingPriceHistoryRoute: typeof KelolaReportsPurchasingPriceHistoryRoute
+  KelolaReportsPurchasingReceiptsRoute: typeof KelolaReportsPurchasingReceiptsRoute
+  KelolaReportsPurchasingRequestsRoute: typeof KelolaReportsPurchasingRequestsRoute
+  KelolaReportsPurchasingSupplierDueRoute: typeof KelolaReportsPurchasingSupplierDueRoute
+  KelolaReportsReservationBookingsRoute: typeof KelolaReportsReservationBookingsRoute
+  KelolaReportsReservationByZoneRoute: typeof KelolaReportsReservationByZoneRoute
+  KelolaReportsReservationNoShowRoute: typeof KelolaReportsReservationNoShowRoute
+  KelolaReportsReservationPeakHoursRoute: typeof KelolaReportsReservationPeakHoursRoute
+  KelolaReportsSalesByCategoryRoute: typeof KelolaReportsSalesByCategoryRoute
+  KelolaReportsSalesByDayRoute: typeof KelolaReportsSalesByDayRoute
   KelolaReportsSalesDailyRoute: typeof KelolaReportsSalesDailyRoute
   KelolaReportsSalesDiscountRoute: typeof KelolaReportsSalesDiscountRoute
   KelolaReportsSalesPerChannelRoute: typeof KelolaReportsSalesPerChannelRoute
@@ -4916,8 +6975,18 @@ interface KelolaRouteChildren {
   KelolaReportsSalesPerMenuRoute: typeof KelolaReportsSalesPerMenuRoute
   KelolaReportsSalesPerPaxRoute: typeof KelolaReportsSalesPerPaxRoute
   KelolaReportsSalesRefundRoute: typeof KelolaReportsSalesRefundRoute
+  KelolaReportsSalesTargetRoute: typeof KelolaReportsSalesTargetRoute
   KelolaReportsSalesTransactionsRoute: typeof KelolaReportsSalesTransactionsRoute
   KelolaReportsSalesVoidRoute: typeof KelolaReportsSalesVoidRoute
+  KelolaReportsTaxByRuleRoute: typeof KelolaReportsTaxByRuleRoute
+  KelolaReportsTaxPbjtRoute: typeof KelolaReportsTaxPbjtRoute
+  KelolaReportsTaxReceivableRoute: typeof KelolaReportsTaxReceivableRoute
+  KelolaReportsTaxServiceChargeRoute: typeof KelolaReportsTaxServiceChargeRoute
+  KelolaReportsTrafficByZoneRoute: typeof KelolaReportsTrafficByZoneRoute
+  KelolaReportsTrafficDwellTimeRoute: typeof KelolaReportsTrafficDwellTimeRoute
+  KelolaReportsTrafficNewVsReturningRoute: typeof KelolaReportsTrafficNewVsReturningRoute
+  KelolaReportsTrafficPaxRoute: typeof KelolaReportsTrafficPaxRoute
+  KelolaReportsTrafficPeakHoursRoute: typeof KelolaReportsTrafficPeakHoursRoute
   KelolaKelolaAksesIndexRoute: typeof KelolaKelolaAksesIndexRoute
   KelolaKelolaAkuntansiIndexRoute: typeof KelolaKelolaAkuntansiIndexRoute
   KelolaKelolaDeliveryIndexRoute: typeof KelolaKelolaDeliveryIndexRoute
@@ -5045,6 +7114,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPengaturanIstilahRoute: KelolaKelolaPengaturanIstilahRoute,
   KelolaKelolaPengaturanKonfigurasiRoute:
     KelolaKelolaPengaturanKonfigurasiRoute,
+  KelolaKelolaPengaturanOpenBillRoute: KelolaKelolaPengaturanOpenBillRoute,
   KelolaKelolaPengaturanOutletRoute: KelolaKelolaPengaturanOutletRoute,
   KelolaKelolaPengaturanTemaRoute: KelolaKelolaPengaturanTemaRoute,
   KelolaKelolaPersetujuanRequestIdRoute: KelolaKelolaPersetujuanRequestIdRoute,
@@ -5053,14 +7123,121 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPromoTumpangTindihRoute: KelolaKelolaPromoTumpangTindihRoute,
   KelolaKelolaPromoVoucherRoute: KelolaKelolaPromoVoucherRoute,
   KelolaKelolaRosterTemplateRoute: KelolaKelolaRosterTemplateRoute,
+  KelolaReportsAttendanceByStationRoute: KelolaReportsAttendanceByStationRoute,
+  KelolaReportsAttendanceDailyRoute: KelolaReportsAttendanceDailyRoute,
+  KelolaReportsAttendanceLateRoute: KelolaReportsAttendanceLateRoute,
+  KelolaReportsAttendanceOvertimeRoute: KelolaReportsAttendanceOvertimeRoute,
+  KelolaReportsCogsPerMenuRoute: KelolaReportsCogsPerMenuRoute,
+  KelolaReportsCogsProductionRoute: KelolaReportsCogsProductionRoute,
+  KelolaReportsCogsRecipeRoute: KelolaReportsCogsRecipeRoute,
+  KelolaReportsCogsTrendRoute: KelolaReportsCogsTrendRoute,
+  KelolaReportsCrmCampaignPerformanceRoute:
+    KelolaReportsCrmCampaignPerformanceRoute,
+  KelolaReportsCrmCustomersRoute: KelolaReportsCrmCustomersRoute,
+  KelolaReportsCrmPromoCostRoute: KelolaReportsCrmPromoCostRoute,
+  KelolaReportsCrmRepeatVisitRoute: KelolaReportsCrmRepeatVisitRoute,
+  KelolaReportsCrmReviewsRoute: KelolaReportsCrmReviewsRoute,
+  KelolaReportsCrmSegmentsRoute: KelolaReportsCrmSegmentsRoute,
+  KelolaReportsDeliveryByMenuRoute: KelolaReportsDeliveryByMenuRoute,
+  KelolaReportsDeliveryChannelSalesRoute:
+    KelolaReportsDeliveryChannelSalesRoute,
+  KelolaReportsDeliveryOrdersRoute: KelolaReportsDeliveryOrdersRoute,
+  KelolaReportsDeliverySettlementRoute: KelolaReportsDeliverySettlementRoute,
+  KelolaReportsFacilityCleaningTimeRoute:
+    KelolaReportsFacilityCleaningTimeRoute,
   KelolaReportsFacilityFnbConversionRoute:
     KelolaReportsFacilityFnbConversionRoute,
+  KelolaReportsFacilityIncidentsRoute: KelolaReportsFacilityIncidentsRoute,
   KelolaReportsFacilityOccupancyRoute: KelolaReportsFacilityOccupancyRoute,
+  KelolaReportsFacilityOvertimeRoute: KelolaReportsFacilityOvertimeRoute,
+  KelolaReportsFacilityProductRevenueRoute:
+    KelolaReportsFacilityProductRevenueRoute,
   KelolaReportsFacilityRevenueRoute: KelolaReportsFacilityRevenueRoute,
   KelolaReportsFacilityRevpashRoute: KelolaReportsFacilityRevpashRoute,
   KelolaReportsFacilitySubscriptionsRoute:
     KelolaReportsFacilitySubscriptionsRoute,
+  KelolaReportsFacilityUnitUtilizationRoute:
+    KelolaReportsFacilityUnitUtilizationRoute,
   KelolaReportsFacilityWifiRoute: KelolaReportsFacilityWifiRoute,
+  KelolaReportsFinanceCashPositionRoute: KelolaReportsFinanceCashPositionRoute,
+  KelolaReportsFinanceEbitdaRoute: KelolaReportsFinanceEbitdaRoute,
+  KelolaReportsFinanceGrossMarginRoute: KelolaReportsFinanceGrossMarginRoute,
+  KelolaReportsFinanceIncomeStatementRoute:
+    KelolaReportsFinanceIncomeStatementRoute,
+  KelolaReportsFinancePendingSettlementRoute:
+    KelolaReportsFinancePendingSettlementRoute,
+  KelolaReportsFinancePrimeCostRoute: KelolaReportsFinancePrimeCostRoute,
+  KelolaReportsFinanceProfitTrendRoute: KelolaReportsFinanceProfitTrendRoute,
+  KelolaReportsFinanceSupplierDueRoute: KelolaReportsFinanceSupplierDueRoute,
+  KelolaReportsInventoryCriticalStockRoute:
+    KelolaReportsInventoryCriticalStockRoute,
+  KelolaReportsInventoryFoodCostRoute: KelolaReportsInventoryFoodCostRoute,
+  KelolaReportsInventoryMovementRoute: KelolaReportsInventoryMovementRoute,
+  KelolaReportsInventoryStockUsageRoute: KelolaReportsInventoryStockUsageRoute,
+  KelolaReportsInventoryStockValueRoute: KelolaReportsInventoryStockValueRoute,
+  KelolaReportsInventoryWasteRoute: KelolaReportsInventoryWasteRoute,
+  KelolaReportsInventoryWasteByCategoryRoute:
+    KelolaReportsInventoryWasteByCategoryRoute,
+  KelolaReportsLoyaltyMembersRoute: KelolaReportsLoyaltyMembersRoute,
+  KelolaReportsLoyaltyNewMembersRoute: KelolaReportsLoyaltyNewMembersRoute,
+  KelolaReportsLoyaltyPointsRoute: KelolaReportsLoyaltyPointsRoute,
+  KelolaReportsLoyaltyTierMixRoute: KelolaReportsLoyaltyTierMixRoute,
+  KelolaReportsLoyaltyVisitsRoute: KelolaReportsLoyaltyVisitsRoute,
+  KelolaReportsMenuBestSellersRoute: KelolaReportsMenuBestSellersRoute,
+  KelolaReportsMenuCategorySalesRoute: KelolaReportsMenuCategorySalesRoute,
+  KelolaReportsMenuEngineeringRoute: KelolaReportsMenuEngineeringRoute,
+  KelolaReportsMenuMarginRoute: KelolaReportsMenuMarginRoute,
+  KelolaReportsMenuRecipeCostRoute: KelolaReportsMenuRecipeCostRoute,
+  KelolaReportsMenuSlowMoversRoute: KelolaReportsMenuSlowMoversRoute,
+  KelolaReportsMenuSoldOutRoute: KelolaReportsMenuSoldOutRoute,
+  KelolaReportsOperationsAlertsRoute: KelolaReportsOperationsAlertsRoute,
+  KelolaReportsOperationsDevicesRoute: KelolaReportsOperationsDevicesRoute,
+  KelolaReportsOperationsFailedItemsRoute:
+    KelolaReportsOperationsFailedItemsRoute,
+  KelolaReportsOperationsKitchenQueueRoute:
+    KelolaReportsOperationsKitchenQueueRoute,
+  KelolaReportsOperationsOccupancyRoute: KelolaReportsOperationsOccupancyRoute,
+  KelolaReportsOperationsRemakeCompRoute:
+    KelolaReportsOperationsRemakeCompRoute,
+  KelolaReportsOperationsServingTimeRoute:
+    KelolaReportsOperationsServingTimeRoute,
+  KelolaReportsOperationsTableTurnoverRoute:
+    KelolaReportsOperationsTableTurnoverRoute,
+  KelolaReportsOperationsWaiterCallsRoute:
+    KelolaReportsOperationsWaiterCallsRoute,
+  KelolaReportsPaymentsCashVarianceRoute:
+    KelolaReportsPaymentsCashVarianceRoute,
+  KelolaReportsPaymentsEdcSettlementRoute:
+    KelolaReportsPaymentsEdcSettlementRoute,
+  KelolaReportsPaymentsFailedRoute: KelolaReportsPaymentsFailedRoute,
+  KelolaReportsPaymentsFeesRoute: KelolaReportsPaymentsFeesRoute,
+  KelolaReportsPaymentsGatewaySettlementRoute:
+    KelolaReportsPaymentsGatewaySettlementRoute,
+  KelolaReportsPaymentsMethodsRoute: KelolaReportsPaymentsMethodsRoute,
+  KelolaReportsPayrollCostTrendRoute: KelolaReportsPayrollCostTrendRoute,
+  KelolaReportsPayrollGrossRoute: KelolaReportsPayrollGrossRoute,
+  KelolaReportsPayrollLaborCostRoute: KelolaReportsPayrollLaborCostRoute,
+  KelolaReportsPayrollOvertimeRoute: KelolaReportsPayrollOvertimeRoute,
+  KelolaReportsPerformanceChecklistRoute:
+    KelolaReportsPerformanceChecklistRoute,
+  KelolaReportsPerformanceEmployeeRoute: KelolaReportsPerformanceEmployeeRoute,
+  KelolaReportsPerformanceServiceQualityRoute:
+    KelolaReportsPerformanceServiceQualityRoute,
+  KelolaReportsPerformanceStationRoute: KelolaReportsPerformanceStationRoute,
+  KelolaReportsPurchasingOrdersRoute: KelolaReportsPurchasingOrdersRoute,
+  KelolaReportsPurchasingPriceHistoryRoute:
+    KelolaReportsPurchasingPriceHistoryRoute,
+  KelolaReportsPurchasingReceiptsRoute: KelolaReportsPurchasingReceiptsRoute,
+  KelolaReportsPurchasingRequestsRoute: KelolaReportsPurchasingRequestsRoute,
+  KelolaReportsPurchasingSupplierDueRoute:
+    KelolaReportsPurchasingSupplierDueRoute,
+  KelolaReportsReservationBookingsRoute: KelolaReportsReservationBookingsRoute,
+  KelolaReportsReservationByZoneRoute: KelolaReportsReservationByZoneRoute,
+  KelolaReportsReservationNoShowRoute: KelolaReportsReservationNoShowRoute,
+  KelolaReportsReservationPeakHoursRoute:
+    KelolaReportsReservationPeakHoursRoute,
+  KelolaReportsSalesByCategoryRoute: KelolaReportsSalesByCategoryRoute,
+  KelolaReportsSalesByDayRoute: KelolaReportsSalesByDayRoute,
   KelolaReportsSalesDailyRoute: KelolaReportsSalesDailyRoute,
   KelolaReportsSalesDiscountRoute: KelolaReportsSalesDiscountRoute,
   KelolaReportsSalesPerChannelRoute: KelolaReportsSalesPerChannelRoute,
@@ -5069,8 +7246,19 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaReportsSalesPerMenuRoute: KelolaReportsSalesPerMenuRoute,
   KelolaReportsSalesPerPaxRoute: KelolaReportsSalesPerPaxRoute,
   KelolaReportsSalesRefundRoute: KelolaReportsSalesRefundRoute,
+  KelolaReportsSalesTargetRoute: KelolaReportsSalesTargetRoute,
   KelolaReportsSalesTransactionsRoute: KelolaReportsSalesTransactionsRoute,
   KelolaReportsSalesVoidRoute: KelolaReportsSalesVoidRoute,
+  KelolaReportsTaxByRuleRoute: KelolaReportsTaxByRuleRoute,
+  KelolaReportsTaxPbjtRoute: KelolaReportsTaxPbjtRoute,
+  KelolaReportsTaxReceivableRoute: KelolaReportsTaxReceivableRoute,
+  KelolaReportsTaxServiceChargeRoute: KelolaReportsTaxServiceChargeRoute,
+  KelolaReportsTrafficByZoneRoute: KelolaReportsTrafficByZoneRoute,
+  KelolaReportsTrafficDwellTimeRoute: KelolaReportsTrafficDwellTimeRoute,
+  KelolaReportsTrafficNewVsReturningRoute:
+    KelolaReportsTrafficNewVsReturningRoute,
+  KelolaReportsTrafficPaxRoute: KelolaReportsTrafficPaxRoute,
+  KelolaReportsTrafficPeakHoursRoute: KelolaReportsTrafficPeakHoursRoute,
   KelolaKelolaAksesIndexRoute: KelolaKelolaAksesIndexRoute,
   KelolaKelolaAkuntansiIndexRoute: KelolaKelolaAkuntansiIndexRoute,
   KelolaKelolaDeliveryIndexRoute: KelolaKelolaDeliveryIndexRoute,
@@ -5158,15 +7346,21 @@ interface OpsRouteChildren {
   OpsOperasionalSuhuRoute: typeof OpsOperasionalSuhuRoute
   OpsPosCustomerDisplayRoute: typeof OpsPosCustomerDisplayRoute
   OpsPosGantiPenggunaRoute: typeof OpsPosGantiPenggunaRoute
+  OpsPosKodeRoute: typeof OpsPosKodeRoute
   OpsPosReservasiRoute: typeof OpsPosReservasiRoute
+  OpsPosTutupHariRoute: typeof OpsPosTutupHariRoute
   OpsFasilitasIndexRoute: typeof OpsFasilitasIndexRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
   OpsOperasionalChecklistRunIdRoute: typeof OpsOperasionalChecklistRunIdRoute
   OpsOperasionalPeralatanEquipmentIdRoute: typeof OpsOperasionalPeralatanEquipmentIdRoute
+  OpsPosBayarOrderIdRoute: typeof OpsPosBayarOrderIdRoute
+  OpsPosShiftTutupRoute: typeof OpsPosShiftTutupRoute
   OpsOperasionalChecklistIndexRoute: typeof OpsOperasionalChecklistIndexRoute
   OpsOperasionalPeralatanIndexRoute: typeof OpsOperasionalPeralatanIndexRoute
   OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
+  OpsPosShiftIndexRoute: typeof OpsPosShiftIndexRoute
   OpsOperasionalChecklistTemplateTemplateIdRoute: typeof OpsOperasionalChecklistTemplateTemplateIdRoute
+  OpsPosSupervisorShiftShiftIdRoute: typeof OpsPosSupervisorShiftShiftIdRoute
   OpsOperasionalChecklistTemplateIndexRoute: typeof OpsOperasionalChecklistTemplateIndexRoute
 }
 
@@ -5181,17 +7375,23 @@ const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalSuhuRoute: OpsOperasionalSuhuRoute,
   OpsPosCustomerDisplayRoute: OpsPosCustomerDisplayRoute,
   OpsPosGantiPenggunaRoute: OpsPosGantiPenggunaRoute,
+  OpsPosKodeRoute: OpsPosKodeRoute,
   OpsPosReservasiRoute: OpsPosReservasiRoute,
+  OpsPosTutupHariRoute: OpsPosTutupHariRoute,
   OpsFasilitasIndexRoute: OpsFasilitasIndexRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
   OpsOperasionalChecklistRunIdRoute: OpsOperasionalChecklistRunIdRoute,
   OpsOperasionalPeralatanEquipmentIdRoute:
     OpsOperasionalPeralatanEquipmentIdRoute,
+  OpsPosBayarOrderIdRoute: OpsPosBayarOrderIdRoute,
+  OpsPosShiftTutupRoute: OpsPosShiftTutupRoute,
   OpsOperasionalChecklistIndexRoute: OpsOperasionalChecklistIndexRoute,
   OpsOperasionalPeralatanIndexRoute: OpsOperasionalPeralatanIndexRoute,
   OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
+  OpsPosShiftIndexRoute: OpsPosShiftIndexRoute,
   OpsOperasionalChecklistTemplateTemplateIdRoute:
     OpsOperasionalChecklistTemplateTemplateIdRoute,
+  OpsPosSupervisorShiftShiftIdRoute: OpsPosSupervisorShiftShiftIdRoute,
   OpsOperasionalChecklistTemplateIndexRoute:
     OpsOperasionalChecklistTemplateIndexRoute,
 }
@@ -5236,20 +7436,6 @@ const PlatformRouteChildren: PlatformRouteChildren = {
 
 const PlatformRouteWithChildren = PlatformRoute._addFileChildren(
   PlatformRouteChildren,
-)
-
-interface ProtectedRouteChildren {
-  ProtectedAdminRoute: typeof ProtectedAdminRoute
-  ProtectedNotesRoute: typeof ProtectedNotesRoute
-}
-
-const ProtectedRouteChildren: ProtectedRouteChildren = {
-  ProtectedAdminRoute: ProtectedAdminRoute,
-  ProtectedNotesRoute: ProtectedNotesRoute,
-}
-
-const ProtectedRouteWithChildren = ProtectedRoute._addFileChildren(
-  ProtectedRouteChildren,
 )
 
 interface PublicRouteChildren {
@@ -5302,10 +7488,10 @@ const rootRouteChildren: RootRouteChildren = {
   OpsRoute: OpsRouteWithChildren,
   OwnerRoute: OwnerRouteWithChildren,
   PlatformRoute: PlatformRouteWithChildren,
-  ProtectedRoute: ProtectedRouteWithChildren,
   PublicRoute: PublicRouteWithChildren,
   ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,
+  ManifestDotwebmanifestRoute: ManifestDotwebmanifestRoute,
   RobotsDottxtRoute: RobotsDottxtRoute,
   SitemapDotxmlRoute: SitemapDotxmlRoute,
   VerifikasiRoute: VerifikasiRoute,

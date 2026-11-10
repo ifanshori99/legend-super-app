@@ -178,6 +178,8 @@ export const POSTING_ACCOUNT_ROLES = {
   gateway_clearing: "asset",
   edc_clearing: "asset",
   accounts_receivable: "asset",
+  /** Employee PPh 21 shortfall owed to the company (founder B8). */
+  employee_receivable: "asset",
   inventory: "asset",
   inventory_semi_finished: "asset",
   ppn_input: "asset",
@@ -188,6 +190,8 @@ export const POSTING_ACCOUNT_ROLES = {
   salaries_payable: "liability",
   bpjs_payable: "liability",
   loyalty_liability: "liability",
+  /** Customer advances: DP held, late or double gateway payments, refunds awaiting payout. */
+  customer_deposit: "liability",
   tax_payable_pbjt: "liability",
   pph21_payable: "liability",
   pph23_payable: "liability",
@@ -198,24 +202,66 @@ export const POSTING_ACCOUNT_ROLES = {
   sales_revenue: "revenue",
   sales_discount: "revenue",
   loyalty_breakage_revenue: "revenue",
+  /** legend-msqvi: deferred revenue for loyalty points (PSAK 72), contra of the points liability. */
+  loyalty_points_deferral: "revenue",
   rounding: "revenue",
+  /** Forfeited DP (reservation cancelled late or no-show) recognised as other income. */
+  deposit_forfeit_income: "revenue",
   asset_disposal_result: "revenue",
   revaluation_surplus: "equity",
   asset_revaluation_loss: "expense",
   cogs: "expense",
   waste_expense: "expense",
   inventory_adjustment: "expense",
+  /** Direct cash purchases paid from petty cash (PRD §3.18 pembelian sederhana). */
+  petty_purchase_expense: "expense",
   salary_expense: "expense",
+  /** Employee reimbursements (PRD §3 reimbursement via payroll or kas). */
+  reimbursement_expense: "expense",
+  /**
+   * Employer-borne PPh 21 (net scheme). Not deductible (UU PPh Pasal 9(1)h),
+   * so it needs a fiscal correction (koreksi fiskal).
+   */
+  pph21_borne_expense: "expense",
   bpjs_expense: "expense",
   gateway_fee_expense: "expense",
   depreciation_expense: "expense",
   service_expense: "expense",
   cash_over_short: "expense",
-  // Service charge may be revenue or a staff liability; the tenant decides by
-  // mapping it (PRD F11 service charge is configuration), so no type is fixed.
+  /**
+   * Custom payroll deductions (koperasi dues etc.). Default is salary_expense's
+   * account (today's behaviour); a tenant may remap it to a liability such as
+   * "Utang Iuran Koperasi". Allowed types: see POSTING_ROLE_ALLOWED_TYPES.
+   */
+  payroll_custom_deduction: null,
+  // Service charge may be a staff liability or revenue; the tenant decides by
+  // mapping it (PRD F11 service charge is configuration). Allowed types: see
+  // POSTING_ROLE_ALLOWED_TYPES.
   service_charge: null,
 } as const satisfies Record<string, AccountType | null>;
 export type PostingAccountRole = keyof typeof POSTING_ACCOUNT_ROLES;
+
+/**
+ * Roles without a single fixed type (value `null` above) that still restrict
+ * the mapped account to a list of types. A `null` role missing here accepts
+ * any type.
+ */
+export const POSTING_ROLE_ALLOWED_TYPES: Partial<
+  Record<PostingAccountRole, readonly AccountType[]>
+> = {
+  service_charge: ["liability", "revenue"],
+  payroll_custom_deduction: ["expense", "liability"],
+};
+
+/** Account types a role may be mapped to; null = any type. */
+export function allowedAccountTypesForRole(
+  role: PostingAccountRole,
+): readonly AccountType[] | null {
+  const fixed: AccountType | null = POSTING_ACCOUNT_ROLES[role];
+  if (fixed !== null) return [fixed];
+  return POSTING_ROLE_ALLOWED_TYPES[role] ?? null;
+}
+
 export const postingAccountRoleSchema = z.enum(
   Object.keys(POSTING_ACCOUNT_ROLES) as [
     PostingAccountRole,
@@ -248,9 +294,11 @@ export function accountMappingIssues(
       issues.push(`Role ${mapping.role}: account not in this legal entity`);
       continue;
     }
-    const expected = POSTING_ACCOUNT_ROLES[mapping.role];
-    if (expected !== null && account.type !== expected)
-      issues.push(`Role ${mapping.role}: needs a ${expected} account`);
+    const allowed = allowedAccountTypesForRole(mapping.role);
+    if (allowed !== null && !allowed.includes(account.type))
+      issues.push(
+        `Role ${mapping.role}: needs a ${allowed.join(" or ")} account`,
+      );
     if (headers.has(account.id))
       issues.push(`Role ${mapping.role}: header account is not postable`);
   }
@@ -304,6 +352,13 @@ const standardRows: Row[] = [
     ["gateway_clearing"],
   ],
   ["1203", "Kliring EDC", "current_asset", "1200", ["edc_clearing"]],
+  [
+    "1204",
+    "Piutang Karyawan",
+    "current_asset",
+    "1200",
+    ["employee_receivable"],
+  ],
   ["1300", "Persediaan", "current_asset", null],
   ["1301", "Persediaan Bahan Baku", "current_asset", "1300", ["inventory"]],
   [
@@ -355,6 +410,13 @@ const standardRows: Row[] = [
     "2100",
     ["service_charge"],
   ],
+  [
+    "2107",
+    "Uang Muka Pelanggan",
+    "current_liability",
+    "2100",
+    ["customer_deposit"],
+  ],
   ["2200", "Utang Pajak", "current_liability", null],
   ["2201", "Utang PBJT", "current_liability", "2200", ["tax_payable_pbjt"]],
   ["2202", "Utang PPh 21", "current_liability", "2200", ["pph21_payable"]],
@@ -394,12 +456,33 @@ const standardRows: Row[] = [
     "4100",
     ["loyalty_breakage_revenue"],
   ],
+  // legend-msqvi: points earned defer revenue here; redemption releases it.
+  [
+    "4105",
+    "Penangguhan Pendapatan Poin Loyalty",
+    "revenue",
+    "4100",
+    ["loyalty_points_deferral"],
+  ],
   ["5100", "Harga Pokok Penjualan", "cogs", null],
   ["5101", "HPP Makanan dan Minuman", "cogs", "5100", ["cogs"]],
   ["5102", "Waste dan Spoilage", "cogs", "5100", ["waste_expense"]],
   ["5103", "Selisih Stok Opname", "cogs", "5100", ["inventory_adjustment"]],
+  [
+    "5104",
+    "Pembelian Langsung (Kas Kecil)",
+    "cogs",
+    "5100",
+    ["petty_purchase_expense"],
+  ],
   ["6100", "Beban Operasional", "operating_expense", null],
-  ["6101", "Beban Gaji", "operating_expense", "6100", ["salary_expense"]],
+  [
+    "6101",
+    "Beban Gaji",
+    "operating_expense",
+    "6100",
+    ["salary_expense", "payroll_custom_deduction"],
+  ],
   [
     "6102",
     "Beban BPJS Perusahaan",
@@ -432,6 +515,20 @@ const standardRows: Row[] = [
   ],
   ["6108", "Selisih Kas", "operating_expense", "6100", ["cash_over_short"]],
   ["6109", "Beban Pemasaran", "operating_expense", "6100"],
+  [
+    "6110",
+    "Beban Reimbursement Karyawan",
+    "operating_expense",
+    "6100",
+    ["reimbursement_expense"],
+  ],
+  [
+    "6111",
+    "Beban PPh 21 Ditanggung Perusahaan",
+    "operating_expense",
+    "6100",
+    ["pph21_borne_expense"],
+  ],
   ["7100", "Pendapatan Lain-lain", "other_income", null],
   ["7101", "Pembulatan Kas", "other_income", "7100", ["rounding"]],
   [
@@ -440,6 +537,13 @@ const standardRows: Row[] = [
     "other_income",
     "7100",
     ["asset_disposal_result"],
+  ],
+  [
+    "7103",
+    "Pendapatan Uang Muka Hangus",
+    "other_income",
+    "7100",
+    ["deposit_forfeit_income"],
   ],
   ["8100", "Beban Lain-lain", "other_expense", null],
   ["8101", "Beban Administrasi Bank", "other_expense", "8100"],

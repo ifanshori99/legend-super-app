@@ -5,7 +5,10 @@ import {
   deploymentEnvShape,
   deploymentPolicyCheck,
 } from "@starter/shared/env";
+import { normalizeHostname } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
+import { unsafeAiUrlReason } from "../lib/ai/url-guard.ts";
+import { sealKeyConfigProblems } from "../lib/selfie-seal.ts";
 
 // Environment values are loaded by Node (`--env-file-if-exists` in the package
 // scripts) from the repository root's .env.local and .env. Values already in the
@@ -24,6 +27,18 @@ const origin = (message: string) =>
     );
   }, message);
 
+/** Comma-separated secrets (rotation); unset becomes an empty list. */
+const secretList = () =>
+  z
+    .string()
+    .optional()
+    .transform((value) =>
+      (value ?? "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    );
+
 const postgresUrl = z.url().refine((value) => {
   const url = new URL(value);
   return (
@@ -33,6 +48,14 @@ const postgresUrl = z.url().refine((value) => {
     !url.hash
   );
 }, "Use a PostgreSQL connection string.");
+
+/** An empty variable (`NAME=`) counts as unset. */
+const blankToUndefined = <T extends z.ZodType>(inner: T) =>
+  z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    inner,
+  );
 
 const schema = z
   .object({
@@ -90,6 +113,24 @@ const schema = z
       .string()
       .regex(/^\.?[a-z0-9.-]+$/i, "Use a parent domain such as .example.com.")
       .optional(),
+    // Hostname tenants' default subdomains live under (`<slug>.<platform
+    // domain>`). It and everything under it is reserved: no tenant may claim
+    // it as a custom domain (legend-t57t).
+    PLATFORM_DOMAIN: z
+      .string()
+      .trim()
+      .transform((value, ctx) => {
+        const host = normalizeHostname(value);
+        if (host === null) {
+          ctx.addIssue({
+            code: "custom",
+            message: "Use a public hostname such as example.com.",
+          });
+          return z.NEVER;
+        }
+        return host;
+      })
+      .optional(),
     // A hop count or subnet list. `true` would trust any X-Forwarded-For a
     // client sends, letting it pick the IP that rate limits are counted by.
     TRUST_PROXY: z
@@ -119,6 +160,16 @@ const schema = z
       .min(1)
       .max(10_000_000)
       .default(6000),
+    // Guest table-session routes (cart, quote, bill, payments, polls) count
+    // against their own tenant bucket, so a polling dining room cannot spend
+    // the budget of the public reads (or the reverse). It is per tenant, so it
+    // covers every outlet: size it for all venues polling at once.
+    PUBLIC_RATE_LIMIT_GUEST_TENANT_PER_MINUTE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10_000_000)
+      .default(60_000),
     // The web server's address(es) as the API sees them (comma-separated). Its
     // SSR calls carry no visitor IP, so they skip the per-IP public bucket and
     // only count against the tenant bucket. Loopback by default (web and API
@@ -133,6 +184,29 @@ const schema = z
           .filter(Boolean),
       ),
     LOG_SQL: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
+    // Kill switch for DOIT refund payouts (legend-0ogy). Off by default: the
+    // refund port stays fail-closed, so approved refunds wait instead of
+    // moving money. Turn on only once the DOIT refund flow is verified live.
+    DOIT_REFUNDS_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
+    // Duitku (sub-302): the public origin Duitku posts callbacks to and the
+    // page it sends a customer back to. https in production. Unset = the Duitku
+    // adapter stays unregistered. Sandbox or production Duitku comes from the
+    // integration's config; merchant code and API key are entered in the app.
+    DUITKU_CALLBACK_BASE_URL: origin(
+      "Use the API's public origin, e.g. https://api.example.com.",
+    ).optional(),
+    DUITKU_RETURN_URL: z.url().max(255).optional(),
+    // Gate for supplier return posting (legend-65mgw). Off by default: a
+    // return moves stock out without a journal until the goods receipt journal
+    // (legend-29vw) runs, which would split the GL from the stock ledger. That
+    // work turns it on.
+    PURCHASE_RETURN_POSTING_ENABLED: z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
@@ -154,6 +228,12 @@ const schema = z
           .map((item) => item.trim())
           .filter(Boolean),
       ),
+    // Delivery platform webhook signing secrets (legend-5bn3). Comma-separated
+    // while a secret rotates. A platform without a secret is disabled: its
+    // webhook answers 503 and processes nothing.
+    DELIVERY_GOFOOD_WEBHOOK_SECRET: secretList(),
+    DELIVERY_GRABFOOD_WEBHOOK_SECRET: secretList(),
+    DELIVERY_SHOPEEFOOD_WEBHOOK_SECRET: secretList(),
     // Shared secret Caddy sends with its on-demand TLS ask (X-Tls-Ask-Token).
     // Unset in local development; set it wherever a public proxy calls the ask.
     TLS_ASK_TOKEN: z.string().min(16).max(200).optional(),
@@ -166,6 +246,16 @@ const schema = z
       .string()
       .min(32, "Use at least 32 random characters.")
       .optional(),
+    // Pepper generation new staff pins are hashed under (cloud only). Raise it
+    // to rotate: older generations stay derivable so existing pins verify until
+    // their owner sets a new one, and every edge fetches the new tenant pepper
+    // on its next sync (docs/deployment.md "Staff device pins").
+    STAFF_PIN_PEPPER_CURRENT_VERSION: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .default(1),
     // Edge node settings (legend-2pi, edge/config.ts). Required only with
     // EDGE_MODE=true; the cloud ignores them. EDGE_NODE_CREDENTIAL is the
     // secret shown once at registration: never logged, never committed.
@@ -178,6 +268,170 @@ const schema = z
       .max(255)
       .regex(/^[\w.+-]+$/)
       .default("dev"),
+    // Edge selfie store: sealed LSS1 files wait here until the cloud takes
+    // them. EDGE_SELFIE_MAX_BYTES caps the bytes of files not yet uploaded.
+    EDGE_SELFIE_DIR: z.string().min(1).default("/var/lib/legend/edge-selfies"),
+    EDGE_SELFIE_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2_147_483_648),
+    // Edge selfie worker (legend-hubzo): upload interval, and how long a
+    // pending file may wait before it expires on this disk.
+    EDGE_SELFIE_UPLOAD_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .default(30_000),
+    EDGE_SELFIE_MAX_AGE_DAYS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .default(30),
+    // Attendance selfie seal (design hris-edge-replication 5): the cloud's
+    // private keys (JSON {kid: PKCS#8 PEM}, RSA >= 3072 bit) and the kid
+    // edges seal to. Production secrets: never logged, never committed. Keep
+    // an old kid 90 days after a switch. Checked at boot below.
+    ATTENDANCE_SELFIE_SEAL_KEYS: blankToUndefined(z.string().min(1).optional()),
+    ATTENDANCE_SELFIE_SEAL_ACTIVE_KID: blankToUndefined(
+      z.string().min(1).optional(),
+    ),
+    // QR day keys the cloud sends each edge ahead of today (0..14, default 3).
+    EDGE_QR_KEY_DAYS_AHEAD: blankToUndefined(
+      z.coerce.number().int().min(0).max(14).optional(),
+    ),
+    // AI gateway (WS-12). All optional: with no key configured AI is OFF and
+    // every AI call answers AI_PROVIDER_UNAVAILABLE (lib/ai/provider-factory.ts).
+    AI_PROVIDER: z
+      .enum(["anthropic", "openai-compatible", "fake"])
+      .default("anthropic"),
+    ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    AI_MODEL: z.string().min(1).max(200).default("claude-opus-5-5"),
+    AI_EFFORT: z.enum(["low", "medium", "high"]).default("low"),
+    // openai-compatible only; SSRF-checked below (https public host in production).
+    AI_BASE_URL: z.string().min(1).optional(),
+    AI_API_KEY: z.string().min(1).optional(),
+    AI_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(1000)
+      .max(300_000)
+      .default(30_000),
+    // Google sign-in for customers (legend-k2l, AUTH-05). Both or neither: with
+    // neither set Google sign-in is OFF (no provider is registered in
+    // lib/auth.ts); one without the other refuses to boot (below).
+    GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+    GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+    // Member email sign-in over SMTP (legend-k2l, e.g. SumoPod: port 465,
+    // implicit TLS). HOST, USER, PASS and EMAIL_FROM all set or all unset; with
+    // none set email sign-in is OFF and answers EMAIL_NOT_CONFIGURED in
+    // production (the worker's NOTIFICATION_* settings are separate).
+    SMTP_HOST: z.string().min(1).optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65_535).default(465),
+    SMTP_SECURE: z
+      .enum(["true", "false", "1", "0"])
+      .default("true")
+      .transform((value) => value === "true" || value === "1"),
+    SMTP_USER: z.string().min(1).optional(),
+    SMTP_PASS: z.string().min(1).optional(),
+    EMAIL_FROM: z.email().optional(),
+    // Lifetime of an MCP access token (seconds).
+    MCP_TOKEN_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(86_400)
+      .default(3600),
+  })
+  .superRefine((values, ctx) => {
+    if (values.AI_BASE_URL !== undefined) {
+      const reason = unsafeAiUrlReason(
+        values.AI_BASE_URL,
+        values.NODE_ENV === "production",
+      );
+      if (reason)
+        ctx.addIssue({
+          code: "custom",
+          path: ["AI_BASE_URL"],
+          message: reason,
+        });
+    }
+    for (const key of [
+      "DUITKU_CALLBACK_BASE_URL",
+      "DUITKU_RETURN_URL",
+    ] as const) {
+      const value = values[key];
+      if (
+        values.NODE_ENV === "production" &&
+        value !== undefined &&
+        !value.startsWith("https://")
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "Use an https URL in production.",
+        });
+    }
+    if (values.NODE_ENV === "production" && values.AI_PROVIDER === "fake")
+      ctx.addIssue({
+        code: "custom",
+        path: ["AI_PROVIDER"],
+        message: "The fake AI provider is not allowed in production.",
+      });
+  })
+  // legend-k2l: Google needs both halves; SMTP needs all four settings or none.
+  .superRefine((values, ctx) => {
+    const hasId = values.GOOGLE_CLIENT_ID !== undefined;
+    const hasSecret = values.GOOGLE_CLIENT_SECRET !== undefined;
+    if (hasId !== hasSecret)
+      ctx.addIssue({
+        code: "custom",
+        path: [hasId ? "GOOGLE_CLIENT_SECRET" : "GOOGLE_CLIENT_ID"],
+        message:
+          "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET together, or neither.",
+      });
+    const smtpKeys = [
+      "SMTP_HOST",
+      "SMTP_USER",
+      "SMTP_PASS",
+      "EMAIL_FROM",
+    ] as const;
+    const missing = smtpKeys.filter((key) => values[key] === undefined);
+    if (missing.length > 0 && missing.length < smtpKeys.length)
+      for (const key of missing)
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: `${key} is required: set SMTP_HOST, SMTP_USER, SMTP_PASS and EMAIL_FROM together, or none.`,
+        });
+  })
+  .superRefine((values, ctx) => {
+    for (const problem of sealKeyConfigProblems(
+      values.ATTENDANCE_SELFIE_SEAL_KEYS,
+      values.ATTENDANCE_SELFIE_SEAL_ACTIVE_KID,
+    ))
+      ctx.addIssue({
+        code: "custom",
+        path: [problem.path],
+        message: problem.message,
+      });
+  })
+  .superRefine((values, ctx) => {
+    // An edge node seals selfies to the cloud's PUBLIC key, which arrives in
+    // the people snapshot. The private keys stay on the cloud: a stolen edge
+    // must not be able to open sealed selfies (design hris-edge-replication 7).
+    if (!values.EDGE_MODE) return;
+    for (const path of [
+      "ATTENDANCE_SELFIE_SEAL_KEYS",
+      "ATTENDANCE_SELFIE_SEAL_ACTIVE_KID",
+    ] as const)
+      if (values[path] !== undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: [path],
+          message: `An edge node must not hold ${path}: the seal private keys stay on the cloud.`,
+        });
   })
   .superRefine((values, ctx) => {
     // Same rule the edge runtime boots with (wss:// link URL, well-formed
@@ -202,11 +456,24 @@ const schema = z
   })
   .refine(
     (values) =>
-      values.NODE_ENV !== "production" || Boolean(values.STAFF_PIN_PEPPER),
+      values.NODE_ENV !== "production" ||
+      values.EDGE_MODE ||
+      Boolean(values.STAFF_PIN_PEPPER),
     {
       path: ["STAFF_PIN_PEPPER"],
       message:
         "Set STAFF_PIN_PEPPER in production so a BETTER_AUTH_SECRET rotation does not wipe staff pins.",
+    },
+  )
+  .refine(
+    (values) => !values.EDGE_MODE || values.STAFF_PIN_PEPPER === undefined,
+    {
+      // legend-ideif: an edge node holds only the tenant-derived peppers the cloud
+      // sends it. The root secret on an edge box would let a stolen box derive
+      // every tenant's pepper, so the node refuses to boot with it (fail closed).
+      path: ["STAFF_PIN_PEPPER"],
+      message:
+        "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the tenant pepper over the sync.",
     },
   )
   .refine(
@@ -252,6 +519,27 @@ export const env = {
   PORT: values.PORT ?? (Number(new URL(values.BETTER_AUTH_URL).port) || 4000),
   isProduction: values.NODE_ENV === "production",
   isTest: values.NODE_ENV === "test",
+  // legend-k2l: Google sign-in is on only with both credentials (the schema
+  // refuses one without the other).
+  googleEnabled:
+    values.GOOGLE_CLIENT_ID !== undefined &&
+    values.GOOGLE_CLIENT_SECRET !== undefined,
+  // legend-k2l: member email sign-in is on only with the full SMTP set (the
+  // schema refuses a partial one).
+  smtpEnabled:
+    values.SMTP_HOST !== undefined &&
+    values.SMTP_USER !== undefined &&
+    values.SMTP_PASS !== undefined &&
+    values.EMAIL_FROM !== undefined,
+  // Hostnames tenants may not claim as custom domains: the platform domain and
+  // the cookie parent domain (without its leading dot), whichever are set.
+  reservedDomains: [
+    ...new Set(
+      [values.PLATFORM_DOMAIN, values.COOKIE_DOMAIN?.replace(/^\./, "")]
+        .map((value) => (value ? normalizeHostname(value) : null))
+        .filter((value): value is string => value !== null),
+    ),
+  ],
   // Browser origins allowed to call the API with cookies.
   trustedOrigins: [
     ...new Set([

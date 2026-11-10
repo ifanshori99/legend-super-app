@@ -6,6 +6,7 @@ import type { ReportBuilderQuery } from "@starter/shared/dashboard";
 import {
   fetchBuilderOutlets,
   fetchReportSchedules,
+  fetchScheduleRecipients,
   fetchSavedReports,
   previewReport,
 } from "./api";
@@ -17,6 +18,7 @@ export const reportBuilderKeys = {
   saved: () => [...reportBuilderKeys.all, "saved"] as const,
   schedules: () => [...reportBuilderKeys.all, "schedules"] as const,
   outlets: () => [...reportBuilderKeys.all, "outlets"] as const,
+  recipients: () => [...reportBuilderKeys.all, "recipients"] as const,
 };
 
 export function previewQuery(
@@ -51,6 +53,16 @@ export function reportSchedulesQuery(enabled: boolean) {
     queryFn: ({ signal }) => fetchReportSchedules(signal),
     enabled,
     staleTime: 15_000,
+    retry: retryOnceOnServerError,
+  });
+}
+
+export function scheduleRecipientsQuery(enabled: boolean) {
+  return queryOptions({
+    queryKey: reportBuilderKeys.recipients(),
+    queryFn: ({ signal }) => fetchScheduleRecipients(signal),
+    enabled,
+    staleTime: 60_000,
     retry: retryOnceOnServerError,
   });
 }

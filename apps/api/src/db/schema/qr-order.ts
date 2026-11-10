@@ -19,6 +19,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -50,6 +51,7 @@ import {
 import { menuItems } from "./menu";
 import { outlets, tenants } from "./platform-org";
 import { sessionParticipants, tableSessions } from "./floor";
+import { customerProfiles } from "./crm-member";
 
 /** Snapshot of one chosen modifier (contract cartLineModifierSchema). */
 export type CartLineModifierSnapshot = {
@@ -191,6 +193,15 @@ export const orders = pgTable(
     serviceType: varchar("service_type", { length: 20 }).notNull(),
     tableSessionId: uuid("table_session_id"),
     customerProfileId: uuid("customer_profile_id"),
+    // legend-111j: who attached the member and how. `customer_attached_by` is
+    // the staff user id; NULL for `pwa_session` and `receipt_claim` (the
+    // member attaches themselves). The profile is locked once the order is
+    // completed (trigger `orders_customer_lock`, migration 0203).
+    customerAttachedBy: text("customer_attached_by"),
+    customerAttachedVia: varchar("customer_attached_via", { length: 20 }),
+    customerAttachedAt: timestamp("customer_attached_at", {
+      withTimezone: true,
+    }),
     externalRef: varchar("external_ref", { length: 100 }),
     /** Snapshot of the session's pay mode when the order was placed. */
     paymentMode: varchar("payment_mode", { length: 20 })
@@ -202,6 +213,12 @@ export const orders = pgTable(
     taxIdr: idrColumn("tax_idr").notNull(),
     roundingIdr: idrColumn("rounding_idr").notNull(),
     totalIdr: idrColumn("total_idr").notNull(),
+    /**
+     * Prices include service and tax (harga nett, legend-zmc2): `subtotal_idr`
+     * is the gross line sum the guest saw, and `service_charge_idr`/`tax_idr`
+     * are the parts backed out of it, so they are not added to the total.
+     */
+    pricesIncludeTax: boolean("prices_include_tax").notNull().default(false),
     /** Reservation deposit (DP) credit applied to this order (pay-first). */
     depositAppliedIdr: idrColumn("deposit_applied_idr")
       .notNull()
@@ -228,6 +245,17 @@ export const orders = pgTable(
   },
   (table) => [
     unique("orders_tenant_id_id_key").on(table.tenantId, table.id),
+    // legend-111j: added in migration 0203 with FORCE RLS on orders lifted
+    // for that one statement and restored (docs/plan/contracts.md pattern 2).
+    foreignKey({
+      name: "orders_customer_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
+    }),
+    check(
+      "orders_customer_attached_via_check",
+      sql`${table.customerAttachedVia} IS NULL OR ${table.customerAttachedVia} IN ('member_qr', 'phone_lookup', 'pwa_session', 'receipt_claim')`,
+    ),
     unique("orders_tenant_outlet_number_key").on(
       table.tenantId,
       table.outletId,
@@ -279,7 +307,7 @@ export const orders = pgTable(
     ),
     check(
       "orders_total_check",
-      sql`${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.serviceChargeIdr} + ${table.taxIdr} + ${table.roundingIdr}`,
+      sql`(${table.pricesIncludeTax} = false AND ${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.serviceChargeIdr} + ${table.taxIdr} + ${table.roundingIdr}) OR (${table.pricesIncludeTax} = true AND ${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.roundingIdr} AND ${table.serviceChargeIdr} + ${table.taxIdr} <= ${table.subtotalIdr} - ${table.discountIdr})`,
     ),
     check(
       "orders_payment_link_pair_check",

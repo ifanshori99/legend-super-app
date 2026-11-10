@@ -147,6 +147,9 @@ registerMock(createReward, ({ body }) => {
   const state = store.get();
   const reward: Reward = {
     ...body,
+    perCustomerLimit: body.perCustomerLimit ?? null,
+    // DB default (crm-rewards.ts): 30 days.
+    redemptionValidDays: body.redemptionValidDays ?? 30,
     id: newId(),
     tenantId: state.program.tenantId,
   };

@@ -13,8 +13,8 @@
 //
 // Nothing is invented: a metric the day model has no source figure for is
 // returned as `null` ("no data", never zero), and a split the model cannot
-// break down returns no rows. `day_of_week` is the one computed split the
-// viewer does not serve: it is the exact sum of the model's own days.
+// break down returns no rows. `day_of_week` is the exact sum of the model's
+// own days and lives in the day model, like every other split.
 //
 // Loaded in Node: bare package imports and relative `.ts` only.
 import {
@@ -32,13 +32,10 @@ import {
   ATOM_KEYS,
   BUSINESS_DATE,
   MONTH_START,
-  dayAtoms,
   distribute,
-  eachDay,
   outletSplit,
   periodAtoms,
   splitSpecFor,
-  weekdayIndex,
   zeroAtoms,
   type AtomKey,
   type Atoms,
@@ -50,25 +47,7 @@ const outlet = cafeLegendFixtures.outlets[0];
 
 // ---- Day model (the shared module above; see the header) ---------------------
 
-/** Weekday split computed from the model's own days (exact, not invented). */
-function weekdaySplit(range: DateRange): SplitSpec {
-  const sums = Array.from({ length: 7 }, zeroAtoms);
-  for (const day of eachDay(range)) {
-    const atoms = dayAtoms(day);
-    const bucket = sums[weekdayIndex(day)] as Atoms;
-    for (const key of ATOM_KEYS) bucket[key] += atoms[key];
-  }
-  const present = sums
-    .map((atoms, index) => ({ atoms, value: String(index + 1) }))
-    .filter((item) => item.atoms.net > 0);
-  const weights = Object.fromEntries(
-    ATOM_KEYS.map((key) => [key, present.map((item) => item.atoms[key])]),
-  ) as unknown as SplitSpec["weights"];
-  return { values: present.map((item) => item.value), weights };
-}
-
 function splitFor(key: string, range: DateRange): SplitSpec | null {
-  if (key === "day_of_week") return weekdaySplit(range);
   if (key === "outlet") return outletSplit(outlet.id);
   return splitSpecFor(key, range);
 }
@@ -81,12 +60,19 @@ function decimal4(numerator: number, denominator: number): string {
   return ((numerator * 100) / denominator).toFixed(4);
 }
 
+// Same ratio as the viewer's derived `salesTarget` (mock-families/sales.ts).
+const SALES_TARGET_RATIO = 1.05;
+
 function cellFor(metricCode: string, atoms: Atoms): Cell {
   const ratio = (num: number, den: number) =>
     den === 0 ? null : { unit: "percent" as const, value: decimal4(num, den) };
   const idr = (valueIdr: number) => ({ unit: "idr" as const, valueIdr });
   const count = (value: number) => ({ unit: "count" as const, value });
   switch (metricCode) {
+    case "sales_target":
+      return idr(Math.round(atoms.net * SALES_TARGET_RATIO));
+    case "target_achievement_pct":
+      return ratio(atoms.net, Math.round(atoms.net * SALES_TARGET_RATIO));
     case "net_sales":
       return idr(atoms.net);
     case "gross_sales":
@@ -121,6 +107,8 @@ function cellFor(metricCode: string, atoms: Atoms): Cell {
 
 /** Metric codes the mock model has figures for (the rest preview as "—"). */
 export const MOCK_PREVIEW_METRIC_CODES: readonly string[] = Object.freeze([
+  "sales_target",
+  "target_achievement_pct",
   "net_sales",
   "gross_sales",
   "discount_amount",
@@ -194,6 +182,66 @@ function aggregate(
   return [...rows.values()];
 }
 
+const DAY_MS = 86_400_000;
+const isoDay = (time: number) => new Date(time).toISOString().slice(0, 10);
+
+/** Start of the bucket holding `date` (weeks start on Monday, like the API). */
+function bucketStartOf(date: string, bucket: ReportBuilderQuery["bucket"]) {
+  const time = Date.parse(`${date}T00:00:00Z`);
+  const at = new Date(time);
+  switch (bucket) {
+    case "week":
+      return isoDay(time - ((at.getUTCDay() + 6) % 7) * DAY_MS);
+    case "month":
+      return `${date.slice(0, 7)}-01`;
+    case "quarter":
+      return `${date.slice(0, 5)}${String(Math.floor(at.getUTCMonth() / 3) * 3 + 1).padStart(2, "0")}-01`;
+    case "year":
+      return `${date.slice(0, 4)}-01-01`;
+    default:
+      return date;
+  }
+}
+
+/** Bucket ranges clipped to the period; `total` is the whole period. */
+function bucketRanges(
+  range: DateRange,
+  bucket: ReportBuilderQuery["bucket"],
+): DateRange[] {
+  if (bucket === "total") return [range];
+  const ranges: DateRange[] = [];
+  let startDate = range.startDate;
+  while (startDate <= range.endDate) {
+    const next = (() => {
+      const from = bucketStartOf(startDate, bucket);
+      const time = Date.parse(`${from}T00:00:00Z`);
+      switch (bucket) {
+        case "day":
+          return isoDay(time + DAY_MS);
+        case "week":
+          return isoDay(time + 7 * DAY_MS);
+        case "month":
+          return isoDay(
+            Date.UTC(Number(from.slice(0, 4)), Number(from.slice(5, 7)), 1),
+          );
+        case "quarter":
+          return isoDay(
+            Date.UTC(Number(from.slice(0, 4)), Number(from.slice(5, 7)) + 2, 1),
+          );
+        default:
+          return `${Number(from.slice(0, 4)) + 1}-01-01`;
+      }
+    })();
+    const endDate = isoDay(Date.parse(`${next}T00:00:00Z`) - DAY_MS);
+    ranges.push({
+      startDate,
+      endDate: endDate > range.endDate ? range.endDate : endDate,
+    });
+    startDate = next;
+  }
+  return ranges;
+}
+
 function cellNumber(cell: Cell): number | null {
   if (cell === null) return null;
   return cell.valueIdr ?? Number(cell.value);
@@ -229,12 +277,22 @@ export function buildPreviewResult(
     startDate: query.period.startDate,
     endDate: query.period.endDate,
   };
-  // SH-02, same rule as the viewer: final once the period is closed, and for
-  // closed-period-only figures once the books of that month are closed.
+  // SH-02, same rule as the service, per bucket: final once the bucket is
+  // closed, and for closed-period-only figures once its months are closed.
   const closed = range.endDate < BUSINESS_DATE;
   const accountingClosed = closed && range.endDate < MONTH_START;
+  const finalityOf = (bucketEnd: string, officiality: string) =>
+    bucketEnd < BUSINESS_DATE &&
+    (bucketEnd < MONTH_START || officiality !== "closed_period_only")
+      ? ("final" as const)
+      : ("estimate" as const);
 
-  const rows = (options.empty ? [] : aggregate(query, range)).map((row) => ({
+  const toRow = (
+    bucketRange: DateRange,
+    row: ReturnType<typeof aggregate>[number],
+  ) => ({
+    bucketStart: bucketRange.startDate,
+    bucketEnd: bucketRange.endDate,
     dimensions: query.groupBy.map((key, position) => ({
       key,
       value: row.dims[position] as string,
@@ -242,20 +300,17 @@ export function buildPreviewResult(
     values: definitions.map((definition) => ({
       metricCode: definition.code,
       value: cellFor(definition.code, row.atoms),
-      finality:
-        closed &&
-        (accountingClosed || definition.officiality !== "closed_period_only")
-          ? ("final" as const)
-          : ("estimate" as const),
+      finality: finalityOf(bucketRange.endDate, definition.officiality),
     })),
-  }));
+  });
 
-  if (query.sort !== undefined) {
+  const sortRows = (rows: ReturnType<typeof toRow>[]) => {
+    if (query.sort === undefined) return rows;
     const { column, direction } = query.sort;
     const factor = direction === "asc" ? 1 : -1;
     const metricIndex = query.metricCodes.indexOf(column);
     const keyIndex = query.groupBy.indexOf(column);
-    rows.sort((a, b) => {
+    return rows.sort((a, b) => {
       if (metricIndex >= 0) {
         const left = cellNumber(a.values[metricIndex]?.value ?? null);
         const right = cellNumber(b.values[metricIndex]?.value ?? null);
@@ -273,7 +328,16 @@ export function buildPreviewResult(
         )
       );
     });
-  }
+  };
+
+  // Bucket order first, then the sort within each bucket, like the service.
+  const rows = options.empty
+    ? []
+    : bucketRanges(range, query.bucket).flatMap((bucketRange) =>
+        sortRows(
+          aggregate(query, bucketRange).map((row) => toRow(bucketRange, row)),
+        ),
+      );
 
   return reportResultSchema.parse({
     reportCode: null,
@@ -284,15 +348,23 @@ export function buildPreviewResult(
       status: closed ? "closed" : "open",
       accountingPeriodClosed: accountingClosed,
     },
+    bucket: query.bucket,
     outletFilter:
       query.outletIds === undefined
         ? { kind: "all" }
         : { kind: "outlets", outletIds: query.outletIds },
     definitions: definitions.map(definitionRef),
+    availability: definitions
+      .map((definition) => definition.code)
+      .map((metricCode) => ({
+        metricCode,
+        status: "available",
+      })),
     groupBy: query.groupBy,
     // The limit applies after the sort, like the service.
     rows: rows.slice(0, query.limit),
     generatedAt: (options.now ?? new Date()).toISOString(),
     rowLimit: query.limit,
+    truncated: rows.length > query.limit,
   });
 }

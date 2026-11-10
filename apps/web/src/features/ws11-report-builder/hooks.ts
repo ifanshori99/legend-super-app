@@ -15,6 +15,7 @@ import {
   reportBuilderKeys,
   reportSchedulesQuery,
   savedReportsQuery,
+  scheduleRecipientsQuery,
 } from "./queries";
 
 const subscribeToNothing = () => () => {};
@@ -49,6 +50,11 @@ export function useSavedReports() {
 
 export function useReportSchedules() {
   return useQuery(reportSchedulesQuery(useHydrated()));
+}
+
+export function useScheduleRecipients(enabled: boolean) {
+  const hydrated = useHydrated();
+  return useQuery(scheduleRecipientsQuery(hydrated && enabled));
 }
 
 export function useBuilderOutlets() {

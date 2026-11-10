@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
+import { EdcError } from "@starter/shared/edc";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
@@ -164,6 +165,10 @@ afterAll(async () => {
     "DELETE FROM payment_evidence WHERE payment_intent_id = $1",
     [raceIntentId],
   );
+  await owner.query(
+    "DELETE FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = $2",
+    [otherTenant, otherIntent],
+  );
   await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
     [intentId, raceIntentId, otherIntent],
   ]);
@@ -208,6 +213,34 @@ describe("WS-05 payment administration", () => {
         reason: "Cross tenant",
       });
     expect([403, 404]).toContain(response.status);
+  });
+
+  it("TEN-02 cannot release or re-open another tenant's quarantined refund", async () => {
+    const otherRefund = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+                                    requested_by, approved_by, decided_at, last_payout_error)
+       VALUES ($1, $2, $3, $4, 1000, 'Other tenant refund', 'approved', 'seed', 'seed-approver', now(), 'PAYOUT_QUARANTINED')`,
+      [otherRefund, otherTenant, otherOutlet, otherIntent],
+    );
+    for (const action of ["release", "reopen"]) {
+      const response = await manager
+        .post(`/api/payments/admin/refunds/${otherRefund}/quarantine/${action}`)
+        .set(originHeader)
+        .send({
+          idempotencyKey: `cross-${randomUUID()}`,
+          note: "Cross tenant attempt",
+        });
+      expect([403, 404]).toContain(response.status);
+    }
+    const { rows } = await owner.query(
+      "SELECT status, last_payout_error FROM payment_refunds WHERE id = $1",
+      [otherRefund],
+    );
+    expect(rows[0]).toEqual({
+      status: "approved",
+      last_payout_error: "PAYOUT_QUARANTINED",
+    });
   });
 
   it("TEN-03 denies access to another outlet's payment", async () => {
@@ -436,6 +469,87 @@ describe("WS-05 payment administration", () => {
     await owner.query("DELETE FROM payment_edc_terminals WHERE id = $1", [
       created.body.data.id,
     ]);
+  });
+  it("EDC-07 EDC_TERMINAL_BUSY is a declared EDC reason the UI can check", () => {
+    const busy = new EdcError("EDC_TERMINAL_BUSY");
+    expect(busy.reason).toBe("EDC_TERMINAL_BUSY");
+    expect(busy.code).toBe("CONFLICT");
+    expect(busy.message.startsWith("EDC_TERMINAL_BUSY")).toBe(true);
+  });
+  it("EDC-07 a terminal's identity cannot change while it has an open EDC transaction", async () => {
+    // Codex finding 3: an inquiry asks the configured terminal, so swapping
+    // TID/MID/IP under an unfinished sale would let the new device's
+    // `not_found` allow a second charge.
+    const created = await manager
+      .post("/api/payments/admin/edc/terminals")
+      .set(originHeader)
+      .set("Idempotency-Key", `edc-${randomUUID()}`)
+      .send({
+        outletId: outletA,
+        bankCode: "bca",
+        terminalId: `T-${randomUUID()}`,
+        merchantId: "MID-OPEN",
+        model: "Busy terminal",
+        connection: "lan",
+        ipAddress: "10.0.0.5",
+        supportedMethods: ["card"],
+        status: "active",
+      });
+    expect(created.status).toBe(201);
+    const id = created.body.data.id as string;
+    terminalIds.push(id);
+    const txId = randomUUID();
+    await owner.query(
+      `INSERT INTO edc_transactions
+         (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+          request_fingerprint, amount_idr, method, status, trace, dispatched_at)
+       VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp-test', 55000, 'card', 'unknown', $7, now())`,
+      [
+        txId,
+        tenantId,
+        outletA,
+        id,
+        `ADM-${txId.slice(0, 8)}`,
+        randomUUID(),
+        `T${txId.replace(/-/g, "").slice(0, 12)}`,
+      ],
+    );
+    const patch = (body: Record<string, unknown>) =>
+      manager
+        .patch(`/api/payments/admin/edc/terminals/${id}`)
+        .set(originHeader)
+        .set("Idempotency-Key", `edc-${randomUUID()}`)
+        .send(body);
+    try {
+      for (const change of [
+        { terminalId: `T-${randomUUID()}` },
+        { merchantId: "MID-OTHER" },
+        { ipAddress: "10.0.0.9" },
+        { connection: "usb" },
+        { bankCode: "bni" },
+      ]) {
+        const refused = await patch(change);
+        expect(refused.status).toBe(409);
+        expect(refused.body.error.message).toContain("EDC_TERMINAL_BUSY");
+      }
+      // Not identity: allowed. Same values re-sent: allowed.
+      expect((await patch({ model: "Renamed" })).status).toBe(200);
+      expect((await patch({ merchantId: "MID-OPEN" })).status).toBe(200);
+      const stored = await owner.query<{ merchant_id: string }>(
+        "SELECT merchant_id FROM payment_edc_terminals WHERE id = $1",
+        [id],
+      );
+      expect(stored.rows[0]!.merchant_id).toBe("MID-OPEN");
+
+      // Once the transaction is final the terminal can be replaced.
+      await owner.query(
+        "UPDATE edc_transactions SET status = 'failed', completed_at = now() WHERE id = $1",
+        [txId],
+      );
+      expect((await patch({ merchantId: "MID-OTHER" })).status).toBe(200);
+    } finally {
+      await owner.query("DELETE FROM edc_transactions WHERE id = $1", [txId]);
+    }
   });
   it("EDC-07 config writes need an Idempotency-Key, replay it and reject reuse", async () => {
     const body = {

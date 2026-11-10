@@ -29,6 +29,7 @@ import { brands, tenantThemes } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import { assertTenantMedia } from "./tenant-media.ts";
 
 type ThemeRow = typeof tenantThemes.$inferSelect;
 type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
@@ -122,6 +123,8 @@ export async function createThemeDraft(
       .where(and(eq(brands.tenantId, tenantId), eq(brands.id, input.brandId)))
       .limit(1);
     if (!brand) throw new HttpError(404, "NOT_FOUND", "Brand not found.");
+    // legend-iiqx (TEN-10): the logo must be in this tenant's media library.
+    await assertTenantMedia(tx, tenantId, input.logoMediaId, "Logo");
     await lockBrandThemes(tx, tenantId, input.brandId);
     const [latest] = await tx
       .select({ version: tenantThemes.version })

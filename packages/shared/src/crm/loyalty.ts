@@ -17,6 +17,7 @@ import {
   businessDateSchema,
   ulidIdSchema,
 } from "../core/index.ts";
+import { customerWhatsappHashSchema } from "./customer-hash.ts";
 
 const name = z.string().min(1).max(150);
 const description = z.string().max(1000);
@@ -31,9 +32,6 @@ const nonnegativePointsSchema = pointsAmountSchema.refine(
 const positivePointsSchema = pointsAmountSchema.refine((value) => value > 0);
 const nonnegativeIdr = idrSchema.refine((value) => value >= 0);
 const positiveIdr = idrSchema.refine((value) => value > 0);
-const sha256HexSchema = z
-  .string()
-  .regex(/^[a-f0-9]{64}$/, "Expected a lowercase SHA-256 hex digest");
 
 function before(left: string, right: string): boolean {
   return Date.parse(left) < Date.parse(right);
@@ -75,8 +73,12 @@ const customerProfileObjectSchema = z.strictObject({
   tenantId: tenantIdSchema,
   /** Customer account (WS-01 identity). Null until a member PWA account links. */
   userId: uuidSchema.nullable(),
-  /** SHA-256 of the normalized WhatsApp number; the verified identity key (F3). */
-  whatsappHash: sha256HexSchema.nullable(),
+  /**
+   * Keyed digest (HMAC-SHA-256 hex) of the normalized WhatsApp number; the
+   * verified identity key (F3). Equals the reservation `contactHash` for the
+   * same number (see customer-hash.ts).
+   */
+  whatsappHash: customerWhatsappHashSchema.nullable(),
   name,
   birthMonthDay: birthMonthDaySchema.nullable(),
   tierId: uuidSchema.nullable(),
@@ -245,9 +247,15 @@ export const pointSourceTypeSchema = z.enum([
   "reward_redemption",
   "expiry",
   "refund",
+  // legend-111j: a voided final order reverses its points like a refund.
+  "void",
   "adjustment",
 ]);
 export type PointSourceType = z.infer<typeof pointSourceTypeSchema>;
+
+// legend-111j: names the ledger services use for the same enums.
+export type PointLedgerType = PointEntryType;
+export type PointLedgerSourceType = PointSourceType;
 
 const pointLedgerEntryObjectSchema = z.strictObject({
   /** ULID primary key (PRD §6.G.19); time order gives the ledger its order. */
@@ -317,10 +325,11 @@ export const pointLedgerEntrySchema = pointLedgerEntryObjectSchema.superRefine(
           reject("Expiry rows come from the expiry job", ["sourceType"]);
         break;
       case "reverse":
-        // LOY-02: a refund reverses the points of the paid transaction.
+        // LOY-02: a refund reverses the points of the paid transaction; a
+        // voided final order does the same (legend-111j).
         if (entry.points >= 0) reject("Reversal rows are negative");
-        if (entry.sourceType !== "refund")
-          reject("Reversal rows come from a refund", ["sourceType"]);
+        if (entry.sourceType !== "refund" && entry.sourceType !== "void")
+          reject("Reversal rows come from a refund or a void", ["sourceType"]);
         break;
       case "adjust":
         if (entry.points === 0) reject("Adjustments must change the balance");
@@ -417,6 +426,55 @@ export const earnRateSchema = z.strictObject({
 });
 export type EarnRate = z.infer<typeof earnRateSchema>;
 
+/**
+ * Program-level referral rules (legend-a8up). A referral qualifies on the
+ * referee's first paid order of at least `minFirstOrderIdr`; the service
+ * rejects further referrals once a referrer reaches the monthly cap.
+ * Defaults (referral off, 100/50 points, no minimum, 10 per month) apply when
+ * the field is omitted.
+ */
+export const referralRulesSchema = z.strictObject({
+  enabled: z.boolean(),
+  referrerPoints: nonnegativePointsSchema,
+  refereePoints: nonnegativePointsSchema,
+  /** The event that qualifies a referral; only the first paid order today. */
+  qualifyingEvent: z.literal("first_paid_order"),
+  minFirstOrderIdr: nonnegativeIdr,
+  maxReferralsPerCustomerPerMonth: z
+    .number()
+    .int()
+    .min(0)
+    .max(1000)
+    .refine(safeInt),
+});
+export type ReferralRules = z.infer<typeof referralRulesSchema>;
+export const defaultReferralRules: ReferralRules = referralRulesSchema.parse({
+  enabled: false,
+  referrerPoints: 100,
+  refereePoints: 50,
+  qualifyingEvent: "first_paid_order",
+  minFirstOrderIdr: 0,
+  maxReferralsPerCustomerPerMonth: 10,
+});
+
+/**
+ * Program-level anti-fraud limits (legend-a8up). The service enforces the
+ * daily cap when it books earn rows and blocks staff from earning points on
+ * their own profile when `employeeSelfServeBan` is on.
+ * A null cap means no daily limit. Defaults: 500 points per customer per
+ * day, ban on.
+ */
+export const loyaltyAntiFraudSchema = z.strictObject({
+  /** Null = no daily cap. */
+  dailyPointCapPerCustomer: positivePointsSchema.nullable(),
+  employeeSelfServeBan: z.boolean(),
+});
+export type LoyaltyAntiFraud = z.infer<typeof loyaltyAntiFraudSchema>;
+export const defaultLoyaltyAntiFraud: LoyaltyAntiFraud = {
+  dailyPointCapPerCustomer: 500,
+  employeeSelfServeBan: true,
+};
+
 export const loyaltyProgramSchema = z.strictObject({
   id: uuidSchema,
   tenantId: tenantIdSchema,
@@ -428,6 +486,9 @@ export const loyaltyProgramSchema = z.strictObject({
   rollingMonths: z.number().int().min(1).max(60).refine(safeInt),
   /** Liability value of one point, used by accounting and the ledger. */
   pointValueIdr: positiveIdr,
+  referral: referralRulesSchema.default(defaultReferralRules),
+  antiFraud: loyaltyAntiFraudSchema.default(defaultLoyaltyAntiFraud),
+  isActive: z.boolean().default(false),
   updatedAt: isoDateTimeSchema,
 });
 export type LoyaltyProgram = z.infer<typeof loyaltyProgramSchema>;
@@ -548,6 +609,10 @@ export const rewardObjectSchema = z.strictObject({
   voucherValueIdr: positiveIdr.nullable(),
   isActive: z.boolean(),
   sortOrder: z.number().int().refine(safeInt),
+  // legend-m4p5
+  /** null = no per-customer limit. */
+  perCustomerLimit: z.number().int().positive().refine(safeInt).nullable(),
+  redemptionValidDays: z.number().int().min(1).max(365),
 });
 export const rewardSchema = rewardObjectSchema.superRefine((reward, ctx) => {
   if (reward.validUntil !== null && before(reward.validUntil, reward.validFrom))
@@ -618,6 +683,11 @@ export const rewardRedemptionSchema = z
     pointsSpent: positivePointsSchema,
     status: rewardRedemptionStatusSchema,
     redemptionCode: redemptionCodeSchema,
+    // legend-m4p5
+    rewardType: rewardTypeSchema,
+    expiresAt: isoDateTimeSchema,
+    voucherId: uuidSchema.nullable(),
+    fulfilledOutletId: uuidSchema.nullable(),
     idempotencyKey: z.string().min(8).max(100),
     redeemedAt: isoDateTimeSchema,
     fulfilledAt: isoDateTimeSchema.nullable(),

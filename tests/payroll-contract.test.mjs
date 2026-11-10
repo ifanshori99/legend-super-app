@@ -117,7 +117,13 @@ const zeroTotals = {
   bpjsCompanyIdr: 600_000,
   pph21Idr: 200_000,
   pph21WithheldIdr: 200_000,
+  pph21EmployerBorneIdr: 0,
+  pph21RefundIdr: 0,
+  pph21EmployerRefundIdr: 0,
+  pph21EmployerAllowanceRefundIdr: 0,
   loanRepaymentIdr: 150_000,
+  pph21ReceivableIdr: 0,
+  pph21ReceivableCollectedIdr: 0,
   otherDeductionsIdr: 50_000,
   serviceChargeIdr: 500_000,
   reimbursementIdr: 0,
@@ -152,6 +158,7 @@ const snapshotFor = (versions) => ({
     },
   ],
   loanMaxDeductionOfNetPayBp: 5000,
+  pph21Policy: null,
   capturedAt: at(26),
 });
 
@@ -802,18 +809,37 @@ test("PTKP and Pasal 17 annual recalculation are table driven", () => {
     9_000_000,
   );
   assert.equal(payroll.computeProgressiveTax(annual.brackets, 0, "down"), 0);
-  const pkp = payroll.annualTaxableIncome(annual, {
-    annualGrossIdr: 150_000_000,
-    annualEmployeeDeductibleIdr: 3_600_000,
-    ptkpIdr: 54_000_000,
-  });
-  // 150M - min(7.5M, 6M) - 3.6M - 54M = 86.4M
-  assert.equal(pkp, 86_400_000);
   const ptkp = published("ptkp", 30, "2026-01-01", {
     annualAmountIdrByStatus: Object.fromEntries(
       ptkpStatuses.map((s, i) => [s, 54_000_000 + i * 1000]),
     ),
   });
+  // The PPh 21 engine (pph21.ts) derives the PKP in the last tax period.
+  const december = payroll.computePph21Period(
+    {
+      ptkp: ptkp.parameters,
+      ter: ter.parameters,
+      annual: payroll.pph21AnnualParametersSchema.parse(annual),
+    },
+    payroll.DEFAULT_PPH21_POLICY,
+    {
+      ptkpStatus: "TK/0",
+      hasTaxId: true,
+      lastTaxPeriod: true,
+      monthsWorked: 12,
+      taxableLines: [{ amountIdr: 150_000_000, taxScheme: "gross" }],
+      employerBenefitIdr: 0,
+      employeeDeductibleIdr: 3_600_000,
+      prior: {
+        taxableGrossIdr: 0,
+        employeeDeductibleIdr: 0,
+        pph21WithheldIdr: 0,
+        pph21EmployerBorneIdr: 0,
+      },
+    },
+  );
+  // 150M - min(7.5M, 6M) - 3.6M - 54M = 86.4M
+  assert.equal(december.annual.taxableIncomeIdr, 86_400_000);
   assert.equal(payroll.ptkpAnnualAmount(ptkp, "TK/0"), 54_000_000);
 });
 
@@ -880,6 +906,7 @@ test("kasbon limits and lifecycle fail closed", () => {
   const policy = payroll.loanPolicySchema.parse({
     maxPrincipalIdr: 5_000_000,
     maxPrincipalOfBaseSalaryBp: 10_000,
+    maxTotalOpenIdr: 5_000_000,
     maxInstallments: 6,
     maxDeductionOfNetPayBp: 5000,
     singleOpenLoan: true,
@@ -889,8 +916,45 @@ test("kasbon limits and lifecycle fail closed", () => {
     installmentCount: 3,
     monthlyBaseSalaryIdr: 4_000_000,
     openLoanCount: 0,
+    openOutstandingIdr: 0,
   };
   payroll.assertLoanWithinPolicy(policy, ok);
+  // Total open cap: unpaid principal of other open loans plus the request.
+  payroll.assertLoanWithinPolicy(
+    { ...policy, singleOpenLoan: false },
+    { ...ok, openLoanCount: 1, openOutstandingIdr: 2_000_000 },
+  );
+  throwsCode(
+    () =>
+      payroll.assertLoanWithinPolicy(
+        { ...policy, singleOpenLoan: false },
+        { ...ok, openLoanCount: 1, openOutstandingIdr: 2_000_001 },
+      ),
+    "PAYROLL_LOAN_LIMIT_EXCEEDED",
+  );
+  assert.throws(() =>
+    payroll.loanPolicySchema.parse({ ...policy, maxTotalOpenIdr: 0 }),
+  );
+  // The total may not be below the per-loan ceiling; equal is fine, and
+  // without a rupiah ceiling any total is allowed.
+  assert.throws(() =>
+    payroll.loanPolicySchema.parse({
+      ...policy,
+      maxPrincipalIdr: 5_000_000,
+      maxTotalOpenIdr: 4_999_999,
+    }),
+  );
+  payroll.loanPolicySchema.parse({
+    ...policy,
+    maxPrincipalIdr: 5_000_000,
+    maxTotalOpenIdr: 5_000_000,
+  });
+  payroll.loanPolicySchema.parse({
+    ...policy,
+    maxPrincipalIdr: null,
+    maxTotalOpenIdr: 1,
+  });
+  assert.equal(payroll.REIMBURSEMENT_BACKDATE_DAYS, 30);
   for (const bad of [
     { ...ok, principalIdr: 6_000_000, monthlyBaseSalaryIdr: 9_000_000 },
     { ...ok, principalIdr: 4_500_000 },
@@ -1136,7 +1200,13 @@ const slip = (employeeNo, base, paymentMethod = "bank_transfer") => {
       taxableGrossIdr: gross,
       pph21Idr: pph21,
       pph21WithheldIdr: pph21,
+      taxAllowanceIdr: 0,
+      pph21EmployerBorneIdr: 0,
+      pph21RefundIdr: 0,
+      pph21EmployerRefundIdr: 0,
       noTaxIdSurchargeApplied: false,
+      grossSchemeBaseIdr: gross,
+      employerSchemeBaseIdr: 0,
     },
     paymentMethod,
   };

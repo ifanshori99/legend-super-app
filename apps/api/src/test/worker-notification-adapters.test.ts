@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createUlid } from "@starter/shared/core";
 import {
   cafeLegendFixtures,
@@ -16,6 +16,7 @@ import {
 } from "@starter/shared/core/server";
 import { emailRequestSchema } from "@starter/shared/adapters";
 import { eventEnvelopeSchema, eventFixture } from "@starter/shared/events";
+import { notificationSchema } from "@starter/shared/notification";
 import * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -569,8 +570,6 @@ describe("legend-18qw notification recipient resolver", () => {
     await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
       [...createdUserIds, tenantBUser],
     ]);
-    await owner.end();
-    await appPool.end();
   });
 
   it("legend-18qw approval.requested reaches in-scope approvers only, never the requester or another tenant", async () => {
@@ -862,6 +861,43 @@ describe("legend-18qw notification recipient resolver", () => {
     }
   });
 
+  it("legend-c9kbk TEN-04 support_access.requested pages only tenant-scope owner-template holders", async () => {
+    // A non-owner who nevertheless holds the approve permission through a custom
+    // tenant-scope role must not be paged: only owners may decide the request.
+    const customRoleId = randomUUID();
+    const customUserId = await createUser(
+      "Pemegang izin kustom",
+      "supervisor",
+      { type: "tenant" },
+    );
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, 'Penyetuju dukungan kustom notif', false, $3::jsonb, '["tenant"]'::jsonb)`,
+      [customRoleId, tenantId, JSON.stringify(["org.support_access.approve"])],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', now() - interval '1 hour', $2)`,
+      [tenantId, customUserId, customRoleId],
+    );
+    try {
+      const event = envelope("support_access.requested", null, {});
+      const recipients = await resolve({ email: true, push: true }, event);
+      // Only the tenant-scope owner; not the outlet-scope owner, supervisors,
+      // the cashier, the lapsed approver or the custom-role holder.
+      expect(ours(recipients).map((r) => r.userId)).toEqual([
+        users.tenantOwner,
+      ]);
+    } finally {
+      await owner.query(
+        `DELETE FROM role_assignments WHERE tenant_id = $1 AND role_id = $2`,
+        [tenantId, customRoleId],
+      );
+      await owner.query(`DELETE FROM roles WHERE id = $1`, [customRoleId]);
+    }
+  });
+
   it("legend-18qw checklist events alert outlet supervisors, not the assignee", async () => {
     const payload = {
       runId: randomUUID(),
@@ -882,6 +918,150 @@ describe("legend-18qw notification recipient resolver", () => {
     expect(mine).not.toContain(users.otherOutletApprover);
     expect(mine).not.toContain(users.cashier);
     expect(mine).not.toContain(users.lapsedApprover);
+  });
+
+  it("legend-5rgl facility_incident.raised pages in-scope booth operators with the emergency category", async () => {
+    const roleId = randomUUID();
+    const facilityId = randomUUID();
+    const incidentId = randomUUID();
+    const respondedId = randomUUID();
+    const otherOutletIncidentId = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, 'Operator bilik 5rgl', false, $3::jsonb, '["tenant","brand","outlet"]'::jsonb)`,
+      [roleId, tenantId, JSON.stringify(["facility.booth.operate"])],
+    );
+    const grant = async (
+      name: string,
+      scope: { type: string; id?: string },
+      options: { validUntil?: string } = {},
+    ) => {
+      const id = randomUUID();
+      await owner.query(
+        `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, $2, $3, false)`,
+        [id, name, `${id}@example.test`],
+      );
+      createdUserIds.push(id);
+      await owner.query(
+        `INSERT INTO role_assignments
+           (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, now() - interval '1 hour', ${
+           options.validUntil ? "now() + $6::interval" : "$6::timestamptz"
+         }, $2)`,
+        [
+          tenantId,
+          id,
+          roleId,
+          scope.type,
+          scope.id ?? null,
+          options.validUntil ?? null,
+        ],
+      );
+      return id;
+    };
+    const operator = await grant("Operator outlet", {
+      type: "outlet",
+      id: bandung,
+    });
+    const otherOutletOperator = await grant("Operator outlet lain", {
+      type: "outlet",
+      id: bandung2,
+    });
+    const lapsedOperator = await grant(
+      "Operator lewat",
+      { type: "outlet", id: bandung },
+      { validUntil: "-1 minute" },
+    );
+    const insertIncident = (id: string, outletId: string, responded: boolean) =>
+      owner.query(
+        `INSERT INTO facility_incidents
+           (id, tenant_id, outlet_id, facility_id, type, triggered_at, responded_by, responded_at)
+         VALUES ($1, $2, $3, $4, 'panic', now(), $5, $6)`,
+        [
+          id,
+          tenantId,
+          outletId,
+          facilityId,
+          responded ? operator : null,
+          responded ? new Date() : null,
+        ],
+      );
+    const raised = (id: string, outletId: string) =>
+      envelope("facility_incident.raised", outletId, {
+        incidentId: id,
+        facilityId,
+        unitId: null,
+        type: "panic",
+        triggeredAt: new Date().toISOString(),
+        offline: false,
+      });
+    try {
+      await owner.query(
+        `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                                 arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+         VALUES ($1, $2, $3, 'Notif 5rgl', 'shower', 20, 10, 10, '[]', $4, $5)`,
+        [
+          facilityId,
+          tenantId,
+          bandung,
+          JSON.stringify({
+            graceMinutes: 5,
+            blockMinutes: 15,
+            feePerBlockIdr: 5000,
+          }),
+          JSON.stringify({
+            freeCancelMinutesBefore: 30,
+            lateCancelResolution: "no_refund",
+            lateCancelFeeIdr: 0,
+            noShowResolution: "no_refund",
+          }),
+        ],
+      );
+      await insertIncident(incidentId, bandung, false);
+      await insertIncident(respondedId, bandung, true);
+
+      const recipients = await resolve(
+        { email: true, push: true },
+        raised(incidentId, bandung),
+      );
+      // Seeded supervisor templates may hold the permission too: assert on
+      // the users this test granted it to, plus the roles that lack it.
+      const mine = ours(recipients).map((r) => r.userId);
+      expect(mine).toContain(operator);
+      expect(mine).not.toContain(otherOutletOperator);
+      expect(mine).not.toContain(lapsedOperator);
+      expect(mine).not.toContain(users.cashier);
+      expect(recipients[0]?.category).toBe("emergency");
+
+      // Already answered: a delayed event pages nobody.
+      expect(
+        await resolve(
+          { email: true, push: true },
+          raised(respondedId, bandung),
+        ),
+      ).toEqual([]);
+
+      // The event outlet must match the stored incident, and the row must exist.
+      await expect(
+        resolve({ email: true, push: true }, raised(incidentId, bandung2)),
+      ).rejects.toThrow("outlet does not match");
+      await expect(
+        resolve(
+          { email: true, push: true },
+          raised(otherOutletIncidentId, bandung),
+        ),
+      ).rejects.toThrow("not found");
+    } finally {
+      await owner.query("DELETE FROM role_assignments WHERE role_id = $1", [
+        roleId,
+      ]);
+      await owner.query(
+        "DELETE FROM facility_incidents WHERE tenant_id = $1 AND facility_id = $2",
+        [tenantId, facilityId],
+      );
+      await owner.query("DELETE FROM facilities WHERE id = $1", [facilityId]);
+      await owner.query("DELETE FROM roles WHERE id = $1", [roleId]);
+    }
   });
 
   it("legend-18qw a banned supervisor does not hide the owner fallback; an expired ban is active again", async () => {
@@ -920,7 +1100,7 @@ describe("legend-18qw notification recipient resolver", () => {
     );
     await owner.query(
       `INSERT INTO "user" (id, name, email, email_verified, banned) VALUES
-       ($1, 'Supervisor diblokir', $3, true, true), ($2, 'Pemilik C', $4, true, false)`,
+       ($1, 'Supervisor diblokir', $3, true, false), ($2, 'Pemilik C', $4, true, false)`,
       [
         bannedSupervisor,
         ownerC,
@@ -934,6 +1114,11 @@ describe("legend-18qw notification recipient resolver", () => {
             ($1, $4, $6, 'tenant', NULL, $4, now() - interval '1 hour')`,
       [tenantC, bannedSupervisor, supervisorRole, ownerC, outletC, ownerRole],
     );
+    // The ban comes after the grant, as in production: migration 0144 refuses a
+    // role assignment to an account that is already banned.
+    await owner.query(`UPDATE "user" SET banned = true WHERE id = $1`, [
+      bannedSupervisor,
+    ]);
     const contextC = tenantContext(tenantC);
     const event = {
       ...envelope("checklist.missed", bandung, {
@@ -1011,4 +1196,596 @@ describe("legend-18qw notification recipient resolver", () => {
       ),
     ).rejects.toThrow("No notification recipient rule for order.paid");
   });
+
+  // legend-fmpgz: a platform Super Admin appoints or replaces a tenant Owner.
+  // Assumptions (spec is the brief, no PRD text):
+  // - "Owner aktif" means tenant-scope owner-template holders, like the
+  //   support_access rules; an outlet-scope Owner is not paged.
+  // - Waktu is rendered in WIB; the exact id-ID clock punctuation depends on
+  //   ICU, so the time is matched as 10.30 or 10:30.
+  describe("legend-fmpgz tenant_owner.changed", () => {
+    // Far future on purpose: every Owner created by these tests has a
+    // validFrom <= changedAt, whatever the clock says. The "appointed after
+    // the change" test passes its own, past changedAt.
+    const changedAt = "2030-11-09T03:30:00.000Z"; // 10:30 WIB
+    const reason = "Owner lama tidak lagi bekerja di perusahaan";
+
+    const emailOf = (id: string) => `${id}@example.test`;
+    async function assignmentOf(userId: string): Promise<string> {
+      const { rows } = await owner.query<{ id: string }>(
+        "SELECT id FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+        [tenantId, userId],
+      );
+      if (!rows[0]) throw new Error("No assignment for user");
+      return rows[0].id;
+    }
+    const ownerChanged = (payload: Record<string, unknown>) =>
+      envelope("tenant_owner.changed", null, {
+        changedAt,
+        reason,
+        ...payload,
+      });
+    const setEmail = (userId: string, email: string) =>
+      owner.query(`UPDATE "user" SET email = $2 WHERE id = $1`, [
+        userId,
+        email,
+      ]);
+    const setName = (userId: string, name: string) =>
+      owner.query(`UPDATE "user" SET name = $2 WHERE id = $1`, [userId, name]);
+    /** A valid 254-character email (the maximum); unique per call (user.email is unique). */
+    const longEmail = (tag: string) =>
+      `${tag.repeat(58)}${randomUUID().slice(0, 6)}@${"d".repeat(63)}.${"d".repeat(63)}.${"d".repeat(57)}.com`;
+
+    // Each test gets its own Owners; drop them so a later test does not see
+    // an earlier test's still-active Owner.
+    const setupUserIds: string[] = [];
+    afterEach(async () => {
+      await owner.query(
+        "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
+        [tenantId, setupUserIds],
+      );
+      setupUserIds.length = 0;
+    });
+
+    /** Actor is a non-Owner platform admin row; an outlet Owner is the
+     * "not tenant-wide" decoy; a lapsed Owner ended before the change. */
+    async function setup() {
+      const actor = await createUser("Dewi Super Admin", "supervisor", {
+        type: "tenant",
+      });
+      const oldOwner = await createUser(
+        "Owner lama",
+        "owner",
+        { type: "tenant" },
+        { validFrom: "-2 hours", validUntil: "-1 minute" },
+      );
+      const newOwner = await createUser("Owner baru", "owner", {
+        type: "tenant",
+      });
+      const earlierOwner = await createUser(
+        "Owner dulu",
+        "owner",
+        { type: "tenant" },
+        { validFrom: "-3 hours", validUntil: "-2 hours" },
+      );
+      setupUserIds.push(actor, oldOwner, newOwner, earlierOwner);
+      return { actor, oldOwner, newOwner, earlierOwner };
+    }
+
+    it("legend-fmpgz replacing an Owner pages the old Owner and every active Owner once, nobody else", async () => {
+      const { actor, oldOwner, newOwner, earlierOwner } = await setup();
+      const recipients = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "replaced",
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: await assignmentOf(oldOwner),
+        }),
+      );
+      const mine = ours(recipients).map((r) => r.userId);
+      expect([...mine].sort()).toEqual(
+        [users.tenantOwner, newOwner, oldOwner].sort(),
+      );
+      expect(new Set(mine).size).toBe(mine.length);
+      expect(mine).not.toContain(earlierOwner);
+      expect(mine).not.toContain(actor);
+      expect(mine).not.toContain(users.outletOwner);
+      expect(mine).not.toContain(users.tenantApprover);
+      expect(mine).not.toContain(users.cashier);
+      expect(mine).not.toContain(tenantBUser);
+    });
+
+    it("legend-fmpgz a first appointment pages the active Owners only (no replaced Owner)", async () => {
+      const { actor, oldOwner, newOwner } = await setup();
+      const recipients = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "assigned",
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: null,
+        }),
+      );
+      const mine = ours(recipients).map((r) => r.userId);
+      expect([...mine].sort()).toEqual([users.tenantOwner, newOwner].sort());
+      expect(mine).not.toContain(oldOwner);
+      expect(mine).not.toContain(actor);
+    });
+
+    it("legend-fmpgz the message names the actor, the accounts, the reason and the WIB time under security", async () => {
+      const { actor, oldOwner, newOwner } = await setup();
+      const replaced = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "replaced",
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: await assignmentOf(oldOwner),
+        }),
+      );
+      const forOldOwner = replaced.find((r) => r.userId === oldOwner);
+      expect(forOldOwner).toMatchObject({
+        category: "security",
+        title: "Owner diganti oleh platform",
+      });
+      // The actor is a name only: the platform staff email never leaks.
+      expect(forOldOwner?.body).toContain("Dewi Super Admin");
+      expect(forOldOwner?.body).not.toContain(emailOf(actor));
+      // Owner accounts are labelled "name (email)".
+      expect(forOldOwner?.body).toContain(`Owner lama (${emailOf(oldOwner)})`);
+      expect(forOldOwner?.body).toContain(`Owner baru (${emailOf(newOwner)})`);
+      expect(forOldOwner?.body).toContain(reason);
+      expect(forOldOwner?.body).toContain("9 November 2030");
+      expect(forOldOwner?.body).toMatch(/10[.:]30/);
+      expect(forOldOwner?.body).toContain("WIB");
+      // The same text reaches the sitting Owners.
+      const sitting = replaced.find((r) => r.userId === users.tenantOwner);
+      expect(sitting).toMatchObject({
+        category: "security",
+        title: "Owner diganti oleh platform",
+        body: forOldOwner?.body,
+      });
+
+      const assigned = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "assigned",
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: null,
+        }),
+      );
+      const first = assigned.find((r) => r.userId === newOwner);
+      expect(first).toMatchObject({
+        category: "security",
+        title: "Owner baru ditunjuk oleh platform",
+      });
+      expect(first?.body).toContain("Dewi Super Admin");
+      expect(first?.body).not.toContain(emailOf(actor));
+      expect(first?.body).toContain(`Owner baru (${emailOf(newOwner)})`);
+      expect(first?.body).toContain(reason);
+      expect(first?.body).not.toContain(emailOf(oldOwner));
+    });
+
+    it("legend-fmpgz a blank actor name reads as 'tim platform' and never shows an email", async () => {
+      const { actor, oldOwner, newOwner } = await setup();
+      await setName(actor, "   ");
+      const recipients = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "replaced",
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: await assignmentOf(oldOwner),
+        }),
+      );
+      const body = recipients.find((r) => r.userId === oldOwner)?.body;
+      expect(body).toContain("Super Admin platform tim platform mengganti");
+      expect(body).not.toContain(emailOf(actor));
+    });
+
+    it("legend-fmpgz placeholder WhatsApp emails are hidden; a blank name then reads 'akun baru'", async () => {
+      const { actor, oldOwner, newOwner } = await setup();
+      await setEmail(oldOwner, `${randomUUID()}@wa.invalid`);
+      await setEmail(newOwner, `${randomUUID()}@wa.invalid`);
+      const replaced = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "replaced",
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: await assignmentOf(oldOwner),
+        }),
+      );
+      const body = replaced.find((r) => r.userId === oldOwner)?.body;
+      expect(body).toContain(
+        "mengganti Owner Owner lama dengan Owner baru pada",
+      );
+      expect(body).not.toContain("wa.invalid");
+      expect(body).not.toContain("(");
+
+      await setName(newOwner, "");
+      const assigned = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "assigned",
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: null,
+        }),
+      );
+      const first = assigned.find((r) => r.userId === newOwner)?.body;
+      expect(first).toContain("menunjuk akun baru sebagai Owner");
+      expect(first).not.toContain("wa.invalid");
+    });
+
+    it("legend-fmpgz a real email with a blank name is shown as the email alone", async () => {
+      const { actor, newOwner } = await setup();
+      await setName(newOwner, "");
+      const assigned = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "assigned",
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: null,
+        }),
+      );
+      const body = assigned.find((r) => r.userId === newOwner)?.body;
+      expect(body).toContain(`menunjuk ${emailOf(newOwner)} sebagai Owner`);
+    });
+
+    it("legend-fmpgz a 500-character reason is cut to 300 and long emails still fit the notification schema", async () => {
+      const { actor, oldOwner, newOwner } = await setup();
+      const oldEmail = longEmail("a");
+      const newEmail = longEmail("b");
+      expect(oldEmail).toHaveLength(254);
+      await setEmail(oldOwner, oldEmail);
+      await setEmail(newOwner, newEmail);
+      const recipients = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "replaced",
+          actorUserId: actor,
+          reason: "Z".repeat(500),
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: await assignmentOf(oldOwner),
+        }),
+      );
+      const mine = ours(recipients);
+      expect(mine.length).toBeGreaterThan(0);
+      for (const recipient of mine) {
+        expect(recipient.body.length).toBeLessThanOrEqual(1000);
+        expect(recipient.body).toContain("Z".repeat(300));
+        expect(recipient.body).not.toContain("Z".repeat(301));
+        expect(recipient.body).toContain(oldEmail);
+        expect(recipient.body).toContain(newEmail);
+        const parsed = notificationSchema.shape.body.safeParse(recipient.body);
+        expect(parsed.success).toBe(true);
+        expect(
+          notificationSchema.shape.title.safeParse(recipient.title).success,
+        ).toBe(true);
+      }
+    });
+
+    it("legend-fmpgz a body over 1000 characters is cut to exactly 1000 and ends with an ellipsis", async () => {
+      const { actor, oldOwner, newOwner } = await setup();
+      await setEmail(oldOwner, longEmail("a"));
+      await setEmail(newOwner, longEmail("b"));
+      await setName(oldOwner, "L".repeat(100));
+      await setName(newOwner, "N".repeat(100));
+      const recipients = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "replaced",
+          actorUserId: actor,
+          reason: "Z".repeat(500),
+          newAssignmentId: await assignmentOf(newOwner),
+          replacedAssignmentId: await assignmentOf(oldOwner),
+        }),
+      );
+      const mine = ours(recipients);
+      expect(mine.length).toBeGreaterThan(0);
+      for (const recipient of mine) {
+        expect(recipient.body).toHaveLength(1000);
+        expect(recipient.body.endsWith("…")).toBe(true);
+        expect(
+          notificationSchema.shape.body.safeParse(recipient.body).success,
+        ).toBe(true);
+      }
+    });
+
+    it("legend-fmpgz an Owner whose validFrom is after the change is not paged; one at or before it is", async () => {
+      const { actor, oldOwner } = await setup();
+      // The change happened two hours ago (past: unlike the other tests).
+      const past = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+      const before = await createUser(
+        "Owner sebelum",
+        "owner",
+        { type: "tenant" },
+        { validFrom: "-3 hours" },
+      );
+      const atChange = await createUser(
+        "Owner tepat waktu",
+        "owner",
+        { type: "tenant" },
+        { validFrom: "-3 hours" },
+      );
+      const after = await createUser(
+        "Owner sesudah",
+        "owner",
+        { type: "tenant" },
+        { validFrom: "-1 hour" },
+      );
+      setupUserIds.push(before, atChange, after);
+      // validFrom exactly equal to changedAt still counts as "before".
+      await owner.query(
+        "UPDATE role_assignments SET valid_from = $3::timestamptz WHERE tenant_id = $1 AND user_id = $2",
+        [tenantId, atChange, past],
+      );
+      const recipients = await resolve(
+        { email: true, push: true },
+        ownerChanged({
+          kind: "replaced",
+          changedAt: past,
+          actorUserId: actor,
+          newAssignmentId: await assignmentOf(before),
+          replacedAssignmentId: await assignmentOf(oldOwner),
+        }),
+      );
+      const mine = recipients.map((r) => r.userId);
+      expect(mine).toContain(before);
+      expect(mine).toContain(atChange);
+      expect(mine).toContain(oldOwner);
+      expect(mine).not.toContain(after);
+    });
+
+    it("legend-fmpgz another tenant's Owner is never paged and its assignment id is refused", async () => {
+      const { actor, newOwner } = await setup();
+      const bOwner = randomUUID();
+      const bOwnerRole = randomUUID();
+      await owner.query(
+        `INSERT INTO "user" (id, name, email) VALUES ($1, 'Owner B', $2)`,
+        [bOwner, emailOf(bOwner)],
+      );
+      await owner.query(
+        `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, allowed_scope_types)
+         VALUES ($1, $2, 'Owner', true, 'owner', '[]'::jsonb, '["tenant"]'::jsonb)`,
+        [bOwnerRole, tenantB],
+      );
+      const { rows } = await owner.query<{ id: string }>(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, assigned_by, valid_from)
+         VALUES ($1, $2, $3, 'tenant', $2, now() - interval '1 hour') RETURNING id`,
+        [tenantB, bOwner, bOwnerRole],
+      );
+      try {
+        const recipients = await resolve(
+          { email: true, push: true },
+          ownerChanged({
+            kind: "assigned",
+            actorUserId: actor,
+            newAssignmentId: await assignmentOf(newOwner),
+            replacedAssignmentId: null,
+          }),
+        );
+        expect(recipients.map((r) => r.userId)).not.toContain(bOwner);
+        expect(recipients.map((r) => r.userId)).not.toContain(tenantBUser);
+
+        // An assignment id that belongs to tenant B cannot be notified from A.
+        await expect(
+          resolve(
+            { email: true, push: true },
+            ownerChanged({
+              kind: "assigned",
+              actorUserId: actor,
+              newAssignmentId: rows[0]?.id,
+              replacedAssignmentId: null,
+            }),
+          ),
+        ).rejects.toThrow("Owner assignment not found");
+        await expect(
+          resolve(
+            { email: true, push: true },
+            ownerChanged({
+              kind: "replaced",
+              actorUserId: actor,
+              newAssignmentId: await assignmentOf(newOwner),
+              replacedAssignmentId: rows[0]?.id,
+            }),
+          ),
+        ).rejects.toThrow("Replaced Owner assignment not found");
+      } finally {
+        await owner.query(
+          "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+          [tenantB, bOwner],
+        );
+        await owner.query("DELETE FROM roles WHERE id = $1", [bOwnerRole]);
+        await owner.query(`DELETE FROM "user" WHERE id = $1`, [bOwner]);
+      }
+    });
+  });
+});
+
+describe("legend-5rgl facility_incident.raised owner fallback", () => {
+  // Assumption (brief W3a, no PRD text): no active booth-operator holder on the
+  // outlet pages the tenant owners instead; with no owner either, nobody is
+  // paged (fail closed, empty list, no throw). Isolated tenant: the fixture
+  // tenant has seeded roles that would blur an exact assertion.
+  const tenantC = randomUUID();
+  const brandC = randomUUID();
+  const legalC = randomUUID();
+  const outletC = randomUUID();
+  const outletC2 = randomUUID();
+  const facilityC = randomUUID();
+  const boothRole = randomUUID();
+  const ownerRole = randomUUID();
+  const userIds: string[] = [];
+  const contextC = tenantContext(tenantC);
+
+  const makeUser = async (name: string) => {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, $2, $3, true)`,
+      [id, name, `${id}@example.test`],
+    );
+    userIds.push(id);
+    return id;
+  };
+  const assign = (
+    userId: string,
+    roleId: string,
+    scope: { type: string; id?: string },
+  ) =>
+    owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, assigned_by, valid_from)
+       VALUES ($1, $2, $3, $4, $5, $2, now() - interval '1 hour')`,
+      [tenantC, userId, roleId, scope.type, scope.id ?? null],
+    );
+  const newIncident = async (outletId: string) => {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO facility_incidents (id, tenant_id, outlet_id, facility_id, type, triggered_at)
+       VALUES ($1, $2, $3, $4, 'panic', now())`,
+      [id, tenantC, outletId, facilityC],
+    );
+    return id;
+  };
+  const page = async (incidentId: string) => {
+    const event = {
+      ...envelope("facility_incident.raised", outletC, {
+        incidentId,
+        facilityId: facilityC,
+        unitId: null,
+        type: "panic",
+        triggeredAt: new Date().toISOString(),
+        offline: false,
+      }),
+      tenantId: tenantC,
+      outletId: outletC,
+    } as ReturnType<typeof envelope>;
+    return withTenant(database, contextC, (tx) =>
+      createNotificationRecipientResolver({ email: true, push: true })(
+        contextC,
+        event,
+        tx,
+      ),
+    );
+  };
+
+  beforeAll(async () => {
+    const creator = await makeUser("Pembuat C");
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       VALUES ($1, $2, 'Owner fallback tenant', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', '{"maxOutlets":2,"maxActiveEmployees":1,"maxDevices":1,"aiRequestsPerMonth":0,"whatsappCostCapIdr":0,"aiCostCapIdr":0,"emailCostCapIdr":0}', $3)`,
+      [tenantC, `adapters-5rgl-${tenantC}`, creator],
+    );
+    await owner.query(
+      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, 'Brand 5rgl')",
+      [brandC, tenantC, `adapters-5rgl-${tenantC.slice(0, 8)}`],
+    );
+    await owner.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT 5rgl', false)",
+      [legalC, tenantC],
+    );
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+       VALUES ($1, $3, $4, $5, 'OUT-5A', 'Outlet 5A', 'Jl. A', '{}'),
+              ($2, $3, $4, $5, 'OUT-5B', 'Outlet 5B', 'Jl. B', '{}')`,
+      [outletC, outletC2, tenantC, brandC, legalC],
+    );
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, allowed_scope_types)
+       VALUES ($1, $3, 'Operator bilik', false, NULL, $4::jsonb, '["tenant","brand","outlet"]'::jsonb),
+              ($2, $3, 'Owner', true, 'owner', '[]'::jsonb, '["tenant","outlet"]'::jsonb)`,
+      [
+        boothRole,
+        ownerRole,
+        tenantC,
+        JSON.stringify(["facility.booth.operate"]),
+      ],
+    );
+    await owner.query(
+      `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                               arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+       VALUES ($1, $2, $3, 'Notif fallback', 'shower', 20, 10, 10, '[]', $4, $5)`,
+      [
+        facilityC,
+        tenantC,
+        outletC,
+        JSON.stringify({
+          graceMinutes: 5,
+          blockMinutes: 15,
+          feePerBlockIdr: 5000,
+        }),
+        JSON.stringify({
+          freeCancelMinutesBefore: 30,
+          lateCancelResolution: "no_refund",
+          lateCancelFeeIdr: 0,
+          noShowResolution: "no_refund",
+        }),
+      ],
+    );
+  });
+
+  afterEach(async () => {
+    await owner.query("DELETE FROM role_assignments WHERE tenant_id = $1", [
+      tenantC,
+    ]);
+    await owner.query("DELETE FROM facility_incidents WHERE tenant_id = $1", [
+      tenantC,
+    ]);
+  });
+
+  afterAll(async () => {
+    await owner.query("DELETE FROM facilities WHERE id = $1", [facilityC]);
+    await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
+      userIds,
+    ]);
+  });
+
+  it("legend-5rgl holders on the outlet are paged and the owners are not", async () => {
+    const holder = await makeUser("Operator outlet");
+    const ownerUser = await makeUser("Pemilik");
+    await assign(holder, boothRole, { type: "outlet", id: outletC });
+    await assign(ownerUser, ownerRole, { type: "tenant" });
+    const recipients = await page(await newIncident(outletC));
+    expect(recipients.map((r) => r.userId)).toEqual([holder]);
+    expect(recipients[0]?.category).toBe("emergency");
+  });
+
+  it("legend-5rgl a holder on another outlet is not paged; with no holder here the owners are", async () => {
+    const otherHolder = await makeUser("Operator outlet lain");
+    const ownerUser = await makeUser("Pemilik");
+    await assign(otherHolder, boothRole, { type: "outlet", id: outletC2 });
+    await assign(ownerUser, ownerRole, { type: "tenant" });
+    const recipients = await page(await newIncident(outletC));
+    expect(recipients.map((r) => r.userId)).toEqual([ownerUser]);
+    expect(recipients[0]?.category).toBe("emergency");
+  });
+
+  it("legend-5rgl with no operator on the outlet the tenant owner is paged, an owner scoped to another outlet is not", async () => {
+    const tenantOwner = await makeUser("Pemilik tenant");
+    const otherOutletOwner = await makeUser("Pemilik outlet lain");
+    await assign(tenantOwner, ownerRole, { type: "tenant" });
+    await assign(otherOutletOwner, ownerRole, {
+      type: "outlet",
+      id: outletC2,
+    });
+    const recipients = await page(await newIncident(outletC));
+    expect(recipients.map((r) => r.userId)).toEqual([tenantOwner]);
+    expect(recipients[0]?.category).toBe("emergency");
+  });
+
+  it("legend-5rgl with no holder and no owner nobody is paged (fail closed)", async () => {
+    const otherHolder = await makeUser("Operator outlet lain");
+    await assign(otherHolder, boothRole, { type: "outlet", id: outletC2 });
+    expect(await page(await newIncident(outletC))).toEqual([]);
+  });
+});
+
+// Pools close once every suite in this file has finished.
+afterAll(async () => {
+  await owner.end();
+  await appPool.end();
 });

@@ -16,8 +16,24 @@ import { z } from "../core/index.ts";
 export const QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED =
   "QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED" as const;
 
+/**
+ * The outlet runs an edge node and its cloud link is down: the cloud refuses
+ * the order (it cannot reach the kitchen) and the guest asks a waiter (WS-02).
+ */
+export const EDGE_LINK_DOWN = "EDGE_LINK_DOWN" as const;
+
+/**
+ * legend-zmc2: one table session, one pricing mode. An order whose prices
+ * include tax cannot join a session that already holds an exclusive order (or
+ * the reverse): the session bill has no single total formula.
+ */
+export const QR_ORDER_PRICING_MODE_MIXED =
+  "QR_ORDER_PRICING_MODE_MIXED" as const;
+
 export const qrOrderErrorHttpStatus = {
   [QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED]: 422,
+  [EDGE_LINK_DOWN]: 503,
+  [QR_ORDER_PRICING_MODE_MIXED]: 409,
 } as const satisfies Record<string, number>;
 
 export type QrOrderErrorCode = keyof typeof qrOrderErrorHttpStatus;
@@ -33,4 +49,15 @@ export const qrOrderErrorCodeSchema = z.enum(
 export const qrOrderErrorMessages: Record<QrOrderErrorCode, string> = {
   QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED:
     "Pajak harga-termasuk-pajak belum didukung untuk QR order; harga menu QR tidak termasuk pajak dan service charge.",
+  EDGE_LINK_DOWN: "Silakan pesan melalui waiter.",
+  QR_ORDER_PRICING_MODE_MIXED:
+    "Pesanan ini memakai mode harga (termasuk atau belum termasuk pajak) yang berbeda dari pesanan lain di meja ini. Minta bantuan kasir.",
 };
+
+/**
+ * Guest message when a QR order lands on a business day already closed by
+ * Tutup Hari. The API refuses it as a PosError BUSINESS_DAY_ALREADY_CLOSED
+ * (409) carrying this text (bead legend-2o1b).
+ */
+export const QR_OUTLET_CLOSED_MESSAGE =
+  "Outlet sudah tutup untuk hari ini. Pesanan belum bisa dibuat, silakan hubungi staf.";

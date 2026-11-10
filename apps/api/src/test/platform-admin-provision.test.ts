@@ -210,8 +210,15 @@ describe("First tenant admin (flow R steps 2-3)", () => {
     });
     const tenant = await createTenant(input, actorUserId);
     const events = await auditActions(tenant.id);
+    // legend-4ryw: a new tenant also gets the standard UOM catalog, audited.
+    // legend-9obf: and the default PBJT rule and tax settings.
+    // legend-2qz7: and the default 5% dine-in service charge.
     expect(events.map((event) => event.action).sort()).toEqual([
+      "inventory.uoms.provisioned",
       "role_assignment.granted",
+      "tax.rules.provisioned",
+      "tax.service_charge.provisioned",
+      "tax.settings.provisioned",
       "tenant.created",
     ]);
     for (const event of events) expect(event.actorId).toBe(actorUserId);

@@ -40,13 +40,67 @@ PRD §6 says money is BIGINT rupiah, but `stock_ledger.unit_cost_idr` and `recip
   2. **Database (backstop).** Migration `0032_outlet_rls` adds `app.enforce_outlet_rls(regclass)` next to `app.enforce_tenant_rls`: a RESTRICTIVE `outlet_isolation` policy (USING + WITH CHECK) reading `app.outlet_ids`, which `withTenant` installs from the server-minted scope. Semantics, all fail closed: unset/empty → error `42501` "outlet scope context is required"; `'*'` (only for a `{ kind: "tenant" }` scope — tenant- and brand-wide roles, guest/QR/public reads, jobs) → every outlet **of the current tenant** (the tenant policy still applies); a JSON array of uuids → exactly those outlets (`[]` → nothing); anything else → error "outlet scope context is malformed". Code that sets `app.tenant_id` by hand (seed, test fixtures) must also set `app.outlet_ids`.
   3. **Which tables.** Every tenant table whose `outlet_id` is `UUID NOT NULL` gets the policy in the same migration that creates it (call `app.enforce_outlet_rls` after `app.enforce_tenant_rls`); the catalog guard `src/db/outlet-rls.test.ts` fails CI otherwise. Allowlisted: `payment_link_tokens` (read before any tenant/outlet context, see the TEN-02 allowlist). Tables with a **nullable** `outlet_id` (tax rules/settings, service-charge rules, journals, audit log, domain events, notifications, tenant integrations, payment routing rules) hold tenant/brand-level rows that outlet roles legitimately read, so they keep the service-layer filter only.
   4. **Observable effect.** A by-id read or write of another outlet's record now behaves like a missing row (404 `NOT_FOUND`), the same answer as cross-tenant, so the response does not reveal that the record exists. Station-level narrowing stays in the service (next bullet): RLS stops at the outlet.
-- **Station scope on station-bound resources (legend-fsb7).** A station assignment expands to its outlet only where the database needs an outlet to filter: a station-bound route authorizes a `{ type: "station" }` target (`requireStationPermission`) and mints an outlet context for that station's outlet. The service must then re-assert the station from the same snapshot (`assertStationPermission`) or filter the rows with `permittedStationIds` (`stationReachOf`) and fail closed when the station of a resource cannot be determined. `outletReachOf` keeps giving a station-only grant no outlet-wide query reach, so non-station routes stay closed.
+- **Station scope on station-bound resources (legend-fsb7).** A station assignment expands to its outlet only where the database needs an outlet to filter: a station-bound route authorizes a `{ type: "station" }` target (`requireStationPermission`) and mints an outlet context for that station's outlet. The service must then re-assert the station from the same snapshot (`assertStationPermission`) or filter the rows with `permittedStationIds` (`stationReachOf`) and fail closed when the station of a resource cannot be determined. `outletReachOf` keeps giving a station-only grant no outlet-wide query reach, so non-station routes stay closed. A station-aware list or ticket gate (`requireStationScopePermission`) mints the union of the outlet/brand reach and the outlets of the stations a station grant reaches, so outlet A plus station B reaches both outlets while the service still narrows outlet B to station B (legend-cy2e).
 - Ids normalize on parse (UUID lowercase, ULID uppercase), so comparisons are plain `===`.
 - Two copies of the shared package in one process would not trust each other's objects (fails closed). Keep `@starter/shared` a single workspace dependency.
 
 ### D-CORE-4 Errors
 
 Envelope: `{ "error": { "code", "message", "details"?: [{ field, message }], "requestId"? } }`, the starter's shape. `code` is stable `UPPER_SNAKE_CASE`; the UI maps it to catalog text. `message` is a safe Indonesian fallback. Core codes and their HTTP status live in `coreErrorHttpStatus` (starter codes plus `TENANT_CONTEXT_REQUIRED`, `OUTLET_OUT_OF_SCOPE`, `FEATURE_DISABLED`, `CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `PRECONDITION_FAILED`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`). Domain contracts declare their own codes next to their schemas (for example `PERIOD_CLOSED` in WS-07).
+
+#### Inventory and purchasing error statuses (bead `legend-ul4s`)
+
+`InventoryError` and `PurchasingError` codes have one HTTP mapping each, declared next to the codes: `inventoryErrorHttpStatus` and `purchasingErrorHttpStatus` (`Record` over the code union, so a new code without a status fails the typecheck) in `@starter/shared/inventory`. The API answers `{ error: { code, message } }` through the single translator `translateDomainError` (`apps/api/src/services/domain-error-http.shared.ts`); the old `translateInventoryError`, `translateCountError` and `translatePurchasingError` delegate to it. `message` is the fixed Indonesian text from `inventoryErrorMessages` / `purchasingErrorMessages`, never the thrown message (it carries ids and amounts). Exception: stock-count services raise `countError(code, message)` with a message they build themselves (status and code still come from the table); those messages hold the document status only, never ids or amounts. Observable changes made with this table: `PURCHASE_ORDER_LINE_MISMATCH` and `THREE_WAY_MATCH_INVALID_INPUT` 409 to 422 (no API path throws them yet); `INSUFFICIENT_STOCK` through the generic translator 422 to 409 (the `insufficientStock` helper already answered 409). Errors that are not an `InventoryError` or `PurchasingError` pass through unchanged. Rule of thumb: not found 404; state, transition, version, duplicate, limit or stock conflict 409; permission-like (self approval, blind detail) 403; invalid or missing input data 422. Purchasing self-approval stays 409 (shipped, asserted by `purchasing-flow.test.ts`); stock-count self-approval stays 403.
+
+| Inventory code                     | HTTP |
+| ---------------------------------- | ---- |
+| `RECIPE_CYCLE`                     | 422  |
+| `RECIPE_NOT_FOUND`                 | 404  |
+| `RECIPE_OUTPUT_MISSING`            | 422  |
+| `RECIPE_COMPONENT_MISSING`         | 422  |
+| `UNIT_COST_MISSING`                | 422  |
+| `UOM_CONVERSION_MISSING`           | 422  |
+| `STOCK_COUNT_INVALID_TRANSITION`   | 409  |
+| `STOCK_COUNT_NOT_PENDING_APPROVAL` | 409  |
+| `STOCK_COUNT_SELF_APPROVAL`        | 403  |
+| `STOCK_COUNT_BLIND_HIDDEN`         | 403  |
+| `STOCK_COUNT_BLIND_USE_SHEET`      | 409  |
+| `STOCK_COUNT_LOCATION_BUSY`        | 409  |
+| `STOCK_COUNT_LINES_INCOMPLETE`     | 422  |
+| `STOCK_COUNT_APPROVAL_UNROUTED`    | 409  |
+| `STOCK_COUNT_VERSION_MISMATCH`     | 409  |
+| `STOCK_COUNT_NOT_EDITABLE`         | 409  |
+| `STOCK_COUNT_COST_MISSING`         | 422  |
+| `STOCK_COUNT_DECIDER_CANNOT_COUNT` | 403  |
+| `STOCK_COUNT_VIEWER_CANNOT_COUNT`  | 403  |
+| `STOCK_COUNT_APPROVAL_EXPIRED`     | 409  |
+| `PRODUCTION_INVALID_TRANSITION`    | 409  |
+| `INSUFFICIENT_STOCK`               | 409  |
+| `PRODUCTION_LOCATION_UNRESOLVED`   | 422  |
+
+| Purchasing code                         | HTTP |
+| --------------------------------------- | ---- |
+| `PURCHASE_REQUEST_INVALID_TRANSITION`   | 409  |
+| `PURCHASE_REQUEST_NOT_PENDING_APPROVAL` | 409  |
+| `PURCHASE_REQUEST_SELF_APPROVAL`        | 409  |
+| `PURCHASE_ORDER_INVALID_TRANSITION`     | 409  |
+| `PURCHASE_ORDER_NOT_PENDING_APPROVAL`   | 409  |
+| `PURCHASE_ORDER_SELF_APPROVAL`          | 409  |
+| `PURCHASE_ORDER_LINE_MISMATCH`          | 422  |
+| `PURCHASE_ORDER_OVER_RECEIPT`           | 409  |
+| `SUPPLIER_INVOICE_NOT_MATCHED`          | 409  |
+| `SUPPLIER_INVOICE_NOT_PAYABLE`          | 409  |
+| `SUPPLIER_INVOICE_OVERPAYMENT`          | 409  |
+| `SUPPLIER_PAYMENT_INVALID_TRANSITION`   | 409  |
+| `SUPPLIER_PAYMENT_NOT_PENDING_APPROVAL` | 409  |
+| `SUPPLIER_PAYMENT_SELF_APPROVAL`        | 409  |
+| `PURCHASE_RETURN_EXCEEDS_RECEIPT`       | 409  |
+| `PETTY_PURCHASE_LIMIT_EXCEEDED`         | 409  |
+| `THREE_WAY_MATCH_INVALID_INPUT`         | 422  |
+| `SUPPLIER_INACTIVE`                     | 409  |
+| `SUPPLIER_NAME_TAKEN`                   | 409  |
+| `PURCHASE_ORDER_NOT_SENDABLE`           | 409  |
+| `PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE` | 409  |
 
 ### D-CORE-5 Pagination
 
@@ -65,6 +119,58 @@ Each outlet sets `businessDayCutoff` (`outlets.business_day_cutoff`, `HH:mm`, `0
 - **Uses the business date:** menu price list in force + daily-limit counters + guest/QR menu and its tax rules (`menu-pricing`, `guest-menu`, callers of `reserveMenuItemDailyLimit` pass `businessDateOf(at, clock)`), promo engine price-list day and the min-spend facility reward expiry (`endOfBusinessDay` = next cutoff), tax/service-charge "not before today" (`tax.service`; tenant-wide versions use the default clock), stock-card `fromDate`/`toDate` (`businessDayRange`), facility subscription max-per-day (`sessionsOnBusinessDate`), and on the web: tax, menu, accounting, inventory and kitchen-report "today" defaults and the loyalty reward validity editor (a validity day runs from the cutoff to one second before the next cutoff). Contracts not yet backed by a service (POS EOD `businessDate`, cashier `shiftDate`, dashboards/metrics `metricDate`/`dataThrough`, tax report periods, accounting event `entryDate`) must be produced with `businessDateOf` and the outlet clock.
 - **Stays wall-clock** (`localDateOf(instant, timeZone)`, plain local calendar date): opening hours, menu availability schedules, promo time windows (`outletLocalClock`), notification quiet hours, reservation day, HRIS shift roster/attendance day, facility slot day. Promo/voucher validity (`startsAt`/`endsAt`, `validFrom`/`validUntil`) are instants, not dates. Payment settlement periods are bank-supplied dates.
 - Tests: `tests/core-contract.test.mjs` "Q39 …" (23:59 / 00:30 / 03:59 / 04:00 × WIB/WITA/WIT, ranges, DST, bounds); API tests named `Q39` in `platform-org-api`, `inventory`, `crm-promo-engine`.
+
+## Migrations: foreign keys into FORCE RLS tables (bead `legend-m007`)
+
+Tenant tables (`employees`, `positions`, `stations`, `outlets`, `chart_of_accounts`, …) use `FORCE ROW LEVEL SECURITY`, so the tenant policy also applies to their owner. The migrator is allowed to be a plain table owner (no SUPERUSER, no BYPASSRLS). Production uses a dedicated migrator login with BYPASSRLS (`legend-jtnd`), and migrations 0000-0064 still need BYPASSRLS on a fresh database; migrations 0065 and later must not depend on it. `ALTER TABLE child ADD CONSTRAINT … FOREIGN KEY … REFERENCES forced_parent` validates under the parent's policy; with no `app.tenant_id` it raises `tenant context is required` and aborts the migration transaction. Even an empty new child table fails.
+
+A new migration that references a FORCE RLS table must use one of these, in this order of preference:
+
+1. **Foreign key inside `CREATE TABLE`** of the new (empty) table: no validation scan runs. When drizzle generates a separate `ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY`, move the clause into the `CREATE TABLE` by hand before committing the SQL (keep the constraint name so the drizzle snapshot still matches).
+2. **Lift FORCE for the transaction** on every FORCE table the statement touches: `ALTER TABLE public.<table> NO FORCE ROW LEVEL SECURITY;` at the top, `ALTER TABLE public.<table> FORCE ROW LEVEL SECURITY;` after the last statement that needs it, before the file ends (drizzle runs all pending migrations in one transaction, so no other session sees the lifted state). The foreign key validation scan reads both sides as the migrator, so lift the parent and also the child when the child is itself a FORCE table, whatever the row count: a FORCE child fails even when the parent has no RLS (for example `tenants`). Also lift any FORCE table the migration reads or writes (a backfill `INSERT` hits `WITH CHECK`). Examples: `0065_edge_received_events.sql`, `0068_closed_tiger_shark.sql`, `0088_complex_newton_destine.sql` (lifts the existing children `pos_order_tenders`, `pos_order_voids`, `pos_order_refunds`). Restore FORCE on every table you lifted.
+
+```sql
+-- Pattern 1: new empty table, foreign key inline (no validation scan).
+CREATE TABLE "leave_requests" (
+  "tenant_id" uuid NOT NULL,
+  "id" uuid NOT NULL,
+  "employee_id" uuid NOT NULL,
+  CONSTRAINT "leave_requests_pk" PRIMARY KEY ("tenant_id", "id"),
+  CONSTRAINT "leave_requests_employee_fk" FOREIGN KEY ("tenant_id", "employee_id")
+    REFERENCES "public"."employees" ("tenant_id", "id")
+);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.leave_requests');
+
+-- Pattern 2: ALTER … ADD FOREIGN KEY on an existing table.
+-- Lift the parent and, when it is a FORCE table too, the child.
+ALTER TABLE public.employees NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.attendance_logs NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "attendance_logs" ADD CONSTRAINT "attendance_logs_employee_fk"
+  FOREIGN KEY ("tenant_id", "employee_id") REFERENCES "public"."employees" ("tenant_id", "id");
+--> statement-breakpoint
+ALTER TABLE public.attendance_logs FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.employees FORCE ROW LEVEL SECURITY;
+```
+
+With both sides lifted, pattern 2 validates every existing child row against the whole parent (all tenants), which is the check we want. Lifting only the parent fails on a FORCE child (`tenant context is required`); setting a dummy `app.tenant_id` instead would hide rows on both sides and either reject a populated child or validate nothing. `ALTER TABLE … NO FORCE` takes an ACCESS EXCLUSIVE lock on each lifted table, held until the whole pending batch commits (restoring FORCE early does not release it), so every read of that table waits for the rest of the migration run. Production's migrator has BYPASSRLS, so there the lift changes nothing but the lock; keep migrations that lift large hot tables (`outlets`, `employees`) short.
+
+Do not use `NOT VALID` (the constraint stays unvalidated forever, and a later `VALIDATE CONSTRAINT` hits the same error) and do not rely on BYPASSRLS for migrations 0065 and later.
+
+Tests: `apps/api/src/test/migration-fk-force-rls.test.ts` reproduces the failure and pins both patterns on a scratch database. `edge-received-events-migration.test.ts` ("applies the full migration folder as the non-superuser owner") applies the real folder from 0065 as a plain owner, so a new migration that breaks the rule fails there; `migrator-role.test.ts` is the contrast case (a plain owner is expected to fail on 0000-0064). `migration-force-rls-guard.test.ts` catches the silent failures: a `NO FORCE` with no later `FORCE` on the same table in the same file, a foreign key `NOT VALID` or a `DISABLE ROW LEVEL SECURITY` in migrations 0065 and later, and (after all migrations) any public table with RLS enabled but not forced other than the three documented ENABLE-only tables `tenant_domains`, `payment_link_tokens` and `delivery_store_index`. Review checklist: any `ADD CONSTRAINT … FOREIGN KEY` in a new migration → check the referenced table for FORCE and the pattern above.
+
+## Migrations: a tighter lock_timeout is restored to the saved value (bead `legend-76azz`)
+
+The migrator sets its own `lock_timeout` for the session (`MIGRATION_LOCK_TIMEOUT`, `apps/api/src/db/migration-session.ts`, `legend-jluo`), and drizzle runs every pending file in one transaction. A migration that tightens `lock_timeout` for one statement (for example `'5s'` before `ALTER TABLE … NO FORCE ROW LEVEL SECURITY` on a hot table) must save the value it found with `current_setting('lock_timeout')` and put it back with `set_config('lock_timeout', <saved>, true)` before the file ends. `SET LOCAL lock_timeout TO DEFAULT` (or `= DEFAULT`) and `RESET lock_timeout` restore the role/database default instead, often `0` (wait forever), for every later file in the batch, so a later blocked `ALTER` hangs the deploy and queues POS traffic behind it.
+
+- One `DO` block (preferred, `0143_edc_pan_scrub_separators.sql`): `prior_lock_timeout text := current_setting('lock_timeout')`, then `PERFORM set_config('lock_timeout', '5s', true)`, the statements, and `PERFORM set_config('lock_timeout', prior_lock_timeout, true)`.
+- A file split by `--> statement-breakpoint` (`0135_edc_pan_scrub.sql`): save into a transaction-local setting named after the file, `set_config('legend.lock_timeout_before_<NNNN>', current_setting('lock_timeout'), true)`, and restore with `SELECT set_config('lock_timeout', COALESCE(NULLIF(current_setting('legend.lock_timeout_before_<NNNN>', true), ''), current_setting('lock_timeout')), true)` (the fallback keeps a statement-by-statement autocommit run from failing on an empty saved value).
+- Never pass `NULL` as the value: `set_config('lock_timeout', NULL, …)` also resets to the server default, and a bare `current_setting(<name>, true)` is `NULL` when the saved setting is missing. Wrap it as above.
+
+Tests: `migration-lock-timeout.test.ts` ("legend-76azz migrations restore the migrator's lock_timeout") fails on any `lock_timeout TO DEFAULT`, `= DEFAULT`, `RESET lock_timeout`, `RESET ALL`, or `set_config('lock_timeout', NULL | current_setting(…, true), …)` in `apps/api/drizzle/*.sql`; `edc-pan-scrub-migration.test.ts` checks that 0135 ("0135 restores the migrator's lock_timeout, not the server default") and 0143 (the NOSUPERUSER NOBYPASSRLS owner case) leave `lock_timeout` as they found it.
 
 ## Naming
 

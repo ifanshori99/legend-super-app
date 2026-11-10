@@ -14,10 +14,12 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
 import * as service from "../services/payment-admin.service.ts";
 import * as config from "../services/payment-admin-config.service.ts";
 import * as funds from "../services/payment-admin-funds.service.ts";
 import * as reconciliation from "../services/payment-admin-reconciliation.service.ts";
+import * as refunds from "../services/payment-refund.service.ts";
 
 export const paymentAdminRouter = Router();
 paymentAdminRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
@@ -47,6 +49,16 @@ function byOutlet(
 }
 const edcQuery = byOutlet("payment.edc.manage", (req) => req.query.outletId);
 const edcBody = byOutlet("payment.edc.manage", (req) => req.body?.outletId);
+// Routing picks the gateway that receives the money: org.settings.manage
+// (sub-302 D14), not the EDC permission.
+const settingsQuery = byOutlet(
+  "org.settings.manage",
+  (req) => req.query.outletId,
+);
+const settingsBody = byOutlet(
+  "org.settings.manage",
+  (req) => req.body?.outletId,
+);
 const reconcileQuery = byOutlet(
   "payment.reconcile",
   (req) => req.query.outletId,
@@ -62,7 +74,7 @@ const reconcileRecord = requireMenuPermission("payment.reconcile");
 
 paymentAdminRouter.get(
   route(contract.getPaymentRouting.path),
-  edcQuery,
+  settingsQuery,
   async (req, res) => {
     res.json({
       data: await config.getPaymentRouting(
@@ -76,7 +88,7 @@ paymentAdminRouter.get(
 paymentAdminRouter.put(
   route(contract.updatePaymentRoute.path),
   jsonBody,
-  edcBody,
+  settingsBody,
   async (req, res) => {
     res.json({
       data: await config.updatePaymentRoute(
@@ -221,6 +233,84 @@ paymentAdminRouter.post(
         contract.approveRefund.params.parse(req.params),
         input,
         input.idempotencyKey,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+      ),
+    });
+  },
+);
+paymentAdminRouter.post(
+  route(contract.rejectRefund.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    const input = contract.rejectRefund.body.parse(req.body);
+    res.json({
+      data: await refunds.rejectRefund(
+        scope(req),
+        actor(req),
+        contract.rejectRefund.params.parse(req.params),
+        input,
+        input.idempotencyKey,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+      ),
+    });
+  },
+);
+paymentAdminRouter.post(
+  route(contract.retryRefundPayout.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    const input = contract.retryRefundPayout.body.parse(req.body);
+    res.json({
+      data: await refunds.retryRefundPayout(
+        scope(req),
+        actor(req),
+        {
+          ...contract.retryRefundPayout.params.parse(req.params),
+          sourceEvidenceId: input.sourceEvidenceId,
+        },
+        input.idempotencyKey,
+      ),
+    });
+  },
+);
+for (const [endpoint, run] of [
+  [contract.releaseQuarantinedRefund, refunds.releaseQuarantinedRefund],
+  [contract.reopenQuarantinedRefund, refunds.reopenQuarantinedRefund],
+] as const)
+  paymentAdminRouter.post(
+    route(endpoint.path),
+    jsonBody,
+    reconcileRecord,
+    async (req, res) => {
+      const input = endpoint.body.parse(req.body);
+      res.json({
+        data: await run(
+          scope(req),
+          actor(req),
+          endpoint.params.parse(req.params),
+          input,
+          input.idempotencyKey,
+          { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+        ),
+      });
+    },
+  );
+paymentAdminRouter.post(
+  route(contract.settleRefundManually.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    const input = contract.settleRefundManually.body.parse(req.body);
+    res.json({
+      data: await refunds.settleRefundManually(
+        scope(req),
+        actor(req),
+        contract.settleRefundManually.params.parse(req.params),
+        input,
+        input.idempotencyKey,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
       ),
     });
   },

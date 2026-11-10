@@ -2,7 +2,14 @@
 import {
   cafeLegendKitchenFixtures,
   kitchenFixtureSchema,
+  orderHeaders,
   getKitchenBoard,
+  getStationCapacityRules,
+  listKitchenStationLabels,
+  stationCapacityRuleSchema,
+  stationCapacityRules,
+  stationLabelSchema,
+  stationLabels,
   startKitchenTicket,
   bumpKitchenTicket,
   recallKitchenTicket,
@@ -38,12 +45,17 @@ const boards = createMockStore<StationBoard[]>(() =>
       pacing,
       tickets: fixtures.tickets
         .filter((ticket) => ticket.stationId === config.stationId)
-        .map((ticket) => ({
-          ...ticket,
-          items: fixtures.ticketItems.filter(
-            (item) => item.ticketId === ticket.id,
-          ),
-        })),
+        .map((ticket) => {
+          const header = orderHeaders[ticket.orderId];
+          if (!header) throw new Error("Missing fixture order header");
+          return {
+            ...ticket,
+            ...header,
+            items: fixtures.ticketItems.filter(
+              (item) => item.ticketId === ticket.id,
+            ),
+          };
+        }),
       allDay: {
         tenantId: config.tenantId,
         outletId: config.outletId,
@@ -133,6 +145,20 @@ function transition(id: string, action: KitchenTicketAction) {
 }
 // listKitchenStations is owned by ws04-kitchen-config/mock.ts (the station
 // settings screen); both features read the same fixture list (bead legend-jzud).
+// legend-gt7f: the cook reads of the station label and capacity rules.
+const labelRows = stationLabelSchema.array().parse(stationLabels);
+const capacityRows = stationCapacityRuleSchema
+  .array()
+  .parse(stationCapacityRules);
+registerMock(listKitchenStationLabels, ({ scenario }) => ({
+  data: scenario === "empty" ? [] : labelRows,
+}));
+registerMock(getStationCapacityRules, ({ params, scenario }) => ({
+  data:
+    scenario === "empty"
+      ? []
+      : capacityRows.filter((rule) => rule.stationId === params.stationId),
+}));
 registerMock(getKitchenBoard, ({ params, scenario }) => {
   const board = boards
     .get()

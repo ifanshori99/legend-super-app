@@ -213,6 +213,13 @@ export const tableSessions = pgTable(
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    /**
+     * The `last_activity_at` the open-bill idle alert already fired for
+     * (legend-cqrw): one alert per idle spell, new activity starts a new one.
+     */
+    inactivityAlertedActivityAt: timestamp("inactivity_alerted_activity_at", {
+      withTimezone: true,
+    }),
     billRequestedAt: timestamp("bill_requested_at", { withTimezone: true }),
     closedAt: timestamp("closed_at", { withTimezone: true }),
     closedReason: varchar("closed_reason", {

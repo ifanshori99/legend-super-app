@@ -31,6 +31,11 @@ import {
 import { db } from "../db";
 import { session } from "../db/schema";
 import { HttpError } from "../lib/http-error";
+import { logger } from "../lib/logger";
+import {
+  IMPERSONATION_SESSION_MAX_SECONDS,
+  recordImpersonationEnded,
+} from "./platform-support.service";
 import { createSessionExtendLimiter } from "./session-extend-limiter";
 export { SESSION_EXTEND_RATE_LIMIT } from "./session-extend-limiter";
 
@@ -132,6 +137,17 @@ export async function loadSessionRow(
   return row ?? null;
 }
 
+/** legend-rzirp: an impersonated session has a hard 60 minute cap set at
+ * creation. No activity or management upgrade may push it later. */
+function capImpersonated(row: SessionRow, next: Date): Date {
+  if (row.impersonatedBy === null) return next;
+  const cap = Math.min(
+    row.expiresAt.getTime(),
+    row.createdAt.getTime() + IMPERSONATION_SESSION_MAX_SECONDS * 1000,
+  );
+  return next.getTime() < cap ? next : new Date(cap);
+}
+
 /**
  * Records user activity. A management session's idle deadline moves forward
  * (at most one write a minute); a customer session only touches `last_seen_at`.
@@ -143,7 +159,10 @@ export async function touchSession(input: {
   readonly now: Date;
   readonly tx?: Pick<typeof db, "update">;
 }): Promise<void> {
-  const { row, management, now } = input;
+  const { row, now } = input;
+  // legend-k2l: a non-password session is never upgraded to management, even
+  // when a caller asks for it (design ws08 M2 "Sign-in method gate").
+  const management = input.management && row.authMethod === "password";
   const writer = input.tx ?? db;
   if (row.revokedAt !== null) return;
   if (row.expiresAt.getTime() <= now.getTime()) return;
@@ -153,7 +172,7 @@ export async function touchSession(input: {
       .set({
         kind: "management",
         lastSeenAt: now,
-        expiresAt: newSessionExpiry("management", now),
+        expiresAt: capImpersonated(row, newSessionExpiry("management", now)),
       })
       .where(eq(session.id, row.id));
     return;
@@ -169,7 +188,7 @@ export async function touchSession(input: {
     .update(session)
     .set({
       lastSeenAt: new Date(activity.session.lastSeenAt),
-      expiresAt: new Date(activity.session.expiresAt),
+      expiresAt: capImpersonated(row, new Date(activity.session.expiresAt)),
     })
     .where(eq(session.id, row.id));
 }
@@ -259,6 +278,29 @@ export async function revokeOwnSession(input: {
   // the wire schema requires) and in the past for any session older than a
   // millisecond. `revoked_at` keeps the audit trail.
   const expiresAt = new Date(row.createdAt.getTime() + 1);
+  if (row.impersonatedBy !== null) {
+    // legend-rzirp: a support (impersonated) session is deleted, not kept as
+    // a revoked row, and its end is audited here with cause "revoked". A
+    // direct delete skips Better Auth's delete hook, so no second end row.
+    await db.delete(session).where(eq(session.id, row.id));
+    try {
+      await recordImpersonationEnded({
+        adminUserId: row.impersonatedBy,
+        targetUserId: row.userId,
+        sessionId: row.id,
+        sessionCreatedAt: row.createdAt,
+        cause: "revoked",
+        now,
+      });
+    } catch (error) {
+      // Never block a revoke; the failure is logged for follow-up.
+      logger.error(
+        { err: error, sessionId: row.id },
+        "failed to audit impersonation end",
+      );
+    }
+    return toWireSession({ ...row, revokedAt: now, expiresAt });
+  }
   await db
     .update(session)
     .set({ revokedAt: now, expiresAt })

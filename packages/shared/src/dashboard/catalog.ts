@@ -14,7 +14,9 @@ import {
   REPORT_FAMILY_INFO,
   REPORT_PERIOD_PRESETS,
   reportDefinitionSchema,
+  PERSONAL_DATA_DIMENSIONS,
   reportRouteForCode,
+  selectionContainsPersonalData,
 } from "./reports.ts";
 import type {
   ReportDefinition,
@@ -78,6 +80,131 @@ const FAMILY_PERMISSIONS: Record<ReportFamily, readonly string[]> = {
   facility: ["report.operational.view"],
   operations: ["report.operational.view"],
 };
+
+/** The only report permission a shareholder holds (access/roles.ts, SH-01). */
+export const REPORT_AGGREGATE_VIEW_PERMISSION = "report.aggregate.view";
+
+/**
+ * Reports the shareholder dashboard tiles link to. They also accept
+ * `report.aggregate.view`, but only as aggregates: see
+ * `reportAcceptsAggregateView`. Every other report keeps its own permissions.
+ */
+export const AGGREGATE_VIEW_REPORT_CODES: readonly string[] = Object.freeze([
+  "sales.daily",
+  "sales.per_pax",
+  "traffic.pax",
+  "finance.gross_margin",
+  "finance.ebitda",
+  "finance.income_statement",
+  "finance.cash_position",
+]);
+
+/**
+ * Founder decision Q59 (2026-11-10, DECISIONS.md butir 8): metrics a
+ * `report.aggregate.view` holder (the shareholder) may read as one business
+ * total through `GET /api/metrics/query`, although their source report does
+ * not accept the aggregate view. Only a request with no `groupBy` at all gets
+ * the aggregate reach; any split (outlet, menu, category) stays 403
+ * REPORT_NOT_PERMITTED. The source report itself (`inventory.food_cost` for
+ * `cogs`) is not added to `AGGREGATE_VIEW_REPORT_CODES`: its report run, with
+ * per-menu detail, stays closed to the aggregate view.
+ */
+export const AGGREGATE_TOTAL_METRIC_CODES: readonly string[] = Object.freeze([
+  "cogs",
+]);
+
+/**
+ * SH-01: a report accepts `report.aggregate.view` only when it is a
+ * shareholder-linked report and shows no person: not flagged personal and no
+ * identity split (employee, customer, member) on offer.
+ */
+export function reportAcceptsAggregateView(
+  report: Pick<
+    ReportDefinition,
+    "code" | "containsPersonalData" | "dimensions"
+  >,
+): boolean {
+  return (
+    AGGREGATE_VIEW_REPORT_CODES.includes(report.code) &&
+    !report.containsPersonalData &&
+    !report.dimensions.some((key) => PERSONAL_DATA_DIMENSIONS.includes(key))
+  );
+}
+
+/**
+ * Whether the held permissions open a report: every required permission, or
+ * `report.aggregate.view` for an aggregate-only report. One rule for the page
+ * guard, the builder, the export gate and the shareholder drill-down links.
+ */
+export function reportPermittedFor(
+  report: Pick<
+    ReportDefinition,
+    "code" | "containsPersonalData" | "dimensions" | "requiredPermissions"
+  >,
+  held: ReadonlySet<string> | readonly string[],
+): boolean {
+  const has = (code: string) => holds(held, code);
+  return (
+    report.requiredPermissions.every(has) ||
+    (reportAcceptsAggregateView(report) &&
+      has(REPORT_AGGREGATE_VIEW_PERMISSION))
+  );
+}
+
+/** Every permission a report family asks for: the "full report" permissions. */
+const FULL_REPORT_PERMISSIONS: ReadonlySet<string> = new Set(
+  Object.values(FAMILY_PERMISSIONS).flat(),
+);
+
+function holds(held: ReadonlySet<string> | readonly string[], code: string) {
+  return Array.isArray(held)
+    ? held.includes(code)
+    : (held as ReadonlySet<string>).has(code);
+}
+
+/**
+ * SH-01: a caller who holds `report.aggregate.view` and no permission of any
+ * report family (the shareholder) sees aggregates only: never a split or
+ * filter by an employee, customer or member, in the viewer, the builder, an
+ * export or a schedule.
+ */
+export function aggregateOnlyCaller(
+  held: ReadonlySet<string> | readonly string[],
+): boolean {
+  return (
+    holds(held, REPORT_AGGREGATE_VIEW_PERMISSION) &&
+    ![...FULL_REPORT_PERMISSIONS].some((code) => holds(held, code))
+  );
+}
+
+/**
+ * Server rule for a builder query (preview, save, export, schedule): an
+ * aggregate-only caller may not group or filter by an identity (groupBy AND
+ * filters), and every selected metric's source report must be one the held
+ * permissions open. Other callers pass here: their report permissions and the
+ * export gate decide. `metricCodes` is optional for export and schedule
+ * payloads that carry only the splits.
+ */
+export function builderQueryPermittedFor(
+  query: {
+    readonly metricCodes?: readonly string[];
+    readonly groupBy: readonly string[];
+    readonly filters: readonly { readonly key: string }[];
+  },
+  held: ReadonlySet<string> | readonly string[],
+): boolean {
+  if (aggregateOnlyCaller(held) && selectionContainsPersonalData(query))
+    return false;
+  for (const code of query.metricCodes ?? []) {
+    const metric = reportMetricByCode.get(code);
+    const source =
+      metric === undefined
+        ? undefined
+        : reportByCode(metric.sourceReport.reportCode);
+    if (source === undefined || !reportPermittedFor(source, held)) return false;
+  }
+  return true;
+}
 
 function defineReport(seed: ReportSeed): ReportDefinition {
   const monthly = CLOSED_PERIOD_FAMILIES.has(seed.family);
@@ -896,10 +1023,11 @@ const reportSeeds: readonly ReportDefinition[] = [
   defineReport({
     code: "facility.revenue",
     name: "Pendapatan fasilitas",
-    description: "Pendapatan shower room dan jumlah sesi per fasilitas.",
+    description:
+      "Pendapatan shower room dan jumlah sesi per fasilitas dan per unit (bilik).",
     family: "facility",
     metrics: ["shower_revenue", "shower_sessions"],
-    dimensions: ["outlet", "facility"],
+    dimensions: ["outlet", "facility", "unit"],
   }),
   defineReport({
     code: "facility.revpash",
@@ -912,10 +1040,10 @@ const reportSeeds: readonly ReportDefinition[] = [
   defineReport({
     code: "facility.occupancy",
     name: "Utilisasi shower room",
-    description: "Utilisasi bilik dan jumlah sesi per fasilitas.",
+    description: "Utilisasi bilik dan jumlah sesi per fasilitas dan per unit.",
     family: "facility",
     metrics: ["shower_occupancy_pct", "shower_sessions"],
-    dimensions: ["facility"],
+    dimensions: ["facility", "unit"],
   }),
   defineReport({
     code: "facility.subscriptions",
@@ -936,17 +1064,63 @@ const reportSeeds: readonly ReportDefinition[] = [
   defineReport({
     code: "facility.fnb_conversion",
     name: "Konversi fasilitas ke F&B",
-    description: "Sesi shower dengan pesanan F&B dan konversinya.",
+    description:
+      "Sesi shower dengan pesanan F&B dan konversinya per fasilitas dan per unit.",
     family: "facility",
     metrics: ["shower_fnb_conversion_pct", "shower_sessions_with_fnb"],
-    dimensions: ["facility"],
+    dimensions: ["facility", "unit"],
+  }),
+  defineReport({
+    code: "facility.overtime",
+    name: "Kelebihan waktu fasilitas",
+    description:
+      "Sesi yang melewati durasi dan total waktu kelebihan per fasilitas dan per unit.",
+    family: "facility",
+    metrics: ["facility_overtime_sessions", "facility_overtime_seconds"],
+    dimensions: ["outlet", "facility", "unit"],
+  }),
+  defineReport({
+    code: "facility.cleaning_time",
+    name: "Waktu pembersihan",
+    description:
+      "Jumlah pembersihan dan rata-rata lama pembersihan per fasilitas dan per unit.",
+    family: "facility",
+    metrics: ["facility_cleaning_count", "facility_cleaning_seconds"],
+    dimensions: ["outlet", "facility", "unit"],
+  }),
+  defineReport({
+    code: "facility.incidents",
+    name: "Insiden fasilitas",
+    description:
+      "Jumlah insiden dan rata-rata waktu respons per fasilitas dan per unit.",
+    family: "facility",
+    metrics: ["facility_incident_count", "facility_incident_response_seconds"],
+    dimensions: ["outlet", "facility", "unit"],
+  }),
+  defineReport({
+    code: "facility.product_revenue",
+    name: "Pendapatan per produk fasilitas",
+    description:
+      "Pendapatan dan jumlah terjual tiap produk fasilitas: tiket, paket, day pass, reservasi kursi, dan langganan.",
+    family: "facility",
+    metrics: ["facility_product_revenue", "facility_product_sales"],
+    dimensions: ["outlet", "facility", "product"],
+  }),
+  defineReport({
+    code: "facility.unit_utilization",
+    name: "Utilisasi unit per jam",
+    description:
+      "Persentase menit terpakai tiap unit (bilik atau kursi), per unit dan per jam buka.",
+    family: "facility",
+    metrics: ["unit_utilization_pct"],
+    dimensions: ["outlet", "unit", "hour", "facility"],
   }),
 
   // ---- Operations ----------------------------------------------------------
   defineReport({
     code: "operations.table_turnover",
-    name: "Table turnover",
-    description: "Table turnover dan okupansi meja per zona.",
+    name: "Perputaran meja",
+    description: "Perputaran dan okupansi meja per zona.",
     family: "operations",
     metrics: ["table_turnover", "table_occupancy_pct"],
     dimensions: ["zone"],

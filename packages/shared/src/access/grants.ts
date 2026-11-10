@@ -37,14 +37,52 @@ export const ROLE_GRANT_REAUTH_MAX_AGE_MS = 5 * 60 * 1000;
  * permission (so Admin Tenant can assign Finance). Everyone else must hold
  * every permission they delegate, which keeps reciprocal escalation impossible.
  * The `owner` template itself is never reachable through this path: only a
- * grantor who already holds all of Owner's permissions can create an Owner,
- * so two Admin Tenants cannot promote each other to Owner.
+ * grantor with an active tenant-scoped Owner assignment can create an Owner
+ * (legend-7vsby). Holding the same permissions through a custom role is not
+ * enough, so an Admin Tenant cannot build a custom role with every Owner code,
+ * hand it to a second account, and have that account promote anyone to Owner.
+ * Founder Q41 (the tenant admin may configure everything) does not cover
+ * creating a new Owner: an Owner only comes from an Owner.
  */
 export const ROLE_GRANT_TOP_AUTHORITY_TEMPLATES = Object.freeze([
   "owner",
   "tenant_admin",
 ] as const);
-const TOP_AUTHORITY_EXCLUDED_TARGETS: readonly string[] = ["owner"];
+const OWNER_TEMPLATE_KEY = "owner";
+
+/**
+ * Permissions that only the Owner template may carry (legend-7vsby). A custom
+ * role can never include them: `normalizeCustomRolePermissions` refuses them
+ * on create and edit, and readers drop them from custom roles stored before
+ * this rule (`withoutOwnerOnlyPermissions`), so old rows keep loading.
+ * `pos.receipt.writeoff` removes a gap from the numbered receipt trail for
+ * good (legend-0hzqw, legend-l56xd).
+ */
+export const OWNER_TEMPLATE_ONLY_PERMISSIONS = Object.freeze([
+  "pos.receipt.writeoff",
+] as const satisfies readonly PermissionCode[]);
+const ownerOnly: readonly string[] = OWNER_TEMPLATE_ONLY_PERMISSIONS;
+
+/** `codes` without the Owner-template-only permissions (custom-role reads). */
+export function withoutOwnerOnlyPermissions<T extends string>(
+  codes: readonly T[],
+): T[] {
+  return codes.filter((code) => !ownerOnly.includes(code));
+}
+
+/**
+ * What a stored role row actually grants: Owner-template-only codes count only
+ * on the Owner template. Any other row (a custom role stored before the rule,
+ * or a future template that picked one up) loses them on read.
+ */
+export function rolePermissionsAsGranted<T extends string>(
+  templateKey: string | null,
+  codes: readonly T[],
+): T[] {
+  return templateKey === OWNER_TEMPLATE_KEY
+    ? [...codes]
+    : withoutOwnerOnlyPermissions(codes);
+}
 
 /** A grantor's role as the API loaded it; templateKey null = custom role. */
 export type GrantorRole = RoleGrant & { readonly templateKey?: string | null };
@@ -113,16 +151,53 @@ export function assertCanGrantRole(input: {
     mfaVerified: input.grantorMfaVerified,
   };
   const assignmentId = assertAuthorized(authorization);
-  const excludedTarget =
-    input.role.templateKey !== null &&
-    TOP_AUTHORITY_EXCLUDED_TARGETS.includes(input.role.templateKey);
-  const topAuthority = excludedTarget
-    ? null
-    : topAuthorityAssignment(input, "access.role.assign");
+  if (input.role.templateKey === OWNER_TEMPLATE_KEY) {
+    // legend-7vsby: an Owner only comes from an Owner. Top authority never
+    // applies, and holding every Owner permission (e.g. through a custom
+    // role) is not enough; the grantor also needs every delegated permission
+    // below, which a tenant-scoped Owner holds.
+    const owner = ownerTemplateAssignment(input);
+    if (owner === null)
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Hanya Owner yang dapat memberikan role Owner.",
+      );
+    for (const permission of input.role.permissions)
+      assertAuthorized({ ...authorization, permission });
+    return owner;
+  }
+  const topAuthority = topAuthorityAssignment(input, "access.role.assign");
   if (topAuthority !== null) return topAuthority;
   for (const permission of input.role.permissions)
     assertAuthorized({ ...authorization, permission });
   return assignmentId;
+}
+
+/**
+ * The grantor's own active tenant-scoped assignment of the tenant's Owner
+ * template, or null. A brand-scoped Owner, an ended or future assignment and
+ * any custom role (templateKey null) never count.
+ */
+function ownerTemplateAssignment(input: {
+  readonly grantor: AccessPrincipal;
+  readonly grantorRoles: readonly GrantorRole[];
+  readonly now: Date;
+}): RoleAssignmentId | null {
+  const byId = new Map(
+    input.grantorRoles.map((role) => [role.id.toLowerCase(), role] as const),
+  );
+  const tenantId = input.grantor.tenantId.toLowerCase();
+  const userId = input.grantor.userId.toLowerCase();
+  for (const row of input.grantor.assignments) {
+    if (row.scope.type !== "tenant") continue;
+    if (row.tenantId.toLowerCase() !== tenantId) continue;
+    if (row.userId.toLowerCase() !== userId) continue;
+    if (!isAssignmentActive(row, input.now)) continue;
+    const role = byId.get(row.roleId.toLowerCase());
+    if (role?.templateKey !== OWNER_TEMPLATE_KEY) continue;
+    return row.id;
+  }
+  return null;
 }
 
 /**
@@ -217,7 +292,7 @@ export function assertCanEditCustomRole(input: {
 
 /**
  * Validates a custom role's permission list: catalog codes only, no platform
- * permissions. Returns the deduplicated list (catalog order is not required)
+ * permissions, no Owner-template-only permissions (legend-7vsby). Returns the deduplicated list (catalog order is not required)
  * and whether the role must require MFA (AUTH-05: a custom role that reaches
  * finance, payroll, personal data or access administration always does).
  */
@@ -229,6 +304,8 @@ export function normalizeCustomRolePermissions(
   for (const code of unique)
     if (!isPermissionCode(code) || permissionHasTag(code, "platform"))
       throw new AccessError("PERMISSION_NOT_IN_CATALOG");
+  if (unique.some((code) => ownerOnly.includes(code)))
+    throw new AccessError("PERMISSION_OWNER_ONLY");
   const codes = unique as PermissionCode[];
   return {
     permissions: codes,

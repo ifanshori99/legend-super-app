@@ -93,13 +93,22 @@ type MenuState = MenuFixture & {
   media: Record<string, string>;
 };
 
-// The contract fixtures do not model the item↔group link yet (follow-up
-// bead), so the mock seeds two drinks with the sugar-level group to make the
-// screen reviewable.
+// The item↔group links come from the shared contract fixture
+// (`itemModifierGroups`), folded into the per-item ordered id lists the
+// endpoints speak.
 // The demo photo map lives in lib/mock so a normal build compiles the sample
 // paths out (legend-4pki): items with a photo get a mock media row so the demo
 // can restore them after an 86 (a restore needs the photo, Q23).
 import { demoPhotos } from "../../lib/mock/demo-photos.ts";
+
+function groupIdsByItem(
+  links: MenuFixture["itemModifierGroups"],
+): Record<string, string[]> {
+  const byItem: Record<string, string[]> = {};
+  for (const link of [...links].sort((a, b) => a.sortOrder - b.sortOrder))
+    (byItem[link.itemId] ??= []).push(link.groupId);
+  return byItem;
+}
 
 function seedState(): MenuState {
   const fixtures = structuredClone(cafeLegendMenuFixtures);
@@ -113,10 +122,7 @@ function seedState(): MenuState {
   }
   return {
     ...fixtures,
-    itemGroups: {
-      [fixtures.items[0].id]: [fixtures.modifierGroups[0].id],
-      [fixtures.items[4].id]: [fixtures.modifierGroups[0].id],
-    },
+    itemGroups: groupIdsByItem(fixtures.itemModifierGroups),
     media,
   };
 }
@@ -322,6 +328,7 @@ registerMock(createStation, ({ body }) => {
     type: body.type,
     printerDeviceId: body.printerDeviceId ?? null,
     targetSeconds: body.targetSeconds ?? null,
+    updatedAt: new Date().toISOString(),
   };
   state().stations.push(station);
   return { data: station };
@@ -333,7 +340,15 @@ registerMock(updateStation, ({ params, body }) => {
   );
   const station = state().stations[index];
   if (!station) notFound("Stasiun");
-  state().stations[index] = { ...station, ...body };
+  const { expectedUpdatedAt, ...changes } = body;
+  // Same rule as the API (legend-4xai): a stale form answers 409.
+  if (expectedUpdatedAt && expectedUpdatedAt !== station.updatedAt)
+    conflict("Stasiun sudah diubah orang lain. Muat ulang lalu coba lagi.");
+  state().stations[index] = {
+    ...station,
+    ...changes,
+    updatedAt: new Date().toISOString(),
+  };
   return { data: state().stations[index] };
 });
 

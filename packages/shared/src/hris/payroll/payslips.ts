@@ -28,6 +28,7 @@ import {
   clientInputSchema,
   idempotencyKeySchema,
   sumIdr,
+  idr,
 } from "../../core/index.ts";
 import type { Idr } from "../../core/index.ts";
 import { legalEntityIdSchema } from "../../accounting/ids.ts";
@@ -78,20 +79,73 @@ export type PayslipBpjsLine = z.infer<typeof payslipBpjsLineSchema>;
 /** ter = monthly TER; annual_recalculation = last tax period (Pasal 17). */
 export const pph21MethodSchema = z.enum(["ter", "annual_recalculation"]);
 
-export const payslipTaxSchema = z.strictObject({
-  ptkpStatus: ptkpStatusSchema,
-  method: pph21MethodSchema,
-  /** TER category/rate; null for the annual recalculation. */
-  terCategory: terCategorySchema.nullable(),
-  terRateBp: basisPointsSchema.nullable(),
-  taxableGrossIdr: nonNegativeIdr,
-  /** Total PPh 21 owed for the period (withheld + borne by the employer). */
-  pph21Idr: idrSchema,
-  /** Part deducted from the employee (gross and gross-up schemes). */
-  pph21WithheldIdr: nonNegativeIdr,
-  /** Employees without a tax id pay the table surcharge, if any. */
-  noTaxIdSurchargeApplied: z.boolean(),
-});
+export const payslipTaxSchema = z
+  .strictObject({
+    ptkpStatus: ptkpStatusSchema,
+    method: pph21MethodSchema,
+    /** TER category/rate; null for the annual recalculation. */
+    terCategory: terCategorySchema.nullable(),
+    terRateBp: basisPointsSchema.nullable(),
+    taxableGrossIdr: nonNegativeIdr,
+    /**
+     * Total PPh 21 owed for the period: withheld + borne + receivable -
+     * refunds (the deposit).
+     */
+    pph21Idr: idrSchema,
+    /** Part deducted from the employee (gross and gross-up schemes). */
+    pph21WithheldIdr: nonNegativeIdr,
+    /** Gross-up tunjangan pajak paid as an extra earning (also withheld). */
+    taxAllowanceIdr: nonNegativeIdr,
+    /** Borne by the employer (net scheme); a taxable benefit, not withheld. */
+    pph21EmployerBorneIdr: nonNegativeIdr,
+    /** Lebih potong paid back to the employee this period. */
+    pph21RefundIdr: nonNegativeIdr,
+    /** Lebih potong that returns to the employer (tax it bore earlier). */
+    pph21EmployerRefundIdr: nonNegativeIdr,
+    /**
+     * Part of `pph21EmployerRefundIdr` that returns an earlier gross-up tax
+     * allowance (journal: 6101 salary expense); the rest returns borne tax
+     * (6111). Absent = 0.
+     */
+    pph21EmployerAllowanceRefundIdr: nonNegativeIdr.optional(),
+    /**
+     * The employee's PPh 21 above the pay left (withholding cap): deposited by
+     * the employer and owed back by the employee as an employee receivable,
+     * collected from later pay (founder decision B8, bead legend-kn3n). Not a
+     * taxable benefit, no gross-up. Absent = 0.
+     */
+    pph21ReceivableIdr: nonNegativeIdr.optional(),
+    /** Employees without a tax id pay the table surcharge, if any. */
+    noTaxIdSurchargeApplied: z.boolean(),
+    /**
+     * Scheme mix of taxableGrossIdr (sum = taxableGrossIdr): the employee's
+     * (gross-scheme) part and the employer's (gross-up / net lines, their
+     * benefit share, the covered tax). Read by `buildPph21Prior` so a later
+     * last period splits the year's history by the schemes paid at the time.
+     */
+    grossSchemeBaseIdr: nonNegativeIdr,
+    employerSchemeBaseIdr: nonNegativeIdr,
+  })
+  .refine(
+    (tax) =>
+      tax.grossSchemeBaseIdr + tax.employerSchemeBaseIdr ===
+      tax.taxableGrossIdr,
+    { message: "scheme bases must sum to taxableGrossIdr" },
+  )
+  .refine(
+    (tax) =>
+      (tax.pph21EmployerAllowanceRefundIdr ?? 0) <= tax.pph21EmployerRefundIdr,
+    {
+      message: "employer allowance refund cannot exceed the employer refund",
+    },
+  )
+  .refine(
+    (tax) => !((tax.pph21ReceivableIdr ?? 0) > 0 && tax.pph21RefundIdr > 0),
+    {
+      message:
+        "an employee receivable and an employee refund cannot both be set",
+    },
+  );
 export type PayslipTax = z.infer<typeof payslipTaxSchema>;
 
 export const payslipPaymentMethodSchema = z.enum(["bank_transfer", "cash"]);
@@ -155,8 +209,18 @@ export function payslipTotalsIssues(slip: CalculationLike): string[] {
     issues.push("pph21 lines != tax.pph21WithheldIdr");
   if (slip.pph21Idr !== slip.tax.pph21Idr)
     issues.push("pph21Idr != tax.pph21Idr");
-  if (slip.tax.pph21WithheldIdr > Math.max(0, slip.tax.pph21Idr))
-    issues.push("withheld PPh 21 exceeds PPh 21 owed");
+  // Withheld may exceed the period tax when the employer takes back its own
+  // Jan-Nov lebih potong in the same slip (bead legend-u1xq): the split must
+  // still add up to the tax owed.
+  if (
+    slip.tax.pph21WithheldIdr +
+      slip.tax.pph21EmployerBorneIdr +
+      (slip.tax.pph21ReceivableIdr ?? 0) -
+      slip.tax.pph21RefundIdr -
+      slip.tax.pph21EmployerRefundIdr !==
+    slip.tax.pph21Idr
+  )
+    issues.push("withheld + borne + receivable - refunds != PPh 21 owed");
   const bpjsEmployee = sumIdr(slip.bpjs.map((b) => b.employeeIdr));
   if (bpjsEmployee !== slip.bpjsEmployeeIdr)
     issues.push("bpjsEmployeeIdr != sum of BPJS employee shares");
@@ -284,9 +348,41 @@ export const payrollRunTotalsSchema = z
     bpjsCompanyIdr: nonNegativeIdr,
     pph21Idr: idrSchema,
     pph21WithheldIdr: nonNegativeIdr,
+    /** PPh 21 borne by the employer (net scheme): no payslip line, not in gross. */
+    pph21EmployerBorneIdr: nonNegativeIdr,
+    /**
+     * Lebih potong paid back to employees as a PPH21_REFUND earning line, so
+     * it is inside gross.
+     */
+    pph21RefundIdr: nonNegativeIdr,
+    /** Lebih potong that returns to the employer (tax it bore earlier). */
+    pph21EmployerRefundIdr: nonNegativeIdr,
+    /**
+     * Part of `pph21EmployerRefundIdr` that returns an earlier gross-up tax
+     * allowance. Journal: Cr salary_expense (the borne rest is Cr
+     * pph21_borne_expense).
+     */
+    pph21EmployerAllowanceRefundIdr: nonNegativeIdr,
     loanRepaymentIdr: nonNegativeIdr,
+    /**
+     * PPh 21 the employees could not have withheld this run, raised as an
+     * employee receivable (founder decision B8). Journal: Dr employee_receivable.
+     */
+    pph21ReceivableIdr: nonNegativeIdr,
+    /**
+     * Earlier receivable collected from this run's pay (`pph21_receivable`
+     * deduction lines). Journal: Cr employee_receivable.
+     */
+    pph21ReceivableCollectedIdr: nonNegativeIdr,
     /** Late and custom deductions. */
     otherDeductionsIdr: nonNegativeIdr,
+    /**
+     * Part of otherDeductionsIdr from custom_deduction lines (koperasi dues
+     * etc.). Journal: Cr payroll_custom_deduction. Default 0 keeps totals
+     * written before this field: they posted all other deductions to
+     * salary_expense.
+     */
+    customDeductionsIdr: nonNegativeIdr.default(idr(0)),
     /** Parts of gross the journal books differently (liability / expense). */
     serviceChargeIdr: nonNegativeIdr,
     reimbursementIdr: nonNegativeIdr,
@@ -301,22 +397,51 @@ export const payrollRunTotalsSchema = z
       t.bpjsEmployeeIdr +
         t.pph21WithheldIdr +
         t.loanRepaymentIdr +
+        t.pph21ReceivableCollectedIdr +
         t.otherDeductionsIdr
     )
       issue(
         "deductionsIdr",
-        "deductions = BPJS employee + PPh 21 withheld + loans + other",
+        "deductions = BPJS employee + PPh 21 withheld + loans + receivable collected + other",
       );
     if (t.netIdr !== t.grossIdr - t.deductionsIdr)
       issue("netIdr", "net = gross - deductions");
     if (t.netIdr !== t.bankTransferIdr + t.cashIdr)
       issue("bankTransferIdr", "net = bank transfer + cash (PAYR-04)");
-    if (t.pph21WithheldIdr > Math.max(0, t.pph21Idr))
-      issue("pph21WithheldIdr", "withheld PPh 21 exceeds PPh 21 owed");
-    if (t.serviceChargeIdr + t.reimbursementIdr > t.grossIdr)
-      issue("serviceChargeIdr", "service charge + reimbursement exceed gross");
+    // No withheld <= owed check here: a slip may withhold more than it owes
+    // when the employer gets its own lebih potong back (bead legend-u1xq);
+    // each slip's split is checked by payslipTotalsIssues.
+    if (
+      t.pph21Idr !==
+      t.pph21WithheldIdr +
+        t.pph21EmployerBorneIdr +
+        t.pph21ReceivableIdr -
+        t.pph21RefundIdr -
+        t.pph21EmployerRefundIdr
+    )
+      issue(
+        "pph21Idr",
+        "PPh 21 = withheld + employer borne + receivable - refund - employer refund",
+      );
+    if (t.customDeductionsIdr > t.otherDeductionsIdr)
+      issue(
+        "customDeductionsIdr",
+        "custom deductions cannot exceed other deductions",
+      );
+    if (t.pph21EmployerAllowanceRefundIdr > t.pph21EmployerRefundIdr)
+      issue(
+        "pph21EmployerAllowanceRefundIdr",
+        "employer allowance refund cannot exceed the employer refund",
+      );
+    if (t.serviceChargeIdr + t.reimbursementIdr + t.pph21RefundIdr > t.grossIdr)
+      issue(
+        "serviceChargeIdr",
+        "service charge + reimbursement + PPh 21 refund exceed gross",
+      );
   });
 export type PayrollRunTotals = z.infer<typeof payrollRunTotalsSchema>;
+/** Totals before parsing: `customDeductionsIdr` may be absent (written before legend-75kr). */
+export type PayrollRunTotalsInput = z.input<typeof payrollRunTotalsSchema>;
 
 /** Run totals from its employee results (simulation or lock). */
 export function sumPayrollRunTotals(
@@ -341,13 +466,27 @@ export function sumPayrollRunTotals(
     bpjsCompanyIdr: total((s) => s.bpjsCompanyIdr),
     pph21Idr: total((s) => s.pph21Idr),
     pph21WithheldIdr: total((s) => s.tax.pph21WithheldIdr),
+    pph21EmployerBorneIdr: total((s) => s.tax.pph21EmployerBorneIdr),
+    pph21RefundIdr: total((s) => s.tax.pph21RefundIdr),
+    pph21EmployerRefundIdr: total((s) => s.tax.pph21EmployerRefundIdr),
+    pph21EmployerAllowanceRefundIdr: total((s) =>
+      idr(s.tax.pph21EmployerAllowanceRefundIdr ?? 0),
+    ),
     loanRepaymentIdr: lineTotal((l) => l.category === "loan_installment"),
+    pph21ReceivableIdr: total((s) => idr(s.tax.pph21ReceivableIdr ?? 0)),
+    pph21ReceivableCollectedIdr: lineTotal(
+      (l) => l.category === "pph21_receivable",
+    ),
     otherDeductionsIdr: lineTotal(
       (l) =>
         l.kind === "deduction" &&
         l.category !== "loan_installment" &&
+        l.category !== "pph21_receivable" &&
         l.category !== "bpjs_employee" &&
         l.category !== "pph21",
+    ),
+    customDeductionsIdr: lineTotal(
+      (l) => l.kind === "deduction" && l.category === "custom_deduction",
     ),
     serviceChargeIdr: total((s) => s.serviceChargeIdr),
     reimbursementIdr: lineTotal((l) => l.category === "reimbursement"),

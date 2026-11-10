@@ -10,6 +10,7 @@ import {
 } from "../packages/shared/src/api/endpoint.ts";
 import { eventCatalog } from "../packages/shared/src/events/index.ts";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import { calculateTax } from "../packages/shared/src/tax/calculate.ts";
 
 const f = qr.qrOrderFixtures;
 const uuid = "00000000-0000-4000-8000-000000000401";
@@ -145,6 +146,168 @@ test("ORD-03 prices, discounts, service, tax and rounding are server-computed", 
   assert.equal(round(1_050).rounding.adjustmentIdr, 50);
   assert.equal(round(1_049).totalIdr, 1_000);
   assert.equal(round(1_049).rounding.adjustmentIdr, -49);
+});
+
+test("legend-49pw inclusive prices back service and tax out of the menu price, exclusive stays additive", () => {
+  const base = {
+    serviceChargeBp: 500,
+    taxRules: [
+      {
+        id: taxRuleId,
+        name: "PB1 10%",
+        rateBp: 1000,
+        appliesTo: "net_plus_service",
+      },
+    ],
+    roundingIncrementIdr: 1,
+    roundingMode: "half_up",
+    minimumSpendIdr: 0,
+  };
+  const lineFor = (unitPriceIdr, quantity = 1) => ({
+    cartLineId: "00000000-0000-4000-8000-000000000501",
+    menuItemId: "00000000-0000-4000-8000-000000001004",
+    name: "Nasi Akseptansi",
+    quantity,
+    unitPriceIdr,
+    modifiersTotalIdr: 0,
+    taxRuleId,
+  });
+  const quoteOf = (config, unitPriceIdr, discounts) =>
+    qr.computeQuote({
+      sessionId: uuid,
+      cartVersion: 1,
+      lines: [lineFor(unitPriceIdr)],
+      config,
+      discounts,
+      computedAt: "2026-11-01T00:00:00.000Z",
+    });
+
+  // Exclusive: 100.000 net + 5.000 service + 10.500 tax = 115.500 on top.
+  const exclusive = quoteOf(base, 100_000);
+  assert.equal(exclusive.pricesIncludeTaxAndService, false);
+  assert.equal(exclusive.totalIdr, 115_500);
+
+  // Inclusive: the same 115.500 menu price already contains both.
+  const inclusive = quoteOf(
+    { ...base, pricesIncludeTaxAndService: true },
+    115_500,
+  );
+  assert.equal(inclusive.pricesIncludeTaxAndService, true);
+  assert.equal(inclusive.subtotalIdr, 115_500);
+  assert.equal(inclusive.lines[0].lineSubtotalIdr, 115_500);
+  assert.equal(inclusive.serviceCharge.amountIdr, 5_000);
+  assert.equal(inclusive.serviceCharge.baseIdr, 100_000);
+  assert.equal(inclusive.taxLines[0].baseIdr, 105_000);
+  assert.equal(inclusive.taxIdr, 10_500);
+  assert.equal(inclusive.totalIdr, 115_500);
+  assert.equal(
+    inclusive.totalIdr,
+    inclusive.subtotalIdr -
+      inclusive.discountIdr +
+      inclusive.rounding.adjustmentIdr,
+  );
+
+  // The schema refuses an inclusive quote that adds service/tax on top.
+  assert.throws(() =>
+    qr.orderQuoteSchema.parse({
+      ...inclusive,
+      totalIdr: inclusive.totalIdr + 15_500,
+    }),
+  );
+
+  // Parity with WS-05 calculateTax for the same lines, discount and rounding.
+  const rule = {
+    id: taxRuleId,
+    tenantId: uuid,
+    outletId: null,
+    code: "PB1",
+    name: "PB1 10%",
+    taxType: "pbjt",
+    rateBp: 1000,
+    regionCode: null,
+    channels: [],
+    appliesTo: { itemClasses: ["food_beverage"], categoryIds: [], itemIds: [] },
+    priceIncludesTax: true,
+    includeServiceInBase: true,
+    isActive: true,
+    version: 1,
+    effectiveFrom: "2026-01-01",
+    status: "published",
+  };
+  const serviceRule = {
+    id: "00000000-0000-4000-8000-0000000000a2",
+    outletId: null,
+    code: "SVC",
+    rateBp: 500,
+    zoneId: null,
+    orderTypes: [],
+    itemClasses: ["food_beverage"],
+    isActive: true,
+    version: 1,
+    effectiveFrom: "2026-01-01",
+    status: "published",
+  };
+  const settings = {
+    id: "00000000-0000-4000-8000-0000000000a3",
+    outletId: null,
+    pricesIncludeTax: true,
+    serviceRoundingMode: "half_up",
+    taxRoundingMode: "half_up",
+    inclusiveBaseRoundingMode: "half_up",
+    billRounding: null,
+    packageAllocation: "fixed_bp",
+    version: 1,
+    effectiveFrom: "2026-01-01",
+    status: "published",
+  };
+  for (const [price, discount] of [
+    [115_500, 0],
+    [99_999, 0],
+    [12_345, 0],
+    [87_650, 7_000],
+    [333_333, 1],
+  ]) {
+    const mine = quoteOf(
+      { ...base, pricesIncludeTaxAndService: true },
+      price,
+      discount > 0
+        ? [{ label: "Promo", source: "promo", amountIdr: discount }]
+        : undefined,
+    );
+    const engine = calculateTax(
+      {
+        outletId: uuid,
+        businessDate: "2026-11-02",
+        channel: "dine_in",
+        zoneId: null,
+        regionCode: null,
+        lines: [
+          {
+            lineId: "00000000-0000-4000-8000-000000000501",
+            itemId: "00000000-0000-4000-8000-000000001004",
+            categoryId: null,
+            itemClass: "food_beverage",
+            grossIdr: price,
+            discountIdr: 0,
+            components: [],
+          },
+        ],
+        orderDiscountIdr: discount,
+      },
+      {
+        taxRules: [rule],
+        serviceChargeRules: [serviceRule],
+        settings: [settings],
+      },
+    );
+    assert.equal(
+      mine.serviceCharge.amountIdr,
+      engine.serviceChargeIdr,
+      `${price} service`,
+    );
+    assert.equal(mine.taxIdr, engine.taxIdr, `${price} tax`);
+    assert.equal(mine.totalIdr, engine.totalIdr, `${price} total`);
+  }
 });
 
 test("ORD-03 client input cannot carry prices, totals or a tenant", () => {

@@ -13,6 +13,10 @@
 //   outlet/brand/tenant scopes cover every station they contain. A resource
 //   whose station cannot be determined (null/blank id, a row without a
 //   station) is denied — fail closed, never "all stations".
+// - `stationScopeCondition` (legend-cot3): the SQL filter for a list over a
+//   station-bound table, built from `permittedStationIds`: `station_id IN (reach)`,
+//   `false` for an empty reach. Outlet/tenant RLS cannot express this, so a
+//   list without it shows a station-only caller every station of the outlet.
 // - `permittedStationIds`: the stations a list may show for the permission,
 //   from the same snapshot (`AccessSnapshot.stationsFor`, i.e.
 //   `stationReachOf`). An empty list means the caller may read no station, so
@@ -29,6 +33,8 @@ import {
   type PermissionCode,
 } from "@starter/shared/access";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { inArray, sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { accessSnapshotInTransaction, type Tx } from "./permission-resolver";
 
 /** The message every station denial uses; it must not reveal other stations. */
@@ -60,6 +66,22 @@ export async function assertStationPermission(
   // reaches the "covered" branch.
   if (!snapshot.allows(permission, { type: "station", id: parsed.data }))
     throw new AccessError("PERMISSION_DENIED", STATION_DENIED);
+}
+
+/**
+ * The station-aware query filter (legend-cot3, TEN-03): `column IN
+ * (stationIds)`, and a literal `false` when the list is empty, so a caller
+ * without a station never matches a row, including rows whose station is NULL
+ * (outlet-level rows stay outside a station-only reach). Combine it with the
+ * tenant and outlet conditions; it narrows, it never widens.
+ */
+export function stationScopeCondition(
+  column: AnyPgColumn,
+  stationIds: readonly string[],
+): SQL {
+  return stationIds.length === 0
+    ? sql`false`
+    : inArray(column, [...stationIds]);
 }
 
 /**

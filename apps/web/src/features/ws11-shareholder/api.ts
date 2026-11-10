@@ -3,6 +3,7 @@
 // run); the personal part follows the accounting profit-share contract (SH-01).
 import { callEndpoint } from "@/lib/api/endpoint";
 import {
+  createShareholderDocumentSignedUrl,
   getMyProfitShare,
   listShareholderDocuments,
   type MyProfitShare,
@@ -61,4 +62,17 @@ export async function fetchShareholderDocuments(
     { signal },
   );
   return { data: response.data, nextCursor: response.meta.nextCursor };
+}
+
+/** Short-lived (300 s) download URL; the server checks publication and ownership. */
+export async function fetchShareholderDocumentUrl(
+  documentId: ShareholderDocument["id"],
+  signal?: AbortSignal,
+): Promise<{ url: string; expiresAt: string }> {
+  const response = await callEndpoint(
+    createShareholderDocumentSignedUrl,
+    { params: { shareholderDocumentId: documentId }, body: {} },
+    { signal },
+  );
+  return response.data;
 }

@@ -12,10 +12,13 @@ import {
   dataResponseSchema,
   idempotencyKeySchema,
   outletIdSchema,
+  uuidSchema,
   z,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
+  assetCategorySchema,
+  createAssetCategoryInputSchema,
   fixedAssetSchema,
   createFixedAssetInputSchema,
   depreciationRunSchema,
@@ -45,6 +48,10 @@ import {
   budgetVsActualRowSchema,
   upsertBudgetsInputSchema,
 } from "./budgets.ts";
+import {
+  financePolicySchema,
+  putFinancePolicyInputSchema,
+} from "./finance-policy.ts";
 import {
   accountCodeSchema,
   accountMappingSchema,
@@ -80,7 +87,11 @@ import {
   reverseJournalInputSchema,
   updateManualJournalInputSchema,
 } from "./journal.ts";
-import { agingReportSchema, openItemKindSchema } from "./payables.ts";
+import {
+  agingReportSchema,
+  openItemKindSchema,
+  openItemListRowSchema,
+} from "./payables.ts";
 import { periodKeySchema } from "./period-key.ts";
 import {
   fiscalPeriodSchema,
@@ -112,6 +123,30 @@ const entityParams = z.strictObject({ legalEntityId: legalEntityIdSchema });
 const list = <T extends z.ZodType>(item: T) =>
   dataResponseSchema(z.array(item));
 const commandBody = z.strictObject({ idempotencyKey: idempotencyKeySchema });
+
+// ---- Legal entities (finance picker) -----------------------------------------
+
+/** Read model for the finance screens' entity picker (legend-bddb): only what
+ * a report needs to label an entity. The NPWP stays masked to its last four
+ * digits; address, tenant id and bank accounts are not part of it. */
+export const accountingLegalEntitySchema = z.strictObject({
+  id: legalEntityIdSchema,
+  name: z.string().trim().min(1).max(150),
+  npwpLast4: z
+    .string()
+    .regex(/^\d{4}$/)
+    .nullable(),
+  isPkp: z.boolean(),
+});
+export type AccountingLegalEntity = z.infer<typeof accountingLegalEntitySchema>;
+
+/** Tenant-wide, `accounting.journal.view`; the org route stays
+ * `org.structure.manage`. */
+export const listLegalEntities = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/legal-entities`,
+  response: list(accountingLegalEntitySchema),
+});
 
 // ---- Chart of accounts -----------------------------------------------------
 
@@ -296,6 +331,17 @@ export const transitionRecurringJournalEndpoint = defineEndpoint({
       reason: z.string().trim().min(1).max(500),
     }),
   ]),
+  response: dataResponseSchema(recurringJournalSchema),
+});
+
+export const skipRecurringJournalPeriodEndpoint = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/recurring-journals/:recurringJournalId/skip-period`,
+  params: recurringParams,
+  body: z.strictObject({
+    period: periodKeySchema,
+    reason: z.string().trim().min(1).max(500),
+  }),
   response: dataResponseSchema(recurringJournalSchema),
 });
 
@@ -508,6 +554,23 @@ export const getAgingReport = defineEndpoint({
   }),
   response: dataResponseSchema(agingReportSchema),
 });
+/**
+ * Open invoices behind the aging report: one row per document with money
+ * still outstanding, oldest due date first (ties by id). `asOf` replays the
+ * past like the aging report; omitted = today's state.
+ */
+export const listOpenItems = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/open-items`,
+  query: cursorPageQuerySchema.extend({
+    legalEntityId: legalEntityIdSchema,
+    kind: openItemKindSchema,
+    counterpartyId: uuidSchema.optional(),
+    outletId: outletIdSchema.optional(),
+    asOf: businessDateSchema.optional(),
+  }),
+  response: cursorPageSchema(openItemListRowSchema),
+});
 
 // ---- Fixed assets ----------------------------------------------------------
 
@@ -550,6 +613,17 @@ export const revalueFixedAsset = defineEndpoint({
   body: revalueFixedAssetInputSchema,
   response: dataResponseSchema(fixedAssetSchema),
 });
+export const listAssetCategories = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/asset-categories`,
+  response: list(assetCategorySchema),
+});
+export const createAssetCategory = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/asset-categories`,
+  body: createAssetCategoryInputSchema,
+  response: dataResponseSchema(assetCategorySchema),
+});
 export const listDepreciationRuns = defineEndpoint({
   method: "GET",
   path: `${BASE}/legal-entities/:legalEntityId/depreciation-runs`,
@@ -590,6 +664,21 @@ export const getBudgetVsActual = defineEndpoint({
     outletId: outletIdSchema.optional(),
   }),
   response: list(budgetVsActualRowSchema),
+});
+
+// ---- Finance policy ----------------------------------------------------------
+
+/** Tenant policy: bank matching date tolerance + ACC-05 undeposited-cash limit. */
+export const getFinancePolicy = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/finance-policy`,
+  response: dataResponseSchema(financePolicySchema),
+});
+export const putFinancePolicy = defineEndpoint({
+  method: "PUT",
+  path: `${BASE}/finance-policy`,
+  body: putFinancePolicyInputSchema,
+  response: dataResponseSchema(financePolicySchema),
 });
 
 // ---- Statements --------------------------------------------------------------
@@ -680,6 +769,7 @@ export const exportTaxReport = defineEndpoint({
 
 /** Every accounting endpoint, for registries and route-coverage tests. */
 export const accountingEndpoints = Object.freeze({
+  listLegalEntities,
   listAccounts,
   createAccount,
   updateAccount,
@@ -700,6 +790,7 @@ export const accountingEndpoints = Object.freeze({
   listRecurringJournals,
   createRecurringJournal,
   transitionRecurringJournalEndpoint,
+  skipRecurringJournalPeriodEndpoint,
   listFiscalPeriods,
   closeFiscalPeriod,
   getPeriodSnapshot,
@@ -723,16 +814,21 @@ export const accountingEndpoints = Object.freeze({
   getReconciliationCase,
   actOnReconciliationCase,
   getAgingReport,
+  listOpenItems,
   listFixedAssets,
   createFixedAsset,
   getFixedAsset,
   disposeFixedAsset,
   revalueFixedAsset,
+  listAssetCategories,
+  createAssetCategory,
   listDepreciationRuns,
   runDepreciation,
   listBudgets,
   upsertBudgets,
   getBudgetVsActual,
+  getFinancePolicy,
+  putFinancePolicy,
   getTrialBalance,
   getBalanceSheet,
   getProfitAndLoss,

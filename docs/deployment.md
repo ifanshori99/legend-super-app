@@ -115,6 +115,19 @@ TRUST_PROXY=2
 # TRUSTED_ORIGINS=https://admin.example.com
 # Optional direct connection when DATABASE_URL uses a pooler:
 # MIGRATION_DATABASE_URL=postgresql://user:password@direct-host:5432/app
+# Optional: member sign-in email over SMTP (legend-k2l). SMTP_HOST, SMTP_USER,
+# SMTP_PASS and EMAIL_FROM together or none; none = email sign-in answers 503.
+# Port 465 uses implicit TLS (SMTP_SECURE=true); SMTP_SECURE=false requires STARTTLS.
+# SMTP_HOST=smtp.example.com
+# SMTP_PORT=465
+# SMTP_SECURE=true
+# SMTP_USER=replace_me
+# SMTP_PASS=replace_me
+# EMAIL_FROM=masuk@example.com
+# Optional: member Google sign-in (legend-k2l). Both or neither; neither = off.
+# Redirect URI: <BETTER_AUTH_URL>/api/auth/callback/google
+# GOOGLE_CLIENT_ID=replace_me
+# GOOGLE_CLIENT_SECRET=replace_me
 ```
 
 **Web**:
@@ -196,11 +209,12 @@ The API's session-free reads — the guest QR scan and menu (`/api/qr/*`), the b
 
 Two fixed one-minute windows are charged on every public read: one per client IP and one per resolved tenant. A request over either limit answers `429` with `{"error":{"code":"RATE_LIMITED"}}`, a `Retry-After` header holding the whole seconds left in the window, and `Cache-Control: no-store`. Health, Better Auth (`/api/auth/*`), provider webhooks and the TLS ask are not mounted on the limiter.
 
-| Variable                              | Default  | Meaning                                                              |
-| ------------------------------------- | -------- | -------------------------------------------------------------------- |
-| `PUBLIC_RATE_LIMIT_PER_MINUTE`        | `600`    | Requests per client IP per minute                                    |
-| `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE` | `6000`   | Requests per resolved tenant per minute                              |
-| `PUBLIC_RATE_LIMIT_INTERNAL_IPS`      | loopback | Web server address(es) that skip the per-IP bucket (comma-separated) |
+| Variable                                    | Default  | Meaning                                                                                                                                                    |
+| ------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE`              | `600`    | Requests per client IP per minute                                                                                                                          |
+| `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE`       | `6000`   | Requests per resolved tenant per minute                                                                                                                    |
+| `PUBLIC_RATE_LIMIT_INTERNAL_IPS`            | loopback | Web server address(es) that skip the per-IP bucket (comma-separated)                                                                                       |
+| `PUBLIC_RATE_LIMIT_GUEST_TENANT_PER_MINUTE` | `60000`  | QR guest table-session requests per tenant per minute (own bucket; guests also get 10x the per-IP budget for a venue NAT and 600/min per table credential) |
 
 Sizing the defaults — they must not break legitimate traffic:
 
@@ -211,6 +225,13 @@ Sizing the defaults — they must not break legitimate traffic:
 
 `TRUST_PROXY` decides which address is "the client": the limiter uses `req.ip` as Express resolved it, never a raw `X-Forwarded-For`. Behind Cloudflare in front of Caddy that is **two** hops (`TRUST_PROXY=2`); with a single reverse proxy it is `1`. If the hop count is too low, every client appears as the proxy's address and all of them share one bucket.
 
+### Edge bootstrap limits
+
+The edge bootstrap routes (`/api/edge-sync/bootstrap/*`) have their own in-memory limiter, mounted before tenant resolution so a flood is refused before any database query. `/masters` (the master sync every edge node polls) has its own buckets: 120 requests per minute per IP and 30 per IP and credential (the bearer, hashed). The other bootstrap routes allow 30 per IP and 10 per credential.
+
+- An outlet's edge nodes share the outlet's public IP. A guest device on the same network can use up the per-IP budget and delay that outlet's sync for the rest of the minute. Keep edge nodes on a network segment guests cannot use, or put the outlet behind its own address.
+- `TRUST_PROXY` must match the proxy hops here too: with too few hops every edge node in the fleet appears as the proxy's address and they all share one per-IP bucket.
+
 ### Cloudflare free-plan rule (edge layer)
 
 The API limiter is one process's backstop. Put a stricter, shared rule at the edge where the plan allows it. On the **Free plan** Cloudflare's rate limiting rules allow **one rule**, a **10-second counting period**, **IP-only** counting, a **10-second mitigation timeout**, and expressions limited to **path** (plus verified bot). One rule can still cover the two catalogue-dumping surfaces:
@@ -220,6 +241,84 @@ The API limiter is one process's backstop. Put a stricter, shared rule at the ed
 - Action: **Managed Challenge**, so a real guest recovers by solving one page instead of waiting for the block to lift. Use **Block** with the 10-second mitigation period only if the venue never needs to scrape its own menu.
 
 On Pro and above, split the paths into separate rules with a longer period and a block action. Keep the API limits at or above the edge limits, so a legitimate client never meets the API's 429 before the edge rule has had its chance to challenge it.
+
+## Staff device PIN down-sync runbook
+
+The cloud sends staff PIN changes to each outlet's edge in commit order, using `staff_pins.sync_xid` (migration `0151_staff_pin_sync_xid`). Follow these rules when you operate the cloud database or release the API.
+
+1. **Durability.** The cloud database must run with `synchronous_commit = on` and `fsync = on`. A commit that was exported but then lost in a crash could have its transaction id reused, and the edge would skip the change. Do not turn either setting off, even for load tests.
+2. **Dump and restore.** After a dump/restore into a new cluster, restamp `sync_xid` on every `staff_pins` row. Run it as the migration owner, the same way as migration `0141_great_firedrake`: lift `FORCE ROW LEVEL SECURITY` for the statement, touch every row, then force it again. Example: `UPDATE "staff_pins" SET "sync_xid" = pg_current_xact_id()`. Point-in-time recovery, promotion, and restart need no action: a new epoch makes each edge do one idempotent full resync per outlet.
+3. **Idle transactions (legend-4z2ch).** Set `idle_in_transaction_session_timeout` (for example `5min`) on the application and worker databases, with `ALTER DATABASE ... SET`. Do not set it only on the roles: `provision-roles.sh` runs `ALTER ROLE ... RESET ALL` on every run, which removes role-level settings (`apps/api/src/db/provision-roles.ts`). A database-level setting survives that reset. Alert when the export horizon (`pg_snapshot_xmin`) stays behind `pg_current_xact_id()` for more than 10 minutes. A long open write transaction delays the PIN export for every tenant. It never loses changes.
+4. **Release order.** Release the cloud (API and database migrations) before the edge.
+5. **One machine per edge node (legend-rucdm).** The cloud adopts a node's later PIN set by that node's event sequence, so two machines must never send under one edge node id. The standby keeps its own credential: never start it from a copy of the primary's credential or disk. A node restored from a backup or snapshot may run only after the old machine can no longer reach the cloud. An edge database rebuilt from empty under the same node id gets a new `edge_nodes.instance_id` and restarts its link and event sequences. An edge on this release sends that instance on the link, and the cloud then resumes the node by itself (legend-o839h, legend-nd3cu). The cloud rebases the node's link cursors onto the new database. Events the old database already delivered are not replayed, and cloud events still pending are delivered. The cloud orders the new database's PIN sets by their set time. Release order: cloud first (migration `0162_sync_cursor_peer_instance`), then the edges. Enroll a rebuilt edge as a new node instead in three cases. First, the edge runs an older release that does not send its instance. Second, the rebuild happens together with the first upgrade to this release. Third, the database is a restored or cloned copy. Never put a restored or cloned edge database back into service under the same node. A restore or clone keeps the same `instance_id`, so the cloud sees no instance change. Once a node is bound to an instance, the cloud also refuses a link without an instance, such as a downgrade to an older edge release.
+
+   Restored or cloned database (legend-a9iby). The cloud refuses the link with close 1008 when the edge's hello cursor is below what the cloud already saw it acknowledge. The hello cursor is the highest `cloud_to_edge` link sequence the edge applied without a gap. The cloud writes nothing and acknowledges nothing. The close reason reads `Edge database is older than the cloud's link cursor (restored or cloned); refusing to resume`. The edge keeps retrying with backoff, and the cloud refuses it each time, because 1008 is not final on the client. The edge database must also run with `synchronous_commit = on` and `fsync = on`. An edge that loses an applied and acknowledged batch in a power cut looks the same as a restore, and the cloud refuses it the same way.
+
+   The cloud detects this only when the edge had acknowledged `cloud_to_edge` events newer than the backup. Today only QR orders produce them (`apps/api/src/edge/qr-order-forwarding.ts`). An outlet without QR orders, or with none since the backup, is not detected. Its restored database resumes. Events it creates under link numbers the cloud already received are marked acknowledged without being sent, so the cloud loses them. An old machine I1 that comes back after a rebuild to I2 at an outlet without QR has cursor 0. The cloud rebases it instead of refusing it. Event id dedupe prevents data loss, but the two machines rebase each other.
+
+   If the edge log shows the warning `Edge link refused by protocol` with code 1008 and that reason:
+
+   - Stop that edge.
+   - Keep its database for audit.
+   - Enroll a new node, or rebuild the edge from empty so it gets a new instance.
+   - Reconcile by hand any events that exist only on the restored database, from its outbound queue.
+
+## Staff PIN pepper on edge nodes (legend-ideif)
+
+The root `STAFF_PIN_PEPPER` lives only on the cloud. An edge node never holds it: the API refuses to start with `EDGE_MODE=true` and `STAFF_PIN_PEPPER` set (the log names the key, never the value). The cloud derives one pepper per tenant and pepper version (HKDF) and sends an edge only its own tenant's peppers, inside the staff PIN sync (`GET /api/edge-sync/staff-pin-records?peppers=<highest version held>`, TLS, `Cache-Control: private, no-store`). The edge seals them (AES-256-GCM, key derived from the node credential) in its table `edge_staff_pin_peppers` (migration `0225`). A stolen edge box therefore weakens one tenant, never the others.
+
+1. **Release order.** Cloud first (it must know the `peppers` query), then the edges. An edge on this release against an older cloud gets HTTP 400 for `peppers`, falls back to the older query, and never receives a pepper, so it cannot verify PINs. Check the cloud version before you touch an edge.
+2. **Upgrade an installed edge.** Do this with the outlet online:
+   - Deploy the cloud, then run migration `0225` on the edge database.
+   - Remove `STAFF_PIN_PEPPER` from the edge environment (secret store, compose file, systemd unit) and restart the edge. With the variable still set, the edge refuses to start.
+   - Within one sync interval the edge logs `Edge staff pin peppers updated`. Until then PIN checks on the edge fail closed (the PIN is refused, no attempt is counted against the staff member). Do not take the outlet offline in that window.
+3. **Rotate the pepper.** Set `STAFF_PIN_PEPPER_CURRENT_VERSION` on the cloud to the next number (for example `2`) and restart the cloud. Never lower it: an edge that already holds the higher version keeps hashing new PINs under it, and the cloud drops those PINs. Do NOT change `STAFF_PIN_PEPPER` for a routine rotation. Each edge fetches the new tenant pepper on its next sync; until then it still hashes new PINs under the old version, which stay valid. PINs hashed under an older version keep verifying, on the cloud and on every edge, until the owner sets a new PIN; a new PIN is hashed under the current version.
+   - **Suspected edge theft.** First revoke that node's credential (an edge with a valid credential fetches every new pepper on its next sync). Then rotate the version, and have that outlet's staff set new PINs.
+   - **Leak of the root.** Replace `STAFF_PIN_PEPPER` AND raise `STAFF_PIN_PEPPER_CURRENT_VERSION` in the same release. Every PIN then needs a reset. An edge keeps the peppers it already holds (derived from the old root) for the old versions, so a root replacement without a version bump leaves edges on stale peppers.
+4. **Credential rotation.** The seal key comes from the node credential. After you issue a new credential, the edge cannot open its stored peppers, treats them as missing, and fetches them again on the next sync (online).
+5. **Never** copy the root pepper to an edge to "fix" a verification problem, and never log or paste the `peppers` of a sync response.
+
+## Attendance selfie seal key (legend-0wvoz, founder decision Q88)
+
+An edge node seals each attendance selfie to a cloud public key (format `LSS1`, `docs/design/hris-edge-replication.md` section 5) and uploads it with `PUT /api/edge-sync/attendance-selfies/:objectId`. Only the cloud can open it, with the private key. Lose the private key and every selfie still waiting on an edge disk is unreadable. The key is a production secret with a founder backup.
+
+Environment (cloud API only, never on an edge):
+
+- `ATTENDANCE_SELFIE_SEAL_KEYS`: JSON `{"<kid>": "<PKCS#8 PEM>"}`, 3072-bit RSA. One entry per key still in use.
+- `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID`: the kid whose public half edges seal to.
+- Without the keys the endpoint answers 503 `SELFIE_SEAL_KEY_MISSING`; the edge keeps the file and retries.
+
+Create the first key (on a trusted machine, not in the repo, not in chat):
+
+1. `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out seal-k1.pem` (PKCS#8 PEM).
+2. Public half for the edge snapshot: `openssl pkey -in seal-k1.pem -pubout -out seal-k1.pub.pem`.
+3. Build the JSON value without printing it, for example `node -e 'process.stdout.write(JSON.stringify({k1: require("fs").readFileSync("seal-k1.pem","utf8")}))'`, and put it straight into the production secret store under `ATTENDANCE_SELFIE_SEAL_KEYS`. Set `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID=k1`.
+4. Founder backup: store `seal-k1.pem` as a secure note or document in the founder's 1Password vault, named `legend attendance selfie seal key k1`. The CTO asks for the value with `ghostex secret request`; nobody pastes it in chat.
+5. Delete the local `seal-k1.pem` after both stores are confirmed. Restore test: decrypt one sealed test file with the backup copy before the first real edge goes live.
+
+Rotation: add a new kid to `ATTENDANCE_SELFIE_SEAL_KEYS`, switch `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID`, and keep the old private key for 90 days after the switch (an edge cut off from the cloud keeps sealing with the old kid until its next snapshot). Retire the old key on that date, in both stores. An emergency retirement (key leaked) knowingly loses the backlog sealed with the old kid.
+
+Release order: cloud first (this endpoint and the `attendance.logged` v2 applier), then the edges. Cloud orphan sweep: a received selfie that no attendance log references after 14 days is deleted from storage (the receipt stays).
+
+## Edge host (outlet) (legend-svy91)
+
+Ringkasan untuk host edge di outlet. Langkah lengkap ada di `deploy/edge/README.md`, dan respons jika edge hilang atau dicuri ada di `docs/runbooks/edge-hilang-dicuri.md`.
+
+- **Volume selfie.** Selfie yang menunggu upload disimpan di `EDGE_SELFIE_DIR` (default `/var/lib/legend/edge-selfies`, volume Docker). Direktori tenant dibuat dengan mode 0700 dan file `.lss` dengan mode 0600. Batas `EDGE_SELFIE_MAX_BYTES` (default 2 GiB). Di atas batas itu edge menjawab 507 `EDGE_SELFIE_STORAGE_FULL`.
+- **NTP wajib.** Jam edge dan jam HP harus berada dalam satu jendela QR 30 detik, jadi edge memakai chrony (lihat `deploy/edge/chrony.conf.example`).
+- **HTTPS wajib untuk perangkat outlet.** Kamera butuh secure context. Origin edge di perangkat outlet memakai HTTPS dengan sertifikat dari CA internal yang dipercaya perangkat (lihat `deploy/edge/Caddyfile.edge.example`).
+- **Enkripsi disk penuh (FDE) dengan unlock TPM** pada mini PC edge sebagai lapisan tambahan. Wajib jika enkripsi selfie cadangan dengan AES dipakai.
+- **Kunci publik seal datang lewat snapshot.** Edge menyegel selfie dengan kunci publik cloud dari snapshot data orang (`edge_people_sync_state.selfie_seal_public_key`, `selfie_seal_kid`). Tidak ada kunci yang disalin manual ke disk edge.
+- **Edge tidak pernah memegang kunci privat.** `ATTENDANCE_SELFIE_SEAL_KEYS` dan `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID` hanya ada di cloud. Prosedur kunci produksi ada di section "Attendance selfie seal key" di atas, jangan diduplikasi.
+
+## Support read_write owner approval release (legend-c9kbk)
+
+From migration `0160_support_access_requests`, a Super Admin's read_write support session needs the tenant owner's approval first (founder Q37). Release it like this:
+
+1. **Order.** Apply the migration first, then roll out the API and the worker together. Between the two steps, an old API instance can still try to open a read_write grant directly. The database refuses it, because new read_write grants must name an approved request (`support_access_grant_write_approved_check`). Read_only grants keep working as before.
+2. **Grants already open.** Read_write grants that were open before the migration keep working until they expire, at most 30 minutes. The check is added `NOT VALID`, so those rows are not checked.
+3. **Owner permission.** The migration adds `org.support_access.approve` to the owner role of every existing tenant. A tenant created by an old API instance after the migration and before the rollout misses it, so its owners get 403 when they approve. Rerun the backfill block at the end of `0160` once the rollout finishes (it is idempotent).
+4. **Web.** Until UI card legend-8r77t ships, the platform request dialog can only open read_only sessions. A read_write request answers 409 `SUPPORT_ACCESS_OWNER_APPROVAL_REQUIRED`. Use `POST /api/platform/tenants/:tenantId/support-access-requests` instead, and have the owner answer with `POST /api/org/support-access/requests/:requestId/approve`.
 
 ## Security checklist
 
@@ -259,9 +358,35 @@ pnpm check
 pnpm build
 ```
 
-The tenant-branch and color scanners are heuristics, not proofs: review indirect tenant-specific logic and dynamically constructed colors. The color scanner documents its starter exceptions in source. The isolation harness accepts an adapter for two authenticated tenants; its in-memory tests verify the harness only, not application isolation.
+The tenant-branch and color scanners are heuristics, not proofs: review indirect tenant-specific logic and dynamically constructed colors. The color scanner documents its starter exceptions in source. The in-memory isolation harness in `scripts/ci` verifies the harness only. Application isolation is proven by `apps/api/src/test/tenant-isolation-*.test.ts` (POS orders, menu, payments and refunds, inventory, accounting journals, HRIS): tenant A versus a throwaway tenant B through the real services, the HTTP routes and database RLS as the `legend_app` role. They run inside `pnpm check`; run them alone with `LEGEND_TEST_FILES="src/test/tenant-isolation-pos-menu.test.ts src/test/tenant-isolation-payment-inventory.test.ts src/test/tenant-isolation-accounting-hris.test.ts" pnpm test`. A new tenant-aware module needs a case in one of these files.
 
-Lighthouse for `/menu` and `/t/*` and real tenant isolation remain explicit placeholders until the routes and modules exist (legend-wwsa). The 80% business-logic coverage gate requires domain modules and a coverage provider (legend-dd0g). Dependency scanning blocks critical advisories; known high findings are reported but do not block while legend-ziit tracks remediation. The high-level audit command returns nonzero for those findings. Do not treat these placeholders as release evidence.
+The 80% business-logic coverage gate requires domain modules and a coverage provider (legend-dd0g). Dependency scanning blocks critical advisories; known high findings are reported but do not block while legend-ziit tracks remediation. The high-level audit command returns nonzero for those findings. Do not treat these placeholders as release evidence.
+
+### Lighthouse
+
+The `lighthouse` CI job (after `check`) measures the public menu `/menu` and the guest QR menu `/t/<token>` with Lighthouse 13 in its mobile preset (simulated slow 4G, 4x CPU slowdown). Each page runs three times; the median of every score and metric is compared with the thresholds in `scripts/ci/lighthouse.config.mjs`, and the job fails when any median is out of bounds or a page cannot be measured.
+
+| Check                    | Threshold (median of 3)                                         |
+| ------------------------ | --------------------------------------------------------------- |
+| Performance              | at least 80                                                     |
+| Accessibility            | at least 90                                                     |
+| Best practices           | at least 90                                                     |
+| SEO                      | at least 90 (not applied to `/t/<token>`, which is not indexed) |
+| Largest Contentful Paint | at most 3500 ms                                                 |
+| Cumulative Layout Shift  | at most 0.1                                                     |
+| Total Blocking Time      | at most 400 ms                                                  |
+
+`is-on-https`, `redirects-http` and `valid-source-maps` are not scored (the run is plain http on localhost and the build ships no source maps; TLS belongs to the edge proxy). Total blocking time may be at most 600 ms. A failing category prints the audits that lost points, and each page's last full report is saved as `test-results/lighthouse/<page>.lhr.json`.
+
+The numbers are looser than Lighthouse's "good" bands because CI runners are small and shared; tighten them in the config file once there is a baseline. Run it locally after a build made for the test API origin (the web bundle inlines `VITE_API_URL`; `pnpm test:e2e` builds the same way):
+
+```sh
+NODE_ENV=production VITE_API_URL=http://localhost:4101 heavy pnpm build
+pnpm exec playwright install chromium
+heavy pnpm lighthouse
+```
+
+`pnpm lighthouse --dry-run` prints the plan without starting anything. The script starts a disposable PostgreSQL (Docker), seeds Cafe Legend with a menu and one table QR (`apps/api/src/test/lighthouse-seed.ts`), starts the production API and web servers on the Playwright ports (4101 and 3101), and drives Chromium with `cafe-legend.platform.example` mapped to `127.0.0.1` because tenants resolve by `Host`. To reuse a migrated and seeded test database instead, set `STARTER_TEST_DATABASE_URL` and `STARTER_TEST_RUN` (starting with `starter-pg-test-`). Set `LIGHTHOUSE_CHROME_PATH` to use another Chromium. Results are written to `test-results/lighthouse/summary.json`.
 
 ## Single-VM deployment (legend-8br)
 
@@ -287,9 +412,10 @@ Copy `deploy/single-vm/compose.env.example` outside the repository and set its
 values and absolute paths. Create separate private env files for migrator, API,
 web and worker; give each process only the credentials it needs. The runtime
 example lists settings, not a complete production secret configuration. Provision
-restricted app and worker database roles after migration using
-`scripts/provision-app-role.mjs`; configure the worker's trusted transport and
-notification adapters before starting it.
+restricted app and worker database roles after migration with
+`deploy/single-vm/provision-roles.sh` (see "First boot: restricted database
+roles" below); configure the worker's trusted transport and notification
+adapters before starting it.
 
 #### Worker transport and notification settings (legend-18qw)
 
@@ -312,9 +438,11 @@ stays held until the missing event arrives. Watch for that log line: it means a
 producer bug, and nothing skips the gap automatically.
 
 Run `deploy/single-vm/deploy.sh --env-file /absolute/path/compose.env --dry-run`
-to validate without starting services. Without `--dry-run`, it starts PostgreSQL,
-runs the migration job once, then starts the services. Run only after setting up
-backup configuration, provisioning roles and checking the rollout plan. Image
+to validate without starting services (it also runs the role wrapper's
+`--dry-run`). Without `--dry-run`, it starts PostgreSQL, runs the migration job
+once, audits the restricted database roles (`provision-roles.sh --audit`), and
+starts the services only if the audit passes. Run only after setting up backup
+configuration, provisioning roles and checking the rollout plan. Image
 builds and this script do not purchase or provision infrastructure.
 
 ### Deployment security checklist
@@ -345,15 +473,417 @@ production sources and provider adapters before they can be treated as covered.
 ### First boot and backup schedule
 
 On a new VM, prepare the private pgBackRest configuration and transport module
-before starting application services. Start PostgreSQL and run the migration job
-separately using the same `--env-file` and Compose file as the deploy script.
+before starting application services. Start PostgreSQL, create the migrator login
+(next section, before any migration), run the pre-deploy check (see
+"Pre-deploy check" below), then run the migration job separately using the
+same `--env-file` and Compose file as the deploy script.
 Then initialize and check the pgBackRest stanza as the container's `postgres`
-user, provision the restricted application and queue roles against the migrated
-database, and confirm a successful base backup to both repositories. The role
-provisioner exports functions; it is not a standalone CLI. Run it from a trusted
-operator environment with connectivity to the private database and dependencies
-installed, and never put the administrator credentials into application env
-files. Provisioning is a first-boot prerequisite; the deploy script does not
-perform it. See `deploy/backup/README.md` for the supplied systemd timer example
-and restore-drill procedure. Once those prerequisites and the transport adapter
-are ready, use the deploy script for subsequent releases.
+user, provision the restricted application and queue roles (next section), and
+confirm a successful base backup to both repositories. Provisioning is a
+first-boot prerequisite; the deploy script does not perform it. See
+`deploy/backup/README.md` for the supplied systemd timer example and
+restore-drill procedure. Once those prerequisites and the transport adapter are
+ready, use the deploy script for subsequent releases.
+
+#### Create the migrator login (legend-jtnd)
+
+Three database roles exist in production:
+
+| Role                                                                     | Attributes                                                                                                                                                    | Used by                                                                                                     |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Bootstrap superuser (`POSTGRES_USER` of the postgres image, compose.env) | SUPERUSER                                                                                                                                                     | Only `provision-roles.sh --migrator`, once at first boot, and break-glass. Never in any service env file.   |
+| Migrator `legend_migrator_<16 hex>`, password 48 hex                     | LOGIN NOSUPERUSER BYPASSRLS CREATEROLE NOCREATEDB NOREPLICATION INHERIT, owner of the database (so it is `pg_database_owner` and owns every table it creates) | `MIGRATION_DATABASE_URL` in migrator.env only: migrate, pre-deploy check, provision/audit restricted logins |
+| `legend_runtime_*` / `legend_worker_*`                                   | unchanged: NOBYPASSRLS etc.                                                                                                                                   | api/worker                                                                                                  |
+
+The migrator needs `BYPASSRLS` because adding a foreign key to a table with
+`FORCE ROW LEVEL SECURITY` validates the existing rows under the tenant policy.
+Without it, migrations 0004 and 0063 fail on a fresh database with
+`tenant context is required` (legend-jtnd). A superuser in `MIGRATION_DATABASE_URL`
+is still accepted by the pre-deploy check, but the documented default is the
+dedicated migrator.
+
+Run this once, before the first migration, as the bootstrap superuser:
+
+```sh
+deploy/single-vm/provision-roles.sh --env-file /absolute/path/compose.env --migrator
+```
+
+The script reads `POSTGRES_USER` and `POSTGRES_PASSWORD` from compose.env and
+passes them to the container through the environment, never on a command line.
+`MIGRATION_DATABASE_URL` must name a login that matches `legend_migrator_<16 hex>`
+with a 48 hex password. Success prints:
+
+```text
+Migrator login <name> <created|updated>: owns the database, BYPASSRLS, CREATEROLE, not superuser.
+```
+
+The job is idempotent. Re-running it re-keys the password and resets the
+attributes above. It refuses, changing nothing, if a relation or schema in
+`public`, `app` or `drizzle` is owned by another role. The message names that
+role. The database was then migrated by another login. As a superuser, run
+`REASSIGN OWNED BY <old> TO <migrator>` and re-run the job. `pgboss` is owned by
+the queue login and is not checked.
+
+If the old owner is the bootstrap superuser (oid 10), `REASSIGN OWNED` cannot
+move its objects. Run `ALTER ... OWNER TO <migrator>` for each object instead,
+or recreate the empty database. The job names the owner role in its refusal.
+
+The job also grants the migrator `ADMIN OPTION, INHERIT FALSE, SET FALSE` on
+`legend_app` and on the logins named in `APP_DATABASE_URL` and
+`WORKER_DATABASE_URL`, but only when those roles already exist. It does not
+grant anything on other roles, including roles that match `legend_runtime_<16 hex>`.
+
+`--migrator` refuses, before Docker starts, a `POSTGRES_USER` or
+`POSTGRES_PASSWORD` in compose.env that contains `$`, `\`, or a quote
+character. Compose would resolve such a value differently. The error names the
+key only, never the value. Use a value without these characters.
+
+### First boot: restricted database roles (legend-zoqc)
+
+The API and worker never receive the migration (administrator) credentials.
+They log in with two restricted roles that a one-shot job creates after the
+migrations (PRD §3 F3, TEN-02). The migration login is the `legend_migrator_<16 hex>`
+login created in the previous section, not the bootstrap superuser.
+
+| Login                     | Env key (file)                                                 | What it can do                                                                                                                                                                                |
+| ------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects.                                    |
+| `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                                                       |
+| `legend_maint_<16 hex>`   | `MAINTENANCE_DATABASE_URL` (worker.env only, optional here)    | Member of `legend_maintenance` only: no table or sequence rights, runs just `app.audit_retention_due_tenants()` and `app.purge_audit_retention_batch()` (audit retention purge, legend-usyi). |
+
+1. Generate each login name and password on the VM, and write them into the
+   private env files; never commit or paste them anywhere else:
+
+   ```sh
+   echo "legend_runtime_$(openssl rand -hex 8)"   # application login name
+   echo "legend_worker_$(openssl rand -hex 8)"    # queue login name
+   echo "legend_maint_$(openssl rand -hex 8)"     # audit retention login name
+   openssl rand -hex 24                            # a password (one per login)
+   ```
+
+   `api.env`: `APP_DATABASE_URL` and `DATABASE_URL` set to
+   `postgresql://<app login>:<app password>@postgres:5432/legend`.
+   `worker.env`: the same two lines plus `WORKER_DATABASE_URL` with the queue
+   login, and `MAINTENANCE_DATABASE_URL` with the audit retention login (same
+   host and database; never in `api.env` or `web.env`). The cloud worker refuses
+   to start in production without it; the edge worker skips it (follow-up:
+   edge audit retention is not scheduled yet). The job provisions it only when
+   set, and `--audit` then also verifies that it has no table rights, is not a
+   `legend_app` member, and that both retention functions are `SECURITY DEFINER`
+   with a pinned `search_path`, owned by the owner of `audit_logs`, and
+   executable by neither PUBLIC nor `legend_app`. `migrator.env` alone holds
+   `MIGRATION_DATABASE_URL`.
+
+2. Run the job from the private network, on the VM:
+
+   ```sh
+   deploy/single-vm/provision-roles.sh --env-file /absolute/path/compose.env --dry-run
+   deploy/single-vm/provision-roles.sh --env-file /absolute/path/compose.env
+   ```
+
+   The script first refuses to continue if `api.env`, `web.env` or `worker.env`
+   contains `MIGRATION_DATABASE_URL`, if `web.env` holds any database URL, if
+   `api.env` and `worker.env` disagree on the application login, if a URL is
+   not exactly `postgresql://<login>:<48 hex>@host:port/database` (no query
+   string), or if the restricted URLs and `MIGRATION_DATABASE_URL` name
+   different databases. It also refuses when the shell exports
+   `API_ENV_FILE`, `WEB_ENV_FILE`, `WORKER_ENV_FILE` or `MIGRATOR_ENV_FILE`
+   with a value other than the one in `compose.env` (Compose would prefer the
+   shell's), and pins the checked paths for every Compose call. Any env file
+   with a non-ASCII character before a key on some line (a byte-order mark or
+   a no-break space, which Compose silently skips, so a hidden
+   `MIGRATION_DATABASE_URL` would reach the service) is refused with only the
+   line number shown (lines inside a quoted value that spans lines are not
+   keys and may hold any text); save such files as plain text. Compose output
+   is hidden during validation because Compose echoes an unparsable env line,
+   secrets included.
+
+   Those checks read line starts, and Compose reads more: text after a closing
+   quote is a new `KEY=value` (`A="x" MIGRATION_DATABASE_URL=...`), and a
+   quoted value can span lines and swallow a later line. So, except with
+   `--dry-run`, the script also checks the configuration Compose will really
+   apply: `docker compose config --format json` is piped straight into
+   `deploy/single-vm/check-compose-env.mjs`, run with `node` from the
+   migrator image in a container with no network and no env file. It refuses
+   unless no service except the two jobs receives `MIGRATION_DATABASE_URL`
+   (or `_FILE`), `web` receives no database URL, no service except `worker` receives
+   `MAINTENANCE_DATABASE_URL`, and the URLs `api` and `worker` receive equal the
+   ones just validated. Its messages name only
+   services and keys, never values. Compose fills `${VAR}` in env files from
+   the shell and `compose.env`, so the configuration is read with the
+   environment `deploy.sh` uses to start the services (which never exports
+   the URLs); the two validated URLs go to the checker only. `MIGRATOR_IMAGE` must be a plain image reference, and if the
+   checker cannot start (image not pulled, no `node`) the script says so and
+   stops. `--dry-run` skips this check (it needs the migrator image);
+   `deploy.sh` always runs it through `--audit` before any service starts.
+   It then starts
+   PostgreSQL, applies migrations, and runs the `provision-roles` service (the
+   migrator image, `node dist/provision-roles.js`) with `migrator.env` plus the
+   two restricted URLs taken from the services' own env files. The URLs reach
+   the container through the environment, never a command line.
+
+3. Expect `Restricted database roles are ready.` Only role names are printed.
+   Then start the services with `deploy.sh`, which re-checks the roles after
+   every migration with `provision-roles.sh --env-file ... --audit`: the same
+   checks, changing nothing, plus a sign-in with each URL. If the logins were
+   never provisioned, a password no longer matches the env file, or a
+   migration widened their rights, the audit fails and no service starts.
+
+The job is idempotent and doubles as an audit: run it again at any time. Each
+run, inside one locked transaction, creates a missing login or re-keys an
+existing one to the password in the env file (so changing the password there
+and re-running is how to rotate it; restart the API and worker afterwards). It
+also resets drift that would only break or bend a login (`NOINHERIT`, an
+expiry, a connection limit, role-level settings such as `search_path`, a
+`legend_app` membership without `INHERIT` or with `ADMIN OPTION`; a superuser
+migration login revokes such a grant whoever made it, a non-superuser only its
+own, and the job otherwise refuses and names the grantor). Settings a
+non-superuser owner cannot reset (for example `session_replication_role`) make
+the job fail until a superuser runs `ALTER ROLE ... RESET ALL`. It then
+fails, changing nothing, if `legend_app` can log in or has elevated attributes,
+or if a login:
+
+- is a superuser or has `BYPASSRLS`, `CREATEDB`, `CREATEROLE` or `REPLICATION`,
+  directly or inherited, or inherits any predefined `pg_*` role;
+- owns any table, function, type, schema, operator, collation or other
+  object outside its own schema (`pgboss`);
+- may run a built-in function that `PUBLIC` cannot (such as `pg_read_file`),
+  or holds rights on a system catalog beyond `PUBLIC`'s (such as reading
+  `pg_authid`);
+- can reach, by any path including a grant to `PUBLIC`, an object on the fixed
+  sensitive list: `pg_authid`, `pg_shadow`, `pg_user_mapping`, `pg_statistic`,
+  `pg_statistic_ext_data`, `pg_largeobject`, `pg_subscription.subconninfo`,
+  the file and server functions (`pg_read_file`, `pg_read_binary_file`,
+  `pg_ls_dir` and the other `pg_ls_*dir`, `pg_stat_file`, `lo_import`,
+  `lo_export`, `pg_reload_conf`, `pg_rotate_logfile`, `pg_promote`) and any
+  `dblink*` function. This is an explicit denylist, not a comparison with
+  PostgreSQL's default catalog privileges per major version: such a baseline
+  would have to be copied and kept for every release, while the denylist is
+  short, reviewable and version-independent. Other catalog grants to `PUBLIC`
+  are not detected;
+- can create objects in the database or any schema outside its own;
+- holds, directly, through a group or through `PUBLIC`, `SET` on a parameter
+  that is not a plain user setting (such as `session_replication_role`, which
+  skips triggers and foreign keys) or on a parameter no loaded module defines
+  yet, or `ALTER SYSTEM` on any parameter. As a superuser, remove it with
+  `REVOKE SET ON PARAMETER <parameter> FROM <role|PUBLIC>` (or
+  `REVOKE ALTER SYSTEM ON PARAMETER ...`) and re-run;
+- belongs, directly or through `legend_app`, to any role other than
+  `legend_app` (with or without `ADMIN OPTION`; the queue login: to none);
+- holds table rights beyond `SELECT/INSERT/UPDATE/DELETE` (application) or
+  beyond `SELECT` on `app.active_tenant_registry` (queue), including grants on
+  single columns. `TRUNCATE` ignores RLS and is always refused, as are
+  `REFERENCES`, `TRIGGER` and, on PostgreSQL 17, `MAINTAIN`. Extension views
+  readable by everyone (such as `pg_stat_statements`) are not counted;
+  application tables granted to `PUBLIC` are;
+- holds sequence rights beyond `USAGE/SELECT` (application) or any sequence
+  right outside `pgboss` (queue). `UPDATE` allows `setval()`, which can push a
+  sequence to its end and break every insert that uses it;
+- would receive such rights on tables or sequences created later through
+  default privileges (`ALTER DEFAULT PRIVILEGES`), any default table or
+  sequence right granted to `PUBLIC`, or a default `CREATE` on schemas. Remove
+  them with `ALTER DEFAULT PRIVILEGES ... REVOKE` and re-run.
+
+The same run (and every audit) also checks tenant isolation itself (TEN-02):
+every table with a `tenant_id` column (in `pgboss` only if the application can
+reach it, including through a grant on a single column) must have row-level security enabled and forced, and a restrictive
+policy for all commands and roles whose `USING` and `WITH CHECK` are exactly
+`tenant_id = app.require_tenant_id()`, as `app.enforce_tenant_rls` creates it.
+Five tables are documented exceptions, the same list as
+`apps/api/src/db/rls.test.ts`: `tenant_domains` and `payment_link_tokens`
+(must keep row-level security enabled; reads are open, writes are
+tenant-checked: every permissive `INSERT`, `UPDATE`, `DELETE` or `ALL` policy
+the application login can use must have `USING` and `WITH CHECK` exactly
+`tenant_id = app.require_tenant_id()`, as the migrations create them), and `session`, `login_challenges` and `wa_inbound_messages`
+(read before a tenant is known; scoped by the services). A table that fails
+the check stops the job. As the migration owner, fix "disabled" with
+`ALTER TABLE <table> ENABLE ROW LEVEL SECURITY` and "not forced" with
+`ALTER TABLE <table> FORCE ROW LEVEL SECURITY`. For a missing or altered policy,
+drop the table's `tenant_access` and `tenant_isolation` policies, then run
+`SELECT app.enforce_tenant_rls('<table>'::regclass)` (it creates both and fails
+if either exists). Never run it on `tenant_domains` or `payment_link_tokens`:
+they only need row-level security enabled. For a write policy on either
+reported as "not limited to the tenant", drop it (`DROP POLICY <policy> ON
+<table>`), or, if the migrations created it (`tenant_domain_*`,
+`payment_link_tokens_*`), restore its expressions with `ALTER POLICY`. The job compares the policy text
+with `search_path` set to `pg_catalog`, so a custom `search_path` does not
+matter.
+
+After committing, the job signs in with each URL exactly as given and checks
+that PostgreSQL reports that login (not a superuser) on the same database. URLs
+may carry only TLS and timeout parameters after `?` (`sslmode`, `sslrootcert`,
+`sslcert`, `sslkey`, `ssl`, `channel_binding`, `application_name`,
+`connect_timeout`); `user`, `password`, `host`, `options` and the like would
+override the login and are refused. PostgreSQL 16 or newer is required.
+
+Changing the queue login name: pg-boss keeps its jobs in tables the old login
+owns, so the new name must be the same role, renamed. With a new name in
+`worker.env` the job stops, creating nothing, with "The pg-boss schema is owned
+by <old>, not <new>". As the migration owner run
+`ALTER ROLE "<old login>" RENAME TO "<new login>"` (the role keeps its OID, so
+it keeps the schema and every table in it), then re-run the job: it re-keys the
+password from `worker.env`. Do not create a separate login and move only the
+schema: the queue tables would stay with the old role and the worker could not
+read them.
+
+An existing role with unsafe attributes is never adopted; fix or drop it by
+hand. Passwords are sent to PostgreSQL as SCRAM-SHA-256 verifiers, so the
+plaintext never reaches the server or its logs. The migration login must be a
+`legend_migrator_<16 hex>` login created in "Create the migrator login"
+(`BYPASSRLS`, `CREATEROLE`, owner of the database), or a superuser (the Compose
+`POSTGRES_USER`, allowed but not the default). On managed PostgreSQL, use a
+`CREATEROLE` + `BYPASSRLS` owner holding `ADMIN` on `legend_app`; existing data
+migrations run under forced RLS. With a non-superuser owner the job grants that owner `SET` (never `INHERIT`) on the queue login so it can
+hand it the `pgboss` schema.
+
+Outside Compose (another host on the private network, with the API bundle or
+the repository), run `node dist/provision-roles.js` or
+`pnpm --filter @starter/api exec tsx src/provision-roles.ts` with
+`MIGRATION_DATABASE_URL`, `APP_DATABASE_URL` and `WORKER_DATABASE_URL` set (and
+`MAINTENANCE_DATABASE_URL` for the audit retention login). Each
+may instead be supplied as `<NAME>_FILE`, a path to a file holding the URL. The
+job does not read `.env` files. Local development keeps using
+`pnpm dev:prepare`, which provisions its own random login through the same code.
+
+### Migration lock timeout (legend-jluo)
+
+`deploy.sh` runs the migrations while the previous api and worker still serve. A
+migration that needs a strong table lock (`ALTER TABLE`, `NO FORCE ROW LEVEL
+SECURITY`, `ADD FOREIGN KEY`) waits behind any long query on that table, and
+every new query on it then queues behind the waiting lock, so the old API would
+stall for as long as the migration waits. The migrator therefore sets, on its
+own session only:
+
+| Variable (migrator.env)       | Default | Meaning                                                                                                   |
+| ----------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `MIGRATION_LOCK_TIMEOUT`      | `10s`   | Longest wait for one lock. `0` waits forever.                                                             |
+| `MIGRATION_STATEMENT_TIMEOUT` | `0`     | Longest single statement. `0` (none) overrides any role or database default, so a long backfill finishes. |
+
+Values are `0` or a whole number with `ms`, `s` or `min` (a bare number such as
+`10` is refused, since PostgreSQL would read it as milliseconds), at most
+`35791min`; anything else stops the migrator before it connects. All pending
+migrations run in one transaction, so when a lock is not granted in time the
+migrator prints `Migration stopped: a
+lock was not granted within MIGRATION_LOCK_TIMEOUT …`, applies nothing,
+and exits 1; `deploy.sh` (`set -eu`) then stops before the role audit and the
+service restart, and the previous release keeps serving. Retry at a quieter
+time, or for that run raise `MIGRATION_LOCK_TIMEOUT` in `migrator.env`.
+
+The limit is per lock wait, not per run: a lock already taken is held until the
+whole batch commits. Put a strong lock on a hot table (`outlets`, `employees`,
+orders) at the end of its release, after any backfill or index build, so the
+services are blocked only for the last statements.
+
+### Pre-deploy check (legend-jtnd, legend-k1np)
+
+`predeploy-check.js` runs before any migration and changes nothing. It opens one
+read-only connection with `MIGRATION_DATABASE_URL` and checks two things:
+
+- Migrator: the login is a superuser, or has both `BYPASSRLS` and `CREATEROLE`.
+  Otherwise it fails with legend-jtnd.
+- Outbox: if `domain_event_outbox` exists, every
+  `(tenant_id, destination, aggregate_type, aggregate_id)` group must have
+  `min(sequence) = 1` and `max(sequence) = count(*)`. A group that breaks this is
+  an old-scheme stream (legend-k1np). The message gives the number of streams and
+  the destination names only, never tenant ids or payloads.
+
+Where it runs: `deploy.sh` runs it after `compose up -d --wait postgres` and before
+`migrate`. The default mode of `provision-roles.sh` runs it the same way on first
+boot. If it fails, `deploy.sh` prints `Pre-deploy check failed: nothing was migrated
+and services were not started.` and stops.
+
+Success prints:
+
+```text
+Pre-deploy check passed: migrator <user> (<superuser|BYPASSRLS>), outbox <absent|N rows, per-destination sequences intact>.
+```
+
+Failure prints `Pre-deploy check failed: <message>` and exits 1. Messages never
+contain a URL or password.
+
+What to do when it fails:
+
+- legend-jtnd: create the migrator login with `provision-roles.sh --migrator`
+  (see "Create the migrator login"), then re-run the deploy.
+- legend-k1np: either write and test a backfill, or confirm the consumers start
+  clean and empty the outbox. Do not enable the relay first. The relay must stay
+  off until the check passes.
+
+### Reset refund pra-switch DOIT (legend-d21p)
+
+A one-off repair before `DOIT_REFUNDS_ENABLED` is turned on for the first time.
+Builds before 5316426a counted payout attempts on approved refunds that were
+never sent to DOIT. `reset-preswitch-refunds.js` puts those refunds back to
+"never attempted" and writes one audit row per refund. It runs in the migrator
+image with `MIGRATION_DATABASE_URL` (or `MIGRATION_DATABASE_URL_FILE`) from
+`migrator.env`, does not read `.env` files, and never prints a URL. Exit codes:
+2 for a usage error, 1 for a refused or failed run, 0 for success.
+
+Always run it through `deploy/single-vm/reset-preswitch-refunds.sh`, never
+with a raw `docker compose run`. `migrator.env` does not hold
+`DOIT_REFUNDS_ENABLED`, so the job cannot see the switch by itself. The wrapper
+reads it from `api.env`, `worker.env` and `migrator.env` and from the `api` and
+`worker` containers, stopped ones included (a container started before an env
+file change still has the old value). It refuses `--apply` unless every one is
+absent, `false` or `0` (a bare `DOIT_REFUNDS_ENABLED` line counts as on), when
+either service has no container to read, or when the shell exports
+`COMPOSE_PROJECT_NAME` with a value other than `compose.env`'s. It passes the
+result to the job together with `LEGEND_RESET_WRAPPER=1`. The job's `--apply`
+exits 2 when either is missing, so a raw `docker compose run` cannot write.
+The wrapper names files and containers only; it never prints their contents or
+a URL.
+
+The `--ids` file is on the VM, not in the image. Give the wrapper its absolute
+host path: it mounts the file read-only at a fixed path in the container. The
+image runs as user `node`, so the file must be readable by all users (for
+example mode `0644`); the wrapper refuses it otherwise.
+
+```sh
+reset=deploy/single-vm/reset-preswitch-refunds.sh
+env=/absolute/path/compose.env
+cutoff=2026-11-09T03:00:00Z   # see step (a)
+# (b) dry-run
+"$reset" --env-file "$env" --dry-run --touched-before "$cutoff"
+# (d) apply
+"$reset" --env-file "$env" --apply --touched-before "$cutoff" --ids /absolute/path/refund-ids.txt
+# (e) check
+"$reset" --env-file "$env" --dry-run --touched-before "$cutoff" --ids /absolute/path/refund-ids.txt
+```
+
+Run order, per environment:
+
+1. (a) Deploy a build that contains this runner (`dist/reset-preswitch-refunds.js`
+   in the migrator image), with `DOIT_REFUNDS_ENABLED` off. The cutoff for
+   `--touched-before` is still the start time of the FIRST worker built from
+   5316426a or later in that environment, which may be an earlier deploy than
+   this one, with its offset, for example
+   `2026-11-09T03:00:00Z`. Take it from the deploy record of that first
+   deploy; a later redeploy replaces the container, so its own start time is
+   too late. When unsure, pick an earlier time: too early is safe (it only
+   leaves rows out), too late is not.
+2. (b) Dry-run with `--touched-before <cutoff>`. It prints each matching
+   refund (tenant, id, amount, decision time) and an id list.
+3. (c) Finance review: finance confirms that no listed refund was paid by
+   hand. Save only the confirmed ids to a file, one per line (blank lines and
+   `#` lines are ignored).
+4. (d) Apply with `--apply --touched-before <cutoff> --ids <file>`.
+5. (e) Dry-run again with the same `--touched-before` and `--ids`: expect 0
+   rows. A plain dry-run must list only the ids finance kept out (paid by
+   hand): close each with `POST /api/payments/admin/refunds/<id>/settle-manually`
+   (payment.reconcile plus pos.refund.approve, not the requester; it records
+   paidAt, channel, transfer reference and amount, ends the refund `completed`
+   with `SETTLED_OUTSIDE_PROVIDER` and never pays it out). A dry-run then no
+   longer lists them.
+6. (f) Only then turn on `DOIT_REFUNDS_ENABLED`.
+
+Read the output of every run. A `SKIPPED refund=<id>` line means a listed id
+was not reset (it no longer matches, or it changed during the run), and the
+run still exits 0. In step (e), SKIPPED lines for the ids reset in step (d)
+are expected: they no longer match because the reset worked. Only rows step
+(e) still lists, and SKIPPED lines from step (d) itself, need a decision
+before step (f).
+
+`--apply` refuses before any write when the wrapper finds the switch on, when
+`DOIT_REFUNDS_ENABLED` is on in the job's environment, or when any refund row
+shows the switch was on (a provider ref, pending polls, a DOIT error code, or
+a provider decline).

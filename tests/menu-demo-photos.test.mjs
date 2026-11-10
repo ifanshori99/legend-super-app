@@ -3,10 +3,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { cafeLegendMenuFixtures } from "../packages/shared/src/menu/index.ts";
-import {
-  buildQrMenu,
-  qrOrderFixtures,
-} from "../packages/shared/src/qr-order/index.ts";
+import { qrOrderFixtures } from "../packages/shared/src/qr-order/index.ts";
+import { buildQrMenu } from "../packages/shared/src/qr-order/sample.ts";
 import {
   demoGalleryPhotos,
   demoHeroPhoto,

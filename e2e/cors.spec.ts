@@ -5,9 +5,9 @@ test("the web origin can call the API with cookies; other origins cannot read it
   page,
 }) => {
   await signUp(page.request, "Cors Check");
-  await page.goto("/notes");
+  await page.goto("/member");
   const fromWebApp = await page.evaluate(async (api) => {
-    const response = await fetch(`${api}/api/notes`, {
+    const response = await fetch(`${api}/api/auth/get-session`, {
       credentials: "include",
     });
     return {
@@ -18,7 +18,7 @@ test("the web origin can call the API with cookies; other origins cannot read it
   }, API_URL);
   expect(fromWebApp.status).toBe(200);
   expect(fromWebApp.requestId).toBeTruthy();
-  expect(fromWebApp.body).toHaveProperty("data");
+  expect(fromWebApp.body).toHaveProperty("user");
 
   // A page on any other origin: the browser blocks the cross-origin read.
   await page.route("http://untrusted.test/**", (route) =>
@@ -30,7 +30,7 @@ test("the web origin can call the API with cookies; other origins cannot read it
   await page.goto("http://untrusted.test/");
   const fromElsewhere = await page.evaluate(async (api) => {
     try {
-      await fetch(`${api}/api/notes`, { credentials: "include" });
+      await fetch(`${api}/api/auth/get-session`, { credentials: "include" });
       return "readable";
     } catch {
       return "blocked";

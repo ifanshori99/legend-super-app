@@ -1,7 +1,7 @@
 // Menu bulk import + printable menu routes (bead legend-dmi; PRD v1.7 §3 F8).
-// NOT in the shared menu contract yet: paths follow the contract's
-// `/api/menu/...` namespace and the bodies are validated with local strict
-// schemas. The lead registers `createMenuImportRouter` under `/api/menu`.
+// The body/query schemas live in the shared menu contract
+// (`@starter/shared/menu`, import.ts). XLSX and CSV are both parsed here, on
+// the server (legend-az32).
 //
 //   POST /api/menu/import/validate   per-row report, writes nothing
 //   POST /api/menu/import/preview    report + normalised rows
@@ -10,14 +10,12 @@
 //   POST /api/menu/print/refresh     regenerate now
 
 import express, { Router, type RequestHandler } from "express";
-import { z } from "zod";
 import type { ObjectStorage } from "@starter/shared/adapters";
+import { idempotencyKeySchema } from "@starter/shared/core";
 import {
-  brandIdSchema,
-  clientInputSchema,
-  idempotencyKeySchema,
-  outletIdSchema,
-} from "@starter/shared/core";
+  menuImportInputSchema,
+  menuPrintQuerySchema,
+} from "@starter/shared/menu";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -41,32 +39,6 @@ import { IMPORT_MAX_FILE_BYTES } from "../services/menu-import-parse.ts";
 import type { MalwareScanner } from "../services/core-image.ts";
 
 const BODY_LIMIT = Math.ceil((IMPORT_MAX_FILE_BYTES * 4) / 3) + 4096;
-
-export const menuImportInputSchema = clientInputSchema({
-  fileName: z.string().min(1).max(120),
-  dataBase64: z
-    .string()
-    .min(1)
-    .max(Math.ceil((IMPORT_MAX_FILE_BYTES * 4) / 3) + 4)
-    .regex(/^[A-Za-z0-9+/]+={0,2}$/, "Data berkas harus base64"),
-  brandId: brandIdSchema.optional(),
-  outletId: outletIdSchema.optional(),
-  channel: z
-    .enum([
-      "dine_in",
-      "takeaway",
-      "gofood",
-      "grabfood",
-      "shopeefood",
-      "reservation",
-    ])
-    .optional(),
-  onDuplicate: z.enum(["reject", "update"]).optional(),
-});
-
-export const menuPrintQuerySchema = z.strictObject({
-  outletId: outletIdSchema.optional(),
-});
 
 const importBody: RequestHandler = (req, res, next) => {
   const type = req.get("content-type")?.split(";")[0].trim().toLowerCase();
@@ -94,6 +66,13 @@ export function createMenuImportRouter(options: {
         503,
         "SERVICE_UNAVAILABLE",
         "Penyimpanan belum tersedia.",
+      );
+    // Fail closed: a PDF is never stored without a scanner (legend-0w2wy).
+    if (!options.scanner)
+      throw new HttpError(
+        503,
+        "SERVICE_UNAVAILABLE",
+        "Pemindai malware belum tersedia.",
       );
     return {
       storage: options.storage,

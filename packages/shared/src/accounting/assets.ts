@@ -35,15 +35,40 @@ const nonNegativeIdr = idrSchema.refine((v) => v >= 0, "Amount must be >= 0");
 
 export const depreciationMethodSchema = z.enum(["straight_line"]);
 
+export const assetCodeSchema = z.string().trim().min(1).max(40);
+export const assetCategoryNameSchema = z.string().trim().min(1).max(80);
+
+export const assetCategorySchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: tenantIdSchema,
+  name: assetCategoryNameSchema,
+});
+export type AssetCategory = z.infer<typeof assetCategorySchema>;
+
+export const createAssetCategoryInputSchema = z.strictObject({
+  name: assetCategoryNameSchema,
+});
+
 export const fixedAssetSchema = z
   .strictObject({
     id: fixedAssetIdSchema,
     tenantId: tenantIdSchema,
     legalEntityId: legalEntityIdSchema,
     outletId: outletIdSchema.nullable(),
+    /** Register number, unique per tenant + legal entity (`FA-00001` when generated). */
+    code: assetCodeSchema,
+    categoryId: uuidSchema.nullable(),
+    categoryName: assetCategoryNameSchema.nullable(),
     name: z.string().trim().min(1).max(150),
     acquiredOn: businessDateSchema,
+    /** Current basis; a revaluation restates it (elimination method). */
     costIdr: idrSchema.refine((v) => v > 0, "Cost must be > 0"),
+    /** Cost before the first revaluation (= `costIdr` when never revalued). */
+    originalCostIdr: idrSchema.refine((v) => v > 0, "Cost must be > 0"),
+    /** Sum of upward revaluation deltas, derived from the revaluation history. */
+    revaluationSurplusIdr: nonNegativeIdr,
+    /** Sum of downward revaluation deltas (absolute), derived the same way. */
+    revaluationLossIdr: nonNegativeIdr,
     residualValueIdr: nonNegativeIdr,
     usefulLifeMonths: z.number().int().min(1).max(600),
     method: depreciationMethodSchema,
@@ -55,6 +80,13 @@ export const fixedAssetSchema = z
     status: z.enum(["active", "fully_depreciated", "disposed"]),
     disposedOn: businessDateSchema.nullable(),
     disposalProceedsIdr: nonNegativeIdr.nullable(),
+    /** Carrying amount: cost − accumulated depreciation (frozen at disposal). */
+    bookValueIdr: nonNegativeIdr,
+    /**
+     * Gain (+) or loss (−) booked at disposal: proceeds − book value. Null
+     * until disposed; equals the `resultIdr` the disposal journal carries.
+     */
+    disposalResultIdr: idrSchema.nullable(),
   })
   .superRefine((asset, ctx) => {
     const issue = (path: string, message: string) =>
@@ -72,12 +104,26 @@ export const fixedAssetSchema = z
       (asset.disposedOn !== null && asset.disposalProceedsIdr !== null)
     )
       issue("disposedOn", "disposal fields are set exactly when disposed");
+    if (asset.bookValueIdr !== asset.costIdr - asset.accumulatedDepreciationIdr)
+      issue("bookValueIdr", "Book value must equal cost − accumulated");
+    const expectedResult =
+      asset.disposalProceedsIdr === null
+        ? null
+        : asset.disposalProceedsIdr - asset.bookValueIdr;
+    if (asset.disposalResultIdr !== expectedResult)
+      issue(
+        "disposalResultIdr",
+        "Disposal result must equal proceeds − book value, and be null until disposed",
+      );
   });
 export type FixedAsset = z.infer<typeof fixedAssetSchema>;
 
 export const createFixedAssetInputSchema = z.strictObject({
   legalEntityId: legalEntityIdSchema,
   outletId: outletIdSchema.nullable(),
+  /** Empty or omitted: the server assigns the next `FA-nnnnn` of the entity. */
+  code: z.string().trim().max(40).optional(),
+  categoryId: uuidSchema.nullable().optional(),
   name: z.string().trim().min(1).max(150),
   acquiredOn: businessDateSchema,
   costIdr: idrSchema.refine((v) => v > 0, "Cost must be > 0"),
@@ -133,6 +179,24 @@ export function depreciationForPeriod(
     (entry) => entry.period === period,
   );
   return (row?.amountIdr ?? 0) as Idr;
+}
+
+/** Derived read-side fields of an asset: book value and disposal result. */
+export function fixedAssetDerivedFields(
+  asset: Pick<
+    FixedAsset,
+    "costIdr" | "accumulatedDepreciationIdr" | "disposalProceedsIdr"
+  >,
+): Pick<FixedAsset, "bookValueIdr" | "disposalResultIdr"> {
+  const bookValueIdr = (asset.costIdr -
+    asset.accumulatedDepreciationIdr) as Idr;
+  return {
+    bookValueIdr,
+    disposalResultIdr:
+      asset.disposalProceedsIdr === null
+        ? null
+        : ((asset.disposalProceedsIdr - bookValueIdr) as Idr),
+  };
 }
 
 /** Gain (+) or loss (−) on disposal: proceeds − carrying amount. */

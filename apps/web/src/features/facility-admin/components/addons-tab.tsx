@@ -49,7 +49,13 @@ import {
   useInventoryItemOptions,
   useUpdateAddon,
 } from "../hooks.ts";
-import { parseInteger, shortId, zodFieldErrors } from "../lib.ts";
+import {
+  parseCreateDraft,
+  parseInteger,
+  parseUpdateDraft,
+  shortId,
+  zodFieldErrors,
+} from "../lib.ts";
 import { ConfigSection } from "./config-section";
 import { FormError } from "./form-error";
 
@@ -90,7 +96,11 @@ export function AddonsTab({
 
   function toggle(addon: FacilityAddon, isEnabled: boolean) {
     updateAddon.mutate(
-      { addonId: addon.id, body: { isEnabled } },
+      {
+        addonId: addon.id,
+        body: { isEnabled },
+        expectedUpdatedAt: addon.updatedAt,
+      },
       {
         onSuccess: () =>
           toast({
@@ -284,7 +294,7 @@ function AddonDialog({
     const inventory = inventoryItemId === "none" ? null : inventoryItemId;
 
     if (addon) {
-      const parsed = updateFacilityAddonSchema.safeParse({
+      const parsed = parseUpdateDraft(updateFacilityAddonSchema, {
         name: trimmed,
         priceIdr,
         inventoryItemId: inventory,
@@ -298,7 +308,11 @@ function AddonDialog({
         return;
       }
       updateAddon.mutate(
-        { addonId: addon.id, body: parsed.data },
+        {
+          addonId: addon.id,
+          body: parsed.data,
+          expectedUpdatedAt: addon.updatedAt,
+        },
         {
           onSuccess: () => {
             toast({
@@ -318,7 +332,7 @@ function AddonDialog({
       return;
     }
 
-    const parsed = createFacilityAddonSchema.safeParse({
+    const parsed = parseCreateDraft(createFacilityAddonSchema, {
       facilityId,
       name: trimmed,
       priceIdr,

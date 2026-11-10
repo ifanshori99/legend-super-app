@@ -163,3 +163,28 @@ test("PAY-01 EDC records never carry a full card number or free-form IP", () => 
   assert.equal(ip("192.168.1.20"), true);
   assert.equal(ip("not-an-ip"), false);
 });
+
+test("PAY-04 payment.funds_unallocated is catalogued for WS-05 with a strict payload", async () => {
+  const { eventCatalogByName } =
+    await import("../packages/shared/src/events/index.ts");
+  assert.equal(
+    eventCatalogByName.get("payment.funds_unallocated")?.workstream,
+    "WS-05",
+  );
+  assert.ok(payment.paymentEventNames.includes("payment.funds_unallocated"));
+  const payload = {
+    unallocatedFundId: "8a32e00d-7e43-45b6-9d01-7a92e605c105",
+    intentId: payment.intentFixture.id,
+    method: "qris",
+    provider: "doit",
+    receivedIdr: 125000,
+    receivedAt: "2026-11-01T05:30:00.000Z",
+    reason: "double_payment",
+  };
+  const parse = (p) =>
+    payment.paymentFundsUnallocatedEventPayloadSchema.safeParse(p).success;
+  assert.equal(parse(payload), true);
+  assert.equal(parse({ ...payload, receivedIdr: 0 }), false);
+  assert.equal(parse({ ...payload, reason: "refund" }), false);
+  assert.equal(parse({ ...payload, extra: 1 }), false);
+});

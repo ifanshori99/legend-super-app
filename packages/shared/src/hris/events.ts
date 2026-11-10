@@ -14,6 +14,7 @@ import {
   isoDateTimeSchema,
   businessDateSchema,
   decimal4Schema,
+  uuidSchema,
 } from "../core/index.ts";
 import { defineDomainEvent } from "../events/define.ts";
 import {
@@ -27,6 +28,7 @@ import {
 } from "./ids.ts";
 import {
   attendanceMethodSchema,
+  attendanceStoredFlagReasonSchema,
   attendanceTypeSchema,
   attendanceValiditySchema,
 } from "./attendance.ts";
@@ -43,6 +45,15 @@ export const attendanceLogged = defineDomainEvent({
     occurredAt: isoDateTimeSchema,
     validity: attendanceValiditySchema,
     shiftAssignmentId: shiftAssignmentIdSchema.nullable(),
+    /** v2 (edge): sealed selfie object id; absent on v1 payloads. */
+    selfieObjectId: uuidSchema.nullable().optional(),
+    /** v2 (edge): reasons the edge attached; the cloud unions them with its own. */
+    edgeFlagReasons: z
+      .array(attendanceStoredFlagReasonSchema)
+      .max(10)
+      .optional(),
+    /** v2 (edge): outlet device that recorded the clock. */
+    edgeDeviceId: z.string().min(1).max(100).nullable().optional(),
   }),
 });
 
@@ -70,6 +81,25 @@ export const shiftPublished = defineDomainEvent({
   }),
 });
 
+/**
+ * Emitted when a published shift stops being the employee's: the manager
+ * cancelled it (`cancelled`) or an approved swap/cover handed it to someone
+ * else (`swapped_away`, `employeeId` is the previous owner). The new owner
+ * hears about a swap through `shift.published`.
+ */
+export const shiftCancelled = defineDomainEvent({
+  name: "shift.cancelled",
+  payload: z.strictObject({
+    shiftAssignmentId: shiftAssignmentIdSchema,
+    employeeId: employeeIdSchema,
+    outletId: outletIdSchema,
+    businessDate: businessDateSchema,
+    cause: z.enum(["cancelled", "swapped_away"]),
+    cancelledBy: userIdSchema,
+    cancelledAt: isoDateTimeSchema,
+  }),
+});
+
 /** Emitted when a leave request is approved; balance deduction follows (F27). */
 export const leaveApproved = defineDomainEvent({
   name: "leave.approved",
@@ -88,6 +118,7 @@ export const leaveApproved = defineDomainEvent({
 export const hrisDomainEvents = [
   attendanceLogged,
   shiftPublished,
+  shiftCancelled,
   leaveApproved,
 ] as const;
 

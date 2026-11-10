@@ -64,6 +64,14 @@ const approval = {
   shiftClose: id(904),
 };
 
+/** legend-0gy1: the `pos_overrides` rows the approvals above consumed. */
+const override = {
+  itemVoid: ulidId(900),
+  discount: ulidId(901),
+  orderVoid: ulidId(902),
+  finalVoid: ulidId(903),
+};
+
 const orderIds = {
   cashDineIn: ulidId(1),
   qrisTakeaway: ulidId(2),
@@ -122,6 +130,8 @@ function fullOrder(
     voidReasonNote: null,
     voidApprovedBy: null,
     voidApprovalRequestId: null,
+    voidOverrideId: null,
+    version: 0,
     ...input,
   } as Order;
 }
@@ -149,6 +159,7 @@ function fullItem(
     voidedBy: null,
     voidApprovedBy: null,
     voidApprovalRequestId: null,
+    voidOverrideId: null,
     costSnapshotIdr: 0,
     createdAt: "2026-11-01T03:05:00.000Z",
     ...input,
@@ -242,6 +253,7 @@ const orders: Order[] = [
     voidReasonNote: "Tamu meninggalkan meja sebelum pesanan dibuat",
     voidApprovedBy: staff.supervisor,
     voidApprovalRequestId: approval.orderVoid,
+    voidOverrideId: override.orderVoid,
   }),
   // F. Duplicate cash sale, voided after settlement (POS-04 linked void).
   fullOrder({
@@ -362,6 +374,7 @@ const orderItems: OrderItem[] = [
     voidedBy: staff.cashierEvening,
     voidApprovedBy: staff.supervisor,
     voidApprovalRequestId: approval.itemVoid,
+    voidOverrideId: override.itemVoid,
   }),
   fullItem({
     id: itemIds.mieGoreng,
@@ -395,6 +408,7 @@ const orderItems: OrderItem[] = [
     voidedBy: staff.cashierEvening,
     voidApprovedBy: staff.supervisor,
     voidApprovalRequestId: approval.orderVoid,
+    voidOverrideId: override.orderVoid,
   }),
   fullItem({
     id: itemIds.thaiTea,
@@ -410,6 +424,7 @@ const orderItems: OrderItem[] = [
     voidedBy: staff.cashierEvening,
     voidApprovedBy: staff.supervisor,
     voidApprovalRequestId: approval.orderVoid,
+    voidOverrideId: override.orderVoid,
   }),
   fullItem({
     id: itemIds.ayamSambalMatah,
@@ -534,6 +549,7 @@ const discounts: Discount[] = [
     appliedBy: staff.cashierEvening,
     approvedBy: staff.supervisor,
     approvalRequestId: approval.discount,
+    overrideId: override.discount,
     createdAt: "2026-11-01T11:07:00.000Z",
   },
 ];
@@ -541,6 +557,7 @@ const discounts: Discount[] = [
 // ---- Shifts and cash movements -------------------------------------------
 
 const shiftIds = { morning: id(701), evening: id(702) };
+const shiftCountIds = { morningFirst: id(795), morningSecond: id(796) };
 
 const shifts: FixtureInput["shifts"] = [
   {
@@ -565,6 +582,7 @@ const shifts: FixtureInput["shifts"] = [
     approvalRequestId: approval.shiftClose,
     approvedAt: "2026-11-01T10:00:00.000Z",
     closedAt: "2026-11-01T10:00:00.000Z",
+    countId: shiftCountIds.morningSecond,
   },
   {
     id: shiftIds.evening,
@@ -588,6 +606,48 @@ const shifts: FixtureInput["shifts"] = [
     approvalRequestId: null,
     approvedAt: null,
     closedAt: null,
+    countId: null,
+  },
+];
+
+/** The morning drawer was counted twice; the close used the second count. */
+const shiftCounts: FixtureInput["shiftCounts"] = [
+  {
+    id: shiftCountIds.morningFirst,
+    ...scope,
+    shiftId: shiftIds.morning,
+    sequence: 1,
+    counts: [
+      { denominationIdr: 100_000, quantity: 5 },
+      { denominationIdr: 20_000, quantity: 1 },
+      { denominationIdr: 10_000, quantity: 1 },
+      { denominationIdr: 5_000, quantity: 1 },
+      { denominationIdr: 100, quantity: 1 },
+    ],
+    countedIdr: 535_100,
+    expectedIdr: 535_100,
+    varianceIdr: 0,
+    heldCashOutIdr: 0,
+    submittedBy: staff.cashierMorning,
+    submittedAt: "2026-11-01T09:50:00.000Z",
+  },
+  {
+    id: shiftCountIds.morningSecond,
+    ...scope,
+    shiftId: shiftIds.morning,
+    sequence: 2,
+    counts: [
+      { denominationIdr: 100_000, quantity: 5 },
+      { denominationIdr: 20_000, quantity: 1 },
+      { denominationIdr: 10_000, quantity: 1 },
+      { denominationIdr: 100, quantity: 1 },
+    ],
+    countedIdr: 530_100,
+    expectedIdr: 535_100,
+    varianceIdr: -5_000,
+    heldCashOutIdr: 0,
+    submittedBy: staff.cashierMorning,
+    submittedAt: "2026-11-01T09:55:00.000Z",
   },
 ];
 
@@ -709,6 +769,7 @@ const receiptDocuments: FixtureInput["receiptDocuments"] = [
     orderNumber: "BDG-01-POS-0001",
     documentKind: "receipt",
     status: "issued",
+    reprint: false,
     outletName: outlet.name,
     outletAddress,
     issuedAt: "2026-11-01T03:40:00.000Z",
@@ -773,6 +834,7 @@ const receiptDocuments: FixtureInput["receiptDocuments"] = [
     orderNumber: "BDG-01-POS-0002",
     documentKind: "kuitansi",
     status: "issued",
+    reprint: false,
     outletName: outlet.name,
     outletAddress,
     issuedAt: "2026-11-01T04:35:00.000Z",
@@ -827,6 +889,7 @@ const invoices: FixtureInput["invoices"] = [
     orderNumber: "BDG-01-POS-0002",
     documentKind: "invoice",
     status: "issued",
+    reprint: false,
     outletName: outlet.name,
     outletAddress,
     issuedAt: "2026-11-01T05:30:00.000Z",
@@ -901,6 +964,7 @@ const voids: FixtureInput["voids"] = [
     requestedBy: staff.cashierMorning,
     approvedBy: staff.supervisor,
     approvalRequestId: approval.finalVoid,
+    overrideId: override.finalVoid,
     voidedAt: "2026-11-01T09:10:00.000Z",
   },
 ];
@@ -914,9 +978,11 @@ const refunds: FixtureInput["refunds"] = [
     reason: "quality_complaint",
     reasonNote: "Kentang goreng dingin; pelanggan minta pengembalian item",
     lines: [{ method: "qris", amountIdr: 31_900, reference: "DOIT-RF-2210" }],
+    items: [],
     requestedBy: staff.cashierMorning,
     approvedBy: staff.supervisor,
     approvalRequestId: approval.orderVoid,
+    overrideId: override.orderVoid,
     refundedAt: "2026-11-01T05:00:00.000Z",
   },
 ];
@@ -1238,6 +1304,7 @@ export const cafeLegendPosFixtures: FixtureInput = {
     cashRoundingIncrementIdr: 100,
   },
   shifts,
+  shiftCounts,
   cashMovements,
   orders,
   orderDetails: orders.map(detailOf),
@@ -1266,6 +1333,7 @@ export const posFixtureIds = {
   orders: orderIds,
   items: itemIds,
   shifts: shiftIds,
+  shiftCounts: shiftCountIds,
   receipts: {
     ids: { cashDineIn: id(710), qrisTakeaway: id(711), corrected: id(712) },
     numbers: receiptNumbers,

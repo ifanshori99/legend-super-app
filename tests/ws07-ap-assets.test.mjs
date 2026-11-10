@@ -13,6 +13,7 @@ import {
   buildAgingReport,
   cafeLegendAccountingFixtures as fixtures,
   depreciationForPeriod,
+  fixedAssetSchema,
   straightLineSchedule,
 } from "../packages/shared/src/accounting/index.ts";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
@@ -189,7 +190,9 @@ describe("F19-Aset: fixed assets", () => {
       status: "disposed",
       disposedOn: "2026-11-05",
       disposalProceedsIdr: 90_000_000,
+      disposalResultIdr: -4_500_000,
     };
+    assert.equal(fixedAssetSchema.safeParse(disposed).success, true);
     assert.equal(ap.disposedResultIdr(disposed), -4_500_000);
     assert.equal(ap.disposalPreviewIdr(disposed, 1), null);
 

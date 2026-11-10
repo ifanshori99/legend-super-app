@@ -60,6 +60,7 @@ export const accountingShareMessages = {
   paymentStatus: {
     pending: "Belum dibayar",
     paid: "Sudah dibayar",
+    autoSettled: "Diselesaikan otomatis",
   },
   shareholderType: {
     person: "Perorangan",
@@ -317,11 +318,17 @@ export const accountingShareMessages = {
       netProfit: "Laba bersih periode",
       reserve: "Cadangan ditahan",
       distributable: "Laba dibagikan",
+      carryDeducted: "Potongan kekurangan koreksi",
+      carryHint:
+        "Kekurangan koreksi minus dipotong dari bagian pemegang saham yang sama, tidak dibebankan ke pemegang saham lain.",
+      carryFrom: "Dari koreksi {ref}",
+      zeroLine: "Dipotong penuh oleh kekurangan koreksi",
       tax: "Pajak ditahan",
       totalNet: "Total bersih",
       columns: {
         shareholder: "Pemegang saham",
         share: "Porsi",
+        carry: "Potongan kekurangan koreksi",
         gross: "Bruto",
         tax: "Pajak",
         net: "Bersih",
@@ -370,6 +377,7 @@ export const accountingShareMessages = {
       saved: "Pembayaran dicatat.",
       lockedNote: "Distribusi disetujui: nilai dan porsi terkunci (SH-04).",
       allPaid: "Semua baris sudah dibayar.",
+      zeroLine: "Dipotong penuh oleh kekurangan koreksi",
     },
     statement: {
       title: "Pernyataan per pemegang saham",
@@ -385,6 +393,7 @@ export const accountingShareMessages = {
       basisValue: "Periode tertutup",
       runType: "Jenis distribusi",
       share: "Porsi",
+      carryDeducted: "Potongan kekurangan koreksi",
       gross: "Bruto",
       tax: "Pajak ditahan",
       net: "Bersih diterima",

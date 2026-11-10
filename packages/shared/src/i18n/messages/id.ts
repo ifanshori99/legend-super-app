@@ -71,6 +71,16 @@ import { crm360Messages } from "./ws08-crm-360.ts";
 import { crmCampaignsMessages } from "./ws08-crm-campaigns.ts";
 import { deliveryOpsMessages } from "./ws08-delivery.ts";
 import { reservationBookingMessages } from "./ws08-reservation-customer.ts";
+import { posKasirCommonMessages } from "./pos-kasir-common.ts";
+import { posKasirPaymentMessages } from "./pos-kasir-payment.ts";
+import { posKasirGatewayMessages } from "./pos-kasir-gateway.ts";
+import { posKasirEdcMessages } from "./pos-kasir-edc.ts";
+import { posKasirCodeMessages } from "./pos-kasir-code.ts";
+import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
+import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
+import { posKasirDaycloseMessages } from "./pos-kasir-dayclose.ts";
+import { openBillConvertMessages } from "./open-bill-convert.ts";
+import { openBillPolicyMessages } from "./open-bill-policy.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -105,6 +115,18 @@ export const id = {
   posDisplay: posDisplayMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
+  // POS cashier screens (bead legend-mjmm): one catalog file per screen group.
+  posKasirCommon: posKasirCommonMessages,
+  posKasirPayment: posKasirPaymentMessages,
+  posKasirGateway: posKasirGatewayMessages,
+  posKasirEdc: posKasirEdcMessages,
+  posKasirCode: posKasirCodeMessages,
+  posKasirShift: posKasirShiftMessages,
+  posKasirSupervisor: posKasirSupervisorMessages,
+  posKasirDayclose: posKasirDaycloseMessages,
+  // Open bill by supervisor + outlet policy (legend-8cm4, legend-2zb5).
+  openBillConvert: openBillConvertMessages,
+  openBillPolicy: openBillPolicyMessages,
   // WS-08 CRM squad (2026-11-03): Customer 360/segments/reviews (legend-i026),
   // campaigns/automations (legend-hbad), delivery channels (legend-e8oa) and
   // the guest booking flow (legend-xm4y). One module per bead so they never
@@ -383,6 +405,7 @@ export const id = {
         quality: "Kualitas",
         late: "Terlambat",
         complaint: "Keluhan",
+        out_of_stock: "Bahan habis",
         other: "Lainnya",
       },
       resolutions: {
@@ -1107,6 +1130,7 @@ export const id = {
       selfie_geo: "Selfie & GPS",
       rotating_qr: "QR outlet",
       manual_correction: "Koreksi manual",
+      outlet_device: "Layar absen outlet",
     },
     history: {
       title: "Riwayat absensi",
@@ -1266,6 +1290,7 @@ export const id = {
       stock_critical: "Stok kritis",
       approval_request: "Permintaan approval",
       printer_offline: "Printer offline",
+      edge_sync_conflict: "Konflik sinkron edge",
       cash_variance: "Selisih kas",
       emergency: "Darurat",
       security: "Keamanan",
@@ -1276,6 +1301,9 @@ export const id = {
       schedule_update: "Perubahan jadwal",
       payslip: "Slip gaji",
       daily_summary: "Ringkasan harian",
+      operational_anomaly: "Anomali operasional",
+      payment_failover: "Gateway pembayaran",
+      kitchen_alert: "Peringatan dapur",
     },
     inbox: {
       heading: "Kotak masuk",
@@ -1960,6 +1988,7 @@ export const id = {
         referral: "Referensi",
         campaign: "Kampanye",
         manual: "Diberikan staf",
+        loyalty_reward: "Hadiah poin",
       },
     },
     visits: {
@@ -1996,6 +2025,7 @@ export const id = {
   channel: {
     dineIn: "Dine-in",
     takeaway: "Takeaway",
+    delivery: "Delivery",
     gofood: "GoFood",
     grabfood: "GrabFood",
     shopeefood: "ShopeeFood",
@@ -3129,6 +3159,55 @@ export const id = {
       invalidAmount: "Isi angka bulat 0 atau lebih, contoh 0.",
       saveFailed: "Perubahan gagal disimpan. Periksa isian lalu coba lagi.",
     },
+
+    // One message per INVENTORY_ERROR_CODES entry, keyed by the code the API
+    // sends (bead legend-tk7i).
+    error: {
+      RECIPE_CYCLE:
+        "Resep saling memanggil dalam putaran. Periksa komponennya.",
+      RECIPE_NOT_FOUND: "Resep tidak ditemukan.",
+      RECIPE_OUTPUT_MISSING:
+        "Resep bertingkat ini belum punya item hasil, jadi biayanya belum bisa dihitung.",
+      RECIPE_COMPONENT_MISSING:
+        "Ada baris resep yang menunjuk item atau resep yang tidak ada.",
+      UNIT_COST_MISSING:
+        "Item ini belum punya harga pokok, HPP belum bisa dihitung.",
+      UOM_CONVERSION_MISSING: "Satuan ini belum punya faktor konversi.",
+      STOCK_COUNT_INVALID_TRANSITION:
+        "Tindakan ini tidak bisa dilakukan pada status stok opname saat ini.",
+      STOCK_COUNT_NOT_PENDING_APPROVAL:
+        "Stok opname belum diajukan, jadi belum bisa disetujui.",
+      STOCK_COUNT_SELF_APPROVAL:
+        "Penghitung dan penyetuju harus orang yang berbeda.",
+      STOCK_COUNT_BLIND_HIDDEN:
+        "Stok sistem dan selisih disembunyikan selama hitung buta.",
+      STOCK_COUNT_BLIND_USE_SHEET:
+        "Hitung buta: isi jumlah lewat lembar hitung.",
+      STOCK_COUNT_LOCATION_BUSY:
+        "Lokasi ini masih punya stok opname yang berjalan.",
+      STOCK_COUNT_LINES_INCOMPLETE:
+        "Semua baris harus dihitung sebelum diajukan.",
+      STOCK_COUNT_APPROVAL_UNROUTED:
+        "Belum ada kebijakan approval yang menentukan penyetuju stok opname ini.",
+      STOCK_COUNT_VERSION_MISMATCH:
+        "Baris berubah setelah permintaan approval dibuka. Ajukan ulang.",
+      STOCK_COUNT_NOT_EDITABLE:
+        "Baris hanya bisa diubah saat stok opname sedang dihitung.",
+      STOCK_COUNT_COST_MISSING:
+        "Selisih lebih belum punya harga pokok untuk dinilai.",
+      STOCK_COUNT_DECIDER_CANNOT_COUNT:
+        "Yang sudah menyetujui atau menolak stok opname ini tidak boleh menghitung.",
+      STOCK_COUNT_VIEWER_CANNOT_COUNT:
+        "Yang sudah melihat stok sistem tidak boleh menghitung.",
+      STOCK_COUNT_APPROVAL_EXPIRED:
+        "Batas waktu approval sudah lewat. Selesaikan dulu sebelum menyetujui.",
+      PRODUCTION_INVALID_TRANSITION:
+        "Tindakan ini tidak bisa dilakukan pada status order produksi saat ini.",
+      INSUFFICIENT_STOCK: "Stok tidak cukup untuk pengeluaran ini.",
+      PRODUCTION_LOCATION_UNRESOLVED:
+        "Lokasi dapur untuk outlet ini belum bisa ditentukan.",
+      WASTE_MEDIA_NOT_FOUND: "Foto atau berkas waste tidak ditemukan.",
+    },
   },
 
   // WS-05 tax & service charge (PRD v1.7 §3.14 F11, D13, R20/R21): versioned
@@ -3215,6 +3294,26 @@ export const id = {
       createdToast: "Draf aturan pajak dibuat.",
       updatedToast: "Draf aturan pajak diperbarui.",
       publishedToast: "Aturan pajak diterbitkan.",
+    },
+    conflicts: {
+      title: "{count} pasang aturan pajak bertabrakan",
+      body: "Dua aturan terbit sama kuat untuk item yang sama, sehingga kasir gagal menghitung pajaknya saat keduanya berlaku.",
+      fix: "Nonaktifkan salah satu: buat versi baru aturan itu, matikan sakelar Aturan aktif, lalu terbitkan.",
+      deactivate: "Buat versi nonaktif {code}",
+      allOutlets: "Semua outlet",
+      outletUnknown: "Outlet tertentu",
+      region: "wilayah {region}",
+      active: "berlaku sekarang",
+      startsOn: "mulai {date}",
+      notLoaded:
+        "Versi aturan {code} yang bertabrakan tidak ada di daftar yang dimuat. Buat aturan baru dengan kode {code} dan sakelar Aturan aktif dimatikan, lalu terbitkan.",
+      draftCreated: "Draf versi nonaktif dibuat. Terbitkan agar berlaku.",
+      presetNote:
+        "Versi ini dibuat nonaktif karena bertabrakan dengan {code}. Terbitkan agar aturan lama berhenti berlaku.",
+      level: {
+        item: "item tertentu",
+        category: "kategori tertentu",
+      },
     },
     serviceCharge: {
       title: "Service charge",
@@ -3392,7 +3491,7 @@ export const id = {
   designSystem: {
     title: "Design System Platform",
     intro:
-      "Token, tema, dan komponen yang dipakai semua layar Legend Super App. Bangun layar hanya dari isi halaman ini, lalu baca DESIGN.md.",
+      "Token, tema, dan komponen yang dipakai semua layar aplikasi. Bangun layar hanya dari isi halaman ini, lalu baca DESIGN.md.",
     controls: "Pengaturan tampilan",
     sections: {
       colors: "Warna",

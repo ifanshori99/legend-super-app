@@ -641,6 +641,7 @@ test("WS-06 purchasing events are registered once and their payloads validate (P
   );
   assert.deepEqual([...shared.purchasingEventNames].sort(), [
     "goods_receipt.recorded",
+    "petty_purchase.recorded",
     "purchase_order.approved",
     "purchase_order.created",
     "purchase_return.recorded",
@@ -826,7 +827,8 @@ test("purchasing endpoints are unique and write inputs reject tenant fields and 
       channel: "email",
       idempotencyKey: "fixture-send-0001",
     }).success,
-    false,
+    true,
+    "[50-F1] the server defaults the recipient to the supplier email",
   );
   assert.equal(
     shared.sendPurchaseOrderInputSchema.safeParse({
@@ -881,4 +883,188 @@ test("purchasing endpoints are unique and write inputs reject tenant fields and 
     false,
     "the photo is mandatory",
   );
+});
+
+test("[25a7-CT-1] a purchase order carries a required updatedAt and a nullable emailDeliveryStatus", () => {
+  const { purchaseOrder } = purchaseOrderByNumber("PO/BDG/2026/10/0042");
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse(purchaseOrder).success,
+    true,
+  );
+  const { updatedAt, ...withoutUpdatedAt } = purchaseOrder;
+  assert.ok(updatedAt);
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse(withoutUpdatedAt).success,
+    false,
+    "updatedAt is required",
+  );
+  const { emailDeliveryStatus, ...withoutStatus } = purchaseOrder;
+  assert.ok(emailDeliveryStatus);
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse(withoutStatus).success,
+    false,
+    "emailDeliveryStatus is required, null means never emailed",
+  );
+  for (const status of ["queued", "sent", "failed", null]) {
+    assert.equal(
+      shared.purchaseOrderSchema.safeParse({
+        ...purchaseOrder,
+        emailDeliveryStatus: status,
+      }).success,
+      true,
+      String(status),
+    );
+  }
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse({
+      ...purchaseOrder,
+      emailDeliveryStatus: "bounced",
+    }).success,
+    false,
+  );
+});
+
+test("[25a7-CT-2] an email longer than 254 characters is rejected in every input", () => {
+  const longEmail = `${"a".repeat(243)}@example.com`;
+  const okEmail = `${"a".repeat(242)}@example.com`;
+  assert.equal(longEmail.length, 255);
+  assert.equal(okEmail.length, 254);
+  const supplierBody = (email) => ({
+    name: "CV Sumber Rejeki",
+    paymentTermsDays: 14,
+    email,
+    idempotencyKey: "fixture-supplier-0002",
+  });
+  const contactBody = (email) => ({
+    name: "Budi",
+    phone: "+6281234567890",
+    email,
+    isPrimary: true,
+    idempotencyKey: "fixture-contact-0001",
+  });
+  const sendBody = (email) => ({
+    channel: "email",
+    email,
+    idempotencyKey: "fixture-send-0002",
+  });
+  const updateBody = (email) => ({
+    email,
+    expectedUpdatedAt: "2026-10-20T03:00:00.000Z",
+  });
+  const cases = [
+    [shared.createSupplierInputSchema, supplierBody],
+    [shared.updateSupplierInputSchema, updateBody],
+    [shared.createSupplierContactInputSchema, contactBody],
+    [shared.sendPurchaseOrderInputSchema, sendBody],
+  ];
+  for (const [schema, body] of cases) {
+    assert.equal(schema.safeParse(body(okEmail)).success, true, "254 accepted");
+    assert.equal(
+      schema.safeParse(body(longEmail)).success,
+      false,
+      "255 rejected",
+    );
+  }
+  const { purchaseOrder } = purchaseOrderByNumber("PO/BDG/2026/10/0042");
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse({
+      ...purchaseOrder,
+      sentTo: longEmail,
+    }).success,
+    false,
+  );
+});
+
+test("[25a7-CT-3] the follow-up purchasing error codes exist", () => {
+  for (const code of [
+    "SUPPLIER_INACTIVE",
+    "SUPPLIER_NAME_TAKEN",
+    "PURCHASE_ORDER_NOT_SENDABLE",
+    "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
+  ]) {
+    assert.ok(shared.PURCHASING_ERROR_CODES.includes(code), code);
+    assert.equal(
+      shared.purchasingErrorCodeSchema.safeParse(code).success,
+      true,
+    );
+  }
+});
+
+test("[50-F2] the share-link revoke endpoint is in the contract and strict", () => {
+  const endpoint = shared.purchasingEndpoints.find(
+    (item) => item.id === shared.revokePurchaseOrderShareLinks.id,
+  );
+  assert.ok(endpoint, "registered in purchasingEndpoints");
+  assert.equal(endpoint.method, "POST");
+  assert.equal(
+    endpoint.path,
+    "/api/inventory/purchase-orders/:purchaseOrderId/share-links/revoke",
+  );
+  assert.equal(
+    shared.revokePurchaseOrderShareLinksInputSchema.safeParse({
+      idempotencyKey: "fixture-revoke-0001",
+    }).success,
+    true,
+  );
+  assert.equal(
+    shared.revokePurchaseOrderShareLinksInputSchema.safeParse({
+      idempotencyKey: "fixture-revoke-0001",
+      note: "Supplier changed",
+      tenantId: "x",
+    }).success,
+    false,
+  );
+  assert.equal(
+    shared.purchaseOrderShareLinksRevokedSchema.safeParse({ revoked: 2 })
+      .success,
+    true,
+  );
+  assert.equal(
+    shared.purchaseOrderShareLinksRevokedSchema.safeParse({ revoked: -1 })
+      .success,
+    false,
+  );
+});
+
+test("[50-F4] a document accepts at most 200 lines", () => {
+  const supplier = fixtures.suppliers[0];
+  const order = purchaseOrderByNumber("PO/BDG/2026/10/0042");
+  const orderLine = {
+    inventoryItemId: order.lines[0].inventoryItemId,
+    quantity: "2.0000",
+    uomId: order.lines[0].uomId,
+    unitPriceIdr: "185000.0000",
+  };
+  const requestLine = {
+    inventoryItemId: orderLine.inventoryItemId,
+    quantity: "2.0000",
+    uomId: orderLine.uomId,
+  };
+  const many = (line, count) => Array.from({ length: count }, () => line);
+  const orderBody = (count) => ({
+    outletId: order.purchaseOrder.outletId,
+    supplierId: supplier.id,
+    expectedDate: "2026-11-06",
+    source: "user",
+    lines: many(orderLine, count),
+    idempotencyKey: "fixture-order-0200",
+  });
+  const requestBody = (count) => ({
+    outletId: order.purchaseOrder.outletId,
+    neededBy: "2026-11-06",
+    lines: many(requestLine, count),
+    idempotencyKey: "fixture-request-0200",
+  });
+  const updateBody = (count) => ({
+    lines: many(orderLine, count),
+    expectedUpdatedAt: "2026-10-20T03:00:00.000Z",
+  });
+  for (const [schema, body] of [
+    [shared.createPurchaseOrderInputSchema, orderBody],
+    [shared.createPurchaseRequestInputSchema, requestBody],
+    [shared.updatePurchaseOrderInputSchema, updateBody],
+  ]) {
+    assert.equal(schema.safeParse(body(200)).success, true, "200 accepted");
+    assert.equal(schema.safeParse(body(201)).success, false, "201 rejected");
+  }
 });

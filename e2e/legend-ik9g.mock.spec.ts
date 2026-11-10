@@ -90,7 +90,8 @@ test("SH-01: closed period figures are official and the running period is labell
     page.getByText("Estimasi", { exact: true }).first(),
   ).toBeVisible();
   await expect(page.getByText(/Estimasi sampai pembukuan/)).toBeVisible();
-  await expect(strip.getByText(/268\.000\.000/)).toHaveCount(0);
+  // The running month-to-date net sales (Rp7.420.000, the owner board's day).
+  await expect(strip.getByText(/7\.420\.000/)).toHaveCount(0);
 
   // No shareholder permission opens a source report: no dead /reports links,
   // and no orphan source chevrons without a link.

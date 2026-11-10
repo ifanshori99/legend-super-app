@@ -17,9 +17,13 @@
 
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
-import { importRowSchema, type MenuImportRow } from "@starter/shared/menu";
+import {
+  importRowSchema,
+  MENU_IMPORT_MAX_FILE_BYTES,
+  type MenuImportRow,
+} from "@starter/shared/menu";
 
-export const IMPORT_MAX_FILE_BYTES = 1024 * 1024;
+export const IMPORT_MAX_FILE_BYTES = MENU_IMPORT_MAX_FILE_BYTES;
 export const IMPORT_MAX_ROWS = 500;
 export const IMPORT_MAX_COLUMNS = 20;
 export const IMPORT_MAX_CELL_CHARS = 1000;

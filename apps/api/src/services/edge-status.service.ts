@@ -8,12 +8,15 @@
 //   edgeNode          the node's own registry row
 //   pendingEventCount offline queue backlog edge -> cloud (unacknowledged)
 //   lastSyncedAt      when the cloud last acknowledged the edge's events
+//   deviceRegistry    last successful device-registry pull and whether the
+//                     replica is stale (legend-2lp.7; revocations may be missing)
 //   thisDevice        the calling device from the device registry port
 //                     (legend-165); null until it is wired or for a session
 import { edgeStatusSchema, type EdgeStatus } from "@starter/shared/edge";
 import type { CloudLink } from "@starter/shared/edge";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
+import { getDeviceRegistrySyncState } from "../edge/runtime.ts";
 import { lookupEdgeDevice } from "../edge/ports.ts";
 import type { LinkScope } from "../edge/link-peer.ts";
 import { getEdgeNode } from "./edge-node.service.ts";
@@ -38,6 +41,8 @@ export async function getEdgeStatus(input: {
     device.outletId === scope.outletId
       ? device
       : null;
+  // No pull state (cloud, or before boot) counts as stale: fail visible.
+  const registry = getDeviceRegistrySyncState();
   return edgeStatusSchema.parse({
     tenantId: scope.tenantId,
     outletId: scope.outletId,
@@ -45,6 +50,16 @@ export async function getEdgeStatus(input: {
     edgeNode,
     pendingEventCount: backlog.pending,
     lastSyncedAt: backlog.lastAckedAt?.toISOString() ?? null,
+    deviceRegistry: {
+      lastPulledAt: registry?.lastSuccessAt ?? null,
+      stale: registry?.stale ?? true,
+      receiptSequencesRefused: registry?.receiptSequencesRefused ?? 0,
+      receiptSequencesRefusedAt: registry?.receiptSequencesRefusedAt ?? null,
+      receiptRunAlert: registry?.receiptRunAlert ?? false,
+      receiptRunAlertAt: registry?.receiptRunAlertAt ?? null,
+      receiptSequencesRetired: registry?.receiptSequencesRetired ?? 0,
+      receiptSequencesRetiredAt: registry?.receiptSequencesRetiredAt ?? null,
+    },
     thisDevice,
   });
 }

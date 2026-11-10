@@ -3,6 +3,7 @@
 // `LEGEND_MOCK_PORT=3244 pnpm test:e2e:mock e2e/legend-fzx.mock.spec.ts`.
 import { Buffer } from "node:buffer";
 import { expect, test, type Page } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 const baseURL =
   process.env.LEGEND_MOCK_WEB_URL ?? process.env.E2E_MOCK_BASE_URL;
@@ -16,17 +17,6 @@ test.use({ baseURL });
 /** 1×1 transparent PNG, enough for the photo-evidence preview. */
 const ONE_PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-
-/** Waits for hydration: a server-rendered button is clickable before it has
- * handlers, and a click that lands too early is silently lost. */
-async function waitForApp(page: Page) {
-  await page.waitForFunction(() =>
-    Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
-  );
-  // The router global appears just before React finishes hydrating; a click
-  // in that window is lost, so give the handlers a moment to attach.
-  await page.waitForTimeout(300);
-}
 
 /** Clicks a button that opens a dialog, retrying a lost pre-hydration click. */
 async function openDialog(page: Page, name: string) {
@@ -45,7 +35,7 @@ async function openDialog(page: Page, name: string) {
 
 async function openCounts(page: Page) {
   await page.goto("/kelola/inventori/opname");
-  await waitForApp(page);
+  await waitForHydration(page);
   // v3 (legend-vvth): the management topbar owns the page h1; the page body
   // no longer repeats it (DESIGN.md v3 §5).
   await expect(
@@ -93,7 +83,7 @@ test("INV-03 blind count hides the system quantity while the counter is counting
 }) => {
   await openCounts(page);
   await page.goto("/kelola/inventori/opname");
-  await waitForApp(page);
+  await waitForHydration(page);
   await createCycleCount(page);
 
   const dialog = await openDialog(page, "Mulai hitung");
@@ -150,7 +140,7 @@ test("INV-03 waste log records reason, rupiah loss and the optional photo", asyn
   page,
 }) => {
   await page.goto("/kelola/inventori/waste");
-  await waitForApp(page);
+  await waitForHydration(page);
   await expect(
     page.getByRole("heading", { name: "Catatan waste" }),
   ).toBeVisible();
@@ -192,7 +182,7 @@ test("INV-03 opname list shows its empty and error states", async ({
   page,
 }) => {
   await page.goto("/kelola/inventori/opname?mock=empty");
-  await waitForApp(page);
+  await waitForHydration(page);
   await expect(page.getByText("Belum ada sesi opname")).toBeVisible();
 
   await page.goto("/kelola/inventori/opname?mock=error");

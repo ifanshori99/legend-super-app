@@ -15,13 +15,14 @@
 //   top of RLS.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, lt, sql } from "drizzle-orm";
+import { and, desc, eq, lt, lte, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   createUlid,
   decodeCursor,
   encodeCursor,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   consentRecordSchema,
@@ -30,11 +31,37 @@ import {
   type RecordConsentInput,
 } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
-import { consents } from "../db/schema/index.ts";
+import { consents, user } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { isStaffConsentSourceAllowed } from "@starter/shared/crm";
+import {
+  isStaffConsentSourceAllowed,
+  customerConsentSchema,
+  type ConsentPolicyVersion,
+  type ConsentPurpose,
+  type CustomerConsent,
+} from "@starter/shared/crm";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import {
+  applyReferralAtSignup,
+  ensureReferralCode,
+  findReferrerByCode,
+} from "./referral.service.ts";
+// legend-111j
+import {
+  setMemberProfileGuc,
+  withMemberScope,
+  withProfileLock,
+  type MemberScope,
+} from "../db/member-scope.ts";
+import {
+  consentPolicyVersions,
+  customerProfiles,
+} from "../db/schema/crm-member.ts";
+import {
+  findProfileByUser,
+  verifiedWhatsAppOfUser,
+} from "./member-profile.service.ts";
 
 type Row = typeof consents.$inferSelect;
 
@@ -236,4 +263,307 @@ export async function recordConsent(
     );
     return toRecord(row);
   });
+}
+
+// ------------------------------------------------- member PWA consents
+// legend-111j (design §M7). The member records their own consent; the profile
+// comes from the session scope, never from the request.
+
+type MemberTx = Parameters<Parameters<typeof withMemberScope>[2]>[0];
+
+export type MemberConsentInput = {
+  purpose: ConsentPurpose;
+  granted: boolean;
+  policyVersion: string;
+  /** Only read when this consent creates the profile (signup). */
+  referralCode?: string;
+};
+
+/** The active policy version per purpose: the latest `published_at <= now`. */
+export async function activeConsentPolicies(
+  tx: MemberTx,
+  tenantId: string,
+  now: Date,
+): Promise<ConsentPolicyVersion[]> {
+  const rows = await tx
+    .selectDistinctOn([consentPolicyVersions.purpose])
+    .from(consentPolicyVersions)
+    .where(
+      and(
+        eq(consentPolicyVersions.tenantId, tenantId as TenantId),
+        lte(consentPolicyVersions.publishedAt, now),
+      ),
+    )
+    .orderBy(
+      consentPolicyVersions.purpose,
+      desc(consentPolicyVersions.publishedAt),
+    );
+  return rows.map((row) => ({
+    purpose: row.purpose as ConsentPurpose,
+    version: row.version,
+    publishedAt: row.publishedAt.toISOString(),
+  }));
+}
+
+/** Maps a consent row to the contract shape; a withdrawal carries its grant's time. */
+async function toMemberConsent(
+  tx: MemberTx,
+  row: Row,
+): Promise<CustomerConsent> {
+  let grantedAt = row.recordedAt;
+  let withdrawnAt: Date | null = null;
+  if (row.decision === "withdrawn") {
+    withdrawnAt = row.recordedAt;
+    const [grant] = await tx
+      .select({ recordedAt: consents.recordedAt })
+      .from(consents)
+      .where(
+        and(
+          eq(consents.tenantId, row.tenantId),
+          eq(consents.subjectId, row.subjectId),
+          eq(consents.purpose, row.purpose),
+          eq(consents.decision, "granted"),
+          lt(consents.seq, row.seq),
+        ),
+      )
+      .orderBy(desc(consents.seq))
+      .limit(1);
+    if (grant && grant.recordedAt <= row.recordedAt)
+      grantedAt = grant.recordedAt;
+  }
+  return customerConsentSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    customerProfileId: row.subjectId,
+    purpose: row.purpose,
+    policyVersion: row.policyVersion,
+    grantedAt: grantedAt.toISOString(),
+    withdrawnAt: withdrawnAt?.toISOString() ?? null,
+    source: row.source,
+  });
+}
+
+/** Creates the member's profile at signup (loyalty granted, no profile yet). */
+async function createMemberProfile(
+  tx: MemberTx,
+  scope: MemberScope,
+  now: Date,
+  referralCode?: string,
+) {
+  // One signup at a time per (tenant, user): the unique index would otherwise
+  // abort the second of two racing requests.
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`member-signup:${scope.tenantId}:${scope.userId}`}, 0))`,
+  );
+  const existing = await findProfileByUser(tx, scope.tenantId, scope.userId);
+  if (existing) return existing;
+  const whatsapp = await verifiedWhatsAppOfUser(tx, scope.userId);
+  const [account] = await tx
+    .select({ name: user.name })
+    .from(user)
+    .where(eq(user.id, scope.userId))
+    .limit(1);
+  const name = account?.name.trim().slice(0, 120) || "Member";
+  const id = randomUUID();
+  // Resolve the referrer first: once the GUC names the new row, the
+  // member_self policy hides every other profile from this lookup.
+  const referrerProfileId = referralCode
+    ? await findReferrerByCode(tx, scope.tenantId, referralCode)
+    : null;
+  // The GUC must name the new row before it is inserted (member_self policy).
+  await setMemberProfileGuc(tx, id);
+  const [created] = await tx
+    .insert(customerProfiles)
+    .values({
+      id,
+      tenantId: scope.tenantId as TenantId,
+      userId: scope.userId,
+      name,
+      whatsappHash: whatsapp?.hash ?? null,
+      whatsappVerifiedAt: whatsapp?.verifiedAt ?? null,
+      membershipStatus: whatsapp ? "active" : "pending_verification",
+      referralCode: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+  if (!created) throw new Error("Member profile was not created");
+  // legend-3zd1: own code (when the program has referrals on) and the referral
+  // the new member arrived with. Neither may fail the signup.
+  const code = await ensureReferralCode(tx, scope.tenantId, created.id);
+  if (referralCode)
+    await applyReferralAtSignup(tx, {
+      tenantId: scope.tenantId,
+      refereeProfileId: created.id,
+      code: referralCode,
+      referrerProfileId,
+    });
+  return code ? { ...created, referralCode: code } : created;
+}
+
+/**
+ * Same advisory lock, idempotency and audit as the staff `recordConsent`, with
+ * source `member_pwa`. The caller already holds `withMemberScope`; 290b's
+ * merge reuses this form inside its own transaction.
+ */
+export async function recordMemberConsentInTx(
+  tx: MemberTx,
+  scope: MemberScope,
+  input: MemberConsentInput,
+  now: Date,
+): Promise<CustomerConsent> {
+  const tenantId = scope.tenantId;
+  const decision = input.granted ? "granted" : "withdrawn";
+
+  let profile;
+  if (scope.customerProfileId === null) {
+    if (!(input.purpose === "loyalty" && input.granted))
+      throw new HttpError(
+        404,
+        "CUSTOMER_NOT_FOUND",
+        "Pelanggan tidak ditemukan.",
+      );
+    profile = await createMemberProfile(tx, scope, now, input.referralCode);
+  } else {
+    profile = await withProfileLock(tx, tenantId, scope.customerProfileId);
+  }
+  if (profile.membershipStatus === "closed" || profile.userId !== scope.userId)
+    throw new HttpError(
+      404,
+      "CUSTOMER_NOT_FOUND",
+      "Pelanggan tidak ditemukan.",
+    );
+  const subjectId = profile.id;
+
+  if (input.granted) {
+    const active = (await activeConsentPolicies(tx, tenantId, now)).find(
+      (policy) => policy.purpose === input.purpose,
+    );
+    if (!active || active.version !== input.policyVersion)
+      throw new HttpError(
+        409,
+        "CONSENT_POLICY_OUTDATED",
+        "Versi kebijakan sudah diperbarui. Muat ulang lalu setujui versi terbaru.",
+      );
+  }
+
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`consents:${tenantId}:${subjectId}:${input.purpose}`}, 0))`,
+  );
+  const [current] = await tx
+    .select()
+    .from(consents)
+    .where(
+      and(
+        eq(consents.tenantId, tenantId),
+        eq(consents.subjectId, subjectId),
+        eq(consents.purpose, input.purpose),
+      ),
+    )
+    .orderBy(desc(consents.seq))
+    .limit(1);
+  if (
+    current &&
+    current.decision === decision &&
+    current.policyVersion === input.policyVersion
+  )
+    return toMemberConsent(tx, current);
+  if (!input.granted && current?.decision !== "granted")
+    throw new HttpError(
+      409,
+      "NOTHING_TO_WITHDRAW",
+      "There is no active consent to withdraw.",
+    );
+
+  const [row] = await tx
+    .insert(consents)
+    .values({
+      id: randomUUID(),
+      tenantId,
+      subjectId,
+      purpose: input.purpose,
+      policyVersion: input.policyVersion,
+      decision,
+      source: "member_pwa",
+      recordedBy: scope.userId,
+      recordedAt: now,
+    })
+    .returning();
+  if (!row) throw new Error("Consent was not recorded");
+
+  // Keep the profile in step: marketing flag, and the loyalty status.
+  const patch: Partial<typeof customerProfiles.$inferInsert> = {};
+  if (input.purpose === "marketing") patch.marketingOptIn = input.granted;
+  if (input.purpose === "loyalty") {
+    if (!input.granted) {
+      patch.membershipStatus = "suspended";
+    } else if (profile.membershipStatus !== "active") {
+      const whatsapp = profile.whatsappVerifiedAt
+        ? null
+        : await verifiedWhatsAppOfUser(tx, scope.userId);
+      if (whatsapp) {
+        patch.whatsappHash = whatsapp.hash;
+        patch.whatsappVerifiedAt = whatsapp.verifiedAt;
+      }
+      patch.membershipStatus =
+        profile.whatsappVerifiedAt || whatsapp
+          ? "active"
+          : "pending_verification";
+    }
+  }
+  if (Object.keys(patch).length > 0)
+    await tx
+      .update(customerProfiles)
+      .set({ ...patch, updatedAt: now })
+      .where(
+        and(
+          eq(customerProfiles.tenantId, tenantId as TenantId),
+          eq(customerProfiles.id, subjectId),
+        ),
+      );
+
+  await recordAudit(
+    tx,
+    scope.context,
+    {
+      id: createUlid(),
+      tenantId,
+      outletId: null,
+      actorType: "user",
+      actorId: scope.userId,
+      deviceId: null,
+      action: input.granted ? "consent.granted" : "consent.withdrawn",
+      objectType: "consent",
+      objectId: row.id,
+      reason: null,
+      maskedChanges: {
+        before: current
+          ? { decision: current.decision, policyVersion: current.policyVersion }
+          : null,
+        after: {
+          purpose: row.purpose,
+          decision: row.decision,
+          policyVersion: row.policyVersion,
+          source: row.source,
+        },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    },
+    ["purpose", "decision", "policyVersion", "source"],
+  );
+  return toMemberConsent(tx, row);
+}
+
+/** Opens the member scope, then records the consent (signup creates the profile). */
+export async function recordMemberConsent(
+  scope: MemberScope,
+  input: MemberConsentInput,
+  now: Date = new Date(),
+): Promise<CustomerConsent> {
+  return withMemberScope(db, scope, (tx) =>
+    recordMemberConsentInTx(tx, scope, input, now),
+  );
 }

@@ -37,6 +37,13 @@ import {
   type LinkFrame,
 } from "./protocol.ts";
 
+/**
+ * Frames received but not yet processed before the peer is closed with
+ * LINK_CLOSE.overloaded (legend-wg5t #1). Stop-and-wait means a well-behaved
+ * peer has about one batch plus a few acks, resends and heartbeats in flight.
+ */
+export const LINK_MAX_PENDING_FRAMES = 32;
+
 export type QueuedEdgeEvent = {
   readonly linkSeq: number;
   readonly event: EventEnvelope;
@@ -63,6 +70,15 @@ export type LinkStore = {
     toSeq: number;
     events: readonly QueuedEdgeEvent[];
   }): Promise<void>;
+  /**
+   * Optional (legend-nd3cu): settles both directions' numbering from the
+   * peer's hello cursor before any cursor is used, e.g. the cloud rebasing
+   * onto a rebuilt edge database. When present, this side's own hello waits
+   * for the peer's (the peer sends its hello unconditionally on connect), so
+   * the cursor it announces is already settled. Throw LinkProtocolError to
+   * refuse the link.
+   */
+  onPeerHello?(peerCursor: number): Promise<void>;
 };
 
 export type LinkTransport = {
@@ -86,6 +102,8 @@ export type LinkPeerOptions = {
   version: string;
   batchSize?: number;
   ackTimeoutMs?: number;
+  /** Backpressure bound on unprocessed received frames (legend-wg5t #1). */
+  maxPendingFrames?: number;
   now?: () => Date;
   /** Store/apply failures (no secrets in the error). The link stays up. */
   onError?: (error: unknown) => void;
@@ -123,7 +141,9 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
     LINK_BATCH_SIZE,
   );
   const ackTimeoutMs = options.ackTimeoutMs ?? 10_000;
+  const maxPendingFrames = options.maxPendingFrames ?? LINK_MAX_PENDING_FRAMES;
   const now = options.now ?? (() => new Date());
+  let pendingFrames = 0;
   let ready = false;
   let stopped = false;
   let sentUpTo = 0;
@@ -235,7 +255,34 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
     send({ type: "ack", ack });
   }
 
+  let helloSent = false;
+  async function sendHello() {
+    const cursor = await store.lastReceivedInbound();
+    helloSent = true;
+    send({
+      type: "hello",
+      version: options.version,
+      inboundCursor: String(cursor),
+    });
+  }
+
   async function onHello(cursor: number) {
+    if (!Number.isSafeInteger(cursor) || cursor < 0)
+      throw new LinkProtocolError("Hello cursor is not a sequence");
+    if (store.onPeerHello) {
+      try {
+        await store.onPeerHello(cursor);
+        if (!helloSent) await sendHello();
+      } catch (error) {
+        if (error instanceof LinkProtocolError) throw error;
+        // A transient failure (database blip) before our hello would leave
+        // the peer waiting on an open socket forever: close so it retries.
+        options.onError?.(error);
+        stop();
+        transport.close(LINK_CLOSE.overloaded, "Link not ready; retry");
+        return;
+      }
+    }
     const head = await store.outboundHead();
     if (cursor > head)
       throw new LinkProtocolError(
@@ -327,14 +374,8 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
 
   return {
     start() {
-      enqueue(async () => {
-        const cursor = await store.lastReceivedInbound();
-        send({
-          type: "hello",
-          version: options.version,
-          inboundCursor: String(cursor),
-        });
-      });
+      // With onPeerHello the hello goes out from onHello instead.
+      if (!store.onPeerHello) enqueue(sendHello);
     },
     receive(raw) {
       const frame = decodeFrame(raw);
@@ -343,7 +384,21 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
         transport.close(LINK_CLOSE.protocol, "Invalid frame");
         return;
       }
-      enqueue(() => handle(frame));
+      // The chain processes one frame at a time, so a flood would otherwise
+      // pile up in memory (and in store/DB work) without bound (legend-wg5t #1).
+      if (pendingFrames >= maxPendingFrames) {
+        stop();
+        transport.close(LINK_CLOSE.overloaded, "Too many pending frames");
+        return;
+      }
+      pendingFrames += 1;
+      enqueue(async () => {
+        try {
+          await handle(frame);
+        } finally {
+          pendingFrames -= 1;
+        }
+      });
     },
     notify() {
       enqueue(pump);

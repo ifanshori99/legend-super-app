@@ -5,7 +5,13 @@
 
 import { dataResponseSchema } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
-import { publicMenuPageSchema, publicSiteSchema } from "./schemas.ts";
+import {
+  brandWebsiteParamsSchema,
+  brandWebsiteSchema,
+  publicMenuPageSchema,
+  publicSiteSchema,
+  saveBrandWebsiteInputSchema,
+} from "./schemas.ts";
 
 /** Home page payload: brand, outlet, hours, location, featured menu, promos, SEO. */
 export const getPublicSite = defineEndpoint({
@@ -19,4 +25,24 @@ export const getPublicMenuPage = defineEndpoint({
   method: "GET",
   path: "/api/public/site/menu",
   response: dataResponseSchema(publicMenuPageSchema),
+});
+
+/**
+ * Staff read of the brand's site content (`org.theme.manage`, tenant-wide).
+ * 404 `BRAND_WEBSITE_NOT_FOUND` until a first save.
+ */
+export const getBrandWebsiteContent = defineEndpoint({
+  method: "GET",
+  path: "/api/website/brands/:brandId/content",
+  params: brandWebsiteParamsSchema,
+  response: dataResponseSchema(brandWebsiteSchema),
+});
+
+/** Staff save; `publish` controls `published_at` (same permission, audited). */
+export const saveBrandWebsiteContent = defineEndpoint({
+  method: "PUT",
+  path: "/api/website/brands/:brandId/content",
+  params: brandWebsiteParamsSchema,
+  body: saveBrandWebsiteInputSchema,
+  response: dataResponseSchema(brandWebsiteSchema),
 });

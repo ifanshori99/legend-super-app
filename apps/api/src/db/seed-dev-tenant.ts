@@ -7,13 +7,27 @@
 // idempotent (ON CONFLICT updates the same ids), so `pnpm test` can run it on
 // every fresh disposable database.
 import { Pool } from "pg";
-import { ROLE_TEMPLATES } from "@starter/shared/access";
+import {
+  DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES,
+  DEFAULT_REFUND_APPROVAL_POLICIES,
+  ROLE_TEMPLATES,
+} from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendTaxFixtures } from "@starter/shared/tax";
+import {
+  brandWebsiteContentSchema,
+  cafeLegendWebsiteFixtures,
+} from "@starter/shared/website";
+import { guardDataImport } from "../config/data-import";
 import { databaseUrl } from "./connection";
 
+// Data import guard (legend-v4ld): synthetic, development-only source. The
+// explicit checks below are defence in depth (NODE_ENV is not part of the
+// deployment settings the guard reads).
+guardDataImport("seed.dev-tenant", undefined, {
+  databaseUrl: process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL,
+});
 if (
-  (process.env.DEPLOYMENT_MODE ?? "development") !== "development" ||
   (process.env.DATA_CLASSIFICATION ?? "synthetic") !== "synthetic" ||
   process.env.NODE_ENV === "production"
 ) {
@@ -222,6 +236,67 @@ try {
     );
   }
 
+  // Approval matrix defaults for AI/MCP write tools (AIG-03, legend-zw9r): one
+  // level, the outlet manager; same rows as migration 0089 and
+  // seedTenantRoleTemplates give other tenants. Only when the action has none.
+  await client.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+     SELECT r.tenant_id, a.action_type, NULL, r.id, 1, true
+     FROM roles r
+     CROSS JOIN (VALUES ('ai_action'), ('mcp_action')) AS a(action_type)
+     WHERE r.tenant_id = $1 AND r.is_template AND r.template_key = 'outlet_manager'
+       AND NOT EXISTS (
+         SELECT 1 FROM approval_policies p
+         WHERE p.tenant_id = r.tenant_id AND p.action_type = a.action_type
+       )`,
+    [tenant.id],
+  );
+
+  // Refund approval default (legend-zi9o, PRD §3.6 and D14): same supervisor
+  // level-1 row from Rp0 and same no-refund-row rule as seedTenantRoleTemplates
+  // and migration 0134.
+  await client.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+     SELECT $1::uuid, 'refund', d.threshold_idr, r.id, d.level, true
+     FROM unnest($2::bigint[], $3::int[], $4::text[]) AS d(threshold_idr, level, template_key)
+     JOIN roles r
+       ON r.tenant_id = $1::uuid AND r.is_template AND r.template_key = d.template_key
+     WHERE NOT EXISTS (
+       SELECT 1 FROM approval_policies p
+       WHERE p.tenant_id = $1::uuid AND p.action_type = 'refund'
+     )`,
+    [
+      tenant.id,
+      DEFAULT_REFUND_APPROVAL_POLICIES.map((row) => row.thresholdIdr),
+      DEFAULT_REFUND_APPROVAL_POLICIES.map((row) => row.level),
+      DEFAULT_REFUND_APPROVAL_POLICIES.map((row) => row.roleTemplateKey),
+    ],
+  );
+
+  // Cash shift close approval default (legend-ccpn, Q28, PRD §3.10): same
+  // level-1 rows from Rp0 (supervisor, outlet manager, general manager) and
+  // same no-cash_shift_close-row rule as seedTenantRoleTemplates and the data
+  // migration.
+  await client.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+     SELECT $1::uuid, 'cash_shift_close', d.threshold_idr, r.id, d.level, true
+     FROM unnest($2::bigint[], $3::int[], $4::text[]) AS d(threshold_idr, level, template_key)
+     JOIN roles r
+       ON r.tenant_id = $1::uuid AND r.is_template AND r.template_key = d.template_key
+     WHERE NOT EXISTS (
+       SELECT 1 FROM approval_policies p
+       WHERE p.tenant_id = $1::uuid AND p.action_type = 'cash_shift_close'
+     )`,
+    [
+      tenant.id,
+      DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map((row) => row.thresholdIdr),
+      DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map((row) => row.level),
+      DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map(
+        (row) => row.roleTemplateKey,
+      ),
+    ],
+  );
+
   // Tax configuration (PRD §3.14 F11/F14, bead legend-559): the default PBJT
   // Bandung 10% F&B rule, a facility rule, the Private Room service charge and
   // the exclusive-price calculation options. Tenants created from the panel get
@@ -338,6 +413,38 @@ try {
       ],
     );
   }
+
+  // Published public website content (WS-08, legend-qgr6): the Cafe Legend
+  // site fixture, so GET /api/public/site answers in development and tests.
+  const site = cafeLegendWebsiteFixtures.site;
+  const websiteContent = brandWebsiteContentSchema.parse({
+    tagline: site.brand.tagline,
+    description: site.brand.description,
+    heroImages: site.heroImages,
+    gallery: site.gallery,
+    highlights: site.highlights,
+    address: site.outlet.address,
+    geo: site.outlet.geo,
+    contact: site.contact,
+    seo: site.seo,
+    googleBusinessUrl: site.outlet.mapUrl,
+  });
+  await client.query(
+    `INSERT INTO brand_websites (tenant_id, brand_id, outlet_id, content, published_at, updated_by)
+     VALUES ($1, $2, $3, $4, now(), $5)
+     ON CONFLICT (tenant_id, brand_id) DO UPDATE SET
+       outlet_id = EXCLUDED.outlet_id,
+       content = EXCLUDED.content,
+       published_at = COALESCE(brand_websites.published_at, EXCLUDED.published_at),
+       updated_at = now()`,
+    [
+      tenant.id,
+      brand.id,
+      fixtures.outlets[0].id,
+      JSON.stringify(websiteContent),
+      tenant.createdBy,
+    ],
+  );
 
   await client.query("COMMIT");
 } catch (error) {

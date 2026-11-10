@@ -625,8 +625,11 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
       adjusted: true,
       refundedSubtotalIdr: 40_000,
       withdrawnDiscountIdr: 0,
-      refundDueIdr: 40_000,
-      totalDiscountIdr: 10_000,
+      // Founder rule: the 10.000 discount is split pro rata by price between
+      // the kept 80.000 and the refunded 40.000 (6.667 / 3.333, largest
+      // remainder), so the refund is 40.000 - 3.333.
+      refundDueIdr: 36_667,
+      totalDiscountIdr: 6_667,
       withdrawn: [],
     });
     expect(await counters(promotionId)).toEqual({ uses: 1, spent: 10_000 });
@@ -774,7 +777,7 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
     ]);
   });
 
-  it("[E5IT-12] a partial refund never pays out more than the goods value the guest paid", async () => {
+  it("[E5IT-12] a partial refund pays the paid-in goods minus the kept goods at their payable price", async () => {
     const item = randomUUID();
     const other = randomUUID();
     await seedPromotion(item, {
@@ -789,11 +792,11 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
       adjusted: true,
       refundedSubtotalIdr: 50_000,
       withdrawnDiscountIdr: 0,
-      // Paid 40.000 for the goods: the 50.000 refundable value is capped.
-      refundDueIdr: 40_000,
+      // Paid 40.000 for the goods; the refunded item takes half of the 60.000
+      // discount (30.000), the kept one costs 50.000 - 30.000 = 20.000.
+      refundDueIdr: 20_000,
       uncoveredIdr: 0,
-      // The kept 50.000 bill cannot carry a discount above its own value.
-      totalDiscountIdr: 50_000,
+      totalDiscountIdr: 30_000,
     });
     const { rows } = await asOwner(tenantId, (client) =>
       client.query(
@@ -805,8 +808,8 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
     );
     expect(rows[0]).toMatchObject({
       paid_idr: "40000",
-      refunded_paid_idr: "40000",
-      total_discount_idr: "50000",
+      refunded_paid_idr: "20000",
+      total_discount_idr: "30000",
       refunded_subtotal_idr: "50000",
     });
     // Idempotent: the same refund again pays nothing more.
@@ -819,7 +822,7 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
     });
   });
 
-  it("[E5IT-12] the paid ceiling is cumulative across two partial refunds", async () => {
+  it("[E5IT-12] the payout is cumulative across two partial refunds", async () => {
     const item = randomUUID();
     const second = randomUUID();
     const third = randomUUID();
@@ -837,14 +840,21 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
         priced(item, 50_000),
         priced(second, 30_000),
       ]),
-    ).toMatchObject({ refundedSubtotalIdr: 20_000, refundDueIdr: 20_000 });
-    // 30.000 more goods, but only 20.000 of what the guest paid is left.
+    ).toMatchObject({
+      // Kept 80.000 carries 48.000 of the discount: payable 32.000, so of the
+      // 40.000 paid, 8.000 is due.
+      refundedSubtotalIdr: 20_000,
+      refundDueIdr: 8_000,
+      totalDiscountIdr: 48_000,
+    });
+    // Kept 50.000 carries 30.000 (48.000 x 50/80): payable 20.000, and 32.000
+    // of the paid amount is left, so 12.000 more is due (20.000 in total).
     expect(
       await partialRefund(input.orderId, [priced(item, 50_000)]),
     ).toMatchObject({
       refundedSubtotalIdr: 30_000,
-      refundDueIdr: 20_000,
-      totalDiscountIdr: 50_000,
+      refundDueIdr: 12_000,
+      totalDiscountIdr: 30_000,
     });
   });
 });

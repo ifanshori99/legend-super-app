@@ -32,6 +32,15 @@ export type AreaAccess = {
    * asks for another station's board. Empty = no station reach (fail closed).
    */
   readonly stations: readonly StationId[];
+  /**
+   * Set when this session is a Super Admin support session (Better Auth
+   * impersonation) with a grant, from GET /api/me/access. Presentation only;
+   * the API refuses writes under a read_only grant.
+   */
+  readonly supportSession?: {
+    readonly accessMode: "read_only" | "read_write";
+    readonly expiresAt: string;
+  } | null;
 };
 
 export const ANONYMOUS_ACCESS: AreaAccess = Object.freeze({
@@ -61,6 +70,8 @@ export function accessFromSession(
 }
 
 export const MOCK_ROLE_COOKIE = "legend-mock-role";
+/** Mock only: `read_only` simulates a read-only support session (TEN-04). */
+export const MOCK_SUPPORT_COOKIE = "legend-mock-support";
 /** "all" = every catalog permission (dev default), "none" = signed out. */
 export type MockRole = RoleTemplateKey | "all" | "none";
 

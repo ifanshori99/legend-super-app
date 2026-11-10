@@ -60,6 +60,7 @@ export const APPROVAL_ACTIONS = {
   price_correction: "§3.6 Override Supervisor (koreksi harga)",
   // Other PRD clauses that route through the matrix / approval inbox
   cash_shift_close: "§3.10 Shift Kasir (approval supervisor)",
+  edc_standalone: "§3.13 EDC mode standalone; EDC-04 (PIN supervisor)",
   apology_voucher: "§3.9 Voucher Permintaan Maaf (batas nilai sesuai matriks)",
   unallocated_funds: "PAY-04",
   purchase_request: "§3.15 Alur Pengadaan (Purchase Request → approval)",
@@ -126,6 +127,49 @@ export const approvalMatrixSchema = z
           });
     }
   });
+
+/**
+ * Default refund approval matrix (legend-zi9o), the single source for new
+ * tenants (seedTenantRoleTemplates), the dev tenant and migration 0134. PRD
+ * §3.6 "Override Supervisor" and D14 name only the supervisor: a refund needs
+ * the supervisor's PIN or approval, so every refund opens a one-step chain for
+ * the supervisor from Rp0. Higher tiers (for example an outlet manager level
+ * from a larger amount) are tenant configuration, not a default. The floor is
+ * 0 rather than null: both match an amount of 0 (a null floor is the lowest
+ * tier), but 0 states "from Rp0" explicitly. Applied only to a tenant with no
+ * refund row and a supervisor template role; a tenant that configured refunds
+ * is never touched. The row requires a distinct actor.
+ */
+export const DEFAULT_REFUND_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "supervisor";
+}[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "supervisor" }];
+
+/**
+ * Default cash shift close approval matrix (legend-ccpn), the single source for
+ * new tenants (seedTenantRoleTemplates), the dev tenant and the data migration
+ * for existing tenants. Founder decision Q28 (2026-11-09) and PRD §3.10: every
+ * shift close needs one approval, a PIN at the cashier is enough, and the
+ * variance does not change that. So the matrix is one tier, one level, from Rp0
+ * (floor 0 rather than null, as for refunds). The level-1 approvers are the
+ * templates that hold `shift.cash.approve_close` (supervisor, outlet manager,
+ * general manager), because an approver must hold the exact role the matrix
+ * names (APPROVER_ROLE_MISMATCH). So the default keeps who could approve a
+ * close before and only fixes that every close needs one approval; an outlet
+ * with only a manager on duty is not locked out. Applied only to a tenant with
+ * no cash_shift_close row and the template roles; a tenant that configured its
+ * own matrix is never touched. The rows require a distinct actor.
+ */
+export const DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "supervisor" | "outlet_manager" | "general_manager";
+}[] = [
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "supervisor" },
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "outlet_manager" },
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "general_manager" },
+];
 
 export type ApprovalStep = {
   readonly level: number;
@@ -279,6 +323,10 @@ export const POS_OVERRIDE_ACTIONS = [
   "refund",
   "cash_drawer_open",
   "price_correction",
+  // §4 E step 5 / POS-03: the supervisor approves the blind-count close.
+  "cash_shift_close",
+  // EDC-04: a standalone EDC payment (agent down) needs a supervisor PIN.
+  "edc_standalone",
 ] as const satisfies readonly ApprovalActionType[];
 export type PosOverrideAction = (typeof POS_OVERRIDE_ACTIONS)[number];
 

@@ -6,7 +6,6 @@
   "sideEffects": false,
   "exports": {
     "./permissions": "./src/permissions.ts",
-    "./validators/notes": "./src/validators/notes.ts",
     "./types": "./src/types/api.ts",
     "./site": "./src/site.ts",
     "./theme": "./src/theme/index.ts",
@@ -19,6 +18,10 @@
     "./payment": "./src/payment/index.ts",
     "./payment/admin": "./src/payment/admin.ts",
     "./edge": "./src/edge/index.ts",
+    "./edge/master-sync": "./src/edge/master-sync.ts",
+    "./edge/people-snapshot": "./src/edge/people-snapshot.ts",
+    "./edc": "./src/edc/index.ts",
+    "./edc/events": "./src/edc/events.ts",
     "./adapters": "./src/adapters/index.ts",
     "./storage": "./src/storage/index.ts",
     "./api": "./src/api/index.ts",
@@ -32,6 +35,7 @@
     "./text": "./src/text/index.ts",
     "./inventory": "./src/inventory/index.ts",
     "./qr-order": "./src/qr-order/index.ts",
+    "./qr-order/sample": "./src/qr-order/sample.ts",
     "./crm": "./src/crm/index.ts",
     "./facility": "./src/facility/index.ts",
     "./accounting": "./src/accounting/index.ts",
@@ -45,7 +49,8 @@
     "./hris/payroll/server": "./src/hris/payroll/server.ts",
     "./platform": "./src/platform/index.ts",
     "./dashboard": "./src/dashboard/index.ts",
-    "./operations": "./src/operations/index.ts"
+    "./operations": "./src/operations/index.ts",
+    "./ai": "./src/ai/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

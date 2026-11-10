@@ -16,6 +16,8 @@ export const configTemplateIdSchema = uuidIdSchema<"ConfigTemplateId">();
 export const configImportIdSchema = uuidIdSchema<"ConfigImportId">();
 export const supportAccessGrantIdSchema =
   uuidIdSchema<"SupportAccessGrantId">();
+export const supportAccessRequestIdSchema =
+  uuidIdSchema<"SupportAccessRequestId">();
 export const platformAdminIdSchema = uuidIdSchema<"PlatformAdminId">();
 export const regionIdSchema = uuidIdSchema<"RegionId">();
 
@@ -25,5 +27,8 @@ export type TenantThemeId = z.infer<typeof tenantThemeIdSchema>;
 export type ConfigTemplateId = z.infer<typeof configTemplateIdSchema>;
 export type ConfigImportId = z.infer<typeof configImportIdSchema>;
 export type SupportAccessGrantId = z.infer<typeof supportAccessGrantIdSchema>;
+export type SupportAccessRequestId = z.infer<
+  typeof supportAccessRequestIdSchema
+>;
 export type PlatformAdminId = z.infer<typeof platformAdminIdSchema>;
 export type RegionId = z.infer<typeof regionIdSchema>;
