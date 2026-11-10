@@ -1392,3 +1392,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Keputusan: meja sumber setelah gabung jadi `dirty` (bukan `occupied`) supaya pindai ulang QR tidak membuka tagihan kedua.
 
 - 10 Nov 05:5x legend-9p0k selesai di ws/notification-outbox-events: notification.created/read dan notification_preference.updated masuk outbox cloud-sync satu transaksi dengan datanya, urutan agregat dari outbox (tanpa migrasi; 0192 tidak dipakai). 27 tes baru+lama lulus, tsc api bersih. 1 reviewer, 2 temuan dibetulkan (preferensi user outlet-terbatas, markAllRead massal).
+
+## legend-bjy6 snapshot pajak checkout (engineer, cabang `ws/tax-snapshot-facility` dari d2080951, 2026-11-10)
+
+- Temuan: `recordTaxSnapshots` sudah dipanggil di QR (`qr-order.service.ts:1548`, `:2038`) dan POS (`pos-order.service.ts:1225`). Checkout fasilitas belum ada di kode: `holdFacilitySlot` tanpa pemanggil, bayar tiket fasilitas ditunda ke `legend-bzih` (DEFERRED). Jadi tidak ada panggilan fasilitas yang ditambahkan; arsitek mengonfirmasi tidak ada jalur lain yang perlu mencatat `facility_ticket`.
+- Dibangun: `qr-tax-snapshot.test.ts` (2 tes) dan `pos-tax-snapshot.test.ts` (4 tes): snapshot tertulis sekali per aturan, jumlah cocok dengan total order dan per aturan, tidak ada baris sebelum bayar, ulang bayar/`payment.paid` tidak mengubah baris. Tanpa perubahan kode sumber, tanpa migrasi.
+- Bukti: mutasi (panggilan dimatikan) membuat tes gagal (POS 3 dari 4, QR tiap panggilan gagal di tesnya); 6 dari 6 hijau setelah perubahan terakhir; tsc api, eslint, prettier bersih. Review K (architect): 4 temuan nyata dibetulkan.
+- Sisa: pemasangan di checkout fasilitas menunggu `legend-bzih`.
