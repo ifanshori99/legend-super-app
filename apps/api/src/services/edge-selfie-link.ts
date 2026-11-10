@@ -4,7 +4,7 @@
 // does the linking. Linking is best effort: a failure never throws, it flags
 // the log `selfie_unlinked` and drops its photo_key so the review stays usable.
 import { and, eq, sql } from "drizzle-orm";
-import { ulidToUuid } from "@starter/shared/core";
+import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
 import type { AttendanceStoredFlagReason } from "@starter/shared/hris";
 import { attendanceLogs } from "../db/schema/hris-attendance.ts";
 import { coreStorageObjects } from "../db/schema/core-storage.ts";
@@ -20,16 +20,14 @@ import type { Tx } from "./hris-access.ts";
  * unlinked: both exist but linking failed; the log is flagged `selfie_unlinked`.
  */
 export type EdgeSelfieLinkResult =
-  | "linked"
-  | "already"
-  | "waiting"
-  | "unlinked";
+  "linked" | "already" | "waiting" | "unlinked";
 
 export async function linkEdgeSelfie(
   tx: Tx,
   input: { tenantId: string; objectId: string },
 ): Promise<EdgeSelfieLinkResult> {
-  const { tenantId, objectId } = input;
+  const tenantId = tenantIdSchema.parse(input.tenantId);
+  const { objectId } = input;
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`attendance-selfie-link:${tenantId}:${objectId}`}, 0))`,
   );

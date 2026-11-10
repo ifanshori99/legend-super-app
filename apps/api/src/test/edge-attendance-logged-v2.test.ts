@@ -182,6 +182,69 @@ describe("legend-0wvoz inactive employee is flagged, not rejected (Q81)", () => 
     });
   }
 
+  /** Status and end date as they stand when the replayed event arrives. */
+  async function setEmployment(
+    employeeId: string,
+    status: string,
+    endDate: string | null,
+  ) {
+    await fx.asTenant((client) =>
+      client.query(
+        "UPDATE employees SET status = $1, end_date = $2 WHERE tenant_id = $3 AND id = $4",
+        [status, endDate, fx.tenantId, employeeId],
+      ),
+    );
+  }
+
+  it("clocked while employed, status terminated later with the end date after occurredAt: not flagged employee_inactive", async () => {
+    const staff = await fx.createEmployee("active");
+    const clockedAt = new Date(Date.now() - 20 * MINUTE);
+    await setEmployment(
+      staff.id,
+      "terminated",
+      wibDate(clockedAt.getTime() + 3 * 24 * HOUR),
+    );
+    const { log } = await apply({
+      employeeId: staff.id,
+      selfieObjectId: randomUUID(),
+      clockedAt,
+    });
+    expect(log).toBeDefined();
+    expect(log!.flag_reasons).not.toContain("employee_inactive");
+    expect(log!.flag_reasons).toContain("offline_unverified");
+  });
+
+  for (const status of ["active", "terminated"] as const) {
+    it(`occurredAt after the end date of a ${status} employee gets the flag employee_inactive`, async () => {
+      const staff = await fx.createEmployee("active");
+      const clockedAt = new Date(Date.now() - 20 * MINUTE);
+      await setEmployment(
+        staff.id,
+        status,
+        wibDate(clockedAt.getTime() - 3 * 24 * HOUR),
+      );
+      const { log } = await apply({
+        employeeId: staff.id,
+        selfieObjectId: randomUUID(),
+        clockedAt,
+      });
+      expect(log).toBeDefined();
+      expect(log!.flag_reasons).toEqual(
+        expect.arrayContaining(["employee_inactive", "offline_unverified"]),
+      );
+    });
+  }
+
+  it("occurredAt before the join date gets the flag employee_inactive", async () => {
+    // The fixture's employees join on 2025-03-01.
+    const { log } = await apply({
+      selfieObjectId: randomUUID(),
+      clockedAt: new Date("2025-02-10T05:00:00Z"),
+    });
+    expect(log).toBeDefined();
+    expect(log!.flag_reasons).toContain("employee_inactive");
+  });
+
   it("an onboarding employee and an active employee are not flagged employee_inactive", async () => {
     const onboarding = await fx.createEmployee("onboarding");
     const first = await apply({ employeeId: onboarding.id });

@@ -365,7 +365,28 @@ async function presentLog(
 ): Promise<AttendanceLog> {
   if (row.photoKey === null || !canSee)
     return toAttendanceLog(row, null, isOwn);
-  const url = await signer(context, row.photoKey, tx);
+  // legend-0wvoz: an edge event can name any selfie id, and the cloud applier
+  // cannot see an object of another outlet. Never sign an object that is
+  // linked to another log, or unlinked at another outlet than this log's.
+  const [photoObject] = await tx
+    .select({
+      sourceId: coreStorageObjects.sourceId,
+      outletId: coreStorageObjects.outletId,
+    })
+    .from(coreStorageObjects)
+    .where(
+      and(
+        eq(coreStorageObjects.tenantId, row.tenantId),
+        eq(coreStorageObjects.id, row.photoKey),
+      ),
+    )
+    .limit(1);
+  const foreignPhoto =
+    photoObject !== undefined &&
+    (photoObject.sourceId === null
+      ? photoObject.outletId !== row.outletId
+      : photoObject.sourceId !== ulidToUuid(row.id));
+  const url = foreignPhoto ? null : await signer(context, row.photoKey, tx);
   if (url !== null)
     await recordAudit(
       tx,
@@ -609,11 +630,18 @@ async function storeAttendanceLog(
     const reasons: AttendanceStoredFlagReason[] = ["offline_unverified"];
     for (const reason of input.edgeFlagReasons ?? [])
       if (!reasons.includes(reason)) reasons.push(reason);
-    // The employee table keeps no status history: the current status stands in
-    // for the status at occurredAt. An inactive employee is flagged for review,
-    // never rejected (the edge already recorded the clock).
+    // Decided at occurredAt, not now. The employee table keeps no status
+    // history, so the join and end dates (outlet-local day of occurredAt) say
+    // whether the employee was employed then; only a status without an end
+    // date to judge by (suspended, or ended with no end date) falls back to the
+    // current status. An inactive employee is flagged for review, never
+    // rejected (the edge already recorded the clock).
     const [employee] = await tx
-      .select({ status: employees.status })
+      .select({
+        status: employees.status,
+        joinDate: employees.joinDate,
+        endDate: employees.endDate,
+      })
       .from(employees)
       .where(
         and(
@@ -622,13 +650,17 @@ async function storeAttendanceLog(
         ),
       )
       .limit(1);
-    if (
-      employee &&
-      employee.status !== "onboarding" &&
-      employee.status !== "active" &&
-      !reasons.includes("employee_inactive")
-    )
-      reasons.push("employee_inactive");
+    if (employee && !reasons.includes("employee_inactive")) {
+      const day = localDateOf(input.occurredAt, outlet.timezone);
+      const ended =
+        employee.status === "resigned" || employee.status === "terminated";
+      const inactive =
+        day < employee.joinDate ||
+        (employee.endDate !== null && day > employee.endDate) ||
+        employee.status === "suspended" ||
+        (ended && employee.endDate === null);
+      if (inactive) reasons.push("employee_inactive");
+    }
     decision = { validity: "flagged", reasons };
   } else {
     if (input.method === "selfie_geo" && input.location !== null) {

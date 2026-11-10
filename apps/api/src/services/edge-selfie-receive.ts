@@ -114,170 +114,203 @@ export async function receiveEdgeSelfie(
     visibility: "private" as const,
   };
   const written: string[] = [];
+  const lockSql = sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edge-selfie:${node.tenantId}:${input.objectId}`}, 0))`;
+  /** Delete what this call wrote to S3; emptied first so it runs once. */
+  const removeWritten = () =>
+    Promise.allSettled(
+      written
+        .splice(0)
+        .map((key) => deps.storage.delete(context, { ...base, key })),
+    );
   try {
     return await withTenant(deps.database, context, async (tx) => {
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edge-selfie:${node.tenantId}:${input.objectId}`}, 0))`,
-      );
+      await tx.execute(lockSql);
 
-      const receipt = (
-        await tx
-          .select()
-          .from(edgeReceivedSelfies)
-          .where(
-            and(
-              eq(edgeReceivedSelfies.tenantId, node.tenantId),
-              eq(edgeReceivedSelfies.objectId, input.objectId),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (receipt) {
-        // A purged selfie is discarded for good: answer 200 so the edge stops
-        // retrying, write nothing.
-        if (receipt.state === "discarded") return { status: 200 };
-        if (sealedHash.equals(Buffer.from(receipt.sealedSha256)))
-          return { status: 200 };
-        throw new HttpError(
-          409,
-          "SELFIE_HASH_CONFLICT",
-          "A different selfie already exists for this object id.",
-        );
-      }
-      const existing = (
-        await tx
-          .select({ id: coreStorageObjects.id })
-          .from(coreStorageObjects)
-          .where(
-            and(
-              eq(coreStorageObjects.tenantId, node.tenantId),
-              eq(coreStorageObjects.id, input.objectId),
-            ),
-          )
-          .limit(1)
-      )[0];
-      // A phone upload (or another feature) already owns this id.
-      if (existing)
-        throw new HttpError(
-          409,
-          "OBJECT_ID_TAKEN",
-          "This object id is already in use.",
-        );
-
-      let opened: ReturnType<typeof unsealSelfie>;
+      // From here every failure takes back the S3 files while the lock is
+      // still held: once it is released a retry may store the same keys, and a
+      // late delete would remove the retry's files.
       try {
-        opened = unsealSelfie(input.body, keys);
+        const receipt = (
+          await tx
+            .select()
+            .from(edgeReceivedSelfies)
+            .where(
+              and(
+                eq(edgeReceivedSelfies.tenantId, node.tenantId),
+                eq(edgeReceivedSelfies.objectId, input.objectId),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (receipt) {
+          // A purged selfie is discarded for good: answer 200 so the edge stops
+          // retrying, write nothing.
+          if (receipt.state === "discarded") return { status: 200 };
+          if (sealedHash.equals(Buffer.from(receipt.sealedSha256)))
+            return { status: 200 };
+          throw new HttpError(
+            409,
+            "SELFIE_HASH_CONFLICT",
+            "A different selfie already exists for this object id.",
+          );
+        }
+        const existing = (
+          await tx
+            .select({ id: coreStorageObjects.id })
+            .from(coreStorageObjects)
+            .where(
+              and(
+                eq(coreStorageObjects.tenantId, node.tenantId),
+                eq(coreStorageObjects.id, input.objectId),
+              ),
+            )
+            .limit(1)
+        )[0];
+        // A phone upload (or another feature) already owns this id.
+        if (existing)
+          throw new HttpError(
+            409,
+            "OBJECT_ID_TAKEN",
+            "This object id is already in use.",
+          );
+
+        let opened: ReturnType<typeof unsealSelfie>;
+        try {
+          opened = unsealSelfie(input.body, keys);
+        } catch (error) {
+          if (error instanceof SelfieUnsealError) throw cannotDecrypt();
+          throw error;
+        }
+        const { header, meta, webp } = opened;
+        if (
+          !sameId(header.tenantId, node.tenantId) ||
+          !sameId(header.objectId, input.objectId)
+        )
+          throw new HttpError(
+            403,
+            "FORBIDDEN",
+            "The sealed selfie does not belong to this upload.",
+          );
+        if (!sameId(meta.outletId, node.outletId))
+          throw new HttpError(
+            403,
+            "FORBIDDEN",
+            "The sealed selfie does not belong to this outlet.",
+          );
+        if (!sameId(sha256(webp).toString("hex"), meta.plainSha256))
+          throw cannotDecrypt();
+        const owner = (
+          await tx
+            .select({ id: employees.id })
+            .from(employees)
+            .where(
+              and(
+                eq(employees.tenantId, node.tenantId),
+                eq(employees.userId, meta.ownerUserId),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!owner)
+          throw new HttpError(
+            403,
+            "FORBIDDEN",
+            "The selfie owner is not an employee of this tenant.",
+          );
+
+        const image = await processImage(
+          webp,
+          storagePurposePolicy[SELFIE_PURPOSE].maxBytes,
+          deps.scanner,
+        );
+        const key = `${input.objectId}/original.webp`;
+        const thumbnailKey = `${input.objectId}/thumbnail.webp`;
+        // Claim the object id BEFORE writing S3. Outlet RLS hides an object of
+        // another outlet from the check above, so the primary key is the final
+        // guard: a taken id is a 409 and nothing is written to storage (the S3
+        // put must never overwrite the files of an object this call did not own).
+        const claimedRows = await tx
+          .insert(coreStorageObjects)
+          .values({
+            tenantId: node.tenantId,
+            outletId: node.outletId,
+            id: input.objectId,
+            purpose: SELFIE_PURPOSE,
+            objectKey: key,
+            thumbnailKey,
+            contentType: "image/webp",
+            sizeBytes: image.full.bytes.byteLength,
+            width: image.full.width,
+            height: image.full.height,
+            ownerUserId: meta.ownerUserId,
+            sourceKind: "attendance",
+            sourceId: null,
+          })
+          .onConflictDoNothing()
+          .returning({ id: coreStorageObjects.id });
+        if (claimedRows.length === 0)
+          throw new HttpError(
+            409,
+            "OBJECT_ID_TAKEN",
+            "This object id is already in use.",
+          );
+        await deps.storage.put(context, {
+          ...base,
+          key,
+          contentType: "image/webp",
+          content: new Uint8Array(image.full.bytes),
+        });
+        written.push(key);
+        await deps.storage.put(context, {
+          ...base,
+          key: thumbnailKey,
+          contentType: "image/webp",
+          content: new Uint8Array(image.thumbnail.bytes),
+        });
+        written.push(thumbnailKey);
+        await tx.insert(edgeReceivedSelfies).values({
+          tenantId: node.tenantId,
+          objectId: input.objectId,
+          outletId: node.outletId,
+          edgeNodeId: node.edgeNodeId,
+          sealedSha256: sealedHash,
+          state: "stored",
+          ...(deps.now && { receivedAt: deps.now() }),
+        });
+        await linkEdgeSelfie(tx, {
+          tenantId: node.tenantId,
+          objectId: input.objectId,
+        });
+        return { status: 201 };
       } catch (error) {
-        if (error instanceof SelfieUnsealError) throw cannotDecrypt();
+        await removeWritten();
         throw error;
       }
-      const { header, meta, webp } = opened;
-      if (
-        !sameId(header.tenantId, node.tenantId) ||
-        !sameId(header.objectId, input.objectId)
-      )
-        throw new HttpError(
-          403,
-          "FORBIDDEN",
-          "The sealed selfie does not belong to this upload.",
-        );
-      if (!sameId(meta.outletId, node.outletId))
-        throw new HttpError(
-          403,
-          "FORBIDDEN",
-          "The sealed selfie does not belong to this outlet.",
-        );
-      if (!sameId(sha256(webp).toString("hex"), meta.plainSha256))
-        throw cannotDecrypt();
-      const owner = (
-        await tx
-          .select({ id: employees.id })
-          .from(employees)
-          .where(
-            and(
-              eq(employees.tenantId, node.tenantId),
-              eq(employees.userId, meta.ownerUserId),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (!owner)
-        throw new HttpError(
-          403,
-          "FORBIDDEN",
-          "The selfie owner is not an employee of this tenant.",
-        );
-
-      const image = await processImage(
-        webp,
-        storagePurposePolicy[SELFIE_PURPOSE].maxBytes,
-        deps.scanner,
-      );
-      const key = `${input.objectId}/original.webp`;
-      const thumbnailKey = `${input.objectId}/thumbnail.webp`;
-      // Claim the object id BEFORE writing S3. Outlet RLS hides an object of
-      // another outlet from the check above, so the primary key is the final
-      // guard: a taken id is a 409 and nothing is written to storage (the S3
-      // put must never overwrite the files of an object this call did not own).
-      const claimedRows = await tx
-        .insert(coreStorageObjects)
-        .values({
-          tenantId: node.tenantId,
-          outletId: node.outletId,
-          id: input.objectId,
-          purpose: SELFIE_PURPOSE,
-          objectKey: key,
-          thumbnailKey,
-          contentType: "image/webp",
-          sizeBytes: image.full.bytes.byteLength,
-          width: image.full.width,
-          height: image.full.height,
-          ownerUserId: meta.ownerUserId,
-          sourceKind: "attendance",
-          sourceId: null,
-        })
-        .onConflictDoNothing()
-        .returning({ id: coreStorageObjects.id });
-      if (claimedRows.length === 0)
-        throw new HttpError(
-          409,
-          "OBJECT_ID_TAKEN",
-          "This object id is already in use.",
-        );
-      await deps.storage.put(context, {
-        ...base,
-        key,
-        contentType: "image/webp",
-        content: new Uint8Array(image.full.bytes),
-      });
-      written.push(key);
-      await deps.storage.put(context, {
-        ...base,
-        key: thumbnailKey,
-        contentType: "image/webp",
-        content: new Uint8Array(image.thumbnail.bytes),
-      });
-      written.push(thumbnailKey);
-      await tx.insert(edgeReceivedSelfies).values({
-        tenantId: node.tenantId,
-        objectId: input.objectId,
-        outletId: node.outletId,
-        edgeNodeId: node.edgeNodeId,
-        sealedSha256: sealedHash,
-        state: "stored",
-        ...(deps.now && { receivedAt: deps.now() }),
-      });
-      await linkEdgeSelfie(tx, {
-        tenantId: node.tenantId,
-        objectId: input.objectId,
-      });
-      return { status: 201 };
     });
   } catch (error) {
-    // The transaction rolled back: take back what this call wrote to S3.
-    await Promise.allSettled(
-      written.map((key) => deps.storage.delete(context, { ...base, key })),
-    );
+    // Only a failure at commit time leaves files behind here (the body ran to
+    // the end). A retry may have committed the same keys in the meantime:
+    // delete only when, under the lock, no object row owns the id.
+    if (written.length > 0) {
+      try {
+        await withTenant(deps.database, context, async (tx) => {
+          await tx.execute(lockSql);
+          const owned = await tx
+            .select({ id: coreStorageObjects.id })
+            .from(coreStorageObjects)
+            .where(
+              and(
+                eq(coreStorageObjects.tenantId, node.tenantId),
+                eq(coreStorageObjects.id, input.objectId),
+              ),
+            )
+            .limit(1);
+          if (owned.length === 0) await removeWritten();
+        });
+      } catch {
+        // Best effort: the original failure is the one to report.
+      }
+    }
     throw error;
   }
 }

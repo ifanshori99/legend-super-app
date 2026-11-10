@@ -66,6 +66,47 @@ class RecordingStorage extends FakeObjectStorage {
   }
 }
 
+/**
+ * The thumbnail put fails once, after the original was written, once `release`
+ * is called; the cleanup delete then waits until `deleteWaitsFor` settles (or
+ * 1.5 s), so a cleanup that runs after the lock is gone lands after a retry.
+ */
+class FailThumbnailOnceStorage extends RecordingStorage {
+  private failed = false;
+  private release!: () => void;
+  private readonly gate = new Promise<void>((resolve) => {
+    this.release = resolve;
+  });
+  private markReached!: () => void;
+  readonly reached = new Promise<void>((resolve) => {
+    this.markReached = resolve;
+  });
+  deleteWaitsFor: Promise<unknown> = Promise.resolve();
+  releaseFailure(): void {
+    this.release();
+  }
+  override async put(
+    ...args: Parameters<FakeObjectStorage["put"]>
+  ): ReturnType<FakeObjectStorage["put"]> {
+    if (args[1].key.endsWith("/thumbnail.webp") && !this.failed) {
+      this.failed = true;
+      this.markReached();
+      await this.gate;
+      throw new Error("storage unavailable");
+    }
+    return super.put(...args);
+  }
+  override async delete(
+    ...args: Parameters<FakeObjectStorage["delete"]>
+  ): ReturnType<FakeObjectStorage["delete"]> {
+    await Promise.race([
+      this.deleteWaitsFor,
+      new Promise((resolve) => setTimeout(resolve, 1500)),
+    ]);
+    return super.delete(...args);
+  }
+}
+
 let fx: EdgeSelfieFixture;
 let pair: SealKeyPair;
 let storage: RecordingStorage;
@@ -246,6 +287,30 @@ describe("legend-0wvoz T6 receive: store, retry, conflict", () => {
       ),
     );
     expect(receipts.rowCount).toBe(1);
+  });
+
+  it("a failure after the S3 put cleans up under the lock: a concurrent retry that stores its files keeps them", async () => {
+    const flaky = new FailThumbnailOnceStorage();
+    storage = flaky;
+    app = buildApp(flaky);
+    const objectId = randomUUID();
+    const sealed = await seal(objectId);
+
+    const first = put(objectId, sealed).then((response) => response);
+    await flaky.reached;
+    const retry = put(objectId, sealed).then((response) => response);
+    flaky.deleteWaitsFor = retry;
+    // Let the retry reach the object lock the first call still holds.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    flaky.releaseFailure();
+
+    const [firstResponse, retryResponse] = await Promise.all([first, retry]);
+    expect(firstResponse.status).toBe(500);
+    expect(retryResponse.status, JSON.stringify(retryResponse.body)).toBe(201);
+    expect(await stored(`${objectId}/original.webp`)).not.toBeNull();
+    expect(await stored(`${objectId}/thumbnail.webp`)).not.toBeNull();
+    expect(await fx.objectRow(objectId)).toBeDefined();
+    expect(await fx.receiptRow(objectId)).toBeDefined();
   });
 
   it("409 for the same object id with different sealed bytes, the stored selfie is untouched", async () => {

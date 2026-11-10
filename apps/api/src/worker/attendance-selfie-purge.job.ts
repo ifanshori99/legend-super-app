@@ -37,6 +37,7 @@ import type { ObjectStorage } from "@starter/shared/adapters";
 import {
   assertTrustedScopedContext,
   outletIdSchema,
+  ulidToUuid,
   uuidSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -243,6 +244,11 @@ async function purgeOne(
   const tenantId = context.tenant.tenantId;
   const objectId = uuidSchema.parse(candidate.photoKey);
   await withTenant(database, context, async (tx) => {
+    // Same lock as the edge receive endpoint (services/edge-selfie-receive.ts):
+    // a receive and a purge of one object never interleave.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edge-selfie:${tenantId}:${objectId}`}, 0))`,
+    );
     const [object] = await tx
       .select()
       .from(coreStorageObjects)
@@ -254,7 +260,17 @@ async function purgeOne(
         ),
       )
       .limit(1);
-    if (object) {
+    // A log's photo_key may point at someone else's object. Only delete an
+    // object linked to this very log, or an unlinked one at the log's outlet;
+    // any other object stays and only the log's own photo_key is cleared.
+    const owned =
+      object !== undefined &&
+      (object.sourceId === null
+        ? object.outletId !== null &&
+          object.outletId.toLowerCase() === candidate.outletId.toLowerCase()
+        : object.sourceId.toLowerCase() ===
+          ulidToUuid(candidate.id).toLowerCase());
+    if (object && owned) {
       const lookup = {
         tenantId,
         outletId: outletIdSchema.nullable().parse(object.outletId),
@@ -272,18 +288,19 @@ async function purgeOne(
             eq(coreStorageObjects.id, object.id),
           ),
         );
-    } else {
+    } else if (!object) {
       // legend-0wvoz: the selfie never reached the cloud. When the log's
       // outlet has an edge node the selfie may still arrive later; a
       // `discarded` receipt (zero-filled hash) makes the receive endpoint
       // answer 200 and store nothing. An existing receipt stays untouched.
+      const logOutletId = outletIdSchema.parse(candidate.outletId);
       const [node] = await tx
         .select({ id: edgeNodes.id })
         .from(edgeNodes)
         .where(
           and(
             eq(edgeNodes.tenantId, tenantId),
-            eq(edgeNodes.outletId, candidate.outletId),
+            eq(edgeNodes.outletId, logOutletId),
           ),
         )
         .orderBy(
@@ -297,7 +314,7 @@ async function purgeOne(
           .values({
             tenantId,
             objectId,
-            outletId: candidate.outletId,
+            outletId: logOutletId,
             edgeNodeId: node.id,
             sealedSha256: Buffer.alloc(32, 0),
             state: "discarded",
