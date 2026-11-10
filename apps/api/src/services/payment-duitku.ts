@@ -129,10 +129,16 @@ type Resolved = {
 const defaultLoader: DuitkuCredentialLoader = (context, outletId) =>
   loadActiveIntegrationCredentials(context, "duitku", outletId);
 
+// By id = a payment already minted on that integration: no plan check (a
+// revoked plan blocks new intents through `defaultLoader`, never the
+// reconciliation of money in flight, Codex P1 legend-rgddb).
 const defaultByIdLoader: DuitkuCredentialByIdLoader = (
   context,
   integrationId,
-) => loadIntegrationCredentialsById(context, "duitku", integrationId);
+) =>
+  loadIntegrationCredentialsById(context, "duitku", integrationId, {
+    forStoredIntent: true,
+  });
 
 /** The one outlet an outlet-scoped context is limited to, else null (tenant
  * row). */

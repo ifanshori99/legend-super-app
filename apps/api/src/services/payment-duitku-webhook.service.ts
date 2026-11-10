@@ -9,13 +9,19 @@
 //    intent id) and verify the signature with the credentials of the
 //    integration that minted it (current key, plus the previous one while in
 //    its rotation grace);
-// 2. STORE the callback in `gateway_webhook_events` (a retry of the same
-//    event id is a no-op);
+// 2. STORE the callback in `gateway_webhook_events`, keyed by the SIGNED
+//    fields only (order id + amount). A repeat of that key ends only when the
+//    intent is already settled; otherwise it is processed again, so a replay
+//    with a forged `resultCode` or `reference` can never swallow the genuine
+//    delivery (Codex P1 legend-rgddb);
 // 3. process: ignore `resultCode`, ask Duitku `transactionStatus` with the
 //    minting credentials and act on that answer. Money moves only on a paid
-//    answer whose reference is the intent's own, through `confirmPayment`, so
-//    late payment, double payment and amount mismatch follow the same rules as
-//    every other gateway (D20).
+//    answer whose reference is the intent's own, and only when the callback
+//    amount, the status amount and the bill are equal; any difference parks
+//    the money as unallocated funds for reconciliation (Codex P2). A failed or
+//    expired intent settles late only while its bill is open; a bill settled
+//    by other means or cancelled parks the money instead (Codex P2, CTO
+//    decision legend-rgddb).
 //
 // Every failure before the signature is verified answers with the same
 // UNAUTHORIZED error. A rejected delivery keeps only a counter row (hash, no
@@ -68,7 +74,15 @@ const PROVIDER = "duitku";
 const SIGNATURE_MESSAGE = "Tanda tangan webhook tidak valid.";
 const RESULT_CODES: ReadonlySet<string> = new Set(["00", "01", "02"]);
 const MAX_FORM_FIELDS = 20;
+/** Intent statuses that already hold the money: a repeat ends there. */
+const SETTLED_STATUSES: ReadonlySet<string> = new Set([
+  "paid",
+  "partially_refunded",
+  "refunded",
+]);
 const WEBHOOK_RETRY_MAX_BACKOFF_MINUTES = 60;
+/** A repeat of a stored event asks Duitku at most once per this window. */
+const REPEAT_RECHECK_MS = 60_000;
 
 type PaymentIntentRow = typeof paymentIntents.$inferSelect;
 type ProcessOutcome = "processed" | "ignored" | "failed";
@@ -97,9 +111,20 @@ function parseForm(rawBody: Buffer): Record<string, string> | null {
   return count === 0 ? null : { ...fields };
 }
 
+/** Signed fields only (merchantOrderId, amount; the merchant code is bound by
+ * the credentials). `resultCode` and `reference` are not signed: keying on
+ * them let a forged replay take the genuine delivery's key. */
 function eventIdOf(fields: DuitkuCallbackFields): string {
-  return `${fields.merchantOrderId}:${fields.reference ?? "-"}:${fields.resultCode}`;
+  return `${fields.merchantOrderId}:${fields.amount}`;
 }
+
+const storedIntentCredentials = (
+  context: ScopedTenantContext,
+  integrationId: string,
+) =>
+  loadIntegrationCredentialsById(context, PROVIDER, integrationId, {
+    forStoredIntent: true,
+  });
 
 async function loadIntent(
   context: ScopedTenantContext,
@@ -194,9 +219,10 @@ async function askStatus(
   return result;
 }
 
-/** A paid answer the lifecycle refused: an underpayment is parked as
- * unallocated funds (keyed by the provider reference, so a poll sees the same
- * row), any other refusal is only recorded on the row. */
+/** A paid answer the lifecycle refused: an underpayment, or a late payment
+ * whose bill is already settled or cancelled, is parked as unallocated funds
+ * (keyed by the provider reference, so a poll sees the same row) for the
+ * refund or credit review; any other refusal is only recorded on the row. */
 async function handleRejectedConfirmation(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
@@ -210,7 +236,7 @@ async function handleRejectedConfirmation(
     error instanceof PaymentConfirmationRejected
       ? error.decisionCode
       : "CONFLICT";
-  if (decision === "AMOUNT_MISMATCH")
+  if (decision === "AMOUNT_MISMATCH" || decision === "BILL_CLOSED")
     await recordUnsettledGatewayFunds(
       context,
       intent,
@@ -238,6 +264,7 @@ async function processStoredCallback(
   fetchImpl: DuitkuFetch,
 ): Promise<ProcessOutcome> {
   try {
+    // Only the signed fields (order id, amount) are read: they are the key.
     const fields = storedFields(row.payload);
     const intent = fields
       ? await loadIntent(context, fields.merchantOrderId)
@@ -275,31 +302,13 @@ async function processStoredCallback(
       return retryable ? "failed" : "ignored";
     }
     const bound = { paymentIntentId: intent.id, outletId: intent.outletId };
-    if (
-      fields.reference !== undefined &&
-      fields.reference !== intent.providerRef
-    ) {
-      await markRow(
-        context,
-        row.id,
-        {
-          status: "ignored",
-          lastErrorCode: "REFERENCE_MISMATCH",
-          processedAt: now,
-          ...bound,
-        },
-        now,
-      );
-      return "ignored";
-    }
+    // The callback `reference` is not signed, so it decides nothing (a forged
+    // one used to mark the shared row `ignored` and stop the worker, Codex
+    // legend-rgddb): the status answer's reference is checked in askStatus.
     const loaded =
       intent.gatewayIntegrationId === null
         ? null
-        : await loadIntegrationCredentialsById(
-            context,
-            PROVIDER,
-            intent.gatewayIntegrationId,
-          );
+        : await storedIntentCredentials(context, intent.gatewayIntegrationId);
     const credentials = loaded ? duitkuCredentialSet(loaded, now) : [];
     if (credentials.length === 0) {
       await markRow(
@@ -339,33 +348,58 @@ async function processStoredCallback(
     let code: string | null = null;
     if (answer.status === "paid") {
       const at = plausiblePaidAt(null, intent.createdAt, now);
-      try {
-        await confirmPayment(
-          context,
-          intent.id,
-          {
-            source: "verified_webhook",
-            method: intent.method,
-            amountIdr: answer.amountIdr,
-            providerRef: intent.providerRef,
-            at,
-          },
-          { type: "system" },
-          now,
-        );
-      } catch (error) {
-        if (!(error instanceof HttpError) || error.status !== 409) throw error;
+      // Money settles only when the signed callback amount, Duitku's status
+      // amount and the bill agree. Any difference (over or under, by even one
+      // rupiah) is parked for reconciliation; the intent stays unpaid.
+      const amountsAgree =
+        Number(fields.amount) === answer.amountIdr &&
+        answer.amountIdr === Number(intent.amountIdr);
+      if (!amountsAgree) {
         outcome = "ignored";
-        code = await handleRejectedConfirmation(
+        code = "REJECTED_AMOUNT_MISMATCH";
+        await recordUnsettledGatewayFunds(
           context,
           intent,
-          intent.providerRef,
-          answer.amountIdr,
-          at,
-          error,
+          {
+            provider: PROVIDER,
+            providerRef: intent.providerRef,
+            source: "verified_webhook",
+            paidAmountIdr: answer.amountIdr,
+            receivedAt: new Date(at),
+          },
           now,
         );
-      }
+      } else
+        try {
+          await confirmPayment(
+            context,
+            intent.id,
+            {
+              source: "verified_webhook",
+              method: intent.method,
+              amountIdr: answer.amountIdr,
+              providerRef: intent.providerRef,
+              at,
+            },
+            { type: "system" },
+            now,
+            // A failed or expired intent settles only an open bill.
+            { closedIntentNeedsOpenBill: true },
+          );
+        } catch (error) {
+          if (!(error instanceof HttpError) || error.status !== 409)
+            throw error;
+          outcome = "ignored";
+          code = await handleRejectedConfirmation(
+            context,
+            intent,
+            intent.providerRef,
+            answer.amountIdr,
+            at,
+            error,
+            now,
+          );
+        }
     } else if (answer.status === "pending") {
       // Duitku has not settled it (yet): retried by the worker.
       outcome = "failed";
@@ -469,9 +503,8 @@ export async function receiveDuitkuCallback(input: {
     return reject();
   const intent = await loadIntent(context, intentId.data);
   if (!intent || intent.gatewayIntegrationId === null) return reject();
-  const loaded = await loadIntegrationCredentialsById(
+  const loaded = await storedIntentCredentials(
     context,
-    PROVIDER,
     intent.gatewayIntegrationId,
   );
   const credentials = loaded ? duitkuCredentialSet(loaded, now) : [];
@@ -507,9 +540,30 @@ export async function receiveDuitkuCallback(input: {
   if (!row) {
     row = await loadRow(context, eventId);
     if (!row) throw new Error("Webhook event conflicted without a winner");
-    if (row.status === "processed" || row.status === "ignored")
+    // Same signed fields. Only a settled intent makes it a plain duplicate:
+    // the first delivery's unsigned `resultCode` may have been forged, so an
+    // unsettled intent is checked with Duitku again. A signed callback has
+    // no timestamp and can be replayed at will, so at most one check per
+    // event per REPEAT_RECHECK_MS; a repeat inside that window only hands a
+    // closed row back to the worker (its backoff then asks Duitku) and never
+    // touches an open one, so replays cannot postpone the worker either.
+    const fresh = await loadIntent(context, intent.id);
+    if (!fresh || SETTLED_STATUSES.has(fresh.status))
       return { status: "duplicate", eventId };
-    // `received` or `failed`: the earlier delivery never finished, retry it.
+    if (now.getTime() - row.updatedAt.getTime() < REPEAT_RECHECK_MS) {
+      if (row.status === "processed" || row.status === "ignored")
+        await markRow(
+          context,
+          row.id,
+          {
+            status: "failed",
+            lastErrorCode: "RECHECK_QUEUED",
+            processedAt: null,
+          },
+          now,
+        );
+      return { status: "duplicate", eventId };
+    }
   }
   const outcome = await processStoredCallback(
     context,

@@ -2,6 +2,17 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-rgddb perbaikan temuan second-opinion Codex gateway Duitku (engineer Opus, cabang `ws/duitku-codex-fix` dari milestone/m1 29ddcbf7, brief 374, 2026-11-10)
+
+- Tanpa migrasi. Berkas: `payment-duitku-webhook.service.ts`, `payment-duitku.ts`, `platform-integration.service.ts` (opsi `forStoredIntent`), `payment.service.ts` (opsi `closedIntentNeedsOpenBill`, kode tolak `BILL_CLOSED`, aturan ketat Duitku di poller), baru `payment-late-settlement.ts`, test `payment-duitku-webhook.test.ts`.
+- P1 kredensial: intent yang sudah dibuat (callback, cek status, poll) memuat kredensial per id tanpa cek paket; intent baru tetap butuh paket.
+- P1 dedup: kunci event hanya field bertanda tangan (`<orderId>:<amount>`). Ulangan pada intent belum lunas dicek ulang ke Duitku paling sering sekali per menit per event; di dalam jendela itu baris selesai dikembalikan ke worker (`RECHECK_QUEUED`), baris terbuka tidak disentuh (replay tidak bisa menunda worker). `reference` callback (tidak ditandatangani) tidak lagi menentukan apa pun; reference jawaban status yang menentukan.
+- P2 nominal: lunas hanya bila callback == status == tagihan; selain itu dana diparkir sebagai unallocated funds (`REJECTED_AMOUNT_MISMATCH`), intent tidak lunas. Berlaku juga di poller untuk Duitku.
+- P2 pelunasan terlambat (keputusan CTO): intent failed/expired lunas hanya bila tagihan masih terbuka (belum tertutup pembayaran lain, pesanan/tender tidak void/selesai/gagal, reservasi tidak cancelled/no_show), dicek di bawah kunci tagihan + intent. Selain itu dana diparkir (`REJECTED_BILL_CLOSED`) ke antrean unallocated -> event `payment.funds_unallocated` -> jurnal gateway vs `customer_deposit`. Audit `payment.paid` kini mencatat `late`.
+- Bukti: 9 test baru/berubah merah di base (fail-first, log run 3), lalu 20 file terarah 549/550 dengan 1 gagal berantai dari cleanup test (order final tidak bisa dihapus, diperbaiki dengan `session_replication_role = replica`), rerun 3 file 53/53 setelah perubahan terakhir; tsc api (heavy) exit 0; eslint + prettier berkas berubah bersih.
+- Review architect xhigh: 4 temuan (poller melewati aturan, reservasi batal tak tercakup, reference palsu menghentikan worker, replay DoS) semua dibetulkan, re-review: tertutup, tanpa bug uang baru. Sisa minor: worker ambil 100 baris tertua per run; halaman tamu 409 saat dana diparkir pada intent pending (sama seperti underpayment hari ini).
+- Subagent: 7 (Explore 4, implementer 1, test-runner 1, architect 1 dua putaran), puncak bersamaan 3.
+
 ## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
 
 - Tanpa migrasi (`db:generate` kosong). Role baru `loyalty_points_deferral` + akun `4105 Penangguhan Pendapatan Poin Loyalty` (kontra-pendapatan di bawah 4100). Tenant baru dari template; tenant lama lewat `pnpm db:backfill-defaults` (`addLoyaltyDeferralAccount`, lewati bila 4105 terpakai).

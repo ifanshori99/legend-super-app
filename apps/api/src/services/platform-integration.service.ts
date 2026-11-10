@@ -928,18 +928,29 @@ export async function loadIntegrationCredentialsById(
   context: ScopedTenantContext,
   provider: IntegrationProvider,
   integrationId: string,
+  options: {
+    /**
+     * The caller reconciles a payment ALREADY minted on this integration
+     * (callback verification, status check, poll, cancel). The plan check is
+     * skipped: removing the provider from the plan stops new payments, never
+     * the reconciliation of money already in flight (Codex P1 legend-rgddb).
+     * Tenant, provider, integration id and outlet scope still bind the row.
+     */
+    forStoredIntent?: boolean;
+  } = {},
 ): Promise<{
   integration: TenantIntegration;
   credentials: Record<string, string>;
 } | null> {
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
-    try {
-      await assertProviderAvailable(tx, tenantId, provider);
-    } catch (error) {
-      if (error instanceof PlatformError) return null;
-      throw error;
-    }
+    if (!options.forStoredIntent)
+      try {
+        await assertProviderAvailable(tx, tenantId, provider);
+      } catch (error) {
+        if (error instanceof PlatformError) return null;
+        throw error;
+      }
     const [row] = await tx
       .select()
       .from(tenantIntegrations)
