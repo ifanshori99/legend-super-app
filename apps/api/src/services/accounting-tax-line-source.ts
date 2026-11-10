@@ -142,7 +142,8 @@ async function collectedTaxByOutlet(
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+// First character 0-7: a ULID is 128 bits, so a larger one cannot decode.
+const ULID_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/i;
 
 /** The `uuid` a sale journal's source id is stored as in tax_snapshots. */
 function snapshotSourceId(sourceId: string): string | null {
@@ -212,21 +213,33 @@ async function saleSnapshotsByOutlet(
   const byOutlet = new Map<string, { base: bigint; tax: bigint }>();
   if (weight.size === 0) return { byOutlet, missing: [] };
 
-  const snapshots = await tx
-    .select({
-      outletId: taxSnapshots.outletId,
-      sourceId: taxSnapshots.sourceId,
-      base: taxSnapshots.taxBaseIdr,
-      tax: taxSnapshots.taxIdr,
-    })
-    .from(taxSnapshots)
-    .where(
-      and(
-        sql`${taxSnapshots.tenantId} = ${args.tenantId}`,
-        eq(taxSnapshots.taxType, "pbjt"),
-        inArray(taxSnapshots.sourceId, [...weight.keys()]),
-      ),
+  // Batched: one bind parameter per id, and Postgres allows 65,535 per query.
+  const ids = [...weight.keys()];
+  const snapshots: {
+    outletId: string;
+    sourceId: string;
+    base: number;
+    tax: number;
+  }[] = [];
+  for (let from = 0; from < ids.length; from += 5000) {
+    snapshots.push(
+      ...(await tx
+        .select({
+          outletId: taxSnapshots.outletId,
+          sourceId: taxSnapshots.sourceId,
+          base: taxSnapshots.taxBaseIdr,
+          tax: taxSnapshots.taxIdr,
+        })
+        .from(taxSnapshots)
+        .where(
+          and(
+            sql`${taxSnapshots.tenantId} = ${args.tenantId}`,
+            eq(taxSnapshots.taxType, "pbjt"),
+            inArray(taxSnapshots.sourceId, ids.slice(from, from + 5000)),
+          ),
+        )),
     );
+  }
   const seen = new Set<string>();
   for (const row of snapshots) {
     const key = row.sourceId.toLowerCase();
@@ -271,7 +284,11 @@ async function latestRateBp(
         sql`${taxSnapshots.businessDate} < ${periodEndExclusive(args.period)}`,
       ),
     )
-    .orderBy(desc(taxSnapshots.businessDate))
+    .orderBy(
+      desc(taxSnapshots.businessDate),
+      desc(taxSnapshots.createdAt),
+      desc(taxSnapshots.id),
+    )
     .limit(1);
   return row && row.rateBp > 0 ? row.rateBp : null;
 }
