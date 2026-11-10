@@ -3,7 +3,7 @@
 // platform reported, the internal order it was injected into, and every
 // fulfilment step the contract machine allows from the current status.
 import * as React from "react";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, RefreshCw, TriangleAlert } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,12 +20,18 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { useSupportReadOnly } from "@/features/ws01-support-access/read-only";
 import type {
   DeliveryChannelOrder,
   DeliveryOrderStatus,
 } from "@starter/shared/delivery";
 import type { MessageKey } from "@starter/shared/i18n";
-import { useDeliveryOrder, useUpdateOrderStatus } from "../hooks";
+import {
+  useDeliveryOrder,
+  useResendOrderSync,
+  useResolveOrderSync,
+  useUpdateOrderStatus,
+} from "../hooks";
 import {
   businessDateOf,
   deliveryErrorKey,
@@ -36,11 +42,17 @@ import {
   orderCanEnterKitchen,
   orderHasPriceMismatch,
   orderHasUnmatchedLine,
+  orderIsFinal,
   orderNetIdr,
   platformKey,
   type DeliveryOrderAction,
 } from "../lib";
-import { MappingBadge, OrderStatusPill, SourceBadge } from "./delivery-badges";
+import {
+  MappingBadge,
+  OrderStatusPill,
+  PlatformSyncBadge,
+  SourceBadge,
+} from "./delivery-badges";
 
 function Fact({
   label,
@@ -119,6 +131,272 @@ function LineList({ order }: { order: DeliveryChannelOrder }) {
   );
 }
 
+function isStaleSync(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "DELIVERY_SYNC_NOT_PENDING"
+  );
+}
+
+/**
+ * Founder Q58: two recovery buttons on a `needs_action` order. Resend is one
+ * request per press. Mark handled asks for an optional note first, because it
+ * clears the mark without the platform confirming anything. Both go through
+ * `mutateAsync`: a success clears the mark, the refetch unmounts this block,
+ * and a `mutate` callback would be dropped with it.
+ */
+function PlatformSyncActions({
+  outletId,
+  order,
+  platform,
+  disabled,
+  onBusyChange,
+}: {
+  outletId: string;
+  order: DeliveryChannelOrder;
+  platform: string;
+  disabled: boolean;
+  onBusyChange: (busy: boolean) => void;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const resend = useResendOrderSync();
+  const resolve = useResolveOrderSync();
+  const [confirming, setConfirming] = React.useState(false);
+  const [note, setNote] = React.useState("");
+  const busy = resend.isPending || resolve.isPending;
+  const readOnly = useSupportReadOnly();
+  const locked = disabled || readOnly;
+  const resolveButton = React.useRef<HTMLButtonElement>(null);
+  // The status buttons below lock while a sync write is in flight, so the two
+  // never race on one order. Release on unmount: the mark clearing unmounts us.
+  React.useEffect(() => {
+    onBusyChange(busy);
+    return () => onBusyChange(false);
+  }, [busy, onBusyChange]);
+  const stillFailing =
+    resend.isSuccess && resend.data.platformSync === "needs_action";
+  const error = resend.error ?? resolve.error;
+
+  const onResend = async () => {
+    if (busy) return;
+    resolve.reset();
+    try {
+      const next = await resend.mutateAsync({
+        outletId,
+        deliveryOrderId: order.id,
+      });
+      if (next.platformSync === "ok")
+        toast({
+          title: t("deliveryOps.platformSync.resendSuccess", { platform }),
+          tone: "success",
+        });
+    } catch (caught) {
+      // Another staff member got there first: the refetch removes this block,
+      // so the inline error would never be seen. Say it in a toast instead.
+      if (isStaleSync(caught))
+        toast({ title: t(deliveryErrorKey(caught)), tone: "info" });
+    }
+  };
+
+  const onResolve = async () => {
+    if (busy) return;
+    resend.reset();
+    const reason = note.trim();
+    try {
+      await resolve.mutateAsync({
+        outletId,
+        deliveryOrderId: order.id,
+        body: reason === "" ? {} : { reason },
+      });
+      toast({
+        title: t("deliveryOps.platformSync.resolved"),
+        tone: "success",
+      });
+      setConfirming(false);
+      setNote("");
+    } catch (caught) {
+      if (isStaleSync(caught))
+        toast({ title: t(deliveryErrorKey(caught)), tone: "info" });
+    }
+  };
+
+  return (
+    <div
+      role="group"
+      aria-label={t("deliveryOps.platformSync.actionsLabel")}
+      className="grid gap-2 border-t border-warning/30 pt-3"
+    >
+      {confirming && (
+        <div className="grid gap-2 rounded-container border-(length:--border-w) bg-card p-card">
+          <FormField
+            label={t("deliveryOps.platformSync.resolveNoteLabel")}
+            hint={t("deliveryOps.platformSync.resolveNoteHint")}
+          >
+            <Textarea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder={t("deliveryOps.platformSync.resolveNotePlaceholder")}
+              rows={2}
+              maxLength={300}
+              autoFocus
+            />
+          </FormField>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              className="min-h-11"
+              type="button"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false);
+                setNote("");
+                resolve.reset();
+                // The confirm area unmounts this button: hand focus back.
+                requestAnimationFrame(() => resolveButton.current?.focus());
+              }}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              className="min-h-11"
+              type="button"
+              variant="outline"
+              loading={resolve.isPending}
+              disabled={locked || busy}
+              onClick={() => void onResolve()}
+            >
+              {t("deliveryOps.platformSync.resolveConfirm")}
+            </Button>
+          </div>
+        </div>
+      )}
+      <p
+        role="status"
+        className="flex items-start gap-1.5 font-medium text-warning empty:hidden"
+      >
+        {stillFailing && (
+          <>
+            <TriangleAlert
+              className="mt-0.5 size-4 shrink-0"
+              aria-hidden="true"
+            />
+            {t("deliveryOps.platformSync.resendStillFailing", { platform })}
+          </>
+        )}
+      </p>
+      {error && (
+        <p role="alert" className="font-medium text-danger">
+          {t(deliveryErrorKey(error))}
+        </p>
+      )}
+      {!confirming && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button
+            className="min-h-11"
+            type="button"
+            variant="outline"
+            loading={resend.isPending}
+            disabled={locked || busy}
+            onClick={() => void onResend()}
+          >
+            {t("deliveryOps.platformSync.resend")}
+          </Button>
+          <Button
+            className="min-h-11"
+            ref={resolveButton}
+            type="button"
+            variant="outline"
+            disabled={locked || busy}
+            onClick={() => {
+              resend.reset();
+              setConfirming(true);
+            }}
+          >
+            {t("deliveryOps.platformSync.resolve")}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Staff guidance for a platform sync that is not `ok` (legend-u37u3). */
+function PlatformSyncNote({
+  order,
+  outletId,
+  canAct,
+  online,
+  onBusyChange,
+}: {
+  order: DeliveryChannelOrder;
+  outletId: string;
+  canAct: boolean;
+  online: boolean;
+  onBusyChange: (busy: boolean) => void;
+}) {
+  const t = useT();
+  if (order.platformSync === "ok") return null;
+  const platform = t(platformKey(order.platform));
+  if (order.platformSync === "retrying")
+    return (
+      <div
+        role="note"
+        className="flex items-start gap-2 rounded-container bg-surface-2 p-card text-sm"
+      >
+        <RefreshCw
+          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <p>{t("deliveryOps.platformSync.retryingHint", { platform })}</p>
+      </div>
+    );
+  const final = orderIsFinal(order.status);
+  return (
+    <div
+      role="note"
+      className="grid gap-2 rounded-container bg-warning-subtle p-card text-sm"
+    >
+      <h3 className="flex items-start gap-2 text-sm font-semibold text-warning">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        {t("deliveryOps.platformSync.needsActionTitle", { platform })}
+      </h3>
+      <p>{t("deliveryOps.platformSync.needsActionIntro")}</p>
+      <ol
+        aria-label={t("deliveryOps.platformSync.needsActionStepsLabel")}
+        className="grid list-decimal gap-1 pl-5"
+      >
+        <li>
+          {t("deliveryOps.platformSync.needsActionStep1", { platform })}{" "}
+          <span translate="no" className="font-mono whitespace-nowrap">
+            {order.externalOrderId}
+          </span>
+          .
+        </li>
+        <li>{t("deliveryOps.platformSync.needsActionStep2")}</li>
+        {!final && (
+          <li>
+            {t("deliveryOps.platformSync.needsActionStep3", { platform })}
+          </li>
+        )}
+      </ol>
+      {final && (
+        <p>{t("deliveryOps.platformSync.needsActionFinal", { platform })}</p>
+      )}
+      {canAct && (
+        <PlatformSyncActions
+          outletId={outletId}
+          order={order}
+          platform={platform}
+          disabled={!online}
+          onBusyChange={onBusyChange}
+        />
+      )}
+    </div>
+  );
+}
+
 function OrderDetailBody({
   outletId,
   timeZone,
@@ -141,6 +419,7 @@ function OrderDetailBody({
   );
   const [reason, setReason] = React.useState("");
   const [showError, setShowError] = React.useState(false);
+  const [syncBusy, setSyncBusy] = React.useState(false);
 
   if (orderQuery.isPending) return <OrderSkeleton />;
   if (orderQuery.isError || !orderQuery.data)
@@ -163,7 +442,7 @@ function OrderDetailBody({
       ? t("deliveryOps.detail.reasonRequired")
       : undefined;
   const mutationError = update.error ? t(deliveryErrorKey(update.error)) : null;
-  const disabled = !canHandle || !online || update.isPending;
+  const disabled = !canHandle || !online || update.isPending || syncBusy;
 
   const moments: { labelKey: MessageKey; instant: string }[] = [
     { labelKey: "deliveryOps.detail.received", instant: order.receivedAt },
@@ -230,6 +509,7 @@ function OrderDetailBody({
           <OrderStatusPill status={order.status} />
           <SourceBadge source={order.source} />
           <Badge tone="neutral">{t(platformKey(order.platform))}</Badge>
+          <PlatformSyncBadge sync={order.platformSync} />
         </SheetDescription>
       </SheetHeader>
 
@@ -269,6 +549,14 @@ function OrderDetailBody({
             </Fact>
           )}
         </dl>
+
+        <PlatformSyncNote
+          order={order}
+          outletId={outletId}
+          canAct={canHandle}
+          online={online}
+          onBusyChange={setSyncBusy}
+        />
 
         {order.customerNote && (
           <div className="grid gap-1 rounded-container bg-surface-2 p-card">

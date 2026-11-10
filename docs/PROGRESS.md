@@ -58,6 +58,14 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Aturan: buat ulang butuh sesi sudah MFA dan minimal satu faktor terverifikasi; set lama hapus total. Pakai kode: kunci baris set (FOR UPDATE), sekali pakai, 5 salah = kunci 15 menit (sama dengan TOTP), counter tetap tersimpan. Hapus faktor terakhir = set dicabut (advisory lock yang sama dengan buat ulang). Audit `mfa_recovery_codes.generated/revoked`, `mfa_recovery_code.used/rejected` di tenant sesi; sesi tanpa tenant hanya log. Audit gagal tidak menggagalkan aksi.
 - Bukti: 16 test API gagal-dulu (16/16 merah 404 di commit 74784770), lalu semua hijau; review architect (K): 3 sedang (race hapus vs buat ulang, audit gagal = 500, `when` journal bentrok) + 2 rendah (kode terpakai pada sesi dicabut, import melingkar) dibetulkan, 3 test paralel ditambah.
 - Berikut: FE (layar kode cadangan + login pakai kode) kartu terpisah; edge allowlist tidak disentuh (MFA hanya cloud); merge train: pastikan `when` 0239 di atas migrasi terakhir yang sudah jalan di DB tujuan.
+## legend-u37u3 WS-08 lencana platformSync di layar staf delivery (ui-engineer, cabang `ws/u37u3-delivery-sync-badge` dari milestone/m1 d07b6cf8, 2026-11-10)
+
+- Daftar dan detail pesanan delivery menampilkan `platformSync`: `ok` tanpa tanda; `retrying` lencana netral "Mengirim ulang ke platform" plus catatan detail; `needs_action` lencana peringatan "Belum sinkron, perlu tindakan" plus kartu langkah staf. Teks di `deliveryOps.platformSync` (`ws08-delivery.ts`), komponen `PlatformSyncBadge` (`delivery-badges.tsx`), `PlatformSyncNote` (`order-detail-sheet.tsx`). Tanpa tombol kirim ulang (endpoint ada di legend-eyqvo, belum di m1; keputusan founder Q58: dua tombol menyusul di kartu terpisah).
+- Pesanan final (selesai, dibatalkan, ditolak) yang `needs_action` tidak punya langkah status berikutnya, jadi kartu tidak menjanjikan tanda hilang sendiri (hasil review). Tanda baru bisa dihapus lewat tombol "Tandai sudah ditangani" legend-eyqvo.
+- Mock web: tiga pesanan demo (GF-4471 needs_action, GF-4452 retrying, GF-4468 dibatalkan + needs_action); ganti status di mock mengosongkan tanda.
+- Override DESIGN.md: lencana sinkron di daftar `rounded-xl` dan boleh turun baris (bukan pil satu baris) supaya teks penuh terbaca di 390 px tanpa terpotong.
+- Bukti: `e2e/legend-u37u3.mock.spec.ts` 4 dari 5 tes merah sebelum kode, kini 7/7 (screenshot ikut); `legend-e8oa.mock.spec.ts` 13/13 tetap hijau; tsc web dan shared, eslint, prettier bersih. Screenshot: `docs/screens/u37u3/`.
+- Review: reviewer (2 temuan nyata dibetulkan: teks langkah final, mock tidak mengosongkan tanda), ui-auditor (salinan final dibuat jujur, ID pesanan tidak putus baris, screenshot final 390/1280/320). Subagent 4 (test-writer, reviewer, ui-auditor, test-runner), puncak bersamaan 3.
 
 ## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
 
@@ -1991,3 +1999,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Gate: typecheck tiga paket hijau; lint 0 error; `heavy pnpm test` penuh 12091 lulus, 2 gagal (`menu-print-db` render konkuren dan `tax-api` ORD-03, flake yang sudah dikenal, keduanya lulus saat dijalankan sendiri); `heavy pnpm test:e2e` 18 lulus, 1 dilewati. Architect (K) atas diff migrasi: satu temuan nyata (trigger 0239) dan dua kosmetik, semua dibetulkan.
 - Ukuran: sesi 4,92 juta unit biaya total, batch48b kira-kira 2,4 juta (utama Sonnet, subagent: 3 Explore, 1 test-runner, 1 architect Opus); 5 subagent, puncak 3 bersamaan.
 - Belum: batch48c (fe-small-tests, u37u3, fe-badge-theme, tenant-config-export, print-agent) menunggu perintah CTO.
+
+## legend-u37u3 tombol sinkron platform (ui-engineer, cabang `ws/u37u3-platform-sync`)
+
+- Sudah: lencana retrying/needs_action (dari 7134de77, di-cherry-pick) ditambah tombol Kirim ulang dan Tandai sudah ditangani (Q58, API legend-eyqvo di m1). Kirim ulang sekali per tekan; Tandai memakai konfirmasi dengan catatan opsional. Tombol status terkunci saat aksi sinkron berjalan; 409 DELIVERY_SYNC_NOT_PENDING jadi toast. Screenshot di `docs/design/screenshots/u37u3/`.
+- Bukti: typecheck web + eslint bersih, e2e mock `legend-u37u3` 15/15.
+- Celah: belum diuji terhadap API nyata; fokus setelah sukses tidak dipindah; target sentuh 44 px belum dicek pada emulasi touch.

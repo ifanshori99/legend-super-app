@@ -20,6 +20,7 @@ import type {
   DeliveryOrderSource,
   DeliveryOrderStatus,
   DeliveryPlatform,
+  DeliveryPlatformSync,
   DeliverySettlementStatus,
   DeliverySyncStatus,
 } from "@starter/shared/delivery";
@@ -44,6 +45,19 @@ export function mappingStatusKey(status: DeliveryMappingStatus): MessageKey {
 
 export function syncStatusKey(status: DeliverySyncStatus): MessageKey {
   return `deliveryOps.syncStatus.${status}`;
+}
+
+/** No later status step exists, so a `needs_action` mark cannot clear alone. */
+export function orderIsFinal(status: DeliveryOrderStatus): boolean {
+  return (
+    status === "delivered" || status === "cancelled" || status === "rejected"
+  );
+}
+
+export function platformSyncKey(
+  sync: Exclude<DeliveryPlatformSync, "ok">,
+): MessageKey {
+  return `deliveryOps.platformSync.${sync}`;
 }
 
 export function settlementStatusKey(
@@ -72,6 +86,7 @@ export function deliveryErrorKey(error: unknown): MessageKey {
     case "DELIVERY_CHANNEL_CLOSED":
     case "DELIVERY_MAPPING_INCOMPLETE":
     case "DELIVERY_CHANNEL_UNKNOWN":
+    case "DELIVERY_SYNC_NOT_PENDING":
       return `deliveryOps.errors.${code}`;
     default:
       return "deliveryOps.errors.fallback";

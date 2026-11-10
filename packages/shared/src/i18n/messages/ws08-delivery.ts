@@ -156,6 +156,38 @@ export const deliveryOpsMessages = {
     noAction: "Tidak ada aksi lanjutan untuk status ini.",
     errorTitle: "Pesanan tidak dapat dimuat",
   },
+  // Platform sync of the latest status step (legend-u37u3): `ok` shows
+  // nothing, `retrying` the system resends alone, `needs_action` staff check
+  // the platform app. The order keeps running at the outlet either way.
+  platformSync: {
+    retrying: "Mengirim ulang ke platform",
+    needs_action: "Belum sinkron, perlu tindakan",
+    retryingHint:
+      "Sistem sedang mengirim ulang status pesanan ini ke {platform}. Tidak ada yang perlu Anda lakukan.",
+    needsActionTitle: "{platform} belum menerima status terakhir pesanan ini",
+    needsActionIntro:
+      "Pesanan tetap berjalan di outlet; hanya status di platform yang belum sama.",
+    needsActionStepsLabel: "Langkah untuk staf",
+    needsActionStep1: "Buka aplikasi mitra {platform} dan cek status pesanan",
+    needsActionStep2:
+      "Bila berbeda, ubah status di aplikasi mitra agar sama dengan layar ini.",
+    needsActionFinal:
+      "Pesanan ini sudah ditutup di outlet, jadi tidak ada langkah status berikutnya. Tanda tetap tampil di layar ini meski status di {platform} sudah Anda samakan.",
+    needsActionStep3:
+      "Lanjutkan pesanan seperti biasa. Tanda ini hilang sendiri setelah {platform} menerima langkah status berikutnya.",
+    resend: "Kirim ulang",
+    resolve: "Tandai sudah ditangani",
+    resendSuccess: "Terkirim ke {platform}. Tanda belum sinkron dihapus.",
+    resendStillFailing:
+      "Kirim ulang belum berhasil: {platform} masih menolak. Cek aplikasi mitra, lalu tekan Tandai sudah ditangani.",
+    resolveNoteLabel: "Catatan",
+    resolveNoteHint:
+      "Contoh: status sudah disamakan lewat aplikasi mitra. Tersimpan di catatan audit.",
+    resolveNotePlaceholder: "Tulis singkat bila perlu",
+    resolveConfirm: "Ya, sudah ditangani",
+    resolved: "Pesanan ditandai sudah ditangani.",
+    actionsLabel: "Tindakan untuk staf",
+  },
   manual: {
     title: "Catat pesanan manual",
     description:
