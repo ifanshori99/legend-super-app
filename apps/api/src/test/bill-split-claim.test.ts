@@ -41,6 +41,7 @@ import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import {
   getSplitClaim,
+  getSplitClaimByToken,
   redeemSplitClaimTx,
 } from "../services/bill-split.service.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
@@ -491,5 +492,202 @@ describe("split part claim token (legend-ms3)", () => {
     const response = await as(stranger).claim(orderParts[1]!.id);
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(response.body.data?.claimToken).toBeUndefined();
+  });
+});
+
+// legend-ia54l: the claim token alone opens the claim code for 24 hours, also
+// after the table session is closed.
+// GET /api/table-sessions/split-claims/current, Authorization: Bearer <claimToken>.
+//
+// Assumptions:
+// - "Close the table" = the same owner UPDATE other split tests use
+//   (table_sessions voided + closed_at); "void the order" = owner UPDATE
+//   orders.status = 'voided'.
+// - The old session-scoped route refuses a closed session with a 4xx and no
+//   token in the body (exact code not pinned by the spec).
+// - NOT_FOUND over HTTP is status 404 and the body carries no token.
+// - Each case uses its own part, so redeems/expiries do not leak between cases.
+describe("claim by token after table close (legend-ia54l)", () => {
+  const CURRENT = "/api/table-sessions/split-claims/current";
+  let world: Guest;
+  let parts: SplitDto[];
+  let claims: Claim[]; // read with the session open, per paid part (index 0 = part 1)
+  let voidWorld: Guest;
+  let voidPart: SplitDto;
+  let voidClaim: Claim;
+  let otherTenant: IsolatedTenant;
+
+  const byToken = (token: string, host = tenant.hostname) =>
+    agent(app)
+      .get(CURRENT)
+      .set("Host", host)
+      .set("Authorization", `Bearer ${token}`);
+
+  async function splitWorld(count: number, paid: number) {
+    const g = await seatAtNewTable();
+    const added = await as(g).add(ids.kopi, 0);
+    expect(added.status).toBe(201);
+    const placed = await as(g).checkout(added.body.data.cart.version);
+    expect(placed.status).toBe(201);
+    const created = await as(g).split({
+      method: "equal",
+      parts: count,
+      idempotencyKey: randomUUID(),
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const sorted: SplitDto[] = [...created.body.data.splits].sort(
+      (a: SplitDto, b: SplitDto) => a.shareIndex - b.shareIndex,
+    );
+    for (const part of sorted.slice(0, paid)) await payPart(g, part);
+    return { guest: g, parts: sorted };
+  }
+
+  async function closeTable(sessionId: string) {
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE table_sessions SET status = 'voided', closed_at = now(), closed_reason = 'voided'
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, sessionId],
+      ),
+    );
+  }
+
+  beforeAll(async () => {
+    // 5 parts, 4 paid (order stays awaiting_payment); parts 0-3 are paid.
+    const w = await splitWorld(5, 4);
+    world = w.guest;
+    parts = w.parts;
+    claims = [];
+    for (const part of parts.slice(0, 4)) {
+      const claim = await readClaim(world, part.id);
+      expect(claim.status).toBe("available");
+      claims.push(claim);
+    }
+    const v = await splitWorld(3, 2);
+    voidWorld = v.guest;
+    voidPart = v.parts[0]!;
+    voidClaim = await readClaim(voidWorld, voidPart.id);
+    expect(voidClaim.status).toBe("available");
+
+    otherTenant = await createIsolatedTenant(`bsx-${randomUUID().slice(0, 6)}`);
+    createdTenantIds.push(otherTenant.tenantId);
+  });
+
+  it("CLAIM-AFTER-CLOSE the token opens the claim within 24h after the table is closed, the session route refuses", async () => {
+    const part = parts[0]!;
+    const before = claims[0]!;
+    await closeTable(world.sessionId);
+
+    const session = await as(world).claim(part.id);
+    expect(session.status).toBeGreaterThanOrEqual(400);
+    expect(session.body.data?.claimToken).toBeUndefined();
+
+    const response = await byToken(before.claimToken!);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data).toEqual({
+      billSplitId: part.id,
+      status: "available",
+      claimToken: before.claimToken,
+      claimableUntil: before.claimableUntil,
+    });
+  });
+
+  it("CLAIM-EXPIRED-SERVICE more than 24h after payment the token read is NOT_FOUND", async () => {
+    const part = parts[1]!;
+    const claim = claims[1]!;
+    const row = await claimRow(part.id);
+    const paidAt = new Date(row.paid_at!).getTime();
+    const context = contextOf(tenant.tenantId);
+
+    const inside = await getSplitClaimByToken(
+      context,
+      claim.claimToken!,
+      new Date(paidAt + 24 * HOUR - 1000),
+    );
+    expect(inside.claimToken).toBe(claim.claimToken);
+
+    await expect(
+      getSplitClaimByToken(
+        context,
+        claim.claimToken!,
+        new Date(paidAt + 24 * HOUR + 1000),
+      ),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("CLAIM-EXPIRED-HTTP a token whose window passed answers 404 with no token", async () => {
+    const part = parts[2]!;
+    const claim = claims[2]!;
+    expect((await byToken(claim.claimToken!)).status).toBe(200);
+    await owner.query(
+      `UPDATE bill_splits SET claim_expires_at = now() - interval '1 second'
+        WHERE tenant_id = $1 AND id = $2::uuid`,
+      [tenant.tenantId, part.id],
+    );
+    const response = await byToken(claim.claimToken!);
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(claim.claimToken!);
+  });
+
+  it("CLAIM-REDEEMED after the token is redeemed the read is NOT_FOUND", async () => {
+    const part = parts[3]!;
+    const claim = claims[3]!;
+    expect((await byToken(claim.claimToken!)).status).toBe(200);
+    expect(await redeem(claim.claimToken!, new Date())).toEqual({
+      billSplitId: part.id,
+    });
+
+    await expect(
+      getSplitClaimByToken(contextOf(tenant.tenantId), claim.claimToken!),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const response = await byToken(claim.claimToken!);
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain(claim.claimToken!);
+  });
+
+  it("CLAIM-VOIDED when the order is voided the read is NOT_FOUND", async () => {
+    expect((await byToken(voidClaim.claimToken!)).status).toBe(200);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE orders SET status = 'voided'
+          WHERE tenant_id = $1 AND id = (SELECT order_id FROM bill_splits WHERE tenant_id = $1 AND id = $2::uuid)`,
+        [tenant.tenantId, voidPart.id],
+      ),
+    );
+
+    await expect(
+      getSplitClaimByToken(contextOf(tenant.tenantId), voidClaim.claimToken!),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const response = await byToken(voidClaim.claimToken!);
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+  });
+
+  it("CLAIM-ISOLATION a token returns only its own part; unknown token and another tenant's host give 404", async () => {
+    const a = claims[0]!;
+    const b = claims[1]!;
+    expect(a.claimToken).not.toBe(b.claimToken);
+
+    const responseA = await byToken(a.claimToken!);
+    expect(responseA.status, JSON.stringify(responseA.body)).toBe(200);
+    expect(responseA.body.data.billSplitId).toBe(parts[0]!.id);
+    expect(responseA.body.data.billSplitId).not.toBe(parts[1]!.id);
+    expect(Object.keys(responseA.body.data).sort()).toEqual([
+      "billSplitId",
+      "claimToken",
+      "claimableUntil",
+      "status",
+    ]);
+
+    const responseB = await byToken(b.claimToken!);
+    expect(responseB.status).toBe(200);
+    expect(responseB.body.data.billSplitId).toBe(parts[1]!.id);
+    expect(responseB.body.data.claimToken).toBe(b.claimToken);
+
+    const random = await byToken(`sc_${randomBytes(32).toString("base64url")}`);
+    expect(random.status, JSON.stringify(random.body)).toBe(404);
+
+    const foreign = await byToken(a.claimToken!, otherTenant.hostname);
+    expect(foreign.status, JSON.stringify(foreign.body)).toBe(404);
+    expect(JSON.stringify(foreign.body)).not.toContain(a.claimToken!);
   });
 });

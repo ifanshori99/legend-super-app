@@ -733,6 +733,60 @@ export async function getSplitClaim(
 }
 
 /**
+ * legend-ia54l (founder Q75): the guest opens the claim code from the phone
+ * for 24 hours after the part is paid, also after the table is closed. The
+ * proof is the claim token itself (printed on the receipt), not the table
+ * session, so a closed session does not block it. Reads one part only and
+ * returns the same four fields as `getSplitClaim`: no other guest's part, no
+ * order data. Unknown, used, expired or voided: the same NOT_FOUND, so the
+ * route is no oracle.
+ */
+export async function getSplitClaimByToken(
+  context: ScopedTenantContext,
+  rawToken: string,
+  now = new Date(),
+): Promise<SplitClaim> {
+  const tenantId = context.tenant.tenantId;
+  const notFound = () =>
+    new CoreError("NOT_FOUND", "Kode klaim tidak ditemukan atau sudah habis.");
+  return withTenant(db, context, async (tx) => {
+    const [part] = await tx
+      .select({
+        id: billSplits.id,
+        sealed: billSplits.claimTokenSealed,
+        expiresAt: billSplits.claimExpiresAt,
+        orderStatus: orders.status,
+      })
+      .from(billSplits)
+      .innerJoin(
+        orders,
+        and(
+          eq(orders.tenantId, billSplits.tenantId),
+          eq(orders.id, billSplits.orderId),
+        ),
+      )
+      .where(
+        and(
+          eq(billSplits.tenantId, tenantId),
+          eq(billSplits.claimTokenHash, sha256(rawToken)),
+          eq(billSplits.status, "paid"),
+          isNull(billSplits.claimRedeemedAt),
+          gt(billSplits.claimExpiresAt, now),
+        ),
+      );
+    if (!part || part.sealed === null || part.expiresAt === null)
+      throw notFound();
+    if (part.orderStatus === "voided") throw notFound();
+    return splitClaimSchema.parse({
+      billSplitId: part.id,
+      status: "available",
+      claimToken: openSecret(part.sealed, claimAad(tenantId, part.id)),
+      claimableUntil: toIsoDateTime(part.expiresAt),
+    });
+  });
+}
+
+/**
  * Redeems a claim token once. null: unknown, already used, expired, the part
  * not paid, or the order voided. No
  * public route yet (waits legend-111j); the caller owns the transaction.
