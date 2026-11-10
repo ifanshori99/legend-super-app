@@ -985,3 +985,4 @@ Langkah berikut CTO baru:
 - 18:56 aruta: bug nyata (pelaku POS = pemilik sesi; test merah 0ae90e96). CTO setujui token kasir aktif per perangkat (0243), architect subagent dulu, tabel terpisah dari u7g9w.
 - 18:58 n1mp d3dc89d2 G3bg8 resolved (F8 poin sebelum pajak+service, F9 latihan, architect tanpa salah hitung), batch48. Kartu legend-udu47 mulai (365).
 - 19:04 bod irisan 1 f46b2cd4 (panic_alerts 0238, architect 2 tinggi+3 sedang dibetulkan). Lanjut m47qh allowlist edge di G62w7 (merge j6cyb dulu). Kartu sisa kmjax, kpzmi (gate-ui).
+- 19:10 r3i8w+5nhkp 16dfb81d (0242 when 1794370000000; architect tanpa blokir). CTO: finalize ulang tanpa perubahan ditolak TAX_REPORT_NO_CHANGE, idempotency finalize. Kartu lanjutan: sumber pph21/pph23/ppn, NPWP asli+spesifikasi Coretax, i18n+event.
