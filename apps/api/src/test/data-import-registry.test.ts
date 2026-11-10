@@ -131,6 +131,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends profit_share.share_allocation.change to the stored owner and finance template role rows of existing tenants (legend-8s992, founder Q84); idempotent, never touches a custom role, FORCE RLS lifted for this statement and restored",
   "0221_k2l_member_signin_identity.sql":
     "sets session.auth_method on the existing session rows (management sessions become password, every other row legacy) so the sign-in method gate keeps today's staff sessions working (legend-k2l); no other column changes, never inserts or deletes rows",
+  "0234_uom_is_system.sql":
+    "marks the twelve standard unit rows (kg, g, l, ml, pcs, pack, ctn, btl, can, sachet, box, porsi) of existing tenants as is_system by exact, case-sensitive code (legend-ie6m); only the new is_system column changes, never inserts or deletes rows, FORCE RLS on uoms lifted and restored",
   "0187_audit_retention_maintenance.sql":
     "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
   // legend-111j

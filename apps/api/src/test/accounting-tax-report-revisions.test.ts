@@ -14,7 +14,7 @@
 //   the old row gets superseded_at + superseded_by_id pointing at it, then the
 //   draft becomes final with revision_no / supersedes_id / correction_reason,
 //   all in ONE transaction (the chain trigger is deferred to COMMIT).
-// - Migration 0231 is tested on a scratch database migrated only up to idx 235.
+// - Migration 0231 is tested on a scratch database migrated only up to idx 230.
 
 import { randomBytes, randomUUID } from "node:crypto";
 import {

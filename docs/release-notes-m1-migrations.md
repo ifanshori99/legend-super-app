@@ -184,3 +184,21 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0216, urut merge. `when
 - 0217 GAGAL (`0217: ...`) bila `shareholder_document_files` atau `shareholder_documents` sudah berisi baris (lihat catatan 0217 di atas).
 - 0218 mem-backfill izin `profit_share.share_allocation.change` ke template owner dan finance (lihat bagian legend-8s992).
 - Test yang bergantung nomor: `edge-hris-migration-0226.test.ts` (dulu `-0227`, journal dipotong di idx 225), `profit-share-permission-backfill-migration.test.ts`, `profit-share-carry-migration.test.ts`, `data-import-registry.test.ts`.
+
+## Tambahan batch48a (penomoran ulang 0229 sampai 0234)
+
+Nomor sementara dari cabang dinomori ulang rapat sesudah 0228, urut merge. `when` naik 1000000 per migrasi mulai 1794310000000; snapshot dibuat ulang dari skema gabungan (0229 dibangun dari 0230 dengan mencabut delta forward migration); `pnpm db:generate` kosong sesudah tiap merge. m1 belum pernah diterapkan ke DB bersama (`docs/deployment.md`), jadi 0229 dan forward migration 0230 dipakai apa adanya, tidak digabung.
+
+| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
+|---|---|---|---|---|
+| 0229 | `0229_order_issue_refund_rejected` | 0229 (`when` lama 1794308000000 lebih kecil dari 0228, dinaikkan) | ws/i83ls-fix | 1794310000000 |
+| 0230 | `0230_order_issue_charge_cash` | 0244 | ws/i83ls-fix | 1794311000000 |
+| 0231 | `0231_tax_report_revisions` | 0242 | ws/r3i8w-tax-reports | 1794312000000 |
+| 0232 | `0232_pos_acting_staff` | 0243 | ws/aruta-pos-pin | 1794313000000 |
+| 0233 | `0233_mfa_recovery_codes` | 0239 | ws/omp4-mfa-recovery | 1794314000000 |
+| 0234 | `0234_uom_is_system` | 0245 | ws/ie6m-uom-write | 1794315000000 |
+
+- Tanpa migrasi baru: ws/94q2l-impl (hanya kode refund), ws/tct8-config-codecs. omp4 dan ie6m masing-masing hanya satu migrasi (nomor 0240 dan 0246 pada brief tidak ada).
+- **SQL diubah oleh merge train:** 0230 kini mengangkat FORCE RLS `order_issue_charges` dan `cash_movements` sebelum menambah FK, lalu memulihkannya di akhir (pola 2, `docs/plan/contracts.md`): tanpa itu migrasi gagal untuk pemilik tabel non-superuser (`edge-received-events-migration.test.ts`). 0232 menulis semua FK `pos_acting_staff` inline di `CREATE TABLE` (pola legend-436yt), tanpa angkat NO FORCE/FORCE; skema akhir identik.
+- Perubahan kode di luar nomor: `device-pin.service.ts` (`attemptStaffPinVersioned` dari aruta memakai pepper per generasi dari ideif), `order-recovery-refund-amount.ts` (pro-rata kumulatif 94q2l; `lineShareSplit` tetap diekspor untuk tagihan swap), `order-recovery-refund.ts` (import `inArray` dan `isNull`).
+- Test yang bergantung nomor: `order-issue-charge-cash-migration.test.ts` (idx 230), `accounting-tax-report-revisions.test.ts` (journal dipotong di idx 230), `uom-is-system-migration.test.ts` (dipotong di idx 233), `inventory-uom-backfill-migration.test.ts`.
