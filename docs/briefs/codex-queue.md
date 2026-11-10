@@ -15,3 +15,5 @@ Urutan: uang/pajak -> auth/akses -> migrasi -> data pribadi/offline. Satu run pe
 | HRIS edge + PIN proof | 62ef1e11..092643e6 + j6cyb + u7g9w | edge-hris.ts, hris-attendance-qr.ts, selfie-seal.ts | selesai 382 (1 P2, sp9vq) |
 | Pepper | d07b6cf8..3150feeb + jmsdx | staff-pin-pepper-*.ts, device-pin-pepper.ts, edge/runtime.ts | selesai 382 |
 | Wi-Fi edge | e79e86a0^1..e79e86a0^2 + 8b57852f..52c7c7ef | wifi-*.ts, edge/wifi-quota-applier.ts | antre (ws09 lama 110) |
+| w5by9 expiry FIFO loyalty (8f0b4630, d735d8b7) | Codex ulang area loyalty sebelum rilis | antre |
+| vfj7z slot device + window per user (ws/jmsdx-pepper) | Codex area PIN | antre |
