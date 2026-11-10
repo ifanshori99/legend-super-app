@@ -4,15 +4,18 @@
 // under test: top items of the outlet's last 30 days by order lines, orderable
 // now only (86 items never offered), nothing already in the session cart, at
 // most 6, menu order when there is no history, outlet-scoped by the bearer
-// session credential. Order issues, point claim and order ETA have no data
-// source yet (follow-up cards) and are intentionally not served here. The
-// existing GET payments/:paymentId is covered in qr-order-api.test.ts.
+// session credential. Order ETAs (legend-541h) are derived from the KDS
+// pacing core for the session's paid, unserved orders. Order issues are
+// covered in order-recovery.test.ts; point claim has no data source yet
+// (legend-n1mp). The existing GET payments/:paymentId is covered in
+// qr-order-api.test.ts.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
+import { ulidToUuid } from "@starter/shared/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
-import { getMenuSuggestions } from "@starter/shared/qr-order";
+import { getMenuSuggestions, getOrderEtas } from "@starter/shared/qr-order";
 import { createApp } from "../app.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
@@ -122,6 +125,7 @@ function as(guest: Guest, host = tenant.hostname) {
       }),
     suggestions: (query = "") =>
       auth(client.get(`${base}/suggestions${query}`)),
+    etas: () => auth(client.get(`${base}/order-etas`)),
   };
 }
 
@@ -337,5 +341,159 @@ describe("guest suggestions (legend-cpq2)", () => {
     const guest = await seat();
     const res = await as(guest, seededHostname).suggestions();
     expect(res.status).toBe(401);
+  });
+});
+
+describe("guest order ETAs (legend-541h)", () => {
+  /** Places one order and returns its id (checkout leaves it unpaid). */
+  const cartVersions = new Map<string, number>();
+  async function place(guest: Guest, menuItemId: string): Promise<string> {
+    const added = await as(guest).add(
+      menuItemId,
+      cartVersions.get(guest.sessionId) ?? 0,
+    );
+    expect(added.status, JSON.stringify(added.body)).toBe(201);
+    const placed = await as(guest).checkout(added.body.data.cart.version);
+    expect(placed.status, JSON.stringify(placed.body)).toBe(201);
+    cartVersions.set(
+      guest.sessionId,
+      (placed.body.data.cart?.version as number | undefined) ??
+        added.body.data.cart.version + 1,
+    );
+    return placed.body.data.order.id as string;
+  }
+  const setOrder = (orderId: string, status: string) =>
+    owner.query("UPDATE orders SET status = $2 WHERE id = $1", [
+      ulidToUuid(orderId),
+      status,
+    ]);
+
+  /** Routes `menuItemId` to a coffee-bar station with a given prep time. */
+  async function seedStationFor(menuItemId: string, prepSeconds: number) {
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        "UPDATE menu_items SET station_type = 'coffee_bar' WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, menuItemId],
+      );
+      await client.query(
+        `INSERT INTO stations (id, tenant_id, outlet_id, name, type)
+         VALUES ($1, $2, $3, 'Bar Kopi Uji', 'coffee_bar')`,
+        [randomUUID(), tenant.tenantId, tenant.outletId],
+      );
+      await client.query(
+        `INSERT INTO kitchen_menu_loads (tenant_id, outlet_id, menu_item_id, variant_id, load_points, prep_seconds)
+         VALUES ($1, $2, $3, NULL, 1, $4)`,
+        [tenant.tenantId, tenant.outletId, menuItemId, prepSeconds],
+      );
+    });
+  }
+
+  it("answers 401 without a credential and 404 for another session id", async () => {
+    const guest = await seat();
+    const anonymous = await agent(app)
+      .get(`/api/table-sessions/${guest.sessionId}/order-etas`)
+      .set("Host", tenant.hostname);
+    expect(anonymous.status).toBe(401);
+    const other = await as({ ...guest, sessionId: randomUUID() }).etas();
+    expect(other.status).toBe(404);
+    const foreign = await as(guest, seededHostname).etas();
+    expect(foreign.status).toBe(401);
+  });
+
+  it("is empty for a session without a sent order", async () => {
+    const guest = await seat();
+    const none = await as(guest).etas();
+    expect(none.status, JSON.stringify(none.body)).toBe(200);
+    expect(none.body.data).toEqual([]);
+    // An order still awaiting payment is not in the kitchen: no ETA yet.
+    const orderId = await place(guest, ids.kopi);
+    await setOrder(orderId, "awaiting_payment");
+    const unpaid = await as(guest).etas();
+    expect(unpaid.body.data).toEqual([]);
+  });
+
+  it("serves a range for a sent order, from the pacing fallback without KDS data", async () => {
+    const guest = await seat();
+    const orderId = await place(guest, ids.kopi);
+    await setOrder(orderId, "sent");
+    const before = Date.now();
+    const res = await as(guest).etas();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(() => getOrderEtas.response.parse(res.body)).not.toThrow();
+    expect(res.body.data).toHaveLength(1);
+    const [eta] = res.body.data;
+    expect(eta.orderId).toBe(orderId);
+    // No station rule and no history: 600 s fallback, range margin max(2, 25%).
+    expect(eta.minMinutes).toBe(10);
+    expect(eta.maxMinutes).toBe(13);
+    const readyAt = new Date(eta.estimatedReadyAt).getTime();
+    expect(readyAt).toBeGreaterThanOrEqual(before + 10 * 60_000 - 1000);
+    expect(readyAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000 + 1000);
+  });
+
+  it("uses the longest item prep time of the unserved lines", async () => {
+    const guest = await seat();
+    const orderId = await place(guest, ids.roti);
+    await setOrder(orderId, "sent");
+    // Roti is routed to a station and takes 20 min.
+    await seedStationFor(ids.roti, 1200);
+    const res = await as(guest).etas();
+    expect(res.body.data[0].minMinutes).toBe(20);
+    expect(res.body.data[0].maxMinutes).toBe(25);
+  });
+
+  it("keeps an order whose lines are all ready, with no waiting time", async () => {
+    const guest = await seat();
+    const orderId = await place(guest, ids.teh);
+    await setOrder(orderId, "sent");
+    await owner.query(
+      "UPDATE order_items SET status = 'ready' WHERE order_id = $1",
+      [ulidToUuid(orderId)],
+    );
+    const res = await as(guest).etas();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].orderId).toBe(orderId);
+    expect(res.body.data[0].minMinutes).toBe(0);
+    expect(res.body.data[0].maxMinutes).toBe(0);
+  });
+
+  it("estimates several open orders of one session in one answer", async () => {
+    const guest = await seat();
+    const first = await place(guest, ids.kopi);
+    const second = await place(guest, ids.teh);
+    await setOrder(first, "sent");
+    await setOrder(second, "sent");
+    const res = await as(guest).etas();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(
+      res.body.data.map((row: { orderId: string }) => row.orderId).sort(),
+    ).toEqual([first, second].sort());
+  });
+
+  it("drops served, voided and completed orders and never leaks another session", async () => {
+    const guest = await seat();
+    const servedId = await place(guest, ids.teh);
+    await setOrder(servedId, "sent");
+    await owner.query(
+      "UPDATE order_items SET status = 'served' WHERE order_id = $1",
+      [ulidToUuid(servedId)],
+    );
+    const voidedId = await place(guest, ids.teh);
+    await setOrder(voidedId, "voided");
+    const doneId = await place(guest, ids.teh);
+    await setOrder(doneId, "completed");
+    const openId = await place(guest, ids.teh);
+    await setOrder(openId, "sent");
+
+    const stranger = await seat();
+    const strangerOrder = await place(stranger, ids.teh);
+    await setOrder(strangerOrder, "sent");
+
+    const res = await as(guest).etas();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(
+      res.body.data.map((row: { orderId: string }) => row.orderId),
+    ).toEqual([openId]);
   });
 });

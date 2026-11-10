@@ -24,6 +24,7 @@ import {
   getGuestPayment,
   getGuestPaymentOptions,
   getMenuSuggestions,
+  getOrderEtas,
   getSessionBill,
   getSplitClaim,
   getTableSession,
@@ -55,7 +56,10 @@ import {
   getSplitClaim as getSplitClaimService,
   getSplitClaimByToken as getSplitClaimByTokenService,
 } from "../services/bill-split.service.ts";
-import { getMenuSuggestions as getMenuSuggestionsService } from "../services/qr-guest-reads.service.ts";
+import {
+  getMenuSuggestions as getMenuSuggestionsService,
+  getOrderEtas as getOrderEtasService,
+} from "../services/qr-guest-reads.service.ts";
 import {
   createGuestPayment as createGuestPaymentService,
   getGuestPayment as getGuestPaymentService,
@@ -341,6 +345,18 @@ qrOrderRouter.get("/:sessionId/suggestions", ...read, async (req, res) => {
       credential,
       sessionId,
       query,
+    ),
+  });
+});
+
+qrOrderRouter.get("/:sessionId/order-etas", ...read, async (req, res) => {
+  const { sessionId } = getOrderEtas.params.parse(req.params);
+  const credential = sessionCredential(req);
+  res.json({
+    data: await getOrderEtasService(
+      await guestContext(req, credential),
+      credential,
+      sessionId,
     ),
   });
 });
