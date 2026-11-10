@@ -7,7 +7,9 @@
 // - ONE transaction. Lock order: issue, order, charge row (`lockChargeChain`),
 //   then the guest's link (QRIS check), then the cashier's shift
 //   (`lockCashierShiftForCash`, the cash tender's lock). The link is touched
-//   again after the shift, when it is cancelled and its intents expired.
+//   again after the shift, when it is cancelled and its intents expired. An
+//   advisory lock on shift + idempotency key comes last, so two charges taken
+//   at once under one key run one after the other (the second is a 409).
 // - Status `open` (QR bill) or `routed_pos` (cashier bill) only. The cash goes
 //   into the drawer of the device it was taken on as a `cash_in` movement of
 //   the shift; the charge points at it (`cash_movement_id`) and is `paid`.
@@ -23,7 +25,7 @@
 // - `order_issue.charge_paid` (method pos_cash) lets the journal recognise
 //   revenue; the cash_in itself is not journalled.
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
@@ -186,6 +188,15 @@ export async function collectChargeAtPos(
     });
     assertCashMovementAllowed(shift);
 
+    // Two charges collected at once under one key both hold the shift FOR
+    // SHARE, so both would read "key unused" and the second insert would hit
+    // the unique index (a raw 500). Serialise per shift + key: the later one
+    // waits for the first to commit, then sees its movement below. The lock is
+    // taken after the shift row, so the lock order stays chain, link, shift,
+    // key (legend-44g8n).
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`issue-charge-cash:${tenantId}:${shift.id}:${input.idempotencyKey}`}, 0))`,
+    );
     // The key may belong to another movement of this shift (this charge's own
     // replay returned above): a clean 409 instead of the unique violation.
     const [reused] = await tx

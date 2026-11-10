@@ -528,6 +528,31 @@ describe("legend-800h1 collect a swap charge in cash at the till", () => {
     expect(await movementsOf(shiftId)).toHaveLength(cashIns);
   });
 
+  it("legend-44g8n two charges collected at once under one key: one 200, one 409 IDEMPOTENCY_KEY_REUSED, never a 500", async () => {
+    await openShift(await businessDateOf((await openCharge()).order.id));
+    // Both requests hold the shift FOR SHARE together, so the "key already
+    // used" read alone lets both through; the key itself must be serialised.
+    for (let round = 0; round < 3; round += 1) {
+      const [a, b] = [await openCharge(), await openCharge()];
+      const key = randomUUID();
+      const results = await Promise.all(
+        [a, b].map((c) =>
+          collect(c.charge.id, { ...cashBody(), idempotencyKey: key }),
+        ),
+      );
+      const statuses = results.map((r) => r.status).sort();
+      expect(statuses, JSON.stringify(results.map((r) => r.body))).toEqual([
+        200, 409,
+      ]);
+      const loser = results.find((r) => r.status === 409)!;
+      expect(JSON.stringify(loser.body)).toContain("IDEMPOTENCY_KEY_REUSED");
+      cashIns += 1;
+      const rows = [await chargeOf(a.issueId), await chargeOf(b.issueId)];
+      expect(rows.map((r) => r.status).sort()).toEqual(["open", "paid"]);
+      expect(await movementsOf(shiftId)).toHaveLength(cashIns);
+    }
+  });
+
   it("session bill shows the charge paid and the session closes normally", async () => {
     // Direct insert (a session with a paid order and an open charge), like the
     // open-bill tests: the bill of a really swapped order is out of scope here.

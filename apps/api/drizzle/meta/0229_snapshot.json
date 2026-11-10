@@ -45105,18 +45105,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "cash_movement_id": {
-          "name": "cash_movement_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "paid_by": {
-          "name": "paid_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "closed_at": {
           "name": "closed_at",
           "type": "timestamp with time zone",
@@ -45194,28 +45182,6 @@
           "method": "btree",
           "with": {}
         },
-        "order_issue_charges_cash_movement_once_idx": {
-          "name": "order_issue_charges_cash_movement_once_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "cash_movement_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"order_issue_charges\".\"cash_movement_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "order_issue_charges_session_open_idx": {
           "name": "order_issue_charges_session_open_idx",
           "columns": [
@@ -45272,19 +45238,6 @@
           "tableTo": "user",
           "columnsFrom": [
             "closed_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "order_issue_charges_paid_by_user_id_fk": {
-          "name": "order_issue_charges_paid_by_user_id_fk",
-          "tableFrom": "order_issue_charges",
-          "tableTo": "user",
-          "columnsFrom": [
-            "paid_by"
           ],
           "columnsTo": [
             "id"
@@ -45381,21 +45334,6 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
-        },
-        "order_issue_charges_cash_movement_fk": {
-          "name": "order_issue_charges_cash_movement_fk",
-          "tableFrom": "order_issue_charges",
-          "tableTo": "cash_movements",
-          "columnsFrom": [
-            "tenant_id",
-            "cash_movement_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -45411,10 +45349,6 @@
       },
       "policies": {},
       "checkConstraints": {
-        "order_issue_charges_cash_paid_check": {
-          "name": "order_issue_charges_cash_paid_check",
-          "value": "\"order_issue_charges\".\"cash_movement_id\" IS NULL OR (\"order_issue_charges\".\"status\" = 'paid' AND \"order_issue_charges\".\"payment_intent_id\" IS NULL)"
-        },
         "order_issue_charges_link_token_check": {
           "name": "order_issue_charges_link_token_check",
           "value": "(\"order_issue_charges\".\"payment_link_id\" IS NULL) = (\"order_issue_charges\".\"payment_link_token_sealed\" IS NULL)"
@@ -45437,7 +45371,7 @@
         },
         "order_issue_charges_route_status_check": {
           "name": "order_issue_charges_route_status_check",
-          "value": "(\"order_issue_charges\".\"route\" = 'pos') = (\"order_issue_charges\".\"status\" = 'routed_pos') OR \"order_issue_charges\".\"status\" IN ('paid', 'waived', 'expired')"
+          "value": "(\"order_issue_charges\".\"route\" = 'pos') = (\"order_issue_charges\".\"status\" = 'routed_pos') OR \"order_issue_charges\".\"status\" IN ('waived', 'expired')"
         }
       },
       "isRLSEnabled": false

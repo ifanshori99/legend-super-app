@@ -1387,6 +1387,13 @@
       "when": 1794308000000,
       "tag": "0229_order_issue_refund_rejected",
       "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "7",
+      "when": 1794390000000,
+      "tag": "0244_order_issue_charge_cash",
+      "breakpoints": true
     }
   ]
 }
