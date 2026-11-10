@@ -925,3 +925,4 @@ Langkah berikut CTO baru:
 - 15:25 CTO: 8s992 selesai 0033ea1d (gate tombol web ke izin baru, approve ke distribution.approve), G78cw resolved, batch47. Mulai 0w2wy (332).
 - 15:26 CTO: 94q2l desain architect disetujui (5b9ed408), implementasi Opus brief 333; nominal refund menunggu founder Q85 (rekomendasi pro-rata). Kartu legend-lzvh0: Q83 kekurangan dipotong dari pembagian berikutnya (8s992 baru mencatat sisa). 0w2wy: konflik _journal pilih sisip urut.
 - 15:26 CTO: k2l-followup 1fd0e1a9 (0220 sementara, akun lama createdAt menang, profil, throttle email 3/15m, audit email, F1 takeover dibetulkan). Lanjutan G08n2: profil kosong tidak ditolak, batal challenge lintas tenant.
+- 15:35 CTO: 0w2wy 80f5c4d1 (router impor/cetak menu, helper acceptsDocuments, architect 2 temuan dibetulkan) G4gfq resolved, batch47. Kartu legend-eirhm (PDF lama). lzvh0 mulai G2crn (334).
