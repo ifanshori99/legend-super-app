@@ -79,6 +79,7 @@ import {
   applyRefundProviderUpdate,
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
+import { gatewayWebhookTolerance } from "./platform-payment-gateway.service";
 import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
@@ -124,13 +125,38 @@ type ParsedEvent =
   | { kind: "payment"; event: DoitWebhookEvent }
   | { kind: "refund"; event: DoitRefundWebhookEvent };
 type PaymentIntentRow = typeof paymentIntents.$inferSelect;
-type WebhookSecretEntry = { secret: string; integrationId: string };
+/** `until` (epoch ms) is set on a previous-generation secret (D17-D18): it
+ * verifies only while `now < until`. Checked at use time, not at load time, so
+ * a cached entry never outlives its grace. */
+type WebhookSecretEntry = {
+  secret: string;
+  integrationId: string;
+  until?: number;
+};
+
+/** Previous webhook secret of a sealed DOIT credential set, while it is still
+ * in its rotation grace (D18); null otherwise. */
+function previousWebhookSecretOf(
+  credentials: Record<string, string>,
+  integrationId: string,
+): WebhookSecretEntry | null {
+  const secret = credentials.previousWebhookSecret;
+  const until = Date.parse(credentials.previousValidUntil ?? "");
+  return typeof secret === "string" &&
+    secret.length > 0 &&
+    Number.isFinite(until)
+    ? { secret, integrationId, until }
+    : null;
+}
+
+const inGrace = (entry: WebhookSecretEntry, now: Date): boolean =>
+  entry.until === undefined || now.getTime() < entry.until;
 
 function unauthorized(): CoreError {
   return new CoreError("UNAUTHORIZED", SIGNATURE_MESSAGE);
 }
 
-function tenantWideContext(tenantId: string): ScopedTenantContext {
+export function tenantWideContext(tenantId: string): ScopedTenantContext {
   const tenant = establishTenantContext({
     tenantId,
     brandId: null,
@@ -140,7 +166,7 @@ function tenantWideContext(tenantId: string): ScopedTenantContext {
 }
 
 /** Error code only; a message could carry provider data (PAY-06). */
-function errorCodeOf(error: unknown): string {
+export function errorCodeOf(error: unknown): string {
   const code =
     typeof error === "object" && error !== null && "code" in error
       ? (error as { code: unknown }).code
@@ -150,7 +176,9 @@ function errorCodeOf(error: unknown): string {
     : "INTERNAL_ERROR";
 }
 
-async function tenantIsActive(context: ScopedTenantContext): Promise<boolean> {
+export async function tenantIsActive(
+  context: ScopedTenantContext,
+): Promise<boolean> {
   return withTenant(db, context, async (tx) => {
     const [row] = await tx
       .select({ status: tenants.status })
@@ -171,7 +199,7 @@ async function loadWebhookSecrets(
   for (const row of data)
     if (row.provider === PROVIDER && row.status === "active")
       outletIds.add(row.outletId);
-  const secrets = new Map<string, string>();
+  const secrets = new Map<string, WebhookSecretEntry>();
   for (const outletId of outletIds) {
     const loaded = await loadActiveIntegrationCredentials(
       context,
@@ -181,12 +209,15 @@ async function loadWebhookSecrets(
     if (!loaded) continue;
     const secret = loaded.credentials.webhookSecret;
     if (typeof secret === "string" && secret.length > 0 && !secrets.has(secret))
-      secrets.set(secret, loaded.integration.id);
+      secrets.set(secret, { secret, integrationId: loaded.integration.id });
+    const previous = previousWebhookSecretOf(
+      loaded.credentials,
+      loaded.integration.id,
+    );
+    if (previous && !secrets.has(previous.secret))
+      secrets.set(previous.secret, previous);
   }
-  return [...secrets].map(([secret, integrationId]) => ({
-    secret,
-    integrationId,
-  }));
+  return [...secrets.values()];
 }
 
 const secretCache = new Map<
@@ -213,21 +244,24 @@ export function clearDoitWebhookSecretCache(tenantId?: string): void {
  * credential store each time. An empty result is never cached. */
 async function cachedWebhookSecrets(
   context: ScopedTenantContext,
+  now: Date,
 ): Promise<WebhookSecretEntry[]> {
   const key = context.tenant.tenantId;
   const hit = secretCache.get(key);
-  if (hit && hit.expiresAt > Date.now()) return hit.entries;
+  if (hit && hit.expiresAt > Date.now())
+    return hit.entries.filter((entry) => inGrace(entry, now));
   const generation = secretCacheGeneration;
   const entries = await loadWebhookSecrets(context);
   // A clear ran while loading: serve this request, cache nothing.
-  if (generation !== secretCacheGeneration) return entries;
+  if (generation !== secretCacheGeneration)
+    return entries.filter((entry) => inGrace(entry, now));
   if (entries.length > 0)
     secretCache.set(key, {
       entries,
       expiresAt: Date.now() + SECRET_CACHE_TTL_MS,
     });
   else secretCache.delete(key);
-  return entries;
+  return entries.filter((entry) => inGrace(entry, now));
 }
 
 /**
@@ -240,7 +274,8 @@ async function mintingIntegrationSecret(
   context: ScopedTenantContext,
   json: unknown,
   tried: readonly WebhookSecretEntry[],
-): Promise<WebhookSecretEntry | null> {
+  now: Date,
+): Promise<WebhookSecretEntry[]> {
   const data =
     typeof json === "object" && json !== null
       ? (json as { data?: unknown }).data
@@ -250,7 +285,7 @@ async function mintingIntegrationSecret(
       ? (data as { reference?: unknown }).reference
       : undefined,
   );
-  if (!reference.success) return null;
+  if (!reference.success) return [];
   const integrationId = await withTenant(db, context, async (tx) => {
     const [found] = await tx
       .select({ integrationId: paymentIntents.gatewayIntegrationId })
@@ -269,16 +304,20 @@ async function mintingIntegrationSecret(
     integrationId === null ||
     tried.some((entry) => entry.integrationId === integrationId)
   )
-    return null;
+    return [];
   const loaded = await loadIntegrationCredentialsById(
     context,
     PROVIDER,
     integrationId,
   );
-  const secret = loaded?.credentials.webhookSecret;
-  return typeof secret === "string" && secret.length > 0
-    ? { secret, integrationId }
-    : null;
+  if (!loaded) return [];
+  const secret = loaded.credentials.webhookSecret;
+  const entries: WebhookSecretEntry[] = [];
+  if (typeof secret === "string" && secret.length > 0)
+    entries.push({ secret, integrationId });
+  const previous = previousWebhookSecretOf(loaded.credentials, integrationId);
+  if (previous && inGrace(previous, now)) entries.push(previous);
+  return entries;
 }
 
 function readableEventId(value: unknown): string | null {
@@ -314,7 +353,7 @@ function settledAmount(event: DoitWebhookEvent): number | null {
   return paid > 0 ? paid : null;
 }
 
-async function markRow(
+export async function markRow(
   context: ScopedTenantContext,
   rowId: string,
   patch: Partial<typeof gatewayWebhookEvents.$inferInsert>,
@@ -380,6 +419,7 @@ async function signedByIntentIntegration(
   intent: PaymentIntentRow,
   row: GatewayWebhookEvent,
   verifiedSecret: string | undefined,
+  now: Date,
 ): Promise<boolean> {
   const minted = intent.gatewayIntegrationId;
   if (minted !== null && row.integrationId === minted) return true;
@@ -394,11 +434,18 @@ async function signedByIntentIntegration(
   if (!loaded) return false;
   if (row.integrationId !== null && loaded.integration.id === row.integrationId)
     return true;
+  if (verifiedSecret === undefined) return false;
   const secret = loaded.credentials.webhookSecret;
+  if (typeof secret === "string" && secret === verifiedSecret) return true;
+  // The secret that signed may be the previous generation, still in grace.
+  const previous = previousWebhookSecretOf(
+    loaded.credentials,
+    loaded.integration.id,
+  );
   return (
-    verifiedSecret !== undefined &&
-    typeof secret === "string" &&
-    secret === verifiedSecret
+    previous !== null &&
+    inGrace(previous, now) &&
+    previous.secret === verifiedSecret
   );
 }
 
@@ -522,7 +569,13 @@ async function processPaymentEvent(
     const intent = bound.kind === "found" ? bound.intent : null;
     if (
       !intent ||
-      !(await signedByIntentIntegration(context, intent, row, verifiedSecret))
+      !(await signedByIntentIntegration(
+        context,
+        intent,
+        row,
+        verifiedSecret,
+        now,
+      ))
     ) {
       await markRow(
         context,
@@ -1005,7 +1058,13 @@ async function processRefundEvent(
     if (
       intent.provider !== PROVIDER ||
       !(await paymentMatchesRefund(context, facts, refund, intent)) ||
-      !(await signedByIntentIntegration(context, intent, row, verifiedSecret))
+      !(await signedByIntentIntegration(
+        context,
+        intent,
+        row,
+        verifiedSecret,
+        now,
+      ))
     ) {
       await recordRefundIntegrationMismatch(
         context,
@@ -1207,26 +1266,31 @@ async function insertRow(
  * log. The row reuses the unique index on (tenant, payload_hash) for rows
  * that are not signature-valid.
  */
-async function recordRejectedAttempt(
+export async function recordRejectedAttempt(
   context: ScopedTenantContext,
   bodyHash: string,
   now: Date,
+  provider: string = PROVIDER,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   const bucket = new Date(Math.floor(now.getTime() / 60_000) * 60_000);
   const bucketHash = createHash("sha256")
-    .update(`rejected:${tenantId}:${bucket.toISOString()}`)
+    .update(
+      provider === PROVIDER
+        ? `rejected:${tenantId}:${bucket.toISOString()}`
+        : `rejected:${provider}:${tenantId}:${bucket.toISOString()}`,
+    )
     .digest("hex");
   logger.warn(
-    { module: "payment-webhook", tenantId, payloadHash: bodyHash },
-    "DOIT webhook signature rejected",
+    { module: "payment-webhook", provider, tenantId, payloadHash: bodyHash },
+    `${provider} webhook signature rejected`,
   );
   await withTenant(db, context, async (tx) => {
     await tx
       .insert(gatewayWebhookEvents)
       .values({
         tenantId,
-        provider: PROVIDER,
+        provider,
         signatureValid: false,
         status: "rejected",
         lastErrorCode: "SIGNATURE_INVALID",
@@ -1335,7 +1399,7 @@ export async function receiveDoitWebhook(input: {
   const context = tenantWideContext(parsedTenant.data);
   if (!(await tenantIsActive(context))) throw unauthorized();
 
-  const entries = await cachedWebhookSecrets(context);
+  const entries = await cachedWebhookSecrets(context, now);
   const payloadHash = createHash("sha256").update(input.rawBody).digest("hex");
   let json: unknown;
   try {
@@ -1343,21 +1407,28 @@ export async function receiveDoitWebhook(input: {
   } catch {
     json = undefined;
   }
+  // Per-gateway timestamp window (D19), set by the platform admin.
+  const window = await gatewayWebhookTolerance(PROVIDER);
+  const tolerance = {
+    pastSeconds: window.pastMs / 1000,
+    futureSeconds: window.futureMs / 1000,
+  };
   const signedWith = (entry: WebhookSecretEntry) =>
     verifyDoitSignature({
       rawBody: input.rawBody,
       header: input.signatureHeader,
       secrets: [entry.secret],
       now,
+      tolerance,
     });
   let verified = entries.find(signedWith);
   if (!verified) {
     // Money in flight on an integration disabled since it minted the intent.
     const minting =
       input.signatureHeader === undefined
-        ? null
-        : await mintingIntegrationSecret(context, json, entries);
-    if (minting && signedWith(minting)) verified = minting;
+        ? []
+        : await mintingIntegrationSecret(context, json, entries, now);
+    verified = minting.find(signedWith);
   }
   if (!verified) {
     // A tenant without any DOIT secret has nothing to audit against.
@@ -1560,7 +1631,8 @@ export async function reprocessStoredWebhookEvents(
       .limit(limit),
   );
   let processed = 0;
-  const secrets = rows.length > 0 ? await cachedWebhookSecrets(context) : [];
+  const secrets =
+    rows.length > 0 ? await cachedWebhookSecrets(context, now) : [];
   for (const row of rows) {
     const parsed = parseStoredEvent(row.payload);
     if (!parsed) {

@@ -13,6 +13,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { pollPendingGatewayIntents } from "../services/payment.service.ts";
+import { reprocessDuitkuWebhookEvents } from "../services/payment-duitku-webhook.service.ts";
 import {
   purgeRejectedWebhookEvents,
   reprocessStoredWebhookEvents,
@@ -51,6 +52,15 @@ export async function runPaymentGatewayPollJob(
   let failed = false;
   try {
     result.webhooks = await reprocessStoredWebhookEvents(context, now);
+  } catch {
+    failed = true;
+  }
+  try {
+    const duitku = await reprocessDuitkuWebhookEvents(context, now);
+    result.webhooks = {
+      checked: result.webhooks.checked + duitku.checked,
+      processed: result.webhooks.processed + duitku.processed,
+    };
   } catch {
     failed = true;
   }

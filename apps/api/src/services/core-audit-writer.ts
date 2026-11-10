@@ -129,6 +129,9 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "status",
     "configKeys",
   ],
+  // sub-302 D16/D17: gateway secret replaced with a grace window; test button.
+  "integration.credentials_rotated": ["provider", "previousValidUntil"],
+  "integration.connection_tested": ["ok", "errorCode"],
   "outbox.replayed": ["dispatchState", "generation"],
   "role.created": ["permissions", "mfaRequired", "allowedScopeTypes"],
   "role.updated": ["permissions", "mfaRequired", "allowedScopeTypes"],

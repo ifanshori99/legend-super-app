@@ -11,6 +11,7 @@ export * from "./domains.ts";
 export * from "./context.ts";
 export * from "./device-token.ts";
 export * from "./integrations.ts";
+export * from "./payment-gateways.ts";
 export * from "./themes.ts";
 export * from "./support-access.ts";
 export * from "./tenant-owner.ts";

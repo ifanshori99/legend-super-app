@@ -25,6 +25,7 @@ import type {
 } from "@starter/shared/payment";
 import { createApp } from "../app";
 import {
+  registerPaymentGateway,
   setPaymentGateway,
   type GatewayIntent,
   type GatewayIntentRequest,
@@ -42,6 +43,7 @@ import {
   type CreatePaymentLinkInput,
 } from "../services/payment.service";
 import { upsertRoutingRule } from "../services/payment-routing.service";
+import { resetPlatformGatewayCache } from "../services/platform-payment-gateway.service";
 import {
   listUnallocatedFunds,
   unallocatedFundsOfIntent,
@@ -107,7 +109,7 @@ async function openBill(
 }
 
 class FakeGateway implements PaymentGatewayPort {
-  readonly provider = "doit";
+  provider: string = "doit";
   healthValue: "available" | "degraded" | "down" = "available";
   /** Shorten every code's life to exercise expiry without a clock jump. */
   expiresInMs: number | null = null;
@@ -245,6 +247,11 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: amountIdr ?? found.amountIdr,
     });
   }
+}
+
+/** A second adapter behind the same registry (sub-302 D1). */
+class FakeDuitku extends FakeGateway {
+  override provider = "duitku";
 }
 
 let gateway: FakeGateway;
@@ -1212,17 +1219,46 @@ describe("gateway outage and routing", () => {
     );
     expect(firstRow.rows[0]?.provider).toBe("doit"); // PRD §3.13 default
 
-    const saved = await upsertRoutingRule(
-      tenantWideContext(),
-      {
-        outletId: null,
-        method: "qris",
-        provider: "duitku",
-        fallbackProvider: "doit",
-        enabled: true,
-      },
-      userId,
+    // A rule may only name a gateway that is registered, switched on by Super
+    // Admin, allowed for the tenant and integrated (sub-302 D12): make duitku
+    // all four, and put doit's fake behind the registry next to it.
+    registerPaymentGateway(gateway);
+    registerPaymentGateway(new FakeDuitku());
+    await owner.query(
+      "UPDATE platform_payment_gateways SET enabled = true WHERE provider = 'duitku'",
     );
+    resetPlatformGatewayCache();
+    const flagsBefore = await owner.query<{ flags: unknown }>(
+      "SELECT feature_flags AS flags FROM tenants WHERE id = $1",
+      [tenantId],
+    );
+    await owner.query(
+      "UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{integrationProviders}', '[\"doit\",\"duitku\"]'::jsonb) WHERE id = $1",
+      [tenantId],
+    );
+    await owner.query(
+      `INSERT INTO tenant_integrations (tenant_id, outlet_id, provider, status, credentials_encrypted)
+       VALUES ($1, NULL, 'duitku', 'active', 'sealed'), ($1, NULL, 'doit', 'active', 'sealed')
+       ON CONFLICT DO NOTHING`,
+      [tenantId],
+    );
+    let saved;
+    try {
+      saved = await upsertRoutingRule(
+        tenantWideContext(),
+        {
+          outletId: null,
+          method: "qris",
+          provider: "duitku",
+          fallbackProvider: "doit",
+          enabled: true,
+        },
+        userId,
+      );
+    } catch (error) {
+      await restoreGatewayConfig(flagsBefore.rows[0]!.flags);
+      throw error;
+    }
     expect(saved).toMatchObject({
       method: "qris",
       provider: "duitku",
@@ -1257,8 +1293,25 @@ describe("gateway outage and routing", () => {
       "DELETE FROM payment_routing_rules WHERE tenant_id = $1 AND method = 'qris' AND outlet_id IS NULL",
       [tenantId],
     );
+    await restoreGatewayConfig(flagsBefore.rows[0]!.flags);
   });
 });
+
+/** Undo the platform and tenant gateway setup of the PAY-05 routing test. */
+async function restoreGatewayConfig(flags: unknown) {
+  await owner.query(
+    "UPDATE platform_payment_gateways SET enabled = false WHERE provider = 'duitku'",
+  );
+  resetPlatformGatewayCache();
+  await owner.query("UPDATE tenants SET feature_flags = $2 WHERE id = $1", [
+    tenantId,
+    JSON.stringify(flags),
+  ]);
+  await owner.query(
+    "DELETE FROM tenant_integrations WHERE tenant_id = $1 AND provider IN ('duitku', 'doit') AND outlet_id IS NULL AND credentials_encrypted = 'sealed'",
+    [tenantId],
+  );
+}
 
 describe("isolation at the service boundary", () => {
   it("TEN-03 a link of another outlet is not reachable with an outlet-scoped context", async () => {

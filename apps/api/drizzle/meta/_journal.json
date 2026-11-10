@@ -1380,6 +1380,13 @@
       "when": 1794289000000,
       "tag": "0210_loyalty_tiers_referrals",
       "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1794290000000,
+      "tag": "0211_platform_payment_gateways",
+      "breakpoints": true
     }
   ]
 }

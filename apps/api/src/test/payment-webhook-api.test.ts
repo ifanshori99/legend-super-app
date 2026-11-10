@@ -1494,7 +1494,7 @@ describe("PAY-03 a verified event must name the intent it settles", () => {
 });
 
 describe("PAY-03 an integration change reaches the webhook secret cache at once", () => {
-  it("PAY-03 rotating or disabling a secret applies immediately, without clearing the cache by hand", async () => {
+  it("PAY-03 rotating keeps the old secret valid only for the grace window; disabling refuses both at once, without clearing the cache by hand", async () => {
     const oldSecret = `whsec-rot-old-${randomBytes(12).toString("hex")}`;
     const newSecret = `whsec-rot-new-${randomBytes(12).toString("hex")}`;
     const context = contextFor(tenantA, "session");
@@ -1533,7 +1533,29 @@ describe("PAY-03 an integration change reaches the webhook secret cache at once"
         actor,
       );
       expect((await send(newSecret)).status).toBe(200);
-      expect((await send(oldSecret)).status).toBe(401);
+      // Sub-302 D17-D18: the replaced secret still verifies during the grace
+      // window (the provider may still be signing with it), and the cache
+      // served the rotation at once (the new secret works without a clear).
+      expect((await send(oldSecret)).status).toBe(200);
+      // Past previousValidUntil (default grace 72 h) the old secret is
+      // refused, even though the cached entry is still inside its 60 s TTL.
+      const afterGrace = new Date(Date.now() + 73 * 3_600_000);
+      const raw = JSON.stringify(
+        doit.otherEvent(bill.providerRef, "webhook.test"),
+      );
+      const late = (secret: string) =>
+        receiveDoitWebhook({
+          tenantId: tenantA,
+          rawBody: Buffer.from(raw),
+          signatureHeader: signatureHeader(raw, secret, afterGrace),
+          now: afterGrace,
+        });
+      await expect(late(oldSecret)).rejects.toMatchObject({
+        code: "UNAUTHORIZED",
+      });
+      await expect(late(newSecret)).resolves.toMatchObject({
+        status: expect.stringMatching(/ignored|duplicate/),
+      });
 
       await setIntegrationStatus(
         context,
@@ -1541,7 +1563,10 @@ describe("PAY-03 an integration change reaches the webhook secret cache at once"
         { status: "disabled" },
         actor,
       );
+      // A disabled integration is refused for the new secret and for the
+      // previous one still in grace.
       expect((await send(newSecret)).status).toBe(401);
+      expect((await send(oldSecret)).status).toBe(401);
     } finally {
       await owner.query("DELETE FROM tenant_integrations WHERE id = $1", [
         created.id,

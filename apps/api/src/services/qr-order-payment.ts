@@ -51,7 +51,8 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
-import { paymentGateway } from "./payment-gateway.ts";
+import { paymentGatewayFor } from "./payment-gateway.ts";
+import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
   assertSplitMutableTx,
@@ -236,7 +237,15 @@ async function assertVaBank(
   bankCode: string,
   outletId: string,
 ): Promise<void> {
-  const banks = await paymentGateway().channels(context, "va", outletId);
+  // The gateway the VA rule routes to now (fallback when the primary is down).
+  const routing = await withTenant(db, context, (tx) =>
+    resolveRoutingRule(tx, context, outletId, "va"),
+  );
+  const selected = await selectGatewayForNewIntent(context, outletId, routing);
+  const port = selected.provider
+    ? selected.port
+    : paymentGatewayFor(routing.provider);
+  const banks = await port.channels(context, "va", outletId);
   if (!banks.some((bank) => bank.code === bankCode))
     throw new CoreError(
       "VALIDATION_ERROR",
@@ -272,27 +281,30 @@ export async function getGuestPaymentOptions(
         session.outletId,
         method,
       );
-      rules.push({ method, enabled: rule.enabled });
+      rules.push({ method, routing: rule });
     }
     return { outletId: session.outletId, rules };
   });
-  const gateway = paymentGateway();
-  const gatewayUsable =
-    (await gateway.health(context, routed.outletId)).status !== "down";
   const methods = [];
   for (const entry of routed.rules) {
+    const selected = await selectGatewayForNewIntent(
+      context,
+      routed.outletId,
+      entry.routing,
+    );
+    const gatewayUsable = selected.provider !== null;
     const banks =
-      entry.method === "va" && entry.enabled && gatewayUsable
-        ? await gateway.channels(context, "va", routed.outletId)
+      entry.method === "va" && entry.routing.enabled && selected.provider
+        ? await selected.port.channels(context, "va", routed.outletId)
         : [];
     const configured = entry.method === "qris" || banks.length > 0;
-    const enabled = entry.enabled && gatewayUsable && configured;
+    const enabled = entry.routing.enabled && gatewayUsable && configured;
     methods.push({
       method: entry.method,
       enabled,
       unavailableReason: enabled
         ? null
-        : !entry.enabled
+        : !entry.routing.enabled
           ? ("routing_disabled" as const)
           : !gatewayUsable
             ? ("gateway_down" as const)

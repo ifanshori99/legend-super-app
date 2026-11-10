@@ -12,6 +12,7 @@ import { CoreError } from "@starter/shared/core";
 import { MINUTE_MS } from "@starter/shared/identity";
 import { BODY_LIMIT_BYTES } from "../middleware/body";
 import { HttpError } from "../lib/http-error";
+import { receiveDuitkuCallback } from "../services/payment-duitku-webhook.service";
 import { receiveDoitWebhook } from "../services/payment-webhook.service";
 
 const DOIT_SIGNATURE_HEADER = "PayBridge-Signature";
@@ -88,36 +89,48 @@ function rejectRateLimited(res: Parameters<RequestHandler>[1], retry: number) {
 export function createPaymentWebhookRouter(options?: {
   /** Test override; production uses the real service. */
   receive?: typeof receiveDoitWebhook;
+  receiveDuitku?: typeof receiveDuitkuCallback;
 }) {
   const router = Router();
   const receive = options?.receive ?? receiveDoitWebhook;
+  const receiveDuitku = options?.receiveDuitku ?? receiveDuitkuCallback;
 
-  const rawBody: RequestHandler = (req, res, next) => {
-    // A malformed tenant id is a plain 404 with no body echo.
-    const tenant = tenantIdSchema.safeParse(req.params.tenantId);
-    if (!tenant.success) {
-      res.status(404).json({
-        error: { code: "NOT_FOUND", message: "Tidak ditemukan." },
-      });
-      return;
-    }
-    // Throttle (IP, tenant) pairs with too many failed verifications before
-    // the body is read.
-    const retry = failedRetryAfter(limiterKey(req, tenant.data), limiterNow());
-    if (retry !== null) rejectRateLimited(res, retry);
-    const contentType = req
-      .get("content-type")
-      ?.split(";")[0]
-      .trim()
-      .toLowerCase();
-    if (contentType !== "application/json")
-      throw new HttpError(
-        415,
-        "UNSUPPORTED_MEDIA_TYPE",
-        "Send an application/json body.",
+  /** Raw body of one content type, read only after the tenant id and the
+   * per-IP failure limit passed. */
+  const rawBodyOf =
+    (expectedType: string, limit: number | string): RequestHandler =>
+    (req, res, next) => {
+      // A malformed tenant id is a plain 404 with no body echo.
+      const tenant = tenantIdSchema.safeParse(req.params.tenantId);
+      if (!tenant.success) {
+        res.status(404).json({
+          error: { code: "NOT_FOUND", message: "Tidak ditemukan." },
+        });
+        return;
+      }
+      // Throttle (IP, tenant) pairs with too many failed verifications before
+      // the body is read.
+      const retry = failedRetryAfter(
+        limiterKey(req, tenant.data),
+        limiterNow(),
       );
-    express.raw({ type: () => true, limit: BODY_LIMIT_BYTES })(req, res, next);
-  };
+      if (retry !== null) rejectRateLimited(res, retry);
+      const contentType = req
+        .get("content-type")
+        ?.split(";")[0]
+        .trim()
+        .toLowerCase();
+      if (contentType !== expectedType)
+        throw new HttpError(
+          415,
+          "UNSUPPORTED_MEDIA_TYPE",
+          `Send an ${expectedType} body.`,
+        );
+      express.raw({ type: () => true, limit })(req, res, next);
+    };
+  const rawBody = rawBodyOf("application/json", BODY_LIMIT_BYTES);
+  // Duitku callbacks are small forms (a dozen short fields).
+  const duitkuBody = rawBodyOf("application/x-www-form-urlencoded", "16kb");
 
   router.post("/doit/:tenantId", rawBody, async (req, res) => {
     const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
@@ -139,6 +152,29 @@ export function createPaymentWebhookRouter(options?: {
       res.status(200).json({ received: true, status: result.status });
     } catch (error) {
       // One fixed message for every verification failure (no oracle).
+      if (error instanceof CoreError && error.code === "UNAUTHORIZED") {
+        recordFailedVerification(
+          limiterKey(req, String(req.params.tenantId)),
+          limiterNow(),
+        );
+        throw new HttpError(401, "UNAUTHORIZED", UNAUTHORIZED_MESSAGE);
+      }
+      throw error;
+    }
+  });
+
+  router.post("/duitku/:tenantId", duitkuBody, async (req, res) => {
+    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    try {
+      await receiveDuitku({
+        tenantId: String(req.params.tenantId),
+        rawBody: raw,
+      });
+      // Stored, duplicate or ignored: Duitku has nothing more to resend (a
+      // stored row that still needs work is retried by the worker). A thrown
+      // 503 (could not store or process) makes Duitku retry.
+      res.status(200).type("text/plain").send("OK");
+    } catch (error) {
       if (error instanceof CoreError && error.code === "UNAUTHORIZED") {
         recordFailedVerification(
           limiterKey(req, String(req.params.tenantId)),
