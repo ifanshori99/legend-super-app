@@ -78,6 +78,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - 0217 kini berisi FK komposit `profit_entity_id` di `shareholder_document_files` dan `shareholder_documents` (422 `PROFIT_ENTITY_NOT_FOUND` di servis). Semua `ADD CONSTRAINT` FK diapit `NO FORCE`/`FORCE ROW LEVEL SECURITY` (contracts.md pola 2) agar migrator non-superuser lolos, dan blok DO menolak migrasi bila kedua tabel dokumen sudah berisi baris.
 - Belum: storage + email adapter belum terpasang di app (statement 503 lalu dicatat, pembayaran tetap jalan; sama dengan dokumen pemegang saham); `estimates` di my-profit-share masih [] (event `distribution.approved|paid|completed` sudah lewat outbox).
 
+## legend-shrlc desain replikasi master HRIS ke edge + selfie offline (architect, cabang `ws/hris-edge-design` dari ws/storage-wire 62ef1e11, 2026-11-10)
+
+- Dokumen: `docs/design/hris-edge-replication.md`. Hanya desain, tanpa kode produk.
+- Temuan: tidak ada replikasi `user`/`roles`/`role_assignments` ke edge sama sekali; `applyStaffPinRecords` akan gagal FK `staff_pins.user_id` di DB edge terpisah (test memakai satu DB bersama, jadi tidak pernah tertangkap). Edge juga memegang root `STAFF_PIN_PEPPER` (kartu bug `legend-ideif`).
+- Keputusan: (D-01) saat internet outlet putus, HP tetap ke cloud lewat data seluler; QR layar outlet dibuat edge; karyawan tanpa kuota absen di "layar absen outlet" (PIN staf + selfie, metode baru `outlet_device`), tidak ada HP ke edge di tahap ini. (D-02/03) satu snapshot penuh per outlet `GET /api/edge-sync/people-snapshot` tiap 60 s dengan ETag; kolom minimum, tanpa hash password, tanpa PII tersegel, email diganti `<id>@edge.invalid`, proyeksi `home_outlet_id=O` dan `assigned_by=assignee`; keluar scope = detach. (D-04) edge tidak menyimpan seed QR, hanya kunci harian D-1..D+3; token QR v2 bisa diverifikasi cloud. (D-05) selfie disegel ke kunci publik cloud (RSA-OAEP-256 + AES-256-GCM, meta terenkripsi), diunggah idempoten `PUT /api/edge-sync/attendance-selfies/:objectId`, file lokal dihapus setelah cloud konfirmasi, kedaluwarsa 30 hari. (D-06) dampak edge dicuri + runbook.
+- Review: reviewer konteks segar 15 temuan (5 tinggi: FK home outlet, FK `assigned_by`, bentrok natural key karyawan yang ditahan, link selfie gagal menghilangkan log, prefix edge buta metode membuka `/qr/rotate`); review ulang 5 sisa (placeholder `employee_no` melanggar CHECK, shift untuk karyawan yang tidak dikirim, bentrok kunci unik dengan state lama edge, batas pensiun kunci segel, ETag memuat waktu); semua dibetulkan di dokumen (apply dua tahap, pensiun kunci 90 hari).
+- Kartu: C1 `legend-hwn02`, C2 `legend-ye4j1`, C3 `legend-tkycp`, C4 `legend-cku1m`, C5 `legend-we0yc`, C6 `legend-0wvoz`, C7 `legend-hubzo`, C8 UI `legend-tvkuz`, C9 ops `legend-svy91`, bug pepper `legend-ideif`. `legend-j6cyb` sekarang bergantung pada C1-C7. Mulai paralel: C1 dan C4.
+- Pertanyaan founder (di laporan): Q1 jalur absen saat internet putus, Q2 layar outlet setiap hari atau hanya saat putus, Q3 tempat simpan kunci segel selfie production.
+- Subagent: 11 (Explore 9, reviewer 2), puncak bersamaan 4.
+
 ## legend-dwrr WS-12 provider AI OpenAI-compatible per tenant (engineer, cabang `ws/ai-provider-tenant` dari milestone/m1 d2080951, 2026-11-10)
 
 - Satu migrasi `0188_ai_provider_configs` (when 1794267000000, prevId 8948ed96 = id snapshot 0186): tabel `ai_provider_configs` satu baris per tenant, tenant RLS (`ai-provider.custom.sql`). Kunci API disegel `sealSecret` (AAD `ai_provider_config:<tenantId>:<rowId>`), hanya `hasKey` + `keyLast4` yang keluar. Tipe koneksi `api_key`; `chatgpt_oauth` dicadangkan dan ditolak (legend-z83k).
@@ -1626,6 +1636,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Penanganan gagal: 503 agen belum siap dan 409 `WIFI_GRANT_IN_FLIGHT` diulang (rollback, tidak di-ack); 502 `WIFI_AUTHORIZE_REFUSED` dan 4xx lain dicatat `applier_refused`; tanpa grant live: no-op. Edge offline: antrean cloud menahan, kursor lanjut berurutan.
 - Bukti: 20 tes baru (`wifi-quota-edge-apply.test.ts`), mutasi (forwarder dicabut, klasifikasi error dicabut) membuat 17 tes gagal; 179 tes terarah lulus di 10 berkas; typecheck shared+api, eslint, prettier bersih; `db:generate` kosong. Review K (architect): 2 tinggi (409 in-flight tertelan, 502 menahan tautan) dan 1 sedang (node salah saat heartbeat primary basi) dibetulkan.
 - Risiko tersisa: panggilan controller berjalan di dalam transaksi terima tautan (satu per event, berurutan); 503 menahan tautan outlet selama agen belum siap bila ada grant live. Perubahan agar keluar dari transaksi butuh tabel pending lokal (migrasi), tidak dikerjakan.
+
 
 
 
