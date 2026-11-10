@@ -12,7 +12,11 @@
 
 import { createHash } from "node:crypto";
 import { and, asc, eq, gt, sql } from "drizzle-orm";
-import { businessDateOf, tenantIdSchema } from "@starter/shared/core";
+import {
+  businessDateOf,
+  tenantIdSchema,
+  ulidTimestamp,
+} from "@starter/shared/core";
 import { customerProfiles, loyaltyPrograms } from "../db/schema/crm-member";
 import { pointLedger } from "../db/schema/crm-ledger";
 import { loyaltyTiers } from "../db/schema/crm-tiers";
@@ -83,6 +87,8 @@ type Allocation = {
   owner: Allocation[];
   /** Replay position of the consuming row. */
   seq: number;
+  /** Time (ms) the consuming row was posted (its ULID timestamp). */
+  at: number;
 };
 
 /** FIFO order: earliest `expires_at` first (no expiry last), then id. */
@@ -141,8 +147,9 @@ async function loadGrantStates(
     lot: Lot,
     points: number,
     seq: number,
+    at: number,
   ): void => {
-    const allocation: Allocation = { lot, points, owner, seq };
+    const allocation: Allocation = { lot, points, owner, seq, at };
     owner.push(allocation);
     const list = claims.get(lot);
     if (list === undefined) claims.set(lot, [allocation]);
@@ -170,7 +177,12 @@ async function loadGrantStates(
    * those redemptions are now charged there (latest claim first), so a later
    * restore gives the points back to the lots that really paid.
    */
-  const takeFromGrant = (lot: Lot, points: number, seq: number): void => {
+  const takeFromGrant = (
+    lot: Lot,
+    points: number,
+    seq: number,
+    at: number,
+  ): void => {
     const own = Math.min(lot.left, points);
     lot.left -= own;
     const parts = consume(points - own);
@@ -183,14 +195,14 @@ async function loadGrantStates(
         if (move <= 0) continue;
         claim.points -= move;
         part.points -= move;
-        charge(claim.owner, part.lot, move, claim.seq);
+        charge(claim.owner, part.lot, move, claim.seq, claim.at);
       }
     }
     // The rest of the excess is this row's own claim, so `settle` can move it
     // onto a lot a later restore refills.
     const excess: Allocation[] = [];
     for (const part of parts)
-      if (part.points > 0) charge(excess, part.lot, part.points, seq);
+      if (part.points > 0) charge(excess, part.lot, part.points, seq, at);
   };
 
   const expiryTime = (lot: Lot): number =>
@@ -200,10 +212,15 @@ async function loadGrantStates(
    * After a restore refilled a lot: redemptions posted after that lot and
    * charged to a later-expiring lot move onto it (latest-expiring lot first),
    * so the member keeps the points that expire last, as plain FIFO would.
+   * A lot that had already expired when the restore posted (`restoreAt`) is
+   * not refilled this way, and a claim only moves onto a lot that was still
+   * alive when the claim's row was posted.
    */
-  const settle = (): void => {
+  const settle = (restoreAt: number): void => {
     for (let early = 0; early < fifo.length; early++) {
       const lot = fifo[early]!;
+      if (lot.expiresAt !== null && lot.expiresAt.getTime() <= restoreAt)
+        continue;
       for (let late = fifo.length - 1; late > early && lot.left > 0; late--) {
         const other = fifo[late]!;
         if (expiryTime(other) <= expiryTime(lot)) break;
@@ -214,18 +231,24 @@ async function loadGrantStates(
           index--
         ) {
           const claim = onOther[index]!;
-          if (claim.points <= 0 || claim.seq < lot.seq) continue;
+          if (
+            claim.points <= 0 ||
+            claim.seq < lot.seq ||
+            claim.at >= expiryTime(lot)
+          )
+            continue;
           const move = Math.min(claim.points, lot.left);
           claim.points -= move;
           other.left += move;
           lot.left -= move;
-          charge(claim.owner, lot, move, claim.seq);
+          charge(claim.owner, lot, move, claim.seq, claim.at);
         }
       }
     }
   };
 
   for (const [seq, row] of rows.entries()) {
+    const rowAt = ulidTimestamp(row.id);
     const isGrant =
       (row.type === "earn" ||
         row.type === "bonus" ||
@@ -252,11 +275,11 @@ async function loadGrantStates(
       );
     if (row.points < 0) {
       const points = -row.points;
-      if (target !== undefined) takeFromGrant(target, points, seq);
+      if (target !== undefined) takeFromGrant(target, points, seq, rowAt);
       else {
         const owner: Allocation[] = [];
         for (const part of consume(points))
-          charge(owner, part.lot, part.points, seq);
+          charge(owner, part.lot, part.points, seq, rowAt);
         taken.set(row.id, owner);
       }
       continue;
@@ -273,7 +296,7 @@ async function loadGrantStates(
       allocation.lot.left += back;
       rest -= back;
     }
-    settle();
+    settle(rowAt);
   }
 
   return fifo

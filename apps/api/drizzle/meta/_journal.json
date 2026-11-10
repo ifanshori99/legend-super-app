@@ -1646,6 +1646,13 @@
       "when": 1794329000000,
       "tag": "0248_payroll_reseal_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 249,
+      "version": "7",
+      "when": 1794330000000,
+      "tag": "0249_backfill_marketing_opt_in_from_consents",
+      "breakpoints": true
     }
   ]
 }

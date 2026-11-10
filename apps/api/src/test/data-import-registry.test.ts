@@ -157,6 +157,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-l9rji (sub-302 D7/D27)
   "0211_platform_payment_gateways.sql":
     "seeds the two rows of the new global platform_payment_gateways table it creates (doit enabled and default, duitku off); touches no existing table or tenant row",
+  // legend-37wom (Codex 411, batch48d)
+  "0249_backfill_marketing_opt_in_from_consents.sql":
+    "sets customer_profiles.marketing_opt_in from each profile's latest marketing consent decision (highest seq) where the flag differs; edits only that one column, never inserts or deletes rows, idempotent, FORCE RLS on consents and customer_profiles lifted and restored in the same migration",
 };
 
 // Entrypoints that open a database pool but import no data.
