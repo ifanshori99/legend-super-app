@@ -139,3 +139,5 @@ export * from "./crm-member";
 export * from "./crm-ledger";
 // WS-08 rewards, redemptions, missions (legend-m4p5).
 export * from "./crm-rewards";
+// legend-dn4 WhatsApp login reply policy, default off (AUTH-03).
+export * from "./wa-login-reply";

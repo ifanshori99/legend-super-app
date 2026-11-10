@@ -1373,6 +1373,13 @@
       "when": 1794297863874,
       "tag": "0220_k2l_member_signin_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "7",
+      "when": 1794305000000,
+      "tag": "0226_wa_login_reply_policies",
+      "breakpoints": true
     }
   ]
 }
