@@ -48,6 +48,7 @@ export * from "./hris";
 export * from "./hris-leave";
 // WS-10 shift scheduling: templates, roster, swaps, compliance (legend-jstx).
 export * from "./hris-scheduling";
+export * from "./hris-attendance";
 export * from "./hris-lifecycle";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";

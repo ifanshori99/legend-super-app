@@ -1368,6 +1368,13 @@
       "breakpoints": true
     },
     {
+      "idx": 217,
+      "version": "7",
+      "when": 1794296000000,
+      "tag": "0217_hris_attendance",
+      "breakpoints": true
+    },
+    {
       "idx": 219,
       "version": "7",
       "when": 1794298000000,

@@ -5,7 +5,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
 import { env, trustProxySetting } from "./config/env";
-import { pool } from "./db";
+import { db, pool } from "./db";
 import { auth, CLIENT_IP_HEADER } from "./lib/auth";
 import {
   logger as defaultLogger,
@@ -29,6 +29,12 @@ import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
+import { createStorageApiRouter } from "./routes/storage-api.routes";
+import {
+  consoleLikeLog,
+  createStorageRuntimeFromEnv,
+  type StorageRuntime,
+} from "./services/core-storage-runtime";
 import { mcpOAuthRouter, mcpRouter } from "./routes/mcp.routes";
 import { auditEventsRouter } from "./routes/audit-events.routes";
 import { createMetricsRouter } from "./routes/metrics.routes";
@@ -153,6 +159,11 @@ export function createApp({
   publicRateLimit: publicRateLimitOptions,
   loginChallengeRateLimit: loginChallengeRateLimitOptions,
   edgeMode = env.EDGE_MODE,
+  storageRuntime = createStorageRuntimeFromEnv(
+    process.env,
+    db,
+    consoleLikeLog(defaultLogger),
+  ),
 }: {
   logger?: Logger;
   /** Test seam; production reads EDGE_MODE (legend-2pi route split). */
@@ -163,6 +174,8 @@ export function createApp({
   publicRateLimit?: Partial<PublicRateLimitOptions>;
   /** Test seam; production uses the LOGIN_* defaults (legend-fc0f2). */
   loginChallengeRateLimit?: Partial<LoginChallengeRateLimitOptions>;
+  /** Test seam; production reads STORAGE_* (null: uploads answer 503, legend-dzh9q). */
+  storageRuntime?: StorageRuntime | null;
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
@@ -398,6 +411,11 @@ export function createApp({
   app.use("/api/reports", createReportsRouter());
   // Dashboard layout, tile values (batch) and queue rows (legend-flb8f).
   app.use("/api/dashboards", createDashboardsRouter());
+  // Object storage consumers (core-storage router, attendance selfie URLs).
+  app.use(
+    "/api",
+    createStorageApiRouter({ runtime: storageRuntime, database: db }),
+  );
   app.use("/api", apiRouter);
 
   app.use(notFound);

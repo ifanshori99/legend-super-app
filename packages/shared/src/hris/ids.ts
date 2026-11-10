@@ -25,6 +25,9 @@ export const offboardingIdSchema = uuidIdSchema<"OffboardingId">();
 export const attendanceLogIdSchema = ulidIdSchema<"AttendanceLogId">();
 export const attendanceCorrectionIdSchema =
   uuidIdSchema<"AttendanceCorrectionId">();
+export const attendanceDeviceIdSchema = uuidIdSchema<"AttendanceDeviceId">();
+export const attendanceDutyMealIdSchema =
+  uuidIdSchema<"AttendanceDutyMealId">();
 export const shiftTemplateIdSchema = uuidIdSchema<"ShiftTemplateId">();
 export const shiftAssignmentIdSchema = uuidIdSchema<"ShiftAssignmentId">();
 export const shiftSwapRequestIdSchema = uuidIdSchema<"ShiftSwapRequestId">();
@@ -64,6 +67,8 @@ export type AttendanceLogId = z.infer<typeof attendanceLogIdSchema>;
 export type AttendanceCorrectionId = z.infer<
   typeof attendanceCorrectionIdSchema
 >;
+export type AttendanceDeviceId = z.infer<typeof attendanceDeviceIdSchema>;
+export type AttendanceDutyMealId = z.infer<typeof attendanceDutyMealIdSchema>;
 export type ShiftTemplateId = z.infer<typeof shiftTemplateIdSchema>;
 export type ShiftAssignmentId = z.infer<typeof shiftAssignmentIdSchema>;
 export type ShiftSwapRequestId = z.infer<typeof shiftSwapRequestIdSchema>;

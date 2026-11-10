@@ -5,10 +5,19 @@ import { HttpError } from "../lib/http-error.ts";
 export interface MalwareScanner {
   /** Resolves only when the object is accepted; rejects on detection or failure. */
   scan(bytes: Uint8Array): Promise<void>;
+  /** False when this scanner cannot vet non-image documents (PDF); uploads of
+   * those are refused. Absent means true. */
+  readonly acceptsDocuments?: boolean;
 }
 
 /** Development fake only; it does not detect malicious content. */
 export class NoopMalwareScanner implements MalwareScanner {
+  readonly acceptsDocuments: boolean;
+
+  constructor(options: { acceptsDocuments?: boolean } = {}) {
+    this.acceptsDocuments = options.acceptsDocuments ?? true;
+  }
+
   async scan(): Promise<void> {
     // Deliberately does not inspect content.
   }
