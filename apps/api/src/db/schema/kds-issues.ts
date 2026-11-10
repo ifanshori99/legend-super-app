@@ -76,6 +76,11 @@ export const orderIssues = pgTable(
       .notNull()
       .defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    /**
+     * A manual refund of this issue was rejected (final, legend-wumm8): the
+     * guest got nothing back, so the line may be reported again as a new issue.
+     */
+    refundRejectedAt: timestamp("refund_rejected_at", { withTimezone: true }),
   },
   (table) => [
     unique("order_issues_tenant_id_id_key").on(table.tenantId, table.id),
@@ -88,11 +93,12 @@ export const orderIssues = pgTable(
       .on(table.tenantId, table.orderItemId)
       .where(sql`${table.type} = 'comp' AND ${table.status} <> 'cancelled'`),
     // One settled unfulfillable report per order line (legend-4qu): two
-    // concurrent resolutions cannot both win.
+    // concurrent resolutions cannot both win. An issue whose refund was
+    // rejected gave nothing back and is not counted (legend-wumm8).
     uniqueIndex("order_issues_resolved_item_once_idx")
       .on(table.tenantId, table.orderItemId)
       .where(
-        sql`${table.type} = 'unfulfillable' AND ${table.resolution} IS NOT NULL AND ${table.status} <> 'cancelled'`,
+        sql`${table.type} = 'unfulfillable' AND ${table.resolution} IS NOT NULL AND ${table.status} <> 'cancelled' AND ${table.refundRejectedAt} IS NULL`,
       ),
     // One voucher settles at most one issue.
     uniqueIndex("order_issues_voucher_once_idx")
@@ -178,6 +184,10 @@ export const orderIssues = pgTable(
     check(
       "order_issues_replacement_unit_price_check",
       sql`${table.replacementUnitPriceIdr} IS NULL OR ${table.resolution} = 'swap'`,
+    ),
+    check(
+      "order_issues_refund_rejected_check",
+      sql`${table.refundRejectedAt} IS NULL OR ${table.resolution} = 'manual_refund'`,
     ),
     check(
       "order_issues_resolved_check",

@@ -1,0 +1,4 @@
+DROP INDEX "order_issues_resolved_item_once_idx";--> statement-breakpoint
+ALTER TABLE "order_issues" ADD COLUMN "refund_rejected_at" timestamp with time zone;--> statement-breakpoint
+CREATE UNIQUE INDEX "order_issues_resolved_item_once_idx" ON "order_issues" USING btree ("tenant_id","order_item_id") WHERE "order_issues"."type" = 'unfulfillable' AND "order_issues"."resolution" IS NOT NULL AND "order_issues"."status" <> 'cancelled' AND "order_issues"."refund_rejected_at" IS NULL;--> statement-breakpoint
+ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_refund_rejected_check" CHECK ("order_issues"."refund_rejected_at" IS NULL OR "order_issues"."resolution" = 'manual_refund');
