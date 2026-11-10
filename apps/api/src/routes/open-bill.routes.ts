@@ -7,7 +7,7 @@
 // attached per route instead of the router. Outlet ids come from the path or
 // from the stored session, never from the body.
 
-import { Router, type Request } from "express";
+import { Router } from "express";
 import { AccessError } from "@starter/shared/access";
 import { z, outletIdSchema } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";

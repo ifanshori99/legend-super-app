@@ -232,7 +232,8 @@ describe("carry deduction in a regular distribution", () => {
     const calc = distribute({
       carry: new Map([[A, [{ shortfallId: shortfall(1), amountIdr: 200 }]]]),
     });
-    const { carryDeductions: _omit, ...plain } = calc;
+    const plain = { ...calc };
+    delete plain.carryDeductions;
     assert.doesNotThrow(() =>
       accounting.distributionCalculationSchema.parse(plain),
     );

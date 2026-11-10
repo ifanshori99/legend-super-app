@@ -102,7 +102,9 @@ describe("legend-44g8n migration 0230: swap charge cash columns", () => {
     const snap0230 = JSON.parse(read("meta/0230_snapshot.json"));
     expect(snap0230.prevId).toBe(snap0229.id);
     expect(snap0230.id).not.toBe(snap0229.id);
-    const table = (snap: { tables: Record<string, any> }) =>
+    const table = (snap: {
+      tables: Record<string, { columns: Record<string, unknown> }>;
+    }) =>
       snap.tables["public.order_issue_charges"].columns;
     expect(Object.keys(table(snap0229))).not.toContain("cash_movement_id");
     expect(Object.keys(table(snap0230))).toContain("cash_movement_id");
