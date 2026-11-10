@@ -1118,3 +1118,4 @@ Langkah berikut CTO baru:
   - G2i7n pti5r (023d161b), G0t1a qih2m (review), G05um duitku-406 (e1bebe1f): push + test DB + bukti gagal-dulu setelah restart.
 - 00:38 Semua thread sudah commit lokal. Siap restart Mac.
   - G2q9m ps-405: keputusan CTO 00:40: backfill 0239 tandai SEMUA baris lama yang sudah dibayar dengan recipient NULL (hapus syarat login pemegang saham) supaya Owner bisa rekonsiliasi; kirim setelah restart bersama run 4 file test.
+  - Kartu baru adapter Kirim outbound produksi (penghalang rilis PIN). G0t1a: run 3 file test + push setelah restart.
