@@ -1040,3 +1040,5 @@ Langkah berikut CTO baru:
 - p649r diantre ke G3hrs setelah batch48a.
 - Slot Claude 1 kosong tanpa kartu siap yang bisa jalan: s0qwk tunggu refund masuk m1 (batch48a), knfl6/xa9bc/wqorb tunggu r3i8w di m1. Codex: #2 limit s/d 00:35, #3 7d 99%.
 - Founder tanya Fable 5.2 medium vs Opus 5.5 xhigh. Temuan: harga per token Fable 2x ($8/$40 vs $4/$20); benchmark publik hanya Fable 5.1 (Opus 5.5 xhigh lebih tinggi pada biaya per tugas setara). Akun langganan punya kuota Fable 7d terpisah (0% di ketiga akun). Usulan: pilot Fable 5.2 high untuk review architect 2-3 kartu, menunggu persetujuan founder.
+
+- 20:58 Pilot Fable (disetujui founder: Fable 5.2 medium saja). A/B buta brief 387 atas 8f0b4630 (w5by9 sebelum perbaikan review). A: architect subagent Opus xhigh (workflow sekarang). B: architect subagent Fable medium. Kunci jawaban: laporan G1amj (HIGH restore ke grant yang di-refund, MEDIUM restore vs redeem sesudahnya, LOW kelebihan reverse tidak dipindah). Ukur: temuan cocok, positif palsu, waktu, token. Slot thread 8/8, jadi subagent.
