@@ -971,3 +971,4 @@ Langkah berikut CTO baru:
 - Kuota 18:18: Claude #1 7d 2% 5h ~15%; #2 7d 91% (CTO lama); #3 5h 87% reset 20:00, 7d 48%. Codex 91-96% sampai 15 Nov.
 - Cron yang harus dibuat ulang: retro `43 2,7,12,17,22 * * *` (memory 1), push GitHub `17 * * * *` git push origin --all tanpa --force (memory 2).
 - GitHub: origin = ifanshori99/legend-super-app (privat). m1 29ddcbf7 sudah di-push.
+- 18:26 tct8 2c2c45c6 (codec roles, approval_policies, chart_of_accounts; 8 kartu domain + importer). Untuk batch48.
