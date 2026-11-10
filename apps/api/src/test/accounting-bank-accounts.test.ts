@@ -192,10 +192,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const tenants = [tenantId, ...otherTenantIds];
+  // Scoped to this file's own entities and tenants: the fixture tenant is shared
+  // with the other cash-bank test files running in parallel, whose bank accounts
+  // are referenced by cash_deposits.
   await owner.query(
-    "DELETE FROM bank_accounts WHERE tenant_id = ANY($1::uuid[])",
-    [tenants],
+    "DELETE FROM bank_accounts WHERE legal_entity_id = ANY($1::uuid[]) OR tenant_id = ANY($2::uuid[])",
+    [entityIds, otherTenantIds],
   );
   for (const table of ["chart_of_accounts"])
     await owner.query(
