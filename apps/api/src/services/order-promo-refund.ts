@@ -52,6 +52,7 @@ import { PROMO_AUDIT_SAFE_FIELDS } from "./crm-promo-engine";
 import {
   recomputeAfterPartialRefund,
   recordPartialRefundPayout,
+  returnPartialRefundPayout,
   type PartialRefundInput,
   type PartialRefundResult,
   type PromoPartialRefundPort,
@@ -337,4 +338,5 @@ export async function livePromoApplicationOf(
 export const orderPromoPartialRefundPort: PromoPartialRefundPort = {
   recomputeAfterPartialRefund: recomputeOrderPromoAfterPartialRefund,
   recordPartialRefundPayout,
+  returnPartialRefundPayout,
 };

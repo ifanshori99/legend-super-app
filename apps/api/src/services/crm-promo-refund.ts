@@ -60,6 +60,7 @@
 // advisory lock, the application row, the voucher row, the customer-day
 // advisory lock (Q40), promotion rows by id, then the customer usage rows.
 
+import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   evaluatePromotion,
@@ -83,6 +84,7 @@ import {
 } from "@starter/shared/core";
 import {
   facilityRewards,
+  promoCommandIdempotency,
   promotionCustomerUsage,
   promotionOrderApplications,
   promotionRedemptions,
@@ -123,6 +125,8 @@ const REFUND_AUDIT_FIELDS: readonly string[] = [
   "refundedSubtotalIdr",
   "withdrawnDiscountIdr",
   "discountIdr",
+  "returnedIdr",
+  "refundedPaidIdr",
 ];
 
 export type PartialRefundInput = {
@@ -217,6 +221,23 @@ export type PromoPartialRefundPort = {
     context: ScopedTenantContext,
     input: { orderId: string; payoutIdr: number; at: Date },
   ): Promise<{ recordedIdr: number }>;
+  /**
+   * Gives back a payout recorded with `recordPartialRefundPayout` when the
+   * refund that carried it failed for good (legend-pti5r), so the line can be
+   * reported again and refunded. Idempotent per `idempotencyKey`. Never throws
+   * for a missing or released application (`{ returnedIdr: 0 }`): the caller
+   * is a failure hook that must not roll back.
+   */
+  returnPartialRefundPayout(
+    tx: Tx,
+    context: ScopedTenantContext,
+    input: {
+      orderId: string;
+      idempotencyKey: string;
+      payoutIdr: number;
+      at: Date;
+    },
+  ): Promise<{ returnedIdr: number }>;
 };
 
 /** Same key as the engine's per-order lock (crm-promo-engine `lockOrder`). */
@@ -862,8 +883,137 @@ export async function recordPartialRefundPayout(
   return { recordedIdr };
 }
 
+const PAYOUT_RETURN_OPERATION = "promo_payout.return";
+
+/**
+ * Gives back a payout whose refund failed for good (legend-pti5r): lowers
+ * `refunded_paid_idr` by `min(payoutIdr, refunded_paid_idr)`. Same lock order
+ * as `recordPartialRefundPayout`: per-order advisory lock, then the
+ * application row. Idempotent per `(tenant, idempotencyKey)`, so a replay
+ * never gives back twice; the same key with another payout is 409
+ * `IDEMPOTENCY_KEY_REUSED`. No application, or a released one: Rp0, no throw.
+ */
+export async function returnPartialRefundPayout(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    orderId: string;
+    idempotencyKey: string;
+    payoutIdr: number;
+    at: Date;
+  },
+): Promise<{ returnedIdr: number }> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const orderId = orderIdSchema.parse(input.orderId);
+  if (!Number.isSafeInteger(input.payoutIdr) || input.payoutIdr < 0)
+    throw new HttpError(422, "VALIDATION_ERROR", "Jumlah refund tidak valid.");
+  const key = input.idempotencyKey;
+  if (typeof key !== "string" || key.length < 1 || key.length > 100)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Kunci idempotensi tidak valid.",
+    );
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify([
+        tenantId,
+        PAYOUT_RETURN_OPERATION,
+        { orderId, payoutIdr: input.payoutIdr },
+      ]),
+    )
+    .digest("hex");
+  await lockOrder(tx, tenantId, orderId);
+  const [existing] = await tx
+    .select()
+    .from(promoCommandIdempotency)
+    .where(
+      and(
+        eq(promoCommandIdempotency.tenantId, tenantId),
+        eq(promoCommandIdempotency.key, key),
+      ),
+    )
+    .limit(1);
+  if (existing) {
+    if (
+      existing.operation !== PAYOUT_RETURN_OPERATION ||
+      existing.fingerprint !== fingerprint
+    )
+      throw new HttpError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "Idempotency-Key sudah dipakai untuk permintaan yang berbeda.",
+      );
+    const stored = (existing.response as { returnedIdr?: unknown } | null)
+      ?.returnedIdr;
+    return { returnedIdr: typeof stored === "number" ? stored : 0 };
+  }
+  const [application] = await tx
+    .select()
+    .from(promotionOrderApplications)
+    .where(
+      and(
+        eq(promotionOrderApplications.tenantId, tenantId),
+        eq(promotionOrderApplications.orderId, orderId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  const returnedIdr =
+    !application || application.status === "released"
+      ? 0
+      : Math.min(input.payoutIdr, application.refundedPaidIdr);
+  if (application && returnedIdr > 0) {
+    const refundedPaidIdr = application.refundedPaidIdr - returnedIdr;
+    await tx
+      .update(promotionOrderApplications)
+      .set({ refundedPaidIdr: idr(refundedPaidIdr) })
+      .where(
+        and(
+          eq(promotionOrderApplications.tenantId, tenantId),
+          eq(promotionOrderApplications.orderId, orderId),
+        ),
+      );
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(input.at.getTime()),
+        tenantId,
+        outletId: application.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "promo_application.payout_returned",
+        objectType: "promo_application",
+        objectId: orderId,
+        reason: "Refund gagal permanen: payout promo dikembalikan",
+        maskedChanges: {
+          before: null,
+          after: { orderId, returnedIdr, refundedPaidIdr },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: input.at.toISOString(),
+      },
+      REFUND_AUDIT_FIELDS,
+    );
+  }
+  await tx.insert(promoCommandIdempotency).values({
+    tenantId,
+    key,
+    operation: PAYOUT_RETURN_OPERATION,
+    fingerprint,
+    response: { returnedIdr },
+  });
+  return { returnedIdr };
+}
+
 /** Default port: the real recompute (the refund module injects it). */
 export const promoPartialRefundPort: PromoPartialRefundPort = {
   recomputeAfterPartialRefund,
   recordPartialRefundPayout,
+  returnPartialRefundPayout,
 };

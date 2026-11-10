@@ -28,6 +28,9 @@
 //   failed item was never delivered, whatever happened to its refund, so the
 //   kept lines leave out the item of every manual_refund issue of the order,
 //   and a rejected refund keeps its promo payout (the money is not owed).
+//   Any other final failure gives the payout back (legend-pti5r,
+//   `returnPartialRefundPayout`): the guest was never paid, and the
+//   re-reported line would otherwise recompute to Rp0 (`nothing_left`).
 // Events of another tenant or outlet, and every other event, are ignored.
 
 import { and, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -869,6 +872,10 @@ async function requestRecoveryRefundReversal(
  * resolver and approver are copied from the first filing's idempotency row,
  * which four-eyes reads. Without that row nothing is filed: the parties
  * would be unknown (`order_issue.refund_refile_blocked`).
+ * legend-pti5r: every final failure except `rejected` also returns the promo
+ * payout the first filing recorded (`promoRecordedIdr`) to the promo ledger,
+ * idempotent per issue (`<key>:promo-return`); `rejected` keeps it (the money
+ * is not owed, legend-h1dyy).
  * The caller holds the refund graph locks (intent row first).
  */
 export async function refileRecoveryRefundAfterFailure(
@@ -915,8 +922,12 @@ export async function refileRecoveryRefundAfterFailure(
   // A final failure (`rejected`, a person-needed failure, `refile_limit`,
   // `no_first_filing`) gives the sale its money back (legend-iu91r): the line
   // may be reported again (legend-wumm8, same idempotent stamp as `rejected`)
-  // and the refund journal and the points are reversed.
-  const settleFinalFailure = async () => {
+  // and the refund journal and the points are reversed. Unless the approver
+  // rejected it (`returnPromoPayout` false), the promo payout the first filing
+  // recorded goes back too (legend-pti5r): the money was never paid out, so
+  // the re-reported line must be refundable. Lock order: issue -> order ->
+  // intent (held by the caller) -> promo.
+  const settleFinalFailure = async (returnPromoPayout: boolean) => {
     await tx
       .update(orderIssues)
       .set({ refundRejectedAt: now })
@@ -935,6 +946,34 @@ export async function refileRecoveryRefundAfterFailure(
       issueId,
       now,
     );
+    if (!returnPromoPayout) return;
+    const [filing] = await tx
+      .select({ response: paymentAdminIdempotency.response })
+      .from(paymentAdminIdempotency)
+      .where(
+        and(
+          eq(paymentAdminIdempotency.tenantId, tenantId),
+          eq(paymentAdminIdempotency.key, orderRecoveryRefundKey(issueId)),
+        ),
+      );
+    // Rows from before legend-h1dyy have no field: nothing was recorded.
+    const recorded = (
+      filing?.response as { promoRecordedIdr?: unknown } | null | undefined
+    )?.promoRecordedIdr;
+    if (typeof recorded !== "number" || !(recorded > 0)) return;
+    const [issueRow] = await tx
+      .select({ orderId: orderIssues.orderId })
+      .from(orderIssues)
+      .where(
+        and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issueId)),
+      );
+    if (!issueRow) return;
+    await orderPromoPartialRefundPort.returnPartialRefundPayout(tx, context, {
+      orderId: issueRow.orderId,
+      idempotencyKey: `${orderRecoveryRefundKey(issueId)}:promo-return`,
+      payoutIdr: recorded,
+      at: now,
+    });
   };
   const failureReason = failedRefund.failureReason ?? "unknown";
   if (failureReason === "rejected") {
@@ -949,10 +988,10 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal ditolak, tidak diajukan ulang",
     );
-    await settleFinalFailure();
     // legend-h1dyy: the promo payout this refund recorded stays on the promo
     // ledger. The approver decided the money is not owed, so a later refund
     // of this order must not pay it (the item stays out of the kept lines).
+    await settleFinalFailure(false);
     return;
   }
   if (
@@ -969,7 +1008,7 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal tidak diajukan ulang: perlu keputusan orang",
     );
-    await settleFinalFailure();
+    await settleFinalFailure(true);
     return;
   }
   const [live] = await tx
@@ -1006,7 +1045,7 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal tidak diajukan ulang: sudah gagal 3 kali",
     );
-    await settleFinalFailure();
+    await settleFinalFailure(true);
     return;
   }
   const [first] = await tx
@@ -1031,7 +1070,7 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal tidak diajukan ulang: pihak asli tidak terbaca",
     );
-    await settleFinalFailure();
+    await settleFinalFailure(true);
     return;
   }
   await idempotentPaymentAdminWrite(
