@@ -298,6 +298,11 @@ export async function setPosOrderCustomer(
 
       if (!profile || profile.membershipStatus === "closed")
         return { kind: "refused", error: crmHttpError("CUSTOMER_NOT_FOUND") };
+      // legend-9ehr6: a typed number must not reveal that it is registered but
+      // not active; answer exactly like an unknown number. The member's own QR
+      // (proof of presence) keeps the specific reason.
+      if (profile.membershipStatus !== "active" && via === "phone_lookup")
+        return { kind: "refused", error: crmHttpError("CUSTOMER_NOT_FOUND") };
       if (profile.membershipStatus !== "active")
         return {
           kind: "refused",

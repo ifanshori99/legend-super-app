@@ -36,6 +36,7 @@ import {
   pointEarnRecords,
   userIdentities,
 } from "../db/schema/index.ts";
+import { isTrainingOrder } from "./device-training.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { recordLoyaltyAnomaly } from "./loyalty-anomaly.service.ts";
 import { afterVisit as missionAfterVisit } from "./loyalty-earn-mission-step.ts";
@@ -267,6 +268,7 @@ async function earnForPaidOrder(
   paid: z.infer<typeof orderPaidSchema>,
 ): Promise<void> {
   const { tenantId, context, now } = scope;
+  if (await isTrainingOrder(tx, tenantId as never, paid.orderId)) return;
   const [order] = await tx
     .select({
       customerProfileId: orders.customerProfileId,
@@ -485,6 +487,7 @@ async function reverseForOrder(
   input: ReverseInput,
 ): Promise<void> {
   const { tenantId, context, now } = scope;
+  if (await isTrainingOrder(tx, tenantId as never, input.orderId)) return;
   const recordWhere = and(
     eq(pointEarnRecords.tenantId, tenantId as never),
     eq(pointEarnRecords.orderId, input.orderId),

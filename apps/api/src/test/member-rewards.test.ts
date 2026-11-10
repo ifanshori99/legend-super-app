@@ -45,6 +45,7 @@ import {
   balanceOf,
   createWorld,
   ensureConsentPolicies,
+  markTraining,
   memberHeaders,
   newMemberUser,
   owner,
@@ -1353,6 +1354,59 @@ describe("LOY-03 fulfil a redemption by code", () => {
     expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
       "fulfilled",
     );
+  });
+});
+
+describe("LOY-03 fulfil never lands on a training order (legend-dbrw3)", () => {
+  it("LOY-03 fulfilling an item reward against a training order is refused and the redemption stays pending", async () => {
+    const { world, scope } = await setup(100);
+    const rewardId = await seedReward(world.tenantId, { pointsCost: 50 });
+    const redemption = await redeemAs(scope, rewardId, key());
+    const trainingOrder = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: null,
+    });
+    await markTraining(world.tenantId, trainingOrder);
+
+    const code = await errorCodeOf(
+      withTenant(db, world.context, (tx) =>
+        fulfilRedemption(
+          tx,
+          world.context,
+          randomUUID(),
+          {
+            redemptionCode: redemption.redemptionCode,
+            outletId: world.outletA,
+            orderId: trainingOrder,
+          },
+          NOW,
+        ),
+      ),
+    );
+    expect(code).toBe("VOUCHER_INVALID");
+    expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
+      "pending",
+    );
+
+    // The same redemption still fulfils against a real order.
+    const realOrder = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: null,
+    });
+    const done = await withTenant(db, world.context, (tx) =>
+      fulfilRedemption(
+        tx,
+        world.context,
+        randomUUID(),
+        {
+          redemptionCode: redemption.redemptionCode,
+          outletId: world.outletA,
+          orderId: realOrder,
+        },
+        NOW,
+      ),
+    );
+    expect(done.status).toBe("fulfilled");
   });
 });
 
