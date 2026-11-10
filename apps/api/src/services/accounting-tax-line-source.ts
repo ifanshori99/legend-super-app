@@ -3,26 +3,33 @@
 // the report service only sums and stores them, so a source can be swapped in
 // tests or when payroll / AP data feeds PPh 21, PPh 23 and PPN.
 //
-// PBJT comes from the ledger: per outlet, credit minus debit of the account
-// mapped to `tax_payable_pbjt` for the entries of that fiscal period (the tax
-// collected, net of reversals). The base is the same figure on the account
-// mapped to `sales_revenue`. An outlet whose tax nets to zero or less is left
-// out. PPh 21 / PPh 23 / PPN have no wired source yet and refuse to generate.
+// PBJT comes from the ledger and the per-sale tax snapshots. Tax: per outlet,
+// credit minus debit of the account mapped to `tax_payable_pbjt`, but only for
+// journals of sales and refunds (a reversal counts as the entry it reverses),
+// so a remittance (setoran) or an opening balance never reduces the tax
+// collected. Base: the `taxBaseIdr` snapshot of each sale in the period (after
+// discount, as the tax rule computed it; a voided sale subtracts it). A refund
+// has no link to its order in the ledger, so its base is its tax grossed up by
+// the outlet's rate of the period's sales (latest PBJT snapshot rate when the
+// period has no sales). An outlet whose tax nets to zero or less is left out.
+// PPh 21 / PPh 23 / PPN have no wired source yet and refuse to generate.
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   AccountingError,
   taxReportLineSchema,
   type TaxReportLine,
   type TaxReportType,
 } from "@starter/shared/accounting";
-import { idr } from "@starter/shared/core";
+import { idr, ulidToUuid } from "@starter/shared/core";
 import {
   accountMappings,
   fiscalPeriods,
   journalEntries,
   journalLines,
   outlets,
+  taxSnapshots,
 } from "../db/schema";
 import type { TenantTransaction } from "./accounting-shared";
 
@@ -62,18 +69,31 @@ async function mappedAccountId(
   return row.accountId;
 }
 
-/** Credit minus debit of one account in the period, per outlet (null = none). */
-async function netCreditByOutlet(
+const reversedEntries = alias(journalEntries, "reversed_entries");
+
+/** Journal source of an entry; a reversal carries the source of its original. */
+const effectiveSource = sql<string>`coalesce(${reversedEntries.sourceType}, ${journalEntries.sourceType})`;
+
+type TaxByOutlet = {
+  /** Net tax of sales and refunds (credit minus debit), per outlet. */
+  tax: Map<string | null, bigint>;
+  /** Net tax of refunds only, per outlet. */
+  refundTax: Map<string | null, bigint>;
+};
+
+/** Tax collected: credit minus debit on the tax account, sales and refunds only. */
+async function collectedTaxByOutlet(
   tx: TenantTransaction,
   args: TaxLineSourceArgs,
   accountId: string,
-): Promise<Map<string | null, bigint>> {
+): Promise<TaxByOutlet> {
   const outletKey = sql<
     string | null
   >`coalesce(${journalLines.outletId}, ${journalEntries.outletId})`;
   const rows = await tx
     .select({
       outletId: outletKey,
+      source: effectiveSource,
       net: sql<string>`sum(${journalLines.creditIdr} - ${journalLines.debitIdr})::text`,
     })
     .from(journalLines)
@@ -82,6 +102,13 @@ async function netCreditByOutlet(
       and(
         eq(journalEntries.tenantId, journalLines.tenantId),
         eq(journalEntries.id, journalLines.entryId),
+      ),
+    )
+    .leftJoin(
+      reversedEntries,
+      and(
+        eq(reversedEntries.tenantId, journalEntries.tenantId),
+        eq(reversedEntries.id, journalEntries.reversalOf),
       ),
     )
     .innerJoin(
@@ -98,10 +125,145 @@ async function netCreditByOutlet(
         eq(journalEntries.legalEntityId, args.legalEntityId),
         eq(fiscalPeriods.legalEntityId, args.legalEntityId),
         eq(fiscalPeriods.period, args.period),
+        inArray(effectiveSource, ["sale", "refund"]),
       ),
     )
-    .groupBy(outletKey);
-  return new Map(rows.map((row) => [row.outletId, BigInt(row.net)]));
+    .groupBy(outletKey, effectiveSource);
+  const tax = new Map<string | null, bigint>();
+  const refundTax = new Map<string | null, bigint>();
+  for (const row of rows) {
+    const net = BigInt(row.net);
+    tax.set(row.outletId, (tax.get(row.outletId) ?? 0n) + net);
+    if (row.source === "refund")
+      refundTax.set(row.outletId, (refundTax.get(row.outletId) ?? 0n) + net);
+  }
+  return { tax, refundTax };
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+
+/** The `uuid` a sale journal's source id is stored as in tax_snapshots. */
+function snapshotSourceId(sourceId: string): string | null {
+  if (UUID_RE.test(sourceId)) return sourceId.toLowerCase();
+  if (ULID_RE.test(sourceId)) return ulidToUuid(sourceId.toUpperCase());
+  return null;
+}
+
+/**
+ * Tax base and snapshot tax of the sales posted in the period, per snapshot
+ * outlet. The sale journals carry the order id as ULID text (or a UUID); the
+ * snapshots store it as a uuid. A reversal (void) of a sale counts negative.
+ */
+async function saleSnapshotsByOutlet(
+  tx: TenantTransaction,
+  args: TaxLineSourceArgs,
+): Promise<Map<string, { base: bigint; tax: bigint }>> {
+  const sign = sql<number>`case when ${journalEntries.reversalOf} is null then 1 else -1 end`;
+  const sourceId = sql<
+    string | null
+  >`coalesce(${reversedEntries.sourceId}, ${journalEntries.sourceId})`;
+  const entries = await tx
+    .select({
+      sourceId,
+      net: sql<string>`sum(${sign})::text`,
+    })
+    .from(journalEntries)
+    .leftJoin(
+      reversedEntries,
+      and(
+        eq(reversedEntries.tenantId, journalEntries.tenantId),
+        eq(reversedEntries.id, journalEntries.reversalOf),
+      ),
+    )
+    .innerJoin(
+      fiscalPeriods,
+      and(
+        eq(fiscalPeriods.tenantId, journalEntries.tenantId),
+        eq(fiscalPeriods.id, journalEntries.fiscalPeriodId),
+      ),
+    )
+    .where(
+      and(
+        eq(journalEntries.tenantId, args.tenantId),
+        eq(journalEntries.legalEntityId, args.legalEntityId),
+        eq(fiscalPeriods.legalEntityId, args.legalEntityId),
+        eq(fiscalPeriods.period, args.period),
+        eq(effectiveSource, "sale"),
+      ),
+    )
+    .groupBy(sourceId);
+  const weight = new Map<string, bigint>();
+  for (const entry of entries) {
+    const id =
+      entry.sourceId === null ? null : snapshotSourceId(entry.sourceId);
+    if (id !== null) weight.set(id, (weight.get(id) ?? 0n) + BigInt(entry.net));
+  }
+  const result = new Map<string, { base: bigint; tax: bigint }>();
+  if (weight.size === 0) return result;
+
+  const snapshots = await tx
+    .select({
+      outletId: taxSnapshots.outletId,
+      sourceId: taxSnapshots.sourceId,
+      base: taxSnapshots.taxBaseIdr,
+      tax: taxSnapshots.taxIdr,
+    })
+    .from(taxSnapshots)
+    .where(
+      and(
+        sql`${taxSnapshots.tenantId} = ${args.tenantId}`,
+        eq(taxSnapshots.taxType, "pbjt"),
+        inArray(taxSnapshots.sourceId, [...weight.keys()]),
+      ),
+    );
+  for (const row of snapshots) {
+    const w = weight.get(row.sourceId.toLowerCase()) ?? 0n;
+    const current = result.get(row.outletId) ?? { base: 0n, tax: 0n };
+    result.set(row.outletId, {
+      base: current.base + w * BigInt(row.base),
+      tax: current.tax + w * BigInt(row.tax),
+    });
+  }
+  return result;
+}
+
+/** First day of the month after "YYYY-MM". */
+function periodEndExclusive(period: string): string {
+  const [year, month] = period.split("-").map(Number) as [number, number];
+  return month === 12
+    ? `${year + 1}-01-01`
+    : `${year}-${String(month + 1).padStart(2, "0")}-01`;
+}
+
+/** PBJT rate (basis points) of the outlet's latest snapshot, if any. */
+async function latestRateBp(
+  tx: TenantTransaction,
+  args: TaxLineSourceArgs,
+  outletId: string,
+): Promise<number | null> {
+  const [row] = await tx
+    .select({ rateBp: taxSnapshots.rateBp })
+    .from(taxSnapshots)
+    .where(
+      and(
+        sql`${taxSnapshots.tenantId} = ${args.tenantId}`,
+        sql`${taxSnapshots.outletId} = ${outletId}`,
+        eq(taxSnapshots.taxType, "pbjt"),
+        // Bounded by the period so regenerating a closed period is stable.
+        sql`${taxSnapshots.businessDate} < ${periodEndExclusive(args.period)}`,
+      ),
+    )
+    .orderBy(desc(taxSnapshots.businessDate))
+    .limit(1);
+  return row && row.rateBp > 0 ? row.rateBp : null;
+}
+
+/** Whole-rupiah division rounded half away from zero. */
+function divRound(numerator: bigint, denominator: bigint): bigint {
+  const twice = 2n * numerator + (numerator < 0n ? -denominator : denominator);
+  return twice / (2n * denominator);
 }
 
 const toIdr = (value: bigint) => idr(Number(value));
@@ -111,13 +273,11 @@ async function pbjtLines(
   args: TaxLineSourceArgs,
 ): Promise<TaxReportLine[]> {
   const taxAccount = await mappedAccountId(tx, args, "tax_payable_pbjt");
-  const revenueAccount = await mappedAccountId(tx, args, "sales_revenue");
-  const tax = await netCreditByOutlet(tx, args, taxAccount);
-  const revenue = await netCreditByOutlet(tx, args, revenueAccount);
+  const { tax, refundTax } = await collectedTaxByOutlet(tx, args, taxAccount);
 
   // A line needs an outlet (PBJT is per outlet/region); tax booked without one
   // cannot be reported, so refuse instead of dropping it from the total.
-  if ((tax.get(null) ?? 0n) > 0n)
+  if ((tax.get(null) ?? 0n) !== 0n)
     throw new AccountingError(
       "TAX_REPORT_SOURCE_UNAVAILABLE",
       "Ada PBJT tanpa outlet di buku besar, laporan tidak bisa dibuat.",
@@ -137,10 +297,40 @@ async function pbjtLines(
     );
   const nameOf = new Map(names.map((row) => [row.id, row.name]));
 
-  return outletIds
-    .map((outletId) => {
-      const base = revenue.get(outletId) ?? 0n;
-      return taxReportLineSchema.parse({
+  const sales = await saleSnapshotsByOutlet(tx, args);
+
+  // The base comes from the snapshots, the tax from the ledger: they must agree
+  // on the sales of the period, else a sale lacks its snapshot (or was
+  // re-quoted after posting) and the base would be wrong without any warning.
+  for (const outletId of outletIds) {
+    const ledgerSaleTax =
+      (tax.get(outletId) ?? 0n) - (refundTax.get(outletId) ?? 0n);
+    if ((sales.get(outletId)?.tax ?? 0n) !== ledgerSaleTax)
+      throw new AccountingError(
+        "TAX_REPORT_SOURCE_UNAVAILABLE",
+        "Pajak PBJT di buku besar tidak cocok dengan snapshot pajak transaksi, laporan tidak bisa dibuat.",
+      );
+  }
+
+  const lines: TaxReportLine[] = [];
+  for (const outletId of outletIds) {
+    const sale = sales.get(outletId) ?? { base: 0n, tax: 0n };
+    // Refund base: tax grossed up by the effective rate of the period's sales
+    // (snapshot base over snapshot tax), else by the latest snapshot rate.
+    const refund = refundTax.get(outletId) ?? 0n;
+    let refundBase = 0n;
+    if (refund !== 0n) {
+      if (sale.tax > 0n && sale.base > 0n)
+        refundBase = divRound(refund * sale.base, sale.tax);
+      else {
+        const rateBp = await latestRateBp(tx, args, outletId);
+        if (rateBp !== null)
+          refundBase = divRound(refund * 10000n, BigInt(rateBp));
+      }
+    }
+    const base = sale.base + refundBase;
+    lines.push(
+      taxReportLineSchema.parse({
         subjectType: "outlet",
         subjectId: outletId,
         subjectName: nameOf.get(outletId) ?? outletId,
@@ -149,13 +339,14 @@ async function pbjtLines(
         baseIdr: toIdr(base > 0n ? base : 0n),
         taxIdr: toIdr(tax.get(outletId) ?? 0n),
         references: [],
-      });
-    })
-    .sort((a, b) =>
-      a.subjectName === b.subjectName
-        ? a.subjectId.localeCompare(b.subjectId)
-        : a.subjectName.localeCompare(b.subjectName),
+      }),
     );
+  }
+  return lines.sort((a, b) =>
+    a.subjectName === b.subjectName
+      ? a.subjectId.localeCompare(b.subjectId)
+      : a.subjectName.localeCompare(b.subjectName),
+  );
 }
 
 export const defaultTaxLineSource: TaxLineSource = async (tx, args) => {

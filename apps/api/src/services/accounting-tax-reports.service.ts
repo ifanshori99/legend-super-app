@@ -361,10 +361,12 @@ export async function finalizeTaxReport(
       .limit(1)
       .for("update");
 
-    // 4. nothing to correct: same period version, amount and lines
+    // 4. nothing to correct: same amount and lines. The period version is not
+    // compared: a reopen and re-close moves it without changing a figure, and
+    // that empty correction must still be refused (the version only guards
+    // staleness, step 2).
     if (
       current &&
-      current.fiscalPeriodVersion === draft.fiscalPeriodVersion &&
       current.amountIdr === draft.amountIdr &&
       canonicalJson(current.lines) === canonicalJson(draft.lines)
     )

@@ -846,8 +846,9 @@ describe("legend-5nhkp export and download", () => {
 // ---- Follow-up (brief 2): no-change guard and finalize idempotency -----------------
 //
 // Assumptions:
-// - NO_CHANGE compares fiscal_period_version, amount and the lines as stored
-//   (JSON, key order irrelevant). Lines produced with the same content but a
+// - NO_CHANGE compares amount and the lines as stored (JSON, key order
+//   irrelevant). The fiscal period version is NOT compared: it only decides
+//   staleness (legend-powk0). Lines produced with the same content but a
 //   different key order therefore count as equal.
 // - NO_CHANGE is checked before the correction-reason check, so a no-change
 //   draft finalized WITHOUT a reason answers TAX_REPORT_NO_CHANGE, not 400.
@@ -989,7 +990,7 @@ describe("legend-5nhkp finalize: no-change guard", () => {
     expect((await dbRow(draft.id)).status).toBe("draft");
   });
 
-  it("allows a correction after reopen and re-close even with identical lines and amount", async () => {
+  it("refuses a correction after reopen and re-close when lines and amount are identical (409 TAX_REPORT_NO_CHANGE)", async () => {
     const fx = await fresh();
     const same = lines(100);
     await close(fx.p);
@@ -999,10 +1000,26 @@ describe("legend-5nhkp finalize: no-change guard", () => {
     expect(draft.fiscalPeriodVersion).toBe(4);
     expect(rev0.fiscalPeriodVersion).toBe(2);
 
+    await expectCode(
+      finalize(draft, "Periode dibuka dan ditutup ulang"),
+      "TAX_REPORT_NO_CHANGE",
+      409,
+    );
+    expect((await dbRow(draft.id)).status).toBe("draft");
+    expect((await dbRow(rev0.id)).superseded_at).toBeNull();
+    expect((await currentRows(fx)).map((r) => r.id)).toEqual([rev0.id]);
+  });
+
+  it("allows a correction after reopen and re-close when the amount changed", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const rev0 = await finalize(await generate(fx, lines(100)));
+    await reopenAndReclose(fx.p);
+    const draft = await generate(fx, lines(150));
+    expect(draft.fiscalPeriodVersion).toBe(4);
     const rev1 = await finalize(draft, "Periode dibuka dan ditutup ulang");
     expect(rev1.revisionNo).toBe(1);
     expect(rev1.supersedesId).toBe(rev0.id);
-    expect(rev1.amountIdr).toBe(rev0.amountIdr);
     expect((await currentRows(fx)).map((r) => r.id)).toEqual([rev1.id]);
   });
 
