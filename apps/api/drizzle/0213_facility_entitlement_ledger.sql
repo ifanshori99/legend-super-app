@@ -46,7 +46,7 @@ CREATE INDEX "entitlement_ledger_outlet_idx" ON "entitlement_ledger" USING btree
 --> statement-breakpoint
 -- Hand SQL for entitlement_ledger (bead legend-fjk5; PRD v1.7 §3 F25 "Produk &
 -- Hak Akses", §6 K; FAC-04, FAC-05). Appended to
--- drizzle/0215_facility_entitlement_ledger.sql. Foreign keys are inline in the
+-- drizzle/0213_facility_entitlement_ledger.sql. Foreign keys are inline in the
 -- generated DDL (the migrator is not a superuser).
 
 -- TEN-01, TEN-03: tenant-owned and outlet-owned (outlet_id NOT NULL).

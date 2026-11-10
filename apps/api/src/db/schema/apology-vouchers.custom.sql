@@ -1,5 +1,5 @@
 -- Custom SQL migration fragment for legend-4qu (apology_vouchers, migration
--- 0214). Append AFTER the drizzle-generated statements. Keep this file and the
+-- 0212). Append AFTER the drizzle-generated statements. Keep this file and the
 -- migration in step.
 --
 -- The generated CREATE TABLE carries every foreign key inline (pattern 1: the

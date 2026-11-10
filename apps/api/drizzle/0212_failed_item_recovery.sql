@@ -1,5 +1,5 @@
 -- legend-4qu: failed item recovery (apology_vouchers, order_issues.approval_request_id).
--- Number 0214 and its `when` were assigned by the coordinator (0209-0213 belong
+-- Number 0212 (was 0214) and its `when` were assigned by the coordinator (0209-0213 belong
 -- to other branches). The generated part creates apology_vouchers with every
 -- foreign key inline (the table is empty, so FORCE RLS needs no lift), adds
 -- the nullable order_issues.approval_request_id, order_issues.replacement_order_item_id
@@ -34,7 +34,7 @@ BEGIN
     GROUP BY tenant_id, voucher_id HAVING count(*) > 1) d;
   IF dup_items > 0 OR dup_vouchers > 0 THEN
     RAISE EXCEPTION
-      '0214: order_issues has % order line(s) with several settled unfulfillable issues and % voucher id(s) used by several issues; resolve them before migrating',
+      '0212: order_issues has % order line(s) with several settled unfulfillable issues and % voucher id(s) used by several issues; resolve them before migrating',
       dup_items, dup_vouchers;
   END IF;
 END
@@ -106,7 +106,7 @@ ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_replacement_unit_price_c
 -- legend-4qu hand SQL (copied from src/db/schema/apology-vouchers.custom.sql).
 -- ---------------------------------------------------------------------------
 -- Custom SQL migration fragment for legend-4qu (apology_vouchers, migration
--- 0214). Append AFTER the drizzle-generated statements. Keep this file and the
+-- 0212). Append AFTER the drizzle-generated statements. Keep this file and the
 -- migration in step.
 --
 -- The generated CREATE TABLE carries every foreign key inline (pattern 1: the

@@ -59,7 +59,7 @@ CREATE INDEX "wifi_spend_entries_account_day_idx" ON "wifi_spend_entries" USING 
 CREATE INDEX "wifi_spend_entries_order_idx" ON "wifi_spend_entries" USING btree ("tenant_id","order_id");--> statement-breakpoint
 ALTER TABLE "wifi_policies" ADD CONSTRAINT "wifi_policies_spend_mode_check" CHECK ("wifi_policies"."spend_mode" IS NULL OR "wifi_policies"."spend_mode" IN ('per_day_multiple','per_order'));--> statement-breakpoint
 -- Custom SQL migration file, put your code below! ---
--- legend-kmd3: hand SQL of migration 0218 (tables in wifi-quota.ts). Keep this file and the migration in step.
+-- legend-kmd3: hand SQL of migration 0216 (tables in wifi-quota.ts). Keep this file and the migration in step.
 
 -- TEN-01/TEN-03: tenant + outlet owned (outlet_id NOT NULL).
 SELECT app.enforce_tenant_rls('public.wifi_sessions'::regclass);
