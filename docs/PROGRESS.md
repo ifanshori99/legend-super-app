@@ -1014,3 +1014,6 @@ Langkah berikut CTO baru:
 - 20:05 akun #3 reset: mulai 6 thread — G8go1 ec6fa (366 sonnet), G816d rgddb (376 opus), G0y2x 44g8n (369 sonnet), G1fjl powk0 (370 sonnet), G2b3l h1dyy (375 opus), G58ff 5u03q (373 opus). Antre: 33im6 (378), ptn11 (381).
 - 20:10 Codex 382 PIN proof+pepper: 1 P2 (kegagalan yang mengunci tidak dihitung di batas device). Kartu legend-sp9vq (Sonnet, ws/jmsdx-pepper), antre slot. Codex 383 ledger loyalty jalan (#2).
 - 20:15 Codex #2 kena batas 5 jam (reset 00:35) di tengah 383; #3 7d 97%. G98qx parkir, cron adc6d200 00:41 lanjutkan. Kupon reset kedua disimpan (antrean Codex tidak menahan slice, hanya gerbang rilis).
+- 20:25 G0y2x 44g8n selesai: 88ce89d2 ws/i83ls-fix. 0229 dikembalikan identik (dicek), forward 0244 (when 1794390000000), advisory lock collect charge, 409 pada key ganda. Architect K setuju. i83ls-fix siap batch48. Sisa: legend-8docm (cash movement manual tanpa lock, P3).
+  - Catatan merge train: r3i8w 0242 (when ...370), aruta 0243 (...380), ie6m 0245 (...360) punya `when` di bawah 0244; naikkan `when` di atas 1794390000000 bila masuk sesudah i83ls-fix.
+- 20:26 mulai G0a8q 33im6 profit share (378, opus).
