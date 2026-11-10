@@ -1005,4 +1005,4 @@ Langkah berikut CTO baru:
 - legend-p649r: naikkan memori Postgres test 512->768 MiB (puncak 445 MiB).
 - 20:00 Codex 374 Duitku: 2 P1 (kredensial intent lama ikut cek paket; dedup pakai resultCode tak bertanda tangan) + 2 P2 (nominal tidak wajib sama; failed/expired->paid tanpa aturan). Kartu legend-rgddb (P0), brief 376, worktree baru dari milestone/m1. Keputusan CTO: dana terlambat diterima bila pesanan belum lunas lain dan nominal cocok; selain itu kelebihan bayar ke antrean rekonsiliasi.
 - Codex jalan: 377 profit share bagian A (akun #2).
-- Rekap Codex hari ini: 6 run, 18 temuan (8 P1) yang lolos review Claude.
+- Rekap Codex hari ini: 5 run selesai, 16 temuan (8 P1) yang lolos review Claude.
