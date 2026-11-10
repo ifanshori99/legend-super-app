@@ -278,6 +278,28 @@ The root `STAFF_PIN_PEPPER` lives only on the cloud. An edge node never holds it
 4. **Credential rotation.** The seal key comes from the node credential. After you issue a new credential, the edge cannot open its stored peppers, treats them as missing, and fetches them again on the next sync (online).
 5. **Never** copy the root pepper to an edge to "fix" a verification problem, and never log or paste the `peppers` of a sync response.
 
+## Attendance selfie seal key (legend-0wvoz, founder decision Q88)
+
+An edge node seals each attendance selfie to a cloud public key (format `LSS1`, `docs/design/hris-edge-replication.md` section 5) and uploads it with `PUT /api/edge-sync/attendance-selfies/:objectId`. Only the cloud can open it, with the private key. Lose the private key and every selfie still waiting on an edge disk is unreadable. The key is a production secret with a founder backup.
+
+Environment (cloud API only, never on an edge):
+
+- `ATTENDANCE_SELFIE_SEAL_KEYS`: JSON `{"<kid>": "<PKCS#8 PEM>"}`, 3072-bit RSA. One entry per key still in use.
+- `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID`: the kid whose public half edges seal to.
+- Without the keys the endpoint answers 503 `SELFIE_SEAL_KEY_MISSING`; the edge keeps the file and retries.
+
+Create the first key (on a trusted machine, not in the repo, not in chat):
+
+1. `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out seal-k1.pem` (PKCS#8 PEM).
+2. Public half for the edge snapshot: `openssl pkey -in seal-k1.pem -pubout -out seal-k1.pub.pem`.
+3. Build the JSON value without printing it, for example `node -e 'process.stdout.write(JSON.stringify({k1: require("fs").readFileSync("seal-k1.pem","utf8")}))'`, and put it straight into the production secret store under `ATTENDANCE_SELFIE_SEAL_KEYS`. Set `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID=k1`.
+4. Founder backup: store `seal-k1.pem` as a secure note or document in the founder's 1Password vault, named `legend attendance selfie seal key k1`. The CTO asks for the value with `ghostex secret request`; nobody pastes it in chat.
+5. Delete the local `seal-k1.pem` after both stores are confirmed. Restore test: decrypt one sealed test file with the backup copy before the first real edge goes live.
+
+Rotation: add a new kid to `ATTENDANCE_SELFIE_SEAL_KEYS`, switch `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID`, and keep the old private key for 90 days after the switch (an edge cut off from the cloud keeps sealing with the old kid until its next snapshot). Retire the old key on that date, in both stores. An emergency retirement (key leaked) knowingly loses the backlog sealed with the old kid.
+
+Release order: cloud first (this endpoint and the `attendance.logged` v2 applier), then the edges. Cloud orphan sweep: a received selfie that no attendance log references after 14 days is deleted from storage (the receipt stays).
+
 ## Support read_write owner approval release (legend-c9kbk)
 
 From migration `0160_support_access_requests`, a Super Admin's read_write support session needs the tenant owner's approval first (founder Q37). Release it like this:

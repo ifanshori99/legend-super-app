@@ -124,6 +124,7 @@ import {
   createStorageRuntimeFromEnv,
 } from "./services/core-storage-runtime.ts";
 import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-purge.job.ts";
+import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sweep.job.ts";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -741,16 +742,23 @@ try {
     db,
     consoleLikeLog(logger),
   );
-  if (storageRuntime)
+  if (storageRuntime) {
     await registerAttendanceSelfiePurgeJob({
       boss,
       storage: storageRuntime.storage,
       database: db,
       log: consoleLikeLog(logger),
     });
-  else
+    // legend-0wvoz: the orphan sweep of received edge selfies deletes objects too.
+    await registerEdgeSelfieOrphanSweepJob({
+      boss,
+      storage: storageRuntime.storage,
+      database: db,
+      log: consoleLikeLog(logger),
+    });
+  } else
     logger.warn(
-      "Object storage is not configured (STORAGE_*): attendance selfie purge job not registered.",
+      "Object storage is not configured (STORAGE_*): attendance selfie purge and edge selfie orphan sweep jobs not registered.",
     );
   await relay.start();
   if (sweepsRefunds) {

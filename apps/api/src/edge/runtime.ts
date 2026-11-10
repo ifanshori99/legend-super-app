@@ -103,6 +103,9 @@ import {
 } from "./link-client.ts";
 import type { LinkScope } from "./link-peer.ts";
 import { LINK_CLOSE } from "./protocol.ts";
+import { recordUploaderRejection } from "./selfie-health.ts";
+import { startEdgeSelfieSweep } from "./selfie-retention.ts";
+import { createEdgeSelfieUploader } from "./selfie-uploader.ts";
 import { createEdgeLinkServer, type EdgeLinkIdentity } from "./link-server.ts";
 import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
 import { createDefaultWifiProvider } from "./wifi/registry.ts";
@@ -901,6 +904,29 @@ export async function startEdgeRuntime(
       logger.warn(safeError(error), "Edge staff pin pull failed"),
   });
   pinPuller.start();
+  // legend-hubzo: sealed selfies go up to the cloud, one file at a time. Both
+  // roles run it: a node with no rows is idle, and the cloud answers 200 for a
+  // file it already holds. Failures are logged by class only; a selfie never
+  // reaches a log line.
+  const selfieUploader = createEdgeSelfieUploader({
+    context: local.context,
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+    intervalMs: env.EDGE_SELFIE_UPLOAD_INTERVAL_MS,
+    maxBackoffMs: Math.max(
+      env.EDGE_SELFIE_UPLOAD_INTERVAL_MS,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onRejected: () => recordUploaderRejection(),
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge selfie upload failed"),
+  });
+  selfieUploader.start();
+  const selfieSweep = startEdgeSelfieSweep({
+    context: local.context,
+    dir: env.EDGE_SELFIE_DIR,
+    maxAgeDays: env.EDGE_SELFIE_MAX_AGE_DAYS,
+  });
   // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
   // accounts. No tick at start: a fresh bootstrap (or missing masters) syncs at
   // boot, a restarted node first refreshes one interval later. A failure is logged by class only and the loop keeps
@@ -955,6 +981,8 @@ export async function startEdgeRuntime(
         peoplePuller.stop(),
         pinPuller.stop(),
         masterSync.stop(),
+        selfieUploader.stop(),
+        selfieSweep.stop(),
         stopWakeups(),
         client.stop(),
       ]);

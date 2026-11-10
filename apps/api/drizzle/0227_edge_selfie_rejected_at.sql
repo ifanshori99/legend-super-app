@@ -1,0 +1,1 @@
+ALTER TABLE "edge_selfie_uploads" ADD COLUMN "rejected_at" timestamp with time zone;

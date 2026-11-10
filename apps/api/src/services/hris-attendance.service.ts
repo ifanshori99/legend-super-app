@@ -92,11 +92,15 @@ import {
 } from "../db/schema/hris-attendance.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { env } from "../config/env.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { EDGE_SEALED_KEY_PREFIX } from "../edge/selfie-paths.ts";
+import { enqueueEdgeSelfieUpload } from "../edge/selfie-queue.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { linkStorageObjectSource } from "./core-storage.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { linkEdgeSelfie } from "./edge-selfie-link.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -364,7 +368,28 @@ async function presentLog(
 ): Promise<AttendanceLog> {
   if (row.photoKey === null || !canSee)
     return toAttendanceLog(row, null, isOwn);
-  const url = await signer(context, row.photoKey, tx);
+  // legend-0wvoz: an edge event can name any selfie id, and the cloud applier
+  // cannot see an object of another outlet. Never sign an object that is
+  // linked to another log, or unlinked at another outlet than this log's.
+  const [photoObject] = await tx
+    .select({
+      sourceId: coreStorageObjects.sourceId,
+      outletId: coreStorageObjects.outletId,
+    })
+    .from(coreStorageObjects)
+    .where(
+      and(
+        eq(coreStorageObjects.tenantId, row.tenantId),
+        eq(coreStorageObjects.id, row.photoKey),
+      ),
+    )
+    .limit(1);
+  const foreignPhoto =
+    photoObject !== undefined &&
+    (photoObject.sourceId === null
+      ? photoObject.outletId !== row.outletId
+      : photoObject.sourceId !== ulidToUuid(row.id));
+  const url = foreignPhoto ? null : await signer(context, row.photoKey, tx);
   if (url !== null)
     await recordAudit(
       tx,
@@ -407,6 +432,11 @@ export type RecordAttendanceInput = {
   qrToken: string | null;
   clientEventId: string;
   offline: boolean;
+  /**
+   * Flag reasons an edge attached to an offline event (attendance.logged v2);
+   * stored unioned with the cloud's own reasons.
+   */
+  edgeFlagReasons?: readonly AttendanceStoredFlagReason[];
 };
 
 /**
@@ -534,7 +564,27 @@ export async function recordAttendanceLog(
   scope: AttendanceScope,
   input: RecordAttendanceInput,
 ): Promise<LogRow> {
-  return (await storeAttendanceLog(tx, scope, input)).row;
+  const { row, created } = await storeAttendanceLog(tx, scope, input);
+  // An edge selfie (photo_key = the sealed object id) is linked to the new log
+  // once; a replay changes nothing. A link that cannot be made clears photo_key
+  // and flags the log `selfie_unlinked` (linkEdgeSelfie), so read the row again.
+  if (!created || !input.offline || input.photoKey === null) return row;
+  const outcome = await linkEdgeSelfie(tx, {
+    tenantId: scope.tenantId,
+    objectId: input.photoKey,
+  });
+  if (outcome !== "unlinked") return row;
+  const [relinked] = await tx
+    .select()
+    .from(attendanceLogs)
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, scope.tenantId),
+        eq(attendanceLogs.id, row.id),
+      ),
+    )
+    .limit(1);
+  return relinked ?? row;
 }
 
 /**
@@ -580,7 +630,41 @@ async function storeAttendanceLog(
     // Edge replay: the event carries none of the evidence the edge vetted
     // (device, QR, selfie, geofence), so it cannot be verified here. Store it
     // flagged for review; the client time is checked below.
-    decision = { validity: "flagged", reasons: ["offline_unverified"] };
+    const reasons: AttendanceStoredFlagReason[] = ["offline_unverified"];
+    for (const reason of input.edgeFlagReasons ?? [])
+      if (!reasons.includes(reason)) reasons.push(reason);
+    // Decided at occurredAt, not now. The employee table keeps no status
+    // history, so the join and end dates (outlet-local day of occurredAt) say
+    // whether the employee was employed then; only a status without an end
+    // date to judge by (suspended, or ended with no end date) falls back to the
+    // current status. An inactive employee is flagged for review, never
+    // rejected (the edge already recorded the clock).
+    const [employee] = await tx
+      .select({
+        status: employees.status,
+        joinDate: employees.joinDate,
+        endDate: employees.endDate,
+      })
+      .from(employees)
+      .where(
+        and(
+          eq(employees.tenantId, tenantId),
+          eq(employees.id, input.employeeId),
+        ),
+      )
+      .limit(1);
+    if (employee && !reasons.includes("employee_inactive")) {
+      const day = localDateOf(input.occurredAt, outlet.timezone);
+      const ended =
+        employee.status === "resigned" || employee.status === "terminated";
+      const inactive =
+        day < employee.joinDate ||
+        (employee.endDate !== null && day > employee.endDate) ||
+        employee.status === "suspended" ||
+        (ended && employee.endDate === null);
+      if (inactive) reasons.push("employee_inactive");
+    }
+    decision = { validity: "flagged", reasons };
   } else {
     if (input.method === "selfie_geo" && input.location !== null) {
       const distance = geofenceDistance(input.location, outlet.geofence);
@@ -873,7 +957,7 @@ export async function clockAttendance(
       created &&
       row.photoKey !== null &&
       row.photoKey === body.photoUploadRef
-    )
+    ) {
       await linkStorageObjectSource(tx, {
         tenantId,
         objectId: row.photoKey,
@@ -882,6 +966,27 @@ export async function clockAttendance(
         actorUserId,
         outletId: row.outletId,
       });
+      // An edge-sealed selfie lives on the edge disk: queue it for the cloud
+      // in the same transaction as the log.
+      const [stored] = await tx
+        .select({ objectKey: coreStorageObjects.objectKey })
+        .from(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.id, row.photoKey),
+          ),
+        )
+        .limit(1);
+      if (stored?.objectKey.startsWith(EDGE_SEALED_KEY_PREFIX))
+        await enqueueEdgeSelfieUpload(tx, {
+          tenantId,
+          outletId: row.outletId,
+          attendanceLogId: ulidToUuid(row.id),
+          objectKey: stored.objectKey,
+          dir: env.EDGE_SELFIE_DIR,
+        });
+    }
     return { log: await present(row), flagReasons: storedReasons(row) };
   });
 }

@@ -6,9 +6,12 @@
 // time is trusted for an offline event; a time far off the receive time is
 // flagged `offline_time_skew` by recordAttendanceLog.
 //
-// The event carries none of the evidence the edge vetted (device, QR, geofence,
-// selfie), so the cloud cannot verify it: the log is stored flagged
-// `offline_unverified` and waits in the review queue. Its idempotency identity is
+// The event carries none of the evidence the edge vetted (device, QR, geofence),
+// so the cloud cannot verify it: the log is stored flagged `offline_unverified`
+// (unioned with the reasons a v2 payload carries, plus `employee_inactive` for
+// an employee who is not onboarding/active) and waits in the review queue. A v2
+// payload's `selfieObjectId` becomes the log's photo_key and is linked to the
+// uploaded selfie object (services/edge-selfie-link.ts, design 6.3). Its idempotency identity is
 // the edge's own log id (payload.attendanceLogId): a re-delivered envelope, or
 // a second envelope for the same edge log, never makes a second row.
 //
@@ -117,10 +120,11 @@ export async function applyEdgeAttendanceLogged(
       receivedAt: new Date(),
       location: null,
       deviceIdHash: null,
-      photoKey: null,
+      photoKey: payload.selfieObjectId ?? null,
       qrToken: null,
       clientEventId: payload.attendanceLogId,
       offline: true,
+      edgeFlagReasons: payload.edgeFlagReasons,
     },
   );
 }
