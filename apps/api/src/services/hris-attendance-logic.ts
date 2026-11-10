@@ -4,14 +4,14 @@
 //
 // - Geofence: haversine distance from the outlet point (server side; raw
 //   coordinates are never stored or returned, only the rounded distance).
-// - Rotating QR: HMAC-SHA256(seed, floor(t / 30 s)) as base64url; the current
-//   window and the one before it are accepted (tolerance of 1 window).
+// - Rotating QR: 30 s windows (`qrWindowOf`). Token v2 and its daily keys live
+//   in hris-attendance-qr.ts (the current and previous window are accepted).
 // - Work timing: late / early leave / overtime in whole minutes against the
 //   assigned shift (first segment start .. last segment end).
 // - Selfie retention: due once the payroll close time plus N days has passed.
 // - Review sampling: deterministic from the log id so the queue stays stable.
 
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   ATTENDANCE_QR_ROTATION_SECONDS,
   type ShiftAssignmentSegment,
@@ -69,32 +69,6 @@ export function geofenceDistance(
 /** Index of the 30 s window an instant (epoch ms) falls in. */
 export function qrWindowOf(epochMs: number): number {
   return Math.floor(epochMs / QR_WINDOW_MS);
-}
-
-/** QR token of one window: HMAC-SHA256(seed, window) as base64url. */
-export function qrTokenForWindow(seed: Uint8Array, window: number): string {
-  return createHmac("sha256", seed).update(String(window)).digest("base64url");
-}
-
-/**
- * True when `token` is the token of the window containing `nowMs` or of the
- * window right before it. Constant-time comparison; a token of the wrong
- * length is simply false.
- */
-export function validateQr(
-  seed: Uint8Array,
-  token: string,
-  nowMs: number,
-): boolean {
-  const given = Buffer.from(token);
-  const current = qrWindowOf(nowMs);
-  let matched = false;
-  for (const window of [current, current - 1]) {
-    const expected = Buffer.from(qrTokenForWindow(seed, window));
-    if (expected.length === given.length && timingSafeEqual(expected, given))
-      matched = true;
-  }
-  return matched;
 }
 
 export interface WorkTimingInput {

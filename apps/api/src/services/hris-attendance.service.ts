@@ -92,6 +92,7 @@ import {
 } from "../db/schema/hris-attendance.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { linkStorageObjectSource } from "./core-storage.ts";
@@ -111,10 +112,14 @@ import {
 import {
   computeWorkTiming,
   geofenceDistance,
-  qrTokenForWindow,
-  qrWindowOf,
-  validateQr,
 } from "./hris-attendance-logic.ts";
+import {
+  edgeTableQrKeySource,
+  issueQrToken,
+  seedQrKeySource,
+  validateQr,
+  type QrKeySource,
+} from "./hris-attendance-qr.ts";
 import {
   noHrisFileSigner,
   type HrisFileSigner,
@@ -404,6 +409,37 @@ export type RecordAttendanceInput = {
   offline: boolean;
 };
 
+/**
+ * True on an edge node. The server answers before `startEdgeRuntime` flips
+ * `edgeMode`, so the static `EDGE_MODE` setting counts too: an edge in its boot
+ * window must never act as the cloud and create a QR seed (same fix as
+ * legend-3yqy, pos-receipt.service.ts).
+ */
+function isEdgeMode(): boolean {
+  return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
+}
+
+/**
+ * Where QR day keys come from. The cloud derives them from the outlet seed; an
+ * edge reads the keys the cloud sent (it never holds a seed).
+ */
+function qrKeySourceFor(tx: Tx, edgeMode = isEdgeMode()): QrKeySource {
+  if (edgeMode) return edgeTableQrKeySource(tx);
+  return seedQrKeySource(async (tenantId, outletId) => {
+    const [secret] = await tx
+      .select({ seed: attendanceQrSecrets.seed })
+      .from(attendanceQrSecrets)
+      .where(
+        and(
+          eq(attendanceQrSecrets.tenantId, tenantId as TenantId),
+          eq(attendanceQrSecrets.outletId, outletId),
+        ),
+      )
+      .limit(1);
+    return secret?.seed ?? null;
+  });
+}
+
 async function findLogByClientEvent(
   tx: Tx,
   tenantId: TenantId,
@@ -568,19 +604,17 @@ async function storeAttendanceLog(
     }
     let qrValid = false;
     if (input.method === "rotating_qr" && input.qrToken !== null) {
-      const [secret] = await tx
-        .select({ seed: attendanceQrSecrets.seed })
-        .from(attendanceQrSecrets)
-        .where(
-          and(
-            eq(attendanceQrSecrets.tenantId, tenantId),
-            eq(attendanceQrSecrets.outletId, outletId),
-          ),
-        )
-        .limit(1);
-      qrValid =
-        secret !== undefined &&
-        validateQr(secret.seed, input.qrToken, effectiveAt.getTime());
+      // An edge never validates a QR itself (design §3.2, T4: it rejects
+      // rotating_qr before this point): fail closed.
+      qrValid = isEdgeMode()
+        ? false
+        : await validateQr(
+            qrKeySourceFor(tx, false),
+            tenantId,
+            outletId,
+            input.qrToken,
+            effectiveAt.getTime(),
+          );
     }
     const evaluated = evaluateAttendanceSubmission({
       policy,
@@ -963,52 +997,71 @@ async function assertManagesOutlet(
   if (!outlet) throw notFound("Outlet");
 }
 
+/** Cloud only: creates the outlet seed on first use (no-op when it exists). */
+async function ensureQrSeed(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: string,
+): Promise<void> {
+  const [existing] = await tx
+    .select({ id: attendanceQrSecrets.id })
+    .from(attendanceQrSecrets)
+    .where(
+      and(
+        eq(attendanceQrSecrets.tenantId, tenantId),
+        eq(attendanceQrSecrets.outletId, outletId),
+      ),
+    )
+    .limit(1);
+  if (existing) return;
+  await tx
+    .insert(attendanceQrSecrets)
+    .values({ tenantId, outletId, seed: randomBytes(32) })
+    .onConflictDoNothing({
+      target: [attendanceQrSecrets.tenantId, attendanceQrSecrets.outletId],
+    });
+}
+
+/** Test seams for the QR endpoints; production code passes nothing. */
+export interface AttendanceQrOptions {
+  /** Force edge or cloud behaviour (default: the runtime state). */
+  edgeMode?: boolean;
+  /** Replace the key source (default: seed on the cloud, edge key table on an edge). */
+  keySource?: QrKeySource;
+}
+
 /**
  * GET /api/hris/attendance/qr — the outlet display polls the token of the
- * current 30 s window. Needs `hr.attendance.manage` at the outlet; an employee
- * must never be able to read it. The first read creates the outlet seed.
+ * current 30 s window (v2, daily key). Needs `hr.attendance.manage` at the
+ * outlet; an employee must never be able to read it. On the cloud the first
+ * read creates the outlet seed. On an edge there is no seed and no lazy
+ * generation: no key for today means 503 `QR_KEY_UNAVAILABLE`.
  */
 export async function getAttendanceQr(
   context: ScopedTenantContext,
   actorUserId: string,
   query: GetQrQuery,
   now = new Date(),
+  options: AttendanceQrOptions = {},
 ): Promise<AttendanceQrToken> {
+  const edgeMode = options.edgeMode ?? isEdgeMode();
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     await assertManagesOutlet(tx, context, access, query.outletId);
     const tenantId = context.tenant.tenantId;
-    const select = () =>
-      tx
-        .select({ seed: attendanceQrSecrets.seed })
-        .from(attendanceQrSecrets)
-        .where(
-          and(
-            eq(attendanceQrSecrets.tenantId, tenantId),
-            eq(attendanceQrSecrets.outletId, query.outletId),
-          ),
-        )
-        .limit(1);
-    let [secret] = await select();
-    if (!secret) {
-      await tx
-        .insert(attendanceQrSecrets)
-        .values({
-          tenantId,
-          outletId: query.outletId,
-          seed: randomBytes(32),
-        })
-        .onConflictDoNothing({
-          target: [attendanceQrSecrets.tenantId, attendanceQrSecrets.outletId],
-        });
-      [secret] = await select();
-    }
-    if (!secret) throw new Error("Attendance QR secret missing after insert");
-    const window = qrWindowOf(now.getTime());
+    // Cloud only: the first read creates the outlet seed. Never on an edge.
+    if (!edgeMode) await ensureQrSeed(tx, tenantId, query.outletId);
+    const source = options.keySource ?? qrKeySourceFor(tx, edgeMode);
+    const { token, window } = await issueQrToken(
+      source,
+      tenantId,
+      query.outletId,
+      now.getTime(),
+    );
     const issuedAt = window * ATTENDANCE_QR_ROTATION_SECONDS * 1_000;
     return attendanceQrTokenSchema.parse({
       outletId: query.outletId,
-      token: qrTokenForWindow(secret.seed, window),
+      token,
       issuedAt: new Date(issuedAt).toISOString(),
       expiresAt: new Date(
         issuedAt + ATTENDANCE_QR_ROTATION_SECONDS * 1_000,
@@ -1019,15 +1072,24 @@ export async function getAttendanceQr(
 }
 
 /**
- * POST /api/hris/attendance/qr/rotate — replaces the outlet seed; the QR on
- * the display and every printed copy stop validating at once. Audited.
+ * POST /api/hris/attendance/qr/rotate — replaces the outlet seed, which changes
+ * every day key at once; the QR on the display and every printed copy stop
+ * validating. Audited. Cloud only: on an edge it throws before touching the
+ * table (the edge holds no seed).
  */
 export async function rotateAttendanceQrSecret(
   context: ScopedTenantContext,
   actorUserId: string,
   body: RotateQrBody,
   now = new Date(),
+  options: Pick<AttendanceQrOptions, "edgeMode"> = {},
 ): Promise<AttendanceQrRotation> {
+  if (options.edgeMode ?? isEdgeMode())
+    throw new HttpError(
+      404,
+      "CLOUD_ONLY_ROUTE",
+      "The QR key can only be rotated on the cloud.",
+    );
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     await assertManagesOutlet(tx, context, access, body.outletId);

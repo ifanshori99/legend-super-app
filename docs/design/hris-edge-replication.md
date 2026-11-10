@@ -279,6 +279,19 @@ about four days, and only until someone presses "rotate" (existing
 seed itself on the edge would allow forging forever until rotation. No new
 encryption keys to manage.
 
+**Implementation (C4, legend-cku1m).** Code in
+`apps/api/src/services/hris-attendance-qr.ts`: `deriveQrDayKey`,
+`deriveQrDayKeys` (the run the snapshot sends, card C2), `qrTokenForWindow`
+(v2), `issueQrToken`, `validateQr` and a `QrKeySource` port with two adapters:
+`seedQrKeySource` (cloud) and `edgeTableQrKeySource` (edge, raw SQL on
+`edge_attendance_qr_keys`; the table itself is card C1 legend-hwn02, so the
+edge adapter has no database test until C1 lands). `getAttendanceQr` and
+`rotateAttendanceQrSecret` take an optional `edgeMode` (default
+`getEdgeRuntimeState().edgeMode`). v1 tokens are not accepted (this section:
+no dual-algorithm period). TBD-verify results touching QR: the selfie upload
+path (T8, resolved above); the other TBD-verify items in this document do not
+touch the QR code.
+
 **Risk.** An outage longer than three days stops the QR screen (path B still
 works). Edge and phone clocks must be within one 30 s window: edges need NTP
 (card C9).
@@ -549,8 +562,12 @@ stays invisible.
 - **T8 route guard** (j6cyb; the WIP test is on `ws/j6cyb-edge-attendance`
   de141264, `test/edge-mode-guard.test.ts`): `edge_and_cloud` only for
   `POST /api/hris/attendance/clock`, `GET /api/hris/attendance/qr` and the
-  selfie upload route under `/api/storage` (`routes/storage-api.routes.ts`,
-  **TBD-verify** exact path), each matched by method and exact path;
+  selfie upload route `POST /api/storage/uploads` (verified by C4,
+  legend-cku1m: defined in `packages/shared/src/storage/index.ts:124-126`,
+  registered in `routes/core-storage.routes.ts:80`, mounted under `/storage/*`
+  by `routes/storage-api.routes.ts:37-38`; selfie is a `purpose` value of the
+  body, so a method-and-path match alone also admits other purposes: the edge
+  must reject them, see T5), each matched by method and exact path;
   `POST /api/hris/attendance/qr/rotate`, `POST /api/hris/attendance/clock/x`
   and every other `/api/hris` path `cloud_only`. The WIP test lists `/qr` as
   cloud only: change it. Service test: `rotateAttendanceQrSecret` in edge mode

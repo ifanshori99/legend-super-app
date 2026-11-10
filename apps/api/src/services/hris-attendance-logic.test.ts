@@ -9,15 +9,10 @@ import {
   computeWorkTiming,
   geofenceDistance,
   haversineMeters,
-  qrTokenForWindow,
   qrWindowOf,
   sampleSelected,
   selfieRetentionDue,
-  validateQr,
 } from "./hris-attendance-logic";
-
-const seed = Buffer.from("0123456789abcdef0123456789abcdef");
-const otherSeed = Buffer.from("ffffffffffffffffffffffffffffffff");
 
 describe("haversineMeters", () => {
   it("is zero for the same point", () => {
@@ -91,46 +86,6 @@ describe("rotating QR", () => {
   it("derives windows of 30 seconds", () => {
     expect(qrWindowOf(t0 + 29_999)).toBe(window);
     expect(qrWindowOf(t0 + 30_000)).toBe(window + 1);
-  });
-
-  it("is deterministic base64url and differs per window and seed", () => {
-    const token = qrTokenForWindow(seed, window);
-    expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(qrTokenForWindow(seed, window)).toBe(token);
-    expect(qrTokenForWindow(seed, window + 1)).not.toBe(token);
-    expect(qrTokenForWindow(otherSeed, window)).not.toBe(token);
-  });
-
-  it("accepts the current window", () => {
-    expect(validateQr(seed, qrTokenForWindow(seed, window), t0 + 10_000)).toBe(
-      true,
-    );
-  });
-
-  it("accepts the previous window (tolerance of 1)", () => {
-    expect(
-      validateQr(seed, qrTokenForWindow(seed, window - 1), t0 + 10_000),
-    ).toBe(true);
-  });
-
-  it("rejects a token two windows old", () => {
-    expect(
-      validateQr(seed, qrTokenForWindow(seed, window - 2), t0 + 10_000),
-    ).toBe(false);
-  });
-
-  it("rejects a token from the next window", () => {
-    expect(
-      validateQr(seed, qrTokenForWindow(seed, window + 1), t0 + 10_000),
-    ).toBe(false);
-  });
-
-  it("rejects another outlet seed, garbage and empty tokens", () => {
-    expect(
-      validateQr(otherSeed, qrTokenForWindow(seed, window), t0 + 10_000),
-    ).toBe(false);
-    expect(validateQr(seed, "garbage", t0)).toBe(false);
-    expect(validateQr(seed, "", t0)).toBe(false);
   });
 });
 
