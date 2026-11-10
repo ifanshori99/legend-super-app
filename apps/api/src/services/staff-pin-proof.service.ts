@@ -40,9 +40,12 @@ import { logger } from "../lib/logger";
 import { toLoggableError } from "../lib/safe-error";
 import { recordAudit } from "./audit-writer";
 import {
+  assertPinAttemptOk,
+  attemptStaffPin,
   PinNewlyLockedError,
   resolveDeviceOutlet,
   verifyStaffPinOnDevice,
+  type PinAttemptOutcome,
 } from "./device-pin.service";
 import { outletContext } from "./device-pin-support";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert";
@@ -446,4 +449,61 @@ export async function verifyStaffPinWithProof(
     ...result,
     proof: { token: proof.token, expiresAt: proof.expiresAt.toISOString() },
   };
+}
+
+/**
+ * An approver's PIN on the supervisor override and open-bill paths (bead
+ * legend-vfj7z), under the same per-device window as `verifyStaffPinWithProof`:
+ * a slot is taken before the PIN is checked; a wrong guess and the guess that
+ * newly locks the PIN keep it (and can raise the window alert); a correct PIN,
+ * an already locked PIN and any other answer give it back. Over the limit the
+ * answer is 429 before the staff counter moves. Without a device id (a signed-in
+ * back-office browser) there is no device to count: the plain attempt runs.
+ * Throws what `assertPinAttemptOk` throws.
+ */
+export async function attemptApproverPinOnDevice(
+  tenant: TenantContext,
+  input: {
+    readonly outletId: string;
+    readonly userId: string;
+    readonly pin: string;
+    readonly deviceId: string | null;
+    readonly now: Date;
+  },
+): Promise<void> {
+  const attempt = {
+    outletId: input.outletId,
+    userId: input.userId,
+    pin: input.pin,
+    deviceId: input.deviceId,
+    now: input.now,
+  };
+  const deviceId = input.deviceId;
+  if (deviceId === null) {
+    assertPinAttemptOk(await attemptStaffPin(tenant, attempt));
+    return;
+  }
+  const outletId = outletIdSchema.parse(input.outletId);
+  const context = outletContext(tenant, outletId);
+  const windowStartedAt = await reserveDeviceSlot(context, deviceId, input.now);
+  let outcome: PinAttemptOutcome;
+  try {
+    outcome = await attemptStaffPin(tenant, attempt);
+  } catch (error) {
+    await releaseDeviceSlot(context, deviceId, windowStartedAt);
+    throw error;
+  }
+  if (
+    outcome.kind === "invalid" ||
+    (outcome.kind === "locked" && outcome.fresh === true)
+  )
+    await alertDeviceThrottled(
+      context,
+      outletId,
+      deviceId,
+      windowStartedAt,
+      input.now,
+    );
+  else await releaseDeviceSlot(context, deviceId, windowStartedAt);
+  assertPinAttemptOk(outcome);
 }

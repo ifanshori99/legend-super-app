@@ -11,13 +11,11 @@ import { Router, type Request } from "express";
 import { AccessError } from "@starter/shared/access";
 import { z, outletIdSchema } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
-import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import {
   convertSessionToOpenBillInputSchema,
   tableSessionIdSchema,
   upsertOpenBillPolicyInputSchema,
 } from "@starter/shared/qr-order";
-import { verifyDeviceToken } from "../lib/device-token";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -29,7 +27,9 @@ import {
   openBillSessionOutletId,
   upsertOpenBillPolicy,
 } from "../services/open-bill-control.service";
+import { PinDeviceThrottledError } from "../services/staff-pin-proof.service";
 import { resolveOutletContext } from "./floor-access";
+import { optionalDeviceIdOf } from "./optional-device-id";
 
 const outletParams = z.strictObject({ outletId: outletIdSchema });
 const sessionParams = z.strictObject({ sessionId: tableSessionIdSchema });
@@ -38,24 +38,6 @@ export const openBillRouter = Router();
 
 /** Staff session + trusted origin + resolved tenant, per route. */
 const staffGuard = [requireAuth, requireTrustedOrigin, requireTenantContext];
-
-/**
- * The signed device id, only when the request carries a valid token for the
- * resolved tenant. Optional: a signed-in staff browser has none (like the
- * AUTH-06 override, which records no device for a back-office caller).
- */
-function optionalDeviceIdOf(req: Request): string | null {
-  const tenant = getTenantContext(req);
-  const raw = req.get(DEVICE_TOKEN_HEADER);
-  const payload = raw ? verifyDeviceToken(raw) : null;
-  if (
-    tenant.source !== "device" ||
-    payload === null ||
-    payload.tenantId.toLowerCase() !== tenant.tenantId.toLowerCase()
-  )
-    return null;
-  return payload.deviceId;
-}
 
 openBillRouter.get(
   "/outlets/:outletId/open-bill/approvers",
@@ -136,14 +118,21 @@ openBillRouter.post(
       outletId,
     );
     res.setHeader("Cache-Control", "private, no-store");
-    res.json({
-      data: await convertSessionToOpenBill(
-        context,
-        sessionId,
-        input,
-        getAuth(req).user.id,
-        { deviceId: optionalDeviceIdOf(req) },
-      ),
-    });
+    try {
+      res.json({
+        data: await convertSessionToOpenBill(
+          context,
+          sessionId,
+          input,
+          getAuth(req).user.id,
+          { deviceId: optionalDeviceIdOf(req) },
+        ),
+      });
+    } catch (error) {
+      // 429 tells the device when its PIN window ends (bead legend-vfj7z).
+      if (error instanceof PinDeviceThrottledError)
+        res.setHeader("Retry-After", String(error.retryAfterSeconds));
+      throw error;
+    }
   },
 );
