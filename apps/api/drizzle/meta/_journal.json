@@ -1485,6 +1485,13 @@
       "when": 1794306000000,
       "tag": "0225_edge_staff_pin_peppers",
       "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "7",
+      "when": 1794307000000,
+      "tag": "0226_hris_edge_replication",
+      "breakpoints": true
     }
   ]
 }

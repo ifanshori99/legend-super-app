@@ -153,7 +153,7 @@ export type PtkpStatus = z.infer<typeof ptkpStatusSchema>;
  * Employee master data. Contains no PII: encrypted personal fields are in
  * `employeePiiSchema`, served separately (HR-03).
  */
-const employeeShape = {
+export const employeeShape = {
   ...row,
   id: employeeIdSchema,
   /** Login account; null for an employee who never signs in (PRD F30 opt-in). */

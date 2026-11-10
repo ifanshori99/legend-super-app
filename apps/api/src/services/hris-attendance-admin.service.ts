@@ -441,7 +441,13 @@ export async function listAttendanceReviewQueue(
           ? eq(attendanceLogs.reviewStatus, query.reviewStatus)
           : inArray(attendanceLogs.reviewStatus, ["none", "pending"]),
         inArray(attendanceLogs.validity, ["flagged", "valid"]),
-        inArray(attendanceLogs.method, ["selfie_geo", "rotating_qr"]),
+        // outlet_device (outlet attendance screen on an edge) is always flagged
+        // and must reach the supervisor (Q87); manual_correction never queues.
+        inArray(attendanceLogs.method, [
+          "selfie_geo",
+          "rotating_qr",
+          "outlet_device",
+        ]),
       );
     }
     if (query.outletId !== undefined)

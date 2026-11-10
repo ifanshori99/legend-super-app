@@ -42,7 +42,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { tenantIdSchema } from "@starter/shared/core";
+import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -737,6 +737,26 @@ describe("hris.attendance.review", () => {
     expect(flagged?.log.employeeId).toBe(clocked["sample-flagged"].employeeId);
     expect(sampled?.source).toBe("sampled");
     expect(sampled?.log.validity).toBe("valid");
+  });
+
+  it("queues a flagged log made on the outlet attendance screen (method outlet_device, legend-hwn02)", async () => {
+    await setSampling(0, true);
+    const log = clocked["sample-flagged"];
+    await owner.query(
+      "UPDATE attendance_logs SET method = 'outlet_device' WHERE id = $1",
+      [ulidToUuid(log.id)],
+    );
+    try {
+      const items = await queueOf(hr.client);
+      const entry = queueEntry(items, log.id);
+      expect(entry?.source).toBe("flagged");
+      expect(entry?.log.method).toBe("outlet_device");
+    } finally {
+      await owner.query(
+        "UPDATE attendance_logs SET method = 'selfie_geo' WHERE id = $1",
+        [ulidToUuid(log.id)],
+      );
+    }
   });
 
   it("with sampling rate 0 only flagged logs stay in the queue", async () => {

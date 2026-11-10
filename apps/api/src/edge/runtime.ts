@@ -124,6 +124,9 @@ export const EDGE_REQUIRED_TABLES = [
   "edge_pull_checkpoints",
   "wifi_device_grants",
   "wifi_quota_apply_queue",
+  // legend-hwn02: the edge QR display reads the day keys; a missing table must
+  // refuse boot (assertEdgeSchemaReady) instead of failing each request.
+  "edge_attendance_qr_keys",
 ] as const;
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */

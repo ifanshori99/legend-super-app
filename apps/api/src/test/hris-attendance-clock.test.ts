@@ -1051,6 +1051,15 @@ describe("manual correction method", () => {
   });
 });
 
+describe("outlet_device method (legend-hwn02)", () => {
+  it("[F25] the clock endpoint refuses method outlet_device 422 until the edge path exists and stores no log", async () => {
+    const staff = await newStaff(ownOutlet, "Staf Layar Outlet Palsu");
+    const response = await clock(staff.client, { method: "outlet_device" });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await storedLogs(staff.employeeId)).toHaveLength(0);
+  });
+});
+
 describe("idempotency", () => {
   it("[F25] re-sending a clock-in with the same idempotency key returns the same log and adds none", async () => {
     const staff = await newStaff(ownOutlet);

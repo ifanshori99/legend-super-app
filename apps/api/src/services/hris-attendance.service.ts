@@ -777,6 +777,12 @@ export async function clockAttendance(
 ): Promise<ClockResult> {
   if (body.method === "manual_correction")
     throw validation("Metode koreksi manual tidak bisa dipakai untuk absen.");
+  // outlet_device is made only by the outlet attendance screen on an edge
+  // (design 2, 3.4). Its checks (device token, PIN session) are legend-j6cyb;
+  // until they exist nobody may claim the method, or a phone could skip the
+  // geofence, device and QR checks.
+  if (body.method === "outlet_device")
+    throw validation("Metode layar outlet belum tersedia untuk absen.");
   // Phase 1: who is clocking and where. The outlet is not known until the
   // shift is, and the write below needs a context scoped to it.
   const target = await withTenant(db, context, async (tx) => {
@@ -998,7 +1004,7 @@ async function assertManagesOutlet(
 }
 
 /** Cloud only: creates the outlet seed on first use (no-op when it exists). */
-async function ensureQrSeed(
+export async function ensureQrSeed(
   tx: Tx,
   tenantId: TenantId,
   outletId: string,
