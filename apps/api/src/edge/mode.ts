@@ -31,6 +31,7 @@ import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import type { RequestHandler } from "express";
 import { HttpError } from "../lib/http-error.ts";
+import { EDGE_PANIC_UPGRADE_PATTERN } from "./panic-prefixes.ts";
 
 /** Web paths the edge serves (PRD §5 site map, "Dilayani edge node"). */
 export const EDGE_WEB_PREFIXES = [
@@ -251,7 +252,13 @@ export function guardEdgeUpgrades(
   ): boolean {
     if (event === "upgrade") {
       const [request, socket] = args as [IncomingMessage, Duplex];
-      const refusal = edgeRouteRefusal(request.url ?? "", options);
+      const target = request.url ?? "";
+      // The staff panic stream is the one outlet WebSocket the edge serves
+      // besides the kitchen one (bead legend-m47qh). The pattern is exact, so
+      // siblings such as /panic/other stay refused.
+      const refusal = EDGE_PANIC_UPGRADE_PATTERN.test(target)
+        ? null
+        : edgeRouteRefusal(target, options);
       if (refusal) {
         if (!socket.destroyed) {
           // Destroy once the refusal is flushed (as ws abortHandshake does).
