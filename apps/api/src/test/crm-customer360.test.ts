@@ -218,32 +218,13 @@ describe("CRM-C360 detail and personal data", () => {
     expect(response.body.data.profile.id).toBe(b.id);
   });
 
-  it("CRM-C360-16 the number shown is the verified identity that matches the profile's hash, not another WhatsApp identity of the account", async () => {
+  it("CRM-C360-16 the number shown is the verified identity that matches the profile's hash, never another number", async () => {
+    // Migration 0221 (legend-k2l) allows one WhatsApp identity per account,
+    // so the cases below each use their own account.
     const userId = await realUserId(app);
     const mine = newNumber();
-    const other = newNumber();
-    const sibling = newNumber();
-    const unverified = newNumber();
-    // The profile's own number is a secondary identity; a primary verified
-    // identity with another number and an unverified one sit beside it.
+    const stranger = newNumber();
     await seedWhatsappIdentity(userId, mine);
-    for (const [number, primary, verified] of [
-      [other, true, true],
-      [sibling, false, false],
-    ] as const) {
-      await owner.query(
-        `INSERT INTO user_identities (id, user_id, type, value_hash, value_encrypted, verified_at, is_primary)
-         VALUES ($1, $2, 'whatsapp', $3, $4, $5, $6)`,
-        [
-          randomUUID(),
-          userId,
-          number.hash,
-          sealSecret(`+${number.digits}`, identityAad(number.hash)),
-          verified ? new Date() : null,
-          primary,
-        ],
-      );
-    }
     const matching = await seedProfile(world.tenantId, {
       userId,
       name: `Ganda ${randomUUID().slice(0, 6)}`,
@@ -253,13 +234,26 @@ describe("CRM-C360 detail and personal data", () => {
     const response = await get(withPii, world, `/api/customers/${matching.id}`);
     expect(response.status).toBe(200);
     expect(bodyHasDigits(response.body, mine.digits)).toBe(true);
-    expect(bodyHasDigits(response.body, other.tail)).toBe(false);
-    expect(bodyHasDigits(response.body, sibling.tail)).toBe(false);
 
-    // A profile whose hash points at the unverified identity shows no number.
-    // (One profile per user and tenant, so this one gets its own account.)
+    // A profile whose hash differs from the account's only identity shows no
+    // number, and never reveals the identity it does not match.
+    const driftUserId = await realUserId(app);
+    const drifted = newNumber();
+    await seedWhatsappIdentity(driftUserId, drifted);
+    const mismatched = await seedProfile(world.tenantId, {
+      userId: driftUserId,
+      name: `Beda ${randomUUID().slice(0, 6)}`,
+      whatsappHash: stranger.hash,
+    });
+    await seedConsent(world.tenantId, mismatched.id);
+    const mismatch = await get(withPii, world, `/api/customers/${mismatched.id}`);
+    expect(mismatch.status).toBe(200);
+    expect(mismatch.body.data.whatsapp.number).toBeNull();
+    expect(bodyHasDigits(mismatch.body, drifted.tail)).toBe(false);
+
+    // A profile whose hash points at an unverified identity shows no number.
+    const unverified = newNumber();
     const otherUserId = await realUserId(app);
-    await seedWhatsappIdentity(otherUserId, newNumber());
     await owner.query(
       `INSERT INTO user_identities (id, user_id, type, value_hash, value_encrypted, verified_at, is_primary)
        VALUES ($1, $2, 'whatsapp', $3, $4, NULL, false)`,
