@@ -14,10 +14,18 @@ import {
 // Runs tests against a disposable PostgreSQL server that exists only for this
 // run. The development database is never touched.
 //   pnpm test      → API integration tests (vitest) + root node:test suites
+//   pnpm test:coverage → the same, with the business-logic coverage gate
 //   pnpm test:e2e  → production builds of both apps + Playwright
 const mode = process.argv[2];
 if (!["unit", "e2e"].includes(mode))
   throw new Error("Use pnpm test or pnpm test:e2e.");
+
+// Business-logic coverage gate (legend-dd0g): pnpm test:coverage, or
+// LEGEND_COVERAGE=1 pnpm test (CI sets it on the pnpm check step so the suite
+// runs once). Thresholds live in apps/api/vitest.config.ts.
+const coverage =
+  mode === "unit" &&
+  (process.argv.includes("--coverage") || Boolean(process.env.LEGEND_COVERAGE));
 
 // Fixed local origins for test servers, distinct from development.
 export const TEST_API_URL = "http://localhost:4101";
@@ -137,6 +145,7 @@ try {
         "@starter/api",
         "run",
         "test",
+        ...(coverage ? ["--coverage"] : []),
         ...(process.env.LEGEND_TEST_FILES?.split(" ").filter(Boolean) ?? []),
       ],
       testEnv,
