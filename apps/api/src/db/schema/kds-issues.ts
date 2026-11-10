@@ -35,7 +35,9 @@ import {
 } from "../columns";
 import { stations } from "./menu";
 import { outlets, tenants } from "./platform-org";
+import { paymentIntents, paymentLinks } from "./payment";
 import { orderItems, orders } from "./qr-order";
+import { tableSessions } from "./floor";
 import { user } from "./user";
 
 /** `order_issues` (T, O): one remake, comp, complaint or unfulfillable line. */
@@ -192,6 +194,115 @@ export const orderIssues = pgTable(
     check(
       "order_issues_resolved_check",
       sql`(${table.status} = 'resolved') = (${table.resolvedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/**
+ * `order_issue_charges` (T, O): the dearer-swap difference of one failed-item
+ * issue, owed by the guest (legend-i83ls). One row per issue. `route`:
+ * `qr_link` is paid through its own payment link (never the order's: the order
+ * is already paid), `pos` is a cashier bill the cashier charges. Revenue is
+ * recognised when the money arrives (`order_issue.charge_paid`), so a charge
+ * that is waived or expires has no journal.
+ */
+export const orderIssueCharges = pgTable(
+  "order_issue_charges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    orderIssueId: uuid("order_issue_id").notNull(),
+    orderId: ulidInUuid("order_id").notNull(),
+    /** QR charges ride on the table session (bill, session close). */
+    tableSessionId: uuid("table_session_id"),
+    route: varchar("route", { length: 10 }).notNull(),
+    status: varchar("status", { length: 12 }).notNull().default("open"),
+    /** Price difference of the swap line (before service charge and PBJT). */
+    differenceIdr: idrColumn("difference_idr").notNull(),
+    grossSalesIdr: idrColumn("gross_sales_idr").notNull(),
+    serviceChargeIdr: idrColumn("service_charge_idr").notNull(),
+    pbjtIdr: idrColumn("pbjt_idr").notNull(),
+    /** gross + service + pbjt: what the guest pays. */
+    amountIdr: idrColumn("amount_idr").notNull(),
+    paymentLinkId: uuid("payment_link_id"),
+    paymentIntentId: uuid("payment_intent_id"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    closedBy: text("closed_by").references(() => user.id),
+    closeReason: varchar("close_reason", { length: 500 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("order_issue_charges_tenant_id_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    // One charge per issue, even when the event is replayed or concurrent.
+    uniqueIndex("order_issue_charges_issue_once_idx").on(
+      table.tenantId,
+      table.orderIssueId,
+    ),
+    uniqueIndex("order_issue_charges_link_once_idx")
+      .on(table.tenantId, table.paymentLinkId)
+      .where(sql`${table.paymentLinkId} IS NOT NULL`),
+    index("order_issue_charges_session_open_idx")
+      .on(table.tenantId, table.tableSessionId)
+      .where(sql`${table.status} = 'open'`),
+    foreignKey({
+      name: "order_issue_charges_issue_fk",
+      columns: [table.tenantId, table.orderIssueId],
+      foreignColumns: [orderIssues.tenantId, orderIssues.id],
+    }),
+    foreignKey({
+      name: "order_issue_charges_order_fk",
+      columns: [table.tenantId, table.orderId],
+      foreignColumns: [orders.tenantId, orders.id],
+    }),
+    foreignKey({
+      name: "order_issue_charges_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "order_issue_charges_session_fk",
+      columns: [table.tenantId, table.tableSessionId],
+      foreignColumns: [tableSessions.tenantId, tableSessions.id],
+    }),
+    foreignKey({
+      name: "order_issue_charges_link_fk",
+      columns: [table.tenantId, table.paymentLinkId],
+      foreignColumns: [paymentLinks.tenantId, paymentLinks.id],
+    }),
+    foreignKey({
+      name: "order_issue_charges_intent_fk",
+      columns: [table.tenantId, table.paymentIntentId],
+      foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
+    }),
+    check(
+      "order_issue_charges_route_check",
+      sql`${table.route} IN ('qr_link', 'pos')`,
+    ),
+    check(
+      "order_issue_charges_status_check",
+      sql`${table.status} IN ('open', 'paid', 'routed_pos', 'waived', 'expired')`,
+    ),
+    check(
+      "order_issue_charges_amount_check",
+      sql`${table.differenceIdr} > 0 AND ${table.grossSalesIdr} >= 0 AND ${table.serviceChargeIdr} >= 0 AND ${table.pbjtIdr} >= 0 AND ${table.amountIdr} > 0 AND ${table.amountIdr} = ${table.grossSalesIdr} + ${table.serviceChargeIdr} + ${table.pbjtIdr}`,
+    ),
+    check(
+      "order_issue_charges_state_check",
+      sql`(${table.status} = 'paid') = (${table.paidAt} IS NOT NULL) AND (${table.status} IN ('waived', 'expired')) = (${table.closedAt} IS NOT NULL) AND (${table.status} <> 'waived' OR (${table.closedBy} IS NOT NULL AND ${table.closeReason} IS NOT NULL))`,
+    ),
+    check(
+      "order_issue_charges_route_status_check",
+      sql`(${table.route} = 'pos') = (${table.status} = 'routed_pos') OR ${table.status} IN ('waived', 'expired')`,
     ),
   ],
 );

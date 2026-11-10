@@ -1,5 +1,5 @@
 {
-  "id": "9b3d6c8b-8993-47f0-b08c-fe1200b0865b",
+  "id": "72ec6d0f-da98-4a75-8a43-5c324ef886e2",
   "prevId": "b885f249-0f88-4183-89b0-c2483bcb36b3",
   "version": "7",
   "dialect": "postgresql",
@@ -44993,6 +44993,375 @@
         "pickup_calls_order_check": {
           "name": "pickup_calls_order_check",
           "value": "\"pickup_calls\".\"picked_up_at\" IS NULL OR \"pickup_calls\".\"picked_up_at\" >= \"pickup_calls\".\"called_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.order_issue_charges": {
+      "name": "order_issue_charges",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_issue_id": {
+          "name": "order_issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "table_session_id": {
+          "name": "table_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "route": {
+          "name": "route",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(12)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "difference_idr": {
+          "name": "difference_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "gross_sales_idr": {
+          "name": "gross_sales_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "service_charge_idr": {
+          "name": "service_charge_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pbjt_idr": {
+          "name": "pbjt_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_idr": {
+          "name": "amount_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payment_link_id": {
+          "name": "payment_link_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payment_intent_id": {
+          "name": "payment_intent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paid_at": {
+          "name": "paid_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed_by": {
+          "name": "closed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "close_reason": {
+          "name": "close_reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "order_issue_charges_issue_once_idx": {
+          "name": "order_issue_charges_issue_once_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "order_issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "order_issue_charges_link_once_idx": {
+          "name": "order_issue_charges_link_once_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "payment_link_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"order_issue_charges\".\"payment_link_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "order_issue_charges_session_open_idx": {
+          "name": "order_issue_charges_session_open_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "table_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"order_issue_charges\".\"status\" = 'open'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "order_issue_charges_tenant_id_tenants_id_fk": {
+          "name": "order_issue_charges_tenant_id_tenants_id_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_issue_charges_outlet_id_outlets_id_fk": {
+          "name": "order_issue_charges_outlet_id_outlets_id_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_issue_charges_closed_by_user_id_fk": {
+          "name": "order_issue_charges_closed_by_user_id_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "user",
+          "columnsFrom": [
+            "closed_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_issue_charges_issue_fk": {
+          "name": "order_issue_charges_issue_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "order_issues",
+          "columnsFrom": [
+            "tenant_id",
+            "order_issue_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_issue_charges_order_fk": {
+          "name": "order_issue_charges_order_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "tenant_id",
+            "order_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_issue_charges_outlet_fk": {
+          "name": "order_issue_charges_outlet_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_issue_charges_session_fk": {
+          "name": "order_issue_charges_session_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "table_sessions",
+          "columnsFrom": [
+            "tenant_id",
+            "table_session_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_issue_charges_link_fk": {
+          "name": "order_issue_charges_link_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "payment_links",
+          "columnsFrom": [
+            "tenant_id",
+            "payment_link_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "order_issue_charges_intent_fk": {
+          "name": "order_issue_charges_intent_fk",
+          "tableFrom": "order_issue_charges",
+          "tableTo": "payment_intents",
+          "columnsFrom": [
+            "tenant_id",
+            "payment_intent_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "order_issue_charges_tenant_id_id_key": {
+          "name": "order_issue_charges_tenant_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "order_issue_charges_route_check": {
+          "name": "order_issue_charges_route_check",
+          "value": "\"order_issue_charges\".\"route\" IN ('qr_link', 'pos')"
+        },
+        "order_issue_charges_status_check": {
+          "name": "order_issue_charges_status_check",
+          "value": "\"order_issue_charges\".\"status\" IN ('open', 'paid', 'routed_pos', 'waived', 'expired')"
+        },
+        "order_issue_charges_amount_check": {
+          "name": "order_issue_charges_amount_check",
+          "value": "\"order_issue_charges\".\"difference_idr\" > 0 AND \"order_issue_charges\".\"gross_sales_idr\" >= 0 AND \"order_issue_charges\".\"service_charge_idr\" >= 0 AND \"order_issue_charges\".\"pbjt_idr\" >= 0 AND \"order_issue_charges\".\"amount_idr\" > 0 AND \"order_issue_charges\".\"amount_idr\" = \"order_issue_charges\".\"gross_sales_idr\" + \"order_issue_charges\".\"service_charge_idr\" + \"order_issue_charges\".\"pbjt_idr\""
+        },
+        "order_issue_charges_state_check": {
+          "name": "order_issue_charges_state_check",
+          "value": "(\"order_issue_charges\".\"status\" = 'paid') = (\"order_issue_charges\".\"paid_at\" IS NOT NULL) AND (\"order_issue_charges\".\"status\" IN ('waived', 'expired')) = (\"order_issue_charges\".\"closed_at\" IS NOT NULL) AND (\"order_issue_charges\".\"status\" <> 'waived' OR (\"order_issue_charges\".\"closed_by\" IS NOT NULL AND \"order_issue_charges\".\"close_reason\" IS NOT NULL))"
+        },
+        "order_issue_charges_route_status_check": {
+          "name": "order_issue_charges_route_status_check",
+          "value": "(\"order_issue_charges\".\"route\" = 'pos') = (\"order_issue_charges\".\"status\" = 'routed_pos') OR \"order_issue_charges\".\"status\" IN ('waived', 'expired')"
         }
       },
       "isRLSEnabled": false
