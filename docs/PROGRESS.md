@@ -1399,3 +1399,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Dibangun: `qr-tax-snapshot.test.ts` (2 tes) dan `pos-tax-snapshot.test.ts` (4 tes): snapshot tertulis sekali per aturan, jumlah cocok dengan total order dan per aturan, tidak ada baris sebelum bayar, ulang bayar/`payment.paid` tidak mengubah baris. Tanpa perubahan kode sumber, tanpa migrasi.
 - Bukti: mutasi (panggilan dimatikan) membuat tes gagal (POS 3 dari 4, QR tiap panggilan gagal di tesnya); 6 dari 6 hijau setelah perubahan terakhir; tsc api, eslint, prettier bersih. Review K (architect): 4 temuan nyata dibetulkan.
 - Sisa: pemasangan di checkout fasilitas menunggu `legend-bzih`.
+
+## legend-a30j unggah logo tenant (engineer, cabang `ws/brand-logo-upload` dari d2080951, 2026-11-10)
+
+- Dibangun: purpose `brand_logo` (publik, 2 MiB), `outletId` opsional dengan refine (brand_logo tanpa outlet, purpose lain wajib outlet), izin `org.theme.manage` di skala tenant, resolver hanya memberi scope tenant bila body purpose tepat `brand_logo`. Migrasi `0201_brand_logo_storage` (nomor dipesan, idx 201, when 1794280000000): `outlet_id` nullable, CHECK `(outlet_id IS NULL) = (purpose = 'brand_logo')`, kebijakan RLS: baca baris tanpa outlet boleh untuk staf outlet, tulis hanya scope tenant, UPDATE/DELETE tetap ketat (`outlet_isolation_update`, `outlet_isolation_delete`).
+- Review K (architect): HIGH (staf outlet bisa ubah/hapus/ambil alih baris logo lewat FOR ALL longgar) dan MEDIUM (CHECK terlalu longgar) dibetulkan + tes; LOW: `hris-sop.service.ts:320` dan `inventory-waste.service.ts:209` menerima id logo dari staf outlet (publik, dampak rendah, tidak diubah).
+- Bukti: 27 tes baru (10 resolver, 17 DB/RLS/service/skema), mutasi policy/izin tertangkap; 14 file 183 tes hijau termasuk storage lama, rls, outlet-rls, hris-leave, payroll-reimbursements; `db:generate` kedua kosong; tsc api dan shared, eslint, prettier bersih.
+- Sisa: belum ada rute/UI yang memanggil unggah brand_logo atau mengisi `brands.logo_media_id`; merge train merantai ulang 0201.

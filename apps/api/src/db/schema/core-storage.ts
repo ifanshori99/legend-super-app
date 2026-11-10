@@ -17,7 +17,9 @@ export const coreStorageObjects = pgTable(
   "core_storage_objects",
   {
     tenantId: uuid("tenant_id").notNull(),
-    outletId: uuid("outlet_id").notNull(),
+    // Null only for tenant-level assets (purpose brand_logo); see the
+    // core_storage_objects_outlet_purpose_check constraint.
+    outletId: uuid("outlet_id"),
     id: uuid("id").notNull(),
     purpose: varchar("purpose", { length: 32 }).notNull(),
     objectKey: text("object_key").notNull(),
@@ -46,6 +48,10 @@ export const coreStorageObjects = pgTable(
     check(
       "core_storage_objects_source_check",
       sql`${table.sourceId} IS NULL OR ${table.sourceKind} IS NOT NULL`,
+    ),
+    check(
+      "core_storage_objects_outlet_purpose_check",
+      sql`(${table.outletId} IS NULL) = (${table.purpose} = 'brand_logo')`,
     ),
     index("core_storage_objects_source_idx").on(
       table.tenantId,

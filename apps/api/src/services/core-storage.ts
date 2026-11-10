@@ -30,7 +30,7 @@ type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 export type StorageAuthorization = (
   action: "upload" | "read",
   purpose: StoragePurpose,
-  outletId: string,
+  outletId: string | null,
   target?: { objectId?: string; sourceKind?: StorageSourceKind | null },
 ) => Promise<boolean>;
 type Dependencies = {
@@ -51,11 +51,14 @@ export async function uploadStorage(
 ) {
   assertTrustedScopedContext(context);
   const input = uploadStorageMetadataSchema.parse(raw);
-  assertOutletInScope(context.outletScope, input.outletId);
+  // Only brand_logo has no outlet (schema refine); it needs a tenant-wide scope.
+  if (input.outletId) assertOutletInScope(context.outletScope, input.outletId);
+  else if (context.outletScope.kind !== "tenant")
+    throw new CoreError("OUTLET_OUT_OF_SCOPE", "Permission denied.");
   const sourceKind =
     input.sourceKind ?? storageDefaultSourceKind[input.purpose] ?? null;
   if (
-    !(await deps.authorize("upload", input.purpose, input.outletId, {
+    !(await deps.authorize("upload", input.purpose, input.outletId ?? null, {
       sourceKind,
     }))
   )
@@ -66,7 +69,7 @@ export async function uploadStorage(
   const id = randomUUID();
   const base = {
     tenantId: context.tenant.tenantId,
-    outletId: input.outletId,
+    outletId: input.outletId ?? null,
     reference: id,
     visibility: policy.visibility,
   };
@@ -113,7 +116,7 @@ export async function uploadStorage(
     await withTenant(database, context, (tx) =>
       tx.insert(coreStorageObjects).values({
         tenantId: base.tenantId,
-        outletId: input.outletId,
+        outletId: input.outletId ?? null,
         id,
         purpose: input.purpose,
         objectKey: key,
@@ -178,6 +181,9 @@ export async function signedStorageUrl(
       )[0],
   );
   if (!row) throw new CoreError("NOT_FOUND", "Object not found.");
+  // A tenant-level row (no outlet) is only ever a public purpose: no signed URL.
+  if (row.outletId === null)
+    throw new CoreError("FORBIDDEN", "Permission denied.");
   const outletId = outletIdSchema.parse(row.outletId);
   assertOutletInScope(context.outletScope, outletId);
   const purpose = storagePurposeSchema.parse(row.purpose);
