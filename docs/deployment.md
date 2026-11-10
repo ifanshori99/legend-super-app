@@ -272,6 +272,17 @@ Rotation: add a new kid to `ATTENDANCE_SELFIE_SEAL_KEYS`, switch `ATTENDANCE_SEL
 
 Release order: cloud first (this endpoint and the `attendance.logged` v2 applier), then the edges. Cloud orphan sweep: a received selfie that no attendance log references after 14 days is deleted from storage (the receipt stays).
 
+## Edge host (outlet) (legend-svy91)
+
+Ringkasan untuk host edge di outlet. Langkah lengkap ada di `deploy/edge/README.md`, dan respons jika edge hilang atau dicuri ada di `docs/runbooks/edge-hilang-dicuri.md`.
+
+- **Volume selfie.** Selfie yang menunggu upload disimpan di `EDGE_SELFIE_DIR` (default `/var/lib/legend/edge-selfies`, volume Docker). Direktori tenant dibuat dengan mode 0700 dan file `.lss` dengan mode 0600. Batas `EDGE_SELFIE_MAX_BYTES` (default 2 GiB). Di atas batas itu edge menjawab 507 `EDGE_SELFIE_STORAGE_FULL`.
+- **NTP wajib.** Jam edge dan jam HP harus berada dalam satu jendela QR 30 detik, jadi edge memakai chrony (lihat `deploy/edge/chrony.conf.example`).
+- **HTTPS wajib untuk perangkat outlet.** Kamera butuh secure context. Origin edge di perangkat outlet memakai HTTPS dengan sertifikat dari CA internal yang dipercaya perangkat (lihat `deploy/edge/Caddyfile.edge.example`).
+- **Enkripsi disk penuh (FDE) dengan unlock TPM** pada mini PC edge sebagai lapisan tambahan. Wajib jika enkripsi selfie cadangan dengan AES dipakai.
+- **Kunci publik seal datang lewat snapshot.** Edge menyegel selfie dengan kunci publik cloud dari snapshot data orang (`edge_people_sync_state.selfie_seal_public_key`, `selfie_seal_kid`). Tidak ada kunci yang disalin manual ke disk edge.
+- **Edge tidak pernah memegang kunci privat.** `ATTENDANCE_SELFIE_SEAL_KEYS` dan `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID` hanya ada di cloud. Prosedur kunci produksi ada di section "Attendance selfie seal key" di atas, jangan diduplikasi.
+
 ## Support read_write owner approval release (legend-c9kbk)
 
 From migration `0160_support_access_requests`, a Super Admin's read_write support session needs the tenant owner's approval first (founder Q37). Release it like this:

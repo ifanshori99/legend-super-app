@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { mintEdgeCredential } from "../edge/credential.ts";
 
 // Attendance selfie sealing keys and edge QR lookahead in config/env.ts.
 // Same approach as env.test.ts: config/env.ts validates process.env once, at
@@ -229,5 +230,48 @@ describe("EDGE_QR_KEY_DAYS_AHEAD", () => {
     const result = loadEnv({ [DAYS]: value });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(DAYS);
+  });
+});
+
+// An edge node only ever holds the cloud's PUBLIC seal key (it arrives in the
+// people snapshot). Holding the private keys would let a stolen edge open
+// every sealed selfie (design hris-edge-replication 7).
+describe("edge node and the seal private keys", () => {
+  const edgeEnv = () => ({
+    DEPLOYMENT_MODE: "development",
+    EDGE_MODE: "true",
+    EDGE_CLOUD_URL: "ws://localhost:4000/api/edge-link",
+    EDGE_NODE_CREDENTIAL: mintEdgeCredential({
+      tenantId: randomUUID(),
+      outletId: randomUUID(),
+      edgeNodeId: randomUUID(),
+    }).token,
+  });
+
+  it("boots an edge node that holds no seal key", () => {
+    expect(loadEnv(edgeEnv()).status).toBe(0);
+  });
+
+  it("refuses an edge node that holds the seal keys", () => {
+    const result = loadEnv({
+      ...edgeEnv(),
+      [KEYS]: keysJson({ k1: rsa3072a }),
+      [ACTIVE]: "k1",
+    });
+    expectRejected(result, /ATTENDANCE_SELFIE_SEAL_KEYS: .*edge/i, [rsa3072a]);
+    expect(result.stderr).toMatch(/ATTENDANCE_SELFIE_SEAL_ACTIVE_KID: .*edge/i);
+  });
+
+  it("refuses an edge node that holds only the active kid", () => {
+    expectRejected(
+      loadEnv({ ...edgeEnv(), [ACTIVE]: "k1" }),
+      /ATTENDANCE_SELFIE_SEAL_ACTIVE_KID: .*edge/i,
+    );
+  });
+
+  it("still boots the cloud with the seal keys", () => {
+    expect(
+      loadEnv({ [KEYS]: keysJson({ k1: rsa3072a }), [ACTIVE]: "k1" }).status,
+    ).toBe(0);
   });
 });
