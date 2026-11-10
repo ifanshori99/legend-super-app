@@ -14,8 +14,6 @@ type PinLayoutProps = {
   description?: string;
   /** Info panel text; the panel is omitted when empty. */
   side?: ReactNode;
-  /** "hr" swaps the page heading to the HR reset wording. */
-  variant?: "employee" | "hr";
   /** Back link element (a router Link), rendered above the page heading. */
   backLink?: ReactNode;
   /** Card body: form, notice, buttons or skeleton. */
@@ -28,28 +26,24 @@ function PinLayout({
   title,
   description,
   side,
-  variant = "employee",
   backLink,
   children,
   busy,
 }: PinLayoutProps) {
   const t = useT();
-  const hr = variant === "hr";
 
   return (
     <div className="mx-auto grid w-full max-w-5xl gap-6">
       {backLink}
       <header className="grid gap-1">
         <p className="text-xs font-bold tracking-widest text-muted-foreground uppercase">
-          {t(hr ? "payslipPin.layout.hrEyebrow" : "payslipPin.layout.eyebrow")}
+          {t("payslipPin.layout.eyebrow")}
         </p>
         <h1 className="font-brand type-display-xl">
-          {t(hr ? "payslipPin.layout.hrTitle" : "payslipPin.layout.title")}
+          {t("payslipPin.layout.title")}
         </h1>
         <p className="text-sm leading-5 text-muted-foreground">
-          {t(
-            hr ? "payslipPin.layout.hrSubtitle" : "payslipPin.layout.subtitle",
-          )}
+          {t("payslipPin.layout.subtitle")}
         </p>
       </header>
       <div className="grid items-start gap-4 md:grid-cols-[minmax(0,1fr)_20rem] md:gap-7">

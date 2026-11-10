@@ -3,7 +3,7 @@
 // PIN and the repeat, and the new PIN is active. HR is the other way out and
 // never sees or sets a PIN. States: choose (request), unavailable (503, a calm
 // notice and not a toast), rate limited (429, own card), code entry, done.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, CircleCheck } from "lucide-react";
@@ -17,7 +17,6 @@ import {
 } from "../pin-hooks.ts";
 import type { PinErrorState } from "../pin-state.ts";
 import {
-  PAYSLIP_PIN_LENGTH,
   classifyPinError,
   isCompletePin,
   validateNewPin,
@@ -26,6 +25,10 @@ import { PinCodeInput } from "./pin-code-input.tsx";
 import { PinLayout } from "./pin-layout.tsx";
 
 type Step = "choose" | "code" | "done";
+type Field = "code" | "pin" | "confirm";
+
+/** The API allows 3 code requests per hour; the resend button stops there. */
+const MAX_CODE_SENDS = 3;
 type Tone = "neutral" | "danger" | "success";
 
 const TONE_CLASS: Record<Tone, string> = {
@@ -97,13 +100,39 @@ export function PinForgot() {
   const [pinError, setPinError] = useState<string | undefined>();
   const [confirmError, setConfirmError] = useState<string | undefined>();
 
+  const [sends, setSends] = useState(0);
+  const [focusRequest, setFocusRequest] = useState<{
+    field: Field;
+    n: number;
+  } | null>(null);
+  const codeRef = useRef<HTMLInputElement>(null);
+  const pinRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
+
   const requesting = requestOtp.isPending;
   const verifying = verifyOtp.isPending;
+
+  // After a failed submit the first input with an error takes focus. Deferred
+  // one tick so the fields are enabled again when the call has settled.
+  useEffect(() => {
+    if (focusRequest === null) return;
+    const refs = { code: codeRef, pin: pinRef, confirm: confirmRef };
+    const timer = setTimeout(
+      () => refs[focusRequest.field].current?.focus(),
+      0,
+    );
+    return () => clearTimeout(timer);
+  }, [focusRequest]);
+
+  function focusField(field: Field) {
+    setFocusRequest((previous) => ({ field, n: (previous?.n ?? 0) + 1 }));
+  }
 
   async function sendCode() {
     setRequestFailure(null);
     try {
       await requestOtp.mutateAsync({ idempotencyKey: newIdempotencyKey() });
+      setSends((count) => count + 1);
       setCode("");
       setVerifyFailure(null);
       setCodeError(undefined);
@@ -134,13 +163,19 @@ export function PinForgot() {
 
     if (!isCompletePin(code)) {
       setCodeError(t("payslipPinForgot.codeIncomplete"));
+      focusField("code");
       return;
     }
     const check = validateNewPin(pin, confirm);
     if (!check.ok) {
       const message = t(`payslipPin.validation.${check.reason}`);
-      if (check.reason === "mismatch") setConfirmError(message);
-      else setPinError(message);
+      if (check.reason === "mismatch") {
+        setConfirmError(message);
+        focusField("confirm");
+      } else {
+        setPinError(message);
+        focusField("pin");
+      }
       return;
     }
 
@@ -154,16 +189,21 @@ export function PinForgot() {
       setPin("");
       setConfirm("");
       setStep("done");
+      // Nothing keeps the code or the PIN once the success screen shows.
+      verifyOtp.reset();
+      requestOtp.reset();
     } catch (error) {
       const failure = classifyPinError(error);
       setCode("");
       if (failure.kind === "invalid") {
         setCodeError(t("payslipPinForgot.codeInvalid"));
+        focusField("code");
         return;
       }
       setPin("");
       setConfirm("");
       setVerifyFailure(failure);
+      focusField("code");
     }
   }
 
@@ -197,10 +237,8 @@ export function PinForgot() {
   }
 
   // ---- 429: too many code requests (mockup kode-dibatasi) -------------------
-  const rateLimited =
-    requestFailure?.kind === "rate_limited" ||
-    verifyFailure?.kind === "rate_limited";
-  if (rateLimited) {
+  // Only from the request step: inside the code step the notice is inline.
+  if (step === "choose" && requestFailure?.kind === "rate_limited") {
     return (
       <PinLayout
         backLink={<BackLink />}
@@ -219,7 +257,16 @@ export function PinForgot() {
   // ---- code entry -----------------------------------------------------------
   if (step === "code") {
     const locked = verifyFailure?.kind === "locked";
-    const unavailable = verifyFailure?.kind === "unavailable";
+    const unavailable =
+      verifyFailure?.kind === "unavailable" ||
+      requestFailure?.kind === "unavailable";
+    const rateLimited =
+      verifyFailure?.kind === "rate_limited" ||
+      requestFailure?.kind === "rate_limited";
+    const requestFailed =
+      requestFailure !== null &&
+      requestFailure.kind !== "unavailable" &&
+      requestFailure.kind !== "rate_limited";
     const generic =
       verifyFailure !== null &&
       (verifyFailure.kind === "network" ||
@@ -247,6 +294,9 @@ export function PinForgot() {
             required
           >
             <PinCodeInput
+              ref={codeRef}
+              name="otp-code"
+              mask={false}
               value={code}
               onChange={(next) => {
                 setCode(next);
@@ -263,13 +313,15 @@ export function PinForgot() {
             required
           >
             <PinCodeInput
+              ref={pinRef}
+              name="new-pin"
               value={pin}
               onChange={(next) => {
                 setPin(next);
                 setPinError(undefined);
               }}
               disabled={verifying || locked}
-              autoComplete="new-password"
+              autoComplete="off"
             />
           </FormField>
           <FormField
@@ -278,13 +330,15 @@ export function PinForgot() {
             required
           >
             <PinCodeInput
+              ref={confirmRef}
+              name="confirm-pin"
               value={confirm}
               onChange={(next) => {
                 setConfirm(next);
                 setConfirmError(undefined);
               }}
               disabled={verifying || locked}
-              autoComplete="new-password"
+              autoComplete="off"
             />
           </FormField>
 
@@ -301,6 +355,14 @@ export function PinForgot() {
               {t("payslipPinForgot.unavailableNotice")}
             </Notice>
           )}
+          {rateLimited && (
+            <Notice
+              tone="danger"
+              title={t("payslipPin.kodeDibatasi.noticeTitle")}
+            >
+              {t("payslipPin.kodeDibatasi.notice")}
+            </Notice>
+          )}
           {generic && (
             <Notice
               tone="danger"
@@ -314,7 +376,7 @@ export function PinForgot() {
               {t("payslipPinForgot.notSetBody")}
             </Notice>
           )}
-          {requestFailure !== null && (
+          {requestFailed && (
             <Notice
               tone="danger"
               title={t("payslipPinForgot.requestErrorTitle")}
@@ -328,12 +390,7 @@ export function PinForgot() {
             size="lg"
             className="w-full"
             loading={verifying}
-            disabled={
-              locked ||
-              code.length !== PAYSLIP_PIN_LENGTH ||
-              pin.length !== PAYSLIP_PIN_LENGTH ||
-              confirm.length !== PAYSLIP_PIN_LENGTH
-            }
+            disabled={locked}
           >
             {verifying
               ? t("payslipPin.kodeWa.verifying")
@@ -345,7 +402,7 @@ export function PinForgot() {
             size="lg"
             className="w-full"
             loading={requesting}
-            disabled={verifying}
+            disabled={verifying || (!locked && sends >= MAX_CODE_SENDS)}
             onClick={() => (locked ? requestNewCode() : void sendCode())}
           >
             {requesting
@@ -387,7 +444,6 @@ export function PinForgot() {
         size="lg"
         className="w-full"
         loading={requesting}
-        disabled={unavailable}
         onClick={() => void sendCode()}
       >
         {requesting

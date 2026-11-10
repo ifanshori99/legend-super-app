@@ -14,7 +14,6 @@ import { useMyPayslips } from "../hooks.ts";
 import { usePayslipPinStatus } from "../pin-hooks.ts";
 import { PageHeader } from "./page-header.tsx";
 import { PinLayout } from "./pin-layout.tsx";
-import { StateBadge } from "./state-badge.tsx";
 
 function PinInfoCard({ canChangePin }: { canChangePin: boolean }) {
   const t = useT();
@@ -91,27 +90,29 @@ export function PayslipHistory() {
   const query = useMyPayslips();
   const pinStatus = usePayslipPinStatus();
 
-  // Loading, error and empty follow the approved mockups (memuat, error,
-  // kosong): the shared PIN layout with an info panel. No amounts either way.
+  // Error and empty follow the approved mockups (error, kosong): the shared
+  // PIN layout with an info panel. Loading keeps the loaded list's shape so
+  // nothing jumps when the rows arrive. No amounts in any state.
   if (query.isPending) {
     return (
-      <PinLayout
-        busy
-        backLink={<ListBackLink />}
-        title={t("payslipPin.memuat.title")}
-        description={t("payslipPin.memuat.description")}
-        side={t("payslipPin.memuat.side")}
-      >
-        <div aria-busy="true" className="grid gap-3">
-          <Skeleton className="h-4 w-1/2 rounded-container" />
-          <Skeleton className="h-4 w-full rounded-container" />
-          <Skeleton className="h-4 w-full rounded-container" />
-          <Skeleton className="h-4 w-1/2 rounded-container" />
-          <p role="status" className="text-xs text-muted-foreground">
-            {t("payslipPin.memuat.status")}
-          </p>
+      <div aria-busy="true" className="grid gap-4">
+        <div className="grid gap-2">
+          <ListBackLink />
+          <PageHeader
+            title={t("payslip.history.title")}
+            subtitle={t("payslip.history.subtitle")}
+          />
         </div>
-      </PinLayout>
+        <PinInfoCard canChangePin={pinStatus.data?.status === "active"} />
+        <span className="sr-only" role="status">
+          {t("common.loading")}
+        </span>
+        <div className="grid gap-3">
+          <Skeleton className="h-32 w-full rounded-container" />
+          <Skeleton className="h-32 w-full rounded-container" />
+          <Skeleton className="h-32 w-full rounded-container" />
+        </div>
+      </div>
     );
   }
 
@@ -128,6 +129,7 @@ export function PayslipHistory() {
         </ListNotice>
         <Button
           type="button"
+          size="lg"
           className="w-full"
           loading={query.isRefetching}
           onClick={() => void query.refetch()}
@@ -152,6 +154,7 @@ export function PayslipHistory() {
         <Button
           type="button"
           variant="outline"
+          size="lg"
           className="w-full"
           loading={query.isRefetching}
           onClick={() => void query.refetch()}
@@ -200,9 +203,6 @@ export function PayslipHistory() {
                     })}
                   </p>
                 </div>
-                <StateBadge tone="success">
-                  {t("payslip.history.paid")}
-                </StateBadge>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
                 <span className="text-sm leading-5 text-muted-foreground">

@@ -1,6 +1,8 @@
 // Custom hooks of the payslip PIN screens (bead legend-ilzrj): the only way
 // components touch the PIN endpoints. Every PIN write replaces the cached
-// status, and the mutations keep no PIN in the MutationCache (gcTime 0).
+// status. A mutation keeps its variables (the PIN or code) until it is reset:
+// gcTime 0 only evicts them once the screen unmounts, so screens call
+// `.reset()` as soon as the PIN or code is no longer needed.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PayslipPinStatus } from "@starter/shared/hris/payroll";
 import type {

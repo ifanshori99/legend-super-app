@@ -1,7 +1,7 @@
 // HR resets an employee's payslip PIN (bead legend-ilzrj, mockup hr-reset).
 // The dialog states the consequence, collects a 3-500 character reason, and
-// sends it with one idempotency key per open. HR never sees or sets a PIN: the
-// employee creates a new one the next time they open a payslip.
+// sends it with an idempotency key. HR never sees or sets a PIN: the employee
+// creates a new one the next time they open a payslip.
 import * as React from "react";
 import type { Employee } from "@starter/shared/hris";
 import { useT } from "@/components/i18n";
@@ -33,11 +33,15 @@ export function PayslipPinResetDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
+  const reset = useResetPayslipPin();
+  const pending = reset.isPending;
   const close = React.useCallback(() => onOpenChange(false), [onOpenChange]);
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        // A reset in flight cannot be dismissed: the result must be seen.
+        if (pending) return;
         if (next) onOpenChange(true);
         else close();
       }}
@@ -50,8 +54,10 @@ export function PayslipPinResetDialog({
           </DialogDescription>
         </DialogHeader>
         {/* Mounted only while open: each attempt starts with an empty reason
-            and a fresh idempotency key (no setState in an effect). */}
-        {open ? <ResetForm employee={employee} onDone={close} /> : null}
+            (no setState in an effect). */}
+        {open ? (
+          <ResetForm employee={employee} reset={reset} onDone={close} />
+        ) : null}
       </DialogContent>
     </Dialog>
   );
@@ -59,17 +65,21 @@ export function PayslipPinResetDialog({
 
 function ResetForm({
   employee,
+  reset,
   onDone,
 }: {
   employee: Employee;
+  reset: ReturnType<typeof useResetPayslipPin>;
   onDone: () => void;
 }) {
   const t = useT();
   const toast = useToast();
-  const reset = useResetPayslipPin();
   const [reason, setReason] = React.useState("");
   const [reasonError, setReasonError] = React.useState<string>();
   const [formError, setFormError] = React.useState<string>();
+  const reasonRef = React.useRef<HTMLTextAreaElement>(null);
+  // One key per distinct request: a new reason or a failed attempt gets a
+  // fresh key so the server never replays a different payload under it.
   const idempotencyKey = React.useRef(newIdempotencyKey());
 
   function submit(event: React.FormEvent) {
@@ -78,6 +88,7 @@ function ResetForm({
     const trimmed = reason.trim();
     if (trimmed.length < REASON_MIN || trimmed.length > REASON_MAX) {
       setReasonError(t("payslipPin.hrReset.reasonError"));
+      reasonRef.current?.focus();
       return;
     }
     setReasonError(undefined);
@@ -94,7 +105,10 @@ function ResetForm({
           });
           onDone();
         },
-        onError: () => setFormError(t("payslipPin.hrReset.error")),
+        onError: () => {
+          idempotencyKey.current = newIdempotencyKey();
+          setFormError(t("payslipPin.hrReset.error"));
+        },
       },
     );
   }
@@ -111,33 +125,44 @@ function ResetForm({
       <FormField
         label={t("payslipPin.hrReset.reasonLabel")}
         id="payslip-pin-reset-reason"
-        hint={t("payslipPin.hrReset.reasonHint")}
+        hint={
+          <span className="flex flex-wrap justify-between gap-x-3">
+            <span>{t("payslipPin.hrReset.reasonHint")}</span>
+            <span className="tabular">
+              {reason.length}/{REASON_MAX}
+            </span>
+          </span>
+        }
         error={reasonError}
         required
       >
         <Textarea
+          ref={reasonRef}
           id="payslip-pin-reset-reason"
+          name="reason"
           rows={3}
           maxLength={REASON_MAX}
           autoComplete="off"
           placeholder={t("payslipPin.hrReset.reasonPlaceholder")}
           value={reason}
-          onChange={(event) => setReason(event.target.value)}
+          onChange={(event) => {
+            setReason(event.target.value);
+            idempotencyKey.current = newIdempotencyKey();
+          }}
         />
       </FormField>
-      <p
-        className="-mt-2 text-right text-xs leading-4 text-muted-foreground tabular"
-        aria-live="off"
-      >
-        {reason.length}/{REASON_MAX}
-      </p>
       {formError && (
         <p className="text-sm leading-5 font-medium text-danger" role="alert">
           {formError}
         </p>
       )}
       <DialogFooter>
-        <Button type="button" variant="outline" onClick={onDone}>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={reset.isPending}
+          onClick={onDone}
+        >
           {t("payslipPin.hrReset.cancel")}
         </Button>
         <Button type="submit" loading={reset.isPending}>

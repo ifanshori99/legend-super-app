@@ -3,6 +3,6 @@
 export const payslipPinListMessages = {
   list: {
     changePin: "Ubah PIN slip gaji",
-    changePinHint: "Ganti PIN yang Anda pakai untuk membuka slip.",
+    viewSlip: "Lihat slip {period}",
   },
 } as const;

@@ -555,10 +555,13 @@ registerMock(verifyMyPayslipPinResetOtp, ({ body }) => {
     let failure: PinFailure;
     let next: PayslipMockState;
     if (attempts >= PAYSLIP_PIN_OTP_MAX_ATTEMPTS) {
-      // The fifth wrong code burns the challenge and locks the PIN.
-      const lockedUntil = new Date(Date.now() + PIN_LOCK_MS).toISOString();
-      failure = { code: "PAYSLIP_PIN_LOCKED", lockedUntil };
-      next = { ...state, otp: null, pinLockedUntil: lockedUntil };
+      // The fifth wrong code burns the challenge (423, retry after it would
+      // have expired) like the API; the PIN's own lock is left alone.
+      failure = {
+        code: "PAYSLIP_PIN_LOCKED",
+        lockedUntil: challenge.expiresAt,
+      };
+      next = { ...state, otp: null };
     } else {
       failure = {
         code: "PAYSLIP_PIN_INVALID",

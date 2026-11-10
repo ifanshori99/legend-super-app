@@ -8,10 +8,6 @@ export const payslipPinMessages = {
     subtitle: "Akses informasi gaji Anda secara pribadi.",
     back: "Slip gaji",
     infoTitle: "Informasi",
-    hrEyebrow: "Pengaturan karyawan",
-    hrTitle: "Reset PIN slip gaji",
-    hrSubtitle: "Kelola akses PIN karyawan",
-    hrBack: "Detail karyawan",
   },
   common: {
     pinLabel: "PIN slip gaji",
@@ -74,8 +70,6 @@ export const payslipPinMessages = {
     title: "Lupa PIN?",
     description: "Pilih cara untuk memulihkan akses ke slip gaji Anda.",
     whatsappTitle: "Kode WhatsApp belum tersedia",
-    whatsappNotice:
-      "Fitur ini sedang disiapkan. Silakan hubungi HR untuk mereset PIN Anda.",
     requestWhatsapp: "Minta kode WhatsApp",
     hrTitle: "Hubungi HR",
     hrBody:
@@ -91,7 +85,6 @@ export const payslipPinMessages = {
     codeLabel: "Kode WhatsApp",
     verifySubmit: "Verifikasi kode",
     verifying: "Memeriksa kode…",
-    invalid: "Kode belum benar. Periksa kode dan coba lagi.",
     side: "Setelah kode benar, Anda membuat PIN baru sendiri.",
   },
   ubahPin: {
@@ -115,11 +108,9 @@ export const payslipPinMessages = {
     reasonHint: "Wajib diisi, 3–500 karakter.",
     reasonError: "Alasan reset harus 3–500 karakter.",
     confirm: "Ya, reset PIN",
-    submitting: "Mereset PIN…",
     cancel: "Batal",
     success: "PIN direset. Karyawan membuat PIN baru saat membuka slip.",
     error: "PIN belum dapat direset. Coba lagi.",
-    side: "Konfirmasi ini menunjukkan konsekuensi reset sebelum HR melanjutkan.",
   },
   kosong: {
     title: "Belum ada slip gaji",
@@ -130,10 +121,7 @@ export const payslipPinMessages = {
     side: "Daftar hanya menampilkan informasi periode dan riwayat pembukaan, tanpa nominal gaji.",
   },
   memuat: {
-    title: "Memuat slip gaji",
-    description: "Mohon tunggu sebentar.",
     status: "Sedang memuat daftar slip…",
-    side: "Bentuk pemuatan mengikuti daftar slip agar perubahan tampilan tetap tenang.",
   },
   error: {
     title: "Slip gaji tidak dapat dimuat",

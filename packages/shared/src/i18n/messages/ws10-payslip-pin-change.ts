@@ -18,6 +18,5 @@ export const payslipPinChangeMessages = {
     unavailableError: "Layanan sedang tidak tersedia. Coba lagi nanti.",
     successTitle: "PIN berhasil diubah",
     successDescription: "Gunakan PIN baru untuk membuka slip gaji berikutnya.",
-    lockedUnknownTime: "Coba lagi setelah waktu penguncian berakhir.",
   },
 } as const;

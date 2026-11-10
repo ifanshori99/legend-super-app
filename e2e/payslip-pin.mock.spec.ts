@@ -21,11 +21,18 @@
 //    history page, then the slip is opened through its link.
 //  - After saving a first PIN the continue action is a button named
 //    "Lanjut ke slip gaji" and the saved title is "PIN berhasil disimpan".
-//  - The history list still offers the "Lihat slip" link (ws10-payslip copy).
+//  - Each history row link is named "Lihat slip {period}" (aria-label, fix
+//    round 1), matched by prefix.
 //  - The "hr" role template (cookie legend-mock-role=hr) holds payroll.run;
 //    outlet_manager holds hr.employee.view but not payroll.run.
-//  - Submit buttons change their label after a wrong PIN ("Buka slip gaji" ->
-//    "Coba lagi"), so the helper matches either.
+//  - Submit buttons are always enabled and validate on submit (fix round 1).
+//    They change label after a wrong PIN ("Buka slip gaji" -> "Coba lagi"), so
+//    the helper matches either. A wrong PIN clears the field.
+//  - Wrong PIN text is one message: "PIN belum benar. Periksa PIN dan coba
+//    lagi. N percobaan tersisa."
+//  - The OTP field is unmasked. A wrong code clears the code field only; the
+//    5th wrong code burns the code (423) without locking the PIN, and the
+//    screen offers "Kirim kode baru". Resend stops after 3 sends.
 import { expect, test, type Page } from "@playwright/test";
 import { waitForHydration } from "./hydration.ts";
 
@@ -62,7 +69,7 @@ async function openEmployee(page: Page, path: string) {
 async function openGate(page: Page) {
   await openEmployee(page, "/karyawan/slip-gaji");
   await page
-    .getByRole("link", { name: "Lihat slip" })
+    .getByRole("link", { name: /^Lihat slip/ })
     .first()
     .click({ timeout: COLD });
   await expect(page.getByRole("heading", { name: "Masukkan PIN" })).toBeVisible(
@@ -93,12 +100,40 @@ test("F30 HR-01 ilzrj: amounts are hidden until the PIN is entered", async ({
   await expect(page.getByText("Gaji bersih")).toHaveCount(0);
 });
 
+test("F30 ilzrj: the gate shows the payslip period above the PIN field", async ({
+  page,
+}) => {
+  await openGate(page);
+  const period = page.getByText("Periode gaji", { exact: true });
+  await expect(period).toBeVisible();
+  const periodBox = await period.boundingBox();
+  const fieldBox = await page
+    .getByLabel("PIN slip gaji", { exact: true })
+    .boundingBox();
+  expect(periodBox!.y).toBeLessThan(fieldBox!.y);
+});
+
+test("F30 HR-01 ilzrj: submitting an incomplete PIN shows an error and keeps amounts hidden", async ({
+  page,
+}) => {
+  await openGate(page);
+  // The button is never disabled; the check happens on submit.
+  const submit = page.getByRole("button", { name: "Buka slip gaji" });
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(page.getByText("PIN harus 6 angka.")).toBeVisible();
+
+  await submitPin(page, "123");
+  await expect(page.getByText("PIN harus 6 angka.")).toBeVisible();
+  await expect(page.getByText(/Rp/)).toHaveCount(0);
+});
+
 test("F30 HR-01 ilzrj: a wrong PIN shows the remaining attempts and keeps amounts hidden", async ({
   page,
 }) => {
   await openGate(page);
   await submitPin(page, "000000");
-  await expect(page.getByText("PIN belum benar")).toBeVisible();
+  await expect(page.getByText(/PIN belum benar/)).toBeVisible();
   await expect(page.getByText(/4 percobaan tersisa/)).toBeVisible();
   await expect(page.getByText(/Rp/)).toHaveCount(0);
 
@@ -119,7 +154,7 @@ test("F30 HR-01 ilzrj: the right PIN reveals the payslip amounts", async ({
     timeout: COLD,
   });
   await expect(page.getByText(/Rp/).first()).toBeVisible();
-  await expect(page.getByText("PIN belum benar")).toHaveCount(0);
+  await expect(page.getByText(/PIN belum benar/)).toHaveCount(0);
 });
 
 test("F30 HR-01 ilzrj: five wrong PINs lock the gate, amounts stay hidden, Lupa PIN is offered", async ({
@@ -137,6 +172,9 @@ test("F30 HR-01 ilzrj: five wrong PINs lock the gate, amounts stay hidden, Lupa 
   await expect(page.getByText("PIN terkunci sementara")).toBeVisible();
   await expect(page.getByText(/15 menit/).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Lupa PIN?" })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Kembali ke daftar slip" }),
+  ).toBeVisible();
   // Locked: no way to type another PIN and no amounts.
   await expect(
     page.getByRole("button", { name: /^(Buka slip gaji|Coba lagi)$/ }),
@@ -175,6 +213,11 @@ test("F30 ilzrj: creating a PIN rejects a short, weak or mismatched PIN near the
   const newPin = page.getByLabel("PIN baru", { exact: true });
   const repeat = page.getByLabel("Ulangi PIN baru", { exact: true });
   const save = page.getByRole("button", { name: "Simpan PIN" });
+
+  // Always enabled; an empty form is checked on submit.
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(page.getByText("PIN harus 6 angka.")).toBeVisible();
 
   await newPin.fill("12345");
   await repeat.fill("12345");
@@ -225,7 +268,7 @@ test("F30 HR-01 ilzrj: a created PIN is saved, then the slip opens only with tha
 
   // The old demo PIN no longer works; the new one does.
   await submitPin(page, DEMO_PIN);
-  await expect(page.getByText("PIN belum benar")).toBeVisible();
+  await expect(page.getByText(/PIN belum benar/)).toBeVisible();
   await submitPin(page, NEW_PIN);
   await expect(page.getByText("Gaji bersih").first()).toBeVisible({
     timeout: COLD,
@@ -315,12 +358,16 @@ test("F30 ilzrj: WhatsApp reset flow sends a code, verifies it and saves a new P
     name: /Verifikasi kode|Simpan PIN/,
   });
 
-  // Wrong code: the same invalid state, worded as a wrong code.
+  // Wrong code: worded as a wrong or expired code; the field is cleared.
   await code.fill("000000");
   await newPin.fill(NEW_PIN);
   await repeat.fill(NEW_PIN);
   await verify.click();
-  await expect(page.getByText(/Kode belum benar/)).toBeVisible();
+  await expect(code).toHaveValue("");
+  await expect(
+    page.getByText(/Kode salah atau sudah kedaluwarsa/),
+  ).toBeVisible();
+  await expect(page.getByText(/Kirim kode baru jika perlu/)).toBeVisible();
 
   // Right code.
   await code.fill(DEMO_OTP);
@@ -370,6 +417,96 @@ test("F30 ilzrj: the new PIN after a WhatsApp code must be strong and repeated c
   await expect(page.getByText("PIN berhasil disimpan")).toHaveCount(0);
 });
 
+test("F30 ilzrj: the verify button is always enabled and an incomplete code is reported on submit", async ({
+  page,
+}) => {
+  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
+  await page
+    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
+    .click({ timeout: COLD });
+  await expect(
+    page.getByText(/Kode sudah dikirim ke WhatsApp Anda/),
+  ).toBeVisible();
+  const verify = page.getByRole("button", { name: "Verifikasi kode" });
+  await expect(verify).toBeEnabled();
+  await verify.click();
+  await expect(page.getByText("Kode harus 6 angka.")).toBeVisible();
+  await expect(page.getByText("PIN berhasil disimpan")).toHaveCount(0);
+});
+
+test("F30 ilzrj: the code field is plain text, not masked", async ({
+  page,
+}) => {
+  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
+  await page
+    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
+    .click({ timeout: COLD });
+  const code = page.getByLabel("Kode WhatsApp", { exact: true });
+  await code.fill(DEMO_OTP);
+  await expect(code).toHaveAttribute("type", "text");
+  await expect(page.getByLabel("PIN baru", { exact: true })).toHaveAttribute(
+    "type",
+    "password",
+  );
+});
+
+test("F30 ilzrj: five wrong codes burn the code but do not lock the PIN", async ({
+  page,
+}) => {
+  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
+  await page
+    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
+    .click({ timeout: COLD });
+  await expect(
+    page.getByText(/Kode sudah dikirim ke WhatsApp Anda/),
+  ).toBeVisible();
+
+  const code = page.getByLabel("Kode WhatsApp", { exact: true });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await code.fill("000000");
+    await page.getByLabel("PIN baru", { exact: true }).fill(NEW_PIN);
+    await page.getByLabel("Ulangi PIN baru", { exact: true }).fill(NEW_PIN);
+    await page.getByRole("button", { name: "Verifikasi kode" }).click();
+    // A failed check clears the code: that is the sync point for each round.
+    await expect(code).toHaveValue("");
+  }
+  await expect(page.getByText("Terlalu banyak percobaan")).toBeVisible();
+  await expect(page.getByText(/Kode sudah tidak berlaku/)).toBeVisible();
+  await expect(page.getByText("PIN berhasil disimpan")).toHaveCount(0);
+
+  // The way on is a new code.
+  await page.getByRole("button", { name: "Kirim kode baru" }).click();
+  await expect(page.getByRole("heading", { name: "Lupa PIN?" })).toBeVisible();
+
+  // The PIN itself is not locked: the demo PIN still opens the slip.
+  await page.getByRole("link", { name: "Kembali ke daftar slip" }).click();
+  await page
+    .getByRole("link", { name: /^Lihat slip/ })
+    .first()
+    .click({ timeout: COLD });
+  await expect(page.getByText("PIN terkunci sementara")).toHaveCount(0);
+  await submitPin(page, DEMO_PIN);
+  await expect(page.getByText("Gaji bersih").first()).toBeVisible({
+    timeout: COLD,
+  });
+});
+
+test("F30 ilzrj: Kirim ulang kode stops after three sends", async ({
+  page,
+}) => {
+  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
+  await page
+    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
+    .click({ timeout: COLD });
+  const resend = page.getByRole("button", { name: "Kirim ulang kode" });
+  await expect(resend).toBeEnabled();
+  await resend.click();
+  await expect(resend).toBeEnabled();
+  await resend.click();
+  // Three sends in total (first request + two resends): no fourth.
+  await expect(resend).toBeDisabled();
+});
+
 // ---------------------------------------------------------------------------
 // Change PIN
 // ---------------------------------------------------------------------------
@@ -402,6 +539,13 @@ test("F30 ilzrj: Ubah PIN validates the new PIN before sending", async ({
   const newPin = page.getByLabel("PIN baru", { exact: true });
   const repeat = page.getByLabel("Ulangi PIN baru", { exact: true });
   const save = page.getByRole("button", { name: "Simpan PIN baru" });
+
+  // Always enabled; an empty form is checked on submit.
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(
+    page.getByText("Masukkan PIN saat ini (6 angka)."),
+  ).toBeVisible();
 
   await current.fill(DEMO_PIN);
   await newPin.fill("12345");
@@ -453,6 +597,17 @@ test("F30 ilzrj: the history offers Ubah PIN slip gaji and it opens the change s
   await expect(page.getByRole("heading", { name: "Ubah PIN" })).toBeVisible({
     timeout: COLD,
   });
+});
+
+test("F30 HR-01 ilzrj: the history lists periods without amounts or a paid badge", async ({
+  page,
+}) => {
+  await openEmployee(page, "/karyawan/slip-gaji");
+  await expect(
+    page.getByRole("link", { name: /^Lihat slip/ }).first(),
+  ).toBeVisible({ timeout: COLD });
+  await expect(page.getByText("Dibayar", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Rp/)).toHaveCount(0);
 });
 
 test("F30 ilzrj: an empty history says there are no payslips yet", async ({

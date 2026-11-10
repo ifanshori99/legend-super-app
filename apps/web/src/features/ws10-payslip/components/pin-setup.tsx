@@ -4,7 +4,7 @@
 // they belong to. The PIN lives in component state only and leaves through the
 // PUT body; after a save the cached status turns active and the confirmation
 // card offers the way on (`onDone`). No amounts are shown here.
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, ShieldCheck } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -43,8 +43,17 @@ function PinSetup({ onDone }: PinSetupProps) {
   const [errors, setErrors] = useState<FieldErrors>({});
   const pinRef = useRef<HTMLInputElement>(null);
   const confirmRef = useRef<HTMLInputElement>(null);
+  // Once saved the card stays up from local state, so the mutation (which held
+  // the PIN) can be reset right away and the cached status may flip to active.
+  const [saved, setSaved] = useState(false);
 
-  if (setPin.isSuccess) {
+  // Focus the first box on a mouse or trackpad; on touch it would only pop the
+  // keyboard over the form before the employee has read it.
+  useEffect(() => {
+    if (window.matchMedia("(pointer: fine)").matches) pinRef.current?.focus();
+  }, []);
+
+  if (saved) {
     return (
       <PinLayout
         backLink={<BackLink />}
@@ -113,7 +122,17 @@ function PinSetup({ onDone }: PinSetupProps) {
       return;
     }
     setErrors({});
-    setPin.mutate({ pin, idempotencyKey: newIdempotencyKey() });
+    setPin.mutate(
+      { pin, idempotencyKey: newIdempotencyKey() },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setPin.reset();
+          setPinValue("");
+          setConfirm("");
+        },
+      },
+    );
   }
 
   return (
@@ -138,11 +157,12 @@ function PinSetup({ onDone }: PinSetupProps) {
         >
           <PinCodeInput
             ref={pinRef}
+            name="new-pin"
+            autoComplete="off"
             value={pin}
             onChange={handlePinChange}
             onComplete={() => confirmRef.current?.focus()}
             disabled={submitting}
-            autoFocus
           />
         </FormField>
         <FormField
@@ -152,6 +172,8 @@ function PinSetup({ onDone }: PinSetupProps) {
         >
           <PinCodeInput
             ref={confirmRef}
+            name="confirm-pin"
+            autoComplete="off"
             value={confirm}
             onChange={handleConfirmChange}
             disabled={submitting}

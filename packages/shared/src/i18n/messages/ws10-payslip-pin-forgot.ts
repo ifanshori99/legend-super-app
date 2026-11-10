@@ -9,7 +9,7 @@ export const payslipPinForgotMessages = {
   codeHint: "Masukkan 6 angka dari pesan WhatsApp.",
   codeIncomplete: "Kode harus 6 angka.",
   newPinHint: "Ini menjadi PIN slip gaji Anda yang baru.",
-  codeInvalid: "Kode salah atau sudah kedaluwarsa.",
+  codeInvalid: "Kode salah atau sudah kedaluwarsa. Kirim kode baru jika perlu.",
   resend: "Kirim ulang kode",
   newCode: "Kirim kode baru",
   verifyErrorTitle: "Kode belum dapat diperiksa",

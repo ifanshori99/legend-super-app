@@ -15,13 +15,12 @@
 // HR-01: the id in the URL is only a lookup key. A malformed id never reaches
 // the API, and a well-formed id that is not the caller's answers NOT_FOUND,
 // shown as "not found", never as a PIN problem.
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   ChevronLeft,
   Download,
   FileX,
-  LockKeyhole,
   Printer,
   ShieldCheck,
 } from "lucide-react";
@@ -37,7 +36,7 @@ import { API_MOCK } from "@/lib/api/mock-flag";
 import { Skeleton } from "@/components/ui/skeleton";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { formatBusinessDate, formatQuantity } from "../format.ts";
-import { useViewMyPayslip } from "../hooks.ts";
+import { useMyPayslips, useViewMyPayslip } from "../hooks.ts";
 import { usePayslipPinStatus } from "../pin-hooks.ts";
 import {
   classifyPinError,
@@ -53,6 +52,7 @@ import {
 import { PageHeader } from "./page-header.tsx";
 import { PinCodeInput } from "./pin-code-input.tsx";
 import { PinLayout } from "./pin-layout.tsx";
+import { PinLocked } from "./pin-locked.tsx";
 import { PinSetup } from "./pin-setup.tsx";
 
 function SummaryRow({ label, amount }: { label: string; amount: number }) {
@@ -252,7 +252,18 @@ function PayslipContent({ payslip }: { payslip: Payslip }) {
 }
 
 type GateError =
-  { kind: "invalid"; remainingAttempts: number | null } | { kind: "other" };
+  | { kind: "incomplete" }
+  | { kind: "invalid"; remainingAttempts: number | null }
+  | { kind: "other" };
+
+// Autofocus only where a hardware keyboard is likely: on a touch screen it
+// would pop the keypad open before the employee has read the page.
+function hasFinePointer() {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia("(pointer: fine)").matches
+  );
+}
 
 function BackLink() {
   const t = useT();
@@ -320,7 +331,13 @@ function GateStatusError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-function GateLocked({ minutes }: { minutes: number | null }) {
+function GateLocked({
+  lockedUntil,
+  onUnlocked,
+}: {
+  lockedUntil: string | null;
+  onUnlocked: () => void;
+}) {
   const t = useT();
   return (
     <PinLayout
@@ -329,32 +346,7 @@ function GateLocked({ minutes }: { minutes: number | null }) {
       description={t("payslipPin.terkunci.description")}
       side={t("payslipPin.terkunci.side")}
     >
-      <div
-        role="status"
-        className="flex items-start gap-3 rounded-field border-l-4 border-danger bg-danger-subtle p-4"
-      >
-        <LockKeyhole
-          className="mt-0.5 size-5 shrink-0 text-danger"
-          aria-hidden="true"
-        />
-        <div className="grid gap-0.5">
-          <p className="text-base font-bold">
-            {t("payslipPin.terkunci.noticeTitle")}
-          </p>
-          <p className="text-sm leading-5">{t("payslipPin.terkunci.notice")}</p>
-          {minutes !== null && (
-            <p className="text-sm leading-5 font-medium">
-              {t("payslipPin.terkunci.remaining", { minutes })}
-            </p>
-          )}
-        </div>
-      </div>
-      <Button asChild variant="outline" size="lg" className="w-full">
-        <Link to="/karyawan/slip-gaji">
-          {t("payslipPin.common.backToList")}
-        </Link>
-      </Button>
-      <ForgotPinLink />
+      <PinLocked lockedUntil={lockedUntil} onUnlocked={onUnlocked} />
     </PinLayout>
   );
 }
@@ -373,11 +365,15 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
   // Keeps <PinSetup> mounted after the save flips the cached status to active,
   // so its "PIN tersimpan" card shows until onDone.
   const [setupOpen, setSetupOpen] = useState(false);
-  const [notFound, setNotFound] = useState(
-    () => !payslipIdSchema.safeParse(payslipId).success,
-  );
+  // The id that answered 404; derived per payslipId so a new id starts clean.
+  const [notFoundId, setNotFoundId] = useState<string | null>(null);
+  const notFound =
+    notFoundId === payslipId || !payslipIdSchema.safeParse(payslipId).success;
+  const pinRef = useRef<HTMLInputElement>(null);
+  const myPayslips = useMyPayslips();
   const [expired, setExpired] = useState(false);
   const [now, setNow] = useState(() => new Date());
+  const summary = myPayslips.payslips.find((item) => item.id === payslipId);
 
   const statusView = status.data ? pinStatusView(status.data, now) : null;
   if (statusView === "create" && !setupOpen) setSetupOpen(true);
@@ -403,14 +399,21 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
   const isLocked =
     (lockedLocally !== null || statusView === "locked") && lockMinutes !== 0;
 
-  // Keep the "N menit lagi" text and the lock expiry current.
-  useEffect(() => {
-    if (!isLocked) return;
-    const timer = window.setInterval(() => setNow(new Date()), 30_000);
-    return () => window.clearInterval(timer);
-  }, [isLocked]);
+  // PinLocked ticks the clock; when the lock has passed, show the form again
+  // and re-read the status.
+  function handleUnlocked() {
+    setLockedLocally(null);
+    setNow(new Date());
+    void status.refetch();
+  }
 
   const submitting = view.isPending;
+
+  // After a failed submit, put the caret back in the PIN field. The field is
+  // disabled while the request runs, so wait until it is enabled again.
+  useEffect(() => {
+    if (gateError !== null && !submitting) pinRef.current?.focus();
+  }, [gateError, submitting]);
 
   function handlePinChange(value: string) {
     setPin(value);
@@ -419,7 +422,11 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!isCompletePin(pin) || submitting) return;
+    if (submitting) return;
+    if (!isCompletePin(pin)) {
+      setGateError({ kind: "incomplete" });
+      return;
+    }
     setGateError(null);
     setExpired(false);
     try {
@@ -435,7 +442,7 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
       setPin("");
       setNow(new Date());
       if (failure.kind === "not_found") {
-        setNotFound(true);
+        setNotFoundId(payslipId);
       } else if (failure.kind === "locked") {
         setLockedLocally({ until: failure.lockedUntil });
       } else if (failure.kind === "not_set") {
@@ -495,14 +502,19 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
   if (status.isError || statusView === null) {
     return <GateStatusError onRetry={() => void status.refetch()} />;
   }
-  if (isLocked) return <GateLocked minutes={lockMinutes} />;
+  if (isLocked) {
+    return <GateLocked lockedUntil={lockedUntil} onUnlocked={handleUnlocked} />;
+  }
 
   const invalid = gateError?.kind === "invalid" ? gateError : null;
-  const errorText = invalid
-    ? invalid.remainingAttempts === null
-      ? `${t("payslipPin.pinSalah.noticeTitle")}. ${t("payslipPin.gate.wrongPinNoCount")}`
-      : `${t("payslipPin.pinSalah.noticeTitle")}. ${t("payslipPin.pinSalah.notice")} ${t("payslipPin.pinSalah.attemptsLeft", { count: invalid.remainingAttempts })}`
-    : undefined;
+  const errorText =
+    gateError?.kind === "incomplete"
+      ? t("payslipPin.validation.incomplete")
+      : invalid
+        ? invalid.remainingAttempts === null
+          ? `${t("payslipPin.pinSalah.noticeTitle")}. ${t("payslipPin.gate.wrongPinNoCount")}`
+          : `${t("payslipPin.pinSalah.noticeTitle")}. ${t("payslipPin.pinSalah.notice")} ${t("payslipPin.pinSalah.attemptsLeft", { count: invalid.remainingAttempts })}`
+        : undefined;
 
   return (
     <PinLayout
@@ -512,6 +524,21 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
       side={t("payslipPin.bukaSlip.side")}
       busy={submitting}
     >
+      {summary !== undefined && (
+        <div className="grid gap-0.5 rounded-field border p-4">
+          <p className="text-sm leading-5 font-semibold">
+            {t("payslipPin.common.periodTitle", {
+              period: t("payslip.history.periodValue", {
+                start: formatBusinessDate(summary.periodStart),
+                end: formatBusinessDate(summary.periodEnd),
+              }),
+            })}
+          </p>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("payslipPin.common.periodLabel")}
+          </p>
+        </div>
+      )}
       {expired && (
         <p role="status" className="text-sm leading-5 text-muted-foreground">
           {t("payslip.pin.expired")}
@@ -530,10 +557,12 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
           required
         >
           <PinCodeInput
+            ref={pinRef}
+            name="payslip-pin"
             value={pin}
             onChange={handlePinChange}
             disabled={submitting}
-            autoFocus
+            autoFocus={hasFinePointer()}
           />
         </FormField>
 
@@ -553,13 +582,7 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
           </div>
         )}
 
-        <Button
-          type="submit"
-          size="lg"
-          className="w-full"
-          loading={submitting}
-          disabled={!isCompletePin(pin)}
-        >
+        <Button type="submit" size="lg" className="w-full" loading={submitting}>
           {submitting
             ? t("payslipPin.bukaSlip.submitting")
             : invalid || gateError?.kind === "other"

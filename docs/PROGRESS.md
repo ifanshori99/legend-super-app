@@ -2,6 +2,12 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## legend-ilzrj WS-10 FE layar PIN slip gaji + sisa percobaan di API (ui-engineer, cabang `ws/payslip-pin-ui` dari `ws/hris-pii-pin` 8305fdc3 + merge `design/payslip-pin`, 2026-11-11)
+
+- Sudah: BE 403 `PAYSLIP_PIN_INVALID` membawa `error.remainingAttempts`, 423 membawa `error.lockedUntil` (field opsional di envelope error, bukan `details` yang berbentuk array); architect approve. Web: buat PIN, PIN tersimpan, buka slip (kartu periode, nominal tersembunyi), PIN salah + sisa, terkunci (`pin-locked.tsx`, menit berjalan), lupa PIN (teks HR/atasan tanpa nomor) + kode WhatsApp (503 belum tersedia, 429 dibatasi, kode hangus setelah 5 salah tanpa mengunci PIN), ubah PIN, daftar slip kosong/memuat/error, dialog reset HR dengan alasan. Logika murni `pin-state.ts` + `tests/payslip-pin-ui.test.mjs` (35). Mock: `?mock=pin-not-set|pin-locked|otp-ok|otp-rate-limited`.
+- Keputusan: kode WhatsApp yang salah = 403 `PAYSLIP_PIN_INVALID` (tanpa sisa, sengaja); 423 di verifikasi OTP = kode hangus, bukan PIN terkunci; PIN salah mengosongkan field (beda dari mockup, demi keamanan); tombol WhatsApp tetap bisa ditekan lalu menampilkan "belum tersedia" saat 503 (sesuai keputusan founder).
+- Belum: screenshot 390/1280, axe (`scripts/ui-check.mjs`), e2e mock (`e2e/payslip-pin.mock.spec.ts`) belum jalan: Chromium gagal start dari sesi thread ini (`MachPortRendezvousServer bootstrap_check_in` FATAL). Perlu sesi lain yang bisa meluncurkan Playwright.
+
 ## Merge train batch33 + batch34 (engineer, sesi c81d48a4, 2026-11-09 malam)
 
 - `milestone/m1` = `d8ea5e0b` (batch34, fast-forward dari 4c818489; batch33 73af1bd0 ikut di dalamnya). Isi batch34: gn17x 04d2836a (+imdzn 814bc779, atwse 6b2fedbf), a9iby 4e100246, drzaf f3e4108d (migrasi 0166), ghgei 3b90a9bd, usw3 4fe23687, 76azz dac509f3, EDC fixtures 0c959539.

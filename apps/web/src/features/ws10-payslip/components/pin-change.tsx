@@ -3,9 +3,9 @@
 // current PIN counts as an attempt (same counter as opening a payslip): it
 // shows the attempts left next to the field, and a lock shows the locked copy.
 // Only the PIN status is read here; no payslip amount is ever on this screen.
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import { ChevronLeft, CircleCheck, Info, Lock } from "lucide-react";
+import { ChevronLeft, CircleCheck, Info } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/feedback-state";
@@ -16,13 +16,13 @@ import { usePayslipPinStatus, useSetPayslipPin } from "../pin-hooks.ts";
 import {
   classifyPinError,
   isCompletePin,
-  minutesUntil,
   pinStatusView,
   validateNewPin,
   type PinErrorState,
 } from "../pin-state.ts";
 import { PinCodeInput } from "./pin-code-input.tsx";
 import { PinLayout } from "./pin-layout.tsx";
+import { PinLocked } from "./pin-locked.tsx";
 
 type PinChangeProps = {
   /** Called from the success screen ("Lanjut ke slip gaji"). */
@@ -113,8 +113,29 @@ function PinChange({ onDone }: PinChangeProps) {
   );
   const [notSet, setNotSet] = useState(false);
   const [saved, setSaved] = useState(false);
+  const currentRef = useRef<HTMLInputElement>(null);
+  const nextRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
+  // Autofocus only where a hardware keyboard is likely; a touch screen would
+  // pop its keypad over the form before the person asked for it.
+  const autoFocus =
+    typeof window !== "undefined" &&
+    window.matchMedia("(pointer: fine)").matches;
 
   const submitting = setPin.isPending;
+
+  /** Moves focus to the first field that shows an error. */
+  function focusFirstError(found: FieldErrors) {
+    const target = found.current
+      ? currentRef
+      : found.next
+        ? nextRef
+        : found.confirm
+          ? confirmRef
+          : null;
+    // Wait a frame: the field may still be disabled for the request in flight.
+    requestAnimationFrame(() => target?.current?.focus());
+  }
 
   function clearFeedback() {
     setErrors({});
@@ -126,14 +147,18 @@ function PinChange({ onDone }: PinChangeProps) {
       case "invalid":
         // The typed PIN is wrong: clear it so the next try starts clean.
         setCurrent("");
-        setErrors({
-          current:
-            error.remainingAttempts === null
-              ? t("payslipPin.change.currentWrong")
-              : t("payslipPin.change.currentWrongLeft", {
-                  count: error.remainingAttempts,
-                }),
-        });
+        {
+          const found = {
+            current:
+              error.remainingAttempts === null
+                ? t("payslipPin.change.currentWrong")
+                : t("payslipPin.change.currentWrongLeft", {
+                    count: error.remainingAttempts,
+                  }),
+          };
+          setErrors(found);
+          focusFirstError(found);
+        }
         return;
       case "locked":
         setCurrent("");
@@ -178,6 +203,7 @@ function PinChange({ onDone }: PinChangeProps) {
     }
     if (found.current || found.next || found.confirm) {
       setErrors(found);
+      focusFirstError(found);
       return;
     }
 
@@ -185,6 +211,8 @@ function PinChange({ onDone }: PinChangeProps) {
       { pin: next, currentPin: current, idempotencyKey: newIdempotencyKey() },
       {
         onSuccess: () => {
+          // The mutation held both PINs; drop them now that the result shows.
+          setPin.reset();
           setCurrent("");
           setNext("");
           setConfirm("");
@@ -263,8 +291,6 @@ function PinChange({ onDone }: PinChangeProps) {
   }
 
   if (lockKnown || view === "locked") {
-    const until = lockKnown ? lockedUntil : status.data.lockedUntil;
-    const minutes = minutesUntil(until, new Date());
     return (
       <PinLayout
         backLink={<BackLink />}
@@ -272,20 +298,13 @@ function PinChange({ onDone }: PinChangeProps) {
         description={t("payslipPin.terkunci.description")}
         side={t("payslipPin.terkunci.side")}
       >
-        <Notice
-          icon={Lock}
-          role="alert"
-          title={t("payslipPin.terkunci.noticeTitle")}
-        >
-          {minutes === null
-            ? t("payslipPin.change.lockedUnknownTime")
-            : t("payslipPin.terkunci.remaining", { minutes })}
-        </Notice>
-        <Button asChild variant="link" className="mx-auto">
-          <Link to="/karyawan/slip-gaji/lupa-pin">
-            {t("payslipPin.common.forgotPin")}
-          </Link>
-        </Button>
+        <PinLocked
+          lockedUntil={lockKnown ? lockedUntil : status.data.lockedUntil}
+          onUnlocked={() => {
+            setLockedUntil(undefined);
+            void status.refetch();
+          }}
+        />
       </PinLayout>
     );
   }
@@ -310,13 +329,16 @@ function PinChange({ onDone }: PinChangeProps) {
           required
         >
           <PinCodeInput
+            ref={currentRef}
+            name="current-pin"
+            autoFocus={autoFocus}
             value={current}
             onChange={(value) => {
               setCurrent(value);
               if (errors.current) setErrors({ ...errors, current: undefined });
             }}
             disabled={submitting}
-            autoComplete="current-password"
+            autoComplete="off"
           />
         </FormField>
         <FormField
@@ -325,13 +347,15 @@ function PinChange({ onDone }: PinChangeProps) {
           required
         >
           <PinCodeInput
+            ref={nextRef}
+            name="new-pin"
             value={next}
             onChange={(value) => {
               setNext(value);
               if (errors.next) setErrors({ ...errors, next: undefined });
             }}
             disabled={submitting}
-            autoComplete="new-password"
+            autoComplete="off"
           />
         </FormField>
         <FormField
@@ -340,13 +364,15 @@ function PinChange({ onDone }: PinChangeProps) {
           required
         >
           <PinCodeInput
+            ref={confirmRef}
+            name="confirm-new-pin"
             value={confirm}
             onChange={(value) => {
               setConfirm(value);
               if (errors.confirm) setErrors({ ...errors, confirm: undefined });
             }}
             disabled={submitting}
-            autoComplete="new-password"
+            autoComplete="off"
           />
         </FormField>
 
@@ -356,17 +382,7 @@ function PinChange({ onDone }: PinChangeProps) {
           </p>
         )}
 
-        <Button
-          type="submit"
-          size="lg"
-          className="w-full"
-          loading={submitting}
-          disabled={
-            !isCompletePin(current) ||
-            !isCompletePin(next) ||
-            !isCompletePin(confirm)
-          }
-        >
+        <Button type="submit" size="lg" className="w-full" loading={submitting}>
           {submitting
             ? t("payslipPin.ubahPin.submitting")
             : t("payslipPin.ubahPin.submit")}
