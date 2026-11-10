@@ -913,3 +913,4 @@ Langkah berikut CTO baru:
 - 12:44 CTO: profit-share 9e3d3928 (FK profit_entities, 422 PROFIT_ENTITY_NOT_FOUND, 0219 matikan FORCE RLS sesaat untuk FK, guard tabel berisi). G6eis resolved. Masuk batch47 bersama k2l, mz15j, oeqme.
 - 12:51 CTO: founder jawab Q82-Q84 (sisa ke pecahan terbesar, lantai nol, izin porsi terpisah) -> DECISIONS.md, brief 326 (legend-8s992) mulai 15:03.
 - 13:13 CTO: retro 13:13 ditunda ke 15:07 (akun #3 5h 100% sampai 14:59, #2 7d 90%, #1 7d 100%). Cron sekali 2e59d6e3.
+- 13:32 CTO: k2l cf37290d (SMTP SumoPod) G5byz resolved. Keputusan: arah merge ikut kontrak, akun lama tersisa. Brief 327 lanjutan mulai 15:03. Batch47: profit-share, k2l-followup, mz15j, oeqme, 8s992.
