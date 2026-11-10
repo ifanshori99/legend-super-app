@@ -122,7 +122,7 @@ export async function seedTableSession(
     );
     await client.query(
       `INSERT INTO tables (id, tenant_id, outlet_id, zone_id, code, capacity, type, layout)
-       VALUES ($1, $2, $3, $4, $5, 4, 'regular', '{}')`,
+       VALUES ($1, $2, $3, $4, $5, 4, 'regular', '{"x":1,"y":1,"width":20,"height":20,"rotation":0,"shape":"rect"}'::jsonb)`,
       [
         tableId,
         seededTenantId,
