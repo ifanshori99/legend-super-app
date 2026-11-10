@@ -273,6 +273,21 @@ describe("legend-kmd3 guest Wi-Fi sessions", () => {
     expect(current.body.data.session.quotaMinutes).toBe(120);
   });
 
+  // legend-415 finding 2: the day's used minutes are per outlet. Usage at
+  // outlet A must not shrink the allowance of a new session at outlet B.
+  it("starts a session at another outlet with that outlet's own used minutes", async () => {
+    const member = await newMember();
+    const inA = await start(member, "outlet-a");
+    expect(inA.status).toBe(200);
+    await ageSession(inA.body.data.session.id, 70);
+    // Same day, same account, other outlet (zoneB belongs to outlet B).
+    const inB = await start(member, "outlet-b", {}, zoneB);
+    expect(inB.status).toBe(200);
+    expect(inB.body.data.session.outletId).toBe(seededOutletB);
+    expect(inB.body.data.session.usedMinutes).toBe(0);
+    expect(inB.body.data.remainingMinutes).toBe(120);
+  });
+
   it("refuses a third device with 409 and does not count a known device", async () => {
     const member = await newMember();
     expect((await start(member, "a")).status).toBe(200);

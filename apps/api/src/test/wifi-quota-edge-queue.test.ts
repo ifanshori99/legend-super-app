@@ -306,9 +306,23 @@ function variant(
 
 // ---- edge side -------------------------------------------------------------------
 
-type Call = (context: unknown, input: unknown) => Promise<undefined>;
+type Call = (context: unknown, input: unknown) => Promise<unknown>;
 
-function agentWith(impl: Call = async () => undefined) {
+/**
+ * The grant view the agent returns. legend-415: the worker only marks a row
+ * applied when the view is `active` with the requested tier, so the default fake
+ * agent answers like a healthy agent: an active view of the requested tier.
+ */
+const viewFor = (
+  input: unknown,
+  overrides: { status?: string; speedTier?: string } = {},
+) => ({
+  status: "active",
+  speedTier: (input as { speedTier: string }).speedTier,
+  ...overrides,
+});
+
+function agentWith(impl: Call = async (_context, input) => viewFor(input)) {
   const applySession = vi.fn<Call>(impl);
   const endSession = vi.fn<Call>(async () => undefined);
   installWifiEnforcement({
@@ -386,6 +400,24 @@ const calledWith = (
     sessionEndsAt: DAY_END,
   },
 ];
+
+/**
+ * legend-415: seconds of quota the session still has at `now`. The event
+ * snapshot (quotaMinutes - usedMinutes, in minutes) is the remaining time at
+ * `event.occurredAt`; the time that passed since then is already used up.
+ * Assumption: the payload has `quotaMinutes` and (optionally) `usedMinutes`.
+ */
+const secondsLeft = (event: EventEnvelope, now: Date) => {
+  const payload = event.payload as {
+    quotaMinutes: number;
+    usedMinutes?: number;
+  };
+  const snapshot = (payload.quotaMinutes - (payload.usedMinutes ?? 0)) * 60;
+  const passed = Math.floor(
+    (now.getTime() - Date.parse(event.occurredAt)) / 1000,
+  );
+  return Math.max(0, snapshot - passed);
+};
 
 // ---- queue table and worker ------------------------------------------------------
 
@@ -727,7 +759,10 @@ describe("legend-oeqme worker: transient agent errors keep the row pending", () 
     expect((await rowOf(s.world.tenantId, event)).attempts).toBe(1);
     await drainRaw(s.node, { now: plus(90_000), backoffMs });
     expect(agent.applySession).toHaveBeenCalledTimes(1);
-    expect(agent.applySession).toHaveBeenCalledWith(...calledWith(s, 180 * 60));
+    // legend-415: the 90s that passed since the event are already used.
+    expect(agent.applySession).toHaveBeenCalledWith(
+      ...calledWith(s, secondsLeft(event, plus(90_000))),
+    );
     expect((await rowOf(s.world.tenantId, event)).status).toBe("applied");
   });
 
@@ -853,7 +888,9 @@ describe("legend-oeqme ordering per session", () => {
     const result = await drainRaw(s.node, { now: plus(3_600_000) });
     expect(result).toMatchObject({ applied: 1 });
     expect(agent.applySession).toHaveBeenCalledTimes(1);
-    expect(agent.applySession).toHaveBeenCalledWith(...calledWith(s, 300 * 60));
+    expect(agent.applySession).toHaveBeenCalledWith(
+      ...calledWith(s, secondsLeft(newer, plus(3_600_000))),
+    );
     expect((await rowOf(s.world.tenantId, older)).status).toBe("superseded");
     expect((await rowOf(s.world.tenantId, newer)).status).toBe("applied");
   });
@@ -873,7 +910,9 @@ describe("legend-oeqme ordering per session", () => {
     // +1s: the older row is still backing off (due at +5s); the newer row is due.
     await drainRaw(s.node, { now: plus(1000) });
     expect(agent.applySession).toHaveBeenCalledTimes(1);
-    expect(agent.applySession).toHaveBeenCalledWith(...calledWith(s, 300 * 60));
+    expect(agent.applySession).toHaveBeenCalledWith(
+      ...calledWith(s, secondsLeft(newer, plus(1000))),
+    );
     expect((await rowOf(s.world.tenantId, newer)).status).toBe("applied");
 
     // The older one never reaches the agent, now or later.
@@ -891,7 +930,7 @@ describe("legend-oeqme ordering per session", () => {
     const agent = agentWith(async (_context, input) => {
       if ((input as { wifiSessionId: string }).wifiSessionId === s.sessionId)
         throw new HttpError(503, "WIFI_AGENT_NOT_READY", "x");
-      return undefined;
+      return viewFor(input);
     });
     await deliver(s.node, [failing, healthy]);
 
@@ -1196,9 +1235,9 @@ describe("legend-oeqme worker: shouldStop", () => {
     ];
     await deliver(s.node, events);
     let stop = false;
-    const agent = agentWith(async () => {
+    const agent = agentWith(async (_context, input) => {
       stop = true;
-      return undefined;
+      return viewFor(input);
     });
     await makeDue(s.world.tenantId);
 
@@ -1217,5 +1256,179 @@ describe("legend-oeqme worker: shouldStop", () => {
     expect(
       (await queue(s.world.tenantId)).every((row) => row.status === "applied"),
     ).toBe(true);
+  });
+});
+
+// ---- legend-415 findings 3 and 4 ---------------------------------------------------
+
+const inputOf = (agent: ReturnType<typeof agentWith>, call: number) =>
+  agent.applySession.mock.calls[call]![1] as {
+    remainingSeconds: number;
+    speedTier: string;
+  };
+
+describe("legend-415 remaining time counts down from the event, not from the drain", () => {
+  it("sanity: a drain at the event's own time grants the full snapshot (180 minutes)", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    const agent = agentWith();
+    await deliver(s.node, [event]);
+
+    await makeDue(s.world.tenantId);
+    await drainRaw(s.node, { now: new Date(event.occurredAt) });
+    expect(agent.applySession).toHaveBeenCalledTimes(1);
+    expect(inputOf(agent, 0).remainingSeconds).toBe(180 * 60);
+  });
+
+  it("a delayed drain (30 minutes after the event) grants only what is left", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    const agent = agentWith();
+    await deliver(s.node, [event]);
+    const now = new Date(Date.parse(event.occurredAt) + 30 * 60_000);
+
+    await makeDue(s.world.tenantId);
+    await drainRaw(s.node, { now });
+    expect(agent.applySession).toHaveBeenCalledTimes(1);
+    expect(inputOf(agent, 0)).toMatchObject({
+      remainingSeconds: 150 * 60,
+      speedTier: "full",
+    });
+    expect((await rowOf(s.world.tenantId, event)).status).toBe("applied");
+  });
+
+  it("a drain after the quota ran out grants 0 seconds on the base tier", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    const agent = agentWith();
+    await deliver(s.node, [event]);
+    const now = new Date(Date.parse(event.occurredAt) + 181 * 60_000);
+
+    await makeDue(s.world.tenantId);
+    await drainRaw(s.node, { now });
+    expect(agent.applySession).toHaveBeenCalledTimes(1);
+    expect(inputOf(agent, 0)).toMatchObject({
+      remainingSeconds: 0,
+      speedTier: "base",
+    });
+    expect((await rowOf(s.world.tenantId, event)).status).toBe("applied");
+  });
+
+  it("a retry never resets the duration: every attempt counts from its own now", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    const t0 = Date.parse(event.occurredAt);
+    let calls = 0;
+    const agent = agentWith(async (_context, input) => {
+      calls += 1;
+      if (calls < 3) throw new HttpError(503, "WIFI_AGENT_NOT_READY", "x");
+      return viewFor(input);
+    });
+    await deliver(s.node, [event]);
+
+    await makeDue(s.world.tenantId);
+    await drainRaw(s.node, { now: new Date(t0) });
+    await drainRaw(s.node, { now: new Date(t0 + 6_000) });
+    await drainRaw(s.node, { now: new Date(t0 + 20 * 60_000) });
+    expect(agent.applySession).toHaveBeenCalledTimes(3);
+    expect(inputOf(agent, 0).remainingSeconds).toBe(180 * 60);
+    expect(inputOf(agent, 1).remainingSeconds).toBe(180 * 60 - 6);
+    expect(inputOf(agent, 2).remainingSeconds).toBe(160 * 60);
+    expect((await rowOf(s.world.tenantId, event)).status).toBe("applied");
+  });
+});
+
+describe("legend-415 only an active grant of the requested tier counts as applied", () => {
+  it.each(["pending", "unknown"])(
+    "a %s in-flight grant view: the row stays pending (WIFI_GRANT_IN_FLIGHT), attempts + 1, no conflict, retried later",
+    async (status) => {
+      const s = await scenario();
+      const event = await firstEvent(s);
+      const agent = agentWith(async (_context, input) =>
+        viewFor(input, { status }),
+      );
+      await deliver(s.node, [event]);
+
+      const result = await drain(s);
+      expect(result).toMatchObject({ retried: 1, applied: 0, failed: 0 });
+      const row = await rowOf(s.world.tenantId, event);
+      expect(row.status).toBe("pending");
+      expect(row.attempts).toBe(1);
+      expect(row.last_error).toBe("WIFI_GRANT_IN_FLIGHT");
+      expect(row.done_at).toBeNull();
+      expect(row.next_attempt_at?.getTime()).toBe(plus(5000).getTime());
+      expect(await conflicts(s.world.tenantId, event.id)).toEqual([]);
+
+      // Once the grant is active, the same row is applied by a later pass.
+      agent.applySession.mockImplementation(async (_context, input) =>
+        viewFor(input),
+      );
+      await drainRaw(s.node, { now: plus(6000) });
+      expect(agent.applySession).toHaveBeenCalledTimes(2);
+      expect((await rowOf(s.world.tenantId, event)).status).toBe("applied");
+    },
+  );
+
+  it("an active view of the requested tier is applied", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    agentWith(async (_context, input) => viewFor(input, { status: "active" }));
+    await deliver(s.node, [event]);
+
+    const result = await drain(s);
+    expect(result).toMatchObject({ applied: 1, retried: 0 });
+    expect((await rowOf(s.world.tenantId, event)).status).toBe("applied");
+  });
+
+  it("a view whose tier differs from the requested one (base for a full request) is not applied", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    agentWith(async (_context, input) => viewFor(input, { speedTier: "base" }));
+    await deliver(s.node, [event]);
+
+    const result = await drain(s);
+    expect(result).toMatchObject({ retried: 1, applied: 0 });
+    const row = await rowOf(s.world.tenantId, event);
+    expect(row.status).toBe("pending");
+    expect(row.attempts).toBe(1);
+    expect(row.last_error).toBe("WIFI_GRANT_IN_FLIGHT");
+  });
+
+  it("a view whose tier differs from the requested one (full for a base request) is not applied", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    agentWith(async (_context, input) => viewFor(input, { speedTier: "full" }));
+    await deliver(s.node, [event]);
+
+    // Quota already used up at drain time: the request is the base tier.
+    const now = new Date(Date.parse(event.occurredAt) + 181 * 60_000);
+    await makeDue(s.world.tenantId);
+    const result = await drainRaw(s.node, { now });
+    expect(result).toMatchObject({ retried: 1, applied: 0 });
+    expect((await rowOf(s.world.tenantId, event)).status).toBe("pending");
+  });
+
+  it("a grant that stays in flight until maxAttempts ends as failed with one conflict", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    const agent = agentWith(async (_context, input) =>
+      viewFor(input, { status: "pending" }),
+    );
+    const backoffMs = () => 1000;
+    await deliver(s.node, [event]);
+
+    await drain(s, { maxAttempts: 2, backoffMs });
+    expect((await rowOf(s.world.tenantId, event)).status).toBe("pending");
+    const last = await drainRaw(s.node, {
+      now: plus(2000),
+      maxAttempts: 2,
+      backoffMs,
+    });
+    expect(last).toMatchObject({ failed: 1, applied: 0 });
+    expect(agent.applySession).toHaveBeenCalledTimes(2);
+    const row = await rowOf(s.world.tenantId, event);
+    expect(row).toMatchObject({ status: "failed", attempts: 2 });
+    expect(row.last_error).toBe("WIFI_GRANT_IN_FLIGHT");
+    expect(await conflicts(s.world.tenantId, event.id)).toHaveLength(1);
   });
 });
