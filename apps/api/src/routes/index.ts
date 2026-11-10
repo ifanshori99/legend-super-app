@@ -4,6 +4,8 @@ import { accessRouter } from "./access.routes";
 import { serviceRequestRouter } from "./service-request.routes";
 import { posOverrideRouter, staffPinRouter } from "./device-pin.routes";
 import { qrOrderRouter } from "./qr-order.routes";
+import { orderRecoveryRouter } from "./order-recovery.routes.ts";
+import { apologyVoucherRouter } from "./apology-voucher.routes.ts";
 import { healthRouter } from "./health.routes";
 import { inventoryRouter } from "./inventory.routes";
 import { createInventoryCountRouter } from "./inventory-count.routes.ts";
@@ -233,6 +235,11 @@ apiRouter.use(serviceRequestRouter);
 apiRouter.use(openBillRouter);
 apiRouter.use("/tables", tablesRouter);
 apiRouter.use("/table-links", tableLinksRouter);
+// WS-04 failed paid item recovery (legend-4qu): full contract paths across
+// /order-items, /order-issues and /table-sessions, per-route guards. Before
+// /table-sessions so the guest order-issues list is not shadowed.
+apiRouter.use(orderRecoveryRouter);
+apiRouter.use("/apology-vouchers", apologyVoucherRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/table-sessions", qrOrderRouter);
 apiRouter.use("/qr", qrRouter);

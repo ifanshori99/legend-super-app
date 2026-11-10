@@ -2361,6 +2361,51 @@ export async function voidUnpaidQrOrderTx(
   return orderDto(voided, items.get(order.id) ?? []);
 }
 
+// ---- Shared with order-recovery.service.ts -------------------------------------------------------
+
+/** A menu item a guest can be moved to: plain price, no variant or required choice. */
+export type OutletMenuPrice = {
+  menuItemId: string;
+  name: string;
+  unitPriceIdr: number;
+};
+
+/**
+ * Current dine-in price of `menuItemIds` at one outlet, through the same
+ * catalogue the cart uses (ORD-05). Only items a single tap can order come
+ * back: sellable, no variants and no required modifier group. Anything else
+ * is missing from the map.
+ */
+export async function priceMenuItemForOutlet(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  menuItemIds: readonly string[],
+  now: Date,
+): Promise<Map<string, OutletMenuPrice>> {
+  const outlet = await loadOutlet(tx, context, outletId);
+  const catalogue = await loadCatalogue(tx, context, {
+    brandId: outlet.brandId,
+    outletId: outlet.id as OutletId,
+    timeZone: outlet.timezone,
+    businessDate: businessDateFor(outlet, now),
+    itemIds: menuItemIds,
+    now,
+  });
+  const priced = new Map<string, OutletMenuPrice>();
+  for (const [menuItemId, item] of catalogue) {
+    if (!item.sellable || item.plainPriceIdr === null) continue;
+    if (item.variants.size > 0) continue;
+    if (item.groups.some((group) => group.minSelect > 0)) continue;
+    priced.set(menuItemId, {
+      menuItemId,
+      name: item.name,
+      unitPriceIdr: item.plainPriceIdr,
+    });
+  }
+  return priced;
+}
+
 // ---- Shared with qr-order-payment.ts ------------------------------------------------------------
 
 export {

@@ -61,6 +61,8 @@ export const orderIssues = pgTable(
     /** Positive: the guest pays the difference; negative: credited. */
     priceDifferenceIdr: idrColumn("price_difference_idr"),
     approvedBy: text("approved_by").references(() => user.id),
+    /** Approval request that allowed a manual refund (ORD-09, legend-4qu). */
+    approvalRequestId: uuid("approval_request_id"),
     /** Ingredient cost, whole rupiah, server-computed (KDS-07). */
     costIdr: idrColumn("cost_idr").notNull(),
     /** Client retry key: a resend returns the stored row (unique per tenant). */
@@ -81,6 +83,17 @@ export const orderIssues = pgTable(
     uniqueIndex("order_issues_comp_once_idx")
       .on(table.tenantId, table.orderItemId)
       .where(sql`${table.type} = 'comp' AND ${table.status} <> 'cancelled'`),
+    // One settled unfulfillable report per order line (legend-4qu): two
+    // concurrent resolutions cannot both win.
+    uniqueIndex("order_issues_resolved_item_once_idx")
+      .on(table.tenantId, table.orderItemId)
+      .where(
+        sql`${table.type} = 'unfulfillable' AND ${table.resolution} IS NOT NULL AND ${table.status} <> 'cancelled'`,
+      ),
+    // One voucher settles at most one issue.
+    uniqueIndex("order_issues_voucher_once_idx")
+      .on(table.tenantId, table.voucherId)
+      .where(sql`${table.voucherId} IS NOT NULL`),
     foreignKey({
       name: "order_issues_order_fk",
       columns: [table.tenantId, table.orderId],

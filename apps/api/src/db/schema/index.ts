@@ -78,6 +78,7 @@ export * from "./kds";
 export * from "./expo-pickup";
 // WS-04 remake / comp / complaint log (legend-4b5).
 export * from "./kds-issues";
+export * from "./apology-vouchers";
 // WS-04 kitchen capacity rules (legend-w4nq4).
 export * from "./kds-capacity";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).

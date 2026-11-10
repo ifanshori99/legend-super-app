@@ -21,7 +21,7 @@ export const qrOrderSignalSchema = z.strictObject({
   tenantId: tenantIdSchema,
   sessionId: uuidSchema,
   orderId: ulidSchema,
-  status: z.enum(["sent", "voided"]),
+  status: z.enum(["sent", "voided", "item_failed"]),
 });
 
 export const qrRealtimeSignalSchema = z.union([
@@ -41,7 +41,7 @@ export const qrRealtimeMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("order.updated"),
     sessionId: uuidSchema,
     orderId: z.string(),
-    status: z.enum(["sent", "voided"]),
+    status: z.enum(["sent", "voided", "item_failed"]),
   }),
 ]);
 export type QrRealtimeMessage = z.infer<typeof qrRealtimeMessageSchema>;
