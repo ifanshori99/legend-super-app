@@ -43,6 +43,7 @@ export function getRouter() {
       session: null,
       access: ANONYMOUS_ACCESS,
       tenantTheme: null,
+      textOverrides: {},
     },
     scrollRestoration: true,
     defaultPreload: "intent",

@@ -3,6 +3,7 @@
 
 export * from "./schemas.ts";
 export * from "./terms.ts";
+export * from "./public-overrides.ts";
 export * from "./dictionary.ts";
 export * from "./events.ts";
 export * from "./fixtures.ts";

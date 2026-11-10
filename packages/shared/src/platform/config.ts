@@ -603,6 +603,8 @@ export const createConfigTemplateInputSchema = z.strictObject({
   name: configTemplateSchema.shape.name,
   /** Sections to include; default all present in the source tenant. */
   sections: z.array(configSectionSchema).min(1).optional(),
+  /** Store the template although the personal-data scan has findings (legend-ms2a). */
+  confirmPiiFindings: z.boolean().optional(),
 });
 
 /** Import into a tenant: from a stored template or an uploaded bundle. */

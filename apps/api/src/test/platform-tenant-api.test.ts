@@ -416,11 +416,90 @@ describe("TEN-05/TEN-08 whitelabel brand context", () => {
     expect(Object.keys(response.body.data).sort()).toEqual([
       "brand",
       "enabledModules",
+      "textOverrides",
       "theme",
     ]);
     expect(JSON.stringify(response.body).toLowerCase()).not.toContain(
       "platform",
     );
+  });
+});
+
+describe("legend-it6p4 brand context carries the public term overrides", () => {
+  const insertOverride = (
+    forTenantId: string,
+    locale: string,
+    key: string,
+    value: string,
+  ) =>
+    asTenant(forTenantId, (client) =>
+      client.query(
+        `INSERT INTO text_overrides (tenant_id, locale, key, value, updated_by)
+         VALUES ($1, $2, $3, $4, 'uji')`,
+        [forTenantId, locale, key, value],
+      ),
+    );
+
+  it("includes terms.* overrides only, with no non-allowlisted key or id", async () => {
+    const other = await createTenantPair("active", "ovr-other");
+    try {
+      await insertOverride(tenantId, "id", "terms.table", "Meja Kami");
+      await insertOverride(tenantId, "en", "terms.wfcZone", "Work Zone");
+      await insertOverride(
+        tenantId,
+        "id",
+        "hris.home.greeting",
+        "Rahasia admin {name}",
+      );
+      await insertOverride(
+        other.tenantId,
+        "id",
+        "terms.table",
+        "Lapak Tetangga",
+      );
+      const response = await request(app)
+        .get("/api/tenant/context")
+        .set("Host", VERIFIED_HOST);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data.textOverrides).toEqual({
+        id: { "terms.table": "Meja Kami" },
+        en: { "terms.wfcZone": "Work Zone" },
+      });
+      const text = JSON.stringify(response.body);
+      expect(text).not.toContain("hris.home.greeting");
+      expect(text).not.toContain("Rahasia admin");
+      // Tenant isolation: the neighbour's override never shows up here.
+      expect(text).not.toContain("Lapak Tetangga");
+
+      const forOther = await request(app)
+        .get("/api/tenant/context")
+        .set("Host", other.hostname);
+      expect(forOther.status).toBe(200);
+      expect(forOther.body.data.textOverrides).toEqual({
+        id: { "terms.table": "Lapak Tetangga" },
+        en: {},
+      });
+      expect(JSON.stringify(forOther.body)).not.toContain("Meja Kami");
+    } finally {
+      await asTenant(tenantId, (client) =>
+        client.query("DELETE FROM text_overrides WHERE tenant_id = $1", [
+          tenantId,
+        ]),
+      );
+      await asTenant(other.tenantId, (client) =>
+        client.query("DELETE FROM text_overrides WHERE tenant_id = $1", [
+          other.tenantId,
+        ]),
+      );
+      await dropTenantPair(other);
+    }
+  });
+
+  it("answers empty maps for a tenant with no overrides", async () => {
+    const response = await request(app)
+      .get("/api/tenant/context")
+      .set("Host", VERIFIED_HOST);
+    expect(response.body.data.textOverrides).toEqual({ id: {}, en: {} });
   });
 });
 
