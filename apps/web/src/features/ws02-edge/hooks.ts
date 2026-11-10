@@ -7,11 +7,13 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import type { Device } from "@starter/shared/edge";
+import { useOnline } from "@/lib/use-online";
 import {
   reprintPrintJobCall,
   retryPrintJobCall,
   setDeviceTrainingModeCall,
 } from "./api.ts";
+import { cloudConnectionOnline } from "./logic.ts";
 import {
   edgeDevicesQuery,
   edgeKeys,
@@ -28,6 +30,21 @@ export function useEdgeStatus(options?: { enabled?: boolean }) {
   return useQuery({
     ...edgeStatusQuery(),
     enabled: typeof window !== "undefined" && (options?.enabled ?? true),
+  });
+}
+
+/**
+ * Cloud connection for the operations header badge (legend-b0l9): the edge
+ * node's cloud link, with browser connectivity as the secondary hint. Shares
+ * the status query with the offline banner, so no extra request. Pass
+ * `enabled: false` where the badge is not shown (no edge probe then).
+ */
+export function useCloudConnection(options?: { enabled?: boolean }): boolean {
+  const browserOnline = useOnline();
+  const { data } = useEdgeStatus(options);
+  return cloudConnectionOnline({
+    browserOnline,
+    cloudLink: data?.data.cloudLink ?? null,
   });
 }
 

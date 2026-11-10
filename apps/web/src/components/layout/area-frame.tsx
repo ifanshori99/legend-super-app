@@ -27,7 +27,7 @@ import {
 } from "@/lib/mock/tenant-context";
 import { ORG_OUTLET_STORE_EVENT } from "@/features/ws01-org/outlet-store";
 import { TenantProvider, useTenantContext } from "@/lib/tenant-context";
-import { useOnline } from "@/lib/use-online";
+import { useCloudConnection } from "@/features/ws02-edge/hooks";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
 import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
 import { ApprovalInboxBadge } from "@/features/ws01-approvals/components/inbox-badge";
@@ -98,11 +98,15 @@ function AreaFrameBody({
   children,
 }: AreaFrameProps) {
   const t = useT();
-  const online = useOnline();
+  const definition = AREAS[area];
+  // Operations header badge = edge cloud link (legend-b0l9); other shells
+  // render no badge, so they do not probe the edge node.
+  const online = useCloudConnection({
+    enabled: definition.shell === "operations",
+  });
   const { brandName } = useTenantContext();
   const { href, pathname } = useLocation();
   const { token } = useParams({ strict: false }) as { token?: string };
-  const definition = AREAS[area];
   const nav = useMemo(
     () =>
       buildAreaNav({

@@ -6,6 +6,8 @@ import {
   Link,
   Outlet,
   Scripts,
+  rootRouteId,
+  useMatch,
   useRouter,
 } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
@@ -15,16 +17,28 @@ import { Button } from "@/components/ui/button";
 import { loadAreaAccess } from "@/lib/areas/load-access";
 import type { AreaAccess } from "@/lib/areas/access";
 import { getSessionFn, type Session } from "@/lib/session";
+import { getTenantBrandFn } from "@/lib/tenant-brand-fn";
+import { brandContextToThemeConfig } from "@/lib/tenant-brand";
+import { TenantThemeStyle } from "@/lib/theme";
+import type { TenantThemeConfig } from "@starter/shared/theme";
 import globalsCss from "@/styles/globals.css?url";
 
 // Head and the document shell render outside I18nProvider: default catalog.
 const staticT = createTranslator();
+
+// Browser-only memory of the last resolved tenant theme (see beforeLoad).
+let lastTenantTheme: TenantThemeConfig | null = null;
 
 export type RouterContext = {
   queryClient: QueryClient;
   session: Session | null;
   /** What the visitor may reach; presentation only (see lib/areas). */
   access: AreaAccess;
+  /**
+   * Theme of the brand the request host resolved to (D44); null on a host
+   * with no tenant or no active theme, so the Base Theme applies.
+   */
+  tenantTheme: TenantThemeConfig | null;
 };
 
 export const Route = createRootRouteWithContext<RouterContext>()({
@@ -32,8 +46,27 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   // with every route as context. Layouts decide what to do with it; the API
   // still authenticates every request on its own.
   beforeLoad: async () => {
-    const session = await getSessionFn();
-    return { session, access: await loadAreaAccess(session) };
+    const [session, brand] = await Promise.all([
+      getSessionFn(),
+      getTenantBrandFn(),
+    ]);
+    const isBrowser = typeof window !== "undefined";
+    let tenantTheme: TenantThemeConfig | null;
+    if (brand.kind === "error") {
+      // A transient API failure keeps the theme the browser already showed.
+      // Browser only: a module variable on the server would leak across hosts.
+      tenantTheme = isBrowser ? lastTenantTheme : null;
+    } else {
+      tenantTheme = brandContextToThemeConfig(
+        brand.kind === "brand" ? brand.brand : null,
+      );
+      if (isBrowser) lastTenantTheme = tenantTheme;
+    }
+    return {
+      session,
+      access: await loadAreaAccess(session),
+      tenantTheme,
+    };
   },
   head: () => ({
     meta: [
@@ -66,10 +99,22 @@ function HydrationMarker() {
 }
 
 function RootDocument({ children }: { children: ReactNode }) {
+  // The shell also renders when root beforeLoad failed, so the match may have
+  // no tenant theme: the Base Theme applies then.
+  const tenantTheme = useMatch({
+    from: rootRouteId,
+    shouldThrow: false,
+    select: (match) => match.context.tenantTheme ?? null,
+  });
   return (
-    <html lang="id" suppressHydrationWarning>
+    <html
+      lang="id"
+      data-tenant={tenantTheme?.id}
+      suppressHydrationWarning
+    >
       <head>
         <HeadContent />
+        {tenantTheme ? <TenantThemeStyle tenant={tenantTheme} /> : null}
       </head>
       <body>
         <HydrationMarker />
