@@ -9,9 +9,11 @@ import {
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { outletIdSchema } from "@starter/shared/core";
 import * as schema from "../db/schema";
+import { withTenant } from "../db/tenant";
 import { NoopMalwareScanner } from "../services/core-image";
 import {
   createAttendanceSelfieSigner,
+  createHrisDocumentSigner,
   createObjectStorageFromEnv,
   createStorageRuntimeFromEnv,
 } from "../services/core-storage-runtime";
@@ -174,6 +176,7 @@ describe("legend-dzh9q storage env", () => {
     expect(runtime!.storage).toBeInstanceOf(S3ObjectStorage);
     expect(runtime!.scanner).toBeInstanceOf(NoopMalwareScanner);
     expect(typeof runtime!.fileSigner).toBe("function");
+    expect(typeof runtime!.hrisDocumentSigner).toBe("function");
   });
 });
 
@@ -247,6 +250,72 @@ describe("legend-dzh9q attendance selfie signer", () => {
       await sign(outletContext(tenant.tenantId, tenant.outletA), id),
     ).toBeNull();
     expect(log.error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("legend-2ect HRIS document signer", () => {
+  const signerFor = (log = { error: vi.fn() }) => ({
+    log,
+    sign: createHrisDocumentSigner({
+      database: db,
+      storage: new FakeObjectStorage(),
+      log,
+    }),
+  });
+
+  it("signs a document object in scope with a 300 second URL", async () => {
+    const id = await seedRow(tenant.tenantId, tenant.outletA, "document");
+    const { sign } = signerFor();
+    const url = await sign(outletContext(tenant.tenantId, tenant.outletA), id);
+    expect(url).toMatch(/^https:\/\/storage\.invalid\/private\//);
+    expect(url).toContain("expires=300");
+  });
+
+  it("signs inside the caller transaction when one is given", async () => {
+    const id = await seedRow(tenant.tenantId, tenant.outletA, "document");
+    const { sign } = signerFor();
+    const context = outletContext(tenant.tenantId, tenant.outletA);
+    const url = await withTenant(db, context, (tx) => sign(context, id, tx));
+    expect(url).toContain("expires=300");
+  });
+
+  it("refuses every purpose except document", async () => {
+    const { sign, log } = signerFor();
+    const context = outletContext(tenant.tenantId, tenant.outletA);
+    for (const purpose of ["selfie", "receipt", "menu_photo"])
+      expect(
+        await sign(
+          context,
+          await seedRow(tenant.tenantId, tenant.outletA, purpose),
+        ),
+      ).toBeNull();
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it("returns null for a missing object, outside scope and across tenants", async () => {
+    const { sign } = signerFor();
+    const id = await seedRow(tenant.tenantId, tenant.outletA, "document");
+    expect(
+      await sign(outletContext(tenant.tenantId, tenant.outletA), randomUUID()),
+    ).toBeNull();
+    expect(
+      await sign(outletContext(tenant.tenantId, tenant.outletB), id),
+    ).toBeNull();
+    expect(
+      await sign(outletContext(other.tenantId, other.outletA), id),
+    ).toBeNull();
+  });
+
+  it("the selfie signer still refuses documents", async () => {
+    const sign = createAttendanceSelfieSigner({
+      database: db,
+      storage: new FakeObjectStorage(),
+      log: { error: vi.fn() },
+    });
+    const id = await seedRow(tenant.tenantId, tenant.outletA, "document");
+    expect(
+      await sign(outletContext(tenant.tenantId, tenant.outletA), id),
+    ).toBeNull();
   });
 });
 

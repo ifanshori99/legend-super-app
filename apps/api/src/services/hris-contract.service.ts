@@ -157,7 +157,7 @@ async function toContract(
       HRIS_PII_FIELDS.contractFileUrl,
     ) !== "hidden"
   ) {
-    fileUrl = await signer(context, row.fileObjectId);
+    fileUrl = await signer(context, row.fileObjectId, tx);
     if (fileUrl !== null) opened.push("fileUrl");
   }
   if (opened.length > 0)
@@ -395,7 +395,7 @@ export async function listEmployeeDocuments(
     const data: EmployeeDocument[] = [];
     for (const row of pageRows) {
       const downloadUrl = urlAllowed
-        ? await signer(context, row.storageObjectId)
+        ? await signer(context, row.storageObjectId, tx)
         : null;
       if (downloadUrl !== null)
         await recordAudit(

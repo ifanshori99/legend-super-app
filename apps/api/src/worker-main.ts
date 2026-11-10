@@ -131,6 +131,7 @@ import {
 } from "./services/core-storage-runtime.ts";
 import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-purge.job.ts";
 import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sweep.job.ts";
+import { registerHrisPiiResealJob } from "./worker/hris-pii-reseal.job.ts";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -755,6 +756,12 @@ try {
     await probeMaintenanceConnection(maintenancePool);
     await registerAuditRetentionJob({ boss, pool: maintenancePool });
   }
+  // legend-33mj: on-demand re-seal of HRIS PII after a key rotation.
+  await registerHrisPiiResealJob({
+    boss,
+    database: db,
+    log: consoleLikeLog(logger),
+  });
   // legend-dzh9q: the selfie purge deletes objects, so it needs the object
   // storage. Without STORAGE_* the worker still starts, with the job off.
   const storageRuntime = createStorageRuntimeFromEnv(

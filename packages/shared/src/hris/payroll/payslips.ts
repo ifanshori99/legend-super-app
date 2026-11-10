@@ -335,6 +335,76 @@ export const viewMyPayslipInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+// ---- Payslip PIN lifecycle (bead legend-2ap3) ----------------------------
+
+/** Same limits as the staff device pin (identity/limits.ts), kept separate. */
+export const PAYSLIP_PIN_MAX_ATTEMPTS = 5;
+export const PAYSLIP_PIN_LOCK_MINUTES = 15;
+/** WhatsApp one-time code that lets an employee set a new PIN without HR. */
+export const PAYSLIP_PIN_OTP_LENGTH = 6;
+export const PAYSLIP_PIN_OTP_TTL_MINUTES = 5;
+export const PAYSLIP_PIN_OTP_MAX_ATTEMPTS = 5;
+
+export const payslipPinStatusValueSchema = z.enum([
+  "not_set",
+  "active",
+  "locked",
+]);
+export type PayslipPinStatusValue = z.infer<typeof payslipPinStatusValueSchema>;
+
+/** Never carries the PIN, hash or attempt counter. */
+export const payslipPinStatusSchema = z.strictObject({
+  status: payslipPinStatusValueSchema,
+  lockedUntil: isoDateTimeSchema.nullable(),
+});
+export type PayslipPinStatus = z.infer<typeof payslipPinStatusSchema>;
+
+/**
+ * First set: no `currentPin`. Change: `currentPin` is required, and a wrong one
+ * counts as a failed attempt (same counter and lock as opening a payslip).
+ */
+export const setMyPayslipPinInputSchema = clientInputSchema({
+  pin: payslipPinSchema,
+  currentPin: payslipPinSchema.optional(),
+  idempotencyKey: idempotencyKeySchema,
+});
+export type SetMyPayslipPinInput = z.infer<typeof setMyPayslipPinInputSchema>;
+
+/** HR clears the hash and the lock; HR never sees or sets the PIN itself. */
+export const resetPayslipPinInputSchema = clientInputSchema({
+  reason: z.string().trim().min(3).max(500),
+  idempotencyKey: idempotencyKeySchema,
+});
+export type ResetPayslipPinInput = z.infer<typeof resetPayslipPinInputSchema>;
+
+export const requestPayslipPinResetOtpInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+});
+export type RequestPayslipPinResetOtpInput = z.infer<
+  typeof requestPayslipPinResetOtpInputSchema
+>;
+
+export const payslipPinResetOtpRequestedSchema = z.strictObject({
+  expiresAt: isoDateTimeSchema,
+});
+export type PayslipPinResetOtpRequested = z.infer<
+  typeof payslipPinResetOtpRequestedSchema
+>;
+
+export const verifyPayslipPinResetOtpInputSchema = clientInputSchema({
+  code: z
+    .string()
+    .regex(
+      new RegExp(`^\\d{${PAYSLIP_PIN_OTP_LENGTH}}$`),
+      `The code is ${PAYSLIP_PIN_OTP_LENGTH} digits`,
+    ),
+  pin: payslipPinSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+export type VerifyPayslipPinResetOtpInput = z.infer<
+  typeof verifyPayslipPinResetOtpInputSchema
+>;
+
 // ---- Run totals -----------------------------------------------------------
 
 /** PRD §6 H `payroll_runs.totals` (gross, deductions, BPJS, PPh 21, net). */

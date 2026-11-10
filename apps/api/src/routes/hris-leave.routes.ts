@@ -647,5 +647,6 @@ export function createHrisLeaveRouter(deps: HrisLeaveRouterDeps = {}): Router {
   return router;
 }
 
-/** Mount at `/api/hris` (routes/index.ts, right after `hrisRouter`). */
+/** Signer-less instance (tests). createApp mounts `createHrisLeaveRouter`
+ * with the storage signer in routes/storage-api.routes.ts (legend-2ect). */
 export const hrisLeaveRouter = createHrisLeaveRouter();

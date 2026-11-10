@@ -580,6 +580,8 @@ export const payrollConfigMessages = {
     PAYSLIP_PIN_INVALID: "PIN slip gaji salah.",
     PAYSLIP_PIN_LOCKED:
       "PIN slip gaji terkunci sementara karena terlalu banyak percobaan.",
+    PAYSLIP_PIN_NOT_SET:
+      "PIN slip gaji belum dibuat. Buat PIN terlebih dahulu.",
     PAYROLL_BANK_FILE_MISMATCH:
       "File transfer tidak cocok dengan payroll yang dipilih.",
     PAYROLL_PPH21_STATUS_UNSUPPORTED:

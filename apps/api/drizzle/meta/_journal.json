@@ -1625,6 +1625,13 @@
       "when": 1794326000000,
       "tag": "0245_edge_print_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1794327000000,
+      "tag": "0246_payslip_pins",
+      "breakpoints": true
     }
   ]
 }
