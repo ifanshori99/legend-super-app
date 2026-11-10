@@ -258,6 +258,19 @@ const schema = z
       .int()
       .positive()
       .default(2_147_483_648),
+    // Edge selfie worker (legend-hubzo): upload interval, and how long a
+    // pending file may wait before it expires on this disk.
+    EDGE_SELFIE_UPLOAD_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .default(30_000),
+    EDGE_SELFIE_MAX_AGE_DAYS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .default(30),
     // Attendance selfie seal (design hris-edge-replication 5): the cloud's
     // private keys (JSON {kid: PKCS#8 PEM}, RSA >= 3072 bit) and the kid
     // edges seal to. Production secrets: never logged, never committed. Keep

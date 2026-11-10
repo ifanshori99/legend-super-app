@@ -27,8 +27,13 @@ import type * as schema from "../db/schema";
 import { coreStorageObjects } from "../db/schema/core-storage";
 import { edgePeopleSyncState } from "../db/schema/edge-hris";
 import { withTenant } from "../db/tenant";
+import {
+  recordSelfieStorageFull,
+  recordSelfieStored,
+} from "../edge/selfie-health";
 import { edgeSealedFilePath, edgeSealedObjectKey } from "../edge/selfie-paths";
 import { HttpError } from "../lib/http-error";
+import { logger } from "../lib/logger";
 import {
   SelfieSealError,
   importSealPublicKey,
@@ -118,6 +123,12 @@ async function sealKeyFor(
 }
 
 function fullDisk() {
+  // One log line per episode; the health field carries the rest.
+  if (recordSelfieStorageFull(new Date()))
+    logger.error(
+      { code: EDGE_SELFIE_ERROR_CODES.EDGE_SELFIE_STORAGE_FULL },
+      "edge selfie storage full",
+    );
   return new HttpError(
     507,
     EDGE_SELFIE_ERROR_CODES.EDGE_SELFIE_STORAGE_FULL,
@@ -260,6 +271,7 @@ export async function uploadEdgeSelfie(
     await unlink(filePath).catch(() => undefined);
     throw error;
   }
+  recordSelfieStored();
   return {
     id,
     purpose: "selfie" as const,
