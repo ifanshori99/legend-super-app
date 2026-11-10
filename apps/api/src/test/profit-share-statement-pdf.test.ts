@@ -10,7 +10,7 @@ import {
   renderStatementEmail,
 } from "../services/profit-share-statement-email.ts";
 import { renderDistributionStatementPdf } from "../services/profit-share-statement-pdf.ts";
-import { allText } from "./pdf-text.ts";
+import { allText, drawnText } from "./pdf-text.ts";
 
 const OTHER_SHAREHOLDER = "Budi Santoso Pemegang Lain";
 
@@ -87,6 +87,39 @@ describe("renderDistributionStatementPdf", () => {
     expect(text).toContain("Catatan penyesuaian (pengembalian)");
     expect(text).toContain("-Rp 500.000");
     expect(text).toContain("-Rp 475.000");
+  });
+
+  it("reads a carry deduction top to bottom: share before the cut, the cut, then the gross share", async () => {
+    // Gross after the cut 3.233.333 + cut 100.000 = 3.333.333 before it.
+    const pdf = await render(
+      statement({ grossIdr: 3233333, carryDeductedIdr: 100000 }),
+    );
+    const rows = drawnText(pdf);
+    const top = (label: string) => {
+      const row = rows.find((drawn) => drawn.text === label);
+      expect(row, label).toBeDefined();
+      return row!.y;
+    };
+    const valueOn = (label: string) =>
+      rows.find(
+        (drawn) => drawn.y === top(label) && drawn.text.startsWith("Rp"),
+      )?.text;
+    // PDF y grows upward: a higher row has a larger y.
+    expect(top("Bagian sebelum potongan")).toBeGreaterThan(
+      top("Potongan kekurangan koreksi"),
+    );
+    expect(top("Potongan kekurangan koreksi")).toBeGreaterThan(
+      top("Bagian kotor"),
+    );
+    expect(valueOn("Bagian sebelum potongan")).toBe("Rp 3.333.333");
+    expect(valueOn("Potongan kekurangan koreksi")).toBe("Rp 100.000");
+    expect(valueOn("Bagian kotor")).toBe("Rp 3.233.333");
+  });
+
+  it("shows no carry rows when nothing was deducted", async () => {
+    const text = allText(await render(statement()));
+    expect(text).not.toContain("Bagian sebelum potongan");
+    expect(text).not.toContain("Potongan kekurangan koreksi");
   });
 
   it("is byte-identical when rendered twice", async () => {

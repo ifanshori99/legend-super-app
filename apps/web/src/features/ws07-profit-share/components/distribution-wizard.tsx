@@ -606,6 +606,16 @@ function SimulationStep({
             <Money amount={run.distributableIdr} />
           </dd>
         </div>
+        {run.carryDeductedIdr > 0 && (
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-muted-foreground">
+              {t("accounting.share.wizard.sim.carryDeducted")}
+            </dt>
+            <dd className="font-medium">
+              <Money amount={run.carryDeductedIdr} />
+            </dd>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-2">
           <dt className="text-muted-foreground">
             {t("accounting.share.wizard.sim.tax")}
@@ -632,6 +642,11 @@ function SimulationStep({
             <TableHead numeric>
               {t("accounting.share.wizard.sim.columns.share")}
             </TableHead>
+            {run.carryDeductedIdr > 0 && (
+              <TableHead numeric>
+                {t("accounting.share.wizard.sim.columns.carry")}
+              </TableHead>
+            )}
             <TableHead numeric>
               {t("accounting.share.wizard.sim.columns.gross")}
             </TableHead>
@@ -653,6 +668,11 @@ function SimulationStep({
               <TableCell numeric className="tabular">
                 {formatShareBp(line.shareBp)}
               </TableCell>
+              {run.carryDeductedIdr > 0 && (
+                <TableCell numeric className="text-muted-foreground">
+                  <Money amount={line.carryDeductedIdr} />
+                </TableCell>
+              )}
               <TableCell numeric>
                 <Money amount={line.grossIdr} />
               </TableCell>
@@ -666,6 +686,35 @@ function SimulationStep({
           ))}
         </TableBody>
       </Table>
+      {run.carryDeductions.length > 0 && (
+        <div className="grid gap-1 rounded-lg border-(length:--border-w) border-border bg-surface-2 p-3 text-sm">
+          <p className="text-muted-foreground">
+            {t("accounting.share.wizard.sim.carryHint")}
+          </p>
+          <ul className="grid gap-1">
+            {run.carryDeductions.map((row) => (
+              <li
+                key={`${row.shareholderId}:${row.shortfallRunId}`}
+                className="flex items-center justify-between gap-2"
+              >
+                <span>
+                  {byId.get(row.shareholderId)?.name ??
+                    t("accounting.share.allocations.unknown")}
+                  <span className="text-muted-foreground">
+                    {" · "}
+                    {t("accounting.share.wizard.sim.carryFrom", {
+                      ref: shortActorRef(row.shortfallRunId),
+                    })}
+                  </span>
+                </span>
+                <span className="font-medium">
+                  <Money amount={row.amountIdr} />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {error && <InlineError message={error} />}
       <div className="flex flex-wrap justify-end gap-2">
         <Button
@@ -1145,6 +1194,12 @@ function StatementStep({
                 label={t("accounting.share.wizard.statement.share")}
                 value={`${formatShareBp(statement.shareBp)} (${formatShareBpInteger(statement.shareBp)} bp)`}
               />
+              {selected && selected.carryDeductedIdr > 0 && (
+                <Fact
+                  label={t("accounting.share.wizard.statement.carryDeducted")}
+                  value={<Money amount={selected.carryDeductedIdr} />}
+                />
+              )}
               <Fact
                 label={t("accounting.share.wizard.statement.gross")}
                 value={<Money amount={statement.grossIdr} />}

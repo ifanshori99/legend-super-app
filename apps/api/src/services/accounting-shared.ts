@@ -119,6 +119,7 @@ const AUDIT_SAFE_FIELDS = [
   "role",
   "glCode",
   "count",
+  "carryDeductedIdr",
   "entryDate",
   "sourceType",
   "reversalEntryId",

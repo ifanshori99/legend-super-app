@@ -21,6 +21,11 @@
 //   and payment claim their key in `profit_share_commands` inside the command's
 //   transaction: the same key and request replays the current state (200), any
 //   other request with that key is IDEMPOTENCY_KEY_REUSED.
+// - Founder rule Q83 (carry): a claw-back the paid gross could not absorb keeps
+//   its rest per shareholder (`distribution_run_shortfalls`, written with the
+//   adjustment run). Once that adjustment is approved or paid, the next regular
+//   run cuts it from the SAME shareholder's share (FIFO) before tax and records
+//   the cut in `distribution_carry_deductions`. A cancelled run releases its cut.
 // - Events `distribution.approved|paid|completed` go through the domain outbox
 //   in the same transaction. The statement PDF is issued after commit; a failure
 //   is logged and leaves `statement_file_key` null (issuing again is allowed).
@@ -62,6 +67,8 @@ import {
   transitionDistributionRun,
   type createAdjustmentDistributionInputSchema,
   type createDistributionRunInputSchema,
+  type CarryDeduction,
+  type CarryShortfall,
   type distributionDecisionInputSchema,
   type DistributionRun,
   type HeldPaid,
@@ -90,7 +97,9 @@ import {
 import type { z } from "zod";
 import { db } from "../db";
 import {
+  distributionCarryDeductions,
   distributionLines,
+  distributionRunShortfalls,
   distributionRuns,
   fiscalPeriods,
   outlets,
@@ -161,7 +170,17 @@ const notFound = () =>
 
 // ------------------------------------------------------------- row mapping
 
-function toRun(row: RunRow, lineRows: readonly LineRow[]): DistributionRun {
+type CarryTrail = {
+  shareholderId: string;
+  shortfallRunId: string;
+  amountIdr: number;
+};
+
+function toRun(
+  row: RunRow,
+  lineRows: readonly LineRow[],
+  carryDeductions: readonly CarryTrail[],
+): DistributionRun {
   const lines = [...lineRows]
     .sort((a, b) => a.position - b.position)
     .map((line) => ({
@@ -171,6 +190,7 @@ function toRun(row: RunRow, lineRows: readonly LineRow[]): DistributionRun {
       shareholderId: line.shareholderId,
       shareBp: line.shareBp,
       grossIdr: line.grossIdr,
+      carryDeductedIdr: line.carryDeductedIdr,
       taxWithheldIdr: line.taxWithheldIdr,
       netIdr: line.netIdr,
       paymentStatus: line.paymentStatus,
@@ -204,6 +224,8 @@ function toRun(row: RunRow, lineRows: readonly LineRow[]): DistributionRun {
     adjustmentReason: row.adjustmentReason,
     reversalJournalEntryId: row.reversalJournalEntryId,
     unabsorbedIdr: row.unabsorbedIdr,
+    carryDeductedIdr: row.carryDeductedIdr,
+    carryDeductions,
   });
 }
 
@@ -336,6 +358,58 @@ async function loadLineRows(
     .orderBy(asc(distributionLines.position));
 }
 
+/** Carry deductions of the given runs, each traced to the claw-back it came from. */
+async function loadCarryTrails(
+  tx: Tx,
+  tenantId: string,
+  runIds: readonly string[],
+): Promise<Map<string, CarryTrail[]>> {
+  const trails = new Map<string, CarryTrail[]>();
+  if (runIds.length === 0) return trails;
+  const rows = await tx
+    .select({
+      runId: distributionCarryDeductions.distributionRunId,
+      shareholderId: distributionCarryDeductions.shareholderId,
+      shortfallRunId: distributionRunShortfalls.distributionRunId,
+      amountIdr: distributionCarryDeductions.amountIdr,
+    })
+    .from(distributionCarryDeductions)
+    .innerJoin(
+      distributionRunShortfalls,
+      and(
+        eq(
+          distributionRunShortfalls.tenantId,
+          distributionCarryDeductions.tenantId,
+        ),
+        eq(
+          distributionRunShortfalls.id,
+          distributionCarryDeductions.shortfallId,
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(distributionCarryDeductions.tenantId, tenantId),
+        inArray(distributionCarryDeductions.distributionRunId, [...runIds]),
+      ),
+    )
+    .orderBy(
+      asc(distributionCarryDeductions.shareholderId),
+      asc(distributionRunShortfalls.createdAt),
+      asc(distributionRunShortfalls.id),
+    );
+  for (const row of rows) {
+    const list = trails.get(row.runId) ?? [];
+    list.push({
+      shareholderId: row.shareholderId,
+      shortfallRunId: row.shortfallRunId,
+      amountIdr: row.amountIdr,
+    });
+    trails.set(row.runId, list);
+  }
+  return trails;
+}
+
 async function loadRun(
   tx: Tx,
   tenantId: string,
@@ -344,7 +418,52 @@ async function loadRun(
 ): Promise<{ row: RunRow; run: DistributionRun }> {
   const row = await loadRunRow(tx, tenantId, runId, lock);
   const lines = await loadLineRows(tx, tenantId, [runId]);
-  return { row, run: toRun(row, lines) };
+  const trails = await loadCarryTrails(tx, tenantId, [runId]);
+  return { row, run: toRun(row, lines, trails.get(runId) ?? []) };
+}
+
+/**
+ * The open correction shortfalls of an entity (founder rule Q83) per
+ * shareholder, oldest first. Only claw-backs that are approved or paid count;
+ * what regular runs that are not cancelled already cut is taken off, so a
+ * rejected run releases its cut and a draft run keeps its cut reserved.
+ */
+async function loadOpenCarry(
+  tx: Tx,
+  tenantId: string,
+  profitEntityId: string,
+): Promise<Map<string, CarryShortfall[]>> {
+  const rows = await tx
+    .execute<{ id: string; shareholder_id: string; open_idr: string }>(
+      sql`
+    SELECT s.id, s.shareholder_id,
+           (s.amount_idr - coalesce(
+             sum(d.amount_idr) FILTER (WHERE r.status <> 'cancelled'), 0
+           ))::text AS open_idr
+    FROM distribution_run_shortfalls s
+    JOIN distribution_runs adj
+      ON adj.tenant_id = s.tenant_id AND adj.id = s.distribution_run_id
+    LEFT JOIN distribution_carry_deductions d
+      ON d.tenant_id = s.tenant_id AND d.shortfall_id = s.id
+    LEFT JOIN distribution_runs r
+      ON r.tenant_id = d.tenant_id AND r.id = d.distribution_run_id
+    WHERE s.tenant_id = ${tenantId}
+      AND s.profit_entity_id = ${profitEntityId}
+      AND adj.status IN ('approved', 'paid')
+    GROUP BY s.id, s.shareholder_id, s.amount_idr, s.created_at
+    ORDER BY s.shareholder_id, s.created_at, s.id
+  `,
+    )
+    .then((result) => result.rows);
+  const carry = new Map<string, CarryShortfall[]>();
+  for (const row of rows) {
+    const amountIdr = Number(row.open_idr);
+    if (amountIdr <= 0) continue;
+    const list = carry.get(row.shareholder_id) ?? [];
+    list.push({ shortfallId: row.id, amountIdr });
+    carry.set(row.shareholder_id, list);
+  }
+  return carry;
 }
 
 // ---------------------------------------------------------- audit & events
@@ -354,7 +473,7 @@ async function auditRun(
   context: ScopedTenantContext,
   actorId: string,
   action: string,
-  run: Pick<DistributionRun, "id" | "type" | "lines">,
+  run: Pick<DistributionRun, "id" | "type" | "lines" | "carryDeductedIdr">,
   outletId: string | null,
   reason: string | null = null,
 ): Promise<void> {
@@ -366,7 +485,11 @@ async function auditRun(
     outletId,
     reason,
     before: null,
-    after: { type: run.type, count: run.lines.length },
+    after: {
+      type: run.type,
+      count: run.lines.length,
+      carryDeductedIdr: run.carryDeductedIdr,
+    },
   });
 }
 
@@ -463,14 +586,45 @@ type CalculatedRun = {
   adjustmentReason: string | null;
   /** Claw-back rest no shareholder could absorb (founder rule Q83). */
   unabsorbedIdr?: number;
+  /** Claw-back rest per shareholder; the rows add up to `unabsorbedIdr`. */
+  shortfalls?: ReadonlyMap<string, number>;
+  /** Regular run: earlier shortfalls cut from the shares (Q83). */
+  carryDeductedIdr?: number;
+  carryDeductions?: readonly CarryDeduction[];
   lines: readonly {
     shareholderId: string;
     shareBp: number;
     grossIdr: number;
+    carryDeductedIdr?: number;
     taxWithheldIdr: number;
     netIdr: number;
   }[];
 };
+
+/** The rows of the carry tables must agree with the run's own totals. */
+function assertCarryConsistent(calc: CalculatedRun): void {
+  const shortfalls = [...(calc.shortfalls?.values() ?? [])];
+  if (
+    shortfalls.reduce((sum, amount) => sum + amount, 0) !==
+    (calc.unabsorbedIdr ?? 0)
+  )
+    throw new Error("Shortfall rows must add up to unabsorbedIdr");
+  const deductions = calc.carryDeductions ?? [];
+  const deducted = deductions.reduce((sum, row) => sum + row.amountIdr, 0);
+  if (deducted !== (calc.carryDeductedIdr ?? 0))
+    throw new Error("Carry deductions must add up to carryDeductedIdr");
+  // A shareholder whose whole share was absorbed has a deduction but no line.
+  const withLine = new Set(calc.lines.map((line) => line.shareholderId));
+  const lineCarry = calc.lines.reduce(
+    (sum, line) => sum + (line.carryDeductedIdr ?? 0),
+    0,
+  );
+  const absorbed = deductions
+    .filter((row) => !withLine.has(row.shareholderId))
+    .reduce((sum, row) => sum + row.amountIdr, 0);
+  if (lineCarry + absorbed !== deducted)
+    throw new Error("Line carry must add up to the run carry");
+}
 
 async function insertRun(
   tx: Tx,
@@ -479,6 +633,7 @@ async function insertRun(
   idempotencyKey: string,
   calc: CalculatedRun,
 ): Promise<DistributionRun> {
+  assertCarryConsistent(calc);
   const [row] = await tx
     .insert(distributionRuns)
     .values({
@@ -506,6 +661,7 @@ async function insertRun(
       adjustsRunId: calc.adjustsRunId,
       adjustmentReason: calc.adjustmentReason,
       unabsorbedIdr: idr(calc.unabsorbedIdr ?? 0),
+      carryDeductedIdr: idr(calc.carryDeductedIdr ?? 0),
       idempotencyKey,
     })
     .returning();
@@ -520,11 +676,35 @@ async function insertRun(
         grossIdr: idr(line.grossIdr),
         taxWithheldIdr: idr(line.taxWithheldIdr),
         netIdr: idr(line.netIdr),
+        carryDeductedIdr: idr(line.carryDeductedIdr ?? 0),
         position,
       })),
     )
     .returning();
-  return toRun(row!, lineRows);
+  // A claw-back keeps what no shareholder could absorb, one row per shareholder.
+  if (calc.shortfalls && calc.shortfalls.size > 0)
+    await tx.insert(distributionRunShortfalls).values(
+      [...calc.shortfalls].map(([shareholderId, amountIdr]) => ({
+        tenantId,
+        distributionRunId: row!.id,
+        profitEntityId: calc.profitEntityId,
+        shareholderId,
+        amountIdr: idr(amountIdr),
+      })),
+    );
+  if (calc.carryDeductions && calc.carryDeductions.length > 0)
+    await tx.insert(distributionCarryDeductions).values(
+      calc.carryDeductions.map((deduction) => ({
+        tenantId,
+        distributionRunId: row!.id,
+        shortfallId: deduction.shortfallId,
+        profitEntityId: calc.profitEntityId,
+        shareholderId: deduction.shareholderId,
+        amountIdr: deduction.amountIdr,
+      })),
+    );
+  const trails = await loadCarryTrails(tx, tenantId, [row!.id]);
+  return toRun(row!, lineRows, trails.get(row!.id) ?? []);
 }
 
 /** A unique violation after the entity lock can only be the regular-run index. */
@@ -707,6 +887,7 @@ export async function createDistributionRunService(
         periodNetProfitIdr: netProfit,
         policy: entity.policy,
         allocations: allocationRows as never,
+        carry: await loadOpenCarry(tx, tenantId, profitEntityId),
       });
       const run = await insertRun(
         tx,
@@ -729,6 +910,8 @@ export async function createDistributionRunService(
           taxWithholdingBp: entity.policy.taxWithholdingBp,
           adjustsRunId: null,
           adjustmentReason: null,
+          carryDeductedIdr: calculation.carryDeductedIdr,
+          carryDeductions: calculation.carryDeductions,
           lines: calculation.lines,
         },
       );
@@ -810,10 +993,12 @@ export async function createAdjustmentDistributionService(
         adjustmentIdr: input.adjustmentIdr,
         // The rate frozen with the corrected run, not today's policy.
         taxWithholdingBp: targetRow.taxWithholdingBp,
-        allocations: target.lines.map((line) => ({
-          shareholderId: line.shareholderId,
-          shareBp: line.shareBp,
-        })),
+        allocations: await shareVersionAllocations(
+          tx,
+          tenantId,
+          target.profitEntityId,
+          target.shareVersion,
+        ),
         held,
       });
       assertAdjustmentMatchesTarget(
@@ -841,6 +1026,7 @@ export async function createAdjustmentDistributionService(
           reserveIdr: 0,
           distributableIdr: calculation.adjustmentIdr,
           unabsorbedIdr: calculation.unabsorbedIdr,
+          shortfalls: calculation.unabsorbedByShareholder,
           totalGrossIdr: calculation.totalGrossIdr,
           totalTaxWithheldIdr: calculation.totalTaxWithheldIdr,
           totalNetIdr: calculation.totalNetIdr,
@@ -864,6 +1050,37 @@ export async function createAdjustmentDistributionService(
   } catch (error) {
     throw translateRunError(error);
   }
+}
+
+type AdjustmentAllocations = Parameters<
+  typeof calculateAdjustmentDistribution
+>[0]["allocations"];
+
+/**
+ * The corrected run's split: every holder of its share version, not only the
+ * ones with a line. A holder fully absorbed by a carry deduction has no line
+ * but still owns their share, so the shares keep adding up to 100%.
+ */
+async function shareVersionAllocations(
+  tx: Tx,
+  tenantId: string,
+  profitEntityId: string,
+  version: number,
+): Promise<AdjustmentAllocations> {
+  const rows = await tx
+    .select({
+      shareholderId: shareAllocations.shareholderId,
+      shareBp: shareAllocations.shareBp,
+    })
+    .from(shareAllocations)
+    .where(
+      and(
+        eq(shareAllocations.tenantId, tenantId),
+        eq(shareAllocations.profitEntityId, profitEntityId),
+        eq(shareAllocations.version, version),
+      ),
+    );
+  return rows as unknown as AdjustmentAllocations;
 }
 
 /**
@@ -1175,6 +1392,7 @@ export async function decideDistributionRunService(
           totalGrossIdr: run.totalGrossIdr,
           totalTaxWithheldIdr: run.totalTaxWithheldIdr,
           totalNetIdr: run.totalNetIdr,
+          carryDeductedIdr: run.carryDeductedIdr,
           shareholderCount: run.lines.length,
           approvedBy: actorId,
           approvedAt: now.toISOString(),
@@ -1278,7 +1496,9 @@ async function postCompletionJournal(
         ? "Koreksi distribusi bagi hasil (pengembalian)"
         : input.run.type === "adjustment"
           ? "Koreksi distribusi bagi hasil"
-          : undefined,
+          : input.run.carryDeductedIdr > 0
+            ? `Distribusi bagi hasil (dipotong kekurangan koreksi Rp${new Intl.NumberFormat("id-ID").format(input.run.carryDeductedIdr)})`
+            : undefined,
       postedBy: userIdSchema.parse(input.actorId),
       idempotencyKey: `distribution:${input.run.id}:completed`,
     },
@@ -1416,6 +1636,7 @@ export async function recordDistributionPaymentService(
           distributedIdr: run.totalGrossIdr,
           taxWithheldIdr: run.totalTaxWithheldIdr,
           paidNetIdr: run.totalNetIdr,
+          carryDeductedIdr: run.carryDeductedIdr,
           shareholderCount: run.lines.length,
           journalEntryId: journalId,
           completedAt: completedAt.toISOString(),
@@ -1654,6 +1875,7 @@ export async function getMyProfitShareService(
               ),
             );
     const allLines = await loadLineRows(tx, tenantId, runIds);
+    const trails = await loadCarryTrails(tx, tenantId, runIds);
     const entityNames = new Map<string, string>();
     for (const entity of entityRows) entityNames.set(entity.id, entity.name);
     const missingEntityIds = [
@@ -1682,6 +1904,7 @@ export async function getMyProfitShareService(
         toRun(
           row,
           allLines.filter((line) => line.distributionRunId === row.id),
+          trails.get(row.id) ?? [],
         ),
       );
     const statements: DistributionStatement[] = [];

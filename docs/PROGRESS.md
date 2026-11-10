@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-lzvh0 kekurangan koreksi minus dipotong dari pembagian berikutnya (engineer Sonnet, cabang `ws/lzvh0-unabsorbed-carry` dari `ws/0w2wy-docs-storage` 80f5c4d1, 2026-11-10)
+
+- Q83 lanjutan: sisa klaw-bek yang tidak terserap disimpan per pemegang saham di `distribution_run_shortfalls` (migrasi 0224, when 1794303000000, tag `0224_profit_share_carry`; jumlah baris = `unabsorbed_idr`). Efektif saat run koreksi `approved`/`paid`. Run reguler berikutnya memotong dari bagian pemegang saham itu saja, shortfall tertua dulu (FIFO), tidak lebih dari bagiannya; jejak di `distribution_carry_deductions`. Pajak dihitung dari gross setelah potongan. Pemegang yang habis terserap tidak dapat baris, potongan tetap tercatat, sisa terbawa lagi. Run reguler yang ditolak melepas potongannya.
+- `distributable = total_gross + carry_deducted_idr` (kolom baru di run dan baris). Jurnal penyelesaian memakai gross yang sudah dikurangi, deskripsi menyebut potongan; tidak ada jurnal baru (kekurangan tidak pernah dibukukan sebagai piutang). Audit dan event approve/complete memuat `carryDeductedIdr`. Statement PDF dan layar web menampilkan "Potongan kekurangan koreksi". Izin approve tetap `profit_share.distribution.approve`.
+- Migrasi: guard DB (trigger insert dan constraint trigger tertunda, kode `SH-CARRY`), tabel baru append-only untuk `legend_app`, FORCE RLS, jalan sebagai migrator non-superuser; `db:generate` kosong.
+- Review architect (K): 1 tinggi (koreksi atas run dengan pemegang terserap gagal `SHARE_ALLOCATION_NOT_EXACT_100`, kini porsi dari versi porsi), 1 sedang (guard DB tabel baru), 1 rendah (urutan baris PDF) dibetulkan dengan test gagal-dulu. Temuan rendah (pemegang terserap penuh tidak punya baris/statement) dicatat sebagai keterbatasan.
+- Terbuka (keputusan CTO/founder): (1) semua pemegang terserap: run reguler ditolak `NOTHING_TO_DISTRIBUTE`, run tanpa baris belum didukung, carry tidak berkurang sampai run berikut punya ruang; (2) klaw-bek atas run yang punya pemegang terserap membuat shortfall baru atas pemegang itu padahal ia tidak pernah menerima uangnya; (3) top-up atas run semacam itu ditolak `ADJUSTMENT_TARGET_INVALID`; (4) seed mock run dengan potongan tidak dibuat (merusak asersi outlet tanpa run di `tests/ws07-profit-share.test.mjs` dan `e2e/legend-ogx3.mock.spec.ts`).
+- Bukti: 10 file API 165 test hijau; root `accounting-contract` + `ws07-profit-share` + `ws07-profit-share-carry` 117 hijau; tsc shared/api/web exit 0; eslint dan prettier bersih; `db:generate` kosong. Test gagal-dulu: shared 13 test merah (`unabsorbedByShareholder is not iterable`), migrasi 8/8 merah, test API 1-9 dan 10-11 merah sebelum kode. Subagent: 3 Explore, 4 implementer berurutan/paralel, 1 architect; puncak 2 bersamaan.
+
 ## legend-8s992 aturan founder bagi hasil + sisa test (engineer Sonnet, cabang `ws/8s992-profit-rules` dari `ws/profit-share` 9e3d3928, 2026-11-10)
 
 - Q82 pembulatan: sudah ada (`allocateIdr`, seri ke shareholderId terendah); dibuktikan 3 test baru di `tests/ws07-profit-share.test.mjs` (sisa hitung tangan, seri dengan semua urutan input, loop properti 400 putaran). Mutasi balik urutan seri: 3 test merah.
@@ -1494,6 +1503,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum: retur aktif sesudah jurnal penerimaan barang (`legend-29vw`) menyalakan flag; UI; kas kecil `legend-4961`. Brief Codex: `docs/briefs/301c-second-opinion-supplier-return-petty.md` (belum dijalankan).
 
 ## 2026-11-10: WS-10 absensi karyawan (legend-wh71)
+
 - Sudah: 6 tabel `attendance_*` (migrasi 0217, RLS tenant + outlet), clock selfie/geofence/QR 30 detik/ikat perangkat, terlambat/pulang cepat/lembur dari shift, idempoten, koreksi lewat approval `hris_attendance`, antrean review sampling + config kebijakan, duty meal (catat saja), applier edge `attendance.logged`, job purge selfie 90 hari sesudah payroll tutup (per badan hukum).
 - Bukti: tes terarah 153 lulus di 8 berkas; typecheck api dan shared, eslint, prettier bersih; `db:generate` kedua kosong; review K (architect xhigh) 8 temuan (1 kritis: method manual_correction di clock) dibetulkan dengan tes gagal-dulu.
 - Belum: provider object storage prod belum ada (legend-7nv1), jadi job purge belum didaftarkan di `worker-main.ts` dan upload selfie belum bisa; pemotongan stok duty meal (konsumen event) dan event duty meal belum ada; FE legend-0z5k; second-opinion Codex per area.

@@ -1329,6 +1329,8 @@ function draftDistributionRun(input: {
     adjustmentReason: input.adjustmentReason ?? null,
     reversalJournalEntryId: null,
     unabsorbedIdr: 0,
+    carryDeductedIdr: adjustment ? 0 : regular.carryDeductedIdr,
+    carryDeductions: [],
   });
 }
 

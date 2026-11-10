@@ -559,6 +559,11 @@ export const distributionCalculationLineSchema = z
     shareholderId: shareholderIdSchema,
     shareBp: positiveShareBp,
     grossIdr: idrSchema,
+    /**
+     * Carry (unabsorbed correction shortfall) deducted from this shareholder's
+     * share before tax; `grossIdr` is the share after it (founder rule Q83).
+     */
+    carryDeductedIdr: nonNegativeIdr.default(idr(0)),
     taxWithheldIdr: idrSchema,
     netIdr: idrSchema,
   })
@@ -627,14 +632,27 @@ export const distributionCalculationSchema = z
     periodNetProfitIdr: positiveIdr,
     reserveIdr: nonNegativeIdr,
     distributableIdr: positiveIdr,
+    /** Total carry deducted from this run's shares, absorbed shareholders included. */
+    carryDeductedIdr: nonNegativeIdr.default(idr(0)),
+    /** What each shortfall gave up, for the BE to persist with the run. */
+    carryDeductions: z
+      .array(
+        z.strictObject({
+          shareholderId: z.string().min(1),
+          shortfallId: z.string().min(1),
+          amountIdr: positiveIdr,
+        }),
+      )
+      .default([]),
   })
   .superRefine((row, ctx) => {
     checkCalculationTotals(row, ctx);
-    if (row.distributableIdr !== row.totalGrossIdr)
+    if (row.distributableIdr !== row.totalGrossIdr + row.carryDeductedIdr)
       ctx.addIssue({
         code: "custom",
         path: ["distributableIdr"],
-        message: "distributableIdr must equal the allocated gross total",
+        message:
+          "distributableIdr must equal the allocated gross total plus carry deducted",
       });
     if (row.periodNetProfitIdr - row.reserveIdr !== row.distributableIdr)
       ctx.addIssue({
@@ -700,13 +718,83 @@ function assertClosedPeriod(periodStatus: "open" | "closed"): void {
 /** What a shareholder still holds of a corrected run (gross and tax withheld). */
 export type HeldPaid = { grossIdr: number; taxWithheldIdr: number };
 
+/**
+ * An open correction shortfall of one shareholder (founder rule Q83): the part
+ * a claw-back could not take back from what the shareholder had been paid.
+ */
+export type CarryShortfall = { shortfallId: string; amountIdr: number };
+
+/** What a regular run takes from one shortfall of one shareholder. */
+export type CarryDeduction = {
+  shareholderId: string;
+  shortfallId: string;
+  amountIdr: Idr;
+};
+
+/**
+ * Regular split with carry. Each shareholder's share `S` is the usual largest
+ * remainder part; the open shortfalls (oldest first, as the caller orders them)
+ * take `min(S, what is open)` and tax runs on the rest. A share absorbed to
+ * zero gets no line (the schema refuses a zero line) but its deduction is
+ * still reported. A deduction never moves to another shareholder.
+ */
 function buildCalculationLines(
   amountIdr: Idr,
   allocations: readonly AllocationWeight[],
   taxWithholdingBp: number,
-): DistributionCalculationLine[] {
-  return buildClampedCalculationLines(amountIdr, allocations, taxWithholdingBp)
-    .lines;
+  carry?: ReadonlyMap<string, readonly CarryShortfall[]>,
+): {
+  lines: DistributionCalculationLine[];
+  carryDeductions: CarryDeduction[];
+} {
+  assertUniqueShareholders(allocations);
+  assertShareAllocationsSum(allocations);
+  const ordered = [...allocations].sort((a, b) =>
+    a.shareholderId < b.shareholderId ? -1 : 1,
+  );
+  const grossParts = allocateIdr(
+    amountIdr,
+    ordered.map((row) => row.shareBp),
+  );
+  if (grossParts.some((part) => part === 0))
+    throw new AccountingError(
+      "NOTHING_TO_DISTRIBUTE",
+      "Jumlah terlalu kecil: setiap pemegang saham harus menerima minimal Rp1.",
+    );
+  const lines: DistributionCalculationLine[] = [];
+  const carryDeductions: CarryDeduction[] = [];
+  ordered.forEach((row, index) => {
+    const share = grossParts[index];
+    let left: number = share;
+    for (const open of carry?.get(row.shareholderId) ?? []) {
+      const taken = Math.min(left, open.amountIdr);
+      if (taken <= 0) continue;
+      carryDeductions.push({
+        shareholderId: row.shareholderId,
+        shortfallId: open.shortfallId,
+        amountIdr: idr(taken),
+      });
+      left -= taken;
+    }
+    if (left === 0) return;
+    const grossIdr = idr(left);
+    const taxWithheldIdr = applyBasisPoints(
+      grossIdr,
+      taxWithholdingBp,
+      DISTRIBUTION_ROUNDING.tax,
+    );
+    lines.push(
+      distributionCalculationLineSchema.parse({
+        shareholderId: row.shareholderId,
+        shareBp: row.shareBp,
+        grossIdr,
+        carryDeductedIdr: idr(share - left),
+        taxWithheldIdr,
+        netIdr: subtractIdr(grossIdr, taxWithheldIdr),
+      }),
+    );
+  });
+  return { lines, carryDeductions };
 }
 
 /**
@@ -722,7 +810,11 @@ function buildClampedCalculationLines(
   allocations: readonly AllocationWeight[],
   taxWithholdingBp: number,
   held?: ReadonlyMap<string, HeldPaid>,
-): { lines: DistributionCalculationLine[]; unabsorbedIdr: Idr } {
+): {
+  lines: DistributionCalculationLine[];
+  unabsorbedIdr: Idr;
+  unabsorbedByShareholder: Map<string, Idr>;
+} {
   assertUniqueShareholders(allocations);
   assertShareAllocationsSum(allocations);
   // Canonical order: the remainder tie-break must not depend on row order.
@@ -741,6 +833,7 @@ function buildClampedCalculationLines(
       "Jumlah terlalu kecil: setiap pemegang saham harus menerima minimal Rp1.",
     );
   let unabsorbed = 0;
+  const unabsorbedByShareholder = new Map<string, Idr>();
   const lines: DistributionCalculationLine[] = [];
   ordered.forEach((row, index) => {
     let grossIdr = grossParts[index];
@@ -749,7 +842,10 @@ function buildClampedCalculationLines(
       const holding = held.get(row.shareholderId);
       const available = Math.max(holding?.grossIdr ?? 0, 0);
       if (-grossIdr >= available) {
-        unabsorbed += -grossIdr - available;
+        const short = -grossIdr - available;
+        unabsorbed += short;
+        if (short > 0)
+          unabsorbedByShareholder.set(row.shareholderId, idr(short));
         grossIdr = idr(-available);
         // Giving back everything also gives back all the tax still held, so
         // rounding on each step never leaves a tax residue behind.
@@ -772,7 +868,11 @@ function buildClampedCalculationLines(
       }),
     );
   });
-  return { lines, unabsorbedIdr: idr(unabsorbed) };
+  return {
+    lines,
+    unabsorbedIdr: idr(unabsorbed),
+    unabsorbedByShareholder,
+  };
 }
 
 function totalsOf(lines: readonly DistributionCalculationLine[]) {
@@ -798,7 +898,15 @@ export function calculateDistribution(input: {
   policy: DistributionPolicy;
   /** The approved, effective share version's allocations. */
   allocations: readonly AllocationWeight[];
-}): DistributionCalculation {
+  /**
+   * Open correction shortfalls per shareholder, oldest first (founder rule
+   * Q83). Each is deducted from that shareholder's share of this run only.
+   */
+  carry?: ReadonlyMap<string, readonly CarryShortfall[]>;
+}): DistributionCalculation & {
+  carryDeductedIdr: Idr;
+  carryDeductions: CarryDeduction[];
+} {
   assertClosedPeriod(input.periodStatus);
   if (input.periodNetProfitIdr <= 0)
     throw new AccountingError("NOTHING_TO_DISTRIBUTE");
@@ -809,11 +917,20 @@ export function calculateDistribution(input: {
   );
   const distributableIdr = subtractIdr(input.periodNetProfitIdr, reserveIdr);
   if (distributableIdr <= 0) throw new AccountingError("NOTHING_TO_DISTRIBUTE");
-  const lines = buildCalculationLines(
+  const { lines, carryDeductions } = buildCalculationLines(
     distributableIdr,
     input.allocations,
     input.policy.taxWithholdingBp,
+    input.carry,
   );
+  // Run lines need >= 1 line; a run whose shares are all absorbed is not
+  // supported by the run state machine.
+  if (lines.length === 0)
+    throw new AccountingError(
+      "NOTHING_TO_DISTRIBUTE",
+      "Seluruh bagian pemegang saham habis terserap kekurangan koreksi sebelumnya.",
+    );
+  const carryDeductedIdr = sumIdr(carryDeductions.map((row) => row.amountIdr));
   return distributionCalculationSchema.parse({
     basis: "closed_period_net_profit",
     profitEntityId: input.profitEntityId,
@@ -822,6 +939,8 @@ export function calculateDistribution(input: {
     periodNetProfitIdr: input.periodNetProfitIdr,
     reserveIdr,
     distributableIdr,
+    carryDeductedIdr,
+    carryDeductions,
     lines,
     ...totalsOf(lines),
   });
@@ -848,31 +967,38 @@ export function calculateAdjustmentDistribution(input: {
    * corrected run plus its live adjustments). Omitted: no cap.
    */
   held?: ReadonlyMap<string, HeldPaid>;
-}): AdjustmentCalculation {
+}): AdjustmentCalculation & {
+  /** Claw-back rest per shareholder; sums to `unabsorbedIdr` (Q83 carry). */
+  unabsorbedByShareholder: Map<string, Idr>;
+} {
   assertClosedPeriod(input.periodStatus);
   if (input.reason.trim() === "")
     throw new AccountingError("ADJUSTMENT_TARGET_INVALID");
   if (input.adjustmentIdr === 0)
     throw new AccountingError("NOTHING_TO_DISTRIBUTE");
-  const { lines, unabsorbedIdr } = buildClampedCalculationLines(
-    input.adjustmentIdr,
-    input.allocations,
-    input.taxWithholdingBp,
-    input.held,
-  );
+  const { lines, unabsorbedIdr, unabsorbedByShareholder } =
+    buildClampedCalculationLines(
+      input.adjustmentIdr,
+      input.allocations,
+      input.taxWithholdingBp,
+      input.held,
+    );
   if (lines.length === 0) throw new AccountingError("ADJUSTMENT_EXCEEDS_PAID");
-  return adjustmentCalculationSchema.parse({
-    basis: "approved_run_adjustment",
-    profitEntityId: input.profitEntityId,
-    fiscalPeriodId: input.fiscalPeriodId,
-    period: input.period,
-    adjustsRunId: input.adjustsRunId,
-    reason: input.reason.trim(),
-    adjustmentIdr: sumIdr(lines.map((line) => line.grossIdr)),
-    unabsorbedIdr,
-    lines,
-    ...totalsOf(lines),
-  });
+  return {
+    ...adjustmentCalculationSchema.parse({
+      basis: "approved_run_adjustment",
+      profitEntityId: input.profitEntityId,
+      fiscalPeriodId: input.fiscalPeriodId,
+      period: input.period,
+      adjustsRunId: input.adjustsRunId,
+      reason: input.reason.trim(),
+      adjustmentIdr: sumIdr(lines.map((line) => line.grossIdr)),
+      unabsorbedIdr,
+      lines,
+      ...totalsOf(lines),
+    }),
+    unabsorbedByShareholder,
+  };
 }
 
 // ---- Distribution runs & lines (PRD §6 I `distribution_runs`, `distribution_lines`, SH-04)
@@ -905,6 +1031,8 @@ const distributionLineBaseShape = {
   shareholderId: shareholderIdSchema,
   shareBp: positiveShareBp,
   grossIdr: idrSchema,
+  /** Carry deducted from this shareholder's share on this run (Q83). */
+  carryDeductedIdr: nonNegativeIdr.default(idr(0)),
   taxWithheldIdr: idrSchema,
   netIdr: idrSchema,
 };
@@ -944,6 +1072,17 @@ export const distributionLineSchema = z
   });
 export type DistributionLine = z.infer<typeof distributionLineSchema>;
 
+/** Trace of a carry deduction back to the correction run it came from. */
+export const distributionCarryDeductionSchema = z.strictObject({
+  shareholderId: shareholderIdSchema,
+  /** The adjustment run whose unabsorbed rest this deduction pays down. */
+  shortfallRunId: distributionRunIdSchema,
+  amountIdr: positiveIdr,
+});
+export type DistributionCarryDeduction = z.infer<
+  typeof distributionCarryDeductionSchema
+>;
+
 export const distributionRunSchema = z
   .strictObject({
     id: distributionRunIdSchema,
@@ -980,6 +1119,12 @@ export const distributionRunSchema = z
      * rule Q83): recorded open, never charged to another shareholder.
      */
     unabsorbedIdr: nonNegativeIdr,
+    /**
+     * Regular run only: carry deducted from shares (founder rule Q83). The run's
+     * `distributableIdr` is `totalGrossIdr + carryDeductedIdr`.
+     */
+    carryDeductedIdr: nonNegativeIdr.default(idr(0)),
+    carryDeductions: z.array(distributionCarryDeductionSchema).default([]),
   })
   .superRefine((run, ctx) => {
     const lineIds = new Set<string>();
@@ -1025,11 +1170,40 @@ export const distributionRunSchema = z
         path: ["totalNetIdr"],
         message: "totalNetIdr must equal the line net total",
       });
-    if (run.distributableIdr !== run.totalGrossIdr)
+    if (run.distributableIdr !== run.totalGrossIdr + run.carryDeductedIdr)
       ctx.addIssue({
         code: "custom",
         path: ["distributableIdr"],
-        message: "distributableIdr must equal the allocated gross total",
+        message:
+          "distributableIdr must equal the allocated gross total plus carry deducted",
+      });
+    if (
+      sumIdr(run.carryDeductions.map((row) => row.amountIdr)) !==
+      run.carryDeductedIdr
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["carryDeductions"],
+        message: "carryDeductions must sum to carryDeductedIdr",
+      });
+    for (const line of run.lines) {
+      const deducted = sumIdr(
+        run.carryDeductions
+          .filter((row) => row.shareholderId === line.shareholderId)
+          .map((row) => row.amountIdr),
+      );
+      if (deducted !== line.carryDeductedIdr)
+        ctx.addIssue({
+          code: "custom",
+          path: ["lines"],
+          message: "A line's carryDeductedIdr must match its carryDeductions",
+        });
+    }
+    if (run.type !== "regular" && run.carryDeductedIdr > 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["carryDeductedIdr"],
+        message: "Only a regular run deducts carry",
       });
 
     if (
@@ -1242,6 +1416,19 @@ export function assertAdjustmentMatchesTarget(
     ? adjustment.lines.length > 0 &&
       adjustment.lines.every((line) => originalKeys.has(key1(line)))
     : key(original.lines) === key(adjustment.lines);
+  // A holder fully absorbed by a carry deduction has no line on the corrected
+  // run; paying them would skip their open shortfall.
+  const originalHolders = new Set(original.lines.map((l) => l.shareholderId));
+  if (
+    !matches &&
+    original.profitEntityId === adjustment.profitEntityId &&
+    original.shareVersion === adjustment.shareVersion &&
+    adjustment.lines.some((line) => !originalHolders.has(line.shareholderId))
+  )
+    throw new AccountingError(
+      "ADJUSTMENT_TARGET_INVALID",
+      "Penambahan tidak bisa dibuat: ada pemegang saham yang bagiannya habis menutup kekurangan koreksi dan tidak punya baris di distribusi ini.",
+    );
   if (
     original.profitEntityId !== adjustment.profitEntityId ||
     original.shareVersion !== adjustment.shareVersion ||
@@ -1413,6 +1600,8 @@ export const distributionStatementSchema = z.strictObject({
   adjustsRunId: distributionRunIdSchema.nullable(),
   shareBp: positiveShareBp,
   grossIdr: idrSchema,
+  /** Earlier correction shortfall cut from this share before tax (Q83). */
+  carryDeductedIdr: nonNegativeIdr.default(idr(0)),
   taxWithheldIdr: idrSchema,
   netIdr: idrSchema,
   paymentStatus: distributionLinePaymentStatusSchema,
@@ -1451,6 +1640,7 @@ export function buildDistributionStatement(input: {
     adjustsRunId: run.adjustsRunId,
     shareBp: line.shareBp,
     grossIdr: line.grossIdr,
+    carryDeductedIdr: line.carryDeductedIdr,
     taxWithheldIdr: line.taxWithheldIdr,
     netIdr: line.netIdr,
     paymentStatus: line.paymentStatus,
