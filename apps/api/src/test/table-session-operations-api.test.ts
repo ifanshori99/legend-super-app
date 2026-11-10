@@ -1685,6 +1685,78 @@ describe("review fixes (legend-685n)", () => {
     expect((await orderRow(order.uuid)).total).toBe(50000);
   });
 
+  // legend-ekxy2: the move reads its requested items before it locks their
+  // orders. A POS void that commits between that read and the lock must still
+  // stop the move (a voided item may never travel to another bill).
+  it("refuses an item voided while the move waits for the order lock", async () => {
+    const from = await openSession();
+    const to = await openSession();
+    await seedOrder(to.sessionId, [{ quantity: 1, unit: 18000 }]);
+    const order = await seedOrder(from.sessionId, [
+      { quantity: 1, unit: 20000 },
+      { quantity: 1, unit: 30000 },
+    ]);
+    const target = order.items[0]!;
+    const before = await eventCounts(
+      "table_session.items_moved",
+      from.sessionId,
+    );
+
+    // A second connection holds the order row lock, as a POS void would.
+    const blocker = await owner.connect();
+    let response: Awaited<ReturnType<typeof moveItems>>;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT id FROM orders WHERE id = $1 FOR UPDATE", [
+        order.uuid,
+      ]);
+      // `.then` starts the request now; it is not awaited yet.
+      // Both lines of the order are requested (whole-order move), so the
+      // refusal is the voided-item rule and not the split rule.
+      const pending = moveItems(
+        from.sessionId,
+        to.sessionId,
+        order.items.map((item) => item.id),
+      ).then((res) => res);
+      // Wait until some other backend is blocked on a lock (the move), polling
+      // instead of a blind sleep; capped so a changed lock order cannot hang.
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const { rows } = await blocker.query<{ waiting: number }>(
+          `SELECT count(*)::int AS waiting FROM pg_stat_activity
+           WHERE datname = current_database() AND pid <> pg_backend_pid()
+             AND wait_event_type = 'Lock'`,
+        );
+        if (rows[0]!.waiting > 0 || Date.now() > deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      // Let the waiting move finish any read it does just before the lock.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await blocker.query(
+        "UPDATE order_items SET status = 'voided' WHERE tenant_id = $1 AND id = $2",
+        [seededTenantId, target.uuid],
+      );
+      await blocker.query("COMMIT");
+      response = await pending;
+    } catch (error) {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
+
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(JSON.stringify(response.body)).toContain("dibatalkan");
+    expect(await sessionOfItem(target.uuid)).toBe(from.sessionId);
+    expect((await orderRow(order.uuid)).table_session_id).toBe(from.sessionId);
+    await expectEventsAdded(
+      "table_session.items_moved",
+      from.sessionId,
+      before,
+      0,
+    );
+  });
+
   /** Two running pay-first sessions, each with one live order. */
   async function twoPlainSessions() {
     const target = await openSession();

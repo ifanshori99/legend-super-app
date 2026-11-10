@@ -3199,3 +3199,19 @@ Langkah berikut CTO baru:
 - Bukti: 14 test baru gagal-dulu (3 cloud, 11 edge), semuanya lulus setelah perbaikan; 144 test terarah wifi lulus; tsc `apps/api` 0 error, eslint dan prettier bersih; reviewer sonnet (tingkat S) tidak menemukan bug.
 - Catatan: worker mengirim tier `base` ke agent bila sisa 0; waktu edge yang lebih cepat dari cloud hanya mengurangi sisa sedikit lebih banyak (condong ke kecepatan dasar).
 - Ukuran: 1 Explore x2, test-writer x2, test-runner x1, reviewer x1; puncak 2 bersamaan.
+## fix-419 gabung meja (legend-mgavf), 11 Nov 2026
+- Cabang `fix/codex-419-table-merge`. `table-session-operations.service.ts`: merge mengunci order kedua sesi (urut id, FOR UPDATE) sebelum cek pembayaran, jadi tender POS yang commit saat merge terlihat dan merge ditolak. Biaya selisih swap terbuka (`order_issue_charges`, status open) ikut dipindah ke sesi tujuan dalam transaksi yang sama. Guard sesi dibayar sebagian tidak diubah (pesan sudah jelas).
+- Test baru `table-session-merge-hardening.test.ts` (6 test): gagal-dulu pada service lama (4 dari 4 untuk temuan 1 dan 2), lulus sesudah. Gate: tsc api hijau, eslint 0, prettier bersih, 44 test area lulus.
+- Architect (xhigh, uang): merge disetujui, tanpa temuan. Temuan di luar diff: `moveSessionItemsOperation` punya race yang sama (cek bayar L963 sebelum lock order L1002), perlu kartu sendiri.
+- Subagent: 4 (2 Explore, test-writer, implementer) + 1 architect, puncak 4 bersamaan.
+
+### fix-419 tambahan: pindah item (legend-mgavf), 11 Nov 2026
+- `moveSessionItemsOperation`: order kedua sesi (asal dan tujuan) dikunci urut id sebelum cek pembayaran; pencarian order yang dipindah memakai set yang sudah terkunci. Guard dan pesan tidak berubah.
+- 3 test baru di `table-session-merge-hardening.test.ts` (tender di order yang dipindah, order lain sesi asal, order sesi tujuan). Pada service lama: 3 gagal (move 200 tanpa menunggu lock); sesudah perbaikan: lulus. Gate: typecheck api, eslint, prettier hijau; 47 test area lulus.
+- Architect xhigh atas diff tambahan: disetujui. Catatan lama (bukan regresi, tidak dikerjakan): cek order void di `moveSessionItemsOperation` membaca baris sebelum lock, void POS yang commit di sela itu terlewat.
+- Subagent: 2 (test-writer, implementer) + 1 architect, puncak 2 bersamaan.
+
+### fix-419 tambahan: void di pindah item (legend-mgavf), 11 Nov 2026
+- `moveSessionItemsOperation`: setelah lock, order berstatus `voided` di set terkunci ditolak 409 dengan pesan yang sama ("Item yang sudah dibatalkan tidak dapat dipindah."). Cek lama membaca baris sebelum lock.
+- 2 test baru (pindah seluruh order dan sebagian) untuk void POS yang commit saat pindah item menunggu lock. Pada service lama: seluruh order 500 (trigger final-order POS-04 menggagalkan transaksi, data aman) dan sebagian 409 dengan pesan lain; sesudah perbaikan keduanya 409 "dibatalkan". Gate: typecheck api, eslint, prettier hijau; 49 test area lulus. Reviewer sonnet: tanpa temuan.
+- Tersisa (tidak dikerjakan): cek void tingkat item masih memakai baris sebelum lock; hanya relevan bila POS bisa membatalkan satu baris tanpa membatalkan order.

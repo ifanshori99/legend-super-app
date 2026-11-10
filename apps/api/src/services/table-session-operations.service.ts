@@ -44,7 +44,7 @@ import {
   tableSessions,
   tables,
 } from "../db/schema";
-import { orderIssues } from "../db/schema/kds-issues";
+import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues";
 import { posOrderTenders } from "../db/schema/pos-order";
 import { reservationTables } from "../db/schema/reservation";
 import { withTenant } from "../db/tenant";
@@ -563,6 +563,22 @@ export async function mergeTableSessionsOperation(
         };
     }
 
+    // Lock the orders of both sessions (ascending order id, the same order
+    // every order writer uses) BEFORE reading what is paid: a POS tender that
+    // commits while the merge runs waits here, so the payment check below sees
+    // it and a merge never moves an order whose bill just changed.
+    const lockedOrders = await tx
+      .select()
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          inArray(orders.tableSessionId, [target.id, source.id]),
+        ),
+      )
+      .orderBy(asc(orders.id))
+      .for("update");
+
     const targetBill = await paidOf(tx, context, target.id);
     const sourceBill = await paidOf(tx, context, source.id);
     assertSessionsCanMerge({
@@ -585,16 +601,9 @@ export async function mergeTableSessionsOperation(
         "CONFLICT",
         "Sesi dari reservasi beberapa meja tidak dapat digabung; pecah reservasinya dulu.",
       );
-    const moved = await tx
-      .select()
-      .from(orders)
-      .where(
-        and(
-          eq(orders.tenantId, tenantId),
-          eq(orders.tableSessionId, source.id),
-        ),
-      )
-      .for("update");
+    const moved = lockedOrders.filter(
+      (order) => order.tableSessionId === source.id,
+    );
     const liveOrders = moved.filter((order) => order.status !== "voided");
     assertSamePricingMode([
       liveOrders,
@@ -642,6 +651,19 @@ export async function mergeTableSessionsOperation(
             ),
           ),
         );
+
+    // An open dearer-swap charge rides on the source session; without this it
+    // would be lost when the source closes below.
+    await tx
+      .update(orderIssueCharges)
+      .set({ tableSessionId: target.id, updatedAt: now })
+      .where(
+        and(
+          eq(orderIssueCharges.tenantId, tenantId),
+          eq(orderIssueCharges.tableSessionId, source.id),
+          eq(orderIssueCharges.status, "open"),
+        ),
+      );
 
     // Guests of the source join the shared bill; a device already in the
     // target stays one participant (unique device per session).
@@ -897,7 +919,7 @@ export async function moveSessionItemsOperation(
     assertTableUnchanged(from, locatedFrom);
     assertTableUnchanged(to, locatedTo);
 
-    const requested = await tx
+    const requestedEarly = await tx
       .select({ item: orderItems, order: orders })
       .from(orderItems)
       .innerJoin(
@@ -914,8 +936,8 @@ export async function moveSessionItemsOperation(
     // Repeat of a move that already succeeded: every item sits in the
     // destination now and the earlier request is on record.
     if (
-      requested.length === itemIds.length &&
-      requested.every((row) => row.order.tableSessionId === to.id)
+      requestedEarly.length === itemIds.length &&
+      requestedEarly.every((row) => row.order.tableSessionId === to.id)
     ) {
       const wanted = new Set(itemIds);
       const prior = await findPriorEvent(
@@ -937,6 +959,41 @@ export async function moveSessionItemsOperation(
           movedTotalIdr: Number(prior.movedTotalIdr),
         };
     }
+
+    // Lock the orders of both sessions (ascending order id, the same order
+    // every order writer uses) BEFORE reading what is paid: a POS tender that
+    // commits while the move runs waits here, so the payment check below sees
+    // it and a move never touches an order whose bill just changed.
+    const sessionOrders = await tx
+      .select()
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          inArray(orders.tableSessionId, [from.id, to.id]),
+        ),
+      )
+      .orderBy(asc(orders.id))
+      .for("update");
+
+    // Re-read the requested lines under the same lock: a POS void of one line
+    // that committed after the first read must not be missed (legend-ekxy2).
+    const freshItems = await tx
+      .select()
+      .from(orderItems)
+      .where(
+        and(eq(orderItems.tenantId, tenantId), inArray(orderItems.id, itemIds)),
+      );
+    const freshItemById = new Map(freshItems.map((item) => [item.id, item]));
+    const freshOrderById = new Map(
+      sessionOrders.map((order) => [order.id, order]),
+    );
+    const requested = requestedEarly.flatMap((row) => {
+      const item = freshItemById.get(row.item.id);
+      return item
+        ? [{ item, order: freshOrderById.get(row.order.id) ?? row.order }]
+        : [];
+    });
 
     const fromBill = await paidOf(tx, context, from.id);
     const toBill = await paidOf(tx, context, to.id);
@@ -974,19 +1031,20 @@ export async function moveSessionItemsOperation(
       await liveOrdersOf(tx, tenantId, to.id),
     ]);
 
-    // Lock the touched orders in id order and re-read them under the lock.
+    // The touched orders, as re-read under the lock taken above.
     const orderIds = [...new Set(requested.map((row) => row.order.id))].sort();
     const lockedOrders = new Map<string, OrderRow>();
     for (const id of orderIds) {
-      const [order] = await tx
-        .select()
-        .from(orders)
-        .where(and(eq(orders.tenantId, tenantId), eq(orders.id, id)))
-        .for("update");
+      const order = sessionOrders.find((row) => row.id === id);
       if (!order || order.tableSessionId !== from.id)
         throw new CoreError(
           "NOT_FOUND",
           "Item pesanan tidak ditemukan di sesi ini.",
+        );
+      if (order.status === "voided")
+        throw new CoreError(
+          "CONFLICT",
+          "Item yang sudah dibatalkan tidak dapat dipindah.",
         );
       lockedOrders.set(id, order);
     }
