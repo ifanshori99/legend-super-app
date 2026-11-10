@@ -1184,6 +1184,7 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
           tenantId: world.tenantId,
           profileId: uProfile,
           action: "survivor_closed_into_absorbed",
+          intoProfileId: vProfile,
         },
       ]);
     });
@@ -1237,6 +1238,94 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
       const kept = await profileRow(TENANT_A, vProfile);
       expect(kept.user_id).toBe(u.userId);
       expect(kept.whatsapp_hash).toBe(await whatsAppDigest(SENDER));
+    });
+
+    it("a survivor profile closed in another tenant than the webhook's hands its verified WhatsApp number to the kept profile", async () => {
+      const v = await whatsAppOnlyAccount();
+      const u = await signedInAccount();
+      await makeOlder(u, v);
+      // The webhook runs in TENANT_A: onWhatsAppVerified only reaches that
+      // tenant, so the other tenant's number must travel with the merge itself.
+      const digest = await whatsAppDigest(SENDER);
+      const uProfile = await seedMemberProfile(world.tenantId, u.userId, {
+        whatsappHash: digest,
+      });
+      const vProfile = await seedMemberProfile(world.tenantId, v.userId);
+      await seedConsent(world.tenantId, vProfile, {
+        purpose: "loyalty",
+        decision: "granted",
+        policyVersion: "2026-01",
+      });
+      await grantPoints(world.tenantId, vProfile, 60);
+
+      const { delivered } = await link(u.client);
+      expect(delivered.body.data.completed).toBe(1);
+
+      expect(await profileRow(world.tenantId, uProfile)).toMatchObject({
+        membership_status: "closed",
+        user_id: null,
+        merged_into_profile_id: vProfile,
+      });
+      const kept = await profileRow(world.tenantId, vProfile);
+      expect(kept.user_id).toBe(u.userId);
+      expect(kept.whatsapp_hash).toBe(digest);
+      expect(kept.whatsapp_verified_at).toBeTruthy();
+      expect(kept.membership_status).toBe("active");
+    });
+
+    it("waits for an in-flight insert on the survivor U's profile and then refuses: no row is stranded on a closed profile", async () => {
+      const v = await whatsAppOnlyAccount();
+      const u = await signedInAccount();
+      await makeOlder(u, v);
+      const uProfile = await seedMemberProfile(world.tenantId, u.userId);
+      const vProfile = await seedMemberProfile(world.tenantId, v.userId, {
+        whatsappHash: hex64(),
+      });
+      await grantPoints(world.tenantId, vProfile, 80);
+
+      // An open transaction inserts a voucher on U's profile: the foreign key
+      // takes a key-share lock on the row, which FOR NO KEY UPDATE does not
+      // wait for. The merge must queue behind it (FOR UPDATE), see the
+      // committed row, and refuse instead of closing a profile that now holds it.
+      let linking: ReturnType<typeof link> | undefined;
+      let sawWaiter = false;
+      await asTenant(world.tenantId, async (client) => {
+        await client.query(
+          `INSERT INTO vouchers (tenant_id, customer_profile_id, code_hash, source, status, value_idr, valid_from)
+           VALUES ($1, $2, $3, 'manual', 'issued', 10000, now())`,
+          [world.tenantId, uProfile, hex64()],
+        );
+        linking = link(u.client);
+        for (let attempt = 0; attempt < 100 && !sawWaiter; attempt += 1) {
+          const { rows } = await owner.query(
+            `SELECT 1 FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+          );
+          sawWaiter = rows.length > 0;
+          if (!sawWaiter)
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      });
+      expect(sawWaiter).toBe(true);
+
+      const { delivered, polled } = await linking!;
+      expect(delivered.body.data.completed).toBe(0);
+      expect(polled.status).toBe(409);
+      expect(polled.body.error.code).toBe("IDENTITY_MERGE_NEEDS_SUPPORT");
+      expect(await merges()).toHaveLength(0);
+      expect(await profileRow(world.tenantId, uProfile)).toMatchObject({
+        user_id: u.userId,
+        membership_status: "pending_verification",
+        merged_into_profile_id: null,
+      });
+      expect((await profileRow(world.tenantId, vProfile)).user_id).toBe(
+        v.userId,
+      );
+      await asTenant(world.tenantId, (client) =>
+        client.query("DELETE FROM vouchers WHERE customer_profile_id = $1", [
+          uProfile,
+        ]),
+      );
     });
 
     it("refuses, writing nothing, when both profiles hold points", async () => {

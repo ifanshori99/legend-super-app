@@ -51,6 +51,7 @@
 // the agreed wording for the day an outbound reply path exists.
 
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { tenantIdSchema } from "@starter/shared/core";
 import { maskEmail } from "@starter/shared/identity";
 import type { db } from "../db";
 import {
@@ -67,6 +68,7 @@ import { identityMerges } from "../db/schema/identity-merge.ts";
 import { memberTenantContext, withProfileLock } from "../db/member-scope.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordMemberConsentInTx } from "./consent.service.ts";
+import { onWhatsAppVerified } from "./member-profile.service.ts";
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -96,6 +98,11 @@ export type ProfileMove = {
     | "moved_to_survivor"
     | "closed_into_survivor"
     | "survivor_closed_into_absorbed";
+  /**
+   * Only for `survivor_closed_into_absorbed`: the profile that keeps the user
+   * (the absorbed account's), since `profileId` is the survivor's closed one.
+   */
+  intoProfileId?: string;
 };
 
 export type MergeInput = {
@@ -171,6 +178,28 @@ async function profilesOfUser(
  * must teach `profileIsEmpty` its column.
  */
 const UNMAPPED_PROFILE_TABLES = ["feedback", "referrals"] as const;
+
+/**
+ * `SELECT ... FOR UPDATE` on one profile row, under the profile's tenant
+ * (`inTenant`). Stronger than `withProfileLock`: it also blocks the key-share
+ * locks of inserts that reference the profile (see `moveMemberProfiles`).
+ */
+async function lockProfileForUpdate(
+  tx: Transaction,
+  tenantId: string,
+  profileId: string,
+): Promise<void> {
+  await tx
+    .select({ id: customerProfiles.id })
+    .from(customerProfiles)
+    .where(
+      and(
+        eq(customerProfiles.tenantId, tenantIdSchema.parse(tenantId)),
+        eq(customerProfiles.id, profileId),
+      ),
+    )
+    .for("update");
+}
 
 /**
  * True when no table holds a row for the profile: nothing in any table that
@@ -356,8 +385,14 @@ async function carryConsents(
  * - anything else (both have content, or S's profile is closed): `refused`
  *   (`profile_conflict`), the caller refuses the whole merge with
  *   `IDENTITY_MERGE_NEEDS_SUPPORT`.
+ * Wherever both accounts have a profile, both are locked `FOR UPDATE`
+ * (S first, then A) before the emptiness checks, so no row can land on a
+ * profile between the check and the close.
  * The point ledger is append-only and keys on `customer_profile_id`, which
  * survives every case: no ledger row is ever written, updated or deleted here.
+ * `survivor_closed_into_absorbed` also runs `onWhatsAppVerified` with the
+ * closed profile's number for the survivor in that tenant, and records the
+ * kept profile as `intoProfileId` in the move.
  */
 export async function moveMemberProfiles(
   tx: Transaction,
@@ -393,26 +428,41 @@ export async function moveMemberProfiles(
       });
       continue;
     }
-    const empty = await inTenant(tx, absorbed.tenantId, () =>
-      profileIsEmpty(tx, absorbed.profileId),
-    );
-    if (empty) {
+    // Decide under row locks, S first, then A (one order everywhere). The
+    // `FOR NO KEY UPDATE` of `withProfileLock` does not block inserts that take
+    // a key-share lock on the profile (visits, orders, consents, ...), so a row
+    // could land between the emptiness check and the close and be stranded on
+    // the closed profile. `FOR UPDATE` conflicts with key-share: such an insert
+    // waits for this transaction, and the check below (read committed: a fresh
+    // snapshot per statement) sees everything committed while we waited. The
+    // locks stay until the transaction ends, so the write phase decides nothing
+    // new; a refusal below still writes nothing.
+    const decision = await inTenant(tx, absorbed.tenantId, async () => {
+      await lockProfileForUpdate(tx, absorbed.tenantId, survivorProfileId);
+      await lockProfileForUpdate(tx, absorbed.tenantId, absorbed.profileId);
+      if (await profileIsEmpty(tx, absorbed.profileId))
+        return "closed_into_survivor" as const;
+      if (
+        await survivorProfileIsEmpty(tx, absorbed.tenantId, survivorProfileId)
+      )
+        return "survivor_closed_into_absorbed" as const;
+      return null;
+    });
+    if (decision === null)
+      return { kind: "refused", reason: "profile_conflict" };
+    if (decision === "closed_into_survivor") {
       plan.push({
         tenantId: absorbed.tenantId,
         profileId: absorbed.profileId,
-        action: "closed_into_survivor",
+        action: decision,
         survivorProfileId,
       });
       continue;
     }
-    const survivorEmpty = await inTenant(tx, absorbed.tenantId, () =>
-      survivorProfileIsEmpty(tx, absorbed.tenantId, survivorProfileId),
-    );
-    if (!survivorEmpty) return { kind: "refused", reason: "profile_conflict" };
     plan.push({
       tenantId: absorbed.tenantId,
       profileId: survivorProfileId,
-      action: "survivor_closed_into_absorbed",
+      action: decision,
       survivorProfileId,
       absorbedProfileId: absorbed.profileId,
     });
@@ -434,6 +484,12 @@ export async function moveMemberProfiles(
       ) {
         await withProfileLock(tx, step.tenantId, step.survivorProfileId);
         await withProfileLock(tx, step.tenantId, step.absorbedProfileId);
+        // The survivor's verified number, read before the profile is closed:
+        // the caller runs onWhatsAppVerified for the webhook's tenant only.
+        const [closing] = await tx
+          .select({ whatsappHash: customerProfiles.whatsappHash })
+          .from(customerProfiles)
+          .where(eq(customerProfiles.id, step.survivorProfileId));
         // Close first, then repoint: the one-profile-per-user index never sees
         // two live profiles of the survivor. The closed row leaves the
         // WhatsApp-number unique index too, before onWhatsAppVerified runs.
@@ -450,6 +506,13 @@ export async function moveMemberProfiles(
           .update(customerProfiles)
           .set({ userId: input.survivorUserId, updatedAt: input.now })
           .where(eq(customerProfiles.id, step.absorbedProfileId));
+        // The number follows the user into the kept profile of this tenant.
+        if (closing?.whatsappHash)
+          await onWhatsAppVerified(
+            tx,
+            input.survivorUserId,
+            closing.whatsappHash,
+          );
         return;
       }
       await withProfileLock(tx, step.tenantId, step.survivorProfileId);
@@ -474,10 +537,13 @@ export async function moveMemberProfiles(
   }
   return {
     kind: "moved",
-    moves: plan.map(({ tenantId, profileId, action }) => ({
+    moves: plan.map(({ tenantId, profileId, action, absorbedProfileId }) => ({
       tenantId,
       profileId,
       action,
+      ...(action === "survivor_closed_into_absorbed" && absorbedProfileId
+        ? { intoProfileId: absorbedProfileId }
+        : {}),
     })),
   };
 }

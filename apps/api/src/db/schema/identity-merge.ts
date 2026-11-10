@@ -31,6 +31,8 @@ export type IdentityMergeProfileMove = {
   tenantId: string;
   profileId: string;
   action: string;
+  /** Set for `survivor_closed_into_absorbed`: the profile that keeps the user. */
+  intoProfileId?: string;
 };
 
 export const identityMerges = pgTable(
