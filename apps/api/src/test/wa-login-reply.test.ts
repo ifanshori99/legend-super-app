@@ -207,7 +207,27 @@ afterAll(async () => {
     "SELECT user_id FROM user_identities WHERE type = 'whatsapp' AND value_hash = ANY($1)",
     [hashes],
   );
-  const userIds = users.rows.map((row) => row.user_id);
+  const identityUserIds = users.rows.map((row) => row.user_id);
+  // A merge moves the WhatsApp identity to the survivor and leaves the absorbed
+  // WhatsApp-only user plus an append-only identity_merges row behind; both
+  // must go, or later files sharing this database fail on the FK (legend-qodvz).
+  const merges = await owner.query<{ absorbed: string }>(
+    `SELECT absorbed_user_id AS absorbed FROM identity_merges
+      WHERE survivor_user_id = ANY($1) OR absorbed_user_id = ANY($1)`,
+    [identityUserIds],
+  );
+  const userIds = [
+    ...new Set([...identityUserIds, ...merges.rows.map((row) => row.absorbed)]),
+  ];
+  await owner.query("ALTER TABLE identity_merges DISABLE TRIGGER USER");
+  try {
+    await owner.query(
+      "DELETE FROM identity_merges WHERE survivor_user_id = ANY($1) OR absorbed_user_id = ANY($1)",
+      [userIds],
+    );
+  } finally {
+    await owner.query("ALTER TABLE identity_merges ENABLE TRIGGER USER");
+  }
   await owner.query(
     "DELETE FROM wa_inbound_messages WHERE receiving_number = ANY($1)",
     [[tenantA.receivingNumber, tenantB.receivingNumber]],
