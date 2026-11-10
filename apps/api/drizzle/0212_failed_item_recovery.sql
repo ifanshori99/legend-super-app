@@ -92,7 +92,6 @@ ALTER TABLE public.order_items NO FORCE ROW LEVEL SECURITY;--> statement-breakpo
 ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_replacement_order_item_fk" FOREIGN KEY ("tenant_id","replacement_order_item_id") REFERENCES "public"."order_items"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE public.order_items FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.order_issues FORCE ROW LEVEL SECURITY;--> statement-breakpoint
---> statement-breakpoint
 CREATE UNIQUE INDEX "order_issues_replacement_item_once_idx" ON "order_issues" USING btree ("tenant_id","replacement_order_item_id") WHERE "order_issues"."replacement_order_item_id" IS NOT NULL;
 --> statement-breakpoint
 ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_swap_approval_check" CHECK ("order_issues"."resolution" IS DISTINCT FROM 'swap' OR "order_issues"."price_difference_idr" IS NULL OR "order_issues"."price_difference_idr" <= 0 OR "order_issues"."approval_request_id" IS NOT NULL);
