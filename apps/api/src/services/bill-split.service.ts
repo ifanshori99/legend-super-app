@@ -671,9 +671,11 @@ export async function markSplitPartPaidTx(
 }
 
 /**
- * legend-udu47: the order of a part was rung up in practice (latihan) mode or
- * has a refund. Its points cannot be claimed (the POST answers 409), so the
- * code is not shown either. Same conditions as `table-claim.service`.
+ * legend-udu47: the points of this part cannot be claimed (the POST answers
+ * 409), so the code is not shown either: the order has a refund, was rung up
+ * in practice (latihan) mode, is voided, or already has a member attached (the
+ * earn consumer credits them). Same conditions as `redeemSplit` in
+ * `table-claim.service`.
  */
 async function orderBlocksClaim(
   tx: Tx,
@@ -687,7 +689,12 @@ async function orderBlocksClaim(
       and(
         eq(orders.tenantId, tenantId),
         eq(orders.id, orderId),
-        or(orderRefunded(tenantId), orderTraining(tenantId)),
+        or(
+          eq(orders.status, "voided"),
+          isNotNull(orders.customerProfileId),
+          orderRefunded(tenantId),
+          orderTraining(tenantId),
+        ),
       ),
     )
     .limit(1);

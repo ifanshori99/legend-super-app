@@ -65,6 +65,7 @@ import {
   type IsolatedTenant,
   type Staff,
 } from "./floor-test-helpers.ts";
+import { seedProfile } from "./member-loyalty-helpers.ts";
 
 let app: Express;
 let tenant: IsolatedTenant;
@@ -698,6 +699,25 @@ describe("claim by token after table close (legend-ia54l)", () => {
     const response = await byToken(claim.claimToken!);
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(JSON.stringify(response.body)).not.toContain(claim.claimToken!);
+  });
+
+  it("CLAIM-MEMBER-ATTACHED a part of an order with a member attached shows no code, by session and by token", async () => {
+    const w = await splitWorld(2, 2);
+    const part = w.parts[0]!;
+    const claim = await readClaim(w.guest, part.id);
+    expect(claim.status).toBe("available");
+    const attached = await seedProfile(tenant.tenantId);
+    await owner.query(
+      `UPDATE orders SET customer_profile_id = $3, customer_attached_via = 'pwa_session',
+              customer_attached_at = now()
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, await orderIdOf(part.id), attached.id],
+    );
+
+    expect((await readClaim(w.guest, part.id)).status).toBe("unavailable");
+    await expect(
+      getSplitClaimByToken(contextOf(tenant.tenantId), claim.claimToken!),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("CLAIM-REFUNDED a refunded part shows no code, by session and by token", async () => {
