@@ -13,6 +13,7 @@ import {
 import {
   DEFAULT_BUSINESS_DAY_CLOCK,
   businessDateOf,
+  createUlid,
   type BusinessDayClock,
   type OutletId,
   type TenantId,
@@ -28,7 +29,21 @@ import {
   taxRules,
   taxSettings,
 } from "../db/schema/index.ts";
+import { recordAudit } from "./core-audit.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
+import {
+  DEFAULT_EFFECTIVE_FROM,
+  DEFAULT_SERVICE_CHARGE_CODE,
+  DEFAULT_SERVICE_CHARGE_ITEM_CLASSES,
+  DEFAULT_SERVICE_CHARGE_NAME,
+  DEFAULT_SERVICE_CHARGE_ORDER_TYPES,
+  DEFAULT_SERVICE_CHARGE_RATE_BP,
+  DEFAULT_SETTINGS,
+} from "./tax-provisioning.service.ts";
+import {
+  lockServiceChargeConfig,
+  lockTaxConfig,
+} from "./tenant-config-locks.ts";
 import { loadTenantKeyMaps } from "./tenant-config-keys.ts";
 import {
   ConfigImportError,
@@ -46,6 +61,7 @@ import {
 
 type TaxSettingsRow = typeof taxSettings.$inferSelect;
 type TaxRuleRow = typeof taxRules.$inferSelect;
+type ServiceChargeRow = typeof serviceChargeRules.$inferSelect;
 
 // ---- shared helpers -------------------------------------------------------
 
@@ -59,11 +75,172 @@ function ensure(ok: boolean, what: string, message: string): void {
   if (!ok) throw new ConfigImportError(`Invalid ${what}: ${message}.`);
 }
 
+// ---- provisioning defaults (legend-z1qk8) ---------------------------------
+// A new tenant is provisioned with default tax settings and a tenant-wide
+// SC-DINE-IN service charge. While such a row is still EXACTLY the default (the
+// owner never touched it) the template overwrites it; once the owner changed it
+// (or published a newer version) the import leaves it and says so. Only
+// tenant-wide rows count: an outlet row is always the owner's.
+
+const sameJson = (a: unknown, b: unknown) =>
+  JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+// Audit of an in-place default overwrite: only the fields that changed, from
+// and to. Names and other free text are left out (the masker redacts them).
+const OVERWRITE_AUDIT_ACTION = "tenant_config.import_default_overwrite";
+const OVERWRITE_AUDIT_SAFE_FIELDS = [
+  "source",
+  "calculationOrder",
+  "pricesIncludeTax",
+  "serviceRoundingMode",
+  "taxRoundingMode",
+  "inclusiveBaseRoundingMode",
+  "billRounding",
+  "incrementIdr",
+  "mode",
+  "packageAllocation",
+  "rateBp",
+  "zoneId",
+  "orderTypes",
+  "itemClasses",
+  "isActive",
+] as const;
+
+async function auditDefaultOverwrite(
+  input: ImportContext,
+  objectType: "tax_settings" | "service_charge_rule",
+  objectId: string,
+  fields: Record<string, { from: unknown; to: unknown }>,
+): Promise<void> {
+  const changed = Object.entries(fields).filter(
+    ([, { from, to }]) => !sameJson(from, to),
+  );
+  if (changed.length === 0) return;
+  const before: Record<string, unknown> = { source: "config_import" };
+  const after: Record<string, unknown> = { source: "config_import" };
+  for (const [field, { from, to }] of changed) {
+    before[field] = from ?? null;
+    after[field] = to ?? null;
+  }
+  const { tx, ctx, now } = input;
+  await recordAudit(
+    tx as Parameters<typeof recordAudit>[0],
+    ctx,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: input.tenantId,
+      outletId: null,
+      actorType: "user",
+      actorId: input.actorUserId,
+      deviceId: null,
+      action: OVERWRITE_AUDIT_ACTION,
+      objectType,
+      objectId,
+      reason: null,
+      maskedChanges: { before, after },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    },
+    OVERWRITE_AUDIT_SAFE_FIELDS,
+  );
+}
+
+const billRoundingOf = (
+  value: { incrementIdr: number; mode: string } | null | undefined,
+) => (value ? { incrementIdr: value.incrementIdr, mode: value.mode } : null);
+
+function isDefaultTaxSettings(rows: TaxSettingsRow[]): boolean {
+  const [row] = rows;
+  return (
+    rows.length === 1 &&
+    row !== undefined &&
+    row.outletId === null &&
+    row.version === 1 &&
+    row.status === "published" &&
+    row.effectiveFrom === DEFAULT_EFFECTIVE_FROM &&
+    row.calculationOrder === DEFAULT_SETTINGS.calculationOrder &&
+    row.pricesIncludeTax === DEFAULT_SETTINGS.pricesIncludeTax &&
+    row.serviceRoundingMode === DEFAULT_SETTINGS.serviceRoundingMode &&
+    row.taxRoundingMode === DEFAULT_SETTINGS.taxRoundingMode &&
+    row.inclusiveBaseRoundingMode ===
+      DEFAULT_SETTINGS.inclusiveBaseRoundingMode &&
+    row.packageAllocation === DEFAULT_SETTINGS.packageAllocation &&
+    sameJson(
+      billRoundingOf(row.billRounding),
+      billRoundingOf(DEFAULT_SETTINGS.billRounding),
+    )
+  );
+}
+
+function taxSettingsMatchItem(
+  row: TaxSettingsRow,
+  item: TaxSettingsItem,
+): boolean {
+  return (
+    row.calculationOrder === item.calculationOrder &&
+    row.pricesIncludeTax === item.pricesIncludeTax &&
+    row.serviceRoundingMode === item.serviceRoundingMode &&
+    row.taxRoundingMode === item.taxRoundingMode &&
+    row.inclusiveBaseRoundingMode === item.inclusiveBaseRoundingMode &&
+    row.packageAllocation === item.packageAllocation &&
+    sameJson(
+      billRoundingOf(row.billRounding),
+      billRoundingOf(item.billRounding),
+    )
+  );
+}
+
+function isDefaultServiceCharge(rows: ServiceChargeRow[]): boolean {
+  const [row] = rows;
+  return (
+    rows.length === 1 &&
+    row !== undefined &&
+    row.outletId === null &&
+    row.code === DEFAULT_SERVICE_CHARGE_CODE &&
+    row.name === DEFAULT_SERVICE_CHARGE_NAME &&
+    row.rateBp === DEFAULT_SERVICE_CHARGE_RATE_BP &&
+    row.zoneId === null &&
+    row.isActive &&
+    row.version === 1 &&
+    row.status === "published" &&
+    row.effectiveFrom === DEFAULT_EFFECTIVE_FROM &&
+    sameJson(row.orderTypes, DEFAULT_SERVICE_CHARGE_ORDER_TYPES) &&
+    sameJson(row.itemClasses, DEFAULT_SERVICE_CHARGE_ITEM_CLASSES)
+  );
+}
+
+/** `itemZoneId`: the item's zone resolved in the target tenant (null: none). */
+function serviceChargeMatchesItem(
+  row: ServiceChargeRow,
+  item: ServiceChargeItem,
+  itemZoneId: string | null | undefined,
+): boolean {
+  return (
+    row.name === item.name &&
+    row.rateBp === item.rateBp &&
+    itemZoneId !== undefined &&
+    row.zoneId === itemZoneId &&
+    row.isActive === item.isActive &&
+    sameJson(row.orderTypes, item.orderTypes) &&
+    sameJson(row.itemClasses, item.itemClasses)
+  );
+}
+
 const ROUNDING_MODES = ["half_up", "half_even", "down", "floor", "ceil"];
 const isRateBp = (value: unknown) =>
   Number.isInteger(value) &&
   (value as number) >= 0 &&
   (value as number) <= 10000;
+
+/** Highest-version published row (else the highest version): what is in force. */
+function latestPublished<T extends { version: number; status: string }>(
+  rows: T[],
+): T {
+  const byVersion = [...rows].sort((a, b) => b.version - a.version);
+  return byVersion.find((row) => row.status === "published") ?? byVersion[0]!;
+}
 
 /** First row per (outlet | tenant-wide, code) of rows sorted version desc. */
 function latestPerKey<
@@ -468,6 +645,7 @@ async function importTaxRules(
   if (items.length === 0) return;
   const { tx, keys, actorUserId, now } = input;
   const tenantId = input.tenantId as TenantId;
+  await lockTaxConfig(tx, tenantId);
   const clocks = await targetOutletClocks(tx, tenantId);
   const today = (outletId: string | null) =>
     businessDateOf(now, clockFor(outletId, clocks));
@@ -567,8 +745,8 @@ async function importTaxRules(
         what,
         "billRounding must be an object or null",
       );
-      const [existing] = await tx
-        .select({ id: taxSettings.id })
+      const rows = await tx
+        .select()
         .from(taxSettings)
         .where(
           and(
@@ -577,9 +755,68 @@ async function importTaxRules(
               ? isNull(taxSettings.outletId)
               : eq(taxSettings.outletId, outletId),
           ),
-        )
-        .limit(1);
-      if (existing) continue;
+        );
+      if (rows.length > 0) {
+        if (!isDefaultTaxSettings(rows)) {
+          if (
+            outletId === null &&
+            !taxSettingsMatchItem(latestPublished(rows), item)
+          )
+            input.warn(
+              "Skipped tax settings: the tenant's tax settings were changed after provisioning, so the template's were not applied.",
+            );
+          continue;
+        }
+        // Still the provisioning default: the template replaces it in place
+        // (version 1, effective from the default floor, so older business
+        // dates keep resolving).
+        const current = rows[0]!;
+        await tx
+          .update(taxSettings)
+          .set({
+            calculationOrder: item.calculationOrder,
+            pricesIncludeTax: item.pricesIncludeTax,
+            serviceRoundingMode: item.serviceRoundingMode,
+            taxRoundingMode: item.taxRoundingMode,
+            inclusiveBaseRoundingMode: item.inclusiveBaseRoundingMode,
+            billRounding: item.billRounding,
+            packageAllocation: item.packageAllocation,
+            publishedAt: now,
+            publishedBy: actorUserId as UserId,
+          })
+          .where(eq(taxSettings.id, current.id));
+        await auditDefaultOverwrite(input, "tax_settings", current.id, {
+          calculationOrder: {
+            from: current.calculationOrder,
+            to: item.calculationOrder,
+          },
+          pricesIncludeTax: {
+            from: current.pricesIncludeTax,
+            to: item.pricesIncludeTax,
+          },
+          serviceRoundingMode: {
+            from: current.serviceRoundingMode,
+            to: item.serviceRoundingMode,
+          },
+          taxRoundingMode: {
+            from: current.taxRoundingMode,
+            to: item.taxRoundingMode,
+          },
+          inclusiveBaseRoundingMode: {
+            from: current.inclusiveBaseRoundingMode,
+            to: item.inclusiveBaseRoundingMode,
+          },
+          billRounding: {
+            from: billRoundingOf(current.billRounding),
+            to: billRoundingOf(item.billRounding),
+          },
+          packageAllocation: {
+            from: current.packageAllocation,
+            to: item.packageAllocation,
+          },
+        });
+        continue;
+      }
       await tx.insert(taxSettings).values({
         tenantId,
         outletId,
@@ -687,6 +924,7 @@ async function importServiceChargeRules(
   if (items.length === 0) return;
   const { tx, keys, actorUserId, now } = input;
   const tenantId = input.tenantId as TenantId;
+  await lockServiceChargeConfig(tx, tenantId);
   const clocks = await targetOutletClocks(tx, tenantId);
 
   for (const item of items) {
@@ -704,8 +942,8 @@ async function importServiceChargeRules(
       what,
       "itemClasses needs at least one class",
     );
-    const [existing] = await tx
-      .select({ id: serviceChargeRules.id })
+    const rows = await tx
+      .select()
       .from(serviceChargeRules)
       .where(
         and(
@@ -715,9 +953,28 @@ async function importServiceChargeRules(
             ? isNull(serviceChargeRules.outletId)
             : eq(serviceChargeRules.outletId, outletId),
         ),
+      );
+    // Only the tenant-wide provisioning default may be overwritten; any other
+    // existing rule (including every outlet rule) is the owner's.
+    const overwritable =
+      outletId === null &&
+      item.code === DEFAULT_SERVICE_CHARGE_CODE &&
+      isDefaultServiceCharge(rows);
+    if (rows.length > 0 && !overwritable) {
+      if (
+        outletId === null &&
+        item.code === DEFAULT_SERVICE_CHARGE_CODE &&
+        !serviceChargeMatchesItem(
+          latestPublished(rows),
+          item,
+          item.zoneKey === null ? null : keys.zones.get(item.zoneKey),
+        )
       )
-      .limit(1);
-    if (existing) continue;
+        input.warn(
+          `Skipped ${what}: it was changed after provisioning, so the template's version was not applied.`,
+        );
+      continue;
+    }
     // A zone-scoped rule must not widen to every zone: skip when the zone is
     // not in the target (outlet missing there, or a tenant-wide rule).
     if (item.zoneKey !== null && !keys.zones.has(item.zoneKey)) {
@@ -735,6 +992,32 @@ async function importServiceChargeRules(
         : outletId === null
           ? keys.need("zones", item.zoneKey)
           : keys.needInOutlet("zones", item.zoneKey, outletId);
+    if (overwritable) {
+      // Still the provisioning default: replaced in place (version 1, effective
+      // from the default floor, so older business dates keep resolving).
+      const current = rows[0]!;
+      await tx
+        .update(serviceChargeRules)
+        .set({
+          name: item.name,
+          rateBp: item.rateBp,
+          zoneId,
+          orderTypes: item.orderTypes,
+          itemClasses: item.itemClasses,
+          isActive: item.isActive,
+          publishedAt: now,
+          publishedBy: actorUserId as UserId,
+        })
+        .where(eq(serviceChargeRules.id, current.id));
+      await auditDefaultOverwrite(input, "service_charge_rule", current.id, {
+        rateBp: { from: current.rateBp, to: item.rateBp },
+        zoneId: { from: current.zoneId, to: zoneId },
+        orderTypes: { from: current.orderTypes, to: item.orderTypes },
+        itemClasses: { from: current.itemClasses, to: item.itemClasses },
+        isActive: { from: current.isActive, to: item.isActive },
+      });
+      continue;
+    }
     await tx.insert(serviceChargeRules).values({
       tenantId,
       outletId,
