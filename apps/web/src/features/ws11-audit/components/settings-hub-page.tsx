@@ -177,16 +177,18 @@ export function SettingsHubPage() {
                         {t(hintKey)}
                       </p>
                     </div>
-                    <ul className="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                      {items.map((entry) => {
-                        const Icon = entry.icon;
-                        return (
-                          <li key={entry.key} className="grid">
-                            <CardShell className="h-full">
-                              <CardShellBody className="h-full">
+                    {/* One shell per group with divided rows (like the
+                        primary list), not a double-framed card per tile. */}
+                    <CardShell>
+                      <CardShellBody>
+                        <ul className="grid grid-cols-[minmax(0,1fr)] divide-y divide-border">
+                          {items.map((entry) => {
+                            const Icon = entry.icon;
+                            return (
+                              <li key={entry.key}>
                                 <Link
                                   to={entry.to as "/kelola"}
-                                  className="flex h-full min-h-control items-start gap-3 px-4 py-3.5 transition-colors duration-(--duration-fast) hover:bg-surface-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+                                  className="flex min-h-control items-center gap-3 px-4 py-3 transition-colors duration-(--duration-fast) hover:bg-surface-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
                                 >
                                   <span className="grid size-9 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
                                     <Icon
@@ -203,16 +205,16 @@ export function SettingsHubPage() {
                                     </span>
                                   </span>
                                   <ChevronRight
-                                    className="mt-1 size-4 shrink-0 text-muted-foreground"
+                                    className="size-4 shrink-0 text-muted-foreground"
                                     aria-hidden="true"
                                   />
                                 </Link>
-                              </CardShellBody>
-                            </CardShell>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </CardShellBody>
+                    </CardShell>
                   </section>
                 );
               })}
