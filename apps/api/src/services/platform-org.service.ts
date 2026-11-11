@@ -566,6 +566,16 @@ export async function restoreTenant(
       },
       { tx, context },
     );
+    // legend-5zb6g: consumers resume serving the tenant, same event as a
+    // suspend or archive, committed with the status change and its audit row.
+    await appendTenantChangeEvent(
+      tx,
+      context,
+      "tenant.status_changed",
+      { from: "archived", to: row.status, reason: input.reason },
+      actorUserId,
+      now,
+    );
     return toTenant(row);
   });
 }
