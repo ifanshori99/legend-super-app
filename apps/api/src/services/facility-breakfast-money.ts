@@ -6,7 +6,7 @@
 // `facility_linked_orders` row that holds
 //   awaiting_payment -> paid -> fired | cancelled.
 // `orders.status` stays `awaiting_payment` until the kitchen gets the order
-// (`sent`), so the QR void path (`voidUnpaidQrOrderTx`) releases stock for both
+// (`sent`), so the QR void path (`voidAwaitingPaymentOrderTx`) releases stock for both
 // an unpaid and a paid-not-fired order.
 //
 // Lock order everywhere: orders row -> facility_linked_orders row ->
@@ -45,7 +45,7 @@ import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import { pendingRefundIdr } from "./pos-order-late-payment.ts";
 import { QR_SYSTEM_ACTOR } from "./qr-order-late-payment.ts";
-import { voidUnpaidQrOrderTx } from "./qr-order.service.ts";
+import { voidAwaitingPaymentOrderTx } from "./qr-order.service.ts";
 
 export type BreakfastOrderRow = typeof orders.$inferSelect;
 export type BreakfastLinkedRow = typeof facilityLinkedOrders.$inferSelect;
@@ -230,7 +230,7 @@ export async function cancelBreakfastOrderTx(
   if (linked.status === "cancelled") return { linked, refundIdr: 0 };
   if (linked.status === "fired")
     throw new FacilityError("BREAKFAST_ALREADY_FIRED");
-  await voidUnpaidQrOrderTx(
+  await voidAwaitingPaymentOrderTx(
     tx,
     context,
     order.id,
