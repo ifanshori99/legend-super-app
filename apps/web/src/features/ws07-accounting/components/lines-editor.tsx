@@ -80,7 +80,14 @@ function RupiahInput({
           if (/\d/.test(formatted.charAt(position))) seen += 1;
           position += 1;
         }
-        caret.current = formatted === raw ? null : position;
+        if (formatted === raw) {
+          // Same text means no re-render and no layout effect: place the
+          // caret now and leave nothing behind for a later render.
+          caret.current = null;
+          event.target.setSelectionRange(position, position);
+          return;
+        }
+        caret.current = position;
         onValueChange(formatted);
       }}
     />
@@ -122,6 +129,11 @@ export function JournalLinesEditor({
   // Field ids come from useId + row position, not the random row key, so the
   // server render and hydration agree on every id/htmlFor pair.
   const baseId = React.useId();
+  // Rows with an unreadable amount (or both sides) are left out of the totals,
+  // so a difference computed from them would mislead.
+  const hasAmountIssue = Object.values(evaluation.lineIssues).some(
+    (issue) => issue === "amount" || issue === "side",
+  );
 
   const update = (index: number, patch: Partial<EditorLine>) => {
     onChange(
@@ -345,12 +357,16 @@ export function JournalLinesEditor({
           >
             <strong>{t("accounting.manual.form.unbalancedTitle")}</strong>
             <span>
-              {t(
-                evaluation.differenceIdr > 0
-                  ? "accounting.manual.form.debitHigher"
-                  : "accounting.manual.form.creditHigher",
-                { amount: formatRupiah(Math.abs(evaluation.differenceIdr)) },
-              )}
+              {hasAmountIssue
+                ? t("accounting.manual.form.amountIssueHint")
+                : t(
+                    evaluation.differenceIdr > 0
+                      ? "accounting.manual.form.debitHigher"
+                      : "accounting.manual.form.creditHigher",
+                    {
+                      amount: formatRupiah(Math.abs(evaluation.differenceIdr)),
+                    },
+                  )}
             </span>
           </div>
         )}
@@ -377,7 +393,7 @@ export function JournalLinesEditor({
         ) : (
           <p className="flex items-center gap-2 text-sm font-medium text-danger">
             <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
-            {evaluation.differenceIdr !== 0
+            {evaluation.differenceIdr !== 0 && !hasAmountIssue
               ? `${t("accounting.manual.form.difference", {
                   amount: formatRupiah(Math.abs(evaluation.differenceIdr)),
                 })} · ${t("accounting.manual.form.unbalanced")}`

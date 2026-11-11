@@ -248,6 +248,8 @@ export const accountingMessages = {
       balance: "Debit {debit} · Kredit {credit}",
       difference: "Selisih {amount}",
       unbalancedTitle: "Jurnal belum seimbang",
+      amountIssueHint:
+        "Ada baris dengan jumlah tidak valid. Perbaiki dulu sebelum menyeimbangkan.",
       debitHigher:
         "Debit lebih besar {amount}. Sesuaikan jumlah debit atau kredit sebelum mengajukan.",
       creditHigher:
