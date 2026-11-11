@@ -586,13 +586,15 @@ async function becomePosSale(paid: PaidOrder, tenderIdr = paid.total) {
      VALUES ($1, $2, $3, 'pos', now())`,
     [uuid, w.tenant.tenantId, paid.outletId],
   );
-  await owner.query(
-    `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
-        amount_idr, received_idr, change_idr, status, requested_at, resolved_at)
-     VALUES ($1, $2, $3, 'cash', 'manual', $4, $4, 0, 'captured',
-             now() - interval '1 minute', now())`,
-    [w.tenant.tenantId, paid.outletId, uuid, tenderIdr],
-  );
+  // Rp0 tender: a sale that was paid only from the deposit (no tender row).
+  if (tenderIdr > 0)
+    await owner.query(
+      `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
+          amount_idr, received_idr, change_idr, status, requested_at, resolved_at)
+       VALUES ($1, $2, $3, 'cash', 'manual', $4, $4, 0, 'captured',
+               now() - interval '1 minute', now())`,
+      [w.tenant.tenantId, paid.outletId, uuid, tenderIdr],
+    );
 }
 
 type RefundInput = Parameters<typeof refundPosOrder>[4];
@@ -1041,5 +1043,136 @@ describe("Q25 given 8: tukar lebih mahal tanpa baris tagihan diperlakukan sebaga
     expect(
       (await vouchersOf(issues)) + (await recoveryRefundTotal(issues)),
     ).toBeLessThanOrEqual(ITEM_A_PAID);
+  });
+});
+
+// =====================================================================================
+// Row 10 (HIGH, ex-4): the due of a POS refund also drops what EARLIER refunds' lines gave
+// =====================================================================================
+
+describe("Q25 given 10: refund POS kedua tidak membayar ulang voucher baris yang sudah direfund", () => {
+  // The roti is paid 20.790 (not free: the promo discount sits on the kopi).
+  const ROTI_PAID = 20_790;
+
+  it("voucher kopi 5.000, refund POS kopi (3.085), lalu refund yang hanya menyebut roti: dibayar paling banyak 20.790, teh yang disimpan tidak tersentuh", async () => {
+    const paid = await paidPromoOrder();
+    const kopi = paid.line(w.ids.kopi);
+    const teh = paid.line(w.ids.teh);
+    const roti = paid.line(w.ids.roti);
+    const issueId = await apologyOnLine(kopi, 5_000);
+    await becomePosSale(paid);
+    const first = await posRefund(paid.orderId, KOPI_PAID_PROMO, [
+      { itemId: kopi, quantity: 1 },
+    ]);
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    expect(await posRefundRows(paid.orderId)).toEqual([
+      KOPI_PAID_PROMO - 5_000,
+    ]);
+
+    // Asks more than anything due: the payout is cut to what the roti cost.
+    const second = await posRefund(paid.orderId, 30_000, [
+      { itemId: roti, quantity: 1 },
+    ]);
+
+    expect(second.ok, JSON.stringify(second)).toBe(true);
+    const rows = await posRefundRows(paid.orderId);
+    expect(rows, "the 5.000 voucher of the kopi is not paid again").toEqual([
+      KOPI_PAID_PROMO - 5_000,
+      ROTI_PAID,
+    ]);
+    // Only the kopi and the roti were returned: voucher + refunds <= what they cost.
+    expect(
+      (await vouchersOf([issueId])) + sum(rows),
+      "voucher + POS refunds of the returned lines",
+    ).toBeLessThanOrEqual(KOPI_PAID_PROMO + ROTI_PAID);
+    const { rows: refundRows } = await owner.query<{ items: unknown }>(
+      `SELECT items FROM pos_order_refunds WHERE tenant_id = $1 AND order_id = $2`,
+      [w.tenant.tenantId, toUuid(paid.orderId)],
+    );
+    expect(
+      JSON.stringify(refundRows),
+      "the kept tea is not refunded",
+    ).not.toContain(toUlid(teh));
+    await expectOrderWithinPaid(paid.orderId, [issueId], PROMO_TOTAL);
+  });
+});
+
+// =====================================================================================
+// Row 11 (MED, ex-5): depositOwedIdr is measured on the due AFTER the voucher
+// =====================================================================================
+
+describe("Q25 given 11: depositOwedIdr memakai due yang sudah dikurangi voucher", () => {
+  it("order promo dibayar penuh dari deposit, voucher kopi 5.000, refund POS kopi: depositOwedIdr = 3.085, bukan 8.085", async () => {
+    const paid = await paidPromoOrder();
+    const kopi = paid.line(w.ids.kopi);
+    await apologyOnLine(kopi, 5_000);
+    // No tender at all: the whole bill sits on the deposit (the tender is used up).
+    await becomePosSale(paid, 0);
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "UPDATE orders SET deposit_applied_idr = $3 WHERE tenant_id = $1 AND id = $2",
+        [w.tenant.tenantId, toUuid(paid.orderId), PROMO_TOTAL],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const refund = await posRefund(paid.orderId, KOPI_PAID_PROMO, [
+      { itemId: kopi, quantity: 1 },
+    ]);
+
+    expect(refund.ok, JSON.stringify(refund)).toBe(true);
+    expect(await posRefundRows(paid.orderId)).toEqual([0]);
+    const audit = await owner.query<{ event: unknown }>(
+      `SELECT event FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'pos_order.refunded'`,
+      [w.tenant.tenantId],
+    );
+    const afters = audit.rows
+      .filter((row) => JSON.stringify(row.event).includes(toUlid(paid.orderId)))
+      .map(
+        (row) =>
+          (
+            row.event as {
+              maskedChanges: { after: Record<string, unknown> };
+            }
+          ).maskedChanges.after,
+      );
+    expect(afters, JSON.stringify(afters)).toHaveLength(1);
+    // 8.085 (the kopi) less the 5.000 already given as voucher.
+    expect(afters[0]!.depositOwedIdr).toBe(KOPI_PAID_PROMO - 5_000);
+  });
+});
+
+// =====================================================================================
+// Row 12 (LOW): a late charge event cannot open a charge for an already re-swapped line
+// =====================================================================================
+
+describe("Q25 given 12: event tagihan terlambat setelah tukar ulang", () => {
+  it("40rb -> 80rb (event tagihan belum jalan) -> tukar ulang ke 20rb -> event tagihan pertama datang: tidak ada tagihan terbuka", async () => {
+    const paid = await paidItemAOrder();
+    const first = await swapLineDearer(
+      paid.line(itemA),
+      itemB,
+      ITEM_B_PRICE - ITEM_A_PRICE,
+      { openCharge: false },
+    );
+    const firstEvent = await resolvedEvent(first.swapIssueId);
+    expect(await chargesOf(first.swapIssueId)).toEqual([]);
+    await swapLineTo(first.replacementLineId, itemC);
+
+    await deliverCharge(firstEvent);
+
+    const open = (await chargesOf(first.swapIssueId)).filter(
+      (row) => row.status === "open" || row.status === "routed_pos",
+    );
+    expect(open, "no open charge for the already swapped line").toEqual([]);
   });
 });
