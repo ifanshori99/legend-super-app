@@ -8,3 +8,5 @@ Kartu (selesaikan semua, lalu lapor):
 3. legend-sdqni (P2): `provision-roles.ts` `--audit` (deploy.sh:37) wajib menemukan `idle_in_transaction_session_timeout` di login app/queue; test audit gagal tanpa timeout.
 
 Paralel: Explore 1, test-writer 1 (test gagal-dulu tiap kartu), implementer per kartu (3, file terpisah), reviewer sonnet akhir. Test terarah lewat `heavy`. Laporan: commit, test, angka subagent (total, puncak).
+
+Catatan: kerja di worktree sendiri dari origin/ws/edge-catalog-followups (git worktree add .worktrees/ecf-482 ...), push ke cabang yang sama.
