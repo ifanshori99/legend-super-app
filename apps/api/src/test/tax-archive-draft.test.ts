@@ -2,6 +2,7 @@
 // archived, a published one never can (R21), and tenant isolation holds for the
 // archive and settings-draft PATCH paths.
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -15,6 +16,9 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { db } from "../db";
+import { auditLogs } from "../db/schema";
+import { withTenant } from "../db/tenant";
 import {
   archiveTaxRule,
   archiveTaxSettings,
@@ -34,6 +38,8 @@ const owner = new Pool({
 const tenantB = randomUUID() as TenantId;
 const userA = randomUUID();
 const userB = randomUUID();
+/** Signed in to tenant A but holds no tax permission at all. */
+const userNoGrant = randomUUID();
 
 function tenantContext(tenantId: TenantId) {
   return establishScopedTenantContext(
@@ -59,6 +65,19 @@ function ruleInput() {
     isActive: true,
     effectiveFrom: today(),
   };
+}
+
+/** Audit actions recorded for one object in the tenant. */
+async function auditActions(tenantId: TenantId, objectId: string) {
+  const rows = await withTenant(db, tenantContext(tenantId), (tx) =>
+    tx
+      .select({ event: auditLogs.event })
+      .from(auditLogs)
+      .where(eq(auditLogs.tenantId, tenantId)),
+  );
+  return rows
+    .filter((row) => row.event.objectId === objectId)
+    .map((row) => row.event.action);
 }
 
 function settingsInput() {
@@ -135,6 +154,7 @@ beforeAll(async () => {
   );
   await insertUser(userA, "Tax Archive A");
   await insertUser(userB, "Tax Archive B");
+  await insertUser(userNoGrant, "Tax Archive None");
   await grantTenantConfig(seeded.id, userA);
   await grantTenantConfig(tenantB, userB);
 });
@@ -160,7 +180,9 @@ afterAll(async () => {
     );
   });
   await owner.query("DELETE FROM tenants WHERE id = $1", [tenantB]);
-  await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [[userA, userB]]);
+  await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [
+    [userA, userB, userNoGrant],
+  ]);
   await owner.end();
 });
 
@@ -170,6 +192,9 @@ describe("archive a tax rule draft", () => {
     const draft = await createTaxRule(context, userA, ruleInput());
     const archived = await archiveTaxRule(context, userA, draft.id);
     expect(archived).toMatchObject({ id: draft.id, status: "archived" });
+    expect(await auditActions(seeded.id, draft.id)).toContain(
+      "tax_rule.archived",
+    );
 
     const publish = await publishTaxRule(
       context,
@@ -188,6 +213,20 @@ describe("archive a tax rule draft", () => {
       (caught: unknown) => caught,
     );
     expect(error).toMatchObject({ status: 409, code: "TAX_RULE_IMMUTABLE" });
+  });
+
+  it("refuses a caller without the tax permission (403) and leaves the draft", async () => {
+    const context = tenantContext(seeded.id);
+    const draft = await createTaxRule(context, userA, ruleInput());
+    const error = await archiveTaxRule(context, userNoGrant, draft.id).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({ status: 403, code: "FORBIDDEN" });
+    expect(await auditActions(seeded.id, draft.id)).not.toContain(
+      "tax_rule.archived",
+    );
+    const archived = await archiveTaxRule(context, userA, draft.id);
+    expect(archived.status).toBe("archived");
   });
 
   it("TEN-01 another tenant cannot archive this tenant's draft", async () => {
@@ -221,6 +260,27 @@ describe("tax settings drafts", () => {
     });
     const archived = await archiveTaxSettings(context, userA, draft.id);
     expect(archived.status).toBe("archived");
+    expect(await auditActions(seeded.id, draft.id)).toContain(
+      "tax_settings.archived",
+    );
+  });
+
+  it("refuses a caller without the tax permission (403) for edit and archive", async () => {
+    const context = tenantContext(seeded.id);
+    const draft = await createTaxSettings(context, userA, settingsInput());
+    const edit = await updateTaxSettings(context, userNoGrant, draft.id, {
+      pricesIncludeTax: true,
+    }).catch((caught: unknown) => caught);
+    expect(edit).toMatchObject({ status: 403, code: "FORBIDDEN" });
+    const archive = await archiveTaxSettings(
+      context,
+      userNoGrant,
+      draft.id,
+    ).catch((caught: unknown) => caught);
+    expect(archive).toMatchObject({ status: 403, code: "FORBIDDEN" });
+    expect(await auditActions(seeded.id, draft.id)).not.toContain(
+      "tax_settings.archived",
+    );
   });
 
   it("refuses to edit or archive a published settings version", async () => {

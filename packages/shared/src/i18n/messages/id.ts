@@ -3402,6 +3402,11 @@ export const id = {
       error: "Aturan belum dinonaktifkan. Periksa koneksi lalu coba lagi.",
       zeroNote:
         "Buat versi aturan aktif dengan tarif 0% untuk transaksi bebas pajak.",
+      removeTitle: "Lepas makanan & minuman dari aturan terakhir?",
+      removeKeep: "Pertahankan makanan & minuman",
+      removeConfirm: "Tetap simpan",
+      removePending: "Menyimpan…",
+      removeError: "Perubahan belum disimpan. Periksa koneksi lalu coba lagi.",
     },
     conflicts: {
       title: "{count} pasang aturan pajak bertabrakan",

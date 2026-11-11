@@ -214,42 +214,76 @@ export function appliesToCounts(appliesTo: TaxAppliesTo): AppliesToCounts {
 
 /** A rule version with the fields the food-and-beverage check reads. */
 export type FoodBeverageRuleVersion = RuleVersion & {
-  appliesTo: Pick<TaxAppliesTo, "itemClasses">;
+  appliesTo: Pick<TaxAppliesTo, "itemClasses" | "categoryIds" | "itemIds">;
+  channels: readonly string[];
+  regionCode: string | null;
 };
 
+/** Active, covers food_beverage, and no channel/region/item/category limit. */
+function coversAllFoodBeverage(version: FoodBeverageRuleVersion): boolean {
+  return (
+    version.isActive &&
+    version.appliesTo.itemClasses.includes("food_beverage") &&
+    version.channels.length === 0 &&
+    version.regionCode === null &&
+    version.appliesTo.categoryIds.length === 0 &&
+    version.appliesTo.itemIds.length === 0
+  );
+}
+
 /**
- * True when `chain` (a rule code at tenant or one outlet) is the only active
- * rule in force that covers food_beverage in its scope. Switching it off makes
- * every POS and QR food line fail with TAX_RULE_NOT_FOUND, so the editor warns
- * first and points to a 0% rate for tax-exempt items (legend-d5pz). Another
- * code at tenant level or in the same outlet counts as a replacement.
+ * True when `chain` (a rule code at tenant level or at one outlet) is in force
+ * on `date`, covers food_beverage, and nothing else replaces it. Switching it
+ * off, or taking food_beverage out of it, makes every POS and QR food line fail
+ * with TAX_RULE_NOT_FOUND, so the editor warns first and points to a 0% rate
+ * for tax-exempt items (legend-d5pz).
+ *
+ * `date` is the day the change takes effect: the later of today and the
+ * draft's effective date. A replacement must be another code that is in force
+ * on that date, active, covers food_beverage with no channel, region, item or
+ * category limit, and is not itself switched off or narrowed by an outlet
+ * version of its code. A tenant-wide chain has only tenant-wide replacements; an
+ * outlet chain also accepts tenant-wide ones. When in doubt it answers true.
  */
 export function isOnlyActiveFoodBeverageRule<T extends FoodBeverageRuleVersion>(
   versions: readonly T[],
   chain: { code: string; outletId: string | null },
-  today: string,
+  date: string,
 ): boolean {
-  let covered = false;
-  for (const version of versions) {
-    if (
-      !isEffectiveVersion(version, versions, today) ||
-      !version.isActive ||
-      !version.appliesTo.itemClasses.includes("food_beverage")
-    )
+  const inForce = versions.filter((version) =>
+    isEffectiveVersion(version, versions, date),
+  );
+  const own = inForce.find(
+    (version) =>
+      version.code === chain.code && version.outletId === chain.outletId,
+  );
+  if (
+    !own ||
+    !own.isActive ||
+    !own.appliesTo.itemClasses.includes("food_beverage")
+  )
+    // Nothing in force to lose: no version yet, or already off.
+    return false;
+  for (const version of inForce) {
+    if (version.code === chain.code) continue;
+    if (version.outletId !== null && version.outletId !== chain.outletId)
       continue;
-    if (version.code === chain.code && version.outletId === chain.outletId) {
-      covered = true;
-      continue;
+    if (!coversAllFoodBeverage(version)) continue;
+    if (version.outletId === null) {
+      // An outlet version of the same code replaces the tenant-wide one there;
+      // if it is off or narrower, the tenant-wide rule is no safety net.
+      const overridden = inForce.some(
+        (other) =>
+          other.code === version.code &&
+          other.outletId !== null &&
+          (chain.outletId === null || other.outletId === chain.outletId) &&
+          !coversAllFoodBeverage(other),
+      );
+      if (overridden) continue;
     }
-    // Same code in another scope does not replace this chain; any other code
-    // at tenant level or in this outlet does.
-    if (
-      version.code !== chain.code &&
-      (version.outletId === null || version.outletId === chain.outletId)
-    )
-      return false;
+    return false;
   }
-  return covered;
+  return true;
 }
 
 /** Tax error code → catalog key; every code has a fix hint in the catalog. */

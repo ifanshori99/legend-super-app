@@ -2,7 +2,12 @@
 // endpoint id (`endpointQueryOptions`), so one
 // `invalidateQueries({ queryKey: [endpoint.id] })` refreshes every cached page
 // of that endpoint (docs/frontend.md).
-import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
+import { queryOptions } from "@tanstack/react-query";
+import type {
+  AnyEndpoint,
+  EndpointInput,
+  EndpointOutput,
+} from "@starter/shared/api";
 import { listCategories, listItems } from "@starter/shared/menu";
 import { getFloorBoard } from "@starter/shared/qr-order";
 import { orgEndpoints } from "@starter/shared/platform";
@@ -13,7 +18,12 @@ import {
   listTaxRules,
   listTaxSettings,
 } from "@starter/shared/tax";
-import { endpointQueryOptions } from "@/lib/api/endpoint";
+import {
+  callEndpoint,
+  endpointQueryKey,
+  endpointQueryOptions,
+} from "@/lib/api/endpoint";
+import { collectAllPages } from "../ws03-menu/pages.ts";
 
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
@@ -80,3 +90,24 @@ export const taxMenuItemsQuery = () => ({
   staleTime: 5 * 60_000,
   retry: false,
 });
+
+/**
+ * Every published rule version, all pages. The "last food and beverage rule"
+ * warning (legend-d5pz) must not depend on the first 100 rows of the list.
+ * Keyed under the endpoint id, so a rule write that invalidates
+ * `[listTaxRules.id]` refreshes it too.
+ */
+export const taxPublishedRulesAllQuery = () => {
+  const query = { limit: TAX_PAGE_SIZE, status: "published" as const };
+  type Page = EndpointOutput<typeof listTaxRules>;
+  return queryOptions({
+    queryKey: [
+      ...endpointQueryKey(listTaxRules, { query }),
+      "all-pages",
+    ] as const,
+    queryFn: ({ signal }) =>
+      collectAllPages<Page["data"][number], Page>((cursor) =>
+        callEndpoint(listTaxRules, { query: { ...query, cursor } }, { signal }),
+      ),
+  });
+};

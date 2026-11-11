@@ -35,6 +35,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
 import { taxMutationError } from "../errors";
 import {
+  useAllPublishedTaxRules,
   useCreateTaxRule,
   useTaxMenuCategories,
   useTaxMenuItems,
@@ -145,6 +146,7 @@ export function TaxRuleDialog({
   const outletsQuery = useTaxOutlets();
   const categoriesQuery = useTaxMenuCategories();
   const itemsQuery = useTaxMenuItems();
+  const allPublishedQuery = useAllPublishedTaxRules();
 
   const chain = React.useMemo(
     () =>
@@ -222,18 +224,36 @@ export function TaxRuleDialog({
     const message = taxMutationError(error, t);
     // The confirm step has its own wording for a failed write.
     return confirmingOff && message === t("tax.errors.saveFailed")
-      ? t("tax.deactivate.error")
+      ? t(
+          lastRuleChange === "inactive"
+            ? "tax.deactivate.error"
+            : "tax.deactivate.removeError",
+        )
       : message;
   }
 
-  const deactivatesLastFoodBeverageRule =
-    !isActive &&
-    itemClasses.includes("food_beverage") &&
-    isOnlyActiveFoodBeverageRule(
-      versions,
-      { code: (rule?.code ?? code).trim(), outletId: scopeOutletId },
-      today,
-    );
+  // d5pz: the change takes effect on the later of today and the draft's date.
+  // Judged against every published rule (all pages), not the loaded list; if
+  // that read is not available, warn whenever an existing rule is changed.
+  const changeDate = laterDate(
+    today,
+    /^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom) ? effectiveFrom : today,
+  );
+  const lastRuleChange: "inactive" | "class" | null = !isActive
+    ? "inactive"
+    : !itemClasses.includes("food_beverage")
+      ? "class"
+      : null;
+  const publishedRules = allPublishedQuery.data?.data;
+  const losesLastFoodBeverageRule =
+    lastRuleChange !== null &&
+    (publishedRules
+      ? isOnlyActiveFoodBeverageRule(
+          publishedRules,
+          { code: (rule?.code ?? code).trim(), outletId: scopeOutletId },
+          changeDate,
+        )
+      : mode !== "create");
 
   function validate(rateBp: number | null): Errors {
     const next: Errors = {};
@@ -256,7 +276,7 @@ export function TaxRuleDialog({
     const found = validate(rateBp);
     setErrors(found);
     if (Object.keys(found).length > 0 || rateBp === null) return;
-    if (deactivatesLastFoodBeverageRule) {
+    if (losesLastFoodBeverageRule) {
       setConfirmingOff(true);
       return;
     }
@@ -269,6 +289,14 @@ export function TaxRuleDialog({
     setRate("0");
     setErrors({});
     setZeroNote(true);
+  }
+
+  function keepFoodBeverage() {
+    setConfirmingOff(false);
+    setItemClasses((current) =>
+      toggleValue<ItemTaxClass>(current, "food_beverage", true),
+    );
+    setErrors({});
   }
 
   function save(rateBp: number) {
@@ -642,7 +670,13 @@ export function TaxRuleDialog({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("tax.deactivate.title")}</DialogTitle>
+            <DialogTitle>
+              {t(
+                lastRuleChange === "inactive"
+                  ? "tax.deactivate.title"
+                  : "tax.deactivate.removeTitle",
+              )}
+            </DialogTitle>
             <DialogDescription>
               {t("tax.deactivate.body", {
                 name: name.trim() || (rule?.name ?? ""),
@@ -659,14 +693,16 @@ export function TaxRuleDialog({
                 {t("tax.deactivate.impactBody")}
               </p>
             </div>
-            <div className="rounded-container border-(length:--border-w) p-card">
-              <p className="text-sm font-semibold">
-                {t("tax.deactivate.recommendTitle")}
-              </p>
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("tax.deactivate.recommendBody")}
-              </p>
-            </div>
+            {lastRuleChange === "inactive" && (
+              <div className="rounded-container border-(length:--border-w) p-card">
+                <p className="text-sm font-semibold">
+                  {t("tax.deactivate.recommendTitle")}
+                </p>
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("tax.deactivate.recommendBody")}
+                </p>
+              </div>
+            )}
             {errors.form && (
               <p
                 className="text-sm leading-5 font-medium text-danger"
@@ -691,10 +727,16 @@ export function TaxRuleDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={setRateToZero}
+              onClick={
+                lastRuleChange === "inactive" ? setRateToZero : keepFoodBeverage
+              }
               disabled={pending}
             >
-              {t("tax.deactivate.setZero")}
+              {t(
+                lastRuleChange === "inactive"
+                  ? "tax.deactivate.setZero"
+                  : "tax.deactivate.removeKeep",
+              )}
             </Button>
             <Button
               type="button"
@@ -706,8 +748,16 @@ export function TaxRuleDialog({
               }}
             >
               {pending
-                ? t("tax.deactivate.pending")
-                : t("tax.deactivate.confirm")}
+                ? t(
+                    lastRuleChange === "inactive"
+                      ? "tax.deactivate.pending"
+                      : "tax.deactivate.removePending",
+                  )
+                : t(
+                    lastRuleChange === "inactive"
+                      ? "tax.deactivate.confirm"
+                      : "tax.deactivate.removeConfirm",
+                  )}
             </Button>
           </DialogFooter>
         </DialogContent>

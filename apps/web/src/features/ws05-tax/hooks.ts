@@ -17,6 +17,7 @@ import {
   taxMenuCategoriesQuery,
   taxMenuItemsQuery,
   taxOutletsQuery,
+  taxPublishedRulesAllQuery,
   taxRuleConflictsDefaultQuery,
   taxRulesDefaultQuery,
   taxSettingsDefaultQuery,
@@ -56,6 +57,11 @@ export function useTaxRuleConflicts() {
 
 export function useTaxOutlets() {
   return useQuery(taxOutletsQuery());
+}
+
+/** All published rule versions, for the last-food-and-beverage-rule check. */
+export function useAllPublishedTaxRules() {
+  return useQuery(taxPublishedRulesAllQuery());
 }
 
 export function useTaxMenuCategories() {

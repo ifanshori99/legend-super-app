@@ -400,3 +400,201 @@ test(`${TAG} Laporan Pajak mock: the fixture month has rows, other months are em
   });
   assert.deepEqual(empty.data.rows, []);
 });
+
+// ---- legend-d5pz: warn before switching off the last food_beverage rule -----
+
+function fbVersion(overrides = {}) {
+  const code = overrides.code ?? "FB";
+  return {
+    id: overrides.id ?? `${code}-${overrides.version ?? 1}`,
+    code,
+    name: code,
+    version: 1,
+    status: "published",
+    effectiveFrom: "2026-01-01",
+    outletId: null,
+    isActive: true,
+    channels: [],
+    regionCode: null,
+    appliesTo: {
+      itemClasses: ["food_beverage"],
+      categoryIds: [],
+      itemIds: [],
+    },
+    ...overrides,
+  };
+}
+
+test("isOnlyActiveFoodBeverageRule: the only rule in force is the last one", () => {
+  const rules = [fbVersion()];
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      rules,
+      { code: "FB", outletId: null },
+      "2026-11-11",
+    ),
+    true,
+  );
+});
+
+test("isOnlyActiveFoodBeverageRule: an unrestricted active rule with another code replaces it", () => {
+  const rules = [fbVersion(), fbVersion({ code: "FB2" })];
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      rules,
+      { code: "FB", outletId: null },
+      "2026-11-11",
+    ),
+    false,
+  );
+});
+
+test("isOnlyActiveFoodBeverageRule: a limited, inactive or facility-only rule is no replacement", () => {
+  const chain = { code: "FB", outletId: null };
+  const date = "2026-11-11";
+  for (const other of [
+    fbVersion({ code: "X", channels: ["dine_in"] }),
+    fbVersion({ code: "X", regionCode: "ID-JB-3273" }),
+    fbVersion({
+      code: "X",
+      appliesTo: {
+        itemClasses: ["food_beverage"],
+        categoryIds: [],
+        itemIds: ["0d7a9d6e-1111-4111-8111-111111111111"],
+      },
+    }),
+    fbVersion({
+      code: "X",
+      appliesTo: {
+        itemClasses: ["food_beverage"],
+        categoryIds: ["0d7a9d6e-2222-4222-8222-222222222222"],
+        itemIds: [],
+      },
+    }),
+    fbVersion({ code: "X", isActive: false }),
+    fbVersion({
+      code: "X",
+      appliesTo: { itemClasses: ["facility"], categoryIds: [], itemIds: [] },
+    }),
+    // Not in force yet on the date.
+    fbVersion({ code: "X", effectiveFrom: "2027-02-01" }),
+    fbVersion({ code: "X", status: "draft" }),
+  ]) {
+    assert.equal(
+      lib.isOnlyActiveFoodBeverageRule([fbVersion(), other], chain, date),
+      true,
+      JSON.stringify(other),
+    );
+  }
+});
+
+test("isOnlyActiveFoodBeverageRule: a replacement switched off by an outlet version does not count", () => {
+  const outlet = "0d7a9d6e-3333-4333-8333-333333333333";
+  const rules = [
+    fbVersion(),
+    fbVersion({ code: "X" }),
+    fbVersion({ code: "X", id: "X-outlet", outletId: outlet, isActive: false }),
+  ];
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      rules,
+      { code: "FB", outletId: null },
+      "2026-11-11",
+    ),
+    true,
+  );
+  // An outlet version that is itself a full cover keeps the replacement.
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [
+        fbVersion(),
+        fbVersion({ code: "X" }),
+        fbVersion({ code: "X", id: "X-outlet", outletId: outlet }),
+      ],
+      { code: "FB", outletId: null },
+      "2026-11-11",
+    ),
+    false,
+  );
+});
+
+test("isOnlyActiveFoodBeverageRule: judged at the change date, not today", () => {
+  const rules = [
+    fbVersion(),
+    fbVersion({ code: "NEW", effectiveFrom: "2027-01-01" }),
+  ];
+  const chain = { code: "FB", outletId: null };
+  // Today the new rule is not yet in force, so FB is the last one.
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(rules, chain, "2026-11-11"),
+    true,
+  );
+  // A change that starts after the replacement begins is safe.
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(rules, chain, "2027-01-01"),
+    false,
+  );
+});
+
+test("isOnlyActiveFoodBeverageRule: a chain with nothing in force, already off, or facility-only has nothing to lose", () => {
+  const chain = { code: "FB", outletId: null };
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule([], chain, "2026-11-11"),
+    false,
+  );
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [fbVersion({ isActive: false })],
+      chain,
+      "2026-11-11",
+    ),
+    false,
+  );
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [fbVersion({ status: "draft" })],
+      chain,
+      "2026-11-11",
+    ),
+    false,
+  );
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [
+        fbVersion({
+          appliesTo: {
+            itemClasses: ["facility"],
+            categoryIds: [],
+            itemIds: [],
+          },
+        }),
+      ],
+      chain,
+      "2026-11-11",
+    ),
+    false,
+  );
+});
+
+test("isOnlyActiveFoodBeverageRule: an outlet chain accepts a tenant-wide replacement but not another outlet's", () => {
+  const outletA = "0d7a9d6e-4444-4444-8444-444444444444";
+  const outletB = "0d7a9d6e-5555-4555-8555-555555555555";
+  const own = fbVersion({ outletId: outletA });
+  const chain = { code: "FB", outletId: outletA };
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [own, fbVersion({ code: "T" })],
+      chain,
+      "2026-11-11",
+    ),
+    false,
+  );
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [own, fbVersion({ code: "B", outletId: outletB })],
+      chain,
+      "2026-11-11",
+    ),
+    true,
+  );
+});
