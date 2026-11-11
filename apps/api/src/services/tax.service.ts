@@ -51,6 +51,7 @@ import {
 } from "@starter/shared/core";
 import {
   TaxError,
+  archiveRuleVersion,
   calculateTax,
   createServiceChargeRuleInputSchema,
   effectiveRuleVersions,
@@ -75,6 +76,7 @@ import {
   taxSettingsSchema,
   updateServiceChargeRuleInputSchema,
   updateTaxRuleInputSchema,
+  updateTaxSettingsInputSchema,
   type PbjtMonthlyRecap,
   type ServiceChargeRule,
   type TaxCalculationInput,
@@ -117,6 +119,7 @@ type UpdateServiceChargeRuleInput = z.output<
   typeof updateServiceChargeRuleInputSchema
 >;
 type CreateTaxSettingsInput = z.output<typeof createTaxSettingsInputSchema>;
+type UpdateTaxSettingsInput = z.output<typeof updateTaxSettingsInputSchema>;
 
 /** Configuration is tenant administration (tenant_admin/admin templates);
  * the report is finance (accounting.tax_report.manage). */
@@ -609,6 +612,75 @@ export async function updateTaxRule(
       )
       .returning();
     if (!updated) throw new HttpError(404, "NOT_FOUND", "Tax rule not found.");
+    return toTaxRule(updated);
+  });
+}
+
+/**
+ * Discards a draft tax rule version (draft -> archived). The lifecycle refuses
+ * a published version (TAX_RULE_IMMUTABLE) and an archived one
+ * (TAX_INVALID_TRANSITION): published history is never rewritten (R21).
+ */
+export async function archiveTaxRule(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  taxRuleId: string,
+  now = new Date(),
+): Promise<TaxRule> {
+  const actor = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    const id = taxRuleIdSchema.parse(taxRuleId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
+    const row = await lockTaxRule(tx, context.tenant.tenantId, id);
+    await assertPermission(
+      tx,
+      context,
+      actor,
+      CONFIG_PERMISSION,
+      targetOf(row.outletId),
+    );
+    if (row.outletId) await requireOutlet(tx, context, row.outletId);
+    const archived = archiveRuleVersion({
+      status: row.status,
+      effectiveFrom: row.effectiveFrom,
+      publishedAt: iso(row.publishedAt),
+      publishedBy: row.publishedBy,
+    });
+    const [updated] = await tx
+      .update(taxRules)
+      .set({ status: archived.status })
+      .where(
+        and(
+          eq(taxRules.id, id),
+          eq(taxRules.tenantId, context.tenant.tenantId),
+        ),
+      )
+      .returning();
+    if (!updated) throw new HttpError(404, "NOT_FOUND", "Tax rule not found.");
+    await recordAudit(tx, context, {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: updated.outletId,
+      actorType: "user",
+      actorId: actor,
+      deviceId: null,
+      action: "tax_rule.archived",
+      objectType: "tax_rule",
+      objectId: updated.id,
+      reason: null,
+      maskedChanges: {
+        before: { status: row.status },
+        after: {
+          code: updated.code,
+          version: updated.version,
+          status: updated.status,
+        },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    });
     return toTaxRule(updated);
   });
 }
@@ -1356,6 +1428,136 @@ export async function createTaxSettings(
         );
       throw error;
     }
+  });
+}
+
+async function lockTaxSettings(tx: Tx, tenantId: TenantId, id: string) {
+  const [row] = await tx
+    .select()
+    .from(taxSettings)
+    .where(and(eq(taxSettings.id, id), eq(taxSettings.tenantId, tenantId)))
+    .limit(1)
+    .for("update");
+  if (!row) throw new HttpError(404, "NOT_FOUND", "Tax settings not found.");
+  return row;
+}
+
+/** Edits a settings draft; published and archived versions are immutable. */
+export async function updateTaxSettings(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  taxSettingsId: string,
+  input: UpdateTaxSettingsInput,
+): Promise<TaxSettings> {
+  const actor = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    const id = taxSettingsIdSchema.parse(taxSettingsId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
+    const row = await lockTaxSettings(tx, context.tenant.tenantId, id);
+    await assertPermission(
+      tx,
+      context,
+      actor,
+      CONFIG_PERMISSION,
+      targetOf(row.outletId),
+    );
+    if (row.outletId) await requireOutlet(tx, context, row.outletId);
+    if (row.status !== "draft") throw new TaxError("TAX_RULE_IMMUTABLE");
+    const billRounding =
+      input.billRounding === undefined
+        ? row.billRounding
+        : input.billRounding === null
+          ? null
+          : {
+              incrementIdr: idr(input.billRounding.incrementIdr),
+              mode: input.billRounding.mode,
+            };
+    const [updated] = await tx
+      .update(taxSettings)
+      .set({
+        calculationOrder: input.calculationOrder ?? row.calculationOrder,
+        pricesIncludeTax: input.pricesIncludeTax ?? row.pricesIncludeTax,
+        serviceRoundingMode:
+          input.serviceRoundingMode ?? row.serviceRoundingMode,
+        taxRoundingMode: input.taxRoundingMode ?? row.taxRoundingMode,
+        inclusiveBaseRoundingMode:
+          input.inclusiveBaseRoundingMode ?? row.inclusiveBaseRoundingMode,
+        billRounding,
+        packageAllocation: input.packageAllocation ?? row.packageAllocation,
+        effectiveFrom: input.effectiveFrom ?? row.effectiveFrom,
+      })
+      .where(
+        and(
+          eq(taxSettings.id, id),
+          eq(taxSettings.tenantId, context.tenant.tenantId),
+        ),
+      )
+      .returning();
+    if (!updated)
+      throw new HttpError(404, "NOT_FOUND", "Tax settings not found.");
+    return toTaxSettings(updated);
+  });
+}
+
+/** Discards a settings draft (draft -> archived; published is refused). */
+export async function archiveTaxSettings(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  taxSettingsId: string,
+  now = new Date(),
+): Promise<TaxSettings> {
+  const actor = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    const id = taxSettingsIdSchema.parse(taxSettingsId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
+    const row = await lockTaxSettings(tx, context.tenant.tenantId, id);
+    await assertPermission(
+      tx,
+      context,
+      actor,
+      CONFIG_PERMISSION,
+      targetOf(row.outletId),
+    );
+    if (row.outletId) await requireOutlet(tx, context, row.outletId);
+    const archived = archiveRuleVersion({
+      status: row.status,
+      effectiveFrom: row.effectiveFrom,
+      publishedAt: iso(row.publishedAt),
+      publishedBy: row.publishedBy,
+    });
+    const [updated] = await tx
+      .update(taxSettings)
+      .set({ status: archived.status })
+      .where(
+        and(
+          eq(taxSettings.id, id),
+          eq(taxSettings.tenantId, context.tenant.tenantId),
+        ),
+      )
+      .returning();
+    if (!updated)
+      throw new HttpError(404, "NOT_FOUND", "Tax settings not found.");
+    await recordAudit(tx, context, {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: updated.outletId,
+      actorType: "user",
+      actorId: actor,
+      deviceId: null,
+      action: "tax_settings.archived",
+      objectType: "tax_settings",
+      objectId: updated.id,
+      reason: null,
+      maskedChanges: {
+        before: { status: row.status },
+        after: { version: updated.version, status: updated.status },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    });
+    return toTaxSettings(updated);
   });
 }
 

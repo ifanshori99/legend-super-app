@@ -3,6 +3,7 @@
 // `invalidateQueries({ queryKey: [endpoint.id] })` refreshes every cached page
 // of that endpoint (docs/frontend.md).
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
+import { listCategories, listItems } from "@starter/shared/menu";
 import { getFloorBoard } from "@starter/shared/qr-order";
 import { orgEndpoints } from "@starter/shared/platform";
 import {
@@ -62,3 +63,20 @@ export function floorZonesQuery(outletId: string) {
     retry: false,
   };
 }
+
+/**
+ * Menu categories and items for the rule's category/item targets. Read from
+ * the menu contract, one page of 100 (PAGE_LIMIT_MAX); a failure never blocks
+ * the rule editor, which keeps the targets the version already carries.
+ */
+export const taxMenuCategoriesQuery = () => ({
+  ...endpointQueryOptions(listCategories, { query: { limit: 100 } }),
+  staleTime: 5 * 60_000,
+  retry: false,
+});
+
+export const taxMenuItemsQuery = () => ({
+  ...endpointQueryOptions(listItems, { query: { limit: 100, sort: "name" } }),
+  staleTime: 5 * 60_000,
+  retry: false,
+});

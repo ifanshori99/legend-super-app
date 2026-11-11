@@ -975,7 +975,7 @@ export const id = {
       notifications: "Notifikasi",
       access: "Akses & Peran",
       payments: "Pembayaran",
-      tax: "Pajak & service charge",
+      tax: "Pajak & layanan",
       taxReport: "Laporan pajak",
     },
     karyawan: {
@@ -3288,7 +3288,7 @@ export const id = {
   // WS-05 tax & service charge (PRD v1.7 §3.14 F11, D13, R20/R21): versioned
   // rules, calculation options and the monthly PBJT recap (bead legend-efr).
   tax: {
-    title: "Pajak & service charge",
+    title: "Pajak & layanan",
     subtitle:
       "Aturan pajak dan service charge berversi, opsi perhitungan, dan rekap PBJT bulanan. Harga menu belum termasuk pajak dan service charge; keduanya ditambahkan saat pembayaran.",
     tabs: {
@@ -3300,7 +3300,7 @@ export const id = {
     versionLabel: "v{version}",
     versionStatus: {
       draft: "Draf",
-      published: "Terbit",
+      published: "Diterbitkan",
       archived: "Arsip",
     },
     effective: {
@@ -3345,13 +3345,21 @@ export const id = {
       title: "Aturan pajak",
       description:
         "Setiap perubahan dibuat sebagai versi baru dengan tanggal efektif. Versi yang sudah terbit tidak dapat diubah.",
-      add: "Aturan baru",
+      add: "Buat aturan",
+      createTitle: "Buat aturan pajak",
+      createDescription:
+        "Aturan baru disimpan sebagai draf sebelum diterbitkan.",
+      editTitle: "Ubah draf aturan pajak",
+      editDescription:
+        "{code} · Versi {version}. Perubahan disimpan sebagai draf sebelum diterbitkan.",
+      discard: "Buang draf",
+      scopeLine: "Versi {version} · {scope}",
       searchLabel: "Cari kode atau nama aturan",
       filterStatus: "Saring status versi",
       filterAll: "Semua status",
       emptyTitle: "Belum ada aturan pajak",
       emptyHint:
-        "Tambahkan aturan PBJT makanan dan minuman sebagai aturan pertama, lalu terbitkan.",
+        "Buat aturan untuk menentukan pajak yang berlaku pada item atau kategori.",
       columns: {
         rule: "Kode & nama",
         rate: "Tarif",
@@ -3369,6 +3377,30 @@ export const id = {
       createdToast: "Draf aturan pajak dibuat.",
       updatedToast: "Draf aturan pajak diperbarui.",
       publishedToast: "Aturan pajak diterbitkan.",
+    },
+    discard: {
+      ruleTitle: "Buang draf aturan pajak?",
+      settingsTitle: "Buang draf opsi perhitungan?",
+      body: "Draf versi {version} akan diarsipkan dan tidak dapat diterbitkan. Versi yang sudah diterbitkan tetap berlaku.",
+      meta: "Draf · Berlaku mulai {date}",
+      confirm: "Buang draf",
+      success: "Draf berhasil dibuang. Versi yang diterbitkan tetap berlaku.",
+    },
+    deactivate: {
+      title: "Nonaktifkan aturan pajak terakhir?",
+      body: "{name} adalah satu-satunya aturan aktif untuk makanan dan minuman.",
+      impactTitle: "Transaksi dapat gagal",
+      impactBody:
+        "Jika aturan ini dinonaktifkan, transaksi makanan dan minuman di POS dan pesanan QR tidak dapat dihitung hingga aturan pengganti aktif.",
+      recommendTitle: "Untuk transaksi bebas pajak",
+      recommendBody:
+        "Tetapkan aturan aktif dengan tarif 0% agar transaksi tetap dapat dihitung.",
+      setZero: "Atur tarif 0%",
+      confirm: "Tetap nonaktifkan",
+      pending: "Menonaktifkan…",
+      error: "Aturan belum dinonaktifkan. Periksa koneksi lalu coba lagi.",
+      zeroNote:
+        "Buat versi aturan aktif dengan tarif 0% untuk transaksi bebas pajak.",
     },
     conflicts: {
       title: "{count} pasang aturan pajak bertabrakan",
@@ -3425,6 +3457,10 @@ export const id = {
       historyDescription:
         "Setiap perubahan opsi perhitungan adalah versi baru dengan tanggal efektif.",
       newVersion: "Versi baru",
+      editTitle: "Ubah draf opsi perhitungan",
+      editDescription: "Perubahan disimpan sebagai draf sebelum diterbitkan.",
+      updatedToast: "Draf opsi perhitungan diperbarui.",
+      discardName: "Opsi perhitungan",
       emptyTitle: "Belum ada opsi perhitungan",
       emptyHint:
         "Buat versi pertama: harga belum termasuk pajak, pembulatan setengah ke atas.",
@@ -3520,11 +3556,28 @@ export const id = {
       region: "Wilayah",
       regionHint:
         "Opsional. Kode ISO provinsi + BPS, misalnya ID-JB-3273 (Kota Bandung). Kosong = semua wilayah.",
-      effectiveFrom: "Tanggal efektif",
-      appliesTo: "Cakupan item",
+      effectiveFrom: "Berlaku mulai",
+      outlet: "Berlaku untuk outlet",
+      outletHint:
+        "Versi outlet menggantikan aturan dengan kode yang sama untuk outlet ini.",
+      outletLocked:
+        "Outlet mengikuti versi sebelumnya dan tidak dapat diubah pada draf ini.",
+      allOutlets: "Semua outlet",
+      appliesTo: "Jenis item",
       appliesToHint: "Pilih kelas item yang tercakup aturan ini.",
-      preservedTargets:
-        "Kategori ({categories}) dan item ({items}) yang sudah ditargetkan tetap dipertahankan.",
+      categories: "Kategori menu",
+      categoriesHint: "Pilih satu atau lebih kategori dari menu.",
+      items: "Item menu",
+      itemsHint: "Pilih item tertentu dari menu.",
+      targetSearch: "Cari {label}",
+      targetLoading: "Memuat daftar…",
+      targetUnavailable:
+        "Daftar menu belum bisa dimuat. Pilihan yang sudah ada tetap dipertahankan.",
+      targetEmpty: "Belum ada pilihan.",
+      targetNoMatch: "Tidak ada yang cocok.",
+      targetSelected: "{count} dipilih",
+      targetUnlisted:
+        "{count} pilihan tidak ada di daftar yang dimuat dan tetap dipertahankan.",
       channels: "Kanal",
       channelsHint: "Kosong = semua kanal.",
       priceIncludesTax: "Harga termasuk pajak",

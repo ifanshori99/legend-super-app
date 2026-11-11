@@ -3,7 +3,7 @@
 // The list is the version history per code, newest first, with drafts editable
 // and published versions copied into a new draft.
 import * as React from "react";
-import { CopyPlus, Pencil, Plus, Send } from "lucide-react";
+import { CopyPlus, Pencil, Plus, Send, Trash2 } from "lucide-react";
 import type { RuleVersionStatus, TaxRule } from "@starter/shared/tax";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ import {
 import { useToast } from "@/components/ui/toast";
 import { taxMutationError } from "../errors";
 import {
+  useArchiveTaxRule,
   usePublishTaxRule,
   useTaxOutlets,
   useTaxRuleConflicts,
@@ -39,6 +40,7 @@ import {
   formatBusinessDate,
   sortRuleVersions,
 } from "../lib";
+import { DiscardDraftDialog } from "./discard-draft-dialog";
 import { PublishDialog } from "./publish-dialog";
 import { RuleConflictsBanner } from "./rule-conflicts-banner";
 import { AppliesToSummary, ChannelsSummary } from "./summaries";
@@ -63,18 +65,21 @@ function RuleActions({
   showLabels,
   onEdit,
   onPublish,
+  onDiscard,
   onNewVersion,
 }: {
   rule: TaxRule;
   showLabels: boolean;
   onEdit: () => void;
   onPublish: () => void;
+  onDiscard: () => void;
   onNewVersion: () => void;
 }) {
   const t = useT();
   const editLabel = t("tax.rules.editDraft");
   const publishLabel = t("tax.rules.publish");
   const versionLabel = t("tax.rules.newVersion");
+  const discardLabel = t("tax.rules.discard");
   if (rule.status === "draft") {
     return (
       <div
@@ -116,6 +121,22 @@ function RuleActions({
             <Send aria-hidden="true" />
           </Button>
         )}
+        {showLabels ? (
+          <Button type="button" variant="outline" size="sm" onClick={onDiscard}>
+            <Trash2 aria-hidden="true" />
+            {discardLabel}
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`${discardLabel} ${rule.code}`}
+            onClick={onDiscard}
+          >
+            <Trash2 aria-hidden="true" />
+          </Button>
+        )}
       </div>
     );
   }
@@ -150,12 +171,15 @@ export function TaxRulesPage() {
   const conflictsQuery = useTaxRuleConflicts();
   const outletsQuery = useTaxOutlets();
   const publishRule = usePublishTaxRule();
+  const archiveRule = useArchiveTaxRule();
 
   const [search, setSearch] = React.useState("");
   const [status, setStatus] = React.useState<StatusFilter>("all");
   const [editor, setEditor] = React.useState<Editor | null>(null);
   const [publishing, setPublishing] = React.useState<TaxRule | null>(null);
   const [publishError, setPublishError] = React.useState<string>();
+  const [discarding, setDiscarding] = React.useState<TaxRule | null>(null);
+  const [discardError, setDiscardError] = React.useState<string>();
 
   const today = businessDateToday();
   const all = React.useMemo(
@@ -212,6 +236,32 @@ export function TaxRulesPage() {
       },
     );
   }
+
+  function scopeLabel(rule: TaxRule): string {
+    return rule.outletId === null
+      ? t("tax.form.allOutlets")
+      : (outletNames.get(rule.outletId) ?? t("tax.conflicts.outletUnknown"));
+  }
+
+  function confirmDiscard() {
+    if (!discarding) return;
+    archiveRule.mutate(
+      { params: { taxRuleId: discarding.id } },
+      {
+        onSuccess: () => {
+          toast({ title: t("tax.discard.success"), tone: "success" });
+          setDiscarding(null);
+          setDiscardError(undefined);
+        },
+        onError: (error) => setDiscardError(taxMutationError(error, t)),
+      },
+    );
+  }
+
+  const openDiscard = (rule: TaxRule) => {
+    setDiscardError(undefined);
+    setDiscarding(rule);
+  };
 
   return (
     <>
@@ -309,6 +359,12 @@ export function TaxRulesPage() {
                       <span className="text-sm text-muted-foreground">
                         {rule.name}
                       </span>
+                      <span className="text-sm text-muted-foreground">
+                        {t("tax.rules.scopeLine", {
+                          version: rule.version,
+                          scope: scopeLabel(rule),
+                        })}
+                      </span>
                     </div>
                   </TableCell>
                   <TableCell numeric>
@@ -351,6 +407,7 @@ export function TaxRulesPage() {
                         setPublishError(undefined);
                         setPublishing(rule);
                       }}
+                      onDiscard={() => openDiscard(rule)}
                       onNewVersion={() =>
                         setEditor({ mode: "new-version", rule })
                       }
@@ -373,6 +430,12 @@ export function TaxRulesPage() {
                   <span className="font-semibold">{rule.code}</span>
                   <span className="text-sm text-muted-foreground">
                     {rule.name}
+                  </span>
+                  <span className="text-sm text-muted-foreground">
+                    {t("tax.rules.scopeLine", {
+                      version: rule.version,
+                      scope: scopeLabel(rule),
+                    })}
                   </span>
                 </div>
                 <VersionStatusBadge version={rule} />
@@ -403,6 +466,7 @@ export function TaxRulesPage() {
                   setPublishError(undefined);
                   setPublishing(rule);
                 }}
+                onDiscard={() => openDiscard(rule)}
                 onNewVersion={() => setEditor({ mode: "new-version", rule })}
               />
             </li>
@@ -427,6 +491,24 @@ export function TaxRulesPage() {
             }
           }}
           onClose={() => setEditor(null)}
+        />
+      )}
+
+      {discarding && (
+        <DiscardDraftDialog
+          title={t("tax.discard.ruleTitle")}
+          version={discarding.version}
+          name={discarding.name}
+          meta={`${t("tax.discard.meta", {
+            date: formatBusinessDate(discarding.effectiveFrom),
+          })} · ${scopeLabel(discarding)}`}
+          error={discardError}
+          pending={archiveRule.isPending}
+          onCancel={() => {
+            setDiscarding(null);
+            setDiscardError(undefined);
+          }}
+          onConfirm={confirmDiscard}
         />
       )}
 

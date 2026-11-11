@@ -212,6 +212,46 @@ export function appliesToCounts(appliesTo: TaxAppliesTo): AppliesToCounts {
   };
 }
 
+/** A rule version with the fields the food-and-beverage check reads. */
+export type FoodBeverageRuleVersion = RuleVersion & {
+  appliesTo: Pick<TaxAppliesTo, "itemClasses">;
+};
+
+/**
+ * True when `chain` (a rule code at tenant or one outlet) is the only active
+ * rule in force that covers food_beverage in its scope. Switching it off makes
+ * every POS and QR food line fail with TAX_RULE_NOT_FOUND, so the editor warns
+ * first and points to a 0% rate for tax-exempt items (legend-d5pz). Another
+ * code at tenant level or in the same outlet counts as a replacement.
+ */
+export function isOnlyActiveFoodBeverageRule<T extends FoodBeverageRuleVersion>(
+  versions: readonly T[],
+  chain: { code: string; outletId: string | null },
+  today: string,
+): boolean {
+  let covered = false;
+  for (const version of versions) {
+    if (
+      !isEffectiveVersion(version, versions, today) ||
+      !version.isActive ||
+      !version.appliesTo.itemClasses.includes("food_beverage")
+    )
+      continue;
+    if (version.code === chain.code && version.outletId === chain.outletId) {
+      covered = true;
+      continue;
+    }
+    // Same code in another scope does not replace this chain; any other code
+    // at tenant level or in this outlet does.
+    if (
+      version.code !== chain.code &&
+      (version.outletId === null || version.outletId === chain.outletId)
+    )
+      return false;
+  }
+  return covered;
+}
+
 /** Tax error code → catalog key; every code has a fix hint in the catalog. */
 export const TAX_ERROR_MESSAGE_KEYS: Record<TaxErrorCode, MessageKey> = {
   TAX_RULE_NOT_FOUND: "tax.errors.ruleNotFound",
