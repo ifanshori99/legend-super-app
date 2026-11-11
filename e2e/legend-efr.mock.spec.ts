@@ -94,11 +94,18 @@ test("R21: publish a new tax rule version and start its next version", async ({
     page.getByText("Draf aturan pajak dibuat.", { exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Terbitkan PBJT-E2E" }).click();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "PBJT-E2E" })
+    .getByRole("button", { name: "Terbitkan", exact: true })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Terbitkan PBJT-E2E versi 1?" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Terbitkan", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Terbitkan", exact: true })
+    .click();
   await expect(
     page.getByText("Aturan pajak diterbitkan.", { exact: true }),
   ).toBeVisible();

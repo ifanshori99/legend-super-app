@@ -63,7 +63,8 @@ export function DiscardDraftDialog({
           </Button>
           <Button
             type="button"
-            variant="outline"
+            variant="destructive"
+            className="focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             loading={pending}
             onClick={onConfirm}
           >

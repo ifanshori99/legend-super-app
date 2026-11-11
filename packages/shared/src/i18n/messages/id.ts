@@ -3372,6 +3372,7 @@ export const id = {
       effectiveFrom: "Efektif {date}",
       newVersion: "Versi baru",
       newVersionTitle: "Versi baru {code}",
+      edit: "Ubah",
       editDraft: "Ubah draf",
       publish: "Terbitkan",
       createdToast: "Draf aturan pajak dibuat.",
@@ -3397,6 +3398,7 @@ export const id = {
         "Tetapkan aturan aktif dengan tarif 0% agar transaksi tetap dapat dihitung.",
       setZero: "Atur tarif 0%",
       confirm: "Tetap nonaktifkan",
+      saved: "Penonaktifan disimpan sebagai draf. Terbitkan agar berlaku.",
       pending: "Menonaktifkan…",
       error: "Aturan belum dinonaktifkan. Periksa koneksi lalu coba lagi.",
       zeroNote:

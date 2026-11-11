@@ -3,7 +3,7 @@
 // charge by default (owner decision 2026-11-01); visible prices are inclusive
 // only when this setting says so.
 import * as React from "react";
-import { Pencil, Plus, Send, Trash2 } from "lucide-react";
+import { Plus } from "lucide-react";
 import type { TaxSettings } from "@starter/shared/tax";
 import { formatNumber } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -41,6 +41,7 @@ import {
   formatBusinessDate,
 } from "../lib";
 import { DiscardDraftDialog } from "./discard-draft-dialog";
+import { DraftActions } from "./draft-actions";
 import { PublishDialog } from "./publish-dialog";
 import { TaxSettingsDialog } from "./tax-settings-dialog";
 import { VersionStatusBadge } from "./version-badges";
@@ -289,38 +290,14 @@ export function TaxSettingsPage() {
                     </TableCell>
                     <TableCell numeric>
                       {row.status === "draft" && (
-                        <div className="flex items-center justify-end gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={`${t("tax.rules.editDraft")} v${row.version}`}
-                            onClick={() => setEditing(row)}
-                          >
-                            <Pencil aria-hidden="true" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={`${t("tax.rules.publish")} v${row.version}`}
-                            onClick={() => {
-                              setPublishError(undefined);
-                              setPublishing(row);
-                            }}
-                          >
-                            <Send aria-hidden="true" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={`${t("tax.rules.discard")} v${row.version}`}
-                            onClick={() => openDiscard(row)}
-                          >
-                            <Trash2 aria-hidden="true" />
-                          </Button>
-                        </div>
+                        <DraftActions
+                          onEdit={() => setEditing(row)}
+                          onPublish={() => {
+                            setPublishError(undefined);
+                            setPublishing(row);
+                          }}
+                          onDiscard={() => openDiscard(row)}
+                        />
                       )}
                     </TableCell>
                   </TableRow>
@@ -365,38 +342,14 @@ export function TaxSettingsPage() {
                   {t(PACKAGE_ALLOCATION_KEYS[row.packageAllocation])}
                 </p>
                 {row.status === "draft" && (
-                  <div className="flex flex-wrap items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setEditing(row)}
-                    >
-                      <Pencil aria-hidden="true" />
-                      {t("tax.rules.editDraft")}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setPublishError(undefined);
-                        setPublishing(row);
-                      }}
-                    >
-                      <Send aria-hidden="true" />
-                      {t("tax.rules.publish")}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => openDiscard(row)}
-                    >
-                      <Trash2 aria-hidden="true" />
-                      {t("tax.rules.discard")}
-                    </Button>
-                  </div>
+                  <DraftActions
+                    onEdit={() => setEditing(row)}
+                    onPublish={() => {
+                      setPublishError(undefined);
+                      setPublishing(row);
+                    }}
+                    onDiscard={() => openDiscard(row)}
+                  />
                 )}
               </li>
             );

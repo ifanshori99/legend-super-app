@@ -133,9 +133,11 @@ test.describe("legend-woc1 tax rules", () => {
     await dialog.getByLabel("Kode aturan").fill("PBJT-KOSONG");
     await dialog.getByLabel("Nama aturan").fill("Tanpa tarif");
     await dialog.getByRole("button", { name: "Simpan draf" }).click();
-    await expect(dialog.getByText(
+    await expect(
+      dialog.getByText(
         "Tulis angka 0–100, maksimal dua desimal (misalnya 10 atau 5,5).",
-      )).toBeVisible();
+      ),
+    ).toBeVisible();
     await expect(dialog).toBeVisible();
   });
 
@@ -309,7 +311,9 @@ test.describe("legend-d5pz deactivate the only food_beverage rule", () => {
       ),
     ).toBeVisible();
     await expect(form.getByLabel("Tarif (%)")).toHaveValue("0");
-    await expect(form.getByRole("switch", { name: "Aturan aktif" })).toBeChecked();
+    await expect(
+      form.getByRole("switch", { name: "Aturan aktif" }),
+    ).toBeChecked();
 
     // Saving now needs no warning: the rule stays active.
     await form.getByRole("button", { name: "Simpan draf" }).click();
@@ -328,7 +332,10 @@ test.describe("legend-d5pz deactivate the only food_beverage rule", () => {
     await dialog.getByRole("button", { name: "Tetap nonaktifkan" }).click();
 
     await expect(
-      page.getByText("Draf aturan pajak dibuat.", { exact: true }),
+      page.getByText(
+        "Penonaktifan disimpan sebagai draf. Terbitkan agar berlaku.",
+        { exact: true },
+      ),
     ).toBeVisible();
     // The new inactive version is a second PBJT-FNB draft next to the seeded
     // revision; the published version keeps applying until it is published.

@@ -3,7 +3,7 @@
 // The list is the version history per code, newest first, with drafts editable
 // and published versions copied into a new draft.
 import * as React from "react";
-import { CopyPlus, Pencil, Plus, Send, Trash2 } from "lucide-react";
+import { CopyPlus, Plus } from "lucide-react";
 import type { RuleVersionStatus, TaxRule } from "@starter/shared/tax";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -41,9 +41,11 @@ import {
   sortRuleVersions,
 } from "../lib";
 import { DiscardDraftDialog } from "./discard-draft-dialog";
+import { DraftActions } from "./draft-actions";
 import { PublishDialog } from "./publish-dialog";
 import { RuleConflictsBanner } from "./rule-conflicts-banner";
 import { AppliesToSummary, ChannelsSummary } from "./summaries";
+import { TaxPage } from "./tax-page";
 import { TaxRuleDialog } from "./tax-rule-dialog";
 import { EffectiveBadge, VersionStatusBadge } from "./version-badges";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
@@ -62,97 +64,36 @@ type Editor =
 
 function RuleActions({
   rule,
-  showLabels,
   onEdit,
   onPublish,
   onDiscard,
   onNewVersion,
 }: {
   rule: TaxRule;
-  showLabels: boolean;
   onEdit: () => void;
   onPublish: () => void;
   onDiscard: () => void;
   onNewVersion: () => void;
 }) {
   const t = useT();
-  const editLabel = t("tax.rules.editDraft");
-  const publishLabel = t("tax.rules.publish");
   const versionLabel = t("tax.rules.newVersion");
-  const discardLabel = t("tax.rules.discard");
   if (rule.status === "draft") {
     return (
-      <div
-        className={
-          showLabels
-            ? "flex flex-wrap items-center gap-1"
-            : "flex items-center justify-end gap-1"
-        }
-      >
-        {showLabels ? (
-          <Button type="button" variant="outline" size="sm" onClick={onEdit}>
-            <Pencil aria-hidden="true" />
-            {editLabel}
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`${editLabel} ${rule.code}`}
-            onClick={onEdit}
-          >
-            <Pencil aria-hidden="true" />
-          </Button>
-        )}
-        {showLabels ? (
-          <Button type="button" variant="outline" size="sm" onClick={onPublish}>
-            <Send aria-hidden="true" />
-            {publishLabel}
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`${publishLabel} ${rule.code}`}
-            onClick={onPublish}
-          >
-            <Send aria-hidden="true" />
-          </Button>
-        )}
-        {showLabels ? (
-          <Button type="button" variant="outline" size="sm" onClick={onDiscard}>
-            <Trash2 aria-hidden="true" />
-            {discardLabel}
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`${discardLabel} ${rule.code}`}
-            onClick={onDiscard}
-          >
-            <Trash2 aria-hidden="true" />
-          </Button>
-        )}
-      </div>
+      <DraftActions
+        onEdit={onEdit}
+        onPublish={onPublish}
+        onDiscard={onDiscard}
+      />
     );
   }
   if (rule.status === "published") {
     return (
-      <div
-        className={
-          showLabels
-            ? "flex flex-wrap items-center gap-1"
-            : "flex items-center justify-end gap-1"
-        }
-      >
+      <div className="flex flex-wrap items-center gap-1 md:justify-end">
         <Button
           type="button"
           variant="outline"
           size="sm"
+          className="max-md:min-h-11"
           onClick={onNewVersion}
         >
           <CopyPlus aria-hidden="true" />
@@ -164,7 +105,13 @@ function RuleActions({
   return null;
 }
 
-export function TaxRulesPage() {
+export function TaxRulesPage({
+  description,
+  canReport,
+}: {
+  description: string;
+  canReport: boolean;
+}) {
   const t = useT();
   const toast = useToast();
   const rulesQuery = useTaxRules();
@@ -263,8 +210,25 @@ export function TaxRulesPage() {
     setDiscarding(rule);
   };
 
+  const isEmpty =
+    !rulesQuery.isPending && !rulesQuery.isError && all.length === 0;
+
   return (
-    <>
+    <TaxPage
+      active="rules"
+      description={description}
+      canConfigure
+      canReport={canReport}
+      // One primary action: the empty state carries its own button instead.
+      action={
+        isEmpty ? undefined : (
+          <Button type="button" onClick={() => setEditor({ mode: "create" })}>
+            <Plus aria-hidden="true" />
+            {t("tax.rules.add")}
+          </Button>
+        )
+      }
+    >
       <DataTableShell
         title={t("tax.rules.title")}
         description={t("tax.rules.description")}
@@ -283,35 +247,29 @@ export function TaxRulesPage() {
           label: t("tax.rules.searchLabel"),
         }}
         actions={
-          <>
-            <Select
-              value={status}
-              onValueChange={(value) => setStatus(value as StatusFilter)}
+          <Select
+            value={status}
+            onValueChange={(value) => setStatus(value as StatusFilter)}
+          >
+            <SelectTrigger
+              aria-label={t("tax.rules.filterStatus")}
+              className="h-control-sm sm:w-40"
             >
-              <SelectTrigger
-                aria-label={t("tax.rules.filterStatus")}
-                className="h-control-sm sm:w-40"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{t("tax.rules.filterAll")}</SelectItem>
-                <SelectItem value="draft">
-                  {t("tax.versionStatus.draft")}
-                </SelectItem>
-                <SelectItem value="published">
-                  {t("tax.versionStatus.published")}
-                </SelectItem>
-                <SelectItem value="archived">
-                  {t("tax.versionStatus.archived")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <Button type="button" onClick={() => setEditor({ mode: "create" })}>
-              <Plus aria-hidden="true" />
-              {t("tax.rules.add")}
-            </Button>
-          </>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("tax.rules.filterAll")}</SelectItem>
+              <SelectItem value="draft">
+                {t("tax.versionStatus.draft")}
+              </SelectItem>
+              <SelectItem value="published">
+                {t("tax.versionStatus.published")}
+              </SelectItem>
+              <SelectItem value="archived">
+                {t("tax.versionStatus.archived")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         }
         onRetry={() => void rulesQuery.refetch()}
         empty={{
@@ -401,7 +359,6 @@ export function TaxRulesPage() {
                   <TableCell numeric>
                     <RuleActions
                       rule={rule}
-                      showLabels={false}
                       onEdit={() => setEditor({ mode: "edit", rule })}
                       onPublish={() => {
                         setPublishError(undefined);
@@ -460,7 +417,6 @@ export function TaxRulesPage() {
               <EffectiveBadge version={rule} versions={all} today={today} />
               <RuleActions
                 rule={rule}
-                showLabels
                 onEdit={() => setEditor({ mode: "edit", rule })}
                 onPublish={() => {
                   setPublishError(undefined);
@@ -528,6 +484,6 @@ export function TaxRulesPage() {
           onConfirm={confirmPublish}
         />
       )}
-    </>
+    </TaxPage>
   );
 }

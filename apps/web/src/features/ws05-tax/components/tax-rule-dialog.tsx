@@ -327,11 +327,13 @@ export function TaxRuleDialog({
     const onSuccess = (saved: { data: TaxRule }) => {
       toast({
         title: t(
-          presetInactive
-            ? "tax.conflicts.draftCreated"
-            : mode === "edit"
-              ? "tax.rules.updatedToast"
-              : "tax.rules.createdToast",
+          confirmingOff && lastRuleChange === "inactive"
+            ? "tax.deactivate.saved"
+            : presetInactive
+              ? "tax.conflicts.draftCreated"
+              : mode === "edit"
+                ? "tax.rules.updatedToast"
+                : "tax.rules.createdToast",
         ),
         tone: "success",
       });
@@ -413,18 +415,6 @@ export function TaxRuleDialog({
                   spellCheck={false}
                 />
               </FormField>
-              <FormField
-                label={t("tax.form.name")}
-                required
-                error={errors.name}
-              >
-                <Input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  disabled={pending}
-                  maxLength={150}
-                />
-              </FormField>
               <FormField label={t("tax.form.taxType")} required>
                 <Select
                   value={taxType}
@@ -442,6 +432,19 @@ export function TaxRuleDialog({
                     ))}
                   </SelectContent>
                 </Select>
+              </FormField>
+              <FormField
+                label={t("tax.form.name")}
+                required
+                className="sm:col-span-2"
+                error={errors.name}
+              >
+                <Input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  disabled={pending}
+                  maxLength={150}
+                />
               </FormField>
               <FormField
                 label={t("tax.form.rate")}
