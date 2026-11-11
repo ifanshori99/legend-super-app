@@ -208,6 +208,7 @@ async function payVerified(intentId: string, amountIdr: number) {
 }
 
 type PaidOrder = {
+  guest: Parameters<World["as"]>[0];
   order: { id: string; items: { id: string; menuItemId: string }[] };
   line: (menuItemId: string) => { id: string; menuItemId: string };
 };
@@ -708,7 +709,7 @@ describe("legend-rat9r 3: refund pengganti gagal final dan dilaporkan ulang (rep
     );
   });
 
-  it("contoh founder: refund pengganti 0, lini dilaporkan lagi (C): tetap 0", async () => {
+  it("contoh founder: refund pengganti 0 (nothing_left), lapor ulang lalu resolve ditolak 409 CONFLICT, tidak ada refund baru", async () => {
     const { paid, replacementLineId } = await kopiSwappedDirectly(
       "pay_first",
       airItem,
@@ -717,10 +718,35 @@ describe("legend-rat9r 3: refund pengganti gagal final dan dilaporkan ulang (rep
     await deliver(b.event);
     expect(await refundedTotal(b.issueId)).toBe(0);
 
-    const c = await approvedRefund(replacementLineId, AIR_PRICE);
-    await deliver(c.event);
-    expect(await refundedTotal(c.issueId)).toBe(0);
-    expect(await refundedEventTotal(paid.order.id, c.issueId)).toBe(0);
+    // Q25 + k0ub4: a refund that came out at 0 closes the line (nothing is left to
+    // pay). Reporting it again is accepted but the issue is already resolved, so a new
+    // refund approval is refused as a conflict. Right: no money is left.
+    const again = await w.report(replacementLineId);
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    const approvalId = await w.insertApproval({
+      actionType: "refund",
+      objectType: "order_issue",
+      objectId: again.body.data.id as string,
+      amountIdr: AIR_PRICE,
+      status: "approved",
+      requestedBy: w.floorStaff.userId,
+    });
+    const resolved = await w.staffPost(
+      w.supervisor,
+      `/api/order-issues/${again.body.data.id as string}/resolve`,
+      {
+        resolution: "manual_refund",
+        approvalRequestId: approvalId,
+        reason: REASON,
+      },
+    );
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(409);
+    expect(resolved.body.error.code).toBe("CONFLICT");
+    expect(await refundedTotal(b.issueId)).toBe(0);
+    expect(
+      await refundedEventTotal(paid.order.id, b.issueId),
+      "no new refund event",
+    ).toBe(0);
   });
 });
 
@@ -948,5 +974,32 @@ describe("legend-rat9r 8: setelah voucher, refund teh tidak membayar uang kopi",
         (await refundedTotal(b.issueId)) +
         (await refundedTotal(teh.issueId)),
     ).toBeLessThanOrEqual(KOPI_PAID + TEH_PAID);
+  });
+});
+
+describe("legend-rat9r 9: setelah voucher selisih, tamu memilih voucher untuk lini pengganti: ditolak", () => {
+  it("contoh founder: kopi ditukar ke air (voucher 8.085), lini air dilaporkan dan tamu memilih voucher: 422, tidak ada voucher baru, total voucher tetap [8.085]", async () => {
+    const { paid, swapIssueId, replacementLineId } = await kopiSwappedDirectly(
+      "pay_first",
+      airItem,
+    );
+    expect(await voucherValues(swapIssueId)).toEqual([KOPI_PAID]);
+
+    // The air line fails; the guest is offered the voucher but the whole paid value
+    // is already held as a voucher, so a second credit would pay the kopi twice.
+    const airIssueId = await reportLine(replacementLineId);
+    const chosen = await w
+      .as(paid.guest)
+      .choose(airIssueId, { choice: "voucher" });
+    expect(chosen.status, JSON.stringify(chosen.body)).toBe(422);
+
+    expect(await voucherValues(airIssueId), "no new voucher").toEqual([]);
+    expect(await voucherValues(swapIssueId)).toEqual([KOPI_PAID]);
+    const { rows } = await owner.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM apology_vouchers a
+        WHERE a.tenant_id = $1 AND a.order_issue_id = ANY($2::uuid[])`,
+      [w.tenant.tenantId, [swapIssueId, airIssueId]],
+    );
+    expect(Number(rows[0]!.total), "vouchers of the chain").toBe(1);
   });
 });
