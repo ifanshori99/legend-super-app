@@ -3,6 +3,7 @@
 export const posCaptainOrderMessages = {
   table: {
     title: "Meja {table}",
+    loadingTitle: "Meja",
     sessionActive: "Sesi QR aktif · {count} tamu",
     sessionEmpty: "Meja kosong · {seats} kursi",
     sessionOccupied: "Terisi · {count} tamu",

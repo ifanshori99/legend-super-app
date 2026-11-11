@@ -1,11 +1,20 @@
 import { createFileRoute, notFound } from "@tanstack/react-router";
+import { z } from "zod";
 import { CashierMainScreen } from "@/features/ws04-pos-order/components/cashier/cashier-main-screen";
 import { evaluateGuard } from "@/lib/areas/guard";
 
 // /pos/kasir — the cashier's main sale screen: pick menu, build the cart, send
 // the order and continue to payment (PRD §3 F11 "POS Kasir"). Presentation
-// guard only; the API re-checks `pos.sale.create` on every request.
+// guard only; the API re-checks `pos.sale.create` on every request. On phones the
+// cart is its own view: `?v=keranjang` keeps it in history, so the browser Back
+// button returns to the menu.
 export const Route = createFileRoute("/_ops/pos/kasir")({
+  validateSearch: z.object({
+    v: z.enum(["keranjang"]).optional().catch(undefined),
+    // Mock seed (`?demo=offline`, `?demo=...`) read by the POS ordering mock;
+    // kept so navigation does not drop it.
+    demo: z.string().optional().catch(undefined),
+  }),
   beforeLoad: ({ context }) => {
     const gate = evaluateGuard(
       { kind: "permission", surface: "pos", anyOf: ["pos.sale.create"] },

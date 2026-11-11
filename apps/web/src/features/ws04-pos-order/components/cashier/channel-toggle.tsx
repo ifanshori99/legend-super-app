@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { cn } from "cn";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -64,6 +64,7 @@ export function ChannelToggle({
           onClick={() => onChange(channel.value)}
           className={cn(
             choiceClass,
+            channel.value === "dine_in" && "whitespace-nowrap",
             value === channel.value &&
               "border-foreground bg-surface-2 not-aria-disabled:hover:bg-surface-2",
           )}
@@ -88,6 +89,7 @@ export function ChannelDetail({
   ojolRef,
   onOjolRefChange,
   error,
+  focusToken,
 }: {
   channel: SaleChannel;
   tableLabel: string | null;
@@ -97,12 +99,30 @@ export function ChannelDetail({
   ojolRef: string;
   onOjolRefChange: (value: string) => void;
   error: ChannelDetailError;
+  /** Changes on every failed "Lanjutkan", so the same error focuses again. */
+  focusToken: number;
 }) {
   const t = useT();
   const refId = useId();
+  const tableRef = useRef<HTMLButtonElement>(null);
+  const platformRef = useRef<HTMLButtonElement>(null);
+  const refInputRef = useRef<HTMLInputElement>(null);
   const messageId = `${refId}-message`;
   const [pickerOpen, setPickerOpen] = useState(false);
   const callNumber = useNextCallNumber(channel === "takeaway");
+
+  // A validation error moves focus to the first field that has one.
+  useEffect(() => {
+    if (!error) return;
+    const target =
+      error === "table"
+        ? tableRef.current
+        : error === "ojolPlatform"
+          ? platformRef.current
+          : refInputRef.current;
+    target?.focus();
+    target?.scrollIntoView({ block: "center" });
+  }, [error, focusToken]);
 
   const rowClass =
     "flex min-h-control-lg w-full items-center justify-between gap-3 rounded-control border-(length:--border-w) border-border bg-card px-3 text-left text-(length:--density-text) font-semibold";
@@ -141,9 +161,10 @@ export function ChannelDetail({
           aria-label={t("posOrderCart.ojol.platform")}
           className="grid grid-cols-3 gap-1.5"
         >
-          {PLATFORMS.map((platform) => (
+          {PLATFORMS.map((platform, index) => (
             <Button
               key={platform.value}
+              ref={index === 0 ? platformRef : undefined}
               type="button"
               variant="outline"
               aria-pressed={ojolPlatform === platform.value}
@@ -163,6 +184,7 @@ export function ChannelDetail({
         </label>
         <Input
           id={refId}
+          ref={refInputRef}
           value={ojolRef}
           onChange={(event) => onOjolRefChange(event.target.value)}
           placeholder={t("posOrderCart.ojol.refPlaceholder")}
@@ -173,7 +195,11 @@ export function ChannelDetail({
           className="h-control-lg"
         />
         {message && (
-          <p id={messageId} className="text-base font-semibold text-danger">
+          <p
+            id={messageId}
+            role="alert"
+            className="text-base font-semibold text-danger"
+          >
             {message}
           </p>
         )}
@@ -184,6 +210,7 @@ export function ChannelDetail({
   return (
     <div className="grid gap-2">
       <button
+        ref={tableRef}
         type="button"
         onClick={() => setPickerOpen(true)}
         aria-invalid={error === "table" ? true : undefined}
@@ -206,7 +233,11 @@ export function ChannelDetail({
         </span>
       </button>
       {error === "table" && (
-        <p id={messageId} className="text-base font-semibold text-danger">
+        <p
+          id={messageId}
+          role="alert"
+          className="text-base font-semibold text-danger"
+        >
           {t("posOrderCart.validation.table")}
         </p>
       )}

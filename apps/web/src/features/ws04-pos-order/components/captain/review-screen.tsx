@@ -17,10 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Money } from "@/components/ui/money";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Notice,
-  PosPageHeading,
-} from "@/features/ws04-pos-kasir/components/shared";
+import { Notice } from "@/features/ws04-pos-kasir/components/shared";
 import { lineTotalIdr } from "@/features/ws04-pos-order/cart-logic";
 import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
@@ -31,6 +28,7 @@ import {
 import type { CartLine } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
 import {
+  CaptainIntro,
   SampleBadge,
   lineDetails,
   tableSessionText,
@@ -75,7 +73,7 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
       title={
         tableLabel
           ? t("posCaptainOrder.table.title", { table: tableLabel })
-          : t("posCaptainOrder.review.title")
+          : t("posCaptainOrder.table.loadingTitle")
       }
       subtitle={
         tableOrder.data ? tableSessionText(t, tableOrder.data.table) : undefined
@@ -107,7 +105,7 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
       }
     >
       <div data-slot="captain-review" className="grid content-start gap-4">
-        <PosPageHeading
+        <CaptainIntro
           title={t("posCaptainOrder.review.title")}
           subtitle={
             tableLabel
@@ -255,9 +253,6 @@ function ReviewLine({
           id={switchId}
           checked={line.hold}
           onCheckedChange={onToggleHold}
-          aria-label={t("posCaptainOrder.review.holdSwitch", {
-            name: line.name,
-          })}
         />
       </Label>
     </div>

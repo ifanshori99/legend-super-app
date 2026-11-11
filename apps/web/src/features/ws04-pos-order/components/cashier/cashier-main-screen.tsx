@@ -1,11 +1,18 @@
-import { useState, type ReactNode } from "react";
-import { useNavigate, useRouteContext } from "@tanstack/react-router";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useNavigate,
+  useRouter,
+  useRouteContext,
+  useSearch,
+} from "@tanstack/react-router";
+import { TriangleAlert } from "lucide-react";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { ModifierDialog } from "@/features/ws04-pos-order/components/modifier-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Notice,
@@ -15,10 +22,15 @@ import { cartTotals } from "@/features/ws04-pos-order/cart-logic";
 import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
+  useOrderingConnectivity,
   useParkDraft,
   useSubmitOrder,
 } from "@/features/ws04-pos-order/hooks";
-import type { MenuItem, ParkedDraft } from "@/features/ws04-pos-order/types";
+import type {
+  CartLine,
+  MenuItem,
+  ParkedDraft,
+} from "@/features/ws04-pos-order/types";
 import { CartPane, type CartOrderMeta } from "./cart-pane";
 import { CatalogPane } from "./catalog-pane";
 import type { ChannelDetailError } from "./channel-toggle";
@@ -46,6 +58,7 @@ const CART_FIX_CODES = new Set([
 export function CashierMainScreen() {
   const t = useT();
   const navigate = useNavigate();
+  const router = useRouter();
   const cart = useDraftCart("kasir");
   const access = (useRouteContext({ strict: false }) as { access?: AreaAccess })
     .access;
@@ -61,18 +74,78 @@ export function CashierMainScreen() {
     ojolPlatform: null,
     ojolRef: "",
   });
-  const [view, setView] = useState<"menu" | "cart">("menu");
+  // The phone view lives in the URL (`?v=keranjang`), so Back returns to the menu.
+  const { v } = useSearch({ from: "/_ops/pos/kasir" });
+  const view = v === "keranjang" ? "cart" : "menu";
+  // Whether the cart view was opened by a push from this screen: then "back to
+  // menu" is a real history Back; a cart opened directly (deep link) is replaced.
+  const cartOpenedByPush = useRef(false);
+  useEffect(() => {
+    if (view === "menu") cartOpenedByPush.current = false;
+  }, [view]);
+  const setView = (next: "menu" | "cart") => {
+    if (next === "menu" && cartOpenedByPush.current) {
+      cartOpenedByPush.current = false;
+      router.history.back();
+      return;
+    }
+    if (next === "cart") cartOpenedByPush.current = true;
+    void navigate({
+      to: "/pos/kasir",
+      search: (prev) => ({
+        ...prev,
+        v: next === "cart" ? ("keranjang" as const) : undefined,
+      }),
+      replace: next === "menu",
+    });
+  };
+  const connectivity = useOrderingConnectivity();
   const [pickedItem, setPickedItem] = useState<MenuItem | null>(null);
   const [parkedOpen, setParkedOpen] = useState(false);
   const [fieldError, setFieldError] = useState<ChannelDetailError>(null);
+  const [fieldErrorToken, setFieldErrorToken] = useState(0);
+  // The line the cashier just removed, kept briefly so "Urungkan" can restore it.
+  const [removed, setRemoved] = useState<{
+    line: CartLine;
+    index: number;
+  } | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
 
   const totals = cartTotals(cart.lines);
+
+  useEffect(() => {
+    if (!removed) return;
+    const timer = setTimeout(() => setRemoved(null), 8000);
+    return () => clearTimeout(timer);
+  }, [removed]);
+
+  const fail = (field: Exclude<ChannelDetailError, null>) => {
+    setFieldError(field);
+    setFieldErrorToken((token) => token + 1);
+  };
+
+  const setQuantity = (lineId: string, quantity: number) => {
+    if (quantity <= 0) {
+      const index = cart.lines.findIndex((line) => line.lineId === lineId);
+      const line = cart.lines[index];
+      if (line) setRemoved({ line, index });
+    }
+    cart.setQuantity(lineId, quantity);
+  };
+
+  const undoRemove = () => {
+    if (!removed) return;
+    const next = [...cart.lines];
+    next.splice(Math.min(removed.index, next.length), 0, removed.line);
+    cart.replace(next);
+    setRemoved(null);
+  };
 
   const changeMeta = (patch: Partial<CartOrderMeta>) => {
     setMeta((current) => ({ ...current, ...patch }));
     setFieldError(null);
     setStatus(null);
+    setRemoved(null);
     submit.reset();
     park.reset();
   };
@@ -80,6 +153,7 @@ export function CashierMainScreen() {
   const pick = (item: MenuItem) => {
     if (item.soldOut) return;
     setStatus(null);
+    setRemoved(null);
     if (item.modifierGroups.length === 0) {
       cart.add(item, { modifiers: [], note: "", quantity: 1 });
       return;
@@ -90,19 +164,20 @@ export function CashierMainScreen() {
   const continueOrder = () => {
     const { channel, tableLabel, ojolPlatform, ojolRef } = meta;
     if (channel === "dine_in" && !tableLabel) {
-      setFieldError("table");
+      fail("table");
       return;
     }
     if (channel === "ojol_manual" && !ojolPlatform) {
-      setFieldError("ojolPlatform");
+      fail("ojolPlatform");
       return;
     }
     if (channel === "ojol_manual" && ojolRef.trim() === "") {
-      setFieldError("ojolRef");
+      fail("ojolRef");
       return;
     }
     setFieldError(null);
     setStatus(null);
+    setRemoved(null);
     submit.mutate(
       {
         channel,
@@ -132,6 +207,7 @@ export function CashierMainScreen() {
 
   const parkOrder = () => {
     setStatus(null);
+    setRemoved(null);
     park.mutate(
       { channel: meta.channel, lines: cart.lines },
       {
@@ -146,6 +222,7 @@ export function CashierMainScreen() {
   // The order does not exist on the server yet, so "send held items" releases
   // every held line: they go to the kitchen together with the order.
   const releaseHeld = () => {
+    setRemoved(null);
     setStatus({ key: "heldReleased", params: { count: totals.heldCount } });
     cart.replace(cart.lines.map((line) => ({ ...line, hold: false })));
   };
@@ -155,6 +232,7 @@ export function CashierMainScreen() {
     setMeta((current) => ({ ...current, channel: draft.channel }));
     setFieldError(null);
     setParkedOpen(false);
+    setRemoved(null);
     setStatus({ key: "resumedOk" });
   };
 
@@ -163,9 +241,15 @@ export function CashierMainScreen() {
       {status && (
         <Notice
           tone="info"
-          role="status"
           title={t(`posOrderCart.status.${status.key}`, status.params)}
         />
+      )}
+      {removed && (
+        <Notice tone="info" title={t("posOrderCart.status.lineRemoved")}>
+          <Button type="button" variant="outline" onClick={undoRemove}>
+            {t("posOrderCart.status.undo")}
+          </Button>
+        </Notice>
       )}
       {submit.isError && (
         <ActionError
@@ -206,6 +290,16 @@ export function CashierMainScreen() {
         <PosPageHeading
           title={t("posOrderCart.title")}
           subtitle={t("posOrderCart.subtitle")}
+          action={
+            <div role="status" className="empty:hidden">
+              {connectivity.mode === "edge_only" && (
+                <Badge tone="warning" className="px-3 py-1 text-sm">
+                  <TriangleAlert aria-hidden="true" />
+                  {t("posOrderCart.connectivity.offline")}
+                </Badge>
+              )}
+            </div>
+          }
         />
         <CatalogPane onPick={pick} />
       </div>
@@ -215,7 +309,8 @@ export function CashierMainScreen() {
         meta={meta}
         onMetaChange={changeMeta}
         fieldError={fieldError}
-        onSetQuantity={cart.setQuantity}
+        fieldErrorToken={fieldErrorToken}
+        onSetQuantity={setQuantity}
         onToggleHold={cart.toggleHold}
         onPark={parkOrder}
         onFireHeld={releaseHeld}

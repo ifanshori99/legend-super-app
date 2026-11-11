@@ -1,12 +1,12 @@
 import { Link } from "@tanstack/react-router";
 import { Plus, Send } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { ApiError } from "@/lib/api/errors";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Notice,
-  PosPageHeading,
   StatusPill,
 } from "@/features/ws04-pos-kasir/components/shared";
 import {
@@ -17,13 +17,28 @@ import {
 import type { OrderLine } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
 import {
+  CaptainIntro,
   SampleBadge,
   lineDetails,
   tableSessionText,
 } from "./captain-order-parts";
 
+/** Lines grouped by course, courses in kitchen order. */
+function groupByCourse(lines: OrderLine[]) {
+  const groups = new Map<
+    string,
+    { course: OrderLine["course"]; lines: OrderLine[] }
+  >();
+  for (const line of lines) {
+    const group = groups.get(line.course.id);
+    if (group) group.lines.push(line);
+    else groups.set(line.course.id, { course: line.course, lines: [line] });
+  }
+  return [...groups.values()].sort((a, b) => a.course.order - b.course.order);
+}
+
 // /pos/captain/meja/$tableId — what a table has ordered: sent items and held
-// ones. A held item goes to the kitchen only when the captain sends it.
+// ones. A held item goes to the kitchen only when the captain sends its course.
 export function TableOrderScreen({ tableId }: { tableId: string }) {
   const t = useT();
   const query = useTableOrder(tableId);
@@ -31,22 +46,25 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
   const view = query.data;
   const firingLineIds =
     fire.isPending && fire.variables ? fire.variables.lineIds : [];
-  const heldLines = (view?.order?.lines ?? []).filter(
-    (line) => line.status === "held",
-  );
+  const groups = groupByCourse(view?.order?.lines ?? []);
+  const tableMissing =
+    query.isError &&
+    !view &&
+    query.error instanceof ApiError &&
+    query.error.status === 404;
 
   return (
     <CaptainShell
       title={
         view
           ? t("posCaptainOrder.table.title", { table: view.table.label })
-          : t("posCaptainOrder.order.title")
+          : t("posCaptainOrder.table.loadingTitle")
       }
       subtitle={view ? tableSessionText(t, view.table) : undefined}
       backTo="/pos/captain"
     >
       <div data-slot="captain-table-order" className="grid content-start gap-4">
-        <PosPageHeading
+        <CaptainIntro
           title={t("posCaptainOrder.order.title")}
           subtitle={t("posCaptainOrder.order.subtitle")}
           action={<SampleBadge />}
@@ -74,6 +92,18 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
             <Skeleton className="h-36 rounded-container" />
             <Skeleton className="h-16 rounded-control" />
           </div>
+        ) : tableMissing ? (
+          <EmptyState
+            title={t("posCaptainOrder.order.notFoundTitle")}
+            description={t("posCaptainOrder.order.notFoundHint")}
+            action={
+              <Button asChild>
+                <Link to="/pos/captain">
+                  {t("posCaptainOrder.order.backToTables")}
+                </Link>
+              </Button>
+            }
+          />
         ) : query.isError && !view ? (
           <ErrorState
             title={t("posCaptainOrder.order.loadFailedTitle")}
@@ -87,31 +117,60 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
           />
         ) : (
           <>
-            {view?.order && view.order.lines.length > 0 ? (
-              <ul className="grid gap-3">
-                {view.order.lines.map((line) => (
-                  <li key={line.lineId}>
-                    <OrderLineCard
-                      line={line}
-                      firing={firingLineIds.includes(line.lineId)}
-                      busy={fire.isPending}
-                      courseHeldCount={
-                        heldLines.filter(
-                          (held) => held.course.id === line.course.id,
-                        ).length
-                      }
-                      onFire={() =>
-                        fire.mutate({
-                          tableId,
-                          lineIds: heldLines
-                            .filter((held) => held.course.id === line.course.id)
-                            .map((held) => held.lineId),
-                        })
-                      }
-                    />
-                  </li>
-                ))}
-              </ul>
+            {groups.length > 0 ? (
+              groups.map((group) => {
+                const held = group.lines.filter(
+                  (line) => line.status === "held",
+                );
+                const firing = held.some((line) =>
+                  firingLineIds.includes(line.lineId),
+                );
+                const course = group.course.label.toLocaleLowerCase("id-ID");
+                return (
+                  <div key={group.course.id} className="grid gap-3">
+                    <h3 className="text-base leading-6 font-semibold text-muted-foreground">
+                      {group.course.label}
+                    </h3>
+                    <ul className="grid gap-3">
+                      {group.lines.map((line) => (
+                        <li key={line.lineId}>
+                          <OrderLineCard line={line} />
+                        </li>
+                      ))}
+                    </ul>
+                    {held.length > 0 && (
+                      <div className="grid gap-2">
+                        <p className="text-base text-muted-foreground">
+                          {t("posCaptainOrder.order.heldHint")}
+                        </p>
+                        <Button
+                          onClick={() =>
+                            fire.mutate({
+                              tableId,
+                              lineIds: held.map((line) => line.lineId),
+                            })
+                          }
+                          loading={firing}
+                          disabled={fire.isPending && !firing}
+                          className="w-full"
+                        >
+                          <Send aria-hidden="true" />
+                          {firing
+                            ? t("posCaptainOrder.order.firing")
+                            : held.length > 1
+                              ? t("posCaptainOrder.order.fireAll", {
+                                  course,
+                                  count: held.length,
+                                })
+                              : t("posCaptainOrder.order.fireCourse", {
+                                  course,
+                                })}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             ) : (
               <EmptyState
                 title={t("posCaptainOrder.order.emptyTitle")}
@@ -131,34 +190,19 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
   );
 }
 
-function OrderLineCard({
-  line,
-  firing,
-  busy,
-  courseHeldCount,
-  onFire,
-}: {
-  line: OrderLine;
-  firing: boolean;
-  busy: boolean;
-  courseHeldCount: number;
-  onFire: () => void;
-}) {
+function OrderLineCard({ line }: { line: OrderLine }) {
   const t = useT();
-  const details = [
-    ...lineDetails(line),
-    ...(line.status === "held" ? [line.course.label] : []),
-  ];
+  const details = lineDetails(line);
   return (
     <div className="rounded-container border-(length:--border-w) border-border bg-card p-card">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-(length:--density-text) leading-6 font-semibold">
+          <h4 className="text-(length:--density-text) leading-6 font-semibold">
             {t("posCaptainOrder.order.lineTitle", {
               qty: line.quantity,
               name: line.name,
             })}
-          </h3>
+          </h4>
           {details.length > 0 && (
             <p className="text-base text-muted-foreground">
               {details.join(" · ")}
@@ -175,31 +219,6 @@ function OrderLineCard({
           </StatusPill>
         )}
       </div>
-      {line.status === "held" && (
-        <div className="mt-3 grid gap-3 border-t-(length:--border-w) border-border pt-3">
-          <p className="text-base text-muted-foreground">
-            {t("posCaptainOrder.order.heldHint")}
-          </p>
-          <Button
-            onClick={onFire}
-            loading={firing}
-            disabled={busy && !firing}
-            className="w-full"
-          >
-            <Send aria-hidden="true" />
-            {firing
-              ? t("posCaptainOrder.order.firing")
-              : courseHeldCount > 1
-                ? t("posCaptainOrder.order.fireAll", {
-                    course: line.course.label.toLocaleLowerCase("id-ID"),
-                    count: courseHeldCount,
-                  })
-                : t("posCaptainOrder.order.fireCourse", {
-                    course: line.course.label.toLocaleLowerCase("id-ID"),
-                  })}
-          </Button>
-        </div>
-      )}
     </div>
   );
 }

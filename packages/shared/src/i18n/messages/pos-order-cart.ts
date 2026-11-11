@@ -5,6 +5,9 @@ export const posOrderCartMessages = {
     kasir: "Kasir",
   },
   title: "Pesanan baru",
+  connectivity: {
+    offline: "Offline",
+  },
   subtitle: "Cari atau pilih menu untuk mulai",
   cart: {
     title: "Keranjang",
@@ -82,6 +85,8 @@ export const posOrderCartMessages = {
     resumedOk: "Pesanan ditahan dibuka kembali di keranjang.",
     heldReleased: "{count} item ditahan akan dikirim bersama pesanan ini.",
     placed: "Pesanan {number} terkirim. Pembayaran dilakukan oleh kasir.",
+    lineRemoved: "Item dihapus",
+    undo: "Urungkan",
   },
   error: {
     pendingTitle: "Fitur ini belum tersambung ke server",

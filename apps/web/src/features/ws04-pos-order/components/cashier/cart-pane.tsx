@@ -29,6 +29,8 @@ export interface CartPaneProps {
   meta: CartOrderMeta;
   onMetaChange: (patch: Partial<CartOrderMeta>) => void;
   fieldError: ChannelDetailError;
+  /** Changes on every failed "Lanjutkan", so the same error focuses again. */
+  fieldErrorToken: number;
   onSetQuantity: (lineId: string, quantity: number) => void;
   onToggleHold: (lineId: string) => void;
   onPark: () => void;
@@ -52,6 +54,7 @@ export function CartPane({
   meta,
   onMetaChange,
   fieldError,
+  fieldErrorToken,
   onSetQuantity,
   onToggleHold,
   onPark,
@@ -126,6 +129,7 @@ export function CartPane({
         ojolRef={meta.ojolRef}
         onOjolRefChange={(ojolRef) => onMetaChange({ ojolRef })}
         error={fieldError}
+        focusToken={fieldErrorToken}
       />
 
       <div className="min-h-32 flex-1 overflow-y-auto">
@@ -183,7 +187,7 @@ export function CartPane({
             aria-disabled={isEmpty || busy ? true : undefined}
             aria-describedby={isEmpty ? emptyHintId : undefined}
             onClick={isEmpty || busy ? undefined : onPark}
-            className="h-auto min-h-control-lg whitespace-normal"
+            className="h-auto min-h-control-lg px-3 whitespace-normal"
           >
             {t("posOrderCart.cart.park")}
           </Button>
@@ -194,7 +198,7 @@ export function CartPane({
             aria-disabled={noHeld || busy ? true : undefined}
             aria-describedby={noHeld ? heldHintId : undefined}
             onClick={noHeld || busy ? undefined : onFireHeld}
-            className="h-auto min-h-control-lg whitespace-normal"
+            className="h-auto min-h-control-lg px-3 whitespace-normal"
           >
             {t("posOrderCart.cart.fireHeld")}
           </Button>
@@ -289,7 +293,7 @@ function CartLineRow({
         </Button>
         <Button
           type="button"
-          variant={line.hold ? "secondary" : "ghost"}
+          variant="outline"
           size="sm"
           aria-pressed={line.hold}
           aria-label={t(
@@ -300,7 +304,11 @@ function CartLineRow({
           )}
           aria-disabled={locked ? true : undefined}
           onClick={() => (locked ? undefined : onToggleHold(line.lineId))}
-          className="rounded-full"
+          className={cn(
+            "rounded-full",
+            line.hold &&
+              "border-foreground bg-surface-2 not-aria-disabled:hover:bg-surface-2",
+          )}
         >
           {line.hold
             ? t("posOrderCart.line.held", { course: line.course.label })

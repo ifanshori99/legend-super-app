@@ -6,9 +6,10 @@ import { Badge } from "@/components/ui/badge";
 import { useOrderingConnectivity } from "@/features/ws04-pos-order/hooks";
 
 // The frame of every captain screen (PRD: POS and captain use Mode Kontras
-// Tinggi): a 64 px header with the back link or brand, the connectivity badge,
-// the content, and a bottom bar that stays in reach of the thumb. The badge is
-// always icon plus text, never color alone.
+// Tinggi): a 64 px header with the back link, the title, the connectivity badge,
+// the content, and a bottom bar that stays in reach of the thumb. The header
+// holds the screen's only `<h1>`. The badge is always icon plus text, never
+// color alone.
 export function CaptainShell({
   title,
   subtitle,
@@ -28,22 +29,6 @@ export function CaptainShell({
   const { mode } = useOrderingConnectivity();
   const online = mode === "online";
 
-  const heading = (
-    <>
-      {backTo && <ChevronLeft className="size-6 shrink-0" aria-hidden="true" />}
-      <span className="min-w-0">
-        <span className="block truncate text-lg leading-6 font-bold">
-          {title}
-        </span>
-        {subtitle && (
-          <span className="block truncate text-xs leading-4 font-normal text-muted-foreground">
-            {subtitle}
-          </span>
-        )}
-      </span>
-    </>
-  );
-
   return (
     <div
       data-density="kontras"
@@ -51,17 +36,25 @@ export function CaptainShell({
       className="flex min-h-dvh min-w-0 flex-col bg-background text-foreground"
     >
       <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b-2 border-border bg-card px-4">
-        {backTo ? (
-          <Link
-            to={backTo as LinkProps["to"]}
-            aria-label={`${t("posCaptainTables.shell.back")}: ${title}`}
-            className="-ml-2 flex min-h-11 min-w-0 items-center gap-1 rounded-control px-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            {heading}
-          </Link>
-        ) : (
-          <div className="flex min-w-0 items-center gap-1">{heading}</div>
-        )}
+        <div className="flex min-w-0 items-center gap-1">
+          {backTo && (
+            <Link
+              to={backTo as LinkProps["to"]}
+              aria-label={t("posCaptainTables.shell.back")}
+              className="-ml-2 grid min-h-11 min-w-11 shrink-0 place-items-center rounded-control focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              <ChevronLeft className="size-6" aria-hidden="true" />
+            </Link>
+          )}
+          <div className="min-w-0">
+            <h1 className="truncate text-lg leading-6 font-bold">{title}</h1>
+            {subtitle && (
+              <p className="truncate text-xs leading-4 font-normal text-muted-foreground">
+                {subtitle}
+              </p>
+            )}
+          </div>
+        </div>
         <Badge
           tone={online ? "neutral" : "warning"}
           role="status"
@@ -84,7 +77,7 @@ export function CaptainShell({
       {bottomBar && (
         <div
           data-slot="captain-bottom-bar"
-          className="sticky bottom-0 z-10 border-t-2 border-border bg-card px-4 pt-3 pb-4"
+          className="sticky bottom-0 z-10 border-t-2 border-border bg-card px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]"
         >
           <div className="mx-auto grid w-full max-w-3xl gap-2">{bottomBar}</div>
         </div>

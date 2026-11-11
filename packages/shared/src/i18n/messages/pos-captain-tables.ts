@@ -2,7 +2,6 @@
 // id.ts imports it as `posCaptainTables`.
 export const posCaptainTablesMessages = {
   shell: {
-    brand: "Legend / Captain",
     back: "Kembali",
     online: "Lokal terhubung",
     offline: "Internet putus",
@@ -85,6 +84,13 @@ export const posCaptainTablesMessages = {
     resolveFor: "Selesaikan permintaan meja {table}",
     hint: "Terima permintaan agar tim tahu Anda akan menindaklanjutinya.",
     resolved: "Permintaan meja {table} selesai.",
+    acknowledged: "Permintaan meja {table} diterima.",
+    confirmQuestion: "Selesaikan permintaan meja {table}?",
+    confirmYes: "Ya, selesaikan",
+    confirmYesFor: "Ya, selesaikan permintaan meja {table}",
+    confirmCancel: "Batal",
+    confirmCancelFor: "Batal, jangan selesaikan permintaan meja {table}",
+    stale: "Daftar mungkin belum terbaru. Yang tampil adalah data terakhir.",
     loading: "Memuat panggilan…",
     empty: {
       title: "Tidak ada panggilan",

@@ -1,5 +1,6 @@
-// The `?demo=<seed>` switch for the ordering mock. Only the mock engine reads
-// the seed (VITE_API_MOCK=true); components never do. The seeds feed the
+// The `?demo=<seed>` switch for the ordering mock. Only the mock engine and the
+// ws02-edge mock (status: cloud out of reach on "offline") read the seed
+// (VITE_API_MOCK=true); components never do. The seeds feed the
 // mockup screens and their states.
 //
 // Plain TypeScript: Node tests load it directly.

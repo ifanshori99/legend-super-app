@@ -53,11 +53,14 @@ const DESKTOP = { label: "1280", width: 1280, height: 800 };
 const VIEWPORTS = [MOBILE, DESKTOP];
 const COLD_TIMEOUT = 45_000; // Vite compiles a route on its first request.
 const TABLE = "A01";
+// Fixture table ids are `table-<label lowercase>` (features/ws04-pos-order/fixtures.ts).
+const TABLE_ID = "table-a01";
 
 // ---- screens -----------------------------------------------------------------
 // `screen` + `state` name the png. `path` is opened after `seed` (optional, runs
 // on its own URL first). `prepare` drives the state and must end with something
-// visible that proves it. `viewports` limits the widths; `noHydration` skips the
+// visible that proves it. `mobilePath` replaces `path` at 390 (the kasir phone
+// cart is its own view, `?v=keranjang`). `viewports` limits the widths; `noHydration` skips the
 // hydration wait (the "memuat" state never settles).
 const SCREENS = [];
 
@@ -81,6 +84,7 @@ add({
   screen: "kasir",
   state: "kosong",
   path: `${KASIR}?demo=kosong`,
+  mobilePath: `${KASIR}?demo=kosong&v=keranjang`,
   prepare: async (p) => {
     await expectText(p, "Keranjang masih kosong");
     await expectAbsent(p, /Nasi goreng kampung/);
@@ -131,6 +135,7 @@ add({
   prepare: async (p) => {
     await expectHeading(p, "Pesanan baru");
     await fillKasirCart(p);
+    await openMobileCart(p);
     await clickControl(p, /Takeaway/);
     await expectText(p, /Nomor panggilan/);
     await expectText(p, /A-12/);
@@ -144,7 +149,7 @@ add({
   prepare: async (p) => {
     await expectHeading(p, "Pesanan baru");
     await fillKasirCart(p);
-    await clickControl(p, /Lihat keranjang/);
+    await openMobileCart(p);
     await expectHeading(p, "Keranjang");
     await expectButton(p, /Lanjutkan pesanan/);
   },
@@ -182,7 +187,7 @@ const CAPTAIN_SCREENS = [
   },
   {
     screen: "captain-meja",
-    path: `/pos/captain/meja/${TABLE}`,
+    path: `/pos/captain/meja/${TABLE_ID}`,
     main: async (p) => {
       await expectText(p, TABLE);
       await expectText(p, /Sesi QR aktif/);
@@ -194,7 +199,7 @@ const CAPTAIN_SCREENS = [
   },
   {
     screen: "captain-tambah",
-    path: `/pos/captain/meja/${TABLE}/tambah`,
+    path: `/pos/captain/meja/${TABLE_ID}/tambah`,
     main: async (p) => {
       await expectHeading(p, "Tambah pesanan");
       await expectText(p, /Nasi goreng kampung/i);
@@ -209,7 +214,7 @@ const CAPTAIN_SCREENS = [
     // Review needs a cart: filled on the add screen first (`seed`), except in
     // "kosong" where the empty cart is the point.
     screen: "captain-tinjau",
-    path: `/pos/captain/meja/${TABLE}/tinjau`,
+    path: `/pos/captain/meja/${TABLE_ID}/tinjau`,
     seedCart: true,
     main: async (p) => {
       await expectHeading(p, "Tinjau pesanan");
@@ -308,6 +313,12 @@ async function expectAbsent(page, text) {
     .count();
   if (count > 0) throw new Error(`unexpected visible text: ${text}`);
 }
+/** On phones the cart is its own view: opens it from the bottom bar. No-op on desktop. */
+async function openMobileCart(page) {
+  if ((page.viewportSize()?.width ?? 1280) > 700) return;
+  await clickControl(page, /Lihat keranjang/);
+  await page.waitForURL(/[?&]v=keranjang/, { timeout: COLD_TIMEOUT });
+}
 /** Clicks a button/radio/tab/link by its visible text (channel toggles vary). */
 async function clickControl(page, name) {
   const control = page
@@ -400,7 +411,7 @@ async function fillKasirCart(page) {
 
 /** Captain draft for table A01 (nasi goreng tidak pedas + es teh). */
 async function seedCaptainCart(page, baseUrl) {
-  await page.goto(`${baseUrl}/pos/captain/meja/${TABLE}/tambah`, {
+  await page.goto(`${baseUrl}/pos/captain/meja/${TABLE_ID}/tambah`, {
     waitUntil: "domcontentloaded",
   });
   await waitForHydration(page);
@@ -488,7 +499,7 @@ async function main() {
 
   const axe = await loadAxe();
   await mkdir(OUT_DIR, { recursive: true });
-  const browser = await chromium.launch();
+  let browser = await chromium.launch();
   const failures = [];
   let total = 0;
   try {
@@ -496,6 +507,8 @@ async function main() {
       for (const viewport of screen.viewports) {
         total += 1;
         const id = `${screen.screen}-${screen.state}-${viewport.label}`;
+        // A crashed/closed browser must fail one state, not the whole run.
+        if (!browser.isConnected()) browser = await chromium.launch();
         const context = await browser.newContext({
           viewport: { width: viewport.width, height: viewport.height },
           locale: "id-ID",
@@ -504,7 +517,11 @@ async function main() {
         const page = await context.newPage();
         try {
           if (screen.seed) await screen.seed(page, baseUrl);
-          await page.goto(`${baseUrl}${screen.path}`, {
+          const path =
+            viewport === MOBILE && screen.mobilePath
+              ? screen.mobilePath
+              : screen.path;
+          await page.goto(`${baseUrl}${path}`, {
             waitUntil: "domcontentloaded",
           });
           // The loading state is a skeleton screenshot: hydration is not awaited.
@@ -552,12 +569,12 @@ async function main() {
             .catch(() => {});
           failures.push(id);
         } finally {
-          await context.close();
+          await context.close().catch(() => {});
         }
       }
     }
   } finally {
-    await browser.close();
+    await browser.close().catch(() => {});
   }
   console.log(
     failures.length === 0
@@ -567,4 +584,7 @@ async function main() {
   process.exit(failures.length === 0 ? 0 : 1);
 }
 
-await main();
+await main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+});

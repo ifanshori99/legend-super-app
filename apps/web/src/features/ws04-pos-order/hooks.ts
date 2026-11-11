@@ -15,7 +15,6 @@ import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
 import { useCloudConnection } from "@/features/ws02-edge/hooks";
-import { useHydrated } from "@/features/ws02-edge/use-now";
 import {
   acknowledgeCall,
   addToTable,
@@ -26,7 +25,6 @@ import {
   resumeDraft,
   submitOrder,
 } from "./api";
-import { orderDemoSeed, readDemoSeed } from "./demo-seed";
 import { readDraft, writeDraft } from "./draft-store";
 import {
   callNumberQuery,
@@ -114,15 +112,12 @@ export function usePosCatalog(): UseQueryResult<Catalog> {
  * the cached catalog); `catalogUpdatedAt` is the time of the catalog in use.
  */
 export function useOrderingConnectivity(): OrderingConnectivity {
-  const hydrated = useHydrated();
+  // One source of truth: the ws02-edge status (the `_ops` header badge reads
+  // it too). `?demo=offline` flips that status in the mock, not here.
   const cloudOnline = useCloudConnection();
   const catalog = usePosCatalog();
-  // The demo seed is only known in the browser: read it after hydration.
-  const demoOffline =
-    API_MOCK && hydrated && orderDemoSeed(readDemoSeed()) === "offline";
-  const online = cloudOnline && !demoOffline;
   return {
-    mode: online ? "online" : "edge_only",
+    mode: cloudOnline ? "online" : "edge_only",
     catalogUpdatedAt: catalog.data?.updatedAt ?? null,
   };
 }

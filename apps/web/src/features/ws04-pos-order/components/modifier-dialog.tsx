@@ -140,9 +140,9 @@ function ModifierForm({
   function submit() {
     if (missing.length > 0) {
       setAttempted(true);
-      groupRefs.current[missing[0]!]
-        ?.querySelector<HTMLInputElement>("input")
-        ?.focus();
+      const first = groupRefs.current[missing[0]!];
+      first?.querySelector<HTMLInputElement>("input")?.focus();
+      first?.scrollIntoView({ block: "nearest" });
       return;
     }
     onConfirm({ modifiers, note: note.trim(), quantity: 1 });
@@ -198,11 +198,11 @@ function ModifierForm({
         >
           {t("posOrderCatalog.modifier.cancel")}
         </Button>
-        {/* aria-disabled, not disabled: a tap still explains what is missing. */}
+        {/* Always styled as the primary action: a tap without a required choice
+            shows the message and moves focus to that group. */}
         <Button
           type="button"
           className="flex-1 whitespace-normal"
-          aria-disabled={missing.length > 0}
           onClick={submit}
         >
           {t("posOrderCatalog.modifier.confirm")}
@@ -302,7 +302,11 @@ function ModifierGroupField({
         </p>
       )}
       {missing && (
-        <p id={errorId} className="text-sm font-semibold text-danger">
+        <p
+          id={errorId}
+          role="alert"
+          className="text-sm font-semibold text-danger"
+        >
           {t("posOrderCatalog.modifier.missing", {
             group: group.name.toLocaleLowerCase("id-ID"),
           })}

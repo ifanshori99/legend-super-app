@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import type { ServiceCall } from "@/features/ws04-pos-order/types";
 
 // The newest unanswered waiter call above the table picker. Amber fill plus the
-// bell icon and the word "Panggilan baru": never color alone. `role="status"`
-// announces a call that arrives while the captain is on this screen.
+// bell icon and the word "Panggilan baru": never color alone. The screen wraps
+// it in an `aria-live` region that is always present, so a call that arrives
+// while the captain is on the screen is announced.
 export function CallBanner({
   call,
   zone,
@@ -24,7 +25,6 @@ export function CallBanner({
     : t("posCaptainTables.banner.descriptionNoZone", { reason: call.reason });
   return (
     <div
-      role="status"
       data-slot="captain-call-banner"
       className="flex items-center justify-between gap-3 rounded-container border-l-[5px] border-warning bg-warning-subtle p-3 text-foreground"
     >

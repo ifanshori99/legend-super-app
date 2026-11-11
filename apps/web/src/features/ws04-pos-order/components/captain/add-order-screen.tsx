@@ -12,7 +12,6 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Notice,
-  PosPageHeading,
   StatusPill,
 } from "@/features/ws04-pos-kasir/components/shared";
 import { cartTotals } from "@/features/ws04-pos-order/cart-logic";
@@ -26,6 +25,7 @@ import {
 import type { CartLine, MenuItem } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
 import {
+  CaptainIntro,
   SampleBadge,
   formatClock,
   tableSessionText,
@@ -76,14 +76,14 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
       title={
         tableLabel
           ? t("posCaptainOrder.table.title", { table: tableLabel })
-          : t("posCaptainOrder.add.title")
+          : t("posCaptainOrder.table.loadingTitle")
       }
       subtitle={
         tableOrder.data ? tableSessionText(t, tableOrder.data.table) : undefined
       }
       backTo={`/pos/captain/meja/${encodeURIComponent(tableId)}`}
       bottomBar={
-        totals.itemCount > 0 ? (
+        tableMissing ? undefined : totals.itemCount > 0 ? (
           <div className="grid gap-1 text-center">
             <Button asChild size="lg" className="w-full">
               <Link to={reviewHref} params={{ tableId }}>
@@ -102,7 +102,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
       }
     >
       <div data-slot="captain-add-order" className="grid content-start gap-4">
-        <PosPageHeading
+        <CaptainIntro
           title={t("posCaptainOrder.add.title")}
           subtitle={
             offline && tableLabel
@@ -191,7 +191,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
             <div
               role="group"
               aria-label={t("posCaptainOrder.add.categories")}
-              className="flex flex-wrap gap-2"
+              className="-mb-1 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:thin]"
             >
               {[
                 { id: ALL, name: t("posCaptainOrder.add.allCategories") },
@@ -203,6 +203,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
                   aria-pressed={category === entry.id}
                   onClick={() => setCategory(entry.id)}
                   className={cn(
+                    "shrink-0 whitespace-nowrap",
                     category === entry.id &&
                       "border-foreground bg-surface-3 shadow-none",
                   )}

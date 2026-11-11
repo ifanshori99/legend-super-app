@@ -3,6 +3,7 @@ export const posOrderCatalogMessages = {
   search: {
     label: "Cari menu",
     placeholder: "Cari nama menu atau pindai kode",
+    resultCount: "{count} menu ditemukan",
   },
   categories: {
     label: "Kategori menu",

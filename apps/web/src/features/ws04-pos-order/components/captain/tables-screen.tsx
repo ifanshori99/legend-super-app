@@ -8,10 +8,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  PosPageHeading,
-  Notice,
-} from "@/features/ws04-pos-kasir/components/shared";
+import { Notice } from "@/features/ws04-pos-kasir/components/shared";
 import {
   isContractPending,
   useCaptainTables,
@@ -22,6 +19,7 @@ import type { CaptainTable } from "@/features/ws04-pos-order/types";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
 import { CallBanner } from "./call-banner";
+import { CaptainIntro } from "./captain-order-parts";
 import { CaptainShell } from "./captain-shell";
 import { TableTile } from "./table-tile";
 
@@ -78,7 +76,7 @@ export function TablesScreen() {
 
   return (
     <CaptainShell
-      title={t("posCaptainTables.shell.brand")}
+      title={t("posCaptainTables.tables.title")}
       subtitle={subtitle || undefined}
       bottomBar={
         <Button asChild variant="outline" size="lg" className="w-full">
@@ -90,8 +88,7 @@ export function TablesScreen() {
       }
     >
       <div className="grid gap-4">
-        <PosPageHeading
-          title={t("posCaptainTables.tables.title")}
+        <CaptainIntro
           subtitle={t("posCaptainTables.tables.subtitle")}
           action={
             API_MOCK ? (
@@ -106,13 +103,16 @@ export function TablesScreen() {
           </Notice>
         )}
 
-        {latest && (
-          <CallBanner
-            call={latest}
-            zone={latestZone}
-            moreCount={newCalls.length - 1}
-          />
-        )}
+        {/* Always in the page, so a call that arrives later is announced. */}
+        <div aria-live="polite" className="empty:sr-only">
+          {latest && (
+            <CallBanner
+              call={latest}
+              zone={latestZone}
+              moreCount={newCalls.length - 1}
+            />
+          )}
+        </div>
 
         {tablesQuery.isError && tables && (
           <Notice tone="warning" title={t("posCaptainTables.tables.stale")} />

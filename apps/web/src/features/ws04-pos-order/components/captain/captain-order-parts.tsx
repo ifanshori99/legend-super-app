@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { useT } from "@/components/i18n";
 import { API_MOCK } from "@/lib/api/mock-flag";
@@ -41,5 +42,37 @@ export function SampleBadge() {
     <Badge tone="neutral" className="rounded-full px-3 text-sm">
       {t("posCaptainOrder.sample")}
     </Badge>
+  );
+}
+
+/**
+ * What the screen is for, under the header. The header already holds the only
+ * `<h1>`, so the optional title here is an `<h2>`.
+ */
+export function CaptainIntro({
+  title,
+  subtitle,
+  action,
+}: {
+  title?: string;
+  subtitle?: string;
+  action?: ReactNode;
+}) {
+  if (!title && !subtitle && !action) return null;
+  return (
+    <div
+      data-slot="captain-intro"
+      className="flex flex-wrap items-start justify-between gap-3"
+    >
+      <div className="min-w-0">
+        {title && <h2 className="type-title">{title}</h2>}
+        {subtitle && (
+          <p className="text-(length:--density-text) text-muted-foreground">
+            {subtitle}
+          </p>
+        )}
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
   );
 }

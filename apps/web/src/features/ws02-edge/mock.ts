@@ -64,6 +64,24 @@ function writeOverride(value: LinkOverride | null) {
 
 const browser = typeof window !== "undefined";
 
+/**
+ * `?demo=offline` (the POS ordering mock seed) means the cloud is out of reach
+ * while the local edge node stays up, so the header badge and the POS screens
+ * agree. Read per call: the param is gone after a client-side navigation only
+ * if the route drops it, and the status query refetches on its own.
+ */
+function demoCloudDown(): boolean {
+  if (!browser) return false;
+  try {
+    return (
+      window.location.pathname.startsWith("/pos") &&
+      new URLSearchParams(window.location.search).get("demo") === "offline"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Live heartbeats: only the kitchen printer has stopped reporting. */
 const devices = createMockStore<Device[]>(() =>
   deviceFixtures.map((device) =>
@@ -171,7 +189,7 @@ registerMock(getEdgeStatus, ({ scenario }) => {
     data: edgeStatusSchema.parse({
       tenantId: edgeNodeFixture.tenantId,
       outletId: edgeNodeFixture.outletId,
-      cloudLink: current.cloudLink,
+      cloudLink: demoCloudDown() ? "disconnected" : current.cloudLink,
       edgeNode: edgeNodeSchema.parse({
         ...edgeNodeFixture,
         lastHeartbeatAt: nowIso(-5_000),

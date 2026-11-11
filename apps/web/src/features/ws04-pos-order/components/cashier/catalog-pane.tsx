@@ -173,7 +173,9 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
           type="search"
           inputMode="search"
           enterKeyHint="search"
+          name="menu-search"
           autoComplete="off"
+          spellCheck={false}
           aria-label={t("posOrderCatalog.search.label")}
           placeholder={t("posOrderCatalog.search.placeholder")}
           value={query}
@@ -195,6 +197,14 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
         className="-mt-1 text-base font-semibold text-foreground empty:hidden"
       >
         {scanMessage}
+      </p>
+      {/* Quiet live region: the filtered count is announced, never shown twice. */}
+      <p role="status" aria-live="polite" className="sr-only">
+        {query.trim() === "" && categoryId === null
+          ? ""
+          : items.length === 0
+            ? t("posOrderCatalog.noResults.title")
+            : t("posOrderCatalog.search.resultCount", { count: items.length })}
       </p>
 
       <nav
