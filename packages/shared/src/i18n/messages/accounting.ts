@@ -217,6 +217,18 @@ export const accountingMessages = {
       removeLine: "Hapus baris {line}",
       account: "Akun baris {line}",
       accountPlaceholder: "Pilih akun",
+      outletColumn: "Outlet (opsional)",
+      outlet: "Outlet baris {line}",
+      outletEntity: "Entitas · tanpa outlet",
+      outletHint:
+        "Pilih outlet pada tiap baris untuk laporan per outlet. Tanpa outlet, baris dicatat pada tingkat badan usaha.",
+      linesLoading: "Memuat akun dan outlet…",
+      linesErrorTitle: "Data jurnal belum bisa dimuat",
+      linesErrorHint:
+        "Periksa koneksi, lalu coba lagi untuk memuat akun dan outlet.",
+      linesEmptyTitle: "Belum ada akun untuk jurnal",
+      linesEmptyHint:
+        "Tambahkan akun untuk badan usaha ini sebelum membuat jurnal.",
       debit: "Debit baris {line}",
       credit: "Kredit baris {line}",
       amountHint: "Isi debit atau kredit, tidak keduanya. Rupiah bulat.",

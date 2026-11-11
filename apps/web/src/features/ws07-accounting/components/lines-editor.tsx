@@ -26,23 +26,38 @@ export type EditorLine = {
   key: string;
   /** "" = not chosen yet (Radix shows the placeholder). */
   accountId: string;
+  /** "" = entity-level line (no outlet); otherwise an outlet id (ACC-03). */
+  outletId: string;
   /** Raw text so the user may type "1.520.000". */
   debit: string;
   credit: string;
 };
 
+/** Radix Select forbids an empty item value, so "no outlet" gets a sentinel. */
+const ENTITY_LEVEL = "__entity__";
+
+export type OutletOption = { id: string; name: string };
+
 export function blankEditorLine(): EditorLine {
-  return { key: newIdempotencyKey(), accountId: "", debit: "", credit: "" };
+  return {
+    key: newIdempotencyKey(),
+    accountId: "",
+    outletId: "",
+    debit: "",
+    credit: "",
+  };
 }
 
 export function JournalLinesEditor({
   accounts,
+  outlets,
   rows,
   onChange,
   evaluation,
   disabled = false,
 }: {
   accounts: readonly Account[];
+  outlets: readonly OutletOption[];
   rows: readonly EditorLine[];
   onChange: (rows: EditorLine[]) => void;
   evaluation: DraftEvaluation;
@@ -78,9 +93,10 @@ export function JournalLinesEditor({
     <div className="grid min-w-0 gap-2">
       <div
         aria-hidden="true"
-        className="hidden gap-2 px-3 text-xs font-semibold tracking-wide text-muted-foreground uppercase sm:grid sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem]"
+        className="hidden gap-2 px-3 text-xs font-semibold tracking-wide text-muted-foreground uppercase sm:grid sm:grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem]"
       >
         <span>{t("accounting.journal.columns.account")}</span>
+        <span>{t("accounting.manual.form.outletColumn")}</span>
         <span>{t("accounting.journal.columns.debit")}</span>
         <span>{t("accounting.journal.columns.credit")}</span>
         <span className="sr-only">{t("common.delete")}</span>
@@ -91,7 +107,7 @@ export function JournalLinesEditor({
         return (
           <div
             key={row.key}
-            className="grid min-w-0 gap-2 rounded-lg border-(length:--border-w) border-border p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem] sm:items-start"
+            className="grid min-w-0 gap-2 rounded-lg border-(length:--border-w) border-border p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem] sm:items-start"
           >
             <div className="grid gap-1">
               <Label
@@ -118,6 +134,40 @@ export function JournalLinesEditor({
                   {accounts.map((account) => (
                     <SelectItem key={account.id} value={account.id}>
                       {accountLabel(account)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1">
+              <Label
+                htmlFor={`${baseId}-line-${index}-outlet`}
+                className="sm:sr-only"
+              >
+                {t("accounting.manual.form.outlet", { line })}
+              </Label>
+              <Select
+                value={row.outletId === "" ? ENTITY_LEVEL : row.outletId}
+                onValueChange={(value) =>
+                  update(index, {
+                    outletId: value === ENTITY_LEVEL ? "" : value,
+                  })
+                }
+                disabled={disabled}
+              >
+                <SelectTrigger
+                  id={`${baseId}-line-${index}-outlet`}
+                  className="h-control-sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ENTITY_LEVEL}>
+                    {t("accounting.manual.form.outletEntity")}
+                  </SelectItem>
+                  {outlets.map((outlet) => (
+                    <SelectItem key={outlet.id} value={outlet.id}>
+                      {outlet.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -180,7 +230,7 @@ export function JournalLinesEditor({
               </Button>
             </div>
             {issue && (
-              <p className="flex items-center gap-1 text-sm leading-5 text-danger sm:col-span-3">
+              <p className="flex items-center gap-1 text-sm leading-5 text-danger sm:col-span-4">
                 <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
                 {issue}
               </p>
@@ -200,6 +250,9 @@ export function JournalLinesEditor({
           {t("accounting.manual.form.addLine")}
         </Button>
       </div>
+      <p className="text-sm leading-5 text-muted-foreground">
+        {t("accounting.manual.form.outletHint")}
+      </p>
       <p className="text-sm leading-5 text-muted-foreground">
         {t("accounting.manual.form.amountHint")}
       </p>

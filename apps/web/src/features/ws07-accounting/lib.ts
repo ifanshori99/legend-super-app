@@ -25,6 +25,7 @@ import {
 import {
   DEFAULT_BUSINESS_DAY_CUTOFF,
   businessDateOf,
+  type OutletId,
 } from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
 
@@ -280,6 +281,8 @@ export function linesTotal(lines: readonly { debitIdr: number }[]): number {
 
 export type LineDraft = {
   accountId: string | null;
+  /** "" or absent = entity-level line (outletId null, ACC-03). */
+  outletId?: string | null;
   /** Raw field text; the user may type "1.520.000". */
   debit: string;
   credit: string;
@@ -344,7 +347,7 @@ export function evaluateManualDraft(
       accountId: draft.accountId as AccountId,
       debitIdr: debit as JournalLineInput["debitIdr"],
       creditIdr: credit as JournalLineInput["creditIdr"],
-      outletId: null,
+      outletId: draft.outletId ? (draft.outletId as OutletId) : null,
       costCenter: null,
     });
   });

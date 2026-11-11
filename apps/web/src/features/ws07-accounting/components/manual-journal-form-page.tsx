@@ -18,11 +18,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import {
-  useAccounts,
   useCreateManualJournal,
   useFiscalPeriods,
   useUpdateManualJournal,
@@ -32,13 +30,9 @@ import {
   businessDateToday,
   evaluateManualDraft,
   formatPeriod,
-  postableAccounts,
 } from "../lib";
-import {
-  JournalLinesEditor,
-  blankEditorLine,
-  type EditorLine,
-} from "./lines-editor";
+import { blankEditorLine, type EditorLine } from "./lines-editor";
+import { JournalLinesSection } from "./journal-lines-section";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type Kind = ManualJournal["kind"];
@@ -48,6 +42,7 @@ function rowsFromJournal(journal: ManualJournal | undefined): EditorLine[] {
   return journal.lines.map((line) => ({
     key: newIdempotencyKey(),
     accountId: line.accountId,
+    outletId: line.outletId ?? "",
     debit: line.debitIdr > 0 ? String(line.debitIdr) : "",
     credit: line.creditIdr > 0 ? String(line.creditIdr) : "",
   }));
@@ -66,7 +61,6 @@ export function ManualJournalFormPage({
   const t = useT();
   const navigate = useNavigate();
   const toast = useToast();
-  const accountsQuery = useAccounts(legalEntityId);
   const periodsQuery = useFiscalPeriods(legalEntityId);
   const create = useCreateManualJournal();
   const update = useUpdateManualJournal(journal?.id);
@@ -86,7 +80,6 @@ export function ManualJournalFormPage({
     string | undefined
   >(undefined);
 
-  const accounts = postableAccounts(accountsQuery.data ?? []);
   const evaluation = evaluateManualDraft(rows);
   const period = periodsQuery.data?.find(
     (row) => row.period === entryDate.slice(0, 7),
@@ -236,26 +229,14 @@ export function ManualJournalFormPage({
             maxLength={255}
           />
         </FormField>
-        {accountsQuery.isPending ? (
-          <div className="grid gap-2" aria-busy="true">
-            <span className="sr-only">{t("common.loading")}</span>
-            <Skeleton className="h-20 w-full" />
-            <Skeleton className="h-20 w-full" />
-          </div>
-        ) : (
-          <div className="grid gap-2">
-            <h3 className="text-base leading-6 font-semibold">
-              {t("accounting.manual.form.lines")}
-            </h3>
-            <JournalLinesEditor
-              accounts={accounts}
-              rows={rows}
-              onChange={setRows}
-              evaluation={evaluation}
-              disabled={pending}
-            />
-          </div>
-        )}
+        <JournalLinesSection
+          legalEntityId={legalEntityId}
+          heading={t("accounting.manual.form.lines")}
+          rows={rows}
+          onChange={setRows}
+          evaluation={evaluation}
+          disabled={pending}
+        />
         {serverError && (
           <p
             role="alert"

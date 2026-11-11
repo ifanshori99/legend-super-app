@@ -16,20 +16,12 @@ import {
 } from "@/components/ui/dialog";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { useAccounts, useCreateRecurringJournal } from "../hooks";
-import {
-  businessDateToday,
-  evaluateManualDraft,
-  postableAccounts,
-} from "../lib";
-import {
-  JournalLinesEditor,
-  blankEditorLine,
-  type EditorLine,
-} from "./lines-editor";
+import { useCreateRecurringJournal } from "../hooks";
+import { businessDateToday, evaluateManualDraft } from "../lib";
+import { blankEditorLine, type EditorLine } from "./lines-editor";
+import { JournalLinesSection } from "./journal-lines-section";
 
 const PERIOD_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -65,7 +57,6 @@ function RecurringJournalForm({
 }) {
   const t = useT();
   const toast = useToast();
-  const accountsQuery = useAccounts(legalEntityId);
   const create = useCreateRecurringJournal(legalEntityId);
 
   const [description, setDescription] = React.useState("");
@@ -85,7 +76,6 @@ function RecurringJournalForm({
     server?: string;
   }>({});
 
-  const accounts = postableAccounts(accountsQuery.data ?? []);
   const evaluation = evaluateManualDraft(rows);
   const dayNumber = Number(day);
   const canSubmit =
@@ -198,25 +188,14 @@ function RecurringJournalForm({
             />
           </FormField>
         </div>
-        {accountsQuery.isPending ? (
-          <div className="grid gap-2" aria-busy="true">
-            <span className="sr-only">{t("common.loading")}</span>
-            <Skeleton className="h-20 w-full" />
-          </div>
-        ) : (
-          <div className="grid gap-2">
-            <h3 className="text-base leading-6 font-semibold">
-              {t("accounting.recurring.form.lines")}
-            </h3>
-            <JournalLinesEditor
-              accounts={accounts}
-              rows={rows}
-              onChange={setRows}
-              evaluation={evaluation}
-              disabled={create.isPending}
-            />
-          </div>
-        )}
+        <JournalLinesSection
+          legalEntityId={legalEntityId}
+          heading={t("accounting.recurring.form.lines")}
+          rows={rows}
+          onChange={setRows}
+          evaluation={evaluation}
+          disabled={create.isPending}
+        />
         {errors.server && (
           <p
             role="alert"
