@@ -33,6 +33,19 @@ export function canEditEmployeePii(access: AreaAccess): boolean {
   return holdsAny(access, EMPLOYEE_PII_EDIT_PERMISSIONS);
 }
 
+/**
+ * Ubah atasan: HR (`hr.employee.manage`) or a brand GM (`hr.attendance.manage`).
+ * Presentation only: the API decides by assignment scope and answers 403.
+ */
+export const EMPLOYEE_MANAGER_CHANGE_PERMISSIONS = [
+  "hr.employee.manage",
+  "hr.attendance.manage",
+] as const;
+
+export function canChangeEmployeeManager(access: AreaAccess): boolean {
+  return holdsAny(access, EMPLOYEE_MANAGER_CHANGE_PERMISSIONS);
+}
+
 /** True when the visitor may read the employee master (presentation only). */
 export function canViewEmployees(access: AreaAccess): boolean {
   return holdsAny(access, EMPLOYEE_MASTER_PERMISSIONS);

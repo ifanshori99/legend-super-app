@@ -15,10 +15,10 @@ sudah disetujui orang.
 menjalankannya hanya terhadap database lokal sekali pakai untuk test. Production
 dan staging dijalankan manusia (operator) setelah gerbang founder.
 
-**Layar HR belum punya edit atasan.** `managerId` hanya diisi saat karyawan
-dibuat (`hris-employee.service.ts:708`). Karena itu daftar manual tidak bisa
-diselesaikan di layar HR dan rollback tidak punya layar undo. Keduanya butuh
-tugas engineer lewat CTO (lihat bagian 2 dan Rollback).
+**Daftar manual dan rollback dikerjakan di layar.** Buka Profil karyawan, di
+baris Atasan tekan tombol **Ubah atasan** (legend-f4uvg). Perubahan lewat jalur
+ini divalidasi dan dicatat di jejak audit dengan action
+`hris.employee_manager_change` (lihat bagian 2 dan Rollback).
 
 ## Apa yang dicek dan diubah
 
@@ -51,12 +51,11 @@ disentuh. Tiap perubahan menulis satu baris audit.
 
 ## Siapa yang menyetujui
 
-| Daftar                       | Penyetuju                                            |
-| ---------------------------- | ---------------------------------------------------- |
-| Daftar auto                  | HR lead, ditinjau bersama outlet manager tiap outlet |
-| Daftar manual                | HR lead dan GM brand menentukan atasan per baris     |
-| Tugas engineer daftar manual | CTO (tugas terpisah, bukan bagian skrip ini)         |
-| Menjalankan di staging/prod  | Gerbang founder (lewat CTO), lalu operator manusia   |
+| Daftar                      | Penyetuju                                            |
+| --------------------------- | ---------------------------------------------------- |
+| Daftar auto                 | HR lead, ditinjau bersama outlet manager tiap outlet |
+| Daftar manual               | HR lead dan GM brand menentukan atasan per baris     |
+| Menjalankan di staging/prod | Gerbang founder (lewat CTO), lalu operator manusia   |
 
 ## Urutan sebelum rollout
 
@@ -66,14 +65,14 @@ disentuh. Tiap perubahan menulis satu baris audit.
 4. HR lead menyimpan id yang disetujui ke berkas `approved-ids.txt` (bagian 3).
 5. Apply dengan `--ids` (bagian 4).
 6. Dry-run ulang. Hasil yang benar: 0 auto (bagian 5).
-7. Keputusan atasan untuk daftar manual diserahkan ke CTO sebagai tugas engineer
-   terpisah (bagian 2). Tidak bisa dikerjakan di layar HR.
+7. HR atau GM brand mengisi atasan untuk daftar manual lewat Profil karyawan >
+   Ubah atasan, satu karyawan per baris (bagian 2).
 8. Baru setelah itu scope 502 (batas ke bawahan langsung) dibuka untuk
    supervisor dan outlet manager.
 
 Jangan lompat ke langkah 8 sebelum langkah 6 dan 7 selesai: karyawan tanpa atasan
-hilang dari layar supervisor dan outlet manager. Bila langkah 7 belum selesai,
-keputusan membuka scope 502 dengan sisa manual dibawa ke founder lewat CTO.
+hilang dari layar supervisor dan outlet manager. Dry-run ulang (bagian 5)
+menunjukkan sisa baris manual yang belum diisi.
 
 ## 1. Dry-run (baca saja)
 
@@ -126,12 +125,51 @@ nama). Jangan tempel ke chat atau tiket publik.
   baris `holds_manager_role` (atasannya bukan otomatis outlet manager). Kolom
   `tenant_id` menunjukkan tenant tiap baris. Hasil keputusan dicatat per baris.
 
-Daftar manual **tidak bisa diselesaikan di layar HR**: tidak ada edit atasan di
-sana (`managerId` hanya diisi saat karyawan dibuat,
-`hris-employee.service.ts:708`). Mengisi atasan untuk daftar ini butuh tugas
-engineer terpisah yang disetujui CTO. Jangan membuat alat sendiri dan jangan
-menulis SQL ad hoc ke production. Serahkan daftar manual beserta keputusan HR
-dan GM ke CTO.
+Daftar manual diselesaikan per baris di layar, oleh HR (role `hr`) atau GM brand.
+GM hanya bisa untuk karyawan brand-nya sendiri. Penjagaan ada di dua lapis:
+
+- Rute API menghentikan akun yang tidak memegang `hr.employee.manage` maupun
+  `hr.attendance.manage` dengan `PERMISSION_DENIED`. Supervisor dan kasir
+  biasanya berhenti di sini. Layar hanya menampilkan pesan umum
+  ("Atasan tidak dapat disimpan. Coba lagi sebentar lagi."), bukan pesan peran,
+  dan tombol **Ubah atasan** tidak muncul bagi mereka.
+- Tombol **Ubah atasan** hanya tampil bagi pemegang `hr.employee.manage` atau
+  `hr.attendance.manage`. Setelah itu service memeriksa cakupan brand/tenant
+  terhadap outlet asal karyawan. Outlet manager yang memegang izin itu bisa
+  melihat tombol, tetapi ditolak 403 ("Peran Anda tidak boleh mengubah atasan
+  karyawan ini.") karena cakupannya hanya outlet, bukan brand/tenant.
+
+Dua aturan lain: karyawan harus terlihat oleh pemanggil (bila tidak, 404), dan
+tidak seorang pun bisa mengubah atasannya sendiri (403 dengan pesan yang sama;
+minta HR atau GM lain).
+
+1. Buka Profil karyawan untuk karyawan di baris daftar manual (cari lewat nomor
+   karyawan).
+2. Di baris Atasan tekan **Ubah atasan**.
+3. Pilih atasan di daftar "Atasan langsung" (format "nama (nomor)", hanya
+   karyawan aktif), atau **Tanpa atasan** untuk mengosongkan.
+4. Isi "Alasan (opsional)", maksimal 200 karakter, misalnya "keputusan HR dan GM,
+   daftar manual backfill".
+5. Tekan **Simpan atasan**. Tombol tidak aktif bila pilihan sama dengan atasan
+   sekarang. Muncul pesan "Atasan diperbarui".
+
+Tiap simpan menulis satu baris audit `hris.employee_manager_change` dengan nilai
+sebelum/sesudah `managerId` dan alasan. Jangan menulis SQL ad hoc ke production.
+
+Pesan galat yang bisa muncul:
+
+| Pesan                                                                                          | Arti dan tindakan                                                                                                         |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| "Atasan ini berada di bawah karyawan yang bersangkutan, sehingga membentuk lingkaran. ..."     | Atasan yang dipilih ada di bawah karyawan ini (rantai atasan kembali). Pilih atasan lain.                                 |
+| "Peran atasan lebih rendah dari karyawan ini. ..."                                             | Karyawan memegang role non-junior, atasannya hanya role junior. Pilih supervisor atau lebih tinggi.                       |
+| "Atasan yang dipilih tidak aktif atau tidak ditemukan. ..."                                    | `MANAGER_NOT_ELIGIBLE`: atasan bukan karyawan aktif, atau di luar karyawan yang bisa Anda lihat. Pilih orang lain.        |
+| "Peran Anda tidak boleh mengubah atasan karyawan ini."                                         | 403: bukan HR atau GM brand yang mencakup outlet asal karyawan, atau mengubah atasan diri sendiri. Minta HR atau GM lain. |
+| "Atasan tidak dapat disimpan. Coba lagi sebentar lagi."                                        | Galat lain, termasuk `PERMISSION_DENIED` dari rute (tanpa izin HR/GM). Cek peran dulu; bila berulang, lapor ke CTO.       |
+| "Atasan tidak bisa diubah: pilihan sama dengan sebelumnya, atau memilih karyawan itu sendiri." | Pilihan tidak berubah atau memilih dirinya sendiri. Pilih orang lain.                                                     |
+
+Memilih **Tanpa atasan** tidak pernah ditolak karena aturan role. Dua perubahan
+atasan di tenant yang sama diproses bergantian, jadi dua orang yang saling
+menjadikan atasan tidak bisa sama-sama berhasil.
 
 ## 3. Berkas id yang disetujui
 
@@ -194,22 +232,31 @@ terlihat.
 
 ## Rollback
 
-Skrip tidak punya mode undo, dan **tidak ada layar atau tombol undo**: layar HR
-tidak bisa mengubah atasan karyawan yang sudah ada (`managerId` hanya diisi saat
-karyawan dibuat, `hris-employee.service.ts:708`). Pengembalian dilakukan
-engineer lewat CTO, dari nilai sebelum di audit. Setiap baris audit
-`hris.employee_manager_backfill` menyimpan nilai `managerId` sebelum perubahan.
-Prosedur:
+Skrip tidak punya mode undo. Pengembalian dilakukan per karyawan lewat kolom
+yang sama: Profil karyawan > **Ubah atasan**, oleh HR atau GM brand. Setiap baris
+audit `hris.employee_manager_backfill` (dari skrip) dan
+`hris.employee_manager_change` (dari layar) menyimpan nilai `managerId` sebelum
+perubahan. Prosedur:
 
-1. Operator memberi tahu CTO: tenant, rentang waktu apply, dan karyawan yang
-   perlu dikembalikan (atau semuanya).
-2. CTO menugaskan engineer. Engineer membaca baris audit action
-   `hris.employee_manager_backfill` untuk tenant dan rentang waktu itu, dan
-   mengambil nilai "sebelum" `managerId` tiap karyawan.
-3. Engineer mengembalikan `managerId` ke nilai itu lewat tugas yang disetujui
-   CTO. Bila nilai sebelumnya kosong, dikosongkan. Jangan menulis SQL ad hoc ke
-   production tanpa persetujuan CTO.
-4. Pengembalian dicatat dengan audit sendiri beserta alasannya.
+1. Operator menentukan tenant, rentang waktu apply, dan karyawan yang perlu
+   dikembalikan (atau semuanya), lalu menyerahkannya ke HR.
+2. Ambil nilai "sebelum" `managerId` tiap karyawan dari baris audit action
+   `hris.employee_manager_backfill` untuk tenant dan rentang waktu itu. Role HR
+   tidak bisa membuka log audit (butuh `audit.log.view`, yang dipegang
+   `tenant_admin` dan `owner`). Jadi `tenant_admin` atau `owner` membuka
+   `/audit`, menyaring action dan tanggal, lalu menyerahkan daftar karyawan
+   dan UUID "sebelum" ke HR.
+3. Audit menyimpan UUID atasan, bukan nama. Untuk tahu siapa pemilik sebuah
+   UUID, buka `/kelola/karyawan/<uuid>` (HR atau GM yang bisa melihat orang itu).
+   Lalu HR atau GM brand membuka Profil karyawan > Ubah atasan dan memilih
+   atasan "sebelum" itu. Bila nilai sebelumnya kosong, pilih **Tanpa atasan**.
+4. Isi "Alasan", misalnya "rollback backfill legend-qhqf8 512". Pengembalian
+   tercatat sebagai baris audit `hris.employee_manager_change` sendiri.
+
+Bila atasan "sebelum" sudah tidak aktif, layar menolak dengan pesan atasan tidak
+aktif; pilih atasan aktif lain atau **Tanpa atasan**, dan catat keputusannya di
+alasan. Bila pengembalian ditolak karena lingkaran atau peran, baca pesan di
+bagian 2.
 
 Efek mengembalikan atasan menjadi kosong: karyawan itu hilang lagi dari layar
 supervisor dan outlet manager, jadi lakukan sebelum scope 502 dibuka.
@@ -221,5 +268,5 @@ supervisor dan outlet manager, jadi lakukan sebelum scope 502 dibuka.
 - Skrip tidak membaca atau mencetak nama lengkap dan user id.
 - Skrip tidak menyentuh baris `manual`, apa pun isi `--ids`.
 - Skrip tidak mengubah GM atau akses scope brand.
-- Skrip tidak menyelesaikan daftar manual dan tidak punya undo. Keduanya butuh
-  tugas engineer lewat CTO.
+- Skrip tidak menyelesaikan daftar manual dan tidak punya undo. Keduanya
+  dikerjakan di layar Profil karyawan > Ubah atasan.

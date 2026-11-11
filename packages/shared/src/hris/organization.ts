@@ -246,6 +246,15 @@ export type UpdateEmployeePiiInput = z.infer<
   typeof updateEmployeePiiInputSchema
 >;
 
+/** HR / GM brand sets (or clears with null) the direct manager of one employee. */
+export const changeEmployeeManagerInputSchema = clientInputSchema({
+  managerId: employeeIdSchema.nullable(),
+  reason: z.string().trim().min(1).max(200).optional(),
+});
+export type ChangeEmployeeManagerInput = z.infer<
+  typeof changeEmployeeManagerInputSchema
+>;
+
 const employeeStatusTransitions: Partial<
   Record<
     EmployeeStatus,

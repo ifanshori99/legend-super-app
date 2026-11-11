@@ -404,8 +404,11 @@ export function hrisAuditEntry(
     readonly action: string;
     readonly objectType: string;
     readonly objectId: string;
+    readonly before?: Record<string, unknown> | null;
     readonly after: Record<string, unknown> | null;
     readonly sensitiveReason?: string;
+    /** Free-text note of an ordinary change; does not flag sensitive access. */
+    readonly reason?: string;
   },
 ) {
   const resolved: HrisActor =
@@ -420,8 +423,8 @@ export function hrisAuditEntry(
     action: entry.action,
     objectType: entry.objectType,
     objectId: entry.objectId,
-    reason: entry.sensitiveReason ?? null,
-    maskedChanges: { before: null, after: entry.after },
+    reason: entry.sensitiveReason ?? entry.reason ?? null,
+    maskedChanges: { before: entry.before ?? null, after: entry.after },
     ipHash: null,
     sensitiveAccess: entry.sensitiveReason !== undefined,
     retentionClass: "audit_2y" as const,

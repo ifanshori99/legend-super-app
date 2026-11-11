@@ -57,6 +57,7 @@ import {
   positionGradeSchema,
   employeeStatusSchema,
   updateEmployeePiiInputSchema,
+  changeEmployeeManagerInputSchema,
 } from "./organization.ts";
 import {
   checklistTaskActionInputSchema,
@@ -181,6 +182,16 @@ export const updateEmployeePii = defineEndpoint({
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(employeePiiSchema),
+});
+
+export const changeEmployeeManagerEndpoint = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/employees/:employeeId/manager",
+  params: employeeIdParams,
+  body: changeEmployeeManagerInputSchema.extend({
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(employeeSchema),
 });
 
 export const listOrgUnits = defineEndpoint({
@@ -1229,6 +1240,7 @@ export const hrisEndpoints = [
   getEmployee,
   getEmployeePii,
   updateEmployeePii,
+  changeEmployeeManagerEndpoint,
   getMyHrisProfile,
   listOrgUnits,
   listPositionGrades,

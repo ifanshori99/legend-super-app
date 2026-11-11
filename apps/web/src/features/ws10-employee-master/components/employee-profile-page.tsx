@@ -4,8 +4,8 @@
 // search param (`?tab=kontrak|dokumen`) like the inventory pages, so a section
 // is linkable and the loader can prefetch it.
 import * as React from "react";
-import { Link } from "@tanstack/react-router";
-import { ArrowLeft, Lock } from "lucide-react";
+import { Link, useRouteContext } from "@tanstack/react-router";
+import { ArrowLeft, Lock, UserRoundCog } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,9 @@ import { CardShell, CardShellBody } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { ApiError } from "@/lib/api/errors";
+import type { AreaAccess } from "@/lib/areas/access";
 import type { MessageKey } from "@starter/shared/i18n";
+import { canChangeEmployeeManager } from "../guard";
 import {
   useEmployee,
   useEmployees,
@@ -34,6 +36,7 @@ import {
   EmployeeStatusPill,
   EmploymentTypeBadge,
 } from "./employee-status";
+import { ManagerChangeDialog } from "./manager-change-dialog";
 import { EmployeePiiPanel } from "./pii-panel";
 import { EmployeeContracts } from "./profile-contracts";
 import { EmployeeDocuments } from "./profile-documents";
@@ -100,6 +103,12 @@ function ProfileBody({
   canEditPii: boolean;
 }) {
   const t = useT();
+  // Presentation only: the API decides by assignment scope and answers 403.
+  const { access } = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  const canChangeManager = access ? canChangeEmployeeManager(access) : false;
+  const [changingManager, setChangingManager] = React.useState(false);
   const employeeQuery = useEmployee(employeeId);
   const employeesQuery = useEmployees();
   const positionsQuery = usePositions();
@@ -241,6 +250,17 @@ function ProfileBody({
                       ? t("employeeMaster.profile.noManager")
                       : (manager ?? t("employeeMaster.profile.notSet"))
                   }
+                  action={
+                    canChangeManager ? (
+                      <Button
+                        variant="outline"
+                        onClick={() => setChangingManager(true)}
+                      >
+                        <UserRoundCog aria-hidden="true" />
+                        {t("employeeMaster.profile.manager.change")}
+                      </Button>
+                    ) : undefined
+                  }
                 />
                 <Fact
                   label={t("employeeMaster.profile.fields.outlet")}
@@ -279,6 +299,14 @@ function ProfileBody({
         <EmployeePiiPanel employee={employee} canEdit={canEditPii} />
       </div>
 
+      {canChangeManager && (
+        <ManagerChangeDialog
+          employee={employee}
+          open={changingManager}
+          onOpenChange={setChangingManager}
+        />
+      )}
+
       <nav aria-label={t("employeeMaster.profile.tabsLabel")}>
         <div className={tabsListClass}>
           {TABS.map((item) => {
@@ -308,11 +336,20 @@ function ProfileBody({
   );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+function Fact({
+  label,
+  value,
+  action,
+}: {
+  label: string;
+  value: string;
+  action?: React.ReactNode;
+}) {
   return (
     <div className="grid min-w-0 gap-0.5">
       <dt className="text-xs leading-4 text-muted-foreground">{label}</dt>
       <dd className="min-w-0 font-medium break-words">{value}</dd>
+      {action && <dd className="mt-1">{action}</dd>}
     </div>
   );
 }

@@ -51,6 +51,12 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { recordAudit } from "../services/core-audit.ts";
+import {
+  JUNIOR_ROLE_KEYS,
+  chainReaches,
+  isJuniorOnly,
+  loadRoleKeys,
+} from "../services/hris-manager-rules.ts";
 import { databaseError, databaseUrl } from "./connection";
 import * as schema from "./schema";
 
@@ -75,16 +81,8 @@ export class BackfillUsageError extends Error {}
 export type ManagerIssue =
   "no_manager" | "manager_inactive" | "manager_cross_outlet";
 
-/** Roles that are safe to put under an outlet manager; any other role blocks auto. */
-export const JUNIOR_ROLE_KEYS: readonly string[] = [
-  "cashier",
-  "waiter",
-  "barista_cook",
-  "facility_attendant",
-  "kitchen_lead",
-  "warehouse",
-  "employee",
-];
+// Shared with the manager-change service; re-exported for the tests.
+export { JUNIOR_ROLE_KEYS };
 
 export type ManualReason =
   | "holds_manager_role"
@@ -162,16 +160,12 @@ function buildIndex(
 }
 
 /** True when the manager chain above `startId` reaches `employeeId`. */
-function chainReaches(index: Index, startId: string, employeeId: string) {
-  const seen = new Set<string>([startId]);
-  let current = index.byId.get(startId)?.managerId ?? null;
-  while (current) {
-    if (current === employeeId) return true;
-    if (seen.has(current)) return false;
-    seen.add(current);
-    current = index.byId.get(current)?.managerId ?? null;
-  }
-  return false;
+function indexChainReaches(index: Index, startId: string, employeeId: string) {
+  return chainReaches(
+    (id) => index.byId.get(id)?.managerId,
+    startId,
+    employeeId,
+  );
 }
 
 function propose(
@@ -196,7 +190,7 @@ function propose(
       manualReason: "ambiguous_outlet_manager",
     };
   const proposed = candidates[0]!;
-  if (chainReaches(index, proposed, employee.id))
+  if (indexChainReaches(index, proposed, employee.id))
     return { proposedManagerId: proposed, manualReason: "would_cycle" };
   return { proposedManagerId: proposed };
 }
@@ -230,7 +224,7 @@ function classifyOne(index: Index, employee: EmployeeRow): Finding | null {
       manualReason: "cross_outlet_needs_review",
     };
   // Never put a senior (or unknown custom role) under an outlet manager.
-  if (!employee.roleKeys.every((key) => JUNIOR_ROLE_KEYS.includes(key)))
+  if (!isJuniorOnly(employee.roleKeys))
     return {
       ...base,
       proposedManagerId: null,
@@ -295,32 +289,18 @@ async function loadTenantState(tx: Tx, tenantId: string, now: Date) {
     sql`SELECT id, employee_no, user_id, manager_id, home_outlet_id, status
         FROM employees WHERE tenant_id = ${tenantId}::uuid ORDER BY employee_no, id`,
   );
-  const roleRows = await tx.execute(
-    sql`SELECT DISTINCT ra.user_id, COALESCE(r.template_key, 'custom') AS role_key
-        FROM role_assignments ra
-        JOIN roles r ON r.tenant_id = ra.tenant_id AND r.id = ra.role_id
-        JOIN employees e ON e.tenant_id = ra.tenant_id AND e.user_id = ra.user_id
-        WHERE ra.tenant_id = ${tenantId}::uuid
-          AND ra.valid_from <= ${now}
-          AND (ra.valid_until IS NULL OR ra.valid_until > ${now})`,
-  );
-  const roleKeysByUser = new Map<string, string[]>();
-  for (const row of roleRows.rows) {
-    const userId = String(row.user_id);
-    const keys = roleKeysByUser.get(userId) ?? [];
-    keys.push(String(row.role_key));
-    roleKeysByUser.set(userId, keys);
-  }
+  const roleKeysByEmployee = await loadRoleKeys(tx, tenantId, null, now);
   const employees: EmployeeRow[] = employeeRows.rows.map((row) => {
     const userId = row.user_id == null ? null : String(row.user_id);
+    const id = String(row.id);
     return {
-      id: String(row.id),
+      id,
       employeeNo: String(row.employee_no),
       userId,
       managerId: row.manager_id == null ? null : String(row.manager_id),
       homeOutletId: String(row.home_outlet_id),
       status: String(row.status),
-      roleKeys: userId ? (roleKeysByUser.get(userId) ?? []) : [],
+      roleKeys: roleKeysByEmployee.get(id) ?? [],
     };
   });
   const managerRows = await tx.execute(
@@ -463,6 +443,12 @@ export async function run(options: {
     const context = tenantContext(tenantId);
     const tenantApplied = await db.transaction(async (tx) => {
       await enterTenant(tx, tenantId);
+      // Same per-tenant lock as the online "ubah atasan" endpoint
+      // (hris-employee-manager.service.ts), so the two can never close a cycle
+      // together.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${`hris.employee_manager:${tenantId}`}))`,
+      );
       // Lock first, then classify again on the locked state: a row may have
       // changed since the read pass.
       await tx.execute(

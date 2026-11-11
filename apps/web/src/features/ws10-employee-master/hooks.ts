@@ -3,6 +3,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import {
+  changeEmployeeManagerEndpoint,
+  getEmployee,
   getEmployeePii,
   listEmployees,
   listEmploymentContracts,
@@ -18,6 +20,7 @@ import {
   orgUnitsQuery,
   outletsQuery,
   positionGradesQuery,
+  employeeMasterKeys,
   positionsQuery,
 } from "./queries";
 
@@ -95,5 +98,29 @@ export function useUpdateEmployeePii() {
       api.saveEmployeePii(params, body),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: [getEmployeePii.id] }),
+  });
+}
+
+type ManagerWrite = {
+  params: ParamsOf<typeof changeEmployeeManagerEndpoint>;
+  body: BodyOf<typeof changeEmployeeManagerEndpoint>;
+};
+
+/**
+ * Ubah atasan: the manager name on the profile and the directory's "Belum ada
+ * atasan" warning both derive from `managerId`, so the detail, every list page
+ * and the employee-master prefix are refreshed together.
+ */
+export function useChangeEmployeeManager() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ params, body }: ManagerWrite) =>
+      api.saveEmployeeManager(params, body),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: [getEmployee.id] }),
+        queryClient.invalidateQueries({ queryKey: [listEmployees.id] }),
+        queryClient.invalidateQueries({ queryKey: employeeMasterKeys.all }),
+      ]),
   });
 }
