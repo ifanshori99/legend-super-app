@@ -106,6 +106,26 @@ export type HrisAccess = {
   readonly viewerFor: (subject: HrisSubject) => HrisViewer | null;
 };
 
+/** The detail hint and PATCH share the same scope and self-edit rule. */
+export function mayChangeEmployeeManager(
+  access: HrisAccess,
+  subject: HrisSubject,
+): boolean {
+  if (
+    access.viewerFor(subject) === null ||
+    access.own?.id.toLowerCase() === subject.id.toLowerCase()
+  )
+    return false;
+  if (access.permissionsAt(subject.homeOutletId).includes(HRIS_MANAGE_CODE))
+    return true;
+  const reach = access.brandOrWiderReach(["hr.attendance.manage"]);
+  if (reach === null) return false;
+  if (reach.kind === "tenant") return true;
+  return reach.outletIds.some(
+    (id) => id.toLowerCase() === subject.homeOutletId.toLowerCase(),
+  );
+}
+
 const lower = (value: string) => value.toLowerCase();
 
 export async function loadHrisAccess(
@@ -404,8 +424,11 @@ export function hrisAuditEntry(
     readonly action: string;
     readonly objectType: string;
     readonly objectId: string;
+    readonly before?: Record<string, unknown> | null;
     readonly after: Record<string, unknown> | null;
     readonly sensitiveReason?: string;
+    /** Free-text note of an ordinary change; does not flag sensitive access. */
+    readonly reason?: string;
   },
 ) {
   const resolved: HrisActor =
@@ -420,8 +443,8 @@ export function hrisAuditEntry(
     action: entry.action,
     objectType: entry.objectType,
     objectId: entry.objectId,
-    reason: entry.sensitiveReason ?? null,
-    maskedChanges: { before: null, after: entry.after },
+    reason: entry.sensitiveReason ?? entry.reason ?? null,
+    maskedChanges: { before: entry.before ?? null, after: entry.after },
     ipHash: null,
     sensitiveAccess: entry.sensitiveReason !== undefined,
     retentionClass: "audit_2y" as const,

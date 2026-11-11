@@ -59,6 +59,9 @@ export const employeeMasterMessages = {
     emptyHint: "Data karyawan muncul di sini setelah HR menambahkan profil.",
     emptyFilterTitle: "Tidak ada karyawan yang cocok",
     emptyFilterHint: "Ubah kata pencarian atau filter status dan outlet.",
+    noManager: "Belum ada atasan",
+    noManagerSummary:
+      "{count} karyawan aktif belum punya atasan langsung, jadi belum terlihat oleh supervisor atau manajer outlet.",
   },
   profile: {
     sectionTitle: "Profil karyawan",
@@ -81,6 +84,35 @@ export const employeeMasterMessages = {
     },
     notSet: "Belum diisi",
     noManager: "Tidak ada atasan langsung",
+    // Ubah atasan (legend-f4uvg): HR or GM brand sets `employees.manager_id`.
+    manager: {
+      change: "Ubah atasan",
+      title: "Ubah atasan {name}",
+      description:
+        "Atasan menentukan siapa yang melihat karyawan ini. Perubahan dicatat di jejak audit.",
+      selectLabel: "Atasan langsung",
+      selectPlaceholder: "Pilih atasan",
+      none: "Tanpa atasan",
+      optionLabel: "{name} ({employeeNo})",
+      reasonLabel: "Alasan",
+      reasonHint: "Maksimal 200 karakter.",
+      save: "Simpan atasan",
+      savedTitle: "Atasan diperbarui",
+      savedBody: "{name} sekarang berada di bawah {manager}.",
+      savedBodyNone: "{name} sekarang tidak punya atasan langsung.",
+      errors: {
+        cycle:
+          "Atasan ini berada di bawah karyawan yang bersangkutan, sehingga membentuk lingkaran. Pilih atasan lain.",
+        notEligible:
+          "Atasan yang dipilih tidak aktif atau tidak ditemukan. Pilih karyawan aktif lain.",
+        roleTooLow:
+          "Peran atasan lebih rendah dari karyawan ini. Pilih atasan dengan peran supervisor atau lebih tinggi.",
+        forbidden: "Peran Anda tidak boleh mengubah atasan karyawan ini.",
+        validation:
+          "Atasan tidak bisa diubah: pilihan sama dengan sebelumnya, atau memilih karyawan itu sendiri.",
+        generic: "Atasan tidak dapat disimpan. Coba lagi sebentar lagi.",
+      },
+    },
     noEndDate: "Tanpa batas waktu",
     tabsLabel: "Bagian profil",
     tabs: {

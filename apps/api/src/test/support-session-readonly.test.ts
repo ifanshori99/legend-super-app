@@ -293,6 +293,47 @@ afterAll(async () => {
 });
 
 describe("legend-cg071 TEN-04 support session read-only", () => {
+  it("TEN-04 read_only support cannot change a manager and the employee detail hides that capability", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    const employeeId = randomUUID();
+    await db.query(
+      `INSERT INTO employees
+      (id, tenant_id, employee_no, full_name, home_outlet_id, employment_type, join_date, status)
+      VALUES ($1,$2,$3,'Karyawan support detail',$4,'pkwtt','2025-03-01','active')`,
+      [
+        employeeId,
+        tenantId,
+        `SUP-${unique().toUpperCase()}`,
+        cafeLegendPlatformFixtures.outlets[0]!.id,
+      ],
+    );
+    try {
+      const normal = await tenant.client.get(
+        `/api/hris/employees/${employeeId}`,
+      );
+      expect(normal.status, JSON.stringify(normal.body)).toBe(200);
+      expect(normal.body.data.canChangeManager).toBe(true);
+      await openGrant(tenantId, admin.userId);
+      const support = await impersonate(admin, tenant);
+      const detail = await support.get(`/api/hris/employees/${employeeId}`);
+      expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+      expect(detail.body.data.canChangeManager).toBe(false);
+      expectCode(
+        await support
+          .patch(`/api/hris/employees/${employeeId}/manager`)
+          .set(originHeader)
+          .send({ managerId: null }),
+        "SUPPORT_ACCESS_READ_ONLY",
+      );
+    } finally {
+      await db.query("DELETE FROM employees WHERE tenant_id=$1 AND id=$2", [
+        tenantId,
+        employeeId,
+      ]);
+    }
+  });
+
   it("TEN-04 read_only grant: reads pass, every mutation is refused and nothing changes", async () => {
     const tenant = await newTenantOwner();
     const existing = newHostname();

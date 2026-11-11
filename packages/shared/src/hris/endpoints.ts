@@ -48,6 +48,7 @@ import {
 } from "./ids.ts";
 import {
   employeeSchema,
+  employeeProfileSchema,
   employeePiiSchema,
   employeeDocumentSchema,
   employmentContractSchema,
@@ -57,6 +58,7 @@ import {
   positionGradeSchema,
   employeeStatusSchema,
   updateEmployeePiiInputSchema,
+  changeEmployeeManagerInputSchema,
 } from "./organization.ts";
 import {
   checklistTaskActionInputSchema,
@@ -163,7 +165,7 @@ export const getEmployee = defineEndpoint({
   method: "GET",
   path: "/api/hris/employees/:employeeId",
   params: employeeIdParams,
-  response: dataResponseSchema(employeeSchema),
+  response: dataResponseSchema(employeeProfileSchema),
 });
 
 /** HR-03: the only route that returns (masked) employee PII. */
@@ -182,6 +184,16 @@ export const updateEmployeePii = defineEndpoint({
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(employeePiiSchema),
+});
+
+export const changeEmployeeManagerEndpoint = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/employees/:employeeId/manager",
+  params: employeeIdParams,
+  body: changeEmployeeManagerInputSchema.extend({
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(employeeSchema),
 });
 
 export const listOrgUnits = defineEndpoint({
@@ -1232,6 +1244,7 @@ export const hrisEndpoints = [
   getEmployee,
   getEmployeePii,
   updateEmployeePii,
+  changeEmployeeManagerEndpoint,
   getMyHrisProfile,
   listOrgUnits,
   listPositionGrades,

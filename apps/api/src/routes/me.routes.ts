@@ -17,6 +17,7 @@ import {
 } from "../middleware/permissions";
 import { supportSessionOf } from "../middleware/support-session";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
+import { canChangeAnyEmployeeManager } from "../services/hris-employee-manager.service";
 import { listMyOutlets } from "../services/me-outlets.service";
 
 export const meRouter = Router();
@@ -49,6 +50,16 @@ meRouter.get("/access", async (req, res) => {
     data: getRequestAccessData(req),
     now: new Date(),
   });
+  // "Ubah atasan" hint (HR or a brand/tenant GM). Presentation only: PATCH
+  // /employees/:id/manager decides again. Under a read-only support session the
+  // API refuses writes, so the button is hidden too.
+  const canChangeEmployeeManager =
+    support?.accessMode === "read_only"
+      ? false
+      : await canChangeAnyEmployeeManager(
+          getTenantContext(req),
+          getAuth(req).user.id,
+        );
   res.json({
     data: myAccessViewSchema.parse({
       permissions: snapshot.permissions,
@@ -59,6 +70,7 @@ meRouter.get("/access", async (req, res) => {
       supportSession: support
         ? { accessMode: support.accessMode, expiresAt: support.expiresAt }
         : null,
+      canChangeEmployeeManager,
     }),
   });
 });

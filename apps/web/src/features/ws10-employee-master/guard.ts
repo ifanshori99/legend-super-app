@@ -33,6 +33,17 @@ export function canEditEmployeePii(access: AreaAccess): boolean {
   return holdsAny(access, EMPLOYEE_PII_EDIT_PERMISSIONS);
 }
 
+/**
+ * Ubah atasan: the server says whether the caller's assignments can ever pass
+ * PATCH /employees/:id/manager (`canChangeEmployeeManager` in GET /api/me/access:
+ * HR, or a GM with brand/tenant scope). An outlet manager or supervisor holds
+ * `hr.attendance.manage` but is always refused, so permissions alone would
+ * show a dead button. Presentation only: the API still answers 403.
+ */
+export function canChangeEmployeeManager(access: AreaAccess): boolean {
+  return access.canChangeEmployeeManager === true;
+}
+
 /** True when the visitor may read the employee master (presentation only). */
 export function canViewEmployees(access: AreaAccess): boolean {
   return holdsAny(access, EMPLOYEE_MASTER_PERMISSIONS);

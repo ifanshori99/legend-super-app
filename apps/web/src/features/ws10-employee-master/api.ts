@@ -3,6 +3,7 @@
 // hooks in ./hooks.ts own cache keys and invalidation.
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import {
+  changeEmployeeManagerEndpoint,
   getEmployee,
   getEmployeePii,
   listEmployeeDocuments,
@@ -63,3 +64,9 @@ export const saveEmployeePii = (
   params: Params<typeof updateEmployeePiiEndpoint>,
   body: Body<typeof updateEmployeePiiEndpoint>,
 ) => callEndpoint(updateEmployeePiiEndpoint, { params, body });
+
+/** Ubah atasan: sets or clears `managerId`; answers with the updated employee. */
+export const saveEmployeeManager = (
+  params: Params<typeof changeEmployeeManagerEndpoint>,
+  body: Body<typeof changeEmployeeManagerEndpoint>,
+) => callEndpoint(changeEmployeeManagerEndpoint, { params, body });

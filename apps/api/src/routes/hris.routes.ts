@@ -39,6 +39,7 @@ import {
   listPositionGrades as listPositionGradesEndpoint,
   listPositions as listPositionsEndpoint,
   updateEmployeePii as updateEmployeePiiEndpoint,
+  changeEmployeeManagerEndpoint,
 } from "@starter/shared/hris";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
@@ -46,6 +47,7 @@ import { requireIdentitySurface } from "../middleware/identity.ts";
 import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import { loadRequestAccess } from "../middleware/permissions.ts";
+import { supportSessionOf } from "../middleware/support-session.ts";
 import {
   getTenantContext,
   requireTenantContext,
@@ -53,6 +55,7 @@ import {
 import { loadTenantAccess } from "../services/permission-resolver.ts";
 import { loadSurfaceAccessFacts } from "../services/surface-access.service.ts";
 import * as employeesService from "../services/hris-employee.service.ts";
+import { changeEmployeeManager } from "../services/hris-employee-manager.service.ts";
 import * as attendanceService from "../services/hris-attendance.service.ts";
 import * as orgService from "../services/hris-org.service.ts";
 import {
@@ -147,6 +150,11 @@ const READ: PermissionCode[] = [
 ];
 const READ_OR_SELF: PermissionCode[] = [...READ, "self.profile.view"];
 const MANAGE: PermissionCode[] = ["hr.employee.manage"];
+// The service decides who may change a manager: HR, or a brand-scoped GM.
+const MANAGER_CHANGE: PermissionCode[] = [
+  "hr.employee.manage",
+  "hr.attendance.manage",
+];
 
 export type HrisRouterDeps = {
   /** Private-bucket URL signer (core-storage); default mints no URL. */
@@ -204,12 +212,18 @@ export function createHrisRouter(deps: HrisRouterDeps = {}): Router {
     requireHris(READ_OR_SELF),
     async (req, res) => {
       const { employeeId } = getEmployeeEndpoint.params.parse(req.params);
+      const employee = await employeesService.getEmployee(
+        hrisContext(req),
+        actor(req),
+        employeeId,
+      );
+      const support = await supportSessionOf(req);
       res.json({
-        data: await employeesService.getEmployee(
-          hrisContext(req),
-          actor(req),
-          employeeId,
-        ),
+        data: {
+          ...employee,
+          canChangeManager:
+            employee.canChangeManager && support?.accessMode !== "read_only",
+        },
       });
     },
   );
@@ -226,6 +240,27 @@ export function createHrisRouter(deps: HrisRouterDeps = {}): Router {
           hrisContext(req),
           actor(req),
           employeeId,
+        ),
+      });
+    },
+  );
+
+  router.patch(
+    "/employees/:employeeId/manager",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGER_CHANGE),
+    async (req, res) => {
+      const { employeeId } = changeEmployeeManagerEndpoint.params.parse(
+        req.params,
+      );
+      const body = changeEmployeeManagerEndpoint.body.parse(req.body);
+      res.json({
+        data: await changeEmployeeManager(
+          hrisContext(req),
+          actor(req),
+          employeeId,
+          body,
         ),
       });
     },

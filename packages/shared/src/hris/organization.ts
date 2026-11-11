@@ -206,6 +206,12 @@ export const employeeSchema =
   employeeBaseSchema.superRefine(checkEmployeeDates);
 export type Employee = z.infer<typeof employeeSchema>;
 
+/** Per-employee actions belong to the detail response, not the directory. */
+export const employeeProfileSchema = employeeBaseSchema
+  .extend({ canChangeManager: z.boolean() })
+  .superRefine(checkEmployeeDates);
+export type EmployeeProfile = z.infer<typeof employeeProfileSchema>;
+
 /**
  * Masked personal data (HR-03). Only ever `{ masked, keyVersion }`; raw values
  * are write-only input and ciphertext never leaves Postgres.
@@ -244,6 +250,15 @@ export const updateEmployeePiiInputSchema = clientInputSchema({
 });
 export type UpdateEmployeePiiInput = z.infer<
   typeof updateEmployeePiiInputSchema
+>;
+
+/** HR / GM brand sets (or clears with null) the direct manager of one employee. */
+export const changeEmployeeManagerInputSchema = clientInputSchema({
+  managerId: employeeIdSchema.nullable(),
+  reason: z.string().trim().min(1).max(200).optional(),
+});
+export type ChangeEmployeeManagerInput = z.infer<
+  typeof changeEmployeeManagerInputSchema
 >;
 
 const employeeStatusTransitions: Partial<

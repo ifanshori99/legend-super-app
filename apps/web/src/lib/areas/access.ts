@@ -51,6 +51,12 @@ export type AreaAccess = {
     readonly accessMode: "read_only" | "read_write";
     readonly expiresAt: string;
   } | null;
+  /**
+   * The account's assignments can change an employee's direct manager (HR, or
+   * a GM at brand/tenant scope), from GET /api/me/access. Presentation only:
+   * PATCH /employees/:id/manager decides again and answers 403.
+   */
+  readonly canChangeEmployeeManager?: boolean;
 };
 
 export const ANONYMOUS_ACCESS: AreaAccess = Object.freeze({
@@ -91,6 +97,7 @@ export function accessFromView(view: MyAccessView): AreaAccess {
     stations: view.stations,
     outlets: view.outlets,
     supportSession: view.supportSession,
+    canChangeEmployeeManager: view.canChangeEmployeeManager,
   };
 }
 
@@ -167,6 +174,22 @@ const MOCK_OUTLETS: readonly MyOutlet[] = cafeLegendFixtures.outlets
     businessDayCutoff: outlet.businessDayCutoff,
   }));
 
+/**
+ * Mock of the server's `canChangeEmployeeManager`: HR-style templates hold
+ * hr.employee.manage; a GM-style template holds hr.attendance.manage and may be
+ * assigned at brand or tenant scope. Outlet-scoped templates never qualify.
+ */
+function mockCanChangeEmployeeManager(role: RoleTemplateKey): boolean {
+  const template = roleTemplate(role);
+  if (template.permissions.includes("hr.employee.manage")) return true;
+  return (
+    template.permissions.includes("hr.attendance.manage") &&
+    template.allowedScopeTypes.some(
+      (scope) => scope === "brand" || scope === "tenant",
+    )
+  );
+}
+
 export function accessForMockRole(role: MockRole): AreaAccess {
   if (role === "none") return ANONYMOUS_ACCESS;
   if (role === "all")
@@ -178,6 +201,7 @@ export function accessForMockRole(role: MockRole): AreaAccess {
       roleLabel: undefined,
       stations: MOCK_STATIONS,
       outlets: MOCK_OUTLETS,
+      canChangeEmployeeManager: true,
     };
   const template = roleTemplate(role);
   return {
@@ -188,5 +212,6 @@ export function accessForMockRole(role: MockRole): AreaAccess {
     roleLabel: template.defaultName,
     stations: mockStationsFor(role),
     outlets: MOCK_OUTLETS,
+    canChangeEmployeeManager: mockCanChangeEmployeeManager(role),
   };
 }
