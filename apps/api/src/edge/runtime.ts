@@ -757,21 +757,29 @@ export async function startEdgeRuntime(
       // Reporting a disk failure must not turn it into a sales outage.
     }
   };
+  // 533 A2: the cloud's HTTP Date (link upgrade or catalog pull) proves the
+  // device clock after an offline restart. The link can come up before the
+  // catalog gate exists, so keep the last server time with a monotonic stamp and
+  // apply it later.
+  let catalogClock: {
+    now(): Date;
+    proveWithServerTime(serverTime: Date): void;
+    elapsedTimeUnproven(): boolean;
+  } | null = null;
+  // Wall time of this boot, taken before the gate: alarms of this boot have a
+  // staleSince at or after it, alarms of earlier boots are older.
+  const bootAt = new Date();
   const catalogAlarmQueue = await openCatalogAlarmQueue({
     // 533 A5: its own state directory, not the selfie store.
     directory: join(env.EDGE_STATE_DIR, "catalog-alarms"),
     // Alarms queued by the previous build are imported once from here.
     legacyDirectory: join(env.EDGE_SELFIE_DIR, "catalog-alarms"),
     edgeNodeId: local.scope.edgeNodeId,
+    // 533b: the 7 day expiry runs on the trusted clock once it exists, so a
+    // wall clock set forward cannot age an alarm out.
+    now: () => (catalogClock ? catalogClock.now() : new Date()),
     onError: reportCatalogAlarmError,
   });
-  // 533 A2: the cloud's HTTP Date (link upgrade) proves the device clock after
-  // an offline restart. The link can come up before the catalog gate exists, so
-  // keep the last server time with a monotonic stamp and apply it later.
-  let catalogClock: {
-    proveWithServerTime(serverTime: Date): void;
-    elapsedTimeUnproven(): boolean;
-  } | null = null;
   let lastServerTime: { serverTime: Date; receivedMono: number } | null = null;
   const applyServerTime = (): void => {
     if (!catalogClock || !lastServerTime) return;
@@ -784,11 +792,16 @@ export async function startEdgeRuntime(
       ),
     );
     if (!wasUnproven || catalogClock.elapsedTimeUnproven()) return;
-    // Proven: the unproven-time state and its queued owner alarms are moot.
+    // Proven: the unproven-time state and this boot's queued owner alarms are
+    // moot. Alarms of earlier boots stay: the owner may not have received them.
     catalogFreshness?.clockProven();
     void catalogAlarmQueue
-      .clearReason("CLOCK_ELAPSED_UNPROVEN")
+      .clearReason("CLOCK_ELAPSED_UNPROVEN", bootAt)
       .catch(reportCatalogAlarmError);
+  };
+  const recordServerTime = (serverTime: Date): void => {
+    lastServerTime = { serverTime, receivedMono: performance.now() };
+    applyServerTime();
   };
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
@@ -813,10 +826,7 @@ export async function startEdgeRuntime(
         );
     },
     onError: (error) => logger.warn(safeError(error), "Edge link error"),
-    onServerTime: (serverTime) => {
-      lastServerTime = { serverTime, receivedMono: performance.now() };
-      applyServerTime();
-    },
+    onServerTime: recordServerTime,
     // legend-10nex: stale prices/product status reach the owner through the
     // cloud, which only hears the edge while this link is up.
     catalogStale: () => {
@@ -1164,6 +1174,8 @@ export async function startEdgeRuntime(
       context: local.context,
       edgeNodeId: local.scope.edgeNodeId,
       freshness,
+      // 533b: the Date header of each catalog page is more proof of the clock.
+      onServerTime: recordServerTime,
     },
     catalogOnStart: true,
     onError: (error) =>

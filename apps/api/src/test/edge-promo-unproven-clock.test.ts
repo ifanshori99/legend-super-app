@@ -8,7 +8,6 @@ import {
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
-  PROMO_CHECKPOINT_PERSIST_MARGIN_MS,
   PROMO_CHECKPOINT_STREAMS,
   startPromoGate,
   type PromoGateHandle,
@@ -18,7 +17,6 @@ import {
   setPromoGateEdgeModeForTests,
   withPromoFreshness,
 } from "../edge/promo-gate.ts";
-import { CATALOG_GATE_PERSIST_MS } from "../edge/catalog-gate.ts";
 import { createTrustedClock } from "../edge/trusted-clock.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import type {
@@ -159,29 +157,23 @@ describe("Q62 promo and voucher safety when boot elapsed time cannot be proven",
   });
 });
 
-// 533 A3 (money rule: promos stay off unless the evidence is provably newer
-// than the shutdown). After an offline restart with unproven elapsed time, a
-// pull checkpoint written AFTER the boot high water proves the edge synced since
-// it booted, so promos and vouchers may come back. The high water is only saved
-// every CATALOG_GATE_PERSIST_MS (and a write can lag one more tick), so a
-// checkpoint shortly after it may still predate the shutdown (review R1). Rule:
-// accept only lastSuccessAt > bootHighWater + PROMO_CHECKPOINT_PERSIST_MARGIN_MS,
-// exported from edge/promo-gate-runtime.ts, = 2 * CATALOG_GATE_PERSIST_MS + 5_000
-// (125 s). Older, equal, or inside-the-margin checkpoints do not.
-describe("533 A3 promo gate accepts checkpoints written after an unproven boot", () => {
+// 533b P1 (money rule, architect round 2; replaces the 533 A3 exception).
+// While the trusted clock cannot prove elapsed time (clock.elapsedTimeUnproven()),
+// promos and vouchers stay OFF, full stop: no pull checkpoint, however recent
+// compared with the boot high water, can switch them on. Scenario: host off for
+// three days, NTP blocked, device date set three days back; the only evidence is
+// checkpoints, and promo expiry later uses a `new Date()` that went backwards.
+// Promos return only after clock.proveWithServerTime(...) succeeds, and then the
+// normal 24h checkpoint freshness rules apply (assumption: handle.refresh() is
+// the way the gate re-reads the clock in these tests; the running gate also
+// re-evaluates on its own interval).
+// The old PROMO_CHECKPOINT_PERSIST_MARGIN_MS export is removed (its P3 note,
+// "checkpoint value recorded at boot must change", is moot without A3).
+describe("533b promo gate stays disabled while the clock is unproven", () => {
   const MIN = 60_000;
+  const HOUR = 60 * MIN;
 
-  async function bootUnproven(
-    checkpointsAt: Record<(typeof PROMO_CHECKPOINT_STREAMS)[number], Date>,
-    runningMs = 5 * MIN,
-  ) {
-    const { context, outletId, edgeNodeId } = await createOutletAndNode();
-    for (const stream of PROMO_CHECKPOINT_STREAMS)
-      await owner.query(
-        `INSERT INTO edge_pull_checkpoints (tenant_id, outlet_id, edge_node_id, stream, watermark, last_success_at)
-         VALUES ($1, $2, $3, $4, NULL, $5)`,
-        [seededTenantId, outletId, edgeNodeId, stream, checkpointsAt[stream]],
-      );
+  function unprovenClock(runningMs: number) {
     // Booted offline with the device date at the persisted stamp: unproven.
     let wall = NOW.getTime();
     let mono = 0;
@@ -193,84 +185,110 @@ describe("533 A3 promo gate accepts checkpoints written after an unproven boot",
     expect(clock.elapsedTimeUnproven()).toBe(true);
     wall += runningMs;
     mono += runningMs;
+    return { clock, setWall: (date: Date) => (wall = date.getTime()) };
+  }
+
+  async function seedAndStart(
+    clock: ReturnType<typeof createTrustedClock>,
+    checkpointsAt:
+      Date | Record<(typeof PROMO_CHECKPOINT_STREAMS)[number], Date>,
+  ) {
+    const { context, outletId, edgeNodeId } = await createOutletAndNode();
+    for (const stream of PROMO_CHECKPOINT_STREAMS)
+      await owner.query(
+        `INSERT INTO edge_pull_checkpoints (tenant_id, outlet_id, edge_node_id, stream, watermark, last_success_at)
+         VALUES ($1, $2, $3, $4, NULL, $5)`,
+        [
+          seededTenantId,
+          outletId,
+          edgeNodeId,
+          stream,
+          checkpointsAt instanceof Date ? checkpointsAt : checkpointsAt[stream],
+        ],
+      );
     setPromoGateEdgeModeForTests(() => true);
     const handle = startPromoGate({ context, edgeNodeId, clock });
     handles.push(handle);
     await handle.refresh();
+    return handle;
   }
 
-  const both = (at: Date) => ({
-    "catalog:promotions": at,
-    "catalog:vouchers": at,
+  it("stays off for fresh checkpoints written well after the boot high water", async () => {
+    const { clock } = unprovenClock(15 * MIN);
+    await seedAndStart(clock, new Date(NOW.getTime() + 10 * MIN));
+    expect(promosEnabled()).toBe(false);
   });
 
-  it("enables promos when both streams synced after the boot high water", async () => {
-    await bootUnproven(both(new Date(NOW.getTime() + 3 * MIN)));
-    expect(promosEnabled()).toBe(true);
+  it("stays off for a checkpoint one second after the boot high water, and exactly at it", async () => {
+    const first = unprovenClock(15 * MIN);
+    await seedAndStart(first.clock, new Date(NOW.getTime() + 1_000));
+    expect(promosEnabled()).toBe(false);
+    const second = unprovenClock(15 * MIN);
+    await seedAndStart(second.clock, NOW);
+    expect(promosEnabled()).toBe(false);
   });
 
-  it("keeps promos off when only one stream synced after the boot high water", async () => {
-    await bootUnproven({
-      "catalog:promotions": new Date(NOW.getTime() + 3 * MIN),
+  it("stays off when only one stream synced after the boot high water", async () => {
+    const { clock } = unprovenClock(15 * MIN);
+    await seedAndStart(clock, {
+      "catalog:promotions": new Date(NOW.getTime() + 10 * MIN),
       "catalog:vouchers": new Date(NOW.getTime() - 60 * MIN),
     });
     expect(promosEnabled()).toBe(false);
   });
 
-  it("keeps promos off when the checkpoints predate the boot high water", async () => {
-    await bootUnproven(both(new Date(NOW.getTime() - MIN)));
+  it("stays off after the date was set three days back with fresh-looking checkpoints", async () => {
+    // Money scenario from the review: persisted stamp is NOW, the device date was
+    // set back 3 days (regressed). Checkpoints newer than the high water must not
+    // switch promos on.
+    let wall = NOW.getTime() - 72 * HOUR;
+    let mono = 0;
+    const clock = createTrustedClock({
+      wall: () => new Date(wall),
+      mono: () => mono,
+      persistedHighWater: NOW,
+    });
+    wall += 15 * MIN;
+    mono += 15 * MIN;
+    await seedAndStart(clock, new Date(NOW.getTime() + 10 * MIN));
     expect(promosEnabled()).toBe(false);
   });
 
-  it("derives the persist margin from the catalog gate persist interval", () => {
-    expect(PROMO_CHECKPOINT_PERSIST_MARGIN_MS).toBe(
-      2 * CATALOG_GATE_PERSIST_MS + 5_000,
+  it("stays off after an attempted proof that disagrees with boot wall plus elapsed time (clock step)", async () => {
+    const { clock, setWall } = unprovenClock(15 * MIN);
+    const handle = await seedAndStart(
+      clock,
+      new Date(NOW.getTime() + 10 * MIN),
     );
-  });
-
-  it("keeps promos off for a checkpoint 30 seconds after the boot high water (may predate the shutdown)", async () => {
-    await bootUnproven(both(new Date(NOW.getTime() + 30_000)));
+    const stepped = new Date(NOW.getTime() + 3 * 24 * HOUR);
+    setWall(stepped);
+    clock.proveWithServerTime(stepped);
+    await handle.refresh();
+    expect(clock.elapsedTimeUnproven()).toBe(true);
     expect(promosEnabled()).toBe(false);
   });
 
-  it("keeps promos off for a checkpoint exactly one margin after the high water", async () => {
-    await bootUnproven(
-      both(new Date(NOW.getTime() + PROMO_CHECKPOINT_PERSIST_MARGIN_MS)),
+  it("returns once the cloud's time proves the clock, with fresh checkpoints", async () => {
+    const { clock } = unprovenClock(15 * MIN);
+    const handle = await seedAndStart(
+      clock,
+      new Date(NOW.getTime() + 10 * MIN),
     );
     expect(promosEnabled()).toBe(false);
-  });
-
-  it("keeps promos off for a checkpoint 61 seconds after the boot high water (inside the 125 s margin)", async () => {
-    await bootUnproven(both(new Date(NOW.getTime() + 61_000)));
-    expect(promosEnabled()).toBe(false);
-  });
-
-  it("enables promos for a checkpoint one second past the margin", async () => {
-    await bootUnproven(
-      both(
-        new Date(NOW.getTime() + PROMO_CHECKPOINT_PERSIST_MARGIN_MS + 1_000),
-      ),
-    );
+    clock.proveWithServerTime(new Date(NOW.getTime() + 15 * MIN));
+    expect(clock.elapsedTimeUnproven()).toBe(false);
+    await handle.refresh();
     expect(promosEnabled()).toBe(true);
   });
 
-  it("keeps promos off when one stream is past the margin and the other inside it", async () => {
-    await bootUnproven({
-      "catalog:promotions": new Date(NOW.getTime() + 3 * MIN),
-      "catalog:vouchers": new Date(
-        NOW.getTime() + PROMO_CHECKPOINT_PERSIST_MARGIN_MS,
-      ),
-    });
-    expect(promosEnabled()).toBe(false);
-  });
-
-  it("keeps promos off for a checkpoint exactly at the boot high water", async () => {
-    await bootUnproven(both(NOW));
-    expect(promosEnabled()).toBe(false);
-  });
-
-  it("keeps promos off for a checkpoint in the future of the trusted clock", async () => {
-    await bootUnproven(both(new Date(NOW.getTime() + 60 * MIN)));
+  it("after proof, still refuses checkpoints older than 24 hours", async () => {
+    const { clock } = unprovenClock(15 * MIN);
+    const handle = await seedAndStart(
+      clock,
+      new Date(NOW.getTime() - 25 * HOUR),
+    );
+    clock.proveWithServerTime(new Date(NOW.getTime() + 15 * MIN));
+    await handle.refresh();
     expect(promosEnabled()).toBe(false);
   });
 });

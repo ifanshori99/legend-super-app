@@ -6,6 +6,10 @@
 // Assumptions: called once per successful upgrade (101), with the header parsed
 // to a Date (HTTP dates have 1 second precision); never called for a missing or
 // unparseable header; a throwing callback must not break the link.
+// 533b P3: the Date header is stored when the upgrade response arrives but only
+// delivered to onServerTime once the websocket is actually open, so an upgrade
+// that the client then rejects (here: a wrong Sec-WebSocket-Accept) never feeds
+// the trusted clock.
 // No database: a real ws server on an ephemeral port, an in-memory empty store.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -51,6 +55,7 @@ describe("533 A2 link client reports the cloud's server time", () => {
     stop = undefined;
     wss?.close();
     wss = undefined;
+    http?.closeAllConnections();
     await new Promise<void>((resolve) =>
       http ? http.close(() => resolve()) : resolve(),
     );
@@ -139,5 +144,48 @@ describe("533 A2 link client reports the cloud's server time", () => {
     await settle(() => calls >= 1);
     await settle(() => client.state().cloudLink === "connected");
     expect(client.state().refused).toBe(false);
+  });
+
+  it("does not call onServerTime when the upgrade response arrives but the handshake never opens", async () => {
+    http = createServer();
+    http.on("upgrade", (_request, socket) => {
+      // A 101 with a Date header but an invalid Sec-WebSocket-Accept: the client
+      // sees the upgrade, then refuses the handshake, so `open` never fires.
+      socket.write(
+        [
+          "HTTP/1.1 101 Switching Protocols",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          "Sec-WebSocket-Accept: not-the-right-accept-value",
+          `Date: ${new Date("2026-11-11T03:05:07.000Z").toUTCString()}`,
+          "",
+          "",
+        ].join("\r\n"),
+      );
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => http!.listen(0, "127.0.0.1", resolve));
+    const port = (http.address() as AddressInfo).port;
+    const seen: Date[] = [];
+    const client = connect(
+      `ws://127.0.0.1:${port}/api/edge-link`,
+      (date) => seen.push(date),
+      { random: () => 0 },
+    );
+    expect(client.state().cloudLink).not.toBe("connected");
+    await sleep(400);
+    expect(seen).toEqual([]);
+    expect(client.state().cloudLink).not.toBe("connected");
+  });
+
+  it("still delivers the stored Date value when the socket opens normally, once per open", async () => {
+    const serverTime = new Date("2026-11-11T03:05:07.000Z");
+    const url = await cloud(serverTime.toUTCString());
+    const seen: Date[] = [];
+    const client = connect(url, (date) => seen.push(date));
+    await settle(() => client.state().cloudLink === "connected");
+    await settle(() => seen.length >= 1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.getTime()).toBe(serverTime.getTime());
   });
 });

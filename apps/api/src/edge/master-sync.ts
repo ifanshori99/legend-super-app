@@ -612,6 +612,11 @@ export function startEdgeMasterSyncLoop(input: {
      * succeeded or why it failed. Without it the failures are only reported.
      */
     freshness?: CatalogFreshnessTracker;
+    /**
+     * 533b: the cloud's server time from the `Date` header of each successful
+     * catalog page, offered as evidence for the trusted clock.
+     */
+    onServerTime?: (serverTime: Date) => void;
   };
   catalogOnStart?: boolean;
 }): { stop(): Promise<void> } {
@@ -644,6 +649,7 @@ export function startEdgeMasterSyncLoop(input: {
       fetchImpl: input.options?.fetchImpl,
       timeoutMs: input.options?.timeoutMs,
       signal: abort.signal,
+      onServerTime: input.catalog?.onServerTime,
     });
 
   const pullCatalogRounds = async (): Promise<void> => {

@@ -303,7 +303,8 @@ describe("521 trusted clock reports unproven offline elapsed time", () => {
 //   clock.proveWithServerTime(serverTime: Date): void   (return value unused here)
 // Assumptions: it clears `elapsedTimeUnproven()` only when the server time is at
 // or after the boot high water AND within the 5 minute clock tolerance of the
-// current wall clock. It never touches `regressed()` (founder Q69 pending), and
+// expected time (533b: boot wall clock + monotonic time since boot, see the
+// "533b" block below; NOT the current wall clock). It never touches `regressed()` (founder Q69 pending), and
 // never changes now() or highWater().
 describe("533 A2 trusted clock is proven by the cloud's server time", () => {
   const MIN5 = 5 * 60_000;
@@ -385,5 +386,117 @@ describe("533 A2 trusted clock is proven by the cloud's server time", () => {
     expect(api(clock).regressed()).toBe(true);
     api(clock).proveWithServerTime(T0);
     expect(api(clock).regressed()).toBe(true);
+  });
+});
+
+// 533b P2 (architect round 2): the proof compares the server time with where the
+// clock should be if it kept real time since boot: bootWall + monotonic time
+// elapsed since boot. It must NOT compare with the current wall clock, because
+// a chrony/NTP step (or a hand edit) after boot would then "agree" with a
+// server time that the device only adopted, proving nothing about the time spent
+// powered off. Expected API is unchanged:
+//   clock.proveWithServerTime(serverTime: Date): void
+// Rules: proven iff |serverTime - (bootWall + monoElapsedSinceBoot)| <= 5 min
+// (inclusive of 4m59s, exclusive of 5m01s) AND serverTime >= boot high water.
+// bootWall is the wall clock at createTrustedClock (also for adoptHighWater:
+// the clock's own boot, not the adoption time).
+describe("533b trusted clock proof uses boot wall plus monotonic elapsed time", () => {
+  const MIN5 = 5 * 60_000;
+  const api = (clock: unknown) =>
+    clock as {
+      elapsedTimeUnproven(): boolean;
+      regressed(): boolean;
+      proveWithServerTime(serverTime: Date): unknown;
+    };
+  // Offline restart: the date is at the persisted stamp, so time is unproven.
+  const unprovenBoot = () => {
+    const persisted = new Date(T0.getTime() + HOUR);
+    const r = rig(persisted, persisted);
+    expect(api(r.clock).elapsedTimeUnproven()).toBe(true);
+    return { ...r, persisted };
+  };
+
+  it("does not count a wall clock step after boot that the server time merely agrees with", () => {
+    const { clock, tick, setWall, persisted } = unprovenBoot();
+    tick(2 * 60_000);
+    // chrony steps the wall clock three days ahead and the cloud says the same.
+    const stepped = new Date(persisted.getTime() + 3 * 24 * HOUR);
+    setWall(stepped);
+    api(clock).proveWithServerTime(stepped);
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+  });
+
+  it("does not count a small wall clock step either: agreement with the current wall is irrelevant", () => {
+    const { clock, tick, setWall, persisted } = unprovenBoot();
+    tick(60_000);
+    // 10 minutes ahead of where boot wall + elapsed says it should be.
+    const stepped = new Date(persisted.getTime() + 60_000 + 10 * 60_000);
+    setWall(stepped);
+    api(clock).proveWithServerTime(stepped);
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+  });
+
+  it("proves when the server time matches boot wall plus monotonic elapsed, whatever the wall clock shows now", () => {
+    const { clock, tick, setWall, persisted } = unprovenBoot();
+    tick(30 * 60_000);
+    // The date was set back by a day after boot; real time kept running.
+    setWall(new Date(persisted.getTime() - 24 * HOUR));
+    api(clock).proveWithServerTime(new Date(persisted.getTime() + 30 * 60_000));
+    expect(api(clock).elapsedTimeUnproven()).toBe(false);
+  });
+
+  it("measures elapsed time since boot: a server time equal to the boot wall is too old after 10 minutes", () => {
+    const { clock, tick, persisted } = unprovenBoot();
+    tick(10 * 60_000);
+    api(clock).proveWithServerTime(persisted);
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+    api(clock).proveWithServerTime(new Date(persisted.getTime() + 10 * 60_000));
+    expect(api(clock).elapsedTimeUnproven()).toBe(false);
+  });
+
+  it("applies the 5 minute tolerance around the expected time, on both sides", () => {
+    const early = unprovenBoot();
+    early.tick(20 * 60_000);
+    api(early.clock).proveWithServerTime(
+      new Date(early.persisted.getTime() + 20 * 60_000 + MIN5 + 1000),
+    );
+    expect(api(early.clock).elapsedTimeUnproven()).toBe(true);
+
+    const late = unprovenBoot();
+    late.tick(20 * 60_000);
+    api(late.clock).proveWithServerTime(
+      new Date(late.persisted.getTime() + 20 * 60_000 - MIN5 - 1000),
+    );
+    expect(api(late.clock).elapsedTimeUnproven()).toBe(true);
+
+    const inside = unprovenBoot();
+    inside.tick(20 * 60_000);
+    api(inside.clock).proveWithServerTime(
+      new Date(inside.persisted.getTime() + 20 * 60_000 - MIN5 + 1000),
+    );
+    expect(api(inside.clock).elapsedTimeUnproven()).toBe(false);
+  });
+
+  it("still requires the server time to be at or after the boot high water", () => {
+    // Late-adopted high water 3 minutes ahead of the real time since boot: the
+    // server time agrees with boot wall + elapsed (within 5 minutes) but is
+    // behind the high water, so it proves nothing about the powered-off time.
+    const { clock, tick } = rig();
+    tick(HOUR);
+    clock.adoptHighWater(new Date(T0.getTime() + HOUR + 3 * 60_000));
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+    api(clock).proveWithServerTime(new Date(T0.getTime() + HOUR));
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+  });
+
+  it("does not let a failed attempt block a later valid proof", () => {
+    const { clock, tick, setWall, persisted } = unprovenBoot();
+    tick(5 * 60_000);
+    const stepped = new Date(persisted.getTime() + 5 * 24 * HOUR);
+    setWall(stepped);
+    api(clock).proveWithServerTime(stepped);
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+    api(clock).proveWithServerTime(new Date(persisted.getTime() + 5 * 60_000));
+    expect(api(clock).elapsedTimeUnproven()).toBe(false);
   });
 });

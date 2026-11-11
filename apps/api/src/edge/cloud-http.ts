@@ -55,10 +55,32 @@ export type CloudGetOptions = {
   credential: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * The cloud's server time, read from the `Date` header of a 2xx response
+   * whose body parsed (533b). Not called for a non-2xx, a 304, a missing or
+   * unparseable header. A throwing callback is ignored.
+   */
+  onServerTime?: (serverTime: Date) => void;
 };
 
 type CloudGetResult =
   { status: 304 } | { status: 200; body: unknown; headers: Headers };
+
+function reportServerTime(
+  headers: Headers,
+  onServerTime: CloudGetOptions["onServerTime"],
+): void {
+  if (!onServerTime) return;
+  const header = headers.get("Date");
+  if (header === null) return;
+  const serverTime = new Date(header);
+  if (Number.isNaN(serverTime.getTime())) return;
+  try {
+    onServerTime(serverTime);
+  } catch {
+    // A broken evidence sink must not fail the pull.
+  }
+}
 
 async function cloudGet(
   options: CloudGetOptions & {
@@ -104,16 +126,15 @@ async function cloudGet(
       await response.body?.cancel().catch(() => undefined);
       throw new EdgeCloudHttpError(`HTTP_${response.status}`);
     }
+    let body: unknown;
     try {
-      return {
-        status: 200,
-        body: (await response.json()) as unknown,
-        headers: response.headers,
-      };
+      body = (await response.json()) as unknown;
     } catch (error) {
       if (request.signal.aborted) throw error;
       throw new EdgeCloudHttpError("BAD_JSON");
     }
+    reportServerTime(response.headers, options.onServerTime);
+    return { status: 200, body, headers: response.headers };
   } catch (error) {
     if (error instanceof EdgeCloudHttpError) throw error;
     if (timedOut) throw new EdgeCloudHttpError("TIMEOUT");

@@ -200,13 +200,28 @@ describe("Q62 durable owner alarm queue", () => {
 //    every entry it returns (the cloud sends no ack: "sent on an open link");
 //    heartbeat(null) (paused) counts nothing; flush() saves the counters;
 //  - an entry is dropped once it was sent ALARM_MAX_HEARTBEATS times;
-//  - an entry that was sent at least once is also dropped when more than 7 days
-//    passed since it was first enqueued; an entry never sent is never dropped by
-//    age (a clock jump or a long offline period must not delete it).
+//  - 533b P2: an entry is dropped by age only when it was sent at least
+//    MIN_SENDS_BEFORE_AGE_EXPIRY (240, about 1 hour of 15 s heartbeats over an
+//    open link) times AND more than 7 days passed since it was first enqueued.
+//    An entry sent fewer times (including never) is never dropped by age: a
+//    clock jump, a long offline period or a flapping link must not delete an
+//    alarm the owner may not have received;
+//  - the 7 days are measured with the `now` option (the runtime passes the
+//    trusted clock), never with the device wall clock (Date.now).
 describe("533 A4 owner alarm queue expiry", () => {
   const DAY = 24 * 60 * 60_000;
   const START = new Date("2026-11-11T00:00:00.000Z");
   const at = (ms: number) => new Date(START.getTime() + ms);
+  // 533b: ~1 hour of 15 s heartbeats over an open link (asserted as a literal;
+  // the implementation may export a constant, the tests do not depend on it).
+  const MIN_SENDS_BEFORE_AGE_EXPIRY = 240;
+  const sendMany = (
+    queue: { heartbeat(live: []): unknown[] },
+    times: number,
+  ) => {
+    for (let i = 0; i < times; i += 1)
+      expect(queue.heartbeat([])).toHaveLength(1);
+  };
 
   it("uses 24 hours of 15 second heartbeats as the send budget", () => {
     expect(ALARM_MAX_HEARTBEATS).toBe((24 * 60 * 60) / 15);
@@ -253,7 +268,21 @@ describe("533 A4 owner alarm queue expiry", () => {
     expect(queue.heartbeat([])).toEqual([alarm(1)]);
   });
 
-  it("drops an entry that was sent once when it is more than 7 days old", async () => {
+  it("drops an entry sent at least 240 times only when it is more than 7 days old", async () => {
+    let now = START;
+    const queue = await openCatalogAlarmQueue({
+      ...(await fixture()),
+      now: () => now,
+    });
+    await queue.enqueue([alarm()]);
+    sendMany(queue, MIN_SENDS_BEFORE_AGE_EXPIRY); // an hour of sends on day 0
+    now = at(7 * DAY - 1);
+    expect(queue.heartbeat([])).toEqual([alarm()]);
+    now = at(7 * DAY + 1);
+    expect(queue.heartbeat([])).toEqual([]);
+  });
+
+  it("does not drop by age an entry sent once, however old", async () => {
     let now = START;
     const queue = await openCatalogAlarmQueue({
       ...(await fixture()),
@@ -261,13 +290,41 @@ describe("533 A4 owner alarm queue expiry", () => {
     });
     await queue.enqueue([alarm()]);
     expect(queue.heartbeat([])).toEqual([alarm()]); // sent once on day 0
-    now = at(7 * DAY - 1);
+    now = at(30 * DAY);
     expect(queue.heartbeat([])).toEqual([alarm()]);
-    now = at(7 * DAY + 1);
-    expect(queue.heartbeat([])).toEqual([]);
+    expect(queue.heartbeat([])).toEqual([alarm()]);
   });
 
-  it("never drops an entry that was never sent by age: the first heartbeat after day 8 still sends it once", async () => {
+  it("does not drop by age an entry sent 239 times: the 240th send happens, the next heartbeat drops it", async () => {
+    let now = START;
+    const queue = await openCatalogAlarmQueue({
+      ...(await fixture()),
+      now: () => now,
+    });
+    await queue.enqueue([alarm()]);
+    sendMany(queue, MIN_SENDS_BEFORE_AGE_EXPIRY - 1);
+    now = at(8 * DAY);
+    expect(queue.heartbeat([])).toEqual([alarm()]); // 240th send, still due
+    expect(queue.heartbeat([])).toEqual([]); // 240 sends and older than 7 days
+  });
+
+  it("keeps the send count across a restart before age can expire the entry", async () => {
+    const options = await fixture();
+    let now = START;
+    const first = await openCatalogAlarmQueue({ ...options, now: () => now });
+    await first.enqueue([alarm()]);
+    sendMany(first, MIN_SENDS_BEFORE_AGE_EXPIRY - 1);
+    await first.flush();
+    now = at(8 * DAY);
+    const restarted = await openCatalogAlarmQueue({
+      ...options,
+      now: () => now,
+    });
+    expect(restarted.heartbeat([])).toEqual([alarm()]);
+    expect(restarted.heartbeat([])).toEqual([]);
+  });
+
+  it("never drops an entry that was never sent by age: it keeps being sent after day 8 until it has 240 sends", async () => {
     let now = START;
     const queue = await openCatalogAlarmQueue({
       ...(await fixture()),
@@ -275,9 +332,32 @@ describe("533 A4 owner alarm queue expiry", () => {
     });
     await queue.enqueue([alarm()]);
     now = at(8 * DAY); // offline (no heartbeat) for 8 days
-    expect(queue.heartbeat([])).toEqual([alarm()]);
-    // It has now been sent, so the age rule applies from here on.
+    // Sends 1..240 all happen even though the entry is older than 7 days.
+    sendMany(queue, MIN_SENDS_BEFORE_AGE_EXPIRY);
     expect(queue.heartbeat([])).toEqual([]);
+  });
+
+  it("measures the 7 days with the injected now, not the device wall clock", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(START);
+      let now = START;
+      const queue = await openCatalogAlarmQueue({
+        ...(await fixture()),
+        now: () => now,
+      });
+      await queue.enqueue([alarm()]);
+      sendMany(queue, MIN_SENDS_BEFORE_AGE_EXPIRY);
+      // The device date jumps a month ahead, the trusted clock does not.
+      vi.setSystemTime(at(30 * DAY));
+      expect(queue.heartbeat([])).toEqual([alarm()]);
+      // The trusted clock passes 7 days while the device date is set back.
+      now = at(7 * DAY + 1);
+      vi.setSystemTime(START);
+      expect(queue.heartbeat([])).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a wall clock jump forward of more than 7 days does not delete an unsent entry, also after a restart", async () => {
@@ -294,17 +374,17 @@ describe("533 A4 owner alarm queue expiry", () => {
     expect(restarted.heartbeat([])).toEqual([alarm()]);
   });
 
-  it("applies the age rule per entry: a sent old entry goes, an unsent old entry stays", async () => {
+  it("applies the age rule per entry: a fully sent old entry goes, an unsent old entry stays", async () => {
     let now = START;
     const queue = await openCatalogAlarmQueue({
       ...(await fixture()),
       now: () => now,
     });
     await queue.enqueue([alarm()]);
-    expect(queue.heartbeat([])).toEqual([alarm()]);
+    sendMany(queue, MIN_SENDS_BEFORE_AGE_EXPIRY);
     await queue.enqueue([alarm(1)]); // queued on day 0 as well, offline since
     // Age both past 7 days with no heartbeat in between: only the entry that
-    // was already sent may expire.
+    // was already sent 240 times may expire.
     now = at(8 * DAY);
     const batch = queue.heartbeat([]);
     expect(batch).toEqual([alarm(1)]);
@@ -315,7 +395,7 @@ describe("533 A4 owner alarm queue expiry", () => {
     let now = START;
     const first = await openCatalogAlarmQueue({ ...options, now: () => now });
     await first.enqueue([alarm()]);
-    expect(first.heartbeat([])).toEqual([alarm()]); // sent at least once
+    sendMany(first, MIN_SENDS_BEFORE_AGE_EXPIRY);
     await first.flush();
     now = at(6 * DAY);
     const restarted = await openCatalogAlarmQueue({
@@ -332,6 +412,61 @@ describe("533 A4 owner alarm queue expiry", () => {
         [],
       ),
     ).toEqual([]);
+  });
+});
+
+// 533b P2: clearReason(reason, since?) removes the queued alarms of `reason`
+// whose staleSince is at or after `since` (this boot's episodes); entries older
+// than `since` are alarms from earlier boots the owner may not have received and
+// are kept. Without `since` it removes every entry of that reason (previous
+// behaviour). The returned promise resolves after the change is persisted.
+// Assumption: this is the queue-level signature the runtime will call with the
+// boot time of the process whose clock was just proven.
+describe("533b clearReason only clears alarms from this boot", () => {
+  const other = (index: number): CatalogStale[number] =>
+    ({
+      ...alarm(index),
+      reason: "CLOCK_REGRESSED",
+    }) as CatalogStale[number];
+  // Heartbeat rotation order is not part of this contract: compare as a set.
+  const keys = (entries: CatalogStale) =>
+    entries.map((entry) => `${entry.reason}@${entry.staleSince}`).sort();
+  type ClearableQueue = {
+    clearReason(reason: string, since?: Date): Promise<void>;
+  };
+
+  it("clears every entry of the reason when no boundary is given, and leaves other reasons", async () => {
+    const queue = await openCatalogAlarmQueue(await fixture());
+    await queue.enqueue([alarm(0), alarm(1), other(2)]);
+    await (queue as unknown as ClearableQueue).clearReason(
+      "CLOCK_ELAPSED_UNPROVEN",
+    );
+    expect(keys(queue.heartbeat([]))).toEqual(keys([other(2)]));
+  });
+
+  it("keeps entries older than the boundary and clears those at or after it", async () => {
+    const options = await fixture();
+    const queue = await openCatalogAlarmQueue(options);
+    // staleSince 00:00 (old boot), 00:05 (exactly the boundary), 00:10 (this boot)
+    await queue.enqueue([alarm(0), alarm(5), alarm(10), other(11)]);
+    await (queue as unknown as ClearableQueue).clearReason(
+      "CLOCK_ELAPSED_UNPROVEN",
+      new Date(alarm(5).staleSince),
+    );
+    expect(keys(queue.heartbeat([]))).toEqual(keys([alarm(0), other(11)]));
+    // Persisted: a restart sees the same queue.
+    const restarted = await openCatalogAlarmQueue(options);
+    expect(keys(restarted.heartbeat([]))).toEqual(keys([alarm(0), other(11)]));
+  });
+
+  it("clears nothing when every entry predates the boundary", async () => {
+    const queue = await openCatalogAlarmQueue(await fixture());
+    await queue.enqueue([alarm(0), alarm(1)]);
+    await (queue as unknown as ClearableQueue).clearReason(
+      "CLOCK_ELAPSED_UNPROVEN",
+      new Date(Date.UTC(2026, 10, 11, 1, 0)),
+    );
+    expect(keys(queue.heartbeat([]))).toEqual(keys([alarm(0), alarm(1)]));
   });
 });
 
@@ -409,34 +544,66 @@ describe("533 R4 legacy owner alarms are imported once", () => {
     expect((await stat(legacyFile)).isFile()).toBe(true);
   });
 
-  it("starts normally when the legacy directory does not exist", async () => {
+  it("starts normally and reports nothing when the legacy directory does not exist", async () => {
     const options = await fixture();
+    const onError = vi.fn();
     const queue = await openCatalogAlarmQueue({
       ...options,
+      onError,
       legacyDirectory: join(options.directory, "..", "never-created"),
     });
     expect(queue.heartbeat([])).toEqual([]);
     await queue.enqueue([alarm()]);
     expect(queue.heartbeat([])).toEqual([alarm()]);
+    expect(onError).not.toHaveBeenCalled();
   });
 
-  it("starts normally when the legacy directory has no file for this node", async () => {
+  it("starts normally and reports nothing when the legacy directory has no file for this node", async () => {
     const options = await fixture();
     const legacyDirectory = join(options.directory, "..", "empty-legacy");
     await openCatalogAlarmQueue({
       directory: legacyDirectory,
       edgeNodeId: "someone-else",
     }).then((queue) => queue.enqueue([alarm()]));
-    const queue = await openCatalogAlarmQueue({ ...options, legacyDirectory });
+    const onError = vi.fn();
+    const queue = await openCatalogAlarmQueue({
+      ...options,
+      onError,
+      legacyDirectory,
+    });
     expect(queue.heartbeat([])).toEqual([]);
+    expect(onError).not.toHaveBeenCalled();
   });
 
-  it("ignores an unreadable legacy file and still serves new alarms", async () => {
+  it("ignores an unreadable legacy file for the import, keeps it, and still serves new alarms", async () => {
     const { legacyFile, ...options } = await legacyFixture();
     await writeFile(legacyFile, "{broken");
     const queue = await openCatalogAlarmQueue(options);
     expect(queue.heartbeat([])).toEqual([]);
     await queue.enqueue([alarm(1)]);
     expect(queue.heartbeat([])).toEqual([alarm(1)]);
+    expect(await readFile(legacyFile, "utf8")).toBe("{broken");
+  });
+
+  // 533b P3: a legacy file that exists but cannot be parsed (any error other
+  // than ENOENT) is reported once through onError instead of silently ignored.
+  it("reports a broken legacy file through onError", async () => {
+    const { legacyFile, ...options } = await legacyFixture();
+    await writeFile(legacyFile, "{broken");
+    const onError = vi.fn();
+    await openCatalogAlarmQueue({ ...options, onError });
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fail startup when reporting a broken legacy file also throws", async () => {
+    const { legacyFile, ...options } = await legacyFixture();
+    await writeFile(legacyFile, "{broken");
+    const queue = await openCatalogAlarmQueue({
+      ...options,
+      onError: () => {
+        throw new Error("logger failed");
+      },
+    });
+    expect(queue.heartbeat([])).toEqual([]);
   });
 });

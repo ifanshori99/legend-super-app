@@ -11,10 +11,14 @@ import { catalogStaleSchema, type CatalogStale } from "./protocol.ts";
 // 533 A4: an alarm about an old clock doubt must not nag the owner forever.
 // The cloud sends no delivery ack, so "delivered" means "sent in a heartbeat
 // over an open link". An entry expires after this many such heartbeats (24 h of
-// 15 s heartbeats), or, once it was sent at least once, after ALARM_MAX_AGE_MS
-// since it was first enqueued. An entry never sent is never dropped by age: an
-// offline edge or a wall clock jump forward must not delete an unsent alarm.
+// 15 s heartbeats), or, once it was sent at least ALARM_MIN_SENDS_BEFORE_AGE_EXPIRY
+// times (about 1 h of heartbeats), after ALARM_MAX_AGE_MS since it was first
+// enqueued, measured with the `now` option (the runtime passes the trusted
+// clock). An entry sent fewer times is never dropped by age: an offline edge, a
+// flapping link or a clock jump forward must not delete an alarm the owner may
+// not have received.
 export const ALARM_MAX_HEARTBEATS = 5760;
+export const ALARM_MIN_SENDS_BEFORE_AGE_EXPIRY = 240;
 export const ALARM_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 
 export type CatalogAlarmQueue = {
@@ -23,10 +27,12 @@ export type CatalogAlarmQueue = {
   heartbeat(live: CatalogStale | null): CatalogStale;
   flush(): Promise<void>;
   /**
-   * Drop every queued entry with this reason (533 A2: the clock was proven,
-   * so the unproven-time alarms are moot) and persist the result.
+   * Drop the queued entries with this reason (533 A2: the clock was proven,
+   * so the unproven-time alarms are moot) and persist the result. With `since`
+   * only entries whose staleSince is at or after it go (533b: the alarms of this
+   * boot; older ones may not have reached the owner). Without it, all of them.
    */
-  clearReason(reason: string): Promise<void>;
+  clearReason(reason: string, since?: Date): Promise<void>;
 };
 
 const keyOf = (alarm: CatalogStale[number]): string =>
@@ -37,7 +43,7 @@ export async function openCatalogAlarmQueue(options: {
   edgeNodeId: string;
   /** Previous location of this queue's file (import once, then remove). */
   legacyDirectory?: string;
-  /** Test seam: wall clock for the 7 day expiry. */
+  /** Clock for the 7 day expiry; the runtime passes the trusted clock. */
   now?: () => Date;
   onError?: (error: unknown) => void;
 }): Promise<CatalogAlarmQueue> {
@@ -138,8 +144,10 @@ export async function openCatalogAlarmQueue(options: {
       merge(saved);
       legacyToRemove = legacyPath;
       dirty = true;
-    } catch {
-      // Missing or unreadable legacy file: ignore it, leave it in place.
+    } catch (error) {
+      // Missing legacy file: nothing to import. Unreadable: ignore it for the
+      // import, leave it in place, but tell the operator.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") report(error);
     }
   };
   const load = async (): Promise<void> => {
@@ -236,7 +244,8 @@ export async function openCatalogAlarmQueue(options: {
       for (const [key, entry] of meta)
         if (
           entry.heartbeats >= ALARM_MAX_HEARTBEATS ||
-          (entry.heartbeats >= 1 && nowMs - entry.enqueuedAt > ALARM_MAX_AGE_MS)
+          (entry.heartbeats >= ALARM_MIN_SENDS_BEFORE_AGE_EXPIRY &&
+            nowMs - entry.enqueuedAt > ALARM_MAX_AGE_MS)
         ) {
           entries.delete(key);
           meta.delete(key);
@@ -262,14 +271,18 @@ export async function openCatalogAlarmQueue(options: {
       return batch;
     },
     flush: () => flush(),
-    clearReason: (reason) => {
+    clearReason: (reason, since) => {
+      const sinceMs = since?.getTime();
       // Run behind queued writes so a pending enqueue cannot bring it back.
       pending = pending
         .catch(() => {})
         .then(async () => {
           if (needsLoad) await load();
           for (const [key, alarm] of entries)
-            if (alarm.reason === reason) {
+            if (
+              alarm.reason === reason &&
+              (sinceMs === undefined || Date.parse(alarm.staleSince) >= sinceMs)
+            ) {
               entries.delete(key);
               meta.delete(key);
               dirty = true;

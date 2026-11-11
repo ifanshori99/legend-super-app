@@ -34,11 +34,13 @@ export type TrustedClock = {
    */
   adoptHighWater(persisted: Date): void;
   /**
-   * The cloud's server time (HTTP `Date` of the link upgrade, 533 A2). Clears
-   * `elapsedTimeUnproven()` when it is at or after the boot high water and
-   * within 5 minutes of the wall clock: the wall clock then agrees with the
-   * cloud and is not still sitting at the pre-shutdown stamp. Never touches
-   * `regressed()`, `now()` or `highWater()`.
+   * The cloud's server time (HTTP `Date` of the link upgrade or a catalog
+   * pull, 533 A2). Clears `elapsedTimeUnproven()` when it is at or after the
+   * boot high water and within 5 minutes of where a clock that kept real time
+   * since boot would be: the boot wall clock plus the monotonic time elapsed
+   * since boot (533b). It is not compared with the current wall clock: a
+   * chrony step or hand edit after boot proves nothing about the time spent
+   * powered off. Never touches `regressed()`, `now()` or `highWater()`.
    */
   proveWithServerTime(serverTime: Date): void;
   /**
@@ -77,7 +79,8 @@ export function createTrustedClock(
     bootWall <= persistedMs + CLOCK_REGRESSION_TOLERANCE_MS;
   // The highest stamp known from before this boot (persisted or adopted late).
   let bootHighWater = persistedMs;
-  let anchorMono = mono();
+  const bootMono = mono();
+  let anchorMono = bootMono;
   let high = anchorWall;
 
   const read = (): number => {
@@ -127,7 +130,10 @@ export function createTrustedClock(
       if (!Number.isFinite(serverMs)) return;
       if (!unproven) return;
       if (bootHighWater !== null && serverMs < bootHighWater) return;
-      if (Math.abs(wall().getTime() - serverMs) > CLOCK_REGRESSION_TOLERANCE_MS)
+      // Where the clock stands if it kept real time since boot, whatever the
+      // wall clock was set to afterwards.
+      const expectedMs = bootWall + (mono() - bootMono);
+      if (Math.abs(serverMs - expectedMs) > CLOCK_REGRESSION_TOLERANCE_MS)
         return;
       unproven = false;
     },

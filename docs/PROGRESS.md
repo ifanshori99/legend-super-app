@@ -3335,3 +3335,11 @@ Langkah berikut CTO baru:
 - A5: antrean alarm ke `EDGE_STATE_DIR` (baru, default `/var/lib/legend/edge-state`); alarm lama di `EDGE_SELFIE_DIR/catalog-alarms` diimpor sekali lalu dihapus. Direktori baru harus dibuat di host (README deploy diperbarui).
 - Bukti: gagal-dulu 19 + 11 test, sesudah fix 8 berkas test terarah (174 test) lulus, tsc API exit 0, eslint dan prettier berkas berubah hijau.
 - 533 A5 lanjutan (keputusan CTO): `deploy/edge/check-edge-host.sh` punya opsi `--state-dir` dan memeriksa `EDGE_STATE_DIR` ada, mode 0700, dimiliki service user (FAIL bila tidak); test `test-check-edge-host.sh` lulus (state-dir hilang, mode terbuka, dari env). Tidak ada compose atau unit edge di repo, jadi volume didokumentasikan di `docs/deployment.md` dan `deploy/edge/README.md`.
+
+## 533b: fix architect ronde 2 atas c8d4c254 (ws/edge-catalog-fresh, tingkat K)
+
+- P1: selama jam belum terbukti promo tetap mati; pengecualian A3 (checkpoint > high water + margin) dihapus. Bukti jam sekarang juga datang dari header `Date` respons tarikan katalog (cloud-http, 2xx saja), selain header `Date` upgrade link (disimpan saat `upgrade`, dipakai saat `open`).
+- P2: bukti hanya bila |server - (bootWall + monotonic sejak boot)| <= 5 menit dan server >= high water boot, jadi lompatan jam setelah boot tidak dihitung. `clearReason(reason, since)` hanya menghapus alarm dari boot ini.
+- P2: kedaluwarsa umur alarm butuh minimal 240 kiriman (sekitar 1 jam link terbuka); 7 hari diukur dengan jam terpercaya. File legacy rusak (selain ENOENT) dilaporkan lewat onError.
+- Catatan: jam yang salah saat boot lalu diperbaiki chrony tidak pernah terbukti di proses itu; promo mati sampai restart (sesuai brief). Temuan reviewer rendah, tidak diubah: `enqueuedAt` alarm boot memakai jam dinding karena antrean dibuat sebelum gate; hanya memperpendek notifikasi owner, tidak menyentuh uang.
+- Bukti: gagal-dulu 18 test; sesudah fix 9 berkas test terarah (225 test) lulus, tsc API exit 0, eslint dan prettier hijau.
