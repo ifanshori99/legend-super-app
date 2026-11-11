@@ -2,12 +2,14 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
-## legend-3jem1 UI tinjauan HR: absen masuk saat cuti disetujui (ui-engineer, cabang `ws/3jem1-hr-leave-review-ui` dari m1 3c7217b2 + merge `ws/5nt2z-leave-partial` 3a3750ed, 2026-11-11)
+## legend-3jem1 UI tinjauan HR: absen masuk saat cuti disetujui (ui-engineer, cabang `ws/3jem1-hr-leave-review-ui` dari m1 3c7217b2 + merge `ws/5nt2z-leave-partial` 3a3750ed + `ws/merge-batch48g` 45007c83, 2026-11-11)
 
 - Sudah: fitur `apps/web/src/features/hr-leave-clockin-review/` (antrean `/kelola/absensi/tinjauan-cuti`, detail `$logId`, dialog konfirmasi tetap/batal, hasil, tanpa hak batal, koreksi manual, perlu ditinjau ulang, kosong, loading, error, gagal konfirmasi), i18n `leaveClockinReview.*`, mock (`?mock=empty|error|slow|offline`, `?leaveRights=keep-only`), test node `tests/legend-3jem1-leave-clockin.test.mjs`, spec `e2e/legend-3jem1.mock.spec.ts`, skrip axe `scripts/ui-check-leave-clockin.mjs`.
 - Keputusan: detail sebagai halaman (bukan modal seperti satu gambar mockup) supaya deep link + mobile; shell mockup (generatif) tidak ditiru; teks kosong-cari dan loading pakai bawaan `DataTableShell`; "Perlu ditinjau ulang" = cuti diputuskan setelah jam masuk (API tidak membedakan); data diperkaya di klien (karyawan, cuti, jam keluar) sampai `legend-eps6t`.
-- Merge 5nt2z: journal migrasi diselesaikan mekanis; bug urutan `when` 0276 vs 0247-0249 dicatat `legend-0kxb2` (P1, migrasi, bukan dibetulkan di sini).
-- Berikut: hasil e2e + ui-check + audit, lalu lapor ke CTO.
+- Merge 5nt2z: journal migrasi diselesaikan mekanis; bug urutan `when` 0276 vs 0247-0249 dicatat `legend-0kxb2`. Lalu cabang menggabungkan `origin/ws/merge-batch48g` 45007c83 (163666b6): migrasi cuti kini 0256-0258 dari merge train, 0276-0278 hilang dari cabang ini; `scripts/migration-renumber.mjs check --from-idx 240` ok.
+- Audit ui-auditor putaran 2: semua temuan putaran 1 terverifikasi; 5 temuan kecil baru dibetulkan (31bfbe47): teks 409 terminal mengarah ke tombol yang ada, offline sebelum simpan = peringatan bukan gagal, gaya nonaktif "Tetap cuti" sama dengan batal, label sr-only skeleton, baris jenis kasus ganda dibuang; "Jam keluar" satu nama; tombol Tinjau per baris jadi outline.
+- Bukti (HEAD 31bfbe47): typecheck web (heap 6144) exit 0; eslint + prettier berkas berubah bersih; node test 17/17; e2e mock `e2e/legend-3jem1.mock.spec.ts` 24/24; `scripts/ui-check-leave-clockin.mjs` 28/28 (14 keadaan x 390/1280), axe tanpa pelanggaran. Screenshot: `docs/design/screenshots/legend-3jem1/<keadaan>-<390|1280>.png` (26).
+- Berikut: kartu `review`; merge cabang ini setelah batch48g masuk m1.
 
 ## legend-ilzrj WS-10 FE layar PIN slip gaji + sisa percobaan di API (ui-engineer, cabang `ws/payslip-pin-ui` dari `ws/hris-pii-pin` 8305fdc3 + merge `design/payslip-pin`, 2026-11-11)
 
