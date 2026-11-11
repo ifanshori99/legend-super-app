@@ -45,6 +45,7 @@ const linkIds: string[] = [];
 const overrideUuids: string[] = [];
 const mirrorKeys: string[] = [];
 const customRoleIds: string[] = [];
+const fundIds: string[] = [];
 let cashier: Staff;
 
 const scope = () =>
@@ -258,6 +259,36 @@ async function adminRefund(
   return id;
 }
 
+/**
+ * The payer sent more than the bill: the surplus sits in an unallocated fund and
+ * was already refunded to the payer (fund refund, not a refund of the sale).
+ */
+async function overpaymentRefunded(bill: Sale, amountIdr: number) {
+  const fundId = randomUUID();
+  fundIds.push(fundId);
+  await owner.query(
+    `INSERT INTO payment_unallocated_funds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason)
+     VALUES ($1, $2, $3, $4, $5, 'overpayment')`,
+    [fundId, seededTenantId, seededOutletA, bill.intentId, amountIdr],
+  );
+  await owner.query(
+    `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id,
+       amount_idr, reason, status, requested_by, approved_by, decided_at,
+       completed_at, unallocated_fund_id)
+     VALUES ($1, $2, $3, $4, $5, 'Kembalikan kelebihan bayar', 'completed',
+       'system:test', $6, now(), now(), $7)`,
+    [
+      randomUUID(),
+      seededTenantId,
+      seededOutletA,
+      bill.intentId,
+      amountIdr,
+      approvers.get("owner")!,
+      fundId,
+    ],
+  );
+}
+
 async function nativeTotal(bill: Sale) {
   const result = await owner.query<{ total: string }>(
     "SELECT coalesce(sum(amount_idr), 0)::text AS total FROM pos_order_refunds WHERE tenant_id = $1 AND order_id = $2",
@@ -353,6 +384,10 @@ afterAll(async () => {
     await client.query(
       "DELETE FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
       [intentIds],
+    );
+    await client.query(
+      "DELETE FROM payment_unallocated_funds WHERE id = ANY($1::uuid[])",
+      [fundIds],
     );
     await client.query(
       "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
@@ -589,5 +624,51 @@ describe("POS-04 Q63 cumulative refund ceilings (brief 530)", () => {
         [seededTenantId, actor],
       );
     }
+  });
+
+  // Brief 532 A2: money returned for an overpayment is not a refund of the
+  // sale, so it must not eat the order's refundable balance.
+  it("QRIS Rp100000 with Rp20000 overpayment already refunded: a Rp100000 POS refund still passes", async () => {
+    const bill = await sale(100_000, "qris");
+    await overpaymentRefunded(bill, 20_000);
+    const result = await refund(bill, 100_000, "supervisor");
+    expect(Number(result.amountIdr)).toBe(100_000);
+    expect(await nativeTotal(bill)).toBe(100_000);
+  });
+
+  it("the same order still refuses a POS refund of Rp100001 (never pays more than the sale)", async () => {
+    const bill = await sale(100_000, "qris");
+    await overpaymentRefunded(bill, 20_000);
+    await expect(refund(bill, 100_001, "supervisor")).rejects.toBeDefined();
+    expect(await nativeTotal(bill)).toBe(0);
+  });
+
+  it("an overpayment refund does not let a second POS refund exceed the paid amount", async () => {
+    const bill = await sale(100_000, "qris");
+    await overpaymentRefunded(bill, 20_000);
+    await refund(bill, 100_000, "supervisor");
+    await expect(refund(bill, 1, "supervisor")).rejects.toBeDefined();
+    expect(await nativeTotal(bill)).toBe(bill.paid);
+  });
+
+  it("a late-payment refund (pos-late-payment-refund:) does not eat the refundable balance of the sale", async () => {
+    const bill = await sale(100_000, "qris");
+    const lateId = await adminRefund(bill, 30_000, "system:pos");
+    const lateKey = `pos-late-payment-refund:${bill.intentId}`;
+    mirrorKeys.push(lateKey);
+    await owner.query(
+      `INSERT INTO payment_admin_idempotency (tenant_id, key, fingerprint, response)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [
+        seededTenantId,
+        lateKey,
+        "b".repeat(64),
+        JSON.stringify({ refundId: lateId }),
+      ],
+    );
+    const result = await refund(bill, 100_000, "supervisor");
+    expect(Number(result.amountIdr)).toBe(100_000);
+    expect(await nativeTotal(bill)).toBe(100_000);
+    await expect(refund(bill, 1, "supervisor")).rejects.toBeDefined();
   });
 });

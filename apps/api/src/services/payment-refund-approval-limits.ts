@@ -135,6 +135,41 @@ export async function refundApprovalDecisionTime(
   return new Date(Number(rows[0]!.at_ms));
 }
 
+function nativeOrderUuid(refund: NativeRefundApproval): string {
+  return refund.orderId.length === 26
+    ? ulidToUuid(refund.orderId)
+    : ulidToUuid(uuidToUlid(refund.orderId));
+}
+
+/**
+ * Money that is not a refund of the bill's own tenders: an overpayment refund
+ * (it pays out an unallocated fund) and a late-payment refund (it returns a
+ * payment that arrived after the bill was settled or closed). Neither reduces
+ * what this bill's tenders hold, so a native POS refund does not count them
+ * against the bill. LATE_PAYMENT_REFUND_KEY_PREFIXES mirrors
+ * payment-refund.service.ts (import cycle).
+ */
+const LATE_PAYMENT_REFUND_KEY_PREFIXES = [
+  "pos-late-payment-refund:",
+  "qr-late-payment-refund:",
+];
+
+function notBillTenderRefund(tenantId: string) {
+  return sql`r.unallocated_fund_id IS NULL AND NOT EXISTS (
+    SELECT 1 FROM payment_admin_idempotency late
+     WHERE late.tenant_id = ${tenantId}
+       AND late.response->>'refundId' = r.id::text
+       AND (${sql.join(
+         LATE_PAYMENT_REFUND_KEY_PREFIXES.map(
+           (prefix) =>
+             sql`late.key = ${prefix}::text || r.payment_intent_id::text
+              OR late.key LIKE ${prefix}::text || r.payment_intent_id::text || ':%'`,
+         ),
+         sql` OR `,
+       )})
+    )`;
+}
+
 /** Bill groups reached by the persisted intent or by a native POS order. */
 function currentRefundGroups(refund: RefundApprovalSubject) {
   if ("paymentIntentId" in refund)
@@ -142,10 +177,7 @@ function currentRefundGroups(refund: RefundApprovalSubject) {
       SELECT DISTINCT group_key FROM intent_groups
        WHERE intent_id = ${refund.paymentIntentId}::uuid
     )`;
-  const orderId =
-    refund.orderId.length === 26
-      ? ulidToUuid(refund.orderId)
-      : ulidToUuid(uuidToUlid(refund.orderId));
+  const orderId = nativeOrderUuid(refund);
   return sql`current_groups AS (
     SELECT ${`order:${orderId}`}::text AS group_key
     UNION
@@ -227,6 +259,11 @@ export async function refundCommittedAmount(
       SELECT DISTINCT other.intent_id
         FROM current_groups
         JOIN intent_groups other USING (group_key)
+       ${
+         paymentRefund === null
+           ? sql`WHERE current_groups.group_key = ${`order:${nativeOrderUuid(refund as NativeRefundApproval)}`}`
+           : sql``
+       }
     ), native_refunds AS (
       SELECT n.* FROM pos_order_refunds n
        WHERE n.tenant_id = ${refund.tenantId}
@@ -272,6 +309,7 @@ export async function refundCommittedAmount(
          ${paymentRefund === null ? sql`` : sql`AND r.id <> ${paymentRefund.id}::uuid`}
          AND r.payment_intent_id IN (SELECT intent_id FROM related)
          AND r.id NOT IN (SELECT id FROM mirrors)
+         ${paymentRefund === null ? sql`AND ${notBillTenderRefund(refund.tenantId)}` : sql``}
          AND (
            r.status IN ('approved', 'completed')
            ${options.includePendingReservations ? sql`OR r.status = 'pending'` : sql``}

@@ -77,7 +77,7 @@ export async function loadDeferredRefundCommitments(
      WHERE tenant_id = ${input.tenantId}
        AND (event_name = 'order.refunded' OR envelope->>'name' = 'order.refunded')
        AND (
-         lower(aggregate_id) IN (${identifiers})
+         (aggregate_type = 'order' AND lower(aggregate_id) IN (${identifiers}))
          OR lower(envelope->>'aggregateId') IN (${identifiers})
          OR lower(envelope->'payload'->>'orderId') IN (${identifiers})
        )
