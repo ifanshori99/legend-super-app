@@ -46,6 +46,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
+import { orderGivenOf } from "./order-given.ts";
 import { livePromoApplicationOf } from "./order-promo-refund.ts";
 import {
   assertBusinessDayOpen,
@@ -608,6 +609,12 @@ export async function refundPosOrder(
         .filter((tender) => tender.status === "captured")
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
       const refunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
+      // legend-5g9sn (Q25): the vouchers and the live recovery refunds of the
+      // order count against what the guest paid too (order level, read without
+      // lock: only the order lock above, never an issue lock).
+      const given = await orderGivenOf(tx, context.tenant.tenantId, order.id);
+      const recoveryGivenIdr = given.vouchersIdr + given.recoveryRefundsIdr;
+      const roomIdr = Math.max(0, paid - refunded - recoveryGivenIdr);
 
       // Items: quantities already refunded by earlier rows, then this request.
       const requested = (input.items ?? []).map(({ itemId, quantity }) => ({
@@ -764,7 +771,7 @@ export async function refundPosOrder(
           // payout below what is due would lock the rest for good. Asking
           // less is refused before anything is written; asking more is
           // capped to what is due (unchanged).
-          const owedIdr = Math.min(dueBill, Math.max(0, paid - refunded));
+          const owedIdr = Math.min(dueBill, roomIdr);
           // legend-186 (s7rx B): owed, but only from the deposit (the tenders
           // are used up): the item still comes back as a Rp0 return and the
           // rest stays on the deposit side.
@@ -797,8 +804,24 @@ export async function refundPosOrder(
             "Tidak ada dana yang perlu dikembalikan.",
           );
       }
+      // legend-5g9sn: a refund above what the vouchers and recovery refunds
+      // left is cut to it (as the promo payout is capped to what is due);
+      // nothing left is refused.
+      if (!promoApplication && recoveryGivenIdr > 0) {
+        payout = Math.min(payout, roomIdr);
+        if (payout <= 0)
+          throw new HttpError(
+            422,
+            "REFUND_NOTHING_DUE",
+            "Tidak ada dana yang perlu dikembalikan.",
+          );
+      }
       if (!goodsReturnOnly)
-        assertRefundWithinPaid(idr(paid), idr(refunded), idr(payout));
+        assertRefundWithinPaid(
+          idr(paid),
+          idr(Math.min(paid, refunded + recoveryGivenIdr)),
+          idr(payout),
+        );
       const override = await consumeApproval(tx, context, {
         action: "refund",
         purpose: "refund",
