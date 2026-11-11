@@ -461,26 +461,37 @@ describe("printable menu: old PDF cleanup", () => {
   it("concurrent renders leave exactly one PDF object (no orphan)", async () => {
     const storage = new FakeObjectStorage();
     const d = { storage, renderer, scanner: deps.scanner };
+    // Document objects of this outlet. Other files leave their own behind, so
+    // only the rows created or removed by THIS test's renders are compared.
+    const documentIds = async () =>
+      (
+        await withTenant(db, ctx(), (tx) =>
+          tx
+            .select({ id: coreStorageObjects.id })
+            .from(coreStorageObjects)
+            .where(
+              and(
+                eq(coreStorageObjects.tenantId, tenantId),
+                eq(coreStorageObjects.outletId, outletA),
+                eq(coreStorageObjects.purpose, "document"),
+              ),
+            ),
+        )
+      ).map((r) => r.id);
     await setPrice(38000);
-    await regenerateMenuPrint(ctx(), outletA, d, now);
+    const first = await regenerateMenuPrint(ctx(), outletA, d, now);
     await setPrice(39000);
+    const before = new Set(await documentIds());
     await Promise.all([
       regenerateMenuPrint(ctx(), outletA, d, now),
       regenerateMenuPrint(ctx(), outletA, d, now),
     ]);
-    const rows = await withTenant(db, ctx(), (tx) =>
-      tx
-        .select({ id: coreStorageObjects.id })
-        .from(coreStorageObjects)
-        .where(
-          and(
-            eq(coreStorageObjects.tenantId, tenantId),
-            eq(coreStorageObjects.outletId, outletA),
-            eq(coreStorageObjects.purpose, "document"),
-          ),
-        ),
-    );
-    expect(rows.map((r) => r.id)).toEqual([await currentObjectId()]);
+    const after = await documentIds();
+    // Exactly one new PDF object, the current one; the one it replaced is gone.
+    expect(after.filter((id) => !before.has(id))).toEqual([
+      await currentObjectId(),
+    ]);
+    expect(after).not.toContain(first.objectId);
   });
 
   it("a failed delete does not fail the render and is written to the audit log", async () => {
