@@ -32,3 +32,12 @@ Test: apps/api/src/test/payroll-gross-engine.test.ts (belum dijalankan). Signatu
 `computeEmployeeGross(ctx, userId, { employeeId, periodStart, periodEnd, payslipId, overtimeParameters: OvertimeParameters })` -> `{ grossIdr, deductionsIdr, netIdr, overtimeIdr, overtimeMinutes, lines: PayslipLine[], sealed: { calculation: Buffer, keyVersion } }`.
 `sealed.calculation` = sealPayrollValue(JSON {grossIdr, deductionsIdr, netIdr, overtimeIdr, lines}) dengan binding {tenantId, table:"payslips", rowId: payslipId, field:"calculation"}.
 Asumsi: jumlah komponen = baris berlaku pada periodEnd (tanpa prorata), komponen nonaktif dilewati; lembur = attendance_logs type 'out' dalam periode, validity valid (atau flagged lalu accepted), pending/rejected tidak dihitung, tier per hari (workday); lembur dasar = jumlah earning ber-overtimeBase; potongan dipotong dari displayOrder terakhir bila > gross; tanpa komponen -> nol & lines []; input salah -> error status 4xx (404 untuk karyawan tak ada/lintas tenant).
+
+## sko14 test gagal-dulu: nama fungsi service (test-writer, 12 Nov)
+Test: apps/api/src/test/payroll-statutory-calc.test.ts (belum dijalankan; gagal karena berkas service belum ada).
+Service baru: apps/api/src/services/payroll-statutory-calc.service.ts, fungsi MURNI (tanpa DB), ekspor:
+- `captureStatutoryForLock({ tables, payDate, types })` -> `{ statutoryVersions: StatutoryVersionRef[], statutoryParametersHash }` (sha-256 hex 64 char atas parameter versi yang dipin).
+- `calculatePayrollRunStatutory({ run, tables, employees, thrAsOfDate })` -> `{ statutoryVersions, statutoryParametersHash, lines[] }`; `run = { status, payDate, configSnapshot: null | { statutoryVersions, statutoryParametersHash } }`. Pakai `statutoryVersionsForRun`, `bpjsRateOf`, `computeBpjsContribution`, `computeThr`; hash snapshot tak cocok -> PAYROLL_SNAPSHOT_MISMATCH.
+- Tipe: `PayrollRunStatutoryRun`, `PayrollRunStatutoryEmployee` = `{ employeeId, joinDate, bpjsWageBaseIdr, thrWageIdr, payableWageIdr, jkkRiskClass, bpjsProgrammes[] }`.
+- Baris: `{ employeeId, contributions[{type,baseIdr,capped,employerIdr,employeeIdr(setelah cap)}], employerBpjsIdr, employeeBpjsDeductionIdr (<= payableWageIdr), deductionCapped, thr: {tenureMonths, amountIdr (<= thrWageIdr)} | null }`. `thr` null bila `thrAsOfDate` null.
+Asumsi: cap potongan terhadap `payableWageIdr`; bagian perusahaan tidak dipotong saat cap; programme mana yang menanggung pemotongan tidak diasersi (hanya jumlah). Wage negatif ditolak (throw).
