@@ -242,8 +242,12 @@ function ItemEditor({
   const [errors, setErrors] = React.useState<
     Record<string, string | undefined>
   >({});
+  // A legacy item without a type stays savable; the type becomes required for
+  // a new item or once the manager touches the field.
+  const [typeTouched, setTypeTouched] = React.useState(false);
   const [formError, setFormError] = React.useState<string | undefined>();
 
+  const requireType = itemId === null || typeTouched;
   const schema = React.useMemo(
     () =>
       z.object({
@@ -256,14 +260,16 @@ function ItemEditor({
         stationType: z
           .string()
           .refine(
-            (value) => (STATION_TYPES as readonly string[]).includes(value),
+            (value) =>
+              !requireType ||
+              (STATION_TYPES as readonly string[]).includes(value),
             t("menu.editor.station.typeRequired"),
           ),
         description: z
           .string()
           .max(1000, t("menu.errors.tooLong", { max: 1000 })),
       }),
-    [t],
+    [t, requireType],
   );
 
   const update = (patch: Partial<FormValues>) =>
@@ -320,7 +326,7 @@ function ItemEditor({
       categoryId: parsed.data.categoryId,
       description: parsed.data.description,
       type: values.type,
-      stationType: parsed.data.stationType as StationTypeValue,
+      stationType: (values.stationType || null) as StationTypeValue | null,
       stationId: values.stationId === NO_STATION ? null : values.stationId,
       course: values.course === NONE ? null : values.course,
       labels: values.labels,
@@ -609,7 +615,10 @@ function ItemEditor({
                   stationType={values.stationType}
                   stationId={values.stationId}
                   typeError={errors.stationType}
-                  onChange={update}
+                  onChange={(change) => {
+                    if (change.stationType !== undefined) setTypeTouched(true);
+                    update(change);
+                  }}
                 />
               </div>
 

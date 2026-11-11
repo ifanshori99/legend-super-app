@@ -2646,6 +2646,7 @@ export const id = {
         followsType: "Mengikuti tipe: {type}",
         followsNone: "Mengikuti tipe: belum dipilih",
         customStation: "Stasiun khusus: {name}",
+        unavailable: "Stasiun tidak tersedia",
         loading: "Memuat pengaturan stasiun…",
         loadErrorTitle: "Pengaturan stasiun belum bisa dimuat",
         loadErrorHint: "Periksa koneksi, lalu coba lagi.",

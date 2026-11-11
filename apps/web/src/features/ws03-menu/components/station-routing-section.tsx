@@ -74,6 +74,10 @@ export function StationRoutingSection({
   const outlet = outlets[selectedIndex];
   const stations = stationsByOutlet[selectedIndex] ?? [];
   const station = stations.find((row) => row.id === stationId);
+  // A saved override that no loaded outlet lists (deleted or moved station):
+  // keep it visible instead of silently showing "follow the type".
+  const unavailable =
+    !pending && !failed && stationId !== NO_STATION && overrideIndex < 0;
 
   const typeLabel = (value: string) =>
     (STATION_TYPES as readonly string[]).includes(value)
@@ -82,11 +86,15 @@ export function StationRoutingSection({
 
   const destination = station
     ? t("menu.editor.station.customStation", { name: station.name })
-    : stationType && typeLabel(stationType)
-      ? t("menu.editor.station.followsType", {
-          type: typeLabel(stationType) ?? "",
+    : unavailable
+      ? t("menu.editor.station.customStation", {
+          name: t("menu.editor.station.unavailable"),
         })
-      : t("menu.editor.station.followsNone");
+      : stationType && typeLabel(stationType)
+        ? t("menu.editor.station.followsType", {
+            type: typeLabel(stationType) ?? "",
+          })
+        : t("menu.editor.station.followsNone");
 
   return (
     <CardShell>
@@ -99,6 +107,40 @@ export function StationRoutingSection({
             </p>
           </div>
           <Badge tone="neutral">{t("menu.editor.station.brandBadge")}</Badge>
+        </div>
+
+        <FormField
+          label={t("menu.editor.station.typeLabel")}
+          hint={t("menu.editor.station.typeHint")}
+          error={typeError}
+          required
+        >
+          <Select
+            value={stationType}
+            onValueChange={(value) => onChange({ stationType: value })}
+          >
+            <SelectTrigger>
+              <SelectValue
+                placeholder={t("menu.editor.station.typePlaceholder")}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {STATION_TYPES.map((type) => (
+                <SelectItem key={type} value={type}>
+                  {t(`menu.stations.types.${type}`)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+
+        <div className="grid gap-1 border-t pt-4">
+          <h3 className="type-title">
+            {t("menu.editor.station.overrideTitle")}
+          </h3>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("menu.editor.station.overrideHint")}
+          </p>
         </div>
 
         {pending ? (
@@ -124,120 +166,82 @@ export function StationRoutingSection({
               stationQueries.forEach((query) => void query.refetch());
             }}
           />
-        ) : (
+        ) : outlet ? (
           <div className="grid gap-4">
-            <FormField
-              label={t("menu.editor.station.typeLabel")}
-              hint={t("menu.editor.station.typeHint")}
-              error={typeError}
-              required
-            >
+            <FormField label={t("menu.editor.station.outlet")}>
               <Select
-                value={stationType}
-                onValueChange={(value) => onChange({ stationType: value })}
+                value={outlet.id}
+                // Switching outlet only changes which stations are listed; a
+                // saved override stays until another station is picked.
+                onValueChange={setPickedOutletId}
               >
                 <SelectTrigger>
-                  <SelectValue
-                    placeholder={t("menu.editor.station.typePlaceholder")}
-                  />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {STATION_TYPES.map((type) => (
-                    <SelectItem key={type} value={type}>
-                      {t(`menu.stations.types.${type}`)}
+                  {outlets.map((entry) => (
+                    <SelectItem key={entry.id} value={entry.id}>
+                      {entry.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </FormField>
 
-            <div className="grid gap-1 border-t pt-4">
-              <h3 className="type-title">
-                {t("menu.editor.station.overrideTitle")}
-              </h3>
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("menu.editor.station.overrideHint")}
-              </p>
+            <FormField
+              label={
+                <>
+                  {t("menu.editor.station.override")}{" "}
+                  <span className="font-normal text-muted-foreground">
+                    {t("menu.editor.station.optional")}
+                  </span>
+                </>
+              }
+              hint={
+                stations.length === 0 && !unavailable
+                  ? t("menu.editor.station.overrideEmpty")
+                  : t("menu.editor.station.overrideScopeHint")
+              }
+            >
+              <Select
+                value={station || unavailable ? stationId : NO_STATION}
+                onValueChange={(value) => onChange({ stationId: value })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_STATION}>
+                    {t("menu.editor.station.useType")}
+                  </SelectItem>
+                  {unavailable && (
+                    <SelectItem value={stationId}>
+                      {t("menu.editor.station.unavailable")}
+                    </SelectItem>
+                  )}
+                  {stations.map((row) => (
+                    <SelectItem key={row.id} value={row.id}>
+                      {row.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+
+            <div
+              className="grid gap-0.5 rounded-control bg-shell px-4 py-3"
+              aria-live="polite"
+            >
+              <strong className="text-sm font-semibold">
+                {t("menu.editor.station.destination", { outlet: outlet.name })}
+              </strong>
+              <span className="text-sm leading-5">{destination}</span>
             </div>
-
-            {outlet ? (
-              <>
-                <FormField label={t("menu.editor.station.outlet")}>
-                  <Select
-                    value={outlet.id}
-                    onValueChange={(value) => {
-                      setPickedOutletId(value);
-                      // One override per item, valid only in its own outlet.
-                      if (value !== outlet.id)
-                        onChange({ stationId: NO_STATION });
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {outlets.map((entry) => (
-                        <SelectItem key={entry.id} value={entry.id}>
-                          {entry.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </FormField>
-
-                <FormField
-                  label={
-                    <>
-                      {t("menu.editor.station.override")}{" "}
-                      <span className="font-normal text-muted-foreground">
-                        {t("menu.editor.station.optional")}
-                      </span>
-                    </>
-                  }
-                  hint={
-                    stations.length === 0
-                      ? t("menu.editor.station.overrideEmpty")
-                      : t("menu.editor.station.overrideScopeHint")
-                  }
-                >
-                  <Select
-                    value={station ? stationId : NO_STATION}
-                    onValueChange={(value) => onChange({ stationId: value })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NO_STATION}>
-                        {t("menu.editor.station.useType")}
-                      </SelectItem>
-                      {stations.map((row) => (
-                        <SelectItem key={row.id} value={row.id}>
-                          {row.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </FormField>
-
-                <div
-                  className="grid gap-0.5 rounded-control bg-shell px-4 py-3"
-                  aria-live="polite"
-                >
-                  <strong className="text-sm font-semibold">
-                    {t("menu.editor.station.destination", {
-                      outlet: outlet.name,
-                    })}
-                  </strong>
-                  <span className="text-sm leading-5">{destination}</span>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("menu.editor.station.noOutlets")}
-              </p>
-            )}
           </div>
+        ) : (
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("menu.editor.station.noOutlets")}
+          </p>
         )}
       </Card>
     </CardShell>
