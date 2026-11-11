@@ -1,11 +1,11 @@
 // Small pieces shared by the WhatsApp-reset screens (bead ur82k; mockups
 // design/mockups/payslip-pin-inbound): the left-ruled notice, the back link
-// to the payslip list and the "PIN tetap pribadi" info text. Copy is
-// Indonesian and lives in the components, as the shared catalog is not part
-// of this slice.
+// to the payslip list and the "PIN tetap pribadi" info text. Copy comes from
+// the catalog (payslipWaReset.*).
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft } from "lucide-react";
+import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 
 type Tone = "neutral" | "danger" | "success";
@@ -39,7 +39,9 @@ function WaNotice({
       role={tone === "danger" ? "alert" : "status"}
       className={`grid gap-0.5 rounded-field p-4 ${TONE_CLASS[tone]}`}
     >
-      <p className="text-base leading-6 md:text-sm md:leading-5 font-semibold">{title}</p>
+      <p className="text-base leading-6 md:text-sm md:leading-5 font-semibold">
+        {title}
+      </p>
       {children && (
         <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
           {children}
@@ -50,22 +52,28 @@ function WaNotice({
 }
 
 function WaBackLink() {
+  const t = useT();
   return (
     <Button asChild variant="ghost" size="sm" className="-ml-2 w-fit">
       <Link to="/karyawan/slip-gaji">
         <ChevronLeft aria-hidden="true" />
-        Slip gaji
+        {t("payslipWaReset.parts.backLink")}
       </Link>
     </Button>
   );
 }
 
 /** Info panel text shared by the choose, HR help and "no WhatsApp" screens. */
-const PRIVATE_PIN_SIDE = (
-  <>
-    <strong className="font-semibold text-foreground">PIN tetap pribadi</strong>{" "}
-    - HR bisa mereset PIN, tetapi tidak bisa melihat atau menentukan PIN Anda.
-  </>
-);
+function WaPrivatePinSide() {
+  const t = useT();
+  return (
+    <>
+      <strong className="font-semibold text-foreground">
+        {t("payslipWaReset.parts.privateTitle")}
+      </strong>{" "}
+      {t("payslipWaReset.parts.privateBody")}
+    </>
+  );
+}
 
-export { PRIVATE_PIN_SIDE, WRAP_BUTTON_CLASS, WaBackLink, WaNotice };
+export { WRAP_BUTTON_CLASS, WaBackLink, WaNotice, WaPrivatePinSide };

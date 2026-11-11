@@ -160,21 +160,20 @@ function WaResetNewPin({
         {proofGone && (
           <div role="alert" className="grid gap-0.5">
             <p className="text-base leading-6 md:text-sm md:leading-5 font-semibold text-danger">
-              Verifikasi WhatsApp sudah tidak berlaku
+              {t("payslipWaReset.newPin.proofGoneTitle")}
             </p>
             <p className="text-base leading-6 md:text-sm md:leading-5">
-              Waktu untuk membuat PIN sudah habis. Mulai lagi dari awal untuk
-              mengirim kode baru.
+              {t("payslipWaReset.newPin.proofGoneBody")}
             </p>
           </div>
         )}
         {error === "generic" && (
           <div role="alert" className="grid gap-0.5">
             <p className="text-base leading-6 md:text-sm md:leading-5 font-semibold text-danger">
-              PIN belum dapat disimpan
+              {t("payslipWaReset.newPin.genericTitle")}
             </p>
             <p className="text-base leading-6 md:text-sm md:leading-5">
-              Periksa koneksi Anda, lalu coba lagi.
+              {t("payslipWaReset.newPin.genericBody")}
             </p>
           </div>
         )}
@@ -187,7 +186,7 @@ function WaResetNewPin({
             className="h-auto min-h-control w-full whitespace-normal"
             onClick={onRestart}
           >
-            Mulai lagi
+            {t("payslipWaReset.newPin.restart")}
           </Button>
         ) : (
           <Button

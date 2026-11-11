@@ -1,6 +1,7 @@
 // "Minta bantuan HR atau supervisor" (bead ur82k; mockup bantuan-hr): a
 // two-step guide for asking someone at the outlet. It sends nothing, names
 // nobody and shows no contact details.
+import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { PinLayout } from "../pin-layout.tsx";
 import { WRAP_BUTTON_CLASS, WaBackLink } from "./parts.tsx";
@@ -11,22 +12,23 @@ type WaResetHrHelpProps = {
 
 const STEPS = [
   {
-    title: "Minta reset PIN",
-    body: "Sampaikan bahwa Anda lupa PIN slip gaji.",
+    title: "payslipWaReset.hrHelp.step1Title",
+    body: "payslipWaReset.hrHelp.step1Body",
   },
   {
-    title: "Buka slip gaji lagi",
-    body: "Setelah HR meresetnya, buat PIN baru sendiri.",
+    title: "payslipWaReset.hrHelp.step2Title",
+    body: "payslipWaReset.hrHelp.step2Body",
   },
 ] as const;
 
 function WaResetHrHelp({ onBack }: WaResetHrHelpProps) {
+  const t = useT();
   return (
     <PinLayout
       backLink={<WaBackLink />}
-      title="Minta bantuan HR atau supervisor"
-      description="Hubungi HR atau supervisor di outlet dan minta reset PIN slip gaji."
-      side="HR tidak bisa melihat atau menentukan PIN Anda."
+      title={t("payslipWaReset.common.hrHelpTitle")}
+      description={t("payslipWaReset.hrHelp.description")}
+      side={t("payslipWaReset.hrHelp.side")}
     >
       <ol className="grid gap-3">
         {STEPS.map((step, index) => (
@@ -38,9 +40,9 @@ function WaResetHrHelp({ onBack }: WaResetHrHelpProps) {
               {index + 1}
             </span>
             <div className="grid gap-0.5">
-              <p className="text-base font-bold">{step.title}</p>
+              <p className="text-base font-bold">{t(step.title)}</p>
               <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
-                {step.body}
+                {t(step.body)}
               </p>
             </div>
           </li>
@@ -52,7 +54,7 @@ function WaResetHrHelp({ onBack }: WaResetHrHelpProps) {
         className={WRAP_BUTTON_CLASS}
         onClick={onBack}
       >
-        Kembali ke slip gaji
+        {t("payslipWaReset.common.backToSlip")}
       </Button>
     </PinLayout>
   );
