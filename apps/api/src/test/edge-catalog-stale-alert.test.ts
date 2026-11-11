@@ -204,7 +204,10 @@ describe("legend-10nex heartbeat is held back from an older cloud", () => {
   const MIN = 60_000;
   function staleFreshness(reason: string) {
     let clock = Date.parse("2026-11-11T03:05:00.000Z");
-    const freshness = createCatalogFreshness({ now: () => new Date(clock) });
+    const freshness = createCatalogFreshness({
+      now: () => new Date(clock),
+      failurePersistMs: 0,
+    });
     freshness.recordSuccess("price_lists");
     freshness.recordSuccess("menu_items");
     clock += 31 * MIN;
@@ -216,6 +219,53 @@ describe("legend-10nex heartbeat is held back from an older cloud", () => {
     expect(
       catalogStaleForHeartbeat(staleFreshness("HTTP_500").snapshot()),
     ).toEqual([
+      {
+        stream: "price_lists",
+        staleSince: "2026-11-11T03:05:00.000Z",
+        reason: "HTTP_500",
+      },
+    ]);
+  });
+
+  it.each(["item_variants", "modifiers"])(
+    "reports a stale %s stream (variant and modifier prices are money)",
+    (stream) => {
+      let clock = Date.parse("2026-11-11T03:05:00.000Z");
+      const freshness = createCatalogFreshness({
+        now: () => new Date(clock),
+        failurePersistMs: 0,
+      });
+      freshness.recordSuccess(stream);
+      clock += 31 * MIN;
+      freshness.recordFailure(stream, {
+        reason: "HTTP_500",
+        cloudReachable: true,
+      });
+      expect(catalogStaleForHeartbeat(freshness.snapshot())).toEqual([
+        {
+          stream,
+          staleSince: "2026-11-11T03:05:00.000Z",
+          reason: "HTTP_500",
+        },
+      ]);
+    },
+  );
+
+  it("a restart keeps the checkpoint's last success: the heartbeat still reports the episode", () => {
+    const clock = Date.parse("2026-11-11T06:05:00.000Z");
+    const freshness = createCatalogFreshness({
+      now: () => new Date(clock),
+      failurePersistMs: 0,
+    });
+    freshness.seedLastSuccess(
+      "price_lists",
+      new Date("2026-11-11T03:05:00.000Z"),
+    );
+    freshness.recordFailure("price_lists", {
+      reason: "HTTP_500",
+      cloudReachable: true,
+    });
+    expect(catalogStaleForHeartbeat(freshness.snapshot())).toEqual([
       {
         stream: "price_lists",
         staleSince: "2026-11-11T03:05:00.000Z",

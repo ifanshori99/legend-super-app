@@ -44,13 +44,17 @@ const T0 = new Date("2026-11-11T03:05:00.000Z"); // 10:05 in Asia/Jakarta
 const [STREAM_A, STREAM_B] = CRITICAL_CATALOG_STREAMS as readonly string[];
 const NON_CRITICAL = "stations";
 
-function setup() {
+// The age rules below are tested with `failurePersistMs: 0` (a reachable
+// failure alarms at once when the age is over 30 minutes). The persistence
+// rule (legend-10nex round 2, finding 1) has its own tests that use the default.
+function setup(options: { defaultPersistence?: boolean } = {}) {
   let clock = T0.getTime();
   const onOwnerAlarm = vi.fn();
   const freshness = createCatalogFreshness({
     now: () => new Date(clock),
     timeZone: "Asia/Jakarta",
     onOwnerAlarm,
+    ...(options.defaultPersistence ? {} : { failurePersistMs: 0 }),
   });
   return {
     freshness,
@@ -283,5 +287,249 @@ describe("legend-10nex stale catalog never blocks sales", () => {
   it("has no sell policy setting", () => {
     const { freshness } = setup();
     expect(freshness.snapshot()).not.toHaveProperty("sellPolicy");
+  });
+});
+
+describe("legend-10nex variant and modifier prices are critical", () => {
+  it("tracks item_variants and modifiers next to prices and product status", () => {
+    expect(CRITICAL_CATALOG_STREAMS).toEqual(
+      expect.arrayContaining([
+        "price_lists",
+        "menu_items",
+        "item_variants",
+        "modifiers",
+      ]),
+    );
+  });
+
+  it.each(["item_variants", "modifiers"])(
+    "%s stale over 30 minutes alarms the owner; its failure shows in the snapshot",
+    (stream) => {
+      const { freshness, advance, onOwnerAlarm } = setup();
+      for (const name of CRITICAL_CATALOG_STREAMS)
+        freshness.recordSuccess(name);
+      advance(30 * MIN + 1000);
+      freshness.recordFailure(stream, {
+        reason: "HTTP 500",
+        cloudReachable: true,
+      });
+      const snap = freshness.snapshot();
+      expect(snap.streams[stream]?.failureReason).toBe("HTTP 500");
+      expect(snap.cashierWarning).toBe("katalog belum diperbarui sejak 10:05");
+      expect(snap.alarmStreams.map((entry) => entry.stream)).toEqual([stream]);
+      expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("is not fresh again until item_variants and modifiers succeed too", () => {
+    const { freshness, advance } = setup();
+    for (const name of CRITICAL_CATALOG_STREAMS) freshness.recordSuccess(name);
+    advance(5 * MIN);
+    for (const name of ["item_variants", "modifiers"])
+      freshness.recordFailure(name, {
+        reason: "HTTP 500",
+        cloudReachable: true,
+      });
+    freshness.recordSuccess("price_lists");
+    freshness.recordSuccess("menu_items");
+    freshness.recordSuccess("item_variants");
+    expect(freshness.snapshot().stale).toBe(true);
+    freshness.recordSuccess("modifiers");
+    expect(freshness.snapshot().stale).toBe(false);
+  });
+});
+
+describe("legend-10nex restart keeps the last success from the checkpoint", () => {
+  const OLD = new Date(T0.getTime() - 3 * 60 * MIN); // 07:05 Jakarta
+
+  it("a stale catalog stays stale across a restart: alarm counts from the checkpoint", () => {
+    const { freshness, onOwnerAlarm } = setup();
+    for (const name of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(name, OLD);
+    // Nothing failed yet: the seed alone says nothing is stale.
+    expect(freshness.snapshot().stale).toBe(false);
+    expect(freshness.snapshot().streams[STREAM_A!]?.ageMs).toBe(180 * MIN);
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP 500",
+      cloudReachable: true,
+    });
+    const snap = freshness.snapshot();
+    expect(snap.cashierWarning).toBe("katalog belum diperbarui sejak 07:05");
+    expect(snap.ownerAlarm).toBe(true);
+    expect(snap.alarmStreams[0]?.staleSince).toEqual(OLD);
+    expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+  });
+
+  it("an offline restart warns the cashier but never alarms", () => {
+    const { freshness, onOwnerAlarm } = setup();
+    for (const name of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(name, OLD);
+    freshness.recordFailure(STREAM_A!, {
+      reason: "NETWORK",
+      cloudReachable: false,
+    });
+    const snap = freshness.snapshot();
+    expect(snap.cashierWarning).toBe("katalog belum diperbarui sejak 07:05");
+    expect(snap.ownerAlarm).toBe(false);
+    expect(onOwnerAlarm).not.toHaveBeenCalled();
+  });
+
+  it("a fresh checkpoint gives no alarm for a first failure", () => {
+    const { freshness, advance, onOwnerAlarm } = setup();
+    freshness.seedLastSuccess(STREAM_A!, T0);
+    advance(10 * MIN);
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP 500",
+      cloudReachable: true,
+    });
+    expect(freshness.snapshot().ownerAlarm).toBe(false);
+    expect(onOwnerAlarm).not.toHaveBeenCalled();
+  });
+
+  it("a new edge (no checkpoint) counts from its first failure: no false alarm", () => {
+    const { freshness, advance, onOwnerAlarm } = setup();
+    // Nothing seeded: first boot of the node.
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP 500",
+      cloudReachable: true,
+    });
+    advance(10 * MIN);
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP 500",
+      cloudReachable: true,
+    });
+    const snap = freshness.snapshot();
+    expect(snap.ownerAlarm).toBe(false);
+    expect(snap.streams[STREAM_A!]?.lastSuccessAt).toBeNull();
+    expect(onOwnerAlarm).not.toHaveBeenCalled();
+    advance(21 * MIN);
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP 500",
+      cloudReachable: true,
+    });
+    expect(freshness.snapshot().ownerAlarm).toBe(true);
+  });
+
+  it("never moves a newer success back, and ignores non-critical streams", () => {
+    const { freshness } = setup();
+    freshness.recordSuccess(STREAM_A!);
+    freshness.seedLastSuccess(STREAM_A!, OLD);
+    expect(freshness.snapshot().streams[STREAM_A!]?.lastSuccessAt).toEqual(T0);
+    freshness.seedLastSuccess(NON_CRITICAL, OLD);
+    expect(freshness.snapshot().streams).not.toHaveProperty(NON_CRITICAL);
+  });
+
+  it("a seed that arrives after a first failure still dates the episode from the checkpoint", () => {
+    const { freshness } = setup();
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP 500",
+      cloudReachable: true,
+    });
+    freshness.seedLastSuccess(STREAM_A!, OLD);
+    const snap = freshness.snapshot();
+    expect(snap.cashierWarning).toBe("katalog belum diperbarui sejak 07:05");
+    expect(snap.ownerAlarm).toBe(true);
+  });
+
+  it("recovers after a restart once a pull succeeds", () => {
+    const { freshness } = setup();
+    for (const name of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(name, OLD);
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP 500",
+      cloudReachable: true,
+    });
+    freshness.recordSuccess(STREAM_A!);
+    const snap = freshness.snapshot();
+    expect(snap.stale).toBe(false);
+    expect(snap.ownerAlarm).toBe(false);
+  });
+});
+
+describe("legend-10nex an alarm needs a failure that lasts, not one failed tick", () => {
+  const OLD = new Date(T0.getTime() - 8 * 60 * MIN); // last night's checkpoint
+  const fail = (freshness: ReturnType<typeof setup>["freshness"]) =>
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP_500",
+      cloudReachable: true,
+    });
+
+  it("restart after a night and one failed tick: no alarm, the cashier still sees the warning", () => {
+    const { freshness, onOwnerAlarm } = setup({ defaultPersistence: true });
+    for (const name of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(name, OLD);
+    fail(freshness);
+    const snap = freshness.snapshot();
+    expect(snap.stale).toBe(true);
+    expect(snap.cashierWarning).toBe("katalog belum diperbarui sejak 02:05");
+    expect(snap.ownerAlarm).toBe(false);
+    expect(snap.alarmStreams).toEqual([]);
+    expect(onOwnerAlarm).not.toHaveBeenCalled();
+  });
+
+  it("the next tick recovers: still no alarm and the warning clears", () => {
+    const { freshness, advance, onOwnerAlarm } = setup({
+      defaultPersistence: true,
+    });
+    for (const name of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(name, OLD);
+    fail(freshness);
+    advance(MIN);
+    freshness.recordSuccess(STREAM_A!);
+    expect(freshness.snapshot().stale).toBe(false);
+    expect(onOwnerAlarm).not.toHaveBeenCalled();
+  });
+
+  it("a failure that lasts 5 minutes alarms (once, with the checkpoint as start)", () => {
+    const { freshness, advance, onOwnerAlarm } = setup({
+      defaultPersistence: true,
+    });
+    for (const name of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(name, OLD);
+    fail(freshness);
+    advance(4 * MIN);
+    fail(freshness);
+    expect(freshness.snapshot().ownerAlarm).toBe(false);
+    advance(MIN);
+    fail(freshness);
+    const snap = freshness.snapshot();
+    expect(snap.ownerAlarm).toBe(true);
+    expect(snap.alarmStreams[0]?.staleSince).toEqual(OLD);
+    expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+  });
+
+  it("offline time does not count as a lasting failure once the cloud answers again", () => {
+    const { freshness, advance } = setup({ defaultPersistence: true });
+    for (const name of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(name, OLD);
+    for (let n = 0; n < 6; n += 1) {
+      freshness.recordFailure(STREAM_A!, {
+        reason: "NETWORK",
+        cloudReachable: false,
+      });
+      advance(MIN);
+    }
+    fail(freshness); // first tick with the cloud reachable again
+    expect(freshness.snapshot().ownerAlarm).toBe(false);
+    advance(5 * MIN);
+    fail(freshness);
+    expect(freshness.snapshot().ownerAlarm).toBe(true);
+  });
+});
+
+describe("legend-10nex recordSuccess uses the time the page was stored", () => {
+  it("dates the last success from `at`, so staleSince matches the checkpoint after a restart", () => {
+    const { freshness, advance } = setup();
+    const stored = new Date(T0.getTime() - 2 * MIN);
+    freshness.recordSuccess(STREAM_A!, stored);
+    expect(freshness.snapshot().streams[STREAM_A!]?.lastSuccessAt).toEqual(
+      stored,
+    );
+    advance(40 * MIN);
+    freshness.recordFailure(STREAM_A!, {
+      reason: "HTTP_500",
+      cloudReachable: true,
+    });
+    expect(freshness.snapshot().alarmStreams[0]?.staleSince).toEqual(stored);
   });
 });

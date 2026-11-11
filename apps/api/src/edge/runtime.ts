@@ -94,7 +94,10 @@ import {
   saveEdgePeppers,
 } from "./staff-pin-pepper-store.ts";
 import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
-import { startEdgeMasterSyncLoop } from "./master-sync.ts";
+import {
+  seedCatalogFreshness,
+  startEdgeMasterSyncLoop,
+} from "./master-sync.ts";
 import {
   catalogStaleForHeartbeat,
   createCatalogFreshness,
@@ -1004,6 +1007,17 @@ export async function startEdgeRuntime(
       ),
   });
   catalogFreshness = freshness;
+  // A restart must not hide a stale catalog: start from the checkpoint's last
+  // success (none on a new edge). A read failure leaves the tracker unseeded.
+  try {
+    await seedCatalogFreshness(
+      freshness,
+      local.context,
+      local.scope.edgeNodeId,
+    );
+  } catch (error) {
+    logger.warn(safeError(error), "Edge catalog freshness seed failed");
+  }
   const masterSync = startEdgeMasterSyncLoop({
     config,
     intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,

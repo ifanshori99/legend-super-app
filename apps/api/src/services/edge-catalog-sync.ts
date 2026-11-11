@@ -597,6 +597,17 @@ const scanners: Record<
 };
 
 /**
+ * The page version for an edge that understands up to `requested`: the lower
+ * of that and this cloud's own. A newer edge gets this cloud's version (it
+ * decides whether it can read it); an older one gets its own. Only version 2
+ * exists, so every page has the v2 shape whatever is stamped; when v3
+ * changes the shape, serve the shape of the returned version here.
+ */
+export function negotiateCatalogProtocolVersion(requested: number): number {
+  return Math.min(requested, CATALOG_PROTOCOL_VERSION);
+}
+
+/**
  * One page of one catalog stream changed after `since`, in (sync_txid, key)
  * order. Tenant and outlet come only from the arguments (the verified edge
  * credential); `query` carries the stream, the cursor and the limit only.
@@ -663,7 +674,7 @@ export async function listCatalogRecordsSince(
     // refuse the field and stop syncing.
     ...(protocolVersion === undefined
       ? {}
-      : { protocolVersion: CATALOG_PROTOCOL_VERSION }),
+      : { protocolVersion: negotiateCatalogProtocolVersion(protocolVersion) }),
     stream,
     records: page.map(({ record }) =>
       catalogSyncRecordSchemas[stream].parse(record),

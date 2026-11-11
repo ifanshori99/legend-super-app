@@ -43,7 +43,10 @@ import { pullCatalog } from "./catalog-puller.ts";
 import { EdgeCloudHttpError } from "./cloud-http.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
-import { listCatalogRecordsSince } from "../services/edge-catalog-sync.ts";
+import {
+  listCatalogRecordsSince,
+  negotiateCatalogProtocolVersion,
+} from "../services/edge-catalog-sync.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import { catCursor, settleCloud } from "../test/helpers/catalog-cloud.ts";
 import {
@@ -212,14 +215,22 @@ async function copyToEdge(table: string, rowId: string) {
 
 // A new edge asks for the version (`protocolVersion` query parameter); an older
 // edge does not and must get pages without the field (its page schema is strict).
-const cloudQuery = (since?: string, edgeAsksVersion = true) => ({
+const cloudQuery = (
+  since?: string,
+  edgeAsksVersion: boolean | number = true,
+) => ({
   tenantId: tenantId as never,
   outletId: O1 as never,
   query: catalogSyncQuerySchema.parse({
     stream: STREAM,
     limit: 100,
     ...(since === undefined ? {} : { since }),
-    ...(edgeAsksVersion ? { protocolVersion: VERSION } : {}),
+    ...(edgeAsksVersion
+      ? {
+          protocolVersion:
+            typeof edgeAsksVersion === "number" ? edgeAsksVersion : VERSION,
+        }
+      : {}),
   }),
 });
 
@@ -315,6 +326,24 @@ describe("legend-2dlxq the cloud stamps the version on every response", () => {
     expect(page.records).toEqual([]);
     expect(page.hasMore).toBe(false);
     expect(page.protocolVersion).toBe(VERSION);
+  });
+
+  it("answers with the lower of the requested and its own version", async () => {
+    // A newer edge (asks for v+1) gets this cloud's version, never a higher one.
+    const newer = (await listCatalogRecordsSince(
+      db,
+      cloudQuery(undefined, VERSION + 1),
+    )) as unknown as Rec;
+    expect(newer.protocolVersion).toBe(VERSION);
+    // An edge that only understands an older version is answered with that one
+    // (it then refuses or reads it by its own rules).
+    const older = (await listCatalogRecordsSince(
+      db,
+      cloudQuery(undefined, VERSION - 1),
+    )) as unknown as Rec;
+    expect(older.protocolVersion).toBe(VERSION - 1);
+    expect(negotiateCatalogProtocolVersion(VERSION)).toBe(VERSION);
+    expect(negotiateCatalogProtocolVersion(VERSION + 5)).toBe(VERSION);
   });
 
   it("an older edge (no protocolVersion in the request) gets pages without the field", async () => {
@@ -445,6 +474,27 @@ describe("legend-2dlxq the edge refuses an older cloud before the checkpoint mov
     const result = await pull(cloud);
     expect(result).not.toBeInstanceOf(Error);
     expect((result as PullResult).streams[STREAM]?.error).toBeFalsy();
+  });
+
+  it("the stream result carries lastSuccessAt, equal to the stored checkpoint's last_success_at", async () => {
+    const cloud = cloudAnswering({
+      records: [],
+      nextCursor: null,
+      hasMore: false,
+      protocolVersion: VERSION,
+    });
+    const result = (await pull(cloud)) as PullResult;
+    const reported = (result.streams[STREAM] as { lastSuccessAt?: Date })
+      .lastSuccessAt;
+    const stored = await edge.rows(
+      "SELECT last_success_at FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = $2",
+      [node.id, CHECKPOINT],
+    );
+    expect(reported).toBeInstanceOf(Date);
+    expect(stored).toHaveLength(1);
+    expect((stored[0]!.last_success_at as Date).getTime()).toBe(
+      reported!.getTime(),
+    );
   });
 
   it("control: a page with records and the current protocolVersion is stored and the checkpoint moves", async () => {

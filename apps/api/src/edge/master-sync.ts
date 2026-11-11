@@ -71,6 +71,7 @@ import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
+import { edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -87,7 +88,11 @@ import {
 } from "../services/tenant-config-locks.ts";
 import type { EdgeBootstrapConfig, EdgeBootstrapOptions } from "./bootstrap.ts";
 import { cloudGetJson, EdgeCloudHttpError } from "./cloud-http.ts";
-import { pullCatalog, type PullCatalogOptions } from "./catalog-puller.ts";
+import {
+  catalogCheckpointStream,
+  pullCatalog,
+  type PullCatalogOptions,
+} from "./catalog-puller.ts";
 import { parseEdgeCredential } from "./credential.ts";
 
 type Claims = NonNullable<ReturnType<typeof parseEdgeCredential>>;
@@ -96,6 +101,63 @@ type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
 const MIN_SYNC_INTERVAL_MS = 60_000;
 /** Catalog pulls in one tick while a stream reports a backlog (bounded). */
 const MAX_CATALOG_ROUNDS = 20;
+
+/**
+ * legend-10nex: the last success of each critical catalog stream, from its
+ * pull checkpoint (`edge_pull_checkpoints.last_success_at`, written by every
+ * finished pull). Boot seeds the freshness tracker with it so a restart does
+ * not hide a stale catalog. No row (a new edge) = no entry.
+ */
+export async function loadCatalogLastSuccess(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  database: typeof db = db,
+): Promise<Map<string, Date>> {
+  const keys = CRITICAL_CATALOG_STREAMS.map((stream) =>
+    catalogCheckpointStream(stream),
+  );
+  const rows = await withTenant(database, context, (tx) =>
+    tx
+      .select({
+        stream: edgePullCheckpoints.stream,
+        lastSuccessAt: edgePullCheckpoints.lastSuccessAt,
+      })
+      .from(edgePullCheckpoints)
+      .where(
+        and(
+          eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
+          inArray(edgePullCheckpoints.stream, keys),
+        ),
+      ),
+  );
+  const seeded = new Map<string, Date>();
+  for (const stream of CRITICAL_CATALOG_STREAMS) {
+    const row = rows.find(
+      (entry) => entry.stream === catalogCheckpointStream(stream),
+    );
+    if (row) seeded.set(stream, row.lastSuccessAt);
+  }
+  return seeded;
+}
+
+/**
+ * Boot: seed the freshness tracker with each critical stream's last success
+ * from the pull checkpoint, so a restart neither hides a stale catalog nor
+ * dates it differently from the pull (same `last_success_at` value).
+ */
+export async function seedCatalogFreshness(
+  freshness: CatalogFreshnessTracker,
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  database: typeof db = db,
+): Promise<void> {
+  for (const [stream, at] of await loadCatalogLastSuccess(
+    context,
+    edgeNodeId,
+    database,
+  ))
+    freshness.seedLastSuccess(stream, at);
+}
 
 export type EdgeMasterSyncCounts = {
   uoms: number;
@@ -623,7 +685,8 @@ export function startEdgeMasterSyncLoop(input: {
                 : isOfflineFailureCode(code)),
             });
           report(new EdgeCatalogSyncError(stream, code));
-        } else if (!stopped) freshness?.recordSuccess(stream);
+        } else if (!stopped)
+          freshness?.recordSuccess(stream, outcome.lastSuccessAt ?? undefined);
       }
       if (!result.backlog) break;
     }

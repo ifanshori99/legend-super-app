@@ -2,7 +2,9 @@
 // A catalog stream failure used to be only logged; nobody learned that prices
 // or product status on the edge had stopped updating.
 //
-//   critical streams  price_lists (prices) and menu_items (product status).
+//   critical streams  price_lists, item_variants and modifiers (prices: a
+//                     variant or modifier price is money) and menu_items
+//                     (product status).
 //   stale             a critical stream failed since its last success (any
 //                     reason, offline included: the prices on screen are old
 //                     either way).
@@ -11,8 +13,11 @@
 //                     reachable cloud (sync failing, not offline) and whose
 //                     age (since its last success; since its first failure
 //                     when it never succeeded) is strictly more than
-//                     `staleAlarmAfterMs` (default 30 minutes). A purely
-//                     offline edge never alarms.
+//                     `staleAlarmAfterMs` (default 30 minutes), and whose
+//                     failures with a reachable cloud have lasted at least
+//                     `failurePersistMs` (default 5 minutes, so one failed
+//                     tick after a restart or a wake from sleep does not
+//                     alarm). A purely offline edge never alarms.
 //   delivery          `onOwnerAlarm` fires once per stale episode (local log
 //                     only). The owner is told through the link heartbeat:
 //                     the link client sends `alarmStreams` of every snapshot
@@ -23,15 +28,29 @@
 //                     decision, `salesBlocked` is always false); the cashier
 //                     warning and the owner alarm are the whole reaction.
 //
-// State is in memory: a restart begins a fresh episode.
+// State is in memory, but `seedLastSuccess` restores each stream's last
+// success from the pull checkpoint at boot (`edge_pull_checkpoints`), so a
+// restart does not hide a stale catalog. No checkpoint (a new edge): the
+// stream starts without a success, and a failure counts from its first one.
 import type { CatalogFreshness } from "@starter/shared/edge";
 import type { CatalogStale } from "./protocol.ts";
 
 /** Streams whose staleness changes what the cashier sells or charges. */
-export const CRITICAL_CATALOG_STREAMS = ["price_lists", "menu_items"] as const;
+export const CRITICAL_CATALOG_STREAMS = [
+  "price_lists",
+  "item_variants",
+  "modifiers",
+  "menu_items",
+] as const;
 export type CriticalCatalogStream = (typeof CRITICAL_CATALOG_STREAMS)[number];
 
 export const CATALOG_STALE_ALARM_AFTER_MS = 30 * 60_000;
+/**
+ * A reachable-cloud failure must last this long before it can alarm: one
+ * failed tick after a restart or a wake from sleep, with an old last success
+ * from the checkpoint, is not an incident.
+ */
+export const CATALOG_FAILURE_PERSIST_MS = 5 * 60_000;
 
 /** Cloud-http codes that mean "no connection", not "the cloud refused". */
 const UNREACHABLE_CODES: ReadonlySet<string> = new Set([
@@ -75,11 +94,17 @@ export type CatalogFreshnessSnapshot = {
 };
 
 export type CatalogFreshnessTracker = {
-  recordSuccess(stream: string): void;
+  /** `at`: when the stream's last page was stored (default now). */
+  recordSuccess(stream: string, at?: Date): void;
   recordFailure(
     stream: string,
     failure: { reason: string; cloudReachable: boolean },
   ): void;
+  /**
+   * Boot: the last success the pull checkpoint remembers. Never moves a
+   * stream's last success back; a stream that is not critical is ignored.
+   */
+  seedLastSuccess(stream: string, at: Date): void;
   snapshot(): CatalogFreshnessSnapshot;
 };
 
@@ -88,6 +113,8 @@ type StreamState = {
   /** Failure since the last success. */
   failure: {
     firstAt: Date;
+    /** Start of the unbroken run of failures with a reachable cloud. */
+    reachableSince: Date | null;
     reason: string;
     cloudReachable: boolean;
   } | null;
@@ -102,6 +129,8 @@ export function createCatalogFreshness(
     now?: () => Date;
     timeZone?: string;
     staleAlarmAfterMs?: number;
+    /** How long reachable-cloud failures must last to alarm (default 5 min). */
+    failurePersistMs?: number;
     /** Once per stale episode; a throw or rejection is swallowed. */
     onOwnerAlarm?: (alarm: {
       stream: string;
@@ -115,6 +144,7 @@ export function createCatalogFreshness(
   const timeZone = options.timeZone ?? "Asia/Jakarta";
   const alarmAfterMs =
     options.staleAlarmAfterMs ?? CATALOG_STALE_ALARM_AFTER_MS;
+  const persistMs = options.failurePersistMs ?? CATALOG_FAILURE_PERSIST_MS;
   const states = new Map<string, StreamState>(
     CRITICAL_CATALOG_STREAMS.map((stream) => [
       stream,
@@ -146,7 +176,12 @@ export function createCatalogFreshness(
       if (!state.failure) continue;
       staleStates.push(state);
       const since = state.lastSuccessAt ?? state.failure.firstAt;
-      if (state.failure.cloudReachable && at - since.getTime() > alarmAfterMs)
+      if (
+        state.failure.cloudReachable &&
+        state.failure.reachableSince !== null &&
+        at - state.failure.reachableSince.getTime() >= persistMs &&
+        at - since.getTime() > alarmAfterMs
+      )
         alarmStreams.push({
           stream,
           staleSince: since,
@@ -199,10 +234,10 @@ export function createCatalogFreshness(
   };
 
   return {
-    recordSuccess(stream) {
+    recordSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;
-      state.lastSuccessAt = now();
+      state.lastSuccessAt = at ?? now();
       state.failure = null;
       evaluate();
     },
@@ -211,9 +246,20 @@ export function createCatalogFreshness(
       if (!state) return;
       state.failure = {
         firstAt: state.failure?.firstAt ?? now(),
+        reachableSince: failure.cloudReachable
+          ? (state.failure?.reachableSince ?? now())
+          : null,
         reason: failure.reason,
         cloudReachable: failure.cloudReachable,
       };
+      evaluate();
+    },
+    seedLastSuccess(stream, at) {
+      const state = isCritical(stream) ? states.get(stream) : undefined;
+      if (!state) return;
+      if (state.lastSuccessAt && state.lastSuccessAt.getTime() >= at.getTime())
+        return;
+      state.lastSuccessAt = at;
       evaluate();
     },
     snapshot,

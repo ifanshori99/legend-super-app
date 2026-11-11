@@ -129,6 +129,11 @@ export type CatalogStreamPullResult = Omit<
   readonly repairedParents: number;
   /** The cloud had more pages left when `maxPages` was reached. */
   readonly backlog: boolean;
+  /**
+   * When the last page of this pull was stored (the checkpoint's
+   * `last_success_at`); null when no page was stored.
+   */
+  readonly lastSuccessAt: Date | null;
   /** Set when the stream stopped early; its checkpoint is the last applied page. */
   readonly error?: CatalogStreamError;
 };
@@ -420,6 +425,7 @@ type StreamProgress = {
   pages: number;
   watermark: string | null;
   backlog: boolean;
+  lastSuccessAt: Date | null;
 };
 
 async function pullStream(
@@ -556,6 +562,7 @@ async function pullStream(
     // The page is committed: only now does the stream's progress move.
     rejectedCursor = null;
     progress.watermark = checkpoint;
+    progress.lastSuccessAt = succeededAt;
     progress.applied += result.applied;
     progress.skipped += result.skipped;
     progress.deleted += result.deleted;
@@ -677,6 +684,7 @@ export async function pullCatalog(
       pages: 0,
       watermark: null,
       backlog: false,
+      lastSuccessAt: null,
     };
     let error: CatalogStreamError | undefined;
     const blockedBy = (PARENT_STREAMS[stream] ?? []).find((parent) =>
