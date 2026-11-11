@@ -54,6 +54,7 @@ import { inventorySuppliersMessages } from "./ws06-suppliers.ts";
 import { inventoryReceivingMessages } from "./ws06-receiving.ts";
 import { menuImportMessages } from "./ws03-menu-import.ts";
 import { attendanceQrMessages } from "./ws10-attendance-qr.ts";
+import { leaveClockinReviewMessages } from "./hr-leave-clockin-review.ts";
 import { employeeMasterMessages } from "./ws10-employee-master.ts";
 import { learningMessages } from "./ws10-learning.ts";
 import { lifecycleMessages } from "./ws10-lifecycle.ts";
@@ -195,6 +196,7 @@ export const id = {
   // squad never edits the same catalog lines.
   employeeMaster: employeeMasterMessages,
   attendanceQr: attendanceQrMessages,
+  leaveClockinReview: leaveClockinReviewMessages,
   roster: rosterMessages,
   lifecycle: lifecycleMessages,
   payrollConfig: payrollConfigMessages,
