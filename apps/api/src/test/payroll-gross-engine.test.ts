@@ -24,7 +24,7 @@
 //    net = gross - deductions and is never negative (deductions are capped);
 //  - overtime pay = computeOvertimePay over the monthly overtime base (sum of
 //    the employee's earning amounts whose component has overtimeBase = true)
-//    and the overtime minutes of the period's attendance logs;
+//    and approved overtime requests, bounded by accepted attendance per day;
 //  - no duplicate component line; no negative amount;
 //  - the calculation is sealed (payslips.calculation, AAD-bound to the row).
 //
@@ -39,7 +39,7 @@
 //     [periodStart, periodEnd] that are approved: validity 'valid' (review
 //     none/accepted) or flagged-then-accepted. Pending flagged and rejected
 //     logs never count. Hours are computed per business day (tiers are per
-//     day) and every day is a 'workday'.
+//     day), using the approved request's dayType. Attendance alone never pays.
 //  A3 deductions beyond gross are cut in displayOrder order (earlier lines
 //     keep their full amount, the last ones shrink, then drop to 0).
 //  A4 no overtime minutes -> no overtime line; no components -> zero totals
@@ -283,6 +283,37 @@ async function seedLog(employeeId: string, input: LogInput) {
   );
 }
 
+type OvertimeInput = {
+  date: string;
+  minutes: number;
+  dayType?: "workday" | "rest_day_6_day_week" | "rest_day_5_day_week";
+  status?: "pending" | "approved" | "rejected" | "cancelled";
+};
+
+async function seedOvertimeRequest(employeeId: string, input: OvertimeInput) {
+  await asTenant(tenant.id, (db) =>
+    db.query(
+      `INSERT INTO overtime_requests
+         (tenant_id, outlet_id, employee_id, date, minutes, day_type, reason,
+          status, requested_by, decided_by, decided_at)
+       VALUES ($1, $2, $3, $4::date, $5, $6, 'Gross engine regression', $7::varchar, $8,
+               CASE WHEN $7::varchar = 'approved' THEN $9 ELSE NULL END,
+               CASE WHEN $7::varchar = 'approved' THEN now() ELSE NULL END)`,
+      [
+        tenant.id,
+        outlet,
+        employeeId,
+        input.date,
+        input.minutes,
+        input.dayType ?? "workday",
+        input.status ?? "approved",
+        actorId,
+        reviewerId,
+      ],
+    ),
+  );
+}
+
 const compute = (employeeId: string, overrides: Record<string, unknown> = {}) =>
   service.computeEmployeeGross(ctx, actorId, {
     employeeId,
@@ -315,6 +346,10 @@ afterAll(async () => {
     await db.query(
       "DELETE FROM hris_idempotency WHERE tenant_id = $1 AND key LIKE 'gross-engine-%'",
       [tenant.id],
+    );
+    await db.query(
+      "DELETE FROM overtime_requests WHERE tenant_id = $1 AND employee_id = ANY($2)",
+      [tenant.id, createdEmployees],
     );
     await db.query(
       "DELETE FROM attendance_logs WHERE tenant_id = $1 AND employee_id = ANY($2)",
@@ -418,7 +453,7 @@ describe("computeEmployeeGross: earnings and deductions", () => {
   });
 });
 
-describe("computeEmployeeGross: overtime from attendance minutes", () => {
+describe("computeEmployeeGross: approved overtime bounded by attendance", () => {
   it("[OVERTIME] pays tiered overtime on the overtimeBase components only", async () => {
     const employeeId = await seedEmployee();
     // Overtime base = 15,000,000 + 2,300,000 = 17,300,000 -> 100,000 / hour.
@@ -432,28 +467,29 @@ describe("computeEmployeeGross: overtime from attendance minutes", () => {
     await setAmount(employeeId, base.id, 15_000_000);
     await setAmount(employeeId, allowance.id, 2_300_000);
     await setAmount(employeeId, transport.id, 500_000);
-    // Day 1: 90 min = 1.5 h -> 1 x 1.5 + 0.5 x 2.0 = 2.5 -> 250,000.
+    // Each day's tiers restart: 2 hours = 350,000; 1 hour = 150,000.
     await seedLog(employeeId, {
       businessDate: "2026-06-03",
-      overtimeMinutes: 90,
+      overtimeMinutes: 120,
     });
-    // Day 2: 30 min = 0.5 h -> 0.5 x 1.5 = 0.75 -> 75,000.
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 120 });
     await seedLog(employeeId, {
       businessDate: "2026-06-04",
-      overtimeMinutes: 30,
+      overtimeMinutes: 60,
     });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-04", minutes: 60 });
 
     const result = await compute(employeeId);
 
-    expect(result.overtimeIdr).toBe(325_000);
-    expect(result.overtimeMinutes).toBe(120);
-    expect(result.grossIdr).toBe(15_000_000 + 2_300_000 + 500_000 + 325_000);
+    expect(result.overtimeIdr).toBe(500_000);
+    expect(result.overtimeMinutes).toBe(180);
+    expect(result.grossIdr).toBe(15_000_000 + 2_300_000 + 500_000 + 500_000);
     const overtimeLines = result.lines.filter((l) => l.category === "overtime");
     expect(overtimeLines).toHaveLength(1);
     expect(overtimeLines[0]).toMatchObject({
       kind: "earning",
-      amountIdr: 325_000,
-      quantity: "2.0000",
+      amountIdr: 500_000,
+      quantity: "3.0000",
     });
   });
 
@@ -461,16 +497,28 @@ describe("computeEmployeeGross: overtime from attendance minutes", () => {
     const employeeId = await seedEmployee();
     const base = await earning({ overtimeBase: true });
     await setAmount(employeeId, base.id, 17_300_000); // 100,000 / hour
-    // Counted: valid, and flagged-then-accepted (30 min each = 75,000 each).
+    // Counted: valid and flagged-then-accepted, each with an approved request.
     await seedLog(employeeId, {
       businessDate: "2026-06-05",
-      overtimeMinutes: 30,
+      overtimeMinutes: 60,
     });
     await seedLog(employeeId, {
       businessDate: "2026-06-06",
-      overtimeMinutes: 30,
+      overtimeMinutes: 60,
       state: "accepted_after_flag",
     });
+    for (const date of [
+      "2026-06-05",
+      "2026-06-06",
+      "2026-06-07",
+      "2026-06-08",
+      "2026-05-31",
+      "2026-07-01",
+      "2026-06-09",
+      "2026-06-10",
+    ]) {
+      await seedOvertimeRequest(employeeId, { date, minutes: 120 });
+    }
     // Never counted: pending review, rejected, outside the period, a clock-in
     // row, and a row without minutes.
     await seedLog(employeeId, {
@@ -503,8 +551,199 @@ describe("computeEmployeeGross: overtime from attendance minutes", () => {
 
     const result = await compute(employeeId);
 
-    expect(result.overtimeMinutes).toBe(60);
-    expect(result.overtimeIdr).toBe(150_000);
+    expect(result.overtimeMinutes).toBe(120);
+    expect(result.overtimeIdr).toBe(300_000);
+  });
+
+  it("[538-G2b-P0] 600 attendance minutes without an approved request pay zero", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    await seedLog(employeeId, {
+      businessDate: "2026-06-03",
+      overtimeMinutes: 600,
+    });
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(0);
+    expect(result.overtimeIdr).toBe(0);
+    expect(result.netIdr).toBe(17_300_000);
+    expect(result.lines.some((line) => line.category === "overtime")).toBe(
+      false,
+    );
+  });
+
+  it.each(["pending", "rejected", "cancelled"] as const)(
+    "[538-G2b-P0] %s overtime requests never increase payroll",
+    async (status) => {
+      const employeeId = await seedEmployee();
+      const base = await earning({ overtimeBase: true });
+      await setAmount(employeeId, base.id, 17_300_000);
+      await seedLog(employeeId, {
+        businessDate: "2026-06-03",
+        overtimeMinutes: 600,
+      });
+      await seedOvertimeRequest(employeeId, {
+        date: "2026-06-03",
+        minutes: 600,
+        status,
+      });
+
+      const result = await compute(employeeId);
+
+      expect(result.overtimeMinutes).toBe(0);
+      expect(result.overtimeIdr).toBe(0);
+      expect(result.netIdr).toBe(17_300_000);
+    },
+  );
+
+  it.each([
+    ["workday", 350_000],
+    ["rest_day_6_day_week", 400_000],
+    ["rest_day_5_day_week", 400_000],
+  ] as const)(
+    "[538-G2b-P0] pays only approved minutes using %s tiers",
+    async (dayType, expectedPay) => {
+      const employeeId = await seedEmployee();
+      const base = await earning({ overtimeBase: true });
+      await setAmount(employeeId, base.id, 17_300_000);
+      await seedLog(employeeId, {
+        businessDate: "2026-06-03",
+        overtimeMinutes: 600,
+      });
+      await seedOvertimeRequest(employeeId, {
+        date: "2026-06-03",
+        minutes: 120,
+        dayType,
+      });
+
+      const result = await compute(employeeId);
+
+      expect(result.overtimeMinutes).toBe(120);
+      expect(result.overtimeIdr).toBe(expectedPay);
+      expect(result.netIdr).toBe(17_300_000 + expectedPay);
+    },
+  );
+
+  it.each([
+    ["workday", 1_550_000],
+    ["rest_day_6_day_week", 1_700_000],
+    ["rest_day_5_day_week", 1_600_000],
+  ] as const)(
+    "[538-G2b-P0] applies the distinct eighth-hour boundary for %s",
+    async (dayType, expectedPay) => {
+      const employeeId = await seedEmployee();
+      const base = await earning({ overtimeBase: true });
+      await setAmount(employeeId, base.id, 17_300_000);
+      await seedLog(employeeId, {
+        businessDate: "2026-06-03",
+        overtimeMinutes: 600,
+      });
+      await seedOvertimeRequest(employeeId, {
+        date: "2026-06-03",
+        minutes: 480,
+        dayType,
+      });
+
+      const result = await compute(employeeId);
+
+      expect(result.overtimeMinutes).toBe(480);
+      expect(result.overtimeIdr).toBe(expectedPay);
+      expect(result.netIdr).toBe(17_300_000 + expectedPay);
+    },
+  );
+
+  it("[538-G2b-P0] approved minutes cannot exceed accepted attendance for that day", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    await seedLog(employeeId, {
+      businessDate: "2026-06-03",
+      overtimeMinutes: 120,
+    });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 600 });
+    // A request on a day with no attendance must not borrow another day's cap.
+    await seedOvertimeRequest(employeeId, { date: "2026-06-04", minutes: 600 });
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(120);
+    expect(result.overtimeIdr).toBe(350_000);
+    expect(result.netIdr).toBe(17_650_000);
+  });
+
+  it("[538-G2b-P0] duplicate approvals cannot pay more than attendance in one day", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    await seedLog(employeeId, {
+      businessDate: "2026-06-03",
+      overtimeMinutes: 120,
+    });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 120 });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 120 });
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(120);
+    expect(result.overtimeIdr).toBe(350_000);
+  });
+
+  it("[538-G2b-P0] same-day requests share the attendance cap across day types", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    await seedLog(employeeId, {
+      businessDate: "2026-06-03",
+      overtimeMinutes: 120,
+    });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 120 });
+    await seedOvertimeRequest(employeeId, {
+      date: "2026-06-03",
+      minutes: 120,
+      dayType: "rest_day_5_day_week",
+    });
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(120);
+    expect(result.overtimeIdr).toBe(350_000);
+    expect(result.netIdr).toBe(17_650_000);
+  });
+
+  it("[538-G2b-P0] combines approved same-day requests before applying daily tiers", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    await seedLog(employeeId, {
+      businessDate: "2026-06-03",
+      overtimeMinutes: 180,
+    });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 60 });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 120 });
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(180);
+    expect(result.overtimeIdr).toBe(550_000);
+  });
+
+  it("[538-G2b-P0] duplicate 720-minute approvals cannot exceed the daily cap", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    await seedLog(employeeId, {
+      businessDate: "2026-06-03",
+      overtimeMinutes: 1_000,
+    });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 720 });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 720 });
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(720);
+    expect(result.overtimeIdr).toBe(2_350_000);
   });
 
   it("[OVERTIME] attendance without any pay components yields no overtime (no base)", async () => {
@@ -513,6 +752,7 @@ describe("computeEmployeeGross: overtime from attendance minutes", () => {
       businessDate: "2026-06-03",
       overtimeMinutes: 120,
     });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 120 });
 
     const result = await compute(employeeId);
 
@@ -727,18 +967,19 @@ describe("computeEmployeeGross: sealed result", () => {
     await setAmount(employeeId, loan.id, 125_000);
     await seedLog(employeeId, {
       businessDate: "2026-06-03",
-      overtimeMinutes: 90,
+      overtimeMinutes: 120,
     });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 120 });
     const payslipId = randomUUID();
 
     const result = await compute(employeeId, { payslipId });
 
-    expect(result.grossIdr).toBe(17_550_000);
-    expect(result.netIdr).toBe(17_425_000);
+    expect(result.grossIdr).toBe(17_650_000);
+    expect(result.netIdr).toBe(17_525_000);
     const sealed = result.sealed.calculation;
     expect(Buffer.isBuffer(sealed)).toBe(true);
-    expect(sealed.toString("utf8")).not.toContain("17550000");
-    expect(sealed.toString("utf8")).not.toContain("17425000");
+    expect(sealed.toString("utf8")).not.toContain("17650000");
+    expect(sealed.toString("utf8")).not.toContain("17525000");
 
     const binding = {
       tenantId: tenant.id,
@@ -750,10 +991,10 @@ describe("computeEmployeeGross: sealed result", () => {
       openPayrollValue(sealed, binding, result.sealed.keyVersion),
     );
     expect(opened).toMatchObject({
-      grossIdr: 17_550_000,
+      grossIdr: 17_650_000,
       deductionsIdr: 125_000,
-      netIdr: 17_425_000,
-      overtimeIdr: 250_000,
+      netIdr: 17_525_000,
+      overtimeIdr: 350_000,
     });
     expect(opened.lines).toEqual(result.lines);
 

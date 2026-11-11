@@ -49,6 +49,7 @@ import {
   employeePayComponentSchema,
   computeOvertimePay,
   FROZEN_PAYROLL_RUN_STATUSES,
+  OVERTIME_DAY_TYPES,
   payComponentIdSchema,
   payComponentKindOf,
   overtimeParametersSchema,
@@ -60,6 +61,7 @@ import {
   type CreatePayComponentInput,
   type EmployeePayComponent,
   type OvertimeParameters,
+  type OvertimeDayType,
   type PayComponent,
   type PayslipLine,
   type SetEmployeePayComponentInput,
@@ -69,6 +71,7 @@ import { CoreError } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
 import { attendanceLogs } from "../db/schema/hris-attendance.ts";
+import { overtimeRequests } from "../db/schema/hris-leave.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import {
   employeePayComponents,
@@ -756,17 +759,17 @@ const hoursOf = (minutes: number) =>
 
 /**
  * Gross, deductions, net and overtime of one employee for a period, from the
- * pay components in effect during the period and the approved overtime minutes of
- * the period's attendance (PRD §3 D.29/D.30). Nothing is written: the caller
+ * pay components in effect during the period and approved overtime requests,
+ * bounded by the period's attendance (PRD §3 D.29/D.30). Nothing is written: the caller
  * stores `sealed.calculation` on the payslip row.
  *
  * Money guards (never pay more): an amount is never negative and a zero amount
  * has no line; a component appears once, prorated by calendar day over the
  * rows that overlap the period (floor, never above the full amount);
  * deductions are cut, later display order first, so net is never below zero;
- * overtime counts only `out` logs that are valid, or flagged and then
- * accepted, one day at a time with the largest value of that day, hours rounded
- * down, on the overtime base of the employee's own earnings only.
+ * overtime requires an approved request and `out` logs that are valid, or
+ * flagged and then accepted, capped by the largest attendance value and 720
+ * minutes per day, on the overtime base of the employee's own earnings only.
  */
 export async function computeEmployeeGross(
   context: ScopedTenantContext,
@@ -905,7 +908,7 @@ export async function computeEmployeeGross(
         .reduce((sum, { baseIdr }) => sum + baseIdr, 0),
     );
 
-    // Overtime minutes: approved `out` logs of the period, one value per day.
+    // Attendance limits the approved requests; it never authorizes overtime.
     const logs = await tx
       .select({
         businessDate: attendanceLogs.businessDate,
@@ -933,17 +936,77 @@ export async function computeEmployeeGross(
         ),
       )
       .groupBy(attendanceLogs.businessDate);
-    const overtimeMinutes = logs.reduce((sum, log) => sum + log.minutes, 0);
+    const requests = await tx
+      .select({
+        date: overtimeRequests.date,
+        minutes: overtimeRequests.minutes,
+        dayType: overtimeRequests.dayType,
+      })
+      .from(overtimeRequests)
+      .where(
+        and(
+          eq(overtimeRequests.tenantId, context.tenant.tenantId),
+          eq(overtimeRequests.employeeId, employeeId),
+          eq(overtimeRequests.status, "approved"),
+          gte(overtimeRequests.date, periodStart),
+          lte(overtimeRequests.date, periodEnd),
+          gte(overtimeRequests.minutes, 1),
+          lte(overtimeRequests.minutes, 720),
+          inArray(overtimeRequests.dayType, [...OVERTIME_DAY_TYPES]),
+        ),
+      );
+    const requestsByDay = new Map<string, Map<OvertimeDayType, number>>();
+    for (const request of requests) {
+      const day =
+        requestsByDay.get(request.date) ?? new Map<OvertimeDayType, number>();
+      day.set(
+        request.dayType,
+        (day.get(request.dayType) ?? 0) + request.minutes,
+      );
+      requestsByDay.set(request.date, day);
+    }
+    const payableOvertime: { minutes: number; dayType: OvertimeDayType }[] = [];
+    for (const log of logs) {
+      const day = requestsByDay.get(log.businessDate);
+      if (!day) continue;
+      let remaining = Math.min(log.minutes, 720);
+      // Conflicting day types consume one shared cap, cheaper tariff first.
+      const groups = [...day].sort(
+        ([left], [right]) =>
+          computeOvertimePay(
+            parameters.data,
+            left,
+            hoursOf(remaining),
+            overtimeBase,
+          ) -
+            computeOvertimePay(
+              parameters.data,
+              right,
+              hoursOf(remaining),
+              overtimeBase,
+            ) || left.localeCompare(right),
+      );
+      for (const [dayType, approvedMinutes] of groups) {
+        const minutes = Math.min(approvedMinutes, remaining);
+        if (minutes <= 0) continue;
+        payableOvertime.push({ minutes, dayType });
+        remaining -= minutes;
+      }
+    }
+    const overtimeMinutes = payableOvertime.reduce(
+      (sum, entry) => sum + entry.minutes,
+      0,
+    );
     // No overtime base, no overtime pay: the minutes stay reported, unpaid.
     let overtimeIdr = idr(0);
     if (overtimeBase > 0)
-      for (const log of logs)
+      for (const entry of payableOvertime)
         overtimeIdr = idr(
           overtimeIdr +
             computeOvertimePay(
               parameters.data,
-              "workday",
-              hoursOf(log.minutes),
+              entry.dayType,
+              hoursOf(entry.minutes),
               overtimeBase,
             ),
         );

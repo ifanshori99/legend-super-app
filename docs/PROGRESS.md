@@ -3591,3 +3591,14 @@ Review reviewer (Sonnet): tidak ada cacat berat; tiga celah sedang dibetulkan (p
 Terbuka untuk CTO/founder: batas jam lembur per hari, status run approved untuk distribusi service charge, alur rapel, cek data `payroll_runs` produksi sebelum migrasi 0350.
 Subagent: total 23, puncak 4 bersamaan; token heavy dipegang satu subagent bergantian. Biaya sesi (session-usage): total biaya* 5171k, compact 0. parallel-report 36 sesi rata-rata subagent per agent 3.7.
 Langkah berikut: review architect (K) dan merge train; push ke origin/ws/payroll-engine bila CTO setuju.
+
+## 2026-11-12: 538-G2b temuan architect payroll (ws/payroll-engine)
+
+- Mulai 06:32 WIB, basis 8812c48b. Brief dan urutan ada di `docs/briefs/538-g2b-work.md`, issue `legend-sonza`.
+- Pembagian awal: 2 Explore, 1 test-writer gross, 2 implementer (components dan service-charge); berkas tidak tumpang tindih. Parent memegang token heavy dan commit per temuan. Tidak push/merge.
+- Keputusan founder: Q42 menolak distribusi sesudah persetujuan; Q43 prorata harian; Q44 rapel sebelum rilis sebagai kartu baru.
+- RED service-charge: 2 gagal karena hr_approved/approved diterima, 21 lulus (`/tmp/538-g2b-service-charge-red.log`). RED gross pertama: 600 tanpa approval terbukti dibayar600; fixture request mengalami 42P08 dan sudah diperbaiki sebelum ulang.
+- Celah existing formula pin vs overtimeParameters dicatat terpisah `legend-g5v69` (P1); tidak memperluas brief. Kartu rapel pra-rilis Q44 sudah `legend-svqew`.
+- Kuota snapshot 06:35 (awal terdekat tersedia): Claude akun1 5h57%/7d82%, akun2 0%/93%, akun3 0%/96%; Codex akun2 69%/37%, akun3 100%/76%, akun4 16%/49%, akun5 88%/50%, akun6 5h tidak dilaporkan/7d4%.
+- P0 selesai: RED sah 8 gagal/24 lulus, GREEN gross mandiri 35/35 lulus (`/tmp/538-g2b-p0-{red-valid,green}.log`). Request approved + dayType + cap absensi/720 harian, termasuk approval duplikat. ESLint empat file kode exit0. Review internal P0 bersih.
+- Run gabungan pertama mengungkap fixture service-charge frozen berbagi entity gross (SC23 lulus, gross15 gagal PAYROLL_RUN_FROZEN); fixture SC diisolasi ke entity khusus sebelum gate gabungan berikut.
