@@ -734,6 +734,103 @@ describe("attendance HTTP: tenant isolation (TEN-01)", () => {
     expect(queueB.ids).not.toContain(fixA2.flaggedLogUlid);
   });
 
+  // legend-t3h6e: the review queue takes a `logId` filter (server side), so the
+  // case-detail screen no longer pages every log to find one.
+  // Assumptions (the bead gives the name only): query param `logId` is the
+  // public ULID of one attendance log; the result is that single item or an
+  // empty page; scope is unchanged (a log outside the caller's tenant or outlet
+  // never appears, status 200 empty or 403/404). Runs before the review tests
+  // below, which flip the review status of the fixtures.
+  it("[t3h6e] the review queue filtered by logId returns only that log", async () => {
+    const a2 = await listAll(
+      managerA.client,
+      `/api/hris/attendance/review-queue?logId=${fixA2.flaggedLogUlid}`,
+      reviewLogId,
+    );
+    expect(a2.status).toBe(200);
+    expect(a2.ids).toEqual([fixA2.flaggedLogUlid]);
+
+    const a3 = await listAll(
+      managerA.client,
+      `/api/hris/attendance/review-queue?logId=${fixA3.flaggedLogUlid}`,
+      reviewLogId,
+    );
+    expect(a3.status).toBe(200);
+    expect(a3.ids).toEqual([fixA3.flaggedLogUlid]);
+
+    // Without the filter both are in the queue, so the filter is what narrows it.
+    const all = await listAll(
+      managerA.client,
+      "/api/hris/attendance/review-queue",
+      reviewLogId,
+    );
+    expect(all.ids).toEqual(
+      expect.arrayContaining([fixA2.flaggedLogUlid, fixA3.flaggedLogUlid]),
+    );
+  });
+
+  it("[t3h6e] a logId that does not exist gives an empty page, and a malformed logId is refused", async () => {
+    const unknown = await listAll(
+      managerA.client,
+      `/api/hris/attendance/review-queue?logId=${createUlid()}`,
+      reviewLogId,
+    );
+    expect(unknown.status).toBe(200);
+    expect(unknown.ids).toEqual([]);
+
+    const malformed = await managerA.client.get(
+      "/api/hris/attendance/review-queue?logId=not-a-ulid",
+    );
+    expect([400, 422]).toContain(malformed.status);
+  });
+
+  it("[t3h6e] a logId of another tenant never leaks, in either direction", async () => {
+    const aAsksB = await listAll(
+      managerA.client,
+      `/api/hris/attendance/review-queue?logId=${fixB.flaggedLogUlid}`,
+      reviewLogId,
+    );
+    expect([200, 403, 404]).toContain(aAsksB.status);
+    expect(aAsksB.ids).toEqual([]);
+
+    const bAsksA = await listAll(
+      managerB.client,
+      `/api/hris/attendance/review-queue?logId=${fixA2.flaggedLogUlid}`,
+      reviewLogId,
+      tenantBHost,
+    );
+    expect([200, 403, 404]).toContain(bAsksA.status);
+    expect(bAsksA.ids).toEqual([]);
+
+    // Control: tenant B reads its own log through the same filter.
+    const bOwn = await listAll(
+      managerB.client,
+      `/api/hris/attendance/review-queue?logId=${fixB.flaggedLogUlid}`,
+      reviewLogId,
+      tenantBHost,
+    );
+    expect(bOwn.status).toBe(200);
+    expect(bOwn.ids).toEqual([fixB.flaggedLogUlid]);
+  });
+
+  it("[t3h6e] an outlet-scoped manager gets a log of their outlet but not one of another outlet by logId", async () => {
+    const own = await listAll(
+      managerOutletA2.client,
+      `/api/hris/attendance/review-queue?logId=${fixA2.flaggedLogUlid}`,
+      reviewLogId,
+    );
+    expect(own.status).toBe(200);
+    expect(own.ids).toEqual([fixA2.flaggedLogUlid]);
+
+    const foreign = await listAll(
+      managerOutletA2.client,
+      `/api/hris/attendance/review-queue?logId=${fixA3.flaggedLogUlid}`,
+      reviewLogId,
+    );
+    expect([200, 403, 404]).toContain(foreign.status);
+    expect(foreign.ids).toEqual([]);
+  });
+
   it("hides another tenant's outlet policy and QR, and refuses to rotate its secret", async () => {
     // Own-outlet controls first, so the denials below are tenant scoping.
     const ownPolicy = await managerA.client.get(
