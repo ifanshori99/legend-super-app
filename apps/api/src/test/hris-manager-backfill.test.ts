@@ -32,7 +32,7 @@
 //   O5  only a supervisor         m5 (manager NULL)
 //   O6  outlet_manager assignment expired               m6 (manager NULL)
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool, type PoolClient } from "pg";
@@ -438,20 +438,56 @@ function tempFile(text: string) {
 describe("legend-qhqf8 backfill CLI", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("parses dry-run (default) and apply with an ids file and tenant", () => {
+  it("parses dry-run and apply with the exact reviewed manager manifest", () => {
     expect(parseArgs([])).toMatchObject({ apply: false });
     expect(parseArgs(["--dry-run"])).toMatchObject({ apply: false });
     const employeeId = randomUUID();
     const tenant = randomUUID();
+    const managerId = randomUUID();
     expect(
       parseArgs([
         "--apply",
-        "--ids",
-        tempFile(`# reviewed by HR\n${employeeId.toUpperCase()}\n\n`),
+        "--manifest",
+        tempFile(
+          `employee_id,current_manager_id,proposed_manager_id\n${employeeId.toUpperCase()},,${managerId}\n`,
+        ),
         "--tenant",
         tenant,
       ]),
-    ).toMatchObject({ apply: true, ids: [employeeId], tenantId: tenant });
+    ).toMatchObject({
+      apply: true,
+      manifest: [
+        { employeeId, currentManagerId: null, proposedManagerId: managerId },
+      ],
+      tenantId: tenant,
+    });
+  });
+
+  it("refuses id-only apply and malformed or duplicate manifests", () => {
+    const employeeId = randomUUID();
+    const managerId = randomUUID();
+    expect(() =>
+      parseArgs(["--apply", "--ids", tempFile(`${employeeId}\n`)]),
+    ).toThrow(BackfillUsageError);
+    for (const text of [
+      "employee_id,current_manager_id,proposed_manager_id\nnot-a-uuid,,not-a-uuid\n",
+      `employee_id,current_manager_id,proposed_manager_id\n${employeeId},,\n`,
+      `employee_id,current_manager_id,proposed_manager_id\n${employeeId},,${managerId}\n${employeeId},,${managerId}\n`,
+    ])
+      expect(() =>
+        parseArgs(["--apply", "--manifest", tempFile(text)]),
+      ).toThrow(BackfillUsageError);
+  });
+
+  it("accepts a new output manifest path in dry-run without reading that file", () => {
+    const path = join(
+      mkdtempSync(join(tmpdir(), "qhqf8-manifest-")),
+      "review.csv",
+    );
+    expect(parseArgs(["--dry-run", "--manifest", path])).toMatchObject({
+      apply: false,
+      manifestFile: path,
+    });
   });
 
   it("refuses bad arguments as usage errors", () => {
@@ -466,7 +502,7 @@ describe("legend-qhqf8 backfill CLI", () => {
     expect(USAGE).toContain("--ids");
   });
 
-  it("exits 2 with usage when --apply has no ids, before reading settings", async () => {
+  it("exits 2 with usage when --apply has no manifest, before reading settings", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(await cli(["--apply"], { loadEnv: false })).toBe(2);
     expect(await cli(["--bogus"], { loadEnv: false })).toBe(2);
@@ -780,18 +816,86 @@ async function auditRows(tenantId: string): Promise<AuditRow[]> {
   });
 }
 
-const runIn = (
+type ReviewedManager = {
+  employeeId: string;
+  currentManagerId: string | null;
+  proposedManagerId: string;
+};
+
+// Legacy behavior scenarios approve a fresh tuple before applying; stale-review
+// regressions below pass the actual tuple saved before the intervening mutation.
+const runIn = async (
   tenantId: string | undefined,
-  options: { apply: boolean; ids?: string[] },
-) =>
-  run({
+  options: { apply: boolean; ids?: string[]; manifest?: ReviewedManager[] },
+) => {
+  let manifest = options.manifest;
+  if (options.apply && options.ids && !manifest) {
+    const dry = await run({
+      pool: owner,
+      apply: false,
+      now: clock(),
+      log: () => {},
+      tenantId,
+    });
+    manifest = options.ids.map((employeeId) => {
+      const finding = dry.findings.find((row) => row.employeeId === employeeId);
+      return {
+        employeeId,
+        currentManagerId: finding?.currentManagerId ?? null,
+        proposedManagerId: finding?.proposedManagerId ?? randomUUID(),
+      };
+    });
+  }
+  return run({
     pool: owner,
     apply: options.apply,
     now: clock(),
     log,
-    ids: options.ids,
+    ...(!options.apply ? { ids: options.ids } : {}),
+    ...(manifest ? { manifest } : {}),
     tenantId,
   });
+};
+
+async function seedMoney(
+  tenantId: string,
+  outletId: string,
+  employeeId: string,
+  managerId: string,
+  createdBy: string,
+) {
+  const poolId = randomUUID();
+  await inTenant(tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO service_charge_pools
+      (id, tenant_id, outlet_id, period_start, period_end, amount_idr, rule, status, created_by)
+      VALUES ($1,$2,$3,'2026-10-01','2026-10-31',100000,'{}'::jsonb,'draft',$4)`,
+      [poolId, tenantId, outletId, createdBy],
+    );
+    for (const [recipient, amount] of [
+      [employeeId, 60_000],
+      [managerId, 40_000],
+    ] as const)
+      await client.query(
+        `INSERT INTO service_charge_allocations
+        (id,tenant_id,pool_id,employee_id,points,attendance_days,weight,amount_idr)
+        VALUES ($1,$2,$3,$4,1,20,20,$5)`,
+        [randomUUID(), tenantId, poolId, recipient, amount],
+      );
+  });
+  return () =>
+    inTenant(tenantId, async (client) => {
+      const pool = await client.query<Record<string, unknown>>(
+        "SELECT * FROM service_charge_pools WHERE id=$1",
+        [poolId],
+      );
+      const allocations = await client.query<Record<string, unknown>>(
+        "SELECT * FROM service_charge_allocations WHERE pool_id=$1 ORDER BY employee_id",
+        [poolId],
+      );
+      return { pool: pool.rows[0]!, allocations: allocations.rows };
+    });
+}
 
 const AUTO = (s: Scenario) => [s.e.a1, s.e.a2, s.e.a3, s.e.i1];
 
@@ -916,7 +1020,7 @@ describe("legend-qhqf8 dry-run", () => {
     expect(text).toContain("holds_manager_role");
     expect(text).toContain("Total: findings=");
     expect(text).toContain(
-      "# Ids for review (save approved to a file for --ids)",
+      "employee_id,current_manager_id,proposed_manager_id",
     );
     expect(text).toContain("Dry-run: nothing written");
     expect(text).not.toContain("Nama Rahasia");
@@ -927,10 +1031,278 @@ describe("legend-qhqf8 dry-run", () => {
 // ---------------------------------------------------------------------------
 // 3 + 4. Apply, audit, idempotency
 // ---------------------------------------------------------------------------
+describe("legend-qhqf8 reviewed manifest safety", () => {
+  it("CLI writes a reviewable CSV manifest that roundtrips and never overwrites an existing approval", async () => {
+    const s = await buildScenario();
+    const path = join(
+      mkdtempSync(join(tmpdir(), "qhqf8-cli-manifest-")),
+      "review.csv",
+    );
+    const args = [
+      "--dry-run",
+      "--tenant",
+      s.ctx.id,
+      "--ids",
+      tempFile(`${s.e.a1}\n`),
+      "--manifest",
+      path,
+    ];
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubEnv("MIGRATION_DATABASE_URL", process.env.STARTER_TEST_DATABASE_URL);
+    try {
+      expect(await cli(args, { loadEnv: false })).toBe(0);
+      const csv = readFileSync(path, "utf8");
+      expect(csv).toBe(
+        `employee_id,current_manager_id,proposed_manager_id\n${s.e.a1},,${s.om.om1}\n`,
+      );
+      expect(parseArgs(["--apply", "--manifest", path])).toMatchObject({
+        apply: true,
+        manifest: [
+          {
+            employeeId: s.e.a1,
+            currentManagerId: null,
+            proposedManagerId: s.om.om1,
+          },
+        ],
+      });
+      expect(await cli(args, { loadEnv: false })).toBe(2);
+      expect(readFileSync(path, "utf8")).toBe(csv);
+      expect(await managerOf(s.ctx.id, s.e.a1)).toBeNull();
+      expect(await auditRows(s.ctx.id)).toHaveLength(0);
+    } finally {
+      vi.unstubAllEnvs();
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it("exports the exact before and proposed manager tuples for HR review", async () => {
+    const s = await buildScenario();
+    const result = await runIn(s.ctx.id, {
+      apply: false,
+      ids: [s.e.a1, s.e.i1],
+    });
+    expect(result).toMatchObject({
+      manifest: expect.arrayContaining([
+        {
+          employeeId: s.e.a1,
+          currentManagerId: null,
+          proposedManagerId: s.om.om1,
+        },
+        {
+          employeeId: s.e.i1,
+          currentManagerId: s.gone,
+          proposedManagerId: s.om.om1,
+        },
+      ]),
+    });
+    expect(
+      (result as unknown as { manifest: ReviewedManager[] }).manifest,
+    ).toHaveLength(2);
+  });
+
+  it("skips an otherwise auto employee when the outlet manager changed after HR review", async () => {
+    const s = await buildScenario();
+    const manifest = [
+      {
+        employeeId: s.e.a1,
+        currentManagerId: null,
+        proposedManagerId: s.om.om1,
+      },
+    ];
+    await runIn(s.ctx.id, { apply: false, ids: [s.e.a1] });
+    await inTenant(s.ctx.id, (client) =>
+      client.query("UPDATE employees SET status = 'resigned' WHERE id = $1", [
+        s.om.om1,
+      ]),
+    );
+    const replacement = await seedOutletManager(
+      s.ctx,
+      s.outlets.o1,
+      await newUserId("Backfill Replacement Outlet Manager"),
+    );
+    const before = await snapshot(s.ctx.id);
+    const result = await runIn(s.ctx.id, { apply: true, manifest });
+    expect(count(result.applied)).toBe(0);
+    expect(result.skipped).toContain(s.e.a1);
+    expect(await managerOf(s.ctx.id, s.e.a1)).toBeNull();
+    expect(await snapshot(s.ctx.id)).toEqual(before);
+    expect(await auditRows(s.ctx.id)).toHaveLength(0);
+    expect(logs.join("\n")).toContain(`SKIPPED employee=${s.e.a1}`);
+    expect(replacement).not.toBe(s.om.om1);
+  });
+
+  it("skips when the previous manager changed to a different inactive manager after HR review", async () => {
+    const s = await buildScenario();
+    const manifest = [
+      {
+        employeeId: s.e.i1,
+        currentManagerId: s.gone,
+        proposedManagerId: s.om.om1,
+      },
+    ];
+    const otherInactive = await seedEmployee(s.ctx, {
+      homeOutletId: s.outlets.o1,
+      status: "resigned",
+    });
+    await setManager(s.ctx.id, s.e.i1, otherInactive);
+    const result = await runIn(s.ctx.id, { apply: true, manifest });
+    expect(count(result.applied)).toBe(0);
+    expect(result.skipped).toContain(s.e.i1);
+    expect(await managerOf(s.ctx.id, s.e.i1)).toBe(otherInactive);
+    expect(await auditRows(s.ctx.id)).toHaveLength(0);
+  });
+
+  it("skips a proposed manager whose offboarding commits while the manager lock is awaited", async () => {
+    const s = await buildScenario();
+    const manifest = [
+      {
+        employeeId: s.e.a1,
+        currentManagerId: null,
+        proposedManagerId: s.om.om1,
+      },
+    ];
+    const offboarding = await owner.connect();
+    let applying: ReturnType<typeof runIn> | undefined;
+    try {
+      await offboarding.query("BEGIN");
+      await offboarding.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [s.ctx.id],
+      );
+      const backend = await offboarding.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      await offboarding.query(
+        "UPDATE employees SET status='resigned' WHERE tenant_id=$1 AND id=$2",
+        [s.ctx.id, s.om.om1],
+      );
+      let settled = false;
+      applying = runIn(s.ctx.id, { apply: true, manifest });
+      void applying.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      const deadline = Date.now() + 10_000;
+      let waiting = false;
+      while (!settled && Date.now() < deadline) {
+        const blockers = await owner.query<{ waiting: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting",
+          [backend.rows[0]!.pid],
+        );
+        if (blockers.rows[0]?.waiting) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(
+        waiting || settled,
+        "apply either waited on the offboarding lock or incorrectly completed",
+      ).toBe(true);
+      await offboarding.query("COMMIT");
+      const result = await applying;
+      expect(count(result.applied)).toBe(0);
+      expect(result.skipped).toContain(s.e.a1);
+      expect(await managerOf(s.ctx.id, s.e.a1)).toBeNull();
+      expect(await auditRows(s.ctx.id)).toHaveLength(0);
+    } finally {
+      await offboarding.query("ROLLBACK");
+      offboarding.release();
+      if (applying) await applying;
+    }
+  });
+
+  it("holds the proposed manager against concurrent offboarding until the apply commits", async () => {
+    const s = await buildScenario();
+    const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
+    const fn = `hris_backfill_pause_${suffix}`;
+    const gate = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const blocker = await owner.connect();
+    let applying: ReturnType<typeof runIn> | undefined;
+    await owner.query(`CREATE FUNCTION public.${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.id = '${s.e.a1}'::uuid AND NEW.manager_id IS DISTINCT FROM OLD.manager_id THEN
+          PERFORM pg_advisory_xact_lock(${gate});
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await owner.query(
+      `CREATE TRIGGER ${fn} BEFORE UPDATE ON public.employees FOR EACH ROW EXECUTE FUNCTION public.${fn}()`,
+    );
+    try {
+      await blocker.query("SELECT pg_advisory_lock($1)", [gate]);
+      applying = runIn(s.ctx.id, { apply: true, ids: [s.e.a1] });
+      void applying.catch(() => undefined);
+      // The trigger places the real UPDATE at a deterministic pre-write gate.
+      const deadline = Date.now() + 10_000;
+      let waiting = false;
+      while (Date.now() < deadline) {
+        const locks = await owner.query<{ waiting: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objid = $1 AND NOT granted) AS waiting",
+          [gate],
+        );
+        if (locks.rows[0]?.waiting) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(waiting, "backfill reached the gated employee UPDATE").toBe(true);
+      const offboarding = await owner.connect();
+      let offboardingError: string | undefined;
+      try {
+        await offboarding.query("BEGIN");
+        await offboarding.query(
+          "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+          [s.ctx.id],
+        );
+        await offboarding.query("SET LOCAL lock_timeout = '200ms'");
+        try {
+          await offboarding.query(
+            "UPDATE employees SET status = 'resigned' WHERE tenant_id = $1 AND id = $2",
+            [s.ctx.id, s.om.om1],
+          );
+        } catch (error) {
+          offboardingError = (error as { code?: string }).code;
+        }
+      } finally {
+        await offboarding.query("ROLLBACK");
+        offboarding.release();
+      }
+      expect(
+        offboardingError,
+        "offboarding must wait for the approved manager share lock",
+      ).toBe("55P03");
+    } finally {
+      await blocker.query("SELECT pg_advisory_unlock($1)", [gate]);
+      blocker.release();
+      if (applying) await applying;
+      await owner.query(`DROP TRIGGER IF EXISTS ${fn} ON public.employees`);
+      await owner.query(`DROP FUNCTION IF EXISTS public.${fn}()`);
+    }
+    expect(await managerOf(s.ctx.id, s.e.a1)).toBe(s.om.om1);
+    expect(await auditRows(s.ctx.id)).toHaveLength(1);
+  });
+});
+
 describe("legend-qhqf8 apply", () => {
   it("updates only the reviewed auto rows, audits each one, and touches nothing else", async () => {
     const s = await buildScenario();
     const before = await snapshot(s.ctx.id);
+    const money = await seedMoney(
+      s.ctx.id,
+      s.outlets.o1,
+      s.e.a1,
+      s.om.om1,
+      userPool[0]!,
+    );
+    const moneyBefore = await money();
     // a2 and a3 are auto but not reviewed; m1 and m3 are reviewed but manual.
     const ids = [s.e.a1, s.e.i1, s.e.m1, s.e.m3];
 
@@ -938,6 +1310,18 @@ describe("legend-qhqf8 apply", () => {
 
     expect(result.apply).toBe(true);
     expect(count(result.applied)).toBe(2);
+    expect(await money()).toEqual(moneyBefore);
+    expect(
+      moneyBefore.allocations
+        .map((row) => Number(row.amount_idr))
+        .sort((a, b) => a - b),
+    ).toEqual([40_000, 60_000]);
+    expect(
+      moneyBefore.allocations.reduce(
+        (sum, row) => sum + Number(row.amount_idr),
+        0,
+      ),
+    ).toBeLessThanOrEqual(Number(moneyBefore.pool.amount_idr));
     expect(await managerOf(s.ctx.id, s.e.a1)).toBe(s.om.om1);
     expect(await managerOf(s.ctx.id, s.e.i1)).toBe(s.om.om1);
     expect(await managerOf(s.ctx.id, s.e.a2)).toBeNull();
@@ -978,7 +1362,7 @@ describe("legend-qhqf8 apply", () => {
     });
   });
 
-  it("refuses --apply without reviewed ids and writes nothing", async () => {
+  it("refuses --apply without a reviewed manifest and writes nothing", async () => {
     const s = await buildScenario();
     const before = await snapshot(s.ctx.id);
 
@@ -1404,6 +1788,8 @@ afterAll(async () => {
         await scope(tenantId);
         for (const table of [
           "audit_logs",
+          "service_charge_allocations",
+          "service_charge_pools",
           "employees",
           "role_assignments",
           "roles",

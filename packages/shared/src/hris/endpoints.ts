@@ -48,6 +48,7 @@ import {
 } from "./ids.ts";
 import {
   employeeSchema,
+  employeeProfileSchema,
   employeePiiSchema,
   employeeDocumentSchema,
   employmentContractSchema,
@@ -163,7 +164,7 @@ export const getEmployee = defineEndpoint({
   method: "GET",
   path: "/api/hris/employees/:employeeId",
   params: employeeIdParams,
-  response: dataResponseSchema(employeeSchema),
+  response: dataResponseSchema(employeeProfileSchema),
 });
 
 /** HR-03: the only route that returns (masked) employee PII. */

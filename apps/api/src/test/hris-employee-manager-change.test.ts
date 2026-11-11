@@ -59,6 +59,7 @@ const createdRoles: string[] = [];
 const createdEmployees: string[] = [];
 const createdOutlets: string[] = [];
 const createdCorrections: string[] = [];
+const createdServiceChargePools: string[] = [];
 const createdTenants: string[] = [];
 let outletA1: string;
 let outletA2: string;
@@ -406,6 +407,47 @@ beforeAll(async () => {
   staffEmployee = await seedEmployee({ userId: staff.userId });
 });
 
+async function seedMoney(
+  tenantId: string,
+  outletId: string,
+  employeeId: string,
+  managerId: string,
+  createdBy: string,
+) {
+  const poolId = randomUUID();
+  createdServiceChargePools.push(poolId);
+  await inTenant(tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO service_charge_pools
+      (id, tenant_id, outlet_id, period_start, period_end, amount_idr, rule, status, created_by)
+      VALUES ($1,$2,$3,'2026-10-01','2026-10-31',100000,'{}'::jsonb,'draft',$4)`,
+      [poolId, tenantId, outletId, createdBy],
+    );
+    for (const [recipient, amount] of [
+      [employeeId, 60_000],
+      [managerId, 40_000],
+    ] as const)
+      await client.query(
+        `INSERT INTO service_charge_allocations
+        (id,tenant_id,pool_id,employee_id,points,attendance_days,weight,amount_idr)
+        VALUES ($1,$2,$3,$4,1,20,20,$5)`,
+        [randomUUID(), tenantId, poolId, recipient, amount],
+      );
+  });
+  return () =>
+    inTenant(tenantId, async (client) => {
+      const pool = await client.query<Record<string, unknown>>(
+        "SELECT * FROM service_charge_pools WHERE id=$1",
+        [poolId],
+      );
+      const allocations = await client.query<Record<string, unknown>>(
+        "SELECT * FROM service_charge_allocations WHERE pool_id=$1 ORDER BY employee_id",
+        [poolId],
+      );
+      return { pool: pool.rows[0]!, allocations: allocations.rows };
+    });
+}
+
 // ---------------------------------------------------------------------------
 // 1. HR sets a manager
 // ---------------------------------------------------------------------------
@@ -413,6 +455,8 @@ describe("legend-f4uvg HR changes the manager", () => {
   it("sets the manager: 200 with the new managerId, DB updated, one audit row, updated_at advanced", async () => {
     const boss = await seedEmployee();
     const target = await seedEmployee();
+    const money = await seedMoney(tenant.id, outletA1, target, boss, hr.userId);
+    const moneyBefore = await money();
     const updatedBefore = await updatedAtOf(target);
 
     const res = await patchManager(hr.client, target, boss, {
@@ -422,6 +466,18 @@ describe("legend-f4uvg HR changes the manager", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data).toMatchObject({ id: target, managerId: boss });
     expect(await managerOf(target)).toBe(boss);
+    expect(await money()).toEqual(moneyBefore);
+    expect(
+      moneyBefore.allocations
+        .map((row) => Number(row.amount_idr))
+        .sort((a, b) => a - b),
+    ).toEqual([40_000, 60_000]);
+    expect(
+      moneyBefore.allocations.reduce(
+        (sum, row) => sum + Number(row.amount_idr),
+        0,
+      ),
+    ).toBeLessThanOrEqual(Number(moneyBefore.pool.amount_idr));
     expect(await updatedAtOf(target)).toBeGreaterThan(updatedBefore);
 
     const audit = await auditRows(target);
@@ -1120,6 +1176,86 @@ async function seedForeignTenantEmployee() {
 // GET /api/me/access: canChangeEmployeeManager (presentation hint for the
 // "Ubah atasan" button; PATCH stays the authority and re-checks the scope)
 // ---------------------------------------------------------------------------
+describe("GET employee detail canChangeManager is specific to the viewed employee", () => {
+  const detailHint = async (client: Client, employeeId: string) => {
+    const res = await client.get(`/api/hris/employees/${employeeId}`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.data.canChangeManager as unknown;
+  };
+
+  it("allows tenant HR and brand GM for someone else in their management scope", async () => {
+    const target = await seedEmployee({ homeOutletId: outletA2 });
+    expect(await detailHint(hr.client, target)).toBe(true);
+    expect(await detailHint(gm.client, target)).toBe(true);
+  });
+
+  it.each(["HR", "GM"])(
+    "denies %s on their own employee profile despite global capability",
+    async (kind) => {
+      const caller = await signedInClient(`Detail Self ${kind}`);
+      await grantRole(
+        caller.userId,
+        kind === "HR"
+          ? ["hr.employee.manage", "hr.employee.view"]
+          : ["hr.employee.view", "hr.attendance.manage"],
+        kind === "HR" ? { type: "tenant" } : { type: "brand", brandId: brandA },
+      );
+      const own = await seedEmployee({ userId: caller.userId });
+      expect(await detailHint(caller.client, own)).toBe(false);
+      expect(await detailHint(caller.client, await seedEmployee())).toBe(true);
+    },
+  );
+
+  it("denies a view-only outlet even when another outlet grants employee management", async () => {
+    const caller = await signedInClient("Detail Mixed Outlet Scope");
+    await grantRole(caller.userId, ["hr.employee.view"], { type: "tenant" });
+    await grantRole(caller.userId, ["hr.employee.manage"], {
+      type: "outlet",
+      outletId: outletA1,
+    });
+    const managed = await seedEmployee({ homeOutletId: outletA1 });
+    const viewOnly = await seedEmployee({ homeOutletId: outletA2 });
+    expect(await detailHint(caller.client, viewOnly)).toBe(false);
+    expect(await detailHint(caller.client, managed)).toBe(true);
+  });
+
+  it("does not extend brand GM management through tenant-wide employee view", async () => {
+    const caller = await signedInClient("Detail Mixed Brand Scope");
+    await grantRole(caller.userId, ["hr.employee.view"], { type: "tenant" });
+    await grantRole(caller.userId, ["hr.attendance.manage"], {
+      type: "brand",
+      brandId: brandA,
+    });
+    expect(
+      await detailHint(
+        caller.client,
+        await seedEmployee({ homeOutletId: outletB1 }),
+      ),
+    ).toBe(false);
+    expect(
+      await detailHint(
+        caller.client,
+        await seedEmployee({ homeOutletId: outletA2 }),
+      ),
+    ).toBe(true);
+  });
+
+  it("denies outlet supervisors and outlet managers viewing their direct reports", async () => {
+    expect(
+      await detailHint(
+        sup.client,
+        await seedEmployee({ managerId: supEmployee }),
+      ),
+    ).toBe(false);
+    expect(
+      await detailHint(
+        om.client,
+        await seedEmployee({ managerId: omEmployee }),
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("GET /api/me/access canChangeEmployeeManager", () => {
   const hintOf = async (client: Client) => {
     const res = await client.get("/api/me/access");
@@ -1170,6 +1306,14 @@ afterAll(async () => {
       await client.query(
         "DELETE FROM attendance_corrections WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
         [tenant.id, createdCorrections],
+      );
+      await client.query(
+        "DELETE FROM service_charge_allocations WHERE tenant_id=$1 AND pool_id=ANY($2::uuid[])",
+        [tenant.id, createdServiceChargePools],
+      );
+      await client.query(
+        "DELETE FROM service_charge_pools WHERE tenant_id=$1 AND id=ANY($2::uuid[])",
+        [tenant.id, createdServiceChargePools],
       );
       await client.query(
         "UPDATE employees SET manager_id = NULL WHERE tenant_id = $1 AND id = ANY($2::uuid[])",

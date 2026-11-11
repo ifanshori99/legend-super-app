@@ -47,6 +47,7 @@ import { requireIdentitySurface } from "../middleware/identity.ts";
 import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import { loadRequestAccess } from "../middleware/permissions.ts";
+import { supportSessionOf } from "../middleware/support-session.ts";
 import {
   getTenantContext,
   requireTenantContext,
@@ -211,12 +212,18 @@ export function createHrisRouter(deps: HrisRouterDeps = {}): Router {
     requireHris(READ_OR_SELF),
     async (req, res) => {
       const { employeeId } = getEmployeeEndpoint.params.parse(req.params);
+      const employee = await employeesService.getEmployee(
+        hrisContext(req),
+        actor(req),
+        employeeId,
+      );
+      const support = await supportSessionOf(req);
       res.json({
-        data: await employeesService.getEmployee(
-          hrisContext(req),
-          actor(req),
-          employeeId,
-        ),
+        data: {
+          ...employee,
+          canChangeManager:
+            employee.canChangeManager && support?.accessMode !== "read_only",
+        },
       });
     },
   );

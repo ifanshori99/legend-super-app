@@ -31,6 +31,7 @@ import {
   updateEmployeePii as updateEmployeePiiEndpoint,
   listEmployees as listEmployeesEndpoint,
   type Employee,
+  type EmployeeProfile,
   type EmployeePii,
   type EmployeeStatus,
   type MyHrisProfile,
@@ -64,6 +65,7 @@ import {
   hrisAuditEntry,
   hrisFieldVisibility,
   loadHrisAccess,
+  mayChangeEmployeeManager,
   notFound,
   uniqueViolation,
   type HrisAccess,
@@ -334,12 +336,15 @@ export async function getEmployee(
   context: ScopedTenantContext,
   actorUserId: string,
   employeeId: string,
-): Promise<Employee> {
+): Promise<EmployeeProfile> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId);
     const row = await findEmployee(tx, context, employeeId);
     if (!row || access.viewerFor(row) === null) throw notFound();
-    return toEmployee(row);
+    return {
+      ...toEmployee(row),
+      canChangeManager: mayChangeEmployeeManager(access, row),
+    };
   });
 }
 

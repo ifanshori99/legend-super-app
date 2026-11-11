@@ -353,7 +353,13 @@ registerMock(getEmployee, ({ params }) => {
   );
   if (!employee)
     throw new ApiError(404, "NOT_FOUND", "Karyawan tidak ditemukan.");
-  return { data: employee };
+  const role = mockRoleFromCookie();
+  return {
+    data: {
+      ...employee,
+      canChangeManager: role !== null && mayChangeManagerInMock(role, employee),
+    },
+  };
 });
 
 // ---- Ubah atasan (mirrors apps/api hris-employee-manager.service.ts) --------
@@ -382,9 +388,14 @@ function isJuniorEmployee(employee: Employee): boolean {
   );
 }
 
-/** Same rule the shell uses to show the button: HR, owner and brand GM. */
-function mayChangeManagerInMock(role: MockRole): boolean {
-  return accessForMockRole(role).canChangeEmployeeManager === true;
+/** Mock assignments use the role template; the subject still excludes self. */
+function mayChangeManagerInMock(role: MockRole, employee: Employee): boolean {
+  const viewer = mockHrisViewer();
+  return (
+    viewer !== null &&
+    viewer.employeeId !== employee.id &&
+    accessForMockRole(role).canChangeEmployeeManager === true
+  );
 }
 
 registerMock(changeEmployeeManagerEndpoint, ({ params, body }) => {
@@ -396,7 +407,7 @@ registerMock(changeEmployeeManagerEndpoint, ({ params, body }) => {
   const target = all.find((row) => row.id === params.employeeId);
   if (!target)
     throw new ApiError(404, "NOT_FOUND", "Karyawan tidak ditemukan.");
-  if (!mayChangeManagerInMock(role))
+  if (!mayChangeManagerInMock(role, target))
     throw new ApiError(
       403,
       "FORBIDDEN",

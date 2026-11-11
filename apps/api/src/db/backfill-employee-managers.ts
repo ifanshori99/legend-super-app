@@ -3,7 +3,7 @@
 // id). Active employees with a NULL manager_id (or a manager who is no longer
 // active, or who sits in another outlet) are invisible to them. This script
 // proposes the single active outlet_manager of the employee's home outlet as the
-// manager, and writes it only for rows that HR has reviewed (--ids).
+// manager, and writes only the exact before/after tuples HR has reviewed.
 //
 // Only "auto" items are ever written: manager_id NULL, or a manager that is not
 // active, where exactly one active outlet_manager (whose home outlet is that
@@ -20,8 +20,8 @@
 //   (a) deploy a build that contains this script.
 //   (b) pnpm db:backfill-employee-managers            (dry-run: auto and manual lists)
 //   (c) HR lead reviews the auto list with the outlet manager; save the approved
-//       employee ids to a file, one per line.
-//   (d) pnpm db:backfill-employee-managers --apply --ids <file>
+//       tuples from --dry-run --manifest <new.csv>; remove unapproved rows.
+//   (d) pnpm db:backfill-employee-managers --apply --manifest <approved.csv>
 //   (e) dry-run again, expect 0 auto items; resolve the manual list in the HR screen.
 //   (f) only then roll out the supervisor / outlet_manager direct-report scope.
 //
@@ -36,7 +36,7 @@
 // throws, the error propagates (exit 1) after the earlier tenants have already
 // committed and been logged; later tenants are not touched. Full names and user
 // ids are never printed.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -64,14 +64,18 @@ export const BACKFILL_ACTION = "hris.employee_manager_backfill";
 export const BACKFILL_REASON = "legend-qhqf8 512 backfill manager_id";
 
 export const USAGE =
-  "Usage: db:backfill-employee-managers [--dry-run | --apply] [--ids <file>] [--tenant <uuid>]\n" +
-  "  --dry-run         (default) list the employees that would get a manager, write nothing\n" +
+  "Usage: db:backfill-employee-managers [--dry-run | --apply] [--manifest <file>] [--ids <file>] [--tenant <uuid>]\n" +
+  "  --dry-run         (default) list proposals without changing the database\n" +
   "  --apply           set manager_id and write one audit row per employee\n" +
-  "  --ids <file>      reviewed employee ids, one uuid per line (blank and # lines\n" +
-  "                    ignored); required for --apply, only these rows are touched\n" +
+  "  --manifest <file> write a new review CSV in dry-run; read approved tuples in apply\n" +
+  "                    columns: employee_id,current_manager_id,proposed_manager_id\n" +
+  "                    required for --apply; an empty current_manager_id means NULL\n" +
+  "  --ids <file>      optional dry-run filter, one employee uuid per line\n" +
+  "                    (blank and # lines ignored); cannot approve an apply\n" +
   "  --tenant <uuid>   only this tenant (default: every tenant)\n" +
-  "Run order: (a) deploy a build with this script; (b) dry-run; (c) HR lead reviews the auto\n" +
-  "  list with the outlet manager, save the approved ids to a file; (d) --apply --ids <file>;\n" +
+  "Run order: (a) deploy a build with this script; (b) --dry-run --manifest <new.csv>;\n" +
+  "  (c) HR lead reviews the exact tuples with the outlet manager; remove unapproved rows;\n" +
+  "  (d) --apply --manifest <approved.csv>;\n" +
   "  (e) dry-run again, expect 0 auto items, resolve the manual list in the HR screen;\n" +
   "  (f) only then roll out the direct-report scope.";
 
@@ -120,6 +124,74 @@ export type Finding = {
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export type ManifestEntry = {
+  employeeId: string;
+  currentManagerId: string | null;
+  proposedManagerId: string;
+};
+
+const MANIFEST_HEADER = "employee_id,current_manager_id,proposed_manager_id";
+
+function normalizeManifest(entries: ManifestEntry[]): ManifestEntry[] {
+  const seen = new Set<string>();
+  return entries.map((entry) => {
+    if (
+      typeof entry.employeeId !== "string" ||
+      !UUID.test(entry.employeeId) ||
+      (entry.currentManagerId !== null &&
+        (typeof entry.currentManagerId !== "string" ||
+          !UUID.test(entry.currentManagerId))) ||
+      typeof entry.proposedManagerId !== "string" ||
+      !UUID.test(entry.proposedManagerId)
+    )
+      throw new BackfillUsageError(
+        "--manifest contains an invalid manager tuple.",
+      );
+    const employeeId = entry.employeeId.toLowerCase();
+    if (seen.has(employeeId))
+      throw new BackfillUsageError("--manifest repeats an employee id.");
+    seen.add(employeeId);
+    return {
+      employeeId,
+      currentManagerId: entry.currentManagerId?.toLowerCase() ?? null,
+      proposedManagerId: entry.proposedManagerId.toLowerCase(),
+    };
+  });
+}
+
+/** Exact reviewed tuples; no id-only approval or implicit manager recomputation. */
+export function parseManifestFile(text: string): ManifestEntry[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  if (lines.shift() !== MANIFEST_HEADER)
+    throw new BackfillUsageError("--manifest has an invalid CSV header.");
+  return normalizeManifest(
+    lines.map((line) => {
+      const fields = line.split(",").map((field) => field.trim());
+      if (fields.length !== 3)
+        throw new BackfillUsageError("--manifest contains an invalid CSV row.");
+      return {
+        employeeId: fields[0]!,
+        currentManagerId: fields[1] || null,
+        proposedManagerId: fields[2]!,
+      };
+    }),
+  );
+}
+
+function manifestCsv(entries: ManifestEntry[]): string {
+  return [
+    MANIFEST_HEADER,
+    ...entries.map(
+      (entry) =>
+        `${entry.employeeId},${entry.currentManagerId ?? ""},${entry.proposedManagerId}`,
+    ),
+    "",
+  ].join("\n");
+}
 
 /** Parses the --ids file: one uuid per line, blank and `#` lines ignored. */
 export function parseIdsFile(text: string): string[] {
@@ -323,11 +395,13 @@ async function loadTenantState(tx: Tx, tenantId: string, now: Date) {
 
 export type BackfillResult = {
   apply: boolean;
+  /** Auto proposals in dry-run; exact HR-approved input tuples in apply. */
+  manifest: ManifestEntry[];
   /** Every finding of the read pass, across the tenants that were read. */
   findings: Finding[];
   /** Employees whose manager_id was written (apply only). */
   applied: number;
-  /** Ids from --ids that were no longer an auto item with the same proposal; never touched. */
+  /** Approved rows no longer eligible with the same before/after tuple; never touched. */
   skipped: string[];
   /** Findings that need a human decision; never touched. */
   manual: Finding[];
@@ -338,20 +412,34 @@ export async function run(options: {
   apply: boolean;
   now: Date;
   log: (line: string) => void;
-  /** Reviewed employee ids; required for apply, rows outside it are never touched. */
+  /** Optional dry-run filter; employee ids alone can never approve an apply. */
   ids?: string[];
+  /** The exact before/after tuples approved by HR; required for apply. */
+  manifest?: ManifestEntry[];
   /** Only this tenant; default every tenant. */
   tenantId?: string;
 }): Promise<BackfillResult> {
   const { pool, apply, now, log } = options;
   const ids = options.ids?.map((id) => id.toLowerCase());
-  if (apply && !ids)
-    throw new BackfillUsageError("--apply requires --ids <file>.");
+  if (apply && !options.manifest)
+    throw new BackfillUsageError("--apply requires --manifest <file>.");
+  if (apply && ids)
+    throw new BackfillUsageError(
+      "--ids is only a dry-run filter; apply uses --manifest.",
+    );
   if (ids?.some((id) => !UUID.test(id)))
     throw new BackfillUsageError("--ids holds a value that is not a uuid.");
   if (options.tenantId && !UUID.test(options.tenantId))
     throw new BackfillUsageError("--tenant is not a uuid.");
-  const idSet = ids ? new Set(ids) : undefined;
+  const approved = normalizeManifest(options.manifest ?? []);
+  const approvedByEmployee = new Map(
+    approved.map((entry) => [entry.employeeId, entry]),
+  );
+  const idSet = apply
+    ? new Set(approvedByEmployee.keys())
+    : ids
+      ? new Set(ids)
+      : undefined;
   const db = drizzle(pool, { schema });
   const tenantIds = (
     options.tenantId
@@ -366,7 +454,8 @@ export async function run(options: {
   const skipped: string[] = [];
   let applied = 0;
   const manualLines: string[] = [];
-  const autoIds: string[] = [];
+  const autoManifest: ManifestEntry[] = [];
+  const allWrittenIds = new Set<string>();
 
   for (const tenantId of tenantIds) {
     // Read pass: read-only, nothing is written here.
@@ -395,10 +484,16 @@ export async function run(options: {
           `${tenantId},${finding.employeeId},${finding.employeeNo},${finding.outletId},${finding.issue},${finding.manualReason ?? ""}`,
         );
       } else if (!idSet || idSet.has(finding.employeeId)) {
-        autoIds.push(finding.employeeId);
-        tenantAutoLines.push(
-          `tenant=${tenantId} employee=${finding.employeeId} no=${finding.employeeNo} outlet=${finding.outletId} issue=${finding.issue} current=${finding.currentManagerId ?? "-"} proposed=${finding.proposedManagerId ?? "-"}`,
-        );
+        if (finding.proposedManagerId)
+          autoManifest.push({
+            employeeId: finding.employeeId,
+            currentManagerId: finding.currentManagerId,
+            proposedManagerId: finding.proposedManagerId,
+          });
+        if (!apply)
+          tenantAutoLines.push(
+            `tenant=${tenantId} employee=${finding.employeeId} no=${finding.employeeNo} outlet=${finding.outletId} issue=${finding.issue} current=${finding.currentManagerId ?? "-"} proposed=${finding.proposedManagerId ?? "-"}`,
+          );
       }
     }
     log(
@@ -409,25 +504,30 @@ export async function run(options: {
     for (const line of tenantAutoLines) log(line);
     if (!apply) continue;
 
-    const candidates = findings.filter(
-      (finding) => finding.action === "auto" && idSet!.has(finding.employeeId),
-    );
-    // Reviewed ids that are employees of THIS tenant: whatever is not written
+    // Reviewed tuples for employees of THIS tenant: whatever is not written
     // below is reported as skipped for this tenant.
-    const reviewedHere = await db.transaction(
-      async (tx) => {
-        await enterTenant(tx, tenantId);
-        const rows = await tx.execute(
-          sql`SELECT id FROM employees
+    const reviewedHere =
+      idSet!.size === 0
+        ? []
+        : await db.transaction(
+            async (tx) => {
+              await enterTenant(tx, tenantId);
+              const rows = await tx.execute(
+                sql`SELECT id FROM employees
               WHERE tenant_id = ${tenantId}::uuid AND id IN (${sql.join(
                 [...idSet!].map((id) => sql`${id}::uuid`),
                 sql`, `,
               )})`,
-        );
-        return rows.rows.map((row) => String(row.id));
-      },
-      { accessMode: "read only" },
-    );
+              );
+              return rows.rows.map((row) => String(row.id));
+            },
+            { accessMode: "read only" },
+          );
+    const candidates = reviewedHere.map((id) => approvedByEmployee.get(id)!);
+    for (const candidate of candidates)
+      log(
+        `tenant=${tenantId} employee=${candidate.employeeId} approved_current=${candidate.currentManagerId ?? "-"} approved_proposed=${candidate.proposedManagerId}`,
+      );
     const writtenIds = new Set<string>();
     const logTenantResult = () => {
       const notWritten = reviewedHere.filter((id) => !writtenIds.has(id));
@@ -458,6 +558,21 @@ export async function run(options: {
               sql`, `,
             )})
             ORDER BY id FOR UPDATE`,
+      );
+      // Lock the exact approved managers before loading fresh state. Offboarding
+      // may already hold one of these rows: wait for it, then recheck its status
+      // and eligibility below. If we lock first, its status cannot change until
+      // our employee updates and audit rows commit (same order as PATCH).
+      const proposedManagerIds = [
+        ...new Set(candidates.map((candidate) => candidate.proposedManagerId)),
+      ].sort();
+      await tx.execute(
+        sql`SELECT id FROM employees
+            WHERE tenant_id = ${tenantId}::uuid AND id IN (${sql.join(
+              proposedManagerIds.map((id) => sql`${id}::uuid`),
+              sql`, `,
+            )})
+            ORDER BY id FOR SHARE`,
       );
       const state = await loadTenantState(tx, tenantId, now);
       const index = buildIndex(state.employees, state.outletManagers);
@@ -520,18 +635,14 @@ export async function run(options: {
       return count;
     });
     applied += tenantApplied;
+    for (const id of writtenIds) allWrittenIds.add(id);
     logTenantResult();
   }
 
-  // Ids named in --ids that were never an auto item at all.
-  if (idSet) {
-    const autoSeen = new Set(
-      allFindings
-        .filter((finding) => finding.action === "auto")
-        .map((finding) => finding.employeeId),
-    );
+  // Include missing employees and rows outside --tenant in the skip report.
+  if (apply && idSet) {
     for (const id of idSet)
-      if (!autoSeen.has(id) && !skipped.includes(id)) skipped.push(id);
+      if (!allWrittenIds.has(id) && !skipped.includes(id)) skipped.push(id);
   }
 
   log(
@@ -539,23 +650,26 @@ export async function run(options: {
   );
   for (const id of skipped)
     log(
-      `SKIPPED employee=${id}: listed in --ids but no longer an auto item with the same proposal.`,
+      `SKIPPED employee=${id}: reviewed manifest tuple no longer matches an eligible employee and manager.`,
     );
   log(
     "# MANUAL LIST (csv: tenant_id,employee_id,employee_no,outlet_id,issue,reason)",
   );
   for (const line of manualLines) log(line);
   if (!apply) {
-    if (autoIds.length > 0) {
-      log("# Ids for review (save approved to a file for --ids)");
-      for (const id of autoIds) log(id);
-      log("Dry-run: nothing written. Add --apply --ids <file>.");
+    if (autoManifest.length > 0) {
+      log("# Manifest for HR review (--manifest CSV)");
+      log(manifestCsv(autoManifest).trimEnd());
+      log(
+        "Dry-run: nothing written to the database. Apply the reviewed --manifest <file>.",
+      );
     }
   } else {
     log(`Updated ${applied} employee(s), ${applied} audit row(s) written.`);
   }
   return {
     apply,
+    manifest: apply ? approved : autoManifest,
     findings: allFindings,
     applied,
     skipped,
@@ -594,17 +708,20 @@ function migrationDatabaseUrl(requireMigrationUrl: boolean) {
   return direct ? databaseUrl(direct) : databaseUrl();
 }
 
-/** Parses the CLI arguments and reads the --ids file. Throws BackfillUsageError. */
+/** Reads approved manifests in apply; --manifest is a new output path in dry-run. */
 export function parseArgs(args: string[]) {
   let apply = false;
   let dryRun = false;
   let idsFile: string | undefined;
+  let manifestFile: string | undefined;
   let tenantId: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--apply") apply = true;
     else if (arg === "--dry-run") dryRun = true;
     else if (arg === "--ids" && args[i + 1] && !idsFile) idsFile = args[++i];
+    else if (arg === "--manifest" && args[i + 1] && !manifestFile)
+      manifestFile = args[++i];
     else if (arg === "--tenant" && args[i + 1] && !tenantId) {
       tenantId = args[++i]!.toLowerCase();
       if (!UUID.test(tenantId))
@@ -613,6 +730,12 @@ export function parseArgs(args: string[]) {
   }
   if (apply && dryRun)
     throw new BackfillUsageError("Use --apply or --dry-run, not both.");
+  if (apply && !manifestFile)
+    throw new BackfillUsageError("--apply requires --manifest <file>.");
+  if (apply && idsFile)
+    throw new BackfillUsageError(
+      "--ids is only a dry-run filter; apply uses --manifest.",
+    );
   let ids: string[] | undefined;
   if (idsFile) {
     let text: string;
@@ -623,9 +746,17 @@ export function parseArgs(args: string[]) {
     }
     ids = parseIdsFile(text);
   }
-  if (apply && !ids)
-    throw new BackfillUsageError("--apply requires --ids <file>.");
-  return { apply, ids, tenantId };
+  let manifest: ManifestEntry[] | undefined;
+  if (apply && manifestFile) {
+    let text: string;
+    try {
+      text = readFileSync(manifestFile, "utf8");
+    } catch {
+      throw new BackfillUsageError("Cannot read the --manifest file.");
+    }
+    manifest = parseManifestFile(text);
+  }
+  return { apply, ids, tenantId, manifest, manifestFile };
 }
 
 /**
@@ -651,12 +782,27 @@ export async function cli(
       connectionString: migrationDatabaseUrl(!options.loadEnv),
       max: 1,
     });
-    await run({
+    const result = await run({
       pool,
       ...parsed,
       now: new Date(),
       log: (line) => console.log(line),
     });
+    if (!parsed.apply && parsed.manifestFile) {
+      try {
+        writeFileSync(parsed.manifestFile, manifestCsv(result.manifest), {
+          flag: "wx",
+          mode: 0o600,
+        });
+      } catch {
+        throw new BackfillUsageError(
+          "Cannot write the new --manifest file; use a writable path that does not exist.",
+        );
+      }
+      console.log(
+        "Review manifest written; remove unapproved rows before --apply.",
+      );
+    }
     return 0;
   } catch (error) {
     if (error instanceof BackfillUsageError) {

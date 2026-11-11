@@ -36,6 +36,7 @@ import {
   forbidden,
   hrisAuditEntry,
   loadHrisAccess,
+  mayChangeEmployeeManager,
   notFound,
   type HrisAccess,
   type Tx,
@@ -55,22 +56,10 @@ export const MANAGER_CHANGE_ACTION = "hris.employee_manager_change";
 const GM_MANAGE_CODE = "hr.attendance.manage" as const;
 const AUDIT_FIELDS = [...HRIS_AUDIT_SAFE_FIELDS, "managerId"];
 
-/** HR at the home outlet, or a brand/tenant-scoped holder of hr.attendance.manage covering it. */
-function mayChangeManager(access: HrisAccess, homeOutletId: string): boolean {
-  if (access.permissionsAt(homeOutletId).includes(HRIS_MANAGE_CODE))
-    return true;
-  const reach = access.brandOrWiderReach([GM_MANAGE_CODE]);
-  if (reach === null) return false;
-  if (reach.kind === "tenant") return true;
-  return reach.outletIds.some(
-    (id) => id.toLowerCase() === homeOutletId.toLowerCase(),
-  );
-}
-
 /**
  * Whether this actor can change any employee's manager (hint for GET
  * /api/me/access; the PATCH decides per employee). Keep in step with
- * `mayChangeManager`: HR through any assignment, or a brand/tenant GM.
+ * `mayChangeEmployeeManager`: HR through any assignment, or a brand/tenant GM.
  */
 export function mayChangeAnyEmployeeManager(access: HrisAccess): boolean {
   return (
@@ -168,11 +157,9 @@ export async function changeEmployeeManager(
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const visible = await selectEmployee(tx, context, employeeId, false);
     if (!visible || access.viewerFor(visible) === null) throw notFound();
-    if (!mayChangeManager(access, visible.homeOutletId)) throw forbidden();
     // Nobody picks their own manager: that person would then see them as a
     // direct report and could decide their attendance corrections.
-    if (access.own?.id.toLowerCase() === visible.id.toLowerCase())
-      throw forbidden();
+    if (!mayChangeEmployeeManager(access, visible)) throw forbidden();
     return idempotentHrisWrite(
       tx,
       context,

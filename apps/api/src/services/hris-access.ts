@@ -106,6 +106,26 @@ export type HrisAccess = {
   readonly viewerFor: (subject: HrisSubject) => HrisViewer | null;
 };
 
+/** The detail hint and PATCH share the same scope and self-edit rule. */
+export function mayChangeEmployeeManager(
+  access: HrisAccess,
+  subject: HrisSubject,
+): boolean {
+  if (
+    access.viewerFor(subject) === null ||
+    access.own?.id.toLowerCase() === subject.id.toLowerCase()
+  )
+    return false;
+  if (access.permissionsAt(subject.homeOutletId).includes(HRIS_MANAGE_CODE))
+    return true;
+  const reach = access.brandOrWiderReach(["hr.attendance.manage"]);
+  if (reach === null) return false;
+  if (reach.kind === "tenant") return true;
+  return reach.outletIds.some(
+    (id) => id.toLowerCase() === subject.homeOutletId.toLowerCase(),
+  );
+}
+
 const lower = (value: string) => value.toLowerCase();
 
 export async function loadHrisAccess(

@@ -4,7 +4,7 @@
 // search param (`?tab=kontrak|dokumen`) like the inventory pages, so a section
 // is linkable and the loader can prefetch it.
 import * as React from "react";
-import { Link, useRouteContext } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { ArrowLeft, Lock, UserRoundCog } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -13,9 +13,7 @@ import { CardShell, CardShellBody } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { ApiError } from "@/lib/api/errors";
-import type { AreaAccess } from "@/lib/areas/access";
 import type { MessageKey } from "@starter/shared/i18n";
-import { canChangeEmployeeManager } from "../guard";
 import {
   useEmployee,
   useEmployees,
@@ -103,11 +101,6 @@ function ProfileBody({
   canEditPii: boolean;
 }) {
   const t = useT();
-  // Presentation only: the API decides by assignment scope and answers 403.
-  const { access } = useRouteContext({ strict: false }) as {
-    access?: AreaAccess;
-  };
-  const canChangeManager = access ? canChangeEmployeeManager(access) : false;
   const [changingManager, setChangingManager] = React.useState(false);
   const employeeQuery = useEmployee(employeeId);
   const employeesQuery = useEmployees();
@@ -116,6 +109,7 @@ function ProfileBody({
   const outletsQuery = useOutlets();
 
   const employee = employeeQuery.data?.data;
+  const canChangeManager = employee?.canChangeManager === true;
   const employees = React.useMemo(
     () => employeesQuery.data?.data ?? [],
     [employeesQuery.data],

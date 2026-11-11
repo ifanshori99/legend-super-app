@@ -206,6 +206,12 @@ export const employeeSchema =
   employeeBaseSchema.superRefine(checkEmployeeDates);
 export type Employee = z.infer<typeof employeeSchema>;
 
+/** Per-employee actions belong to the detail response, not the directory. */
+export const employeeProfileSchema = employeeBaseSchema
+  .extend({ canChangeManager: z.boolean() })
+  .superRefine(checkEmployeeDates);
+export type EmployeeProfile = z.infer<typeof employeeProfileSchema>;
+
 /**
  * Masked personal data (HR-03). Only ever `{ masked, keyVersion }`; raw values
  * are write-only input and ciphertext never leaves Postgres.

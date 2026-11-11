@@ -60,10 +60,12 @@ disentuh. Tiap perubahan menulis satu baris audit.
 ## Urutan sebelum rollout
 
 1. Deploy build yang memuat skrip ke environment tujuan.
-2. Dry-run per environment (bagian 1). Tidak menulis apa pun.
+2. Dry-run per environment dan simpan manifest CSV baru (bagian 1). Database
+   tidak berubah.
 3. HR dan outlet manager meninjau daftar auto dan daftar manual (bagian 2).
-4. HR lead menyimpan id yang disetujui ke berkas `approved-ids.txt` (bagian 3).
-5. Apply dengan `--ids` (bagian 4).
+4. HR lead meninjau tuple karyawan, atasan lama, dan usulan atasan; hapus baris
+   yang tidak disetujui dari manifest `approved-managers.csv` (bagian 3).
+5. Apply dengan manifest yang ditinjau itu, `--manifest` (bagian 4).
 6. Dry-run ulang. Hasil yang benar: 0 auto (bagian 5).
 7. HR atau GM brand mengisi atasan untuk daftar manual lewat Profil karyawan >
    Ubah atasan, satu karyawan per baris (bagian 2).
@@ -80,17 +82,20 @@ Dari `apps/api`, koneksi database lewat `MIGRATION_DATABASE_URL_FILE` (path ke
 berkas berisi URL, jangan cetak URL). Pilih salah satu, bukan keduanya:
 
 ```bash
-pnpm --filter @starter/api db:backfill-employee-managers --dry-run
+pnpm --filter @starter/api db:backfill-employee-managers --dry-run --manifest review-managers.csv
 # satu tenant saja (opsional):
-pnpm --filter @starter/api db:backfill-employee-managers --dry-run --tenant <tenant-uuid>
+pnpm --filter @starter/api db:backfill-employee-managers --dry-run --manifest review-tenant.csv --tenant <tenant-uuid>
 ```
 
 `--dry-run` adalah default. Transaksi per tenant, hanya baca, tidak ada update
-dan tidak ada audit. Log tidak memuat nama lengkap atau user id.
+dan tidak ada audit. `--manifest` menulis berkas CSV baru dengan izin `0600`;
+berkas yang sudah ada tidak ditimpa, supaya persetujuan lama tidak tergantikan
+oleh perhitungan baru. Log tidak memuat nama lengkap atau user id. `--ids`
+masih tersedia sebagai filter dry-run opsional, bukan bukti persetujuan apply.
 
 Log ditulis per tenant begitu tenant itu selesai: satu baris ringkasan, lalu
 baris auto tenant itu. Setelah semua tenant: baris `Total`, daftar manual (CSV
-dengan kolom `tenant_id`), dan daftar id untuk ditinjau.
+dengan kolom `tenant_id`), dan manifest usulan untuk ditinjau.
 
 Contoh keluaran, dua tenant (id palsu):
 
@@ -105,11 +110,13 @@ Total: findings=6 auto=3 manual=3
 11111111-1111-4111-8111-111111111111,aaaaaaaa-0000-4000-8000-000000000004,EMP-0120,bbbbbbbb-0000-4000-8000-000000000003,no_manager,no_outlet_manager
 11111111-1111-4111-8111-111111111111,aaaaaaaa-0000-4000-8000-000000000005,EMP-0130,bbbbbbbb-0000-4000-8000-000000000001,manager_cross_outlet,cross_outlet_needs_review
 11111111-1111-4111-8111-111111111111,aaaaaaaa-0000-4000-8000-000000000006,EMP-0140,bbbbbbbb-0000-4000-8000-000000000001,no_manager,holds_manager_role
-# Ids for review (save approved to a file for --ids)
-aaaaaaaa-0000-4000-8000-000000000001
-aaaaaaaa-0000-4000-8000-000000000002
-aaaaaaaa-0000-4000-8000-000000000003
-Dry-run: nothing written. Add --apply --ids <file>.
+# Manifest for HR review (--manifest CSV)
+employee_id,current_manager_id,proposed_manager_id
+aaaaaaaa-0000-4000-8000-000000000001,,cccccccc-0000-4000-8000-000000000001
+aaaaaaaa-0000-4000-8000-000000000002,,cccccccc-0000-4000-8000-000000000001
+aaaaaaaa-0000-4000-8000-000000000003,dddddddd-0000-4000-8000-000000000009,cccccccc-0000-4000-8000-000000000002
+Dry-run: nothing written to the database. Apply the reviewed --manifest <file>.
+Review manifest written; remove unapproved rows before --apply.
 ```
 
 Simpan keluaran ke berkas kerja yang aman (berisi nomor karyawan dan id, bukan
@@ -119,7 +126,8 @@ nama). Jangan tempel ke chat atau tiket publik.
 
 - Daftar auto: HR lead dan outlet manager memeriksa tiap baris: apakah
   `proposed` memang atasan langsung karyawan itu. Baris yang ragu dihapus dari
-  daftar id (tidak ikut apply).
+  manifest (tidak ikut apply). Nilai atasan lama dan usulan yang dipertahankan
+  harus tetap sama dengan hasil dry-run yang ditinjau.
 - Daftar manual: HR lead dan GM brand menentukan atasan per baris, termasuk
   baris `manager_cross_outlet` (bisa jadi sah, misalnya supervisor area) dan
   baris `holds_manager_role` (atasannya bukan otomatis outlet manager). Kolom
@@ -133,11 +141,11 @@ GM hanya bisa untuk karyawan brand-nya sendiri. Penjagaan ada di dua lapis:
   biasanya berhenti di sini. Layar hanya menampilkan pesan umum
   ("Atasan tidak dapat disimpan. Coba lagi sebentar lagi."), bukan pesan peran,
   dan tombol **Ubah atasan** tidak muncul bagi mereka.
-- Tombol **Ubah atasan** hanya tampil bagi pemegang `hr.employee.manage` atau
-  `hr.attendance.manage`. Setelah itu service memeriksa cakupan brand/tenant
-  terhadap outlet asal karyawan. Outlet manager yang memegang izin itu bisa
-  melihat tombol, tetapi ditolak 403 ("Peran Anda tidak boleh mengubah atasan
-  karyawan ini.") karena cakupannya hanya outlet, bukan brand/tenant.
+- Tombol **Ubah atasan** mengikuti `canChangeManager` dari detail karyawan:
+  HR harus punya izin kelola di outlet asal karyawan, atau GM punya cakupan
+  brand/tenant yang mencakup outlet itu. Tombol tidak muncul di profil sendiri
+  maupun profil pada outlet yang hanya boleh dilihat. API PATCH tetap
+  memeriksa izin itu saat menyimpan.
 
 Dua aturan lain: karyawan harus terlihat oleh pemanggil (bila tidak, 404), dan
 tidak seorang pun bisa mengubah atasannya sendiri (403 dengan pesan yang sama;
@@ -171,38 +179,52 @@ Memilih **Tanpa atasan** tidak pernah ditolak karena aturan role. Dua perubahan
 atasan di tenant yang sama diproses bergantian, jadi dua orang yang saling
 menjadikan atasan tidak bisa sama-sama berhasil.
 
-## 3. Berkas id yang disetujui
+## 3. Manifest yang disetujui
 
-Satu uuid per baris, baris `#` adalah komentar. Contoh `approved-ids.txt`:
+Berkas CSV yang dihasilkan dry-run memuat tiga kolom berikut. Nilai kosong di
+`current_manager_id` berarti `NULL`; usulan atasan wajib UUID. Contoh
+`approved-managers.csv` setelah baris yang belum disetujui dihapus:
 
-```text
+```csv
 # disetujui HR lead, ditinjau outlet manager, 2026-11-12
-aaaaaaaa-0000-4000-8000-000000000001
-aaaaaaaa-0000-4000-8000-000000000002
+employee_id,current_manager_id,proposed_manager_id
+aaaaaaaa-0000-4000-8000-000000000001,,cccccccc-0000-4000-8000-000000000001
+aaaaaaaa-0000-4000-8000-000000000003,dddddddd-0000-4000-8000-000000000009,cccccccc-0000-4000-8000-000000000002
 ```
 
-Hanya id di berkas ini yang boleh berubah. Id manual atau id di luar berkas
-tidak pernah disentuh. Id di berkas boleh dari beberapa tenant.
+Hanya tuple di berkas ini yang boleh diterapkan. Jangan membuat persetujuan dari
+daftar id saja, dan jangan mengganti usulan setelah ditinjau. Baris duplikat
+ditolak. Baris kosong dan komentar `#` diabaikan. Manifest boleh mencakup
+beberapa tenant; baris manual atau id di luar manifest tidak pernah disentuh.
 
 ## 4. Apply
 
 Hanya setelah gerbang founder dan oleh operator manusia:
 
 ```bash
-pnpm --filter @starter/api db:backfill-employee-managers --apply --ids approved-ids.txt
+pnpm --filter @starter/api db:backfill-employee-managers --apply --manifest approved-managers.csv
 ```
 
-- Tanpa `--ids`, skrip menolak (exit 2) dan tidak menulis apa pun.
+- Tanpa `--manifest`, skrip menolak (exit 2) dan tidak menulis apa pun. Apply
+  dengan `--ids` juga ditolak; persetujuan harus menyertakan kedua nilai atasan.
 - Satu transaksi per tenant. Tiap tenant di-commit dan dicatat di log begitu
   selesai, dengan baris `tenant=<id> updated=<n> skipped=<n>`.
 - Bila satu tenant (misalnya tenant B) gagal, skrip berhenti dengan exit 1.
   Tenant sebelumnya (tenant A) tetap ter-commit dan sudah tercatat di log.
   Tenant sesudahnya tidak disentuh. Lihat baris `updated=` terakhir di log untuk
   tahu tenant mana yang sudah selesai, perbaiki penyebab kesalahan, lalu jalankan
-  ulang dengan berkas id yang sama (aman diulang, lihat di bawah).
-- Di dalam transaksi, baris dikunci (`FOR UPDATE`) dan klasifikasi dihitung
-  ulang. Baris yang berubah sejak dry-run (sudah punya atasan lain, atasan
-  berbeda dari usulan, tidak lagi aktif) dilewati dan dicatat sebagai skipped.
+  ulang dengan manifest yang sama (aman diulang, lihat di bawah).
+- Di dalam transaksi, karyawan dikunci (`FOR UPDATE`), calon atasan dikunci
+  (`FOR SHARE`), lalu status, tenant, role, outlet, dan klasifikasi dibaca ulang.
+  Kunci calon atasan ditahan sampai commit, sehingga offboarding tidak bisa
+  mengubah statusnya di tengah penulisan. Nilai atasan lama dan usulan harus
+  sama persis dengan manifest yang sudah ditinjau HR. Baris yang berubah sejak
+  dry-run (sudah punya atasan lain, usulan berubah, tidak lagi aktif atau layak)
+  dilewati dan dicatat sebagai skipped, tanpa otomatis memilih pengganti baru.
+  Baris yang hilang atau di luar `--tenant` juga dilaporkan sebagai skipped.
+- Log apply memakai `approved_current` dan `approved_proposed` untuk nilai yang
+  ditinjau HR, bukan usulan baru yang dihitung saat apply. Tinjau ulang hasil
+  dry-run baru bila baris skipped tetap perlu diubah.
 - Tiap update menulis satu baris `audit_logs` dengan action
   `hris.employee_manager_backfill`, reason `legend-qhqf8 512 backfill manager_id`,
   actor `system`, dan nilai sebelum/sesudah `managerId`.
@@ -266,7 +288,7 @@ supervisor dan outlet manager, jadi lakukan sebelum scope 502 dibuka.
 - Hanya karyawan `active`. Karyawan `onboarding`, `suspended`, `resigned`,
   `terminated` tidak diperiksa.
 - Skrip tidak membaca atau mencetak nama lengkap dan user id.
-- Skrip tidak menyentuh baris `manual`, apa pun isi `--ids`.
+- Skrip tidak menyentuh baris `manual`, apa pun isi `--manifest`.
 - Skrip tidak mengubah GM atau akses scope brand.
 - Skrip tidak menyelesaikan daftar manual dan tidak punya undo. Keduanya
   dikerjakan di layar Profil karyawan > Ubah atasan.
