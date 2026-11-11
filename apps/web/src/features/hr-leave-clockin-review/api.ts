@@ -53,26 +53,40 @@ async function readPages<T>(
   return rows;
 }
 
-/** Queue items of one review status that carry the leave flag. */
+/**
+ * Queue items of one review status that carry the leave flag. The server
+ * filters by flag, so every page is read until `nextCursor` is null (no page
+ * cap: a leave case must never fall past an arbitrary limit). A cursor seen
+ * before (a repeat or a cycle) stops the loop. The client filter stays as defense.
+ */
 export async function fetchLeaveReviewItems(
   outletId: OutletId,
   reviewStatus: AttendanceReviewStatus,
   signal?: AbortSignal,
 ): Promise<AttendanceReviewItem[]> {
-  const items = await readPages((cursor) =>
-    callEndpoint(
+  const items: AttendanceReviewItem[] = [];
+  let cursor: string | undefined;
+  const seen = new Set<string>();
+  for (;;) {
+    const result = await callEndpoint(
       listAttendanceReviewQueue,
       {
         query: {
           outletId,
           reviewStatus,
+          flagReason: "leave_approved",
           limit: LEAVE_CLOCKIN_PAGE_LIMIT,
           ...(cursor === undefined ? {} : { cursor }),
         },
       },
       { signal },
-    ),
-  );
+    );
+    items.push(...result.data);
+    const next = result.meta.nextCursor;
+    if (next === null || seen.has(next)) break;
+    seen.add(next);
+    cursor = next;
+  }
   return items.filter(isLeaveClockinItem);
 }
 
