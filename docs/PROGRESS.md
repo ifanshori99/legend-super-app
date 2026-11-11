@@ -2,6 +2,11 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-eajpb + legend-5g9sn + legend-pqm3t sisa aturan Q25 (cabang `ws/rat9r-followups` dari ws/rat9r-voucher-cap 391a5514 + merge ti19m 79923008, 2026-11-11)
+
+- Sudah: cabang dibuat, ti19m digabung (logika `filingSeq` dipindah ke `order-recovery-paid-value.ts` karena rat9r memindah `findRecoveryRefundReplay`); tsc api lulus, 5 file 84/84 (filing-order, codex422, swap-cap, paid-cap, promo-final-failure). Brief `docs/briefs/sub-rat9r-followups.md`.
+- Berikut: tiga kartu sesuai brief (test gagal-dulu, architect xhigh), dikerjakan sesi agent baru (sesi lama sudah compact 2 kali).
+
 ## legend-rat9r voucher selisih tukar + refund item <= nilai dibayar tamu (engineer Opus, cabang `ws/rat9r-voucher-cap` dari ws/pti5r-promo-refund 326bfbfa + merge k0ub4, 2026-11-11)
 
 - Sudah: keputusan founder W4 Q25. Kolom baru `order_issues.paid_value_idr` (migrasi 0235) menyimpan nilai dibayar saat tukar ke menu lebih murah. Voucher = `min(selisih daftar, nilai dibayar - voucher rantai - refund hidup rantai)`; credit 0 = tanpa voucher dan tanpa approval. Consumer refund memotong ke `min(cap fwe4l, sisa rantai)` (audit `voucherCapIdr`); cap 0 di order promo lewat jalur `nothing_left` k0ub4 (ledger tetap). Voucher lini pengganti, voucher sistem, dan voucher maaf staf yang terikat laporan dibatasi sisa yang sama (422). Modul baru `order-recovery-paid-value.ts`.
@@ -16,6 +21,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Test: `order-recovery-refund-zero-replacement.test.ts` 6 test, gagal-dulu 4/6 di 326bfbfa; area 12 file 199/199. tsc, eslint, prettier bersih.
 - Architect xhigh: skenario Rp0 tidak bisa terjadi lewat API (ORD-09, event amount > 0), jadi ini pertahanan berlapis; satu temuan Rendah (goods dipotong ruang) sudah dibetulkan + test. Risiko di luar diff: `priorLinesIdr` ikut menghitung baris pengganti, cap swap pengganti berharga bisa jatuh ke 0.
 - Berikut: review CTO; dipakai ulang oleh legend-rat9r.
+
+## legend-ti19m urutan filing monoton refund recovery (engineer Opus, cabang `ws/ti19m-filing-order` dari ws/pti5r-promo-refund 326bfbfa, 2026-11-11)
+
+- Sudah: pendahulu replay dipilih dari `filingSeq` (max seq filing recovery order + 1, dihitung di bawah kunci order dan intent), disimpan di respons idempotensi dan audit `refund_requested`. Data lama tanpa seq di bawah semua yang ber-seq. Refile tidak mengubah seq.
+- Test: `order-recovery-refund-filing-order.test.ts` 10 test. Gagal-dulu di 326bfbfa: 5/10 (S1 pay-first + open bill, S2 id rendah, S4a, S6). S3/S5 penjaga regresi (rantai menyimpan akar A). Area 12 file 203/203 hijau. tsc, eslint, prettier bersih.
+- Architect xhigh: tidak ada bug uang; dua ekspektasi test salah (akar rantai) dibetulkan. Info: rolling deploy bisa membuat filing tanpa seq setelah ber-seq (butuh 3 laporan item sama dalam jendela deploy).
+- Berikut: review CTO.
 
 ## legend-iu91r + legend-8kilj refund recovery: edge, kegagalan final, four-eyes payout, release pin (engineer, cabang `ws/refund-recovery-fix` dari ws/94q2l-impl 3b94e7ad + merge milestone/m1 0f2802e7, 2026-11-10)
 

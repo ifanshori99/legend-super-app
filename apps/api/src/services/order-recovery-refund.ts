@@ -93,6 +93,7 @@ import {
 } from "./order-recovery-refund-amount.ts";
 import {
   findRecoveryRefundReplay,
+  filingSeqsOf,
   orderRecoveryRefundKey,
   recoveryChainOf,
   recoveryIssuesOf,
@@ -138,6 +139,7 @@ const AUDIT_SAFE_FIELDS = [
   "replayOfIssueId",
   "swapCapIdr",
   "voucherCapIdr",
+  "filingSeq",
 ];
 
 const REVERSAL_EVENT = "order_issue.refund_reversal_requested";
@@ -652,6 +654,27 @@ export async function deliverOrderRecoveryRefundEvent(
       approvedBy: payload.data.approvedBy,
     },
     async () => {
+      // legend-ti19m: still under the intent row lock taken above.
+      const orderIssueIds = await tx
+        .select({ id: orderIssues.id })
+        .from(orderIssues)
+        .where(
+          and(
+            eq(orderIssues.tenantId, tenantId),
+            eq(orderIssues.orderId, order.id),
+          ),
+        );
+      const filingSeq =
+        Math.max(
+          0,
+          ...(
+            await filingSeqsOf(
+              tx,
+              tenantId,
+              orderIssueIds.map((row) => row.id),
+            )
+          ).values(),
+        ) + 1;
       // A QR pay-first sale: the journal reverses this line's revenue.
       if (payFirst)
         await appendPosEvent(tx, context, "order.refunded", {
@@ -721,6 +744,7 @@ export async function deliverOrderRecoveryRefundEvent(
           ...(replay === null ? {} : { replayOfIssueId: replay.issueId }),
           ...(swapCapCuts ? { swapCapIdr } : {}),
           ...(voucherCapCuts ? { voucherCapIdr } : {}),
+          filingSeq,
         },
         REFUND_REASON,
       );
@@ -729,6 +753,7 @@ export async function deliverOrderRecoveryRefundEvent(
         resolvedBy: actorUserId,
         approvedBy: payload.data.approvedBy,
         promoRecordedIdr,
+        filingSeq,
         ...(replay === null ? {} : { replayOfIssueId: replay.issueId }),
       };
     },

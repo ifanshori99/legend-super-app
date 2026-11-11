@@ -501,6 +501,56 @@ export async function swapPaidValueOf(
   }
 }
 
+/**
+ * legend-ti19m: the filing order of the first filings of one order. A refund's
+ * `created_at` is the fact clock of the intent lock (`lockIntentsForFact`),
+ * which is only `>= max(completed_at)`: a host clock that went back or equal
+ * timestamps make it a poor order. The first filing of an issue therefore takes
+ * `filingSeq` = the highest seq of the order + 1, counted under the intent row
+ * lock (the consumer holds it, and so does the failure hook), so two filings of
+ * one order never run at once and the seq grows with the commit order. It is
+ * stored in the filing's idempotency response and its `refund_requested` audit
+ * row. A re-file (approval_expired) keeps the seq of its issue.
+ */
+function filingSeqOf(response: unknown): number | null {
+  const seq = (response as { filingSeq?: unknown } | null | undefined)
+    ?.filingSeq;
+  return typeof seq === "number" && Number.isSafeInteger(seq) && seq > 0
+    ? seq
+    : null;
+}
+
+/** The `filingSeq` of each of `issueIds` that has one (filings before ti19m have none). */
+export async function filingSeqsOf(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  issueIds: string[],
+): Promise<Map<string, number>> {
+  const seqs = new Map<string, number>();
+  if (issueIds.length === 0) return seqs;
+  const rows = await tx
+    .select({
+      key: paymentAdminIdempotency.key,
+      response: paymentAdminIdempotency.response,
+    })
+    .from(paymentAdminIdempotency)
+    .where(
+      and(
+        eq(paymentAdminIdempotency.tenantId, tenantId),
+        inArray(
+          paymentAdminIdempotency.key,
+          issueIds.map((id) => orderRecoveryRefundKey(id)),
+        ),
+      ),
+    );
+  for (const row of rows) {
+    const seq = filingSeqOf(row.response);
+    if (seq !== null)
+      seqs.set(row.key.slice(orderRecoveryRefundKey("").length), seq);
+  }
+  return seqs;
+}
+
 /** The failed refund a re-reported line replays (legend-pti5r). */
 export type RecoveryRefundReplaySource = {
   /** The earlier issue whose refund failed finally. */
@@ -523,8 +573,9 @@ export const REPLAY_REJECTED = "rejected" as const;
  * the normal path. Among the OTHER issues of the same order whose item maps to
  * the same original item (swaps), resolved `manual_refund`, and that already
  * have a refund row (they were processed), the one filed most recently decides:
- * by the time of its first refund row (a later issue opened earlier may be
- * processed first), the newest wins, the id breaks a tie. It is a source only
+ * by its `filingSeq` (legend-ti19m, assigned under the intent lock), the highest
+ * wins; filings without a seq (old data) rank below, ordered by the time of
+ * their first refund row, the id breaking a tie. It is a source only
  * when its refund ended in a final failure that is not `rejected`
  * (`refund_rejected_at` set, latest refund `failed`) and its `order.refunded`
  * (`payload.refundId` = its id) holds a split that adds up to the failed
@@ -585,7 +636,7 @@ export async function findRecoveryRefundReplay(
     )
     .orderBy(desc(paymentRefunds.createdAt), desc(paymentRefunds.id));
   // Per issue: its latest refund (rows come newest first) and the time of its
-  // first refund row (its filing order).
+  // first refund row (its filing order of the old data).
   const latest = new Map<string, (typeof refunds)[number]>();
   const firstFiledAt = new Map<string, number>();
   for (const row of refunds) {
@@ -593,10 +644,22 @@ export async function findRecoveryRefundReplay(
     if (!latest.has(row.orderIssueId)) latest.set(row.orderIssueId, row);
     firstFiledAt.set(row.orderIssueId, row.createdAt.getTime());
   }
+  // legend-ti19m: the predecessor is the issue with the highest `filingSeq`
+  // (set under the intent lock, so monotone; `created_at` is not: a host clock
+  // that went back or a tie would pick the wrong one). A filing from before
+  // the seq has none and ranks below every filing that has one (it is older by
+  // construction: new filings always get a seq); among those the old order
+  // stays: first refund `created_at`, then the id.
+  const seqs = await filingSeqsOf(
+    tx,
+    tenantId,
+    others.map((row) => row.id),
+  );
   const previous = others
     .filter((row) => latest.has(row.id))
     .sort(
       (a, b) =>
+        (seqs.get(b.id) ?? 0) - (seqs.get(a.id) ?? 0) ||
         (firstFiledAt.get(b.id) ?? 0) - (firstFiledAt.get(a.id) ?? 0) ||
         (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
     )[0];
