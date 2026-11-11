@@ -75,8 +75,11 @@ test("SH-01: closed period figures are official and the running period is labell
   await expect(strip.getByText("Laba bersih", { exact: true })).toBeVisible();
   // DASH-02: the strip's guests and gross profit equal the source reports'
   // (report viewer sales.per_pax and the owner income statement, October).
+  // The metric registry answers avg_spend_per_pax `unavailable`, so the tile
+  // shows no number instead of a figure the source report does not serve.
   await expect(strip.getByText("8.222", { exact: true })).toBeVisible();
-  await expect(strip.getByText(/50\.207/)).toBeVisible();
+  await expect(strip.getByText(/50\.207/)).toHaveCount(0);
+  await expect(strip.getByText("Belanja per tamu")).toBeVisible();
   await expect(strip.getByText(/273\.686\.400/)).toBeVisible();
   await expect(page.getByText(/8\.222/)).toHaveCount(2);
   await expect(page.getByText(/7\.920|52\.121/)).toHaveCount(0);
@@ -113,7 +116,8 @@ test("SH-02: the profit share tab shows only the shareholder's own history, esti
   await expect(
     page.getByText("Estimasi", { exact: true }).first(),
   ).toBeVisible();
-  await expect(page.getByText(/30\.000\.000/).first()).toBeVisible();
+  // MTD estimate: 25% of the running month's net profit Rp1.025.000 (legend-zc3g).
+  await expect(page.getByText(/256\.250/).first()).toBeVisible();
 
   await expect(page.getByRole("heading", { name: "Porsi saya" })).toBeVisible();
   await expect(

@@ -41,6 +41,11 @@
 //  - Replies are observed with the `sendReply` spy of `processInboundWhatsApp`,
 //    as wa-login-reply.test.ts does; the message lands through that service.
 
+// Must stay the first import: it sets TRUST_PROXY before ../app reads the env.
+import {
+  FILE_CLIENT_IP,
+  releaseTrustedProxy,
+} from "./helpers/identity-client-ip";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import {
@@ -52,7 +57,6 @@ import {
   it,
   vi,
 } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import { whatsAppDigest } from "../lib/identity-digest.ts";
 import { resolveWhatsAppAccount } from "../services/identity-account.service.ts";
@@ -62,10 +66,16 @@ import {
   type LoginReplySender,
 } from "../services/wa-login-reply.service.ts";
 import { agent, originHeader } from "./helpers";
+import {
+  createIdentityScope,
+  createIdentityTenant,
+  uniqueDigits,
+} from "./helpers/identity-isolation";
 
-const fixtures = cafeLegendPlatformFixtures;
-const TENANT_A = fixtures.tenant.id;
-const NUMBER_A = "628111000001";
+// Own tenant, host, receiving number and senders per run: this file never
+// shares rows with the other identity files (legend-5opkl).
+const TENANT_A: string = randomUUID();
+const NUMBER_A = `62811${uniqueDigits(7)}`;
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 3,
@@ -84,19 +94,29 @@ const app = createApp({
     pollPerBinding: 100_000,
   },
 });
-const host = fixtures.domains[0]!.hostname;
+let host = "";
 
-const digits = (length: number) =>
-  Array.from({ length }, () => Math.floor(Math.random() * 10)).join("");
+// Each file sends its own client IP, so the per-IP challenge budget is not shared.
+const fileAgent = (target: Parameters<typeof agent>[0]) =>
+  agent(target).set("X-Forwarded-For", FILE_CLIENT_IP);
+
+const isolation = createIdentityScope(owner);
+isolation.scope.tenantIds.push(TENANT_A);
+isolation.scope.receivingNumbers.push(NUMBER_A);
+
 /** A fresh sender per call keeps the per-number AUTH-04 window out of the way. */
-const freshSender = () => `628${digits(10)}`;
+const freshSender = () => {
+  const sender = `628${uniqueDigits(10)}`;
+  isolation.scope.senders.push(sender);
+  return sender;
+};
 
 function makeSpy() {
   return vi.fn<LoginReplySender>(async () => undefined);
 }
 
 async function createChallenge(body: Record<string, unknown>) {
-  const browser = agent(app).host(host);
+  const browser = fileAgent(app).host(host);
   const issued = await browser
     .post("/api/auth/login-challenges/whatsapp")
     .set(originHeader)
@@ -194,34 +214,23 @@ async function sessionCount(userId: string): Promise<number> {
   return Number(rows[0]!.n);
 }
 
+/** Only this file's challenges and inbound rows; accounts stay. */
 async function resetChallenges() {
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
+  await owner.query(
+    "DELETE FROM wa_inbound_messages WHERE tenant_id = ANY($1) OR receiving_number = ANY($2)",
+    [isolation.scope.tenantIds, isolation.scope.receivingNumbers],
+  );
+  await owner.query("DELETE FROM login_challenges WHERE tenant_id = ANY($1)", [
+    isolation.scope.tenantIds,
+  ]);
 }
 
-async function wipe() {
-  await resetChallenges();
-  await owner.query("DELETE FROM user_identities");
-  await owner.query(
-    `DELETE FROM role_assignments
-      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
-         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
-    ["%@wa.invalid"],
-  );
-  await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
-}
+const wipe = isolation.cleanup;
 
 beforeAll(async () => {
-  await owner.query(
-    `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
-     VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')
-     ON CONFLICT (tenant_id, provider) WHERE outlet_id IS NULL
-     DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
-    [
-      TENANT_A,
-      JSON.stringify({ vendor: "kirimdev", receivingNumber: NUMBER_A }),
-    ],
-  );
+  host = (
+    await createIdentityTenant(owner, "confirm", NUMBER_A, { id: TENANT_A })
+  ).hostname;
   // The tenant opted in to login replies, so a wrong "berhasil" would go out.
   await owner.query(
     `INSERT INTO wa_login_reply_policies
@@ -236,11 +245,13 @@ beforeAll(async () => {
 beforeEach(wipe);
 
 afterAll(async () => {
+  releaseTrustedProxy();
   await wipe();
   await owner.query(
     "DELETE FROM wa_login_reply_policies WHERE tenant_id = $1",
     [TENANT_A],
   );
+  await isolation.dropTenants([TENANT_A]);
   await owner.end();
 });
 
@@ -561,7 +572,9 @@ describe("lnbtp: Bukan saya vs a second message from the same number", () => {
       `SELECT id, matched_user_id FROM login_challenges lc
         WHERE matched_user_id IS NOT NULL
           AND status <> 'cancelled'
+          AND tenant_id = ANY($1)
           AND NOT EXISTS (SELECT 1 FROM "user" u WHERE u.id = lc.matched_user_id)`,
+      [isolation.scope.tenantIds],
     );
     expect(
       dangling.rows,

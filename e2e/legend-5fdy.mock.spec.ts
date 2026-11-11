@@ -126,7 +126,7 @@ test.describe("tax recap and Coretax export", () => {
       artifact.getByText("Berkas Coretax siap", { exact: true }),
     ).toBeVisible({ timeout: 15_000 });
     await expect(
-      artifact.getByText("coretax-pbjt-2026-10.xml", { exact: true }),
+      artifact.getByText("coretax-pbjt-2026-10-r0.xml", { exact: true }),
     ).toBeVisible();
     await expect(
       artifact.getByText("Coretax XML", { exact: true }),
@@ -135,7 +135,7 @@ test.describe("tax recap and Coretax export", () => {
     const xmlPromise = page.waitForEvent("download");
     await artifact.getByRole("link", { name: "Unduh berkas Coretax" }).click();
     const xml = await xmlPromise;
-    expect(xml.suggestedFilename()).toBe("coretax-pbjt-2026-10.xml");
+    expect(xml.suggestedFilename()).toBe("coretax-pbjt-2026-10-r0.xml");
 
     const downloadPromise = page.waitForEvent("download");
     await artifact.getByRole("button", { name: "Unduh CSV" }).click();

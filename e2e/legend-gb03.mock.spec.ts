@@ -72,15 +72,26 @@ test("DASH-01: cost and margin shows the running month as an estimate against th
     page.getByRole("img", { name: "Grafik garis prime cost persen per bulan" }),
   ).toBeVisible();
   await expect(page.getByRole("cell", { name: /^Okt/ })).toBeVisible();
-  // Cost and finance reports have no viewer route yet: no link to a 404.
-  await expect(page.locator('a[href^="/reports"]')).toHaveCount(0);
+  // Report viewer routes exist now: the source links must be there and each
+  // must point at a concrete report viewer path (no link to a 404).
+  const reportLinks = page.locator('a[href^="/reports"]');
+  await expect(reportLinks.first()).toBeVisible();
+  const hrefs = await reportLinks.evaluateAll((links) =>
+    links.map((link) => link.getAttribute("href") ?? ""),
+  );
+  expect(hrefs.length).toBeGreaterThan(0);
+  for (const href of hrefs) {
+    expect(href).toMatch(/^\/reports\/[a-z0-9-]+\/[a-z0-9-]+(\?|$)/);
+  }
 });
 
 test("DASH-01: service quality, finance, alerts, daily summary and multi-outlet show their report-backed numbers", async ({
   page,
 }) => {
   await openTab(page, "Layanan");
-  await expect(page.getByText("Item gagal", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("paragraph").filter({ hasText: /^Item gagal$/ }),
+  ).toBeVisible();
   await expect(page.getByText("87,5%", { exact: true })).toBeVisible();
 
   await page.getByRole("tab", { name: "Keuangan" }).click();

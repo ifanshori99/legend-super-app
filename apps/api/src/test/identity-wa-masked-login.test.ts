@@ -24,20 +24,31 @@
 //   appear in any form (628..., +628..., 08...).
 // - A non-boolean `requireConfirm` is rejected with a 4xx.
 
+// Must stay the first import: it sets TRUST_PROXY before ../app reads the env.
+import {
+  FILE_CLIENT_IP,
+  releaseTrustedProxy,
+} from "./helpers/identity-client-ip";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { signKirimWebhook } from "@starter/shared/adapters";
 import { createApp } from "../app";
 import { agent, originHeader } from "./helpers";
+import {
+  createIdentityScope,
+  createIdentityTenant,
+  uniqueDigits,
+} from "./helpers/identity-isolation";
 
 const SECRET = "test-kirim-webhook-secret";
-const fixtures = cafeLegendPlatformFixtures;
-const TENANT_A = fixtures.tenant.id;
-const NUMBER_A = "628111000001";
-const SENDER = "6281234567890";
-const SENDER_LOCAL = "081234567890";
+// Own tenant, host, receiving number and sender per run: this file never shares
+// rows with the other identity files (legend-5opkl).
+const TENANT_A: string = randomUUID();
+const NUMBER_A = `62811${uniqueDigits(7)}`;
+// Ends in 7890: the masking checks pin the last four digits.
+const SENDER = `62857${uniqueDigits(4)}7890`;
+const SENDER_LOCAL = `0${SENDER.slice(2)}`;
 const SENDER_LAST4 = "7890";
 
 const owner = new Pool({
@@ -45,7 +56,10 @@ const owner = new Pool({
   max: 2,
 });
 const app = createApp({ whatsappWebhookSecrets: [SECRET] });
-const host = fixtures.domains[0]!.hostname;
+let host = "";
+
+const fileAgent = (target: Parameters<typeof agent>[0]) =>
+  agent(target).set("X-Forwarded-For", FILE_CLIENT_IP);
 
 function kirimPayload(input: { eventId: string; from: string; text: string }) {
   return JSON.stringify({
@@ -81,7 +95,7 @@ async function sendLoginMessage(codeFormatted: string) {
     text: `MASUK LEGEND ${codeFormatted}`,
   });
   const signature = await signKirimWebhook({ rawBody: body, secret: SECRET });
-  return agent(app)
+  return fileAgent(app)
     .host(host)
     .post("/api/webhooks/whatsapp")
     .set("Content-Type", "application/json")
@@ -91,7 +105,7 @@ async function sendLoginMessage(codeFormatted: string) {
 }
 
 async function newChallenge(body: Record<string, unknown> = {}) {
-  const browser = agent(app).host(host);
+  const browser = fileAgent(app).host(host);
   const issued = await browser
     .post("/api/auth/login-challenges/whatsapp")
     .set(originHeader)
@@ -153,36 +167,24 @@ function expectNoSession(res: { body: any; headers: any }) {
   expect(res.headers["set-cookie"]).toBeUndefined();
 }
 
-async function wipe() {
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
-  await owner.query("DELETE FROM user_identities");
-  await owner.query(
-    `DELETE FROM role_assignments
-      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
-         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
-    ["%@wa.invalid"],
-  );
-  await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
-}
+const isolation = createIdentityScope(owner);
+isolation.scope.tenantIds.push(TENANT_A);
+isolation.scope.receivingNumbers.push(NUMBER_A);
+isolation.scope.senders.push(SENDER);
+const wipe = isolation.cleanup;
 
 beforeAll(async () => {
-  await owner.query(
-    `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
-     VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')
-     ON CONFLICT (tenant_id, provider) WHERE outlet_id IS NULL
-     DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
-    [
-      TENANT_A,
-      JSON.stringify({ vendor: "kirimdev", receivingNumber: NUMBER_A }),
-    ],
-  );
+  host = (
+    await createIdentityTenant(owner, "masked", NUMBER_A, { id: TENANT_A })
+  ).hostname;
 });
 
 beforeEach(wipe);
 
 afterAll(async () => {
+  releaseTrustedProxy();
   await wipe();
+  await isolation.dropTenants([TENANT_A]);
   await owner.end();
 });
 
@@ -235,7 +237,7 @@ describe("WhatsApp login: confirm the masked number or Bukan saya", () => {
 
   it("AUTH-01 another browser cannot confirm or peek at the masked number", async () => {
     const { browser, path } = await awaitingChallenge();
-    const other = agent(app).host(host);
+    const other = fileAgent(app).host(host);
 
     const confirm = await other
       .post(`${path}/confirm`)
@@ -342,7 +344,7 @@ describe("WhatsApp login: confirm the masked number or Bukan saya", () => {
   });
 
   it("AUTH-01 rejects a non-boolean requireConfirm", async () => {
-    const res = await agent(app)
+    const res = await fileAgent(app)
       .host(host)
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
