@@ -1723,6 +1723,27 @@
       "when": 1794340000000,
       "tag": "0314_depreciation_journal_manual_reverse_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 260,
+      "version": "7",
+      "when": 1794341000000,
+      "tag": "0317_fiscal_period_transition_fn",
+      "breakpoints": true
+    },
+    {
+      "idx": 261,
+      "version": "7",
+      "when": 1794342000000,
+      "tag": "0318_depreciation_correction_claim",
+      "breakpoints": true
+    },
+    {
+      "idx": 262,
+      "version": "7",
+      "when": 1794343000000,
+      "tag": "0319_depreciation_insert_reversed_at_guard",
+      "breakpoints": true
     }
   ]
 }
