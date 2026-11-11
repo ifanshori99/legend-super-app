@@ -1256,3 +1256,4 @@ Langkah berikut CTO baru:
 - 12:02 Founder W5: akses tetap selama tenggang, lama tenggang per outlet (default 3, boleh 0) -> dikirim ke G1ttt dengan 4 test pembatas.
 - 12:03 Founder W17: tetap jual + peringatan + notifikasi owner 30 menit -> G1mng.
 - 12:04 Founder W1: modifier bersama satu tenant, bukan per brand (komentar legend-d0ipm).
+- 12:04 Founder W11: payroll tetap wajib 2 orang (sesuai 397bb1c5, tidak ada perubahan).
