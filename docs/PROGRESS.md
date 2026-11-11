@@ -1204,3 +1204,4 @@ Langkah berikut CTO baru:
 - 09:05 G8cn2 ptd selesai 1cec0bd2 (74/74, architect 6 + reviewer 1 dibetulkan, migrasi 0282 sementara idx 250 - cek tabrakan dgn 97p 0250). Keputusan CTO: margin inklusif penyebut 1+service+pajak; riwayat member hanya aktif; dikirim balik ke G8cn2.
 - 09:08 G9e2v lnbtp selesai 6eb85838 (release blocker; 10/10 + regresi identitas, e2e kmndq 12/12, architect 2 temuan dibetulkan, migrasi 0279) -> resolve. Kartu legend-ongp7 (P1 isolasi test identitas), legend-mjcl0 (P2 e2e 34 gagal). Brief 455 24318+d0ipm.
 - 09:09 Codex G6kee katalog edge: 3 P1 (commit terlambat terlewat, versi ms sama, kunci unik daftar harga macet) + 2 P2 -> legend-0mus6 brief 456 ke G4eyx. Keputusan CTO: kursor sync_txid aman-commit (pg_snapshot_xmin). Resolve G6kee. 97p ditahan dari merge.
+- 09:10 G0kog o1i9j+elb8c selesai 0b9ce4f2 (test saja; 22/22 root, menu-print-db 3x hijau; akar flake belum terbukti) -> resolve. Brief 457 ongp7+mjcl0.
