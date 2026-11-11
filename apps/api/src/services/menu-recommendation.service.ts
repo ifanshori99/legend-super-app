@@ -7,7 +7,7 @@
 // computed live from order_items, limited to one outlet and the lookback; a
 // pair must appear in at least `min_pair_support` distinct orders (k-anonymity)
 // and the response never carries any member data. Member history needs
-// crm.customer.view and an open member; marginBps needs recipe.cost.view; the
+// crm.customer.view and an active member; marginBps needs recipe.cost.view; the
 // score is the rank only (n..1), never a raw count.
 import {
   and,
@@ -31,9 +31,11 @@ import {
   type OutletId,
   outletIdSchema,
   type ScopedTenantContext,
+  userIdSchema,
 } from "@starter/shared/core";
 import {
   effectiveRuleVersions,
+  resolveServiceChargeRule,
   resolveTaxRule,
   resolveTaxSettings,
   TaxError,
@@ -61,6 +63,7 @@ import { outlets } from "../db/schema/platform-org";
 import { orderItems, orders } from "../db/schema/qr-order";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { recordAudit } from "./core-audit";
 import { readAvailabilityDecisions } from "./menu-availability";
 import { computeLineCostSnapshots } from "./order-cost-snapshot.service";
 import { outletBusinessDayClock } from "./outlet-clock";
@@ -78,6 +81,23 @@ const COUNTED_ORDER_STATUSES = ["sent", "completed"] as const;
 const MEMBER_ORDER_WEIGHT = 1;
 /** Popular candidates read before the rule filters (they drop some). */
 const POPULAR_CANDIDATE_LIMIT = 200;
+
+/** Fields of the rule set that may appear unmasked in the audit log. */
+const RULES_AUDIT_SAFE_FIELDS = [
+  "outletId",
+  "minMarginBps",
+  "excludeOutOfStock",
+  "maxSuggestions",
+  "minPairSupport",
+  "lookbackDays",
+  "memberHistoryEnabled",
+  "enabled",
+  "itemRules",
+  "menuItemId",
+  "blocked",
+  "hourFrom",
+  "hourTo",
+] as const;
 
 const RULE_DEFAULTS = {
   minMarginBps: 2000,
@@ -191,15 +211,19 @@ export async function getRecommendationRules(
  */
 export async function upsertRecommendationRules(
   context: ScopedTenantContext,
+  actorUserId: string,
   outletId: string,
   input: MenuRecommendationRulesUpdate,
 ): Promise<MenuRecommendationRules> {
   assertOutletInScope(context.outletScope, outletId);
   const outlet = outletIdSchema.parse(outletId);
+  const actor = userIdSchema.parse(actorUserId);
   const tenantId = context.tenant.tenantId;
   const { itemRules: nextItemRules, ...fields } = input;
   return withTenant(db, context, async (tx) => {
     await loadOutlet(tx, context, outletId);
+    const previous = await loadRules(tx, context, outletId);
+    const before = toRulesDto(outletId, previous.rules, previous.itemRules);
     if (nextItemRules) {
       const wanted = nextItemRules.map((rule) => rule.menuItemId);
       if (new Set(wanted).size !== wanted.length)
@@ -274,7 +298,30 @@ export async function upsertRecommendationRules(
         );
     }
     const saved = await loadRules(tx, context, outletId);
-    return toRulesDto(outletId, saved.rules, saved.itemRules);
+    const after = toRulesDto(outletId, saved.rules, saved.itemRules);
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: outlet,
+        actorType: "user" as const,
+        actorId: actor,
+        deviceId: null,
+        action: "menu_recommendation_rules.updated",
+        objectType: "menu_recommendation_rules",
+        objectId: outlet,
+        reason: null,
+        maskedChanges: { before, after },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y" as const,
+        createdAt: now.toISOString(),
+      },
+      RULES_AUDIT_SAFE_FIELDS,
+    );
+    return after;
   });
 }
 
@@ -367,8 +414,8 @@ async function memberCounts(
   since: Date,
 ): Promise<Map<string, number>> {
   const tenantId = context.tenant.tenantId;
-  // The member must belong to this tenant and not be closed; anyone else is
-  // ignored.
+  // The member must belong to this tenant and be active; anyone else
+  // (pending_verification, suspended, closed) is ignored.
   const [member] = await tx
     .select({ id: customerProfiles.id })
     .from(customerProfiles)
@@ -376,7 +423,7 @@ async function memberCounts(
       and(
         eq(customerProfiles.tenantId, tenantId),
         eq(customerProfiles.id, memberId),
-        ne(customerProfiles.membershipStatus, "closed"),
+        eq(customerProfiles.membershipStatus, "active"),
       ),
     )
     .limit(1);
@@ -557,6 +604,11 @@ async function sellableCandidates(
   } catch (error) {
     if (!(error instanceof TaxError)) throw error;
   }
+  const serviceRulesInForce = effectiveRuleVersions(
+    taxConfig.serviceChargeRules,
+    outlet,
+    today,
+  );
   const anyRuleInclusive = taxRulesInForce.some((r) => r.priceIncludesTax);
   const itemRuleById = new Map(itemRules.map((row) => [row.menuItemId, row]));
   const hour = localHour(at, outletRow.timezone);
@@ -609,7 +661,32 @@ async function sellableCandidates(
     if (settingsInclude || taxRule?.priceIncludesTax) {
       // Prices include tax but the rate is unknown: drop (never guess).
       if (!taxRule) continue;
-      base = Math.floor((price * 10_000) / (10_000 + taxRule.rateBp));
+      // The service charge is not outlet revenue: back it out too. An
+      // unresolvable service rule (ambiguous) drops the item; none = 0.
+      let serviceBp = 0;
+      try {
+        serviceBp =
+          resolveServiceChargeRule(
+            serviceRulesInForce,
+            {
+              outletId: outlet,
+              channel: "dine_in",
+              zoneId: null,
+              regionCode: null,
+            },
+            "food_beverage",
+          )?.rateBp ?? 0;
+      } catch (error) {
+        if (!(error instanceof TaxError)) throw error;
+        continue;
+      }
+      // Service inside the tax base: the engine's stricter denominator.
+      base = taxRule.includeServiceInBase
+        ? Number(
+            (BigInt(price) * 100_000_000n) /
+              (BigInt(10_000 + serviceBp) * BigInt(10_000 + taxRule.rateBp)),
+          )
+        : Math.floor((price * 10_000) / (10_000 + serviceBp + taxRule.rateBp));
     }
     if (!(base > 0)) continue;
     // Floor: the margin is never rounded up to reach the floor.

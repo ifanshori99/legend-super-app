@@ -64,6 +64,7 @@ let foreignAdmin: Staff;
 let counter = 0;
 let actingUserId = ""; // recipes.updated_by is a FK to a real user
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = Record<string, any>;
 const payload = (res: { body: Json }): Json => res.body.data ?? res.body;
 
@@ -153,10 +154,10 @@ type Scenario = {
   names: Record<string, string>;
 };
 
-let categoryByTenant = new Map<string, string>();
-let uomByTenant = new Map<string, string>();
+const categoryByTenant = new Map<string, string>();
+const uomByTenant = new Map<string, string>();
 type Ingredients = { gram: string; costed: string; costless: string };
-let ingredientsByTenant = new Map<string, Ingredients>();
+const ingredientsByTenant = new Map<string, Ingredients>();
 
 async function ensureCatalog(tenant: IsolatedTenant) {
   if (categoryByTenant.has(tenant.tenantId)) return;
@@ -339,16 +340,27 @@ async function scenario(
   return { tenant, outletId, items, names };
 }
 
+type MemberStatus = "pending_verification" | "active" | "suspended" | "closed";
+
+/** Member profile; defaults to "active" (the only status whose history counts). */
 async function seedProfile(
   tenantId: string,
-  status: "pending_verification" | "closed" = "pending_verification",
+  status: MemberStatus = "active",
 ): Promise<string> {
   const id = randomUUID();
+  // customer_profiles_active_verified_check: active needs a verified WhatsApp.
   await asTenant(tenantId, (client) =>
     client.query(
-      `INSERT INTO customer_profiles (id, tenant_id, user_id, name, membership_status)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [id, tenantId, randomUUID(), `Member ${id.slice(0, 6)}`, status],
+      `INSERT INTO customer_profiles (id, tenant_id, user_id, name, membership_status, whatsapp_verified_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        id,
+        tenantId,
+        randomUUID(),
+        `Member ${id.slice(0, 6)}`,
+        status,
+        status === "active" ? new Date().toISOString() : null,
+      ],
     ),
   );
   return id;
@@ -1044,7 +1056,11 @@ describe("AI-01 recommendations: input validation and isolation", () => {
 const sorted = (list: string[]) => [...list].sort();
 
 /** Outlet whose menu prices include `rateBp` tax (published settings + rule). */
-async function includeTax(s: Scenario, rateBp = 1000) {
+async function includeTax(
+  s: Scenario,
+  rateBp = 1000,
+  includeServiceInBase = false,
+) {
   await asTenant(s.tenant.tenantId, async (client) => {
     await client.query(
       `INSERT INTO tax_settings
@@ -1062,7 +1078,7 @@ async function includeTax(s: Scenario, rateBp = 1000) {
           published_at, published_by)
        VALUES ($1, $2, $3, $4, 'PBJT inklusif', 'pbjt', $5, NULL, '[]',
                '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
-               true, false, true, 1, '2020-01-01', 'published', now(), $6)`,
+               true, $7, true, 1, '2020-01-01', 'published', now(), $6)`,
       [
         randomUUID(),
         s.tenant.tenantId,
@@ -1070,6 +1086,7 @@ async function includeTax(s: Scenario, rateBp = 1000) {
         `PBJT-${randomUUID().slice(0, 6)}`,
         rateBp,
         actingUserId,
+        includeServiceInBase,
       ],
     );
   });
@@ -1302,6 +1319,242 @@ describe("AI-01 margin on tax-inclusive prices uses the net price", () => {
     await putRules(admin, world, s.outletId, { minMarginBps: 2500 });
     const body = await ok(await recommend(admin, s));
     expect(body).toEqual({ items: [], source: "none" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 2 (CTO, conservative rules): service charge is not outlet revenue,
+// only active members count, ambiguous tax rules drop the item, rule changes
+// are audited.
+// ---------------------------------------------------------------------------
+
+/** Published outlet service charge rule (any order type, food and beverage). */
+async function addService(s: Scenario, rateBp: number, code = "SC-REK") {
+  await asTenant(s.tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO service_charge_rules
+         (id, tenant_id, outlet_id, code, name, rate_bp, zone_id, order_types, item_classes,
+          is_active, version, effective_from, status, published_at, published_by)
+       VALUES ($1, $2, $3, $4, 'Service uji', $5, NULL, '[]', '["food_beverage"]',
+               true, 1, '2020-01-01', 'published', now(), $6)`,
+      [randomUUID(), s.tenant.tenantId, s.outletId, code, rateBp, actingUserId],
+    ),
+  );
+}
+
+describe("AI-01 margin on tax-inclusive prices also removes the service charge", () => {
+  // Assumption: net = floor(price * 10000 / (10000 + service + tax)), because
+  // the service charge is collected for staff, not outlet revenue.
+  // 11.000 / 1.15 = 9.565 net; (9565 - 8000) / 9565 = 16.36%.
+  it("11.000 incl. 10% tax and 5% service with HPP 8.000 is 1636 bps, so the 20% floor drops it", async () => {
+    const s = await scenario(world, {
+      A: { price: 20_000, cost: 5000 },
+      X: { price: 11_000, cost: 8000 },
+    });
+    await includeTax(s);
+    await addService(s, 500);
+    await orders(s, ["A", "X"], 3);
+    let body = await ok(await recommend(admin, s, { anchors: [s.items.A] }));
+    expect(body).toEqual({ items: [], source: "none" }); // default floor 2000
+    await putRules(admin, world, s.outletId, { minMarginBps: 1500 });
+    body = await ok(await recommend(admin, s, { anchors: [s.items.A] }));
+    expect(ids(body)).toEqual([s.items.X]);
+    expect(body.items[0].marginBps).toBe(1636); // not 2000 (tax only), not 2727
+  });
+
+  it("without a service rule the service rate is 0 (tax-only net, 2000 bps)", async () => {
+    const s = await scenario(world, {
+      A: { price: 20_000, cost: 5000 },
+      X: { price: 11_000, cost: 8000 },
+    });
+    await includeTax(s);
+    await orders(s, ["A", "X"], 3);
+    const body = await ok(await recommend(admin, s, { anchors: [s.items.A] }));
+    expect(body.items[0].marginBps).toBe(2000);
+  });
+
+  it("service charge does not matter on tax-exclusive prices (control)", async () => {
+    const s = await scenario(world, {
+      A: { price: 20_000, cost: 5000 },
+      X: { price: 11_000, cost: 8000 },
+    });
+    await addService(s, 500);
+    await orders(s, ["A", "X"], 3);
+    const body = await ok(await recommend(admin, s, { anchors: [s.items.A] }));
+    expect(body.items[0].marginBps).toBe(2727);
+  });
+
+  // Assumption: when the rule puts service in the tax base, the engine
+  // denominator (10000+s)*(10000+t)/10000 = 11.550 is used:
+  // net = floor(11000 * 10000 / 11550) = 9.523; (9523 - 8000) / 9523 = 15.99%.
+  it("service inside the tax base uses the stricter engine denominator", async () => {
+    const s = await scenario(world, {
+      A: { price: 20_000, cost: 5000 },
+      X: { price: 11_000, cost: 8000 },
+    });
+    await includeTax(s, 1000, true);
+    await addService(s, 500);
+    await orders(s, ["A", "X"], 3);
+    await putRules(admin, world, s.outletId, { minMarginBps: 1500 });
+    const body = await ok(await recommend(admin, s, { anchors: [s.items.A] }));
+    expect(ids(body)).toEqual([s.items.X]);
+    expect(body.items[0].marginBps).toBe(1599); // not 1636
+  });
+
+  // Assumption: two published service rules of equal specificity cannot be
+  // resolved (TaxError); with a tax-inclusive price the item is dropped.
+  it("an unresolvable service rule on an inclusive price drops the item", async () => {
+    const s = await scenario(world, {
+      A: { price: 20_000, cost: 5000 },
+      X: { price: 20_000, cost: 5000 }, // 75% gross, passes any floor
+    });
+    await includeTax(s);
+    await addService(s, 500, "SC-REK-1");
+    await addService(s, 700, "SC-REK-2");
+    await orders(s, ["A", "X"], 3);
+    const body = await ok(await recommend(admin, s, { anchors: [s.items.A] }));
+    expect(body).toEqual({ items: [], source: "none" });
+  });
+});
+
+describe("AI-01 ambiguous tax rules drop the item (doubt means dropped)", () => {
+  it("two equally specific rules, one inclusive, settings exclusive: gross margin passes but the item is dropped", async () => {
+    const s = await scenario(world, {
+      A: { price: 20_000, cost: 5000 },
+      X: { price: 11_000, cost: 8000 }, // gross 2727, net (if inclusive) 2000
+    });
+    await asTenant(s.tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO tax_settings
+           (id, tenant_id, outlet_id, calculation_order, prices_include_tax, service_rounding_mode,
+            tax_rounding_mode, inclusive_base_rounding_mode, bill_rounding, package_allocation,
+            version, effective_from, status, published_at, published_by)
+         VALUES ($1, $2, $3, 'discount_service_tax', false, 'half_up', 'half_up', 'down', NULL,
+                 'fixed_bp', 1, '2020-01-01', 'published', now(), $4)`,
+        [randomUUID(), s.tenant.tenantId, s.outletId, actingUserId],
+      );
+      for (const inclusive of [true, false])
+        await client.query(
+          `INSERT INTO tax_rules
+             (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+              price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+              published_at, published_by)
+           VALUES ($1, $2, $3, $4, 'PBJT ambigu', 'pbjt', 1000, NULL, '[]',
+                   '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+                   $5, false, true, 1, '2020-01-01', 'published', now(), $6)`,
+          [
+            randomUUID(),
+            s.tenant.tenantId,
+            s.outletId,
+            `PBJT-${randomUUID().slice(0, 6)}`,
+            inclusive,
+            actingUserId,
+          ],
+        );
+    });
+    await orders(s, ["A", "X"], 3);
+    await putRules(admin, world, s.outletId, { minMarginBps: 2500 });
+    const body = await ok(await recommend(admin, s, { anchors: [s.items.A] }));
+    expect(body).toEqual({ items: [], source: "none" });
+  });
+});
+
+describe("AI-01 only active members have history", () => {
+  async function history(status: MemberStatus) {
+    const s = await scenario(world, {
+      H: { price: 20_000, cost: 5000 },
+      P: { price: 20_000, cost: 5000 },
+    });
+    await popular(s, "P", 9);
+    const member = await seedProfile(world.tenantId, status);
+    await orders(s, ["H"], 2, { member });
+    const without = await ok(await recommend(crmViewer, s));
+    const body = await ok(await recommend(crmViewer, s, { member }));
+    return { s, body, without };
+  }
+
+  it("an active member's history is used (control)", async () => {
+    const { s, body } = await history("active");
+    const mine = (body.items as Json[]).find((i) => i.menuItemId === s.items.H);
+    expect(mine, JSON.stringify(body)).toBeDefined();
+    expect(mine!.reason).toBe("member_history");
+  });
+
+  for (const status of ["pending_verification", "suspended", "closed"] as const)
+    it(`a ${status} member's history is ignored`, async () => {
+      const { s, body, without } = await history(status);
+      expect(body).toEqual(without);
+      expect(ids(body)).not.toContain(s.items.H);
+      expect((body.items as Json[]).map((i) => i.reason)).not.toContain(
+        "member_history",
+      );
+    });
+});
+
+describe("AI-01 rule changes are audited", () => {
+  async function auditOf(outletId: string) {
+    const { rows } = await owner.query<{
+      event: {
+        action: string;
+        tenantId: string;
+        outletId?: string;
+        actorType: string;
+        actorId: string | null;
+        objectType: string;
+        objectId: string;
+        retentionClass: string;
+        maskedChanges: { before: Json; after: Json };
+      };
+    }>(
+      `SELECT event FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'objectId' = $2
+          AND event->>'action' = 'menu_recommendation_rules.updated'
+        ORDER BY created_at, id`,
+      [world.tenantId, outletId],
+    );
+    return rows.map((r) => r.event);
+  }
+
+  it("a saved change writes one audit row with actor, outlet, before and after", async () => {
+    const s = await scenario(world, {});
+    expect(
+      (await putRules(admin, world, s.outletId, { minMarginBps: 3500 })).status,
+    ).toBe(200);
+    let rows = await auditOf(s.outletId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      action: "menu_recommendation_rules.updated",
+      tenantId: world.tenantId,
+      outletId: s.outletId,
+      actorType: "user",
+      actorId: admin.userId,
+      objectType: "menu_recommendation_rules",
+      objectId: s.outletId,
+      retentionClass: "audit_2y",
+    });
+    expect(rows[0]!.maskedChanges.after).toMatchObject({ minMarginBps: 3500 });
+
+    expect(
+      (await putRules(admin, world, s.outletId, { maxSuggestions: 3 })).status,
+    ).toBe(200);
+    rows = await auditOf(s.outletId);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]!.maskedChanges.before).toMatchObject({ minMarginBps: 3500 });
+    expect(rows[1]!.maskedChanges.after).toMatchObject({ maxSuggestions: 3 });
+  });
+
+  it("reads, refused and invalid saves write no audit row", async () => {
+    const s = await scenario(world, {});
+    await ok(await getRules(admin, world, s.outletId));
+    const invalid = await putRules(admin, world, s.outletId, {
+      minMarginBps: 99_999,
+    });
+    expect(invalid.status).toBe(422);
+    const denied = await putRules(cashier, world, s.outletId, {
+      minMarginBps: 3000,
+    });
+    expect([401, 403]).toContain(denied.status);
+    expect(await auditOf(s.outletId)).toHaveLength(0);
   });
 });
 

@@ -19,7 +19,7 @@ import {
   menuRecommendationQuerySchema,
   menuRecommendationRulesUpdateSchema,
 } from "@starter/shared/menu";
-import { requireAuth } from "../middleware/auth.ts";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -100,6 +100,7 @@ menuRecommendationRouter.put(
     res.json({
       data: await upsertRecommendationRules(
         getScopedTenantContext(req),
+        getAuth(req).user.id,
         outletId,
         input,
       ),
