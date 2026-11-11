@@ -22,3 +22,17 @@ Gambar lain memakai nama `pos-extra-<kartu>-<layar>-<keadaan>-<lebar>.png`; kead
 ## Pemeriksaan dan batas
 
 Chromium Playwright merender 60 gambar dari HTML pada lebar di atas. Pemeriksaan otomatis memeriksa error JavaScript, gambar rusak, isi yang terlihat, dan luapan horizontal. Mockup HTML dan PNG tidak membuktikan integrasi, tindakan pembayaran, perilaku backend, atau aksesibilitas interaktif secara menyeluruh. Pola penagihan selisih memakai tunai sesuai kontrak yang tersedia saat penyusunan; data contoh dan tindakan ilustratif perlu dicocokkan kembali ketika UI diimplementasikan.
+
+## Tambahan shift, koreksi, dan pembayaran — WS-04
+
+Semua kartu berikut sebelumnya tercakup sebagian. Tautan membuka HTML dengan pilihan keadaan; PNG setiap keadaan tersedia untuk lebar 390 dan 1280 piksel. Nominal dan identitas adalah contoh.
+
+| Kartu | Cakupan sebelumnya | Tambahan |
+| --- | --- | --- |
+| `legend-7mlf` | `shift.html`: buka shift, shift aktif, blind count; `supervisor.html`: selisih dan persetujuan | [Hitungan dan tutup paksa](pos-extra-7mlf-shift.html): terkirim, batas hitungan, tutup paksa, persetujuan, hitungan usang, perangkat gagal, memuat |
+| `legend-2fo` | Tindak lanjut refund di `pos-extra-kfkt-refund.html`, struk elektronik di `pos-extra-1uk9-struk.html` | [Koreksi dan pratinjau struk](pos-extra-2fo-koreksi.html): diskon, void, refund, override, struk, kosong, gagal, memuat |
+| `legend-5w6` | `payment.html`: tunai dan kembalian, status QRIS kasir; `edc.html`: pilih terminal | [QRIS layar pelanggan](pos-extra-5w6-display.html): normal, memuat, gagal, kedaluwarsa, lunas, kosong |
+| `legend-p7lx` | `payment.html` dan `edc.html`: DP sebagian dan sisa bayar | [DP menutup seluruh tagihan](pos-extra-p7lx-dp-lunas.html): sisa Rp0 |
+| `legend-6om3` | `supervisor.html`: detail selisih tutup shift | [Inbox persetujuan](pos-extra-6om3-inbox.html): supervisor, peminta, kosong, memuat, gagal |
+
+Contoh penutupan: Rp2.230.000 − Rp2.250.000 = −Rp20.000. Contoh pembayaran: Rp220.000 + Rp8.000 + Rp20.000 − Rp100.000 = Rp148.000. QRIS adalah ilustrasi, bukan kode pembayaran. Status yang belum pasti memerlukan pemeriksaan sebelum kode baru disiapkan.
