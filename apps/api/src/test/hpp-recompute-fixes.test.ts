@@ -54,8 +54,9 @@ import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { markHppStale } from "../services/hpp-invalidate.ts";
 import { recordStockMovement } from "../services/inventory.service.ts";
-import { updateItem, updateVariant } from "../services/menu.service.ts";
+import { updateVariant } from "../services/menu.service.ts";
 import { createOutlet } from "../services/org.service.ts";
 import {
   enqueueHppRecompute,
@@ -1122,9 +1123,10 @@ describe("HPP-RECOMPUTE-FIX-5 leased claim: a queued change is never lost", () =
 //   wait for them. "Waiting" is detected with a bounded race, not a sleep.
 // - A2: "treated as poison" is observed on `hpp_outlet_state`: a poison row
 //   makes the outlet stale/rebuilt (design: stale_at set or rebuilt_at moved).
-// - A3: the actor keeps the tenant-scope role assignment of `editorUserId`
-//   (permission check) while the call runs with an outlets-scoped context
-//   (outlet RLS: app.outlet_ids limited to ONE of the brand's outlets).
+// - A3: `markHppStale` runs in a transaction whose outlets-scoped context
+//   (outlet RLS: app.outlet_ids limited to ONE of the brand's outlets) cannot
+//   see the other outlets; the whole menu write path is not exercised because
+//   a scoped actor is refused by `assertOutletInScope` before it gets there.
 // - B3: the price list effective date is a calendar date; "tomorrow" and the
 //   moved clock are taken in the outlet time zone (Asia/Jakarta, no DST) and
 //   the clock is set to noon of that day so UTC and local date agree.
@@ -1294,25 +1296,16 @@ describe("HPP-RECOMPUTE-FIX-A2 re-queueing during a lease resets the attempt cou
 });
 
 describe("HPP-RECOMPUTE-FIX-A3 an outlet-scoped actor still marks every outlet of the brand stale", () => {
-  it("HPP-RECOMPUTE-FIX-A3-scoped-actor updateItem recipeId by an actor limited to one outlet re-costs BOTH outlets of the brand after one tick", async () => {
+  it("HPP-RECOMPUTE-FIX-A3-scoped-actor markHppStale under a context limited to one outlet marks BOTH outlets of the brand stale without throwing", async () => {
     const first = await newOutlet();
     const second = await newOutlet();
-    const kit = await buildKit(first);
-    await receive(second, kit.beans, "1000.0000", "100.0000");
-    await receive(second, kit.milk, "10000.0000", "20.0000");
-    const smaller = await beansOnlyRecipe(kit);
-    await rebuildMenuCostsForOutlet(
-      tenantContext(),
-      outletIdSchema.parse(first.id),
-    );
-    await rebuildMenuCostsForOutlet(
-      tenantContext(),
-      outletIdSchema.parse(second.id),
-    );
-    await clearQueue(first);
-    await clearQueue(second);
-    expect((await costOf(first, kit.menuItem)).cost).toBe("5800.0000");
-    expect((await costOf(second, kit.menuItem)).cost).toBe("5800.0000");
+    for (const outlet of [first, second]) {
+      await rebuildMenuCostsForOutlet(
+        tenantContext(),
+        outletIdSchema.parse(outlet.id),
+      );
+      expect((await outletState(outlet))?.stale_at).toBeNull();
+    }
 
     const limited = establishScopedTenantContext(
       establishTenantContext({
@@ -1322,18 +1315,19 @@ describe("HPP-RECOMPUTE-FIX-A3 an outlet-scoped actor still marks every outlet o
       }),
       { kind: "outlets", outletIds: [outletIdSchema.parse(first.id)] },
     );
-    // The edit itself must succeed under outlet RLS.
-    await updateItem(limited, editorUserId, kit.menuItem, {
-      recipeId: smaller,
-    });
-    await tick();
+    // Outlet RLS limits this transaction to `first`: the second outlet is
+    // invisible to a plain write, so only the SECURITY DEFINER function can
+    // mark it.
+    await withTenant(db, limited, (tx) =>
+      markHppStale(tx, {
+        tenantId: tenantIdSchema.parse(tenantA),
+        brandId: brandA,
+      }),
+    );
 
+    // Verified as owner (no RLS filter on what the scoped actor could see).
     for (const outlet of [first, second])
-      expect(await costOf(outlet, kit.menuItem)).toMatchObject({
-        recipe_id: smaller,
-        recipe_complete: true,
-        cost: "1800.0000",
-      });
+      expect((await outletState(outlet))?.stale_at).not.toBeNull();
   });
 });
 

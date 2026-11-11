@@ -16,31 +16,22 @@ import type { Tx } from "./inventory-ops.shared.ts";
 
 /**
  * Marks outlets stale: one outlet (`outletId`), every outlet of a brand
- * (`brandId`), or every outlet of the tenant when neither is given. Rows are
- * written in outlet id order so concurrent marks cannot deadlock.
+ * (`brandId`), or every outlet of the tenant when neither is given.
+ * `hpp_outlet_state` has tenant RLS only, so an outlet-scoped actor can mark
+ * the other outlets too. Rows lock in outlet id order, so concurrent marks
+ * cannot deadlock.
  */
 export async function markHppStale(
   tx: Tx,
   input: { tenantId: TenantId; brandId?: string; outletId?: string },
 ): Promise<void> {
-  if (input.outletId !== undefined) {
-    await tx.execute(sql`
-      INSERT INTO hpp_outlet_state (tenant_id, outlet_id, stale_at)
-      VALUES (${input.tenantId}::uuid, ${input.outletId}::uuid, clock_timestamp())
-      ON CONFLICT (tenant_id, outlet_id)
-      DO UPDATE SET stale_at = clock_timestamp()
-    `);
-    return;
-  }
-  const brandFilter =
-    input.brandId === undefined
-      ? sql``
-      : sql`AND o.brand_id = ${input.brandId}::uuid`;
   await tx.execute(sql`
     INSERT INTO hpp_outlet_state (tenant_id, outlet_id, stale_at)
     SELECT o.tenant_id, o.id, clock_timestamp()
     FROM outlets o
-    WHERE o.tenant_id = ${input.tenantId}::uuid ${brandFilter}
+    WHERE o.tenant_id = ${input.tenantId}::uuid
+      AND (${input.brandId ?? null}::uuid IS NULL OR o.brand_id = ${input.brandId ?? null}::uuid)
+      AND (${input.outletId ?? null}::uuid IS NULL OR o.id = ${input.outletId ?? null}::uuid)
     ORDER BY o.id
     ON CONFLICT (tenant_id, outlet_id)
     DO UPDATE SET stale_at = clock_timestamp()

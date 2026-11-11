@@ -58,7 +58,8 @@ ALTER TABLE "menu_costs" ADD CONSTRAINT "menu_costs_recipe_fk" FOREIGN KEY ("ten
 CREATE INDEX "hpp_recompute_queue_enqueued_idx" ON "hpp_recompute_queue" USING btree ("tenant_id","enqueued_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "menu_costs_target_key" ON "menu_costs" USING btree ("tenant_id","outlet_id","menu_item_id",coalesce("variant_id", '00000000-0000-0000-0000-000000000000'::uuid),coalesce("modifier_id", '00000000-0000-0000-0000-000000000000'::uuid));--> statement-breakpoint
 CREATE INDEX "menu_costs_recipe_idx" ON "menu_costs" USING btree ("tenant_id","outlet_id","recipe_id");--> statement-breakpoint
--- TEN-01/TEN-03: all three tables are tenant + outlet owned (outlet_id NOT NULL).
+-- TEN-01/TEN-03: menu_costs and hpp_recompute_queue are tenant + outlet scoped
+-- (outlet_id NOT NULL).
 SELECT app.enforce_tenant_rls('public.menu_costs'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.menu_costs'::regclass);
@@ -67,6 +68,7 @@ SELECT app.enforce_tenant_rls('public.hpp_recompute_queue'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.hpp_recompute_queue'::regclass);
 --> statement-breakpoint
+-- hpp_outlet_state gets TENANT RLS only (no outlet policy): it holds only stale
+-- markers, so outlet scoping adds nothing, and an outlet-scoped actor must be
+-- able to mark the brand's or tenant's other outlets stale (markHppStale).
 SELECT app.enforce_tenant_rls('public.hpp_outlet_state'::regclass);
---> statement-breakpoint
-SELECT app.enforce_outlet_rls('public.hpp_outlet_state'::regclass);

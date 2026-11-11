@@ -478,29 +478,38 @@ export async function listFoodCostComparisons(
     const start = businessDayRange(query.fromDate, clock).start;
     const end = businessDayRange(query.toDate, clock).end;
 
-    // Per counted order: its theoretical cost (cost snapshots of its lines).
-    const orderResult = await tx.execute<{ id: string; total: string }>(sql`
+    // Per counted order: its theoretical cost (cost snapshots of its lines) and
+    // how many of its lines have no snapshot (unknown cost, never Rp0).
+    const orderResult = await tx.execute<{
+      id: string;
+      total: string;
+      unknown_lines: string;
+    }>(sql`
       SELECT o.id::text AS id,
              COALESCE(SUM(oi.cost_snapshot_idr)
-               FILTER (WHERE oi.cost_snapshot_idr IS NOT NULL), 0)::text AS total
+               FILTER (WHERE oi.cost_snapshot_idr IS NOT NULL), 0)::text AS total,
+             COUNT(*) FILTER (WHERE oi.cost_snapshot_idr IS NULL)::text
+               AS unknown_lines
       ${countedLines(tenantId, query.outletId, query.fromDate, query.toDate)}
        GROUP BY o.id`);
-    // The sale deduction of those orders: the order id is a ULID in
-    // `recipe_deductions.source_id` and the same value as a uuid in
-    // `orders.id` / `stock_ledger.source_id`; match on either spelling.
+    // The deductions of those orders: the sale deduction plus any later draw
+    // for the same order (remake / comp, source_type 'order_issue'). The order
+    // id is a ULID in `recipe_deductions.source_id` and the same value as a
+    // uuid in `orders.id` / `stock_ledger.source_id`; match on either spelling.
     const orderIds = orderResult.rows.map((order) => order.id);
     const sourceForms = orderIds.flatMap((id) => [id, uuidToUlid(id)]);
     const deductionResult = await tx.execute<{
       source_id: string;
       status: string;
       skip_reason: string | null;
+      is_sale: boolean;
     }>(sql`
-      SELECT source_id, status, skip_reason
+      SELECT source_id, status, skip_reason,
+             (kind = 'sale' AND source_type = 'order') AS is_sale
         FROM recipe_deductions
        WHERE tenant_id = ${tenantId}::uuid
          AND outlet_id = ${query.outletId}::uuid
-         AND kind = 'sale'
-         AND source_type = 'order'
+         AND source_type IN ('order', 'order_issue')
          AND source_id IN (
            SELECT value FROM jsonb_array_elements_text(
              ${JSON.stringify(sourceForms)}::jsonb))`);
@@ -508,6 +517,9 @@ export async function listFoodCostComparisons(
       string,
       { status: string; skip: string | null }
     >();
+    // Orders with a remake / comp draw that is not posted yet: the ledger is
+    // still short of the full consumption, so they cannot reconcile.
+    const issuePendingIds = new Set<string>();
     for (const row of deductionResult.rows) {
       let key: string;
       try {
@@ -516,6 +528,10 @@ export async function listFoodCostComparisons(
           : ulidToUuid(row.source_id);
       } catch {
         continue; // not an order id: cannot belong to a counted order
+      }
+      if (!row.is_sale) {
+        if (row.status === "pending") issuePendingIds.add(key);
+        continue;
       }
       const known = deductionOf.get(key);
       // A posted (or reversed) deduction wins over any other row of the order.
@@ -530,23 +546,28 @@ export async function listFoodCostComparisons(
     let matchedTheoreticalIdr = 0;
     let pendingTheoreticalIdr = 0;
     let pendingOrderCount = 0;
+    let pendingUnknownLineCount = 0;
     const matchedIds: string[] = [];
     for (const order of orderResult.rows) {
       const cost = Number(order.total);
       theoreticalIdr += cost;
-      const deduction = deductionOf.get(order.id.toLowerCase());
-      if (deduction?.status === "posted" || deduction?.status === "reversed") {
+      const key = order.id.toLowerCase();
+      const deduction = deductionOf.get(key);
+      if (
+        (deduction?.status === "posted" || deduction?.status === "reversed") &&
+        !issuePendingIds.has(key)
+      ) {
         matchedTheoreticalIdr += cost;
         matchedIds.push(order.id);
-      } else if (
-        deduction?.status === "skipped" &&
-        deduction.skip === "no_recipe"
-      ) {
         continue;
-      } else {
-        pendingOrderCount += 1;
-        pendingTheoreticalIdr += cost;
       }
+      // Not reconciled: lines without a cost snapshot are unknown, so the
+      // figure is a lower bound whenever this count is above zero.
+      pendingUnknownLineCount += Number(order.unknown_lines);
+      if (deduction?.status === "skipped" && deduction.skip === "no_recipe")
+        continue;
+      pendingOrderCount += 1;
+      pendingTheoreticalIdr += cost;
     }
 
     // Exact sums at Decimal4 x Decimal4 scale (integers), rounded once below.
@@ -605,6 +626,7 @@ export async function listFoodCostComparisons(
       offRecipeUsageIdr: idr(offRecipeUsageIdr),
       pendingOrderCount,
       pendingTheoreticalIdr: idr(pendingTheoreticalIdr),
+      pendingUnknownLineCount,
     });
     return { data: [row], meta: { limit: query.limit, nextCursor: null } };
   });

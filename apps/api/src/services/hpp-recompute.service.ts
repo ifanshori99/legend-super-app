@@ -128,7 +128,12 @@ export async function enqueueHppRecompute(
           hppRecomputeQueue.itemId,
         ],
         // clock_timestamp(): never equal to the value a worker claimed.
-        set: { enqueuedAt: sql`clock_timestamp()`, leaseUntil: null },
+        // A new queueing also ends a poison streak: attempts restart at 0.
+        set: {
+          enqueuedAt: sql`clock_timestamp()`,
+          leaseUntil: null,
+          attempts: 0,
+        },
       });
   }
 }
@@ -234,7 +239,7 @@ async function processBatch(
       let written = 0;
       // Sorted: two transactions locking several outlets never deadlock.
       for (const outletId of [...byOutlet.keys()].sort()) {
-        const state = await lockOutletState(tx, tenantId, outletId);
+        const state = await lockOutletState(tx, tenantId, outletId, now);
         // Never rebuilt or stale: the full rebuild of the tick covers it.
         if (state === null || state.stale || state.neverRebuilt) continue;
         const recipeIds = await affectedRecipeIds(
@@ -325,18 +330,32 @@ async function ackRows(
         (row) =>
           sql`(${row.outletId}::uuid, ${row.itemId}::uuid, ${row.enqueuedAt}::timestamptz)`,
       );
+    // Only rows that can be locked now are deleted: a row a stock transaction
+    // holds is being re-queued and is retried by the next tick. SKIP LOCKED
+    // (never a wait) in outlet/item order, so the ack cannot deadlock.
     await tx.execute(sql`
-      DELETE FROM hpp_recompute_queue AS queue
-      USING (VALUES ${sql.join(values, sql`, `)}) AS claimed(outlet_id, item_id, enqueued_at)
-      WHERE queue.tenant_id = ${tenantId}::uuid
-        AND queue.outlet_id = claimed.outlet_id
-        AND queue.item_id = claimed.item_id
-        AND queue.enqueued_at = claimed.enqueued_at
+      DELETE FROM hpp_recompute_queue
+      WHERE (tenant_id, outlet_id, item_id) IN (
+        SELECT queue.tenant_id, queue.outlet_id, queue.item_id
+        FROM hpp_recompute_queue AS queue
+        JOIN (VALUES ${sql.join(values, sql`, `)}) AS claimed(outlet_id, item_id, enqueued_at)
+          ON queue.outlet_id = claimed.outlet_id
+         AND queue.item_id = claimed.item_id
+         AND queue.enqueued_at = claimed.enqueued_at
+        WHERE queue.tenant_id = ${tenantId}::uuid
+        ORDER BY queue.outlet_id, queue.item_id
+        FOR UPDATE OF queue SKIP LOCKED
+      )
     `);
   }
 }
 
-type OutletState = { stale: boolean; neverRebuilt: boolean };
+type OutletState = {
+  stale: boolean;
+  neverRebuilt: boolean;
+  /** A live dine_in price list became effective after the last rebuild. */
+  priceListDue: boolean;
+};
 
 /**
  * Takes the `hpp_outlet_state` row lock of one outlet (creating the row when
@@ -348,6 +367,7 @@ async function lockOutletState(
   tx: Tx,
   tenantId: TenantId,
   outletId: string,
+  now: Date,
 ): Promise<OutletState | null> {
   await tx.execute(sql`
     INSERT INTO hpp_outlet_state (tenant_id, outlet_id)
@@ -356,13 +376,38 @@ async function lockOutletState(
     ON CONFLICT (tenant_id, outlet_id) DO NOTHING
   `);
   const result = await tx.execute(sql`
-    SELECT stale_at IS NOT NULL AS stale, rebuilt_at IS NULL AS never_rebuilt
-    FROM hpp_outlet_state
-    WHERE tenant_id = ${tenantId}::uuid AND outlet_id = ${outletId}::uuid
-    FOR UPDATE
+    SELECT s.stale_at IS NOT NULL AS stale,
+           s.rebuilt_at IS NULL AS never_rebuilt,
+           EXISTS (
+             SELECT 1 FROM price_lists pl
+             JOIN outlets o ON o.tenant_id = pl.tenant_id AND o.id = pl.outlet_id
+             WHERE pl.tenant_id = s.tenant_id
+               AND pl.outlet_id = s.outlet_id
+               AND pl.channel = 'dine_in'
+               AND pl.deleted_at IS NULL
+               AND pl.effective_from >
+                 ((s.rebuilt_at AT TIME ZONE o.timezone) - o.business_day_cutoff::interval)::date
+               AND pl.effective_from <=
+                 ((${now.toISOString()}::timestamptz AT TIME ZONE o.timezone) - o.business_day_cutoff::interval)::date
+           ) AS price_list_due
+    FROM hpp_outlet_state s
+    WHERE s.tenant_id = ${tenantId}::uuid AND s.outlet_id = ${outletId}::uuid
+    FOR UPDATE OF s
   `);
-  const row = (result.rows as { stale: boolean; never_rebuilt: boolean }[])[0];
-  return row ? { stale: row.stale, neverRebuilt: row.never_rebuilt } : null;
+  const row = (
+    result.rows as {
+      stale: boolean;
+      never_rebuilt: boolean;
+      price_list_due: boolean;
+    }[]
+  )[0];
+  return row
+    ? {
+        stale: row.stale,
+        neverRebuilt: row.never_rebuilt,
+        priceListDue: row.price_list_due,
+      }
+    : null;
 }
 
 /**
@@ -383,7 +428,23 @@ async function rebuildStaleOutlets(
       LEFT JOIN hpp_outlet_state s
         ON s.tenant_id = o.tenant_id AND s.outlet_id = o.id
       WHERE o.tenant_id = ${tenantId}::uuid
-        AND (s.outlet_id IS NULL OR s.rebuilt_at IS NULL OR s.stale_at IS NOT NULL)
+        AND (
+          s.outlet_id IS NULL OR s.rebuilt_at IS NULL OR s.stale_at IS NOT NULL
+          -- A live dine_in price list became effective after the last rebuild
+          -- (outlet business date, same clock as loadPrices): no write marks
+          -- the outlet stale when the date passes.
+          OR EXISTS (
+            SELECT 1 FROM price_lists pl
+            WHERE pl.tenant_id = o.tenant_id
+              AND pl.outlet_id = o.id
+              AND pl.channel = 'dine_in'
+              AND pl.deleted_at IS NULL
+              AND pl.effective_from >
+                ((s.rebuilt_at AT TIME ZONE o.timezone) - o.business_day_cutoff::interval)::date
+              AND pl.effective_from <=
+                ((${now.toISOString()}::timestamptz AT TIME ZONE o.timezone) - o.business_day_cutoff::interval)::date
+          )
+        )
       ORDER BY o.id
     `);
     return (result.rows as { id: string }[]).map((row) => row.id);
@@ -545,9 +606,15 @@ async function rebuildLocked(
   onlyIfNeeded: boolean,
 ): Promise<number> {
   const tenantId = context.tenant.tenantId;
-  const state = await lockOutletState(tx, tenantId, outletId);
+  const state = await lockOutletState(tx, tenantId, outletId, now);
   if (state === null) return 0;
-  if (onlyIfNeeded && !state.stale && !state.neverRebuilt) return 0;
+  if (
+    onlyIfNeeded &&
+    !state.stale &&
+    !state.neverRebuilt &&
+    !state.priceListDue
+  )
+    return 0;
   const rows = await recomputeMenuCosts(tx, context, outletId, null, now);
   await tx.execute(sql`
     UPDATE hpp_outlet_state

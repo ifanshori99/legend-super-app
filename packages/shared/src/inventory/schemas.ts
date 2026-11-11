@@ -1366,6 +1366,9 @@ export const foodCostComparisonSchema = z
     // fixtures stay valid; the API always fills them.
     pendingOrderCount: z.number().int().nonnegative().optional(),
     pendingTheoreticalIdr: nonnegativeIdrSchema.optional(),
+    // Lines of unreconciled orders with no cost snapshot: their cost is unknown
+    // (never Rp0), so the figure is a lower bound when this is above zero.
+    pendingUnknownLineCount: z.number().int().nonnegative().optional(),
   })
   .refine((row) => row.fromDate <= row.toDate, {
     path: ["toDate"],
