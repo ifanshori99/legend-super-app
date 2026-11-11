@@ -726,6 +726,74 @@ export function registerConversionReferenceCheck(
   return registerIn(conversionReferenceChecks, check);
 }
 
+/**
+ * Reachability of an item's units over its conversion graph (both directions,
+ * like `convertQuantity`), with and without one conversion. A conversion is
+ * only load-bearing for a unit that reaches the base unit through it, so the
+ * conversion reference checks ask `strandedAmong` instead of matching the
+ * conversion's own units. Null when the conversion is gone.
+ */
+export async function loadConversionReachability(
+  tx: SetupTx,
+  context: ScopedTenantContext,
+  subject: { id: string; inventoryItemId: string },
+): Promise<{
+  /** Units (of `uomIds`) that reach the base unit now but not once deleted. */
+  strandedAmong: (uomIds: readonly string[]) => string[];
+} | null> {
+  const [item] = await tx
+    .select({ baseUomId: inventoryItems.baseUomId })
+    .from(inventoryItems)
+    .where(
+      and(
+        eq(inventoryItems.tenantId, context.tenant.tenantId),
+        eq(inventoryItems.id, subject.inventoryItemId),
+      ),
+    );
+  if (!item) return null;
+  const rows = await tx
+    .select({
+      id: uomConversions.id,
+      fromUomId: uomConversions.fromUomId,
+      toUomId: uomConversions.toUomId,
+    })
+    .from(uomConversions)
+    .where(
+      and(
+        eq(uomConversions.tenantId, context.tenant.tenantId),
+        eq(uomConversions.inventoryItemId, subject.inventoryItemId),
+      ),
+    );
+  if (!rows.some((row) => row.id === subject.id)) return null;
+  const reachesBase = (
+    edges: readonly { fromUomId: string; toUomId: string }[],
+  ): Set<string> => {
+    const seen = new Set([item.baseUomId]);
+    const queue = [item.baseUomId];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const edge of edges) {
+        const next =
+          edge.fromUomId === current
+            ? edge.toUomId
+            : edge.toUomId === current
+              ? edge.fromUomId
+              : null;
+        if (next === null || seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    return seen;
+  };
+  const before = reachesBase(rows);
+  const after = reachesBase(rows.filter((row) => row.id !== subject.id));
+  return {
+    strandedAmong: (uomIds) =>
+      uomIds.filter((uomId) => before.has(uomId) && !after.has(uomId)),
+  };
+}
+
 async function isReferenced(
   checks: readonly SetupReferenceCheck[],
   tx: SetupTx,

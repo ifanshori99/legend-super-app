@@ -1,0 +1,4 @@
+ALTER TABLE "recipe_deduction_lines" DROP CONSTRAINT "recipe_deduction_lines_tenant_deduction_item_key";--> statement-breakpoint
+ALTER TABLE "recipe_lines" ADD COLUMN "deduction_location_id" uuid;--> statement-breakpoint
+ALTER TABLE "recipe_lines" ADD CONSTRAINT "recipe_lines_deduction_location_fk" FOREIGN KEY ("tenant_id","deduction_location_id") REFERENCES "public"."stock_locations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "recipe_deduction_lines" ADD CONSTRAINT "recipe_deduction_lines_tenant_deduction_item_location_key" UNIQUE("tenant_id","deduction_id","inventory_item_id","location_id");

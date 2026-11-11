@@ -2,7 +2,9 @@
 // "HPP per baris pesanan saat penjualan"). Computes what
 // `order_items.cost_snapshot_idr` stores at the moment a line is inserted: the
 // theoretical cost of the WHOLE line (quantity x cost per portion), in whole
-// rupiah, from `stock_balances.avg_cost_idr` at the outlet's sale location.
+// rupiah, from `stock_balances.avg_cost_idr` at the location each draw is
+// deducted from (legend-89zm: the recipe line's own location, else the outlet
+// sale location).
 //
 // NULL means "unknown", never 0: no recipe, inactive or broken recipe, no sale
 // location, quantity below 1, or any single ingredient without a balance or
@@ -68,7 +70,6 @@ async function computeInSavepoint(
       ),
     );
   const saleLocationId = settings?.saleLocationId ?? null;
-  if (saleLocationId === null) return result;
 
   // Only sellable lines are exploded; the rest stay NULL.
   const sellableIndexes = lines.flatMap((line, index) =>
@@ -81,16 +82,22 @@ async function computeInSavepoint(
     sellableIndexes.map((index) => lines[index]!),
   );
 
-  const itemIds = [
-    ...new Set(
-      outcomes.flatMap((outcome) =>
-        outcome.ok ? [...outcome.items.keys()] : [],
-      ),
-    ),
+  // legend-89zm: a draw is costed at the location it is deducted from, i.e.
+  // its recipe line's location, else the sale location (same resolver as the
+  // deduction). A draw with no location makes its line unknown (null).
+  const locationOf = (draw: { locationId: string | null }) =>
+    draw.locationId ?? saleLocationId;
+  const draws = outcomes.flatMap((outcome) =>
+    outcome.ok ? outcome.draws : [],
+  );
+  const locationIds = [
+    ...new Set(draws.flatMap((draw) => locationOf(draw) ?? [])),
   ];
-  if (itemIds.length === 0) return result;
+  const itemIds = [...new Set(draws.map((draw) => draw.itemId))];
+  if (itemIds.length === 0 || locationIds.length === 0) return result;
   const balances = await tx
     .select({
+      locationId: stockBalances.locationId,
       inventoryItemId: stockBalances.inventoryItemId,
       avgCostIdr: stockBalances.avgCostIdr,
     })
@@ -99,21 +106,26 @@ async function computeInSavepoint(
       and(
         eq(stockBalances.tenantId, tenantId),
         eq(stockBalances.outletId, outletId),
-        eq(stockBalances.locationId, saleLocationId),
+        inArray(stockBalances.locationId, locationIds),
         inArray(stockBalances.inventoryItemId, itemIds),
       ),
     );
   const avgCost = new Map(
-    balances.map((row) => [row.inventoryItemId, parseDecimal4(row.avgCostIdr)]),
+    balances.map((row) => [
+      `${row.locationId}|${row.inventoryItemId}`,
+      parseDecimal4(row.avgCostIdr),
+    ]),
   );
 
   outcomes.forEach((outcome, position) => {
-    if (!outcome.ok || outcome.items.size === 0) return;
+    if (!outcome.ok || outcome.draws.length === 0) return;
     let scaledCost = 0n;
-    for (const [itemId, quantity] of outcome.items) {
-      const cost = avgCost.get(itemId);
+    for (const draw of outcome.draws) {
+      const locationId = locationOf(draw);
+      if (locationId === null) return;
+      const cost = avgCost.get(`${locationId}|${draw.itemId}`);
       if (cost === undefined || cost <= 0n) return;
-      scaledCost += parseDecimal4(quantity) * cost;
+      scaledCost += parseDecimal4(draw.quantity) * cost;
     }
     result[sellableIndexes[position]!] = scaledCostToIdr(scaledCost);
   });

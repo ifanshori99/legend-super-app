@@ -44,6 +44,7 @@ import type { z } from "zod";
 import { db } from "../db/index.ts";
 import {
   inventoryItems,
+  stockLocations,
   uomConversions,
   uoms,
 } from "../db/schema/inventory.ts";
@@ -65,6 +66,8 @@ import {
 import {
   auditSetupChange,
   findIdempotentResource,
+  loadConversionReachability,
+  registerConversionReferenceCheck,
   rememberIdempotentResource,
   setupFingerprint,
 } from "./inventory-setup.service.ts";
@@ -110,6 +113,7 @@ const VERSION_AUDIT_FIELDS = [
   "quantity",
   "uomId",
   "wastePctBp",
+  "deductionLocationId",
   "changeNote",
 ] as const;
 const RULES_AUDIT_FIELDS = ["modifierId", "ruleCount"] as const;
@@ -170,6 +174,41 @@ const invalid = (code: string, message: string) =>
 
 const decimalZero = formatDecimal4(0n);
 
+// legend-o1n1: a recipe line (or a modifier rule component) measured in a
+// non-base unit needs the item's conversions to reach the base unit, so the
+// conversion delete must refuse (409) when it would strand such a unit.
+// Registered at module load; inventory-setup.routes imports this module.
+// No alternate check: no table stores a reference to an alternate row, so a
+// "used alternate" check would only ever be a false positive.
+registerConversionReferenceCheck(async (tx, context, subject) => {
+  const reach = await loadConversionReachability(tx, context, subject);
+  if (!reach) return false;
+  const lineUnits = await tx
+    .select({ uomId: recipeLines.uomId })
+    .from(recipeLines)
+    .where(
+      and(
+        eq(recipeLines.tenantId, context.tenant.tenantId),
+        eq(recipeLines.componentType, "item"),
+        eq(recipeLines.componentId, subject.inventoryItemId),
+      ),
+    );
+  const ruleUnits = await tx
+    .select({ uomId: modifierRecipeRules.uomId })
+    .from(modifierRecipeRules)
+    .where(
+      and(
+        eq(modifierRecipeRules.tenantId, context.tenant.tenantId),
+        eq(modifierRecipeRules.componentType, "item"),
+        eq(modifierRecipeRules.componentId, subject.inventoryItemId),
+      ),
+    );
+  const used = [...lineUnits, ...ruleUnits].flatMap((row) =>
+    row.uomId === null ? [] : [row.uomId],
+  );
+  return reach.strandedAmong(used).length > 0;
+});
+
 function toRecipe(row: RecipeRow, withCost: boolean): Recipe {
   return recipeSchema.parse({
     id: row.id,
@@ -197,6 +236,7 @@ function toRecipeLine(row: RecipeLineRow) {
     quantity: row.quantity,
     uomId: row.uomId,
     wastePctBp: row.wastePctBp,
+    deductionLocationId: row.deductionLocationId,
   });
 }
 
@@ -246,6 +286,7 @@ function auditLines(lines: readonly z.infer<typeof recipeLineSchema>[]) {
     quantity: line.quantity,
     uomId: line.uomId,
     wastePctBp: line.wastePctBp,
+    deductionLocationId: line.deductionLocationId ?? null,
   }));
 }
 
@@ -257,6 +298,8 @@ function canonicalLines(lines: readonly LineInput[]) {
     formatDecimal4(parseDecimal4(line.quantity)),
     line.uomId,
     line.wastePctBp,
+    // Only when set, so fingerprints stored before legend-89zm stay valid.
+    ...(line.deductionLocationId ? [line.deductionLocationId] : []),
   ]);
 }
 
@@ -500,6 +543,50 @@ async function assertDepth(
     );
 }
 
+/**
+ * legend-89zm: a line's own stock location must be an active location of an
+ * outlet of the recipe's brand in this tenant (RLS already scopes the tenant).
+ */
+async function validateDeductionLocations(
+  tx: Tx,
+  brandId: string,
+  lines: readonly LineInput[],
+): Promise<void> {
+  const ids = [
+    ...new Set(
+      lines.flatMap((line) =>
+        line.deductionLocationId ? [line.deductionLocationId] : [],
+      ),
+    ),
+  ];
+  if (ids.length === 0) return;
+  const rows = await tx
+    .select({ id: stockLocations.id })
+    .from(stockLocations)
+    .innerJoin(
+      outlets,
+      and(
+        eq(outlets.tenantId, stockLocations.tenantId),
+        eq(outlets.id, stockLocations.outletId),
+      ),
+    )
+    .where(
+      and(
+        inArray(stockLocations.id, ids),
+        eq(stockLocations.isActive, true),
+        eq(outlets.brandId, brandId),
+      ),
+    );
+  const found = new Set(rows.map((row) => row.id));
+  lines.forEach((line, index) => {
+    if (line.deductionLocationId && !found.has(line.deductionLocationId))
+      throw invalid(
+        "RECIPE_LOCATION_INVALID",
+        `lines[${index}].deductionLocationId is not an active stock location of this brand.`,
+      );
+  });
+}
+
 async function validateRecipeBody(
   tx: Tx,
   recipeId: string,
@@ -518,6 +605,7 @@ async function validateRecipeBody(
     path: `lines[${index}]`,
   }));
   await validateComponents(tx, refs, [input.yieldUomId]);
+  await validateDeductionLocations(tx, brandId, input.lines);
   if (input.outputItemId) {
     const [output] = await tx
       .select({
@@ -567,6 +655,7 @@ function lineValues(
     quantity: line.quantity,
     uomId: line.uomId,
     wastePctBp: line.wastePctBp,
+    deductionLocationId: line.deductionLocationId ?? null,
   }));
 }
 

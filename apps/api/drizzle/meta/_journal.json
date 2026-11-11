@@ -1688,6 +1688,13 @@
       "when": 1794335000000,
       "tag": "0254_menu_recommendations",
       "breakpoints": true
+    },
+    {
+      "idx": 293,
+      "version": "7",
+      "when": 1794600293000,
+      "tag": "0293_recipe_line_deduction_location",
+      "breakpoints": true
     }
   ]
 }
