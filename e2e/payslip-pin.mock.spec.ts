@@ -11,10 +11,10 @@
 // Assumptions:
 //  - The mock store lives in browser memory, so every flow that depends on
 //    earlier attempts (wrong PIN, lock) stays on one page load and moves
-//    between screens through links, not page.goto. `?mock=otp-*` is read from
+//    between screens through links, not page.goto. `?mock=pin-*` is read from
 //    the URL at request time, so those flows open the URL directly.
-//  - The signed-in mock employee is CL-1003 with demo PIN 123456 and OTP
-//    482916; five wrong tries lock the PIN for 15 minutes.
+//  - The signed-in mock employee is CL-1003 with demo PIN 123456; five wrong
+//    tries lock the PIN for 15 minutes.
 //  - The remaining-attempts and lock messages use the copy catalog
 //    ("4 percobaan tersisa.", "PIN terkunci sementara", "sekitar 15 menit").
 //  - ?mock=pin-not-set / pin-locked are applied once from the URL of the
@@ -30,9 +30,6 @@
 //    the helper matches either. A wrong PIN clears the field.
 //  - Wrong PIN text is one message: "PIN belum benar. Periksa PIN dan coba
 //    lagi. N percobaan tersisa."
-//  - The OTP field is unmasked. A wrong code clears the code field only; the
-//    5th wrong code burns the code (423) without locking the PIN, and the
-//    screen offers "Kirim kode baru". Resend stops after 3 sends.
 import { expect, test, type Page } from "@playwright/test";
 import { waitForHydration } from "./hydration.ts";
 
@@ -47,7 +44,6 @@ test.use({ baseURL: base });
 const COLD = 30_000;
 const ROLE_COOKIE = "legend-mock-role";
 const DEMO_PIN = "123456";
-const DEMO_OTP = "482916";
 // Not all-same, not a straight sequence: passes the weak-PIN rule.
 const NEW_PIN = "135792";
 /** CL-1001 Rizky Pratama, the fixture employee used by the HR specs. */
@@ -75,6 +71,21 @@ async function openGate(page: Page) {
   await expect(page.getByRole("heading", { name: "Masukkan PIN" })).toBeVisible(
     { timeout: COLD },
   );
+}
+
+/**
+ * List -> the first payslip's page with a mock scenario. The scenario is read
+ * from the current URL, so the query rides on the slip page itself.
+ */
+async function openSlipFromList(page: Page, query: string) {
+  await openEmployee(page, `/karyawan/slip-gaji${query}`);
+  const href = await page
+    .getByRole("link", { name: /^Lihat slip/ })
+    .first()
+    .getAttribute("href", { timeout: COLD });
+  expect(href).toBeTruthy();
+  await page.goto(`${href!.split("?")[0]}${query}`);
+  await waitForHydration(page);
 }
 
 async function submitPin(page: Page, pin: string) {
@@ -292,220 +303,10 @@ test("F30 HR-01 ilzrj: a PIN that is already locked shows the lock state without
 });
 
 // ---------------------------------------------------------------------------
-// Forgot PIN: HR/atasan text, WhatsApp 503 / 429 / ok
+// Forgot PIN: the old OTP-by-WhatsApp-send flow was replaced by the inbound
+// WhatsApp reset (the employee sends a code to the company number). Those
+// screens are covered in e2e/payslip-pin-wa-reset.mock.spec.ts.
 // ---------------------------------------------------------------------------
-
-test("F30 ilzrj: Lupa PIN says to contact HR or the outlet superior, without a phone number", async ({
-  page,
-}) => {
-  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin");
-  await expect(page.getByRole("heading", { name: "Lupa PIN?" })).toBeVisible({
-    timeout: COLD,
-  });
-  await expect(
-    page.getByText(/Hubungi HR atau atasan di outlet/).first(),
-  ).toBeVisible();
-  await expect(page.locator("main, body").first()).not.toContainText(
-    /(\+62|\b62|\b08)\d[\d\s-]{7,}/,
-  );
-});
-
-test("F30 ilzrj: WhatsApp code is not available by default (503), shown as a clear state", async ({
-  page,
-}) => {
-  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin");
-  await page
-    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
-    .click({ timeout: COLD });
-  await expect(page.getByText("Kode WhatsApp belum tersedia")).toBeVisible();
-  await expect(
-    page.getByText(/Hubungi HR atau atasan di outlet/).first(),
-  ).toBeVisible();
-  // Not treated as a generic failure.
-  await expect(page.getByText("Kode belum dapat dikirim")).toHaveCount(0);
-});
-
-test("F30 ilzrj: too many code requests (429) shows the rate-limited state", async ({
-  page,
-}) => {
-  await openEmployee(
-    page,
-    "/karyawan/slip-gaji/lupa-pin?mock=otp-rate-limited",
-  );
-  await page
-    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
-    .click({ timeout: COLD });
-  await expect(page.getByText("Terlalu banyak permintaan kode")).toBeVisible();
-  await expect(page.getByText("Coba lagi nanti")).toBeVisible();
-  await expect(page.getByText("Kode WhatsApp belum tersedia")).toHaveCount(0);
-});
-
-test("F30 ilzrj: WhatsApp reset flow sends a code, verifies it and saves a new PIN", async ({
-  page,
-}) => {
-  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
-  await page
-    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
-    .click({ timeout: COLD });
-  await expect(
-    page.getByText(/Kode sudah dikirim ke WhatsApp Anda/),
-  ).toBeVisible();
-
-  const code = page.getByLabel("Kode WhatsApp", { exact: true });
-  const newPin = page.getByLabel("PIN baru", { exact: true });
-  const repeat = page.getByLabel("Ulangi PIN baru", { exact: true });
-  const verify = page.getByRole("button", {
-    name: /Verifikasi kode|Simpan PIN/,
-  });
-
-  // Wrong code: worded as a wrong or expired code; the field is cleared.
-  await code.fill("000000");
-  await newPin.fill(NEW_PIN);
-  await repeat.fill(NEW_PIN);
-  await verify.click();
-  await expect(code).toHaveValue("");
-  await expect(
-    page.getByText(/Kode salah atau sudah kedaluwarsa/),
-  ).toBeVisible();
-  await expect(page.getByText(/Kirim kode baru jika perlu/)).toBeVisible();
-
-  // Right code.
-  await code.fill(DEMO_OTP);
-  await newPin.fill(NEW_PIN);
-  await repeat.fill(NEW_PIN);
-  await verify.click();
-  await expect(page.getByText("PIN berhasil disimpan")).toBeVisible({
-    timeout: COLD,
-  });
-  await expect(
-    page
-      .getByRole("link", { name: /Lanjut ke slip gaji/ })
-      .or(page.getByRole("button", { name: /Lanjut ke slip gaji/ })),
-  ).toBeVisible();
-});
-
-test("F30 ilzrj: the new PIN after a WhatsApp code must be strong and repeated correctly", async ({
-  page,
-}) => {
-  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
-  await page
-    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
-    .click({ timeout: COLD });
-  await expect(
-    page.getByText(/Kode sudah dikirim ke WhatsApp Anda/),
-  ).toBeVisible();
-
-  const code = page.getByLabel("Kode WhatsApp", { exact: true });
-  const newPin = page.getByLabel("PIN baru", { exact: true });
-  const repeat = page.getByLabel("Ulangi PIN baru", { exact: true });
-  const verify = page.getByRole("button", {
-    name: /Verifikasi kode|Simpan PIN/,
-  });
-
-  await code.fill(DEMO_OTP);
-  await newPin.fill("111111");
-  await repeat.fill("111111");
-  await verify.click();
-  await expect(page.getByText(/PIN terlalu mudah ditebak/)).toBeVisible();
-
-  await newPin.fill(NEW_PIN);
-  await repeat.fill("246801");
-  await verify.click();
-  await expect(
-    page.getByText("Ulangan PIN tidak sama dengan PIN baru."),
-  ).toBeVisible();
-  await expect(page.getByText("PIN berhasil disimpan")).toHaveCount(0);
-});
-
-test("F30 ilzrj: the verify button is always enabled and an incomplete code is reported on submit", async ({
-  page,
-}) => {
-  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
-  await page
-    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
-    .click({ timeout: COLD });
-  await expect(
-    page.getByText(/Kode sudah dikirim ke WhatsApp Anda/),
-  ).toBeVisible();
-  const verify = page.getByRole("button", { name: "Verifikasi kode" });
-  await expect(verify).toBeEnabled();
-  await verify.click();
-  await expect(page.getByText("Kode harus 6 angka.")).toBeVisible();
-  await expect(page.getByText("PIN berhasil disimpan")).toHaveCount(0);
-});
-
-test("F30 ilzrj: the code field is plain text, not masked", async ({
-  page,
-}) => {
-  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
-  await page
-    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
-    .click({ timeout: COLD });
-  const code = page.getByLabel("Kode WhatsApp", { exact: true });
-  await code.fill(DEMO_OTP);
-  await expect(code).toHaveAttribute("type", "text");
-  await expect(page.getByLabel("PIN baru", { exact: true })).toHaveAttribute(
-    "type",
-    "password",
-  );
-});
-
-test("F30 ilzrj: five wrong codes burn the code but do not lock the PIN", async ({
-  page,
-}) => {
-  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
-  await page
-    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
-    .click({ timeout: COLD });
-  await expect(
-    page.getByText(/Kode sudah dikirim ke WhatsApp Anda/),
-  ).toBeVisible();
-
-  const code = page.getByLabel("Kode WhatsApp", { exact: true });
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await code.fill("000000");
-    await page.getByLabel("PIN baru", { exact: true }).fill(NEW_PIN);
-    await page.getByLabel("Ulangi PIN baru", { exact: true }).fill(NEW_PIN);
-    await page.getByRole("button", { name: "Verifikasi kode" }).click();
-    // A failed check clears the code: that is the sync point for each round.
-    await expect(code).toHaveValue("");
-  }
-  await expect(page.getByText("Terlalu banyak percobaan")).toBeVisible();
-  await expect(page.getByText(/Kode sudah tidak berlaku/)).toBeVisible();
-  await expect(page.getByText("PIN berhasil disimpan")).toHaveCount(0);
-
-  // The way on is a new code.
-  await page.getByRole("button", { name: "Kirim kode baru" }).click();
-  await expect(page.getByRole("heading", { name: "Lupa PIN?" })).toBeVisible();
-
-  // The PIN itself is not locked: the demo PIN still opens the slip.
-  await page.getByRole("link", { name: "Kembali ke daftar slip" }).click();
-  await page
-    .getByRole("link", { name: /^Lihat slip/ })
-    .first()
-    .click({ timeout: COLD });
-  await expect(page.getByText("PIN terkunci sementara")).toHaveCount(0);
-  await submitPin(page, DEMO_PIN);
-  await expect(page.getByText("Gaji bersih").first()).toBeVisible({
-    timeout: COLD,
-  });
-});
-
-test("F30 ilzrj: Kirim ulang kode stops after three sends", async ({
-  page,
-}) => {
-  await openEmployee(page, "/karyawan/slip-gaji/lupa-pin?mock=otp-ok");
-  await page
-    .getByRole("button", { name: /(Kirim|Minta) kode WhatsApp/ })
-    .click({ timeout: COLD });
-  const resend = page.getByRole("button", { name: "Kirim ulang kode" });
-  await expect(resend).toBeEnabled();
-  await resend.click();
-  await expect(resend).toBeEnabled();
-  await resend.click();
-  // Three sends in total (first request + two resends): no fourth.
-  await expect(resend).toBeDisabled();
-});
 
 // ---------------------------------------------------------------------------
 // Change PIN
@@ -675,7 +476,12 @@ test("F30 HR-01 ilzrj: HR resets a PIN after confirming with a reason of 3-500 c
   await reason.fill("Karyawan lupa PIN, diminta lewat atasan outlet");
   await confirm.click();
   await expect(dialog).toBeHidden({ timeout: COLD });
-  await expect(page.getByText(/PIN direset/)).toBeVisible();
+  // The toast text also lands in the screen-reader live region: match the toast.
+  await expect(
+    page.getByText("PIN direset. Karyawan membuat PIN baru saat membuka slip.", {
+      exact: true,
+    }),
+  ).toBeVisible();
 });
 
 test("F30 ilzrj: cancelling the HR reset dialog changes nothing", async ({
