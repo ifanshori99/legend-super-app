@@ -13,6 +13,12 @@
 // - Review decision: `transitionAttendanceValidity` owns the legal moves.
 //   Accepting a valid (sampled) log changes no validity, it only records the
 //   review. A decision that already holds is returned as is (retry safe).
+// - Leave clash (bead legend-9y6ri): a clock-in flagged `leave_approved` is
+//   decided by `keep_leave` (leave stays, log stays flagged, review rejected)
+//   or `cancel_leave` (HR cancels the leave, used days return once, log valid,
+//   review accepted). Both need `hr.attendance.manage`; cancel_leave also
+//   `hr.leave.approve`. `accept` is refused while that leave still stands, so
+//   the day is never paid as leave and as work.
 // - Duty meal: one record per employee, business date and shift. This slice
 //   never touches stock; stock deduction by recipe is a separate consumer.
 // - Access: `hr.attendance.manage` or `hr.attendance_correction.approve`
@@ -64,6 +70,10 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { sampleSelected } from "./hris-attendance-logic.ts";
+import {
+  cancelApprovedLeaveOnDateByHr,
+  findApprovedLeaveOnDate,
+} from "./hris-leave-request.service.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -596,25 +606,104 @@ export async function decideAttendanceReview(
         "ATTENDANCE_REVIEW_NOT_ALLOWED",
         "Koreksi manual sudah diputuskan lewat persetujuan dan tidak direview.",
       );
+    // Deciding a leave clash is HR's call: attendance management, and for
+    // cancel_leave also the leave approval right at the leave's outlet.
+    if (body.action === "keep_leave" || body.action === "cancel_leave") {
+      if (!access.permissionsAt(row.outletId).includes("hr.attendance.manage"))
+        throw forbidden();
+      if (
+        body.action === "cancel_leave" &&
+        !access.snapshot.allows("hr.leave.approve", {
+          type: "outlet",
+          id: row.outletId,
+        })
+      )
+        throw forbidden();
+    }
     const holds = reviewAlreadyHolds(row, body.action);
     if (holds)
       return {
         data: await toReviewItem(tx, context, access, row, signPhoto, now),
       };
 
-    // The validity rule decides: accepting a valid log and any move on a
-    // rejected log are a 409.
-    const validity = transitionAttendanceValidity(row.validity, body.action);
-    const decided = body.action !== "flag";
+    // Leave-flagged log (founder W8 Q21): HR picks which side is paid.
+    let validity: LogRow["validity"];
+    let reviewStatus: LogRow["reviewStatus"];
+    if (body.action === "keep_leave" || body.action === "cancel_leave") {
+      if (
+        row.validity !== "flagged" ||
+        row.reviewStatus !== "pending" ||
+        !hasLeaveFlag(row)
+      )
+        throw conflict(
+          "ATTENDANCE_LEAVE_DECISION_NOT_ALLOWED",
+          "Keputusan cuti hanya untuk absensi bertanda cuti yang belum diputuskan.",
+        );
+      if (body.action === "keep_leave") {
+        // Keeping needs a leave still approved on that day, else the day
+        // would be paid as neither leave nor work.
+        const leaves = await findApprovedLeaveOnDate(
+          tx,
+          context.tenant.tenantId,
+          row.employeeId,
+          row.businessDate,
+          true,
+        );
+        if (leaves.length === 0)
+          throw conflict(
+            "ATTENDANCE_LEAVE_NOT_APPROVED",
+            "Tidak ada cuti disetujui pada hari itu. Terima atau tolak absensi ini.",
+          );
+        // Leave stays, the log is never a countable (valid) one.
+        validity = row.validity;
+        reviewStatus = "rejected";
+      } else {
+        // Refund, status change and its audit row share this transaction.
+        await cancelApprovedLeaveOnDateByHr(
+          tx,
+          context,
+          access,
+          { employeeId: row.employeeId, businessDate: row.businessDate },
+          now,
+        );
+        validity = transitionAttendanceValidity(row.validity, "accept");
+        reviewStatus = "accepted";
+      }
+    } else {
+      // A leave-flagged log cannot be accepted while its leave still stands:
+      // that would pay the day twice (leave and work).
+      if (
+        body.action === "accept" &&
+        hasLeaveFlag(row) &&
+        (
+          await findApprovedLeaveOnDate(
+            tx,
+            context.tenant.tenantId,
+            row.employeeId,
+            row.businessDate,
+          )
+        ).length > 0
+      )
+        throw conflict(
+          "ATTENDANCE_LEAVE_DECISION_REQUIRED",
+          "Ada cuti disetujui pada hari itu. Pilih tetap cuti atau batalkan cuti.",
+        );
+      // The validity rule decides: accepting a valid log and any move on a
+      // rejected log are a 409.
+      validity = transitionAttendanceValidity(row.validity, body.action);
+      reviewStatus =
+        body.action === "flag"
+          ? "pending"
+          : body.action === "accept"
+            ? "accepted"
+            : "rejected";
+    }
+    const decided = reviewStatus !== "pending";
     const [updated] = await tx
       .update(attendanceLogs)
       .set({
         validity,
-        reviewStatus: decided
-          ? body.action === "accept"
-            ? "accepted"
-            : "rejected"
-          : "pending",
+        reviewStatus,
         reviewedBy: decided ? access.actorUserId : null,
         reviewedAt: decided ? now : null,
       })
@@ -647,14 +736,35 @@ export async function decideAttendanceReview(
   });
 }
 
+/** Flag reason of a clock-in on a day of approved leave (bead legend-9y6ri). */
+const LEAVE_FLAG_REASON = "leave_approved";
+
+function hasLeaveFlag(row: Pick<LogRow, "flagReasons">): boolean {
+  return (row.flagReasons as readonly string[]).includes(LEAVE_FLAG_REASON);
+}
+
 /**
  * True when the requested decision is already the stored state (a retry).
- * A rejected log is final: a second reject is a 409, not a retry.
+ * A rejected log is final: a second reject is a 409, not a retry. A leave
+ * decision holds only on a leave-flagged log: keep_leave stays flagged and
+ * rejected, cancel_leave becomes valid and accepted.
  */
 function reviewAlreadyHolds(
-  row: Pick<LogRow, "validity" | "reviewStatus">,
-  action: "flag" | "accept" | "reject",
+  row: Pick<LogRow, "validity" | "reviewStatus" | "flagReasons">,
+  action: DecideReviewBody["action"],
 ): boolean {
+  if (action === "keep_leave")
+    return (
+      hasLeaveFlag(row) &&
+      row.validity === "flagged" &&
+      row.reviewStatus === "rejected"
+    );
+  if (action === "cancel_leave")
+    return (
+      hasLeaveFlag(row) &&
+      row.validity === "valid" &&
+      row.reviewStatus === "accepted"
+    );
   if (action === "accept")
     return row.validity === "valid" && row.reviewStatus === "accepted";
   if (action === "reject") return false;

@@ -26,8 +26,10 @@ import {
   desc,
   eq,
   gt,
+  gte,
   inArray,
   lt,
+  lte,
   or,
   sql,
   type SQL,
@@ -87,6 +89,7 @@ import { storagePurposePolicy } from "@starter/shared/storage";
 import { db } from "../db/index.ts";
 import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { employees } from "../db/schema/hris.ts";
+import { leaveRequests } from "../db/schema/hris-leave.ts";
 import {
   attendanceDevices,
   attendanceLogs,
@@ -756,6 +759,31 @@ async function storeAttendanceLog(
     const skew = input.receivedAt.getTime() - input.occurredAt.getTime();
     if (skew < -OFFLINE_FUTURE_SKEW_MS || skew > OFFLINE_MAX_AGE_MS) {
       decision.reasons.push("offline_time_skew");
+      if (decision.validity === "valid") decision.validity = "flagged";
+    }
+  }
+  // legend-9y6ri (founder W8 Q21): an employee with APPROVED leave covering the
+  // outlet-local business day may still clock in. The log is flagged for HR
+  // review (never "valid" until HR decides keep or cancel the leave), so the
+  // day is not paid twice. The leave itself and its balance stay untouched.
+  if (input.type === "in" && decision.validity !== "rejected") {
+    const businessDay = localDateOf(effectiveAt, outlet.timezone);
+    const [leave] = await tx
+      .select({ id: leaveRequests.id })
+      .from(leaveRequests)
+      .where(
+        and(
+          eq(leaveRequests.tenantId, tenantId),
+          eq(leaveRequests.employeeId, input.employeeId),
+          eq(leaveRequests.status, "approved"),
+          lte(leaveRequests.startDate, businessDay),
+          gte(leaveRequests.endDate, businessDay),
+        ),
+      )
+      .limit(1);
+    if (leave) {
+      if (!decision.reasons.includes("leave_approved"))
+        decision.reasons.push("leave_approved");
       if (decision.validity === "valid") decision.validity = "flagged";
     }
   }

@@ -1096,6 +1096,101 @@ async function cancelLeaveRequest(
   });
 }
 
+// ------------------------------------------- HR decision on a clock-in day
+
+/**
+ * Approved leave of one employee whose range holds `businessDate` (bead
+ * legend-9y6ri). `lock` takes the request rows FOR UPDATE, so a concurrent HR
+ * decision on the same leave waits and then sees the new status.
+ */
+export async function findApprovedLeaveOnDate(
+  tx: Tx,
+  tenantId: TenantId,
+  employeeId: string,
+  businessDate: string,
+  lock = false,
+): Promise<LeaveRequestRow[]> {
+  const query = tx
+    .select()
+    .from(leaveRequests)
+    .where(
+      and(
+        eq(leaveRequests.tenantId, tenantId),
+        eq(leaveRequests.employeeId, employeeId),
+        eq(leaveRequests.status, "approved"),
+        sql`${leaveRequests.startDate} <= ${businessDate}`,
+        sql`${leaveRequests.endDate} >= ${businessDate}`,
+      ),
+    )
+    .orderBy(leaveRequests.startDate, leaveRequests.id);
+  return lock ? query.for("update") : query;
+}
+
+/**
+ * HR cancels the approved leave that covers a day the employee clocked in
+ * (attendance review `cancel_leave`). Runs in the caller's transaction, so the
+ * balance refund, the status change and the audit commit together with the
+ * attendance log update. Unlike the requester's cancel, a leave that already
+ * started may be cancelled: that is the point of the decision. Idempotent: only
+ * rows still `approved` (locked) are touched, so the used days go back once.
+ * Needs `hr.leave.approve` at the outlet of each leave. Returns the cancelled
+ * request ids (empty when no approved leave covers the day any more).
+ */
+export async function cancelApprovedLeaveOnDateByHr(
+  tx: Tx,
+  context: ScopedTenantContext,
+  access: HrisAccess,
+  input: { readonly employeeId: string; readonly businessDate: string },
+  now: Date,
+): Promise<string[]> {
+  const rows = await findApprovedLeaveOnDate(
+    tx,
+    context.tenant.tenantId,
+    input.employeeId,
+    input.businessDate,
+    true,
+  );
+  const cancelled: string[] = [];
+  for (const row of rows) {
+    if (
+      !access.snapshot.allows("hr.leave.approve", {
+        type: "outlet",
+        id: row.outletId,
+      })
+    )
+      throw forbidden();
+    await moveBalance(
+      tx,
+      context,
+      access.actorUserId,
+      row,
+      { pending: 0n, used: -parseDecimal4(row.days) },
+      now,
+    );
+    const [updated] = await tx
+      .update(leaveRequests)
+      .set({ status: "cancelled", updatedAt: now })
+      .where(
+        and(
+          eq(leaveRequests.tenantId, row.tenantId),
+          eq(leaveRequests.id, row.id),
+        ),
+      )
+      .returning();
+    if (!updated) throw new Error("Leave request update returned no row");
+    await auditLeave(
+      tx,
+      context,
+      access.actorUserId,
+      now,
+      updated,
+      "hris.leave_request.cancelled_by_attendance_review",
+    );
+    cancelled.push(updated.id);
+  }
+  return cancelled;
+}
+
 // --------------------------------------------------------------- settle
 
 /** Chain outcome (not pending) → request + balance. Caller holds the row lock. */
