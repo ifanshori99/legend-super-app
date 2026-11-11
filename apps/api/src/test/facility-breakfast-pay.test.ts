@@ -6,7 +6,9 @@
 // implementation. Concurrency lives in facility-breakfast-concurrency.test.ts.
 //
 // Ids: BRK-PAY-01 unpaid never reaches the KDS, BRK-PAY-02 double payment,
-// BRK-PAY-03 cancel and refund, BRK-PAY-04 create idempotency and ticket rules.
+// BRK-PAY-03 cancel and refund, BRK-PAY-04 create idempotency and ticket rules,
+// BRK-PAY-05 dead order or ended session cannot be paid (link closed),
+// BRK-PAY-06 fire writes order.paid exactly once.
 //
 // Assumptions (see facility-breakfast-helpers.ts for the adapters):
 // - Order states: awaiting_payment -> paid -> fired, or cancelled. "paid" means
@@ -52,6 +54,7 @@ import {
   placePaidOrder,
   refundedSum,
   refundsOf,
+  owner,
   removeGateway,
   runSweep,
   seedTicket,
@@ -250,12 +253,26 @@ describe("BRK-PAY-01 an unpaid breakfast never reaches the kitchen", () => {
     expect(await kitchenTicketCount(world, unpaid.id)).toBe(0);
   });
 
-  it("BRK-PAY-01 the trigger lets a paid order through (control: the guard is about payment, not the channel)", async () => {
+  it("BRK-PAY-01 the trigger also refuses a paid order that has not been fired yet (only 'fired' passes)", async () => {
+    // Paid money alone is not enough: the order must be released by the fire
+    // step (staff "Kirim sekarang" or the sweep), so no other path can feed the KDS.
     const { member, ticketId } = await newTicket();
     const { order } = await placePaidOrder(world, member, ticketId);
     expect((await linkedOf(world, order.id)).status).toBe("paid");
 
-    expect(await rawKitchenTicket(order.id)).toBeNull();
+    expect(await rawKitchenTicket(order.id)).toMatchObject({
+      code: "23514",
+      constraint: "kitchen_tickets_breakfast_paid",
+    });
+    expect(await kitchenTicketCount(world, order.id)).toBe(0);
+  });
+
+  it("BRK-PAY-01 control: once fired, the order's kitchen ticket exists (the guard is about the fire state, not the channel)", async () => {
+    const { member, ticketId } = await newTicket();
+    const { order } = await placePaidOrder(world, member, ticketId);
+    expect((await staffFire(world, order.id)).status).toBe(200);
+
+    expect((await linkedOf(world, order.id)).status).toBe("fired");
     expect(await kitchenTicketCount(world, order.id)).toBe(1);
   });
 
@@ -619,5 +636,155 @@ describe("BRK-PAY-04 create idempotency and ticket rules", () => {
       (await api.create(ticketId, breakfastBody(world, { status: "paid" })))
         .status,
     ).toBe(422);
+  });
+});
+
+/** Public pay link: true while the guest can still open a payment on it. */
+async function linkAcceptsPayment(token: string) {
+  const response = await agent(app)
+    .post(`/api/payments/links/${token}/intents`)
+    .set(world.headers)
+    .send({
+      method: "qris",
+      channelCode: null,
+      idempotencyKey: `brk-${randomUUID()}`,
+    });
+  return response.status === 201;
+}
+
+/** Every order.paid event written for the order (the sale reaching the books). */
+async function orderPaidEvents(orderId: string) {
+  const { rows } = await owner.query<{
+    event: { payload: Record<string, unknown> };
+  }>(
+    `SELECT event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = 'order.paid'
+        AND event->'payload'->>'orderId' = $2
+      ORDER BY created_at, id`,
+    [world.tenant.tenantId, orderId],
+  );
+  return rows.map((row) => row.event);
+}
+
+async function updateTicket(ticketId: string, sql: string) {
+  await asOwnerTenant(world.tenant.tenantId, (client) =>
+    client.query(
+      `UPDATE access_tickets SET ${sql} WHERE tenant_id = $1 AND id = $2::uuid`,
+      [world.tenant.tenantId, ulidToUuid(ticketId)],
+    ),
+  );
+}
+
+describe("BRK-PAY-05 a dead order or ended session cannot be paid, and the link closes", () => {
+  it("BRK-PAY-05 paying a cancelled order gives no pay link; the link made earlier no longer takes a payment", async () => {
+    // Assumption: the brief says 422 BREAKFAST_UNAVAILABLE; the contract also
+    // has BREAKFAST_ORDER_CANCELLED (409). Either is accepted; what matters is
+    // that no token comes back and the old link is dead.
+    const { member, ticketId, api } = await newTicket();
+    const order = await placeOrder(world, member, ticketId);
+    const token = await payLink(world, member, ticketId, order.id);
+    expect((await api.cancel(ticketId, order.id)).status).toBe(200);
+
+    const again = await api.pay(ticketId, order.id);
+    expect([409, 422], JSON.stringify(again.body)).toContain(again.status);
+    expect(["BREAKFAST_UNAVAILABLE", "BREAKFAST_ORDER_CANCELLED"]).toContain(
+      again.body.error.code,
+    );
+    expect(again.body.data?.paymentToken ?? null).toBeNull();
+    expect(await linkAcceptsPayment(token)).toBe(false);
+    expect((await linkedOf(world, order.id)).status).toBe("cancelled");
+  });
+
+  it("BRK-PAY-05 cancelling a paid order also closes its pay link", async () => {
+    const { member, ticketId, api } = await newTicket();
+    const { order, token } = await placePaidOrder(world, member, ticketId);
+    expect((await api.cancel(ticketId, order.id)).status).toBe(200);
+    expect(await linkAcceptsPayment(token)).toBe(false);
+  });
+
+  it("BRK-PAY-05 once the ticket session has ended, pay is refused with BREAKFAST_UNAVAILABLE (422) and the link is closed", async () => {
+    const { member, ticketId, api } = await newTicket();
+    const order = await placeOrder(world, member, ticketId);
+    const token = await payLink(world, member, ticketId, order.id);
+    // The session ended a minute ago (the cleaning window keeps its order).
+    await updateTicket(
+      ticketId,
+      `ends_at = now() - interval '1 minute', cleaning_ends_at = now() + interval '9 minutes'`,
+    );
+
+    const response = await api.pay(ticketId, order.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error.code).toBe("BREAKFAST_UNAVAILABLE");
+    expect(await linkAcceptsPayment(token)).toBe(false);
+    expect(await kitchenTicketCount(world, order.id)).toBe(0);
+  });
+
+  it("BRK-PAY-05 a dead ticket (cancelled) refuses pay with BREAKFAST_UNAVAILABLE (422)", async () => {
+    const { member, ticketId, api } = await newTicket();
+    const order = await placeOrder(world, member, ticketId);
+    await updateTicket(ticketId, `status = 'cancelled'`);
+
+    const response = await api.pay(ticketId, order.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error.code).toBe("BREAKFAST_UNAVAILABLE");
+    expect(await kitchenTicketCount(world, order.id)).toBe(0);
+  });
+});
+
+describe("BRK-PAY-06 firing books the sale exactly once", () => {
+  it("BRK-PAY-06 staff fire writes one order.paid for the paid total; pressing again adds none", async () => {
+    const { member, ticketId } = await newTicket();
+    const { order } = await placePaidOrder(world, member, ticketId);
+    // Paying alone books nothing: the sale is recognised when the kitchen gets it.
+    expect(await orderPaidEvents(order.id)).toHaveLength(0);
+
+    expect((await staffFire(world, order.id)).status).toBe(200);
+    expect((await staffFire(world, order.id)).status).toBe(200);
+
+    const events = await orderPaidEvents(order.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({
+      orderId: order.id,
+      outletId: world.tenant.outletId,
+      channel: "facility",
+      totalIdr: order.totalIdr,
+      paidGatewayIdr: order.totalIdr,
+    });
+  });
+
+  it("BRK-PAY-06 the sweep also writes one order.paid, even when it runs twice", async () => {
+    const { member, ticketId } = await newTicket();
+    const { order } = await placePaidOrder(world, member, ticketId);
+    await setFireAt(world, order.id, new Date(Date.now() - MINUTE));
+
+    await runSweep(world);
+    await runSweep(world);
+
+    expect((await linkedOf(world, order.id)).status).toBe("fired");
+    const events = await orderPaidEvents(order.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({ totalIdr: order.totalIdr });
+  });
+
+  it("BRK-PAY-06 an unpaid, cancelled or refunded order never writes order.paid", async () => {
+    const unpaid = await newTicket();
+    const unpaidOrder = await placeOrder(world, unpaid.member, unpaid.ticketId);
+    await staffFire(world, unpaidOrder.id);
+
+    const cancelled = await newTicket();
+    const { order: paidThenCancelled } = await placePaidOrder(
+      world,
+      cancelled.member,
+      cancelled.ticketId,
+    );
+    expect(
+      (await cancelled.api.cancel(cancelled.ticketId, paidThenCancelled.id))
+        .status,
+    ).toBe(200);
+    await setFireAt(world, paidThenCancelled.id, new Date(Date.now() - MINUTE));
+    await runSweep(world);
+
+    expect(await orderPaidEvents(unpaidOrder.id)).toHaveLength(0);
+    expect(await orderPaidEvents(paidThenCancelled.id)).toHaveLength(0);
   });
 });
