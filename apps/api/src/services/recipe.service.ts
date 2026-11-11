@@ -203,7 +203,18 @@ registerConversionReferenceCheck(async (tx, context, subject) => {
         eq(modifierRecipeRules.componentId, subject.inventoryItemId),
       ),
     );
-  const used = [...lineUnits, ...ruleUnits].flatMap((row) =>
+  // A recipe that produces this item books its output in the yield unit, which
+  // validateRecipeBody requires to convert to the item base unit.
+  const yieldUnits = await tx
+    .select({ uomId: recipes.yieldUomId })
+    .from(recipes)
+    .where(
+      and(
+        eq(recipes.tenantId, context.tenant.tenantId),
+        eq(recipes.outputItemId, subject.inventoryItemId),
+      ),
+    );
+  const used = [...lineUnits, ...ruleUnits, ...yieldUnits].flatMap((row) =>
     row.uomId === null ? [] : [row.uomId],
   );
   return reach.strandedAmong(used).length > 0;

@@ -51,6 +51,7 @@ import {
   lt,
   lte,
   notExists,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -200,7 +201,7 @@ type DeductionConfig = {
   saleLocationId: string | null;
 };
 
-async function loadDeductionConfig(
+export async function loadDeductionConfig(
   tx: Tx,
   context: ScopedTenantContext,
   outletId: string,
@@ -366,12 +367,13 @@ function byItemThenLocation(
  * before. A named location that is not a location of this outlet (recipes are
  * brand-wide, locations belong to one outlet) is a `recipe_error`.
  */
-async function planDeduction(
+export async function planDeduction(
   tx: Tx,
   context: ScopedTenantContext,
   outletId: string,
   saleLocationId: string | null,
   lines: readonly DeductionMenuLine[],
+  options: { allowInactiveLocations?: boolean } = {},
 ): Promise<DeductionPlan> {
   const failed = (reason: RecipeDeductionSkipReason): DeductionPlan => ({
     ok: false,
@@ -397,6 +399,7 @@ async function planDeduction(
     ),
   ];
   if (namedLocations.length > 0) {
+    // An inactive location is as unusable as a foreign one.
     const own = await tx
       .select({ id: stockLocations.id })
       .from(stockLocations)
@@ -404,10 +407,31 @@ async function planDeduction(
         and(
           eq(stockLocations.tenantId, context.tenant.tenantId),
           eq(stockLocations.outletId, outletId),
+          ...(options.allowInactiveLocations
+            ? []
+            : [eq(stockLocations.isActive, true)]),
           inArray(stockLocations.id, namedLocations),
         ),
       );
     if (own.length !== namedLocations.length) return failed("recipe_error");
+  }
+  if (
+    !options.allowInactiveLocations &&
+    saleLocationId !== null &&
+    result.draws.some((draw) => draw.locationId === null)
+  ) {
+    // The outlet sale location may have been deactivated since it was set.
+    const [active] = await tx
+      .select({ id: stockLocations.id })
+      .from(stockLocations)
+      .where(
+        and(
+          eq(stockLocations.tenantId, context.tenant.tenantId),
+          eq(stockLocations.id, saleLocationId),
+          eq(stockLocations.isActive, true),
+        ),
+      );
+    if (!active) return failed("no_sale_location");
   }
   const merged = new Map<string, PlannedDraw>();
   for (const draw of result.draws) {
@@ -1105,6 +1129,9 @@ async function returnSwappedLine(
     input.outletId,
     config.saleLocationId,
     [input.oldLine],
+    // The stock goes back to the location the sale drew it from, even if that
+    // location was deactivated since (a return is not a draw).
+    { allowInactiveLocations: true },
   );
   if (!plan.ok) return;
   const saleLines = await tx
@@ -1127,21 +1154,30 @@ async function returnSwappedLine(
       (ofItem.length === 1 ? ofItem[0] : undefined)
     );
   };
-  const draws = [...plan.draws].sort(
-    (a, b) =>
-      a.itemId.localeCompare(b.itemId) ||
-      a.locationId.localeCompare(b.locationId),
+  // Two draws can map to one sale line (the fallback above): group them per
+  // sale line, so each line is returned once, from its own `available`, under
+  // its own ledger key.
+  const perLine = new Map<
+    string,
+    { line: (typeof saleLines)[number]; planned: bigint }
+  >();
+  for (const draw of plan.draws) {
+    const line = saleLineOf(draw);
+    if (!line) continue;
+    const entry = perLine.get(line.id);
+    if (entry) entry.planned += draw.quantity;
+    else perLine.set(line.id, { line, planned: draw.quantity });
+  }
+  const perLineSorted = [...perLine.values()].sort((a, b) =>
+    byItemThenLocation(a.line, b.line),
   );
   await lockLocations(
     tx,
     tenantId,
-    draws.flatMap((draw) => saleLineOf(draw)?.locationId ?? []),
+    perLineSorted.map(({ line }) => line.locationId),
   );
-  for (const draw of draws) {
-    const line = saleLineOf(draw);
-    if (!line) continue;
-    const itemId = draw.itemId;
-    const planned = draw.quantity;
+  for (const { line, planned } of perLineSorted) {
+    const itemId = line.inventoryItemId;
     const available =
       parseDecimal4(line.quantity) -
       (alreadyReturned.get(`${itemId}|${line.locationId}`) ?? 0n);
@@ -1422,11 +1458,13 @@ async function retryParkedSwapReturns(
 // ---------------------------------------------------------------- consumer
 
 /** The sellable lines of a paid order: not voided at the kitchen nor the POS. */
-async function paidOrderLines(
+export async function paidOrderLines(
   tx: Tx,
   context: ScopedTenantContext,
   orderId: string,
   outletId: string,
+  /** Order lines a swap deduction already drew (legend-q55i repost). */
+  excludeLineIds: readonly string[] = [],
 ): Promise<DeductionMenuLine[]> {
   const rows = await tx
     .select({
@@ -1450,6 +1488,9 @@ async function paidOrderLines(
         eq(orderItems.orderId, orderId),
         sql`${orderItems.status} <> 'voided'`,
         isNull(posOrderItems.voidedAt),
+        ...(excludeLineIds.length > 0
+          ? [notInArray(orderItems.id, [...excludeLineIds])]
+          : []),
         // legend-v51rh: a line swapped away was never cooked, even when a
         // completed order keeps it frozen and non-voided.
         notExists(

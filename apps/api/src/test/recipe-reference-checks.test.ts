@@ -105,6 +105,25 @@ async function insertSupplierPrice(itemId: string, uomId: string) {
   );
 }
 
+/** A recipe that produces the item in the given yield unit, seeded directly. */
+async function insertRecipeOutputting(
+  outputItemId: string,
+  yieldUomId: string,
+): Promise<void> {
+  await owner.query(
+    `INSERT INTO recipes (tenant_id, brand_id, name, output_item_id, yield_quantity, yield_uom_id, is_active, updated_by)
+     VALUES ($1, $2, $3, $4, '1.0000', $5, true, $6)`,
+    [
+      tenantA,
+      brandA,
+      `Resep Hasil ${short()}`,
+      outputItemId,
+      yieldUomId,
+      admin.userId,
+    ],
+  );
+}
+
 /** A recipe holding one item line, seeded directly (fixture, not under test). */
 async function insertRecipeWithItemLine(
   itemId: string,
@@ -361,6 +380,37 @@ describe("legend-o1n1 UOM conversion delete is refused while it keeps a used uni
     const res = await deleteConversion(item, boxToKg);
     expect(res.status, JSON.stringify(res.body)).toBe(204);
     expect(await rowExists("uom_conversions", boxToKg)).toBe(false);
+  });
+});
+
+describe("legend-o1n1 UOM conversion delete honours the recipe yield unit of the output item", () => {
+  it("legend-o1n1 a conversion whose unit is the yield unit of a recipe outputting the item is refused (409); a base-unit yield deletes (204)", async () => {
+    const mlId = await insertUom("ml");
+    const bottleId = await insertUom("btl");
+    const syrup = await insertItem("Sirup Hasil", mlId, "semi_finished");
+    const conversionId = await createConversion(
+      syrup,
+      bottleId,
+      mlId,
+      "500.0000",
+    );
+    await insertRecipeOutputting(syrup, bottleId);
+    const refused = await deleteConversion(syrup, conversionId);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe("CONFLICT");
+    expect(await rowExists("uom_conversions", conversionId)).toBe(true);
+
+    const syrupBase = await insertItem("Sirup Dasar", mlId, "semi_finished");
+    const baseConversionId = await createConversion(
+      syrupBase,
+      bottleId,
+      mlId,
+      "500.0000",
+    );
+    await insertRecipeOutputting(syrupBase, mlId);
+    const allowed = await deleteConversion(syrupBase, baseConversionId);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(204);
+    expect(await rowExists("uom_conversions", baseConversionId)).toBe(false);
   });
 });
 
