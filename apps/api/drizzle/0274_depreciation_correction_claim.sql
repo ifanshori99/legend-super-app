@@ -34,12 +34,111 @@ CREATE TABLE "fixed_asset_correction_claims" (
 -- journals that already have a reversal journal. The migrator may be a plain
 -- table owner: FORCE ROW LEVEL SECURITY would apply the tenant policy to it and,
 -- with no app.tenant_id set, raise 42501 (same as 0271/0273). Lift FORCE on the
--- three tables read here and restore it right after the insert.
+-- four tables read here (journal_lines too, for the claim check) and restore it
+-- right after the insert. A failed check rolls the whole migration back, FORCE
+-- included: drizzle runs the migration in one transaction.
 ALTER TABLE public.fixed_asset_depreciation_reversals NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.fixed_asset_depreciations NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.journal_entries NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.journal_lines NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+-- Legacy rows that already break the claim rule are refused here, loudly, and
+-- the whole migration rolls back (FORCE RLS lifted above comes back with it).
+-- Copying them would hand the new rule a state it forbids:
+--   (a) a journal that took back more than it debits (a double claim);
+--   (b) a journal that is both taken back and reversed by hand;
+--   (c) a taken-back journal that is not a plain depreciation journal (the
+--       reversal trigger only marks depreciation journals, so a later manual
+--       reversal would never be seen against its claim).
+-- A journal that took back LESS than it debits is accepted: nobody is paid
+-- more, and a later claim up to the debit total still works.
+-- Repair (the app role cannot do any of this; a superuser with the accountant):
+--   (a) keep only the reversal rows whose amounts add up to at most what the
+--       journal debits: delete the extra rows from
+--       fixed_asset_depreciation_reversals and clear reversed_at on the matching
+--       fixed_asset_depreciations rows, after checking
+--       fixed_asset_depreciations_active_key does not clash with a later
+--       generation of that asset month;
+--   (b) the manual reversal journal cannot be deleted or reversed again, so
+--       delete the reversal row(s) of that journal and clear reversed_at as in
+--       (a);
+--   (c) do NOT clear reversed_at when the named journal is the reversal of the
+--       row's own depreciation journal: the ledger has already cancelled that
+--       expense, and an active row would count it twice. Escalate to the
+--       accountant.
+-- Then run the migration again. Each list shows at most 50 journals.
+DO $$
+DECLARE
+  bad_list text;
+  bad_total bigint;
+BEGIN
+  SELECT string_agg(q.txt, '; ' ORDER BY q.k), max(q.total)
+    INTO bad_list, bad_total
+    FROM (
+      SELECT format('%s/%s (took back %s, debits %s)', c.tenant_id, c.journal_entry_id, c.claimed, c.debits) AS txt,
+             c.tenant_id::text || c.journal_entry_id::text AS k,
+             count(*) OVER () AS total
+        FROM (
+          SELECT r.tenant_id, r.journal_entry_id,
+                 sum(d.amount_idr) AS claimed,
+                 COALESCE((SELECT sum(l.debit_idr) FROM public.journal_lines l
+                            WHERE l.tenant_id = r.tenant_id AND l.entry_id = r.journal_entry_id), 0) AS debits
+            FROM public.fixed_asset_depreciation_reversals r
+            JOIN public.fixed_asset_depreciations d ON d.tenant_id = r.tenant_id AND d.id = r.depreciation_id
+            GROUP BY r.tenant_id, r.journal_entry_id
+        ) c
+        WHERE c.claimed > c.debits
+        ORDER BY 2
+        LIMIT 50
+    ) q;
+  IF bad_list IS NOT NULL THEN
+    RAISE EXCEPTION 'migration 0274: % correcting journal(s) took back more than they debit (tenant/journal): %. Repair the data as the comment above this migration step describes, then re-run (DEPRECIATION_REVERSAL_AMOUNT)', bad_total, bad_list
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT string_agg(q.txt, '; ' ORDER BY q.txt), max(q.total)
+    INTO bad_list, bad_total
+    FROM (
+      SELECT format('%s/%s', r.tenant_id, r.journal_entry_id) AS txt,
+             count(*) OVER () AS total
+        FROM (
+          SELECT DISTINCT tenant_id, journal_entry_id
+            FROM public.fixed_asset_depreciation_reversals
+        ) r
+        WHERE EXISTS (
+          SELECT 1 FROM public.journal_entries x
+          WHERE x.tenant_id = r.tenant_id AND x.reversal_of = r.journal_entry_id
+        )
+        ORDER BY 1
+        LIMIT 50
+    ) q;
+  IF bad_list IS NOT NULL THEN
+    RAISE EXCEPTION 'migration 0274: % correcting journal(s) are both taken back and reversed by hand (tenant/journal): %. Repair the data as the comment above this migration step describes, then re-run (DEPRECIATION_CORRECTION_REVERSED)', bad_total, bad_list
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT string_agg(q.txt, '; ' ORDER BY q.txt), max(q.total)
+    INTO bad_list, bad_total
+    FROM (
+      SELECT format('%s/%s (source_type %s)', r.tenant_id, r.journal_entry_id, j.source_type) AS txt,
+             count(*) OVER () AS total
+        FROM (
+          SELECT DISTINCT tenant_id, journal_entry_id
+            FROM public.fixed_asset_depreciation_reversals
+        ) r
+        JOIN public.journal_entries j ON j.tenant_id = r.tenant_id AND j.id = r.journal_entry_id
+        WHERE j.source_type <> 'depreciation' OR j.reversal_of IS NOT NULL
+        ORDER BY 1
+        LIMIT 50
+    ) q;
+  IF bad_list IS NOT NULL THEN
+    RAISE EXCEPTION 'migration 0274: % correcting journal(s) are not plain depreciation journals (tenant/journal): %. Repair the data as the comment above this migration step describes, then re-run (DEPRECIATION_REVERSAL_INVALID)', bad_total, bad_list
+      USING ERRCODE = '23514';
+  END IF;
+END $$;
 --> statement-breakpoint
 INSERT INTO public.fixed_asset_correction_claims (tenant_id, journal_entry_id, claimed_idr, reversed)
 SELECT r.tenant_id, r.journal_entry_id, COALESCE(sum(d.amount_idr), 0),
@@ -50,6 +149,8 @@ SELECT r.tenant_id, r.journal_entry_id, COALESCE(sum(d.amount_idr), 0),
   FROM public.fixed_asset_depreciation_reversals r
   JOIN public.fixed_asset_depreciations d ON d.tenant_id = r.tenant_id AND d.id = r.depreciation_id
   GROUP BY r.tenant_id, r.journal_entry_id;
+--> statement-breakpoint
+ALTER TABLE public.journal_lines FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.journal_entries FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
