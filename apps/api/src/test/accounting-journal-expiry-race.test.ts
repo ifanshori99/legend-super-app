@@ -18,6 +18,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { ROLE_TEMPLATES } from "@starter/shared/access";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -33,8 +34,10 @@ import { agent, originHeader, signUp } from "./helpers";
 
 const app = createApp();
 const BASE = "/api/accounting";
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletId = cafeLegendPlatformFixtures.outlets[0].id;
+// Each file owns its tenant and matrix, including during parallel Vitest runs.
+const tenantId = randomUUID();
+const outletId = randomUUID();
+const hostname = `journal-expiry-race-${tenantId}.example.test`;
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 6,
@@ -42,7 +45,6 @@ const owner = new Pool({
 const createdUserIds: string[] = [];
 const trackedTemplateIds: string[] = [];
 const ACTIONS = ["manual_journal", "recurring_journal"];
-let savedPolicies: Record<string, unknown>[] = [];
 const unique = () => randomBytes(4).toString("hex");
 const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
@@ -72,6 +74,7 @@ async function signedIn(name: string) {
   await signUp(client, name);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
+  client.set("Host", hostname);
   createdUserIds.push(userId);
   return { client, userId };
 }
@@ -360,15 +363,51 @@ async function settleAgainstInFlightDecision<T>(
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  savedPolicies = (
-    await owner.query(
-      `SELECT * FROM approval_policies WHERE tenant_id = $1 AND action_type = ANY($2::text[])`,
-      [tenantId, ACTIONS],
-    )
-  ).rows;
+  const fixture = cafeLegendPlatformFixtures;
+  const brandId = randomUUID();
+  const entityId = randomUUID();
   await owner.query(
-    `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = ANY($2::text[])`,
-    [tenantId, ACTIONS],
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     VALUES ($1, $2, $3, $4, 'active', 'shared', $5, $6, $7)`,
+    [
+      tenantId,
+      `expiry-race-${tenantId}`,
+      "Journal expiry-race test",
+      fixture.tenant.plan,
+      JSON.stringify(fixture.tenant.featureFlags),
+      JSON.stringify(fixture.tenant.limits),
+      fixture.tenant.createdBy,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'journal', 'Journal test')`,
+    [brandId, tenantId],
+  );
+  await owner.query(
+    `INSERT INTO legal_entities (id, tenant_id, name) VALUES ($1, $2, 'Journal outlet entity')`,
+    [entityId, tenantId],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+     VALUES ($1, $2, $3, $4, 'JOURNAL', 'Journal test', 'Jl. Uji', 'Asia/Jakarta', '{}', 'active')`,
+    [outletId, tenantId, brandId, entityId],
+  );
+  await owner.query(
+    `INSERT INTO tenant_domains (tenant_id, brand_id, hostname, kind, tls_status, verified_at)
+     VALUES ($1, $2, $3, 'custom', 'active', now())`,
+    [tenantId, brandId, hostname],
+  );
+  const finance = ROLE_TEMPLATES.find((role) => role.key === "finance")!;
+  await owner.query(
+    `INSERT INTO roles (tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, true, 'finance', $3, $4, $5)`,
+    [
+      tenantId,
+      finance.defaultName,
+      JSON.stringify(finance.permissions),
+      finance.mfaRequired,
+      JSON.stringify(finance.allowedScopeTypes),
+    ],
   );
   for (const action of ACTIONS)
     await owner.query(
@@ -397,20 +436,6 @@ afterAll(async () => {
     `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = ANY($2::text[])`,
     [tenantId, ACTIONS],
   );
-  for (const row of savedPolicies)
-    await owner.query(
-      `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        row.id,
-        row.tenant_id,
-        row.action_type,
-        row.threshold_idr,
-        row.approver_role_id,
-        row.levels,
-        row.requires_distinct_actor,
-      ],
-    );
   await owner.query(
     "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
     [tenantId, createdUserIds],

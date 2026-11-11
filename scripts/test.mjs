@@ -18,6 +18,9 @@ import {
 const mode = process.argv[2];
 if (!["unit", "e2e"].includes(mode))
   throw new Error("Use pnpm test or pnpm test:e2e.");
+const databaseName = process.env.LEGEND_TEST_DB_NAME || "starter_test";
+if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseName))
+  throw new Error("LEGEND_TEST_DB_NAME must be a lowercase PostgreSQL name.");
 
 // Fixed local origins for test servers, distinct from development.
 export const TEST_API_URL = "http://localhost:4101";
@@ -28,6 +31,7 @@ const password = randomBytes(24).toString("hex");
 const dockerArgs = ["compose", "-p", project, "-f", "compose.test.yaml"];
 const env = {
   ...process.env,
+  LEGEND_TEST_DB_NAME: databaseName,
   STARTER_TEST_PASSWORD: password,
   // Marks this run's containers and network so a later run can sweep them if
   // this process is killed without cleaning up (legend-yw90).
@@ -103,7 +107,7 @@ try {
   const port = address.trim().match(/^127\.0\.0\.1:(\d+)$/)?.[1];
   if (!port)
     throw new Error("Could not determine the isolated PostgreSQL port.");
-  const url = `postgresql://starter_test:${password}@127.0.0.1:${port}/starter_test`;
+  const url = `postgresql://starter_test:${password}@127.0.0.1:${port}/${databaseName}`;
   const appUrl = new URL(url);
   appUrl.username = `legend_runtime_${randomBytes(8).toString("hex")}`;
   appUrl.password = randomBytes(24).toString("hex");
@@ -130,35 +134,35 @@ try {
     testEnv,
   );
   if (mode === "unit") {
-    await run(
-      pnpmCommand(),
-      [
-        "--filter",
-        "@starter/api",
-        "run",
-        "test",
-        ...(process.env.LEGEND_TEST_FILES?.split(" ").filter(Boolean) ?? []),
-      ],
-      testEnv,
-    );
-    const files = readdirSync(resolve(root, "tests"))
-      .filter(
-        (file) => !process.env.LEGEND_TEST_FILES && file.endsWith(".test.mjs"),
-      )
-      .map((file) => `tests/${file}`);
+    const selected = process.env.LEGEND_TEST_FILES?.trim()
+      ? process.env.LEGEND_TEST_FILES.trim().split(/\s+/)
+      : undefined;
+    const rootFiles = selected?.filter((file) => file.endsWith(".test.mjs"));
+    const apiFiles = selected?.filter((file) => !file.endsWith(".test.mjs"));
+    if (!selected || apiFiles.length) {
+      await run(
+        pnpmCommand(),
+        ["--filter", "@starter/api", "run", "test", ...(apiFiles ?? [])],
+        testEnv,
+      );
+    }
+    const files = selected
+      ? rootFiles
+      : readdirSync(resolve(root, "tests"))
+          .filter((file) => file.endsWith(".test.mjs"))
+          .map((file) => `tests/${file}`);
     // LEGEND_TEST_CONCURRENCY caps parallel node:test processes so several
     // agents' gates on one 16 GB machine do not starve the OS (2026-11-03 panic).
     const concurrency = process.env.LEGEND_TEST_CONCURRENCY;
     const concurrencyArgs = /^[1-9]\d*$/.test(concurrency ?? "")
       ? [`--test-concurrency=${concurrency}`]
       : [];
-    await run(
-      process.execPath,
-      process.env.LEGEND_TEST_FILES
-        ? ["-e", "0"]
-        : ["--test", ...concurrencyArgs, ...files],
-      testEnv,
-    );
+    if (files.length)
+      await run(
+        process.execPath,
+        ["--test", ...concurrencyArgs, ...files],
+        testEnv,
+      );
   } else {
     // The Playwright servers run these builds with NODE_ENV=production, so
     // build them the same way. Vite inlines NODE_ENV: a test-env build would

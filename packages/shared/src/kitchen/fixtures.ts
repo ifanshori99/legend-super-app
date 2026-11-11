@@ -7,6 +7,7 @@
 // and menu item ids come from the menu fixtures (@starter/shared/menu), so the
 // three contracts reference the same records.
 
+import { fixtureTimeAfter } from "../core/fixture-clock.ts";
 import { z, cafeLegendFixtures } from "../core/index.ts";
 import {
   kitchenFixtureSchema,
@@ -1017,7 +1018,7 @@ export const pickupPromotions: KitchenFixtureInput["pickupDisplay"]["promotions"
       id: id(960),
       title: "Kopi Susu Aren · 2 gelas Rp 45.000",
       body: "Berlaku setiap hari pukul 15.00–18.00 di Cafe Legend Bandung.",
-      validUntil: "2026-11-07T16:59:00.000Z",
+      validUntil: fixtureTimeAfter({ days: 6, hours: 16, minutes: 59 }),
     },
   ];
 

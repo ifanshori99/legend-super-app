@@ -5,6 +5,7 @@
 // references are the registry rows from `@starter/shared/metrics` plus this
 // domain's own catalog.
 
+import { fixtureTimeAfter } from "../core/fixture-clock.ts";
 import {
   apiErrorBody,
   cafeLegendFixtures,
@@ -528,7 +529,10 @@ export const reportExportReadyFixture = reportExportSchema.parse({
     downloadPath: `/api/reports/exports/${reportExportReadyIdFixture}/file`,
     sizeBytes: 18_432,
     rowCount: 24,
-    expiresAt: "2026-11-08T22:47:09.000Z",
+    expiresAt: fixtureTimeAfter(
+      { days: 7, hours: 18, minutes: 7, seconds: 9 },
+      ownerBoardGeneratedAt,
+    ),
   },
   errorCode: null,
 });

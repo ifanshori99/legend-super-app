@@ -11,6 +11,7 @@
 // and the AI/MCP approval requests from the identity contract. Ids are fixed so
 // screens and tests can address rows. Tokens appear only as hash + prefix.
 
+import { fixtureTimeAfter } from "../core/fixture-clock.ts";
 import { cafeLegendFixtures, isoDateTimeSchema, z } from "../core/index.ts";
 import { cafeLegendAccessFixtures } from "../access/fixtures.ts";
 import { cafeLegendFacilityFixtures } from "../facility/fixtures.ts";
@@ -220,7 +221,7 @@ const actionRequests = [
     failureReason: null,
     createdAt: "2026-11-01T04:35:00.000Z",
     executedAt: null,
-    expiresAt: "2026-11-02T04:35:00.000Z",
+    expiresAt: fixtureTimeAfter({ hours: 16, minutes: 35 }, now),
   }),
   // pending, from an approved MCP client: the identity mcp_action approval.
   actionRequestSchema.parse({
@@ -239,7 +240,7 @@ const actionRequests = [
     failureReason: null,
     createdAt: "2026-11-01T04:47:00.000Z",
     executedAt: null,
-    expiresAt: "2026-11-02T04:47:00.000Z",
+    expiresAt: fixtureTimeAfter({ hours: 16, minutes: 47 }, now),
   }),
   // approved, waiting for the executor.
   actionRequestSchema.parse({
@@ -258,7 +259,7 @@ const actionRequests = [
     failureReason: null,
     createdAt: "2026-11-01T08:10:00.000Z",
     executedAt: null,
-    expiresAt: "2026-11-02T08:10:00.000Z",
+    expiresAt: fixtureTimeAfter({ hours: 20, minutes: 10 }, now),
   }),
   // executed: the stock adjustment was posted after approval.
   actionRequestSchema.parse({
@@ -277,7 +278,7 @@ const actionRequests = [
     failureReason: null,
     createdAt: "2026-10-31T09:00:00.000Z",
     executedAt: "2026-10-31T09:25:00.000Z",
-    expiresAt: "2026-11-01T09:00:00.000Z",
+    expiresAt: fixtureTimeAfter({ hours: -3 }, now),
   }),
   // rejected by the approver.
   actionRequestSchema.parse({
@@ -577,7 +578,7 @@ const mcpTokens = [
       "0da62bf33733e618caf663d10a81a19085d6d6c0ef5393eb555cdf37eb3d1f54",
     tokenPrefix: "mcp_a1B2c3D4",
     scopes: ["mcp:sales:read", "mcp:inventory:read", "mcp:purchasing:draft"],
-    expiresAt: "2026-11-01T16:30:00.000Z",
+    expiresAt: fixtureTimeAfter({ hours: 4, minutes: 30 }, now),
     revokedAt: null,
     lastUsedAt: "2026-11-01T11:55:00.000Z",
     createdAt: "2026-11-01T04:30:00.000Z",
