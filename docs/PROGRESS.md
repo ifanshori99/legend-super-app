@@ -1227,3 +1227,4 @@ Langkah berikut CTO baru:
 - Cron yang harus dibuat ulang: retro 3 jam `43 1,4,7,10,13,16,19,22 * * *` (retro-brief.md), push `git push origin --all` tanpa --force (lapor founder hanya bila gagal).
 - 10:00 Serah terima CTO tertunda: hook RAM tolak coordinator create (Claude 8/8). Dibuat saat slot lepas. Founder dikabari 2 kartu persetujuan + DOIT asumsi.
 - 10:05 G1bpq 463 selesai 4dfd3ceb (dheu key ring, ca4l 0287, 8en8 revoke), 161 test lulus, architect bersih; resolve. Second-opinion Codex 465 dimulai G7m4d (Codex #3). Siap batch48g.
+- 10:05 CTO baru G864p dibuat. 8 thread di-unlink dari CTO lama; G864p diminta link ulang (link lintas coordinator ditolak). Pastikan semua thread ter-link.
