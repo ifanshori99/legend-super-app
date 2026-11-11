@@ -8,3 +8,4 @@ Peran: engineer. Worktree .worktrees/payroll-engine. Test gagal-dulu tiap temuan
 - P3 `:754`: komentar vs kode pembulatan jam lembur; samakan ke bawah per jam penuh bila tidak ada aturan lain (membatasi bayar).
 - Sekalian temuan reviewer rendah: urutan cek izin sebelum karyawan (403 dulu), FOR SHARE pada run beku terakhir (8xf32).
 Bukti: test terarah via heavy, tsc api, eslint/prettier. Lapor dengan angka subagent. Lalu CTO menjalankan re-review architect.
+- Founder 12 Nov: Q42 tolak (service charge hanya sebelum disetujui), Q43 prorata per hari, Q44 rapel dibuat SEBELUM rilis (kartu baru).
