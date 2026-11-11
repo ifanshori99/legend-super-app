@@ -551,6 +551,37 @@ export async function filingSeqsOf(
   return seqs;
 }
 
+/**
+ * legend-hhm5m 4: the amount of an issue's first filing, read through the
+ * `refundId` of its filing response (no clock: a refile can carry an older
+ * `created_at` or a lower id). A filing whose response names no row of
+ * `refunds` (old data) takes the smallest amount of them: a refile repeats
+ * the amount, and when in doubt the smaller one is paid.
+ */
+async function firstFiledAmountOf(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  issueId: string,
+  refunds: readonly { id: string; amountIdr: number }[],
+): Promise<number> {
+  const [filing] = await tx
+    .select({ response: paymentAdminIdempotency.response })
+    .from(paymentAdminIdempotency)
+    .where(
+      and(
+        eq(paymentAdminIdempotency.tenantId, tenantId),
+        eq(paymentAdminIdempotency.key, orderRecoveryRefundKey(issueId)),
+      ),
+    );
+  const refundId = (
+    filing?.response as { refundId?: unknown } | null | undefined
+  )?.refundId;
+  const first = refunds.find((row) => row.id === refundId);
+  return first !== undefined
+    ? first.amountIdr
+    : Math.min(...refunds.map((row) => row.amountIdr));
+}
+
 /** The failed refund a re-reported line replays (legend-pti5r). */
 export type RecoveryRefundReplaySource = {
   /** The earlier issue whose refund failed finally. */
@@ -577,9 +608,10 @@ export const REPLAY_REJECTED = "rejected" as const;
  * wins; filings without a seq (old data) rank below, ordered by the time of
  * their first refund row, the id breaking a tie. It is a source only
  * when its refund ended in a final failure that is not `rejected`
- * (`refund_rejected_at` set, latest refund `failed`) and its `order.refunded`
- * (`payload.refundId` = its id) holds a split that adds up to the failed
- * refund's amount. A `rejected` final failure answers `REPLAY_REJECTED`: the
+ * (`refund_rejected_at` set, every refund row `failed`, none `rejected`;
+ * legend-hhm5m 4: no clock) and its `order.refunded` (`payload.refundId` =
+ * its id) holds a split that adds up to its first filing's amount. A
+ * `rejected` refund among its rows answers `REPLAY_REJECTED`: the
  * caller gives nothing back (legend-h1dyy). A live or paid refund, or
  * (pay-first) no split: null. An open bill files no split nor `order.refunded`:
  * its replay is the failed amount as gross sales, with no discount, service
@@ -635,13 +667,16 @@ export async function findRecoveryRefundReplay(
       ),
     )
     .orderBy(desc(paymentRefunds.createdAt), desc(paymentRefunds.id));
-  // Per issue: its latest refund (rows come newest first) and the time of its
+  // Per issue: its refund rows (first filing and refiles) and the time of its
   // first refund row (its filing order of the old data).
-  const latest = new Map<string, (typeof refunds)[number]>();
+  const rowsOf = new Map<string, (typeof refunds)[number][]>();
   const firstFiledAt = new Map<string, number>();
   for (const row of refunds) {
     if (row.orderIssueId === null) continue;
-    if (!latest.has(row.orderIssueId)) latest.set(row.orderIssueId, row);
+    rowsOf.set(row.orderIssueId, [
+      ...(rowsOf.get(row.orderIssueId) ?? []),
+      row,
+    ]);
     firstFiledAt.set(row.orderIssueId, row.createdAt.getTime());
   }
   // legend-ti19m: the predecessor is the issue with the highest `filingSeq`
@@ -656,7 +691,7 @@ export async function findRecoveryRefundReplay(
     others.map((row) => row.id),
   );
   const previous = others
-    .filter((row) => latest.has(row.id))
+    .filter((row) => rowsOf.has(row.id))
     .sort(
       (a, b) =>
         (seqs.get(b.id) ?? 0) - (seqs.get(a.id) ?? 0) ||
@@ -664,15 +699,25 @@ export async function findRecoveryRefundReplay(
         (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
     )[0];
   if (previous === undefined) return null;
-  const failedRefund = latest.get(previous.id);
+  // legend-hhm5m 4: no clock. The refunds of the predecessor (its first filing
+  // and every refile) decide as a set: one still live -> no replay; else one
+  // `rejected` -> nothing owed (a rejected refund is never refiled, so it ends
+  // the chain whatever its `created_at` or id); else the final failure is
+  // replayed for the amount of the first filing (`refundId` of its filing).
+  const previousRefunds = rowsOf.get(previous.id) ?? [];
   if (
-    failedRefund === undefined ||
     previous.refundRejectedAt === null ||
-    failedRefund.status !== "failed"
+    previousRefunds.some((row) => row.status !== "failed")
   )
     return null;
-  if ((failedRefund.failureReason ?? "unknown") === "rejected")
+  if (previousRefunds.some((row) => row.failureReason === "rejected"))
     return REPLAY_REJECTED;
+  const firstFiledAmount = await firstFiledAmountOf(
+    tx,
+    tenantId,
+    previous.id,
+    previousRefunds,
+  );
   // Follow the replay chain to the root issue.
   let rootId = previous.id;
   for (let hop = 0; hop < 10; hop++) {
@@ -697,21 +742,22 @@ export async function findRecoveryRefundReplay(
     previous.orderItemId;
   if (!payFirst) {
     // Open bill: no split to read; the root's filed amount is what to replay.
-    let amountIdr = failedRefund.amountIdr;
+    let amountIdr = firstFiledAmount;
     if (!isRoot) {
-      const [rootRefund] = await tx
-        .select({ amountIdr: paymentRefunds.amountIdr })
+      const rootRefunds = await tx
+        .select({
+          id: paymentRefunds.id,
+          amountIdr: paymentRefunds.amountIdr,
+        })
         .from(paymentRefunds)
         .where(
           and(
             eq(paymentRefunds.tenantId, tenantId),
             eq(paymentRefunds.orderIssueId, rootId),
           ),
-        )
-        .orderBy(desc(paymentRefunds.createdAt), desc(paymentRefunds.id))
-        .limit(1);
-      if (rootRefund === undefined) return null;
-      amountIdr = rootRefund.amountIdr;
+        );
+      if (rootRefunds.length === 0) return null;
+      amountIdr = await firstFiledAmountOf(tx, tenantId, rootId, rootRefunds);
     }
     return {
       issueId: rootId,
@@ -746,7 +792,7 @@ export async function findRecoveryRefundReplay(
       ? value
       : null;
   };
-  const amountIdr = isRoot ? failedRefund.amountIdr : part("amountIdr");
+  const amountIdr = isRoot ? firstFiledAmount : part("amountIdr");
   const grossSalesIdr = part("grossSalesIdr");
   const discountIdr = part("discountIdr");
   const serviceChargeIdr = part("serviceChargeIdr");
