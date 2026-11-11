@@ -1681,6 +1681,13 @@
       "when": 1794377066238,
       "tag": "0301_recurring_live_customer_plan_key",
       "breakpoints": true
+    },
+    {
+      "idx": 254,
+      "version": "7",
+      "when": 1794378000000,
+      "tag": "0302_bank_account_hmac_version",
+      "breakpoints": true
     }
   ]
 }

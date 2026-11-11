@@ -14,7 +14,7 @@
 //   under the entity lock and also maps a unique-key race (23505).
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   AccountingError,
   createBankAccountInputSchema,
@@ -32,7 +32,12 @@ import { db } from "../db";
 import { chartOfAccounts } from "../db/schema/accounting.ts";
 import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import { withTenant } from "../db/tenant.ts";
-import { blindIndex, sealSecret } from "../lib/secrets.ts";
+import {
+  BLIND_INDEX_ACTIVE_VERSION,
+  blindIndexAt,
+  blindIndexCandidates,
+} from "../lib/blind-index.ts";
+import { sealSecret } from "../lib/secrets.ts";
 import {
   advisoryLock,
   assertTenantScope,
@@ -152,9 +157,16 @@ export async function createBankAccount(
       );
 
       const tenantLower = tenantId.toLowerCase();
-      const hmac = blindIndex(
+      const purpose = `bank:account_number:${tenantLower}`;
+      // Written under the active version; the duplicate check reads both so a
+      // number registered under the other version is still refused (legend-baxdx).
+      const hmac = blindIndexAt(
+        BLIND_INDEX_ACTIVE_VERSION,
         input.accountNumber,
-        `bank:account_number:${tenantLower}`,
+        purpose,
+      );
+      const digests = blindIndexCandidates(input.accountNumber, purpose).map(
+        (candidate) => candidate.digest,
       );
       const [taken] = await tx
         .select({ id: bankAccounts.id })
@@ -163,7 +175,7 @@ export async function createBankAccount(
           and(
             eq(bankAccounts.tenantId, tenantId),
             eq(bankAccounts.legalEntityId, input.legalEntityId),
-            eq(bankAccounts.accountNumberHmac, hmac),
+            inArray(bankAccounts.accountNumberHmac, digests),
           ),
         )
         .limit(1);
@@ -184,6 +196,7 @@ export async function createBankAccount(
             "base64",
           ),
           accountNumberHmac: hmac,
+          accountNumberHmacVersion: BLIND_INDEX_ACTIVE_VERSION,
           accountNumberLast4: input.accountNumber.slice(-4),
           accountNumberKeyVersion: ACCOUNT_NUMBER_KEY_VERSION,
           glAccountId: input.glAccountId,
