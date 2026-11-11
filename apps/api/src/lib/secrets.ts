@@ -17,6 +17,7 @@ import {
   createCipheriv,
   createDecipheriv,
   createHmac,
+  hkdfSync,
   randomBytes,
   scryptSync,
 } from "node:crypto";
@@ -105,9 +106,29 @@ export function openSecretWithKey(
   ]).toString("utf8");
 }
 
+const subkeys = new Map<string, Buffer>();
+
+/**
+ * HKDF-SHA256 subkey of the data key for one purpose (`info`), so a key that
+ * indexes values is never the key that seals them (legend-n039,
+ * lib/blind-index.ts). Cached per `info`; the caller must not mutate it.
+ */
+export function deriveDataSubkey(info: string): Buffer {
+  if (!info) throw new TypeError("A subkey needs an info label");
+  let key = subkeys.get(info);
+  if (!key) {
+    key = Buffer.from(hkdfSync("sha256", dataKey(), "legend", info, 32));
+    subkeys.set(info, key);
+  }
+  return key;
+}
+
 /**
  * HMAC-SHA256 blind index (hex) for uniqueness and equality lookups without
  * storing plaintext: one NPWP per legal entity inside a tenant.
+ *
+ * Legacy "version 1" blind index, keyed with the raw data key. New code goes
+ * through lib/blind-index.ts, which keeps this digest byte-identical as v1.
  */
 export function blindIndex(value: string, purpose: string): string {
   return createHmac("sha256", dataKey())

@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HRIS_PII_KEY_VERSION,
   hrisBlindIndex,
+  hrisBlindIndexCandidates,
+  hrisFingerprintMatches,
   hrisRequestFingerprint,
   maskHrisPii,
   normalizeHrisPii,
@@ -243,6 +245,13 @@ describe("legend-33mj HRIS PII after rotation to version 2", () => {
     expect(pii.hrisBlindIndex("nik", tenantA, NIK)).toBe(before);
   });
 
+  it("[legend-n039] the blind index is independent of the PII ring (v2 stable across ring rotation)", async () => {
+    const before = hrisBlindIndex("nik", tenantA, NIK, 2);
+    const pii = await rotated();
+    expect(pii.hrisBlindIndex("nik", tenantA, NIK, 2)).toBe(before);
+    expect(pii.hrisBlindIndex("nik", tenantA, NIK)).toBe(before);
+  });
+
   it("[HR-03] a wrong key for the version does not open another ring's data", async () => {
     const pii = await rotated();
     const sealed = pii.sealHrisPii(NIK, binding());
@@ -251,5 +260,92 @@ describe("legend-33mj HRIS PII after rotation to version 2", () => {
     vi.stubEnv("HRIS_PII_ACTIVE_KEY_VERSION", "2");
     const other = await import("./hris-pii.ts");
     expect(() => other.openHrisPii(sealed, binding(), 2)).toThrow();
+  });
+});
+
+describe("legend-n039 HRIS blind index versions", () => {
+  it("defaults to the active version (2), different from the legacy v1 digest", () => {
+    const v1 = hrisBlindIndex("nik", tenantA, NIK, 1);
+    const v2 = hrisBlindIndex("nik", tenantA, NIK, 2);
+    expect(v1).not.toBe(v2);
+    expect(hrisBlindIndex("nik", tenantA, NIK)).toBe(v2);
+  });
+
+  it("v1 equals the legacy purpose-framed HMAC (existing rows stay findable)", async () => {
+    const { blindIndex } = await import("./secrets.ts");
+    expect(hrisBlindIndex("nik", tenantA, NIK, 1)).toBe(
+      blindIndex(NIK, `hris:nik:${tenantA}`),
+    );
+  });
+
+  it("separates tenants and fields in every version", () => {
+    for (const version of [1, 2] as const) {
+      expect(hrisBlindIndex("nik", tenantA, NIK, version)).not.toBe(
+        hrisBlindIndex("nik", tenantB, NIK, version),
+      );
+      expect(hrisBlindIndex("nik", tenantA, NIK, version)).not.toBe(
+        hrisBlindIndex("npwp", tenantA, NIK, version),
+      );
+    }
+  });
+
+  it("candidates cover both versions and include the active digest", () => {
+    const candidates = hrisBlindIndexCandidates("nik", tenantA, NIK);
+    expect(candidates.map((c) => c.version).sort()).toEqual([1, 2]);
+    expect(candidates.map((c) => c.digest)).toContain(
+      hrisBlindIndex("nik", tenantA, NIK),
+    );
+    expect(candidates.map((c) => c.digest)).toContain(
+      hrisBlindIndex("nik", tenantA, NIK, 1),
+    );
+  });
+
+  it("a field without a blind index still throws", () => {
+    expect(() =>
+      hrisBlindIndex("emergencyContactName", tenantA, "Budi"),
+    ).toThrow(TypeError);
+  });
+
+  it("fingerprint: new fingerprints use the active version", () => {
+    const request = { operation: "x", request: { a: 1 } };
+    const fingerprint = hrisRequestFingerprint(tenantA, request);
+    expect(fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(hrisFingerprintMatches(tenantA, request, fingerprint)).toBe(true);
+  });
+
+  it("fingerprint: a stored v1 fingerprint still matches the same request after cutover", async () => {
+    const { blindIndex } = await import("./secrets.ts");
+    const request = { operation: "x", request: { a: 1 } };
+    const stored = blindIndex(
+      JSON.stringify(request),
+      `hris:idempotency:${tenantA}`,
+    );
+    expect(stored).not.toBe(hrisRequestFingerprint(tenantA, request));
+    expect(hrisFingerprintMatches(tenantA, request, stored)).toBe(true);
+  });
+
+  it("fingerprint: a different request, another tenant or garbage never matches", async () => {
+    const { blindIndex } = await import("./secrets.ts");
+    const request = { operation: "x", request: { a: 1 } };
+    const v1 = blindIndex(
+      JSON.stringify(request),
+      `hris:idempotency:${tenantA}`,
+    );
+    const v2 = hrisRequestFingerprint(tenantA, request);
+    for (const stored of [v1, v2]) {
+      expect(
+        hrisFingerprintMatches(
+          tenantA,
+          { operation: "x", request: { a: 2 } },
+          stored,
+        ),
+      ).toBe(false);
+      expect(hrisFingerprintMatches(tenantB, request, stored)).toBe(false);
+    }
+    expect(hrisFingerprintMatches(tenantA, request, "")).toBe(false);
+    expect(hrisFingerprintMatches(tenantA, request, "zz")).toBe(false);
+    expect(hrisFingerprintMatches(tenantA, request, "0".repeat(64))).toBe(
+      false,
+    );
   });
 });

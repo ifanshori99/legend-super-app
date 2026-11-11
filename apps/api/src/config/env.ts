@@ -107,6 +107,15 @@ const schema = z
       .min(1)
       .max(HRIS_PII_MAX_KEY_VERSION)
       .default(1),
+    // Blind-index key version (legend-n039, lib/blind-index.ts): 1 = legacy
+    // HMAC under the raw data key, 2 = HKDF subkey. New writes use this one;
+    // setting 1 is the rollback lever (then rerun blind-index-rebuild).
+    BLIND_INDEX_ACTIVE_VERSION: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(2)
+      .default(2),
     BETTER_AUTH_URL: origin(
       "Use the API's origin, e.g. http://localhost:4000.",
     ).default("http://localhost:4000"),

@@ -18,6 +18,7 @@ import {
   gt,
   inArray,
   isNull,
+  ne,
   or,
   sql,
   type SQL,
@@ -83,7 +84,12 @@ import { provisionDefaultServiceChargeRule } from "./tax-provisioning.service";
 import { env } from "../config/env";
 import { HttpError } from "../lib/http-error";
 import { assertTenantMedia } from "./tenant-media";
-import { blindIndex, sealSecret } from "../lib/secrets";
+import {
+  BLIND_INDEX_ACTIVE_VERSION,
+  blindIndexAt,
+  blindIndexCandidates,
+} from "../lib/blind-index";
+import { sealSecret } from "../lib/secrets";
 
 type Database = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -322,14 +328,66 @@ export async function listLegalEntities(
   });
 }
 
+const npwpPurpose = (tenantId: string) => `legal_entity-npwp:${tenantId}`;
+
 function npwpColumns(tenantId: string, npwp: string | null) {
   if (npwp === null)
-    return { npwpEncrypted: null, npwpLast4: null, npwpHash: null };
+    return {
+      npwpEncrypted: null,
+      npwpLast4: null,
+      npwpHash: null,
+      npwpHashVersion: BLIND_INDEX_ACTIVE_VERSION,
+    };
   return {
     npwpEncrypted: sealSecret(npwp, `legal_entity:${tenantId}`),
     npwpLast4: npwp.slice(-4),
-    npwpHash: blindIndex(npwp, `legal_entity-npwp:${tenantId}`),
+    npwpHash: blindIndexAt(
+      BLIND_INDEX_ACTIVE_VERSION,
+      npwp,
+      npwpPurpose(tenantId),
+    ),
+    npwpHashVersion: BLIND_INDEX_ACTIVE_VERSION,
   };
+}
+
+const npwpTaken = () =>
+  new HttpError(
+    409,
+    "CONFLICT",
+    "That NPWP is already registered for another legal entity.",
+  );
+
+/**
+ * The unique index is (tenant, digest), so the same NPWP under blind-index
+ * version 1 and 2 would not collide (legend-n039). Take the tenant's
+ * blind-index lock (also taken by worker/blind-index-rebuild.job.ts), then
+ * refuse an NPWP that any other entity holds under any supported version.
+ */
+async function assertNpwpFree(
+  tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+  tenantId: string,
+  npwp: string | null,
+  ownId: string | null,
+): Promise<void> {
+  if (npwp === null) return;
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`blind-index:${tenantId}`}, 0))`,
+  );
+  const digests = blindIndexCandidates(npwp, npwpPurpose(tenantId)).map(
+    (candidate) => candidate.digest,
+  );
+  const [hit] = await tx
+    .select({ id: legalEntities.id })
+    .from(legalEntities)
+    .where(
+      and(
+        eq(legalEntities.tenantId, tenantId),
+        inArray(legalEntities.npwpHash, digests),
+        ...(ownId === null ? [] : [ne(legalEntities.id, ownId)]),
+      ),
+    )
+    .limit(1);
+  if (hit) throw npwpTaken();
 }
 
 export async function createLegalEntity(
@@ -338,6 +396,7 @@ export async function createLegalEntity(
 ): Promise<LegalEntity> {
   const id = randomUUID();
   return withTenant(db, context, async (tx) => {
+    await assertNpwpFree(tx, context.tenant.tenantId, input.npwp, null);
     let inserted: typeof legalEntities.$inferSelect;
     try {
       const [row] = await tx
@@ -353,12 +412,7 @@ export async function createLegalEntity(
         .returning();
       inserted = row;
     } catch (error) {
-      if (uniqueViolation(error))
-        throw new HttpError(
-          409,
-          "CONFLICT",
-          "That NPWP is already registered for another legal entity.",
-        );
+      if (uniqueViolation(error)) throw npwpTaken();
       throw error;
     }
     // Outside the NPWP catch, same transaction: a provisioning failure rolls
@@ -393,6 +447,13 @@ export async function updateLegalEntity(
         throw new HttpError(404, "NOT_FOUND", "Legal entity not found.");
       return toLegalEntity(current);
     }
+    if (input.npwp !== undefined)
+      await assertNpwpFree(
+        tx,
+        context.tenant.tenantId,
+        input.npwp,
+        legalEntityId,
+      );
     try {
       const [row] = await tx
         .update(legalEntities)
@@ -403,12 +464,7 @@ export async function updateLegalEntity(
         throw new HttpError(404, "NOT_FOUND", "Legal entity not found.");
       return toLegalEntity(row);
     } catch (error) {
-      if (uniqueViolation(error))
-        throw new HttpError(
-          409,
-          "CONFLICT",
-          "That NPWP is already registered for another legal entity.",
-        );
+      if (uniqueViolation(error)) throw npwpTaken();
       throw error;
     }
   });

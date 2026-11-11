@@ -208,7 +208,7 @@ export const HRIS_PII_FIELDS = {
   },
   contractFileUrl: {
     field: "fileUrl",
-    column: "file_key",
+    column: "file_object_id",
     blindIndex: null,
     piiClass: "document",
     encryptionAtRest: "private_bucket_sse",

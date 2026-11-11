@@ -1667,6 +1667,13 @@
       "when": 1794332000000,
       "tag": "0290_recurring_reconcile_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "7",
+      "when": 1794333000000,
+      "tag": "0300_blind_index_version",
+      "breakpoints": true
     }
   ]
 }

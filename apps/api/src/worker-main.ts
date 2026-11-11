@@ -22,6 +22,7 @@ import {
   relayOutbox,
 } from "./services/core-outbox";
 import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
+import { deliverIdentityEvent } from "./services/identity-events.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
@@ -131,6 +132,7 @@ import {
 } from "./services/core-storage-runtime.ts";
 import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-purge.job.ts";
 import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sweep.job.ts";
+import { registerBlindIndexRebuildJob } from "./worker/blind-index-rebuild.job.ts";
 import { registerHrisPiiResealJob } from "./worker/hris-pii-reseal.job.ts";
 import { logger } from "./lib/logger";
 
@@ -240,7 +242,11 @@ const runtime = createWorkerRuntime({
           direction: row.direction === null ? null : String(row.direction),
           peerId: row.peer_id === null ? null : String(row.peer_id),
         };
-        if (route.destination === "notification") {
+        if (route.destination === "identity") {
+          // legend-83ll: session.revoked closes the session row (idempotent).
+          await deliverIdentityEvent(context, event, tx);
+          await handlers.deliverEvent(context, event, key, tx, route);
+        } else if (route.destination === "notification") {
           await createNotificationConsumer(
             context,
             handlers.resolveNotificationRecipients,
@@ -761,6 +767,12 @@ try {
   }
   // legend-33mj: on-demand re-seal of HRIS PII after a key rotation.
   await registerHrisPiiResealJob({
+    boss,
+    database: db,
+    log: consoleLikeLog(logger),
+  });
+  // legend-n039: on-demand rebuild of blind indexes after a version change.
+  await registerBlindIndexRebuildJob({
     boss,
     database: db,
     log: consoleLikeLog(logger),
