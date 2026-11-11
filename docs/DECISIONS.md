@@ -1452,3 +1452,14 @@ Source of truth: the comment at the top of `apps/api/src/services/payment-late-s
 - The closed-bill guard (`billClosedForLateSettlement`) also covers `pending` intents. A cancel leaves a gateway code that is past its expiry `pending` so the poller can still reconcile it.
 - Amount mismatch (s5jup D2): the intent is held as `failed`, marked by the audit row `payment.amount_mismatch_held`. The money is parked in the same transaction. The callback row is `failed` with `REJECTED_AMOUNT_MISMATCH` and is not retried, and the log line is a warning that carries ids and the code only. A held intent never settles from the poller or a later callback.
 - paidAt is chosen from the intent status read under the lock: `pending` gives min(now, first receipt); a closed (non-pending) intent gives max(now, the intent's `updatedAt`), so a payment is never dated before the close that committed while the caller waited on the gateway or the lock.
+
+
+## W9: batas ambang persetujuan diskon kasir, aturan founder (legend-5cwrq)
+
+Decided by the founder 11 Nov 2026. Applies to `pos_approval_policies.discount_threshold_bp`, the policy schema, the config bundle (`pos_discount` items) and the importer.
+
+1. **Maximum 5000 bp (50%).** A manual discount above 50% of the subtotal always needs approval, whatever the tenant or outlet sets. The threshold is at least 1 bp; 0 is refused everywhere (policy schema, config codec, bundle schema, importer) with the message "The discount threshold must be above zero". `POS_DISCOUNT_APPROVAL_MAX_BP = 5000`, `capDiscountThresholdBp` and `posDiscountThresholdBpSchema` are defined in `packages/shared/src/core/money.ts` (a leaf module, so `access/` and `platform/` can share them without a circular import) and re-exported from `packages/shared/src/pos/schemas.ts`.
+2. **New writes above 5000 are refused.** Both the shared schemas and the importer (`tenant-config-access.ts`) accept 1..5000 only.
+3. **Stored values above 5000 are clamped on read, not migrated.** `discountThresholdBp()` in `pos-order.service.ts` returns `min(stored, 5000)` (default 1 when no row), so an older row of 10000 behaves as 5000. The config export emits the clamped value (`min(stored, 5000)`), so export and templates keep working for tenants that still store a value above 5000; the stored row is not changed. No data migration rewrites rows.
+4. **DB CHECK unchanged on purpose.** `pos_approval_policies_threshold_check` stays `BETWEEN 1 AND 10000` (db/schema/pos-order.ts), so existing rows stay valid and no migration is needed; the API layer owns the 5000 limit.
+5. **Older templates are refused until re-exported.** A template stored before this change with a `pos_discount` above 5000 is refused when read, until it is exported again (the export now emits the clamped value). CTO to check on production how many such templates exist; if any do, it is a founder choice what to do with them.

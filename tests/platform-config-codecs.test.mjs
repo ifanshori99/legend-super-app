@@ -200,7 +200,13 @@ test("chart_of_accounts: refuses orphans, cycles, type mismatch", () => {
   const other = books.accounts.find((x) => x.type !== a.type);
   const mismatch = coa.fromTemplate([
     a,
-    { ...b, key: "acct.8100", code: "8100", parentKey: a.key, type: other.type },
+    {
+      ...b,
+      key: "acct.8100",
+      code: "8100",
+      parentKey: a.key,
+      type: other.type,
+    },
   ]);
   assert.equal(mismatch.ok, false);
 });
@@ -663,7 +669,9 @@ test("legend-5cwrq: kind role items keep the template/custom rules", () => {
   assert.equal(superAdmin.ok, false);
   // The exporter chooses keys: a custom role key need not look like a
   // template key (a template role key must, see the 5cwrq key-shape test).
-  const odd = rolesCodec.fromTemplate([{ ...custom, key: "role.pilihan-saya" }]);
+  const odd = rolesCodec.fromTemplate([
+    { ...custom, key: "role.pilihan-saya" },
+  ]);
   assert.equal(odd.ok, true, JSON.stringify(odd.issues));
 });
 
@@ -1133,14 +1141,20 @@ test("legend-5cwrq: a template role key must be its templateKey or <templateKey>
     ["tpl.owner", "owner"],
   ]) {
     const ok = rolesCodec.fromTemplate([template(key, templateKey)]);
-    assert.equal(ok.ok, true, `${key} / ${templateKey}: ${JSON.stringify(ok.issues)}`);
+    assert.equal(
+      ok.ok,
+      true,
+      `${key} / ${templateKey}: ${JSON.stringify(ok.issues)}`,
+    );
     assert.equal(ok.drafts[0].key, key);
     assert.equal(ok.drafts[0].templateKey, templateKey);
   }
 
   // kind "custom" is unchanged: any non-template key is fine.
   const [custom] = kindRoleItems().filter((i) => i.kind === "custom");
-  const customOk = rolesCodec.fromTemplate([{ ...custom, key: "custom.apa-saja" }]);
+  const customOk = rolesCodec.fromTemplate([
+    { ...custom, key: "custom.apa-saja" },
+  ]);
   assert.equal(customOk.ok, true, JSON.stringify(customOk.issues));
 
   // Legacy items (no `kind`) are unchanged: key must equal templateKey.
@@ -1154,4 +1168,26 @@ test("legend-5cwrq: a template role key must be its templateKey or <templateKey>
   ]);
   assert.equal(legacyBad.ok, false);
   assert.match(legacyBad.issues.join(), /templateKey/);
+});
+
+// Founder decision (2026-11-11): the cashier discount approval threshold is
+// 1..5000 bp. 0 is refused everywhere (importer and DB check), and so is
+// anything above 50%.
+test("pos_discount threshold: codec fromTemplate accepts 1..5000 bp and refuses 0, 5001 and 10000", () => {
+  const posItem = (discountThresholdBp) => ({
+    key: "pos.tenant",
+    kind: "pos_discount",
+    outletKey: null,
+    discountThresholdBp,
+  });
+  const run = (bp) =>
+    policiesCodec.fromTemplate([posItem(bp)], { roleKeys: new Set() });
+  for (const bp of [1, 5000]) {
+    const ok = run(bp);
+    assert.equal(ok.ok, true, `${bp} bp: ${JSON.stringify(ok.issues)}`);
+  }
+  for (const bp of [0, 5001, 10000]) {
+    const refused = run(bp);
+    assert.equal(refused.ok, false, `${bp} bp must be refused`);
+  }
 });

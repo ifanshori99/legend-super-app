@@ -39,6 +39,7 @@ import {
   idempotencyKeySchema,
 } from "../core/index.ts";
 import type { Idr } from "../core/index.ts";
+import { posDiscountThresholdBpSchema } from "../core/money.ts";
 import { posOverrideIdSchema } from "../access/override.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import {
@@ -736,19 +737,23 @@ export const posDiscountSchema = z
   });
 export type PosDiscount = z.infer<typeof posDiscountSchema>;
 
+// Founder cap for the cashier discount approval threshold (W9). Defined in
+// core/money.ts (a leaf module) so access/ and platform/ can share it without
+// importing pos/ (circular import).
+export {
+  POS_DISCOUNT_APPROVAL_MAX_BP,
+  capDiscountThresholdBp,
+  posDiscountThresholdBpSchema,
+} from "../core/money.ts";
+
 /** Tenant setting behind POS-02 "diskon di atas ambang". */
-export const posApprovalPolicySchema = z
-  .strictObject({
-    ...scope,
-    /** Manual discounts above this share of the subtotal need approval. */
-    discountThresholdBp: basisPointsSchema,
-    /** Cash rounding increment (PRD F11 "aturan pembulatan"). */
-    cashRoundingIncrementIdr: z.number().int().positive().max(1_000),
-  })
-  .refine((policy) => Number(policy.discountThresholdBp) > 0, {
-    message: "The discount threshold must be above zero",
-    path: ["discountThresholdBp"],
-  });
+export const posApprovalPolicySchema = z.strictObject({
+  ...scope,
+  /** Manual discounts above this share of the subtotal need approval. */
+  discountThresholdBp: posDiscountThresholdBpSchema,
+  /** Cash rounding increment (PRD F11 "aturan pembulatan"). */
+  cashRoundingIncrementIdr: z.number().int().positive().max(1_000),
+});
 export type PosApprovalPolicy = z.infer<typeof posApprovalPolicySchema>;
 
 // ---- Order corrections: void & refund (POS-02, POS-04) --------------------

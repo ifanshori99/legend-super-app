@@ -135,6 +135,28 @@ export function applyRatio(
 export const basisPointsSchema = z.number().int().min(0).max(10_000);
 export type BasisPoints = z.infer<typeof basisPointsSchema>;
 
+/**
+ * Founder decision W9 (2026-11-11): a manual discount above 50% of the subtotal
+ * always needs approval, so the approval threshold can never exceed 5000 bp.
+ * Stored values above it (older rows) are clamped on read, never migrated.
+ */
+export const POS_DISCOUNT_APPROVAL_MAX_BP = 5000;
+
+/** Clamp a stored threshold to the founder maximum (read side only). */
+export function capDiscountThresholdBp(value: number): number {
+  return Math.min(value, POS_DISCOUNT_APPROVAL_MAX_BP);
+}
+
+/** Write-side rule shared by the policy, the config bundle and the importer. */
+export const posDiscountThresholdBpSchema = z
+  .number()
+  .int()
+  .min(1, "The discount threshold must be above zero")
+  .max(
+    POS_DISCOUNT_APPROVAL_MAX_BP,
+    `The discount threshold is at most ${POS_DISCOUNT_APPROVAL_MAX_BP} bp (50%)`,
+  );
+
 /** amount x bp / 10,000, rounded. PBJT 10% = 1,000 bp. */
 export function applyBasisPoints(
   amount: Idr,

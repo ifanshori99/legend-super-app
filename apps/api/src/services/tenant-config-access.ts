@@ -5,7 +5,12 @@
 
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import type { OutletId, TenantId } from "@starter/shared/core";
+import {
+  capDiscountThresholdBp,
+  posDiscountThresholdBpSchema,
+  type OutletId,
+  type TenantId,
+} from "@starter/shared/core";
 import {
   AccessError,
   isRoleTemplateKey,
@@ -55,7 +60,7 @@ const posDiscountItemSchema = z.object({
   key: itemKeySchema,
   kind: z.literal("pos_discount"),
   outletKey: z.string().min(1).max(100).nullable(),
-  discountThresholdBp: z.number().int().min(1).max(10000),
+  discountThresholdBp: posDiscountThresholdBpSchema,
 });
 
 const rolesPayloadSchema = z.object({
@@ -284,7 +289,11 @@ const approvalPoliciesHandler: SectionHandler = {
         key: configKey("pos-discount", key ?? "tenant"),
         kind: "pos_discount",
         outletKey: key,
-        discountThresholdBp: discount.discountThresholdBp,
+        // The outlet enforces min(stored, 5000) (founder W9); export that value so
+        // a tenant with an older stored value still exports. Row stays untouched.
+        discountThresholdBp: capDiscountThresholdBp(
+          discount.discountThresholdBp,
+        ),
       });
     }
     return items.length === 0 ? undefined : { version: 1, items };

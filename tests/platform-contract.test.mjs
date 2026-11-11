@@ -1463,3 +1463,44 @@ test("legend-c9kbk owner approval endpoints and the platform request endpoint ex
     meta: { limit: 25, nextCursor: null },
   });
 });
+
+// Founder decision (2026-11-11): the cashier discount approval threshold is
+// 1..5000 bp; 0 is refused everywhere, as is anything above 50%.
+test("TEN-09 pos_discount threshold in a bundle: 5000 accepted, 0, 5001 and 10000 refused", () => {
+  const bundleWith = (bp) => ({
+    formatVersion: 1,
+    exportedAt: fx.now,
+    sections: {
+      approval_policies: {
+        version: 1,
+        items: [
+          {
+            key: "pos.tenant",
+            kind: "pos_discount",
+            outletKey: null,
+            discountThresholdBp: bp,
+          },
+        ],
+      },
+    },
+  });
+  for (const bp of [1, 5000]) {
+    assert.equal(
+      platform.configBundleSchema.safeParse(bundleWith(bp)).success,
+      true,
+      `${bp} bp accepted by configBundleSchema`,
+    );
+  }
+  for (const bp of [0, 5001, 10000]) {
+    assert.equal(
+      platform.configBundleSchema.safeParse(bundleWith(bp)).success,
+      false,
+      `${bp} bp refused by configBundleSchema`,
+    );
+    assert.equal(
+      platform.parseConfigBundle(bundleWith(bp)).ok,
+      false,
+      `${bp} bp refused by parseConfigBundle`,
+    );
+  }
+});

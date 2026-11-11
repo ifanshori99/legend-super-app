@@ -1699,3 +1699,26 @@ test("POS-04 order.refunded rejects a revenue split that does not equal the refu
     false,
   );
 });
+
+// Founder decision (2026-11-11): the cashier discount approval threshold is
+// 1..5000 bp. 0 is refused everywhere, and so is anything above 50%.
+test("POS-02: posApprovalPolicySchema accepts a threshold of 1..5000 bp and refuses 0 and 5001", () => {
+  const policy = (discountThresholdBp) => ({
+    ...fixtures.approvalPolicy,
+    discountThresholdBp,
+  });
+  for (const bp of [1, 5000]) {
+    assert.equal(
+      pos.posApprovalPolicySchema.safeParse(policy(bp)).success,
+      true,
+      `${bp} bp accepted`,
+    );
+  }
+  for (const bp of [0, 5001, 10000]) {
+    assert.equal(
+      pos.posApprovalPolicySchema.safeParse(policy(bp)).success,
+      false,
+      `${bp} bp refused`,
+    );
+  }
+});

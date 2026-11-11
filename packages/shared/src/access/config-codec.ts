@@ -19,7 +19,7 @@
 // new shape and is validated strictly, `kind` absent means the old shape.
 
 import { z } from "zod";
-import { basisPointsSchema, idrSchema } from "../core/index.ts";
+import { idrSchema, posDiscountThresholdBpSchema } from "../core/index.ts";
 import {
   APPROVAL_MAX_LEVELS,
   approvalActionTypeSchema,
@@ -208,10 +208,7 @@ export const rolesConfigCodec = {
           issues.push(
             `roles item ${item.key}: custom role cannot carry a templateKey`,
           );
-        else if (
-          item.kind === "custom" &&
-          TEMPLATE_ROLE_KEYS.has(item.key)
-        )
+        else if (item.kind === "custom" && TEMPLATE_ROLE_KEYS.has(item.key))
           issues.push(
             `roles item ${item.key}: custom role key cannot equal a template role key`,
           );
@@ -301,7 +298,7 @@ const posDiscountItemSchema = z.strictObject({
   kind: z.literal("pos_discount"),
   /** Lower-cased outlet code; null = the tenant-wide threshold. */
   outletKey: itemKeySchema.nullable(),
-  discountThresholdBp: basisPointsSchema,
+  discountThresholdBp: posDiscountThresholdBpSchema,
 });
 const approvalKindItemSchema = z.discriminatedUnion("kind", [
   approvalRuleItemSchema,
@@ -370,8 +367,7 @@ export const approvalPoliciesConfigCodec = {
 
   fromTemplate(
     items: readonly (
-      | ApprovalPolicyConfigItem
-      | LegacyApprovalPolicyConfigItem
+      ApprovalPolicyConfigItem | LegacyApprovalPolicyConfigItem
     )[],
     ctx: { roleKeys: ReadonlySet<string> },
   ): ConfigDecodeResult<ApprovalPolicyConfigDraft> {
