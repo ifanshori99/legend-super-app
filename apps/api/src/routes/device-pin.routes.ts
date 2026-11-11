@@ -227,21 +227,19 @@ posOverrideRouter.get("/approvals/:requestId", async (req, res) => {
   });
 });
 
-posOverrideRouter.post(
-  "/approvals/:requestId/cancel",
-  jsonBody,
-  async (req, res) => {
-    const { requestId } = approvalRequestParamsSchema.parse(req.params);
-    idempotencyKeyOf(req);
-    const acting = requiredActingStaff(req);
-    res.setHeader("Cache-Control", "private, no-store");
-    res.json({
-      data: await cancelOwnPosOverrideApproval(
-        getTenantContext(req),
-        acting.staffUserId,
-        requestId,
-        acting.outletId,
-      ),
-    });
-  },
-);
+// No jsonBody: the browser sends this POST with no body and no content-type.
+posOverrideRouter.post("/approvals/:requestId/cancel", async (req, res) => {
+  const { requestId } = approvalRequestParamsSchema.parse(req.params);
+  idempotencyKeyOf(req);
+  const acting = requiredActingStaff(req);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    data: await cancelOwnPosOverrideApproval(
+      getTenantContext(req),
+      acting.staffUserId,
+      requestId,
+      acting.outletId,
+      { deviceId: signedDeviceIdOf(req) },
+    ),
+  });
+});

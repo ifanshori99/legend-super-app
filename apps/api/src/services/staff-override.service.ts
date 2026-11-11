@@ -885,13 +885,15 @@ export async function cancelOwnPosOverrideApproval(
   actorUserId: string,
   requestId: string,
   outletId: string,
-  now = new Date(),
+  options: { readonly deviceId?: string | null; readonly now?: Date } = {},
 ): Promise<ApprovalRequest> {
+  const now = options.now ?? new Date();
   const { request, chainId } = await cancelOwnModuleApprovalRequest(
     tenant,
     actorUserId,
     requestId,
     { outletId, sourceModule: POS_OVERRIDE_SOURCE_MODULE },
+    options.deviceId ?? null,
     now,
   );
   await settlePosOverrideForApproval(

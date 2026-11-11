@@ -810,6 +810,8 @@ export async function cancelApprovalRequest(
     readonly sourceModule: string;
     /** The human withdrawing it; null = the module itself (system). */
     readonly actorUserId: string | null;
+    /** The signed device the human withdrew it from (POS), for the audit row. */
+    readonly deviceId?: string | null;
     readonly now?: Date;
   },
 ): Promise<ApprovalOutcome> {
@@ -847,7 +849,7 @@ export async function cancelApprovalRequest(
       outletId: cancelled.outletId,
       actorType: input.actorUserId === null ? "system" : "user",
       actorId: input.actorUserId,
-      deviceId: null,
+      deviceId: input.deviceId ?? null,
       action: "approval.cancelled",
       objectType: "approval_request",
       objectId: cancelled.id,
@@ -880,8 +882,9 @@ export async function cancelOwnApprovalRequest(
   requestId: string,
   now = new Date(),
 ): Promise<ApprovalRequest> {
-  return (await cancelOwnRequest(tenant, actorUserId, requestId, null, now))
-    .request;
+  return (
+    await cancelOwnRequest(tenant, actorUserId, requestId, null, null, now)
+  ).request;
 }
 
 /**
@@ -898,6 +901,7 @@ export async function cancelOwnModuleApprovalRequest(
   actorUserId: string,
   requestId: string,
   scope: { readonly outletId: string; readonly sourceModule: string },
+  deviceId: string | null,
   now = new Date(),
 ): Promise<{ request: ApprovalRequest; chainId: string }> {
   return cancelOwnRequest(
@@ -908,6 +912,7 @@ export async function cancelOwnModuleApprovalRequest(
       outletId: outletIdSchema.parse(scope.outletId),
       sourceModule: scope.sourceModule,
     },
+    deviceId,
     now,
   );
 }
@@ -975,6 +980,7 @@ async function cancelOwnRequest(
   actorUserId: string,
   requestId: string,
   scope: { readonly outletId: OutletId; readonly sourceModule: string } | null,
+  deviceId: string | null,
   now: Date,
 ): Promise<{ request: ApprovalRequest; chainId: string }> {
   const sourceModule = scope?.sourceModule ?? INBOX_SOURCE_MODULE;
@@ -1011,6 +1017,7 @@ async function cancelOwnRequest(
             chainId: row.chainId,
             sourceModule: row.sourceModule,
             actorUserId,
+            deviceId,
             now,
           });
     if (outcome !== "cancelled") throw conflict();

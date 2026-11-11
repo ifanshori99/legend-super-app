@@ -131,6 +131,7 @@ function ModalBody({
   const [errors, setErrors] = useState<OverrideFormErrors>({});
   const [requestId, setRequestId] = useState<string | null>(null);
   const [sendError, setSendError] = useState(false);
+  const [noRequester, setNoRequester] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   const values = { valueText, reasonCode, reason };
@@ -228,6 +229,14 @@ function ModalBody({
     // The override is recorded at an outlet; without one the alert below
     // offers the PIN sign-in again.
     if (!outletId) return;
+    // Same fail-closed rule as the PIN path: the phone wait can only be
+    // cancelled or read by the requester, so no request is opened without one.
+    if (requesterId === null) {
+      setSendError(false);
+      setNoRequester(true);
+      return;
+    }
+    setNoRequester(false);
     setSendError(false);
     create.mutate(
       {
@@ -407,6 +416,11 @@ function ModalBody({
             {t("devicePin.override.phoneHint")}
           </p>
           {outletAlert}
+          {noRequester && (
+            <p role="alert" className="text-sm font-semibold text-danger">
+              {t("devicePin.override.noRequester")}
+            </p>
+          )}
           {sendError && (
             <p role="alert" className="text-sm font-semibold text-danger">
               {t("devicePin.override.sendError")}

@@ -377,6 +377,142 @@ describe("E3 POST /api/pos-overrides/approvals/:requestId/cancel", () => {
     expect(await resolvedEvents(requestId)).toHaveLength(1);
   });
 
+  it("E3 the POS sends the cancel with no body and no content-type (as the browser does): 200 cancelled, not 415", async () => {
+    const token = await tokenFor(deviceA);
+    const { requestId } = await openPhoneOverride({ token });
+    const response = await sessionOwner.client
+      .post(`/api/pos-overrides/approvals/${requestId}/cancel`)
+      .set(headers)
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, deviceToken(deviceA))
+      .set(ACTING_HEADER, token);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data).toMatchObject({
+      id: requestId,
+      status: "cancelled",
+    });
+    expect(await statusOf(requestId)).toBe("cancelled");
+  });
+
+  it("E3 a request past its deadline (sweep not run) is 409 and the override is not approved", async () => {
+    const token = await tokenFor(deviceA);
+    const { requestId } = await openPhoneOverride({ token });
+    await owner.query(
+      `UPDATE approval_requests
+       SET created_at = now() - interval '2 hours',
+           deadline_at = now() - interval '1 minute'
+       WHERE id = $1`,
+      [requestId],
+    );
+    const response = await cancel(requestId, { token });
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(await statusOf(requestId)).toBe("pending");
+    expect(await overrideStatusOf(requestId)).not.toBe("approved");
+    expect(await resolvedEvents(requestId)).toHaveLength(0);
+  });
+
+  it("E3 after a cancel there is no pos_override.recorded event and no override audit row", async () => {
+    const token = await tokenFor(deviceA);
+    const { overrideId, requestId } = await openPhoneOverride({ token });
+    const response = await cancel(requestId, { token });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(await overrideStatusOf(requestId)).toBe("cancelled");
+    const { rows } = await owner.query(
+      `SELECT 1 FROM domain_event_outbox
+       WHERE tenant_id = $1 AND event->>'name' = 'pos_override.recorded'
+         AND event->'payload'->>'overrideId' = $2`,
+      [tenant.tenantId, overrideId],
+    );
+    expect(rows).toHaveLength(0);
+    expect(
+      audits.filter(
+        (row) =>
+          row.objectId === overrideId && row.action === "pos_override.recorded",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("E3 the cancel audit row carries the signed device id", async () => {
+    const token = await tokenFor(deviceA);
+    const { requestId } = await openPhoneOverride({ token });
+    const response = await cancel(requestId, { token });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const row = audits.find(
+      (entry) =>
+        entry.objectId === requestId && entry.action === "approval.cancelled",
+    );
+    expect(row?.deviceId).toBe(deviceA);
+  });
+
+  it("E3 a revoked cashier token is 401 and the request stays pending", async () => {
+    const token = await tokenFor(deviceA);
+    const { requestId } = await openPhoneOverride({ token });
+    await owner.query(
+      `UPDATE pos_acting_staff SET revoked_at = now(), revoke_reason = 'ended'
+       WHERE tenant_id = $1 AND staff_user_id = $2 AND revoked_at IS NULL`,
+      [tenant.tenantId, staff.userId],
+    );
+    const response = await cancel(requestId, { token });
+    expect(response.status, JSON.stringify(response.body)).toBe(401);
+    expect(response.body.error.code).toBe("ACTING_STAFF_REVOKED");
+    expect(await statusOf(requestId)).toBe("pending");
+    expect(await overrideStatusOf(requestId)).toBe("pending");
+  });
+
+  it("E3 a cashier who is no longer a member of the outlet is refused and the request stays pending", async () => {
+    const token = await tokenFor(deviceA);
+    const { requestId } = await openPhoneOverride({ token });
+    await owner.query(
+      `UPDATE role_assignments SET valid_until = now() - interval '1 minute'
+       WHERE tenant_id = $1 AND user_id = $2`,
+      [tenant.tenantId, staff.userId],
+    );
+    try {
+      const response = await cancel(requestId, { token });
+      expect(response.status, JSON.stringify(response.body)).toBe(403);
+      expect(response.body.error.code).toBe("ACTING_STAFF_INACTIVE");
+      expect(await statusOf(requestId)).toBe("pending");
+      expect(await overrideStatusOf(requestId)).toBe("pending");
+    } finally {
+      await owner.query(
+        `UPDATE role_assignments SET valid_until = NULL
+         WHERE tenant_id = $1 AND user_id = $2`,
+        [tenant.tenantId, staff.userId],
+      );
+    }
+  });
+
+  it("E3 a 2-level chain with level 1 approved is cancelled by the level-1 id: 200 and the override is cancelled", async () => {
+    const token = await tokenFor(deviceA);
+    const { requestId: level1 } = await openPhoneOverride({ token });
+    await owner.query(
+      `UPDATE approval_requests SET required_levels = 2, status = 'approved',
+         decided_by = $2, decided_at = now(), reason = 'Level 1 setuju.' WHERE id = $1`,
+      [level1, otherStaff.userId],
+    );
+    const { rows } = await owner.query<{ id: string }>(
+      `INSERT INTO approval_requests
+         (tenant_id, outlet_id, chain_id, source_module, action_type, object_type, object_id,
+          requested_by, source, level, required_levels, required_steps, request_reason, deadline_at)
+       SELECT tenant_id, outlet_id, chain_id, source_module, action_type, object_type, object_id,
+          requested_by, source, 2, required_levels, required_steps, request_reason,
+          now() + interval '1 hour'
+       FROM approval_requests WHERE id = $1
+       RETURNING id`,
+      [level1],
+    );
+    const level2 = rows[0]!.id;
+    const response = await cancel(level1, { token });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data).toMatchObject({
+      id: level2,
+      status: "cancelled",
+    });
+    expect(await statusOf(level2)).toBe("cancelled");
+    expect(await statusOf(level1)).toBe("approved");
+    expect(await overrideStatusOf(level1)).toBe("cancelled");
+  });
+
   it("E3 another staff member's request is 404 and stays pending", async () => {
     const theirs = await openPhoneOverride({
       token: await tokenFor(deviceA, otherStaff, OTHER_PIN),

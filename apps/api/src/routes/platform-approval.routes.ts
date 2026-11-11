@@ -105,8 +105,9 @@ approvalRouter.post("/:requestId/decisions", jsonBody, async (req, res) => {
 });
 
 // The requester withdraws their own pending request (legend-6hr8). Naturally
-// idempotent; the optional Idempotency-Key is validated like on create.
-approvalRouter.post("/:requestId/cancel", jsonBody, async (req, res) => {
+// idempotent; the optional Idempotency-Key is validated like on create. No
+// jsonBody: the browser sends this POST with no body and no content-type.
+approvalRouter.post("/:requestId/cancel", async (req, res) => {
   const { requestId } = approvalRequestParamsSchema.parse(req.params);
   idempotencyKeyOf(req);
   res.setHeader("Cache-Control", "private, no-store");

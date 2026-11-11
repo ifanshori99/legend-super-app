@@ -215,6 +215,16 @@ describe("legend-6hr8 POST /api/approvals/:requestId/cancel", () => {
     ).toBe(true);
   });
 
+  it("legend-6hr8 the browser sends the cancel with no body and no content-type: 200 cancelled, not 415", async () => {
+    const id = await seedPending(requester.userId);
+    const response = await requester.client
+      .post(`/api/approvals/${id}/cancel`)
+      .set(originHeader);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data.status).toBe("cancelled");
+    expect(await statusOf(id)).toBe("cancelled");
+  });
+
   it("legend-6hr8 a repeat cancel is 200 with the same data and emits no second event", async () => {
     const id = await seedPending(requester.userId);
     const first = await cancelAs(requester, id);
