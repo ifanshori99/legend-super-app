@@ -20,7 +20,7 @@
 //   terminal went inactive in between; it is not a new 4xx.
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
@@ -249,6 +249,132 @@ describe("WS-05 lnit B1: a deactivated terminal leaves no cashier default", () =
         (row) => row.terminal_id === terminal,
       ),
     ).toBe(true);
+  });
+
+  it.each([
+    { label: "deactivating A", patch: { status: "inactive" } },
+    {
+      label: "removing A's card method",
+      patch: { supportedMethods: ["qris"] },
+    },
+  ])(
+    "EDC-07 $label preserves D moved to B while cleanup waits on another connection",
+    async ({ patch }) => {
+      const cashier = await newUser("Lnit concurrent cashier");
+      await assign(cashier.userId, "cashier", { type: "outlet", id: outletA });
+      const terminalA = await createTerminal("bca");
+      const terminalB = await createTerminal("bni");
+      expect(
+        (await putDefault(manager, cashier.userId, outletA, terminalA)).status,
+      ).toBe(200);
+
+      const holder = await owner.connect();
+      let pending: Promise<Awaited<ReturnType<typeof manager.patch>>> | null =
+        null;
+      try {
+        await holder.query("BEGIN");
+        await holder.query(
+          "SELECT 1 FROM payment_cashier_defaults WHERE tenant_id = $1 AND cashier_id = $2 FOR UPDATE",
+          [tenantId, cashier.userId],
+        );
+        const { rows } = await holder.query<{ pid: number }>(
+          "SELECT pg_backend_pid() AS pid",
+        );
+        pending = manager
+          .patch(`/api/payments/admin/edc/terminals/${terminalA}`)
+          .set(originHeader)
+          .set("Idempotency-Key", `lnit-race-${randomUUID()}`)
+          .send(patch)
+          .then((response) => response);
+        // Observe the real SQL cleanup waiting on D before moving it. No
+        // sleeps or service test hooks decide which connection wins.
+        await vi.waitFor(
+          async () => {
+            const waiting = await owner.query<{ n: number }>(
+              `SELECT count(*)::int AS n FROM pg_stat_activity
+               WHERE $1 = ANY(pg_blocking_pids(pid))
+                 AND query ILIKE '%payment_cashier_defaults%'`,
+              [rows[0]!.pid],
+            );
+            expect(waiting.rows[0]!.n).toBeGreaterThanOrEqual(1);
+          },
+          { timeout: 10_000, interval: 25 },
+        );
+        await holder.query(
+          `UPDATE payment_cashier_defaults SET terminal_id = $3
+           WHERE tenant_id = $1 AND cashier_id = $2`,
+          [tenantId, cashier.userId, terminalB],
+        );
+      } finally {
+        await holder.query("COMMIT");
+        holder.release();
+      }
+      const changed = await pending!;
+      expect(changed.status).toBe(200);
+      expect(await rowsFor(cashier.userId)).toEqual([
+        { terminal_id: terminalB },
+      ]);
+      expect(
+        (await readDefaults()).cashiers.find(
+          (entry) => entry.cashierId === cashier.userId,
+        )?.terminalId,
+      ).toBe(terminalB);
+    },
+  );
+
+  it("EDC-07 removing card rechecks D's current method after a concurrent move to QRIS", async () => {
+    const cashier = await newUser("Lnit concurrent method cashier");
+    await assign(cashier.userId, "cashier", { type: "outlet", id: outletA });
+    const terminal = await createTerminal("bca");
+    expect(
+      (await putDefault(manager, cashier.userId, outletA, terminal)).status,
+    ).toBe(200);
+    const holder = await owner.connect();
+    let pending: Promise<Awaited<ReturnType<typeof manager.patch>>> | null =
+      null;
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT 1 FROM payment_cashier_defaults WHERE tenant_id = $1 AND cashier_id = $2 FOR UPDATE",
+        [tenantId, cashier.userId],
+      );
+      const { rows } = await holder.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      pending = manager
+        .patch(`/api/payments/admin/edc/terminals/${terminal}`)
+        .set(originHeader)
+        .set("Idempotency-Key", `lnit-method-race-${randomUUID()}`)
+        .send({ supportedMethods: ["qris"] })
+        .then((response) => response);
+      await vi.waitFor(
+        async () => {
+          const waiting = await owner.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+             WHERE $1 = ANY(pg_blocking_pids(pid))
+               AND query ILIKE '%payment_cashier_defaults%'`,
+            [rows[0]!.pid],
+          );
+          expect(waiting.rows[0]!.n).toBeGreaterThanOrEqual(1);
+        },
+        { timeout: 10_000, interval: 25 },
+      );
+      await holder.query(
+        `UPDATE payment_cashier_defaults SET default_method = 'edc_qris'
+         WHERE tenant_id = $1 AND cashier_id = $2`,
+        [tenantId, cashier.userId],
+      );
+    } finally {
+      await holder.query("COMMIT");
+      holder.release();
+    }
+    expect((await pending!).status).toBe(200);
+    expect(await rowsFor(cashier.userId)).toEqual([{ terminal_id: terminal }]);
+    const stored = await owner.query<{ default_method: string }>(
+      "SELECT default_method FROM payment_cashier_defaults WHERE tenant_id = $1 AND cashier_id = $2",
+      [tenantId, cashier.userId],
+    );
+    expect(stored.rows).toEqual([{ default_method: "edc_qris" }]);
   });
 
   it("EDC-07 a cashier default cannot be pointed at an inactive terminal", async () => {

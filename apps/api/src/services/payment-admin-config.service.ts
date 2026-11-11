@@ -539,28 +539,26 @@ export async function updateEdcTerminal(
         );
         // EDC-07: a terminal that is inactive, or no longer supports a
         // default's method, must not stay a cashier's default.
-        const defaults = await tx
-          .select()
-          .from(paymentCashierDefaults)
-          .where(
-            and(
-              eq(paymentCashierDefaults.tenantId, ctx.tenant.tenantId),
-              eq(paymentCashierDefaults.terminalId, row.id),
-            ),
-          );
-        const stale = defaults.filter(
-          (entry) => !defaultUsable(row, entry.defaultMethod),
-        );
-        if (stale.length > 0) {
+        const unsupportedMethods = [
+          ...(!row.supportedMethods.includes("card") ? ["edc_card"] : []),
+          ...(!row.supportedMethods.includes("qris") ? ["edc_qris"] : []),
+        ];
+        if (row.status !== "active" || unsupportedMethods.length > 0) {
+          // Recheck the terminal and method in the DELETE itself: a default
+          // waiting on another transaction may have moved to a usable terminal
+          // or method by the time its row lock is acquired.
           const cleared = await tx
             .delete(paymentCashierDefaults)
             .where(
               and(
                 eq(paymentCashierDefaults.tenantId, ctx.tenant.tenantId),
-                inArray(
-                  paymentCashierDefaults.id,
-                  stale.map((entry) => entry.id),
-                ),
+                eq(paymentCashierDefaults.terminalId, row.id),
+                row.status === "active"
+                  ? inArray(
+                      paymentCashierDefaults.defaultMethod,
+                      unsupportedMethods,
+                    )
+                  : undefined,
               ),
             )
             .returning();
