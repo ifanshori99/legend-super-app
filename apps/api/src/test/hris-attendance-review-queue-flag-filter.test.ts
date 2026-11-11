@@ -277,8 +277,10 @@ beforeAll(async () => {
   });
 
   // A manager who reaches only the main outlet, never the outsider outlet.
+  // hr.employee.manage at outlet scope = outlet HR: sees every employee in the
+  // outlet (a plain supervisor sees only direct reports since WS-D wave 2).
   const manager = await signedInClient("Manajer Filter Antrean");
-  await grantRole(manager.userId, ["hr.attendance.manage"], {
+  await grantRole(manager.userId, ["hr.attendance.manage", "hr.employee.manage"], {
     type: "outlet",
     outletIds: [outletId],
   });

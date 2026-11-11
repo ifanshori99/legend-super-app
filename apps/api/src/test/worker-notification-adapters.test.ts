@@ -627,6 +627,9 @@ describe("legend-18qw notification recipient resolver", () => {
     expect(tenantApprover?.reachability).toEqual({
       hasPushSubscription: false,
       hasVerifiedEmail: false,
+      // legend-fy5y: a real but unverified address (only the first-admin
+      // invitation may use it; the approval category ignores it).
+      hasUnverifiedEmail: true,
       whatsappOptIn: false,
     });
     expect(tenantApprover?.defaultTimeZone).toBe("Asia/Jakarta");
@@ -759,6 +762,7 @@ describe("legend-18qw notification recipient resolver", () => {
       expect(recipient.reachability).toEqual({
         hasPushSubscription: false,
         hasVerifiedEmail: false,
+        hasUnverifiedEmail: false,
         whatsappOptIn: false,
       });
   });

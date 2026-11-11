@@ -770,21 +770,30 @@ describe("legend-6xcy the runtime runs the master sync loop", () => {
       ([, delay]) => delay === MASTER_SYNC_INTERVAL_MS,
     );
     expect(masterTimer).toBeGreaterThanOrEqual(0);
-    // Fire the first tick by hand instead of waiting 5 minutes.
+    // Fire the first tick by hand instead of waiting 5 minutes. The boot-time
+    // bootstrap also hit the masters path (its own signal is already spent), and
+    // the loop's start run (catalog only, legend-24318) may still be in flight,
+    // which makes a tick a no-op: count only masters calls made from here on and
+    // retry the tick until one starts.
     const tick = intervalSpy.mock.calls[masterTimer]![0] as () => void;
-    tick();
-    await vi.waitFor(() =>
-      expect(
-        fetchSpy.mock.calls.some(([input]) =>
-          String(
-            typeof input === "string"
-              ? input
-              : input instanceof URL
-                ? input.href
-                : (input as Request).url,
-          ).includes(MASTERS_PATH),
-        ),
-      ).toBe(true),
+    const mastersCalls = () =>
+      fetchSpy.mock.calls.filter(([input]) =>
+        String(
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : (input as Request).url,
+        ).includes(MASTERS_PATH),
+      ).length;
+    const before = mastersCalls();
+    hangingSignal = null;
+    await vi.waitFor(
+      () => {
+        tick();
+        expect(mastersCalls()).toBeGreaterThan(before);
+      },
+      { timeout: 5_000, interval: 25 },
     );
     expect(hangingSignal).not.toBeNull();
     expect(hangingSignal!.aborted).toBe(false);

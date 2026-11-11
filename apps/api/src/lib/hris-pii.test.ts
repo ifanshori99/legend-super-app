@@ -17,6 +17,7 @@ import {
   assertHrisPiiActiveVersion,
   parseHrisPiiKeys,
 } from "./hris-pii-keys.ts";
+import { BLIND_INDEX_ACTIVE_VERSION, blindIndexAt } from "./blind-index.ts";
 
 const tenantA = "11111111-1111-4111-8111-111111111111";
 const tenantB = "22222222-2222-4222-8222-222222222222";
@@ -247,9 +248,10 @@ describe("legend-33mj HRIS PII after rotation to version 2", () => {
 
   it("[legend-n039] the blind index is independent of the PII ring (v2 stable across ring rotation)", async () => {
     const before = hrisBlindIndex("nik", tenantA, NIK, 2);
+    const beforeDefault = hrisBlindIndex("nik", tenantA, NIK);
     const pii = await rotated();
     expect(pii.hrisBlindIndex("nik", tenantA, NIK, 2)).toBe(before);
-    expect(pii.hrisBlindIndex("nik", tenantA, NIK)).toBe(before);
+    expect(pii.hrisBlindIndex("nik", tenantA, NIK)).toBe(beforeDefault);
   });
 
   it("[HR-03] a wrong key for the version does not open another ring's data", async () => {
@@ -264,11 +266,13 @@ describe("legend-33mj HRIS PII after rotation to version 2", () => {
 });
 
 describe("legend-n039 HRIS blind index versions", () => {
-  it("defaults to the active version (2), different from the legacy v1 digest", () => {
+  it("defaults to the active version (1 until BLIND_INDEX_ACTIVE_VERSION=2, 488-6), different from the other digest", () => {
     const v1 = hrisBlindIndex("nik", tenantA, NIK, 1);
     const v2 = hrisBlindIndex("nik", tenantA, NIK, 2);
     expect(v1).not.toBe(v2);
-    expect(hrisBlindIndex("nik", tenantA, NIK)).toBe(v2);
+    expect(hrisBlindIndex("nik", tenantA, NIK)).toBe(
+      BLIND_INDEX_ACTIVE_VERSION === 2 ? v2 : v1,
+    );
   });
 
   it("v1 equals the legacy purpose-framed HMAC (existing rows stay findable)", async () => {
@@ -313,10 +317,10 @@ describe("legend-n039 HRIS blind index versions", () => {
     expect(hrisFingerprintMatches(tenantA, request, fingerprint)).toBe(true);
   });
 
-  it("fingerprint: a stored v1 fingerprint still matches the same request after cutover", async () => {
-    const { blindIndex } = await import("./secrets.ts");
+  it("fingerprint: a stored fingerprint of the other version still matches the same request after cutover", async () => {
     const request = { operation: "x", request: { a: 1 } };
-    const stored = blindIndex(
+    const stored = blindIndexAt(
+      BLIND_INDEX_ACTIVE_VERSION === 1 ? 2 : 1,
       JSON.stringify(request),
       `hris:idempotency:${tenantA}`,
     );
