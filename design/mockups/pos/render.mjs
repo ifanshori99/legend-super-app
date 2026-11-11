@@ -7,7 +7,7 @@ const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:1});
 const scriptErrors=[];page.on('pageerror',e=>scriptErrors.push(e.message));
 const report=[];
-for(const file of (await readdir(dir)).filter(f=>f.endsWith('.html')).sort()){
+for(const file of (await readdir(dir)).filter(f=>f.endsWith('.html')&&!['cashier-main.html','captain.html'].includes(f)).sort()){
  await page.goto(pathToFileURL(path.join(dir,file)).href);
  const states=await page.locator('.screen').evaluateAll(els=>els.map(e=>e.dataset.screen));
  for(const state of states){
