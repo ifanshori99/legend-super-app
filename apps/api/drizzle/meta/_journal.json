@@ -1814,6 +1814,13 @@
       "when": 1794354000000,
       "tag": "0272_depreciation_journal_manual_reverse_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 273,
+      "version": "7",
+      "when": 1794355000000,
+      "tag": "0273_leave_flag_closed_payroll",
+      "breakpoints": true
     }
   ]
 }

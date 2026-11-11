@@ -62,7 +62,6 @@ import {
   attendanceLogs,
 } from "../db/schema/hris-attendance.ts";
 import { shiftAssignments } from "../db/schema/hris-scheduling.ts";
-import { payrollRuns } from "../db/schema/payroll.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -82,6 +81,7 @@ import {
 import { computeWorkTiming } from "./hris-attendance-logic.ts";
 import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
 import { findApprovedLeaveOnDate } from "./hris-leave-request.service.ts";
+import { assertPayrollOpen, isPayrollClosed } from "./hris-payroll-lock.ts";
 import { loadOutletTimeZone } from "./hris-scheduling-common.ts";
 import {
   decideApprovalRequest,
@@ -221,58 +221,9 @@ async function findCorrection(
 
 // --------------------------------------------------------------- payroll
 
-/**
- * 409 when a closed payroll run (locked, paid or reversed) covers any of the
- * dates. The run has no outlet; with a legal entity on the employee only that
- * entity's runs count, otherwise every run of the tenant does (fail closed).
- */
-async function assertPayrollOpen(
-  tx: Tx,
-  tenantId: TenantId,
-  employeeId: string,
-  dates: readonly string[],
-): Promise<void> {
-  if (!(await isPayrollClosed(tx, tenantId, employeeId, dates))) return;
-  throw new HttpError(
-    409,
-    "PAYROLL_PERIOD_LOCKED",
-    "Periode payroll sudah dikunci; koreksi absensi tidak bisa diajukan.",
-  );
-}
-
-async function isPayrollClosed(
-  tx: Tx,
-  tenantId: TenantId,
-  employeeId: string,
-  dates: readonly string[],
-): Promise<boolean> {
-  const [employee] = await tx
-    .select({ legalEntityId: employees.legalEntityId })
-    .from(employees)
-    .where(and(eq(employees.tenantId, tenantId), eq(employees.id, employeeId)))
-    .limit(1);
-  const filters: SQL[] = [
-    eq(payrollRuns.tenantId, tenantId),
-    or(
-      inArray(payrollRuns.status, ["locked", "paid", "reversed"]),
-      isNotNull(payrollRuns.lockedAt),
-    )!,
-    or(
-      ...dates.map(
-        (date) =>
-          sql`(${payrollRuns.periodStart} <= ${date}::date AND ${payrollRuns.periodEnd} >= ${date}::date)`,
-      ),
-    )!,
-  ];
-  if (employee?.legalEntityId)
-    filters.push(eq(payrollRuns.legalEntityId, employee.legalEntityId));
-  const [closed] = await tx
-    .select({ id: payrollRuns.id })
-    .from(payrollRuns)
-    .where(and(...filters))
-    .limit(1);
-  return closed !== undefined;
-}
+// The closed-period check itself lives in hris-payroll-lock.ts (shared with leave).
+const PAYROLL_LOCKED_MESSAGE =
+  "Periode payroll sudah dikunci; koreksi absensi tidak bisa diajukan.";
 
 /** Outlet-local dates a correction touches: the requested time and the log's own day. */
 async function correctionDates(
@@ -444,7 +395,13 @@ export async function requestAttendanceCorrection(
       attendanceLogId: input.attendanceLogId,
       requestedOccurredAt: requestedAt,
     });
-    await assertPayrollOpen(tx, tenantId, own.id, dates);
+    await assertPayrollOpen(
+      tx,
+      tenantId,
+      own.id,
+      dates,
+      PAYROLL_LOCKED_MESSAGE,
+    );
 
     const [inserted] = await tx
       .insert(attendanceCorrections)
@@ -622,7 +579,13 @@ export async function decideAttendanceCorrection(
     );
     if (input.action === "approve") {
       const { dates, timeZone, logDate } = await correctionDates(tx, row);
-      await assertPayrollOpen(tx, row.tenantId, row.employeeId, dates);
+      await assertPayrollOpen(
+        tx,
+        row.tenantId,
+        row.employeeId,
+        dates,
+        PAYROLL_LOCKED_MESSAGE,
+      );
       // Before decideApprovalRequest: a refused day must not leave an
       // approved chain behind a pending correction.
       await assertNoApprovedLeave(

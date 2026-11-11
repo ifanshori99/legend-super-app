@@ -53,6 +53,7 @@ import {
 import { loadTenantAccess } from "../services/permission-resolver.ts";
 import { loadSurfaceAccessFacts } from "../services/surface-access.service.ts";
 import * as employeesService from "../services/hris-employee.service.ts";
+import * as attendanceService from "../services/hris-attendance.service.ts";
 import * as orgService from "../services/hris-org.service.ts";
 import {
   getEmploymentContract,
@@ -168,6 +169,21 @@ export function createHrisRouter(deps: HrisRouterDeps = {}): Router {
     async (req, res) => {
       res.json({
         data: await employeesService.getMyHrisProfile(
+          hrisContext(req),
+          actor(req),
+        ),
+      });
+    },
+  );
+
+  // F25: the caller's outlet attendance policy for the clock-in screen.
+  router.get(
+    "/me/attendance-policy",
+    requireHrisSurface(),
+    requireHris(["self.attendance.clock"]),
+    async (req, res) => {
+      res.json({
+        data: await attendanceService.getMyAttendancePolicy(
           hrisContext(req),
           actor(req),
         ),
