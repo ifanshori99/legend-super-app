@@ -128,6 +128,12 @@ export async function startCatalogGate(options: {
   onError?: (error: unknown) => void;
   /** Boot: the wall clock was behind the saved high water (audit/log line). */
   onClockRegressed?: (info: { wallNow: Date; highWater: Date }) => void;
+  /**
+   * Called once, right after the trusted clock exists and before `seed` or any
+   * owner alarm can fire. The caller uses it to time-stamp the boot alarm with
+   * the trusted clock instead of a wall clock that may be dead (RTC at 1970).
+   */
+  onClock?: (clock: TrustedClock) => void;
   persistMs?: number;
   /** First load of the saved state waits this long; default 3 s. */
   bootWaitMs?: number;
@@ -181,6 +187,11 @@ export async function startCatalogGate(options: {
     mono: options.mono,
     persistedHighWater: first?.state?.clockHighWaterAt ?? null,
   });
+  try {
+    options.onClock?.(clock);
+  } catch (error) {
+    onError(error);
+  }
   let trackingStartedAt = first?.state?.trackingStartedAt ?? clock.now();
   const freshness = createCatalogFreshness({
     clock,

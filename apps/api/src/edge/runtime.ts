@@ -766,6 +766,10 @@ export async function startEdgeRuntime(
     proveWithServerTime(serverTime: Date): void;
     elapsedTimeUnproven(): boolean;
   } | null = null;
+  // Clock for the alarm queue only. It is set as soon as the gate builds the
+  // trusted clock (before the boot alarm), while `catalogClock` stays null until
+  // the freshness tracker exists, so applyServerTime keeps its old timing.
+  let queueClock: { now(): Date } | null = null;
   // Wall time of this boot, taken before the gate: alarms of this boot have a
   // staleSince at or after it, alarms of earlier boots are older.
   const bootAt = new Date();
@@ -777,7 +781,7 @@ export async function startEdgeRuntime(
     edgeNodeId: local.scope.edgeNodeId,
     // 533b: the 7 day expiry runs on the trusted clock once it exists, so a
     // wall clock set forward cannot age an alarm out.
-    now: () => (catalogClock ? catalogClock.now() : new Date()),
+    now: () => (queueClock ? queueClock.now() : new Date()),
     onError: reportCatalogAlarmError,
   });
   let lastServerTime: { serverTime: Date; receivedMono: number } | null = null;
@@ -1122,6 +1126,11 @@ export async function startEdgeRuntime(
     // unseeded; unseeded streams age from the persisted tracking start.
     seed: (tracker) =>
       seedCatalogFreshness(tracker, local.context, local.scope.edgeNodeId),
+    // Before seed and the boot alarm: the alarm queue stamps enqueuedAt with
+    // the trusted clock, never a raw wall clock that may be dead (RTC 1970).
+    onClock: (clock) => {
+      queueClock = clock;
+    },
     onError: (error) =>
       logger.warn(safeError(error), "Edge catalog sales gate step failed"),
     onClockRegressed: ({ wallNow, highWater }) =>

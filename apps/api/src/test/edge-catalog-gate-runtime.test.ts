@@ -42,6 +42,7 @@ import {
   type CatalogGateOverrides,
 } from "../edge/catalog-gate.ts";
 import { CRITICAL_CATALOG_STREAMS } from "../edge/catalog-freshness.ts";
+import type { TrustedClock } from "../edge/trusted-clock.ts";
 import {
   getSalesGateState,
   installSalesGateProvider,
@@ -858,5 +859,78 @@ describe("521 a reload of the same override during its committed close cannot re
     release();
     await ticking;
     expect(getSalesGateState().override).toBeNull();
+  });
+});
+
+// 533b: the runtime stamps the owner alarm queue with the trusted clock, but
+// that clock only exists inside startCatalogGate. The boot alarm
+// (CLOCK_ELAPSED_UNPROVEN) fires while the gate is still being built, so the
+// gate must hand the clock out through `onClock` before any freshness or alarm
+// callback (seed, onOwnerAlarm) can run. Otherwise a dead RTC (1970) stamps the
+// queued alarm with a raw wall time and it ages out.
+// Assumption: the function in the brief ("createCatalogGate") is
+// `startCatalogGate` in this codebase; the new option is
+// `onClock?: (clock: TrustedClock) => void`.
+describe("533b the boot owner alarm sees the trusted clock", () => {
+  it("passes the clock via onClock before seed and the first alarm, already pinned to the high water", async () => {
+    const rig = await newEdge();
+    const first = clocks(T0);
+    const gate = await start(rig, first);
+    first.tick(30 * DAY);
+    await gate.tick(); // persists the high water about T0 + 30 days
+    await gate.stop();
+    const highWater = (await gateRow(rig.scope.edgeNodeId))!
+      .clock_high_water_at;
+    expect(highWater.getTime()).toBeGreaterThanOrEqual(T0.getTime() + 30 * DAY);
+
+    // Reboot with a dead RTC: the wall clock reads 1970.
+    const deadRtc = clocks(new Date(0));
+    const events: string[] = [];
+    let passed = null as TrustedClock | null;
+    let nowWhenPassed: number | null = null;
+    let alarmStampedAt: number | null = null;
+    const alarms: string[] = [];
+
+    const booted = await startCatalogGate({
+      context: rig.context,
+      scope: rig.scope,
+      overrides: overrideStub().stub,
+      onClock: (clock) => {
+        events.push("onClock");
+        passed = clock;
+        nowWhenPassed = clock.now().getTime();
+      },
+      onOwnerAlarm: (alarm) => {
+        events.push("alarm");
+        // What the runtime does: stamp the queue entry with the clock it got.
+        alarmStampedAt = passed ? passed.now().getTime() : null;
+        for (const entry of alarm.streams) alarms.push(entry.reason);
+      },
+      seed: async (freshness) => {
+        events.push("seed");
+        for (const name of STREAMS) freshness.seedLastSuccess(name, T0);
+        freshness.snapshot(); // observes the unproven time: the boot alarm
+      },
+      persistMs: 24 * HOUR,
+      wall: deadRtc.wall,
+      mono: deadRtc.mono,
+    });
+    handles.push(booted);
+    setSalesGateEdgeModeForTests(() => true);
+    booted.freshness.snapshot(); // make sure the alarm path ran
+
+    // The clock is handed out first, before seed and before any alarm.
+    expect(events[0]).toBe("onClock");
+    expect(events.filter((event) => event === "onClock")).toHaveLength(1);
+    expect(events.indexOf("onClock")).toBeLessThan(events.indexOf("seed"));
+    expect(events).toContain("alarm");
+    expect(events.indexOf("onClock")).toBeLessThan(events.indexOf("alarm"));
+    expect(alarms).toContain("CLOCK_ELAPSED_UNPROVEN");
+
+    // It is the gate's own clock, already pinned to the high water (not 1970).
+    expect(passed).toBe(booted.clock);
+    expect(nowWhenPassed).toBe(highWater.getTime());
+    expect(alarmStampedAt).toBe(highWater.getTime());
+    expect(deadRtc.wall().getTime()).toBe(0);
   });
 });
