@@ -156,6 +156,24 @@ async function sourceLines(
   if (issue.orderId !== row.sourceId) return null;
   const lineId = isSwap ? issue.replacementOrderItemId : issue.orderItemId;
   if (!lineId) return null;
+  if (isSwap) {
+    // Chained swap A -> B -> C: B was swapped away again, so it was never
+    // cooked. Only the last replacement still in force may be drawn (same rule
+    // as paidOrderLines for a swapped-away line).
+    const [swappedAway] = await tx
+      .select({ id: orderIssues.id })
+      .from(orderIssues)
+      .where(
+        and(
+          eq(orderIssues.tenantId, tenantId),
+          eq(orderIssues.orderId, row.sourceId),
+          eq(orderIssues.orderItemId, lineId),
+          isNotNull(orderIssues.replacementOrderItemId),
+        ),
+      )
+      .limit(1);
+    if (swappedAway) return null;
+  }
   const [line] = await tx
     .select({
       menuItemId: orderItems.menuItemId,

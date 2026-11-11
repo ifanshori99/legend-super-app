@@ -25,6 +25,13 @@
 // entity createdAt/id, locations by outlet), so it cannot cycle with a writer
 // that holds one.
 //
+// Item unit conversions (`lockItemUomReachability`, legend-o1n1) sit apart from
+// the four above: it is taken only by the conversion delete and by the recipe
+// saves, and a recipe save takes it AFTER the recipe graph lock
+// (`recipe:graph:<tenant>`, recipe.service.ts) and, for several items, in
+// ascending item id order. The conversion delete takes nothing else, so no
+// cycle exists.
+//
 // Keys are unchanged from the per-module locks they replace, so a running
 // process on the previous build still serialises against this one.
 
@@ -78,4 +85,31 @@ export function lockServiceChargeConfig(
   tenantId: string,
 ): Promise<void> {
   return advisoryXactLock(tx, `tax:service-provisioning:${tenantId}`);
+}
+
+/**
+ * Unit reachability of one inventory item (legend-o1n1). A recipe save that
+ * puts the item in a non-base unit and the delete of a conversion that makes
+ * that unit reachable both take this lock before they read conversions or
+ * references, so one of them always sees the other's committed result.
+ */
+export function lockItemUomReachability(
+  tx: TenantTransaction,
+  tenantId: string,
+  inventoryItemId: string,
+): Promise<void> {
+  return advisoryXactLock(
+    tx,
+    `inventory:uom-reach:${tenantId}:${inventoryItemId}`,
+  );
+}
+
+/** Locks several items in ascending id order (the fixed order for no deadlock). */
+export async function lockItemsUomReachability(
+  tx: TenantTransaction,
+  tenantId: string,
+  inventoryItemIds: readonly string[],
+): Promise<void> {
+  for (const id of [...new Set(inventoryItemIds)].sort())
+    await lockItemUomReachability(tx, tenantId, id);
 }

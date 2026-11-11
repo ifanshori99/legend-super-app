@@ -74,6 +74,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import { lockItemUomReachability } from "./tenant-config-locks.ts";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -1020,6 +1021,9 @@ export async function deleteUomConversion(
       SETUP_WRITE_PERMISSION,
       tenantTarget,
     );
+    // legend-o1n1: same lock as a recipe save on this item, taken before the
+    // reference check so the check sees every committed recipe line.
+    await lockItemUomReachability(tx, context.tenant.tenantId, itemId);
     const [row] = await tx
       .select()
       .from(uomConversions)

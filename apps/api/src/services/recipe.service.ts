@@ -72,6 +72,7 @@ import {
   setupFingerprint,
 } from "./inventory-setup.service.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
+import { lockItemsUomReachability } from "./tenant-config-locks.ts";
 
 export type CreateRecipeInput = z.infer<typeof createRecipeInputSchema>;
 export type CreateRecipeVersionInput = z.infer<
@@ -332,6 +333,25 @@ async function lockRecipeGraph(tx: Tx, tenantId: string): Promise<void> {
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`recipe:graph:${tenantId}`}, 0))`,
   );
+}
+
+/**
+ * legend-o1n1: locks the unit reachability of every item a recipe body names
+ * (line items and the output item), so a conversion delete cannot slip between
+ * the reachability check and the commit. Taken after the recipe graph lock and
+ * before validateRecipeBody; a conversion delete takes only an item lock.
+ */
+async function lockBodyItems(
+  tx: Tx,
+  tenantId: string,
+  lines: readonly LineInput[],
+  outputItemId: string | null,
+): Promise<void> {
+  const itemIds = lines
+    .filter((line) => line.componentType === "item")
+    .map((line) => line.componentId);
+  if (outputItemId) itemIds.push(outputItemId);
+  await lockItemsUomReachability(tx, tenantId, itemIds);
 }
 
 // ----------------------------------------------------------- validation
@@ -774,6 +794,12 @@ export async function createRecipe(
       lines: input.lines,
     };
     const id = randomUUID();
+    await lockBodyItems(
+      tx,
+      context.tenant.tenantId,
+      body.lines,
+      body.outputItemId,
+    );
     await validateRecipeBody(tx, id, input.brandId, body);
     await tx.insert(recipes).values({
       id,
@@ -861,6 +887,12 @@ export async function createRecipeVersion(
       yieldUomId: input.yieldUomId ?? before.row.yieldUomId,
       lines: input.lines,
     };
+    await lockBodyItems(
+      tx,
+      context.tenant.tenantId,
+      body.lines,
+      body.outputItemId,
+    );
     await validateRecipeBody(tx, recipeId, before.row.brandId, body);
     if (body.yieldUomId !== before.row.yieldUomId)
       await assertNoBreakingParents(tx, recipeId, body.yieldUomId);
@@ -1062,6 +1094,15 @@ export async function putModifierRecipeRules(
           path: `rules[${index}].target`,
         });
     });
+    // legend-o1n1: same item lock as a conversion delete, taken after the graph
+    // lock and before the reachability check in validateComponents.
+    await lockItemsUomReachability(
+      tx,
+      context.tenant.tenantId,
+      refs
+        .filter((ref) => ref.componentType === "item")
+        .map((ref) => ref.componentId),
+    );
     await validateComponents(tx, refs);
     const existing = await tx
       .select({ id: modifierRecipeRules.id })
