@@ -226,9 +226,10 @@ export const accountingMessages = {
         "Outlet belum bisa dimuat. Baris tetap bisa disimpan tanpa outlet.",
       outletHint:
         "Pilih outlet pada tiap baris untuk laporan per outlet. Tanpa outlet, baris dicatat pada tingkat badan usaha.",
-      linesLoading: "Memuat akun…",
+      linesLoading: "Memuat akun dan outlet…",
       linesErrorTitle: "Data jurnal belum bisa dimuat",
-      linesErrorHint: "Periksa koneksi, lalu coba lagi untuk memuat akun.",
+      linesErrorHint:
+        "Periksa koneksi, lalu coba lagi untuk memuat akun dan outlet.",
       linesEmptyTitle: "Belum ada akun untuk jurnal",
       linesEmptyHint:
         "Tambahkan akun untuk badan usaha ini sebelum membuat jurnal.",
@@ -246,6 +247,11 @@ export const accountingMessages = {
         "Periode {period} sudah ditutup. Pilih tanggal di periode yang masih terbuka.",
       balance: "Debit {debit} · Kredit {credit}",
       difference: "Selisih {amount}",
+      unbalancedTitle: "Jurnal belum seimbang",
+      debitHigher:
+        "Debit lebih besar {amount}. Sesuaikan jumlah debit atau kredit sebelum mengajukan.",
+      creditHigher:
+        "Kredit lebih besar {amount}. Sesuaikan jumlah debit atau kredit sebelum mengajukan.",
       balanced: "Seimbang",
       unbalanced: "Belum seimbang",
     },

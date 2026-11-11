@@ -314,6 +314,21 @@ export function parseRupiahInput(value: string): number | null {
 }
 
 /**
+ * Groups a rupiah field with id-ID thousands dots while the user types:
+ * "1520000" becomes "1.520.000". Text that is not only digits, dots and spaces
+ * (a comma, a minus, letters) is returned as typed, so the amount error still
+ * shows instead of a decimal silently turning into a larger whole number.
+ * `parseRupiahInput` reads the grouped text back unchanged.
+ */
+export function formatRupiahInput(value: string): string {
+  if (!/^[\d.\s]*$/.test(value)) return value;
+  const digits = value.replace(/\D/g, "");
+  if (digits === "") return "";
+  const trimmed = digits.replace(/^0+(?=\d)/, "");
+  return trimmed.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+/**
  * Turns the line editor into contract line inputs and the messages the form
  * shows. Blank rows are ignored; a row needs exactly one side and an account
  * (ACC-01), and fewer than two filled rows can never balance.

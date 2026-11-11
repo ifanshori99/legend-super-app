@@ -104,7 +104,12 @@ test.describe("legend-5ac3 outlet on journal lines", () => {
     await page.getByLabel("Debit baris 1").fill("500000");
     await pick(page, "Akun baris 2", /1103/);
     await page.getByLabel("Kredit baris 2").fill("400000");
+    // Amounts group thousands while typing (value sent to the API stays whole rupiah).
+    await expect(page.getByLabel("Debit baris 1")).toHaveValue("500.000");
     await expect(page.getByText(/Selisih Rp/)).toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Jurnal belum seimbang" }),
+    ).toContainText("Debit lebih besar Rp");
     await expect(
       page.getByRole("button", { name: "Simpan draf" }),
     ).toBeDisabled();

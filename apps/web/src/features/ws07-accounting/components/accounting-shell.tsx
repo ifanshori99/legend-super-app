@@ -174,7 +174,7 @@ function SectionLink({
       // On 390px the strip scrolls; keep the current tab in view.
       ref={scrollIntoView ? keepInView : undefined}
       aria-current={current ? "page" : undefined}
-      className={tabsTriggerClass}
+      className={cn(tabsTriggerClass, "max-md:min-h-11")}
     >
       {label}
     </Link>

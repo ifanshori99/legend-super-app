@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { accountLabel, type DraftEvaluation } from "../lib";
+import { accountLabel, formatRupiahInput, type DraftEvaluation } from "../lib";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export type EditorLine = {
@@ -40,6 +40,52 @@ const ENTITY_LEVEL = "__entity__";
 
 export type OutletOption = { id: string; name: string };
 export type OutletsState = "ready" | "loading" | "error";
+
+/**
+ * Amount field that groups thousands as the user types ("1520000" shows as
+ * "1.520.000"). The text stays a string; `parseRupiahInput` reads it back, so
+ * the integer rupiah sent to the API is unchanged. The caret stays after the
+ * same digit when the dots move.
+ */
+function RupiahInput({
+  value,
+  onValueChange,
+  ...props
+}: Omit<React.ComponentProps<typeof Input>, "value" | "onChange"> & {
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
+  const ref = React.useRef<HTMLInputElement>(null);
+  const caret = React.useRef<number | null>(null);
+  React.useLayoutEffect(() => {
+    if (caret.current !== null && ref.current) {
+      ref.current.setSelectionRange(caret.current, caret.current);
+    }
+    caret.current = null;
+  });
+  return (
+    <Input
+      {...props}
+      ref={ref}
+      value={value}
+      onChange={(event) => {
+        const raw = event.target.value;
+        const formatted = formatRupiahInput(raw);
+        const before = raw.slice(0, event.target.selectionStart ?? raw.length);
+        const digitsBefore = before.replace(/\D/g, "").length;
+        // Put the caret after the same number of digits in the grouped text.
+        let position = 0;
+        let seen = 0;
+        while (position < formatted.length && seen < digitsBefore) {
+          if (/\d/.test(formatted.charAt(position))) seen += 1;
+          position += 1;
+        }
+        caret.current = formatted === raw ? null : position;
+        onValueChange(formatted);
+      }}
+    />
+  );
+}
 
 export function blankEditorLine(): EditorLine {
   return {
@@ -199,12 +245,10 @@ export function JournalLinesEditor({
               >
                 {t("accounting.manual.form.debit", { line })}
               </Label>
-              <Input
+              <RupiahInput
                 id={`${baseId}-line-${index}-debit`}
                 value={row.debit}
-                onChange={(event) =>
-                  update(index, { debit: event.target.value })
-                }
+                onValueChange={(debit) => update(index, { debit })}
                 inputMode="numeric"
                 autoComplete="off"
                 placeholder="0"
@@ -220,12 +264,10 @@ export function JournalLinesEditor({
               >
                 {t("accounting.manual.form.credit", { line })}
               </Label>
-              <Input
+              <RupiahInput
                 id={`${baseId}-line-${index}-credit`}
                 value={row.credit}
-                onChange={(event) =>
-                  update(index, { credit: event.target.value })
-                }
+                onValueChange={(credit) => update(index, { credit })}
                 inputMode="numeric"
                 autoComplete="off"
                 placeholder="0"
@@ -294,6 +336,24 @@ export function JournalLinesEditor({
       <p className="text-sm leading-5 text-muted-foreground">
         {t("accounting.manual.form.amountHint")}
       </p>
+      {!evaluation.balanced &&
+        evaluation.filled >= 2 &&
+        evaluation.differenceIdr !== 0 && (
+          <div
+            role="alert"
+            className="grid gap-1 rounded-lg border-(length:--border-w) border-danger p-3 text-sm leading-5 text-danger"
+          >
+            <strong>{t("accounting.manual.form.unbalancedTitle")}</strong>
+            <span>
+              {t(
+                evaluation.differenceIdr > 0
+                  ? "accounting.manual.form.debitHigher"
+                  : "accounting.manual.form.creditHigher",
+                { amount: formatRupiah(Math.abs(evaluation.differenceIdr)) },
+              )}
+            </span>
+          </div>
+        )}
       <div
         aria-live="polite"
         className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 rounded-lg border-(length:--border-w) border-border bg-muted p-card"
@@ -318,9 +378,9 @@ export function JournalLinesEditor({
           <p className="flex items-center gap-2 text-sm font-medium text-danger">
             <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
             {evaluation.differenceIdr !== 0
-              ? t("accounting.manual.form.difference", {
+              ? `${t("accounting.manual.form.difference", {
                   amount: formatRupiah(Math.abs(evaluation.differenceIdr)),
-                })
+                })} · ${t("accounting.manual.form.unbalanced")}`
               : t("form.invalid")}
           </p>
         )}
