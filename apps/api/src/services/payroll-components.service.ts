@@ -811,9 +811,8 @@ export async function computeEmployeeGross(
   const periodStart = start.data;
   const periodEnd = end.data;
   return withTenant(db, context, async (tx) => {
-    // The employee comes first: another tenant's employee is a plain 404.
-    const employee = await assertEmployeeInTenant(tx, context, employeeId);
     await assertPayrollTenantCan(tx, context, actorUserId, WRITE_CODE);
+    const employee = await assertEmployeeInTenant(tx, context, employeeId);
     const employmentStart =
       employee.joinDate > periodStart ? employee.joinDate : periodStart;
     const employmentEnd =

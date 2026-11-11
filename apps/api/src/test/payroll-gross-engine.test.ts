@@ -1517,6 +1517,48 @@ describe("computeEmployeeGross: sealed result", () => {
   });
 });
 
+describe("employee payroll authorization precedes lookup (538-G2b-low)", () => {
+  it.each(["compute", "list", "set"] as const)(
+    "[538-G2b-LOW-AUTH] %s checks payroll permission before existing, missing or foreign employees",
+    async (operation) => {
+      const employeeId = await seedEmployee();
+      const component = await earning();
+      const request = (context: typeof ctx, userId: string, id: string) =>
+        operation === "compute"
+          ? service.computeEmployeeGross(context, userId, {
+              employeeId: id,
+              periodStart: PERIOD_START,
+              periodEnd: PERIOD_END,
+              payslipId: randomUUID(),
+              overtimeParameters,
+            } as never)
+          : operation === "list"
+            ? service.listEmployeePayComponents(context, userId, id, {
+                limit: 100,
+              })
+            : service.setEmployeePayComponent(context, userId, id, {
+                componentId: component.id,
+                amountIdr: 1,
+                effectiveFrom: EFFECTIVE,
+                idempotencyKey: key(),
+              } as never);
+      for (const check of [
+        { context: ctx, id: employeeId },
+        { context: ctx, id: randomUUID() },
+        { context: scope(randomUUID()), id: employeeId },
+      ]) {
+        expect(
+          (await failure(request(check.context, reviewerId, check.id))).status,
+        ).toBe(403);
+      }
+      // Authorized callers still get the normal missing-resource response.
+      expect((await failure(request(ctx, actorId, randomUUID()))).status).toBe(
+        404,
+      );
+    },
+  );
+});
+
 describe("computeEmployeeGross: invalid input", () => {
   it("[ERROR] rejects an unknown employee, another tenant's employee and a reversed period", async () => {
     const employeeId = await seedEmployee();
@@ -1534,7 +1576,7 @@ describe("computeEmployeeGross: invalid input", () => {
         overtimeParameters,
       } as never),
     );
-    expect(crossTenant.status).toBe(404);
+    expect(crossTenant.status).toBe(403);
 
     const reversed = await failure(
       compute(employeeId, {
