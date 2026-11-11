@@ -26,6 +26,7 @@ import {
   type GuestPaymentOptions,
   type GuestPaymentTarget,
   type PointClaim,
+  type SplitClaim,
   type QrMenu,
   type QrMenuItem,
   type QrOrder,
@@ -89,6 +90,10 @@ type PaymentRec = {
   payment: GuestPayment;
   createdMs: number;
   applied: boolean;
+  /** Split part payments only: the payer's own proof (legend-r77pq). */
+  payerSecret?: string;
+  /** The claim token of this paid part was handed out once (wwyyk). */
+  claimIssued?: boolean;
 };
 
 type PlacedResult = {
@@ -959,6 +964,7 @@ export function createEngine(
       target: GuestPaymentTarget;
       method: GuestPaymentMethod;
       bankCode?: string | null;
+      payerSecret?: string;
       idempotencyKey: string;
     },
   ) {
@@ -1041,7 +1047,12 @@ export function createEngine(
       paidAt: null,
       idemKey: body.idempotencyKey,
     } as unknown as GuestPayment;
-    const entry: PaymentRec = { payment, createdMs: now, applied: false };
+    const entry: PaymentRec = {
+      payment,
+      createdMs: now,
+      applied: false,
+      payerSecret: target.kind === "split" ? body.payerSecret : undefined,
+    };
     rec.payments.set(payment.id, entry);
     return paymentView(entry);
   }
@@ -1054,7 +1065,10 @@ export function createEngine(
 
   function settle(rec: GuestRec, entry: PaymentRec, now: number) {
     entry.applied = true;
-    entry.payment = { ...entry.payment, status: "paid", paidAt: iso(now) };
+    // Settling is lazy (first read after the delay), so the paid time is when it
+    // was due, not when someone looked: the 24 h claim window counts from it.
+    const paidMs = Math.min(now, entry.createdMs + MOCK_PAYMENT_SETTLE_MS);
+    entry.payment = { ...entry.payment, status: "paid", paidAt: iso(paidMs) };
     const target = entry.payment.target;
     const orders = floor.ordersOf(rec.sessionId);
     const splits = floor.splitsOf(rec.sessionId);
@@ -1113,6 +1127,72 @@ export function createEngine(
     )
       settle(rec, entry, now);
     return paymentView(entry);
+  }
+
+  // ---- Split part claim (wwyyk) -----------------------------------------------
+  /**
+   * Claim token of one paid split part, proven by the payer secret kept at pay
+   * time. Wrong, unknown or not-the-payer's: the same 404. A part not paid yet is
+   * "unavailable", past 24 h after payment "expired". The token is handed out
+   * once: a second ask for the same part answers "claimed" with no token, so a
+   * part can never be attached twice (no double payout).
+   */
+  function splitClaim(
+    sessionId: string,
+    splitId: string,
+    body: { payerSecret: string },
+  ): SplitClaim {
+    sessionOf(sessionId);
+    const rec = recOf(sessionId);
+    const notFound = () =>
+      new ApiError(404, "NOT_FOUND", "Bagian ini tidak ditemukan.");
+    const mine = [...rec.payments.values()].filter(
+      (entry) =>
+        entry.payment.target.kind === "split" &&
+        entry.payment.target.billSplitId === splitId &&
+        entry.payerSecret === body.payerSecret,
+    );
+    if (mine.length === 0) throw notFound();
+    const now = clock();
+    for (const entry of mine)
+      if (
+        !entry.applied &&
+        entry.payment.status === "pending" &&
+        now - entry.createdMs >= MOCK_PAYMENT_SETTLE_MS
+      )
+        settle(rec, entry, now);
+    const paid = mine.find((entry) => entry.payment.status === "paid");
+    const billSplitId = splitId as SplitClaim["billSplitId"];
+    if (!paid || !paid.payment.paidAt)
+      return {
+        billSplitId,
+        status: "unavailable",
+        claimToken: null,
+        claimableUntil: null,
+      };
+    const until = new Date(paid.payment.paidAt).getTime() + 24 * 3_600_000;
+    const claimableUntil = iso(until) as SplitClaim["claimableUntil"];
+    if (now >= until)
+      return {
+        billSplitId,
+        status: "expired",
+        claimToken: null,
+        claimableUntil,
+      };
+    if (paid.claimIssued)
+      return {
+        billSplitId,
+        status: "claimed",
+        claimToken: null,
+        claimableUntil,
+      };
+    paid.claimIssued = true;
+    return {
+      billSplitId,
+      status: "available",
+      claimToken: `sc_${rand(HEX, 32)}`,
+      claimableUntil,
+    };
   }
 
   // ---- Failed item recovery -------------------------------------------------
@@ -1417,6 +1497,7 @@ export function createEngine(
     paymentOptions,
     startPayment,
     getPayment,
+    splitClaim,
     issues,
     chooseResolution,
     reviewEligibility,

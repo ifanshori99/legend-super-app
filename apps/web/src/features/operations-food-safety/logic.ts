@@ -48,6 +48,30 @@ export function formatTemperature(value: string): string {
   });
 }
 
+/**
+ * Storage temperature range for the printed label, following the approved
+ * mockup (wjz1): "−22 °C hingga −16 °C". The minus is U+2212 (not a hyphen)
+ * so a negative bound stays legible and is never read as a range dash.
+ */
+export function formatTempRange(min: number, max: number): string {
+  const bound = (value: number) => {
+    const text = new Intl.NumberFormat(LOCALE, {
+      maximumFractionDigits: 1,
+      useGrouping: false,
+    }).format(Math.abs(value));
+    return `${value < 0 ? "\u2212" : ""}${text} \u00b0C`;
+  };
+  return `${bound(min)} hingga ${bound(max)}`;
+}
+
+/** A threshold as printed text, e.g. "−22 °C hingga −16 °C" (see formatTempRange). */
+export function formatThresholdRange(threshold: TemperatureThreshold): string {
+  return formatTempRange(
+    Number(threshold.minCelsius),
+    Number(threshold.maxCelsius),
+  );
+}
+
 /** Planned/actual quantities: at most two decimals, no trailing zeros. */
 export function formatQuantity(value: string): string {
   const parsed = decimal4Schema.safeParse(value);
@@ -57,17 +81,6 @@ export function formatQuantity(value: string): string {
   return new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 2 }).format(
     number,
   );
-}
-
-/** Threshold label arguments for the catalog's `rangeValue` key. */
-export function thresholdRange(threshold: TemperatureThreshold): {
-  min: string;
-  max: string;
-} {
-  return {
-    min: formatTemperature(threshold.minCelsius),
-    max: formatTemperature(threshold.maxCelsius),
-  };
 }
 
 type WallClock = {

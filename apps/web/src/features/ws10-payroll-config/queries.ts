@@ -2,8 +2,10 @@
 // starts with the endpoint id (`endpointQueryOptions`), so one
 // `invalidateQueries({ queryKey: [endpoint.id] })` refreshes every cached page
 // of that endpoint (docs/frontend.md).
+import { queryOptions } from "@tanstack/react-query";
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import { listEmployees } from "@starter/shared/hris";
+import { orgEndpoints } from "@starter/shared/platform";
 import {
   listEmployeePayComponents,
   listPayComponents,
@@ -11,7 +13,8 @@ import {
   listStatutoryTables,
   listThrSchedules,
 } from "@starter/shared/hris/payroll";
-import { endpointQueryOptions } from "@/lib/api/endpoint";
+import { endpointQueryKey, endpointQueryOptions } from "@/lib/api/endpoint";
+import { fetchPayrollLegalEntities } from "./api";
 
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
@@ -45,6 +48,17 @@ export const employeePayComponentsQuery = (
 export const activeEmployeesQuery = () =>
   endpointQueryOptions(listEmployees, {
     query: { limit: PAYROLL_PAGE_SIZE, status: "active" },
+  });
+
+/**
+ * Legal entities for the policy and THR pickers: the organisation contract owns
+ * the list (GET /api/org/legal-entities; mock handler in ws07-accounting), so a
+ * tenant with no policy yet can still choose the entity of its first one.
+ */
+export const payrollLegalEntitiesQuery = () =>
+  queryOptions({
+    queryKey: endpointQueryKey(orgEndpoints.listLegalEntities, {}),
+    queryFn: ({ signal }) => fetchPayrollLegalEntities(signal),
   });
 
 const page = { limit: PAYROLL_PAGE_SIZE };

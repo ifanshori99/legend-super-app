@@ -8,7 +8,11 @@ import { InboxPanel } from "./inbox-panel";
 import { PreferencesPanel } from "./preferences-panel";
 
 /** Notification center (PRD §3.15): inbox, preferences, web-push opt-in. */
-export function NotificationCenter() {
+export function NotificationCenter({
+  initialTab = "inbox",
+}: {
+  initialTab?: "inbox" | "preferences";
+}) {
   const t = useT();
   const unreadCount = useUnreadNotificationCount();
   const unread = unreadCount.data?.data.unread ?? 0;
@@ -22,7 +26,7 @@ export function NotificationCenter() {
         {t("notification.title")}
       </h2>
 
-      <Tabs defaultValue="inbox">
+      <Tabs key={initialTab} defaultValue={initialTab}>
         <div className="flex flex-wrap items-center gap-2">
           <TabsList>
             <TabsTrigger value="inbox">

@@ -109,5 +109,37 @@ export const qrOrdersBillMessages = {
   claimDone: "{points} poin sudah masuk ke akun Anda.",
   claimExpired: "Waktu klaim 24 jam sudah lewat.",
   claimFailed: "Klaim belum berhasil. Coba lagi.",
+  splitClaimTitle: "Bagian Anda",
+  splitClaimOf: "{n} dari {total} bagian",
+  splitClaimAction: "Klaim bagian saya",
+  splitClaimBusy: "Menyiapkan klaim…",
+  splitClaimRetry: "Coba klaim lagi",
+  splitClaimContinue: "Lanjut ke akun",
+  splitClaimIntroPending:
+    "Bayar bagian Anda terlebih dahulu untuk membuka klaim.",
+  splitClaimIntroReady:
+    "Bagian Anda sudah lunas. Klaim bagian ini untuk menghubungkannya ke akun Anda.",
+  splitClaimIntroPaid: "Bagian Anda sudah lunas.",
+  splitClaimCaption:
+    "Klaim bagian membantu menghubungkan pembayaran ini ke akun Anda.",
+  splitClaimPendingNote:
+    "Klaim tersedia setelah pembayaran bagian Anda berhasil.",
+  splitClaimReadyNote: "Klaim tersedia sampai 24 jam setelah pembayaran.",
+  splitClaimBusyNote: "Mohon tunggu, kami menyiapkan klaim Anda.",
+  splitClaimOkTitle: "Klaim siap dilanjutkan",
+  splitClaimOkDetail:
+    "Bukti klaim bagian Anda sudah tersedia. Lanjutkan untuk menghubungkannya ke akun.",
+  splitClaimOkNote: "Menyiapkan bukti klaim belum memasukkan poin ke akun.",
+  splitClaimDoneTitle: "Bagian sudah diklaim",
+  splitClaimDoneDetail:
+    "Bagian ini sudah dihubungkan ke akun. Tidak perlu mengklaim lagi.",
+  splitClaimDoneNote: "Klaim hanya dapat digunakan satu kali.",
+  splitClaimExpiredTitle: "Waktu klaim berakhir",
+  splitClaimExpiredDetail:
+    "Klaim tersedia selama 24 jam setelah pembayaran. Waktu klaim bagian ini sudah lewat.",
+  splitClaimKeptNote: "Pembayaran Anda tetap tercatat.",
+  splitClaimErrorTitle: "Klaim belum dapat disiapkan",
+  splitClaimErrorDetail:
+    "Kami belum dapat memeriksa klaim bagian ini. Periksa koneksi lalu coba lagi.",
   reviewAction: "Beri ulasan",
 } as const;

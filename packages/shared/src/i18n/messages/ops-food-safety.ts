@@ -11,7 +11,6 @@ export const opsFoodSafetyMessages = {
   },
   common: {
     unitCelsius: "°C",
-    rangeValue: "{min}–{max} °C",
     unknownItem: "Bahan tidak dikenal",
     unknownBatch: "Batch tidak dikenal",
     unknownEmployee: "Petugas tidak dikenal",
@@ -101,7 +100,6 @@ export const opsFoodSafetyMessages = {
       hint: "Hentikan pemakaian bahan ini dan catat pembuangannya sebelum menyiapkan batch baru.",
       useBy: "Batas pakai {time}",
       none: "Tidak ada label yang lewat batas pakai",
-      noneHint: "Semua label masih dalam batas pakai.",
     },
     list: {
       title: "Label terbaru",
@@ -118,7 +116,6 @@ export const opsFoodSafetyMessages = {
       print: "Cetak label",
       printing: "Mencetak…",
       expired: "Lewat batas pakai",
-      select: "Pratinjau label {item}",
       batchMissing: "Batch tidak ditemukan",
     },
     form: {

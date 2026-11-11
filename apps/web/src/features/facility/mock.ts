@@ -58,7 +58,21 @@ import "../../lib/mock/handlers/subscription-plans.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { readFacilityAdminConfig } from "../facility-admin/mock.ts";
-import { businessDateInOutletZone } from "./flow.ts";
+import {
+  breakfastFireAt,
+  businessDateInOutletZone,
+  ticketAllowsBreakfast,
+} from "./flow.ts";
+import {
+  BREAKFAST_MAX_QUANTITY,
+  breakfastMenuItemSchema,
+  breakfastOrderSchema,
+  createBreakfastOrder,
+  getBreakfastMenu,
+  type BreakfastMenuItem,
+  type BreakfastOrder,
+  type BreakfastTable,
+} from "./breakfast.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const MINUTE = 60_000;
@@ -779,6 +793,135 @@ registerMock(updateFacilitySubscription, ({ params, body }) => {
   });
   subscriptionStore.set({ ...state, subscription: updated });
   return { data: updated };
+});
+
+// ---- Breakfast from the ticket (alur Z, FAC-10) -----------------------------
+//
+// The ticket-linked breakfast endpoints are not in the shared contract yet
+// (see breakfast.ts), so the mock is the only implementation for now. The
+// order is held until `slot.endsAt - fireOffsetMinutes`; the subtotal is
+// computed here from the menu's own prices, never from anything the client
+// sends, and a ticket holds at most one order (no double order, no double pay).
+
+const BREAKFAST_FIRE_OFFSET_MINUTES = 5;
+
+const breakfastMenuItems: BreakfastMenuItem[] = [
+  breakfastMenuItemSchema.parse({
+    id: "bfm-nasi-goreng-kampung",
+    name: "Nasi goreng kampung",
+    priceIdr: 38_000,
+  }),
+];
+
+const breakfastTables: BreakfastTable[] = [
+  { id: "bft-08", label: "Meja 08" },
+  { id: "bft-09", label: "Meja 09" },
+];
+
+const breakfastOrders = createMockStore<Map<string, BreakfastOrder>>(
+  () => new Map(),
+);
+/** Idempotency key -> order, so a retried submit returns the same order. */
+const breakfastReplies = createMockStore<Map<string, BreakfastOrder>>(
+  () => new Map(),
+);
+
+function myTicket(ticketId: string): AccessTicket {
+  const ticket = tickets.get().find((item) => item.id === ticketId);
+  if (!ticket || ticket.customerProfileId !== ME)
+    throw new ApiError(404, "NOT_FOUND", "Tiket tidak ditemukan.");
+  return ticket;
+}
+
+registerMock(getBreakfastMenu, ({ params, scenario }) => {
+  const ticket = myTicket(params.ticketId);
+  return {
+    data: {
+      items: scenario === "empty" ? [] : breakfastMenuItems,
+      tables: breakfastTables,
+      fireOffsetMinutes: BREAKFAST_FIRE_OFFSET_MINUTES,
+      order: breakfastOrders.get().get(ticket.id) ?? null,
+    },
+  };
+});
+
+registerMock(createBreakfastOrder, ({ params, body }) => {
+  const ticket = myTicket(params.ticketId);
+  const replay = breakfastReplies.get().get(body.idempotencyKey);
+  if (replay && replay.ticketId === ticket.id) return { data: replay };
+  if (!ticketAllowsBreakfast(ticket.status))
+    throw new ApiError(
+      422,
+      "TICKET_NOT_ORDERABLE",
+      "Tiket ini sudah tidak dapat memesan sarapan.",
+    );
+  if (breakfastOrders.get().has(ticket.id))
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Tiket ini sudah punya pesanan sarapan.",
+    );
+  // Merge duplicate menu ids, then cap the portions per dish.
+  const portions = new Map<string, number>();
+  for (const line of body.lines)
+    portions.set(
+      line.menuItemId,
+      (portions.get(line.menuItemId) ?? 0) + line.quantity,
+    );
+  const lines = [...portions].map(([menuItemId, quantity]) => {
+    const item = breakfastMenuItems.find((m) => m.id === menuItemId);
+    if (!item)
+      throw new ApiError(
+        422,
+        "VALIDATION_FAILED",
+        "Menu sarapan tidak ditemukan. Muat ulang menu, lalu pilih lagi.",
+      );
+    if (quantity > BREAKFAST_MAX_QUANTITY)
+      throw new ApiError(
+        422,
+        "VALIDATION_FAILED",
+        `Paling banyak ${BREAKFAST_MAX_QUANTITY} porsi untuk satu menu.`,
+      );
+    return {
+      menuItemId: item.id,
+      name: item.name,
+      quantity,
+      unitPriceIdr: item.priceIdr,
+    };
+  });
+  const { delivery } = body;
+  if (
+    delivery.mode === "table" &&
+    !breakfastTables.some((table) => table.id === delivery.tableId)
+  )
+    throw new ApiError(
+      422,
+      "VALIDATION_FAILED",
+      "Meja tidak ditemukan. Pilih nomor meja lagi.",
+    );
+  const fireAt = breakfastFireAt(
+    ticket.slot.endsAt,
+    BREAKFAST_FIRE_OFFSET_MINUTES,
+  );
+  const order = breakfastOrderSchema.parse({
+    id: `bfo-${nextUlid()}`,
+    ticketId: ticket.id,
+    status:
+      Date.parse(fireAt) > Date.parse(facilityAnchor(showerFacility))
+        ? "held"
+        : "fired",
+    lines,
+    delivery,
+    subtotalIdr: lines.reduce(
+      (sum, line) => sum + line.unitPriceIdr * line.quantity,
+      0,
+    ),
+    fireOffsetMinutes: BREAKFAST_FIRE_OFFSET_MINUTES,
+    fireAt,
+  });
+  breakfastOrders.get().set(ticket.id, order);
+  breakfastReplies.get().set(body.idempotencyKey, order);
+  return { data: order };
 });
 
 // ---- Identity + subscription plans ------------------------------------------

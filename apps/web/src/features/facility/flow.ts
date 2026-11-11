@@ -15,6 +15,12 @@ import type {
   FacilitySubscriptionView,
 } from "@starter/shared/facility";
 import type { LoginChallengeView } from "@starter/shared/identity";
+import type {
+  BreakfastDelivery,
+  BreakfastMenuItem,
+  CreateBreakfastOrderBody,
+} from "./breakfast.ts";
+import { BREAKFAST_MAX_QUANTITY } from "./breakfast.ts";
 
 /**
  * Outlet wall-clock zone until the outlet context bead supplies the outlet's
@@ -419,4 +425,124 @@ export function ticketShowsCredential(status: AccessTicketStatus): boolean {
 /** The session timer belongs to a ticket that has or had a session. */
 export function ticketShowsTimer(status: AccessTicketStatus): boolean {
   return status === "issued" || status === "in_use" || status === "completed";
+}
+
+// ---- Breakfast from the ticket (alur Z, FAC-10) ----------------------------
+
+const MAX_FIRE_OFFSET_MINUTES = 240;
+
+/**
+ * FAC-10: the breakfast order is held and fired `fireOffsetMinutes` before the
+ * session ends (the offset is the menu prep time). ISO string in UTC, the same
+ * value the shared `linkedOrderFireAt` gives for a ticket; recompute it when the
+ * session is extended or the guest is late.
+ */
+export function breakfastFireAt(
+  slotEndsAt: string,
+  fireOffsetMinutes: number,
+): string {
+  if (
+    !Number.isInteger(fireOffsetMinutes) ||
+    fireOffsetMinutes < 0 ||
+    fireOffsetMinutes > MAX_FIRE_OFFSET_MINUTES
+  )
+    throw new RangeError(`Invalid fire offset: ${fireOffsetMinutes}`);
+  const endsAt = Date.parse(slotEndsAt);
+  if (Number.isNaN(endsAt))
+    throw new RangeError(`Invalid session end: ${slotEndsAt}`);
+  return new Date(endsAt - fireOffsetMinutes * MINUTE_MS).toISOString();
+}
+
+/** The breakfast section belongs to a ticket whose session is still ahead. */
+export function ticketAllowsBreakfast(status: AccessTicketStatus): boolean {
+  return status === "issued" || status === "in_use";
+}
+
+/** What the guest has picked so far: portions per dish and where to receive. */
+export type BreakfastDraft = {
+  quantities: Readonly<Record<string, number>>;
+  mode: BreakfastDelivery["mode"];
+  tableId: string;
+};
+
+export const INITIAL_BREAKFAST_DRAFT: BreakfastDraft = {
+  quantities: {},
+  mode: "table",
+  tableId: "",
+};
+
+export type BreakfastDraftErrors = {
+  /** No dish chosen. */
+  items?: "empty";
+  /** Delivery to a table without a table chosen. */
+  table?: "required";
+};
+
+/** Sets one dish's portions, clamped to 0..max; 0 drops the dish. */
+export function setBreakfastQuantity(
+  draft: BreakfastDraft,
+  menuItemId: string,
+  quantity: number,
+): BreakfastDraft {
+  const next = Math.min(
+    BREAKFAST_MAX_QUANTITY,
+    Math.max(0, Math.trunc(Number.isFinite(quantity) ? quantity : 0)),
+  );
+  const quantities = { ...draft.quantities };
+  if (next === 0) delete quantities[menuItemId];
+  else quantities[menuItemId] = next;
+  return { ...draft, quantities };
+}
+
+/** Chosen dishes with their portions, in menu order. */
+export function breakfastChosenLines(
+  menu: readonly BreakfastMenuItem[],
+  draft: BreakfastDraft,
+): { item: BreakfastMenuItem; quantity: number }[] {
+  return menu
+    .map((item) => ({ item, quantity: draft.quantities[item.id] ?? 0 }))
+    .filter((line) => line.quantity > 0);
+}
+
+/** Display subtotal only: the server recomputes it from its own prices. */
+export function breakfastSubtotalIdr(
+  menu: readonly BreakfastMenuItem[],
+  draft: BreakfastDraft,
+): number {
+  return breakfastChosenLines(menu, draft).reduce(
+    (sum, line) => sum + line.item.priceIdr * line.quantity,
+    0,
+  );
+}
+
+/** Rules before submit: at least one dish, and a table when delivering. */
+export function breakfastDraftErrors(
+  menu: readonly BreakfastMenuItem[],
+  draft: BreakfastDraft,
+): BreakfastDraftErrors {
+  const errors: BreakfastDraftErrors = {};
+  if (breakfastChosenLines(menu, draft).length === 0) errors.items = "empty";
+  if (draft.mode === "table" && draft.tableId === "") errors.table = "required";
+  return errors;
+}
+
+/** The request body for a valid draft; `null` while the draft has errors. */
+export function breakfastOrderBody(
+  menu: readonly BreakfastMenuItem[],
+  draft: BreakfastDraft,
+  idempotencyKey: string,
+): CreateBreakfastOrderBody | null {
+  const errors = breakfastDraftErrors(menu, draft);
+  if (errors.items || errors.table) return null;
+  return {
+    lines: breakfastChosenLines(menu, draft).map((line) => ({
+      menuItemId: line.item.id,
+      quantity: line.quantity,
+    })),
+    delivery:
+      draft.mode === "table"
+        ? { mode: "table", tableId: draft.tableId }
+        : { mode: "pickup" },
+    idempotencyKey,
+  };
 }

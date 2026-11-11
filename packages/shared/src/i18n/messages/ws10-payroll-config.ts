@@ -12,7 +12,7 @@ export const payrollConfigMessages = {
   tabs: {
     policies: "Kebijakan",
     components: "Komponen",
-    statutory: "Tabel tarif",
+    statutory: "Tabel ketentuan",
     thr: "THR",
   },
   readOnlyHint:
@@ -91,6 +91,24 @@ export const payrollConfigMessages = {
     bpjsProgrammes: "Pilih minimal satu program BPJS.",
     effectiveToday: "Tanggal efektif tidak boleh sebelum hari ini.",
     saveFailed: "Gagal menyimpan. Periksa isian lalu coba lagi.",
+  },
+  // Legal-entity source for the first policy / THR schedule (bead wpqs): the
+  // list comes from the organisation contract, not from an existing policy.
+  legalEntity: {
+    label: "Badan usaha",
+    placeholder: "Pilih badan usaha",
+    hint: "Daftar badan usaha berasal dari pengaturan organisasi.",
+    required: "Pilih badan usaha untuk melanjutkan.",
+    loading: "Memuat badan usaha…",
+    emptyTitle: "Belum ada badan usaha",
+    emptyPolicy:
+      "Tambahkan badan usaha di pengaturan organisasi sebelum membuat kebijakan.",
+    emptyThr:
+      "Tambahkan badan usaha di pengaturan organisasi sebelum membuat jadwal THR.",
+    emptyLink: "Buka pengaturan organisasi",
+    errorTitle: "Daftar badan usaha tidak dapat dimuat",
+    errorHint: "Periksa koneksi dan coba lagi.",
+    retry: "Coba lagi",
   },
   policies: {
     title: "Kebijakan payroll",
@@ -192,8 +210,6 @@ export const payrollConfigMessages = {
       active: "Aktif",
       activeHint:
         "Kebijakan nonaktif tidak dipakai untuk payroll baru, riwayatnya tetap ada.",
-      legalEntityMissing:
-        "Legal entity belum tersedia, jadi kebijakan baru belum dapat dibuat.",
     },
   },
   components: {
@@ -542,12 +558,11 @@ export const payrollConfigMessages = {
       employeeSearch: "Cari karyawan",
       employeeEmpty: "Belum ada karyawan dipilih.",
       employeeRequired: "Pilih minimal satu karyawan.",
-      legalEntityMissing:
-        "Legal entity belum tersedia, jadi jadwal THR belum dapat dibuat.",
     },
   },
   errors: {
-    saveFailed: "Gagal menyimpan. Periksa isian lalu coba lagi.",
+    saveFailed:
+      "Belum berhasil disimpan. Periksa koneksi lalu coba lagi. Isian tetap tersedia.",
     notFound: "Data tidak ditemukan. Muat ulang halaman.",
     idempotencyReused:
       "Permintaan ini sudah dipakai untuk data lain. Muat ulang lalu coba lagi.",

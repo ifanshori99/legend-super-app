@@ -46,7 +46,7 @@ import {
   personName,
   readingOutOfRange,
   shortId,
-  thresholdRange,
+  formatThresholdRange,
   toDateTimeLocalValue,
 } from "../logic.ts";
 import { FOOD_SAFETY_LIST_LIMIT } from "../outlet.ts";
@@ -329,7 +329,7 @@ function FoodSafetyTemperatureScreenContent() {
                   const threshold = row.temperatureThreshold;
                   if (!threshold) return null;
                   const latest = latestToday.get(row.id) ?? null;
-                  const range = thresholdRange(threshold);
+                  const range = formatThresholdRange(threshold);
                   return (
                     <li
                       key={row.id}
@@ -363,10 +363,7 @@ function FoodSafetyTemperatureScreenContent() {
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground tabular">
                           <span>
                             {t("opsFoodSafety.temperature.schedule.threshold", {
-                              range: t(
-                                "opsFoodSafety.common.rangeValue",
-                                range,
-                              ),
+                              range,
                             })}
                           </span>
                           <span>
@@ -499,10 +496,7 @@ function FoodSafetyTemperatureScreenContent() {
                       ? "opsFoodSafety.temperature.form.outOfRangeHint"
                       : "opsFoodSafety.temperature.form.inRangeHint",
                     {
-                      range: t(
-                        "opsFoodSafety.common.rangeValue",
-                        thresholdRange(selectedThreshold),
-                      ),
+                      range: formatThresholdRange(selectedThreshold),
                     },
                   )}
                 </p>

@@ -48,13 +48,13 @@ test("OPS-02 an out-of-range reading cannot be saved without a corrective action
     .locator('[data-slot="temperature-equipment"]')
     .filter({ hasText: "Chiller Bar" });
   await expect(chiller).toBeVisible();
-  await expect(chiller).toContainText("1–4 °C");
+  await expect(chiller).toContainText("1 °C hingga 4 °C");
   await chiller.getByRole("button", { name: "Catat suhu" }).click();
 
   await page.getByLabel("Suhu terukur (°C)").fill("9,2");
   await expect(
     page.getByText(
-      "Di luar ambang 1–4 °C. Isi tindakan korektif untuk dapat menyimpan.",
+      "Di luar ambang 1 °C hingga 4 °C. Isi tindakan korektif untuk dapat menyimpan.",
     ),
   ).toBeVisible();
 

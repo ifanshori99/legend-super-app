@@ -49,6 +49,8 @@ import {
   PAY_DATE_ADJUSTMENT_KEYS,
   STATUTORY_TYPE_KEYS,
 } from "../lib";
+import { useLegalEntityChoice } from "./legal-entity-field";
+import { SaveErrorBanner } from "./save-error-banner";
 
 const GROUP_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,29}$/;
 
@@ -75,13 +77,13 @@ function daysAfter(value: string, max: number): number | null {
 
 export function PolicyDialog({
   policy,
-  legalEntityId,
+  defaultLegalEntityId,
   onClose,
 }: {
   /** Absent when creating a policy. */
   policy?: PayrollPolicy;
-  /** Branded id of the tenant's legal entity, taken from an existing policy. */
-  legalEntityId: PayrollPolicy["legalEntityId"] | null;
+  /** Entity of an existing policy, preselected when creating another one. */
+  defaultLegalEntityId?: PayrollPolicy["legalEntityId"] | null;
   onClose: () => void;
 }) {
   const t = useT();
@@ -141,6 +143,13 @@ export function PolicyDialog({
 
   const pending = createPolicy.isPending || updatePolicy.isPending;
   const editing = policy !== undefined;
+  const entityChoice = useLegalEntityChoice({
+    preferredId: defaultLegalEntityId ?? null,
+    emptyKey: "legalEntity.emptyPolicy",
+    error: errors.legalEntityId,
+    disabled: pending,
+  });
+  const legalEntityId = entityChoice.legalEntityId;
 
   function buildCycle(): PayrollCycle | null {
     if (frequency === "monthly") {
@@ -174,6 +183,8 @@ export function PolicyDialog({
     const next: Errors = {};
     if (name.trim() === "") next.name = t("payrollConfig.form.required");
     if (!editing) {
+      if (legalEntityId === "")
+        next.legalEntityId = t("payrollConfig.legalEntity.required");
       if (!GROUP_CODE_PATTERN.test(groupCode.trim()))
         next.groupCode = t("payrollConfig.policies.form.groupCodeHint");
       if (groupName.trim() === "")
@@ -218,6 +229,7 @@ export function PolicyDialog({
     if (cycle === null && found.payDay === undefined)
       found.payDay = t("payrollConfig.form.dayOfMonth");
     setErrors(found);
+    if (found.legalEntityId !== undefined) entityChoice.focus();
     if (Object.keys(found).length > 0 || cycle === null) return;
 
     const onSuccess = () => {
@@ -252,10 +264,7 @@ export function PolicyDialog({
       );
       return;
     }
-    if (!legalEntityId) {
-      setErrors({ form: t("payrollConfig.policies.form.legalEntityMissing") });
-      return;
-    }
+    if (legalEntityId === "") return;
     createPolicy.mutate(
       {
         legalEntityId,
@@ -292,6 +301,10 @@ export function PolicyDialog({
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={submit} noValidate>
+          {errors.form && <SaveErrorBanner message={errors.form} />}
+
+          {!editing && entityChoice.field}
+
           <FormField
             label={t("payrollConfig.policies.form.name")}
             required
@@ -606,15 +619,6 @@ export function PolicyDialog({
             />
           </div>
 
-          {errors.form && (
-            <p
-              className="text-sm leading-5 font-medium text-danger"
-              role="alert"
-            >
-              {errors.form}
-            </p>
-          )}
-
           <DialogFooter>
             <Button
               type="button"
@@ -624,7 +628,11 @@ export function PolicyDialog({
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" loading={pending}>
+            <Button
+              type="submit"
+              loading={pending}
+              disabled={!editing && entityChoice.blocked}
+            >
               {t("common.save")}
             </Button>
           </DialogFooter>

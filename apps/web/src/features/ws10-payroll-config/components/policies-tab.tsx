@@ -24,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import {
   Table,
@@ -83,7 +84,7 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
   const today = businessDateToday();
   const overtime = publishedVersionOf(versions, "overtime", today);
   const thr = publishedVersionOf(versions, "thr", today);
-  const legalEntityId = policies[0]?.legalEntityId ?? null;
+  const defaultLegalEntityId = policies[0]?.legalEntityId ?? null;
 
   const activeCount = policies.filter((policy) => policy.isActive).length;
   const groups = new Set(policies.map((policy) => policy.employeeGroup.code));
@@ -95,6 +96,18 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
   );
 
   const editLabel = t("payrollConfig.policies.edit");
+  // Counts and rules are only real once their query succeeded: while loading
+  // or failed they read as a dash / skeleton, never as an invented 0 or as
+  // "rule not published".
+  const metric = (value: number) => (policiesQuery.isSuccess ? value : "—");
+  const rule = (text: string) =>
+    statutoryQuery.isPending ? (
+      <Skeleton className="h-5 w-3/4" />
+    ) : statutoryQuery.isSuccess ? (
+      text
+    ) : (
+      "—"
+    );
 
   if (policiesQuery.isError && isOffline(policiesQuery.error))
     return <PayrollOfflineState onRetry={() => void policiesQuery.refetch()} />;
@@ -104,19 +117,19 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
       <StatStrip label={t("payrollConfig.policies.metrics.label")}>
         <StatTile
           label={t("payrollConfig.policies.metrics.active")}
-          value={activeCount}
+          value={metric(activeCount)}
         />
         <StatTile
           label={t("payrollConfig.policies.metrics.groups")}
-          value={groups.size}
+          value={metric(groups.size)}
         />
         <StatTile
           label={t("payrollConfig.policies.metrics.monthly")}
-          value={monthly}
+          value={metric(monthly)}
         />
         <StatTile
           label={t("payrollConfig.policies.metrics.bpjs")}
-          value={programmes.size}
+          value={metric(programmes.size)}
         />
       </StatStrip>
 
@@ -130,22 +143,26 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
             <p className="text-sm leading-5">
-              {overtime
-                ? t("payrollConfig.policies.overtimeRule", {
-                    divisor: overtime.parameters.monthlyHoursDivisor,
-                    multipliers: overtime.parameters.tiersByDayType.workday
-                      .map((tier) => formatMultiplierInput(tier.multiplier))
-                      .join(" · "),
-                  })
-                : t("payrollConfig.policies.overtimeRuleNone")}
+              {rule(
+                overtime
+                  ? t("payrollConfig.policies.overtimeRule", {
+                      divisor: overtime.parameters.monthlyHoursDivisor,
+                      multipliers: overtime.parameters.tiersByDayType.workday
+                        .map((tier) => formatMultiplierInput(tier.multiplier))
+                        .join(" · "),
+                    })
+                  : t("payrollConfig.policies.overtimeRuleNone"),
+              )}
             </p>
             <p className="text-sm leading-5">
-              {thr
-                ? t("payrollConfig.policies.thrRule", {
-                    min: thr.parameters.minTenureMonths,
-                    full: thr.parameters.fullTenureMonths,
-                  })
-                : t("payrollConfig.policies.thrRuleNone")}
+              {rule(
+                thr
+                  ? t("payrollConfig.policies.thrRule", {
+                      min: thr.parameters.minTenureMonths,
+                      full: thr.parameters.fullTenureMonths,
+                    })
+                  : t("payrollConfig.policies.thrRuleNone"),
+              )}
             </p>
           </CardContent>
         </Card>
@@ -196,20 +213,15 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
             <Button
               type="button"
               onClick={() => setEditing("create")}
-              disabled={!canRun || policies.length === 0}
-              title={
-                !canRun
-                  ? t("payrollConfig.readOnlyHint")
-                  : policies.length === 0
-                    ? t("payrollConfig.policies.form.legalEntityMissing")
-                    : undefined
-              }
+              disabled={!canRun}
+              title={!canRun ? t("payrollConfig.readOnlyHint") : undefined}
             >
               <Plus aria-hidden="true" />
               {t("payrollConfig.policies.add")}
             </Button>
           </>
         }
+        error={policiesQuery.error}
         onRetry={() => void policiesQuery.refetch()}
         empty={{
           title: t("payrollConfig.policies.emptyTitle"),
@@ -345,7 +357,7 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
       {editing && (
         <PolicyDialog
           policy={editing === "create" ? undefined : editing}
-          legalEntityId={legalEntityId}
+          defaultLegalEntityId={defaultLegalEntityId}
           onClose={() => setEditing(null)}
         />
       )}

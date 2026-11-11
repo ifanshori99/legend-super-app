@@ -18,10 +18,12 @@ import { QrSubPage } from "../session-states";
 import { canSplitBill, splitScope } from "../../domain.ts";
 import { useTableJourney } from "../../context";
 import { useSendServiceRequest, useSessionBill } from "../../hooks";
+import { storedPayerSecret } from "../../session-store.ts";
 import { BillTotals, MinimumSpendStatus } from "./bill-totals";
 import { ClaimCard } from "./claim-card";
 import { PayDialog } from "./pay-dialog";
 import { SplitList, liveSplits } from "./split-list";
+import { SplitClaim } from "./split-claim";
 import { SplitPanel } from "./split-panel";
 
 function BillSkeleton() {
@@ -119,6 +121,18 @@ export function BillPage() {
   const sessionStatus = session?.status ?? "open";
   const outstanding = data.totals.outstandingIdr;
   const splits = liveSplits(data);
+  // The guest's own part (the payer secret kept at pay time): its claim bar.
+  const claimSplit =
+    [...splits]
+      .filter(
+        (split) =>
+          (split.participantId === null ||
+            split.participantId === participantId) &&
+          storedPayerSecret(sessionId, split.id) !== null,
+      )
+      .sort(
+        (a, b) => Number(b.status === "paid") - Number(a.status === "paid"),
+      )[0] ?? null;
   const hasPaidSplit = splits.some((split) => split.status === "paid");
   const closed = sessionStatus === "closed" || sessionStatus === "voided";
   const canSplit =
@@ -216,6 +230,7 @@ export function BillPage() {
           <>
             {splits.length > 0 && (
               <SplitList
+                payPrimary={!claimSplit || claimSplit.status !== "paid"}
                 bill={data}
                 participantIds={participantIds}
                 myParticipantId={participantId}
@@ -265,6 +280,16 @@ export function BillPage() {
         target={pay?.target ?? null}
         amountIdr={pay?.amountIdr ?? 0}
       />
+
+      {claimSplit && (
+        <SplitClaim
+          key={claimSplit.id}
+          sessionId={sessionId}
+          qrToken={qrToken}
+          split={claimSplit}
+          total={splits.length}
+        />
+      )}
 
       {showPayAll && (
         <QrFooter>

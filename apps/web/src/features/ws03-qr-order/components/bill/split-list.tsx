@@ -13,11 +13,14 @@ export function liveSplits(bill: SessionBill): BillSplit[] {
 }
 
 export function SplitList({
+  payPrimary = true,
   bill,
   participantIds,
   myParticipantId,
   onPay,
 }: {
+  /** False while the claim bar holds the one primary action of the page. */
+  payPrimary?: boolean;
   bill: SessionBill;
   participantIds: readonly string[];
   myParticipantId: string | null;
@@ -80,7 +83,11 @@ export function SplitList({
                 (mine ? (
                   <Button
                     type="button"
-                    variant={split === firstPayable ? "default" : "outline"}
+                    variant={
+                      payPrimary && split === firstPayable
+                        ? "default"
+                        : "outline"
+                    }
                     onClick={() => onPay(split)}
                   >
                     {t("qrOrders.bill.payShare")}

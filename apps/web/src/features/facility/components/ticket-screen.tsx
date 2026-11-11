@@ -33,6 +33,7 @@ import { useCancelTicket } from "../hooks";
 import {
   formatClock,
   formatDateLabel,
+  ticketAllowsBreakfast,
   ticketShowsCredential,
   ticketShowsTimer,
   unitLabel,
@@ -43,6 +44,7 @@ import {
   subscribeTicketCredentials,
 } from "../credential-store";
 import { AccessTicketQr } from "./access-ticket-qr";
+import { BreakfastSection } from "./breakfast-section";
 import { SessionTimer } from "./session-timer";
 import { ApiFailure, LoadingCard, TicketStatusPill } from "./shared";
 
@@ -220,6 +222,13 @@ export function FacilityTicketScreen({
         <Card>
           <SessionTimer view={view} />
         </Card>
+      )}
+
+      {ticketAllowsBreakfast(ticket.status) && (
+        <BreakfastSection
+          ticketId={ticket.id}
+          slotEndsAt={ticket.slot.endsAt}
+        />
       )}
 
       {!online && (

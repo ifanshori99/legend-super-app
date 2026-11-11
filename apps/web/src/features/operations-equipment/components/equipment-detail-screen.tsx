@@ -61,9 +61,9 @@ import {
   daysUntil,
   formatDate,
   formatDateTime,
-  formatDecimalValue,
   serviceTiming,
 } from "../lib.ts";
+import { formatThresholdRange } from "@/features/operations-food-safety/logic.ts";
 import {
   menuItemsDisabledByEquipment,
   type Equipment,
@@ -780,14 +780,7 @@ function EquipmentDetailContent({ equipmentId }: { equipmentId: string }) {
               </dt>
               <dd>
                 {equipment.temperatureThreshold
-                  ? t("opsEquipment.equipment.detail.temperature", {
-                      min: formatDecimalValue(
-                        equipment.temperatureThreshold.minCelsius,
-                      ),
-                      max: formatDecimalValue(
-                        equipment.temperatureThreshold.maxCelsius,
-                      ),
-                    })
+                  ? formatThresholdRange(equipment.temperatureThreshold)
                   : t("opsEquipment.equipment.detail.temperatureNone")}
               </dd>
             </div>
