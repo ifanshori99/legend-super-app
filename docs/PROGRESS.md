@@ -1257,3 +1257,4 @@ Langkah berikut CTO baru:
 - 12:03 Founder W17: tetap jual + peringatan + notifikasi owner 30 menit -> G1mng.
 - 12:04 Founder W1: modifier bersama satu tenant, bukan per brand (komentar legend-d0ipm).
 - 12:04 Founder W11: payroll tetap wajib 2 orang (sesuai 397bb1c5, tidak ada perubahan).
+- 12:05 Founder W4: durasi sesuai produk + bundel min 50% (sudah a73998a9). legend-7pw8b ditutup (tidak perlu kali durasi).
