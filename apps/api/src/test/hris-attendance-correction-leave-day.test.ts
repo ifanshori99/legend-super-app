@@ -95,7 +95,11 @@ async function signedInClient(
   return { client, userId };
 }
 
-async function assignRole(userId: string, roleId: string, scopeId: string | null) {
+async function assignRole(
+  userId: string,
+  roleId: string,
+  scopeId: string | null,
+) {
   await ownerTx((db) =>
     db.query(
       `INSERT INTO role_assignments
@@ -381,7 +385,9 @@ async function newScenario(label: string): Promise<Scenario> {
     ),
   );
   // Balances for the calendar years the used days (0..30 days ago) can fall in.
-  const years = new Set([dayStr(0), dayStr(30)].map((d) => Number(d.slice(0, 4))));
+  const years = new Set(
+    [dayStr(0), dayStr(30)].map((d) => Number(d.slice(0, 4))),
+  );
   await ownerTx(async (db) => {
     for (const year of years)
       await db.query(
@@ -448,24 +454,32 @@ async function requestCorrection(
   day: string,
   options: { outletId?: string; type?: string } = {},
 ) {
-  const response = await post(s.staff.client, "/api/hris/attendance/corrections", {
-    outletId: options.outletId ?? outletA,
-    attendanceLogId: null,
-    requestedType: options.type ?? "in",
-    requestedOccurredAt: middayUtc(day),
-    reason: "Lupa absen, mesin tidak terbaca",
-    idempotencyKey: key(),
-  });
+  const response = await post(
+    s.staff.client,
+    "/api/hris/attendance/corrections",
+    {
+      outletId: options.outletId ?? outletA,
+      attendanceLogId: null,
+      requestedType: options.type ?? "in",
+      requestedOccurredAt: middayUtc(day),
+      reason: "Lupa absen, mesin tidak terbaca",
+      idempotencyKey: key(),
+    },
+  );
   expect([200, 201], JSON.stringify(response.body)).toContain(response.status);
   return response.body.data as JsonRow;
 }
 
 const approve = (correctionId: string) =>
-  post(manager.client, `/api/hris/attendance/corrections/${correctionId}/decision`, {
-    action: "approve",
-    note: "Diperiksa penyelia",
-    idempotencyKey: key(),
-  });
+  post(
+    manager.client,
+    `/api/hris/attendance/corrections/${correctionId}/decision`,
+    {
+      action: "approve",
+      note: "Diperiksa penyelia",
+      idempotencyKey: key(),
+    },
+  );
 
 /** File then approve; returns the approval response. */
 async function fileAndApprove(
@@ -525,7 +539,10 @@ async function balances(s: Scenario) {
         pendingDays: string;
       }[]
     ).find((entry) => entry.leaveTypeId === leaveTypeId);
-    out[year] = { used: row?.usedDays ?? "none", pending: row?.pendingDays ?? "none" };
+    out[year] = {
+      used: row?.usedDays ?? "none",
+      pending: row?.pendingDays ?? "none",
+    };
   }
   return out;
 }
@@ -651,25 +668,10 @@ describe("hris.attendance.correction on a day with approved leave", () => {
     });
   }
 
-  it("[em8y2] a leave of the home outlet still blocks a correction approved at another outlet", async () => {
-    const s = await newScenario("d1");
-    const day = dayStr(11);
-    const leaveId = await s.seedLeave({
-      status: "approved",
-      startDaysAgo: 11,
-      endDaysAgo: 11,
-      days: 1,
-    });
-    const balanceBefore = await balances(s);
-
-    const { correction, response } = await fileAndApprove(s, day, {
-      outletId: outletB,
-    });
-    expect(correction.outletId).toBe(outletB);
-    await expectRefusedOnLeaveDay(s, correction, response, day);
-    expect(await leaveRows(s)).toEqual([{ id: leaveId, status: "approved" }]);
-    expect(await balances(s)).toEqual(balanceBefore);
-  });
+  // A correction at an outlet other than the employee's home outlet cannot be
+  // filed at all (422 "Outlet harus outlet utama karyawan"), so a cross-outlet
+  // correction on a leave day is unreachable; cross-outlet leave detection is
+  // covered by hris-attendance-leave-flag-outlet.test.ts.
 
   it("[em8y2] a multi-day leave refuses only the days inside its range", async () => {
     const s = await newScenario("e1");
