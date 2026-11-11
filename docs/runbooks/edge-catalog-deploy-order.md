@@ -57,3 +57,7 @@ Migrasi 0333 (`sync_txid` di `promotions`, `vouchers`, `promo_settings`, trigger
 2. Data yang hilang memang disengaja: stempel `sync_txid` dan isi `edge_voucher_catalog`. Aturan promosi, voucher, dan counter (`uses_total`, `spent_idr`) tidak tersentuh.
 3. Skrip juga menghapus baris migrasi 0333 dan 0334 dari `drizzle.__drizzle_migrations` supaya roll-forward berikutnya menerapkannya lagi.
 4. Stream voucher mengirim semua voucher tenant (belum hanya yang aktif); membatasi ke voucher aktif belum dikerjakan.
+
+## Catatan rilis: tidak perlu scrub `code_hash` lama (brief 533, keputusan CTO)
+
+Commit 528 (stream promosi dan voucher dengan `codeHash`) belum pernah sampai ke edge nyata, jadi tidak ada baris `promotions.code_hash` atau `edge_voucher_catalog.payload` berisi hash asli di edge produksi. Rilis pertama sudah membawa stream tanpa `codeHash` (promo berkode memakai `codeRef`); scrub satu kali tidak diperlukan. Bila ada edge uji yang pernah menyinkron dari commit 528, bangun ulang basis datanya.
