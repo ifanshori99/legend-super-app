@@ -131,8 +131,8 @@ export type DecodeConfigBundleOptions = {
   existingTaxRuleOutletKeyByKey?: ReadonlyMap<string, string | null>;
   /** Target menu keys referenced by loyalty reward/mission configuration. */
   existingMenuItemKeys?: ReadonlySet<string>;
-  /** Target point valuation, locked once the tenant has a ledger entry. */
-  lockedPointValueIdr?: number;
+  /** Explicit target lock decision: null before the first ledger entry. */
+  lockedPointValueIdr: number | null;
 };
 
 export type DecodeConfigBundleResult =
@@ -155,8 +155,9 @@ export type DecodeConfigBundleResult =
  */
 export function decodeConfigBundle(
   bundle: ConfigBundle,
-  options: DecodeConfigBundleOptions = {},
+  optionsArg?: DecodeConfigBundleOptions,
 ): DecodeConfigBundleResult {
+  const options: Partial<DecodeConfigBundleOptions> = optionsArg ?? {};
   const wanted = new Set<ConfigSection>(
     options.sections ?? (Object.keys(bundle.sections) as ConfigSection[]),
   );
@@ -256,11 +257,29 @@ export function decodeConfigBundle(
             zoneOutletKeyByKey,
             roleKeys,
           });
-        case "loyalty_policy":
+        case "loyalty_policy": {
+          const lockedPointValueIdr = options.lockedPointValueIdr;
+          if (
+            value.items.length > 0 &&
+            lockedPointValueIdr !== null &&
+            (!Number.isSafeInteger(lockedPointValueIdr) ||
+              typeof lockedPointValueIdr !== "number" ||
+              lockedPointValueIdr <= 0)
+          )
+            return {
+              ok: false as const,
+              issues: [
+                "An explicit target point-value lock decision is required",
+              ],
+            };
           return loyaltyPolicyConfigCodec.fromTemplate(value.items, {
-            lockedPointValueIdr: options.lockedPointValueIdr,
+            lockedPointValueIdr:
+              value.items.length === 0
+                ? null
+                : (lockedPointValueIdr as number | null),
             menuItemKeys: options.existingMenuItemKeys,
           });
+        }
         case "facilities":
           return facilitiesConfigCodec.fromTemplate(value.items, {
             outletKeys: options.existingOutletKeys,
@@ -351,6 +370,9 @@ export function configBundleReferenceIssues(
     ]),
   );
   const decoded = decodeConfigBundle(bundle, {
+    // Structural template validation has no target ledger. Import decoding
+    // requires the caller to supply its real target lock decision.
+    lockedPointValueIdr: null,
     existingRoleKeys,
     existingZoneOutletKeyByKey,
     existingTaxRuleOutletKeyByKey,

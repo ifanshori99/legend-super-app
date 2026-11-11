@@ -368,14 +368,57 @@ test("538-G1: bundle loyalty import preserves locked value and refuses any incre
     );
 });
 
+test("538-G1b P3: selected loyalty imports require an explicit lock state and null permits an unlocked value", () => {
+  const sections = { loyalty_policy: [program], roles: [role] };
+  for (const options of [
+    undefined,
+    {},
+    { lockedPointValueIdr: undefined },
+    { lockedPointValueIdr: Number.NaN },
+    { sections: ["loyalty_policy"] },
+  ]) {
+    refused(decode(sections, options), "loyalty_policy", /lock/i);
+  }
+  for (const pointValueIdr of [100, 101]) {
+    const accepted = decode(
+      { loyalty_policy: [{ ...program, pointValueIdr }] },
+      { lockedPointValueIdr: null },
+    );
+    assert.equal(accepted.ok, true, JSON.stringify(accepted.issues));
+    assert.equal(
+      accepted.drafts.loyalty_policy[0].pointValueIdr,
+      pointValueIdr,
+    );
+  }
+  const unselected = decode(sections, { sections: ["roles"] });
+  assert.equal(unselected.ok, true, JSON.stringify(unselected.issues));
+  assert.deepEqual(Object.keys(unselected.drafts), ["roles"]);
+  const empty = decode({ loyalty_policy: [] });
+  assert.equal(empty.ok, true, JSON.stringify(empty.issues));
+  refused(
+    decode(
+      { loyalty_policy: [reward] },
+      { existingMenuItemKeys: new Set([reward.menuItemKey]) },
+    ),
+    "loyalty_policy",
+    /lock/i,
+  );
+});
+
 test("538-G1: bundle loyalty forwards existing menu keys and rejects unknown explicit references", () => {
   const accepted = decode(
     { loyalty_policy: [reward] },
-    { existingMenuItemKeys: new Set([reward.menuItemKey]) },
+    {
+      lockedPointValueIdr: null,
+      existingMenuItemKeys: new Set([reward.menuItemKey]),
+    },
   );
   assert.equal(accepted.ok, true, JSON.stringify(accepted.issues));
   assert.deepEqual(accepted.drafts.loyalty_policy, [reward]);
-  for (const options of [undefined, { existingMenuItemKeys: new Set() }])
+  for (const options of [
+    { lockedPointValueIdr: null },
+    { lockedPointValueIdr: null, existingMenuItemKeys: new Set() },
+  ])
     refused(
       decode({ loyalty_policy: [reward] }, options),
       "loyalty_policy",

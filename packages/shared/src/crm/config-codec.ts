@@ -110,8 +110,9 @@ export type LoyaltyPolicyConfigRows = {
   missions?: readonly Mission[];
 };
 export type LoyaltyPolicyConfigImportContext = {
-  /** Frozen target value once the first ledger row exists; never from a bundle. */
-  lockedPointValueIdr?: number;
+  /** Frozen target value once the first ledger row exists; null explicitly
+   * confirms the target is unlocked. Never take this decision from a bundle. */
+  lockedPointValueIdr: number | null;
   /** Menu keys present in this import or already in the target tenant. */
   menuItemKeys?: ReadonlySet<string>;
 };
@@ -121,8 +122,21 @@ export type LoyaltyPolicyConfigFromTemplate =
 
 function fromTemplate(
   items: readonly unknown[],
-  context: LoyaltyPolicyConfigImportContext = {},
+  context: LoyaltyPolicyConfigImportContext,
 ): LoyaltyPolicyConfigFromTemplate {
+  const lockedPointValueIdr = context?.lockedPointValueIdr;
+  if (
+    lockedPointValueIdr !== null &&
+    (!Number.isSafeInteger(lockedPointValueIdr) ||
+      typeof lockedPointValueIdr !== "number" ||
+      lockedPointValueIdr <= 0)
+  )
+    return {
+      ok: false,
+      issues: [
+        "Loyalty lockedPointValueIdr must be a positive safe integer or explicit null",
+      ],
+    };
   const issues: string[] = [];
   const drafts: LoyaltyPolicyConfigDraft[] = [];
   const keys = new Set<string>();
@@ -146,8 +160,8 @@ function fromTemplate(
         issues.push(`Loyalty ${item.key}: only one program per tenant`);
       hasProgram = true;
       if (
-        context.lockedPointValueIdr !== undefined &&
-        item.pointValueIdr !== context.lockedPointValueIdr
+        lockedPointValueIdr !== null &&
+        item.pointValueIdr !== lockedPointValueIdr
       )
         issues.push(
           `Loyalty ${item.key}: pointValueIdr is locked in the target tenant`,
@@ -285,6 +299,7 @@ function toTemplate(
       }),
     );
   const decoded = fromTemplate(items, {
+    lockedPointValueIdr: null,
     menuItemKeys: new Set(context.menuItemKeyById?.values() ?? []),
   });
   if (!decoded.ok) throw new Error(decoded.issues.join("\n"));

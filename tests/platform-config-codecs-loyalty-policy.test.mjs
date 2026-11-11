@@ -75,7 +75,10 @@ const mission = {
   endsAt: null,
 };
 const items = [program, tier, reward, mission];
-const menuContext = { menuItemKeys: new Set(["menu.kopi"]) };
+const menuContext = {
+  lockedPointValueIdr: null,
+  menuItemKeys: new Set(["menu.kopi"]),
+};
 
 test("legend-1tzvg: loyalty policy decodes config only, preserving exact reward liability", () => {
   const value = codec();
@@ -117,8 +120,45 @@ test("legend-1tzvg: locked point value cannot increase or decrease imported liab
     true,
   );
   assert.equal(
-    value.fromTemplate([{ ...program, pointValueIdr: 101 }]).ok,
+    value.fromTemplate([{ ...program, pointValueIdr: 101 }], {
+      lockedPointValueIdr: null,
+    }).ok,
     true,
+  );
+});
+
+test("legend-1tzvg: import requires an explicit point value lock decision", () => {
+  const value = codec();
+  for (const context of [
+    undefined,
+    {},
+    ...[
+      undefined,
+      0,
+      -1,
+      0.5,
+      NaN,
+      Infinity,
+      Number.MAX_SAFE_INTEGER + 1,
+      "100",
+    ].map((lockedPointValueIdr) => ({ lockedPointValueIdr })),
+  ]) {
+    const result = value.fromTemplate([program], context);
+    assert.equal(result.ok, false, JSON.stringify(context));
+    assert.match(result.issues.join("\n"), /lockedPointValueIdr/);
+  }
+  assert.equal(value.fromTemplate([]).ok, false);
+  assert.equal(
+    value.fromTemplate([program], { lockedPointValueIdr: null }).ok,
+    true,
+  );
+  assert.equal(
+    value.fromTemplate([program], { lockedPointValueIdr: 100 }).ok,
+    true,
+  );
+  assert.equal(
+    value.fromTemplate([program], { lockedPointValueIdr: 101 }).ok,
+    false,
   );
 });
 
@@ -132,7 +172,7 @@ test("legend-1tzvg: loyalty policy refuses duplicate configuration and unresolve
     [mission],
   ])
     assert.equal(
-      value.fromTemplate(invalid).ok,
+      value.fromTemplate(invalid, { lockedPointValueIdr: null }).ok,
       false,
       JSON.stringify(invalid),
     );
