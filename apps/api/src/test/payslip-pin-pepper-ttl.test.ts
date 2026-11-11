@@ -604,7 +604,9 @@ describe("payslip PIN pepper: the staff PIN pepper never protects a payslip PIN"
   });
 });
 
-// ------------------------------------------------------------ finding 5
+// ------------------------------------------------------------ PIN lock helpers
+// (The reset-code OTP flow and its expiry-after-lock tests are gone: legend-9h2oj
+// replaced it with the inbound WhatsApp proof and dropped the challenges table.)
 
 /** Holds the employee's PIN lock, the way the service takes it. */
 async function holdPinLock(employeeId: string) {
@@ -645,81 +647,11 @@ async function waitForLockWaiter(employeeId: string) {
     .toBeGreaterThan(0);
 }
 
-/**
- * Sends the verify, makes it wait on the PIN lock, then lets `afterWaiting`
- * run (move the clock) before the lock is released.
- */
-async function verifyWhileLocked(
-  staff: Staff,
-  body: { code: string; pin: string },
-  afterWaiting: () => void,
-) {
-  const lock = await holdPinLock(staff.employeeId);
-  let response: Promise<{ status: number }> | undefined;
-  try {
-    response = verifyOtp(staff.client, body).then((r) => r);
-    await waitForLockWaiter(staff.employeeId);
-    afterWaiting();
-  } finally {
-    await lock.release();
-  }
-  try {
-    return await response!;
-  } finally {
-    vi.useRealTimers();
-  }
-}
-
-describe("payslip PIN reset code: expiry is judged after the lock is obtained", () => {
-  it("control: a code verified after waiting for the lock, within its lifetime, still works", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    expect(ok((await requestOtp(staff.client)).status)).toBe(true);
-    const code = lastCode(staff.employeeId);
-
-    const response = await verifyWhileLocked(
-      staff,
-      { code, pin: NEW_PIN },
-      () => undefined,
-    );
-    expect(ok(response.status)).toBe(true);
-    expect((await view(staff.client, staff.payslipId, NEW_PIN)).status).toBe(
-      200,
-    );
-  });
-
-  it("a code that expires while the verify waits for the lock is refused and the PIN stays", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    expect(ok((await requestOtp(staff.client)).status)).toBe(true);
-    const code = lastCode(staff.employeeId);
-
-    const response = await verifyWhileLocked(
-      staff,
-      { code, pin: NEW_PIN },
-      // Code lifetime is 5 minutes; the clock jumps 30 minutes while waiting.
-      () =>
-        vi.useFakeTimers({
-          toFake: ["Date"],
-          now: Date.now() + 30 * 60_000,
-        }),
-    );
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(response.status).toBeLessThan(500);
-
-    // The old PIN still opens the slip, the new one does not.
-    expect((await view(staff.client, staff.payslipId, NEW_PIN)).status).toBe(
-      403,
-    );
-    expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(200);
-  });
-});
-
 // ------------------------------------------------------------ legend-hbaml
-// Timestamps taken after the PIN lock (same clock pattern as finding 5):
+// Timestamps taken after the PIN lock:
 // HR reset (`POST /employees/:id/payslip-pin/reset`) and opening a payslip
 // (`viewedAt`) must stamp the time the lock was obtained, not the time the
-// request started waiting for it. The request-OTP path is out of scope here.
+// request started waiting for it.
 
 /** Sends `request` while the employee's PIN lock is held, jumps the clock, releases. */
 async function whileLocked<T extends { status: number }>(
@@ -768,8 +700,6 @@ describe("legend-hbaml: PIN lock timestamps are read after the lock is obtained"
   it("an HR reset stamps its audit event and its effects with the time the lock was obtained", async () => {
     const staff = await makeStaff();
     expect(ok((await setPin(staff.client, { pin: GOOD })).status)).toBe(true);
-    // A pending reset code is voided by the HR reset.
-    expect(ok((await requestOtp(staff.client)).status)).toBe(true);
 
     const { response, movedTo } = await whileLocked(
       staff.employeeId,
@@ -788,17 +718,6 @@ describe("legend-hbaml: PIN lock timestamps are read after the lock is obtained"
     // Stale clock: about 30 minutes earlier than the moment the lock was won.
     expect
       .soft(new Date(events[0]!.created_at).getTime())
-      .toBeGreaterThanOrEqual(movedTo);
-
-    const challenges = await sql<{ consumed_at: Date | null }>(
-      `SELECT consumed_at FROM payslip_pin_reset_challenges
-        WHERE tenant_id = $1 AND employee_id = $2`,
-      [tenant.id, staff.employeeId],
-    );
-    expect(challenges).toHaveLength(1);
-    expect(challenges[0]!.consumed_at).not.toBeNull();
-    expect
-      .soft(challenges[0]!.consumed_at!.getTime())
       .toBeGreaterThanOrEqual(movedTo);
   });
 });
