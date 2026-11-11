@@ -810,12 +810,16 @@ export async function refundPosOrder(
           // payout below what is due would lock the rest for good. Asking
           // less is refused before anything is written; asking more is
           // capped to what is due (unchanged). Q25 per item (architect Q25
-          // #4): what the named lines already gave back through recovery
-          // (vouchers, live recovery refunds) is not owed again; their
-          // earlier POS refunds are already out of `dueBill` (`refunded`).
+          // #4, #10): `dueBill` is cumulative, so what EVERY line returned so
+          // far gave back through recovery (vouchers, live recovery refunds)
+          // is not owed again: the lines of earlier POS refunds and of this
+          // request, each once. Their earlier POS refunds are already out of
+          // `dueBill` (`refunded`).
           const namedGivenIdr = [
             ...new Set(
-              requested.map((entry) => given.toOriginal(entry.itemId)),
+              [...refundedBefore.keys(), ...requested.map((r) => r.itemId)].map(
+                (itemId) => given.toOriginal(itemId),
+              ),
             ),
           ].reduce(
             (sum, line) => sum + (given.lineRecoveryGivenIdr.get(line) ?? 0),
@@ -844,14 +848,13 @@ export async function refundPosOrder(
           payout = Math.min(input.amountIdr, owedIdr);
           // Running balance (the latest audit row holds it; do not sum rows):
           // what is due beyond what the tenders can still pay (architect Q25
-          // #5: measured against the tenders, not the voucher-cut room: the
-          // voucher and the payout together are what the tenders cover, so a
-          // value already given as a voucher is not owed on the deposit).
+          // #5, #11: measured on the due after what the lines gave back
+          // (`dueIdr`), against the tender room left after the vouchers and
+          // recovery refunds (`roomIdr`): a value already given as a voucher
+          // is not owed on the deposit, and the voucher is not covered twice
+          // by the tenders).
           if (Number(order.depositAppliedIdr) > 0)
-            depositOwedIdr = Math.max(
-              0,
-              dueBill - Math.min(dueBill, Math.max(0, paid - refunded)),
-            );
+            depositOwedIdr = Math.max(0, dueIdr - Math.min(dueIdr, roomIdr));
         }
         if (goodsReturnOnly) payout = 0;
         else if (payout <= 0)
