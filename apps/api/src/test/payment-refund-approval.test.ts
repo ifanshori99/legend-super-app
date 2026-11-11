@@ -32,7 +32,6 @@ import {
   expect,
   it,
 } from "vitest";
-import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
@@ -57,9 +56,12 @@ import {
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 import { FakeRefundGateway } from "./refund-fake-gateway";
 
+import { paymentTestScope } from "./payment-test-scope";
+
+const scope = paymentTestScope();
 const app = createApp();
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = cafeLegendAccessFixtures.outletIds.bandung;
+const tenantId = scope.tenantId;
+const outletA = scope.outletId;
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 4,
@@ -116,7 +118,7 @@ async function signedIn(
   label: string,
   alsoSupervisor = false,
 ) {
-  const client = agent(app);
+  const client = agent(app).set("Host", scope.hostname);
   const email = await signUp(client, label);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
@@ -287,6 +289,7 @@ async function attempt(run: () => Promise<unknown>) {
 }
 
 beforeAll(async () => {
+  await scope.seed(owner);
   ({ client: requester, userId: requesterId } = await signedIn(
     "owner",
     "Refund requester",
@@ -434,6 +437,7 @@ describe("PAY-04 refund approval: request, approve, payout", () => {
     const id = randomUUID();
     for (const action of ["approve", "reject", "retry"]) {
       const anonymous = await agent(app)
+        .set("Host", scope.hostname)
         .post(`${ADMIN}/refunds/${id}/${action}`)
         .set(originHeader)
         .send({ idempotencyKey: key() });

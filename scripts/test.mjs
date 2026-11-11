@@ -75,6 +75,17 @@ async function run(command, args, childEnv = env, capture = false) {
   });
 }
 
+async function runTestStep(label, command, args, childEnv) {
+  console.log(`[${label}] Starting.`);
+  try {
+    await run(command, args, childEnv);
+    console.log(`[${label}] Passed.`);
+  } catch (error) {
+    console.error(`[${label}] Failed: ${error.message}`);
+    throw error;
+  }
+}
+
 // Remove what earlier killed runs left behind. Labeled projects are touched only
 // when their owning process is gone, so runs of other agents stay alive.
 // Unlabeled ones (by hand, older script) go once older than 30 minutes.
@@ -140,7 +151,8 @@ try {
     const rootFiles = selected?.filter((file) => file.endsWith(".test.mjs"));
     const apiFiles = selected?.filter((file) => !file.endsWith(".test.mjs"));
     if (!selected || apiFiles.length) {
-      await run(
+      await runTestStep(
+        "vitest",
         pnpmCommand(),
         ["--filter", "@starter/api", "run", "test", ...(apiFiles ?? [])],
         testEnv,
@@ -158,7 +170,8 @@ try {
       ? [`--test-concurrency=${concurrency}`]
       : [];
     if (files.length)
-      await run(
+      await runTestStep(
+        "node:test",
         process.execPath,
         ["--test", ...concurrencyArgs, ...files],
         testEnv,
@@ -181,9 +194,7 @@ try {
     );
   }
 } catch (error) {
-  console.error(
-    `Tests stopped: ${error.message} Start Docker Desktop if needed.`,
-  );
+  console.error(`Tests stopped: ${error.message}`);
   process.exitCode = interrupted ? 130 : 1;
 } finally {
   // This generated project owns only this run's disposable test server.

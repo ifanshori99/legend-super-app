@@ -19,8 +19,6 @@ import {
   expect,
   it,
 } from "vitest";
-import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -43,9 +41,12 @@ import {
   upsertIntegration,
 } from "../services/platform-integration.service";
 
+import { paymentTestScope } from "./payment-test-scope";
+
+const scope = paymentTestScope();
 const app = createApp();
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = cafeLegendAccessFixtures.outletIds.bandung;
+const tenantId = scope.tenantId;
+const outletA = scope.outletId;
 const actor = randomUUID();
 const PAID_IDR = 100_000;
 const FUND_IDR = 20_000;
@@ -81,6 +82,7 @@ let doitBaseUrl = "";
 const hex = (bytes = 6) => randomBytes(bytes).toString("hex");
 
 beforeAll(async () => {
+  await scope.seed(owner);
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   // The webhook path never calls DOIT for these events; the integration only
