@@ -123,7 +123,29 @@ async function fillBalancedJournal(page) {
   await page.getByLabel("Kredit baris 2").fill("500000");
 }
 
+// ---- Menu item station routing (0frf) --------------------------------------
+// The "Routing stasiun" heading renders before the stations load, together with
+// "Memuat pengaturan stasiun…": wait until that loading text is gone.
+async function stationReady(page) {
+  await visible(heading(page, "Routing stasiun"));
+  await page
+    .getByText("Memuat pengaturan stasiun…")
+    .waitFor({ state: "hidden", timeout: COLD });
+}
+
 // ---- Edge (s7szu) ----------------------------------------------------------
+// The "Perbarui status" button is in the header, so it is on screen while the
+// status is still loading (skeleton, aria-busy). Real content = the status card.
+const edgeStatusCard = (page) => heading(page, "Status koneksi");
+const edgeReady = (page) => visible(edgeStatusCard(page));
+
+async function edgeSettled(page) {
+  await page
+    .locator('[aria-busy="true"]')
+    .first()
+    .waitFor({ state: "hidden", timeout: COLD });
+}
+
 async function setReceiptRunAlert(page, on) {
   await page.waitForFunction(() => window.__legendEdgeMock !== undefined);
   await page.evaluate(
@@ -418,7 +440,7 @@ const STATES = [
     card: "0frf",
     name: "normal",
     path: `/kelola/menu/${ESPRESSO_ID}?mock=normal`,
-    prepare: (page) => visible(heading(page, "Routing stasiun")),
+    prepare: stationReady,
   },
   {
     card: "0frf",
@@ -432,6 +454,10 @@ const STATES = [
     name: "empty",
     path: `/kelola/menu/${ESPRESSO_ID}?mock=empty`,
     prepare: async (page) => {
+      await visible(heading(page, "Routing stasiun"));
+      await page
+        .getByText("Memuat pengaturan stasiun…")
+        .waitFor({ state: "hidden", timeout: COLD });
       await page.waitForLoadState("networkidle").catch(() => {});
     },
   },
@@ -440,6 +466,10 @@ const STATES = [
     name: "error",
     path: `/kelola/menu/${ESPRESSO_ID}?mock=error`,
     prepare: async (page) => {
+      await visible(heading(page, "Routing stasiun"));
+      await page
+        .getByText("Memuat pengaturan stasiun…")
+        .waitFor({ state: "hidden", timeout: COLD });
       await page.waitForLoadState("networkidle").catch(() => {});
     },
   },
@@ -449,7 +479,7 @@ const STATES = [
     name: "override",
     path: `/kelola/menu/${ESPRESSO_ID}?mock=normal`,
     prepare: async (page) => {
-      await visible(heading(page, "Routing stasiun"));
+      await stationReady(page);
       await page.getByRole("combobox", { name: /^Stasiun khusus/ }).click();
       await page.getByRole("option").nth(1).click(); // first real station
       await visible(page.getByText(/^Stasiun khusus: /));
@@ -462,6 +492,9 @@ const STATES = [
     path: "/kelola/menu/baru?mock=normal",
     prepare: async (page) => {
       await visible(page.getByRole("combobox", { name: "Tipe stasiun" }));
+      await page
+        .getByText("Memuat pengaturan stasiun…")
+        .waitFor({ state: "hidden", timeout: COLD });
       await page.getByRole("button", { name: "Simpan item" }).click();
       await visible(page.getByText("Pilih tipe stasiun untuk item ini."));
     },
@@ -471,7 +504,7 @@ const STATES = [
     name: "success",
     path: `/kelola/menu/${ESPRESSO_ID}?mock=normal`,
     prepare: async (page) => {
-      await visible(heading(page, "Routing stasiun"));
+      await stationReady(page);
       // "Simpan item" stays disabled until the form differs from the item.
       const name = page.getByLabel("Nama item");
       await name.fill(`${await name.inputValue()} 2`);
@@ -572,8 +605,7 @@ const STATES = [
     card: "s7szu",
     name: "normal",
     path: "/operasional/koneksi",
-    prepare: (page) =>
-      visible(page.getByRole("button", { name: "Perbarui status" })),
+    prepare: edgeReady,
   },
   {
     card: "s7szu",
@@ -587,6 +619,7 @@ const STATES = [
     name: "error",
     path: "/operasional/koneksi?mock=error",
     prepare: async (page) => {
+      await edgeSettled(page);
       await page.waitForLoadState("networkidle").catch(() => {});
     },
   },
@@ -595,7 +628,7 @@ const STATES = [
     name: "alert",
     path: "/operasional/koneksi",
     prepare: async (page) => {
-      await visible(page.getByRole("button", { name: "Perbarui status" }));
+      await edgeReady(page);
       await raiseReceiptRunAlert(page);
     },
   },
@@ -605,7 +638,7 @@ const STATES = [
     name: "alert-open",
     path: "/operasional/koneksi",
     prepare: async (page) => {
-      await visible(page.getByRole("button", { name: "Perbarui status" }));
+      await edgeReady(page);
       await raiseReceiptRunAlert(page);
       await receiptAlert(page)
         .getByText("Petunjuk untuk administrator teknis")
@@ -618,7 +651,7 @@ const STATES = [
     name: "recovered",
     path: "/operasional/koneksi",
     prepare: async (page) => {
-      await visible(page.getByRole("button", { name: "Perbarui status" }));
+      await edgeReady(page);
       await raiseReceiptRunAlert(page);
       await setReceiptRunAlert(page, false);
       await page.getByRole("button", { name: "Perbarui status" }).click();

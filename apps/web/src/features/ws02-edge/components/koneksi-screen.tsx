@@ -97,8 +97,8 @@ export function KoneksiScreen({
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="grid gap-1">
+      <header className="flex items-start justify-between gap-3">
+        <div className="grid min-w-0 gap-1">
           <h1 className="type-display">{t("edge.pageTitle")}</h1>
           <p className="text-sm leading-5 text-muted-foreground">
             {t("edge.pageHint")}
@@ -106,7 +106,7 @@ export function KoneksiScreen({
         </div>
         <Button
           variant="outline"
-          className="w-full sm:w-auto"
+          className="shrink-0"
           loading={refreshing}
           onClick={refresh}
         >
@@ -296,7 +296,7 @@ export function KoneksiScreen({
                 hint={t("edge.print.description")}
               />
             </div>
-            <PrintQueueButton className="self-start" />
+            <PrintQueueButton className="w-full sm:w-auto" />
           </div>
         </Card>
       )}
