@@ -30,6 +30,8 @@ import { newIdempotencyKey } from "@/lib/idempotency";
 import type { ThrCreateInput } from "../api";
 import { payrollMutationError } from "../errors";
 import { useActiveEmployees, useCreateThrSchedule } from "../hooks";
+import { useLegalEntityChoice } from "./legal-entity-field";
+import { SaveErrorBanner } from "./save-error-banner";
 
 type Scope = "all" | "selected";
 type Errors = Record<string, string | undefined>;
@@ -40,10 +42,11 @@ function toggle<T>(values: readonly T[], value: T, checked: boolean): T[] {
 }
 
 export function ThrDialog({
-  legalEntityId,
+  defaultLegalEntityId,
   onClose,
 }: {
-  legalEntityId: ThrCreateInput["legalEntityId"] | null;
+  /** Entity of an existing schedule, preselected when creating another one. */
+  defaultLegalEntityId?: ThrCreateInput["legalEntityId"] | null;
   onClose: () => void;
 }) {
   const t = useT();
@@ -74,6 +77,13 @@ export function ThrDialog({
         );
 
   const pending = createSchedule.isPending;
+  const entityChoice = useLegalEntityChoice({
+    preferredId: defaultLegalEntityId ?? null,
+    emptyKey: "legalEntity.emptyThr",
+    error: errors.legalEntityId,
+    disabled: pending,
+  });
+  const legalEntityId = entityChoice.legalEntityId;
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -103,10 +113,11 @@ export function ThrDialog({
       found.tenureAsOfDate = t("payrollConfig.thr.form.tenureAfterHoliday");
     if (scope === "selected" && employeeIds.length === 0)
       found.employeeIds = t("payrollConfig.thr.form.employeeRequired");
-    if (legalEntityId === null)
-      found.form = t("payrollConfig.thr.form.legalEntityMissing");
+    if (legalEntityId === "")
+      found.legalEntityId = t("payrollConfig.legalEntity.required");
     setErrors(found);
-    if (Object.keys(found).length > 0 || legalEntityId === null) return;
+    if (found.legalEntityId !== undefined) entityChoice.focus();
+    if (Object.keys(found).length > 0 || legalEntityId === "") return;
 
     createSchedule.mutate(
       {
@@ -143,6 +154,10 @@ export function ThrDialog({
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={submit} noValidate>
+          {errors.form && <SaveErrorBanner message={errors.form} />}
+
+          {entityChoice.field}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField
               label={t("payrollConfig.thr.form.name")}
@@ -282,15 +297,6 @@ export function ThrDialog({
             </fieldset>
           )}
 
-          {errors.form && (
-            <p
-              className="text-sm leading-5 font-medium text-danger"
-              role="alert"
-            >
-              {errors.form}
-            </p>
-          )}
-
           <DialogFooter>
             <Button
               type="button"
@@ -303,12 +309,7 @@ export function ThrDialog({
             <Button
               type="submit"
               loading={pending}
-              disabled={legalEntityId === null}
-              title={
-                legalEntityId === null
-                  ? t("payrollConfig.thr.form.legalEntityMissing")
-                  : undefined
-              }
+              disabled={entityChoice.blocked}
             >
               {t("common.save")}
             </Button>

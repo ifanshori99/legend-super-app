@@ -73,7 +73,10 @@ export function PayrollConfigPage({
       </header>
       <nav
         aria-label={t("payrollConfig.tabsLabel")}
-        className={cn(tabsListClass, "[scrollbar-width:none]")}
+        className={cn(
+          tabsListClass,
+          "h-auto flex-wrap overflow-x-visible [scrollbar-width:none]",
+        )}
       >
         {PAYROLL_CONFIG_TABS.map((tab) => {
           const current = tab === active;

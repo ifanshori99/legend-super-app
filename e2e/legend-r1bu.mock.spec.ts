@@ -143,7 +143,7 @@ test.describe("payroll configuration", () => {
     await expect(componentsTable.getByText("Dasar BPJS").first()).toBeVisible();
 
     // Statutory tables: published versions plus the one fixture draft.
-    await tabs.getByRole("link", { name: "Tabel tarif" }).click();
+    await tabs.getByRole("link", { name: "Tabel ketentuan" }).click();
     await expect(page).toHaveURL(/tab=statutory/);
     await expect(
       page.getByRole("heading", { name: "Tabel tarif berversi", level: 2 }),

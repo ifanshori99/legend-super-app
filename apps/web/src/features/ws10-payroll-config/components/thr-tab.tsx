@@ -16,6 +16,7 @@ import {
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import {
   Table,
@@ -83,7 +84,7 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
   const thrRule = publishedVersionOf(versions, "thr", businessDateToday());
   const rows = filterThrSchedules(schedules, search);
 
-  const legalEntityId = schedules[0]?.legalEntityId ?? null;
+  const defaultLegalEntityId = schedules[0]?.legalEntityId ?? null;
 
   const scheduled = schedules.filter(
     (schedule) => schedule.status === "scheduled",
@@ -91,6 +92,10 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
   const paid = schedules.filter(
     (schedule) => schedule.status === "paid",
   ).length;
+
+  // Counts and the rule are only real once their query succeeded: while
+  // loading or failed they read as a dash / skeleton, never as a 0.
+  const metric = (value: number) => (schedulesQuery.isSuccess ? value : "—");
 
   if (schedulesQuery.isError && isOffline(schedulesQuery.error))
     return (
@@ -102,17 +107,26 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
       <StatStrip label={t("payrollConfig.thr.metrics.label")}>
         <StatTile
           label={t("payrollConfig.thr.metrics.schedules")}
-          value={schedules.length}
+          value={metric(schedules.length)}
         />
         <StatTile
           label={t("payrollConfig.thr.metrics.scheduled")}
-          value={scheduled}
+          value={metric(scheduled)}
         />
-        <StatTile label={t("payrollConfig.thr.metrics.paid")} value={paid} />
+        <StatTile
+          label={t("payrollConfig.thr.metrics.paid")}
+          value={metric(paid)}
+        />
         <StatTile
           label={t("payrollConfig.thr.metrics.fullTenure")}
           // No published THR rule: show a dash, never an invented 0.
-          value={thrRule?.parameters.fullTenureMonths ?? "—"}
+          value={
+            statutoryQuery.isPending ? (
+              <Skeleton className="h-8 w-12" />
+            ) : (
+              (thrRule?.parameters.fullTenureMonths ?? "—")
+            )
+          }
         />
       </StatStrip>
 
@@ -121,12 +135,18 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
           <CardHeader>
             <CardTitle>{t("payrollConfig.thr.ruleTitle")}</CardTitle>
             <CardDescription>
-              {thrRule
-                ? t("payrollConfig.thr.ruleBody", {
-                    min: thrRule.parameters.minTenureMonths,
-                    full: thrRule.parameters.fullTenureMonths,
-                  })
-                : t("payrollConfig.thr.ruleNone")}
+              {statutoryQuery.isPending ? (
+                <Skeleton className="h-5 w-3/4" />
+              ) : !statutoryQuery.isSuccess ? (
+                "—"
+              ) : thrRule ? (
+                t("payrollConfig.thr.ruleBody", {
+                  min: thrRule.parameters.minTenureMonths,
+                  full: thrRule.parameters.fullTenureMonths,
+                })
+              ) : (
+                t("payrollConfig.thr.ruleNone")
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -158,19 +178,14 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
           <Button
             type="button"
             onClick={() => setCreating(true)}
-            disabled={!canRun || legalEntityId === null}
-            title={
-              !canRun
-                ? t("payrollConfig.readOnlyHint")
-                : legalEntityId === null
-                  ? t("payrollConfig.thr.form.legalEntityMissing")
-                  : undefined
-            }
+            disabled={!canRun}
+            title={!canRun ? t("payrollConfig.readOnlyHint") : undefined}
           >
             <Plus aria-hidden="true" />
             {t("payrollConfig.thr.add")}
           </Button>
         }
+        error={schedulesQuery.error}
         onRetry={() => void schedulesQuery.refetch()}
         empty={{
           title: t("payrollConfig.thr.emptyTitle"),
@@ -274,7 +289,7 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
 
       {creating && (
         <ThrDialog
-          legalEntityId={legalEntityId}
+          defaultLegalEntityId={defaultLegalEntityId}
           onClose={() => setCreating(false)}
         />
       )}

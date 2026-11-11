@@ -16,6 +16,7 @@ import {
   activeEmployeesQuery,
   employeePayComponentsQuery,
   payComponentsDefaultQuery,
+  payrollLegalEntitiesQuery,
   payrollPoliciesDefaultQuery,
   statutoryTablesDefaultQuery,
   thrSchedulesDefaultQuery,
@@ -58,6 +59,10 @@ export function usePayComponents() {
 
 export function useThrSchedules() {
   return useQuery(thrSchedulesDefaultQuery());
+}
+
+export function usePayrollLegalEntities() {
+  return useQuery(payrollLegalEntitiesQuery());
 }
 
 export function useActiveEmployees() {

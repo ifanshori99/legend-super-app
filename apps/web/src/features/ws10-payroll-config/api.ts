@@ -20,6 +20,7 @@ import {
   updatePayrollPolicy as updatePayrollPolicyEndpoint,
   updateStatutoryTableDraft as updateStatutoryTableDraftEndpoint,
 } from "@starter/shared/hris/payroll";
+import { orgEndpoints } from "@starter/shared/platform";
 import { callEndpoint } from "@/lib/api/endpoint";
 
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
@@ -124,3 +125,9 @@ export const fetchThrSchedules = (query: ThrListQuery) =>
 
 export const createThrSchedule = (body: ThrCreateInput) =>
   callEndpoint(createThrScheduleEndpoint, { body });
+
+// ---- Legal entities (organisation contract) --------------------------------
+
+/** The tenant's legal entities, the source for a first policy / THR schedule. */
+export const fetchPayrollLegalEntities = (signal?: AbortSignal) =>
+  callEndpoint(orgEndpoints.listLegalEntities, {}, { signal });
