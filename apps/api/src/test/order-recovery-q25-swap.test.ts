@@ -610,8 +610,15 @@ async function previewOf(guest: Guest, issueId: string, menuItemId: string) {
 // =====================================================================================
 
 describe("legend-hhm5m 1: tukar berantai, tambahan belum dibayar tidak dihitung", () => {
-  it("40rb -> 80rb (tambahan belum dibayar) -> 20rb: voucher kedua 46.200, bukan 60.000, dan jumlah voucher rantai <= nilai dibayar item asal", async () => {
-    const paid = await paidItemAOrder();
+  // Decision (CTO, sub-q25-design.md flow A): while the extra charge of a dearer swap is
+  // still `open`, swapping the replacement line again is refused with 422 "selesaikan
+  // tagihan selisih dulu": no voucher, no change to the issue. Money invariant: the
+  // guest paid only 46.200 so far, so vouchers + refunds of the chain stay <= 46.200.
+
+  /** Reports the replacement line and tries to swap it again while the extra is open. */
+  async function refusedReswap(
+    paid: Awaited<ReturnType<typeof paidItemAOrder>>,
+  ) {
     const first = await swapLineDearer(
       paid.line(itemA).id,
       itemB,
@@ -621,41 +628,55 @@ describe("legend-hhm5m 1: tukar berantai, tambahan belum dibayar tidak dihitung"
       await voucherValues(first.swapIssueId),
       "a dearer swap gives no voucher",
     ).toEqual([]);
+    const secondIssueId = await reportLine(first.replacementLineId);
 
-    const second = await swapLineTo(first.replacementLineId, itemC);
+    const refused = await resolveSwap(secondIssueId, itemC);
 
-    const secondVouchers = await voucherValues(second.swapIssueId);
-    expect(secondVouchers, "never the 60.000 list difference").not.toContain(
-      ITEM_B_PRICE - ITEM_C_PRICE,
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(JSON.stringify(refused.body)).toMatch(
+      /selesaikan tagihan selisih dulu/i,
     );
-    expect(secondVouchers).toEqual([ITEM_A_PAID]);
-    // Money invariant: the guest paid 46.200 for the item, nothing of the extra yet.
+    return { first, secondIssueId };
+  }
+
+  async function expectIssueUntouched(issueId: string) {
+    expect(await issueStatus(issueId)).toBe("open");
+    expect(await voucherValues(issueId), "no voucher").toEqual([]);
+    const { rows } = await owner.query<{ id: string | null }>(
+      "SELECT replacement_order_item_id AS id FROM order_issues WHERE tenant_id = $1 AND id = $2",
+      [w.tenant.tenantId, issueId],
+    );
+    expect(rows[0]!.id, "no replacement line").toBeNull();
+    expect(await paidValueOf(issueId), "no paid value stored").toBeNull();
+  }
+
+  it("40rb -> 80rb (tambahan belum dibayar) -> tukar lagi ke 20rb: 422 'selesaikan tagihan selisih dulu', tanpa voucher, issue kedua tidak berubah", async () => {
+    const paid = await paidItemAOrder();
+
+    const { first, secondIssueId } = await refusedReswap(paid);
+
+    await expectIssueUntouched(secondIssueId);
     expect(
-      await vouchersOf([first.swapIssueId, second.swapIssueId]),
+      await vouchersOf([first.swapIssueId, secondIssueId]),
     ).toBeLessThanOrEqual(ITEM_A_PAID);
   });
 
-  it("setelah rantai itu, refund lini 20rb tidak menambah: voucher + refund rantai tetap <= 46.200", async () => {
+  it("setelah penolakan itu, refund lini 80rb tidak menambah: voucher + refund rantai tetap <= 46.200", async () => {
     const paid = await paidItemAOrder();
-    const first = await swapLineDearer(
-      paid.line(itemA).id,
-      itemB,
-      ITEM_B_PRICE - ITEM_A_PRICE,
-    );
-    const second = await swapLineTo(first.replacementLineId, itemC);
+    const { first, secondIssueId } = await refusedReswap(paid);
 
-    const refund = await approvedRefund(second.replacementLineId, ITEM_C_PRICE);
-    await deliver(refund.event);
+    // The same open issue can still be settled by an approved refund of what was paid.
+    const event = await resolveForRefund(secondIssueId, ITEM_B_PRICE);
+    await deliver(event);
 
     const total =
-      (await vouchersOf([first.swapIssueId, second.swapIssueId])) +
-      (await refundedTotal(refund.issueId)) +
-      (await refundedTotal(first.swapIssueId)) +
-      (await refundedTotal(second.swapIssueId));
+      (await vouchersOf([first.swapIssueId, secondIssueId])) +
+      (await refundedTotal(secondIssueId)) +
+      (await refundedTotal(first.swapIssueId));
     expect(total).toBeLessThanOrEqual(ITEM_A_PAID);
   });
 
-  it("tambahan 46.200 sudah benar-benar dibayar: tukar ke 20rb boleh memakainya, voucher 60.000 <= 92.400", async () => {
+  it("tambahan 46.200 sudah dibayar: tukar ulang ke 20rb boleh, voucher 60.000 <= dibayar asal + extra dibayar - yang sudah diberikan (92.400)", async () => {
     const paid = await paidItemAOrder();
     const first = await swapLineDearer(
       paid.line(itemA).id,
@@ -676,20 +697,44 @@ describe("legend-hhm5m 1: tukar berantai, tambahan belum dibayar tidak dihitung"
     ).toBeLessThanOrEqual(ITEM_A_PAID + ITEM_B_EXTRA_PAID);
   });
 
-  it("tukar lebih mahal menyimpan nilai dibayar item asal (46.200) di order_issues, tambahan tidak ikut", async () => {
+  it("tagihan dibayar, tukar ulang ke 20rb (voucher 60.000), lini itu ditukar lagi ke air: voucher ketiga <= sisa 32.400, total <= 92.400", async () => {
     const paid = await paidItemAOrder();
     const first = await swapLineDearer(
       paid.line(itemA).id,
       itemB,
       ITEM_B_PRICE - ITEM_A_PRICE,
     );
-    expect(await paidValueOf(first.swapIssueId)).toBe(ITEM_A_PAID);
-
+    await payExtraCharge(paid.guest, first.swapIssueId);
     const second = await swapLineTo(first.replacementLineId, itemC);
+    const given = await vouchersOf([first.swapIssueId, second.swapIssueId]);
+    expect(given, "the second swap used the paid extra").toBe(
+      ITEM_B_PRICE - ITEM_C_PRICE,
+    );
+
+    const third = await swapLineTo(second.replacementLineId, airItem);
+
+    // min(list difference 15.000, 92.400 - 60.000 already given = 32.400) = 15.000.
+    expect(await voucherValues(third.swapIssueId)).toEqual([
+      ITEM_C_PRICE - AIR_PRICE,
+    ]);
     expect(
-      await paidValueOf(second.swapIssueId),
-      "the chain keeps the paid value of the original item",
-    ).toBe(ITEM_A_PAID);
+      await vouchersOf([
+        first.swapIssueId,
+        second.swapIssueId,
+        third.swapIssueId,
+      ]),
+    ).toBeLessThanOrEqual(ITEM_A_PAID + ITEM_B_EXTRA_PAID);
+  });
+
+  it("tukar lebih mahal menyimpan nilai dibayar item asal (46.200); tukar ulang yang ditolak tidak mengubahnya", async () => {
+    const paid = await paidItemAOrder();
+    const { first, secondIssueId } = await refusedReswap(paid);
+
+    expect(await paidValueOf(first.swapIssueId)).toBe(ITEM_A_PAID);
+    expect(
+      await paidValueOf(secondIssueId),
+      "the refused issue stores nothing",
+    ).toBeNull();
   });
 
   it("tanpa tambahan sama sekali (40rb ditukar langsung ke 20rb): voucher 20.000, tidak berubah", async () => {
