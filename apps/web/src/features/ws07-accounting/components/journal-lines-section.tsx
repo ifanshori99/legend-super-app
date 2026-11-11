@@ -20,6 +20,7 @@ export function JournalLinesSection({
   rows,
   onChange,
   evaluation,
+  submitted = false,
   disabled = false,
 }: {
   legalEntityId: string;
@@ -27,6 +28,7 @@ export function JournalLinesSection({
   rows: readonly EditorLine[];
   onChange: (rows: EditorLine[]) => void;
   evaluation: DraftEvaluation;
+  submitted?: boolean;
   disabled?: boolean;
 }) {
   const t = useT();
@@ -87,6 +89,7 @@ export function JournalLinesSection({
         rows={rows}
         onChange={onChange}
         evaluation={evaluation}
+        submitted={submitted}
         disabled={disabled}
       />
     );

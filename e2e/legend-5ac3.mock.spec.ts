@@ -110,9 +110,27 @@ test.describe("legend-5ac3 outlet on journal lines", () => {
     await expect(
       page.getByRole("alert").filter({ hasText: "Jurnal belum seimbang" }),
     ).toContainText("Debit lebih besar Rp");
+    // Simpan draf stays enabled; a click keeps the page and shows the banner.
+    const save = page.getByRole("button", { name: "Simpan draf" });
+    await expect(save).toBeEnabled();
+    await save.click();
+    await expect(page).toHaveURL(/jurnal-manual\/baru/);
     await expect(
-      page.getByRole("button", { name: "Simpan draf" }),
-    ).toBeDisabled();
+      page.getByRole("alert").filter({ hasText: "Jurnal belum seimbang" }),
+    ).toBeVisible();
+  });
+
+  test("saving an empty journal explains what is missing", async ({ page }) => {
+    await open(page, "/kelola/akuntansi/jurnal-manual/baru");
+    await page.getByRole("button", { name: "Simpan draf" }).click();
+    await expect(page).toHaveURL(/jurnal-manual\/baru/);
+    await expect(page.getByLabel("Keterangan")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    await expect(
+      page.getByText("Jurnal membutuhkan minimal dua baris."),
+    ).toBeVisible();
   });
 
   test("the lines block shows its error state with a retry", async ({

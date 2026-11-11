@@ -7,6 +7,7 @@ import { CircleAlert, CircleCheck, Plus, Trash2 } from "lucide-react";
 import type { Account } from "@starter/shared/accounting";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
+import { focusFirstInvalid } from "@/lib/focus-first-invalid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +40,24 @@ export type EditorLine = {
 const ENTITY_LEVEL = "__entity__";
 
 export type OutletOption = { id: string; name: string };
+/**
+ * After a failed save attempt: focus the first invalid field in `root`; when
+ * only the balance banner explains the failure, focus that instead.
+ */
+export function focusJournalProblem(root: HTMLElement | null): void {
+  if (!root) return;
+  if (root.querySelector('[aria-invalid="true"]')) {
+    focusFirstInvalid(root);
+    return;
+  }
+  requestAnimationFrame(() => {
+    const banner = root.querySelector<HTMLElement>("[data-journal-problem]");
+    if (!banner) return;
+    banner.focus({ preventScroll: true });
+    banner.scrollIntoView({ block: "center" });
+  });
+}
+
 export type OutletsState = "ready" | "loading" | "error";
 
 /**
@@ -113,6 +132,7 @@ export function JournalLinesEditor({
   rows,
   onChange,
   evaluation,
+  submitted = false,
   disabled = false,
 }: {
   accounts: readonly Account[];
@@ -123,6 +143,8 @@ export function JournalLinesEditor({
   rows: readonly EditorLine[];
   onChange: (rows: EditorLine[]) => void;
   evaluation: DraftEvaluation;
+  /** A save was attempted: an incomplete journal now shows its error banner. */
+  submitted?: boolean;
   disabled?: boolean;
 }) {
   const t = useT();
@@ -349,24 +371,30 @@ export function JournalLinesEditor({
         {t("accounting.manual.form.amountHint")}
       </p>
       {!evaluation.balanced &&
-        evaluation.filled >= 2 &&
-        evaluation.differenceIdr !== 0 && (
+        ((evaluation.filled >= 2 && evaluation.differenceIdr !== 0) ||
+          (submitted && evaluation.filled < 2)) && (
           <div
             role="alert"
+            tabIndex={-1}
+            data-journal-problem=""
             className="grid gap-1 rounded-lg border-(length:--border-w) border-danger p-3 text-sm leading-5 text-danger"
           >
             <strong>{t("accounting.manual.form.unbalancedTitle")}</strong>
             <span>
-              {hasAmountIssue
-                ? t("accounting.manual.form.amountIssueHint")
-                : t(
-                    evaluation.differenceIdr > 0
-                      ? "accounting.manual.form.debitHigher"
-                      : "accounting.manual.form.creditHigher",
-                    {
-                      amount: formatRupiah(Math.abs(evaluation.differenceIdr)),
-                    },
-                  )}
+              {evaluation.filled < 2
+                ? t("accounting.manual.form.linesRequired")
+                : hasAmountIssue
+                  ? t("accounting.manual.form.amountIssueHint")
+                  : t(
+                      evaluation.differenceIdr > 0
+                        ? "accounting.manual.form.debitHigher"
+                        : "accounting.manual.form.creditHigher",
+                      {
+                        amount: formatRupiah(
+                          Math.abs(evaluation.differenceIdr),
+                        ),
+                      },
+                    )}
             </span>
           </div>
         )}

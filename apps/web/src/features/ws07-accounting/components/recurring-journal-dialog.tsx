@@ -20,7 +20,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { useCreateRecurringJournal } from "../hooks";
 import { businessDateToday, evaluateManualDraft } from "../lib";
-import { blankEditorLine, type EditorLine } from "./lines-editor";
+import {
+  blankEditorLine,
+  focusJournalProblem,
+  type EditorLine,
+} from "./lines-editor";
 import { JournalLinesSection } from "./journal-lines-section";
 
 const PERIOD_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -78,16 +82,11 @@ function RecurringJournalForm({
 
   const evaluation = evaluateManualDraft(rows);
   const dayNumber = Number(day);
-  const canSubmit =
-    description.trim() !== "" &&
-    Number.isInteger(dayNumber) &&
-    dayNumber >= 1 &&
-    dayNumber <= 31 &&
-    PERIOD_PATTERN.test(startPeriod) &&
-    (endPeriod === "" || PERIOD_PATTERN.test(endPeriod)) &&
-    (endPeriod === "" || endPeriod >= startPeriod) &&
-    evaluation.balanced &&
-    !create.isPending;
+  const formRef = React.useRef<HTMLFormElement>(null);
+  const [submitted, setSubmitted] = React.useState(false);
+  // Save stays enabled so a click explains what is missing; submit() keeps an
+  // invalid or unbalanced template from reaching the API.
+  const canSubmit = !create.isPending;
 
   const submit = async () => {
     const nextErrors: typeof errors = {};
@@ -99,7 +98,11 @@ function RecurringJournalForm({
     else if (endPeriod !== "" && endPeriod < startPeriod)
       nextErrors.period = t("accounting.recurring.form.invalidPeriod");
     setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) return;
+    setSubmitted(true);
+    if (Object.keys(nextErrors).length > 0 || !evaluation.balanced) {
+      focusJournalProblem(formRef.current);
+      return;
+    }
     try {
       await create.mutateAsync({
         legalEntityId,
@@ -129,6 +132,8 @@ function RecurringJournalForm({
         </DialogDescription>
       </DialogHeader>
       <form
+        ref={formRef}
+        noValidate
         className="grid gap-4"
         onSubmit={(event) => {
           event.preventDefault();
@@ -194,6 +199,7 @@ function RecurringJournalForm({
           rows={rows}
           onChange={setRows}
           evaluation={evaluation}
+          submitted={submitted}
           disabled={create.isPending}
         />
         {errors.server && (

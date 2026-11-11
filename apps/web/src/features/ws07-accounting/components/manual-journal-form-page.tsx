@@ -31,7 +31,11 @@ import {
   evaluateManualDraft,
   formatPeriod,
 } from "../lib";
-import { blankEditorLine, type EditorLine } from "./lines-editor";
+import {
+  blankEditorLine,
+  focusJournalProblem,
+  type EditorLine,
+} from "./lines-editor";
 import { JournalLinesSection } from "./journal-lines-section";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
@@ -87,21 +91,26 @@ export function ManualJournalFormPage({
   );
   const periodClosed = period?.status === "closed";
   const pending = create.isPending || update.isPending;
-  const canSubmit =
-    evaluation.balanced &&
-    description.trim() !== "" &&
-    entryDate !== "" &&
-    !periodClosed &&
-    !pending;
+  const formRef = React.useRef<HTMLFormElement>(null);
+  const [submitted, setSubmitted] = React.useState(false);
+  // Simpan draf stays enabled so a click explains what is missing; the
+  // validation in submit() keeps an invalid or unbalanced journal from the API.
+  const canSubmit = !pending && !periodClosed;
 
   const submit = async () => {
     setServerError(null);
-    if (description.trim() === "") {
-      setDescriptionError(t("form.invalid"));
+    setSubmitted(true);
+    const missingDescription = description.trim() === "";
+    setDescriptionError(missingDescription ? t("form.invalid") : undefined);
+    if (
+      missingDescription ||
+      entryDate === "" ||
+      periodClosed ||
+      !evaluation.balanced
+    ) {
+      focusJournalProblem(formRef.current);
       return;
     }
-    setDescriptionError(undefined);
-    if (!evaluation.balanced) return;
     try {
       if (journal) {
         const next = await update.mutateAsync({
@@ -158,6 +167,8 @@ export function ManualJournalFormPage({
         </p>
       </header>
       <form
+        ref={formRef}
+        noValidate
         className="grid gap-4 rounded-container border-(length:--border-w) border-border bg-card p-card shadow-hairline"
         onSubmit={(event) => {
           event.preventDefault();
@@ -165,11 +176,18 @@ export function ManualJournalFormPage({
         }}
       >
         <div className="grid gap-4 sm:grid-cols-3">
-          <FormField label={t("accounting.manual.form.date")} required>
+          <FormField
+            label={t("accounting.manual.form.date")}
+            error={
+              entryDate === "" && submitted ? t("form.invalid") : undefined
+            }
+            required
+          >
             <Input
               type="date"
               value={entryDate}
               onChange={(event) => setEntryDate(event.target.value)}
+              aria-invalid={periodClosed ? true : undefined}
               className="tabular"
             />
           </FormField>
@@ -236,6 +254,7 @@ export function ManualJournalFormPage({
           rows={rows}
           onChange={setRows}
           evaluation={evaluation}
+          submitted={submitted}
           disabled={pending}
         />
         {serverError && (
@@ -246,13 +265,31 @@ export function ManualJournalFormPage({
             {serverError}
           </p>
         )}
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-4">
-          <Button asChild variant="outline" type="button">
+        {periodClosed && (
+          <p
+            role="alert"
+            className="rounded-lg border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm text-danger"
+          >
+            {t("accounting.manual.form.periodClosedSave")}
+          </p>
+        )}
+        <div className="flex flex-col-reverse gap-2 border-t border-border pt-4 sm:flex-row sm:justify-end">
+          <Button
+            asChild
+            variant="outline"
+            type="button"
+            className="w-full sm:w-auto"
+          >
             <Link to="/kelola/akuntansi/jurnal-manual">
               {t("common.cancel")}
             </Link>
           </Button>
-          <Button type="submit" loading={pending} disabled={!canSubmit}>
+          <Button
+            type="submit"
+            loading={pending}
+            disabled={!canSubmit}
+            className="w-full sm:w-auto"
+          >
             {journal
               ? t("accounting.manual.form.saveChanges")
               : t("accounting.manual.form.saveDraft")}

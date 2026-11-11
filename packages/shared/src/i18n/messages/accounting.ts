@@ -239,12 +239,14 @@ export const accountingMessages = {
       saveDraft: "Simpan draf",
       saveChanges: "Simpan perubahan",
       linesRequired: "Jurnal membutuhkan minimal dua baris.",
-      accountRequired: "Pilih akun untuk setiap baris yang berisi nominal.",
+      accountRequired: "Pilih akun.",
       amountInvalid: "Nominal harus angka rupiah bulat tanpa tanda minus.",
       lineSide: "Isi debit atau kredit, tidak keduanya.",
       periodOpen: "Periode {period} masih terbuka.",
       periodClosed:
         "Periode {period} sudah ditutup. Pilih tanggal di periode yang masih terbuka.",
+      periodClosedSave:
+        "Jurnal belum bisa disimpan: periode tanggal ini sudah ditutup. Ubah tanggal ke periode yang masih terbuka.",
       balance: "Debit {debit} · Kredit {credit}",
       difference: "Selisih {amount}",
       unbalancedTitle: "Jurnal belum seimbang",
