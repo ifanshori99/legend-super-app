@@ -623,6 +623,64 @@ describe("[bf20] selfie upload through POST /api/storage/uploads", () => {
 // ---- bind device by supervisor ---------------------------------------------
 
 describe("[bf20] POST /api/hris/attendance/devices/bind-by-supervisor", () => {
+  it("[538-G4b P3] refuses 403 when an HR supervisor binds their own employee and stores no device", async () => {
+    const supervisor = await signedInClient(
+      appWithStorage,
+      "Supervisor bind self",
+      { mfa: true },
+    );
+    await grantRole(
+      supervisor.userId,
+      ["hr.attendance.manage", "hr.employee.manage"],
+      [outletId],
+    );
+    const ownEmployeeId = await seedEmployee(
+      tenant.id,
+      outletId,
+      supervisor.userId,
+    );
+    const response = await bindBySupervisor(supervisor.client, {
+      employeeId: ownEmployeeId,
+      deviceIdHash: deviceHash(),
+    });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(await devicesOf(hr, ownEmployeeId)).toEqual([]);
+  });
+
+  it("[538-G4b P3] still lets an attendance supervisor without employee management bind a direct report", async () => {
+    const supervisor = await signedInClient(
+      appWithStorage,
+      "Supervisor bind direct report",
+      { mfa: true },
+    );
+    await grantRole(supervisor.userId, ["hr.attendance.manage"], [outletId]);
+    const supervisorEmployeeId = await seedEmployee(
+      tenant.id,
+      outletId,
+      supervisor.userId,
+    );
+    const staff = await newStaff(appWithStorage, "direct-report");
+    await asTenant((client) =>
+      client.query(
+        `UPDATE employees SET manager_id = $1 WHERE tenant_id = $2 AND id = $3`,
+        [supervisorEmployeeId, tenant.id, staff.employeeId],
+      ),
+    );
+    const response = await bindBySupervisor(supervisor.client, {
+      employeeId: staff.employeeId,
+      deviceIdHash: deviceHash(),
+    });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.data.employeeId).toBe(staff.employeeId);
+    expect(
+      (await devicesOf(hr, staff.employeeId)).filter(
+        (device) => device.status === "active",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("[bf20] the outlet's HR binds a device for an employee and the clock policy then accepts it", async () => {
     const staff = await newStaff(appWithStorage, "b1");
     const bound = deviceHash();

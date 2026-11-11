@@ -1829,6 +1829,8 @@ export async function bindAttendanceDeviceBySupervisor(
 ): Promise<AttendanceDevice> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
+    if (access.own && lower(access.own.id) === lower(body.employeeId))
+      throw forbidden();
     const tenantId = context.tenant.tenantId;
     const [target] = await tx
       .select({ id: employees.id, homeOutletId: employees.homeOutletId })
