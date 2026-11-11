@@ -216,7 +216,11 @@ async function insertManualReversal(
 const REVERSE_SQL =
   "SELECT app.record_depreciation_reversal($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text) AS id";
 
-const reverseRow = (client: PoolClient, row: DepreciationRow, journal: string) =>
+const reverseRow = (
+  client: PoolClient,
+  row: DepreciationRow,
+  journal: string,
+) =>
   client.query<{ id: string }>(REVERSE_SQL, [
     tenantId,
     row.id,
@@ -469,6 +473,65 @@ describe("item 3: linking a correction and reversing it exclude each other", () 
 
     expect(error.code).toBe("23514");
     expect(await reversalJournals(correction)).toBe(0);
+    expect((await takenBackThrough(correction)).rows).toBe(1);
+  });
+
+  it("ACC-01 the application role of another tenant cannot mark this tenant's correction as reversed", async () => {
+    const { assetId, april } = await catchUpLedger();
+    const correction = await postCorrection(
+      april.journalEntryId,
+      assetId,
+      1_000_000,
+    );
+    // The definer functions run as the owner (BYPASSRLS in production), so the
+    // tenant policy does not help: the database itself must refuse. The session
+    // below belongs to another tenant than the journal.
+    const otherTenant = randomUUID();
+    const client = await owner.connect();
+    let error: DbError | undefined;
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL ROLE legend_app");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [otherTenant],
+      );
+      await client
+        .query(
+          "SELECT app.claim_correction_journal($1::uuid, $2::uuid, 0, true)",
+          [tenantId, correction],
+        )
+        .catch((caught: DbError) => {
+          error = caught;
+        });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    expect(
+      error,
+      "another tenant marked this correction as reversed",
+    ).toBeDefined();
+    // Refused because the role has no EXECUTE, not because the function is
+    // missing (42883) or the arguments are wrong.
+    expect(error!.code).toBe("42501");
+    const { rows: privileges } = await owner.query<{ allowed: boolean }>(
+      `SELECT has_function_privilege('legend_app', 'app.claim_correction_journal(uuid,uuid,bigint,boolean)', 'EXECUTE') AS allowed`,
+    );
+    expect(privileges[0]!.allowed).toBe(false);
+    // The old callable mark function (uuid, uuid) is gone: marking is a trigger.
+    const { rows: callable } = await owner.query<{ found: string | null }>(
+      "SELECT to_regprocedure('app.mark_correction_journal_reversed(uuid,uuid)')::text AS found",
+    );
+    expect(callable[0]!.found).toBeNull();
+    const { rows } = await owner.query(
+      "SELECT 1 FROM fixed_asset_correction_claims WHERE tenant_id = $1 AND journal_entry_id = $2",
+      [tenantId, correction],
+    );
+    expect(rows).toHaveLength(0);
+
+    // The legitimate path keeps working: link, no reversal journal.
+    await withAppRole((app) => reverseRow(app, april, correction));
     expect((await takenBackThrough(correction)).rows).toBe(1);
   });
 

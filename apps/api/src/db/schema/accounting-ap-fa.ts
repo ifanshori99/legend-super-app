@@ -32,6 +32,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -523,6 +524,41 @@ export const fixedAssetDepreciationReversals = pgTable(
     index("fixed_asset_depreciation_reversals_journal_idx").on(
       table.tenantId,
       table.journalEntryId,
+    ),
+  ],
+);
+
+/**
+ * Claim on a correcting journal (migration 0318). One row per correcting
+ * journal that was taken into the depreciation ledger or reversed by hand:
+ * `claimed_idr` is what the linked depreciation rows took back through it
+ * (never more than the journal debits), `reversed` means a manual reversal
+ * journal exists. The two exclude each other. Written only by SECURITY DEFINER
+ * functions; the row update is what makes two REPEATABLE READ writers conflict.
+ */
+export const fixedAssetCorrectionClaims = pgTable(
+  "fixed_asset_correction_claims",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    journalEntryId: uuid("journal_entry_id").notNull(),
+    claimedIdr: idrColumn("claimed_idr")
+      .notNull()
+      .default(sql`0`),
+    reversed: boolean("reversed").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.journalEntryId] }),
+    foreignKey({
+      name: "fixed_asset_correction_claims_journal_fk",
+      columns: [table.tenantId, table.journalEntryId],
+      foreignColumns: [journalEntries.tenantId, journalEntries.id],
+    }),
+    check(
+      "fixed_asset_correction_claims_claimed_check",
+      sql`${table.claimedIdr} >= 0`,
     ),
   ],
 );

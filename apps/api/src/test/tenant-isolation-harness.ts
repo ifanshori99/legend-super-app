@@ -161,6 +161,11 @@ export async function expectRowsIsolated(
     table: string;
     idColumn?: string;
     updateSet: string;
+    /**
+     * legend_app has no DELETE grant on the table (e.g. fiscal_periods, 0312):
+     * the cross-tenant DELETE must then fail with 42501 instead of matching 0.
+     */
+    deleteRevoked?: boolean;
     tenantA: { tenantId: string; rowId: string };
     tenantB: { tenantId: string; rowId: string };
   },
@@ -197,6 +202,20 @@ export async function expectRowsIsolated(
         [other.rowId],
       );
       expect(updated.rowCount, `${spec.table} update`).toBe(0);
+      if (spec.deleteRevoked) {
+        await client.query("SAVEPOINT delete_revoked");
+        let code: string | undefined;
+        try {
+          await client.query(`DELETE FROM ${spec.table} WHERE ${col} = $1`, [
+            other.rowId,
+          ]);
+        } catch (error) {
+          code = (error as { code?: string }).code;
+        }
+        expect(code, `${spec.table} delete is revoked`).toBe("42501");
+        await client.query("ROLLBACK TO SAVEPOINT delete_revoked");
+        return;
+      }
       const deleted = await client.query(
         `DELETE FROM ${spec.table} WHERE ${col} = $1`,
         [other.rowId],

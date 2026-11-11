@@ -67,6 +67,8 @@ const unique = () => randomBytes(4).toString("hex");
 const key = (prefix: string) => `${prefix}-${unique()}-${unique()}`;
 /** Fixed "now" for service calls: every test date below is in the past. */
 const NOW = new Date("2026-11-03T03:00:00Z");
+/** A later "now" for the November run: the service refuses a period that has not ended yet. */
+const NOW_AFTER_NOVEMBER = new Date("2026-12-03T03:00:00Z");
 const actor: UserId = userIdSchema.parse(randomUUID());
 
 function tenantScope(): ScopedTenantContext {
@@ -166,12 +168,12 @@ const tinyAsset = (entity: string) =>
     NOW,
   );
 
-const run = (entity: string, period: string) =>
+const run = (entity: string, period: string, now: Date = NOW) =>
   runDepreciation(
     tenantScope(),
     { legalEntityId: entity, period, idempotencyKey: key("run") },
     actor,
-    NOW,
+    now,
   );
 
 const revalue = (
@@ -369,18 +371,19 @@ describe("backdated revaluation also posts the months that were zero under the o
     expect(revalued.accumulatedDepreciationIdr).toBe(9_600_000);
     expect(revalued.bookValueIdr).toBe(2_400_000);
 
-    // Ledger agrees with the register and stays balanced.
+    // Ledger agrees with the register and stays balanced. The test asset has
+    // no acquisition journal, so only the accumulated-depreciation account
+    // (1502) is compared with the register, not the book value.
     expect(await unbalancedEntries(entity)).toEqual([]);
     const net = await netByCode(entity);
     expect(net["1502"]).toBe(-9_600_000);
+    expect(-(net["1502"] ?? 0)).toBe(fetched.accumulatedDepreciationIdr);
     expect(net["6101"]).toBe(9_600_002);
-    expect((net["1501"] ?? 0) + (net["1502"] ?? 0)).toBe(
-      fetched.bookValueIdr,
-    );
     expect(Object.values(net).reduce((sum, value) => sum + value, 0)).toBe(0);
 
     // The next normal run posts November alone, not the months above again.
-    const november = await run(entity, "2026-11");
+    // (Run with a "now" after November: the month must have ended.)
+    const november = await run(entity, "2026-11", NOW_AFTER_NOVEMBER);
     expect(november.amountIdr).toBe(1_200_000);
     const { asset: afterNovember } = await getFixedAsset(
       tenantScope(),
@@ -423,7 +426,7 @@ describe("backdated revaluation also posts the months that were zero under the o
       revalue(machine.id, "2026-02-25", 12_000_000),
     ).rejects.toMatchObject({ status: 409, code: "PERIOD_CLOSED" });
 
-    const november = await run(entity, "2026-11");
+    const november = await run(entity, "2026-11", NOW_AFTER_NOVEMBER);
     expect(november.amountIdr).toBe(0);
     expect(
       (await allDepreciationRows(machine.id)).map(

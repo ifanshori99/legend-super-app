@@ -785,11 +785,165 @@ async function catchUpAsset(
   };
 }
 
+/** Last month the entity's depreciation ran, or "" when it never ran. */
+async function lastDepreciationRunPeriod(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<string> {
+  const [lastRun] = await tx
+    .select({ period: depreciationRuns.period })
+    .from(depreciationRuns)
+    .where(
+      and(
+        eq(depreciationRuns.tenantId, tenantId),
+        eq(depreciationRuns.legalEntityId, legalEntityId),
+      ),
+    )
+    .orderBy(desc(depreciationRuns.period))
+    .limit(1);
+  return lastRun?.period ?? "";
+}
+
+type RepostGroup = {
+  entryDate: BusinessDate;
+  outletId: string | null;
+  rows: DepreciationScheduleRow[];
+};
+
 /**
- * Posts again, in the same transaction as a backdated revaluation, the months
- * `catchUpAsset` took back, on the new schedule basis. Each month goes back
- * into the journal date/outlet it was taken from; those dates were already
- * checked open before anything was written, so a closed month never gets here.
+ * Where each month of `pending` goes back: into the journal date/outlet it was
+ * taken from, or (a month without an origin, e.g. one that was zero) into the
+ * month-end journal with no outlet, as a normal run posts it.
+ */
+function groupRepostRows(
+  pending: readonly DepreciationScheduleRow[],
+  origins: ReadonlyMap<
+    string,
+    { entryDate: BusinessDate; outletId: string | null }
+  >,
+): Map<string, RepostGroup> {
+  const groups = new Map<string, RepostGroup>();
+  for (const row of pending) {
+    const origin = origins.get(row.period) ?? {
+      entryDate: periodBounds(row.period).end,
+      outletId: null,
+    };
+    const key = `${origin.entryDate}:${origin.outletId ?? "none"}`;
+    const group = groups.get(key) ?? {
+      entryDate: origin.entryDate,
+      outletId: origin.outletId,
+      rows: [],
+    };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+  return groups;
+}
+
+/**
+ * ACC-02: refuses a revaluation (409 PERIOD_CLOSED) when ANY date it will
+ * write sits in a closed month, before the first write: the revaluation
+ * journal date, the journals of the months taken back, and every month the new
+ * schedule posts again up to the horizon (also months that were zero). The new
+ * schedule is derived from the state the catch-up and take-back will leave.
+ */
+async function assertRevaluationPeriodsOpen(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  asset: FixedAssetRow,
+  input: { revaluedOn: BusinessDate; newCarryingAmountIdr: number },
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const uptoPeriod = periodOf(input.revaluedOn);
+  const later = await tx
+    .select({
+      period: fixedAssetDepreciations.period,
+      entryDate: journalEntries.entryDate,
+      outletId: journalEntries.outletId,
+    })
+    .from(fixedAssetDepreciations)
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, fixedAssetDepreciations.tenantId),
+        eq(journalEntries.id, fixedAssetDepreciations.journalEntryId),
+      ),
+    )
+    .leftJoin(
+      fixedAssetDepreciationReversals,
+      and(
+        eq(
+          fixedAssetDepreciationReversals.tenantId,
+          fixedAssetDepreciations.tenantId,
+        ),
+        eq(
+          fixedAssetDepreciationReversals.depreciationId,
+          fixedAssetDepreciations.id,
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(fixedAssetDepreciations.tenantId, tenantId),
+        eq(fixedAssetDepreciations.fixedAssetId, asset.id),
+        gt(fixedAssetDepreciations.period, uptoPeriod),
+        isNull(fixedAssetDepreciationReversals.id),
+      ),
+    );
+  const dates = new Set<BusinessDate>([input.revaluedOn]);
+  for (const row of later) dates.add(row.entryDate);
+  const horizon = [
+    await lastDepreciationRunPeriod(tx, tenantId, asset.legalEntityId),
+    ...later.map((row) => row.period),
+  ].reduce((max, period) => (period > max ? period : max), "");
+  if (horizon > uptoPeriod) {
+    // Accumulated once the take-back and catch-up up to the event are done.
+    const current = toFixedAsset(asset);
+    const accumulated = straightLineSchedule(current)
+      .filter((row) => row.period <= uptoPeriod)
+      .reduce((sum, row) => sum + row.amountIdr, 0);
+    try {
+      const plan = revaluationPlan(
+        { ...current, accumulatedDepreciationIdr: accumulated as Idr },
+        input.revaluedOn,
+        input.newCarryingAmountIdr,
+      );
+      const pending = pendingDepreciation(
+        {
+          costIdr: input.newCarryingAmountIdr as Idr,
+          residualValueIdr: asset.residualValueIdr,
+          usefulLifeMonths: plan.remainingMonths,
+          depreciationStartPeriod: plan.newStartPeriod,
+        },
+        new Set(),
+        horizon,
+      );
+      const groups = groupRepostRows(
+        pending,
+        new Map(later.map((row) => [row.period, row])),
+      );
+      for (const group of groups.values()) dates.add(group.entryDate);
+    } catch (error) {
+      // An invalid revaluation (no life left, same amount, ...) refuses with
+      // its own error later in the command; only the dates are skipped here.
+      if (!(error instanceof HttpError)) throw error;
+    }
+  }
+  for (const entryDate of [...dates].sort())
+    await assertPeriodOpenForPosting(tx, context, {
+      legalEntityId: asset.legalEntityId,
+      entryDate,
+    });
+}
+
+/**
+ * Posts again, in the same transaction as a backdated revaluation, every
+ * positive month of the new schedule up to the horizon: the last month the
+ * entity's depreciation already ran (or the last month taken back, if later).
+ * That includes months that were zero under the old schedule and so left
+ * nothing to take back. All dates were already checked open by
+ * `assertRevaluationPeriodsOpen` before the first write.
  */
 async function repostReversedDepreciation(
   tx: TenantTransaction,
@@ -800,39 +954,23 @@ async function repostReversedDepreciation(
   idempotencyPrefix: string,
   now: Date,
 ): Promise<FixedAssetRow> {
-  if (reversed.length === 0) return asset;
   const tenantId = context.tenant.tenantId;
   const posted = await postedPeriodsByAsset(tx, tenantId, [asset.id]);
   const postedPeriods = posted.get(asset.id) ?? new Set<string>();
-  const lastPeriod = reversed.reduce(
-    (max, row) => (row.period > max ? row.period : max),
-    reversed[0]!.period,
-  );
-  const takenBack = new Map(reversed.map((row) => [row.period, row]));
+  const horizon = [
+    await lastDepreciationRunPeriod(tx, tenantId, asset.legalEntityId),
+    ...reversed.map((row) => row.period),
+  ].reduce((max, period) => (period > max ? period : max), "");
+  if (horizon === "") return asset;
   const pending = pendingDepreciation(
     toFixedAsset(asset),
     postedPeriods,
-    lastPeriod,
-  ).filter((row) => takenBack.has(row.period));
-  const groups = new Map<
-    string,
-    {
-      entryDate: BusinessDate;
-      outletId: string | null;
-      rows: DepreciationScheduleRow[];
-    }
-  >();
-  for (const row of pending) {
-    const origin = takenBack.get(row.period)!;
-    const key = `${origin.entryDate}:${origin.outletId ?? "none"}`;
-    const group = groups.get(key) ?? {
-      entryDate: origin.entryDate,
-      outletId: origin.outletId,
-      rows: [],
-    };
-    group.rows.push(row);
-    groups.set(key, group);
-  }
+    horizon,
+  );
+  const groups = groupRepostRows(
+    pending,
+    new Map(reversed.map((row) => [row.period, row])),
+  );
   for (const [key, group] of [...groups].sort(([a], [b]) =>
     a.localeCompare(b),
   )) {
@@ -1252,6 +1390,8 @@ export async function revalueFixedAsset(
           throw new AccountingError("ASSET_ALREADY_DISPOSED");
         if (input.revaluedOn < asset.acquiredOn)
           throw invalid("An asset cannot be revalued before it was acquired.");
+        // ACC-02: every date this event writes is checked before the first write.
+        await assertRevaluationPeriodsOpen(tx, context, asset, input);
         const revaluationId = newId();
         const caughtUp = await catchUpAsset(
           tx,

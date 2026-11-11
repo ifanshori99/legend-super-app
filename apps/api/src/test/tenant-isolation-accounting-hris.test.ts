@@ -559,7 +559,10 @@ describe("accounting journals tenant isolation", () => {
       appPool,
       {
         table: "fiscal_periods",
-        updateSet: "period = period",
+        // 0317: legend_app may update only updated_at (status moves through
+        // app.close_fiscal_period / app.reopen_fiscal_period); 0312: no DELETE.
+        updateSet: "updated_at = updated_at",
+        deleteRevoked: true,
         tenantA: { tenantId: tenantAId, rowId: journalA.periodId },
         tenantB: { tenantId: tenantB.tenantId, rowId: journalB.periodId },
       },

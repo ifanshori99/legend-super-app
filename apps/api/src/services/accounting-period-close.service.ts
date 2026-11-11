@@ -393,20 +393,17 @@ export async function closeFiscalPeriod(
         })),
       );
 
-    const [updated] = await tx
-      .update(fiscalPeriods)
-      .set({
-        status: "closed",
-        version: closed.version,
-        closedBy: actorId,
-        closedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(eq(fiscalPeriods.tenantId, tenantId), eq(fiscalPeriods.id, row.id)),
+    // legend_app has no UPDATE on the transition columns: the database
+    // function checks the close (open period, snapshot of the next version).
+    await tx.execute(sql`
+      select app.close_fiscal_period(
+        ${tenantId}::uuid,
+        ${row.id}::uuid,
+        ${actorId}::text,
+        ${now.toISOString()}::timestamptz
       )
-      .returning();
-    if (!updated) throw periodNotFound();
+    `);
+    const updated = await readPeriod(tx, tenantId, row.id);
     await auditAccountingChange(tx, context, {
       actorId,
       action: "accounting.period.closed",
@@ -636,25 +633,6 @@ export async function approvePeriodReopen(
     if (decision.requestStatus !== "approved")
       throw new AccountingError("INVALID_TRANSITION");
     const reopened = decision.period;
-    const [updatedPeriod] = await tx
-      .update(fiscalPeriods)
-      .set({
-        status: "open",
-        version: reopened.version,
-        closedBy: null,
-        closedAt: null,
-        reopenedReason: reopened.reopenedReason,
-        reopenedBy: actorId,
-        reopenedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(fiscalPeriods.tenantId, tenantId),
-          eq(fiscalPeriods.id, periodRow.id),
-        ),
-      )
-      .returning();
     const [updatedRequest] = await tx
       .update(periodReopenRequests)
       .set({
@@ -671,7 +649,19 @@ export async function approvePeriodReopen(
         ),
       )
       .returning();
-    if (!updatedPeriod || !updatedRequest) throw requestNotFound();
+    if (!updatedRequest) throw requestNotFound();
+    // The request is approved above; the database function reopens the period
+    // only for an approved, unused request decided by another person.
+    await tx.execute(sql`
+      select app.reopen_fiscal_period(
+        ${tenantId}::uuid,
+        ${periodRow.id}::uuid,
+        ${requestRow.id}::uuid,
+        ${actorId}::text,
+        ${now.toISOString()}::timestamptz
+      )
+    `);
+    const updatedPeriod = await readPeriod(tx, tenantId, periodRow.id);
     await auditAccountingChange(tx, context, {
       actorId,
       action: "accounting.period.reopened",

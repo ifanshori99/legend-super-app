@@ -128,7 +128,9 @@ describe("497 finding 2: tenant, legal entity and month of a fiscal period are i
         ),
       ),
     );
-    expect(error.code).toBe("23514");
+    // legend_app has no UPDATE privilege on the column at all (0317); the
+    // trigger above still guards the migration owner.
+    expect(error.code).toBe("42501");
     sameState(before, await periodRow(fx.jan));
   });
 });
@@ -176,7 +178,7 @@ describe("legend-lt0v4 fiscal_periods.status only changes through a legal transi
     sameState(before, await periodRow(fx.jan));
   });
 
-  it("ACC-02 a direct status flip without a version bump is refused for legend_app (the API's database role)", async () => {
+  it("ACC-02 a direct status flip without a version bump is refused for legend_app (the API's database role): no UPDATE privilege on the column", async () => {
     const fx = await makeFixture();
     const before = await periodRow(fx.jan);
     const error = await failure(
@@ -188,8 +190,7 @@ describe("legend-lt0v4 fiscal_periods.status only changes through a legal transi
         ),
       ),
     );
-    expect(error.code).toBe("23514");
-    expect(error.message).toMatch(/FISCAL_PERIOD_TRANSITION/);
+    expect(error.code).toBe("42501");
     sameState(before, await periodRow(fx.jan));
   });
 
@@ -209,9 +210,9 @@ describe("legend-lt0v4 fiscal_periods.status only changes through a legal transi
     sameState(before, await periodRow(fx.jan));
   });
 
-  it("ACC-02 a legal close (status flip with version + 1) succeeds for the application role", async () => {
+  it("ACC-02 a legal close (status flip with version + 1) passes the transition trigger (migration owner; legend_app goes through the close function)", async () => {
     const fx = await makeFixture();
-    await withAppRole((client) => client.query(CLOSE_SQL, [fx.jan, closer]));
+    await owner.query(CLOSE_SQL, [fx.jan, closer]);
     const after = await periodRow(fx.jan);
     expect(after.status).toBe("closed");
     expect(after.version).toBe(2);
