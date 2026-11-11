@@ -89,7 +89,9 @@ test.describe("legend-s7szu receipt run alert", () => {
     await waitForHydration(page);
     await setReceiptRunAlert(page, true);
     await page.getByRole("button", { name: "Perbarui status" }).click();
-    await expect(page.getByText("Rotasi nomor struk berulang")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Rotasi nomor struk berulang" }),
+    ).toBeVisible();
 
     await setReceiptRunAlert(page, false);
     await page.getByRole("button", { name: "Perbarui status" }).click();
@@ -98,6 +100,8 @@ test.describe("legend-s7szu receipt run alert", () => {
         "Status berhasil diperbarui. Tidak ada peringatan rotasi nomor struk pada node ini.",
       ),
     ).toBeVisible();
-    await expect(page.getByText("Rotasi nomor struk berulang")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Rotasi nomor struk berulang" }),
+    ).toHaveCount(0);
   });
 });

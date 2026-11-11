@@ -52,9 +52,8 @@ test("F11 D13: config screens list versioned rules, service charge and calc opti
   await expect(page.getByText("PBJT-FNB").first()).toBeVisible();
   await expect(page.getByText("10%").first()).toBeVisible();
   await expect(page.getByText("Berlaku sekarang").first()).toBeVisible();
-  await expect(
-    page.getByText("Diterbitkan", { exact: true }).first(),
-  ).toBeVisible();
+  // The status badge reads "Diterbitkan · v1" (status and version in one chip).
+  await expect(page.getByText(/^Diterbitkan · v\d+$/).first()).toBeVisible();
 
   // Service charge is a zone/order-type rule (PRD §3.14 "Service Charge").
   // The table and the phone list render the same row (one is hidden by CSS).

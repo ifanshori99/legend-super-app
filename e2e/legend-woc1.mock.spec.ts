@@ -22,7 +22,8 @@ import { waitForHydration } from "./hydration.ts";
 // - "Kategori menu" / "Item menu" are checkbox groups (fieldset legends, with
 //   an "(Opsional)" suffix) fed by the menu fixture: category Kopi, item
 //   Espresso.
-// - The status badge for a published version reads "Diterbitkan".
+// - The status badge reads "<status> · v<n>" in one chip (e.g. "Diterbitkan · v1",
+//   "Draf · v2"), so status is matched by /^Draf · v\d+$/ rather than exact "Draf".
 const base = process.env.LEGEND_MOCK_WEB_URL ?? "";
 test.skip(base === "", "Set LEGEND_MOCK_WEB_URL (pnpm test:e2e:mock).");
 
@@ -121,7 +122,7 @@ test.describe("legend-woc1 tax rules", () => {
     ).toBeVisible();
     const row = page.getByRole("row").filter({ hasText: "PBJT-WOC1" });
     await expect(row).toContainText(outletName);
-    await expect(row.getByText("Draf", { exact: true })).toBeVisible();
+    await expect(row.getByText(/^Draf · v\d+$/)).toBeVisible();
   });
 
   test("a rule without a rate is refused with a message", async ({ page }) => {
@@ -174,8 +175,10 @@ test.describe("legend-woc1 tax rules", () => {
       .getByRole("button", { name: "Buang draf", exact: true })
       .click();
     await expect(
+      // exact: the toast's screen-reader live region repeats it with a prefix.
       page.getByText(
         "Draf berhasil dibuang. Versi yang diterbitkan tetap berlaku.",
+        { exact: true },
       ),
     ).toBeVisible();
     await expect(draftRow(page)).toHaveCount(0);
@@ -227,8 +230,10 @@ test.describe("legend-woc1 tax rules", () => {
       .getByRole("button", { name: "Buang draf", exact: true })
       .click();
     await expect(
+      // exact: the toast's screen-reader live region repeats it with a prefix.
       page.getByText(
         "Draf berhasil dibuang. Versi yang diterbitkan tetap berlaku.",
+        { exact: true },
       ),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: /Buang draf/ })).toHaveCount(
@@ -331,7 +336,7 @@ test.describe("legend-d5pz deactivate the only food_beverage rule", () => {
       page
         .getByRole("row")
         .filter({ hasText: "PBJT-FNB" })
-        .getByText("Draf", { exact: true }),
+        .getByText(/^Draf · v\d+$/),
     ).toHaveCount(2);
     await expect(liveRow(page)).toBeVisible();
   });
