@@ -4,7 +4,14 @@ import {
   createStart,
 } from "@tanstack/react-start";
 import { logger } from "@/lib/logger.server";
-import { runWithRequestContext } from "@/lib/request-context.server";
+import {
+  decidePublicCache,
+  publicCacheSeconds,
+} from "@/lib/public-cache.server";
+import {
+  isRequestDegraded,
+  runWithRequestContext,
+} from "@/lib/request-context.server";
 
 const STATIC_ASSET =
   /\.(?:js|mjs|css|map|svg|png|jpe?g|gif|webp|ico|woff2?|txt)$/;
@@ -20,22 +27,41 @@ const SECURITY_HEADERS: Record<string, string> = {
   "X-Frame-Options": "DENY",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
-  // Every SSR page embeds the visitor's session and access context, so no
-  // shared cache (Cloudflare, a proxy) may store it. A route that is safe to
-  // cache sets its own Cache-Control (PRD §5 "Peta situs" lists the dynamic,
-  // authorized and no-store pages).
-  "Cache-Control": "private, no-store",
   ...(process.env.NODE_ENV === "production"
     ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" }
     : {}),
 };
 
+const PUBLIC_HTML_CACHE_SECONDS = publicCacheSeconds(
+  process.env.PUBLIC_HTML_CACHE_SECONDS,
+);
+
 // A route that sets one of these headers itself keeps its own value.
-const securityHeaders = createMiddleware().server(async ({ next }) => {
+const securityHeaders = createMiddleware().server(async ({ request, next }) => {
   const result = await next();
+  const headers = result.response.headers;
   for (const [name, value] of Object.entries(SECURITY_HEADERS))
-    if (!result.response.headers.has(name))
-      result.response.headers.set(name, value);
+    if (!headers.has(name)) headers.set(name, value);
+  // Every SSR page embeds the visitor's session and access context, so no
+  // shared cache (Cloudflare, a proxy) may store it: `private, no-store`.
+  // The exception is the anonymous brand site (see public-cache.server.ts).
+  // A route that sets its own Cache-Control keeps it (PRD §5 "Peta situs"
+  // lists the dynamic, authorized and no-store pages).
+  if (!headers.has("Cache-Control")) {
+    const decision = decidePublicCache({
+      method: request.method,
+      pathname: new URL(request.url).pathname,
+      status: result.response.status,
+      requestHeaders: request.headers,
+      responseHeaders: headers,
+      seconds: PUBLIC_HTML_CACHE_SECONDS,
+    });
+    headers.set("Cache-Control", decision.cacheControl);
+    if (decision.vary !== null) headers.set("Vary", decision.vary);
+    // One visitor's request ID must not be replayed to everyone by the cache.
+    if (decision.cacheControl !== "private, no-store")
+      headers.delete("X-Request-Id");
+  }
   return result;
 });
 
@@ -53,6 +79,11 @@ const requestLogger = createMiddleware().server(async ({ request, next }) => {
         const result = await next();
         const status = result.response.status;
         result.response.headers.set("X-Request-Id", reqId);
+        // A render that fell back to defaults after a transient upstream
+        // failure must never reach a shared cache (legend-vz93). securityHeaders
+        // keeps a Cache-Control the route or this middleware already set.
+        if (isRequestDegraded())
+          result.response.headers.set("Cache-Control", "private, no-store");
         const line = `${request.method} ${pathname} ${status} ${Math.round(performance.now() - started)}ms`;
         if (status >= 500) logger.error(line);
         else if (status >= 400) logger.warn(line);

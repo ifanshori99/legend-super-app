@@ -7,6 +7,7 @@ import {
 import { apiFetch } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { markRequestDegraded } from "@/lib/request-context.server";
 import { overridesForLocale } from "@/lib/tenant-text-overrides";
 
 /**
@@ -34,20 +35,24 @@ export const getTenantBrandFn = createServerFn({ method: "GET" }).handler(
     try {
       const response = await apiFetch<{ data: unknown }>("/api/tenant/context");
       const parsed = brandContextSchema.safeParse(response.data);
-      return parsed.success
-        ? {
-            kind: "brand",
-            brand: parsed.data,
-            overrides: overridesForLocale(parsed.data.textOverrides ?? null),
-          }
-        : { kind: "error", overrides: {} };
+      if (!parsed.success) {
+        markRequestDegraded();
+        return { kind: "error", overrides: {} };
+      }
+      return {
+        kind: "brand",
+        brand: parsed.data,
+        overrides: overridesForLocale(parsed.data.textOverrides ?? null),
+      };
     } catch (error) {
       const status = error instanceof ApiError ? error.status : 0;
       // 429 and 5xx (and network, status 0) are transient; other 4xx mean
       // this host has no tenant brand.
-      return status === 429 || status >= 500 || status === 0
-        ? { kind: "error", overrides: {} }
-        : { kind: "none", overrides: {} };
+      if (status === 429 || status >= 500 || status === 0) {
+        markRequestDegraded();
+        return { kind: "error", overrides: {} };
+      }
+      return { kind: "none", overrides: {} };
     }
   },
 );

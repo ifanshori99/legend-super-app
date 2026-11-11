@@ -214,6 +214,9 @@ Two fixed one-minute windows are charged on every public read: one per client IP
 | `PUBLIC_RATE_LIMIT_PER_MINUTE`              | `600`    | Requests per client IP per minute                                                                                                                          |
 | `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE`       | `6000`   | Requests per resolved tenant per minute                                                                                                                    |
 | `PUBLIC_RATE_LIMIT_INTERNAL_IPS`            | loopback | Web server address(es) that skip the per-IP bucket (comma-separated)                                                                                       |
+| `REDIS_URL`                                 | unset    | Optional. Shares the public rate-limit windows across API instances (see below). Unset = in-memory per process, no Redis needed                            |
+| `SSR_SHARED_SECRET` (API **and** web)       | unset    | Optional, min 32 chars, same value on both. Lets the API trust the visitor IP the web server forwards (see below)                                          |
+| `WEB_TRUST_PROXY_HOPS` (web)                | `2`      | Proxies in front of the web server (Cloudflare + Caddy = 2). Picks the visitor IP from `X-Forwarded-For` counting from the right                           |
 | `PUBLIC_RATE_LIMIT_GUEST_TENANT_PER_MINUTE` | `60000`  | QR guest table-session requests per tenant per minute (own bucket; guests also get 10x the per-IP budget for a venue NAT and 600/min per table credential) |
 
 Sizing the defaults — they must not break legitimate traffic:
@@ -221,7 +224,15 @@ Sizing the defaults — they must not break legitimate traffic:
 - Guests on the venue Wi-Fi usually reach the API through **one NAT address**, so all their scans, menu reads and payment polls share one IP bucket. Payment status polls every 2 s while a payment is pending (30 requests a minute per guest).
 - The web server's **SSR fetches** (website pages, the brand context on every render) come from one address — the web server's — and carry no visitor IP. That address skips the per-IP bucket and only counts against the tenant bucket: list it in `PUBLIC_RATE_LIMIT_INTERNAL_IPS` (loopback by default, for web and API on one VM; add the web container's address under Docker). Without it every visitor would share one 600/min bucket.
 - Authenticated payment admin (`/api/payments/admin/*`) is not on the limiter: staff at the venue share the guests' NAT address.
-- The store is bounded (20 000 keys per bucket, least recently used evicted first) and lives in memory per API process. Several API instances each enforce their own window, so N instances allow up to N times the configured limit; the Cloudflare rule below is the shared edge layer.
+- The in-memory store is bounded (20 000 keys per bucket, least recently used evicted first) and lives per API process. Without `REDIS_URL`, N API instances allow up to N times the configured limit; the Cloudflare rule below is the shared edge layer. With `REDIS_URL` set, the public per-IP, per-tenant, guest-session and booking-request windows are counted in Redis (`rl:<bucket>:<key>:<window>` keys that expire with the window), so all instances share one limit. If Redis is down or slower than 200 ms the request is counted in the process-local window instead (fail open per instance, never a 5xx). A single-VM deploy needs no Redis and loads no Redis client.
+
+### Visitor IP from SSR (legend-moe5)
+
+By default the web server's SSR calls carry no visitor IP, so its address skips the per-IP bucket and SSR reads are capped only per tenant. Set the **same** `SSR_SHARED_SECRET` (min 32 characters, generate with `openssl rand -hex 32`) on the API and the web server to close that gap: the web server forwards the visitor address (`x-starter-visitor-ip`) with the secret (`x-starter-ssr-auth`), and the API charges the per-IP bucket with it. The API accepts the address only when the secret matches (constant-time compare); both headers are always stripped from the request, so a browser that sends them gets no effect. Without the secret the API ignores them and behaves as before.
+
+- `WEB_TRUST_PROXY_HOPS` must match the proxies in front of the **web** server (default `2` = Cloudflare + Caddy). Too low and every visitor behind one Cloudflare edge shares a bucket; if the chain is shorter than the count, the header is omitted and the old behaviour applies.
+- A page render makes several SSR calls, all charged to the visitor's per-IP bucket (shared with their own browser calls). Keep `PUBLIC_RATE_LIMIT_PER_MINUTE` well above that.
+- **Origin firewall:** with `TRUST_PROXY=2` a client that reaches the origin directly (bypassing Cloudflare) can choose its own `req.ip`. The origin must accept only Cloudflare's published IP ranges (and the web container), or per-IP limits can be dodged by spoofing `X-Forwarded-For`.
 
 `TRUST_PROXY` decides which address is "the client": the limiter uses `req.ip` as Express resolved it, never a raw `X-Forwarded-For`. Behind Cloudflare in front of Caddy that is **two** hops (`TRUST_PROXY=2`); with a single reverse proxy it is `1`. If the hop count is too low, every client appears as the proxy's address and all of them share one bucket.
 
@@ -241,6 +252,21 @@ The API limiter is one process's backstop. Put a stricter, shared rule at the ed
 - Action: **Managed Challenge**, so a real guest recovers by solving one page instead of waiting for the block to lift. Use **Block** with the 10-second mitigation period only if the venue never needs to scrape its own menu.
 
 On Pro and above, split the paths into separate rules with a longer period and a block action. Keep the API limits at or above the edge limits, so a legitimate client never meets the API's 429 before the edge rule has had its chance to challenge it.
+
+## Public HTML cache (legend-vz93)
+
+By default every web response is `Cache-Control: private, no-store`, because SSR pages embed the visitor's session. Exactly one case is cacheable by a shared cache (Cloudflare): an anonymous `GET`/`HEAD` of **`/`** or **`/menu`** that answers `200`, carries **no `Cookie` header at all**, and sets no `Set-Cookie`. It is sent as `public, max-age=0, s-maxage=60, stale-while-revalidate=300` with `Vary: Host` (merged with any `Vary` the route set). Every other page, any signed-in or cookie-bearing request, errors and redirects stay `private, no-store`. A route that sets its own `Cache-Control` keeps it. Without a cookie the session is null, so the cacheable HTML is the anonymous page only.
+
+| Variable (web)              | Default | Meaning                                                                          |
+| --------------------------- | ------- | -------------------------------------------------------------------------------- |
+| `PUBLIC_HTML_CACHE_SECONDS` | `60`    | Shared-cache lifetime (`s-maxage`) in seconds. `0` turns public HTML caching off |
+
+Cloudflare setup (the origin only declares what is safe; the CDN rule still has to be correct):
+
+- The cache key **must include the hostname** (the default Cloudflare key does), so each tenant domain has its own entry. Never use a rule that ignores the host.
+- **Bypass the cache when a `Cookie` request header is present** (Cache Rule: `http.cookie ne ""` → bypass), so a signed-in visitor is never served the anonymous copy. Do not add a cache-everything rule for other paths.
+- The page is not purged when a menu changes: staff see the change after at most `s-maxage` plus the stale window (about 6 minutes). Purge on menu change is not built.
+- Before enabling the rule, check with two hostnames and a signed-in cookie that each gets its own page and that the cookie request shows `cf-cache-status: BYPASS`.
 
 ## Staff device PIN down-sync runbook
 
