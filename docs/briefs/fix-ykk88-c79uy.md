@@ -17,3 +17,6 @@ Proof tests: P1 revoked role concurrently/before lock => manager assignment reje
 Test migration backfill 0283 with tenant that has template roles (owner/tenant_admin) on real rows (never run on real rows before).
 
 Test paths: apps/api/src/test/... (check existing neighbours). IDs ULID if API needs.
+
+## A+ (second opinion Codex on m1, mandatory regression for ykk88)
+Scenario, two real transactions: owner refund Rp100rb starts at T0, then waits on lock pos_orders; supervisor approves overpayment refund Rp150rb at T1; POS commits with refunded_at=T0 -> supervisor payout legitimately quarantined (Rp250rb > limit Rp200rb). Decision time of refund/void must be set AFTER the lock, monotonic vs bill facts, used for persistence AND events (pos-order-corrections.ts:967 and :371, payment-refund-approval-limits.ts:357). Also keep: illegitimate refund still rejected; total never exceeds cap.
