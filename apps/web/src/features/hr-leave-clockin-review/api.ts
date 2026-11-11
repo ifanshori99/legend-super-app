@@ -91,6 +91,25 @@ export async function fetchLeaveReviewItems(
 }
 
 /**
+ * One queue item by log id, open or already decided: the server filters by
+ * `logId` (legend-t3h6e), so no status or page is walked to find it. Null when
+ * the log is not in the caller's reach or does not exist.
+ */
+export async function fetchLeaveReviewItemByLogId(
+  outletId: OutletId,
+  logId: AttendanceReviewItem["log"]["id"],
+  signal?: AbortSignal,
+): Promise<AttendanceReviewItem | null> {
+  const result = await callEndpoint(
+    listAttendanceReviewQueue,
+    { query: { outletId, logId, limit: 1 } },
+    { signal },
+  );
+  const [item] = result.data;
+  return item !== undefined && isLeaveClockinItem(item) ? item : null;
+}
+
+/**
  * Employees by directory lookup, never silently capped: the outlet's employees
  * are read first (the endpoint filters by outlet), then every employee the
  * cases need that the list did not return (another home outlet, past the page

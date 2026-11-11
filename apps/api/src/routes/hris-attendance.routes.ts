@@ -34,6 +34,7 @@ import {
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   bindAttendanceDevice as bindAttendanceDeviceEndpoint,
+  bindAttendanceDeviceBySupervisor as bindAttendanceDeviceBySupervisorEndpoint,
   clockAttendance as clockAttendanceEndpoint,
   getAttendanceQr as getAttendanceQrEndpoint,
   listAttendanceDevices as listAttendanceDevicesEndpoint,
@@ -58,6 +59,7 @@ import {
 import { loadTenantAccess } from "../services/permission-resolver.ts";
 import { loadSurfaceAccessFacts } from "../services/surface-access.service.ts";
 import * as attendanceService from "../services/hris-attendance.service.ts";
+import { ATTENDANCE_SUPERVISOR_CODES } from "../services/hris-attendance-admin.service.ts";
 import { currentDeviceIdOf } from "./device-id.ts";
 import {
   noHrisFileSigner,
@@ -345,6 +347,26 @@ export function createHrisAttendanceRouter(
           hrisContext(req),
           actor(req),
           body,
+        ),
+      });
+    },
+  );
+
+  router.post(
+    "/attendance/devices/bind-by-supervisor",
+    backOffice,
+    jsonBody,
+    requireHris(ATTENDANCE_SUPERVISOR_CODES),
+    async (req, res) => {
+      const body = bindAttendanceDeviceBySupervisorEndpoint.body.parse(
+        req.body,
+      );
+      res.status(201).json({
+        data: await attendanceService.bindAttendanceDeviceBySupervisor(
+          hrisContext(req),
+          actor(req),
+          body,
+          ATTENDANCE_SUPERVISOR_CODES,
         ),
       });
     },

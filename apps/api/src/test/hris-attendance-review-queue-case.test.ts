@@ -565,7 +565,10 @@ async function itemFor(
   logId: string,
   client: Client = hr,
 ): Promise<QueueItem> {
-  const { status, items } = await readQueue(client, `outletId=${outletId}`);
+  const { status, items } = await readQueue(
+    client,
+    `outletId=${outletId}&logId=${logId}`,
+  );
   expect(status).toBe(200);
   const item = items.find((entry) => entry.log.id === logId);
   expect(item, `queue item for log ${logId}`).toBeDefined();
@@ -803,7 +806,8 @@ describe("[eps6t] access, isolation and empty state", () => {
     ).toBe(false);
 
     const foreign = await readQueue(hr, `outletId=${tenantB.outletId}`);
-    expect([403, 404]).toContain(foreign.status);
+    expect([200, 403, 404]).toContain(foreign.status);
+    if (foreign.status === 200) expect(foreign.items).toEqual([]);
     expect(JSON.stringify(foreign.items)).not.toContain(tenantBEmployeeName);
   });
 

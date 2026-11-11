@@ -3582,3 +3582,10 @@ Percobaan pertama `pnpm test` mati karena container Postgres uji hilang di tenga
 Perbaikan test setelah merge (tiap fix menunggu rumah di cabang asal): hris-pii (default v1), data-import-registry (entri 0276), edge-registry-pull (retry tick), worker-notification-adapters, notification contract (tenant_invitation wajib), review-queue flag filter (supervisor biasa hanya lihat bawahan; manajer uji diberi hr.employee.manage outlet), label akses `platform.event_gap.manage` dan `payment.recurring.manage`, Cache-Control via decidePublicCache, role-provisioning idle_in_transaction_session_timeout, hub pengaturan owner tanpa kartu `terms` (Super Admin).
 Biaya sesi (session-usage): total biaya* 12316k, subagent 13, compact 3. parallel-report 30 sesi: rata-rata subagent per agent 3.9.
 Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; second-opinion Codex area ledger/hris/fac07 sebelum gerbang rilis.
+
+## 2026-11-12: 538-G4 hris-misc (ws/hris-misc dari m1 7917440a)
+
+Sudah: legend-j06v dan legend-aad54 ternyata sudah di m1 (a9a04b67, 55320d17), tidak diulang. legend-bf20 bagian bind-by-supervisor (POST /api/hris/attendance/devices/bind-by-supervisor, 404 untuk karyawan di luar jangkauan). legend-eps6t (migrasi 0360: decision_action, case_kind, leave_snapshot; item review-queue membawa nama, snapshot cuti, caseKind, canCancelLeave, businessDate, clockOutAt, decisionAction). legend-t3h6e (filter logId di review-queue + klien web).
+Belum: bf20 selfie-upload (ObjectStorage tanpa signed PUT; tes di-skip, butuh keputusan CTO).
+Keputusan: antrean tanpa filter hanya memuat item terbuka; item diputuskan lewat reviewStatus atau logId. canCancelLeave = syarat keputusan (attendance.manage + leave.approve di outlet clock-in, leave.approve di outlet cuti).
+Bukti: tes terarah 11 berkas (207 lulus, 4 selfie di-skip), tsc shared/api/web exit 0, eslint+prettier berkas berubah hijau.

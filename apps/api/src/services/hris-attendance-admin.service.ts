@@ -57,6 +57,7 @@ import {
   attendancePolicyViewSchema,
   attendanceReviewItemSchema,
   transitionAttendanceValidity,
+  type AttendanceCaseKind,
   type AttendanceDutyMeal,
   type AttendancePolicy,
   type AttendancePolicyView,
@@ -73,6 +74,7 @@ import {
   attendanceDutyMeals,
   attendanceLogs,
   attendancePolicies,
+  type AttendanceLeaveSnapshot,
   type AttendanceSamplingConfig,
 } from "../db/schema/hris-attendance.ts";
 import { employees } from "../db/schema/hris.ts";
@@ -371,10 +373,53 @@ async function toReviewItem(
   tx: Tx,
   context: ScopedTenantContext,
   access: HrisAccess,
-  row: LogRow,
+  loaded: LogRow,
   signPhoto: AttendancePhotoSigner,
   now: Date,
 ): Promise<AttendanceReviewItem> {
+  const row = await withLeaveCase(tx, loaded);
+  const [employee] = await tx
+    .select({ fullName: employees.fullName })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, row.tenantId),
+        eq(employees.id, row.employeeId),
+      ),
+    )
+    .limit(1);
+  const [clockOut] = await tx
+    .select({ occurredAt: attendanceLogs.occurredAt })
+    .from(attendanceLogs)
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, row.tenantId),
+        eq(attendanceLogs.employeeId, row.employeeId),
+        eq(attendanceLogs.businessDate, row.businessDate),
+        eq(attendanceLogs.type, "out"),
+        sql`${attendanceLogs.validity} <> 'rejected'`,
+      ),
+    )
+    .orderBy(desc(attendanceLogs.occurredAt), desc(attendanceLogs.id))
+    .limit(1);
+  const snapshot = row.leaveSnapshot;
+  // Same rule as the cancel_leave decision: both rights at the clock-in
+  // outlet, and the leave approval right also at the leave's own outlet.
+  const canCancelLeave =
+    snapshot !== null &&
+    row.reviewStatus === "pending" &&
+    access.snapshot.allows("hr.attendance.manage", {
+      type: "outlet",
+      id: row.outletId,
+    }) &&
+    access.snapshot.allows("hr.leave.approve", {
+      type: "outlet",
+      id: row.outletId,
+    }) &&
+    access.snapshot.allows("hr.leave.approve", {
+      type: "outlet",
+      id: snapshot.leaveOutletId,
+    });
   // legend-whiwv: an edge event can name any selfie id. Never sign an object
   // that is linked to another log, or unlinked at another outlet than this
   // log's (same rule as the employee's own history).
@@ -443,7 +488,76 @@ async function toReviewItem(
     reviewStatus: row.reviewStatus,
     reviewedBy: row.reviewedBy,
     reviewedAt: row.reviewedAt === null ? null : iso(row.reviewedAt),
+    employeeName: employee?.fullName ?? "",
+    businessDate: row.businessDate,
+    clockOutAt: clockOut ? iso(clockOut.occurredAt) : null,
+    caseKind: snapshot === null ? null : row.caseKind,
+    canCancelLeave,
+    leave:
+      snapshot === null
+        ? null
+        : {
+            leaveRequestId: snapshot.leaveRequestId,
+            leaveTypeId: snapshot.leaveTypeId,
+            leaveTypeName: snapshot.leaveTypeName,
+            startDate: snapshot.startDate,
+            endDate: snapshot.endDate,
+          },
+    decisionAction: row.decisionAction,
   });
+}
+
+/**
+ * Copies the leave behind a pending leave case onto the log the first time HR
+ * looks at it (or decides it), so the case keeps naming the original leave and
+ * period after cancel_leave splits or cancels it. Reads through
+ * app.leave_case_on (tenant bound, ignores the caller's outlet scope).
+ * A log that is not a pending leave case (unless `deciding`), or already
+ * holds a snapshot, is returned as is.
+ */
+async function withLeaveCase(
+  tx: Tx,
+  row: LogRow,
+  /** A leave decision is being made: snapshot even a log nothing flagged. */
+  deciding = false,
+): Promise<LogRow> {
+  if (row.leaveSnapshot !== null) return row;
+  if (!deciding && (row.reviewStatus !== "pending" || !hasLeaveFlag(row)))
+    return row;
+  const found = await tx.execute(
+    sql`SELECT leave_request_id, outlet_id, leave_type_id, leave_type_name, start_date::text AS start_date, end_date::text AS end_date, decided_at FROM app.leave_case_on(${row.tenantId}::uuid, ${row.employeeId}::uuid, ${row.businessDate}::date)`,
+  );
+  const leave = found.rows[0];
+  if (leave === undefined) return row;
+  const leaveSnapshot: AttendanceLeaveSnapshot = {
+    leaveRequestId: String(leave.leave_request_id),
+    leaveOutletId: String(leave.outlet_id),
+    leaveTypeId: String(leave.leave_type_id),
+    leaveTypeName: String(leave.leave_type_name),
+    startDate: String(leave.start_date),
+    endDate: String(leave.end_date),
+  };
+  const decidedAt =
+    leave.decided_at === null || leave.decided_at === undefined
+      ? null
+      : new Date(leave.decided_at as string | Date);
+  const caseKind: AttendanceCaseKind =
+    row.method === "manual_correction"
+      ? "manual_correction"
+      : decidedAt !== null && decidedAt.getTime() > row.receivedAt.getTime()
+        ? "leave_approved_later"
+        : "clock_in_on_leave";
+  const [updated] = await tx
+    .update(attendanceLogs)
+    .set({ leaveSnapshot, caseKind })
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, row.tenantId),
+        eq(attendanceLogs.id, row.id),
+      ),
+    )
+    .returning();
+  return updated ?? row;
 }
 
 const SCAN_BATCH = 200;
@@ -497,29 +611,46 @@ export async function listAttendanceReviewQueue(
     const filters: SQL[] = [
       eq(attendanceLogs.tenantId, context.tenant.tenantId),
     ];
+    // A log asked for by id is a direct lookup of one item, open or decided.
+    const byId = query.logId !== undefined && query.reviewStatus === undefined;
+    const openItems = and(
+      inArray(attendanceLogs.reviewStatus, ["none", "pending"]),
+      inArray(attendanceLogs.validity, ["flagged", "valid"]),
+      // outlet_device (outlet attendance screen on an edge) is always flagged
+      // and must reach the supervisor (Q87). manual_correction queues only
+      // once flagged (leave approved after the correction, legend-7o3hd).
+      or(
+        inArray(attendanceLogs.method, [
+          "selfie_geo",
+          "rotating_qr",
+          "outlet_device",
+        ]),
+        and(
+          eq(attendanceLogs.method, "manual_correction"),
+          eq(attendanceLogs.validity, "flagged"),
+        ),
+      )!,
+    )!;
     if (reviewed) {
       filters.push(eq(attendanceLogs.reviewStatus, query.reviewStatus!));
-    } else {
+    } else if (byId) {
       filters.push(
-        query.reviewStatus
-          ? eq(attendanceLogs.reviewStatus, query.reviewStatus)
-          : inArray(attendanceLogs.reviewStatus, ["none", "pending"]),
-        inArray(attendanceLogs.validity, ["flagged", "valid"]),
-        // outlet_device (outlet attendance screen on an edge) is always flagged
-        // and must reach the supervisor (Q87). manual_correction queues only
-        // once flagged (leave approved after the correction, legend-7o3hd).
-        or(
-          inArray(attendanceLogs.method, [
-            "selfie_geo",
-            "rotating_qr",
-            "outlet_device",
-          ]),
-          and(
-            eq(attendanceLogs.method, "manual_correction"),
-            eq(attendanceLogs.validity, "flagged"),
-          ),
-        )!,
+        inArray(attendanceLogs.reviewStatus, [
+          "none",
+          "pending",
+          "accepted",
+          "rejected",
+        ]),
       );
+    } else if (query.reviewStatus) {
+      filters.push(
+        eq(attendanceLogs.reviewStatus, query.reviewStatus),
+        openItems,
+      );
+    } else {
+      // Open items only. A decided item is read through an explicit
+      // reviewStatus or its logId.
+      filters.push(openItems);
     }
     if (query.outletId !== undefined)
       filters.push(eq(attendanceLogs.outletId, query.outletId));
@@ -543,6 +674,8 @@ export async function listAttendanceReviewQueue(
     );
     if (query.businessDate !== undefined)
       filters.push(eq(attendanceLogs.businessDate, query.businessDate));
+    if (query.logId !== undefined)
+      filters.push(eq(attendanceLogs.id, query.logId));
     if (query.flagReason !== undefined)
       filters.push(
         sql`${attendanceLogs.flagReasons} @> ${JSON.stringify([query.flagReason])}::jsonb`,
@@ -579,7 +712,7 @@ export async function listAttendanceReviewQueue(
       for (const row of batch) {
         if (selected.length > query.limit) break;
         lastScanned = row;
-        if (reviewed || queued(row, samplingOf)) selected.push(row);
+        if (reviewed || byId || queued(row, samplingOf)) selected.push(row);
       }
       scanned += batch.length;
       if (batch.length < SCAN_BATCH) {
@@ -757,6 +890,8 @@ export async function decideAttendanceReview(
           "ATTENDANCE_LEAVE_DECISION_NOT_ALLOWED",
           "Keputusan cuti hanya untuk absensi masuk pada hari cuti disetujui yang belum diputuskan.",
         );
+      // Copy the leave before cancel_leave splits or cancels it.
+      await withLeaveCase(tx, row, true);
       if (body.action === "keep_leave") {
         // Keeping needs a leave still approved on that day, else the day
         // would be paid as neither leave nor work.
@@ -810,6 +945,7 @@ export async function decideAttendanceReview(
         reviewStatus,
         reviewedBy: decided ? access.actorUserId : null,
         reviewedAt: decided ? now : null,
+        decisionAction: decided ? body.action : null,
       })
       .where(
         and(

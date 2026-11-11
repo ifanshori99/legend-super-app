@@ -901,6 +901,7 @@ describe("attendance HTTP: outlet and own-data isolation (TEN-03, access.own)", 
       "/api/hris/attendance/logs",
       logId,
     );
+    expect(wide.status).toBe(200);
     expect(wide.ids).toContain(fixA2.logUlid);
     expect(wide.ids).toContain(fixA3.logUlid);
 

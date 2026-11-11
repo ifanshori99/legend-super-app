@@ -51,6 +51,16 @@ import { outlets, tenants } from "./platform-org.ts";
 import { employees } from "./hris.ts";
 import { shiftAssignments } from "./hris-scheduling.ts";
 
+/** Stored copy of the leave behind a leave case (attendance_logs.leave_snapshot). */
+export interface AttendanceLeaveSnapshot {
+  leaveRequestId: string;
+  leaveOutletId: string;
+  leaveTypeId: string;
+  leaveTypeName: string;
+  startDate: string;
+  endDate: string;
+}
+
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "bytea",
 });
@@ -314,6 +324,16 @@ export const attendanceLogs = pgTable(
       .default("none"),
     reviewedBy: text("reviewed_by").$type<UserId>(),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    /** Action that decided the review (`keep_leave`, `cancel_leave`, ...); null while pending. */
+    decisionAction: varchar("decision_action", { length: 20 }),
+    /** Kind of a leave case: `clock_in_on_leave`, `leave_approved_later` or `manual_correction`. */
+    caseKind: varchar("case_kind", { length: 30 }),
+    /**
+     * The leave the log clashed with, taken when HR first sees the case so it
+     * survives a split or cancel: leaveRequestId, leaveOutletId, leaveTypeId,
+     * leaveTypeName, startDate, endDate.
+     */
+    leaveSnapshot: jsonb("leave_snapshot").$type<AttendanceLeaveSnapshot>(),
   },
   (table): PgTableExtraConfigValue[] => [
     unique("attendance_logs_tenant_id_key").on(table.tenantId, table.id),

@@ -541,6 +541,22 @@ export const bindAttendanceDevice = defineEndpoint({
   response: dataResponseSchema(attendanceDeviceSchema),
 });
 
+/**
+ * A supervisor or HR binds the phone for an employee in their reach
+ * (legend-bf20): same rules as the employee's own bind (one active device).
+ */
+export const bindAttendanceDeviceBySupervisor = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/devices/bind-by-supervisor",
+  body: clientInputSchema({
+    employeeId: employeeIdSchema,
+    deviceIdHash: z.string().regex(/^[0-9a-f]{64}$/),
+    label: z.string().min(1).max(100),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceDeviceSchema),
+});
+
 export const listAttendanceDevices = defineEndpoint({
   method: "GET",
   path: "/api/hris/attendance/devices",
@@ -600,6 +616,8 @@ export const listAttendanceReviewQueue = defineEndpoint({
     reviewStatus: attendanceReviewStatusSchema.optional(),
     /** Only logs carrying this flag reason (server-side; scope unchanged). */
     flagReason: attendanceStoredFlagReasonSchema.optional(),
+    /** Only this log (public ULID); scope unchanged. Any review status unless given. */
+    logId: attendanceLogIdSchema.optional(),
   }),
   response: cursorPageSchema(attendanceReviewItemSchema),
 });

@@ -1856,6 +1856,13 @@
       "when": 1794360000000,
       "tag": "0278_collective_leave_rededuction",
       "breakpoints": true
+    },
+    {
+      "idx": 279,
+      "version": "7",
+      "when": 1794438363003,
+      "tag": "0360_attendance_review_case",
+      "breakpoints": true
     }
   ]
 }
