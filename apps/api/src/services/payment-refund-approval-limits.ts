@@ -207,6 +207,11 @@ export async function refundCommittedAmount(
   options: {
     readonly approvedBefore?: Date;
     readonly includePendingReservations?: boolean;
+    /**
+     * Only the "<= paid" cap leaves overpayment and late-payment refunds out
+     * (they pay no tender of this bill). The approver ceiling counts them.
+     */
+    readonly paidCapScope?: boolean;
   } = {},
 ): Promise<bigint> {
   const { approvedBefore } = options;
@@ -295,6 +300,20 @@ export async function refundCommittedAmount(
           UNION ALL
           SELECT id, amount_idr FROM deferred_refunds
         ) facts GROUP BY id
+    ), voided_cash AS (
+      -- Cash a cloud void already paid out of the drawer. The void being
+      -- decided has no row yet, so it is only counted as the candidate amount.
+      SELECT t.amount_idr FROM pos_order_tenders t
+       WHERE t.tenant_id = ${refund.tenantId}
+         AND t.method = 'cash' AND t.status = 'captured'
+         AND 'order:' || t.order_id::text IN (
+           SELECT group_key FROM current_groups
+         )
+         AND EXISTS (
+           SELECT 1 FROM pos_order_voids v
+            WHERE v.tenant_id = t.tenant_id AND v.order_id = t.order_id
+              ${approvedBefore === undefined ? sql`` : sql`AND v.voided_at <= ${approvedBefore}`}
+         )
     ), mirrors AS (
       SELECT r.id FROM payment_refunds r
         JOIN payment_admin_idempotency i
@@ -309,7 +328,7 @@ export async function refundCommittedAmount(
          ${paymentRefund === null ? sql`` : sql`AND r.id <> ${paymentRefund.id}::uuid`}
          AND r.payment_intent_id IN (SELECT intent_id FROM related)
          AND r.id NOT IN (SELECT id FROM mirrors)
-         ${paymentRefund === null ? sql`AND ${notBillTenderRefund(refund.tenantId)}` : sql``}
+         ${paymentRefund === null && options.paidCapScope ? sql`AND ${notBillTenderRefund(refund.tenantId)}` : sql``}
          AND (
            r.status IN ('approved', 'completed')
            ${options.includePendingReservations ? sql`OR r.status = 'pending'` : sql``}
@@ -324,6 +343,7 @@ export async function refundCommittedAmount(
          ${approvedBefore === undefined ? sql`` : sql`AND coalesce(r.decided_at, (SELECT max(a.decided_at) FROM approval_requests a WHERE a.tenant_id = r.tenant_id AND a.chain_id = r.approval_chain_id AND a.status = 'approved'), r.created_at) <= ${approvedBefore}`}
       ), 0)
       + coalesce((SELECT sum(amount_idr) FROM pos_refunds), 0)
+      + coalesce((SELECT sum(t.amount_idr) FROM voided_cash t), 0)
       + CASE WHEN EXISTS (SELECT 1 FROM mirrors WHERE id = ${paymentRefund?.id ?? null}::uuid)
           THEN 0 ELSE ${refund.amountIdr} END
     )::text AS total,

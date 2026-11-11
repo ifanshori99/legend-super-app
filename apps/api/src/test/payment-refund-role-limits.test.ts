@@ -234,6 +234,34 @@ async function nativeRefund(
   return id;
 }
 
+/**
+ * A cash void already recorded for a POS order (brief 532b P3): the cash tender
+ * and the pos_order_voids row both carry Rp`cashIdr`. The order was also paid
+ * by the QRIS bill, so total cash out stays within what was paid.
+ */
+async function materializedCashVoid(orderId: string, cashIdr: number) {
+  await owner.query(
+    `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
+       amount_idr, status, reference, requested_at, resolved_at, received_idr, change_idr)
+     VALUES ($1, $2, $3, 'cash', 'manual', $4, 'captured', $5, now(), now(), $4, 0)`,
+    [tenantId, outletId, orderId, cashIdr, `Q63-VOID-${orderId}`],
+  );
+  await owner.query(
+    `INSERT INTO pos_order_voids (tenant_id, outlet_id, order_id, receipt_number, amount_idr,
+       reason, reason_note, requested_by, approved_by, approval_request_id, voided_at)
+     VALUES ($1, $2, $3, $4, $5, 'customer_cancelled', 'Void tunai sudah terjadi',
+       'q63-old-cashier', 'q63-old-approver', $6, now())`,
+    [
+      tenantId,
+      outletId,
+      orderId,
+      `Q63V-${orderId.slice(0, 8)}`,
+      cashIdr,
+      randomUUID(),
+    ],
+  );
+}
+
 async function rawRefund(
   intentId: string,
   amountIdr: number,
@@ -373,7 +401,12 @@ afterAll(async () => {
   try {
     await cleanup.query("BEGIN");
     await cleanup.query("SET LOCAL session_replication_role = replica");
-    for (const table of ["pos_order_refunds", "pos_orders"]) {
+    for (const table of [
+      "pos_order_voids",
+      "pos_order_tenders",
+      "pos_order_refunds",
+      "pos_orders",
+    ]) {
       await cleanup.query(
         `DELETE FROM ${table} WHERE tenant_id = $1 AND order_id = ANY($2::uuid[])`,
         [tenantId, orders],
@@ -755,6 +788,32 @@ describe("PAY-04 Q63 server refund approval ceilings", () => {
       expect(bill.paid - 100_000 - paidOut()).toBe(200_000);
     });
   }
+
+  // Brief 532b P3: the cash a POS void paid out is cash out of the bill, so it
+  // uses up the approver's cumulative ceiling like any refund. Total cash out
+  // stays within the Rp300.000 paid (150k voided cash + at most 100k refund).
+  it("Rp150.000 cash already voided counts toward the next WS-05 approval: a Supervisor cannot approve Rp100.001 more", async () => {
+    const bill = await seedBill([300_000]);
+    const orderId = await seedPosOrder(bill.intentIds, bill.paid);
+    await materializedCashVoid(orderId, 150_000);
+    const id = await rawRefund(bill.intentIds[0]!, 100_001, "pending");
+    const response = await decideInbox(id);
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe("REFUND_APPROVAL_LIMIT_EXCEEDED");
+    expect((await refundState(id)).status).toBe("pending");
+    expect(gateway.calls).toHaveLength(0);
+  });
+
+  it("Rp150.000 cash already voided leaves exactly Rp50.000 for a Supervisor to approve", async () => {
+    const bill = await seedBill([300_000]);
+    const orderId = await seedPosOrder(bill.intentIds, bill.paid);
+    await materializedCashVoid(orderId, 150_000);
+    const id = await rawRefund(bill.intentIds[0]!, 50_000, "pending");
+    const response = await decideInbox(id);
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe("approved");
+    expect(150_000 + 50_000).toBeLessThanOrEqual(bill.paid);
+  });
 
   it("a prior native QRIS refund and its completed gateway mirror count only once", async () => {
     const bill = await seedBill([300_000]);

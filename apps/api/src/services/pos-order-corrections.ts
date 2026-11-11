@@ -312,6 +312,7 @@ export async function voidPosOrderCorrection(
         };
         const committed = await refundCommittedAmount(tx, candidate, {
           includePendingReservations: true,
+          paidCapScope: true,
         });
         if (committed > BigInt(voidCashIdr))
           throw new PosError("REFUND_EXCEEDS_PAID");
@@ -890,6 +891,7 @@ export async function refundPosOrder(
         // admin requests reserve money too; gateway mirrors count only once.
         const committed = await refundCommittedAmount(tx, candidate, {
           includePendingReservations: true,
+          paidCapScope: true,
         });
         if (committed > BigInt(paid)) throw new PosError("REFUND_EXCEEDS_PAID");
         if (

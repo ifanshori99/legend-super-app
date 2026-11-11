@@ -37,7 +37,10 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { eventEnvelopeSchema } from "@starter/shared/events";
-import { orderRefundedPayloadSchema } from "@starter/shared/pos";
+import {
+  orderRefundedPayloadSchema,
+  orderVoidedPayloadSchema,
+} from "@starter/shared/pos";
 import type { PosReceipt } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
@@ -71,6 +74,7 @@ const orders: string[] = [];
 const overrides: string[] = [];
 const users: string[] = [];
 const intentIds: string[] = [];
+const fundIds: string[] = [];
 const edgeNodeId = randomUUID();
 // A cash void or refund needs the cashier's open shift on a registered device,
 // and a void needs the sale's receipt (receipt port double below).
@@ -397,6 +401,98 @@ async function rawDeferredRow(input: {
   );
 }
 
+/**
+ * Legacy void fact accepted from an edge node: an old edge voided a completed
+ * sale offline and refunded the cash (central cannot verify the drawer).
+ * `voidedFinalOrder` true means a completed sale was corrected (cash left).
+ */
+function voidEvent(bill: Sale, amountIdr: number, voidedFinalOrder = true) {
+  const at = new Date(Date.now() - 1_000).toISOString();
+  return eventEnvelopeSchema.parse({
+    id: createUlid(),
+    tenantId: seededTenantId,
+    outletId: seededOutletA,
+    name: "order.voided",
+    version: 1,
+    aggregateType: "order",
+    aggregateId: bill.orderId,
+    sequence: 1,
+    occurredAt: at,
+    actor: { type: "user", id: cashier.userId },
+    deviceId: null,
+    idempotencyKey: randomUUID(),
+    payloadSchemaRef: "order.voided.v1",
+    payload: orderVoidedPayloadSchema.parse({
+      orderId: bill.orderId,
+      outletId: seededOutletA,
+      businessDate,
+      amountIdr,
+      reason: "customer_cancelled",
+      reasonNote: "Void edge lama, tunai sudah dikembalikan ke tamu",
+      approvedBy: supervisor.userId,
+      overrideId: null,
+      approvalRequestId: null,
+      voidedFinalOrder,
+      voidId: voidedFinalOrder ? randomUUID() : null,
+      receiptNumber: voidedFinalOrder ? "Q67-EDGE01" : null,
+      voidedAt: at,
+    }),
+  });
+}
+
+/** An edge `order.voided` of a final sale that central parks (cannot verify). */
+async function deferredCashVoid(bill: Sale, amountIdr: number) {
+  await withTenant(db, scope, (tx) =>
+    applyEdgeDeferredEvent(tx, voidEvent(bill, amountIdr), {
+      context: scope,
+      edgeNodeId,
+      direction: "edge_to_cloud",
+      kind: "transaction_event",
+    }),
+  );
+}
+
+async function parkedVoidCount(bill: Sale) {
+  const { rows } = await owner.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM edge_deferred_events
+      WHERE tenant_id = $1 AND edge_node_id = $2 AND event_name = 'order.voided'
+        AND envelope->'payload'->>'orderId' = $3`,
+    [seededTenantId, edgeNodeId, bill.orderId],
+  );
+  return rows[0]!.n;
+}
+
+/**
+ * The payer sent more than the bill: the surplus sat in an unallocated fund and
+ * was already refunded to the payer (fund refund, not a refund of the sale).
+ * The sale must have been created with withLedger = true.
+ */
+async function overpaymentRefunded(bill: Sale, amountIdr: number) {
+  const fundId = randomUUID();
+  fundIds.push(fundId);
+  await owner.query(
+    `INSERT INTO payment_unallocated_funds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason)
+     VALUES ($1, $2, $3, $4, $5, 'overpayment')`,
+    [fundId, seededTenantId, seededOutletA, bill.intentId, amountIdr],
+  );
+  await owner.query(
+    `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id,
+       amount_idr, reason, status, requested_by, approved_by, decided_at,
+       completed_at, unallocated_fund_id)
+     VALUES ($1, $2, $3, $4, $5, 'Kembalikan kelebihan bayar', 'completed',
+       'system:test', $6, now(), now(), $7)`,
+    [
+      randomUUID(),
+      seededTenantId,
+      seededOutletA,
+      bill.intentId,
+      amountIdr,
+      ownerApprover.userId,
+      fundId,
+    ],
+  );
+}
+
 async function adminRefund(bill: Sale, amountIdr: number) {
   // A completed admin refund on the payment ledger of this order's tender
   // (the sale must have been created with withLedger = true).
@@ -536,6 +632,10 @@ afterAll(async () => {
     await client.query(
       "DELETE FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
       [intentIds],
+    );
+    await client.query(
+      "DELETE FROM payment_unallocated_funds WHERE id = ANY($1::uuid[])",
+      [fundIds],
     );
     await client.query(
       "DELETE FROM edge_deferred_events WHERE edge_node_id = $1",
@@ -709,3 +809,123 @@ describe("POS-04 A3: edge refund history is scoped to the order (brief 532)", ()
     expect(await nativeRefundTotal(mine)).toBe(100_000);
   });
 });
+
+describe("POS-04 P1: a parked edge void counts as unverified cash out (brief 532b)", () => {
+  // Assumption: an edge `order.voided` with voidedFinalOrder=true paid cash back
+  // to the guest, and central cannot verify the drawer, so a later cloud void or
+  // refund of the same order fails closed with REFUND_HISTORY_UNVERIFIED (409)
+  // (the brief's decision) instead of paying the same Rp300000 out twice.
+  it("a parked edge void of Rp300000 cash then a cloud void is refused; no second void or approval spent", async () => {
+    const bill = await sale(300_000);
+    await deferredCashVoid(bill, 300_000);
+    // The fact is really parked (not applied): the order has no void row.
+    expect(await parkedVoidCount(bill)).toBe(1);
+    expect(await voidRows(bill)).toEqual({ voids: 0, uses: 0 });
+    const { run } = await voidOrder(bill, ownerApprover);
+    await expect(run).rejects.toMatchObject({
+      status: 409,
+      code: "REFUND_HISTORY_UNVERIFIED",
+    });
+    expect(await voidRows(bill)).toEqual({ voids: 0, uses: 0 });
+  });
+
+  it("a parked edge void of Rp300000 cash then a cloud refund is refused; no refund is written", async () => {
+    const bill = await sale(300_000);
+    await deferredCashVoid(bill, 300_000);
+    expect(await parkedVoidCount(bill)).toBe(1);
+    await expect(refund(bill, 100_000, ownerApprover)).rejects.toMatchObject({
+      status: 409,
+      code: "REFUND_HISTORY_UNVERIFIED",
+    });
+    expect(await nativeRefundTotal(bill)).toBe(0);
+  });
+
+  it("a parked edge void for another order does not block a cloud void here", async () => {
+    const other = await sale(300_000);
+    await deferredCashVoid(other, 300_000);
+    expect(await parkedVoidCount(other)).toBe(1);
+    const mine = await sale(100_000);
+    const { run } = await voidOrder(mine, supervisor);
+    await run;
+    expect((await voidRows(mine)).voids).toBe(1);
+  });
+
+  it("a parked edge void for another order does not block a cloud refund here", async () => {
+    const other = await sale(300_000);
+    await deferredCashVoid(other, 300_000);
+    const mine = await sale(100_000, "edc_card");
+    const result = await refund(mine, 100_000, supervisor);
+    expect(Number(result.amountIdr)).toBe(100_000);
+    expect(await nativeRefundTotal(mine)).toBe(100_000);
+  });
+
+  it("an already materialized void (pos_order_voids row) is not treated as unverified history; a second void is refused as before", async () => {
+    const bill = await sale(300_000);
+    const first = await voidOrder(bill, ownerApprover);
+    await first.run;
+    expect((await voidRows(bill)).voids).toBe(1);
+    const second = await voidOrder(bill, ownerApprover);
+    const error = await second.run.then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).not.toBeNull();
+    // Refused for what it is (already voided / nothing left to pay), never as
+    // an unverifiable edge fact: central knows this void.
+    expect(error).not.toMatchObject({ code: "REFUND_HISTORY_UNVERIFIED" });
+    expect((await voidRows(bill)).voids).toBe(1);
+  });
+
+  it("an already materialized void then a cloud refund is refused as exceeding paid, never as unverified history", async () => {
+    const bill = await sale(300_000);
+    await (
+      await voidOrder(bill, ownerApprover)
+    ).run;
+    const error = await refund(bill, 100_000, ownerApprover).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).not.toBeNull();
+    expect(error).not.toMatchObject({ code: "REFUND_HISTORY_UNVERIFIED" });
+    expect(await nativeRefundTotal(bill)).toBe(0);
+  });
+});
+
+describe("POS-04 P2: overpayment refunds count toward the approver ceiling, not the paid cap (brief 532b)", () => {
+  // The Supervisor ceiling is Rp200000 cumulative (brief 530 / Q63). Money
+  // already returned for an overpayment is cash out to the guest, so it uses up
+  // the approver's authority even though it never reduces what the sale paid.
+  it("Rp150000 overpayment already refunded: a Supervisor POS refund of Rp200000 is refused (150k + 200k > 200k)", async () => {
+    const bill = await sale(300_000, "cash", true);
+    await overpaymentRefunded(bill, 150_000);
+    await expect(refund(bill, 200_000, supervisor)).rejects.toMatchObject({
+      code: "REFUND_APPROVAL_LIMIT_EXCEEDED",
+    });
+    expect(await nativeRefundTotal(bill)).toBe(0);
+  });
+
+  it("the Supervisor can still refund up to the ceiling left (Rp50000), but Rp50001 is refused", async () => {
+    const bill = await sale(300_000, "cash", true);
+    await overpaymentRefunded(bill, 150_000);
+    await expect(refund(bill, 50_001, supervisor)).rejects.toMatchObject({
+      code: "REFUND_APPROVAL_LIMIT_EXCEEDED",
+    });
+    expect(await nativeRefundTotal(bill)).toBe(0);
+    const result = await refund(bill, 50_000, supervisor);
+    expect(Number(result.amountIdr)).toBe(50_000);
+    expect(await nativeRefundTotal(bill)).toBe(50_000);
+  });
+
+  it("the overpayment still does not count toward the paid cap: an owner refunds the full Rp300000 paid", async () => {
+    const bill = await sale(300_000, "cash", true);
+    await overpaymentRefunded(bill, 150_000);
+    const result = await refund(bill, 300_000, ownerApprover);
+    expect(Number(result.amountIdr)).toBe(300_000);
+    expect(await nativeRefundTotal(bill)).toBe(300_000);
+  });
+});
+
+// P3 (void cash counts toward the cumulative approver authority) is asserted on
+// the admin refund path in payment-refund-role-limits.test.ts: a POS refund after
+// a recorded void is refused outright (the sale is already voided), so only the
+// admin/gateway refund can spend the remaining authority.
