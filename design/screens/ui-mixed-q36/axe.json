@@ -1,0 +1,458 @@
+{
+  "axe": {
+    "payroll-policies-normal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-normal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-loading-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-loading-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-empty-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-empty-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-error-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-error-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-normal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-normal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-loading-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-loading-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-empty-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-empty-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-error-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-error-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-normal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-normal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-loading-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-loading-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-empty-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-empty-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-error-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-error-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-normal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-normal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-loading-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-loading-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-empty-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-empty-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-error-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-error-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "label-prep-normal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "label-prep-normal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "label-prep-loading-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "label-prep-loading-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "label-prep-empty-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "label-prep-empty-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "label-prep-error-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "label-prep-error-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-validasi-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-simpan-gagal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-sukses-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-validasi-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-simpan-gagal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "notifikasi-sukses-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-normal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-validasi-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-normal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-validasi-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-entitas-gagal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-entitas-gagal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-normal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-validasi-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-simpan-gagal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-sukses-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-normal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-validasi-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-simpan-gagal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-sukses-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-entitas-gagal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-thr-dialog-entitas-gagal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-breakfast-normal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-breakfast-validasi-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-breakfast-normal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-breakfast-validasi-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "split-belum-bayar-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-breakfast-sukses-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tiket-breakfast-sukses-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "split-siap-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "split-error-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "split-berhasil-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "split-kedaluwarsa-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "split-sudah-diklaim-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-simpan-gagal-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-sukses-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-simpan-gagal-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "payroll-policies-dialog-sukses-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    }
+  },
+  "overflow320": {
+    "payroll-policies-normal": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "payroll-thr-normal": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "notifikasi-normal": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "tiket-normal": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "label-prep-normal": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "split-belum-bayar": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "split-siap": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "split-error": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "split-berhasil": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "split-kedaluwarsa": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    },
+    "split-sudah-diklaim": {
+      "scrollWidth": 320,
+      "innerWidth": 320,
+      "overflow": false
+    }
+  },
+  "printPages": {
+    "label-prep-normal": 1,
+    "label-prep-loading": 1,
+    "label-prep-empty": 1,
+    "label-prep-error": 1
+  },
+  "failures": []
+}
