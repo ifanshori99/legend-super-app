@@ -48,3 +48,22 @@ ti19m 79923008. Worktree `.worktrees/rat9r-followups`. Latar: `docs/briefs/sub-r
 - Architect xhigh atas diff gabungan tiga kartu. Commit + push tiap langkah.
 - Temuan Codex (brief 460) menyusul dari CTO.
 - Jangan `git stash`, jangan rebase/force-push, jangan baca `.env*`.
+
+## Tambahan: legend-hhm5m (temuan Codex, `docs/briefs/461-refund-codex-fixes.md`)
+
+Lima butir (P1 x4, P2 x1) dikerjakan bersama tiga kartu di atas.
+
+## Pembagian alur (paralel, worktree sendiri, digabung ke `ws/rat9r-followups`)
+
+| Alur | Worktree / cabang | Isi | File utama |
+|---|---|---|---|
+| A tukar + voucher | `.worktrees/q25-swap` / `ws/q25-swap` | hhm5m 1 (tukar berantai: nilai dibayar item asal, tambahan hanya bila sudah dibayar), hhm5m 2 (simpan batas di SEMUA tukar, voucher sistem dibatasi nilai dibayar), eajpb, pqm3t | `order-recovery-paid-value.ts` (`swapPaidValueOf`, `voucherRoomOf`), `order-recovery.service.ts` (`swapSettlement`, `voucherRoom`, `systemVoucherSettlement`, preview ~859), `apology-voucher.service.ts`, web `issue-choices.tsx` |
+| B consumer refund | `.worktrees/q25-refund` / `ws/q25-refund` | hhm5m 3 (open bill promo: catat alokasi A di ledger sebelum recompute selesai), hhm5m 4 (urutan refile: relasi refile atau seq monoton di bawah lock, juga di `findRecoveryRefundReplay`), hhm5m 5 (replay tidak memakai ulang slot pembulatan pajak) | `order-recovery-refund.ts`, `order-recovery-paid-value.ts` (`recoveryReleasedOf`, `findRecoveryRefundReplay`, `filingSeqsOf`) |
+| C POS | `.worktrees/q25-pos` / `ws/q25-pos` | 5g9sn | `pos-order-corrections.ts` (`refundPosOrder`) |
+
+Alur A dan B sama-sama menyentuh `order-recovery-paid-value.ts`, tetapi fungsi berbeda;
+jangan ubah fungsi milik alur lain. Test baru: satu file per alur
+(`order-recovery-q25-swap.test.ts`, `order-recovery-q25-refund.test.ts`,
+`pos-refund-voucher-cap.test.ts`). Fixture: `src/test/order-recovery-helpers.ts`
+dan pola di `order-recovery-swap-voucher-paid-cap.test.ts`,
+`order-recovery-refund-swap-cap.test.ts`, `order-recovery-refund-filing-order.test.ts`.
