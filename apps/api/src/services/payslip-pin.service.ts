@@ -711,10 +711,13 @@ export async function completePayslipPinResetWa(
         const now = nowOverride ?? new Date();
         // The number must still qualify and still be the one the proof named
         // (a swapped number restarts the 3 day clock via `linked_at`).
-        const identity = await findWhatsAppProofSender(tx, {
-          userId: self.actor,
-          now,
-        });
+        // FOR UPDATE: the identity row stays locked until the PIN is saved, so
+        // a concurrent unlink or re-link cannot slip in after this check.
+        const identity = await findWhatsAppProofSender(
+          tx,
+          { userId: self.actor, now },
+          { forUpdate: true },
+        );
         const [proof] = await tx
           .select({ expectedSenderHash: loginChallenges.expectedSenderHash })
           .from(loginChallenges)

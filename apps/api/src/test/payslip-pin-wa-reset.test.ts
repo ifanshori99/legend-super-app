@@ -923,6 +923,95 @@ describe("PIN reset by WhatsApp: saving the new PIN (POST reset-wa/:id/pin)", ()
     expect((await statusOf(staff, issued.challengeId)).status).toBe("verified");
   });
 
+  // legend-g6mvq: the identity recheck in /pin must hold a row lock until the
+  // PIN is saved. Tx B changes the number and stays open; /pin starts while B
+  // is open, must show up as blocked by B (pg_blocking_pids), and after B
+  // commits must see the committed state (no row).
+  it.each([
+    [
+      "removed",
+      (userId: string, _otherUserId: string) => ({
+        text: `DELETE FROM user_identities WHERE user_id = $1 AND type = 'whatsapp'`,
+        values: [userId],
+      }),
+    ],
+    [
+      "re-linked",
+      (userId: string, _otherUserId: string) => ({
+        text: `UPDATE user_identities SET linked_at = now() WHERE user_id = $1 AND type = 'whatsapp'`,
+        values: [userId],
+      }),
+    ],
+    [
+      "moved to another account (merge)",
+      (userId: string, otherUserId: string) => ({
+        text: `UPDATE user_identities SET user_id = $2 WHERE user_id = $1 AND type = 'whatsapp'`,
+        values: [userId, otherUserId],
+      }),
+    ],
+  ])(
+    "403 and the PIN stays when the number is %s by a transaction that commits while /pin is waiting",
+    async (label, change) => {
+      const staff = await seedStaff(`Staf WA Serentak ${label}`);
+      const target = await seedStaff(`Staf WA Tujuan ${label}`, {
+        withWhatsapp: false,
+        withPin: false,
+      });
+      const issued = await verifiedReset(staff);
+      const hashBefore = await pinHash(staff.employeeId);
+
+      const other = await owner.connect();
+      let committed = false;
+      try {
+        await other.query("BEGIN");
+        const { rows } = await other.query("SELECT pg_backend_pid() AS pid");
+        const otherPid = rows[0].pid as number;
+        const statement = change(staff.userId, target.userId);
+        await other.query(statement.text, statement.values);
+        // Not awaited: .then() sends the request, which reaches the identity
+        // read while B still holds its uncommitted change. A rejection is held
+        // and rethrown after COMMIT so it cannot go unhandled meanwhile.
+        let requestError: unknown = null;
+        const pending = savePin(staff.client, issued.challengeId)
+          .then((response) => response)
+          .catch((error: unknown) => {
+            requestError = error;
+            return null;
+          });
+        // Commit only once the request is really waiting on B.
+        const deadline = Date.now() + 5_000;
+        let blocked = false;
+        while (!blocked && Date.now() < deadline) {
+          const found = await owner.query(
+            "SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [otherPid],
+          );
+          blocked = (found.rowCount ?? 0) > 0;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        await other.query("COMMIT");
+        committed = true;
+        const response = await pending;
+        if (requestError) throw requestError;
+        expect(blocked, "/pin never waited for the other transaction").toBe(
+          true,
+        );
+        expect(response!.status, JSON.stringify(response!.body)).toBe(403);
+        expect(response!.body.error.code).toBe(
+          "PAYSLIP_PIN_RESET_PROOF_INVALID",
+        );
+      } finally {
+        if (!committed) await other.query("ROLLBACK").catch(() => undefined);
+        other.release();
+      }
+      expect(await pinHash(staff.employeeId)).toBe(hashBefore);
+      expect((await statusOf(staff, issued.challengeId)).status).toBe(
+        "verified",
+      );
+    },
+    30_000,
+  );
+
   it("403 for a proof that does not exist", async () => {
     const staff = await seedStaff("Staf WA Bukti Tak Ada");
     const response = await savePin(staff.client, randomUUID());

@@ -407,10 +407,12 @@ export async function findWhatsAppProofIdentity(
 /**
  * Same rule as `findWhatsAppProofIdentity`, plus `senderHash`: the digest the
  * webhook computes for this number, i.e. the proof's `expected_sender_hash`.
+ * `forUpdate` locks the qualifying identity row (see below).
  */
 export async function findWhatsAppProofSender(
   tx: Transaction,
   input: { readonly userId: string; readonly now: Date },
+  options: { readonly forUpdate?: boolean } = {},
 ): Promise<{
   valueHash: string;
   senderHash: string;
@@ -419,7 +421,7 @@ export async function findWhatsAppProofSender(
   const linkedBefore = new Date(
     input.now.getTime() - WA_PROOF_IDENTITY_MIN_AGE_DAYS * DAY_MS,
   );
-  const [row] = await tx
+  const query = tx
     .select({
       valueHash: userIdentities.valueHash,
       valueEncrypted: userIdentities.valueEncrypted,
@@ -434,6 +436,10 @@ export async function findWhatsAppProofSender(
       ),
     )
     .limit(1);
+  // `forUpdate`: the row stays locked until the caller's transaction ends, so a
+  // concurrent unlink, move or re-link waits, and one that committed first is
+  // re-checked against the WHERE (READ COMMITTED) and yields no row.
+  const [row] = await (options.forUpdate ? query.for("update") : query);
   if (!row || row.valueEncrypted === null) return null;
   const number = openSecret(
     row.valueEncrypted,
