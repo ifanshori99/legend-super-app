@@ -216,12 +216,7 @@ async function approval(bill: Sale, amountIdr: number, approvedBy: string) {
 }
 
 /** `now` is the app clock the request read BEFORE it waited for the lock. */
-async function refund(
-  bill: Sale,
-  amountIdr: number,
-  level: Level,
-  now?: Date,
-) {
+async function refund(bill: Sale, amountIdr: number, level: Level, now?: Date) {
   const verified = await approval(bill, amountIdr, approvers.get(level)!);
   return refundPosOrder(
     scope(),
@@ -405,7 +400,12 @@ afterAll(async () => {
 describe("POS-04 legend-ykk88 refund fact time is monotonic per bill after the lock", () => {
   it("a POS refund is stamped after a refund fact already committed on the bill, even when its own clock is older", async () => {
     const bill = await sale(400_000);
-    const earlier = await adminRefund(bill, 50_000, 60, approvers.get("owner")!);
+    const earlier = await adminRefund(
+      bill,
+      50_000,
+      60,
+      approvers.get("owner")!,
+    );
     const result = await refund(bill, 100_000, "owner");
     expect(Number(result.amountIdr)).toBe(100_000);
     expect(await nativeStampedAfterAdmin(result.id, earlier)).toBe(true);
@@ -428,7 +428,12 @@ describe("POS-04 legend-ykk88 refund fact time is monotonic per bill after the l
   it("a legitimate Rp150000 supervisor refund is not over the ceiling just because a later Rp100000 POS refund carried a stale clock", async () => {
     const bill = await sale(400_000);
     // R: decided first (fact time in the future of this request's clock).
-    const first = await adminRefund(bill, 150_000, 60, approvers.get("supervisor")!);
+    const first = await adminRefund(
+      bill,
+      150_000,
+      60,
+      approvers.get("supervisor")!,
+    );
     // P: committed second by an outlet manager (own ceiling Rp1.000.000), legitimate.
     const second = await refund(bill, 100_000, "outlet_manager");
     // P came after R, so R's historical authority must not count P:
@@ -443,7 +448,12 @@ describe("POS-04 legend-ykk88 refund fact time is monotonic per bill after the l
   it("control: a refund that really did come before still counts, so a supervisor whose cumulative total passed Rp200000 stays rejected", async () => {
     const bill = await sale(400_000);
     await adminRefund(bill, 150_000, -60, approvers.get("owner")!);
-    const later = await adminRefund(bill, 100_000, 0, approvers.get("supervisor")!);
+    const later = await adminRefund(
+      bill,
+      100_000,
+      0,
+      approvers.get("supervisor")!,
+    );
     expect(
       await revalidatesWithinLimit(later, approvers.get("supervisor")!),
     ).toBe(false);
@@ -452,7 +462,12 @@ describe("POS-04 legend-ykk88 refund fact time is monotonic per bill after the l
   it("control: a POS refund committed before an admin refund counts against that refund's approver (Rp100000 + Rp150000 > Rp200000)", async () => {
     const bill = await sale(400_000);
     await refund(bill, 100_000, "outlet_manager");
-    const later = await adminRefund(bill, 150_000, 5, approvers.get("supervisor")!);
+    const later = await adminRefund(
+      bill,
+      150_000,
+      5,
+      approvers.get("supervisor")!,
+    );
     expect(
       await revalidatesWithinLimit(later, approvers.get("supervisor")!),
     ).toBe(false);
@@ -478,14 +493,21 @@ describe("POS-04 legend-ykk88 refund fact time is monotonic per bill after the l
 
   it("concurrent owner refunds on a bill with a future-dated fact never pay out more than was paid", async () => {
     const bill = await sale(300_000);
-    const earlier = await adminRefund(bill, 50_000, 60, approvers.get("owner")!);
+    const earlier = await adminRefund(
+      bill,
+      50_000,
+      60,
+      approvers.get("owner")!,
+    );
     // 50k admin + 200k + 200k would be 450k on a 300k bill: only one POS refund fits.
     const attempts = await Promise.allSettled([
       refund(bill, 200_000, "owner"),
       refund(bill, 200_000, "owner"),
     ]);
     const done = attempts.filter(
-      (attempt): attempt is PromiseFulfilledResult<
+      (
+        attempt,
+      ): attempt is PromiseFulfilledResult<
         Awaited<ReturnType<typeof refund>>
       > => attempt.status === "fulfilled",
     );
@@ -578,8 +600,7 @@ describe("POS-04 legend-ykk88 A+ two real transactions: POS refund queued on the
       await posRefundQueuedBehindOverpaymentApproval(bill, "owner", 100_000);
     fundsToDrop.push(fundId);
     expect(outcome.status).toBe("fulfilled");
-    const posRefund = (outcome as PromiseFulfilledResult<{ id: string }>)
-      .value;
+    const posRefund = (outcome as PromiseFulfilledResult<{ id: string }>).value;
     // Persistence: refunded_at follows commit order (after T1), never T0.
     expect(await nativeStampedAfterAdmin(posRefund.id, refundId)).toBe(true);
     // Events: order.refunded carries the same fact time as the row.
@@ -600,9 +621,9 @@ describe("POS-04 legend-ykk88 A+ two real transactions: POS refund queued on the
     ).toBeLessThanOrEqual(1);
     // Rp150000 (supervisor, decided first) is within Rp200000: the Rp250000
     // total includes a refund that came after it and must not count against it.
-    expect(await revalidatesWithinLimit(refundId, approvers.get("supervisor")!)).toBe(
-      true,
-    );
+    expect(
+      await revalidatesWithinLimit(refundId, approvers.get("supervisor")!),
+    ).toBe(true);
     // Money: both refunds together stay within what was paid.
     expect(150_000 + (await nativeTotal(bill))).toBeLessThanOrEqual(bill.paid);
   });

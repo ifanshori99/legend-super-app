@@ -274,7 +274,10 @@ const patchManager = (
 /** A fresh HR actor: manage + view at tenant scope, plus a view-only role. */
 async function seedActor(name: string) {
   const actor = await signedInClient(name);
-  await grantTenantRole(actor.userId, ["hr.employee.manage", "hr.employee.view"]);
+  await grantTenantRole(actor.userId, [
+    "hr.employee.manage",
+    "hr.employee.view",
+  ]);
   await grantTenantRole(actor.userId, ["hr.employee.view"]);
   return actor;
 }
@@ -434,9 +437,7 @@ async function patchWhileManagerRoleExpires(
     }
     // Wait on the clock (not for ordering): long enough that the post-lock time is clearly
     // later than the pre-lock time, and past valid_until when the role is expiring.
-    const releaseNotBefore = expiring
-      ? validUntil + 150
-      : Date.now() + 400;
+    const releaseNotBefore = expiring ? validUntil + 150 : Date.now() + 400;
     while (Date.now() < releaseNotBefore) await sleep(20);
     const releasedAt = Date.now();
     await holder.query("COMMIT");

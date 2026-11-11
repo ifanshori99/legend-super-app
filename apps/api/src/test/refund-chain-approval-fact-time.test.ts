@@ -286,7 +286,13 @@ async function decisionQueuedBehindSupervisorRefund(
          amount_idr, reason, status, requested_by, approved_by, decided_at, completed_at)
        VALUES ($1, $2, $3, $4, 150000, 'Riwayat refund supervisor', 'completed',
          'ykk88-admin', $5, clock_timestamp(), clock_timestamp())`,
-      [aId, seededTenantId, seededOutletA, bill.intentId, approvers.get("supervisor")!],
+      [
+        aId,
+        seededTenantId,
+        seededOutletA,
+        bill.intentId,
+        approvers.get("supervisor")!,
+      ],
     );
     await holder.query("COMMIT");
   } catch (error) {
@@ -481,9 +487,10 @@ describe("POS-04 legend-ykk88 refund chain approval fact time is monotonic after
       b.requestId,
       approvers.get("outlet_manager")!,
     );
-    expect(outcome.status, String((outcome as { reason?: unknown }).reason)).toBe(
-      "fulfilled",
-    );
+    expect(
+      outcome.status,
+      String((outcome as { reason?: unknown }).reason),
+    ).toBe("fulfilled");
     expect(await requestStatus(b.requestId)).toBe("approved");
 
     // Persistence: decidedAt and updatedAt follow commit order (after T1), never T0.

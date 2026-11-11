@@ -42,7 +42,8 @@ async function applyMigration(): Promise<void> {
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
-    for (const statement of migrationStatements()) await client.query(statement);
+    for (const statement of migrationStatements())
+      await client.query(statement);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -221,7 +222,10 @@ describe("legend-c79uy migration 0283 unlink permission backfill on real rows", 
     // jsonb @> on arrays compares whole elements. A near-miss code must not
     // make the migration think the real code is already granted.
     const tenantId = await createTenant();
-    const near = ["crm.customer.identity.unlink.extra", "crm.customer.identity"];
+    const near = [
+      "crm.customer.identity.unlink.extra",
+      "crm.customer.identity",
+    ];
     const ownerId = await insertRole(tenantId, "Owner", "owner", near);
 
     await applyMigration();
