@@ -558,7 +558,7 @@ describe("legend-ghgei P3 a POS refund of a QRIS sale files the gateway refund r
     expect(await gatewayKeys(refund.id, sale.intentId)).toHaveLength(0);
   });
 
-  it("a shortfall is audited, never silent: a refund already reserving the cap leaves nothing to file", async () => {
+  it("a pending admin refund reserves the paid balance before a POS refund can commit", async () => {
     const sale = await qrisSale(100_000);
     // An earlier refund (pending, filed by hand) already reserves 70000.
     await owner.query(
@@ -567,18 +567,32 @@ describe("legend-ghgei P3 a POS refund of a QRIS sale files the gateway refund r
       [seededTenantId, seededOutletA, sale.intentId, staff.userId],
     );
 
-    await posRefund(sale, await refundInput(sale, 40_000));
+    await expect(
+      posRefund(sale, await refundInput(sale, 40_000)),
+    ).rejects.toMatchObject({ code: "REFUND_EXCEEDS_PAID" });
 
-    // Cap after the POS refund is 40000, 70000 is reserved: nothing new is filed.
+    // Rp70000 is already reserved from Rp100000 paid: another Rp40000
+    // cannot become a refund or gateway request, leaving Rp30000 intact.
     const rows = await refundRows(sale.intentId);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
+      status: "pending",
       amount: "70000",
       requested_by: staff.userId,
     });
+    const native = await owner.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM pos_order_refunds WHERE tenant_id = $1 AND order_id = $2",
+      [seededTenantId, ulidToUuid(sale.orderId)],
+    );
+    expect(native.rows[0]!.count).toBe(0);
+    const mirrors = await owner.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM payment_admin_idempotency WHERE tenant_id = $1 AND key LIKE $2",
+      [seededTenantId, `pos-refund-gateway:%:${sale.intentId}`],
+    );
+    expect(mirrors.rows[0]!.count).toBe(0);
     expect(
       await auditCount("pos_order.refund_gateway_shortfall", sale.intentId),
-    ).toBe(1);
+    ).toBe(0);
   });
 
   it("four-eyes: the POS refund's requester cannot approve its gateway payout", async () => {
