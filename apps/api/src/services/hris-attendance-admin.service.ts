@@ -415,7 +415,10 @@ async function toReviewItem(
       : null;
   // Cancelling needs attendance management at the clock-in outlet plus the
   // leave approval right at the leave's outlet (already proven by `snapshot`).
+  const ownLog =
+    access.own !== null && lower(access.own.id) === lower(row.employeeId);
   const canCancelLeave =
+    !ownLog &&
     snapshot !== null &&
     row.reviewStatus === "pending" &&
     access.snapshot.allows("hr.attendance.manage", {
@@ -467,8 +470,6 @@ async function toReviewItem(
       HRIS_AUDIT_SAFE_FIELDS,
     );
   // The device hash is the owner's own data; reviewers never see it.
-  const ownLog =
-    access.own !== null && lower(access.own.id) === lower(row.employeeId);
   const flagged = row.validity === "flagged" || row.flagReasons.length > 0;
   return attendanceReviewItemSchema.parse({
     log: attendanceLogSchema.parse({

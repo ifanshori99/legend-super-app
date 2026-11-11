@@ -750,6 +750,24 @@ describe("[eps6t] review queue item carries the leave case data", () => {
     expect(item.canCancelLeave).toBe(false);
   });
 
+  it("[538-G4b P3] canCancelLeave is false on the reviewer's own leave log even with both permissions", async () => {
+    const staff = await newStaff("reviewer-self");
+    const session = await staff.client.get("/api/auth/get-session");
+    await verifySessionMfa(session.body.user.email as string);
+    await grantRole(
+      session.body.user.id as string,
+      ["hr.attendance.manage", "hr.employee.manage", "hr.leave.approve"],
+      { type: "outlet", outletIds: [outletA] },
+    );
+    await seedApprovedLeave(staff, 0, 0, 1);
+    const log = await clockIn(staff);
+    const item = await itemFor(log.outletId, log.id, staff.client);
+
+    expect(item.leave).not.toBeNull();
+    expect(item.reviewStatus).toBe("pending");
+    expect(item.canCancelLeave).toBe(false);
+  });
+
   it("[eps6t] canCancelLeave is false when the leave belongs to an outlet the caller does not hold hr.leave.approve for", async () => {
     // Leave at home outlet A, clock-in at outlet B; hrB reaches B only.
     const staff = await newStaff("c2");
