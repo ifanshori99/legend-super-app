@@ -1,0 +1,2 @@
+# 538-G3 Akuntansi dan pajak WS-07 (K uang) - baca 538-gelombang-backend-umum.md dulu
+Cabang ws/ws07-tax-reports. Kartu: legend-yc96u handler laporan keuangan, legend-12amh ekspor Coretax, legend-xa9bc pisah pajak jurnal penjualan, legend-knfl6 order id jurnal refund (setelah xa9bc, aturan jurnal sama; hanya baca data refund, jangan ubah payment-refund*), legend-v4v7c sumber laporan pajak. Migrasi 0355-0359. Jurnal harus seimbang (debit = kredit), test membuktikan.

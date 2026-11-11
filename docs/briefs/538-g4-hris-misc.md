@@ -1,0 +1,2 @@
+# 538-G4 HRIS absensi dan lain-lain (S, ada akses) - baca 538-gelombang-backend-umum.md dulu
+Cabang ws/hris-misc. Kartu: legend-j06v GET /api/hris/me, legend-bf20 upload selfie + device binding, legend-eps6t data antrean review, legend-aad54 izin hr.announcement.manage, legend-t3h6e filter logId kasus cuti. Migrasi 0360-0362. Akses: tiap endpoint diuji untuk peran tanpa izin (403) dan tenant lain.

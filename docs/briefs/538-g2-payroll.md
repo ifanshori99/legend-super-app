@@ -1,0 +1,2 @@
+# 538-G2 Payroll HRIS (K uang + migrasi) - baca 538-gelombang-backend-umum.md dulu
+Cabang ws/payroll-engine. Kartu: legend-8di9d pay-component engine, legend-sko14 BPJS/THR (setelah 8di9d, berkas sama), legend-pf9u7 service-charge pool, legend-8xf32 tolak effectiveFrom di periode terkunci, legend-7ui6v CHECK constraint + migrasi. Migrasi 0350-0354. Uang: gaji tidak boleh dibayar lebih; periode terkunci tidak boleh berubah.
