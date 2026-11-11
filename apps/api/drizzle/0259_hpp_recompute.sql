@@ -1,8 +1,7 @@
 -- HPP read model and recompute queue (bead legend-2qq). Hand-written in the
--- drizzle-kit style (no node_modules in the worktree): regenerate the
--- meta/0259_snapshot.json with `pnpm db:generate` once dependencies exist and
--- check that the generated SQL matches this file. Renumbered from temporary 0278 by
--- the merge train. RLS: the same statements as hpp.custom.sql.
+-- drizzle-kit style; meta/0259_snapshot.json was rebuilt by the merge train and
+-- `pnpm db:generate` is empty against it. Renumbered from temporary 0278.
+-- RLS: the same statements as hpp.custom.sql.
 CREATE TABLE "hpp_outlet_state" (
 	"tenant_id" uuid NOT NULL,
 	"outlet_id" uuid NOT NULL,
