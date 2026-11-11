@@ -3417,3 +3417,5 @@ Cabang `ws/5nt2z-leave-partial`. Sudah: (1) kunci advisory per karyawan `hris:le
 - Batas verifikasi: pnpm check penuh, build, dan e2e tidak dijalankan di thread ini (gate paket/tes terarah sesuai brief; gate penuh milik merge train). Tidak menjalankan bd, tidak merge/deploy, tidak membuat migrasi.
 
 - Checkpoint commit: cuyu `2508e699` selesai. Langkah ini merekam 3het (runtime, wrapper fitur, regression); gate di atas tetap berlaku karena tidak ada perubahan kode sesudahnya.
+
+- Checkpoint commit: 3het `e8d9a538` selesai. Langkah ini merekam 7305j (dua fixture test API terisolasi); gate paralel 10/10 dan seluruh gate paket hijau. Ketiga kartu siap dipush bersama ke `origin/ws/infra-qa`, tanpa force, tanpa job latar tersisa.
