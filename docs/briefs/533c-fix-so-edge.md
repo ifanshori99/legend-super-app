@@ -1,0 +1,5 @@
+# 533c Fix temuan second-opinion Codex area edge
+Peran: engineer. Keputusan founder final: jam kasir mundur >5 menit = penjualan ditahan (Q2). Test gagal-dulu, commit per temuan, jangan merge.
+- P1 ws/edge-catalog-fresh (.worktrees/edge-catalog-fresh) `apps/api/src/edge/trusted-clock.ts:104`: kemunduran jam saat proses hidup tidak menyetel `regressedUntil` (latch hanya saat boot/adopsi checkpoint). Repro: wall mundur 1 jam, monotonic maju 1 detik -> regressed=false, penjualan tetap jalan. Fix: deteksi selisih >5 menit terhadap waktu trusted di setiap pembacaan, tahan penjualan + alarm owner.
+- P2 (uang) ws/edge-promo-streams (.worktrees/edge-promo-streams) `apps/api/src/edge/catalog-puller.ts:759`: retry tanpa halaman menghapus status pending dari sync partial sebelumnya; bila refresh checkpoint gagal, gate terbuka lagi. Contoh promo stackable A Rp20rb diganti B Rp20rb terpotong antarhalaman -> snapshot campuran A+B Rp40rb. Fix: pertahankan status incomplete lintas retry sampai sync terminal sukses. Test bukti diskon tidak pernah lebih dari promo yang berlaku.
+Bukti: test terarah via heavy, typecheck api, eslint/prettier. Lapor dengan angka subagent.
