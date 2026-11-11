@@ -2,7 +2,7 @@
 
 Peran: designer (`~/.agents/team/roles/designer.md`). Arah visual sudah disetujui: ikuti `DESIGN.md`, `~/.agents/team/ui-standard.md`. Lewati langkah "dua arah": langsung layar final. Isi nyata dari PRD `../PRD_Legend_Super_App_v1.7.md` (`bd show <id>` untuk tiap kartu). Bahasa UI Indonesia. Tiap layar: keadaan normal, kosong, error, dan loading bila relevan; 390 dan 1280 bila layar dipakai di keduanya.
 
-Kerja di worktree sendiri dari cabang `ux/customer-order-benchmark`, cabang `design/mockups-487-<a|b>`. Commit html + png di cabangmu, push cabang, lalu lapor (daftar berkas, kartu, hal yang perlu keputusan founder).
+Kerja langsung di folder repo utama, cabang `ux/customer-order-benchmark` (thread lain juga di sana: jangan sentuh berkas di luar foldermu, jangan `git add -A`). Commit lokal path-scoped hanya berkasmu, lalu lapor (daftar berkas, kartu, hal yang perlu keputusan founder).
 
 ## Bagian A (thread A): WS-04 kasir tambahan, folder `design/mockups/pos/`
 Ikuti gaya `common.css`, `common.js`, `render.mjs`. JANGAN ubah `README.md`, `render.mjs`, `supervisor.html`, `shift.html` (thread lain sedang mengedit folder ini); catat layar barumu di `design/mockups/pos/README-extras.md`. Cek dulu `supervisor.html` (refund/void) dan `shift.html`: kartu yang sudah tercakup cukup dilaporkan, tidak digambar ulang.
