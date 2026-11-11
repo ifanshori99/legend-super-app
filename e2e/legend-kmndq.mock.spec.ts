@@ -32,14 +32,23 @@ const MASKED = "+62 812-****-7890";
 const CARD_TEXT = new RegExp(
   `Pesan diterima dari ${MASKED.replace(/[+*]/g, "\\$&")}\\. Masuk sebagai nomor ini\\?`,
 );
-const CANCELLED_TEXT =
-  "Masuk dibatalkan. Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri.";
+const CANCELLED_TITLE = "Masuk dibatalkan";
+const CANCELLED_HINT =
+  "Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri.";
 const CONFIRM_ID = "POST /api/auth/login-challenges/:challengeId/confirm";
 
 const VIEWPORTS = [
   { width: 390, height: 844 },
   { width: 1280, height: 800 },
 ] as const;
+
+/** Screenshots show the settled state, not a frame mid-transition. */
+async function capture(page: Page, name: string) {
+  await page.evaluate(() =>
+    document.getAnimations().forEach((animation) => animation.finish()),
+  );
+  await captureScreenshot(page, name);
+}
 
 /** Waits for React to hydrate the page's button (a cold dev server paints first). */
 async function waitForHydration(page: Page) {
@@ -105,7 +114,7 @@ for (const viewport of VIEWPORTS) {
       await expect(page.getByRole("link", { name: "Buka WhatsApp" })).toBeVisible();
       await expect(page.getByText(CARD_TEXT)).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Ya, masuk" })).toHaveCount(0);
-      await captureScreenshot(page, `kmndq/waiting-${viewport.width}.png`);
+      await capture(page, `kmndq/waiting-${viewport.width}.png`);
     });
 
     test("kmndq: a landed message shows the masked number with Ya, masuk and Bukan saya", async ({
@@ -135,7 +144,7 @@ for (const viewport of VIEWPORTS) {
           expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
         }
       }
-      await captureScreenshot(page, `kmndq/confirm-${viewport.width}.png`);
+      await capture(page, `kmndq/confirm-${viewport.width}.png`);
     });
 
     test("kmndq: Ya, masuk signs in and lands on the return page", async ({
@@ -147,7 +156,7 @@ for (const viewport of VIEWPORTS) {
       await page.getByRole("button", { name: "Ya, masuk" }).click();
 
       await expect(page).toHaveURL(/\/member$/, { timeout: 20_000 });
-      await captureScreenshot(page, `kmndq/success-${viewport.width}.png`);
+      await capture(page, `kmndq/success-${viewport.width}.png`);
     });
 
     test("kmndq: Bukan saya cancels and goes back to the start with a clear message", async ({
@@ -158,7 +167,8 @@ for (const viewport of VIEWPORTS) {
 
       await page.getByRole("button", { name: "Bukan saya" }).click();
 
-      await expect(page.getByText(CANCELLED_TEXT)).toBeVisible();
+      await expect(page.getByText(CANCELLED_TITLE)).toBeVisible();
+      await expect(page.getByText(CANCELLED_HINT)).toBeVisible();
       await expect(page.getByText(CARD_TEXT)).toHaveCount(0);
       await expect(page).toHaveURL(/\/masuk/);
       // The guest can start again, and nothing signed them in.
@@ -167,7 +177,7 @@ for (const viewport of VIEWPORTS) {
           name: /Masuk dengan WhatsApp|Minta kode baru/,
         }),
       ).toBeVisible();
-      await captureScreenshot(page, `kmndq/cancelled-${viewport.width}.png`);
+      await capture(page, `kmndq/cancelled-${viewport.width}.png`);
     });
 
     test("kmndq: confirming after the code lapsed shows the expired state", async ({
@@ -188,7 +198,7 @@ for (const viewport of VIEWPORTS) {
         page.getByRole("button", { name: "Minta kode baru" }),
       ).toBeVisible();
       await expect(page.getByRole("button", { name: "Ya, masuk" })).toHaveCount(0);
-      await captureScreenshot(page, `kmndq/expired-${viewport.width}.png`);
+      await capture(page, `kmndq/expired-${viewport.width}.png`);
     });
 
     test("kmndq: a network error on confirm keeps the card and a retry signs in", async ({
@@ -211,7 +221,7 @@ for (const viewport of VIEWPORTS) {
       ).toBeVisible();
       await expect(page.getByText(CARD_TEXT)).toBeVisible();
       await expect(page.getByRole("button", { name: "Ya, masuk" })).toBeEnabled();
-      await captureScreenshot(page, `kmndq/network-error-${viewport.width}.png`);
+      await capture(page, `kmndq/network-error-${viewport.width}.png`);
 
       await page.getByRole("button", { name: "Ya, masuk" }).click();
       await expect(page).toHaveURL(/\/member$/, { timeout: 20_000 });

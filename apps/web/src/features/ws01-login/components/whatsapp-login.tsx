@@ -16,6 +16,7 @@
 // returns to the start with a message.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  CheckCircle2,
   CircleSlash,
   Clock3,
   Hourglass,
@@ -175,9 +176,11 @@ export function WhatsAppLogin({
       ? declined
         ? "declined"
         : null
-      : outcome === "awaiting_confirmation" && view
-        ? "confirm"
-        : null;
+      : outcome === "signed_in"
+        ? "signed-in"
+        : outcome === "awaiting_confirmation" && view
+          ? "confirm"
+          : null;
   useEffect(() => {
     const previous = lastFocusKey.current;
     lastFocusKey.current = focusKey;
@@ -298,8 +301,9 @@ export function WhatsAppLogin({
         <Notice
           tone="muted"
           icon={CircleSlash}
-          title={t("login.whatsapp.declined")}
+          title={t("login.whatsapp.declinedTitle")}
           titleRef={headingRef}
+          hint={t("login.whatsapp.declinedHint")}
         />
       );
     }
@@ -334,6 +338,18 @@ export function WhatsAppLogin({
         </p>
       </section>
     );
+  } else if (outcome === "signed_in") {
+    // ----------------------------------------------------------- signed-in state
+    // Holds until onSignedIn navigates away, so the waiting view never flashes.
+    liveClass = "";
+    liveContent = (
+      <Notice
+        tone="success"
+        icon={CheckCircle2}
+        title={t("login.whatsapp.signedIn")}
+        titleRef={headingRef}
+      />
+    );
   } else if (outcome === "awaiting_confirmation" && view) {
     // ------------------------------------------------------- confirm card state
     const expiryLine = t("login.whatsapp.expiresIn", {
@@ -364,7 +380,10 @@ export function WhatsAppLogin({
           {promptBefore}
           {promptAfter !== undefined && (
             <>
-              <bdi translate="no" className="font-semibold tabular">
+              <bdi
+                translate="no"
+                className="inline-block font-semibold whitespace-nowrap tabular"
+              >
                 {view.senderMasked}
               </bdi>
               {promptAfter}
@@ -377,6 +396,9 @@ export function WhatsAppLogin({
       <section aria-labelledby="login-confirm-heading" className="grid gap-4">
         <p className="text-sm leading-5 text-muted-foreground tabular">
           {expiryLine}
+        </p>
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("login.whatsapp.confirmHint")}
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <Button
@@ -411,9 +433,6 @@ export function WhatsAppLogin({
         {poll.isError && !confirm.isError && !cancel.isError && (
           <InlineFailure error={poll.error} onRetry={() => void accept()} />
         )}
-        <p className="text-sm leading-5 text-muted-foreground">
-          {t("login.whatsapp.confirmHint")}
-        </p>
       </section>
     );
   } else {
@@ -422,9 +441,6 @@ export function WhatsAppLogin({
     const expiryLine = t("login.whatsapp.expiresIn", {
       time: formatRemaining(loginCodeRemainingMs(challenge, judgedAt)),
     });
-    if (outcome === "signed_in") {
-      liveContent = t("login.whatsapp.successTitle");
-    }
     content = (
       <section aria-labelledby="login-challenge-heading" className="grid gap-5">
         <div className="grid gap-1">

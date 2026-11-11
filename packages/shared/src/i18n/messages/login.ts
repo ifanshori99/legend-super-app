@@ -59,8 +59,10 @@ export const loginMessages = {
     confirmNo: "Bukan saya",
     confirmHint:
       "Bukan nomormu? Tekan Bukan saya. Kodenya dibatalkan dan tidak ada yang masuk ke akunmu.",
-    declined:
-      "Masuk dibatalkan. Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri.",
+    declinedTitle: "Masuk dibatalkan",
+    declinedHint:
+      "Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri.",
+    signedIn: "Berhasil masuk. Membuka halamanmu…",
     cancelledTitle: "Kode dibatalkan",
     cancelledHint:
       "Tidak ada sesi yang dibuat. Kamu bisa mulai lagi kapan saja.",

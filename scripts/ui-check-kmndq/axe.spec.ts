@@ -164,9 +164,10 @@ for (const viewport of VIEWPORTS) {
       test.slow();
       await reachConfirmCard(page);
       await page.getByRole("button", { name: "Bukan saya" }).click();
+      await expect(page.getByText("Masuk dibatalkan")).toBeVisible();
       await expect(
         page.getByText(
-          "Masuk dibatalkan. Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri.",
+          "Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri.",
         ),
       ).toBeVisible();
       await runAxe(page, label("cancelled"));
