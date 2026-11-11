@@ -17,8 +17,9 @@
 //    `action` values: "keep_leave" and "cancel_leave" (needs
 //    hr.attendance.manage; cancel_leave also needs hr.leave.approve).
 //      keep_leave:   leave stays approved, balance untouched, flag leaves the
-//                    pending state, the log does NOT become "valid" (the day is
-//                    already paid as leave).
+//                    pending state, the log becomes "rejected" (never "valid":
+//                    the day is already paid as leave, and payroll skips
+//                    rejected logs).
 //      cancel_leave: leave request becomes "cancelled", used days go back to
 //                    the balance exactly once, flag leaves the pending state,
 //                    the log becomes "valid" (the day is now paid as worked).
@@ -588,6 +589,9 @@ describe("[F25] leave and pay stay unchanged until HR decides", () => {
     expect((await balance(s)).used).toBe("1.0000");
     const valid = (await logsOf(s)).filter((item) => item.validity === "valid");
     expect(valid).toEqual([]);
+    expect((await logsOf(s)).find((item) => item.id === log.id)?.validity).toBe(
+      "rejected",
+    );
   });
 
   it("[F25] no double pay: cancel_leave pays the day once, as work", async () => {
@@ -706,6 +710,9 @@ describe("[F25] HR decides a leave-flagged clock-in", () => {
     expect(await leaveStatus(s, leaveId)).toBe("approved");
     expect(await balance(s)).toEqual(before);
     expect(await queueOf(s, "&reviewStatus=pending")).toEqual([]);
+    expect((await logsOf(s)).find((item) => item.id === log.id)?.validity).toBe(
+      "rejected",
+    );
   });
 
   it("[F25] cancel_leave: leave is cancelled, balance returns once, flag is resolved", async () => {
@@ -790,6 +797,54 @@ describe("[F25] HR decides a leave-flagged clock-in", () => {
     }
     expect((await logsOf(s)).find((item) => item.id === log.id)?.validity).toBe(
       "valid",
+    );
+  });
+
+  it("[F25] a valid log (no flag) whose leave was approved later: accept is 409, cancel_leave is 200 for a one-day leave", async () => {
+    const s = await newScenario("f6");
+    const log = await clockIn(s);
+    expect(log.validity).toBe("valid");
+    expect((await queueEntry(s, log.id))?.flagReasons ?? []).not.toContain(
+      "leave_approved",
+    );
+    // The leave is approved after the clock-in: nothing flagged the log.
+    const leaveId = await s.seedLeave({
+      status: "approved",
+      startOffsetDays: 0,
+      endOffsetDays: 0,
+      days: 1,
+    });
+
+    const accepted = await review(log.id, { action: "accept" });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(409);
+    expect(await leaveStatus(s, leaveId)).toBe("approved");
+    expect((await balance(s)).used).toBe("1.0000");
+
+    const cancelled = await review(log.id, { action: "cancel_leave" });
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(await leaveStatus(s, leaveId)).toBe("cancelled");
+    expect((await balance(s)).used).toBe("0.0000");
+    expect((await logsOf(s)).find((item) => item.id === log.id)?.validity).toBe(
+      "valid",
+    );
+  });
+
+  it("[F25] a valid log (no flag) whose leave was approved later: keep_leave rejects the log and the leave stays", async () => {
+    const s = await newScenario("f7");
+    const log = await clockIn(s);
+    const leaveId = await s.seedLeave({
+      status: "approved",
+      startOffsetDays: 0,
+      endOffsetDays: 0,
+      days: 1,
+    });
+
+    const kept = await review(log.id, { action: "keep_leave" });
+    expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+    expect(await leaveStatus(s, leaveId)).toBe("approved");
+    expect((await balance(s)).used).toBe("1.0000");
+    expect((await logsOf(s)).find((item) => item.id === log.id)?.validity).toBe(
+      "rejected",
     );
   });
 

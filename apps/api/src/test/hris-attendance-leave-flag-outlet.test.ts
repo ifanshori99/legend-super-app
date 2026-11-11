@@ -623,7 +623,7 @@ describe("[F25] HR with access to outlet B only decides a leave that belongs to 
 
     expect(await leaveStatus(staff, leaveId)).toBe("approved");
     expect((await balance(staff)).used).toBe("1.0000");
-    expect(await validityOf(staff, log.id)).not.toBe("valid");
+    expect(await validityOf(staff, log.id)).toBe("rejected");
   });
 });
 
@@ -650,7 +650,7 @@ describe("[F25] cancel_leave on a leave that spans several days", () => {
     expect(kept.body.data.reviewStatus).not.toBe("pending");
     expect(await leaveStatus(staff, leaveId)).toBe("approved");
     expect((await balance(staff)).used).toBe("3.0000");
-    expect(await validityOf(staff, log.id)).not.toBe("valid");
+    expect(await validityOf(staff, log.id)).toBe("rejected");
   });
 
   it("[F25] a one-day leave on the same day is still cancelled normally (control)", async () => {
