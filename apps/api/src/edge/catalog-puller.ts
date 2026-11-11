@@ -36,8 +36,11 @@
 // - Read only: nothing here writes to the cloud. Errors carry codes, never
 //   record data.
 // - Promotions/vouchers fail closed while a pull is incomplete. Their cursor
-//   still advances page by page, but freshness is invalidated durably before
-//   fetching and only restored after a complete stream (including empty).
+//   still advances page by page, but freshness is invalidated durably with
+//   the first page that has more to come and only restored after a complete
+//   stream (including empty), and also when a fetched page is rejected. A
+//   transport failure before any page arrives (offline) leaves the last success
+//   time alone: uncapped promos live to the 24 h limit.
 import {
   CATALOG_PROTOCOL_MIN_VERSION,
   CATALOG_PROTOCOL_VERSION,
@@ -709,33 +712,18 @@ export async function pullCatalog(
       lastSuccessAt: null,
     };
     let error: CatalogStreamError | undefined;
+    // True once the cloud answered with a page (before it is validated).
+    let pageReceived = false;
     const blockedBy = (PARENT_STREAMS[stream] ?? []).find((parent) =>
       failed.has(parent),
     );
     try {
-      if (isPromoStream(stream))
-        await withTenant(database, options.context, async (tx) => {
-          await lockCatalogStream(tx, options.context.tenant.tenantId, stream);
-          const [row] = await tx
-            .select({ watermark: edgePullCheckpoints.watermark })
-            .from(edgePullCheckpoints)
-            .where(
-              and(
-                eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
-                eq(edgePullCheckpoints.stream, catalogCheckpointStream(stream)),
-              ),
-            )
-            .limit(1);
-          // Durable invalidation also survives a restart after an interrupted
-          // pull. The cursor is retained so the next pull resumes its work.
-          await saveCatalogCheckpoint(
-            tx,
-            options.edgeNodeId,
-            stream,
-            row?.watermark ?? null,
-            PROMO_INVALIDATED_AT,
-          );
-        });
+      // No durable invalidation up front (brief 533 B2): a transport failure
+      // before any page arrives (offline, HTTP error) changes nothing, so the
+      // last successful sync time stays and an uncapped promotion lives until
+      // the 24 h limit. A page that arrives and is then rejected closes the
+      // checkpoint (catch below); a page with more to come closes it in the
+      // same commit as the page (see pullStream).
       if (blockedBy !== undefined)
         throw new CatalogParentFailedError(blockedBy);
       const stored = await loadCatalogCheckpoint(
@@ -744,7 +732,19 @@ export async function pullCatalog(
         options.edgeNodeId,
         stream,
       );
-      await pullStream(options, stream, stored, progress);
+      await pullStream(
+        {
+          ...options,
+          fetchPage: async (fetchStream, since) => {
+            const raw = await options.fetchPage(fetchStream, since);
+            pageReceived = true;
+            return raw;
+          },
+        },
+        stream,
+        stored,
+        progress,
+      );
       if (!progress.backlog)
         completePromoCatalogStream(
           catalogCheckpointStream(stream),
@@ -752,6 +752,50 @@ export async function pullCatalog(
         );
     } catch (caught) {
       error = describeError(caught);
+      if (!pageReceived) {
+        // Transport failure with no page: the stream is as it was, so the
+        // in-memory pending mark must not close it (capped promos are refused
+        // by the promo engine at an edge regardless).
+        completePromoCatalogStream(
+          catalogCheckpointStream(stream),
+          promoGeneration,
+        );
+      } else if (isPromoStream(stream)) {
+        // A page arrived and was rejected or failed to apply: close the
+        // checkpoint durably (kept cursor, epoch success time) and keep the
+        // in-memory pending mark. A failed write stays closed in memory.
+        try {
+          await withTenant(database, options.context, async (tx) => {
+            await lockCatalogStream(
+              tx,
+              options.context.tenant.tenantId,
+              stream,
+            );
+            const [row] = await tx
+              .select({ watermark: edgePullCheckpoints.watermark })
+              .from(edgePullCheckpoints)
+              .where(
+                and(
+                  eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+                  eq(
+                    edgePullCheckpoints.stream,
+                    catalogCheckpointStream(stream),
+                  ),
+                ),
+              )
+              .limit(1);
+            await saveCatalogCheckpoint(
+              tx,
+              options.edgeNodeId,
+              stream,
+              row?.watermark ?? null,
+              PROMO_INVALIDATED_AT,
+            );
+          });
+        } catch {
+          // Reported through the stream error below; memory stays closed.
+        }
+      }
     }
     if (error || (isPromoStream(stream) && progress.backlog))
       failed.add(stream);

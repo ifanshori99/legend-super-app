@@ -37,6 +37,7 @@ import { pullCatalog } from "../edge/catalog-puller.ts";
 import {
   promosEnabled,
   setPromoGateEdgeModeForTests,
+  withPromoFreshness,
 } from "../edge/promo-gate.ts";
 import {
   startPromoGate,
@@ -751,10 +752,9 @@ describe("528 promotions and voucher catalog streams", () => {
     expect(
       result.streams["vouchers" as keyof typeof result.streams]?.error,
     ).toBeDefined();
-    expect((await checkpoint("vouchers"))[0]).toEqual({
-      watermark: saved[0]?.watermark,
-      last_success_at: new Date(0),
-    });
+    // 533 B2: an unreachable cloud (no page arrived) leaves the checkpoint as
+    // it was; it neither advances nor is closed. The 24 h limit still applies.
+    expect((await checkpoint("vouchers"))[0]).toEqual(saved[0]);
     expect(
       await edge.rows(
         "SELECT row_to_json(t) AS row FROM edge_voucher_catalog t WHERE id = $1",
@@ -845,7 +845,7 @@ describe("528 promotions and voucher catalog streams", () => {
     expect(promosEnabled()).toBe(true);
   });
 
-  it("an in-flight failed pull closes cached freshness before reading the first page", async () => {
+  it("an offline failed pull keeps a promotion without quota alive (until the 24 h limit); only a truncated pull closes it (brief 533 B2)", async () => {
     await pull();
     setPromoGateEdgeModeForTests(() => true);
     gate = startPromoGate({
@@ -856,18 +856,38 @@ describe("528 promotions and voucher catalog streams", () => {
     });
     await gate.refresh();
     expect(promosEnabled()).toBe(true);
-    let checkedDuringFetch = false;
+    const guardedQuote = () =>
+      withTenant(edge.database, scope("device"), (tx) =>
+        withPromoFreshness(orderPromoPort).quote(tx, scope("device"), {
+          outletId: outletIdSchema.parse(outletId),
+          channel: "dine_in",
+          lines: [
+            {
+              menuItemId: itemId as never,
+              quantity: 1,
+              unitPriceIdr: 10_000 as never,
+              lineTotalIdr: 10_000 as never,
+            },
+          ],
+          customer: null,
+          voucherCode: null,
+          at: new Date("2026-11-11T03:00:00.000Z"),
+        }),
+      );
+    expect((await guardedQuote()).totalDiscountIdr).toBe(7_777);
+    let fetched = false;
     const result = await pull(async () => {
-      checkedDuringFetch = true;
-      expect(promosEnabled()).toBe(false);
+      fetched = true;
       throw new Error("Cloud reply was interrupted");
     }, ["promotions"]);
-    expect(checkedDuringFetch).toBe(true);
+    expect(fetched).toBe(true);
     expect(
       result.streams["promotions" as keyof typeof result.streams]?.error,
     ).toBeDefined();
-    expect(promosEnabled()).toBe(false);
+    // Offline: this promotion has no quota, so it stays alive until 24 h.
+    expect(promosEnabled()).toBe(true);
     await gate.refresh();
-    expect(promosEnabled()).toBe(false);
+    expect(promosEnabled()).toBe(true);
+    expect((await guardedQuote()).totalDiscountIdr).toBe(7_777);
   });
 });

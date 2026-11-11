@@ -561,7 +561,8 @@ export async function applyCatalogRecords(
               name: r.name,
               description: r.description,
               status: r.status,
-              codeHash: r.codeHash,
+              // Never the real hash: the stream carries only the irreversible ref.
+              codeHash: r.codeRef,
               voucherRequired: r.voucherRequired,
               startsAt: date(r.startsAt),
               endsAt: dateOrNull(r.endsAt),
@@ -586,8 +587,17 @@ export async function applyCatalogRecords(
               .onConflictDoUpdate({
                 target: t.id,
                 // Counters belong to this edge's financial applications. A
-                // catalog import must never reset or replay consumption.
-                set: values,
+                // catalog import must never reset or replay consumption. The
+                // cloud may lower a quota or budget below what this edge
+                // already used offline: store max(cloud, local) so the
+                // `uses_total <= quota_total` / `spent_idr <= budget_idr`
+                // constraints never block the sync, and the exhausted promo
+                // stays unusable (an unlimited cloud value stays unlimited).
+                set: {
+                  ...values,
+                  quotaTotal: sql`CASE WHEN excluded.quota_total IS NULL THEN NULL ELSE GREATEST(excluded.quota_total, ${t.usesTotal}) END`,
+                  budgetIdr: sql`CASE WHEN excluded.budget_idr IS NULL THEN NULL ELSE GREATEST(excluded.budget_idr, ${t.spentIdr}) END`,
+                },
                 setWhere: and(eq(t.tenantId, tenantId), olderThanExcluded(t)),
               })
               .returning({ id: t.id });

@@ -313,37 +313,51 @@ export const recipeSyncRecordSchema = z.strictObject({
   syncTxid: syncTxidSchema,
 });
 
-/** A complete rule document, including the requesting outlet's switch. */
-export const promotionSyncRecordSchema = promotionObjectSchema.extend({
-  outletId: uuidSchema,
-  outletScope: promotionOutletScopeSchema,
-  usesTotal: z.number().int().nonnegative(),
-  createdBy: userIdSchema.nullable(),
-  updatedBy: userIdSchema.nullable(),
-  syncTxid: syncTxidSchema,
-  outletOverrides: z.array(
-    z.strictObject({
-      outletId: uuidSchema,
-      enabled: z.boolean(),
-      updatedBy: userIdSchema.nullable(),
-      updatedAt: isoDateTimeSchema,
-    }),
-  ),
-  stackingSettings: z
-    .strictObject({
-      stackingPolicy: promoStackingPolicySchema,
-      updatedBy: userIdSchema.nullable(),
-      updatedAt: isoDateTimeSchema,
-      syncTxid: syncTxidSchema,
-    })
-    .nullable(),
-});
+/**
+ * A complete rule document, including the requesting outlet's switch. The
+ * promo code hash never travels (a SHA-256 of a short code is brute-forceable
+ * if an outlet disk is stolen): `codeRef` is an irreversible stand-in derived
+ * from the promotion id, `null` when the promotion has no code. The edge
+ * refuses every code anyway (Q66), so it never needs the real hash.
+ */
+export const promotionSyncRecordSchema = promotionObjectSchema
+  .omit({ codeHash: true })
+  .extend({
+    codeRef: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+    outletId: uuidSchema,
+    outletScope: promotionOutletScopeSchema,
+    usesTotal: z.number().int().nonnegative(),
+    createdBy: userIdSchema.nullable(),
+    updatedBy: userIdSchema.nullable(),
+    syncTxid: syncTxidSchema,
+    outletOverrides: z.array(
+      z.strictObject({
+        outletId: uuidSchema,
+        enabled: z.boolean(),
+        updatedBy: userIdSchema.nullable(),
+        updatedAt: isoDateTimeSchema,
+      }),
+    ),
+    stackingSettings: z
+      .strictObject({
+        stackingPolicy: promoStackingPolicySchema,
+        updatedBy: userIdSchema.nullable(),
+        updatedAt: isoDateTimeSchema,
+        syncTxid: syncTxidSchema,
+      })
+      .nullable(),
+  });
 
 /** Single-use state travels read-only; edge redemption requires cloud authority. */
-export const voucherSyncRecordSchema = voucherObjectSchema.extend({
-  issuedBy: userIdSchema.nullable(),
-  syncTxid: syncTxidSchema,
-});
+export const voucherSyncRecordSchema = voucherObjectSchema
+  .omit({ codeHash: true })
+  .extend({
+    issuedBy: userIdSchema.nullable(),
+    syncTxid: syncTxidSchema,
+  });
 
 export const catalogSyncRecordSchemas = {
   stations: stationSyncRecordSchema,

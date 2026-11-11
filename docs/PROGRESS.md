@@ -3343,3 +3343,10 @@ Langkah berikut CTO baru:
 - Setelah FK 0334 dipindah inline sesuai checklist FORCE-RLS dan satu cast seam fixture dibetulkan, `LEGEND_TEST_FILES="src/test/edge-promo-stream-money.test.ts src/test/edge-promo-stream-sync.test.ts" heavy pnpm test` diulang: 2 file / 35 test lulus, exit 0 (`/tmp/528-new-tests-final.log`); DB terisolasi dibersihkan. Tidak ada perubahan kode production sesudah run gabungan 378 test.
 - Batas verifikasi: build, e2e/browser, suite penuh, deployment/migrasi production, serta review architect Claude belum dijalankan. Suite penuh dilarang brief. Import cap yang diturunkan di bawah pemakaian lokal gagal tertutup; diskon mati sampai aturan berhasil diimpor, penjualan normal tetap berjalan. Boot Q62 yang usia waktunya tak terbukti tetap mematikan diskon meskipun live pull selesai.
 - Statistik akhir 23:55: session-usage tetap tidak menemukan transkrip Codex; parallel-report hanya sesi Claude, biaya token tugas tidak diklaim. Claude1 5h79%/7d70%, Claude2 0%/93%, Claude3 0%/96%; Codex2 100%/26%, Codex3 100%/61%, Codex4 9%/38%, Codex5 100%/37%, Codex6 sesi ini 7d3% (5h tidak tertera). Angka akun mencakup sesi lain.
+
+## 533 B: fix temuan architect 531, cabang ws/edge-promo-streams (tingkat K)
+- B1 akses: stream promo dan voucher tidak lagi membawa codeHash atau kode. Promo berkode mengirim `codeRef` (sha256 dari awalan tetap + id promo, tidak bisa dibalik ke kode); edge menolak semua kode (Q66).
+- B2 Q57: tarikan yang tidak mendapat halaman (offline) tidak lagi menutup promo; promo tanpa kuota hidup sampai batas 24 jam. Halaman yang ditolak atau tarikan terpotong tetap menutup. Promo/voucher berkuota tetap mati di edge (engine menolaknya).
+- B3: kuota dan anggaran di edge disimpan sebagai max(cloud, hitungan lokal) sehingga constraint uses_total <= quota_total tidak macet.
+- B4: skrip rollback 0333-0334 `apps/api/scripts/rollback-0333-0334-edge-promo-streams.sql`. Stream voucher hanya-aktif belum dikerjakan (dicatat di runbook).
+- Bukti: gagal-dulu 12 test, sesudah fix 8 berkas test terarah lulus, tsc API exit 0, eslint dan prettier berkas berubah hijau.

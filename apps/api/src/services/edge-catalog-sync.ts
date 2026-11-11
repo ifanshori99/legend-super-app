@@ -52,6 +52,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
+import { createHash } from "node:crypto";
 import { and, asc, eq, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { db as appDb } from "../db/index.ts";
@@ -184,6 +185,27 @@ function outletStationId(
 }
 
 const iso = (value: Date) => value.toISOString();
+
+/** The stream never carries a code hash (brief 533 B1). */
+function withoutCodeHash<T extends { codeHash: unknown }>(
+  row: T,
+): Omit<T, "codeHash"> {
+  const copy: Partial<T> = { ...row };
+  delete copy.codeHash;
+  return copy as Omit<T, "codeHash">;
+}
+
+/**
+ * Irreversible stand-in for `promotions.code_hash` on the promotions stream
+ * (SHA-256 of the promotion id under a fixed prefix). Deterministic, so a
+ * re-export never churns; it is not derived from the code, and no code can
+ * hash to it by accident, so it can never match a presented code.
+ */
+function promoCodeRef(promotionId: string): string {
+  return createHash("sha256")
+    .update(`edge-promo-code-ref:v1:${promotionId}`, "utf8")
+    .digest("hex");
+}
 const stamps = (row: {
   createdAt: Date;
   updatedAt: Date;
@@ -576,21 +598,29 @@ const scanners: Record<
       )
       .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, txid, outletOverrides, stackingSettings }) => ({
-      txid,
-      keys: [row.id],
-      record: {
-        ...row,
-        outletId,
-        syncTxid: txid,
-        startsAt: iso(row.startsAt),
-        endsAt: row.endsAt === null ? null : iso(row.endsAt),
-        createdAt: iso(row.createdAt),
-        updatedAt: iso(row.updatedAt),
+    return rows.map(
+      ({
+        row: { codeHash, ...row },
+        txid,
         outletOverrides,
         stackingSettings,
-      },
-    }));
+      }) => ({
+        txid,
+        keys: [row.id],
+        record: {
+          ...row,
+          codeRef: codeHash === null ? null : promoCodeRef(row.id),
+          outletId,
+          syncTxid: txid,
+          startsAt: iso(row.startsAt),
+          endsAt: row.endsAt === null ? null : iso(row.endsAt),
+          createdAt: iso(row.createdAt),
+          updatedAt: iso(row.updatedAt),
+          outletOverrides,
+          stackingSettings,
+        },
+      }),
+    );
   },
   async vouchers({ tx, tenantId, since, take }) {
     const t = vouchers;
@@ -610,7 +640,7 @@ const scanners: Record<
       txid,
       keys: [row.id],
       record: {
-        ...row,
+        ...withoutCodeHash(row),
         syncTxid: txid,
         validFrom: iso(row.validFrom),
         validUntil: row.validUntil === null ? null : iso(row.validUntil),
