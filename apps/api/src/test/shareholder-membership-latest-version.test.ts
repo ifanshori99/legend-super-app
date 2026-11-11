@@ -117,6 +117,7 @@ async function shareVersion(
   version: number,
   holders: string[],
   status: Status,
+  effectiveFrom?: string,
 ) {
   const base = Math.floor(10000 / holders.length);
   const client = await owner.connect();
@@ -130,7 +131,7 @@ async function shareVersion(
         tenantId,
         entityId,
         version,
-        version === 1 ? "2026-01-01" : "2026-02-01",
+        effectiveFrom ?? (version === 1 ? "2026-01-01" : "2026-02-01"),
         `latest-${randomUUID()}`,
       ],
     );
@@ -293,6 +294,59 @@ describe("legend-lt0v4 shareholder access follows the latest approved share vers
     expect(await listIds(holder)).not.toContain(doc);
     expect(await signedUrlStatus(holder, doc)).toBe(404);
     expect(await listIds(other)).toContain(doc);
+  });
+
+  // Assumption: an approved version only governs access from its effective_from
+  // date. Until then the previous approved version (v1) still decides. No clock
+  // mocking: "future" is a far-future date (2099-01-01), "past" is a date that
+  // has already gone by (2026-02-01, today is after it).
+  it("SH-01 an approved v2 with a future effective_from leaves access with the v1 holders; the newcomer gets nothing yet", async () => {
+    const mgr = await manager();
+    const entityId = await entity();
+    const a = await shareholder();
+    const b = await shareholder();
+    const c = await shareholder();
+    await shareVersion(entityId, 1, [a.rowId, b.rowId], "approved");
+    const doc = await publishedDoc(mgr, entityId);
+    // v2 drops B and adds C, approved but not yet in force.
+    await shareVersion(
+      entityId,
+      2,
+      [a.rowId, c.rowId],
+      "approved",
+      "2099-01-01",
+    );
+
+    expect(await listIds(a)).toContain(doc);
+    expect(await signedUrlStatus(a, doc)).toBe(200);
+    expect(await listIds(b)).toContain(doc);
+    expect(await signedUrlStatus(b, doc)).toBe(200);
+    expect(await listIds(c)).not.toContain(doc);
+    expect(await signedUrlStatus(c, doc)).toBe(404);
+  });
+
+  it("SH-01 once the effective_from of the approved v2 has passed, access flips: B is out, C is in", async () => {
+    const mgr = await manager();
+    const entityId = await entity();
+    const a = await shareholder();
+    const b = await shareholder();
+    const c = await shareholder();
+    await shareVersion(entityId, 1, [a.rowId, b.rowId], "approved");
+    const doc = await publishedDoc(mgr, entityId);
+    // Same change as above, but v2's date is already in the past.
+    await shareVersion(
+      entityId,
+      2,
+      [a.rowId, c.rowId],
+      "approved",
+      "2026-02-01",
+    );
+
+    expect(await listIds(a)).toContain(doc);
+    expect(await listIds(b)).not.toContain(doc);
+    expect(await signedUrlStatus(b, doc)).toBe(404);
+    expect(await listIds(c)).toContain(doc);
+    expect(await signedUrlStatus(c, doc)).toBe(200);
   });
 
   it("SH-01 a holder in two entities loses only the entity they were removed from", async () => {

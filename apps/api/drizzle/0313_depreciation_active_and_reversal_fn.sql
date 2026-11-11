@@ -30,6 +30,31 @@ UPDATE public.fixed_asset_depreciations d
   FROM public.fixed_asset_depreciation_reversals r
   WHERE r.tenant_id = d.tenant_id AND r.depreciation_id = d.id;
 --> statement-breakpoint
+-- Runs while FORCE is still lifted (the read would hit the tenant policy
+-- otherwise). Fail with a readable list instead of a bare unique violation when the data
+-- already holds two active rows for one asset and month. Fix those rows by hand
+-- (reverse one) and rerun; the migration changes nothing until then.
+DO $$
+DECLARE
+  dup text;
+BEGIN
+  SELECT string_agg(
+           format('(tenant %s, asset %s, period %s: %s rows)', tenant_id, fixed_asset_id, period, n),
+           ', ')
+    INTO dup
+    FROM (
+      SELECT tenant_id, fixed_asset_id, period, count(*) AS n
+        FROM public.fixed_asset_depreciations
+        WHERE reversed_at IS NULL
+        GROUP BY tenant_id, fixed_asset_id, period
+        HAVING count(*) > 1
+    ) d;
+  IF dup IS NOT NULL THEN
+    RAISE EXCEPTION 'duplicate active fixed_asset_depreciations rows block fixed_asset_depreciations_active_key: %', dup
+      USING ERRCODE = '23505';
+  END IF;
+END $$;
+--> statement-breakpoint
 ALTER TABLE public.fixed_asset_depreciation_reversals FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.fixed_asset_depreciations FORCE ROW LEVEL SECURITY;

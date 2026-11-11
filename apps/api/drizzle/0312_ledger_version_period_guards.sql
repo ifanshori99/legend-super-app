@@ -71,3 +71,8 @@ CREATE TRIGGER fiscal_periods_ledger_version_bump_insert
 AFTER INSERT ON public.fiscal_periods
 FOR EACH ROW WHEN (NEW.status = 'closed')
 EXECUTE FUNCTION app.bump_ledger_version();
+--> statement-breakpoint
+-- A period row is never deleted or truncated by the app: a close or reopen is
+-- an UPDATE, and a deleted closed period would reopen its month silently
+-- (assert_journal_entry reads a missing period as open).
+REVOKE DELETE, TRUNCATE ON public.fiscal_periods FROM legend_app;

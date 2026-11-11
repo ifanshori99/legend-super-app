@@ -133,6 +133,33 @@ describe("497 finding 2: tenant, legal entity and month of a fiscal period are i
   });
 });
 
+describe("legend-lt0v4 legend_app cannot remove fiscal periods", () => {
+  // Assumption: the API's database role has no DELETE and no TRUNCATE privilege
+  // on fiscal_periods at all, so both fail with 42501 (permission denied) rather
+  // than silently matching zero rows. A closed period must stay on record.
+  it("ACC-02 legend_app cannot DELETE a fiscal_periods row (permission denied)", async () => {
+    const fx = await makeFixture();
+    const before = await periodRow(fx.jan);
+    const error = await failure(
+      withAppRole((client) =>
+        client.query("DELETE FROM fiscal_periods WHERE id = $1", [fx.jan]),
+      ),
+    );
+    expect(error.code).toBe("42501");
+    sameState(before, await periodRow(fx.jan));
+  });
+
+  it("ACC-02 legend_app cannot TRUNCATE fiscal_periods (permission denied)", async () => {
+    const fx = await makeFixture();
+    const before = await periodRow(fx.jan);
+    const error = await failure(
+      withAppRole((client) => client.query("TRUNCATE fiscal_periods CASCADE")),
+    );
+    expect(error.code).toBe("42501");
+    sameState(before, await periodRow(fx.jan));
+  });
+});
+
 describe("legend-lt0v4 fiscal_periods.status only changes through a legal transition with a version bump", () => {
   it("ACC-02 a direct status flip without a version bump is refused with FISCAL_PERIOD_TRANSITION (migration owner)", async () => {
     const fx = await makeFixture();
