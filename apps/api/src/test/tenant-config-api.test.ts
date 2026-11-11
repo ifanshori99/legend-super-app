@@ -908,7 +908,9 @@ describe("TEN-09 export, template and import", () => {
     const fetched = await admin.client.get(
       `/api/platform/config-templates/${template.id}`,
     );
-    expect(fetched.status).toBe(200);
+    expect(fetched.status, JSON.stringify(fetched.body).slice(0, 600)).toBe(
+      200,
+    );
     const full = dataOf(fetched.body);
     expect(full.id).toBe(template.id);
     expect(full.payload.formatVersion).toBe(1);
@@ -1431,6 +1433,87 @@ describe("TEN-09 role and checklist safety on import", () => {
     expect(rows.rows).toEqual([{ name: "Buka Toko", role_id: null }]);
     const [row] = await importRows(target.tenantId);
     expect(row!.warnings.length).toBeGreaterThan(0);
+  });
+
+  // legend-5cwrq: reference checks run for kind-shaped items.
+  const approvalItem = (overrides: Record<string, unknown> = {}) => ({
+    key: "ap.void.1",
+    kind: "approval",
+    actionType: "void",
+    thresholdIdr: null,
+    approverRoleKey: "role.auditor-uji",
+    levels: 1,
+    requiresDistinctActor: true,
+    ...overrides,
+  });
+  const accountItem = (overrides: Record<string, unknown> = {}) => ({
+    key: "acct.9000",
+    kind: "account",
+    code: "9000",
+    name: "Akun Uji",
+    type: "asset",
+    reportGroup: "cash_and_equivalents",
+    parentKey: null,
+    isActive: true,
+    ...overrides,
+  });
+
+  it("TEN-09 legend-5cwrq an approval policy naming a role key the bundle does not carry is refused and nothing is written", async () => {
+    const target = await newTarget(admin);
+    const before = await snapshot(target.tenantId);
+    const response = await postImport(admin, target.tenantId, {
+      bundle: bundleOf({
+        roles: { version: 1, items: [roleItem({})] },
+        approval_policies: {
+          version: 1,
+          items: [approvalItem({ approverRoleKey: "role.tidak-ada" })],
+        },
+      }),
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await snapshot(target.tenantId)).toEqual(before);
+    expect(
+      (await importRows(target.tenantId)).filter(
+        (row) => row.status === "applied",
+      ),
+    ).toEqual([]);
+
+    // Control: the same bundle with the role key present imports, so the
+    // refusal above is about the reference and nothing else.
+    const control = await importOk(admin, target.tenantId, {
+      bundle: bundleOf({
+        roles: { version: 1, items: [roleItem({})] },
+        approval_policies: { version: 1, items: [approvalItem()] },
+      }),
+    });
+    expect(control.status).toBe("applied");
+  });
+
+  it("TEN-09 legend-5cwrq a chart-of-accounts item whose parent key is not in the bundle is refused and nothing is written", async () => {
+    const target = await newTarget(admin);
+    const before = await snapshot(target.tenantId);
+    const response = await postImport(admin, target.tenantId, {
+      bundle: bundleOf({
+        chart_of_accounts: {
+          version: 1,
+          items: [accountItem({ parentKey: "acct.9999" })],
+        },
+      }),
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await snapshot(target.tenantId)).toEqual(before);
+    expect(
+      (await importRows(target.tenantId)).filter(
+        (row) => row.status === "applied",
+      ),
+    ).toEqual([]);
+
+    const control = await importOk(admin, target.tenantId, {
+      bundle: bundleOf({
+        chart_of_accounts: { version: 1, items: [accountItem()] },
+      }),
+    });
+    expect(control.status).toBe("applied");
   });
 });
 
