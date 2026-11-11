@@ -18,7 +18,7 @@ import {
 } from "@starter/shared/pos/acting-staff";
 import { HttpError } from "../lib/http-error";
 import { setRequestActingStaff } from "../lib/request-context";
-import { deviceIdOf } from "../routes/device-id.ts";
+import { registeredDeviceIdOf } from "../routes/device-id.ts";
 import { resolveActingStaffToken } from "../services/pos-acting-staff.service";
 import { getAuth } from "./auth";
 import { getTenantContext } from "./tenant";
@@ -61,8 +61,9 @@ export const resolveActingStaff: RequestHandler = async (req, _res, next) => {
       );
     return next();
   }
-  const deviceId = deviceIdOf(req);
-  // The token is bound to a signed device; a request without one cannot use it.
+  // The token is bound to a signed device whose token is still current in the
+  // registry; a request without one (or with a rotated-out one) cannot use it.
+  const deviceId = await registeredDeviceIdOf(req);
   if (deviceId === null)
     throw new HttpError(
       401,

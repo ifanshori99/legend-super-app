@@ -108,3 +108,118 @@ export function approvalOutcome(
   if (request.status === "expired") return "expired";
   return nowMs >= Date.parse(request.deadlineAt) ? "expired" : "pending";
 }
+
+/** The settled override read back after the phone request is approved. */
+export type SettledOverride = { status: string; approvedBy: string | null };
+
+/**
+ * What the phone wait shows (legend-495 G3). An approved request is not yet an
+ * approved override: the caller may continue only once the override itself is
+ * settled as approved by someone other than the requester (AUTH-06). Until the
+ * settlement is read the wait stays pending; any other settlement is shown as
+ * that end, never as approved.
+ */
+export function phoneOutcome(input: {
+  raw: ApprovalOutcome;
+  decidedBy: string | null;
+  settled: SettledOverride | null;
+  requesterId: string | null;
+}): { outcome: ApprovalOutcome; selfApproved: boolean } {
+  const { raw, decidedBy, settled, requesterId } = input;
+  if (raw !== "approved") return { outcome: raw, selfApproved: false };
+  const rejectedSelf = { outcome: "rejected", selfApproved: true } as const;
+  if (decidedBy === null || decidedBy === requesterId) return rejectedSelf;
+  if (settled === null || settled.status === "pending")
+    return { outcome: "pending", selfApproved: false };
+  if (settled.status === "approved") {
+    if (settled.approvedBy === null || settled.approvedBy === requesterId)
+      return rejectedSelf;
+    return { outcome: "approved", selfApproved: false };
+  }
+  if (settled.status === "cancelled" || settled.status === "expired")
+    return { outcome: settled.status, selfApproved: false };
+  return { outcome: "rejected", selfApproved: false };
+}
+
+/**
+ * X, Escape or an outside click while the phone wait is pending withdraws the
+ * request first; the dialog closes only after the cancel succeeds (G5).
+ */
+export function closeAction(state: {
+  waiting: boolean;
+  outcome: ApprovalOutcome;
+}): "cancel" | "close" {
+  return state.waiting && state.outcome === "pending" ? "cancel" : "close";
+}
+
+/**
+ * Closing the form while a phone request may exist (legend-495 H2): hold the
+ * close while the create is in flight (cancel it once it answers); after a
+ * network error the request may exist, so read it again with the same
+ * Idempotency-Key and cancel it before closing; otherwise just close.
+ */
+export function formCloseAction(state: {
+  sending: boolean;
+  uncertain: boolean;
+}): "hold" | "recover" | "close" {
+  if (state.sending) return "hold";
+  return state.uncertain ? "recover" : "close";
+}
+
+/**
+ * The request reads approved but the override is not settled yet (an approval
+ * chain with levels left): cancel is refused, so the wait must say why it stays.
+ */
+export function awaitingSettlement(state: {
+  raw: ApprovalOutcome;
+  outcome: ApprovalOutcome;
+}): boolean {
+  return state.raw === "approved" && state.outcome === "pending";
+}
+
+/** The fields that make up one override intent (what the server fingerprints). */
+export type OverrideIntentFields = {
+  outletId: string | undefined;
+  action: string;
+  objectType: string;
+  objectId: string;
+  valueText: string;
+  reasonCode: string;
+  reason: string;
+  method: string;
+  approverId: string | null;
+};
+
+/** Equal for the same intent; differs as soon as any field changes (G4). */
+export function overrideIntentSignature(fields: OverrideIntentFields): string {
+  return JSON.stringify([
+    fields.outletId ?? null,
+    fields.action,
+    fields.objectType,
+    fields.objectId,
+    fields.valueText.trim(),
+    fields.reasonCode,
+    fields.reason.trim(),
+    fields.method,
+    fields.approverId,
+  ]);
+}
+
+/**
+ * One idempotency key per override intent (G4): the key made for a signature
+ * is reused on every retry of it, replaced when the signature changes and
+ * after `reset()` (intent finished).
+ */
+export function createIntentKeyKeeper(makeKey: () => string) {
+  let current: { signature: string; key: string } | null = null;
+  return {
+    keyFor(signature: string): string {
+      if (current === null || current.signature !== signature)
+        current = { signature, key: makeKey() };
+      return current.key;
+    },
+    reset() {
+      current = null;
+    },
+  };
+}

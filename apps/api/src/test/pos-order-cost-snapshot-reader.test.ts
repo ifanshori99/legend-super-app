@@ -29,6 +29,7 @@ import {
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -251,6 +252,12 @@ beforeAll(async () => {
   setPosReceiptPort(receiptPort);
   A = await buildShop("hppa");
   B = await buildShop("hppb");
+  for (const shop of [A, B])
+    await registerTestDevice(owner, {
+      tenantId: shop.tenant.tenantId,
+      outletId: shop.tenant.outletId,
+      deviceId: shop.deviceId,
+    });
   setDeviceOutletResolver(async ({ tenantId, deviceId }) => {
     for (const shop of [A, B])
       if (tenantId === shop.tenant.tenantId && deviceId === shop.deviceId)

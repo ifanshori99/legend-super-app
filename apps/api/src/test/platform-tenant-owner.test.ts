@@ -442,6 +442,15 @@ describe("legend-ktc4d platform Super Admin appoints and replaces a tenant Owner
     // Normal tenant path (legend-7vsby): the new Owner grants Owner to another
     // account.
     const other = await signedInUser("Pemilik Kedua");
+    // legend-495 G2: the second Owner already belongs to the tenant (here as
+    // a Finance member), so the grant is not a stranger's first role.
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+       SELECT $1, $2, id, 'tenant', now() - interval '1 minute', $3
+         FROM roles WHERE tenant_id = $1 AND template_key = 'finance'`,
+      [tenant.tenantId, other.userId, admin.userId],
+    );
     const granted = await grantRoleAssignment(
       scopedContext(tenant.tenantId),
       grantRoleSchema.parse({

@@ -34,6 +34,7 @@ import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts
 import { deliverSwapKitchenEvent } from "../services/order-recovery-swap-kitchen.ts";
 import { confirmPayment } from "../services/payment.service.ts";
 import { liveExpectedCashIdr } from "../services/pos-shift-support.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   PRICES,
@@ -80,6 +81,12 @@ const deviceHeader = (deviceId: string) =>
 
 beforeAll(async () => {
   w = await createWorld();
+  for (const deviceId of [DEVICE_ID, OTHER_DEVICE_ID])
+    await registerTestDevice(owner, {
+      tenantId: w.tenant.tenantId,
+      outletId: w.tenant.outletId,
+      deviceId,
+    });
   const roleId = randomUUID();
   await owner.query(
     `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)

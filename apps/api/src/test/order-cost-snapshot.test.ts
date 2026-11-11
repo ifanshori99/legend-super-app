@@ -90,6 +90,7 @@ import {
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createTable,
@@ -766,6 +767,11 @@ beforeAll(async () => {
       ? A.outletId
       : null,
   );
+  await registerTestDevice(owner, {
+    tenantId: A.tenantId,
+    outletId: A.outletId,
+    deviceId,
+  });
   // One role that can run POS, QR floor set-up and delivery orders.
   const roleId = randomUUID();
   await owner.query(

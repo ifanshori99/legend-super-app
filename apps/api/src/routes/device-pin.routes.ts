@@ -65,7 +65,7 @@ import {
   getOwnPosOverrideApproval,
   getPosOverride,
 } from "../services/staff-override.service";
-import { deviceIdOf as signedDeviceIdOf } from "./device-id.ts";
+import { currentDeviceIdOf } from "./device-id.ts";
 
 function idempotencyKeyOf(req: Request): string | null {
   const raw = req.get("Idempotency-Key");
@@ -159,6 +159,7 @@ posOverrideRouter.post("/", jsonBody, async (req, res) => {
       ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
       "Kasir aktif bukan untuk outlet ini.",
     );
+  const deviceId = await currentDeviceIdOf(req);
   let result: Awaited<ReturnType<typeof createPosOverride>>;
   try {
     result = await createPosOverride(
@@ -167,7 +168,7 @@ posOverrideRouter.post("/", jsonBody, async (req, res) => {
       input,
       {
         idempotencyKey: idempotencyKeyOf(req),
-        deviceId: signedDeviceIdOf(req),
+        deviceId,
       },
     );
   } catch (error) {
@@ -232,6 +233,7 @@ posOverrideRouter.post("/approvals/:requestId/cancel", async (req, res) => {
   const { requestId } = approvalRequestParamsSchema.parse(req.params);
   idempotencyKeyOf(req);
   const acting = requiredActingStaff(req);
+  const deviceId = await currentDeviceIdOf(req);
   res.setHeader("Cache-Control", "private, no-store");
   res.json({
     data: await cancelOwnPosOverrideApproval(
@@ -239,7 +241,7 @@ posOverrideRouter.post("/approvals/:requestId/cancel", async (req, res) => {
       acting.staffUserId,
       requestId,
       acting.outletId,
-      { deviceId: signedDeviceIdOf(req) },
+      { deviceId },
     ),
   });
 });

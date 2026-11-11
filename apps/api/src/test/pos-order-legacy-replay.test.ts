@@ -35,6 +35,7 @@ import {
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -235,6 +236,11 @@ beforeAll(async () => {
       ]),
     ],
   );
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId: ids.deviceA,
+  });
   terminalA = await terminal(ids.deviceA, "POS Kasir Replay");
 
   const client = await owner.connect();

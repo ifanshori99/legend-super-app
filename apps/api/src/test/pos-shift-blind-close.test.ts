@@ -32,6 +32,7 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { posShiftCountReceiptSchema } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import {
   setDeviceOutletResolver,
   setStaffPin,
@@ -120,6 +121,11 @@ async function newCashier(
   const base = await member(roleId, label);
   const deviceId = randomUUID();
   registeredDevices.set(`${tenant.tenantId}:${deviceId}`, tenant.outletId);
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId,
+  });
   return { ...base, deviceId };
 }
 

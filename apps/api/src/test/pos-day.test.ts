@@ -62,6 +62,7 @@ import { setPosOutletReceiptGapsPort } from "../services/pos-shift-ports.ts";
 import { closePosDay, getEndOfDayRecap } from "../services/pos-day.service.ts";
 import { recordCashMovement } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -518,6 +519,11 @@ beforeAll(async () => {
         ? (extraDevices.get(deviceId) ?? null)
         : null,
   );
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId: ids.device,
+  });
 
   const roles: [string, string, string, string[]][] = [
     [
@@ -1204,6 +1210,11 @@ describe("POS-05 the day's device cash variance counts a held cash refund as pai
       { pin: PIN },
     );
     extraDevices.set(deviceId, outletId);
+    await registerTestDevice(owner, {
+      tenantId: tenant.tenantId,
+      outletId,
+      deviceId,
+    });
     const till: Till = { outletId, deviceId };
 
     const opened = await shiftApi(cashier, till).open();

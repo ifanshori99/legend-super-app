@@ -80,6 +80,7 @@ import {
 import { tenantIdSchema } from "@starter/shared/core";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
+import { deleteHires, seedHire } from "./hire-seed";
 import { createApp } from "../app";
 import { db } from "../db";
 import { paymentRefunds } from "../db/schema/index";
@@ -1129,16 +1130,26 @@ describe("PAY-04 an expired ban no longer blocks roles, an active one still does
   });
 
   it("PAY-04 granting a role over the API to a person whose ban expired works with 201", async () => {
-    const response = await ownerClient
-      .post("/api/access/role-assignments")
-      .set(originHeader)
-      .send({
-        userId: expiredBanUserId,
-        roleId: await roleIdOf("cashier"),
-        scope: { type: "outlet", id: outletA },
-      });
-    expect(response.status).toBe(201);
-    expect(response.body.data).toMatchObject({ userId: expiredBanUserId });
+    // legend-495 G2: the grantee is a new hire of the tenant (HRIS record).
+    const hireId = await seedHire(owner, {
+      tenantId,
+      userId: expiredBanUserId,
+      outletId: outletA,
+    });
+    try {
+      const response = await ownerClient
+        .post("/api/access/role-assignments")
+        .set(originHeader)
+        .send({
+          userId: expiredBanUserId,
+          roleId: await roleIdOf("cashier"),
+          scope: { type: "outlet", id: outletA },
+        });
+      expect(response.status).toBe(201);
+      expect(response.body.data).toMatchObject({ userId: expiredBanUserId });
+    } finally {
+      await deleteHires(owner, tenantId, [hireId]);
+    }
   });
 });
 

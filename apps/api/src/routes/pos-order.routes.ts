@@ -51,7 +51,7 @@ import {
   requireOutletPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
-import { deviceIdOf } from "./device-id.ts";
+import { currentDeviceIdOf } from "./device-id.ts";
 import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
@@ -97,7 +97,10 @@ function expectedVersion(req: Request): number | null {
  * (a client cannot state two versions). Both absent: no check, so legacy
  * clients keep working; `expectedStatus` still guards transitions.
  */
-function caller(req: Request, body?: { expectedVersion?: number }): PosCaller {
+async function caller(
+  req: Request,
+  body?: { expectedVersion?: number },
+): Promise<PosCaller> {
   const fromHeader = expectedVersion(req);
   const fromBody = body?.expectedVersion ?? null;
   if (fromHeader !== null && fromBody !== null && fromHeader !== fromBody)
@@ -112,7 +115,7 @@ function caller(req: Request, body?: { expectedVersion?: number }): PosCaller {
   if (body) delete body.expectedVersion;
   return {
     userId: userIdSchema.parse(actorOf(req)),
-    deviceId: deviceIdOf(req),
+    deviceId: await currentDeviceIdOf(req),
     expectedVersion: fromBody ?? fromHeader,
   };
 }
@@ -178,7 +181,7 @@ posOrderRouter.post("/orders", sell, jsonBody, async (req, res) => {
   const body = createPosOrder.body.parse(req.body);
   const order = await pos.createPosOrder(
     getScopedTenantContext(req),
-    caller(req),
+    await caller(req),
     outletId,
     body,
   );
@@ -207,7 +210,7 @@ posOrderRouter.post(
     const body = submitPosOrder.body.parse(req.body);
     const data = await pos.submitPosOrder(
       getScopedTenantContext(req),
-      caller(req, body),
+      await caller(req, body),
       outletId,
       orderId,
       body,
@@ -225,7 +228,7 @@ posOrderRouter.post(
     const body = firePosOrderItems.body.parse(req.body);
     const data = await pos.firePosOrderItems(
       getScopedTenantContext(req),
-      caller(req, body),
+      await caller(req, body),
       outletId,
       orderId,
       body,
@@ -243,7 +246,7 @@ posOrderRouter.post(
     const body = completePosOrder.body.parse(req.body);
     const data = await pos.completePosOrder(
       getScopedTenantContext(req),
-      caller(req, body),
+      await caller(req, body),
       outletId,
       orderId,
       body,
@@ -261,7 +264,7 @@ posOrderRouter.post(
     const body = voidPosOrder.body.parse(req.body);
     const data = await pos.voidPosOrder(
       getScopedTenantContext(req),
-      caller(req, body),
+      await caller(req, body),
       outletId,
       orderId,
       body,
@@ -281,7 +284,7 @@ posOrderRouter.post(
     const body = voidPosOrderItem.body.parse(req.body);
     const data = await pos.voidPosOrderItem(
       getScopedTenantContext(req),
-      caller(req, body),
+      await caller(req, body),
       outletId,
       orderId,
       itemId,
@@ -328,7 +331,7 @@ posOrderRouter.post(
     const body = addPosTender.body.parse(req.body);
     const data = await addPosTenderService(
       getScopedTenantContext(req),
-      caller(req, body),
+      await caller(req, body),
       outletId,
       orderId,
       body,
@@ -346,7 +349,7 @@ posOrderRouter.post(
     const body = applyPosDiscount.body.parse(req.body);
     const data = await discounts.applyPosDiscount(
       getScopedTenantContext(req),
-      caller(req, body),
+      await caller(req, body),
       outletId,
       orderId,
       body,
@@ -366,7 +369,7 @@ posOrderRouter.delete(
     const body = removePosDiscount.body.parse(req.body);
     const data = await discounts.removePosDiscount(
       getScopedTenantContext(req),
-      caller(req, body),
+      await caller(req, body),
       outletId,
       orderId,
       discountId,
@@ -390,7 +393,7 @@ posOrderRouter.post(
     res.status(201).json({
       data: await corrections.voidPosOrderCorrection(
         getScopedTenantContext(req),
-        caller(req),
+        await caller(req),
         outletId,
         orderId,
         body,
@@ -409,7 +412,7 @@ posOrderRouter.post(
     res.status(201).json({
       data: await corrections.refundPosOrder(
         getScopedTenantContext(req),
-        caller(req),
+        await caller(req),
         outletId,
         orderId,
         body,

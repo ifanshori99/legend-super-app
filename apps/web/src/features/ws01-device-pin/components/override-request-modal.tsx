@@ -38,8 +38,14 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   approvalOutcome,
+  awaitingSettlement,
+  closeAction,
+  createIntentKeyKeeper,
+  formCloseAction,
   formatCountdown,
+  overrideIntentSignature,
   parseRupiah,
+  phoneOutcome,
   validateOverrideForm,
   type OverrideFormErrors,
 } from "../logic.ts";
@@ -47,6 +53,7 @@ import {
   useApprovalRequestPolling,
   useCancelApprovalRequest,
   useCreatePhoneOverride,
+  usePosOverrideSettlement,
 } from "../hooks.ts";
 import { createPosOverrideCall } from "../api.ts";
 import { ApiError } from "@/lib/api/errors";
@@ -89,10 +96,32 @@ export type OverrideRequestModalProps = {
 
 type Method = "pin" | "phone";
 
+/**
+ * Registered by the phone wait while its request is pending: runs the cancel
+ * that takes over the close (legend-495 G5). Null when nothing is pending.
+ */
+type CloseGuard = (cancel: (() => void) | null) => void;
+
 export function OverrideRequestModal(props: OverrideRequestModalProps) {
   const t = useT();
+  const guardRef = useRef<(() => void) | null>(null);
+  const closeGuard = useCallback<CloseGuard>((cancel) => {
+    guardRef.current = cancel;
+  }, []);
   return (
-    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+    <Dialog
+      open={props.open}
+      onOpenChange={(next) => {
+        // X, Escape and an outside click all arrive here. A pending phone
+        // request is withdrawn first; the wait closes the dialog once the
+        // cancel succeeded, and stays open with a message when it failed.
+        if (!next && guardRef.current) {
+          guardRef.current();
+          return;
+        }
+        props.onOpenChange(next);
+      }}
+    >
       <DialogContent data-testid="override-modal" className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{t("devicePin.override.title")}</DialogTitle>
@@ -100,7 +129,7 @@ export function OverrideRequestModal(props: OverrideRequestModalProps) {
             {t("devicePin.override.description")}
           </DialogDescription>
         </DialogHeader>
-        {props.open && <ModalBody {...props} />}
+        {props.open && <ModalBody {...props} closeGuard={closeGuard} />}
       </DialogContent>
     </Dialog>
   );
@@ -117,7 +146,8 @@ function ModalBody({
   defaultValueIdr,
   onApproved,
   onRejected,
-}: OverrideRequestModalProps) {
+  closeGuard,
+}: OverrideRequestModalProps & { closeGuard: CloseGuard }) {
   const t = useT();
   const deviceOutletId = useTenantContext().outlet?.id;
   const outletId =
@@ -129,10 +159,28 @@ function ModalBody({
   const [reasonCode, setReasonCode] = useState("");
   const [reason, setReason] = useState("");
   const [errors, setErrors] = useState<OverrideFormErrors>({});
-  const [requestId, setRequestId] = useState<string | null>(null);
+  const [phoneWait, setPhoneWait] = useState<{
+    requestId: string;
+    overrideId: string;
+  } | null>(null);
   const [sendError, setSendError] = useState(false);
   const [noRequester, setNoRequester] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // A close asked for while the phone request is being sent (H2): held until
+  // the send answers, then the new request is withdrawn before closing.
+  const [closing, setClosing] = useState(false);
+  // The last phone send, with its key: after a network error the request may
+  // exist, so a close sends the very same input again (same Idempotency-Key).
+  // The last send failed in a way that may have stored the request: the form
+  // is locked so only a retry (same input) or a close (withdraw) goes on.
+  const [maybeCreated, setMaybeCreated] = useState(false);
+  const closeAsked = useRef(false);
+  // Shown when a close was held after a send that failed (maybe-created).
+  const [closeHeld, setCloseHeld] = useState(false);
+  const lastSend = useRef<{
+    body: CreatePosOverrideInput;
+    idempotencyKey: string;
+  } | null>(null);
 
   const values = { valueText, reasonCode, reason };
   // A field's error goes away once that field is edited (not on the next PIN).
@@ -151,9 +199,32 @@ function ModalBody({
   const roster = useRoster();
   const [approverId, setApproverId] = useState<string | null>(null);
 
+  // One Idempotency-Key per override intent (G4): made when the intent first
+  // goes out, reused on every retry, replaced when the form changes and after
+  // the intent is finished. A new key per click would open a second request.
+  const [intentKeys] = useState(() =>
+    createIntentKeyKeeper(() => crypto.randomUUID()),
+  );
+  function intentKey(chosen: Method) {
+    return intentKeys.keyFor(
+      overrideIntentSignature({
+        outletId,
+        action,
+        objectType,
+        objectId,
+        valueText,
+        reasonCode,
+        reason,
+        method: chosen === "pin" ? "supervisor_pin" : "supervisor_phone",
+        approverId: chosen === "pin" ? approverId : null,
+      }),
+    );
+  }
+
   function finish(
     result: Omit<OverrideResult, "reasonCode" | "reason" | "valueIdr">,
   ) {
+    intentKeys.reset();
     onApproved({
       ...result,
       reasonCode,
@@ -193,7 +264,9 @@ function ModalBody({
         objectId,
         approval: { method: "supervisor_pin", approverUserId: userId, pin },
       };
-      return createPosOverrideCall(body);
+      // The PIN path signs the approver in the intent, so the key is the one
+      // for this approver; a retry after a wrong PIN keeps it.
+      return createPosOverrideCall(body, intentKey("pin"));
     },
     onVerified: (override) =>
       finish({
@@ -223,6 +296,11 @@ function ModalBody({
   };
 
   function sendToPhone() {
+    // Retry of a maybe-created request: the same body under the same key.
+    if (maybeCreated && lastSend.current) {
+      closeAsked.current = false;
+      return send(lastSend.current);
+    }
     const found = validateOverrideForm(values);
     setErrors(found);
     if (Object.keys(found).length > 0) return;
@@ -237,9 +315,9 @@ function ModalBody({
       return;
     }
     setNoRequester(false);
-    setSendError(false);
-    create.mutate(
-      {
+    closeAsked.current = false;
+    send({
+      body: {
         outletId: outletId as OutletId,
         action,
         valueIdr: idr(parseRupiah(valueText) ?? 0),
@@ -249,15 +327,79 @@ function ModalBody({
         objectId,
         approval: { method: "supervisor_phone" },
       },
-      {
-        onSuccess: ({ data }) =>
-          data.approvalRequestId === null
-            ? setSendError(true)
-            : setRequestId(data.approvalRequestId),
-        onError: () => setSendError(true),
-      },
-    );
+      idempotencyKey: intentKey("phone"),
+    });
   }
+
+  function send(input: {
+    body: CreatePosOverrideInput;
+    idempotencyKey: string;
+  }) {
+    lastSend.current = input;
+    setSendError(false);
+    setCloseHeld(false);
+    create.mutate(input, {
+      onSuccess: ({ data }) => {
+        setMaybeCreated(false);
+        if (data.approvalRequestId === null) {
+          // The server answered and nothing can be withdrawn.
+          lastSend.current = null;
+          settleFailedSend(false);
+          return;
+        }
+        // Held close: the wait opens and withdraws the request at once.
+        setPhoneWait({
+          requestId: data.approvalRequestId,
+          overrideId: data.id,
+        });
+      },
+      onError: (error) => {
+        // A 4xx (not 409) is an answer: nothing was created. Network, 5xx and
+        // 409 may have stored the request, so it is read again on close.
+        const answered =
+          error instanceof ApiError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          error.status !== 409;
+        if (answered) lastSend.current = null;
+        setMaybeCreated(!answered);
+        settleFailedSend(!answered);
+      },
+    });
+  }
+
+  // A send that ended without a request to withdraw. A close asked for meanwhile
+  // proceeds when nothing can exist; otherwise it is held with a message.
+  function settleFailedSend(maybeCreated: boolean) {
+    setClosing(false);
+    setSendError(true);
+    if (!closeAsked.current) return;
+    if (maybeCreated) return setCloseHeld(true);
+    closeAsked.current = false;
+    onOpenChange(false);
+  }
+
+  // Every way out of the form (X, Escape, outside click, Batal) comes here.
+  function requestClose() {
+    const action = formCloseAction({
+      sending: create.isPending,
+      uncertain: sendError && lastSend.current !== null,
+    });
+    if (action === "close") return onOpenChange(false);
+    closeAsked.current = true;
+    setClosing(true);
+    if (action === "recover" && lastSend.current) send(lastSend.current);
+  }
+  const requestCloseRef = useRef(requestClose);
+  useEffect(() => {
+    requestCloseRef.current = requestClose;
+  });
+  const holdsClose = phoneWait === null && (create.isPending || sendError);
+  useEffect(() => {
+    if (!holdsClose) return;
+    closeGuard(() => requestCloseRef.current());
+    return () => closeGuard(null);
+  }, [holdsClose, closeGuard]);
 
   const outletAlert = !outletId && (
     <div role="alert" className="grid justify-items-start gap-2">
@@ -272,21 +414,28 @@ function ModalBody({
     </div>
   );
 
-  if (requestId !== null)
+  if (phoneWait !== null)
     return (
       <PhoneWait
-        requestId={requestId}
+        requestId={phoneWait.requestId}
+        overrideId={phoneWait.overrideId}
         requesterId={requesterId}
+        closeGuard={closeGuard}
+        cancelOnMount={closing}
         onApproved={(approvedBy) =>
           finish({
             method: "supervisor_phone",
             approverId: approvedBy,
             approverName: null,
-            approvalRequestId: requestId,
+            approvalRequestId: phoneWait.requestId,
           })
         }
         onRejected={(note) => onRejected?.(note)}
-        onRetry={() => setRequestId(null)}
+        onRetry={() => {
+          // "Ajukan ulang" after an end: a fresh intent, a fresh key.
+          intentKeys.reset();
+          setPhoneWait(null);
+        }}
         onClose={() => onOpenChange(false)}
       />
     );
@@ -296,84 +445,97 @@ function ModalBody({
       <p className="text-sm font-semibold">
         {t(`devicePin.override.action.${action}`)}
       </p>
-      <FormField
-        label={t("devicePin.override.valueLabel")}
-        hint={t("devicePin.override.valueHint")}
-        error={
-          errors.value ? t("devicePin.override.field.valueRequired") : undefined
-        }
-        required
-      >
-        <Input
-          inputMode="numeric"
-          autoComplete="off"
-          value={valueText}
-          onChange={(event) => {
-            setValueText(event.target.value);
-            edited("value");
-          }}
-        />
-      </FormField>
-      <FormField
-        label={t("devicePin.override.reasonCodeLabel")}
-        error={
-          errors.reasonCode
-            ? t("devicePin.override.field.reasonCodeRequired")
-            : undefined
-        }
-        required
-      >
-        <Select
-          value={reasonCode}
-          onValueChange={(code) => {
-            setReasonCode(code);
-            edited("reasonCode");
-          }}
+      <fieldset disabled={maybeCreated} className="contents">
+        <FormField
+          label={t("devicePin.override.valueLabel")}
+          hint={t("devicePin.override.valueHint")}
+          error={
+            errors.value
+              ? t("devicePin.override.field.valueRequired")
+              : undefined
+          }
+          required
         >
-          <SelectTrigger>
-            <SelectValue
-              placeholder={t("devicePin.override.reasonCodePlaceholder")}
-            />
-          </SelectTrigger>
-          <SelectContent>
-            {posOverrideReasonCodes.map((code) => (
-              <SelectItem key={code} value={code}>
-                {t(`devicePin.override.reasonCode.${code}`)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FormField>
-      <FormField
-        label={t("devicePin.override.reasonLabel")}
-        hint={t("devicePin.override.reasonHint")}
-        error={
-          errors.reason
-            ? t("devicePin.override.field.reasonRequired")
-            : undefined
-        }
-        required
-      >
-        <Textarea
-          rows={2}
-          value={reason}
-          placeholder={t("devicePin.override.reasonPlaceholder")}
-          onChange={(event) => {
-            setReason(event.target.value);
-            edited("reason");
-          }}
-        />
-      </FormField>
+          <Input
+            inputMode="numeric"
+            autoComplete="off"
+            value={valueText}
+            onChange={(event) => {
+              setValueText(event.target.value);
+              edited("value");
+            }}
+          />
+        </FormField>
+        <FormField
+          label={t("devicePin.override.reasonCodeLabel")}
+          error={
+            errors.reasonCode
+              ? t("devicePin.override.field.reasonCodeRequired")
+              : undefined
+          }
+          required
+        >
+          <Select
+            value={reasonCode}
+            onValueChange={(code) => {
+              setReasonCode(code);
+              edited("reasonCode");
+            }}
+          >
+            <SelectTrigger>
+              <SelectValue
+                placeholder={t("devicePin.override.reasonCodePlaceholder")}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {posOverrideReasonCodes.map((code) => (
+                <SelectItem key={code} value={code}>
+                  {t(`devicePin.override.reasonCode.${code}`)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+        <FormField
+          label={t("devicePin.override.reasonLabel")}
+          hint={t("devicePin.override.reasonHint")}
+          error={
+            errors.reason
+              ? t("devicePin.override.field.reasonRequired")
+              : undefined
+          }
+          required
+        >
+          <Textarea
+            rows={2}
+            value={reason}
+            placeholder={t("devicePin.override.reasonPlaceholder")}
+            onChange={(event) => {
+              setReason(event.target.value);
+              edited("reason");
+            }}
+          />
+        </FormField>
 
-      <SegmentedControl<Method>
-        label={t("devicePin.override.methodLabel")}
-        value={method}
-        onValueChange={setMethod}
-        options={[
-          { value: "pin", label: t("devicePin.override.method.pin") },
-          { value: "phone", label: t("devicePin.override.method.phone") },
-        ]}
-      />
+        <SegmentedControl<Method>
+          label={t("devicePin.override.methodLabel")}
+          value={method}
+          onValueChange={setMethod}
+          options={[
+            { value: "pin", label: t("devicePin.override.method.pin") },
+            { value: "phone", label: t("devicePin.override.method.phone") },
+          ]}
+        />
+      </fieldset>
+      {maybeCreated && (
+        <p
+          role="status"
+          data-testid="override-fields-locked"
+          className="text-sm font-semibold text-warning"
+        >
+          {t("devicePin.override.fieldsLocked")}
+        </p>
+      )}
 
       {method === "pin" ? (
         <div className="grid gap-3" data-attempt={attempt}>
@@ -426,6 +588,15 @@ function ModalBody({
               {t("devicePin.override.sendError")}
             </p>
           )}
+          {closeHeld && (
+            <p
+              role="status"
+              data-testid="override-close-held"
+              className="text-sm font-semibold text-warning"
+            >
+              {t("devicePin.override.closeHeld")}
+            </p>
+          )}
           <Button onClick={sendToPhone} loading={create.isPending}>
             {create.isPending
               ? t("devicePin.override.sending")
@@ -434,7 +605,7 @@ function ModalBody({
         </div>
       )}
       <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
+        <Button variant="outline" onClick={requestClose}>
           {t("devicePin.override.cancel")}
         </Button>
       </DialogFooter>
@@ -444,14 +615,21 @@ function ModalBody({
 
 function PhoneWait({
   requestId,
+  overrideId,
   requesterId,
+  closeGuard,
+  cancelOnMount,
   onApproved,
   onRejected,
   onRetry,
   onClose,
 }: {
   requestId: string;
+  overrideId: string;
   requesterId: string | null;
+  closeGuard: CloseGuard;
+  /** A close was asked for while the request was being sent (H2). */
+  cancelOnMount: boolean;
   onApproved: (approvedBy: string | null) => void;
   onRejected: (reason: string | null) => void;
   onRetry: () => void;
@@ -465,24 +643,69 @@ function PhoneWait({
   const request = poll.data?.data ?? null;
   const raw =
     request && nowMs !== null ? approvalOutcome(request, nowMs) : "pending";
+  // An approved request is not yet an approved override (G3): read the
+  // override itself and continue only when it is settled as approved.
+  const settlement = usePosOverrideSettlement(overrideId, raw === "approved");
+  const settled = settlement.data?.data ?? null;
   // The server enforces requester != approver; the device checks it again and
   // fails closed when the approver is missing or is the requester (AUTH-06).
-  const selfApproved =
-    raw === "approved" &&
-    (request?.decidedBy == null || request.decidedBy === requesterId);
-  const outcome = selfApproved ? "rejected" : raw;
+  const { outcome, selfApproved } = phoneOutcome({
+    raw,
+    decidedBy: request?.decidedBy ?? null,
+    settled,
+    requesterId,
+  });
 
   const notified = useRef(false);
   useEffect(() => {
     if (!request || notified.current) return;
     if (outcome === "approved") {
       notified.current = true;
-      onApproved(request.decidedBy);
+      onApproved(settled?.approvedBy ?? null);
     } else if (outcome === "rejected") {
       notified.current = true;
       onRejected(request.reason);
     }
-  }, [outcome, request, onApproved, onRejected]);
+  }, [outcome, request, settled, onApproved, onRejected]);
+
+  // Withdraw the request, then close. On 409 the request was decided
+  // meanwhile: re-read it, so an approval takes the approved path and any
+  // other end shows its result. Any other failure keeps the modal open with an
+  // error (never close on a request that may still be approved).
+  const cancelNow = useCallback(() => {
+    if (cancel.isPending) return;
+    setCancelFailed(false);
+    cancel.mutate(requestId, {
+      onSuccess: () => onClose(),
+      onError: (error) => {
+        if (error instanceof ApiError && error.status === 409) {
+          void poll.refetch().then((read) => {
+            const status = read.data?.data.status;
+            if (status === undefined || status === "pending")
+              setCancelFailed(true);
+          });
+          return;
+        }
+        setCancelFailed(true);
+      },
+    });
+  }, [cancel, requestId, onClose, poll]);
+
+  // A close asked for during the send cancels the new request right away.
+  const cancelledOnMount = useRef(false);
+  useEffect(() => {
+    if (!cancelOnMount || cancelledOnMount.current) return;
+    cancelledOnMount.current = true;
+    cancelNow();
+  }, [cancelOnMount, cancelNow]);
+
+  // X, Escape and an outside click run the same cancel while pending (G5).
+  const guarded = closeAction({ waiting: true, outcome }) === "cancel";
+  useEffect(() => {
+    if (!guarded) return;
+    closeGuard(cancelNow);
+    return () => closeGuard(null);
+  }, [guarded, closeGuard, cancelNow]);
 
   if (outcome === "pending")
     return (
@@ -511,9 +734,14 @@ function PhoneWait({
             })}
           </p>
         )}
-        {poll.isError && (
+        {(poll.isError || settlement.isError) && (
           <p className="text-sm text-warning">
             {t("devicePin.pending.pollError")}
+          </p>
+        )}
+        {awaitingSettlement({ raw, outcome }) && (
+          <p role="status" className="text-sm font-semibold text-info">
+            {t("devicePin.pending.settling")}
           </p>
         )}
         {cancelFailed && (
@@ -521,31 +749,11 @@ function PhoneWait({
             {t("devicePin.pending.cancelError")}
           </p>
         )}
-        {/* "Berhenti menunggu": withdraw the request first, then close. On 409
-            the request was decided meanwhile: re-read it, so an approval takes
-            the approved path and any other end shows its result. Any other
-            failure keeps the modal open with an error (never close on a
-            request that may still be approved). */}
+        {/* "Berhenti menunggu": same cancel as X / Escape / outside click. */}
         <Button
           variant="outline"
           loading={cancel.isPending}
-          onClick={() => {
-            setCancelFailed(false);
-            cancel.mutate(requestId, {
-              onSuccess: () => onClose(),
-              onError: (error) => {
-                if (error instanceof ApiError && error.status === 409) {
-                  void poll.refetch().then((read) => {
-                    const status = read.data?.data.status;
-                    if (status === undefined || status === "pending")
-                      setCancelFailed(true);
-                  });
-                  return;
-                }
-                setCancelFailed(true);
-              },
-            });
-          }}
+          onClick={cancelNow}
         >
           {t("devicePin.pending.cancel")}
         </Button>

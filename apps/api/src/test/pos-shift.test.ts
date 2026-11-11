@@ -129,6 +129,21 @@ async function asOwnerTenant<T>(
   }
 }
 
+/** A registry row for the terminal, so its signed token is still current. */
+async function registerDevice(
+  deviceId: string,
+  outletId: string = tenant.outletId,
+): Promise<void> {
+  registeredDevices.set(`${tenant.tenantId}:${deviceId}`, outletId);
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+       VALUES ($1, $2, $3, 'pos', 'Kasir Uji', now() - interval '1 minute')`,
+      [deviceId, tenant.tenantId, outletId],
+    ),
+  );
+}
+
 function tenantContextOf(tenantId: string): ScopedTenantContext {
   return establishScopedTenantContext(
     establishTenantContext({
@@ -162,7 +177,7 @@ async function member(
 async function newCashier(label = "Kasir"): Promise<Cashier> {
   const base = await member(tenant, roleIds.cashier, label);
   const deviceId = randomUUID();
-  registeredDevices.set(`${tenant.tenantId}:${deviceId}`, tenant.outletId);
+  await registerDevice(deviceId);
   return { ...base, deviceId };
 }
 
@@ -695,7 +710,7 @@ describe("POS-03 open a cashier shift", () => {
     });
   });
 
-  it("refuses to open without a verified device token (403) and stores nothing", async () => {
+  it("refuses to open without a device token (403), and a forged or unregistered one (401), and stores nothing", async () => {
     const cashier = await newCashier();
     const noToken = await open(cashier, null);
     expect(noToken.status).toBe(403);
@@ -706,11 +721,12 @@ describe("POS-03 open a cashier shift", () => {
       .set(originHeader)
       .set(DEVICE_TOKEN_HEADER, "dv1.forged.token")
       .send({ openingFloatIdr: FLOAT_IDR, idempotencyKey: randomUUID() });
-    expect(forged.status).toBe(403);
+    // A token that is sent but not accepted is 401 (second-opinion 495 H1).
+    expect(forged.status).toBe(401);
 
     // A correctly signed token for a terminal that is not registered at this outlet.
     const unregistered = await open(cashier, randomUUID());
-    expect(unregistered.status).toBe(403);
+    expect(unregistered.status).toBe(401);
 
     const { rows } = await owner.query(
       "SELECT 1 FROM pos_shifts WHERE tenant_id = $1 AND cashier_id = $2",
@@ -721,7 +737,7 @@ describe("POS-03 open a cashier shift", () => {
 
   it("refuses staff without shift.cash.operate (403) and anonymous callers (401)", async () => {
     const deviceId = randomUUID();
-    registeredDevices.set(`${tenant.tenantId}:${deviceId}`, tenant.outletId);
+    await registerDevice(deviceId);
     const denied = await open(noShiftUser, deviceId);
     expect(denied.status).toBe(403);
     const anonymous = await agent(app)
@@ -762,7 +778,7 @@ describe("POS-03 open a cashier shift", () => {
     expect(sameDevice.body.error.code).toBe("SHIFT_ALREADY_OPEN");
 
     const otherDevice = randomUUID();
-    registeredDevices.set(`${tenant.tenantId}:${otherDevice}`, tenant.outletId);
+    await registerDevice(otherDevice);
     const sameCashier = await open(first, otherDevice);
     expect(sameCashier.status).toBe(409);
     expect(sameCashier.body.error.code).toBe("SHIFT_ALREADY_OPEN");
@@ -3310,7 +3326,7 @@ describe("POS-03 review K: supervisor force close (legend-6c0)", () => {
     const caller = await member(tenant, roleIds.supervisor, "Supervisor Hari");
     const cashier = await member(tenant, roleIds.cashier, "Kasir Hari");
     const deviceId = randomUUID();
-    registeredDevices.set(`${tenant.tenantId}:${deviceId}`, outletId);
+    await registerDevice(deviceId, outletId);
     await setStaffPin(
       tenantContextOf(tenant.tenantId).tenant,
       supervisor.userId,

@@ -24,6 +24,7 @@ import {
   grantRoleAssignment,
 } from "../services/access.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
+import { deleteHires, seedHire } from "./hire-seed";
 
 const app = createApp();
 const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
@@ -35,6 +36,7 @@ const owner = new Pool({
 const createdUserIds: string[] = [];
 const createdRoleIds: string[] = [];
 const createdAssignmentIds: string[] = [];
+const createdHireIds: string[] = [];
 
 function scopedContext(tenantId = seededTenantId): ScopedTenantContext {
   return establishScopedTenantContext(
@@ -98,6 +100,7 @@ async function auditRows(objectId: string) {
 }
 
 afterAll(async () => {
+  await deleteHires(owner, seededTenantId, createdHireIds);
   if (createdAssignmentIds.length > 0)
     await owner.query(
       "DELETE FROM role_assignments WHERE id = ANY($1::uuid[])",
@@ -162,6 +165,14 @@ describe("§3.7 RBAC writes append to audit_logs (legend-wt33)", () => {
     const grantor = await signedIn("Audit Grantor");
     await assign(grantor.userId, "owner");
     const grantee = await signedIn("Audit Grantee");
+    // G2: the grantee is a new hire of the tenant (HRIS record, no role yet).
+    createdHireIds.push(
+      await seedHire(owner, {
+        tenantId: seededTenantId,
+        userId: grantee.userId,
+        outletId: bandung,
+      }),
+    );
 
     const assignment = await grantRoleAssignment(
       scopedContext(),

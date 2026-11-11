@@ -40,6 +40,7 @@ import {
   type AuditWriter,
 } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import { deleteHires, seedHire } from "./hire-seed.ts";
 
 const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
 const bandung: string = cafeLegendAccessFixtures.outletIds.bandung;
@@ -50,6 +51,7 @@ const owner = new Pool({
 const createdUserIds: string[] = [];
 const createdRoleIds: string[] = [];
 const createdAssignmentIds: string[] = [];
+const createdHireIds: string[] = [];
 const otherTenantIds: string[] = [];
 let savedPolicies: Record<string, unknown>[] = [];
 
@@ -91,6 +93,19 @@ async function newUser(name: string): Promise<string> {
   );
   createdUserIds.push(id);
   return id;
+}
+
+/** A new account that already belongs to the tenant as an HRIS hire (G2). */
+async function newHire(name: string): Promise<string> {
+  const userId = await newUser(name);
+  createdHireIds.push(
+    await seedHire(owner, {
+      tenantId: seededTenantId,
+      userId,
+      outletId: bandung,
+    }),
+  );
+  return userId;
 }
 
 async function roleIdOf(templateKey: string): Promise<string> {
@@ -220,6 +235,7 @@ afterAll(async () => {
     ]);
   for (const id of otherTenantIds)
     await owner.query("DELETE FROM tenants WHERE id = $1", [id]);
+  await deleteHires(owner, seededTenantId, createdHireIds);
   if (createdUserIds.length > 0)
     await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
       createdUserIds,
@@ -255,7 +271,7 @@ describe("§3.7 RBAC audit commits with the domain write", () => {
 
   it("§3.7 role_assignment.granted lands in audit_logs with grantor, tenant and object", async () => {
     const grantor = await ownerUser("Audit Grantor");
-    const grantee = await newUser("Audit Grantee");
+    const grantee = await newHire("Audit Grantee");
     const assignment = await grantRoleAssignment(
       scopedContext(),
       grantRoleSchema.parse({
@@ -328,7 +344,7 @@ describe("§3.7 RBAC audit rolls back with the domain write", () => {
 
   it("§3.7 a failing audit writer leaves no assignment and no audit row", async () => {
     const grantor = await ownerUser("Rollback Grantor");
-    const grantee = await newUser("Rollback Grantee");
+    const grantee = await newHire("Rollback Grantee");
     setAuditWriter(writeThenFail);
 
     await expect(
@@ -427,7 +443,7 @@ describe("§3.7 RBAC audit fails closed", () => {
 
   it("§3.7 refuses a role grant with AuditUnavailableError when no writer is installed", async () => {
     const grantor = await ownerUser("Closed Grantor");
-    const grantee = await newUser("Closed Grantee");
+    const grantee = await newHire("Closed Grantee");
     setAuditWriter(null);
 
     await expect(

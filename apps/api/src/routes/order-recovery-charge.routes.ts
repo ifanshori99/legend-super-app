@@ -26,7 +26,7 @@ import {
   closeIssueCharge,
   type IssueChargeCloseAction,
 } from "../services/order-recovery-charge-staff.ts";
-import { deviceIdOf } from "./device-id.ts";
+import { currentDeviceIdOf } from "./device-id.ts";
 
 export const orderRecoveryChargeRouter = Router();
 
@@ -82,7 +82,7 @@ orderRecoveryChargeRouter.post(
         getScopedTenantContext(req),
         {
           userId: userIdSchema.parse(getAuth(req).user.id),
-          deviceId: deviceIdOf(req),
+          deviceId: await currentDeviceIdOf(req),
         },
         chargeId,
         input,

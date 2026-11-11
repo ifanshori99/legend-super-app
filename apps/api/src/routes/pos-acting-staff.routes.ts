@@ -17,7 +17,7 @@ import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
-import { deviceIdOf } from "./device-id";
+import { registeredDeviceIdOf } from "./device-id";
 import {
   endActingStaff,
   issueActingStaff,
@@ -27,10 +27,11 @@ import {
  * The signed device id. Unlike `/verify` (no session), this route has a login
  * session AND the device token, and the request may arrive on the tenant's
  * registered domain (tenant source "domain"), so `source === "device"` is not
- * required: the signature and the tenant match (device-id.ts) are.
+ * required: the signature, the tenant match and a current registry row
+ * (device-id.ts `registeredDeviceIdOf`: not revoked, not rotated out) are.
  */
-function signedDeviceId(req: Request): string {
-  const deviceId = deviceIdOf(req);
+async function signedDeviceId(req: Request): Promise<string> {
+  const deviceId = await registeredDeviceIdOf(req);
   if (deviceId === null)
     throw new CoreError(
       "UNAUTHORIZED",
@@ -50,7 +51,7 @@ posActingStaffRouter.post(
   requireTenantContext,
   jsonBody,
   async (req, res) => {
-    const deviceId = signedDeviceId(req);
+    const deviceId = await signedDeviceId(req);
     const input = posSessionRequestSchema.parse(req.body);
     const auth = getAuth(req);
     res.setHeader("Cache-Control", "private, no-store");
@@ -73,7 +74,7 @@ posActingStaffRouter.post(
   requireTenantContext,
   async (req, res) => {
     await endActingStaff(getTenantContext(req), {
-      deviceId: signedDeviceId(req),
+      deviceId: await signedDeviceId(req),
       sessionId: getAuth(req).session.id,
     });
     res.status(204).end();

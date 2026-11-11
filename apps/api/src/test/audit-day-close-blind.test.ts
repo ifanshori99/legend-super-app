@@ -49,6 +49,7 @@ import {
   setStaffPin,
 } from "../services/device-pin.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -134,6 +135,11 @@ async function member(
   );
   const deviceId = randomUUID();
   registeredDevices.set(`${tenant.tenantId}:${deviceId}`, tenant.outletId);
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId,
+  });
   return { client, userId, deviceId };
 }
 

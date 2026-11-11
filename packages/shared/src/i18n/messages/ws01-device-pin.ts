@@ -126,6 +126,10 @@ export const devicePinMessages = {
     pinSuccess: "Disetujui oleh {name}.",
     sending: "Mengirim permintaan…",
     sendError: "Permintaan belum terkirim. Periksa koneksi lalu coba lagi.",
+    fieldsLocked:
+      "Permintaan sebelumnya mungkin sudah terkirim, jadi isian dikunci. Kirim ulang untuk melanjutkan, atau tutup untuk menarik permintaan dulu.",
+    closeHeld:
+      "Layar belum bisa ditutup: permintaan mungkin sudah terkirim. Saat koneksi kembali, permintaan dibatalkan dan layar ditutup. Coba tutup lagi setelah tersambung.",
     field: {
       valueRequired: "Isi nilai dengan angka rupiah, 0 atau lebih.",
       reasonCodeRequired: "Pilih kode alasan.",
@@ -140,6 +144,8 @@ export const devicePinMessages = {
     remaining: "Sisa {time}",
     cancel: "Berhenti menunggu",
     cancelError: "Permintaan belum bisa dibatalkan. Coba lagi sebentar.",
+    settling:
+      "Sudah disetujui, menunggu penyelesaian persetujuan berjenjang. Permintaan tidak bisa dibatalkan lagi; layar ini lanjut otomatis.",
     pollError: "Status belum bisa dibaca. Perangkat mencoba lagi otomatis.",
     live: "Menunggu keputusan supervisor",
   },

@@ -63,6 +63,7 @@ import {
 } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -237,6 +238,11 @@ async function addOutlet(): Promise<{ outletId: string; deviceId: string }> {
     { pin: PIN },
   );
   devices.set(deviceId, outletId);
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId,
+    deviceId,
+  });
   return { outletId, deviceId };
 }
 
@@ -1266,6 +1272,11 @@ describe("POS-03 cash goes into the drawer of the till it is taken on (legend-6c
     const shiftId = await openShift(outlet);
     const otherTill = randomUUID();
     devices.set(otherTill, outlet.outletId);
+    await registerTestDevice(owner, {
+      tenantId: tenant.tenantId,
+      outletId: outlet.outletId,
+      deviceId: otherTill,
+    });
     const unpaid = await submittedOrder(outlet.outletId);
 
     const noDevice = await pos(outlet.outletId, cashier, null).cash(

@@ -37,6 +37,7 @@ import {
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -244,6 +245,11 @@ beforeAll(async () => {
   setPosReceiptPort(memoryReceiptPort());
   tenant = await createIsolatedTenant(`pts-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId: ids.device,
+  });
   setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
     tenantId === tenant.tenantId && deviceId === ids.device
       ? tenant.outletId

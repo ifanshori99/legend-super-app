@@ -74,6 +74,7 @@ import { db } from "../db";
 import {
   approvalPolicies,
   domainEventOutbox,
+  employees,
   roleAssignments,
   roles,
   user,
@@ -885,6 +886,47 @@ export async function grantRoleAssignment(
       org: data.org,
       now,
     });
+    // legend-495 G2: a role goes to someone who already belongs to this
+    // tenant: an assignment in force now (started, not expired), or an HRIS
+    // employee record of this tenant linked to the account whose status is
+    // still `onboarding` or `active` (employees.status, the set the attendance
+    // gate accepts). The second case is how a new hire gets the first role.
+    // Both reads filter by tenant in SQL. Checked after the grantor's own
+    // authority, so a caller who may not grant cannot probe membership.
+    const [currentAssignment] = await tx
+      .select({ id: roleAssignments.id })
+      .from(roleAssignments)
+      .where(
+        and(
+          eq(roleAssignments.tenantId, context.tenant.tenantId),
+          eq(roleAssignments.userId, input.userId),
+          lte(roleAssignments.validFrom, now),
+          or(
+            isNull(roleAssignments.validUntil),
+            gt(roleAssignments.validUntil, now),
+          ),
+        ),
+      )
+      .limit(1);
+    if (!currentAssignment) {
+      const [hire] = await tx
+        .select({ id: employees.id })
+        .from(employees)
+        .where(
+          and(
+            eq(employees.tenantId, context.tenant.tenantId),
+            eq(employees.userId, input.userId),
+            inArray(employees.status, ["onboarding", "active"]),
+          ),
+        )
+        .limit(1);
+      if (!hire)
+        throw new HttpError(
+          422,
+          "VALIDATION_ERROR",
+          "This person is not a member of this business yet.",
+        );
+    }
     const validFrom =
       input.validFrom === undefined ? now : new Date(input.validFrom);
     const validUntil =

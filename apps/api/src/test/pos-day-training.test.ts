@@ -42,6 +42,7 @@ import { endOfDayRecapSchema, type EndOfDayRecap } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -317,6 +318,11 @@ beforeAll(async () => {
   setDeviceOutletResolver(async ({ tenantId, deviceId: id }) =>
     tenantId === tenant.tenantId && id === deviceId ? tenant.outletId : null,
   );
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId,
+  });
   for (const [id, name, permissions] of [
     [managerRole, "Manajer Hari Latihan", ["pos.day.close"]],
     [cashierRole, "Kasir Hari Latihan", ["shift.cash.operate"]],
