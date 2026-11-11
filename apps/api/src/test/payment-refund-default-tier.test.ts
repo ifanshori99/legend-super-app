@@ -1,7 +1,8 @@
 // Default refund approval tier from Rp0 (beads legend-zi9o; PAY-04, TEN-02).
 // PRD §3.6 / D14: a refund needs the supervisor's PIN or approval. A tenant with
-// no refund policy rows gets the default matrix (one row: supervisor from Rp0;
-// higher tiers are tenant configuration), the refund chain opens when the refund
+// no refund policy rows gets the default matrix (4 rows at level 1 from Rp0:
+// supervisor, outlet manager, general manager, owner, Q63; higher tiers are
+// tenant configuration), the refund chain opens when the refund
 // is requested, and a supervisor without payment.reconcile can decide it in the
 // approval inbox.
 //
@@ -19,6 +20,10 @@
 // - The migration is re-run inside a transaction that is rolled back, so it
 //   cannot add rows to tenants owned by other suites. All reads inside it use
 //   that same connection (the migration locks roles and approval_policies).
+// - The default is 4 rows (supervisor, outlet manager, general manager, owner;
+//   level 1 from Rp0, brief 532 B2). Its migrations 0140 then 0341 are re-run in
+//   order; a tenant without a supervisor role gets the other 3 rows (0341 adds
+//   a row for each template role that exists).
 // - The request-time chain deadline is "about 7 days" (10080 minutes, the
 //   maximum): asserted with a few minutes of slack.
 // - A pending refund past the pending_unapproved threshold is escalated even
@@ -96,10 +101,16 @@ const workerContext: ScopedTenantContext = establishScopedTenantContext(
 );
 const tenantWide = tenantContext(tenantId);
 
-// The default matrix as the spec states it (PRD §3.6, D14): the supervisor
-// approves a refund from Rp0. Written out here rather than imported so a wrong
-// constant cannot hide itself.
+// The default matrix as the spec states it (PRD §3.6, D14; founder Q63): a
+// refund opens a one-step chain from Rp0 that the supervisor, the outlet
+// manager, the general manager or the owner can decide, each within their Q63
+// amount ceiling (the ceiling stays in code, not in the matrix). Written out
+// here rather than imported so a wrong constant cannot hide itself. Sorted by
+// template key, as refundPolicies orders them.
 const DEFAULT_ROWS = [
+  { threshold: 0, level: 1, template: "general_manager", distinct: true },
+  { threshold: 0, level: 1, template: "outlet_manager", distinct: true },
+  { threshold: 0, level: 1, template: "owner", distinct: true },
   { threshold: 0, level: 1, template: "supervisor", distinct: true },
 ];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -472,7 +483,7 @@ describe("PAY-04 default refund matrix for a new tenant", () => {
     expect(financeTemplate.permissions).not.toContain("pos.refund.approve");
   });
 
-  it("PAY-04 a tenant created in the platform panel has exactly the 1 default refund rule", async () => {
+  it("PAY-04 a tenant created in the platform panel has exactly the 4 default refund rules (level 1 from Rp0)", async () => {
     const admin = agent(app);
     const email = await signUp(admin, "Default tier platform admin");
     await setRole(email, "admin");
@@ -520,9 +531,11 @@ describe("PAY-04 default refund matrix for a new tenant", () => {
 
     const rows = await refundPolicies(newTenant);
     expect(asDefaults(rows)).toEqual(DEFAULT_ROWS);
-    // The row points at this tenant's own role, not another tenant's.
-    const supervisorRole = await roleIdOf("supervisor", newTenant);
-    expect(rows.map((r) => r.approver_role_id)).toEqual([supervisorRole]);
+    // The rows point at this tenant's own roles, not another tenant's.
+    const ownRoles = await Promise.all(
+      DEFAULT_ROWS.map((row) => roleIdOf(row.template, newTenant)),
+    );
+    expect(rows.map((r) => r.approver_role_id)).toEqual(ownRoles);
   });
 
   it("PAY-04 seeding an existing tenant without refund rules adds the default once", async () => {
@@ -867,8 +880,9 @@ describe("PAY-04 a tenant that configured its own refund matrix keeps it", () =>
   ];
 
   /**
-   * Run the refund_approval_policies_data migration body on a dedicated connection inside a transaction
-   * that is always rolled back. The migration locks roles and approval_policies,
+   * Run the default refund matrix data migrations (0140 supervisor default, then
+   * the Q63 widening to 4 rows) in order on a dedicated connection inside a
+   * transaction that is always rolled back. The migration locks roles and approval_policies,
    * so every read inside goes through this same connection: a read on another
    * connection would wait for the lock and never return.
    */
@@ -876,15 +890,20 @@ describe("PAY-04 a tenant that configured its own refund matrix keeps it", () =>
     inspect: (client: PoolClient) => Promise<T>,
   ): Promise<T> {
     const dir = fileURLToPath(new URL("../../drizzle/", import.meta.url));
-    const file = readdirSync(dir).find((name) =>
-      /^\d{4}_refund_approval_policies_data\.sql$/.test(name),
+    const files = [
+      /^\d{4}_refund_approval_policies_data\.sql$/,
+      /^\d{4}_refund_approval_matrix_data\.sql$/,
+    ].map((pattern) => {
+      const found = readdirSync(dir).find((name) => pattern.test(name));
+      if (!found) throw new Error(`Migration ${pattern} is missing`);
+      return found;
+    });
+    const statements = files.flatMap((file) =>
+      readFileSync(`${dir}${file}`, "utf8")
+        .split("--> statement-breakpoint")
+        .map((statement) => statement.trim())
+        .filter((statement) => statement.length > 0),
     );
-    if (!file)
-      throw new Error("Migration refund_approval_policies_data is missing");
-    const statements = readFileSync(`${dir}${file}`, "utf8")
-      .split("--> statement-breakpoint")
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0);
     const client = await owner.connect();
     try {
       await client.query("BEGIN");
@@ -938,8 +957,11 @@ describe("PAY-04 a tenant that configured its own refund matrix keeps it", () =>
       expect(asDefaults(await refundPolicies(legacy.tenantId, client))).toEqual(
         DEFAULT_ROWS,
       );
-      // ... and a tenant without a supervisor role gets nothing.
-      expect(await refundPolicies(partial.tenantId, client)).toHaveLength(0);
+      // ... and a tenant without a supervisor role gets no supervisor row
+      // (a role that does not exist adds no row), only the roles it has.
+      expect(
+        asDefaults(await refundPolicies(partial.tenantId, client)),
+      ).toEqual(DEFAULT_ROWS.filter((row) => row.template !== "supervisor"));
     });
     // Rolled back: the migration left no trace for the suites that follow.
     expect(await refundPolicies(legacy.tenantId)).toHaveLength(0);

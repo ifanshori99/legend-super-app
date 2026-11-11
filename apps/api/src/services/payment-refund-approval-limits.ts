@@ -12,36 +12,105 @@ import {
 
 type Refund = typeof paymentRefunds.$inferSelect;
 
-/** Every durable way a payment intent can identify the bill it paid. */
-function intentGroups(tenantId: string) {
-  return sql`intent_groups AS (
-    SELECT p.id AS intent_id, 'link:' || p.payment_link_id::text AS group_key
-      FROM payment_intents p WHERE p.tenant_id = ${tenantId}
-    UNION
-    SELECT p.id, 'order:' || p.order_id::text
+/**
+ * Every durable way ONE payment intent identifies the bill it paid, as typed
+ * (kind, ref) keys. Resolved from the intent row first, so each lookup is a
+ * point read on an indexed column instead of a scan of all tenant intents.
+ */
+function intentKeys(tenantId: string, paymentIntentId: string) {
+  return sql`intent_keys AS (
+    SELECT 'link'::text AS kind, p.payment_link_id AS ref
       FROM payment_intents p
-     WHERE p.tenant_id = ${tenantId} AND p.order_id IS NOT NULL
+     WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentIntentId}::uuid
     UNION
-    SELECT p.id, 'order:' || s.order_id::text
+    SELECT 'order'::text, p.order_id
+      FROM payment_intents p
+     WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentIntentId}::uuid
+       AND p.order_id IS NOT NULL
+    UNION
+    SELECT 'order'::text, s.order_id
       FROM payment_intents p JOIN bill_splits s
         ON s.tenant_id = p.tenant_id AND s.id = p.bill_split_id
-     WHERE p.tenant_id = ${tenantId}
+     WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentIntentId}::uuid
     UNION
-    SELECT p.id, 'order:' || o.id::text
+    SELECT 'order'::text, o.id
       FROM payment_intents p JOIN orders o
-        ON o.tenant_id = p.tenant_id
-       AND (o.payment_link_id = p.payment_link_id OR o.payment_intent_id = p.id)
-     WHERE p.tenant_id = ${tenantId}
+        ON o.tenant_id = p.tenant_id AND o.payment_link_id = p.payment_link_id
+     WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentIntentId}::uuid
     UNION
-    SELECT p.id, 'order:' || t.order_id::text
+    SELECT 'order'::text, o.id
+      FROM payment_intents p JOIN orders o
+        ON o.tenant_id = p.tenant_id AND o.payment_intent_id = p.id
+     WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentIntentId}::uuid
+    UNION
+    SELECT 'order'::text, t.order_id
       FROM payment_intents p JOIN pos_order_tenders t
-        ON t.tenant_id = p.tenant_id
-       AND (t.payment_link_id = p.payment_link_id OR t.payment_intent_id = p.id)
-     WHERE p.tenant_id = ${tenantId}
+        ON t.tenant_id = p.tenant_id AND t.payment_link_id = p.payment_link_id
+     WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentIntentId}::uuid
     UNION
-    SELECT p.id, 'reservation:' || p.reservation_id::text
+    SELECT 'order'::text, t.order_id
+      FROM payment_intents p JOIN pos_order_tenders t
+        ON t.tenant_id = p.tenant_id AND t.payment_intent_id = p.id
+     WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentIntentId}::uuid
+    UNION
+    SELECT 'reservation'::text, p.reservation_id
       FROM payment_intents p
-     WHERE p.tenant_id = ${tenantId} AND p.reservation_id IS NOT NULL
+     WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentIntentId}::uuid
+       AND p.reservation_id IS NOT NULL
+  )`;
+}
+
+/**
+ * The intents that share a key with the one intent: the intent itself plus
+ * every other intent of the same link, order, split, tender or reservation,
+ * found through indexed columns of the keys already resolved above.
+ */
+function relatedIntents(tenantId: string, paymentIntentId: string) {
+  return sql`${intentKeys(tenantId, paymentIntentId)}, related AS (
+    SELECT ${paymentIntentId}::uuid AS intent_id
+    UNION
+    SELECT q.id FROM intent_keys k JOIN payment_intents q
+        ON q.tenant_id = ${tenantId} AND q.payment_link_id = k.ref
+     WHERE k.kind = 'link'
+    UNION
+    SELECT q.id FROM intent_keys k JOIN payment_intents q
+        ON q.tenant_id = ${tenantId} AND q.order_id = k.ref
+     WHERE k.kind = 'order'
+    UNION
+    SELECT q.id FROM intent_keys k
+      JOIN bill_splits s ON s.tenant_id = ${tenantId} AND s.order_id = k.ref
+      JOIN payment_intents q ON q.tenant_id = s.tenant_id AND q.bill_split_id = s.id
+     WHERE k.kind = 'order'
+    UNION
+    SELECT q.id FROM intent_keys k
+      JOIN orders o ON o.tenant_id = ${tenantId} AND o.id = k.ref
+      JOIN payment_intents q
+        ON q.tenant_id = o.tenant_id AND q.payment_link_id = o.payment_link_id
+     WHERE k.kind = 'order'
+    UNION
+    SELECT q.id FROM intent_keys k
+      JOIN orders o ON o.tenant_id = ${tenantId} AND o.id = k.ref
+      JOIN payment_intents q
+        ON q.tenant_id = o.tenant_id AND q.id = o.payment_intent_id
+     WHERE k.kind = 'order'
+    UNION
+    SELECT q.id FROM intent_keys k
+      JOIN pos_order_tenders t
+        ON t.tenant_id = ${tenantId} AND t.order_id = k.ref
+      JOIN payment_intents q
+        ON q.tenant_id = t.tenant_id AND q.payment_link_id = t.payment_link_id
+     WHERE k.kind = 'order'
+    UNION
+    SELECT q.id FROM intent_keys k
+      JOIN pos_order_tenders t
+        ON t.tenant_id = ${tenantId} AND t.order_id = k.ref
+      JOIN payment_intents q
+        ON q.tenant_id = t.tenant_id AND q.id = t.payment_intent_id
+     WHERE k.kind = 'order'
+    UNION
+    SELECT q.id FROM intent_keys k JOIN payment_intents q
+        ON q.tenant_id = ${tenantId} AND q.reservation_id = k.ref
+     WHERE k.kind = 'reservation'
   )`;
 }
 
@@ -52,9 +121,9 @@ export async function lockRefundApprovalScope(
   paymentIntentId: string,
 ): Promise<void> {
   const { rows } = await tx.execute<{ group_key: string }>(sql`
-    WITH ${intentGroups(tenantId)}
-    SELECT DISTINCT group_key FROM intent_groups
-     WHERE intent_id = ${paymentIntentId}::uuid ORDER BY group_key
+    WITH ${intentKeys(tenantId, paymentIntentId)}
+    SELECT DISTINCT kind || ':' || ref::text AS group_key FROM intent_keys
+     ORDER BY group_key
   `);
   for (const { group_key: group } of rows)
     await tx.execute(
@@ -79,12 +148,7 @@ export async function refundApprovalDecisionTime(
   now: Date,
 ): Promise<Date> {
   const { rows } = await tx.execute<{ at_ms: string }>(sql`
-    WITH ${intentGroups(refund.tenantId)}, related AS (
-      SELECT DISTINCT other.intent_id
-        FROM intent_groups current_intent
-        JOIN intent_groups other USING (group_key)
-       WHERE current_intent.intent_id = ${refund.paymentIntentId}::uuid
-    ), facts AS (
+    WITH ${relatedIntents(refund.tenantId, refund.paymentIntentId)}, facts AS (
       SELECT r.decided_at AS at FROM payment_refunds r
        WHERE r.tenant_id = ${refund.tenantId}
          AND r.payment_intent_id IN (SELECT intent_id FROM related)
@@ -105,10 +169,7 @@ export async function refundApprovalDecisionTime(
       UNION ALL
       SELECT n.refunded_at FROM pos_order_refunds n
        WHERE n.tenant_id = ${refund.tenantId}
-         AND 'order:' || n.order_id::text IN (
-           SELECT group_key FROM intent_groups
-            WHERE intent_id = ${refund.paymentIntentId}::uuid
-         )
+         AND n.order_id IN (SELECT ref FROM intent_keys WHERE kind = 'order')
     )
     SELECT floor(extract(epoch FROM greatest(
       ${now}::timestamptz,
@@ -135,18 +196,10 @@ async function committedAmount(
   approvedBefore?: Date,
 ): Promise<bigint> {
   const { rows } = await tx.execute<{ total: string }>(sql`
-    WITH ${intentGroups(refund.tenantId)}, related AS (
-      SELECT DISTINCT other.intent_id
-        FROM intent_groups current_intent
-        JOIN intent_groups other USING (group_key)
-       WHERE current_intent.intent_id = ${refund.paymentIntentId}::uuid
-    ), native_refunds AS (
+    WITH ${relatedIntents(refund.tenantId, refund.paymentIntentId)}, native_refunds AS (
       SELECT n.* FROM pos_order_refunds n
        WHERE n.tenant_id = ${refund.tenantId}
-         AND 'order:' || n.order_id::text IN (
-           SELECT group_key FROM intent_groups
-            WHERE intent_id = ${refund.paymentIntentId}::uuid
-         )
+         AND n.order_id IN (SELECT ref FROM intent_keys WHERE kind = 'order')
          ${
            approvedBefore === undefined
              ? sql``

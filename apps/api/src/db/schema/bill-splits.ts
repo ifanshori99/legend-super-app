@@ -121,6 +121,9 @@ export const billSplits = pgTable(
       table.tableSessionId,
       table.createdAt,
     ),
+    // Refund-authority relatedIntents joins bill_splits by order_id across
+    // every status; the live-index above is partial (status <> 'voided'); 0340.
+    index("bill_splits_order_idx").on(table.tenantId, table.orderId),
     check("bill_splits_amount_check", sql`${table.amountIdr} > 0`),
     check(
       "bill_splits_status_check",

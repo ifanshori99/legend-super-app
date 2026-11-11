@@ -265,6 +265,11 @@ export const orders = pgTable(
       "orders_customer_attached_via_check",
       sql`${table.customerAttachedVia} IS NULL OR ${table.customerAttachedVia} IN ('member_qr', 'phone_lookup', 'pwa_session', 'receipt_claim')`,
     ),
+    // Refund authority finds an intent's order by the intent id (the payment
+    // link side is orders_tenant_payment_link_key); migration 0340.
+    index("orders_tenant_payment_intent_idx")
+      .on(table.tenantId, table.paymentIntentId)
+      .where(sql`${table.paymentIntentId} IS NOT NULL`),
     unique("orders_tenant_outlet_number_key").on(
       table.tenantId,
       table.outletId,

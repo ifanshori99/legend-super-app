@@ -317,9 +317,10 @@ export async function seedTenantRoleTemplates(
   `);
   // legend-zi9o: refund needs the supervisor's approval (PRD §3.6, D14), so a
   // refund below every tier must not skip the inbox. Default matrix from Rp0
-  // (DEFAULT_REFUND_APPROVAL_POLICIES; same row as migration 0134): one
-  // supervisor level-1 row at floor 0. Only when the tenant has no refund row
-  // and a supervisor template role exists (the join yields nothing otherwise).
+  // (DEFAULT_REFUND_APPROVAL_POLICIES; same rows as migration 0341, Q63): level
+  // 1 at floor 0 for supervisor, outlet manager, general manager and owner.
+  // Only when the tenant has no refund row; a template role that does not exist
+  // adds no row (the join yields nothing for it).
   const refundValues = sql.join(
     DEFAULT_REFUND_APPROVAL_POLICIES.map(
       (row) =>
