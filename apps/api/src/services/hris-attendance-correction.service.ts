@@ -72,8 +72,10 @@ import {
   cursorPair,
   forbidden,
   hrisAuditEntry,
+  isReachedEmployee,
   loadHrisAccess,
   notFound,
+  reachedEmployeeCondition,
   uniqueViolation,
   type HrisAccess,
   type Tx,
@@ -175,27 +177,46 @@ async function auditCorrection(
 
 // ------------------------------------------------------------ visibility
 
-/** Outlets whose corrections the caller may list/decide, plus their own rows. */
-function visibleCondition(access: HrisAccess): SQL | null {
-  const reach = access.reach(MANAGE_CODES);
+/**
+ * Corrections the caller may list/decide, plus their own rows. Tenant-wide
+ * reach (HR) sees all; outlet reach (supervisor) only direct reports inside
+ * those outlets (employees.manager_id).
+ */
+function visibleCondition(
+  tx: Tx,
+  tenantId: TenantId,
+  access: HrisAccess,
+): SQL | null {
   const conditions: SQL[] = [];
-  if (reach?.kind === "tenant") return sql`true`;
-  if (reach)
-    conditions.push(
-      inArray(attendanceCorrections.outletId, [...reach.outletIds]),
-    );
+  const managed = reachedEmployeeCondition(
+    tx,
+    tenantId,
+    access,
+    MANAGE_CODES,
+    attendanceCorrections.outletId,
+    attendanceCorrections.employeeId,
+  );
+  if (managed) conditions.push(managed);
+  // Reach without reports (no employee record): an empty list, not a 403.
+  else if (access.reach(MANAGE_CODES) !== null) conditions.push(sql`false`);
   if (access.own)
     conditions.push(eq(attendanceCorrections.employeeId, access.own.id));
   return conditions.length === 0 ? null : or(...conditions)!;
 }
 
-function canSee(access: HrisAccess, row: CorrectionRow): boolean {
+async function canSee(
+  tx: Tx,
+  access: HrisAccess,
+  row: CorrectionRow,
+): Promise<boolean> {
   if (access.own && lower(access.own.id) === lower(row.employeeId)) return true;
-  const reach = access.reach(MANAGE_CODES);
-  if (!reach) return false;
-  return (
-    reach.kind === "tenant" ||
-    reach.outletIds.some((id) => id === lower(row.outletId))
+  return isReachedEmployee(
+    tx,
+    row.tenantId,
+    access,
+    MANAGE_CODES,
+    row.outletId,
+    row.employeeId,
   );
 }
 
@@ -480,7 +501,7 @@ export async function listAttendanceCorrections(
 ): Promise<Page<AttendanceCorrection>> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId);
-    const visible = visibleCondition(access);
+    const visible = visibleCondition(tx, context.tenant.tenantId, access);
     if (visible === null) throw forbidden();
     const filters: SQL[] = [
       eq(attendanceCorrections.tenantId, context.tenant.tenantId),
@@ -537,7 +558,8 @@ async function getCorrection(
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId);
     const row = await findCorrection(tx, context.tenant.tenantId, correctionId);
-    if (!row || !canSee(access, row)) throw notFound("Koreksi absensi");
+    if (!row || !(await canSee(tx, access, row)))
+      throw notFound("Koreksi absensi");
     return toCorrection(row);
   });
 }
@@ -560,7 +582,8 @@ export async function decideAttendanceCorrection(
   const gate = await withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const row = await findCorrection(tx, context.tenant.tenantId, correctionId);
-    if (!row || !canSee(access, row)) throw notFound("Koreksi absensi");
+    if (!row || !(await canSee(tx, access, row)))
+      throw notFound("Koreksi absensi");
     if (
       !access.snapshot.allows(APPROVE_CODE, {
         type: "outlet",
@@ -726,6 +749,31 @@ async function applyApproved(
 }
 
 /**
+ * Whether the last decider of the chain reaches the correction's employee at
+ * its outlet (tenant reach, HR, or direct supervisor), the same rule as the
+ * correction endpoints (`canSee`). Re-read here because the inbox decision
+ * only checks role and outlet.
+ */
+async function deciderReachesEmployee(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: CorrectionRow,
+  decidedBy: string | null,
+  now: Date,
+): Promise<boolean> {
+  if (decidedBy === null) return false;
+  const access = await loadHrisAccess(tx, context, decidedBy, now);
+  return isReachedEmployee(
+    tx,
+    row.tenantId,
+    access,
+    MANAGE_CODES,
+    row.outletId,
+    row.employeeId,
+  );
+}
+
+/**
  * Applies the approval chain outcome to the correction. Locks the row,
  * re-reads the chain from the database (an event payload is a trigger, never
  * the authority) and does nothing when the correction is no longer pending or
@@ -788,7 +836,14 @@ export async function settleAttendanceCorrection(
       // ends rejected instead of failing later in applyApproved.
       await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
       const { dates, timeZone, logDate } = await correctionDates(tx, row);
-      if (await isPayrollClosed(tx, row.tenantId, row.employeeId, dates)) {
+      if (!(await deciderReachesEmployee(tx, scoped, row, decidedBy, now))) {
+        // Approved through the general inbox (skips the decision gate's reach
+        // check) by an approver who is not this employee's supervisor or HR:
+        // never write the log. No decider on an approved chain fails closed.
+        cause = "not_supervisor";
+      } else if (
+        await isPayrollClosed(tx, row.tenantId, row.employeeId, dates)
+      ) {
         // Approved, but the period closed while the chain was open: no log.
         cause = "payroll_locked";
       } else if (

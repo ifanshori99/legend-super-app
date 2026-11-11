@@ -19,7 +19,15 @@
 // field-level rule: a `self` viewer gets `hidden` for a field whose
 // `selfPermission` is null or not held (fail closed).
 
-import { and, eq } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  or,
+  sql,
+  type AnyColumn,
+  type SQL,
+} from "drizzle-orm";
 import { outletReachOf, type PermissionCode } from "@starter/shared/access";
 import {
   createUlid,
@@ -27,6 +35,7 @@ import {
   isOutletInScope,
   userIdSchema,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import {
@@ -176,6 +185,109 @@ export async function loadHrisAccess(
     reach,
     viewerFor,
   };
+}
+
+/** Holding this code at an outlet makes the caller "HR" there (role templates). */
+const HR_REACH_CODE: PermissionCode = "hr.employee.manage";
+
+type EmployeeReachPlan = {
+  /** Reach of `codes` (null = no access at all). */
+  readonly all: HrisReach | null;
+  /** Part of `all` where the caller is HR and sees every row. */
+  readonly hr: HrisReach | null;
+};
+
+function employeeReachPlan(
+  access: HrisAccess,
+  codes: readonly PermissionCode[],
+): EmployeeReachPlan {
+  const all = access.reach(codes);
+  if (all === null) return { all, hr: null };
+  if (all.kind === "tenant") return { all, hr: all };
+  const hrReach = access.reach([HR_REACH_CODE]);
+  if (hrReach === null) return { all, hr: null };
+  if (hrReach.kind === "tenant") return { all, hr: all };
+  const allowed = new Set(all.outletIds.map(lower));
+  const outletIds = hrReach.outletIds.filter((id) => allowed.has(lower(id)));
+  return {
+    all,
+    hr: outletIds.length === 0 ? null : { kind: "outlets", outletIds },
+  };
+}
+
+/**
+ * Rows owned by employees that a holder of `codes` may see. Tenant-wide reach
+ * and HR (hr.employee.manage) see every row inside their reach. Any other
+ * outlet-scoped holder (the supervisor templates: hr.attendance.manage and
+ * hr.attendance_correction.approve) sees only their direct reports
+ * (employees.manager_id = the caller's employee id) inside those outlets; no
+ * employee record means no reports (fail closed). Callers add the caller's own
+ * rows themselves where wanted. Null means no access at all.
+ */
+export function reachedEmployeeCondition(
+  tx: Tx,
+  tenantId: TenantId,
+  access: HrisAccess,
+  codes: readonly PermissionCode[],
+  outletColumn: AnyColumn,
+  employeeColumn: AnyColumn,
+): SQL | null {
+  const { all, hr } = employeeReachPlan(access, codes);
+  if (all === null) return null;
+  if (all.kind === "tenant") return sql`true`;
+  const conditions: SQL[] = [];
+  if (hr?.kind === "outlets")
+    conditions.push(inArray(outletColumn, [...hr.outletIds]));
+  if (access.own !== null)
+    conditions.push(
+      and(
+        inArray(outletColumn, [...all.outletIds]),
+        inArray(
+          employeeColumn,
+          tx
+            .select({ id: employees.id })
+            .from(employees)
+            .where(
+              and(
+                eq(employees.tenantId, tenantId),
+                eq(employees.managerId, access.own.id),
+              ),
+            ),
+        ),
+      )!,
+    );
+  return conditions.length === 0 ? null : or(...conditions)!;
+}
+
+/** Row-level twin of `reachedEmployeeCondition` for one employee at one outlet. */
+export async function isReachedEmployee(
+  tx: Tx,
+  tenantId: TenantId,
+  access: HrisAccess,
+  codes: readonly PermissionCode[],
+  outletId: string,
+  employeeId: string,
+): Promise<boolean> {
+  const { all, hr } = employeeReachPlan(access, codes);
+  if (all === null) return false;
+  if (all.kind === "tenant") return true;
+  const outlet = lower(outletId);
+  if (hr?.kind === "outlets" && hr.outletIds.some((id) => lower(id) === outlet))
+    return true;
+  if (!all.outletIds.some((id) => lower(id) === outlet)) return false;
+  if (access.own === null) return false;
+  const [row] = await tx
+    .select({ id: employees.id })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, tenantId),
+        eq(employees.id, employeeId),
+        eq(employees.managerId, access.own.id),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
 }
 
 /** HR-01 / HR-03 visibility of one sealed field for one viewer. */

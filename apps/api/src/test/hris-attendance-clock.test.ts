@@ -190,6 +190,16 @@ async function newStaff(outletId: string, name = "Staf Absensi API") {
   return { ...staff, employeeId, outletId };
 }
 
+/** Makes the manager the direct supervisor of an employee (reach is by manager_id). */
+async function reportToManager(employeeId: string) {
+  await asTenant((client) =>
+    client.query(
+      "UPDATE employees SET manager_id = $1 WHERE tenant_id = $2 AND id = $3",
+      [mgrEmployeeId, tenant.id, employeeId],
+    ),
+  );
+}
+
 const key = () => `att-api-${randomUUID()}`;
 const post = (client: Client, path: string, body: unknown) =>
   client
@@ -360,6 +370,7 @@ let ownOutlet: string;
 
 let mgr: Client;
 let mgrUserId: string;
+let mgrEmployeeId: string;
 let admin: Client;
 let nobody: Client;
 
@@ -395,6 +406,8 @@ beforeAll(async () => {
   );
   mgr = manager.client;
   mgrUserId = manager.userId;
+  // A supervisor reviews only direct reports, so the manager is an employee.
+  mgrEmployeeId = await seedEmployee(manager.userId, ownOutlet);
 
   const policyAdmin = await signedInClient("Admin Kebijakan Absensi API", {
     mfa: true,
@@ -550,6 +563,7 @@ describe("geofence", () => {
 
   it("[HR-02] when the policy says flag, an outside clock-in is stored flagged and reaches the review queue", async () => {
     const staff = await newStaff(geoFlagOutlet);
+    await reportToManager(staff.employeeId);
     const response = await clock(staff.client, { location: at(FAR) });
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     expect(response.body.data.validity).toBe("flagged");
@@ -591,6 +605,8 @@ describe("device binding", () => {
 
   it("[F25] the bound device clocks in; another device is rejected; HR reset lets the employee bind again", async () => {
     const staff = await newStaff(deviceOutlet);
+    // The manager is an outlet-scoped supervisor: devices of direct reports only.
+    await reportToManager(staff.employeeId);
     const bound = deviceHash();
     const other = deviceHash();
 
@@ -1187,6 +1203,7 @@ describe("own data only", () => {
 
   it("[F25] a manager of the outlet sees the employee's logs by employee filter", async () => {
     const a = await newStaff(ownOutlet, "Staf Dilihat Manajer");
+    await reportToManager(a.employeeId);
     const log = await clock(a.client);
     expect(log.status, JSON.stringify(log.body)).toBe(201);
     const response = await mgr.get(
@@ -1200,6 +1217,7 @@ describe("own data only", () => {
 
   it("[F25] a manager sees no device hash of an employee's log; the employee sees their own", async () => {
     const a = await newStaff(ownOutlet, "Staf Hash Perangkat");
+    await reportToManager(a.employeeId);
     const hash = deviceHash();
     const log = await clock(a.client, { deviceIdHash: hash });
     expect(log.status, JSON.stringify(log.body)).toBe(201);

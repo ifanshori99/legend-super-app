@@ -203,20 +203,25 @@ async function seedOutlet(label: string) {
   return id;
 }
 
-async function seedEmployee(userId: string, homeOutletId: string) {
+async function seedEmployee(
+  userId: string,
+  homeOutletId: string,
+  managerId: string | null = null,
+) {
   const id = randomUUID();
   createdEmployees.push(id);
   await asTenant((conn) =>
     conn.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Balapan Cuti', $5, 'pkwtt', '2025-03-01', 'active')`,
+                              employment_type, join_date, status, manager_id)
+       VALUES ($1, $2, $3, $4, 'Karyawan Balapan Cuti', $5, 'pkwtt', '2025-03-01', 'active', $6)`,
       [
         id,
         tenant.id,
         userId,
         `RC-${id.slice(0, 8).toUpperCase()}`,
         homeOutletId,
+        managerId,
       ],
     ),
   );
@@ -417,9 +422,7 @@ interface Scenario {
  * A fresh outlet, an employee who may clock and file leave there with a
  * balance of 12 days, and an outlet manager who approves leave and corrections.
  */
-async function newScenario(
-  label: string,
-): Promise<Scenario> {
+async function newScenario(label: string): Promise<Scenario> {
   await avoidOutletMidnight();
   const outletId = await seedOutlet(label);
   const policy = await put(hr, "/api/hris/attendance/policy", {
@@ -429,18 +432,22 @@ async function newScenario(
   });
   expect(policy.status, JSON.stringify(policy.body)).toBe(200);
 
-  const staffSession = await signedInClient(`Staf Balapan ${label}`, {
-  });
+  const staffSession = await signedInClient(`Staf Balapan ${label}`, {});
   await grantRole(
     staffSession.userId,
     ["self.profile.view", "self.attendance.clock", "self.leave.request"],
     { type: "outlet", id: outletId },
   );
-  const employeeId = await seedEmployee(staffSession.userId, outletId);
-
   const managerSession = await signedInClient(`Manajer Balapan ${label}`, {
     mfa: true,
   });
+  // A supervisor decides only for direct reports: the manager is an employee.
+  const managerEmployeeId = await seedEmployee(managerSession.userId, outletId);
+  const employeeId = await seedEmployee(
+    staffSession.userId,
+    outletId,
+    managerEmployeeId,
+  );
   await asTenant((conn) =>
     assign(conn, managerSession.userId, managerRoleId, {
       type: "outlet",
@@ -572,9 +579,15 @@ async function race<T>(
 
     b = (async () => await startB())()
       .then((value) => {
-        outcome = JSON.stringify(
-          (value as { body?: unknown; status?: number })?.status ?? "ok",
-        ) + " " + JSON.stringify((value as { body?: unknown })?.body ?? "").slice(280, 700);
+        outcome =
+          JSON.stringify(
+            (value as { body?: unknown; status?: number })?.status ?? "ok",
+          ) +
+          " " +
+          JSON.stringify((value as { body?: unknown })?.body ?? "").slice(
+            280,
+            700,
+          );
         return value;
       })
       .finally(() => {

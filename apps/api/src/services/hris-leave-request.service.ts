@@ -1167,7 +1167,7 @@ async function cancelLeaveRequest(
     // Employee lock first, then the leave row, then balances: the same order as
     // cancelApprovedLeaveOnDateByHr (HR cancel), so the two cannot deadlock.
     await lockEmployeeLeaveAttendance(tx, gateRow.tenantId, gateRow.employeeId);
-    const row = await findRequest(tx, scoped.tenant.tenantId, gateRow.id, true);
+    let row = await findRequest(tx, scoped.tenant.tenantId, gateRow.id, true);
     if (!row) throw notFound("Pengajuan cuti");
     if (row.status === "cancelled") return;
     transitionLeaveRequest(row.status as LeaveRequestStatus, "cancel");
@@ -1182,10 +1182,23 @@ async function cancelLeaveRequest(
         });
         // The chain finished first (approved/rejected): settle decides, not us.
         if (outcome !== "cancelled" && outcome !== "pending") {
-          await applyOutcome(tx, scoped, row, outcome, now);
-          return;
+          const settled = await applyOutcome(tx, scoped, row, outcome, now);
+          // Approver won the race and the leave is now approved: the end state
+          // is the serial order approve-then-cancel, so go on into the
+          // approved-cancel branch below (payroll guard included).
+          if (outcome !== "approved" || settled.status !== "approved") return;
+          const settledRow = await findRequest(
+            tx,
+            scoped.tenant.tenantId,
+            gateRow.id,
+            true,
+          );
+          if (!settledRow) throw notFound("Pengajuan cuti");
+          row = settledRow;
         }
       }
+    }
+    if (row.status === "pending") {
       await moveBalance(
         tx,
         scoped,
@@ -1656,13 +1669,20 @@ export async function settleLeaveRequest(
   leaveRequestId: string,
   now = new Date(),
 ): Promise<LeaveRequestStatus> {
-  const outletId = await withTenant(db, context, async (tx) => {
+  const target = await withTenant(db, context, async (tx) => {
     const row = await findRequest(tx, context.tenant.tenantId, leaveRequestId);
-    return row?.outletId ?? null;
+    return row ? { outletId: row.outletId, employeeId: row.employeeId } : null;
   });
-  if (outletId === null) throw notFound("Pengajuan cuti");
-  const scoped = outletScoped(context, outletId);
+  if (target === null) throw notFound("Pengajuan cuti");
+  const scoped = outletScoped(context, target.outletId);
   return withTenant(db, scoped, async (tx) => {
+    // Employee lock first, then the leave row: the one order every leave path
+    // uses (cancelLeaveRequest, HR cancel), so settle cannot deadlock with them.
+    await lockEmployeeLeaveAttendance(
+      tx,
+      scoped.tenant.tenantId,
+      target.employeeId,
+    );
     const row = await findRequest(
       tx,
       scoped.tenant.tenantId,

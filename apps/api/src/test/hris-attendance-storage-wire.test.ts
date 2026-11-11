@@ -175,14 +175,41 @@ async function newStaff(app: App, name: string) {
   return { ...staff, employeeId, objectId };
 }
 
-/** A manager who reviews the outlet (back office, MFA). */
-async function newManager(app: App, name: string) {
+/**
+ * A manager who reviews the outlet (back office, MFA). A supervisor sees only
+ * direct reports, so the manager is an employee and `staff` reports to them.
+ */
+async function newManager(
+  app: App,
+  name: string,
+  staff: Awaited<ReturnType<typeof newStaff>>,
+) {
   const manager = await signedInClient(app, name, { mfa: true });
   await grantRole(
     manager.userId,
     ["hr.attendance.manage", "hr.attendance_correction.approve"],
     { type: "outlet", outletIds: [outletId] },
   );
+  const managerEmployeeId = randomUUID();
+  createdEmployees.push(managerEmployeeId);
+  await asTenant(async (client) => {
+    await client.query(
+      `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
+                              employment_type, join_date, status)
+       VALUES ($1, $2, $3, $4, 'Manajer Absensi Storage', $5, 'pkwtt', '2025-03-01', 'active')`,
+      [
+        managerEmployeeId,
+        tenant.id,
+        manager.userId,
+        `AM-${managerEmployeeId.slice(0, 8).toUpperCase()}`,
+        outletId,
+      ],
+    );
+    await client.query(
+      "UPDATE employees SET manager_id = $1 WHERE tenant_id = $2 AND id = $3",
+      [managerEmployeeId, tenant.id, staff.employeeId],
+    );
+  });
   return manager;
 }
 
@@ -296,7 +323,11 @@ describe("createApp with a storage runtime", () => {
 
   it("[F25] the admin review queue carries a signed selfie URL", async () => {
     const staff = await newStaff(appWithStorage, "Staf Storage Review");
-    const manager = await newManager(appWithStorage, "Manajer Storage Ada");
+    const manager = await newManager(
+      appWithStorage,
+      "Manajer Storage Ada",
+      staff,
+    );
     const created = await clockWithSelfie(staff);
 
     const item = await reviewItem(manager.client, created.id);
@@ -342,6 +373,7 @@ describe("createApp with storageRuntime null", () => {
     const manager = await newManager(
       appWithoutStorage,
       "Manajer Storage Kosong",
+      staff,
     );
     const created = await clockWithSelfie(staff);
 

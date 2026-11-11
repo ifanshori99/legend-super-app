@@ -129,15 +129,27 @@ async function seedOutlet(label: string) {
   return id;
 }
 
-async function seedEmployee(userId: string, outletId: string) {
+/** A supervisor sees only direct reports: staff report to the manager. */
+async function seedEmployee(
+  userId: string,
+  outletId: string,
+  managerId: string | null = mgrEmployeeId ?? null,
+) {
   const id = randomUUID();
   createdEmployees.push(id);
   await asTenant((client) =>
     client.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Absensi Default', $5, 'pkwtt', '2025-03-01', 'active')`,
-      [id, tenant.id, userId, `AD-${id.slice(0, 8).toUpperCase()}`, outletId],
+                              employment_type, join_date, status, manager_id)
+       VALUES ($1, $2, $3, $4, 'Karyawan Absensi Default', $5, 'pkwtt', '2025-03-01', 'active', $6)`,
+      [
+        id,
+        tenant.id,
+        userId,
+        `AD-${id.slice(0, 8).toUpperCase()}`,
+        outletId,
+        managerId,
+      ],
     ),
   );
   return id;
@@ -268,6 +280,7 @@ let defaultOutlet: string; // no stored policy anywhere
 let savedRejectOutlet: string; // stored policy: reject / reject
 
 let mgr: Client;
+let mgrEmployeeId: string | undefined;
 let admin: Client;
 
 beforeAll(async () => {
@@ -291,6 +304,7 @@ beforeAll(async () => {
     outletIds: outlets,
   });
   mgr = manager.client;
+  mgrEmployeeId = await seedEmployee(manager.userId, outlets[0]!, null);
 
   const policyAdmin = await signedInClient("Admin Kebijakan Absensi Default", {
     mfa: true,

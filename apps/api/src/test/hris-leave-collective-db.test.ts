@@ -1163,13 +1163,14 @@ describe("collective day and carry-over expiry", () => {
 // legend-qmte: staff who still clocked in on a collective day worked it, so
 // the day is not taken from their annual leave.
 //
-// Assumptions (from the card, not from the service): a log counts as "worked"
-// when it is type 'in' on business_date = the holiday date and neither its
-// validity nor its review_status is 'rejected'. A flagged or pending-review
-// 'in' log is undecided: the day is skipped with no ledger row and is
-// re-evaluated on the next run (a later rejection deducts it). Money rule,
-// doubt restricts payment: nobody is deducted twice and nobody is deducted
-// while a valid-ish clock-in exists.
+// Assumptions (from the card and brief 502 item A, not from the service): a log
+// counts as "worked" when it is type 'in' on business_date = the holiday date
+// and it is valid (validity 'valid', review_status <> 'rejected') or flagged
+// and review-accepted (decision L1). A flagged or pending-review 'in' log is
+// undecided and does NOT protect the day: it is DEDUCTED (doubt restricts
+// payment). If the log is accepted later the deduction is reversed (M1, see
+// hris-leave-collective-reversal.test.ts); a later rejection changes nothing.
+// Nobody is deducted twice.
 describe("collective day and attendance (clock-in means worked)", () => {
   const D = {
     valid: "2044-06-02",
@@ -1314,7 +1315,7 @@ describe("collective day and attendance (clock-in means worked)", () => {
     expect(await rowsFor(otherDay.id, D.otherDate)).toEqual([D.otherDate]);
   });
 
-  it("a flagged, pending-review clock-in skips the day without a ledger row and is re-evaluated next run", async () => {
+  it("a flagged, pending-review clock-in is DEDUCTED (L1), once, and a later rejection changes nothing", async () => {
     const e = await employee(outletA, "2040-01-02");
     const logId = await writeLog(e.id, {
       businessDate: D.flagged,
@@ -1322,21 +1323,21 @@ describe("collective day and attendance (clock-in means worked)", () => {
       review: "pending",
     });
     await run();
-    expect(await rowsFor(e.id, D.flagged)).toEqual([]);
-    const usedWhileFlagged = Number((await usedOf(e.id, 2044)) ?? 0);
-    expect(usedWhileFlagged).toBe(await usedExcept(e.id, [D.flagged]));
+    expect(await rowsFor(e.id, D.flagged)).toEqual([D.flagged]);
+    const usedWhileFlagged = Number(await usedOf(e.id, 2044));
+    expect(usedWhileFlagged).toBe(await usedExcept(e.id, []));
 
-    // Still undecided on the next run: still no row, nothing charged.
+    // Still undecided on the next run: still exactly one row, nothing more.
     await run();
-    expect(await rowsFor(e.id, D.flagged)).toEqual([]);
-    expect(Number((await usedOf(e.id, 2044)) ?? 0)).toBe(usedWhileFlagged);
+    expect(await rowsFor(e.id, D.flagged)).toEqual([D.flagged]);
+    expect(Number(await usedOf(e.id, 2044))).toBe(usedWhileFlagged);
 
-    // The reviewer rejects the clock-in: the day is deducted exactly once.
+    // The reviewer rejects the clock-in: the day stays deducted, exactly once.
     await rejectLog(logId);
     await run();
     await run();
     expect(await rowsFor(e.id, D.flagged)).toEqual([D.flagged]);
-    expect(Number(await usedOf(e.id, 2044))).toBe(usedWhileFlagged + 1);
+    expect(Number(await usedOf(e.id, 2044))).toBe(usedWhileFlagged);
   });
 
   it("a flagged clock-in the reviewer accepted counts as worked; a flagged one rejected is deducted", async () => {

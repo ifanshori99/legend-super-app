@@ -152,18 +152,32 @@ async function seedOutlet(): Promise<string> {
   return id;
 }
 
+/**
+ * An outlet-scoped supervisor sees only direct reports, so every employee of
+ * outletMain reports to the manager once the manager's own employee exists.
+ */
 async function seedEmployee(
   outletId: string,
   userId: string | null,
+  managerId: string | null = outletId === outletMain
+    ? (empManager ?? null)
+    : null,
 ): Promise<string> {
   const id = randomUUID();
   createdEmployees.push(id);
   await ownerTx((client) =>
     client.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Daftar Mandiri', $5, 'pkwtt', '2025-03-01', 'active')`,
-      [id, tenantAId, userId, `0000SSL${unique().toUpperCase()}`, outletId],
+                              employment_type, join_date, status, manager_id)
+       VALUES ($1, $2, $3, $4, 'Karyawan Daftar Mandiri', $5, 'pkwtt', '2025-03-01', 'active', $6)`,
+      [
+        id,
+        tenantAId,
+        userId,
+        `0000SSL${unique().toUpperCase()}`,
+        outletId,
+        managerId,
+      ],
     ),
   );
   return id;
@@ -339,6 +353,7 @@ let outletEmpty: string; // outlet without any row
 let selfA: Actor;
 let selfB: Actor;
 let manager: Actor; // outlet scope: outletMain
+let empManager: string | undefined; // the manager's own employee row
 let managerOther: Actor; // outlet scope: outletOther (creates the foreign shift)
 let approverOnly: Actor; // hr.attendance_correction.approve at outletEmpty
 let employeeManager: Actor; // hr.employee.manage at outletEmpty
@@ -428,6 +443,7 @@ beforeAll(async () => {
   approverOnly = await signedIn("Penyetuju Saja");
   employeeManager = await signedIn("Pengelola Karyawan Saja");
 
+  empManager = await seedEmployee(outletMain, manager.userId, null);
   empA = await seedEmployee(outletMain, selfA.userId);
   empB = await seedEmployee(outletMain, selfB.userId);
   empColleague = await seedEmployee(outletMain, null);

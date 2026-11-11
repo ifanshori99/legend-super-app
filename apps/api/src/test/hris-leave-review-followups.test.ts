@@ -190,20 +190,25 @@ async function seedOutlet(label: string) {
   return id;
 }
 
-async function seedEmployee(userId: string, homeOutletId: string) {
+async function seedEmployee(
+  userId: string,
+  homeOutletId: string,
+  managerId: string | null = null,
+) {
   const id = randomUUID();
   createdEmployees.push(id);
   await asTenant((db) =>
     db.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Tindak Lanjut Cuti', $5, 'pkwtt', '2025-03-01', 'active')`,
+                              employment_type, join_date, status, manager_id)
+       VALUES ($1, $2, $3, $4, 'Karyawan Tindak Lanjut Cuti', $5, 'pkwtt', '2025-03-01', 'active', $6)`,
       [
         id,
         tenant.id,
         userId,
         `LR-${id.slice(0, 8).toUpperCase()}`,
         homeOutletId,
+        managerId,
       ],
     ),
   );
@@ -439,11 +444,16 @@ async function newScenario(
     ["self.profile.view", "self.attendance.clock", "self.leave.request"],
     { type: "outlet", id: outletId },
   );
-  const employeeId = await seedEmployee(staffSession.userId, outletId);
-
   const managerSession = await signedInClient(
     `Manajer Tindak Lanjut ${label}`,
     { mfa: true },
+  );
+  // A supervisor decides only for direct reports: the manager is an employee.
+  const managerEmployeeId = await seedEmployee(managerSession.userId, outletId);
+  const employeeId = await seedEmployee(
+    staffSession.userId,
+    outletId,
+    managerEmployeeId,
   );
   const managerRoleId = await templateRoleId("outlet_manager");
   await asTenant((db) =>

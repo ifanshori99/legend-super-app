@@ -368,11 +368,7 @@ async function seedApprovedLeave(
  * A published shift at `outletId` that covers "now" (business date given in
  * WIB, so a night shift can belong to yesterday).
  */
-async function seedShift(
-  staff: Staff,
-  outletId: string,
-  businessDate: string,
-) {
+async function seedShift(staff: Staff, outletId: string, businessDate: string) {
   await asTenant((client) =>
     client.query(
       `INSERT INTO shift_assignments
@@ -438,7 +434,9 @@ async function queueOf(
 }
 
 async function queueEntry(outletId: string, logId: string, client = hr) {
-  return (await queueOf(outletId, client)).find((item) => item.log.id === logId);
+  return (await queueOf(outletId, client)).find(
+    (item) => item.log.id === logId,
+  );
 }
 
 async function balance(staff: Staff) {
@@ -467,9 +465,9 @@ async function leaveStatus(staff: Staff, leaveId: string) {
     `/api/hris/leave/requests?employeeId=${staff.employeeId}`,
   );
   expect(response.status, JSON.stringify(response.body)).toBe(200);
-  return (
-    response.body.data as { id: string; status: string }[]
-  ).find((entry) => entry.id === leaveId)?.status;
+  return (response.body.data as { id: string; status: string }[]).find(
+    (entry) => entry.id === leaveId,
+  )?.status;
 }
 
 async function validityOf(staff: Staff, logId: string) {
@@ -477,9 +475,9 @@ async function validityOf(staff: Staff, logId: string) {
     `/api/hris/attendance/logs?employeeId=${staff.employeeId}`,
   );
   expect(response.status, JSON.stringify(response.body)).toBe(200);
-  return (
-    response.body.data as { id: string; validity: string }[]
-  ).find((item) => item.id === logId)?.validity;
+  return (response.body.data as { id: string; validity: string }[]).find(
+    (item) => item.id === logId,
+  )?.validity;
 }
 
 const review = (logId: string, body: Record<string, unknown>, client = hr) =>
@@ -549,7 +547,13 @@ describe("[F25] HR with access to outlet B only decides a leave that belongs to 
     const partial = await signedInClient("HR Outlet B Saja", { mfa: true });
     await grantRole(
       partial.userId,
-      ["hr.attendance.manage", "hr.leave.approve", "hr.employee.view"],
+      [
+        "hr.attendance.manage",
+        "hr.leave.approve",
+        "hr.employee.view",
+        // HR (not a supervisor): sees every row of its outlet, not only reports.
+        "hr.employee.manage",
+      ],
       { type: "outlet", outletIds: [outletB] },
     );
     hrB = partial.client;
@@ -663,12 +667,12 @@ describe("[F25] cancel_leave on a leave that spans several days (day-only cancel
         days: number;
       }[];
     });
-    expect(rows.map((row) => [row.start, row.end, row.days, row.status])).toEqual(
-      [
-        [wibDate(Date.now() - DAY), wibDate(Date.now() - DAY), 1, "approved"],
-        [wibDate(Date.now() + DAY), wibDate(Date.now() + DAY), 1, "approved"],
-      ],
-    );
+    expect(
+      rows.map((row) => [row.start, row.end, row.days, row.status]),
+    ).toEqual([
+      [wibDate(Date.now() - DAY), wibDate(Date.now() - DAY), 1, "approved"],
+      [wibDate(Date.now() + DAY), wibDate(Date.now() + DAY), 1, "approved"],
+    ]);
     // Exactly one of the three days is refunded.
     expect(await balance(staff)).toMatchObject({
       entitled: "12.0000",

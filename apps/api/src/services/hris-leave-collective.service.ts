@@ -21,8 +21,14 @@
 //   pays that day as a workday, hris-overtime.service.ts): an `in`
 //   attendance log on that business date that is valid (not rejected on
 //   review) or flagged and accepted. A flagged log still pending or
-//   unreviewed also skips the pair, with no ledger row, so the next run
-//   decides it. A rejected log (validity or review) deducts.
+//   unreviewed does NOT protect the day (doubt restricts payment): it is
+//   deducted. A rejected log (validity or review) deducts.
+// - Such a log can appear AFTER the deduction (flagged review accepted,
+//   approved manual correction, offline/edge sync). The daily run then
+//   reconciles the pair: a compensating +1 ledger row (kind
+//   `collective_leave_reversal`, same period, never a delete) and `used` gets
+//   the day back, once (unique partial index; a log rejected later changes
+//   nothing). Never below 0 used; a year whose carry-over ran is not touched.
 // - National and company holidays never deduct. A leave request counts its
 //   days once, at filing (countLeaveDays excludes the holidays that exist
 //   then, stored in `excluded_holiday_dates`). A collective day inside a
@@ -40,9 +46,11 @@
 //   `LEAVE_YEAR_CARRIED_OVER`, assertCollectiveYearOpen).
 // - Deleting, moving or retyping a deducted collective day reverses its
 //   deduction in the same transaction (reverseCollectiveLeaveDeductions):
-//   the ledger row is deleted and the day returned to `used`, once.
+//   the ledger row is deleted and the day returned to `used`, once. When a
+//   worked-day reversal row already gave that day back, both rows are deleted
+//   and `used` is left alone (never given back twice).
 
-import { and, asc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import {
   DEFAULT_TIME_ZONE,
   createUlid,
@@ -81,6 +89,7 @@ import {
   type Tx,
 } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-holiday.service.ts";
+import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
 import {
   expireBalanceCarryOver,
   lockBalanceForUpdate,
@@ -96,6 +105,8 @@ const ANNUAL_CODE = "ANNUAL";
 // collective days before the cutover are never deducted.
 export const DEFAULT_COLLECTIVE_LEAVE_EFFECTIVE_FROM = "2027-01-01";
 const ONE_DAY = 10_000n;
+const DEDUCTION_KIND = "collective_leave";
+const REVERSAL_KIND = "collective_leave_reversal";
 const COLLECTIVE_AUDIT_SAFE_FIELDS = [
   ...HRIS_AUDIT_SAFE_FIELDS,
   "date",
@@ -109,6 +120,7 @@ const COLLECTIVE_AUDIT_SAFE_FIELDS = [
   "collectiveLeaveEffectiveFrom",
   "forfeitedDays",
   "carriedOverDays",
+  "reversed",
 ] as const;
 
 // ----------------------------------------------------------------- access
@@ -357,11 +369,27 @@ async function datesCountedByRequests(
 }
 
 /**
- * `employeeId|date` pairs whose collective day the employee worked or may have
- * worked: an `in` log on that business date that is valid, or flagged, and not
- * rejected on review. Flagged and accepted counts as worked; flagged and still
- * pending/unreviewed is skipped too, so no ledger row is written and a later
- * run re-evaluates it once reviewed (rejected then deducts).
+ * An `in` log that counts as worked: valid and not rejected on review, or
+ * flagged and accepted on review. A flagged log still pending/unreviewed, and
+ * any rejected log, does not count.
+ */
+const workedLogCondition = () =>
+  or(
+    and(
+      eq(attendanceLogs.validity, "valid"),
+      ne(attendanceLogs.reviewStatus, "rejected"),
+    ),
+    and(
+      eq(attendanceLogs.validity, "flagged"),
+      eq(attendanceLogs.reviewStatus, "accepted"),
+    ),
+  );
+
+/**
+ * `employeeId|date` pairs whose collective day the employee worked: an `in`
+ * log on that business date that is valid (not rejected on review) or flagged
+ * and accepted. Flagged and still pending/unreviewed does not count: the day
+ * is deducted and reversed once the log is accepted (reconcile below).
  */
 async function datesWorkedOrUnderReview(
   tx: Tx,
@@ -380,11 +408,210 @@ async function datesWorkedOrUnderReview(
         eq(attendanceLogs.type, "in"),
         gte(attendanceLogs.businessDate, range.from),
         lt(attendanceLogs.businessDate, range.today),
-        inArray(attendanceLogs.validity, ["valid", "flagged"]),
-        ne(attendanceLogs.reviewStatus, "rejected"),
+        workedLogCondition(),
       ),
     );
   return new Set(logs.map((row) => `${row.employeeId}|${row.businessDate}`));
+}
+
+/**
+ * Gives one deducted collective day back: a compensating `+1` ledger row (the
+ * deduction row stays), then `used` - 1 (never below 0) under the balance
+ * lock. The unique partial index makes it once per employee and date, so a
+ * replay, a racing worker or a log rejected later reverses nothing more.
+ * Past the carry-over expiry date the returned day must not bring forfeited
+ * carry back: the carry is clamped to the days still used or pending.
+ * Returns whether a reversal was made.
+ */
+async function reverseDeductedDay(
+  tx: Tx,
+  context: ScopedTenantContext,
+  now: Date,
+  today: string,
+  row: { employeeId: string; leaveTypeId: string; period: string },
+  forfeited: (
+    after: Record<string, unknown>,
+    balanceId: string,
+  ) => Promise<void>,
+): Promise<boolean> {
+  const tenantId = context.tenant.tenantId;
+  // Lock order: employee lock (callers), log/leave row, balance, ledger. The
+  // balance is locked BEFORE the reversal row is inserted: the insert can wait
+  // on a racing worker's uncommitted reversal row, and that worker must not
+  // be waiting on this balance in turn.
+  const year = Number(row.period.slice(0, 4));
+  const locked = await lockBalanceForUpdate(
+    tx,
+    tenantId,
+    row.employeeId,
+    row.leaveTypeId,
+    year,
+  );
+  if (!locked) throw new Error("Leave balance row missing for reversal");
+  const claimed = await tx
+    .insert(leaveAccruals)
+    .values({
+      tenantId,
+      employeeId: row.employeeId,
+      leaveTypeId: row.leaveTypeId,
+      kind: REVERSAL_KIND,
+      period: row.period,
+      days: formatDecimal4(ONE_DAY),
+      createdAt: now,
+      createdBy: null,
+    })
+    .onConflictDoNothing({
+      target: [
+        leaveAccruals.tenantId,
+        leaveAccruals.employeeId,
+        leaveAccruals.period,
+      ],
+      // The partial unique index predicate.
+      where: sql`${leaveAccruals.kind} = 'collective_leave_reversal'`,
+    })
+    .returning({ id: leaveAccruals.id });
+  if (claimed.length === 0) return false;
+  const [balance] = await tx
+    .update(leaveBalances)
+    .set({
+      usedDays: sql`GREATEST(${leaveBalances.usedDays} - ${formatDecimal4(ONE_DAY)}::numeric, 0)`,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(leaveBalances.tenantId, tenantId),
+        eq(leaveBalances.id, locked.id),
+      ),
+    )
+    .returning();
+  if (!balance) throw new Error("Leave balance update returned no row");
+  const carried = parseDecimal4(balance.carriedOverDays);
+  if (balance.carryOverExpiresOn === null || balance.carryOverExpiresOn > today)
+    return true;
+  const keep = usableCarriedOverDays(balance, today);
+  if (carried <= keep) return true;
+  await tx
+    .update(leaveBalances)
+    .set({ carriedOverDays: formatDecimal4(keep), updatedAt: now })
+    .where(
+      and(
+        eq(leaveBalances.tenantId, tenantId),
+        eq(leaveBalances.id, balance.id),
+      ),
+    );
+  await forfeited(
+    {
+      periodYear: balance.periodYear,
+      forfeitedDays: formatDecimal4(carried - keep),
+      carriedOverDays: formatDecimal4(keep),
+    },
+    balance.id,
+  );
+  return true;
+}
+
+/**
+ * Reconciles one employee and collective date: when a deduction row exists and
+ * an accepted `in` log (see workedLogCondition) now exists for that business
+ * date, reverses the deduction once. Call it in the transaction that accepted
+ * the log (flagged review accepted); the daily run reconciles the other
+ * routes (manual correction, edge sync). Takes the same locks as the job:
+ * the collective holiday rows FOR SHARE, then the balance FOR UPDATE. A past
+ * year whose carry-over ran for the employee is not touched. Returns the days
+ * reversed (0 or 1).
+ */
+export async function reverseCollectiveLeaveForWorkedDay(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  employeeId: string,
+  date: string,
+  now: Date,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  const today = localDateOf(now, DEFAULT_TIME_ZONE);
+  if (date >= today) return 0;
+  // Same window as the daily run: current and previous local year only.
+  if (date < `${Number(today.slice(0, 4)) - 1}-01-01`) return 0;
+  const holidayRows = await tx
+    .select({ id: holidays.id })
+    .from(holidays)
+    .where(
+      and(
+        eq(holidays.tenantId, tenantId),
+        eq(holidays.type, "collective"),
+        eq(holidays.date, date),
+      ),
+    )
+    .orderBy(asc(holidays.id))
+    .for("share");
+  if (holidayRows.length === 0) return 0;
+  const [deducted] = await tx
+    .select({ leaveTypeId: leaveAccruals.leaveTypeId })
+    .from(leaveAccruals)
+    .where(
+      and(
+        eq(leaveAccruals.tenantId, tenantId),
+        eq(leaveAccruals.employeeId, employeeId),
+        eq(leaveAccruals.kind, DEDUCTION_KIND),
+        eq(leaveAccruals.period, date),
+      ),
+    )
+    .limit(1);
+  if (!deducted) return 0;
+  const [worked] = await tx
+    .select({ id: attendanceLogs.id })
+    .from(attendanceLogs)
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, tenantId),
+        eq(attendanceLogs.employeeId, employeeId),
+        eq(attendanceLogs.type, "in"),
+        eq(attendanceLogs.businessDate, date),
+        workedLogCondition(),
+      ),
+    )
+    .limit(1);
+  if (!worked) return 0;
+  // The year of the collective day is closed once its carry-over (period =
+  // the next year) ran for this employee and leave type.
+  const [carried] = await tx
+    .select({ id: leaveAccruals.id })
+    .from(leaveAccruals)
+    .where(
+      and(
+        eq(leaveAccruals.tenantId, tenantId),
+        eq(leaveAccruals.employeeId, employeeId),
+        eq(leaveAccruals.leaveTypeId, deducted.leaveTypeId),
+        eq(leaveAccruals.kind, "carry_over"),
+        eq(leaveAccruals.period, String(Number(date.slice(0, 4)) + 1)),
+      ),
+    )
+    .limit(1);
+  if (carried) return 0;
+  const actor: LeaveJobActor = { type: "user", id: actorUserId };
+  const reversed = await reverseDeductedDay(
+    tx,
+    context,
+    now,
+    today,
+    { employeeId, leaveTypeId: deducted.leaveTypeId, period: date },
+    (after, balanceId) =>
+      audit(tx, context, actor, now, {
+        action: "hris.leave_carry_over.forfeited",
+        objectType: "leave_balance",
+        objectId: balanceId,
+        after,
+      }),
+  );
+  if (reversed)
+    await audit(tx, context, actor, now, {
+      action: "hris.leave_collective.reversed",
+      objectType: "leave_collective",
+      objectId: createUlid(now.getTime()),
+      after: { date, reversed: 1 },
+    });
+  return reversed ? 1 : 0;
 }
 
 /**
@@ -467,23 +694,24 @@ export async function applyCollectiveLeaveDeductions(
       )
       .orderBy(asc(employees.id));
     // Pairs already in the ledger: skip them without an insert attempt.
+    const deductedRows = await tx
+      .select({
+        employeeId: leaveAccruals.employeeId,
+        leaveTypeId: leaveAccruals.leaveTypeId,
+        period: leaveAccruals.period,
+      })
+      .from(leaveAccruals)
+      .where(
+        and(
+          eq(leaveAccruals.tenantId, tenantId),
+          eq(leaveAccruals.kind, DEDUCTION_KIND),
+          gte(leaveAccruals.period, from),
+          lt(leaveAccruals.period, today),
+        ),
+      )
+      .orderBy(asc(leaveAccruals.period), asc(leaveAccruals.employeeId));
     const done = new Set(
-      (
-        await tx
-          .select({
-            employeeId: leaveAccruals.employeeId,
-            period: leaveAccruals.period,
-          })
-          .from(leaveAccruals)
-          .where(
-            and(
-              eq(leaveAccruals.tenantId, tenantId),
-              eq(leaveAccruals.kind, "collective_leave"),
-              gte(leaveAccruals.period, from),
-              lt(leaveAccruals.period, today),
-            ),
-          )
-      ).map((row) => `${row.employeeId}|${row.period}`),
+      deductedRows.map((row) => `${row.employeeId}|${row.period}`),
     );
 
     const counted = await datesCountedByRequests(tx, tenantId, collective, {
@@ -494,23 +722,64 @@ export async function applyCollectiveLeaveDeductions(
       from,
       today,
     });
-    // Previous-year dates for employees whose carry-over into this year ran.
+    // Previous-year dates for employees whose carry-over into this year ran,
+    // per employee AND leave type (a deduction row keeps the type it was made
+    // under, whatever the annual type is now).
     const thisYear = today.slice(0, 4);
     const carried = new Set(
       (
         await tx
-          .select({ employeeId: leaveAccruals.employeeId })
+          .select({
+            employeeId: leaveAccruals.employeeId,
+            leaveTypeId: leaveAccruals.leaveTypeId,
+          })
           .from(leaveAccruals)
           .where(
             and(
               eq(leaveAccruals.tenantId, tenantId),
-              eq(leaveAccruals.leaveTypeId, type.id),
               eq(leaveAccruals.kind, "carry_over"),
               eq(leaveAccruals.period, thisYear),
             ),
           )
-      ).map((row) => row.employeeId),
+      ).map((row) => `${row.employeeId}|${row.leaveTypeId}`),
     );
+
+    // Reconcile pairs already deducted whose day now has an accepted `in` log
+    // (flagged review accepted, approved correction, edge sync): give the day
+    // back once. Employee then date ascending, under the same holiday FOR
+    // SHARE lock; a closed (carried-over) previous year is kept. Lock order
+    // everywhere: employee lock, log/leave row, balance, ledger: the employee
+    // lock is taken before the first reversal of each employee.
+    let reversed = 0;
+    const locked = new Set<string>();
+    const reconcile = [...deductedRows].sort(
+      (a, b) =>
+        a.employeeId.localeCompare(b.employeeId) ||
+        a.period.localeCompare(b.period),
+    );
+    for (const row of reconcile) {
+      if (!worked.has(`${row.employeeId}|${row.period}`)) continue;
+      if (
+        row.period.slice(0, 4) < thisYear &&
+        carried.has(`${row.employeeId}|${row.leaveTypeId}`)
+      )
+        continue;
+      if (!locked.has(row.employeeId)) {
+        locked.add(row.employeeId);
+        await lockEmployeeLeaveAttendance(tx, tenantId, row.employeeId);
+      }
+      if (
+        await reverseDeductedDay(tx, context, now, today, row, (after, id) =>
+          audit(tx, context, actor, now, {
+            action: "hris.leave_carry_over.forfeited",
+            objectType: "leave_balance",
+            objectId: id,
+            after,
+          }),
+        )
+      )
+        reversed += 1;
+    }
 
     let granted = 0;
     let skipped = 0;
@@ -536,7 +805,10 @@ export async function applyCollectiveLeaveDeductions(
         const pair = `${employee.id}|${holiday.date}`;
         if (counted.has(pair)) continue;
         if (worked.has(pair)) continue;
-        if (holiday.date.slice(0, 4) < thisYear && carried.has(employee.id))
+        if (
+          holiday.date.slice(0, 4) < thisYear &&
+          carried.has(`${employee.id}|${type.id}`)
+        )
           continue;
         if (done.has(pair)) {
           skipped += 1;
@@ -549,7 +821,7 @@ export async function applyCollectiveLeaveDeductions(
             tenantId,
             employeeId: employee.id,
             leaveTypeId: type.id,
-            kind: "collective_leave",
+            kind: DEDUCTION_KIND,
             period: holiday.date,
             days: formatDecimal4(-ONE_DAY),
             createdAt: now,
@@ -648,6 +920,13 @@ export async function applyCollectiveLeaveDeductions(
         }
       }
     }
+    if (reversed > 0)
+      await audit(tx, context, actor, now, {
+        action: "hris.leave_collective.reversed",
+        objectType: "leave_collective",
+        objectId: createUlid(now.getTime()),
+        after: { reversed },
+      });
     if (granted > 0)
       await audit(tx, context, actor, now, {
         action: "hris.leave_collective.applied",
@@ -795,7 +1074,28 @@ export async function reverseCollectiveLeaveDeductions(
   const homeOutlet = new Map(
     uncovered.map((row) => [row.employeeId, row.homeOutletId]),
   );
+  // A day already given back by a worked-day reversal (R) is not given back
+  // again: R goes with the deduction row and `used` stays as it is.
+  const alreadyReversed = new Set(
+    (
+      await tx
+        .delete(leaveAccruals)
+        .where(
+          and(
+            eq(leaveAccruals.tenantId, tenantId),
+            eq(leaveAccruals.kind, REVERSAL_KIND),
+            eq(leaveAccruals.period, date),
+            inArray(
+              leaveAccruals.employeeId,
+              removed.map((row) => row.employeeId),
+            ),
+          ),
+        )
+        .returning({ employeeId: leaveAccruals.employeeId })
+    ).map((row) => row.employeeId),
+  );
   for (const row of removed) {
+    if (alreadyReversed.has(row.employeeId)) continue;
     // Lock the balance first: a concurrent request or job serializes behind us.
     const locked = await lockBalanceForUpdate(
       tx,
@@ -809,7 +1109,7 @@ export async function reverseCollectiveLeaveDeductions(
     const [balance] = await tx
       .update(leaveBalances)
       .set({
-        usedDays: sql`${leaveBalances.usedDays} + ${row.days}::numeric`,
+        usedDays: sql`GREATEST(${leaveBalances.usedDays} + ${row.days}::numeric, 0)`,
         updatedAt: now,
       })
       .where(

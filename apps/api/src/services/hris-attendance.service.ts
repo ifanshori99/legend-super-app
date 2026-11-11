@@ -26,7 +26,6 @@ import {
   desc,
   eq,
   gt,
-  inArray,
   lt,
   or,
   sql,
@@ -114,8 +113,10 @@ import {
   cursorPair,
   forbidden,
   hrisAuditEntry,
+  isReachedEmployee,
   loadHrisAccess,
   notFound,
+  reachedEmployeeCondition,
   uniqueViolation,
   type HrisAccess,
   type HrisReach,
@@ -1457,12 +1458,17 @@ export async function listAttendanceLogs(
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const visible: SQL[] = [];
     const manage = access.reach(ATTENDANCE_MANAGE);
-    if (manage)
-      visible.push(
-        manage.kind === "tenant"
-          ? sql`true`
-          : inArray(attendanceLogs.outletId, [...manage.outletIds]),
-      );
+    const managed = reachedEmployeeCondition(
+      tx,
+      context.tenant.tenantId,
+      access,
+      ATTENDANCE_MANAGE,
+      attendanceLogs.outletId,
+      attendanceLogs.employeeId,
+    );
+    if (managed) visible.push(managed);
+    // Reach without reports (no employee record): an empty list, not a 403.
+    else if (manage !== null) visible.push(sql`false`);
     const own = access.own;
     if (
       own !== null &&
@@ -1809,12 +1815,17 @@ export async function listAttendanceDevices(
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const visible: SQL[] = [];
     const manage = access.reach(ATTENDANCE_MANAGE);
-    if (manage)
-      visible.push(
-        manage.kind === "tenant"
-          ? sql`true`
-          : inArray(employees.homeOutletId, [...manage.outletIds]),
-      );
+    const managed = reachedEmployeeCondition(
+      tx,
+      context.tenant.tenantId,
+      access,
+      ATTENDANCE_MANAGE,
+      employees.homeOutletId,
+      attendanceDevices.employeeId,
+    );
+    if (managed) visible.push(managed);
+    // Reach without reports (no employee record): an empty list, not a 403.
+    else if (manage !== null) visible.push(sql`false`);
     const own = access.own;
     if (
       own !== null &&
@@ -1907,7 +1918,14 @@ export async function revokeAttendanceDevice(
       .limit(1);
     if (
       !found ||
-      !reachIncludes(access.reach(ATTENDANCE_MANAGE), found.homeOutletId)
+      !(await isReachedEmployee(
+        tx,
+        tenantId,
+        access,
+        ATTENDANCE_MANAGE,
+        found.homeOutletId,
+        found.device.employeeId,
+      ))
     )
       throw notFound("Perangkat absensi");
     if (found.device.status === "revoked")
