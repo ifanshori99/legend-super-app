@@ -19,6 +19,9 @@
 //                     hr.leave.approve at the LEAVE's outlet; false otherwise
 //   leave             snapshot { leaveRequestId, leaveTypeId, leaveTypeName,
 //                     startDate, endDate } or null when the log is no leave case
+//                     OR the caller lacks hr.leave.approve at the leave's outlet
+//                     (CTO rule: leave data is only shown to people who may see
+//                     leave; all other item fields stay as they are)
 //   decisionAction    null while pending; the action that decided the item
 //                     (keep_leave | cancel_leave | accept | ...) afterwards
 //
@@ -27,6 +30,15 @@
 //    multi-day leave (which splits the leave) it still names the ORIGINAL
 //    leaveRequestId and the ORIGINAL period.
 //  - Non-leave items have `leave: null` and `canCancelLeave: false`.
+//  - hr.leave.approve is the only hr.leave.* code in packages/shared access
+//    (there is no hr.leave.view), so it is the right that gates `leave`. The
+//    outlet that counts is the LEAVE's outlet (snapshot.leaveOutletId), not the
+//    clock-in outlet; "within reach" means a role assignment covering it.
+//  - A caller holding hr.attendance.manage at the clock-in outlet and
+//    hr.leave.approve at the leave outlet (two separate assignments) may both
+//    see the snapshot and cancel the leave.
+//  - A hidden snapshot must not leak through the JSON at all: no leave type
+//    name, leave type id or leave request id anywhere in the response text.
 //  - The review decision response (an AttendanceReviewItem) carries the same
 //    decisionAction.
 //  - Roles without hr.attendance.manage get 403 on the queue; a foreign outlet
@@ -221,6 +233,7 @@ let hr: Client; // tenant-wide: attendance.manage + leave.approve
 let hrUserId: string;
 let hrNoLeaveRight: Client; // outlet A: attendance.manage, NO hr.leave.approve
 let hrB: Client; // outlet B only: attendance.manage + leave.approve
+let hrSplit: Client; // attendance.manage at B, hr.leave.approve at A (leave outlet)
 let selfOnly: Client; // may clock, no HR rights
 let leaveTypeId: string;
 const leaveTypeName = "Cuti tahunan uji kasus antrean";
@@ -294,6 +307,18 @@ beforeAll(async () => {
     { type: "outlet", outletIds: [outletB] },
   );
   hrB = partial.client;
+
+  const split = await signedInClient("HR Cuti A Absen B", { mfa: true });
+  await grantRole(
+    split.userId,
+    ["hr.attendance.manage", "hr.employee.manage", "hr.employee.view"],
+    { type: "outlet", outletIds: [outletB] },
+  );
+  await grantRole(split.userId, ["hr.leave.approve"], {
+    type: "outlet",
+    outletIds: [outletA],
+  });
+  hrSplit = split.client;
 
   const plain = await signedInClient("Karyawan Biasa Kasus");
   await grantRole(
@@ -575,6 +600,14 @@ async function itemFor(
   return item!;
 }
 
+async function queueText(client: Client, outletId: string) {
+  const response = await client.get(
+    `/api/hris/attendance/review-queue?outletId=${outletId}&limit=100`,
+  );
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  return JSON.stringify(response.body);
+}
+
 const review = (logId: string, body: Record<string, unknown>, client = hr) =>
   post(client, `/api/hris/attendance/logs/${logId}/review`, {
     idempotencyKey: key(),
@@ -659,11 +692,14 @@ describe("[eps6t] review queue item carries the leave case data", () => {
     );
   });
 
-  it("[eps6t] canCancelLeave is false for HR without hr.leave.approve, who still sees the item", async () => {
-    const { log } = await flaggedLeaveCase("c1");
+  it("[eps6t] HR without hr.leave.approve still sees the item, but leave is null and canCancelLeave false", async () => {
+    const { staff, log } = await flaggedLeaveCase("c1");
     const item = await itemFor(log.outletId, log.id, hrNoLeaveRight);
     expect(item.flagReasons).toContain("leave_approved");
-    expect(item.leave).not.toBeNull();
+    expect(item.employeeName).toBe(staff.name);
+    expect(item.businessDate).toBe(wibDate(Date.now()));
+    expect(item.reviewStatus).toBe("pending");
+    expect(item.leave).toBeNull();
     expect(item.canCancelLeave).toBe(false);
   });
 
@@ -695,6 +731,94 @@ describe("[eps6t] review queue item carries the leave case data", () => {
     expect(item.leave).toBeNull();
     expect(item.canCancelLeave).toBe(false);
     expect(item.decisionAction).toBeNull();
+  });
+});
+
+describe("[eps6t] leave snapshot is only shown to holders of hr.leave.approve at the leave outlet", () => {
+  /** Leave at home outlet A, clock-in at outlet B. */
+  async function leaveAtAClockInAtB(label: string) {
+    const staff = await newStaff(label);
+    const leaveId = await seedApprovedLeave(staff, 0, 0, 1);
+    await seedShift(staff, outletB);
+    const log = await clockIn(staff);
+    expect(log.outletId).toBe(outletB);
+    return { staff, leaveId, log };
+  }
+
+  it("[eps6t] (a) HR with hr.attendance.manage but no hr.leave.approve sees the item with leave null", async () => {
+    const { staff, log } = await flaggedLeaveCase("p1");
+    // Control: a leave holder sees the snapshot for the very same item.
+    const control = await itemFor(log.outletId, log.id, hr);
+    expect(control.leave).not.toBeNull();
+
+    const item = await itemFor(log.outletId, log.id, hrNoLeaveRight);
+    expect(item.leave).toBeNull();
+    expect(item.canCancelLeave).toBe(false);
+    // Everything else about the item is unchanged.
+    expect(item.employeeName).toBe(staff.name);
+    expect(item.flagReasons).toContain("leave_approved");
+    expect(item.businessDate).toBe(wibDate(Date.now()));
+    expect(item.reviewStatus).toBe("pending");
+    expect(item.decisionAction).toBeNull();
+  });
+
+  it("[eps6t] (b) hr.leave.approve at the clock-in outlet but not at the leave outlet: leave null", async () => {
+    const { staff, log } = await leaveAtAClockInAtB("p2");
+    // Control: tenant-wide HR sees the snapshot for this item.
+    const control = await itemFor(outletB, log.id, hr);
+    expect(control.leave).not.toBeNull();
+
+    const item = await itemFor(outletB, log.id, hrB);
+    expect(item.leave).toBeNull();
+    expect(item.canCancelLeave).toBe(false);
+    expect(item.employeeName).toBe(staff.name);
+    expect(item.flagReasons).toContain("leave_approved");
+    expect(item.reviewStatus).toBe("pending");
+  });
+
+  it("[eps6t] (c) hr.leave.approve at the leave outlet: leave is filled", async () => {
+    const { leaveId, log } = await leaveAtAClockInAtB("p3");
+    const item = await itemFor(outletB, log.id, hrSplit);
+    expect(item.leave).toEqual({
+      leaveRequestId: leaveId,
+      leaveTypeId,
+      leaveTypeName,
+      startDate: wibDate(Date.now()),
+      endDate: wibDate(Date.now()),
+    });
+    // attendance.manage at the clock-in outlet + hr.leave.approve at the leave outlet.
+    expect(item.canCancelLeave).toBe(true);
+  });
+
+  it("[eps6t] (d) a null leave does not leak the leave type name, type id or request id in the response JSON", async () => {
+    const sameOutlet = await flaggedLeaveCase("p4");
+    const crossOutlet = await leaveAtAClockInAtB("p5");
+
+    const cases = [
+      { client: hrNoLeaveRight, outletId: sameOutlet.log.outletId },
+      { client: hrB, outletId: outletB },
+    ];
+    for (const { client, outletId } of cases) {
+      // Raw text of the whole queue of that outlet (every leave case seeded so far).
+      const raw = await client.get(
+        `/api/hris/attendance/review-queue?outletId=${outletId}&limit=100`,
+      );
+      expect(raw.status, JSON.stringify(raw.body)).toBe(200);
+      const text = JSON.stringify(raw.body);
+      // Control: the leave items are in this response, so the checks below bite.
+      expect(text).toContain("leave_approved");
+      expect(text).not.toContain(leaveTypeName);
+      expect(text).not.toContain("Cuti tahunan");
+      expect(text).not.toContain(leaveTypeId);
+      expect(text).not.toContain(sameOutlet.leaveId);
+      expect(text).not.toContain(crossOutlet.leaveId);
+      for (const entry of raw.body.data as QueueItem[])
+        expect(entry.leave).toBeNull();
+    }
+
+    // Control: the same data IS shown to a holder of the right.
+    const shown = await queueText(hr, crossOutlet.log.outletId);
+    expect(shown).toContain(leaveTypeName);
   });
 });
 

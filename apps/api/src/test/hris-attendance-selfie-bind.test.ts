@@ -4,24 +4,28 @@
 // docs/briefs/538-g4-sub.md, bead legend-bf20 and the shared contract
 // (packages/shared/src/hris), never from service code.
 //
-// Endpoints under test (both new):
-//   POST /api/hris/attendance/selfie-upload            (self.attendance.clock)
-//     -> { data: { uploadUrl, photoUploadRef } }; without object storage the
-//        real build fails closed: 503 SELFIE_UPLOAD_UNAVAILABLE.
-//   POST /api/hris/attendance/devices/bind-by-supervisor
+// CTO decision: the selfie transport is the existing multipart
+// POST /api/storage/uploads (purpose=selfie, through processImage + scanner),
+// with NO selfie-upload / signed-PUT endpoint. Endpoints under test:
+//   POST /api/storage/uploads  (multipart: purpose=selfie, outletId, file)
+//     -> 201 { data: StorageObject }; the object id is the photoUploadRef the
+//        clock accepts. The row in core_storage_objects must be owned by the
+//        actor, carry the outlet, and be purpose=selfie. Without a storage
+//        runtime: 503; without a session: 401.
+//   POST /api/hris/attendance/devices/bind-by-supervisor (new)
 //     { employeeId, deviceIdHash, label } for a supervisor / HR with
 //     hr.attendance.manage at the employee's outlet; the clock policy then
 //     accepts that binding.
 //
 // Assumptions (the brief leaves these open):
-//  - Bodies follow the other attendance POSTs (clientInputSchema): they carry
-//    an `idempotencyKey`. The selfie-upload body is `{ contentType, sizeBytes,
-//    idempotencyKey }` (image/jpeg, under the 5 MB client limit).
-//  - Success answers 200 or 201 with the payload under `data`; `uploadUrl` is
-//    an absolute URL, `photoUploadRef` a non-empty string of at most 200
-//    characters (the clock contract's photoUploadRef limit) that never exposes
-//    the private object key (no "/original").
-//  - Error code is the literal "SELFIE_UPLOAD_UNAVAILABLE" in the JSON body.
+//  - The selfie-upload bodies below follow the storage contract
+//    (packages/shared/src/storage): the response object has no outletId or
+//    owner, so owner/outlet/purpose are checked on the stored row.
+//  - A selfie ref of another user or outlet, a non-image and a scanner
+//    rejection all answer a 4xx (not 5xx) and leave no log / no storage row.
+//  - Uploading a selfie needs self.attendance.clock at the outlet: without it
+//    (or with it only at another outlet) the answer is 403 or 404.
+//  - Bodies of the attendance POSTs carry an `idempotencyKey`.
 //  - ATTENDANCE_SUPERVISOR_CODES contains hr.attendance.manage (the code that
 //    already revokes devices); the supervisor here is outlet-scoped HR
 //    (hr.attendance.manage + hr.employee.manage) of the employee's outlet.
@@ -30,6 +34,7 @@
 //    with 409 or 422.
 import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
@@ -252,6 +257,11 @@ async function expectEndpointWorksForOwnOutlet(label: string) {
 }
 
 beforeAll(async () => {
+  jpeg = await sharp({
+    create: { width: 64, height: 48, channels: 3, background: "teal" },
+  })
+    .jpeg()
+    .toBuffer();
   outletId = await seedOutlet("utama");
   otherOutletId = await seedOutlet("lain");
   tenantB = await createSecondTenant(owner, "selfiebind");
@@ -351,91 +361,260 @@ afterAll(async () => {
   await owner.end();
 });
 
-// ---- selfie upload transport -------------------------------------------------
+// ---- selfie upload transport (multipart /api/storage/uploads) --------------
 
-const selfieBody = () => ({
-  contentType: "image/jpeg",
-  sizeBytes: 150_000,
-  idempotencyKey: key(),
-});
+let jpeg: Buffer;
+const rejectingRuntime: StorageRuntime = {
+  ...withStorage,
+  scanner: {
+    scan: async () => {
+      throw new Error("malware detected");
+    },
+  } as unknown as StorageRuntime["scanner"],
+};
+const appRejectingScanner = createApp({ storageRuntime: rejectingRuntime });
 
-// Parked: needs a CTO decision on the upload transport (legend-bf20: ObjectStorage has no signed PUT).
-describe.skip("[bf20] POST /api/hris/attendance/selfie-upload", () => {
-  it("[bf20] an employee who may clock gets a signed upload URL and a photoUploadRef", async () => {
-    const staff = await newStaff(appWithStorage, "u1");
-    const response = await post(
-      staff.client,
-      "/api/hris/attendance/selfie-upload",
-      selfieBody(),
-    );
-    expect([200, 201], JSON.stringify(response.body)).toContain(
-      response.status,
-    );
-    const data = response.body.data as {
-      uploadUrl: string;
-      photoUploadRef: string;
+const uploadSelfie = (
+  client: Client,
+  options: {
+    outlet?: string;
+    purpose?: string;
+    file?: Buffer;
+    filename?: string;
+    contentType?: string;
+  } = {},
+) =>
+  client
+    .post("/api/storage/uploads")
+    .set(originHeader)
+    .field("purpose", options.purpose ?? "selfie")
+    .field("outletId", options.outlet ?? outletId)
+    .attach("file", options.file ?? jpeg, {
+      filename: options.filename ?? "selfie.jpg",
+      contentType: options.contentType ?? "image/jpeg",
+    });
+
+const storedObject = async (objectId: string) =>
+  (
+    await asTenant((client) =>
+      client.query<{
+        owner_user_id: string | null;
+        outlet_id: string;
+        purpose: string;
+      }>(
+        "SELECT owner_user_id, outlet_id, purpose FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, objectId],
+      ),
+    )
+  ).rows[0];
+
+const objectsOwnedBy = async (userId: string) =>
+  (
+    await asTenant((client) =>
+      client.query(
+        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND owner_user_id = $2",
+        [tenant.id, userId],
+      ),
+    )
+  ).rowCount;
+
+/** An employee of `outletId` with a self-bound device (the outlet needs one). */
+async function newBoundStaff(app: App, label: string) {
+  const staff = await newStaff(app, label);
+  const deviceIdHash = deviceHash();
+  const bind = await post(staff.client, "/api/hris/attendance/devices/bind", {
+    deviceIdHash,
+    label: "Ponsel sendiri",
+    idempotencyKey: key(),
+  });
+  expect(bind.status, JSON.stringify(bind.body)).toBe(201);
+  return { ...staff, deviceIdHash };
+}
+
+const clockWithRef = (
+  client: Client,
+  deviceIdHash: string,
+  photoUploadRef: string,
+) =>
+  post(client, "/api/hris/attendance/clock", {
+    type: "in",
+    method: "selfie_geo",
+    occurredAt: new Date().toISOString(),
+    location: { ...CENTER, accuracyM: 5 },
+    deviceIdHash,
+    photoUploadRef,
+    qrToken: null,
+    idempotencyKey: key(),
+  });
+
+const logsOf = async (client: Client) => {
+  const list = await client.get("/api/hris/attendance/logs");
+  expect(list.status, JSON.stringify(list.body)).toBe(200);
+  return list.body.data as { id: string; photoUrl: string | null }[];
+};
+
+const expectClientError = (status: number, body: unknown) => {
+  expect(status, JSON.stringify(body)).toBeGreaterThanOrEqual(400);
+  expect(status, JSON.stringify(body)).toBeLessThan(500);
+};
+
+describe("[bf20] selfie upload through POST /api/storage/uploads", () => {
+  it("[bf20] an employee who may clock uploads a selfie, then clocks with the returned id as photoUploadRef (201)", async () => {
+    const staff = await newBoundStaff(appWithStorage, "u1");
+    const upload = await uploadSelfie(staff.client);
+    expect(upload.status, JSON.stringify(upload.body)).toBe(201);
+    const object = upload.body.data as {
+      id: string;
+      purpose: string;
+      publicUrl: string | null;
     };
-    expect(typeof data.uploadUrl).toBe("string");
-    expect(() => new URL(data.uploadUrl)).not.toThrow();
-    expect(typeof data.photoUploadRef).toBe("string");
-    expect(data.photoUploadRef.length).toBeGreaterThan(0);
-    expect(data.photoUploadRef.length).toBeLessThanOrEqual(200);
-    // The private storage key is never handed to the client as the reference.
-    expect(data.photoUploadRef).not.toContain("/original");
+    expect(object.purpose).toBe("selfie");
+    expect(object.publicUrl).toBeNull(); // the selfie bucket is private
+    // The private storage key never reaches the client.
+    expect(JSON.stringify(upload.body)).not.toContain("/original");
+
+    // The stored row: id is the reference, owned by the actor, outlet filled.
+    const row = await storedObject(object.id);
+    expect(row).toMatchObject({
+      owner_user_id: staff.userId,
+      outlet_id: outletId,
+      purpose: "selfie",
+    });
+
+    const clocked = await clockWithRef(
+      staff.client,
+      staff.deviceIdHash,
+      object.id,
+    );
+    expect(clocked.status, JSON.stringify(clocked.body)).toBe(201);
+    expect(clocked.body.data.validity).toBe("valid");
+    // The clock really linked the selfie: the log carries its signed URL.
+    expect(clocked.body.data.photoUrl).toBe(
+      `https://signed.example.test/selfie/${object.id}?sig=fake`,
+    );
+    const log = (await logsOf(staff.client)).find(
+      (entry) => entry.id === clocked.body.data.id,
+    );
+    expect(log?.photoUrl).toBe(clocked.body.data.photoUrl);
   });
 
-  it("[bf20] two uploads give two different references", async () => {
+  it("[bf20] two uploads give two different ids", async () => {
     const staff = await newStaff(appWithStorage, "u2");
-    const first = await post(
-      staff.client,
-      "/api/hris/attendance/selfie-upload",
-      selfieBody(),
-    );
-    const second = await post(
-      staff.client,
-      "/api/hris/attendance/selfie-upload",
-      selfieBody(),
-    );
-    expect([200, 201]).toContain(first.status);
-    expect([200, 201]).toContain(second.status);
-    expect(first.body.data.photoUploadRef).not.toBe(
-      second.body.data.photoUploadRef,
-    );
+    const first = await uploadSelfie(staff.client);
+    const second = await uploadSelfie(staff.client);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect(first.body.data.id).not.toBe(second.body.data.id);
   });
 
-  it("[bf20] without object storage the real build fails closed with 503 SELFIE_UPLOAD_UNAVAILABLE", async () => {
+  it("[bf20] a selfie uploaded by another user cannot be used to clock, and nothing is logged", async () => {
+    const victim = await newStaff(appWithStorage, "o1");
+    const upload = await uploadSelfie(victim.client);
+    expect(upload.status, JSON.stringify(upload.body)).toBe(201);
+
+    const thief = await newBoundStaff(appWithStorage, "o2");
+    const refused = await clockWithRef(
+      thief.client,
+      thief.deviceIdHash,
+      upload.body.data.id,
+    );
+    expectClientError(refused.status, refused.body);
+    expect(await logsOf(thief.client)).toHaveLength(0);
+
+    // Control: the thief's own selfie works, so the refusal was about the ref.
+    const own = await uploadSelfie(thief.client);
+    expect(own.status, JSON.stringify(own.body)).toBe(201);
+    const accepted = await clockWithRef(
+      thief.client,
+      thief.deviceIdHash,
+      own.body.data.id,
+    );
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+  });
+
+  it("[bf20] a selfie uploaded for another outlet cannot be used to clock at this outlet", async () => {
+    const staff = await newBoundStaff(appWithStorage, "o3");
+    // The same employee may also clock at the other outlet, so the upload is
+    // allowed there and only the outlet differs.
+    await grantRole(staff.userId, ["self.attendance.clock"], [otherOutletId]);
+    const foreign = await uploadSelfie(staff.client, { outlet: otherOutletId });
+    expect(foreign.status, JSON.stringify(foreign.body)).toBe(201);
+    expect((await storedObject(foreign.body.data.id))?.outlet_id).toBe(
+      otherOutletId,
+    );
+
+    const refused = await clockWithRef(
+      staff.client,
+      staff.deviceIdHash,
+      foreign.body.data.id,
+    );
+    expectClientError(refused.status, refused.body);
+    expect(await logsOf(staff.client)).toHaveLength(0);
+
+    const own = await uploadSelfie(staff.client);
+    expect(own.status, JSON.stringify(own.body)).toBe(201);
+    const accepted = await clockWithRef(
+      staff.client,
+      staff.deviceIdHash,
+      own.body.data.id,
+    );
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+  });
+
+  it("[bf20] without object storage the upload answers 503", async () => {
     const staff = await newStaff(appWithoutStorage, "u3");
-    const response = await post(
-      staff.client,
-      "/api/hris/attendance/selfie-upload",
-      selfieBody(),
-    );
+    const response = await uploadSelfie(staff.client);
     expect(response.status, JSON.stringify(response.body)).toBe(503);
-    expect(JSON.stringify(response.body)).toContain(
-      "SELFIE_UPLOAD_UNAVAILABLE",
-    );
-    expect(JSON.stringify(response.body)).not.toContain("uploadUrl");
-  });
-
-  it("[bf20] a user without self.attendance.clock is refused 403", async () => {
-    const session = await signedInClient(appWithStorage, "Tanpa Izin Selfie");
-    await grantRole(session.userId, ["self.profile.view"], [outletId]);
-    await seedEmployee(tenant.id, outletId, session.userId);
-    const response = await post(
-      session.client,
-      "/api/hris/attendance/selfie-upload",
-      selfieBody(),
-    );
-    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(await objectsOwnedBy(staff.userId)).toBe(0);
   });
 
   it("[bf20] a request without a session is refused 401", async () => {
-    const response = await post(
-      agent(appWithStorage),
-      "/api/hris/attendance/selfie-upload",
-      selfieBody(),
-    );
+    const response = await uploadSelfie(agent(appWithStorage));
     expect(response.status).toBe(401);
+  });
+
+  it("[bf20] a user without self.attendance.clock cannot upload a selfie (403) and nothing is stored", async () => {
+    const session = await signedInClient(appWithStorage, "Tanpa Izin Selfie");
+    await grantRole(session.userId, ["self.profile.view"], [outletId]);
+    await seedEmployee(tenant.id, outletId, session.userId);
+    const response = await uploadSelfie(session.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(await objectsOwnedBy(session.userId)).toBe(0);
+  });
+
+  it("[bf20] clock permission at another outlet does not allow a selfie upload for this outlet", async () => {
+    const session = await signedInClient(appWithStorage, "Izin Outlet Lain");
+    await grantRole(
+      session.userId,
+      ["self.profile.view", "self.attendance.clock"],
+      [otherOutletId],
+    );
+    await seedEmployee(tenant.id, otherOutletId, session.userId);
+    // Control: the same user may upload at their own outlet.
+    const own = await uploadSelfie(session.client, { outlet: otherOutletId });
+    expect(own.status, JSON.stringify(own.body)).toBe(201);
+    const response = await uploadSelfie(session.client);
+    expect([403, 404], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+  });
+
+  it("[bf20] a file that is not an image is rejected 4xx and leaves no storage row", async () => {
+    const staff = await newStaff(appWithStorage, "e1");
+    const response = await uploadSelfie(staff.client, {
+      file: Buffer.from("this is plain text, not a picture"),
+      filename: "selfie.jpg",
+      contentType: "image/jpeg",
+    });
+    expectClientError(response.status, response.body);
+    expect(await objectsOwnedBy(staff.userId)).toBe(0);
+  });
+
+  it("[bf20] a file the malware scanner rejects is refused 4xx and leaves no storage row", async () => {
+    const staff = await newStaff(appRejectingScanner, "e2");
+    const response = await uploadSelfie(staff.client);
+    expectClientError(response.status, response.body);
+    expect(await objectsOwnedBy(staff.userId)).toBe(0);
   });
 });
 
