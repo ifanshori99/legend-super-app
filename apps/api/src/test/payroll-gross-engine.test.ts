@@ -32,9 +32,9 @@
 //  A1 (money review decision) amount of a component for the period = sum over
 //     its rows overlapping the period of floor(amount * activeDays / periodDays)
 //     (inclusive calendar days), never above the full amount; a full-period
-//     row pays the full amount; one line per component. Inactive components
-//     are skipped. A component is stopped by setting amount 0 from the day
-//     after its last day.
+//     row pays the full amount; one line per component. Inactive earnings
+//     are skipped; inactive deductions remain withheld. A component is stopped
+//     by setting amount 0 from the day after its last day.
 //  A2 overtime counts only on attendance logs of type 'out' inside
 //     [periodStart, periodEnd] that are approved: validity 'valid' (review
 //     none/accepted) or flagged-then-accepted. Pending flagged and rejected
@@ -134,6 +134,7 @@ async function asTenant<T>(
 
 let actorId: string;
 let reviewerId: string;
+let grossEntityId: string;
 
 async function createUser(name: string): Promise<string> {
   const client = agent(app);
@@ -174,9 +175,15 @@ async function seedEmployee(): Promise<string> {
   await asTenant(tenant.id, (db) =>
     db.query(
       `INSERT INTO employees (id, tenant_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, 'Karyawan Mesin Gross', $4, 'pkwtt', '2025-03-01', 'active')`,
-      [id, tenant.id, `GE-${id.slice(0, 8).toUpperCase()}`, outlet],
+                              legal_entity_id, employment_type, join_date, status)
+       VALUES ($1, $2, $3, 'Karyawan Mesin Gross', $4, $5, 'pkwtt', '2025-03-01', 'active')`,
+      [
+        id,
+        tenant.id,
+        `GE-${id.slice(0, 8).toUpperCase()}`,
+        outlet,
+        grossEntityId,
+      ],
     ),
   );
   return id;
@@ -480,6 +487,14 @@ async function failure(promise: Promise<unknown>) {
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  grossEntityId = randomUUID();
+  createdLockEntities.push(grossEntityId);
+  await asTenant(tenant.id, (db) =>
+    db.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Gross Engine Suite', false)",
+      [grossEntityId, tenant.id],
+    ),
+  );
   actorId = await createUser("Gross engine actor");
   await grantRole(actorId, ["payroll.view", "payroll.run"]);
   reviewerId = await createUser("Gross engine reviewer");
@@ -1315,6 +1330,35 @@ describe("employee component writes: latest frozen run (538-G2b-low, 8xf32)", ()
       { effective_from: EFFECTIVE },
       { effective_from: "2030-07-01" },
     ]);
+  });
+});
+
+describe("computeEmployeeGross: inactive components (538-G2b-P2)", () => {
+  it("[538-G2b-P2-INACTIVE] inactive deductions remain withheld while inactive earnings are skipped", async () => {
+    const employeeId = await seedEmployee();
+    const salary = await earning();
+    const stoppedEarning = await earning();
+    const loan = await deduction();
+    await setAmount(employeeId, salary.id, 1_000_000);
+    await setAmount(employeeId, stoppedEarning.id, 700_000);
+    await setAmount(employeeId, loan.id, 250_000);
+    for (const component of [stoppedEarning, loan]) {
+      await service.updatePayComponent(ctx, actorId, component.id, {
+        isActive: false,
+        idempotencyKey: key(),
+      } as never);
+    }
+
+    const result = await compute(employeeId);
+
+    expect(result.grossIdr).toBe(1_000_000);
+    expect(result.deductionsIdr).toBe(250_000);
+    expect(result.netIdr).toBe(750_000);
+    expect(
+      result.lines
+        .filter((line) => line.kind === "deduction")
+        .map((line) => line.amountIdr),
+    ).toEqual([250_000]);
   });
 });
 

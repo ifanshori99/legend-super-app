@@ -834,7 +834,10 @@ export async function computeEmployeeGross(
         and(
           eq(employeePayComponents.tenantId, context.tenant.tenantId),
           eq(employeePayComponents.employeeId, employeeId),
-          eq(payComponents.isActive, true),
+          or(
+            eq(payComponents.isActive, true),
+            eq(payComponents.kind, "deduction"),
+          ),
           // Every row that overlaps [periodStart, periodEnd] (inclusive dates).
           lte(employeePayComponents.effectiveFrom, periodEnd),
           or(
