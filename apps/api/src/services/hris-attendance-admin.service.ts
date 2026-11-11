@@ -438,7 +438,10 @@ function queued(
   samplingOf: (outletId: string) => AttendanceSamplingConfig,
 ): boolean {
   const sampling = samplingOf(row.outletId);
-  if (row.validity === "flagged") return sampling.flaggedAlways;
+  // A leave clash is always reviewed (the day would be paid twice), whatever
+  // the outlet's flaggedAlways sampling says.
+  if (row.validity === "flagged")
+    return hasLeaveFlag(row) || sampling.flaggedAlways;
   if (row.validity === "valid") return sampleSelected(row.id, sampling.rate);
   return false;
 }

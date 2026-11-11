@@ -80,6 +80,7 @@ import {
   type Tx,
 } from "./hris-access.ts";
 import { computeWorkTiming } from "./hris-attendance-logic.ts";
+import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
 import { findApprovedLeaveOnDate } from "./hris-leave-request.service.ts";
 import { loadOutletTimeZone } from "./hris-scheduling-common.ts";
 import {
@@ -687,6 +688,8 @@ async function applyApproved(
   // overnight "out" belongs to the shift that started the day before).
   const businessDate =
     logDate ?? localDateOf(row.requestedOccurredAt, timeZone);
+  // legend-x0avw: serialise with leave approval before the leave check.
+  await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
   // Second safety net; the decision gate refuses first (legend-em8y2).
   await assertNoApprovedLeave(tx, row, businessDate);
   const shifts = await tx

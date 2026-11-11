@@ -33,7 +33,16 @@ import {
   attendanceValiditySchema,
 } from "./attendance.ts";
 
-/** Emitted once per accepted attendance log, including offline edge replay (F25). */
+/**
+ * Emitted once per accepted attendance log, including offline edge replay (F25).
+ *
+ * Pay boundary (legend-x0avw F6): `validity` is the value at clock time and the
+ * log can change afterwards (a later approved leave flags it `leave_approved`,
+ * HR can accept or reject it) without a new event. A consumer that counts
+ * worked time or pay MUST exclude validity `flagged` and `rejected` and
+ * review_status `pending`, and MUST re-read the log's current status before
+ * computing pay or timing; the event alone is never proof the day was worked.
+ */
 export const attendanceLogged = defineDomainEvent({
   name: "attendance.logged",
   payload: z.strictObject({
@@ -115,11 +124,36 @@ export const leaveApproved = defineDomainEvent({
   }),
 });
 
+/**
+ * Emitted when HR changes an already approved leave range (legend-x0avw F5):
+ * one event per leave row that changed. `range_split`: the row was narrowed
+ * (head, or the rest when the first or last day went) or is the new tail row
+ * (`splitFromLeaveRequestId` names the row it was split from). `range_cancelled`:
+ * the whole leave was cancelled (`status` cancelled). Carries the row's state
+ * after the change; `leave.approved` stays the event of the approval itself.
+ */
+export const leaveChanged = defineDomainEvent({
+  name: "leave.changed",
+  payload: z.strictObject({
+    leaveRequestId: leaveRequestIdSchema,
+    employeeId: employeeIdSchema,
+    outletId: outletIdSchema,
+    startDate: businessDateSchema,
+    endDate: businessDateSchema,
+    days: decimal4Schema,
+    excludedHolidayDates: z.array(businessDateSchema).max(400),
+    status: z.enum(["approved", "cancelled"]),
+    changeReason: z.enum(["range_split", "range_cancelled"]),
+    splitFromLeaveRequestId: leaveRequestIdSchema.nullable(),
+  }),
+});
+
 export const hrisDomainEvents = [
   attendanceLogged,
   shiftPublished,
   shiftCancelled,
   leaveApproved,
+  leaveChanged,
 ] as const;
 
 export const hrisEventNames = hrisDomainEvents.map((event) => event.name);

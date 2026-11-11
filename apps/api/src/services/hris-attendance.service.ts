@@ -140,6 +140,7 @@ import {
   loadWeekAssignments,
 } from "./hris-scheduling-common.ts";
 import { assertAttendanceClockAllowed } from "./hris-attendance-eligibility.ts";
+import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
 import { consumePinProof, findPinProof } from "./staff-pin-proof.service.ts";
 
 export const HRIS_ATTENDANCE_MANAGE_CODE = "hr.attendance.manage";
@@ -634,6 +635,10 @@ async function storeAttendanceLog(
   // inserts its own log; no submission path may mint one.
   if (input.method === "manual_correction")
     throw validation("Metode koreksi manual tidak bisa dipakai untuk absen.");
+  // legend-x0avw: every clock path (online, outlet device, edge replay) stores
+  // its log here. The per-employee lock comes before the approved-leave check
+  // and the shift lock, so a clock-in cannot race a leave approval.
+  await lockEmployeeLeaveAttendance(tx, tenantId, input.employeeId);
   const replayed = await findLogByClientEvent(
     tx,
     tenantId,

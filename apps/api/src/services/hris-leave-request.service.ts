@@ -44,6 +44,7 @@ import {
   createLeaveRequest as createLeaveRequestEndpoint,
   decideLeaveRequest as decideLeaveRequestEndpoint,
   leaveApproved,
+  leaveChanged,
   leavePolicySchema,
   leaveRequestSchema,
   listLeaveRequests as listLeaveRequestsEndpoint,
@@ -85,6 +86,7 @@ import {
   noHrisFileSigner,
   type HrisFileSigner,
 } from "./hris-contract.service.ts";
+import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
 import { flagAttendanceForApprovedLeave } from "./hris-leave-attendance-flag.service.ts";
 import {
   countLeaveDays,
@@ -362,6 +364,71 @@ async function appendLeaveApproved(
         days: row.days,
         decidedBy,
         decidedAt: row.decidedAt.toISOString(),
+      },
+    });
+    await appendOutbox(tx, context, {
+      id: createUlid(now.getTime()),
+      event,
+      destination,
+      direction: null,
+      peerId: null,
+    });
+  }
+}
+
+/**
+ * Appends `leave.changed` (legend-x0avw F5) for one leave row HR just narrowed,
+ * split off or cancelled, in the caller's transaction (all events commit or
+ * none, with the leave UPDATE/INSERT). Same sequencing as `leave.approved`:
+ * per aggregate and destination; the caller holds the request row lock (or just
+ * inserted the row). No reason or attachment in the payload (personal data).
+ */
+async function appendLeaveChanged(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: LeaveRequestRow,
+  change: {
+    readonly changeReason: "range_split" | "range_cancelled";
+    readonly splitFromLeaveRequestId: string | null;
+    readonly actorUserId: string;
+  },
+  now: Date,
+): Promise<void> {
+  if (row.status !== "approved" && row.status !== "cancelled")
+    throw new Error("leave.changed needs an approved or cancelled request");
+  const actorId = userIdSchema.parse(change.actorUserId);
+  for (const destination of LEAVE_EVENT_DESTINATIONS) {
+    const sequence = await nextLeaveEventSequence(
+      tx,
+      row.tenantId,
+      destination,
+      row.id,
+    );
+    const event = leaveChanged.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId: row.tenantId,
+      outletId: row.outletId,
+      name: leaveChanged.name,
+      version: leaveChanged.version,
+      aggregateType: leaveChanged.entry.aggregateType,
+      aggregateId: row.id,
+      sequence,
+      occurredAt: now.toISOString(),
+      actor: { type: "user", id: actorId },
+      deviceId: null,
+      idempotencyKey: `${leaveChanged.name}:${row.id}:${sequence}`,
+      payloadSchemaRef: leaveChanged.payloadSchemaRef,
+      payload: {
+        leaveRequestId: row.id,
+        employeeId: row.employeeId,
+        outletId: row.outletId,
+        startDate: row.startDate,
+        endDate: row.endDate,
+        days: row.days,
+        excludedHolidayDates: row.excludedHolidayDates,
+        status: row.status,
+        changeReason: change.changeReason,
+        splitFromLeaveRequestId: change.splitFromLeaveRequestId,
       },
     });
     await appendOutbox(tx, context, {
@@ -917,6 +984,8 @@ export async function createLeaveRequest(
         .returning()) as [LeaveRequestRow];
     } else {
       // Below every tier of the matrix: approved on filing, days used at once.
+      // legend-x0avw F1: serialise with clock-ins before approving.
+      await lockEmployeeLeaveAttendance(tx, tenantId, inserted.employeeId);
       if (type.policy.tracksBalance)
         await adjustBalance(
           tx,
@@ -1246,6 +1315,17 @@ export async function cancelApprovedLeaveOnDateByHr(
       .returning();
     if (!updated) throw new Error("Leave request update returned no row");
     changed.push(updated.id);
+    await appendLeaveChanged(
+      tx,
+      context,
+      updated,
+      {
+        changeReason: first ? "range_split" : "range_cancelled",
+        splitFromLeaveRequestId: null,
+        actorUserId: access.actorUserId,
+      },
+      now,
+    );
     let tail: LeaveRequestRow | null = null;
     if (second) {
       const [inserted] = await tx
@@ -1275,6 +1355,17 @@ export async function cancelApprovedLeaveOnDateByHr(
       if (!inserted) throw new Error("Leave request insert returned no row");
       tail = inserted;
       changed.push(inserted.id);
+      await appendLeaveChanged(
+        tx,
+        context,
+        inserted,
+        {
+          changeReason: "range_split",
+          splitFromLeaveRequestId: updated.id,
+          actorUserId: access.actorUserId,
+        },
+        now,
+      );
     }
     await recordAudit(
       tx,
@@ -1365,6 +1456,9 @@ async function applyOutcome(
   outcome: "approved" | "rejected" | "expired" | "cancelled",
   now: Date,
 ): Promise<LeaveRequestStatus> {
+  // legend-x0avw F1: before any leave or balance write, serialise with
+  // clock-ins and corrections of this employee (lock first, always).
+  await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
   const scaledDays = parseDecimal4(row.days);
   if (outcome === "approved") {
     const [final] = await tx
