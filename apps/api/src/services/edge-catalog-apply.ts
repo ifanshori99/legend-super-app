@@ -10,15 +10,16 @@
 // - Every record must be of `tenantId`; one bad record refuses the whole page.
 // - Idempotent upsert by key (id; menu_item_modifier_groups: tenant, item,
 //   group). Version = the record's `syncTxid` (the cloud transaction that last
-//   wrote the row). Cloud wins: a record replaces the local row when its
-//   `syncTxid` is greater than the stored `sync_txid` OR its `updatedAt` is
-//   later than the stored `updated_at`; when neither is newer (equal = the same
-//   write again) it is left alone. So a replayed page, two pulls returning in
-//   reverse order or a rewound cursor never put an old price or a revived row
-//   over a newer one. The `updated_at` half exists for edge rows whose
-//   `sync_txid` was stamped locally (bootstrap, migration default): that local
-//   transaction id can be larger than the cloud's and must not block the
-//   cloud's newer data forever.
+//   wrote the row). Cloud wins: a record replaces the local row only when its
+//   `syncTxid` is strictly greater than the stored `sync_txid`; equal or lower
+//   is left alone (a replayed page, two pulls returning in reverse order or a
+//   rewound cursor never put an old price or a revived row over a newer one).
+//   `updated_at` is copied but never compared (no clock-skew risk). A local row
+//   stamped by a local transaction (bootstrap, migration default) is not
+//   comparable with the cloud's ids: before the first page of a full pull
+//   (empty or `cat1` checkpoint) the puller calls `resetCatalogSyncTxid`, which
+//   sets the stream's local stamps to 0, so every local row loses to the cloud
+//   (safe to repeat).
 // - The edge writes the cloud's `sync_txid`, so every apply (and the parent
 //   repair) first runs `set_config('legend.skip_sync_txid', 'on', true)`, local
 //   to the transaction, which makes the stamp trigger leave the value alone.
@@ -31,21 +32,23 @@
 //   soft-deleted (cloud wins), unless that row is newer than the record.
 // - Money is copied as received: `priceIdr` is the integer rupiah, `quantity`
 //   and `theoreticalCostIdr` the exact decimal string. No conversion.
-// - Optional references the edge may not hold are stored as null, never
-//   refused: menu_items / modifiers `station_id` (null only when that station is
-//   not local, counted in `nulledRefs`), recipes `output_item_id` and
-//   `updated_by` (the author may be an HQ user the edge never got; counted in
-//   `nulledRefs`), menu_categories `parent_id` (a parent that is neither
-//   local nor on the page yet: written null and reported in `deferredParents`
-//   so the puller can persist it and run `repairCategoryParents` later).
+// - Optional references: recipes `updated_by` (the author may be an HQ user the
+//   edge never got) is stored null and counted in `nulledRefs`;
+//   menu_categories `parent_id` (a parent that is neither local nor on the page
+//   yet) is written null and reported in `deferredParents`, so the puller can
+//   persist it and run `repairCategoryParents` later.
 //   Required references (brand, category, price list, item, variant, recipe,
 //   uom, ...) are never nulled: the foreign key refuses the page and the
 //   checkpoint does not move. A price list item never loses its variant.
-// - inventory_items.base_uom_id (required, uoms arrive through the master
-//   sync) not local yet is TRANSIENT: the page is refused with
-//   `CatalogMissingRefError` (code CATALOG_MISSING_REF), the checkpoint stays.
+// - TRANSIENT references: a menu_items / modifiers `station_id`, a recipes
+//   `output_item_id` or an inventory_items `base_uom_id` that is not local yet
+//   (stations and inventory items have their own streams, uoms come with the
+//   master sync) refuses the page with `CatalogMissingRefError` (code
+//   CATALOG_MISSING_REF); the checkpoint stays and a later pull retries. The
+//   cloud only sends the credential outlet's station ids (null otherwise).
 // - A recipe record carries its full `lines`; a price list record its full
-//   `items`. Header and children are replaced in one go: the header is upserted
+//   `items` (a tombstoned list: none, its local items are removed). Header and
+//   children are replaced in one go: the header is upserted
 //   (same version guard), then, only when it was applied, the local children
 //   that are not in the record are deleted and the rest upserted. A stale
 //   record touches no child, so two versions never mix and a header never
@@ -133,14 +136,11 @@ const dateOrNull = (iso: string | null): Date | null =>
   iso === null ? null : new Date(iso);
 
 /**
- * ON CONFLICT guard: the write lands only over a row that is older in txid or
- * in `updated_at` (see the header). Equal on both = the same write: skipped.
+ * ON CONFLICT guard: the write lands only over a row with a strictly lower
+ * `sync_txid` (see the header). Equal = the same write: skipped.
  */
-const olderThanExcluded = (t: {
-  readonly syncTxid: AnyPgColumn;
-  readonly updatedAt: AnyPgColumn;
-}): SQL =>
-  sql`(${t.syncTxid} < excluded.sync_txid OR ${t.updatedAt} < excluded.updated_at)`;
+const olderThanExcluded = (t: { readonly syncTxid: AnyPgColumn }): SQL =>
+  sql`${t.syncTxid} < excluded.sync_txid`;
 
 type Parsed<S extends CatalogSyncStream> = CatalogSyncRecordOf<S>[];
 
@@ -170,7 +170,6 @@ function parseRecords<S extends CatalogSyncStream>(
 
 type Stamped = {
   readonly syncTxid: string;
-  readonly updatedAt: string;
   readonly deletedAt?: string | null;
 };
 
@@ -200,63 +199,51 @@ type Versioned = PgTable & {
   readonly tenantId: AnyPgColumn;
   readonly deletedAt: AnyPgColumn;
   readonly syncTxid: AnyPgColumn;
-  readonly updatedAt: AnyPgColumn;
 };
 type Unversioned = PgTable & {
   readonly id: AnyPgColumn;
   readonly tenantId: AnyPgColumn;
   readonly syncTxid: AnyPgColumn;
-  readonly updatedAt: AnyPgColumn;
 };
 
-type StoredVersion = { readonly txid: bigint; readonly updatedMs: bigint };
-
-/** Version (`sync_txid`, `updated_at` in whole ms) of the local rows among `ids`. */
-async function storedVersions(
+/** `sync_txid` of the local rows among `ids` (lower-case id -> stamp). */
+async function storedSyncTxids(
   tx: Tx,
   table: Unversioned,
   tenantId: string,
   ids: readonly string[],
-): Promise<Map<string, StoredVersion>> {
-  const out = new Map<string, StoredVersion>();
+): Promise<Map<string, bigint>> {
+  const out = new Map<string, bigint>();
   if (ids.length === 0) return out;
   const list = sql.join(
     ids.map((id) => sql`${id}::uuid`),
     sql`, `,
   );
   const result = await tx.execute(
-    sql`SELECT ${table.id}::text AS id, ${table.syncTxid}::text AS sync_txid, floor(extract(epoch FROM ${table.updatedAt}) * 1000)::bigint::text AS updated_ms FROM ${table} WHERE ${table.tenantId} = ${tenantId}::uuid AND ${table.id} IN (${list})`,
+    sql`SELECT ${table.id}::text AS id, ${table.syncTxid}::text AS sync_txid FROM ${table} WHERE ${table.tenantId} = ${tenantId}::uuid AND ${table.id} IN (${list})`,
   );
   for (const row of result.rows)
-    out.set(String(row.id).toLowerCase(), {
-      txid: BigInt(String(row.sync_txid)),
-      updatedMs: BigInt(String(row.updated_ms)),
-    });
+    out.set(String(row.id).toLowerCase(), BigInt(String(row.sync_txid)));
   return out;
 }
 
 /**
  * Frees a live unique key for `self` (a live record about to be written):
  * every other live local row on the key is soft-deleted (cloud wins) and true
- * is returned. When such a row is newer than `self` (greater txid AND not
- * older `updated_at`: the mirror of the accept rule), nothing is deleted and
- * false is returned: `self` is the stale one and is left out (its newer
- * version arrives later in the stream).
+ * is returned. When such a row has a greater txid than `self`, nothing is
+ * deleted and false is returned: `self` is the stale one and is left out (its
+ * newer version arrives later in the stream).
  */
 async function claimUniqueKey(
   tx: Tx,
   table: Versioned,
   tenantId: string,
-  self: {
-    readonly id: string;
-    readonly syncTxid: string;
-    readonly updatedAt: string;
-  },
+  self: { readonly id: string; readonly syncTxid: string },
   sameKey: SQL,
 ): Promise<boolean> {
   const clash = sql`${table.tenantId} = ${tenantId}::uuid AND ${table.deletedAt} IS NULL AND ${table.id} <> ${self.id}::uuid AND ${sameKey}`;
   const newer = await tx.execute(
-    sql`SELECT 1 AS found FROM ${table} WHERE ${clash} AND ${table.syncTxid} > ${self.syncTxid}::bigint AND ${table.updatedAt} >= ${self.updatedAt}::timestamptz LIMIT 1`,
+    sql`SELECT 1 AS found FROM ${table} WHERE ${clash} AND ${table.syncTxid} > ${self.syncTxid}::bigint LIMIT 1`,
   );
   if (newer.rows.length > 0) return false;
   await tx.execute(sql`UPDATE ${table} SET deleted_at = now() WHERE ${clash}`);
@@ -264,8 +251,8 @@ async function claimUniqueKey(
 }
 
 /**
- * Writes `ordered` one by one: a record that is not newer than the local row
- * (neither `syncTxid` greater nor `updatedAt` later) is skipped; a live record on a unique key claims the key
+ * Writes `ordered` one by one: a record whose `syncTxid` is not greater than
+ * the local row's is skipped; a live record on a unique key claims the key
  * first. `write` upserts (and, for documents, replaces the children) and tells
  * whether the row was written. Returns the rows written.
  */
@@ -279,7 +266,7 @@ async function applyOrdered<R extends Stamped & { readonly id: string }>(
     readonly write: (record: R) => Promise<boolean>;
   },
 ): Promise<number> {
-  const stored = await storedVersions(
+  const stored = await storedSyncTxids(
     tx,
     table,
     tenantId,
@@ -288,12 +275,7 @@ async function applyOrdered<R extends Stamped & { readonly id: string }>(
   let applied = 0;
   for (const record of ordered) {
     const have = stored.get(record.id.toLowerCase());
-    if (
-      have !== undefined &&
-      have.txid >= BigInt(record.syncTxid) &&
-      have.updatedMs >= BigInt(Date.parse(record.updatedAt))
-    )
-      continue;
+    if (have !== undefined && have >= BigInt(record.syncTxid)) continue;
     if (
       hooks.sameKey !== undefined &&
       (record.deletedAt === undefined || record.deletedAt === null) &&
@@ -342,6 +324,45 @@ function tally(
     nulledRefs: extra.nulledRefs ?? 0,
     deferredParents: extra.deferredParents ?? [],
   };
+}
+
+const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
+  stations,
+  inventory_items: inventoryItems,
+  menu_categories: menuCategories,
+  modifier_groups: modifierGroups,
+  modifiers,
+  menu_items: menuItems,
+  item_variants: itemVariants,
+  menu_item_modifier_groups: menuItemModifierGroups,
+  price_lists: priceLists,
+  recipes,
+};
+
+/**
+ * Before the first page of a full pull (no checkpoint, or a `cat1` one): the
+ * stream's local rows carry stamps from local transactions that are not
+ * comparable with the cloud's, so they are set to 0 and every cloud record
+ * wins over them. Run in the first page's transaction; safe to repeat.
+ */
+export async function resetCatalogSyncTxid(
+  tx: Tx,
+  tenantId: TenantId,
+  stream: CatalogSyncStream,
+): Promise<void> {
+  await lockCatalogStream(tx, tenantId, stream);
+  await tx.execute(
+    sql`UPDATE ${STREAM_TABLES[stream]} SET sync_txid = 0 WHERE tenant_id = ${tenantId}::uuid AND sync_txid <> 0`,
+  );
+}
+
+/** A station a record names must be local (its own stream): transient otherwise. */
+function requireStations(
+  records: readonly { readonly stationId: string | null }[],
+  known: ReadonlySet<string>,
+): void {
+  if (records.some((r) => r.stationId !== null && !known.has(r.stationId)))
+    throw new CatalogMissingRefError();
 }
 
 /**
@@ -541,7 +562,7 @@ export async function applyCatalogRecords(
         {
           write: async (r) => {
             const values = {
-              tenantId: r.tenantId,
+              tenantId,
               name: r.name,
               category: r.category,
               type: r.type,
@@ -644,7 +665,7 @@ export async function applyCatalogRecords(
       const stationIds = await localIds(tx, stations, tenantId, [
         ...new Set(parsed.flatMap((r) => (r.stationId ? [r.stationId] : []))),
       ]);
-      let nulledRefs = 0;
+      requireStations(parsed, stationIds);
       const applied = await applyOrdered(
         tx,
         t,
@@ -659,10 +680,7 @@ export async function applyCatalogRecords(
               name: r.name,
               description: r.description,
               type: r.type,
-              stationId:
-                r.stationId !== null && stationIds.has(r.stationId)
-                  ? r.stationId
-                  : null,
+              stationId: r.stationId,
               stationType: r.stationType,
               course: r.course,
               recipeId: r.recipeId,
@@ -686,17 +704,11 @@ export async function applyCatalogRecords(
                 setWhere: olderThanExcluded(t),
               })
               .returning({ id: t.id });
-            if (
-              rows.length > 0 &&
-              r.stationId !== null &&
-              !stationIds.has(r.stationId)
-            )
-              nulledRefs += 1;
             return rows.length > 0;
           },
         },
       );
-      return tally(applied, parsed.length, { nulledRefs });
+      return tally(applied, parsed.length);
     }
 
     case "item_variants": {
@@ -794,7 +806,7 @@ export async function applyCatalogRecords(
       const stationIds = await localIds(tx, stations, tenantId, [
         ...new Set(parsed.flatMap((r) => (r.stationId ? [r.stationId] : []))),
       ]);
-      let nulledRefs = 0;
+      requireStations(parsed, stationIds);
       const applied = await applyOrdered(
         tx,
         t,
@@ -810,10 +822,7 @@ export async function applyCatalogRecords(
               name: r.name,
               priceIdr: r.priceIdr,
               recipeId: r.recipeId,
-              stationId:
-                r.stationId !== null && stationIds.has(r.stationId)
-                  ? r.stationId
-                  : null,
+              stationId: r.stationId,
               createdAt: date(r.createdAt),
               updatedAt: date(r.updatedAt),
               deletedAt: dateOrNull(r.deletedAt),
@@ -828,17 +837,11 @@ export async function applyCatalogRecords(
                 setWhere: olderThanExcluded(t),
               })
               .returning({ id: t.id });
-            if (
-              rows.length > 0 &&
-              r.stationId !== null &&
-              !stationIds.has(r.stationId)
-            )
-              nulledRefs += 1;
             return rows.length > 0;
           },
         },
       );
-      return tally(applied, parsed.length, { nulledRefs });
+      return tally(applied, parsed.length);
     }
 
     case "menu_item_modifier_groups": {
@@ -947,7 +950,11 @@ async function applyPriceLists(
           .returning({ id: t.id });
         // Header skipped (local as new or newer): its items stay with it.
         if (rows.length === 0) return false;
-        const ids = r.items.map((item) => item.id);
+        // A deleted list keeps no price at all: whatever items the record
+        // carries, the local items go and none is written (a price must never
+        // stay readable under a deleted list).
+        const items = r.deletedAt === null ? r.items : [];
+        const ids = items.map((item) => item.id);
         const gone = await tx
           .delete(priceListItems)
           .where(
@@ -959,7 +966,7 @@ async function applyPriceLists(
           )
           .returning({ id: priceListItems.id });
         deleted += gone.length;
-        for (const item of r.items) {
+        for (const item of items) {
           const itemValues = {
             tenantId: item.tenantId,
             priceListId: item.priceListId,
@@ -1012,8 +1019,8 @@ async function applyRecipes(
       .where(inArray(user.id, authors));
     for (const row of rows) knownAuthors.add(row.id);
   }
-  // output_item_id: stays null only when that item is not local (inventory_items
-  // now arrive through their own stream). Permanent: null.
+  // output_item_id: inventory items arrive through their own stream; one that
+  // is not local yet is transient (the page is refused, the checkpoint stays).
   const outputIds = [
     ...new Set(parsed.flatMap((r) => (r.outputItemId ? [r.outputItemId] : []))),
   ];
@@ -1029,6 +1036,8 @@ async function applyRecipes(
         ),
       );
     for (const row of rows) knownOutputs.add(row.id);
+    if (outputIds.some((id) => !knownOutputs.has(id)))
+      throw new CatalogMissingRefError();
   }
 
   let deleted = 0;
@@ -1040,16 +1049,12 @@ async function applyRecipes(
     inApplyOrder(parsed, (x) => x.id),
     {
       write: async (r) => {
-        const outputItemId =
-          r.outputItemId !== null && knownOutputs.has(r.outputItemId)
-            ? r.outputItemId
-            : null;
         const updatedBy = knownAuthors.has(r.updatedBy) ? r.updatedBy : null;
         const values = {
           tenantId,
           brandId: r.brandId,
           name: r.name,
-          outputItemId,
+          outputItemId: r.outputItemId,
           yieldQuantity: r.yieldQuantity,
           yieldUomId: r.yieldUomId,
           version: r.version,
@@ -1071,7 +1076,6 @@ async function applyRecipes(
           .returning({ id: t.id });
         // Header skipped (local as new or newer): its lines stay with it.
         if (rows.length === 0) return false;
-        if (r.outputItemId !== null && outputItemId === null) nulledRefs += 1;
         if (updatedBy === null) nulledRefs += 1;
         const ids = r.lines.map((line) => line.id);
         const gone = await tx

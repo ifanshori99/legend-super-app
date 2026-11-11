@@ -6,8 +6,8 @@
 // (helpers/edge-database.ts) is the EDGE. A fresh set of cloud rows is seeded
 // for a private outlet O1.
 //
-// Apply rule: replace when incoming syncTxid > stored OR incoming updatedAt >
-// stored updated_at; "older" copies here keep the same updatedAt.
+// Apply rule: a local row is replaced ONLY when incoming syncTxid > stored
+// (updatedAt plays no part).
 //
 // Assumptions (the design is silent), each easy to change:
 //  - A tombstoned (soft-deleted) price list must leave NO price rows on the
@@ -676,18 +676,22 @@ describe("0mus6 edge apply: only a higher sync_txid replaces a local row", () =>
     expect(await nameOnEdge("menu_categories", ids.catA)).toBe("Versi baru");
   });
 
-  it("a price cannot go back: the older price list (lower txid) never replaces the newer one", async () => {
+  it("a price cannot go back: the older price list (lower txid) never replaces the newer one, even with a newer updatedAt", async () => {
     const data = await exportMine();
     await applyParents(data);
     const list = await exportOne("price_lists", ids.plA);
-    // Apply rule: higher txid OR higher updatedAt replaces; the old copy
-    // keeps the same updatedAt so only its lower txid is at stake.
-    const withPrice = (rec: Rec, price: number) => ({
+    // The old copy even claims the newest updatedAt: only txid orders versions.
+    const withPrice = (rec: Rec, price: number, stamp?: string) => ({
       ...rec,
-      items: (rec.items as Rec[]).map((i) => ({ ...i, priceIdr: price })),
+      ...(stamp ? { updatedAt: stamp } : {}),
+      items: (rec.items as Rec[]).map((i) => ({
+        ...i,
+        priceIdr: price,
+        ...(stamp ? { updatedAt: stamp } : {}),
+      })),
     });
     const fresh = withPrice(newer(list, 10n), 25_000);
-    const old = withPrice(list, 20_000);
+    const old = withPrice(list, 20_000, "2099-01-01T00:00:00.000Z");
     await edgeApply("price_lists", [fresh]);
     await edgeApply("price_lists", [old]);
     expect(await edgePrice(ids.pliA)).toBe("25000");

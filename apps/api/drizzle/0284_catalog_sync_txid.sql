@@ -1,3 +1,4 @@
+SET LOCAL lock_timeout = '10s';--> statement-breakpoint
 ALTER TABLE "recipes" ALTER COLUMN "updated_by" DROP NOT NULL;--> statement-breakpoint
 ALTER TABLE "item_variants" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
 ALTER TABLE "menu_categories" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
@@ -9,16 +10,16 @@ ALTER TABLE "price_lists" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact
 ALTER TABLE "stations" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
 ALTER TABLE "inventory_items" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
 ALTER TABLE "recipes" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
-CREATE INDEX "item_variants_sync_txid_idx" ON "item_variants" USING btree ("sync_txid","id");--> statement-breakpoint
-CREATE INDEX "menu_categories_sync_txid_idx" ON "menu_categories" USING btree ("sync_txid","id");--> statement-breakpoint
-CREATE INDEX "menu_item_modifier_groups_sync_txid_idx" ON "menu_item_modifier_groups" USING btree ("sync_txid","menu_item_id","group_id");--> statement-breakpoint
-CREATE INDEX "menu_items_sync_txid_idx" ON "menu_items" USING btree ("sync_txid","id");--> statement-breakpoint
-CREATE INDEX "modifier_groups_sync_txid_idx" ON "modifier_groups" USING btree ("sync_txid","id");--> statement-breakpoint
-CREATE INDEX "modifiers_sync_txid_idx" ON "modifiers" USING btree ("sync_txid","id");--> statement-breakpoint
-CREATE INDEX "price_lists_sync_txid_idx" ON "price_lists" USING btree ("sync_txid","id");--> statement-breakpoint
-CREATE INDEX "stations_sync_txid_idx" ON "stations" USING btree ("sync_txid","id");--> statement-breakpoint
-CREATE INDEX "inventory_items_sync_txid_idx" ON "inventory_items" USING btree ("sync_txid","id");--> statement-breakpoint
-CREATE INDEX "recipes_sync_txid_idx" ON "recipes" USING btree ("sync_txid","id");
+CREATE INDEX "item_variants_sync_txid_idx" ON "item_variants" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
+CREATE INDEX "menu_categories_sync_txid_idx" ON "menu_categories" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
+CREATE INDEX "menu_item_modifier_groups_sync_txid_idx" ON "menu_item_modifier_groups" USING btree ("tenant_id","sync_txid","menu_item_id","group_id");--> statement-breakpoint
+CREATE INDEX "menu_items_sync_txid_idx" ON "menu_items" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
+CREATE INDEX "modifier_groups_sync_txid_idx" ON "modifier_groups" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
+CREATE INDEX "modifiers_sync_txid_idx" ON "modifiers" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
+CREATE INDEX "price_lists_sync_txid_idx" ON "price_lists" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
+CREATE INDEX "stations_sync_txid_idx" ON "stations" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
+CREATE INDEX "inventory_items_sync_txid_idx" ON "inventory_items" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
+CREATE INDEX "recipes_sync_txid_idx" ON "recipes" USING btree ("tenant_id","sync_txid","id");
 --> statement-breakpoint
 -- legend-24318: sync_txid stamping for the catalog down-sync. The trigger
 -- writes the id of the writing transaction into every inserted / updated row;

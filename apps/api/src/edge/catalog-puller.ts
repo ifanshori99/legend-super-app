@@ -14,7 +14,14 @@
 //   no rewind: the pull resumes exactly at the checkpoint. A stored cursor of
 //   another tag (`cat1`) or a corrupt one counts as no checkpoint (the stream
 //   is pulled from the start again; applying is idempotent and never lets an
-//   older record over a newer row).
+//   older record over a newer row). That full pull first zeroes the stream's
+//   local `sync_txid` stamps (in the first page's transaction): stamps written
+//   by local transactions are not comparable with the cloud's.
+// - A stream whose rows another stream's rows point at (stations for
+//   menu_items and modifiers, inventory_items for recipes) that failed in this
+//   pull makes those streams skip the pull (error `CATALOG_PARENT_FAILED`,
+//   checkpoint untouched); a reference to a row not local yet is refused as
+//   transient (`CATALOG_MISSING_REF`) by the apply anyway.
 // - menu_categories: parent links the apply had to write null (parent not local
 //   yet) are saved in the same transaction as the page, in the checkpoint row
 //   `catalog:menu_categories:parents` (JSON, small), so a restart loses
@@ -47,6 +54,7 @@ import {
   applyCatalogRecords,
   CatalogMissingRefError,
   repairCategoryParents,
+  resetCatalogSyncTxid,
   unresolvedCategoryParents,
   type CatalogApplyResult,
   type DeferredCategoryParent,
@@ -61,6 +69,15 @@ const CATALOG_CURSOR_TAG = "cat2";
 
 /** Pending category parents live in a checkpoint row of their own. */
 const PARENTS_CHECKPOINT = "catalog:menu_categories:parents";
+
+/** Streams that must have pulled cleanly before the listed ones run. */
+const PARENT_STREAMS: Readonly<
+  Partial<Record<CatalogSyncStream, readonly CatalogSyncStream[]>>
+> = {
+  menu_items: ["stations"],
+  modifiers: ["stations"],
+  recipes: ["inventory_items"],
+};
 
 /** Key of a stream's row in `edge_pull_checkpoints` (varchar(40)). */
 export function catalogCheckpointStream(
@@ -343,6 +360,9 @@ async function pullStream(
     const checkpoint = watermark;
     // Apply and checkpoint together: both land, or neither does.
     const result = await withTenant(database, options.context, async (tx) => {
+      // A full pull (no checkpoint): local stamps are not the cloud's, so they
+      // are zeroed first and every cloud record wins (same commit as the page).
+      if (since === null) await resetCatalogSyncTxid(tx, tenantId, stream);
       const outcome = await applyCatalogRecords(tx, {
         tenantId,
         stream,
@@ -410,10 +430,21 @@ async function pullStream(
     );
 }
 
+/** The stream this one depends on failed in the same pull. */
+class CatalogParentFailedError extends Error {
+  readonly code = "CATALOG_PARENT_FAILED";
+
+  constructor(parent: CatalogSyncStream) {
+    super(`Catalog stream skipped: ${parent} failed in this pull.`);
+    this.name = "CatalogParentFailedError";
+  }
+}
+
 /** Code and message that are safe to report: no record data, no SQL detail. */
 function describeError(error: unknown): CatalogStreamError {
   if (
     error instanceof CatalogMissingRefError ||
+    error instanceof CatalogParentFailedError ||
     error instanceof CoreError ||
     error instanceof EdgeCloudHttpError
   )
@@ -447,6 +478,7 @@ export async function pullCatalog(
     pages: 0,
     backlog: false,
   };
+  const failed = new Set<CatalogSyncStream>();
   for (const stream of streams) {
     const progress: StreamProgress = {
       applied: 0,
@@ -459,7 +491,12 @@ export async function pullCatalog(
       backlog: false,
     };
     let error: CatalogStreamError | undefined;
+    const blockedBy = (PARENT_STREAMS[stream] ?? []).find((parent) =>
+      failed.has(parent),
+    );
     try {
+      if (blockedBy !== undefined)
+        throw new CatalogParentFailedError(blockedBy);
       const stored = await loadCatalogCheckpoint(
         database,
         options.context,
@@ -470,6 +507,7 @@ export async function pullCatalog(
     } catch (caught) {
       error = describeError(caught);
     }
+    if (error) failed.add(stream);
     results[stream] = error ? { ...progress, error } : { ...progress };
     total.applied += progress.applied;
     total.skipped += progress.skipped;

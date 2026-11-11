@@ -1,5 +1,5 @@
 {
-  "id": "20e60453-ed6e-40bd-80e4-0d9a0d7d3bd3",
+  "id": "fb322138-fc38-44cd-b098-2deea1e2eda4",
   "prevId": "6ded71a9-8841-4340-b435-d75c538fcd0b",
   "version": "7",
   "dialect": "postgresql",
@@ -2757,6 +2757,12 @@
           "name": "item_variants_sync_txid_idx",
           "columns": [
             {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "sync_txid",
               "isExpression": false,
               "asc": true,
@@ -2970,6 +2976,12 @@
         "menu_categories_sync_txid_idx": {
           "name": "menu_categories_sync_txid_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "sync_txid",
               "isExpression": false,
@@ -3360,6 +3372,12 @@
           "name": "menu_item_modifier_groups_sync_txid_idx",
           "columns": [
             {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "sync_txid",
               "isExpression": false,
               "asc": true,
@@ -3643,6 +3661,12 @@
         "menu_items_sync_txid_idx": {
           "name": "menu_items_sync_txid_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "sync_txid",
               "isExpression": false,
@@ -3934,6 +3958,12 @@
           "name": "modifier_groups_sync_txid_idx",
           "columns": [
             {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "sync_txid",
               "isExpression": false,
               "asc": true,
@@ -4121,6 +4151,12 @@
         "modifiers_sync_txid_idx": {
           "name": "modifiers_sync_txid_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "sync_txid",
               "isExpression": false,
@@ -4615,6 +4651,12 @@
           "name": "price_lists_sync_txid_idx",
           "columns": [
             {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "sync_txid",
               "isExpression": false,
               "asc": true,
@@ -4856,6 +4898,12 @@
         "stations_sync_txid_idx": {
           "name": "stations_sync_txid_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "sync_txid",
               "isExpression": false,
@@ -8214,6 +8262,12 @@
         "inventory_items_sync_txid_idx": {
           "name": "inventory_items_sync_txid_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "sync_txid",
               "isExpression": false,
@@ -70477,6 +70531,12 @@
         "recipes_sync_txid_idx": {
           "name": "recipes_sync_txid_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "sync_txid",
               "isExpression": false,

@@ -163,6 +163,24 @@ function after(
   return sql`(${columns}) > (${values})`;
 }
 
+/**
+ * A station id only when that station belongs to the credential's outlet (same
+ * tenant; a tombstoned station still counts), else null: the edge never waits
+ * for another outlet's station, which is never synced to it.
+ */
+function outletStationId(
+  tenantId: AnyPgColumn,
+  stationId: AnyPgColumn,
+  outletId: string,
+): SQL<string | null> {
+  return sql<string | null>`case when exists (
+    select 1 from stations st
+    where st.tenant_id = ${tenantId}
+      and st.id = ${stationId}
+      and st.outlet_id = ${outletId}::uuid
+  ) then ${stationId} else null end`;
+}
+
 const iso = (value: Date) => value.toISOString();
 const stamps = (row: {
   createdAt: Date;
@@ -290,10 +308,14 @@ const scanners: Record<
       },
     }));
   },
-  async menu_items({ tx, tenantId, brandId, since, take }) {
+  async menu_items({ tx, tenantId, outletId, brandId, since, take }) {
     const t = menuItems;
     const rows = await tx
-      .select({ row: t, txid: txidOf(t.syncTxid) })
+      .select({
+        row: t,
+        txid: txidOf(t.syncTxid),
+        stationId: outletStationId(t.tenantId, t.stationId, outletId),
+      })
       .from(t)
       .where(
         and(
@@ -305,7 +327,7 @@ const scanners: Record<
       )
       .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, txid }) => ({
+    return rows.map(({ row, txid, stationId }) => ({
       txid,
       keys: [row.id],
       record: {
@@ -317,7 +339,7 @@ const scanners: Record<
         name: row.name,
         description: row.description,
         type: row.type,
-        stationId: row.stationId,
+        stationId,
         stationType: row.stationType,
         course: row.course,
         recipeId: row.recipeId,
@@ -393,10 +415,14 @@ const scanners: Record<
       },
     }));
   },
-  async modifiers({ tx, tenantId, since, take }) {
+  async modifiers({ tx, tenantId, outletId, since, take }) {
     const t = modifiers;
     const rows = await tx
-      .select({ row: t, txid: txidOf(t.syncTxid) })
+      .select({
+        row: t,
+        txid: txidOf(t.syncTxid),
+        stationId: outletStationId(t.tenantId, t.stationId, outletId),
+      })
       .from(t)
       .where(
         and(
@@ -407,7 +433,7 @@ const scanners: Record<
       )
       .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, txid }) => ({
+    return rows.map(({ row, txid, stationId }) => ({
       txid,
       keys: [row.id],
       record: {
@@ -418,7 +444,7 @@ const scanners: Record<
         name: row.name,
         priceIdr: row.priceIdr,
         recipeId: row.recipeId,
-        stationId: row.stationId,
+        stationId,
         ...stamps(row),
       },
     }));

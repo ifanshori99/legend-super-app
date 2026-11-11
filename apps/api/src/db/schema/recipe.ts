@@ -86,7 +86,7 @@ export const recipes = pgTable(
   },
   (table) => [
     unique("recipes_tenant_id_id_key").on(table.tenantId, table.id),
-    index("recipes_sync_txid_idx").on(table.syncTxid, table.id),
+    index("recipes_sync_txid_idx").on(table.tenantId, table.syncTxid, table.id),
     foreignKey({
       name: "recipes_brand_fk",
       columns: [table.tenantId, table.brandId],

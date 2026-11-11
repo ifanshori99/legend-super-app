@@ -512,9 +512,9 @@ export class EdgeCatalogSyncError extends Error {
 }
 
 /**
- * Periodic `syncEdgeMasters`, then (when `catalog` is given) `pullCatalog`
- * (legend-24318): masters first because inventory items need their uoms. A
- * failure of one does not stop the other; every error goes to `onError`
+ * Periodic `syncEdgeMasters`, then `pullCatalog` (legend-24318): masters
+ * first because inventory items need their uoms. A failure of one does not
+ * stop the other; every error goes to `onError`
  * (a catalog stream error as `EdgeCatalogSyncError`). A catalog backlog is
  * pulled on in the same tick, up to 20 rounds. No immediate master run
  * (bootstrap already syncs); with `catalogOnStart` one catalog-only run starts
@@ -528,11 +528,15 @@ export function startEdgeMasterSyncLoop(input: {
   intervalMs: number;
   onError?: (error: unknown) => void;
   options?: EdgeBootstrapOptions;
+  /**
+   * Optional overrides of the catalog pull. By default the node's scope and
+   * `edge_nodes.id` come from the credential, like the masters apply.
+   */
   catalog?: {
     /** The node's own scope: where catalog rows land. */
-    context: ScopedTenantContext;
+    context?: ScopedTenantContext;
     /** This node's `edge_nodes.id` (the checkpoint rows belong to it). */
-    edgeNodeId: string;
+    edgeNodeId?: string;
     /** Default `pullCatalog`; tests inject their own. */
     pull?: typeof pullCatalog;
   };
@@ -569,15 +573,18 @@ export function startEdgeMasterSyncLoop(input: {
       signal: abort.signal,
     });
 
-  const runCatalog = async (
-    catalog: NonNullable<typeof input.catalog>,
-  ): Promise<void> => {
+  const runCatalog = async (): Promise<void> => {
+    const claims = parseEdgeCredential(input.config.credential);
+    if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
     guardMasterImport();
-    const pull = catalog.pull ?? pullCatalog;
+    const catalog = input.catalog;
+    const context = catalog?.context ?? edgeNodeContext(claims);
+    const edgeNodeId = catalog?.edgeNodeId ?? claims.edgeNodeId;
+    const pull = catalog?.pull ?? pullCatalog;
     for (let round = 0; round < MAX_CATALOG_ROUNDS && !stopped; round += 1) {
       const result = await pull({
-        context: catalog.context,
-        edgeNodeId: catalog.edgeNodeId,
+        context,
+        edgeNodeId,
         fetchPage: fetchCatalogPage,
       });
       for (const [stream, outcome] of Object.entries(result.streams))
@@ -600,9 +607,9 @@ export function startEdgeMasterSyncLoop(input: {
         } catch (error) {
           report(error);
         }
-      if (stopped || !input.catalog) return;
+      if (stopped) return;
       try {
-        await runCatalog(input.catalog);
+        await runCatalog();
       } catch (error) {
         report(error);
       }
@@ -614,7 +621,7 @@ export function startEdgeMasterSyncLoop(input: {
 
   const timer = setInterval(() => tick(), input.intervalMs);
   timer.unref();
-  if (input.catalogOnStart === true && input.catalog) tick(false);
+  if (input.catalogOnStart === true) tick(false);
 
   return {
     async stop() {

@@ -105,7 +105,11 @@ export const inventoryItems = pgTable(
   },
   (table) => [
     unique("inventory_items_tenant_id_id_key").on(table.tenantId, table.id),
-    index("inventory_items_sync_txid_idx").on(table.syncTxid, table.id),
+    index("inventory_items_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     uniqueIndex("inventory_items_tenant_idempotency_key")
       .on(table.tenantId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
