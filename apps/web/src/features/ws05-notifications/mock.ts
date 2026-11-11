@@ -104,6 +104,21 @@ registerMock(contract.getNotificationPreferences, ({ scenario }) => {
 });
 
 registerMock(contract.updateNotificationPreferences, ({ body }) => {
+  // Same rule as the API (legend-307w3): email for a mandatory category
+  // (security) cannot be switched off.
+  for (const [category, channels] of Object.entries(body.categories)) {
+    const parsed = contract.notificationCategorySchema.safeParse(category);
+    if (
+      channels?.email === false &&
+      parsed.success &&
+      contract.isEmailMandatory(parsed.data)
+    )
+      throw new ApiError(
+        422,
+        "VALIDATION_ERROR",
+        `Email untuk kategori ${category} wajib aktif dan tidak bisa dimatikan.`,
+      );
+  }
   const state = store.get();
   const preference: contract.NotificationPreference = {
     ...state.preference,

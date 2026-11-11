@@ -81,6 +81,31 @@ function asNotification(row: Record<string, unknown>) {
     dedupeKey: row.dedupe_key,
   });
 }
+/**
+ * Presentation only: a mandatory-email category (security) always reports
+ * email on, even if an older stored row says false. The DB row and delivery
+ * are untouched; a missing category stays missing.
+ */
+function withMandatoryEmail(categories: unknown): unknown {
+  if (typeof categories !== "object" || categories === null) return categories;
+  const out: Record<string, unknown> = {
+    ...(categories as Record<string, unknown>),
+  };
+  for (const [category, channels] of Object.entries(out)) {
+    const parsed = notificationCategorySchema.safeParse(category);
+    if (
+      parsed.success &&
+      isEmailMandatory(parsed.data) &&
+      typeof channels === "object" &&
+      channels !== null &&
+      (channels as Record<string, unknown>).email === false
+    ) {
+      out[category] = { ...(channels as Record<string, unknown>), email: true };
+    }
+  }
+  return out;
+}
+
 /** JSONB stores object keys in its own order, so compare with sorted keys. */
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -264,7 +289,7 @@ export function createNotificationService(
                   ? {
                       tenantId: row.tenant_id,
                       userId: row.user_id,
-                      categories: row.categories,
+                      categories: withMandatoryEmail(row.categories),
                       quietHours: row.quiet_hours,
                       timeZone: row.time_zone,
                       updatedAt: isoTimestamp(row.updated_at),
@@ -360,6 +385,7 @@ export function createNotificationService(
                 tenantId: context.tenant.tenantId,
                 userId,
                 ...body,
+                categories: withMandatoryEmail(body.categories),
                 updatedAt: isoTimestamp(result.rows[0].updated_at),
               }),
             };

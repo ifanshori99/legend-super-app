@@ -1,3 +1,4 @@
+import { cn } from "cn";
 import { useMemo, useState, type FormEvent } from "react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -16,9 +17,11 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
+import { ApiError } from "@/lib/api/errors";
 import type { MessageKey } from "@starter/shared/i18n";
 import {
   effectiveChannelPreference,
+  isEmailMandatory,
   type ChannelPreference,
   type NotificationCategory,
   type NotificationPreference,
@@ -60,8 +63,13 @@ type ChannelMap = Record<string, ChannelPreference>;
 
 function initialChannels(preference: NotificationPreference): ChannelMap {
   const channels: ChannelMap = {};
-  for (const category of STAFF_NOTIFICATION_CATEGORIES)
-    channels[category] = effectiveChannelPreference(preference, category);
+  for (const category of STAFF_NOTIFICATION_CATEGORIES) {
+    const own = effectiveChannelPreference(preference, category);
+    // Mandatory email is always on, even if the stored value says false.
+    channels[category] = isEmailMandatory(category as NotificationCategory)
+      ? { ...own, email: true }
+      : own;
+  }
   return channels;
 }
 
@@ -71,8 +79,14 @@ function buildBody(
   timeZone: string,
 ): NotificationPreferenceInput {
   const categories: NotificationPreferenceInput["categories"] = {};
-  for (const category of STAFF_NOTIFICATION_CATEGORIES)
-    categories[category as NotificationCategory] = channels[category];
+  for (const category of STAFF_NOTIFICATION_CATEGORIES) {
+    const channel = channels[category];
+    categories[category as NotificationCategory] = isEmailMandatory(
+      category as NotificationCategory,
+    )
+      ? { ...channel, email: true }
+      : channel;
+  }
   return { categories, quietHours, timeZone };
 }
 
@@ -174,6 +188,7 @@ function PreferencesForm({
     channel: keyof ChannelPreference,
     value: boolean,
   ) => {
+    if (channel === "email" && !value && isEmailMandatory(category)) return;
     setChannels((current) => ({
       ...current,
       [category]: { ...current[category], [channel]: value },
@@ -251,14 +266,22 @@ function PreferencesForm({
                     <div className="grid grid-cols-3 gap-2 sm:contents">
                       {CHANNELS.map(({ key, labelKey }) => {
                         const id = `notification-${category}-${key}`;
+                        const emailLocked =
+                          key === "email" &&
+                          isEmailMandatory(category as NotificationCategory);
+                        const noteId = `${id}-note`;
                         const disabled =
-                          key === "whatsapp" &&
-                          whatsappCategories !== null &&
-                          !whatsappCategories.includes(category);
+                          emailLocked ||
+                          (key === "whatsapp" &&
+                            whatsappCategories !== null &&
+                            !whatsappCategories.includes(category));
                         return (
                           <div
                             key={key}
-                            className="flex min-h-11 flex-col items-start gap-1 rounded-md px-1 py-1 sm:min-h-0 sm:flex-row sm:items-center sm:justify-center sm:gap-2 sm:p-0"
+                            className={cn(
+                              "flex min-h-11 flex-col items-start gap-1 rounded-md px-1 py-1 sm:min-h-0 sm:flex-row sm:items-center sm:justify-center sm:gap-2 sm:p-0",
+                              emailLocked && "sm:flex-col sm:gap-1",
+                            )}
                           >
                             <Label
                               htmlFor={id}
@@ -274,10 +297,21 @@ function PreferencesForm({
                               id={id}
                               checked={channels[category][key]}
                               disabled={disabled}
+                              aria-describedby={
+                                emailLocked ? noteId : undefined
+                              }
                               onCheckedChange={(checked) =>
                                 setChannel(category, key, checked)
                               }
                             />
+                            {emailLocked && (
+                              <span
+                                id={noteId}
+                                className="text-xs leading-4 text-muted-foreground"
+                              >
+                                {t("notification.preferences.emailMandatory")}
+                              </span>
+                            )}
                           </div>
                         );
                       })}
@@ -386,7 +420,9 @@ function PreferencesForm({
         </Button>
         {save.isError && (
           <p role="alert" className="text-sm leading-5 font-medium text-danger">
-            {t("notification.preferences.saveError")}
+            {save.error instanceof ApiError && save.error.status === 422
+              ? save.error.message
+              : t("notification.preferences.saveError")}
           </p>
         )}
       </div>
