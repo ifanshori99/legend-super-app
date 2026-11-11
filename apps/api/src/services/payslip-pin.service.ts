@@ -519,7 +519,7 @@ export async function resetEmployeePayslipPin(
   actorUserId: string,
   employeeId: string,
   input: ResetPayslipPinInput,
-  now: Date = new Date(),
+  nowOverride?: Date,
 ): Promise<PayslipPinStatus> {
   const { idempotencyKey, reason } = input;
   return withTenant(db, context, async (tx) => {
@@ -552,6 +552,9 @@ export async function resetEmployeePayslipPin(
           context.tenant.tenantId,
           employee.id,
         );
+        // Clock read AFTER the lock: a reset that waited for the lock must not
+        // stamp a stale `now`.
+        const now = nowOverride ?? new Date();
         if (row) await tx.delete(payslipPins).where(eq(payslipPins.id, row.id));
         // An open reset code must not outlive the reset.
         await tx
