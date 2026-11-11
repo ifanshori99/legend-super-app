@@ -19,6 +19,7 @@ import { PlatformError } from "@starter/shared/platform";
 import {
   createMagicLinkChallengeSchema,
   createWhatsAppLoginChallengeSchema,
+  invitationAcceptBodySchema,
   LOGIN_CODE_TTL_MINUTES,
   loginChallengeParamsSchema,
   magicLinkVerifyBodySchema,
@@ -39,6 +40,7 @@ import {
   requestEmailMagicLink,
   verifyEmailMagicLink,
 } from "../services/identity-email-login.service";
+import { acceptInvitationLink } from "../services/identity-invitation.service";
 import {
   cancelWhatsAppChallenge,
   issueWhatsAppChallenge,
@@ -179,3 +181,15 @@ loginChallengeRouter.post(
     res.status(200).json({ data: verified.view });
   },
 );
+
+/**
+ * legend-fy5y: the first-admin invitation page posts the token and tenant id
+ * from its URL fragment. No requireTenantContext on purpose: a new tenant has
+ * no verified domain yet. It only marks the email verified and issues no
+ * session. The per-IP loginChallengeRateLimit above applies to this path.
+ */
+loginChallengeRouter.post("/invitation", jsonBody, async (req, res) => {
+  const body = invitationAcceptBodySchema.parse(req.body);
+  await acceptInvitationLink(body);
+  res.status(200).json({ data: { verified: true } });
+});

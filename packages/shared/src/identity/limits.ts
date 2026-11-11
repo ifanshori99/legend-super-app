@@ -15,6 +15,13 @@ export const LOGIN_CODE_TTL_MINUTES = 5;
 export const MAGIC_LINK_TTL_MINUTES = 15;
 
 /**
+ * legend-fy5y: the first-admin invitation link lives one hour and is minted at
+ * send time; at most 3 links per user in 24 hours (a durable cap, not memory).
+ */
+export const INVITATION_LINK_TTL_MINUTES = 60;
+export const INVITATION_LINKS_PER_DAY = 3;
+
+/**
  * PRD is silent on the Google OAuth state window. The round trip is immediate,
  * so 10 minutes is generous without keeping an abandoned state alive.
  */

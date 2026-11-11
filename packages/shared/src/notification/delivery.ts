@@ -2,7 +2,12 @@
 // WhatsApp cap, retry state machine and template rendering. The worker in
 // legend-5ub / legend-hyq calls these; the FE uses them for previews.
 
-import { categoryMeta, inAppLinkSchema, isEmailMandatory } from "./schemas.ts";
+import {
+  allowsUnverifiedEmail,
+  categoryMeta,
+  inAppLinkSchema,
+  isEmailMandatory,
+} from "./schemas.ts";
 import type {
   ChannelPreference,
   DeliveryStatus,
@@ -121,6 +126,11 @@ export type DeliveryPlan = {
 export type Reachability = {
   hasPushSubscription: boolean;
   hasVerifiedEmail: boolean;
+  /**
+   * Usable but unverified address. Counts only for categories that
+   * `allowsUnverifiedEmail`; missing means false (fail closed).
+   */
+  hasUnverifiedEmail?: boolean;
   /** WhatsApp number on file with an explicit opt-in for notifications. */
   whatsappOptIn: boolean;
 };
@@ -179,7 +189,11 @@ export function planDelivery(input: {
       ? skip("email", "policy_disabled")
       : !mandatoryEmail && !wants.email
         ? skip("email", "opted_out")
-        : !input.reachability.hasVerifiedEmail
+        : !(
+              input.reachability.hasVerifiedEmail ||
+              (allowsUnverifiedEmail(input.category) &&
+                input.reachability.hasUnverifiedEmail === true)
+            )
           ? skip("email", "unreachable")
           : go("email");
   const freeWillDeliver = push.decision !== "skip" || email.decision !== "skip";

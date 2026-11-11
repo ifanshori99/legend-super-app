@@ -84,7 +84,7 @@ const emailLoginLog = logger.child({ module: "identity-email-login" });
 /** Contract: a magic link lives 15 minutes (`MAGIC_LINK_TTL_MINUTES`). */
 const MAGIC_LINK_TTL = MAGIC_LINK_TTL_MINUTES * MINUTE_MS;
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type EmailLoginDeps = {
   /** Test clock; production uses the wall clock. */
@@ -92,16 +92,16 @@ export type EmailLoginDeps = {
 };
 
 /** The reserved placeholder domain is never a mailbox (RFC 2606). */
-function isReservedAddress(email: string): boolean {
+export function isReservedAddress(email: string): boolean {
   return email.endsWith(".invalid");
 }
 
-function challengeEmailAad(challengeId: string): string {
+export function challengeEmailAad(challengeId: string): string {
   return `login_challenge:email:${challengeId}`;
 }
 
 /** A tenant that is not active cannot hand out sessions (fail closed). */
-async function assertTenantActive(
+export async function assertTenantActive(
   tx: Transaction,
   tenantId: string,
 ): Promise<void> {
@@ -122,7 +122,7 @@ async function assertTenantActive(
  * commits with the state change it describes. Details carry only the channel,
  * status and cause: never the address, the token or the link.
  */
-async function auditEmailLogin(
+export async function auditEmailLogin(
   tx: Transaction,
   context: ScopedTenantContext,
   input: {
@@ -285,6 +285,60 @@ export async function requestEmailMagicLink(
   return { sent: true, expiresAt: expiresAt.toISOString() };
 }
 
+/**
+ * Marks the address of `userId` verified and records its `email` identity row.
+ * Shared by the magic-link sign-in and the first-admin invitation accept
+ * (legend-fy5y). Returns `identity_conflict` when the address digest already
+ * belongs to another user; the caller then refuses and writes nothing more.
+ */
+export async function markEmailVerifiedWithIdentity(
+  tx: Transaction,
+  input: {
+    userId: string;
+    email: string;
+    digest: string;
+    isPrimary: boolean;
+    now: Date;
+  },
+): Promise<"ok" | "identity_conflict"> {
+  const inserted = await tx
+    .insert(userIdentities)
+    .values({
+      userId: input.userId,
+      type: "email",
+      valueHash: input.digest,
+      valueEncrypted: sealSecret(
+        input.email,
+        `user_identity:email:${input.digest}`,
+      ),
+      verifiedAt: input.now,
+      isPrimary: input.isPrimary,
+    })
+    .onConflictDoNothing()
+    .returning({ id: userIdentities.id });
+  if (inserted.length === 0) {
+    // The address already belongs to an identity row; it must be this
+    // account's, otherwise refuse instead of moving it.
+    const [current] = await tx
+      .select({ userId: userIdentities.userId })
+      .from(userIdentities)
+      .where(
+        and(
+          eq(userIdentities.type, "email"),
+          eq(userIdentities.valueHash, input.digest),
+        ),
+      )
+      .limit(1);
+    if (current?.userId !== input.userId) return "identity_conflict";
+  }
+  // Only after the identity is settled: a conflict leaves emailVerified false.
+  await tx
+    .update(user)
+    .set({ emailVerified: true })
+    .where(eq(user.id, input.userId));
+  return "ok";
+}
+
 type Resolved = { userId: string; created: boolean };
 
 /** PostgreSQL unique violation, directly or wrapped by a driver cause chain. */
@@ -398,6 +452,7 @@ export async function verifyEmailMagicLink(
       !row ||
       row.tenantId !== tenant.tenantId ||
       row.status !== "pending" ||
+      row.linkUserId !== null ||
       row.emailEncrypted === null ||
       now.getTime() >= row.expiresAt.getTime()
     )
@@ -433,6 +488,8 @@ export async function verifyEmailMagicLink(
         !row ||
         row.tenantId !== tenant.tenantId ||
         row.status !== "pending" ||
+        // A first-admin invitation token (link_user_id set) never signs in.
+        row.linkUserId !== null ||
         row.emailEncrypted === null
       )
         return { kind: "refused" };
@@ -517,38 +574,14 @@ export async function verifyEmailMagicLink(
       }
 
       // The link proves the mailbox: mark the address verified.
-      await tx
-        .update(user)
-        .set({ emailVerified: true })
-        .where(eq(user.id, account.userId));
-      const inserted = await tx
-        .insert(userIdentities)
-        .values({
-          userId: account.userId,
-          type: "email",
-          valueHash: digest,
-          valueEncrypted: sealSecret(email, `user_identity:email:${digest}`),
-          verifiedAt: now,
-          isPrimary: account.created,
-        })
-        .onConflictDoNothing()
-        .returning({ id: userIdentities.id });
-      if (inserted.length === 0) {
-        // The address already belongs to an identity row; it must be this
-        // account's, otherwise refuse instead of moving it.
-        const [current] = await tx
-          .select({ userId: userIdentities.userId })
-          .from(userIdentities)
-          .where(
-            and(
-              eq(userIdentities.type, "email"),
-              eq(userIdentities.valueHash, digest),
-            ),
-          )
-          .limit(1);
-        if (current?.userId !== account.userId)
-          return cancel("identity_conflict");
-      }
+      const marked = await markEmailVerifiedWithIdentity(tx, {
+        userId: account.userId,
+        email,
+        digest,
+        isPrimary: account.created,
+        now,
+      });
+      if (marked === "identity_conflict") return cancel("identity_conflict");
 
       const bound =
         request.bindingNonce !== null &&

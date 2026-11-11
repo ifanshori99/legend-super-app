@@ -98,6 +98,17 @@ export const loginMessages = {
     expiredHint:
       "Tautan hanya bisa dipakai sekali dan berlaku 15 menit. Minta tautan baru untuk melanjutkan.",
   },
+  // legend-fy5y: "/undangan", the page the first-admin invitation email opens.
+  invitation: {
+    heading: "Undangan admin",
+    checking: "Memeriksa undangan…",
+    doneTitle: "Email terverifikasi",
+    doneHint:
+      "Email kamu sudah terverifikasi. Kamu bisa masuk setelah tenant ini punya alamat web aktif.",
+    deadTitle: "Tautan kedaluwarsa atau sudah terpakai",
+    deadHint:
+      "Tautan undangan hanya berlaku sebentar dan sekali pakai. Minta tim platform untuk mengirim ulang undangan.",
+  },
   google: {
     action: "Lanjut dengan Google",
     actionHint: "Pakai akun Google dengan email yang kamu pakai di Legend.",

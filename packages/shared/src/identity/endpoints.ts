@@ -63,6 +63,8 @@ import {
   // legend-k2l
   magicLinkVerifiedSchema,
   magicLinkVerifyBodySchema,
+  invitationAcceptBodySchema,
+  invitationAcceptedSchema,
   mfaEnrollmentSchema,
   mfaFactorSchema,
   mfaRecoveryCodesSchema,
@@ -98,6 +100,16 @@ export const verifyMagicLinkEmail = defineEndpoint({
   path: "/api/auth/login-challenges/email/verify",
   body: magicLinkVerifyBodySchema,
   response: dataResponseSchema(magicLinkVerifiedSchema),
+});
+
+// legend-fy5y: the first-admin invitation page posts the token and tenant id
+// from its URL fragment. Platform level (no tenant domain needed) and no
+// session: it only marks the email verified.
+export const acceptTenantInvitation = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/login-challenges/invitation",
+  body: invitationAcceptBodySchema,
+  response: dataResponseSchema(invitationAcceptedSchema),
 });
 
 /** The requesting browser polls; the session appears once the message lands. */
