@@ -1318,3 +1318,9 @@ Disk 28,2 GB (< 30). Jangan hapus volume Docker.
 - 12 Nov ~05:20 keputusan founder: Q1 (CTO G5xeg) void tunai = jalur refund, kena batas Q63 kumulatif dan ditolak offline: YA (sudah di ws/pos-refund-ceilings). Q2 jam kasir mundur >5 menit: TAHAN penjualan (CLOCK_REGRESSED tetap, A6 tanpa perubahan).
 - 12 Nov 06:09 Founder: mockup kasir utama (59v) dan captain order (76t) DISETUJUI (gerbang mockup lewat, page 61cf2365 Q14/Q15). Berikut: ui-engineer bangun UI, lalu review UI founder.
 - 12 Nov ~06:00 Founder setujui SEMUA mockup tertunda: Tanya AI + izin aplikasi luar (Q10; Q11: cabut izin satu aplikasi = semua sesi aplikasi itu putus), HRIS pengajuan karyawan + antrean supervisor + akses dukungan owner (Q12/Q13), kasir tambahan 6 layar + back-office/platform/keamanan 6 layar (Q16/Q17, brief 487), 12 layar konfigurasi dan operasional (Q29-Q40: pajak, jurnal manual, stasiun menu, hub pengaturan tenant, klaim bagian, status edge, kebijakan payroll, THR, notifikasi, sarapan, label prep). Gerbang mockup lewat; gelombang UI brief 539 menunggu slot.
+
+## 12 Nov 06:35 — CTO G5xeg
+- Selesai: G1 config codecs TEN-09 (ws/ten09-codecs 9ffe3589, 177 test), G5 edge hardening (ws/edge-hardening 491d979f, 234 test), fix edge clock (cd07733c). Kartu TEN-09 -> review. Thread di-resolve.
+- Berjalan: architect xhigh (subagent CTO) untuk G1 dan G5; Codex SO area edge (G6hha, brief 541); merge train 48i gate run 4; G2 payroll gate; G3 pajak; G4 HRIS; U1 UI.
+- Ditahan: U2 (brief 539-u2) menunggu RAM hijau.
+- Catatan: edge production butuh MAINTENANCE_DATABASE_URL (startup ditolak tanpa itu) — masuk dokumen deploy sebelum rilis. SSD 20 GB; 28 worktree x 1,4 GB, bersihkan 7 worktree batch48i setelah merge ke m1.
