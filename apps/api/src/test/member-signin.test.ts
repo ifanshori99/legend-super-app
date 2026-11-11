@@ -27,7 +27,13 @@
 //     (throws to refuse). The provider-side `mapProfileToUser` guard is a todo.
 //   - The test environment sets no GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
 
+// Must stay the first import: it sets TRUST_PROXY before ../app reads the env.
+import {
+  FILE_CLIENT_IP,
+  releaseTrustedProxy,
+} from "./helpers/identity-client-ip";
 import { randomBytes, randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import {
   afterAll,
@@ -38,9 +44,9 @@ import {
   expect,
   it,
 } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { signKirimWebhook } from "@starter/shared/adapters";
 import { createApp } from "../app";
+import { db } from "../db";
 import { auth } from "../lib/auth";
 import { whatsAppDigest } from "../lib/identity-digest.ts";
 import {
@@ -48,14 +54,23 @@ import {
   setEmailSenderForTests,
   type EmailMessage,
 } from "../lib/email-sender";
+import { seedTenantRoleTemplates } from "../services/access.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
+import {
+  createIdentityScope,
+  createIdentityTenant,
+  uniqueDigits,
+} from "./helpers/identity-isolation";
 
 const SECRET = "test-kirim-webhook-secret";
-const fixtures = cafeLegendPlatformFixtures;
-const HOST = fixtures.domains[0]!.hostname;
-const TENANT_A = fixtures.tenant.id;
-const NUMBER_A = "628111000001";
-const SENDER = "6281234567890";
+// Own tenant, host, receiving number and sender per run: this file never shares
+// rows with the other identity files (legend-5opkl). The tenant gets its own
+// role templates so the staff-gate tests still run against a tenant where the
+// account really is an owner.
+const TENANT_A: string = randomUUID();
+const NUMBER_A = `62811${uniqueDigits(7)}`;
+const SENDER = `62812${uniqueDigits(8)}`;
+let HOST = "";
 const STAFF_ROUTE = "/api/org/modules";
 
 const owner = new Pool({
@@ -68,7 +83,11 @@ const app = createApp({
   whatsappWebhookSecrets: [SECRET],
   loginChallengeRateLimit: { issuePerIp: 1_000, issuePerBinding: 1_000 },
 });
-const trackedUserIds: string[] = [];
+const isolation = createIdentityScope(owner);
+isolation.scope.tenantIds.push(TENANT_A);
+isolation.scope.receivingNumbers.push(NUMBER_A);
+isolation.scope.senders.push(SENDER);
+const trackedUserIds = isolation.scope.userIds;
 const outbox: EmailMessage[] = [];
 // Fixed sender address returned by the resolver seam, so the test does not
 // depend on EMAIL_FROM in the environment.
@@ -77,7 +96,7 @@ const RESOLVED_FROM = "masuk@brand.example.test";
 type Client = ReturnType<typeof agent>;
 
 function browser(): Client {
-  return agent(app).host(HOST);
+  return agent(app).set("X-Forwarded-For", FILE_CLIENT_IP).host(HOST);
 }
 
 function freshEmail(): string {
@@ -154,7 +173,7 @@ async function assignOwner(userId: string): Promise<void> {
 
 /** A staff account: password sign-up plus an owner role at the seeded tenant. */
 async function newStaff() {
-  const client = agent(app);
+  const client = agent(app).host(HOST);
   const email = await signUp(client, "Staf Uji");
   const userId = await userIdOf(client);
   await assignOwner(userId);
@@ -191,6 +210,7 @@ function kirimPayload(eventId: string, text: string) {
 async function postWebhook(body: string) {
   const signature = await signKirimWebhook({ rawBody: body, secret: SECRET });
   return agent(app)
+    .set("X-Forwarded-For", FILE_CLIENT_IP)
     .host(HOST)
     .post("/api/webhooks/whatsapp")
     .set("Content-Type", "application/json")
@@ -213,6 +233,14 @@ async function whatsAppLogin(client: Client) {
     ),
   );
   expect(delivered.body.data.completed).toBe(1);
+  // The route always requires the person to confirm the masked number
+  // (legend-lnbtp): no session is issued before the bound browser confirms.
+  const confirmed = await client
+    .post(`/api/auth/login-challenges/${issued.body.data.challenge.id}/confirm`)
+    .set(originHeader)
+    .send();
+  expect(confirmed.status).toBeGreaterThanOrEqual(200);
+  expect(confirmed.status).toBeLessThan(300);
   const polled = await client.get(
     `/api/auth/login-challenges/${issued.body.data.challenge.id}`,
   );
@@ -220,23 +248,34 @@ async function whatsAppLogin(client: Client) {
   return polled.body.data.session as { userId: string };
 }
 
+/** This file's rows only; MFA factors go first (they reference the accounts). */
 async function clearState() {
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
-  await owner.query("DELETE FROM user_identities");
+  const mine = await owner.query<{ id: string }>(
+    `SELECT id FROM "user" WHERE email LIKE 'ms-%@example.com'`,
+  );
+  for (const row of mine.rows) {
+    if (!trackedUserIds.includes(row.id)) trackedUserIds.push(row.id);
+  }
+  const ids = await isolation.ownedUserIds();
+  if (ids.length > 0) {
+    await owner.query(
+      "DELETE FROM mfa_factors WHERE user_id = ANY($1::uuid[])",
+      [ids],
+    );
+  }
+  await isolation.cleanup();
 }
 
 beforeAll(async () => {
-  await owner.query(
-    `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
-     VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')
-     ON CONFLICT (tenant_id, provider) WHERE outlet_id IS NULL
-     DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
-    [
-      TENANT_A,
-      JSON.stringify({ vendor: "kirimdev", receivingNumber: NUMBER_A }),
-    ],
-  );
+  HOST = (
+    await createIdentityTenant(owner, "signin", NUMBER_A, { id: TENANT_A })
+  ).hostname;
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.tenant_id', ${TENANT_A}, true)`,
+    );
+    await seedTenantRoleTemplates(tx, TENANT_A);
+  });
 });
 
 beforeEach(async () => {
@@ -256,22 +295,13 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  releaseTrustedProxy();
   await clearState();
-  const users = await owner.query<{ id: string }>(
-    `SELECT id FROM "user" WHERE email LIKE 'ms-%@example.com' OR email LIKE '%@wa.invalid'`,
-  );
-  const ids = [...new Set([...trackedUserIds, ...users.rows.map((r) => r.id)])];
-  if (ids.length > 0) {
-    await owner.query(
-      "DELETE FROM role_assignments WHERE user_id = ANY($1::text[]) OR assigned_by = ANY($1::text[])",
-      [ids],
-    );
-    await owner.query(
-      "DELETE FROM mfa_factors WHERE user_id = ANY($1::uuid[])",
-      [ids],
-    );
-    await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [ids]);
-  }
+  await owner.query("DELETE FROM approval_policies WHERE tenant_id = $1", [
+    TENANT_A,
+  ]);
+  await owner.query("DELETE FROM roles WHERE tenant_id = $1", [TENANT_A]);
+  await isolation.dropTenants([TENANT_A]);
   await owner.end();
 });
 
@@ -298,7 +328,8 @@ describe("AUTH-01 email magic link: request", () => {
     expect(outbox[0]!.text).toContain("/masuk/email#token=");
 
     const rows = await owner.query(
-      "SELECT * FROM login_challenges WHERE channel = 'email_magic_link'",
+      "SELECT * FROM login_challenges WHERE channel = 'email_magic_link' AND tenant_id = $1",
+      [TENANT_A],
     );
     expect(rows.rows).toHaveLength(1);
     expect(rows.rows[0].status).toBe("pending");
@@ -331,7 +362,8 @@ describe("AUTH-01 email magic link: request", () => {
     }
     expect(outbox).toHaveLength(0);
     const rows = await owner.query(
-      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'email_magic_link'",
+      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'email_magic_link' AND tenant_id = $1",
+      [TENANT_A],
     );
     expect(rows.rows[0].count).toBe(0);
   });
@@ -344,7 +376,8 @@ describe("AUTH-01 email magic link: request", () => {
     expect(response.body.error.code).toBe("EMAIL_NOT_CONFIGURED");
     // Refused before any write: no challenge row is left behind.
     const rows = await owner.query(
-      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'email_magic_link'",
+      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'email_magic_link' AND tenant_id = $1",
+      [TENANT_A],
     );
     expect(rows.rows[0].count).toBe(0);
   });
@@ -359,7 +392,8 @@ describe("AUTH-01 email magic link: request", () => {
     expect(outbox).toHaveLength(0);
     // Refused before any write: no challenge row is left behind.
     const rows = await owner.query(
-      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'email_magic_link'",
+      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'email_magic_link' AND tenant_id = $1",
+      [TENANT_A],
     );
     expect(rows.rows[0].count).toBe(0);
   });
@@ -537,7 +571,8 @@ describe("AUTH-01 email magic link: verify", () => {
     expect(expired.status).toBe(410);
     expect(expired.body.error.code).toBe("CHALLENGE_EXPIRED");
     const state = await owner.query(
-      "SELECT status FROM login_challenges WHERE channel = 'email_magic_link'",
+      "SELECT status FROM login_challenges WHERE channel = 'email_magic_link' AND tenant_id = $1",
+      [TENANT_A],
     );
     expect(state.rows[0].status).toBe("expired");
     const sessions = await owner.query(
@@ -580,7 +615,8 @@ describe("AUTH-01 email magic link: another browser", () => {
     expect(link.status).toBe(403);
     expect(link.body.error.code).toBe("IDENTITY_LINK_REAUTH_REQUIRED");
     const challenges = await owner.query(
-      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'whatsapp_inbound'",
+      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'whatsapp_inbound' AND tenant_id = $1",
+      [TENANT_A],
     );
     expect(challenges.rows[0].count).toBe(0);
   });
@@ -625,6 +661,13 @@ describe("AUTH-01 banned user", () => {
         `MASUK LEGEND ${issued.body.data.codeFormatted}`,
       ),
     );
+    // Confirm too, so the ban (not the missing confirmation) is what refuses.
+    await client
+      .post(
+        `/api/auth/login-challenges/${issued.body.data.challenge.id}/confirm`,
+      )
+      .set(originHeader)
+      .send();
     const polled = await client.get(
       `/api/auth/login-challenges/${issued.body.data.challenge.id}`,
     );

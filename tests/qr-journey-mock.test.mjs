@@ -2,6 +2,7 @@
 // real API will enforce, exercised through the in-memory server behind
 // VITE_API_MOCK. Acceptance IDs: ORD-02, ORD-03, ORD-04, ORD-05, ORD-06, ORD-11.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { createEngine } from "../apps/web/src/features/ws03-qr-order/mock-engine.ts";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
@@ -14,6 +15,9 @@ import {
 
 const T = sample.qrTokenFixtures;
 const key = () => `test-${Math.random().toString(36).slice(2)}-abcdef`;
+// legend-r77pq: the paying client makes its own split secret (32 random
+// bytes, `ps_` + base64url); the mock engine only checks it is well formed.
+const payerSecret = () => `ps_${randomBytes(32).toString("base64url")}`;
 
 function fresh(token = T.freeTable, pax = 2) {
   let now = 1_700_000_000_000;
@@ -314,6 +318,7 @@ test("ORD-06 a paid share cannot be re-split and paying every share settles the 
   const payment = engine.startPayment(sessionId, {
     target: { kind: "split", billSplitId: pending.id },
     method: "qris",
+    payerSecret: payerSecret(),
     idempotencyKey: key(),
   });
   tick(5000);
@@ -322,6 +327,23 @@ test("ORD-06 a paid share cannot be re-split and paying every share settles the 
   assert.equal(settled.totals.outstandingIdr, 0);
   qr.sessionBillSchema.parse(settled);
   assert.equal(engine.reviewEligibility(sessionId).eligible, true);
+});
+
+test("ORD-06 a split payment without the payer secret is rejected (money safety)", () => {
+  const { engine, sessionId } = fresh(T.privateRoom, 3);
+  const pending = engine
+    .bill(sessionId)
+    .splits.find((s) => s.status === "pending");
+  assert.throws(
+    () =>
+      engine.startPayment(sessionId, {
+        target: { kind: "split", billSplitId: pending.id },
+        method: "qris",
+        idempotencyKey: key(),
+      }),
+    (e) => e.status === 422 && e.code === "VALIDATION_ERROR",
+  );
+  assert.equal(engine.bill(sessionId).totals.outstandingIdr > 0, true);
 });
 
 /** Places one plain item in the free pay-first table and returns the order. */
@@ -422,6 +444,7 @@ test("ORD-06 once a share of a pay-first order is paid, the whole order cannot b
   const share = engine.startPayment(sessionId, {
     target: { kind: "split", billSplitId: splits[0].id },
     method: "qris",
+    payerSecret: payerSecret(),
     idempotencyKey: key(),
   });
   tick(5000);

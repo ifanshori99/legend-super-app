@@ -27,7 +27,7 @@
 // tenant scoping of these global tables lives here, not in RLS (coordinator
 // decision, docs/plan/contracts.md `login_challenges`).
 
-import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, or, sql } from "drizzle-orm";
 import {
   assertChallengeRateLimit,
   assertLoginChallengeSessionClaimable,
@@ -52,8 +52,15 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { env } from "../config/env";
 import { db } from "../db";
-import { loginChallenges, tenants, tenantIntegrations } from "../db/schema";
+import {
+  loginChallenges,
+  tenants,
+  tenantIntegrations,
+  user,
+  userIdentities,
+} from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { clientIpDigest, loginCodeDigest } from "../lib/identity-digest";
 import { logger } from "../lib/logger";
@@ -148,8 +155,13 @@ function toChallenge(row: ChallengeRow): LoginChallenge {
     channel: row.channel,
     status: row.status,
     expiresAt: row.expiresAt.toISOString(),
-    completedAt: row.completedAt?.toISOString() ?? null,
-    matchedUserId: row.matchedUserId,
+    // Card w8dfz.1: a completed challenge cancelled at the confirm step keeps
+    // its matched user for the audit trail but shows no completion.
+    completedAt:
+      row.status === "cancelled"
+        ? null
+        : (row.completedAt?.toISOString() ?? null),
+    matchedUserId: row.status === "cancelled" ? null : row.matchedUserId,
     createdAt: row.createdAt.toISOString(),
   });
 }
@@ -172,7 +184,7 @@ function challengeContext(row: ChallengeRow): ScopedTenantContext | null {
 }
 
 /** A tenant that is not active cannot hand out sessions (fail closed). */
-async function assertTenantActive(
+export async function assertTenantActive(
   tx: Transaction,
   context: ScopedTenantContext,
 ): Promise<void> {
@@ -207,6 +219,9 @@ async function assertPerDeviceLimit(
     .where(
       and(
         eq(loginChallenges.channel, "whatsapp_inbound"),
+        // legend-lgfru: payslip PIN reset proofs have their own per-user limit
+        // and must not use up a guest's login budget on a shared outlet Wi-Fi.
+        eq(loginChallenges.purpose, "sign_in"),
         gt(loginChallenges.createdAt, windowStart),
         input.ipHash
           ? or(
@@ -227,7 +242,28 @@ export type IssueChallengeDeps = {
   readonly now?: Date;
   /** Test seam for a deterministic code; production uses the CSPRNG. */
   readonly generateCode?: () => string;
+  /**
+   * KirimDev webhook secrets; production reads KIRIM_WEBHOOK_SECRET (the
+   * route passes createApp's override). Empty: the challenge is refused.
+   */
+  readonly webhookSecrets?: readonly string[];
 };
+
+/**
+ * legend-lgfru: a WhatsApp challenge can only be completed by the signed
+ * webhook, and the webhook answers 503 without a secret. Handing out a code
+ * nobody can complete would leave the guest waiting for nothing, so the
+ * challenge is refused the same way (SERVICE_UNAVAILABLE, 503).
+ */
+export function assertWhatsAppWebhookConfigured(
+  secrets: readonly string[] = env.KIRIM_WEBHOOK_SECRET,
+): void {
+  if (secrets.length === 0)
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Verifikasi WhatsApp belum tersedia.",
+    );
+}
 
 /**
  * Issues a challenge for `tenant` and the browser that holds `bindingNonce`.
@@ -238,11 +274,14 @@ export async function issueWhatsAppChallenge(
   request: {
     bindingNonce: string;
     link?: { userId: string; sessionId: string } | null;
+    /** Card w8dfz.1: wait for the person to confirm the masked number. */
+    requireConfirm?: boolean;
     ip: string | null;
     userAgent: string | null;
   },
   deps: IssueChallengeDeps = {},
 ): Promise<LoginChallengeIssued> {
+  assertWhatsAppWebhookConfigured(deps.webhookSecrets);
   const context = establishScopedTenantContext(tenant, { kind: "tenant" });
   const now = deps.now ?? new Date();
   const code = (deps.generateCode ?? generateLoginCode)();
@@ -278,6 +317,9 @@ export async function issueWhatsAppChallenge(
         linkUserId: request.link?.userId ?? null,
         linkSessionId: request.link?.sessionId ?? null,
         receivingNumber: channel.routingNumber,
+        // A link (signed-in browser) never issues a session at the poll, so
+        // the confirm step only applies to a sign-in.
+        confirmRequired: request.requireConfirm === true && !request.link,
         status: "pending",
         expiresAt: new Date(now.getTime() + LOGIN_CODE_TTL_MINUTES * MINUTE_MS),
         ipHash,
@@ -409,13 +451,23 @@ async function auditClaimFailed(
   }
 }
 
+/**
+ * legend-lgfru (design D-WA1): poll and cancel only ever see sign-in rows. A
+ * payslip PIN reset proof answers NOT_FOUND here, so it can never reach the
+ * session claim (or the absorbed-into-survivor branch) below.
+ */
 async function loadChallenge(
   challengeId: string,
 ): Promise<ChallengeRow | null> {
   const [row] = await db
     .select()
     .from(loginChallenges)
-    .where(eq(loginChallenges.id, challengeId))
+    .where(
+      and(
+        eq(loginChallenges.id, challengeId),
+        eq(loginChallenges.purpose, "sign_in"),
+      ),
+    )
     .limit(1);
   return row ?? null;
 }
@@ -539,6 +591,24 @@ export async function pollWhatsAppChallenge(
   if (row.status !== "completed" || row.matchedUserId === null)
     return { view: pendingView(toChallenge(row)), session: null };
 
+  // Card w8dfz.1: the message landed, but the person must still confirm the
+  // masked number (or press "Bukan saya"). No claim, no session, no cookie.
+  if (
+    row.confirmRequired &&
+    row.confirmedAt === null &&
+    row.sessionIssuedAt === null
+  )
+    return {
+      view: loginChallengeViewSchema.parse({
+        ...pendingView(toChallenge(row)),
+        ...(row.senderMasked === null
+          ? {}
+          : { senderMasked: row.senderMasked }),
+        awaitingConfirmation: true,
+      }),
+      session: null,
+    };
+
   // The contract's guard: only a completed, not-yet-claimed whatsapp challenge
   // of the bound browser may hand out a session.
   assertLoginChallengeSessionClaimable({
@@ -561,6 +631,13 @@ export async function pollWhatsAppChallenge(
       .where(
         and(
           eq(loginChallenges.id, row.id),
+          eq(loginChallenges.status, "completed"),
+          // Card w8dfz.1: a challenge that waits for its confirm hands out no
+          // session until confirmed.
+          or(
+            eq(loginChallenges.confirmRequired, false),
+            isNotNull(loginChallenges.confirmedAt),
+          ),
           isNull(loginChallenges.sessionIssuedAt),
         ),
       )
@@ -632,6 +709,60 @@ export async function pollWhatsAppChallenge(
   };
 }
 
+/**
+ * Card lnbtp: "Bukan saya" removes the account this challenge created for a
+ * new sender, but only when nothing ever used it. Any doubt (a session, another
+ * live challenge, a second identity, a role, a member profile, a failed delete)
+ * leaves the account alone. Never called for an account that already existed:
+ * `autoCreatedUserId` is only recorded when the challenge created it.
+ */
+async function removeUnusedAutoAccount(
+  tx: Transaction,
+  challenge: { id: string; autoCreatedUserId: string | null },
+): Promise<boolean> {
+  const userId = challenge.autoCreatedUserId;
+  if (userId === null) return false;
+  // Lock the user row before the in-use check, so a concurrent inbound that
+  // resolved this account (created=false) cannot complete against it after
+  // the check. A missing row means someone already removed it.
+  const locked = await tx.execute(
+    sql`SELECT 1 FROM "user" WHERE id = ${userId} FOR UPDATE`,
+  );
+  if (locked.rows.length === 0) return false;
+  const checked = await tx.execute(sql`
+    SELECT (
+      EXISTS (SELECT 1 FROM "session" WHERE user_id = ${userId})
+      OR EXISTS (SELECT 1 FROM "account" WHERE user_id = ${userId})
+      OR EXISTS (
+        SELECT 1 FROM login_challenges
+         WHERE matched_user_id = ${userId}
+           AND id <> ${challenge.id}::uuid
+           AND status <> 'cancelled')
+      OR EXISTS (SELECT 1 FROM role_assignments WHERE user_id = ${userId} OR assigned_by = ${userId})
+      OR EXISTS (SELECT 1 FROM app.member_profiles_of_user(${userId}))
+      OR (SELECT count(*) FROM user_identities WHERE user_id = ${userId}) <> 1
+      OR NOT EXISTS (
+        SELECT 1 FROM user_identities WHERE user_id = ${userId} AND type = 'whatsapp')
+    ) AS in_use
+  `);
+  if (checked.rows[0]?.in_use !== false) return false;
+  try {
+    // Savepoint: a refused delete (a foreign key we did not foresee) must not
+    // abort the cancel itself.
+    await tx.transaction(async (sp) => {
+      await sp.delete(userIdentities).where(eq(userIdentities.userId, userId));
+      await sp.delete(user).where(eq(user.id, userId));
+    });
+    return true;
+  } catch (error) {
+    logger.warn(
+      { err: error, challengeId: challenge.id },
+      "login cancel: auto-created account kept",
+    );
+    return false;
+  }
+}
+
 /** "Bukan saya": the bound browser cancels its own pending challenge. */
 export async function cancelWhatsAppChallenge(
   challengeId: string,
@@ -640,7 +771,16 @@ export async function cancelWhatsAppChallenge(
   const row = await loadChallenge(challengeId);
   if (!row) throw new CoreError("NOT_FOUND", "Kode masuk tidak ditemukan.");
   assertBinding(row, bindingNonce);
-  const cancelled = cancelChallenge(toChallenge(row));
+  // Card w8dfz.1: "Bukan saya" also stops a completed challenge that is still
+  // waiting for its confirm, as long as no session was issued. The matched
+  // user stays on the row for the audit trail.
+  const awaitingConfirm =
+    row.status === "completed" &&
+    row.confirmRequired &&
+    row.sessionIssuedAt === null;
+  const cancelled = awaitingConfirm
+    ? { status: "cancelled" as const }
+    : cancelChallenge(toChallenge(row));
   if (cancelled.status === row.status) return;
   const cancelContext = challengeContext(row);
   const markCancelled = (tx: Pick<typeof db, "update">) =>
@@ -648,18 +788,41 @@ export async function cancelWhatsAppChallenge(
       .update(loginChallenges)
       .set({ status: cancelled.status })
       .where(
-        and(
-          eq(loginChallenges.id, row.id),
-          eq(loginChallenges.status, "pending"),
-        ),
+        awaitingConfirm
+          ? and(
+              eq(loginChallenges.id, row.id),
+              eq(loginChallenges.status, "completed"),
+              eq(loginChallenges.confirmRequired, true),
+              isNull(loginChallenges.sessionIssuedAt),
+            )
+          : and(
+              eq(loginChallenges.id, row.id),
+              eq(loginChallenges.status, "pending"),
+            ),
       )
       .returning({ id: loginChallenges.id });
+  // Lost a race with the claim: the session is out, so "Bukan saya" is too
+  // late and must not look like it worked.
+  const refuseIfClaimed = async () => {
+    const [current] = await db
+      .select({ sessionIssuedAt: loginChallenges.sessionIssuedAt })
+      .from(loginChallenges)
+      .where(eq(loginChallenges.id, row.id))
+      .limit(1);
+    if (current?.sessionIssuedAt)
+      throw new IdentityError("CHALLENGE_NOT_PENDING");
+  };
   if (cancelContext === null) {
-    await markCancelled(db);
+    const flipped = await markCancelled(db);
+    if (flipped.length === 0 && awaitingConfirm) await refuseIfClaimed();
     return;
   }
-  await withTenant(db, cancelContext, async (tx) => {
+  const flippedCount = await withTenant(db, cancelContext, async (tx) => {
     const flipped = await markCancelled(tx);
+    // Only the request that really flipped the row may tidy; a lost race
+    // (session already issued) never reaches the delete.
+    const autoAccountRemoved =
+      flipped.length === 1 && (await removeUnusedAutoAccount(tx, row));
     if (flipped.length === 1)
       await recordLoginAudit(tx, cancelContext, {
         action: "login_challenge.cancelled",
@@ -667,11 +830,84 @@ export async function cancelWhatsAppChallenge(
         details: {
           channel: "whatsapp_inbound",
           status: cancelled.status,
-          cause: "browser_cancelled",
+          // LoginAuditDetails keeps only `cause`; a boolean field would be
+          // redacted, so the removal is recorded in the cause.
+          cause: autoAccountRemoved
+            ? "browser_cancelled_auto_account_removed"
+            : "browser_cancelled",
           linking: row.linkUserId !== null,
         },
         now: new Date(),
         ipHash: row.ipHash,
       });
+    return flipped.length;
   });
+  if (flippedCount === 0 && awaitingConfirm) await refuseIfClaimed();
+}
+
+/**
+ * Card w8dfz.1: the bound browser confirms the masked sender number; the next
+ * poll then issues the session. Idempotent; refused once cancelled or when the
+ * challenge never waited for a confirm.
+ */
+export async function confirmWhatsAppChallenge(
+  challengeId: string,
+  bindingNonce: string | null,
+): Promise<void> {
+  const row = await loadChallenge(challengeId);
+  if (!row) throw new CoreError("NOT_FOUND", "Kode masuk tidak ditemukan.");
+  assertBinding(row, bindingNonce);
+  if (
+    row.confirmRequired &&
+    row.confirmedAt !== null &&
+    row.status !== "cancelled"
+  )
+    return;
+  if (
+    !row.confirmRequired ||
+    row.status !== "completed" ||
+    row.sessionIssuedAt !== null
+  )
+    throw new IdentityError("CHALLENGE_NOT_PENDING");
+  const now = new Date();
+  const confirmContext = challengeContext(row);
+  const markConfirmed = (tx: Pick<typeof db, "update">) =>
+    tx
+      .update(loginChallenges)
+      .set({ confirmedAt: now })
+      .where(
+        and(
+          eq(loginChallenges.id, row.id),
+          eq(loginChallenges.status, "completed"),
+          eq(loginChallenges.confirmRequired, true),
+          isNull(loginChallenges.confirmedAt),
+          isNull(loginChallenges.sessionIssuedAt),
+        ),
+      )
+      .returning({ id: loginChallenges.id });
+  const flipped =
+    confirmContext === null
+      ? await markConfirmed(db)
+      : await withTenant(db, confirmContext, async (tx) => {
+          const done = await markConfirmed(tx);
+          if (done.length === 1)
+            await recordLoginAudit(tx, confirmContext, {
+              action: "login_challenge.confirmed",
+              challengeId: row.id,
+              actorUserId: row.matchedUserId,
+              details: {
+                channel: "whatsapp_inbound",
+                status: "completed",
+                matchedUserId: row.matchedUserId,
+              },
+              now,
+              ipHash: row.ipHash,
+            });
+          return done;
+        });
+  if (flipped.length === 1) return;
+  // Lost a race: confirmed meanwhile is fine, cancelled or claimed is not.
+  const current = await loadChallenge(challengeId);
+  if (current?.confirmedAt) return;
+  throw new IdentityError("CHALLENGE_NOT_PENDING");
 }

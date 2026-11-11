@@ -383,7 +383,7 @@ function sumBaseQuantities(
  * one query pair per level, bounded so a corrupt graph cannot loop). Ids that
  * do not exist are simply absent from the book.
  */
-async function loadRecipeBook(
+export async function loadRecipeBook(
   tx: Tx,
   context: ScopedTenantContext,
   seedIds: readonly string[],

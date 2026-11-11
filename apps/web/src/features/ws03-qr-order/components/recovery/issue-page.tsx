@@ -71,7 +71,11 @@ function Resolved({
     );
 
   if (issue.resolution === "swap" && issue.replacementItemName) {
-    const difference = issue.priceDifferenceIdr ?? 0;
+    // legend-rat9r: a cheaper swap credits the minted voucher, which the paid
+    // value may cut below the list difference (or to nothing).
+    const listDifference = issue.priceDifferenceIdr ?? 0;
+    const difference =
+      listDifference < 0 ? -(issue.voucher?.valueIdr ?? 0) : listDifference;
     return (
       <section className="qr-paper grid gap-3 p-4">
         <ResolvedNotice>

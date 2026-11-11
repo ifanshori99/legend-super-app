@@ -56,6 +56,7 @@ import {
 } from "../db/schema/recipe.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { markHppStale } from "./hpp-invalidate.ts";
 import {
   cursorKeys,
   ROUNDING_MODE,
@@ -779,6 +780,10 @@ export async function createRecipeVersion(
     await tx
       .insert(recipeLines)
       .values(lineValues(context.tenant.tenantId, recipeId, body.lines));
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      brandId: before.row.brandId,
+    });
     await rememberIdempotentResource(
       tx,
       context,
@@ -876,6 +881,10 @@ export async function deactivateRecipe(
       .update(recipes)
       .set({ isActive: false, updatedBy: actorUserId, updatedAt: new Date() })
       .where(eq(recipes.id, recipeId));
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      brandId: before.row.brandId,
+    });
     const { detail } = await loadDetail(tx, recipeId, access);
     await auditSetupChange(tx, context, actorUserId, {
       action: "recipe.deactivated",
@@ -991,6 +1000,7 @@ export async function putModifierRecipeRules(
           .returning()
       : [];
     rows.sort((a, b) => a.sortOrder - b.sortOrder);
+    await markHppStale(tx, { tenantId: context.tenant.tenantId });
     await auditSetupChange(tx, context, actorUserId, {
       action: "modifier_recipe_rules.replaced",
       objectType: "modifier",

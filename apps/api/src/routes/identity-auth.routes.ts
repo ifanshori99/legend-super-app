@@ -25,6 +25,7 @@ import {
   MAGIC_LINK_TTL_MINUTES,
 } from "@starter/shared/identity";
 import { env } from "../config/env";
+import { whatsAppWebhookSecretsOf } from "../lib/whatsapp-webhook-secrets";
 import { jsonBody } from "../middleware/body";
 import { noStore } from "../middleware/no-store";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -41,6 +42,7 @@ import {
 } from "../services/identity-email-login.service";
 import {
   cancelWhatsAppChallenge,
+  confirmWhatsAppChallenge,
   issueWhatsAppChallenge,
   pollWhatsAppChallenge,
 } from "../services/identity-login.service";
@@ -91,14 +93,22 @@ loginChallengeRouter.post(
     if (signedIn?.session.impersonatedBy)
       throw new PlatformError("SUPPORT_ACCESS_READ_ONLY");
     const nonce = ensureBindingNonce(req);
-    const issued = await issueWhatsAppChallenge(getTenantContext(req), {
-      bindingNonce: nonce,
-      link: signedIn
-        ? { userId: signedIn.user.id, sessionId: signedIn.session.id }
-        : null,
-      ip: req.ip ?? null,
-      userAgent: req.get("user-agent") ?? null,
-    });
+    const issued = await issueWhatsAppChallenge(
+      getTenantContext(req),
+      {
+        bindingNonce: nonce,
+        link: signedIn
+          ? { userId: signedIn.user.id, sessionId: signedIn.session.id }
+          : null,
+        // Always required (legend-lnbtp): the client value is ignored so a
+        // caller cannot skip the masked-number confirmation.
+        requireConfirm: true,
+        ip: req.ip ?? null,
+        userAgent: req.get("user-agent") ?? null,
+      },
+      // createApp's test override, else KIRIM_WEBHOOK_SECRET (legend-lgfru).
+      { webhookSecrets: whatsAppWebhookSecretsOf(req) },
+    );
     setBindingCookie(res, nonce, BINDING_COOKIE_SECONDS);
     res.status(201).json({ data: issued });
   },
@@ -125,6 +135,13 @@ loginChallengeRouter.get("/:challengeId", async (req, res) => {
     setCustomerSessionCookie(res, polled.session);
   }
   res.json({ data: polled.view });
+});
+
+/** Card w8dfz.1: the same browser confirms the masked number it was shown. */
+loginChallengeRouter.post("/:challengeId/confirm", async (req, res) => {
+  const { challengeId } = loginChallengeParamsSchema.parse(req.params);
+  await confirmWhatsAppChallenge(challengeId, readBindingNonce(req));
+  res.status(204).end();
 });
 
 /** "Bukan saya": cancel from the same browser. */

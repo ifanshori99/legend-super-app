@@ -40,11 +40,12 @@ import { and, eq, gt, inArray, ne, isNull, sql } from "drizzle-orm";
 import {
   assertLoginMessageRateLimit,
   LOGIN_MESSAGE_RATE_WINDOW_MINUTES,
-  loginCodeFromMessage,
   MINUTE_MS,
   normalizeWhatsAppNumber,
   identityLinkedEvent,
   planIdentityMerge,
+  whatsAppProofFromMessage,
+  type WhatsAppProofPurpose,
 } from "@starter/shared/identity";
 import { CoreError, createUlid, z, type UserId } from "@starter/shared/core";
 import {
@@ -73,6 +74,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import { onWhatsAppVerified } from "./member-profile.service.ts";
 import { resolveWhatsAppAccount } from "./identity-account.service";
 import { resolveWhatsAppChannel } from "./identity-login.service";
+import { completeProof } from "./identity-wa-proof.service.ts";
 import {
   mergeAbsorbedIntoSurvivor,
   type MergeOutcome,
@@ -80,6 +82,7 @@ import {
 import {
   LOGIN_AUDIT_SAFE_FIELDS,
   maskSenderForAudit,
+  maskSenderForConfirm,
   recordLoginAudit,
   type LoginAuditAction,
 } from "./identity-wa-audit.ts";
@@ -99,7 +102,8 @@ export type InboundWhatsAppMessage = {
   readonly text: string;
 };
 
-export type InboundKind = "login" | "unknown" | "rejected" | "rate_limited";
+export type InboundKind =
+  "login" | "proof" | "unknown" | "rejected" | "rate_limited";
 
 export type InboundOutcome = {
   readonly eventId: string;
@@ -363,8 +367,10 @@ export async function processInboundWhatsApp(
         return { eventId: message.eventId, duplicate: true, kind: null };
       }
 
-      const code = loginCodeFromMessage(message.text);
-      if (code === null) {
+      // legend-lgfru (design D-WA2): the command word names the purpose.
+      const proof = whatsAppProofFromMessage(message.text);
+      const code = proof?.code ?? null;
+      if (proof === null || code === null) {
         // Not a login message: recorded, no reply, no quota use.
         return { eventId: message.eventId, duplicate: false, kind: "unknown" };
       }
@@ -390,6 +396,46 @@ export async function processInboundWhatsApp(
       if (challenge.kind !== "found") {
         await finish(tx, claim.id, { kind: "rejected" });
         return { eventId: message.eventId, duplicate: false, kind: "rejected" };
+      }
+
+      // legend-lgfru (design D-WA1/D-WA2): dispatch on the row's purpose
+      // before anything else. A code sent with the other command is refused
+      // and its challenge stays pending.
+      if (challenge.purpose !== proof.purpose) {
+        await auditPurposeMismatch(tx, challenge, message.sender, now);
+        await finish(tx, claim.id, {
+          kind: "rejected",
+          tenantId: challenge.tenantId,
+          challengeId: challenge.id,
+        });
+        return { eventId: message.eventId, duplicate: false, kind: "rejected" };
+      }
+      if (challenge.purpose !== "sign_in") {
+        // A proof never links, merges, resolves an account, opens a session
+        // or replies (AUTH-03 reply logic is for sign-in only).
+        const context = webhookContext(challenge.tenantId, challenge.brandId);
+        const completed = await withTenant(
+          tx as unknown as typeof db,
+          context,
+          (tenantTx) =>
+            completeProof(tenantTx, context, {
+              challengeId: challenge.id,
+              linkUserId: challenge.linkUserId,
+              expectedSenderHash: challenge.expectedSenderHash,
+              receivingNumber: message.receivingNumber,
+              fromHash,
+              sender: message.sender,
+              now,
+            }),
+        );
+        const kind: InboundKind =
+          completed === "completed" ? "proof" : "rejected";
+        await finish(tx, claim.id, {
+          kind,
+          tenantId: challenge.tenantId,
+          challengeId: challenge.id,
+        });
+        return { eventId: message.eventId, duplicate: false, kind };
       }
 
       if (challenge.linkUserId !== null) {
@@ -442,12 +488,21 @@ export async function processInboundWhatsApp(
         brandId: challenge.brandId,
         receivingNumber: message.receivingNumber,
         userId: account.userId,
+        // Card lnbtp: remembered so "Bukan saya" can tidy an account that
+        // exists only because of this challenge.
+        autoCreatedUserId: account.created ? account.userId : null,
         senderMasked: maskSenderForAudit(message.sender),
+        senderConfirmMask: maskSenderForConfirm(message.sender),
         now,
       });
       const kind: InboundKind =
         completed === "completed" ? "login" : "rejected";
-      if (completed !== "unrouted")
+      // Card lnbtp: while the person still has to confirm the masked number,
+      // no "Login berhasil" goes out (it could be "Bukan saya"). Errors still do.
+      if (
+        completed !== "unrouted" &&
+        !(completed === "completed" && challenge.confirmRequired)
+      )
         pendingReply = {
           tenantId: challenge.tenantId,
           brandId: challenge.brandId,
@@ -506,14 +561,81 @@ async function auditRejected(
   });
 }
 
+/** A code sent with the wrong command (design D-WA2), audited per purpose. */
+async function auditPurposeMismatch(
+  tx: Transaction,
+  challenge: {
+    id: string;
+    tenantId: string;
+    brandId: string | null;
+    purpose: WhatsAppProofPurpose;
+    linkUserId: string | null;
+  },
+  sender: string,
+  now: Date,
+): Promise<void> {
+  if (challenge.purpose === "sign_in") {
+    await auditChallenge(tx, {
+      action: "login_challenge.rejected",
+      challengeId: challenge.id,
+      tenantId: challenge.tenantId,
+      brandId: challenge.brandId,
+      details: {
+        channel: "whatsapp_inbound",
+        cause: "purpose_mismatch",
+        linking: challenge.linkUserId !== null,
+        senderMasked: maskSenderForAudit(sender),
+      },
+      now,
+    });
+    return;
+  }
+  const context = webhookContext(challenge.tenantId, challenge.brandId);
+  await withTenant(tx as unknown as typeof db, context, (tenantTx) =>
+    recordAudit(
+      tenantTx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId: challenge.tenantId,
+        outletId: null,
+        actorType: challenge.linkUserId ? "user" : "system",
+        actorId: challenge.linkUserId,
+        deviceId: null,
+        action: "payslip_pin.wa_proof_rejected",
+        objectType: "login_challenge",
+        objectId: challenge.id,
+        reason: null,
+        maskedChanges: {
+          before: null,
+          after: {
+            purpose: challenge.purpose,
+            status: "pending",
+            cause: "purpose_mismatch",
+            senderMasked: maskSenderForAudit(sender),
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      ["purpose", "status", "cause", "senderMasked"],
+    ),
+  );
+}
+
 type ChallengeMatch =
   | {
       kind: "found";
       id: string;
       tenantId: string;
       brandId: string | null;
+      purpose: WhatsAppProofPurpose;
+      expectedSenderHash: string | null;
       linkUserId: string | null;
       linkSessionId: string | null;
+      confirmRequired: boolean;
     }
   | { kind: "none" };
 
@@ -538,6 +660,9 @@ async function pendingChallengeFor(
       receivingNumber: loginChallenges.receivingNumber,
       linkUserId: loginChallenges.linkUserId,
       linkSessionId: loginChallenges.linkSessionId,
+      purpose: loginChallenges.purpose,
+      expectedSenderHash: loginChallenges.expectedSenderHash,
+      confirmRequired: loginChallenges.confirmRequired,
     })
     .from(loginChallenges)
     .where(
@@ -588,8 +713,11 @@ async function pendingChallengeFor(
     id: row.id,
     tenantId: row.tenantId,
     brandId: row.brandId,
+    purpose: row.purpose,
+    expectedSenderHash: row.expectedSenderHash,
     linkUserId: row.linkUserId,
     linkSessionId: row.linkSessionId,
+    confirmRequired: row.confirmRequired,
   };
 }
 
@@ -613,7 +741,11 @@ async function completeChallenge(
     brandId: string | null;
     receivingNumber: string;
     userId: string;
+    /** Card lnbtp: set only when this challenge created the account. */
+    autoCreatedUserId: string | null;
     senderMasked: string | null;
+    /** Card w8dfz.1: stored for the confirm step; never the whole number. */
+    senderConfirmMask: string | null;
     now: Date;
   },
 ): Promise<Completion> {
@@ -648,12 +780,21 @@ async function completeChallenge(
       );
       if (!channel || channel.routingNumber !== input.receivingNumber)
         return "unrouted";
+      // Card lnbtp: a concurrent "Bukan saya" may delete the auto-created
+      // account (it takes FOR UPDATE on this row). Share-lock the user so it
+      // cannot vanish before this commit; no row means it already did.
+      const lockedUser = await tx.execute(
+        sql`SELECT 1 FROM "user" WHERE id = ${input.userId} FOR KEY SHARE`,
+      );
+      if (lockedUser.rows.length === 0) return "refused";
       const updated = await tx
         .update(loginChallenges)
         .set({
           status: "completed",
           matchedUserId: input.userId,
+          autoCreatedUserId: input.autoCreatedUserId,
           completedAt: input.now,
+          senderMasked: input.senderConfirmMask,
         })
         .where(
           and(

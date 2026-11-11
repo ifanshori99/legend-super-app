@@ -81,6 +81,51 @@ export function loginCodeFromMessage(text: string): string | null {
   return null;
 }
 
+/** What a WhatsApp proof is for (`login_challenges.purpose`, design D-WA1). */
+export type WhatsAppProofPurpose = "sign_in" | "payslip_pin_reset";
+
+/** The fixed command of a payslip PIN reset proof (design D-WA2). */
+export const PAYSLIP_PIN_RESET_COMMAND = "RESET PIN";
+
+/**
+ * Reads the purpose from the command word (design D-WA2): `MASUK ... <code>`
+ * is a sign-in, `RESET PIN <code>` (nothing else in between) is a payslip PIN
+ * reset. The caller refuses a code whose challenge has the other purpose.
+ */
+export function whatsAppProofFromMessage(
+  text: string,
+): { purpose: WhatsAppProofPurpose; code: string } | null {
+  const signIn = loginCodeFromMessage(text);
+  if (signIn !== null) return { purpose: "sign_in", code: signIn };
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words[0]?.toUpperCase() !== "RESET" || words[1]?.toUpperCase() !== "PIN")
+    return null;
+  const rest = words.slice(2);
+  const code =
+    rest.length === 1
+      ? normalizeLoginCode(rest[0])
+      : rest.length === 2 && rest[0]?.length === 4 && rest[1]?.length === 4
+        ? normalizeLoginCode(`${rest[0]}${rest[1]}`)
+        : null;
+  return code === null ? null : { purpose: "payslip_pin_reset", code };
+}
+
+/** "RESET PIN K7Q4-M2XD": the message an employee sends to reset the PIN. */
+export function whatsAppProofMessage(code: string): string {
+  return `${PAYSLIP_PIN_RESET_COMMAND} ${formatLoginCode(code)}`;
+}
+
+/** wa.me link that opens WhatsApp with the reset message filled in. */
+export function whatsAppProofDeepLink(input: {
+  readonly numberDigits: string;
+  readonly code: string;
+}): string {
+  const digits = input.numberDigits.replace(/\D/g, "");
+  if (!/^[1-9]\d{7,14}$/.test(digits))
+    throw new RangeError(`Not a WhatsApp number: ${input.numberDigits}`);
+  return `https://wa.me/${digits}?text=${encodeURIComponent(whatsAppProofMessage(input.code))}`;
+}
+
 /**
  * The message the guest sends: "MASUK LEGEND K7Q4-M2XD" (PRD §3 F6). The
  * keyword is tenant data (the brand's login command) and must start with

@@ -41,6 +41,8 @@ function digestKey(): Buffer {
 export type IdentityDigestPurpose =
   | "login-code"
   | "browser-binding"
+  // legend-lgfru: the payslip PIN reset browser binding (its own label).
+  | "pin-reset-binding"
   | "client-ip"
   | "inbound-request"
   // legend-k2l: the 256-bit email magic-link token (only this digest is stored).

@@ -21,6 +21,7 @@ import {
   publicPurchaseOrderRouter,
 } from "./purchasing-send.routes.ts";
 import { createInventorySetupRouter } from "./inventory-setup.routes";
+import { createInventoryHppRouter } from "./inventory-hpp.routes.ts";
 import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { createAccountingFinancePolicyRouter } from "./accounting-finance-policy.routes";
@@ -53,6 +54,7 @@ import { publicSiteRouter } from "./public-site.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
 import { openBillRouter } from "./open-bill.routes";
 import { salesTargetsRouter } from "./sales-targets.routes";
+import { menuRecommendationRouter } from "./menu-recommendation.routes.ts";
 import { tableLinksRouter } from "./table-links.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
@@ -190,6 +192,9 @@ apiRouter.use("/approvals", approvalRouter);
 // every other menu route is live.
 // Menu CSV/XLSX import + printable menu (WS-03, legend-dmi): mounted by
 // createStorageApiRouter with the storage runtime (legend-0w2wy).
+// AI-01 menu recommendations and per-outlet rules (legend-ptd): per-route
+// guards; the menu router before it passes unmatched /menu paths through.
+apiRouter.use("/menu", menuRecommendationRouter);
 // Inventory & warehouse (WS-06, bead legend-98t).
 apiRouter.use("/inventory", inventoryRouter);
 // Inventory setup writes + settings (WS-06, legend-gjmk).
@@ -211,6 +216,8 @@ apiRouter.use("/inventory", createPurchasingSendRouter());
 apiRouter.use("/inventory", createInventoryCountRouter());
 // Recipes / BOM, modifier rules, auto stock deduction, duty meals (WS-06, legend-db6).
 apiRouter.use("/inventory", createRecipeRouter());
+// HPP reports: menu costs, recipe coverage, food cost, menu engineering (legend-2qq).
+apiRouter.use("/inventory", createInventoryHppRouter());
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.
 apiRouter.use("/payments/admin", paymentAdminRouter);
 apiRouter.use("/payments", paymentRouter);

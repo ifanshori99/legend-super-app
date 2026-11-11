@@ -3,6 +3,19 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-11: Bukti WhatsApp masuk untuk login dan reset PIN slip gaji (legend-lgfru, legend-9h2oj, legend-s5rgo)
+
+Tingkat K. Rancangan lengkap rev 2.1 (D-WA1 sampai D-WA6). Kirimdev tidak punya sandbox; pesan keluar tetap mati (AUTH-03).
+
+1. **D-WA1. Satu mesin bukti untuk semua tujuan.** Kolom `purpose` (`sign_in` | `payslip_pin_reset`) di `login_challenges`; kode, webhook, dedupe, batas, dan polling dipakai bersama. Tidak ada tabel tantangan kedua (webhook datang tanpa tenant, dan tabel global sudah aman untuk pencarian kode). Penjagaan: CHECK database, dispatch `purpose` sebelum cek `link_user_id`, poll dan cancel login hanya menerima `purpose = 'sign_in'`, `completeProof` tidak pernah mengisi `matched_user_id` (baris reset PIN selalu `NULL`), dan test untuk tiap arah. Cadangan: tabel global `wa_proof_challenges`.
+2. **D-WA2. Kata perintah cocok dengan tujuan.** Login tetap `MASUK <kata brand> <KODE>`; reset PIN `RESET PIN <KODE>`. Kode login yang dikirim dengan `RESET PIN` ditolak, dan sebaliknya. Parser baru `whatsAppProofFromMessage` mengembalikan `{ purpose, code }` atau `null`.
+3. **D-WA3. Reset PIN hanya dari nomor yang sudah lama tertaut.** Pengirim harus sama dengan identitas WhatsApp terverifikasi milik user itu, dan `user_identities.linked_at` minimal 3 hari (`WA_PROOF_IDENTITY_MIN_AGE_DAYS = 3`). **Disetujui founder 11 Nov 2026** (rancangan awal 7 hari). `linked_at` diisi saat baris dibuat dan diisi ulang oleh trigger database setiap `user_id` atau `verified_at` berubah (merge, pindah identitas, verifikasi lama), karena `verified_at` ikut terbawa saat merge. Baris lama diisi waktu migrasi, jadi nomor lama baru bisa dipakai 3 hari setelah deploy. Digest pengirim yang diharapkan disimpan di `expected_sender_hash` saat tantangan dibuat; saat PIN baru disimpan, HRIS memeriksa ulang identitas masih milik user, terverifikasi, dan cukup umur. Karyawan tanpa WhatsApp terverifikasi hanya bisa lewat reset oleh HR (`resetEmployeePayslipPin`, izin `payroll.run`).
+4. **D-WA4. Satu nomor WhatsApp per tenant.** Ikuti legend-mbd2: nomor Kirimdev per tenant di `tenant_integrations` `provider = 'whatsapp'` (`receivingNumber`, `phoneNumberId`), dua indeks unik menolak nomor yang sama di dua tenant aktif. Risiko: biaya naik per tenant, dan satu nomor diblokir Meta mematikan login WhatsApp dan reset PIN tenant itu (login email, Google, dan reset HR tetap ada). Cadangan: kartu nomor bersama terpisah.
+5. **D-WA5. Hasil lewat polling, bukan SSE.** Tiap 2 detik selama tantangan berlaku (pola `flow.ts:20`). Repo belum memakai SSE.
+6. **D-WA6. Kode tidak pernah disimpan atau diulang.** `POST` pembuat tantangan reset PIN tidak memakai `idempotentHrisWrite` (respons tersimpan akan memuat kode asli). Tantangan baru membatalkan tantangan `pending` lama untuk user dan tujuan yang sama. Langkah simpan PIN tetap idempoten. Secret `KIRIM_WEBHOOK_SECRET` kosong: webhook 503, pembuatan tantangan reset PIN 503.
+
+Koreksi dokumen: kunci dedupe webhook adalah `messages[].id` (satu kiriman bisa memuat beberapa pesan), bukan `X-Kirim-Event-Id`; `docs/plan/contracts.md` dibetulkan. Simulator dev: `scripts/wa-simulate-inbound.mjs`. Setup dan rotasi: `docs/deployment.md` (Kirimdev inbound WhatsApp), `docs/runbooks/kirimdev-webhook.md`.
+
 ## 2026-11-10: tagih selisih swap lebih mahal; refund ditolak bisa dilaporkan ulang (legend-i83ls, legend-wumm8)
 
 Tingkat K. Rancangan architect, diubah sesudah review architect.

@@ -13,17 +13,14 @@
 //   the transaction committed, so a miss is never rolled back. A retry with the
 //   same idempotency key replays the stored outcome without a second attempt.
 // - HR never sees or sets a PIN: HR reset deletes the row (and any open reset
-//   challenge); the employee then sets a new one. A WhatsApp one-time code is
-//   the self-service way back in (port `PayslipPinOtpSender`; no sender = 503).
+//   WhatsApp proof); the employee then sets a new one. The self-service way
+//   back in is an INBOUND WhatsApp message from the employee's own long-linked
+//   number (legend-9h2oj; proof engine in identity-wa-proof.service, nothing is
+//   ever sent out).
 // Never log, audit, store in an idempotency response, or emit a PIN, hash or
 // code. Audit rows carry ids, status and lock time only.
-import {
-  createHmac,
-  randomInt,
-  randomUUID,
-  timingSafeEqual,
-} from "node:crypto";
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { createHmac } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
 import {
   CoreError,
   type ScopedTenantContext,
@@ -32,30 +29,22 @@ import {
 import {
   PAYSLIP_PIN_LOCK_MINUTES,
   PAYSLIP_PIN_MAX_ATTEMPTS,
-  PAYSLIP_PIN_OTP_LENGTH,
-  PAYSLIP_PIN_OTP_MAX_ATTEMPTS,
-  PAYSLIP_PIN_OTP_TTL_MINUTES,
   PayrollError,
-  type PayslipPinResetOtpRequested,
+  type CompletePayslipPinResetWaInput,
+  type PayslipPinResetWaIssued,
+  type PayslipPinResetWaStatus,
   type PayslipPinStatus,
-  type RequestPayslipPinResetOtpInput,
   type ResetPayslipPinInput,
   type SetMyPayslipPinInput,
-  type VerifyPayslipPinResetOtpInput,
 } from "@starter/shared/hris/payroll";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
-import { userIdentities } from "../db/schema/identity.ts";
-import {
-  payslipPinResetChallenges,
-  payslipPins,
-} from "../db/schema/payslip-pin.ts";
+import { loginChallenges } from "../db/schema/identity.ts";
+import { payslipPins } from "../db/schema/payslip-pin.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { openSecret } from "../lib/secrets.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
-  burnStaffPinCheck,
   hashStaffPin,
   STAFF_PIN_KDF,
   verifyStaffPinHash,
@@ -65,13 +54,16 @@ import {
   currentStaffPinPepperVersion,
   payslipPinPepper,
 } from "./device-pin-pepper.ts";
-import {
-  auditOutletFor,
-  hrisAuditEntry,
-  loadHrisAccess,
-  notFound,
-} from "./hris-access.ts";
+import { hrisAuditEntry, loadHrisAccess, notFound } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
+import {
+  cancelOpenWhatsAppProofs,
+  cancelWhatsAppProof,
+  consumeWhatsAppProof,
+  findWhatsAppProofSender,
+  issueWhatsAppProof,
+  readWhatsAppProof,
+} from "./identity-wa-proof.service.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -88,24 +80,6 @@ export const PAYSLIP_PIN_AUDIT_SAFE_FIELDS = [
   "employeeId",
   "expiresAt",
 ] as const;
-
-// ------------------------------------------------------------------- port
-
-/** Delivers the one-time code by WhatsApp; never logs or stores the code. */
-export type PayslipPinOtpSender = {
-  send(
-    context: ScopedTenantContext,
-    message: {
-      readonly employeeId: string;
-      /** The outlet the message is sent under: the home outlet when the caller's scope reaches it, else the first outlet it does reach. */
-      readonly outletId: string;
-      /** The reset challenge row id; the delivery reference (idempotency). */
-      readonly challengeId: string;
-      readonly phoneE164: string;
-      readonly code: string;
-    },
-  ): Promise<void>;
-};
 
 // ----------------------------------------------------------------- helpers
 
@@ -188,8 +162,6 @@ export async function loadPayslipSelf(
   };
 }
 
-const OTP_REQUEST_CAP = 3;
-const HOUR_MS = 60 * MINUTE_MS;
 const SECRET_REQUEST_FIELDS = ["pin", "currentPin", "code"] as const;
 
 /**
@@ -530,7 +502,11 @@ export async function resetEmployeePayslipPin(
       "payroll.run",
     );
     const [employee] = await tx
-      .select({ id: employees.id, homeOutletId: employees.homeOutletId })
+      .select({
+        id: employees.id,
+        userId: employees.userId,
+        homeOutletId: employees.homeOutletId,
+      })
       .from(employees)
       .where(
         and(
@@ -556,17 +532,24 @@ export async function resetEmployeePayslipPin(
         // stamp a stale `now`.
         const now = nowOverride ?? new Date();
         if (row) await tx.delete(payslipPins).where(eq(payslipPins.id, row.id));
-        // An open reset code must not outlive the reset.
-        await tx
-          .update(payslipPinResetChallenges)
-          .set({ consumedAt: now })
-          .where(
-            and(
-              eq(payslipPinResetChallenges.tenantId, context.tenant.tenantId),
-              eq(payslipPinResetChallenges.employeeId, employee.id),
-              isNull(payslipPinResetChallenges.consumedAt),
-            ),
-          );
+        // An open WhatsApp proof (pending, or verified and unused) must not
+        // outlive the reset: it would set a PIN after HR cleared it.
+        const cancelled =
+          employee.userId === null
+            ? 0
+            : await cancelOpenWhatsAppProofs(tx, {
+                purpose: "payslip_pin_reset",
+                tenantId: context.tenant.tenantId,
+                userId: employee.userId,
+                now,
+              });
+        if (cancelled > 0)
+          await auditPin(tx, context, actor, now, {
+            outletId: employee.homeOutletId,
+            action: "payslip_pin.wa_proof_cancelled",
+            objectId: employee.id,
+            after: { employeeId: employee.id, status: "cancelled" },
+          });
         await auditPin(tx, context, actor, now, {
           outletId: employee.homeOutletId,
           action: "payslip_pin.reset",
@@ -580,189 +563,126 @@ export async function resetEmployeePayslipPin(
   });
 }
 
-// ------------------------------------------------------- WhatsApp reset OTP
+// ----------------------------------------------- reset by inbound WhatsApp
 
-function codeHash(
-  pepper: Buffer,
-  tenantId: string,
-  employeeId: string,
-  challengeId: string,
-  code: string,
-): string {
-  return createHmac("sha256", pepper)
-    .update(
-      [
-        "legend:payslip-pin-otp:v1",
-        tenantId.toLowerCase(),
-        employeeId.toLowerCase(),
-        challengeId.toLowerCase(),
-        code,
-      ].join("\u0000"),
-      "utf8",
-    )
-    .digest("hex");
-}
+/** What the route knows about the asking browser (cookie, session, network). */
+export type WaResetBrowser = {
+  readonly sessionId: string;
+  readonly bindingHash: string;
+};
 
-/** The employee's verified WhatsApp number (login identity), or null. */
-async function ownWhatsappNumber(
-  tx: Tx,
-  actorUserId: string,
-): Promise<string | null> {
-  const [identity] = await tx
-    .select({
-      valueHash: userIdentities.valueHash,
-      valueEncrypted: userIdentities.valueEncrypted,
-    })
-    .from(userIdentities)
-    .where(
-      and(
-        eq(userIdentities.userId, actorUserId),
-        eq(userIdentities.type, "whatsapp"),
-        sql`${userIdentities.verifiedAt} IS NOT NULL`,
-      ),
-    )
-    .limit(1);
-  if (!identity?.valueEncrypted) return null;
-  try {
-    const raw = openSecret(
-      identity.valueEncrypted,
-      `user_identity:whatsapp:${identity.valueHash}`,
-    );
-    return `+${raw.replace(/\D/g, "")}`;
-  } catch {
-    return null;
-  }
-}
-
-function otpUnavailable(): CoreError {
-  return new CoreError(
-    "SERVICE_UNAVAILABLE",
-    "Kode verifikasi WhatsApp belum tersedia. Hubungi HR untuk reset PIN.",
-  );
+function proofInvalid(): PayrollError {
+  return new PayrollError("PAYSLIP_PIN_RESET_PROOF_INVALID");
 }
 
 /**
- * POST /api/hris/me/payslip-pin/reset-otp. Sends a 6-digit code (5 min, single
- * use, 5 tries) to the employee's own WhatsApp number through the port. No
- * sender, or no verified number, answers 503. An older open code is voided.
+ * POST /api/hris/me/payslip-pin/reset-wa. Opens a WhatsApp proof for the
+ * employee: a PIN must exist (else NOT_SET), and the employee needs a verified
+ * WhatsApp number linked for `WA_PROOF_IDENTITY_MIN_AGE_DAYS` (else
+ * UNAVAILABLE; HR reset is then the only way). Not idempotent on purpose: the
+ * response holds the code (design D-WA6). The code is never stored or audited.
  */
-export async function requestPayslipPinResetOtp(
+export async function requestPayslipPinResetWa(
   context: ScopedTenantContext,
   actorUserId: string,
-  input: RequestPayslipPinResetOtpInput,
-  sender: PayslipPinOtpSender | null,
+  browser: WaResetBrowser & {
+    readonly ipHash: string | null;
+    readonly userAgent: string | null;
+    /** createApp's override; default KIRIM_WEBHOOK_SECRET. */
+    readonly webhookSecrets?: readonly string[];
+  },
   now: Date = new Date(),
-): Promise<PayslipPinResetOtpRequested> {
-  if (sender === null) throw otpUnavailable();
-  const { idempotencyKey } = input;
+): Promise<PayslipPinResetWaIssued> {
   return withTenant(db, context, async (tx) => {
     const self = await loadPayslipSelf(tx, context, actorUserId, now);
-    return idempotentHrisWrite<PayslipPinResetOtpRequested>(
+    const pin = await lockPayslipPin(
       tx,
-      context,
-      idempotencyKey,
-      "payslip_pin.otp_request",
-      { actor: self.actor, employeeId: self.employeeId },
-      async () => {
-        const phone = await ownWhatsappNumber(tx, self.actor);
-        if (phone === null) throw otpUnavailable();
-        await lockPayslipPin(tx, context.tenant.tenantId, self.employeeId);
-        // Every request is a fresh code with its own tries: cap them, or the
-        // 5-try limit per code is no limit at all.
-        const [recent] = await tx
-          .select({ total: sql<number>`count(*)::int` })
-          .from(payslipPinResetChallenges)
-          .where(
-            and(
-              eq(payslipPinResetChallenges.tenantId, context.tenant.tenantId),
-              eq(payslipPinResetChallenges.employeeId, self.employeeId),
-              gte(
-                payslipPinResetChallenges.createdAt,
-                new Date(now.getTime() - HOUR_MS),
-              ),
-            ),
-          );
-        if ((recent?.total ?? 0) >= OTP_REQUEST_CAP)
-          throw new HttpError(
-            429,
-            "RATE_LIMITED",
-            "Terlalu banyak permintaan kode. Coba lagi dalam satu jam atau hubungi HR.",
-          );
-        await tx
-          .update(payslipPinResetChallenges)
-          .set({ consumedAt: now })
-          .where(
-            and(
-              eq(payslipPinResetChallenges.tenantId, context.tenant.tenantId),
-              eq(payslipPinResetChallenges.employeeId, self.employeeId),
-              isNull(payslipPinResetChallenges.consumedAt),
-            ),
-          );
-        const code = String(
-          randomInt(0, 10 ** PAYSLIP_PIN_OTP_LENGTH),
-        ).padStart(PAYSLIP_PIN_OTP_LENGTH, "0");
-        const id = randomUUID();
-        const version = currentStaffPinPepperVersion();
-        const expiresAt = new Date(
-          now.getTime() + PAYSLIP_PIN_OTP_TTL_MINUTES * MINUTE_MS,
-        );
-        await tx.insert(payslipPinResetChallenges).values({
-          id,
-          tenantId: context.tenant.tenantId,
-          employeeId: self.employeeId,
-          codeHash: codeHash(
-            pepperFor(context.tenant.tenantId, version),
-            context.tenant.tenantId,
-            self.employeeId,
-            id,
-            code,
-          ),
-          pepperVersion: version,
-          expiresAt,
-          createdAt: now,
-        });
-        try {
-          await sender.send(context, {
-            employeeId: self.employeeId,
-            outletId: auditOutletFor(context, self.homeOutletId),
-            challengeId: id,
-            phoneE164: phone,
-            code,
-          });
-        } catch {
-          // Undelivered code: roll the challenge back, say nothing more.
-          throw otpUnavailable();
-        }
-        await auditPin(tx, context, self.actor, now, {
-          outletId: self.homeOutletId,
-          action: "payslip_pin.otp_requested",
-          objectId: id,
-          after: {
-            employeeId: self.employeeId,
-            expiresAt: expiresAt.toISOString(),
-          },
-        });
-        return { expiresAt: expiresAt.toISOString() };
-      },
+      context.tenant.tenantId,
+      self.employeeId,
     );
+    if (!pin) throw new PayrollError("PAYSLIP_PIN_NOT_SET");
+    const identity = await findWhatsAppProofSender(tx, {
+      userId: self.actor,
+      now,
+    });
+    if (!identity)
+      throw new PayrollError("PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE");
+    const issued = await issueWhatsAppProof(tx, context, {
+      purpose: "payslip_pin_reset",
+      userId: self.actor,
+      sessionId: browser.sessionId,
+      bindingHash: browser.bindingHash,
+      expectedSenderHash: identity.senderHash,
+      ipHash: browser.ipHash,
+      userAgent: browser.userAgent,
+      now,
+      ...(browser.webhookSecrets
+        ? { webhookSecrets: browser.webhookSecrets }
+        : {}),
+    });
+    await auditPin(tx, context, self.actor, now, {
+      outletId: self.homeOutletId,
+      action: "payslip_pin.wa_proof_requested",
+      objectId: issued.challengeId,
+      after: {
+        employeeId: self.employeeId,
+        expiresAt: issued.expiresAt.toISOString(),
+      },
+    });
+    return {
+      challengeId: issued.challengeId,
+      code: issued.code,
+      waLink: issued.waLink,
+      senderHint: identity.senderHint,
+      expiresAt: issued.expiresAt.toISOString(),
+    };
   });
 }
 
-type VerifyOutcome =
-  | { readonly kind: "ok" }
-  | { readonly kind: "invalid" }
-  | { readonly kind: "locked"; readonly lockedUntil: string };
-
-/**
- * POST /api/hris/me/payslip-pin/reset-otp/verify. A correct, unexpired,
- * unused code sets the new PIN (clearing the lock) and is consumed. A wrong
- * code counts; the fifth wrong one answers 423. Unknown, expired and used
- * codes answer like a wrong code (403) without counting.
- */
-export async function verifyPayslipPinResetOtp(
+/** GET .../reset-wa/:challengeId. 404 when nothing matches every binding. */
+export async function getPayslipPinResetWa(
   context: ScopedTenantContext,
   actorUserId: string,
-  input: VerifyPayslipPinResetOtpInput,
+  challengeId: string,
+  browser: WaResetBrowser,
+  now: Date = new Date(),
+): Promise<PayslipPinResetWaStatus> {
+  return withTenant(db, context, async (tx) => {
+    const self = await loadPayslipSelf(tx, context, actorUserId, now);
+    const proof = await readWhatsAppProof(tx, {
+      challengeId,
+      purpose: "payslip_pin_reset",
+      tenantId: context.tenant.tenantId,
+      userId: self.actor,
+      sessionId: browser.sessionId,
+      bindingHash: browser.bindingHash,
+      now,
+    });
+    if (!proof) throw notFound("Verifikasi");
+    return {
+      status: proof.status,
+      expiresAt: proof.expiresAt.toISOString(),
+      grantExpiresAt: proof.grantExpiresAt?.toISOString() ?? null,
+    };
+  });
+}
+
+type CompleteOutcome =
+  { readonly kind: "ok" } | { readonly kind: "invalid_proof" };
+
+/**
+ * POST .../reset-wa/:challengeId/pin. Uses the verified proof once (every
+ * binding in one UPDATE, inside the 10 minute grant), re-checks that the
+ * employee's WhatsApp identity still qualifies and is the number that sent the
+ * proof, then saves the new PIN and clears the counter and the lock. Every
+ * refusal is the same 403 PAYSLIP_PIN_RESET_PROOF_INVALID.
+ */
+export async function completePayslipPinResetWa(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  challengeId: string,
+  browser: WaResetBrowser,
+  input: CompletePayslipPinResetWaInput,
   nowOverride?: Date,
 ): Promise<PayslipPinStatus> {
   const { idempotencyKey, ...request } = input;
@@ -773,90 +693,72 @@ export async function verifyPayslipPinResetOtp(
       actorUserId,
       nowOverride ?? new Date(),
     );
-    return idempotentHrisWrite<VerifyOutcome>(
+    return idempotentHrisWrite<CompleteOutcome>(
       tx,
       context,
       idempotencyKey,
-      "payslip_pin.otp_verify",
+      "payslip_pin.wa_reset",
       payslipFingerprintRequest(context.tenant.tenantId, {
         actor: self.actor,
         employeeId: self.employeeId,
+        challengeId,
         ...request,
       }),
       async () => {
-        const pinRow = await lockPayslipPin(
+        const row = await lockPayslipPin(
           tx,
           context.tenant.tenantId,
           self.employeeId,
         );
-        // Clock read AFTER the lock: a code that expired while this request
-        // waited for the lock must not be accepted with a stale `now`.
+        // Clock read AFTER the lock: the grant window is judged with it.
         const now = nowOverride ?? new Date();
-        const [challenge] = await tx
-          .select()
-          .from(payslipPinResetChallenges)
+        // The number must still qualify and still be the one the proof named
+        // (a swapped number restarts the 3 day clock via `linked_at`).
+        // FOR UPDATE: the identity row stays locked until the PIN is saved, so
+        // a concurrent unlink or re-link cannot slip in after this check.
+        const identity = await findWhatsAppProofSender(
+          tx,
+          { userId: self.actor, now },
+          { forUpdate: true },
+        );
+        const [proof] = await tx
+          .select({ expectedSenderHash: loginChallenges.expectedSenderHash })
+          .from(loginChallenges)
           .where(
             and(
-              eq(payslipPinResetChallenges.tenantId, context.tenant.tenantId),
-              eq(payslipPinResetChallenges.employeeId, self.employeeId),
-              isNull(payslipPinResetChallenges.consumedAt),
+              eq(loginChallenges.id, challengeId),
+              eq(loginChallenges.tenantId, context.tenant.tenantId),
+              eq(loginChallenges.linkUserId, self.actor),
             ),
           )
-          .orderBy(desc(payslipPinResetChallenges.createdAt))
-          .limit(1)
-          .for("update");
-        if (!challenge) {
-          await burnStaffPinCheck(
-            pepperFor(context.tenant.tenantId, currentStaffPinPepperVersion()),
-          );
-          return { kind: "invalid" };
-        }
-        if (challenge.expiresAt.getTime() <= now.getTime())
-          return { kind: "invalid" };
-        if (challenge.attempts >= PAYSLIP_PIN_OTP_MAX_ATTEMPTS)
-          return {
-            kind: "locked",
-            lockedUntil: challenge.expiresAt.toISOString(),
-          };
-        const expected = Buffer.from(challenge.codeHash, "hex");
-        const actual = Buffer.from(
-          codeHash(
-            pepperFor(context.tenant.tenantId, challenge.pepperVersion),
-            context.tenant.tenantId,
-            self.employeeId,
-            challenge.id,
-            request.code,
-          ),
-          "hex",
-        );
-        const correct =
-          actual.length === expected.length &&
-          timingSafeEqual(actual, expected);
-        if (!correct) {
-          const attempts = challenge.attempts + 1;
-          await tx
-            .update(payslipPinResetChallenges)
-            .set({ attempts })
-            .where(eq(payslipPinResetChallenges.id, challenge.id));
-          return attempts >= PAYSLIP_PIN_OTP_MAX_ATTEMPTS
-            ? { kind: "locked", lockedUntil: challenge.expiresAt.toISOString() }
-            : { kind: "invalid" };
-        }
-        await tx
-          .update(payslipPinResetChallenges)
-          .set({ consumedAt: now })
-          .where(eq(payslipPinResetChallenges.id, challenge.id));
+          .limit(1);
+        if (
+          !identity ||
+          !proof ||
+          proof.expectedSenderHash !== identity.senderHash
+        )
+          return { kind: "invalid_proof" };
+        const used = await consumeWhatsAppProof(tx, {
+          challengeId,
+          purpose: "payslip_pin_reset",
+          tenantId: context.tenant.tenantId,
+          userId: self.actor,
+          sessionId: browser.sessionId,
+          bindingHash: browser.bindingHash,
+          now,
+        });
+        if (!used) return { kind: "invalid_proof" };
         const stored = await storePin(
           tx,
           context,
           self.employeeId,
-          pinRow,
+          row,
           request.pin,
           now,
         );
         await auditPin(tx, context, self.actor, now, {
           outletId: self.homeOutletId,
-          action: "payslip_pin.otp_reset",
+          action: "payslip_pin.wa_reset",
           objectId: stored.id,
           after: { employeeId: self.employeeId, status: "active" },
         });
@@ -864,6 +766,43 @@ export async function verifyPayslipPinResetOtp(
       },
     );
   });
-  assertPinCheckOk(outcome);
+  if (outcome.kind !== "ok") throw proofInvalid();
   return { status: "active", lockedUntil: null };
+}
+
+/** POST .../reset-wa/:challengeId/cancel. NOT_FOUND unless it is theirs. */
+export async function cancelPayslipPinResetWa(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  challengeId: string,
+  sessionId: string,
+  now: Date = new Date(),
+): Promise<void> {
+  await withTenant(db, context, async (tx) => {
+    const self = await loadPayslipSelf(tx, context, actorUserId, now);
+    let cancelled: number;
+    try {
+      cancelled = await cancelWhatsAppProof(tx, {
+        challengeId,
+        purpose: "payslip_pin_reset",
+        tenantId: context.tenant.tenantId,
+        userId: self.actor,
+        sessionId,
+        now,
+      });
+    } catch (error) {
+      if (error instanceof CoreError && error.code === "NOT_FOUND")
+        throw notFound("Verifikasi");
+      throw error;
+    }
+    // A proof that was already used, expired or cancelled stays as it is, and
+    // nothing is audited for a cancel that changed nothing.
+    if (cancelled === 0) return;
+    await auditPin(tx, context, self.actor, now, {
+      outletId: self.homeOutletId,
+      action: "payslip_pin.wa_proof_cancelled",
+      objectId: challengeId,
+      after: { employeeId: self.employeeId, status: "cancelled" },
+    });
+  });
 }

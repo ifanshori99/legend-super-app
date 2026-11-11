@@ -78,6 +78,13 @@ import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
+import {
+  recoveryPreviewOf,
+  swapCreditOf,
+  swapDifferenceOf,
+  swapPaidValueOf,
+  voucherRoomOf,
+} from "./order-recovery-paid-value.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 import {
   lockGuestSessionForPayment,
@@ -110,6 +117,7 @@ const AUDIT_SAFE_FIELDS = [
   "approvalRequestId",
   "voucherId",
   "replacementItemId",
+  "creditIdr",
 ];
 
 const deniedOutlet = () =>
@@ -834,6 +842,17 @@ export async function listSessionOrderIssues(
     const views: GuestOrderIssue[] = [];
     for (const row of rows) {
       const open = row.issue.status === "open";
+      // legend-pqm3t: one read of the paid value per open issue, without a
+      // lock; the credit shown is the one the swap would mint.
+      const preview = open
+        ? await recoveryPreviewOf(tx, guest, {
+            orderId: row.issue.orderId,
+            issueId: row.issue.id,
+            lineId: row.issue.orderItemId,
+            at: now,
+          })
+        : null;
+      const swap = preview?.swap ?? null;
       views.push(
         guestOrderIssueSchema.parse({
           id: row.issue.id,
@@ -846,24 +865,41 @@ export async function listSessionOrderIssues(
           status: row.issue.status,
           options: {
             swap: {
-              allowed: open,
-              items: open
-                ? candidates
-                    .filter(
-                      (item) =>
-                        item.menuItemId !== row.menuItemId &&
-                        item.unitPriceIdr * row.quantity <= row.lineTotalIdr,
-                    )
-                    .map((item) => ({
-                      menuItemId: item.menuItemId,
-                      name: item.name,
-                      priceIdr: item.unitPriceIdr,
-                      differenceIdr:
-                        item.unitPriceIdr * row.quantity - row.lineTotalIdr,
-                    }))
-                : [],
+              allowed: swap !== null,
+              items:
+                swap === null
+                  ? []
+                  : candidates
+                      .filter(
+                        (item) =>
+                          item.menuItemId !== row.menuItemId &&
+                          swapDifferenceOf(
+                            swap,
+                            item.unitPriceIdr * row.quantity,
+                          ) <= 0,
+                      )
+                      .map((item) => {
+                        const difference = swapDifferenceOf(
+                          swap,
+                          item.unitPriceIdr * row.quantity,
+                        );
+                        return {
+                          menuItemId: item.menuItemId,
+                          name: item.name,
+                          priceIdr: item.unitPriceIdr,
+                          // Negative = credited: cut to the paid value left.
+                          differenceIdr:
+                            difference < 0
+                              ? -swapCreditOf(swap, difference)
+                              : difference,
+                        };
+                      }),
             },
-            voucher: { allowed: open, valueIdr: open ? row.lineTotalIdr : 0 },
+            voucher: voucherOffer(
+              open,
+              row.lineTotalIdr,
+              preview?.voucherRoomIdr ?? null,
+            ),
           },
           resolution: row.issue.resolution,
           replacementItemName:
@@ -881,6 +917,22 @@ export async function listSessionOrderIssues(
     }
     return views;
   });
+}
+
+/**
+ * The voucher a guest is offered for an open issue: the line total, cut to
+ * what the item's paid value still leaves (legend-rat9r, legend-eajpb).
+ * Nothing left, or a paid value that cannot be read (`room` null): not
+ * offered.
+ */
+function voucherOffer(
+  open: boolean,
+  lineTotalIdr: number,
+  room: number | null,
+): { allowed: boolean; valueIdr: number } {
+  if (!open || room === null) return { allowed: false, valueIdr: 0 };
+  const valueIdr = Math.min(lineTotalIdr, room);
+  return { allowed: valueIdr > 0, valueIdr };
 }
 
 export async function getOrderIssueOptions(
@@ -916,7 +968,20 @@ export async function getOrderIssueOptions(
           .slice(0, SUGGESTED_SWAP_LIMIT)
           .map((item) => item.menuItemId),
       },
-      voucher: { allowed: open, valueIdr: open ? found.line.lineTotalIdr : 0 },
+      voucher: voucherOffer(
+        open,
+        found.line.lineTotalIdr,
+        open
+          ? (
+              await recoveryPreviewOf(tx, guest, {
+                orderId: found.order.id,
+                issueId: found.issue.id,
+                lineId: found.line.id,
+                at: now,
+              })
+            ).voucherRoomIdr
+          : null,
+      ),
       manualRefundOfferedToCustomer: false,
     });
   });
@@ -931,6 +996,14 @@ type Settlement = {
   replacementUnitPriceIdr: number | null;
   voucherId: string | null;
   priceDifferenceIdr: number | null;
+  /**
+   * legend-rat9r, legend-hhm5m: what the guest paid for the original item of
+   * the swap chain (every swap; dearer extras left out, read live), the cap
+   * of its vouchers and of every later refund of it.
+   */
+  paidValueIdr: number | null;
+  /** Value of the swap credit voucher (cheaper swap only; 0 = none minted). */
+  creditIdr: number | null;
   approvedBy: string | null;
   approvalRequestId: string | null;
   reasonNote: string | null;
@@ -963,6 +1036,8 @@ async function settleIssue(
         settlement.priceDifferenceIdr === null
           ? null
           : idr(settlement.priceDifferenceIdr),
+      paidValueIdr:
+        settlement.paidValueIdr === null ? null : idr(settlement.paidValueIdr),
       approvedBy: settlement.approvedBy,
       approvalRequestId: settlement.approvalRequestId,
       ...(settlement.reasonNote === null
@@ -1015,6 +1090,9 @@ async function settleIssue(
         approvalRequestId: settlement.approvalRequestId,
         voucherId: settlement.voucherId,
         replacementItemId: settlement.replacementItemId,
+        ...(settlement.creditIdr === null
+          ? {}
+          : { creditIdr: settlement.creditIdr }),
       },
     },
     now,
@@ -1130,9 +1208,22 @@ async function swapSettlement(
   const replacement = priced.get(replacementItemId);
   if (!replacement)
     throw unprocessable("Menu pengganti tidak tersedia di outlet ini.");
-  // Against the whole old line (modifiers included): negative is credited.
-  const difference =
-    replacement.unitPriceIdr * found.line.quantity - found.line.lineTotalIdr;
+  // legend-rat9r, legend-hhm5m: every swap reads the paid value of the
+  // original item of its chain (stored on the issue, the cap of every later
+  // voucher and refund of the item). A dearer swap is measured against the
+  // whole old line (modifiers included); a cheaper one against it less an
+  // extra the guest never paid (`swapDifferenceOf`, architect Q25 #7);
+  // negative is credited. 422 while an earlier extra charge is not settled.
+  const paid = await swapPaidValueOf(tx, context, {
+    orderId: found.order.id,
+    issueId: found.issue.id,
+    lineId: found.line.id,
+    at: now,
+  });
+  const difference = swapDifferenceOf(
+    paid,
+    replacement.unitPriceIdr * found.line.quantity,
+  );
   let approval: {
     approvedBy: string | null;
     approvalRequestId: string;
@@ -1160,7 +1251,15 @@ async function swapSettlement(
     };
   }
   let voucherId: string | null = null;
-  if (difference < 0) {
+  // The base only: a paid extra is read live from its charge.
+  const paidValueIdr = paid.baseIdr;
+  // legend-rat9r (founder W4 Q25): the credit is the list difference at most
+  // what the guest paid for the item (with the extras really paid), less what
+  // its chain already gave back (vouchers, live refunds, POS refunds of it),
+  // and at most what the order still leaves (architect Q25 #2). A credit of 0
+  // mints no voucher and needs no approval.
+  const creditIdr = difference < 0 ? swapCreditOf(paid, difference) : null;
+  if (creditIdr !== null && creditIdr > 0) {
     const creditReason =
       `Kredit selisih harga penukaran ${found.line.name}`.slice(0, 500);
     let creditApprovalId: string | null = null;
@@ -1168,7 +1267,7 @@ async function swapSettlement(
       const matrix = await requireSwapCreditApproval(tx, context, {
         orderIssueId: found.issue.id,
         outletId: found.issue.outletId,
-        valueIdr: -difference,
+        valueIdr: creditIdr,
         reason: creditReason,
         requestedBy: actor.userId,
         approvalRequestId: actor.approvalRequestId,
@@ -1187,7 +1286,7 @@ async function swapSettlement(
     const credit = await mintApologyVoucher(tx, context, {
       outletId: found.issue.outletId,
       issuedBy: found.issue.reportedBy,
-      valueIdr: -difference,
+      valueIdr: creditIdr,
       reason: creditReason,
       orderIssueId: found.issue.id,
       customerProfileId: found.order.customerProfileId,
@@ -1203,13 +1302,39 @@ async function swapSettlement(
     replacementUnitPriceIdr: replacement.unitPriceIdr,
     voucherId,
     priceDifferenceIdr: difference,
+    paidValueIdr,
+    creditIdr,
     approvedBy: approval?.approvedBy ?? null,
     approvalRequestId: approval?.approvalRequestId ?? null,
     reasonNote: null,
   };
 }
 
-/** System-issued voucher worth the line total, no approval matrix. */
+/** The cap a voucher for this issue's line must stay under (legend-rat9r). */
+async function voucherRoom(
+  tx: Tx,
+  context: ScopedTenantContext,
+  found: IssueContext,
+  now: Date,
+): Promise<number> {
+  return voucherRoomOf(tx, context, {
+    orderId: found.order.id,
+    issueId: found.issue.id,
+    lineId: found.line.id,
+    at: now,
+  });
+}
+
+const voucherSpent = () =>
+  unprocessable(
+    "Nilai item ini sudah dikembalikan penuh lewat voucher atau refund sebelumnya. Minta bantuan staf.",
+  );
+
+/**
+ * System-issued voucher worth the line total, no approval matrix, at most
+ * what the paid value of the item still leaves (legend-rat9r, legend-hhm5m,
+ * founder W4 Q25); nothing left refuses the voucher.
+ */
 async function systemVoucherSettlement(
   tx: Tx,
   context: ScopedTenantContext,
@@ -1217,10 +1342,13 @@ async function systemVoucherSettlement(
   now: Date,
 ): Promise<Settlement> {
   assertRecoverable(found);
+  const room = await voucherRoom(tx, context, found, now);
+  const valueIdr = Math.min(found.line.lineTotalIdr, room);
+  if (valueIdr <= 0) throw voucherSpent();
   const minted = await mintApologyVoucher(tx, context, {
     outletId: found.issue.outletId,
     issuedBy: found.issue.reportedBy,
-    valueIdr: found.line.lineTotalIdr,
+    valueIdr,
     reason: `Voucher pengganti item gagal ${found.line.name}`.slice(0, 500),
     orderIssueId: found.issue.id,
     customerProfileId: found.order.customerProfileId,
@@ -1234,6 +1362,8 @@ async function systemVoucherSettlement(
     replacementUnitPriceIdr: null,
     voucherId: minted.apologyVoucherId,
     priceDifferenceIdr: null,
+    paidValueIdr: null,
+    creditIdr: null,
     approvedBy: null,
     approvalRequestId: null,
     reasonNote: null,
@@ -1426,6 +1556,7 @@ export async function resolveOrderIssue(
             orderIssueId: apologyVouchers.orderIssueId,
             status: vouchers.status,
             validUntil: vouchers.validUntil,
+            valueIdr: vouchers.valueIdr,
           })
           .from(apologyVouchers)
           .innerJoin(
@@ -1471,12 +1602,23 @@ export async function resolveOrderIssue(
             "CONFLICT",
             "Voucher maaf ini sudah dipakai laporan lain.",
           );
+        // legend-rat9r: a voucher above what the item's paid value still
+        // leaves would pay the guest more than they paid.
+        const room = await voucherRoom(tx, context, found, now);
+        if (Number(apology.valueIdr) > room)
+          throw room <= 0
+            ? voucherSpent()
+            : unprocessable(
+                `Voucher maaf melebihi sisa nilai yang dibayar tamu untuk item ini (maks ${room}).`,
+              );
         settlement = {
           resolution: "voucher",
           replacementItemId: null,
           replacementUnitPriceIdr: null,
           voucherId: apology.id,
           priceDifferenceIdr: null,
+          paidValueIdr: null,
+          creditIdr: null,
           approvedBy: null,
           approvalRequestId: null,
           reasonNote: null,
@@ -1500,6 +1642,8 @@ export async function resolveOrderIssue(
           replacementUnitPriceIdr: null,
           voucherId: null,
           priceDifferenceIdr: null,
+          paidValueIdr: null,
+          creditIdr: null,
           approvedBy: approval.approvedBy,
           approvalRequestId: input.approvalRequestId,
           reasonNote: reason,

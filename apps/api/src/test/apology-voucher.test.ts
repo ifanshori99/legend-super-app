@@ -13,17 +13,29 @@
 //   in `error` (brief: "dengan requestId"); the test finds it by UUID.
 // - An approval of another action type is refused with 409 or 422.
 // - Same orderIssueId twice returns the same voucher (200 or 201).
+// - legend-eajpb (founder Q25): a voucher tied to an issue never passes what the
+//   guest paid for the line, so the above-floor cases fail a line paid more than
+//   ABOVE (kopi x6 = 150.000 + service + PBJT = 173.250), not the roti.
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { apologyVoucherSchema } from "@starter/shared/qr-order";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import {
   PRICES,
   VOUCHER_APPROVAL_FLOOR_IDR,
   createWorld,
   type World,
 } from "./order-recovery-helpers.ts";
-import { ulidToUuid } from "@starter/shared/core";
+import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { confirmPayment } from "../services/payment.service.ts";
+import { deliverQrOrderPaymentEvent } from "../services/qr-order-payment.ts";
 import { agent, originHeader } from "./helpers.ts";
 import { owner, seededHostname, staffWithRole } from "./floor-test-helpers.ts";
 
@@ -46,6 +58,52 @@ async function failedItem() {
   const paid = await w.paidOrder();
   const issueId = (await w.report(paid.roti.id)).body.data.id as string;
   return { ...paid, issueId };
+}
+
+/** A paid order of kopi x6 (173.250) with its kopi line reported failed. */
+async function bigFailedItem() {
+  const guest = await w.seat();
+  const order = await w.placeOrder(guest, [
+    { menuItemId: w.ids.kopi, quantity: 6 },
+  ]);
+  const { rows } = await owner.query<{ total_idr: number }>(
+    "SELECT total_idr::int FROM orders WHERE tenant_id = $1 AND id = $2",
+    [w.tenant.tenantId, ulidToUuid(order.id)],
+  );
+  const total = rows[0]!.total_idr;
+  expect(total).toBeGreaterThan(ABOVE);
+  const payment = await w.as(guest).pay({ kind: "order", orderId: order.id });
+  expect(payment.status).toBe(201);
+  const context = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(w.tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
+  await confirmPayment(context, payment.body.data.id, {
+    source: "verified_webhook",
+    method: "qris",
+    amountIdr: total,
+    providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
+    at: new Date().toISOString(),
+  });
+  const paid = await owner.query<{ event: unknown }>(
+    `SELECT event FROM domain_event_outbox
+     WHERE tenant_id = $1 AND event->>'name' = 'payment.paid'
+       AND event->'payload'->>'intentId' = $2`,
+    [w.tenant.tenantId, payment.body.data.id],
+  );
+  const event = eventEnvelopeSchema.parse(paid.rows[0]!.event);
+  expect(
+    await withTenant(db, context, (tx) =>
+      deliverQrOrderPaymentEvent(context, event, event.id, tx),
+    ),
+  ).toBe(true);
+  const kopi = order.items.find((item) => item.menuItemId === w.ids.kopi)!;
+  const issueId = (await w.report(kopi.id)).body.data.id as string;
+  return { guest, order, issueId };
 }
 
 /**
@@ -219,7 +277,7 @@ describe("legend-4qu voucher maaf di bawah batas matriks", () => {
 
 describe("legend-4qu voucher maaf di atas batas matriks", () => {
   it("tanpa approval 409 APPROVAL_REQUIRED, permintaan approval terbuka, tidak ada voucher", async () => {
-    const { issueId } = await failedItem();
+    const { issueId } = await bigFailedItem();
     const response = await issueVoucher({
       valueIdr: ABOVE,
       reason: REASON,
@@ -249,7 +307,7 @@ describe("legend-4qu voucher maaf di atas batas matriks", () => {
   });
 
   it("dengan approval yang disetujui voucher terbit dan mencatat approvalRequestId", async () => {
-    const { issueId } = await failedItem();
+    const { issueId } = await bigFailedItem();
     const body = { valueIdr: ABOVE, reason: REASON, orderIssueId: issueId };
     const first = await issueVoucher(body);
     expect(first.status).toBe(409);
@@ -283,7 +341,7 @@ describe("legend-4qu voucher maaf di atas batas matriks", () => {
   });
 
   it("approval untuk aksi lain, nominal lain, atau tak dikenal ditolak dan tidak ada voucher", async () => {
-    const { issueId } = await failedItem();
+    const { issueId } = await bigFailedItem();
     const body = { valueIdr: ABOVE, reason: REASON, orderIssueId: issueId };
 
     const refundApproval = await w.insertApproval({

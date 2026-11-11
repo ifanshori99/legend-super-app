@@ -31,6 +31,7 @@ import {
   type LoginReplySender,
 } from "../services/wa-login-reply.service.ts";
 import { agent, signUp } from "./helpers.ts";
+import { deleteMergesOf } from "./helpers/identity-isolation.ts";
 
 const app = createApp();
 const owner = new Pool({
@@ -219,15 +220,7 @@ afterAll(async () => {
   const userIds = [
     ...new Set([...identityUserIds, ...merges.rows.map((row) => row.absorbed)]),
   ];
-  await owner.query("ALTER TABLE identity_merges DISABLE TRIGGER USER");
-  try {
-    await owner.query(
-      "DELETE FROM identity_merges WHERE survivor_user_id = ANY($1) OR absorbed_user_id = ANY($1)",
-      [userIds],
-    );
-  } finally {
-    await owner.query("ALTER TABLE identity_merges ENABLE TRIGGER USER");
-  }
+  await deleteMergesOf(owner, userIds);
   await owner.query(
     "DELETE FROM wa_inbound_messages WHERE receiving_number = ANY($1)",
     [[tenantA.receivingNumber, tenantB.receivingNumber]],

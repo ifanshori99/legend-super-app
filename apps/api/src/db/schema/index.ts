@@ -145,6 +145,8 @@ export * from "./petty-purchases";
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
+// AI-01 menu recommendation rules.
+export * from "./menu-recommendation";
 // legend-k2l
 export * from "./identity-merge";
 // WS-12 per-tenant AI provider config (legend-dwrr).
@@ -167,3 +169,6 @@ export * from "./crm-tiers";
 
 // legend-dn4 WhatsApp login reply policy, default off (AUTH-03).
 export * from "./wa-login-reply";
+
+// legend-2qq HPP read model (menu_costs) and its recompute queue.
+export * from "./hpp";

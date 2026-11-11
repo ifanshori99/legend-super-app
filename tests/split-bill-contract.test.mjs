@@ -71,8 +71,8 @@ test("splitClaimSchema is strict and rejects unknown status or extra keys", () =
   );
 });
 
-test("getSplitClaim is GET /api/table-sessions/:sessionId/splits/:splitId/claim", () => {
-  assert.equal(qr.getSplitClaim.method, "GET");
+test("getSplitClaim is POST /api/table-sessions/:sessionId/splits/:splitId/claim", () => {
+  assert.equal(qr.getSplitClaim.method, "POST");
   assert.equal(
     qr.getSplitClaim.path,
     "/api/table-sessions/:sessionId/splits/:splitId/claim",

@@ -54,6 +54,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import { markHppStale } from "./hpp-invalidate.ts";
 import {
   MENU_ITEM_PERMISSION,
   MENU_PRICE_MANAGE_PERMISSION,
@@ -758,6 +759,9 @@ export async function commitMenuImport(
       affects: { kind: "outlet", outletId },
       now,
     });
+
+    // New items and prices move menu_costs of every outlet of the brand.
+    await markHppStale(tx, { tenantId, brandId });
 
     // 4. job row + audit (counts only, never row content).
     const result = {

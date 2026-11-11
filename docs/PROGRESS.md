@@ -171,6 +171,23 @@ Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,
 - Perubahan perilaku: Owner tunggal memanggil decide langsung saat chain masih pending kini 409 `APPROVAL_PENDING` (dulu 403).
 - Bukti: tes baru 20 kasus (`profit-share-sole-owner-self-approval.test.ts`), di baseline m1 9/15 gagal, di cabang 20/20 lulus; 8 file terkait 109 lulus; typecheck heavy lulus; prettier bersih; db:generate kosong. Review architect xhigh: 4 temuan (refusal melanggar CHECK, deadlock decide langsung, chain 2 level macet, request inbox buatan tangan), semua dibetulkan, verifikasi ulang OK.
 
+## legend-lnbtp konfirmasi login WA wajib + "Bukan saya" merapikan akun otomatis (engineer, cabang `ws/lnbtp-wa-confirm-required` dari `ws/kmndq-wa-login-confirm` f6fc4d01, 2026-11-11)
+
+- Sudah: route `POST /api/auth/login-challenges/whatsapp` selalu `requireConfirm: true` (nilai klien false/absen diabaikan, schema tetap menerima boolean opsional). Balasan WA "Login berhasil" tidak lagi dikirim saat challenge menunggu konfirmasi (balasan error tetap). Kolom baru `login_challenges.auto_created_user_id` (migrasi sementara `0279_wa_login_auto_account`, idx 244, tanpa snapshot: merge train) diisi bila akun dibuat oleh challenge itu; "Bukan saya" (cancel yang benar-benar membalik status) menghapus akun itu bila belum pernah dipakai (tanpa sesi, account, role, profil member, challenge lain non-cancelled dengan matched_user_id sama, satu identitas WA saja); ragu = akun ditinggal. Akun yang sudah ada tidak pernah disentuh.
+- Review architect (K): T1 (sedang) balapan cancel A vs inbound B dari nomor sama bisa menunjuk user terhapus -> `FOR UPDATE` di `removeUnusedAutoAccount`, `FOR KEY SHARE` di `completeChallenge`, test balapan. T2 (rendah) cek profil buta lintas tenant (RLS) -> `app.member_profiles_of_user`. Keduanya dibetulkan.
+- Keputusan: baris challenge yang di-cancel tetap menyimpan `matched_user_id` akun yang dihapus (jejak audit, tanpa FK); test invariant hanya menghitung baris non-cancelled.
+- Test lama yang memakai jalur HTTP sign-in WA (identity-merge, identity-login, identity-login-audit, member-signin, identity-wa-masked-login) ditambah langkah confirm; asersi tidak dilemahkan. Catatan: menjalankan file test grup ini bersama dalam satu vitest gagal juga di baseline f6fc4d01 (48 gagal, kontaminasi antar file); bukti sah = tiap file sendiri.
+- Bukti: tiap file solo lulus (confirm-required 10, masked-login 9, login-audit 13, identity-login 20, member-signin 24, identity-merge 34, wa-proof 32, wa-login-reply 21, rate-limit 12); typecheck api dan web 0; `db:generate` membuat 0245 karena snapshot 0274/0275/0279 belum ada (hasil dibuang; urusan merge train).
+
+## legend-kmndq UI login WhatsApp pelanggan: kartu konfirmasi nomor tersamar (ui-engineer, cabang `ws/kmndq-wa-login-confirm` dari `ws/w8dfz1-wa-masked` b5956fdb, 2026-11-11)
+
+- Sudah: klien membuat tantangan dengan `requireConfirm: true`; saat poll mengembalikan `awaitingConfirmation` tampil kartu "Pesan diterima dari +62 812-****-7890. Masuk sebagai nomor ini?" dengan "Ya, masuk" (confirm) dan "Bukan saya" (cancel). Kondisi: menunggu, perlu konfirmasi, berhasil, dibatalkan, kedaluwarsa, gagal jaringan.
+- Keputusan: API asli mengirim `status: "completed"` + `session: null` + `awaitingConfirmation` saat menunggu konfirmasi, jadi `loginChallengeOutcome` memeriksa awaiting sebelum cabang completed; mock disamakan dengan API (confirm idempoten, ditolak sebelum pesan masuk, cancel menerima completed-awaiting).
+- Copy batal: "Masuk dibatalkan" + "Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri." (nada "kamu", bukan "Anda").
+- Bukti: `tests/legend-kmndq-wa-confirm.test.mjs`, `e2e/legend-kmndq.mock.spec.ts` (12), axe `scripts/ui-check-kmndq/` (13), screenshot `docs/qa/kmndq/`.
+- Temuan di luar scope: `/masuk` melebar 361px di 320px sejak sebelum alur WA (kartu legend-rxida).
+- Berikut: gerbang UI founder, lalu legend-lnbtp.
+
 ## legend-3sy9b versi porsi saham lewat matriks approval (engineer, cabang `ws/3sy9b-share-alloc-approval` dari `ws/8s992-profit-rules` 54b76963, 2026-11-10)
 
 - Sudah: submit versi porsi saham membuka chain `shareholder_version` (source `profit_share`, object `share_allocation_version`, objectId = kolom baru `share_allocation_versions.id`). Decide approve saat chain terbuka 409 `APPROVAL_PENDING`; tanpa chain (versi lama) cek ulang matriks lalu buka chain dan 409. Reject menutup chain dulu; chain yang sudah approved tidak bisa di-reject (`INVALID_TRANSITION`); chain yang sudah berakhir rejected/expired dicatat sesuai hasilnya. Consumer `approval.resolved` menyelesaikan versi (approved oleh approver terakhir, rejected, atau cancelled saat chain expired/cancelled; tanggal berlaku mundur ditolak dengan catatan `approval refused: <kode>`). Kebijakan tidak ada: 409 `APPROVAL_POLICY_MISSING` (fail closed).
@@ -192,6 +209,40 @@ Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,
 - Review: satu architect (tingkat K), 7 temuan nyata semua dibetulkan dan diverifikasi ulang.
 - Lanjut: `legend-ilzrj` (FE layar PIN, butuh gerbang UI founder), `legend-qih2m` (adapter WA OTP).
 - Ukuran: 22:11, sesi 0a754b16, 34 menit, biaya* 7366k (Opus utama 3055k, Sonnet subagent 3445k, Opus subagent 711k, Haiku 155k); 19 subagent, puncak 4 bersamaan, rata-rata 1,21 berjalan.
+## legend-eajpb + legend-5g9sn + legend-pqm3t sisa aturan Q25 (cabang `ws/rat9r-followups` dari ws/rat9r-voucher-cap 391a5514 + merge ti19m 79923008, 2026-11-11)
+
+- Sudah: cabang dibuat, ti19m digabung (logika `filingSeq` dipindah ke `order-recovery-paid-value.ts` karena rat9r memindah `findRecoveryRefundReplay`); tsc api lulus, 5 file 84/84 (filing-order, codex422, swap-cap, paid-cap, promo-final-failure). Brief `docs/briefs/sub-rat9r-followups.md`.
+- Sudah (tiga kartu + legend-hhm5m, brief 461): tiga alur paralel digabung. Alur A tukar (4c5b7657): nilai dibayar disimpan di setiap tukar dari baris asal rantai, tambahan selisih ikut hanya bila charge `paid`, charge `open`/`routed_pos` = 422, voucher sistem + voucher maaf staf selalu dibatasi, preview tukar memakai credit nilai dibayar (pqm3t, eajpb, hhm5m 1+2). Alur B consumer refund: hhm5m 3 (e3ec5448), 4 (dae36284), 5 (f306bc09). Alur C POS (2c884394, 142a4037): `refundPosOrder` dibatasi level order dan per baris bila item disebut (5g9sn). Architect xhigh di acf82fac: 4 HIGH, ditutup dengan satu sumber "sudah diberikan" `services/order-given.ts` dipakai semua jalur bayar (94324fb4, be329d5d, 783f6ad9).
+- Bukti: gagal-dulu A 19/28 (c235d971), B 4/9 + PBJT (579afd20, 27647585), C 10/14 (3f5c50ae), given 13/13 (470eac0f). Di 783f6ad9: 4 file Q25 lulus semua, area 35 file hanya 3 gagal lama (refund T3/T4, rereport RR-2; gagal sama di 326bfbfa, kartu legend-wdqco). tsc api + web lulus, eslint + prettier bersih.
+- Keputusan agent (untuk CTO): batas per baris POS juga di order promo; tukar ulang saat charge selisih masih terbuka = 422; tukar lebih mahal tanpa baris charge dianggap waived; potongan karena ruang habis = kekurangan dicatat audit, uang tetap di outlet.
+- Verifikasi architect atas 783f6ad9 menemukan sisa: refund POS kedua masih bisa bayar lebih (baris 10 HIGH), audit deposit berutang salah (baris 11), charge terlambat untuk tukar lama (baris 12). Ditutup di c32d8337 (test, 3/3 gagal-dulu), 1a6ed0b8, 99a54bf7; 170/170 lulus di 10 file. Architect: baris 1-8, 10-12 tertutup, tidak ada jalur bayar lebih. Charge terlambat ditulis `expired` (DB mewajibkan user penutup untuk `waived`).
+- Sisa LOW: baris charge tertutup selalu `route: qr_link` walau tagihan kasir; baris itu juga tertulis saat voucher staf berhenti di approval. Baris 9 (dry-run promo di preview mengunci baris promo tanpa lock issue/order) belum dipastikan; recompute promo tidak mengunci `orders`, jadi tidak ada deadlock.
+- Kartu eajpb, 5g9sn, pqm3t, hhm5m: in_progress + komentar siap review CTO. Worktree q25-* dihapus.
+- Area 36 file di 99a54bf7: 582/585, gagal hanya 3 lama (legend-wdqco). Biaya sesi agent (session-usage): 36.338k token-ekuivalen, 65 subagent (Opus 676 req, Sonnet 824, Haiku 41), compact 4.
+- Berikut: second-opinion Codex area ini (brief 460 belum diterima), migrasi 0235 perlu nomor ulang saat merge (bentrok milestone/m1).
+
+## legend-rat9r voucher selisih tukar + refund item <= nilai dibayar tamu (engineer Opus, cabang `ws/rat9r-voucher-cap` dari ws/pti5r-promo-refund 326bfbfa + merge k0ub4, 2026-11-11)
+
+- Sudah: keputusan founder W4 Q25. Kolom baru `order_issues.paid_value_idr` (migrasi 0235) menyimpan nilai dibayar saat tukar ke menu lebih murah. Voucher = `min(selisih daftar, nilai dibayar - voucher rantai - refund hidup rantai)`; credit 0 = tanpa voucher dan tanpa approval. Consumer refund memotong ke `min(cap fwe4l, sisa rantai)` (audit `voucherCapIdr`); cap 0 di order promo lewat jalur `nothing_left` k0ub4 (ledger tetap). Voucher lini pengganti, voucher sistem, dan voucher maaf staf yang terikat laporan dibatasi sisa yang sama (422). Modul baru `order-recovery-paid-value.ts`.
+- Test: `order-recovery-swap-voucher-paid-cap.test.ts` (12 kelompok, 25 test). Test fwe4l diperbarui ke angka Q25 (kopi 8.085: voucher 8.085, refund pengganti 0). Area 17 file 299 test + tsc api/web lulus; ulang 5 file 97/97 setelah fix terakhir.
+- Review: architect xhigh (H1 voucher lini pengganti, M1 UI) dibetulkan; reviewer fix terakhir: lock urut issue lalu order, replay idempoten aman.
+- Keputusan terbuka untuk CTO/founder: voucher maaf staf di lini tanpa rantai tukar belum dibatasi nilai dibayar; arti `rejected` (refund lama ditolak, lalu tukar tetap memberi voucher di bawah cap, test pbwzq T6); rumus lebih ketat `paid - harga pengganti`; teks pratinjau pilihan tukar masih selisih daftar; tukar sebelum migrasi tanpa cap; refund kasir POS mengabaikan voucher; migrasi 0235 bentrok nomor dengan milestone/m1 (renumber saat merge).
+- Berikut: review CTO, second-opinion Codex area refund recovery sebelum gerbang rilis.
+
+## legend-k0ub4 item pengganti Rp0 di order promo selesai (engineer Opus, cabang `ws/k0ub4-zero-replacement` dari ws/pti5r-promo-refund 326bfbfa, 2026-11-11)
+
+- Sudah: jalur `nothing_left` untuk pengganti Rp0 di order promo mencatat goods baris asli (sebelum cap dan potongan ruang, `recoveryRefundGoodsIdr`) ke ledger promo, sekali per issue (audit `nothing_left` jadi penanda). Refund item lain sesudahnya tidak membayar porsi promo item asli.
+- Test: `order-recovery-refund-zero-replacement.test.ts` 6 test, gagal-dulu 4/6 di 326bfbfa; area 12 file 199/199. tsc, eslint, prettier bersih.
+- Architect xhigh: skenario Rp0 tidak bisa terjadi lewat API (ORD-09, event amount > 0), jadi ini pertahanan berlapis; satu temuan Rendah (goods dipotong ruang) sudah dibetulkan + test. Risiko di luar diff: `priorLinesIdr` ikut menghitung baris pengganti, cap swap pengganti berharga bisa jatuh ke 0.
+- Berikut: review CTO; dipakai ulang oleh legend-rat9r.
+
+## legend-ti19m urutan filing monoton refund recovery (engineer Opus, cabang `ws/ti19m-filing-order` dari ws/pti5r-promo-refund 326bfbfa, 2026-11-11)
+
+- Sudah: pendahulu replay dipilih dari `filingSeq` (max seq filing recovery order + 1, dihitung di bawah kunci order dan intent), disimpan di respons idempotensi dan audit `refund_requested`. Data lama tanpa seq di bawah semua yang ber-seq. Refile tidak mengubah seq.
+- Test: `order-recovery-refund-filing-order.test.ts` 10 test. Gagal-dulu di 326bfbfa: 5/10 (S1 pay-first + open bill, S2 id rendah, S4a, S6). S3/S5 penjaga regresi (rantai menyimpan akar A). Area 12 file 203/203 hijau. tsc, eslint, prettier bersih.
+- Architect xhigh: tidak ada bug uang; dua ekspektasi test salah (akar rantai) dibetulkan. Info: rolling deploy bisa membuat filing tanpa seq setelah ber-seq (butuh 3 laporan item sama dalam jendela deploy).
+- Berikut: review CTO.
+
 ## legend-iu91r + legend-8kilj refund recovery: edge, kegagalan final, four-eyes payout, release pin (engineer, cabang `ws/refund-recovery-fix` dari ws/94q2l-impl 3b94e7ad + merge milestone/m1 0f2802e7, 2026-11-10)
 
 - R1: `worker-main.ts` menjalankan `deliverOrderRecoveryRefundEvent` hanya bila `sweepsRefunds` (cloud), seperti refund lain (legend-jm5c).
@@ -3238,6 +3289,42 @@ Langkah berikut CTO baru:
 - Uang: efek merge pada 6 file batas diskon (pos-order.service, core/money, tenant-config-access, access/config-codec, platform/config, pos/schemas) identik dengan niat cabang; reviewer sonnet bersih. Ambang 1..5000 saat tulis, dipotong 5000 saat baca.
 - Gerbang: typecheck 3 paket + root hijau; lint 0 error (1 error `_kind` unused di tests/platform-config-codecs.test.mjs dari 5cwrq dibetulkan, 2 warning react-hooks lama); vitest API 12618 lulus, 1 gagal (menu-print-db "concurrent renders", lulus 3/3 sendiri: flake-suite-isolation belum menghilangkannya di suite penuh); e2e 18 lulus, 1 skip; suite root 2049 tes, 2046 lulus, 3 gagal SUDAH ADA DI m1 (file dan qr-order/guest.ts identik dengan m1): tests/qr-journey-mock.test.mjs ORD-06 x2 ("Data pembayaran tidak valid") dan tests/split-bill-contract.test.mjs getSplitClaim (kontrak POST sejak legend-r77pq, test masih menuntut GET).
 - Biaya sesi (session-usage): total 1087k, utama sonnet 62 req, subagent 28 req.
+### legend-16iyk: penerima reconcile dibatasi ke tenant, 11 Nov 2026
+- `resolveUnverifiedRecipientService`: penerima non-null harus punya role assignment valid di tenant (scope apa pun) atau menjadi `shareholders.user_id` milik pemegang saham baris itu, dan tidak ber-ban. Selain itu 422 `RECIPIENT_NOT_FOUND` (kode sama untuk akun tak ada dan akun tenant lain, tanpa bocor keberadaan akun). Cek di tx yang sama, `FOR SHARE` pada baris role assignment dan shareholder. `null` tetap boleh.
+- Test gagal-dulu: kasus (a) user tenant lain dan (b) tanpa keanggotaan gagal sebelum perbaikan (200). Sekarang 26/26 lulus, tsc api 0, prettier bersih.
+- Review architect (tingkat K): lolos dengan syarat; M1 (test lebih tegas, kadaluarsa, shareholder lain, UUID acak), L1 (ban), L2 (lock) dikerjakan. Butuh keputusan founder: anggota tenant berperan apa pun (mis. kasir) boleh jadi penerima dan lalu membaca laporan bagi hasil baris itu.
+
+### legend-16iyk keputusan founder W14 Q26: penerima hanya Owner atau login pemegang saham, 11 Nov 2026
+- `resolveUnverifiedRecipientService` jalur (a) kini hanya Owner tenant (`roles.templateKey='owner'`, `scopeType='tenant'`, valid sekarang, tidak ber-ban). Kasir, manajer, dan peran custom ditolak 422 `RECIPIENT_NOT_FOUND`. Jalur (b) (`shareholders.user_id` baris itu) tidak berubah. `FOR SHARE` kini juga mengunci baris `user`.
+- Test gagal-dulu: kasir dan manajer tenant sama dapat 200 sebelum perubahan (2 gagal dari 29). Sesudah: 32/32 lulus, tsc api 0, prettier bersih. Kasus baru: custom role dengan izin manage, Owner tenant lain, Owner scope outlet, Owner lain lulus, login pemegang saham ber-ban ditolak.
+- Review architect xhigh: approve; 3 celah test dan #4 (lock user) dikerjakan.
+## 2026-11-11: legend-cx3nb putar ulang approval.resolved mati (ws/cx3nb-replay-outbox, basis m1 a5d58300)
+
+- Basi sebagian: rute replay per-id sudah ada (legend-m119, `ops-outbox.routes.ts`); tidak ada replay massal, tidak dibuat (di luar kartu).
+- Kode produksi tidak diubah: konsumen pos_override idempoten dan gagal-tertutup (review architect). Test karakterisasi (a)-(e) dilulus, tidak ada gagal-dulu karena tidak ada cacat.
+- Runbook `worker-audit-writer-m1-window.md` bagian 4: prosedur replay (SQL, path `/api/ops/...`, ULID, per tenant, cek hasil).
+- Sisa operasional (butuh gerbang founder): replay di production setelah worker dengan audit writer terdeploy.
+- Temuan kecil non-uang: `pos-shift.service.ts:1412` `approvedAt` memakai `resolvedAt` (waktu proses), bukan waktu keputusan.
+
+## 2026-11-11: o1i9j + elb8c test root merah m1 (ws/o1i9j-root-tests, basis m1 3c7217b2)
+
+- legend-o1i9j: hanya test, kode produk tidak berubah. qr-journey-mock ORD-06 mengirim `payerSecret` format asli (skema `createGuestPaymentInputSchema` mewajibkan untuk target split sejak claim-payer-secret); tes baru: bayar split tanpa secret ditolak 422 dan sisa tagihan tidak berkurang. split-bill-contract: `getSplitClaim` kini diassert POST (r77pq).
+- legend-elb8c: menu-print-db "concurrent renders" kini menghitung hanya objek dokumen baru milik test (snapshot id sebelum render), tetap gagal bila ada objek yatim atau objek pengganti terhapus. Akar sisa baris tetangga belum terbukti (core-storage-access cleanup sudah id-scoped dan `asOwner` sudah `outlet_ids='*'`); asersi tidak lagi bergantung pada kebersihan file lain.
+- Bukti: `node --test` dua file root 22/22 lulus; vitest 5 file (menu-print-db + 4 tetangga) lulus 3x (61/61); typecheck @starter/api 0; eslint + prettier bersih.
+
+## 2026-11-11: merge train batch48f (ws/merge-batch48f, basis m1 3c7217b2)
+
+- Digabung --no-ff (urut): lgfru-wa-proof 9b41cc6d, s5rgo-wa-simulator 52a10a81, 5opkl-identity-test-isolation c19a1f3f, w8dfz1-wa-masked b5956fdb, w8dfz2-wa-retention f032c1cd, kmndq-wa-login-confirm f6fc4d01, lnbtp-wa-confirm-required 6eb85838, 16iyk-reconcile-recipient 244ce0e4, cx3nb-replay-outbox 3c4cfd17, o1i9j-root-tests 0b9ce4f2, ptd-menu-recommendation daeb986f. Tidak ada commit 9h2oj (66b99671, 7c73e41b, dc7ec186, a3bdda7f) di hasil.
+- Migrasi (when naik 1000000 mulai 1794331000000): 0250 wa_proof_purpose (ex 0272), 0251 wa_login_confirm (ex 0274), 0252 wa_retention_indexes (ex 0275), 0253 wa_login_auto_account (ex 0279), 0254 menu_recommendations (ex 0282). `db:generate` kosong, `migration-renumber check` hijau.
+- Konflik: worker-main.ts (dua job dipertahankan: HRIS reseal dan WA retention) dan docs/PROGRESS.md (semua entri dipertahankan). Tidak ada konflik di file uang.
+- Gerbang: typecheck shared, web, api, root hijau; lint 0 error setelah perbaikan 8 error dari merge (body tak terpakai di identity-auth.routes, `any` di 2 test, `_omit`); vitest API penuh 12791 lulus; test root 2077/2078 lalu perbaikan komentar docs/ di e2e/legend-kmndq.mock.spec.ts (aturan legend-nt8q), 11/11 file terkait lulus; e2e 18 lulus 1 skip. 8 gagal saat 4 file identitas jalan bersamaan (kartu legend-ongp7), lulus semua per file (10, 9, 20, 32).
+- Review architect xhigh (K): tanpa BLOCKER; 1 MAJOR (lint, dibetulkan), komentar nomor lama dibetulkan. MINOR tersisa: balasan 204 untuk confirm yang kalah balapan lawan cancel (identity-login.service ~909; tidak ada sesi terbit).
+- Catatan lnbtp: requireConfirm kini wajib di route; UI kmndq ikut di batch yang sama.
+## ongp7 + mjcl0: isolasi test identitas, e2e mock (11 Nov 2026 pagi, cabang `ws/ongp7-identity-test-isolation`)
+
+- ongp7: sebagian besar sudah dikerjakan kartu 5opkl (c19a1f3f, di cabang ini lewat cherry-pick f417ebdd, belum di m1). Sisanya: `identity-wa-masked-login` dan `identity-wa-login-confirm-required` (baru dari lnbtp) kini memakai tenant, host, nomor, pengirim, dan IP sendiri, cleanup hanya baris sendiri. Bukti: 14 file identitas/wa/member-signin bersama lewat `heavy pnpm test`, 239 lulus + 2 todo, tiga kali berturut-turut. Gagal-dulu: 48 gagal di baseline (tercatat di 5opkl dan kartu).
+- mjcl0: satu spec per run, baseline ws/lnbtp memberi 10 gagal (bukan 34; 34 muncul saat spec jalan bersamaan). Spec yang sama di m1 3c7217b2: baa lulus 8/8, enam lainnya gagal sama persis (7 tes). Dibetulkan hanya test dan data mock: 5fdy nama berkas coretax kini `-r0`; gb03 tautan `/reports` sudah ada dan `Item gagal` dipersempit; ik9g tile Belanja per tamu kini tanpa angka dan estimasi berjalan Rp256.250 (MTD); g6d 29 menjadi 30 tindakan; c3lm mock `redeemReward` melengkapi empat kolom baru skema. Sisa: baa (3 tes) gagal hanya di cabang lnbtp: spec masih untuk alur login lama, dibuat kartu terpisah.
+- Gate: typecheck api dan web 0; prettier dan eslint bersih pada berkas berubah.
 
 ## Absen masuk saat cuti disetujui: izinkan + tandai HR (11 Nov 2026, cabang `ws/9y6ri-leave-clockin-flag`, kartu legend-9y6ri)
 
@@ -3262,3 +3349,50 @@ Langkah berikut CTO baru:
 
 ## 2026-11-11: legend-x0avw perbaikan second-opinion Codex cuti + absensi (brief 452)
 Cabang `ws/5nt2z-leave-partial`. Sudah: (1) kunci advisory per karyawan `hris:leave-attendance` di `storeAttendanceLog` (online, outlet device, edge), `applyApproved`/settle koreksi, `applyOutcome`, `createLeaveRequest`, batal cuti oleh pemohon dan HR; urutan kunci `hris:leave` -> karyawan -> baris cuti -> saldo; (2) migrasi `0278_leave_clash_backfill` (excluded_holiday_dates bukan hari cuti di `app.approved_leaves_on` dan `app.flag_attendance_for_leave`; backfill idempoten benturan lama jadi flagged/pending `leave_approved`, tidak menyentuh periode payroll terkunci/dibayar); (3) `queued()` selalu memasukkan `leave_approved` ke antrean; (4) event `leave.changed` (range_split, range_cancelled, requester_cancelled) atomik di outbox; (5) `selfie_unlinked` ditambah atomik di SQL. Batas bayar: payload `attendance.logged` membawa `validity`; consumer gaji WAJIB mengecualikan validity flagged/rejected dan review_status pending dan membaca ulang status (flag bisa berubah sesudah event). Payroll belum membaca absensi hari ini. Review architect xhigh + reviewer: semua temuan nyata dibetulkan. Test area 14 file hijau, typecheck API hijau, eslint bersih. Belum: 500 saat approval cuti dengan hari libur lewat POST /api/hris/holidays tidak bisa direproduksi (dicatat, tidak ada akar masalah).
+### legend-2qq: HPP recompute, food cost, menu engineering, kelengkapan resep (WS-06 BE), 11 Nov 2026
+- Cek basi: kartu belum dikerjakan (kontrak shared sudah ada, 4 endpoint dan job belum).
+- Baru: tabel `menu_costs` dan `hpp_recompute_queue` (RLS tenant+outlet, migrasi sementara 0278, journal idx 278), `hpp-recompute.service.ts` (antrean per item, claim DELETE..RETURNING SKIP LOCKED, isi awal outlet tanpa baris, cabang resep rebuild), job worker 60 dtk, `hpp-report.service.ts` + `hpp-math.ts`, route `inventory-hpp.routes.ts` (`menu-costs`, `food-cost`, `menu-engineering`, `recipe-coverage`, izin `recipe.cost.view`).
+- Aturan uang: biaya hilang atau 0 = resep tidak lengkap, biaya null, bukan 0. Modifier dengan aturan add/replace = tidak lengkap. Food cost: varians = waste + penyesuaian + duty meal, aktual tidak pernah negatif.
+- Gagal-dulu: 8 test baru merah sebelum perbaikan temuan architect (`t4.log`). Hasil akhir: 3 berkas HPP + 37 berkas inventori/resep, 530 test lulus; typecheck API 0.
+- Review architect (high): 6 temuan nyata, semua dibetulkan. Tersisa: crash worker di antara claim dan recompute menghilangkan item antrean (biaya basi sampai perubahan berikut); rebuild per merek saat edit resep bisa lambat untuk merek banyak outlet; `snapshot` drizzle 0278 belum ada (jalankan `pnpm db:generate` setelah nomor final).
+
+### legend-husxd + legend-i8ou8: perbaikan temuan second-opinion HPP (brief 451), 11 Nov 2026
+- Temuan 1-7 (Codex G1i5i) dan 6 cacat tambahan dari dua review architect high, semua dibetulkan di `ws/2qq-hpp-recompute`. Migrasi 0278 (belum merge) diedit di tempat.
+- Desain: baris `hpp_outlet_state` per outlet = kunci (FOR UPDATE sebelum baca, hasil lama tak bisa menimpa baru), penanda backfill dan penanda basi (`markHppStale` di `hpp-invalidate.ts`, dipanggil di transaksi yang sama oleh menu, harga, impor menu, resep, aturan modifier, pengaturan deduksi, outlet baru). Tabel ini RLS tenant saja (hanya penanda; fungsi SECURITY DEFINER ditolak pemilik non-superuser di test migrasi 0186).
+- Antrean: klaim ber-lease 5 menit, hitung + tulis + ack dalam satu transaksi, ack hanya baris yang bisa dikunci (SKIP LOCKED, tanpa deadlock dengan posting stok), enqueue ulang me-reset lease dan attempts, poison (>5) menandai outlet basi lalu rebuild penuh. Price list berjadwal yang jatuh tempo memicu rebuild.
+- Food cost: order dengan deduksi pending/skipped/tanpa baris, atau sale posted tetapi remake/comp pending, tidak rekonsiliasi dengan ledger; biaya aktual memakai teoretis (tidak pernah Rp0). Field aditif opsional `pendingOrderCount`, `pendingTheoreticalIdr`, `pendingUnknownLineCount` (baris tanpa snapshot = batas bawah).
+- Aturan varians (temuan 7): surplus (penyesuaian negatif) dipotong di `-(teoretis + waste + off-recipe)`; aktual >= 0 dan varians = waste + penyesuaian + off-recipe selalu berlaku, `adjustmentIdr` yang dilaporkan adalah nilai setelah dipotong.
+- Coverage: penyebut = outlet milik merek baris menu itu yang terjangkau pemanggil, per baris.
+- Gagal-dulu: 29 test merah di 80321fdc (`55b13af7`), lalu 8 test merah di 87f662f6 (`8f253723`). Akhir: typecheck API 0, eslint berkas berubah 0, 58 berkas HPP/inventori/resep/menu/org/pos-order lulus; 3 flake paralel (menu-print-db, menu-availability, menu-import-db) lulus saat dijalankan sendiri.
+- Tersisa: snapshot drizzle 0278 belum ada (`pnpm db:generate` setelah nomor final); `pnpm check`/e2e penuh tidak dijalankan.
+
+## legend-pti5r (10 Nov 2026, 23:40) — refund pemulihan promo setelah kegagalan final
+
+- Cabang `ws/pti5r-promo-refund` (dari `ws/refund-recovery-fix` 00caa599). Commit dbe08344 (give-back payout lewat `returnPartialRefundPayout`), 327e0135 (give-back juga subtotal, baris dianggap kept sampai lapor ulang, kunci `#promo-return`, SQL cek + runbook `docs/runbooks/recovery-refund-final-failure-backfill.md`).
+- Bukti: 122/122 test terarah, tsc api bersih (heavy), db:generate kosong, prettier bersih, fail-first terbukti untuk dua putaran.
+- Status: TAHAN. Review architect putaran 2 menemukan regresi: promo yang sudah ditarik tidak bisa dipulihkan, jadi item lain setelah give-back bisa dapat nothing_left. Rekomendasi: ganti desain ke "lapor ulang memutar ulang refund gagal" tanpa menyentuh ledger promo. Menunggu keputusan CTO.
+
+### legend-pti5r update (11 Nov 2026, 00:45)
+- Desain diganti atas keputusan CTO: ledger promo tidak disentuh; lapor ulang item gagal-final (bukan rejected) memutar ulang jumlah + split refund gagal, dibatasi room (f6f62af8). Open bill + rantai replay ke root (6b497992). Port give-back dan query 2-3 dibuang.
+- Review architect xhigh putaran 3 (2 temuan, dibetulkan) dan putaran 4 (tanpa bug uang; 1 bug test dibetulkan 0c24d644, celah test open-bill chain ditambah).
+- Tsc bersih, eslint bersih, prettier bersih, db:generate kosong.
+- BELUM: test DB putaran 3-4 belum dijalankan. Layanan direktori macOS rusak (`id -un` hanya memberi 501, `dscl` eServerError), sehingga colima/lima panic "unknown userid 501" dan Postgres test tidak bisa dijangkau. Perlu dipulihkan (restart Mac atau opendirectoryd), lalu jalankan test terarah + bukti gagal-dulu terhadap 00caa599/327e0135.
+- Langkah berikut setelah Mac di-restart: (1) `LEGEND_TEST_FILES="src/test/order-recovery-refund-promo-final-failure.test.ts src/test/order-recovery-refund-promo.test.ts src/test/order-recovery-refund-final-failure.test.ts src/test/order-recovery-refund-reject.test.ts src/test/pos-refund-promo-db.test.ts src/test/order-promo-db.test.ts src/test/crm-promo-db.test.ts src/test/recovery-refund-final-failure-check-db.test.ts" pnpm test`; (2) bukti gagal-dulu: jalankan file test pti5r dengan `apps/api/src/services/{crm-promo-refund,order-promo-refund,order-recovery-refund,order-recovery-refund-amount}.ts` dari 00caa599 dan 327e0135 (pakai `"${base}:path"`, zsh), lalu pulihkan; (3) `git push`; (4) `bd update legend-pti5r --status review` + komentar.
+
+### legend-pti5r update (11 Nov 2026, 04:55) — siap review
+- Setelah restart Mac: 8 file test terarah lulus 123/123 di HEAD 023d161b.
+- Bukti gagal-dulu (file test pti5r, 22 test, service ditukar lalu dipulihkan): base 00caa599 gagal 15 (T2, T8-T11: replay belum ada), versi putaran 2 327e0135 gagal 19 (termasuk regresi T1, T3, T5-T7 dari give-back). Yang lulus di base (T1, T3-T7) adalah penjaga regresi.
+- Kartu ke `review`. Langkah berikut: second-opinion Codex area refund (wajib sebelum gerbang rilis), lalu merge train.
+
+### legend-pbwzq (11 Nov 2026) — perbaikan temuan Codex 422 di ws/pti5r-promo-refund
+- Sudah: replay jumlah + split refund gagal final untuk SEMUA order (bukan hanya promo); laporan ulang setelah `rejected` -> nothing_left di semua order; pendahulu dipilih menurut urutan filing (min created_at refund per issue), bukan created_at issue; skrip cek SQL gagal eksplisit tanpa superuser/BYPASSRLS; audit hook kegagalan sekali per refund. Runbook diperbarui (wajib BYPASSRLS, `ON_ERROR_STOP`, hook aman diulang).
+- Architect xhigh: 1 temuan nyata (tanpa promo, swap ke menu lebih murah me-replay jumlah baris lama). Dibetulkan b36d5d3c: tanpa promo pendahulu harus baris yang sama; dengan promo tetap lewat swap.
+- Bukti: test baru `order-recovery-refund-codex422.test.ts` 15 test. Gagal-dulu: di 095b4099 14/17 gagal (codex422 + cek SQL), T6 gagal 2/2 di 2b42c788. 9 file terarah 140/140 lulus. tsc, eslint, prettier bersih, db:generate kosong.
+- Untuk CTO: order promo yang item-nya di-swap ke menu lebih murah setelah gagal final masih me-replay jumlah item asal (ditambah voucher selisih). Sudah ada sejak desain Round 3, perlu keputusan.
+- Langkah berikut: kartu legend-pbwzq review; second-opinion Codex ulang area refund bila CTO mau.
+
+### legend-fwe4l (11 Nov 2026) — refund baris pengganti dibatasi nilai baris itu (keputusan founder Q17)
+- Sudah: bila baris yang dilaporkan adalah baris pengganti (swap), refund-nya dibatasi nilai baris itu sendiri tanpa promo (`recoveryRefundSplit` baris itu, `.wantedIdr`), di jalur replay dan hitung ulang promo. Replay dengan akar baris yang sama tidak dipotong ulang. Ledger promo tetap mencatat goods pra-cap (dipotong room hanya bila room < jumlah pasca-cap). Audit `swapCapIdr` saat cap memotong.
+- Architect xhigh 2x: F1 (swap langsung tanpa refund gagal lolos cap) dibetulkan 376d33a4; cek ulang: regresi replay baris sama + goods ledger terhadap room dibetulkan dc7c4270.
+- Bukti gagal-dulu: di b36d5d3c 7 gagal; di 631344cf 10 gagal (swap langsung, unit cap); di 29926efc 2 gagal (replay baris sama, goods vs room). 11 file terarah 193/193 lulus. tsc, eslint, prettier bersih; db:generate kosong.
+- Untuk CTO: (F2) voucher selisih dihitung dari harga daftar, jadi di order promo voucher + refund bisa melebihi nilai kopi setelah promo (contoh test: voucher 20.000 + 3.885 vs kopi 8.085). (Temuan 2) order yang sudah selesai mencatat baris pengganti Rp0 -> refund-nya nothing_left dan goods kopi tidak tercatat di ledger, sehingga refund item lain berikutnya bisa ikut membayar porsi promo itu. Keduanya di luar diff, perlu keputusan.

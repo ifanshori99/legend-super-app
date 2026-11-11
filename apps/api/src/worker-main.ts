@@ -104,11 +104,13 @@ import {
 } from "./worker/relay";
 import { touchHeartbeat } from "./worker/heartbeat";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
+import { runHppRecomputeJob } from "./worker/hpp-recompute.job.ts";
 import {
   createMaintenancePool,
   probeMaintenanceConnection,
   registerAuditRetentionJob,
 } from "./worker/audit-retention.job.ts";
+import { registerWaInboundRetentionJob } from "./worker/wa-inbound-retention.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { sweepParkedAccessEvents } from "./worker/access-drain.job.ts";
 import { startGatewayProbeSweep } from "./worker/payment-failover-probe.job.ts";
@@ -516,6 +518,13 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Inventory expiry sweep failed");
     }
+    // §17 HPP menu costs follow ingredient cost changes within 5 minutes
+    // (legend-2qq); self-throttled to once a minute per tenant.
+    try {
+      await runHppRecomputeJob(context);
+    } catch {
+      console.error("HPP recompute sweep failed");
+    }
     // Parked staff PIN / POS override edge rows of outlets that never send
     // another live access event (legend-0q3r); self-throttled.
     try {
@@ -765,6 +774,9 @@ try {
     database: db,
     log: consoleLikeLog(logger),
   });
+  // w8dfz.2: WhatsApp messages (90 days) and finished challenges (30 days);
+  // service-scoped tables, so it runs on the app connection, not the maintenance login.
+  await registerWaInboundRetentionJob({ boss, log: consoleLikeLog(logger) });
   // legend-dzh9q: the selfie purge deletes objects, so it needs the object
   // storage. Without STORAGE_* the worker still starts, with the job off.
   const storageRuntime = createStorageRuntimeFromEnv(

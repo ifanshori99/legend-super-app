@@ -14,16 +14,47 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Request, Response } from "express";
 import { siteConfig } from "@starter/shared/site";
 import { env } from "../config/env";
-import { browserBindingDigest } from "./identity-digest";
+import { browserBindingDigest, identityDigest } from "./identity-digest";
+
+/**
+ * legend-lgfru: one browser binding per flow. Each flow has its own cookie
+ * name, path and HMAC labels, so a login cookie is never accepted as a
+ * pin-reset binding (or the other way round). The login values are the
+ * originals, so existing login cookies and stored digests stay valid.
+ */
+export type BindingCookieSpec = {
+  /** Cookie name. */
+  readonly name: string;
+  /** Cookie path: the browser sends it to these endpoints only. */
+  readonly path: string;
+  /** Label of the cookie signature HMAC. */
+  readonly signLabel: string;
+  /** Label of the keyed digest stored on the challenge row. */
+  readonly digestLabel: "browser-binding" | "pin-reset-binding";
+};
 
 /** `<app id>.login_binding`; scoped to the login endpoints only. */
-export const BINDING_COOKIE = `${siteConfig.id}.login_binding`;
-const BINDING_PATH = "/api/auth/login-challenges";
+export const LOGIN_BINDING: BindingCookieSpec = {
+  name: `${siteConfig.id}.login_binding`,
+  path: "/api/auth/login-challenges",
+  signLabel: "login-binding",
+  digestLabel: "browser-binding",
+};
+
+/** Payslip PIN reset through WhatsApp (design §6.1). */
+export const PIN_RESET_BINDING: BindingCookieSpec = {
+  name: `${siteConfig.id}.pin_reset_binding`,
+  path: "/api/hris/me/payslip-pin/reset-wa",
+  signLabel: "pin-reset-binding",
+  digestLabel: "pin-reset-binding",
+};
+
+export const BINDING_COOKIE = LOGIN_BINDING.name;
 const NONCE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
-function sign(nonce: string): string {
+function sign(nonce: string, spec: BindingCookieSpec): string {
   return createHmac("sha256", env.BETTER_AUTH_SECRET)
-    .update(`login-binding\u0000${nonce}`, "utf8")
+    .update(`${spec.signLabel}\u0000${nonce}`, "utf8")
     .digest("base64url");
 }
 
@@ -45,23 +76,29 @@ function readCookie(req: Request, name: string): string | null {
 }
 
 /** The nonce this browser already holds, when the signature verifies. */
-export function readBindingNonce(req: Request): string | null {
-  const value = readCookie(req, BINDING_COOKIE);
+export function readBindingNonce(
+  req: Request,
+  spec: BindingCookieSpec = LOGIN_BINDING,
+): string | null {
+  const value = readCookie(req, spec.name);
   if (value === null) return null;
   const separator = value.lastIndexOf(".");
   if (separator < 1) return null;
   const nonce = value.slice(0, separator);
   const signature = value.slice(separator + 1);
   if (!NONCE_PATTERN.test(nonce)) return null;
-  const expected = Buffer.from(sign(nonce), "utf8");
+  const expected = Buffer.from(sign(nonce, spec), "utf8");
   const presented = Buffer.from(signature, "utf8");
   if (presented.length !== expected.length) return null;
   return timingSafeEqual(presented, expected) ? nonce : null;
 }
 
 /** Reuses the browser's nonce when present, otherwise mints a fresh one. */
-export function ensureBindingNonce(req: Request): string {
-  return readBindingNonce(req) ?? randomBytes(32).toString("base64url");
+export function ensureBindingNonce(
+  req: Request,
+  spec: BindingCookieSpec = LOGIN_BINDING,
+): string {
+  return readBindingNonce(req, spec) ?? randomBytes(32).toString("base64url");
 }
 
 /**
@@ -72,20 +109,26 @@ export function setBindingCookie(
   res: Response,
   nonce: string,
   ttlSeconds: number,
+  spec: BindingCookieSpec = LOGIN_BINDING,
 ): void {
-  res.cookie(BINDING_COOKIE, `${nonce}.${sign(nonce)}`, {
+  res.cookie(spec.name, `${nonce}.${sign(nonce, spec)}`, {
     httpOnly: true,
     sameSite: "lax",
     // Same rule Better Auth applies to its own cookies: `Secure` follows the
     // public scheme, not NODE_ENV, so a production build served over http in
     // tests still gets a cookie the browser will store.
     secure: new URL(env.BETTER_AUTH_URL).protocol === "https:",
-    path: BINDING_PATH,
+    path: spec.path,
     maxAge: ttlSeconds * 1000,
   });
 }
 
 /** The keyed digest stored on the challenge row. */
-export function bindingDigestOf(nonce: string): string {
-  return browserBindingDigest(nonce);
+export function bindingDigestOf(
+  nonce: string,
+  spec: BindingCookieSpec = LOGIN_BINDING,
+): string {
+  return spec.digestLabel === "browser-binding"
+    ? browserBindingDigest(nonce)
+    : identityDigest(spec.digestLabel, nonce);
 }

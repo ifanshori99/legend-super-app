@@ -7,17 +7,17 @@
 // employee (services/payslip-pin.service.ts), so a staff device pin hash never
 // verifies as a payslip PIN. One row per employee; HR reset deletes the row.
 //
-// payslip_pin_reset_challenges holds the WhatsApp one-time code of a
-// self-service reset: only its keyed hash, a short expiry, a try counter and a
-// single-use stamp.
+// Self-service reset proves the employee's own WhatsApp number by an INBOUND
+// message; that proof lives in `login_challenges` (purpose `payslip_pin_reset`,
+// identity-wa-proof.service). The outbound-code table
+// `payslip_pin_reset_challenges` was dropped in 0255 (legend-9h2oj).
 //
-// Both tables are tenant-owned (no outlet): the migration calls
-// `app.enforce_tenant_rls(...)` for each (0257_payslip_pins.sql).
+// The table is tenant-owned (no outlet): the migration calls
+// `app.enforce_tenant_rls(...)` (0246_payslip_pins.sql).
 import { sql } from "drizzle-orm";
 import {
   check,
   foreignKey,
-  index,
   integer,
   pgTable,
   smallint,
@@ -69,48 +69,6 @@ export const payslipPins = pgTable(
     ),
     check(
       "payslip_pins_pepper_version_check",
-      sql`${table.pepperVersion} >= 1`,
-    ),
-  ],
-);
-
-export const payslipPinResetChallenges = pgTable(
-  "payslip_pin_reset_challenges",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    tenantId: tenantIdColumn(() => tenants.id).notNull(),
-    employeeId: uuid("employee_id").notNull(),
-    /** HMAC-SHA-256 hex of the code under the tenant pepper. Never the code. */
-    codeHash: varchar("code_hash", { length: 64 }).notNull(),
-    pepperVersion: smallint("pepper_version").notNull().default(1),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    attempts: integer("attempts").notNull().default(0),
-    consumedAt: timestamp("consumed_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [
-    unique("payslip_pin_reset_challenges_tenant_id_key").on(
-      table.tenantId,
-      table.id,
-    ),
-    index("payslip_pin_reset_challenges_employee_idx").on(
-      table.tenantId,
-      table.employeeId,
-      table.createdAt,
-    ),
-    foreignKey({
-      name: "payslip_pin_reset_challenges_employee_fk",
-      columns: [table.tenantId, table.employeeId],
-      foreignColumns: [employees.tenantId, employees.id],
-    }),
-    check(
-      "payslip_pin_reset_challenges_attempts_check",
-      sql`${table.attempts} BETWEEN 0 AND 5`,
-    ),
-    check(
-      "payslip_pin_reset_challenges_pepper_version_check",
       sql`${table.pepperVersion} >= 1`,
     ),
   ],

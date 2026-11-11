@@ -208,6 +208,12 @@ registerMock(redeemReward, ({ params, body }) => {
     pointsSpent: reward.pointsCost,
     status: "pending",
     redemptionCode: redemptionCode(reward.type === "voucher" ? "VCR" : "RWD"),
+    rewardType: reward.type,
+    expiresAt: new Date(
+      Date.parse(at) + reward.redemptionValidDays * 86_400_000,
+    ).toISOString(),
+    voucherId: null,
+    fulfilledOutletId: null,
     idempotencyKey: key,
     redeemedAt: at,
     fulfilledAt: null,

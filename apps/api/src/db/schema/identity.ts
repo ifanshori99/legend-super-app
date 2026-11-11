@@ -43,6 +43,7 @@ import type {
   LoginChallengeStatus,
   LoginChannel,
   UserIdentityType,
+  WhatsAppProofPurpose,
 } from "@starter/shared/identity";
 import { brands, tenants } from "./platform-org";
 
@@ -62,6 +63,15 @@ export const userIdentities = pgTable(
     providerSubject: varchar("provider_subject", { length: 255 }),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     isPrimary: boolean("is_primary").notNull().default(false),
+    /**
+     * legend-lgfru (design D-WA3): when this identity became this account's,
+     * verified. Trigger `user_identities_linked_at_on_owner_change`
+     * (migration 0250) resets it to now() whenever `user_id` or `verified_at`
+     * changes, so a merge or a late verification never inherits an old date.
+     */
+    linkedAt: timestamp("linked_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -97,6 +107,19 @@ export const loginChallenges = pgTable(
     tenantId: uuid("tenant_id"),
     brandId: uuid("brand_id"),
     channel: varchar("channel", { length: 20 }).$type<LoginChannel>().notNull(),
+    /**
+     * legend-lgfru (design D-WA1): what the proof is for. `sign_in` rows are
+     * the login flow; `payslip_pin_reset` rows are completed by the webhook
+     * (identity-wa-proof.service.ts) and never link, merge or issue a session.
+     */
+    purpose: varchar("purpose", { length: 32 })
+      .$type<WhatsAppProofPurpose>()
+      .notNull()
+      .default("sign_in"),
+    /** Keyed digest of the number that must send the proof; null for sign_in. */
+    expectedSenderHash: varchar("expected_sender_hash", { length: 64 }),
+    /** When a verified proof was used for its action; null for sign_in. */
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
     /** Keyed digest of the 8-symbol code (AUTH-01; the code itself is never stored). */
     codeHash: varchar("code_hash", { length: 64 }).notNull(),
     /** Keyed digest of the requesting browser's binding nonce (AUTH-01). */
@@ -131,6 +154,19 @@ export const loginChallenges = pgTable(
      * is verified, so the address lives here. Null for every other channel.
      */
     emailEncrypted: text("email_encrypted"),
+    /**
+     * Card w8dfz.1: opt-in confirmation before a session is issued. The
+     * sender is stored only masked (country code and last 4 digits).
+     */
+    senderMasked: text("sender_masked"),
+    confirmRequired: boolean("confirm_required").notNull().default(false),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    /**
+     * Card lnbtp: the account this challenge created for a new sender. "Bukan
+     * saya" removes it when it was never used; an account that already existed
+     * is never recorded here.
+     */
+    autoCreatedUserId: text("auto_created_user_id"),
     /** Keyed client-IP digest for the AUTH-04 per-IP limit. */
     ipHash: varchar("ip_hash", { length: 64 }),
     userAgent: varchar("user_agent", { length: 255 }),
@@ -166,6 +202,26 @@ export const loginChallenges = pgTable(
       "login_challenges_brand_needs_tenant_check",
       sql`${table.brandId} IS NULL OR ${table.tenantId} IS NOT NULL`,
     ),
+    // legend-lgfru (design §5.1): a proof row is always a tenant's, bound to a
+    // signed-in session and a sender, and never carries a login result.
+    check(
+      "login_challenges_purpose_check",
+      sql`${table.purpose} IN ('sign_in', 'payslip_pin_reset')`,
+    ),
+    check(
+      "login_challenges_proof_shape_check",
+      sql`${table.purpose} = 'sign_in' OR (${table.channel} = 'whatsapp_inbound' AND ${table.tenantId} IS NOT NULL AND ${table.linkUserId} IS NOT NULL AND ${table.linkSessionId} IS NOT NULL AND ${table.expectedSenderHash} IS NOT NULL AND ${table.matchedUserId} IS NULL AND ${table.sessionId} IS NULL AND ${table.sessionIssuedAt} IS NULL)`,
+    ),
+    check(
+      "login_challenges_consumed_check",
+      sql`${table.consumedAt} IS NULL OR (${table.purpose} <> 'sign_in' AND ${table.status} = 'completed')`,
+    ),
+    // Per-user proof limit and cancelling a user's open proofs.
+    index("login_challenges_purpose_user_idx").on(
+      table.purpose,
+      table.linkUserId,
+      table.createdAt,
+    ),
     // A brand context without a tenant is impossible; the wire schema says so too.
     // The webhook matches the code digest inside one channel (AUTH-02).
     index("login_challenges_code_idx").on(table.channel, table.codeHash),
@@ -182,6 +238,8 @@ export const loginChallenges = pgTable(
       table.status,
       table.createdAt,
     ),
+    // The daily retention purge (finished rows past 30 days) scans by age.
+    index("login_challenges_created_idx").on(table.createdAt),
   ],
 );
 
@@ -191,6 +249,7 @@ export const loginChallenges = pgTable(
  *
  * `kind` is one of:
  * - `login` — a valid code completed a pending challenge;
+ * - `proof` — a valid `RESET PIN` code completed a proof (legend-lgfru);
  * - `unknown` — not a login message (no `MASUK <code>`), or no pending challenge;
  * - `rejected` — the challenge was for another receiving number or no longer valid;
  * - `rate_limited` — AUTH-04's 10 messages per number per hour was reached.
@@ -235,7 +294,7 @@ export const waInboundMessages = pgTable(
     }),
     check(
       "wa_inbound_messages_kind_check",
-      sql`${table.kind} IN ('login', 'unknown', 'rejected', 'rate_limited')`,
+      sql`${table.kind} IN ('login', 'proof', 'unknown', 'rejected', 'rate_limited')`,
     ),
     check(
       "wa_inbound_messages_from_hash_check",
@@ -247,5 +306,7 @@ export const waInboundMessages = pgTable(
       table.tenantId,
       table.processedAt,
     ),
+    // The daily retention purge (rows past 90 days) scans by age.
+    index("wa_inbound_messages_created_idx").on(table.createdAt),
   ],
 );

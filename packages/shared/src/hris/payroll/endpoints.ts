@@ -68,7 +68,13 @@ import {
   payrollRunEmployeeResultSchema,
   payrollTaxExportKindSchema,
   payrollTaxExportSchema,
+  cancelPayslipPinResetWaInputSchema,
+  completePayslipPinResetWaInputSchema,
   payslipPinResetOtpRequestedSchema,
+  payslipPinResetWaIssuedSchema,
+  payslipPinResetWaParamsSchema,
+  payslipPinResetWaStatusSchema,
+  requestPayslipPinResetWaInputSchema,
   payslipPinStatusSchema,
   payslipSchema,
   requestPayslipPinResetOtpInputSchema,
@@ -598,7 +604,10 @@ export const setMyPayslipPin = defineEndpoint({
   response: dataResponseSchema(payslipPinStatusSchema),
 });
 
-/** WhatsApp code to the employee's own number; 503 when no sender is set up. */
+/**
+ * @deprecated legend-ur82k removes with the new screen. The API no longer
+ * serves it (404); use `startMyPayslipPinResetWa`.
+ */
 export const requestMyPayslipPinResetOtp = defineEndpoint({
   method: "POST",
   path: "/api/hris/me/payslip-pin/reset-otp",
@@ -606,11 +615,48 @@ export const requestMyPayslipPinResetOtp = defineEndpoint({
   response: dataResponseSchema(payslipPinResetOtpRequestedSchema),
 });
 
+/** @deprecated legend-ur82k removes with the new screen (API answers 404). */
 export const verifyMyPayslipPinResetOtp = defineEndpoint({
   method: "POST",
   path: "/api/hris/me/payslip-pin/reset-otp/verify",
   body: verifyPayslipPinResetOtpInputSchema,
   response: dataResponseSchema(payslipPinStatusSchema),
+});
+
+/**
+ * Reset through an inbound WhatsApp message (legend-9h2oj). Returns the code
+ * once; not idempotent on purpose, a replayed body would hold the code (D-WA6).
+ * 409 PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE | PAYSLIP_PIN_NOT_SET, 429, 503.
+ */
+export const startMyPayslipPinResetWa = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/me/payslip-pin/reset-wa",
+  body: requestPayslipPinResetWaInputSchema,
+  response: dataResponseSchema(payslipPinResetWaIssuedSchema),
+});
+
+/** Polled by the browser that asked; 404 when not bound to it. */
+export const getMyPayslipPinResetWa = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/me/payslip-pin/reset-wa/:challengeId",
+  params: payslipPinResetWaParamsSchema,
+  response: dataResponseSchema(payslipPinResetWaStatusSchema),
+});
+
+/** New PIN with a verified proof; 403 PAYSLIP_PIN_RESET_PROOF_INVALID. */
+export const completeMyPayslipPinResetWa = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/me/payslip-pin/reset-wa/:challengeId/pin",
+  params: payslipPinResetWaParamsSchema,
+  body: completePayslipPinResetWaInputSchema,
+  response: dataResponseSchema(payslipPinStatusSchema),
+});
+
+export const cancelMyPayslipPinResetWa = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/me/payslip-pin/reset-wa/:challengeId/cancel",
+  params: payslipPinResetWaParamsSchema,
+  body: cancelPayslipPinResetWaInputSchema,
 });
 
 /** HR (payroll.run): clears the PIN and its lock; the employee sets a new one. */

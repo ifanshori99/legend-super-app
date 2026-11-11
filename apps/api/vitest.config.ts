@@ -14,6 +14,11 @@ export default defineConfig({
     env: {
       NODE_ENV: "test",
       LOG_LEVEL: process.env.LOG_LEVEL ?? "silent",
+      // legend-lgfru: a WhatsApp challenge is refused (503) without a webhook
+      // secret. Tests that issue one directly get this placeholder; tests of
+      // the refusal pass `webhookSecrets: []` / `whatsappWebhookSecrets: []`.
+      KIRIM_WEBHOOK_SECRET:
+        process.env.KIRIM_WEBHOOK_SECRET ?? "test-kirim-webhook-secret",
     },
   },
 });

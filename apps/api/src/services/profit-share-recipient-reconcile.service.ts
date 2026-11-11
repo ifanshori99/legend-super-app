@@ -23,8 +23,8 @@ import {
   roleAssignments,
   roles,
   shareholders,
+  user,
 } from "../db/schema";
-import { user } from "../db/schema/user";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import type { TenantTransaction } from "./accounting-shared";
@@ -146,17 +146,80 @@ export async function resolveUnverifiedRecipientService(
   return withTenant(db, context, async (tx) => {
     await assertTenantOwner(tx, tenantId, actorUserId);
     if (input.recipientUserId !== null) {
-      const [login] = await tx
-        .select({ id: user.id })
-        .from(user)
-        .where(eq(user.id, input.recipientUserId))
-        .limit(1);
-      if (!login)
-        throw new HttpError(
-          422,
-          "RECIPIENT_NOT_FOUND",
-          "Akun penerima tidak ditemukan.",
-        );
+      // Recipient must be a tenant Owner (valid tenant-scope 'owner' role
+      // assignment) or the login of this line's shareholder. A non-Owner
+      // member is not a valid recipient. One code for "no such user" and
+      // "user of another tenant" so account existence does not leak.
+      const recipientUserId = input.recipientUserId;
+      const now = new Date();
+      // A banned login (banned, and ban not yet expired) is never a valid
+      // recipient: same 422 as "no such user".
+      const notBanned = or(
+        isNull(user.banned),
+        eq(user.banned, false),
+        lte(user.banExpires, now),
+      );
+      const [member] = await tx
+        .select({ id: roleAssignments.id })
+        .from(roleAssignments)
+        .innerJoin(user, eq(user.id, roleAssignments.userId))
+        .innerJoin(
+          roles,
+          and(
+            eq(roles.tenantId, roleAssignments.tenantId),
+            eq(roles.id, roleAssignments.roleId),
+          ),
+        )
+        .where(
+          and(
+            notBanned,
+            eq(roleAssignments.tenantId, tenantId),
+            eq(roleAssignments.userId, recipientUserId),
+            eq(roles.templateKey, "owner"),
+            eq(roleAssignments.scopeType, "tenant"),
+            lte(roleAssignments.validFrom, now),
+            or(
+              isNull(roleAssignments.validUntil),
+              gt(roleAssignments.validUntil, now),
+            ),
+          ),
+        )
+        .limit(1)
+        .for("share", { of: [roleAssignments, user] });
+      if (!member) {
+        const [line] = await tx
+          .select({ shareholderId: distributionLines.shareholderId })
+          .from(distributionLines)
+          .where(
+            and(
+              eq(distributionLines.tenantId, tenantId),
+              eq(distributionLines.id, lineId),
+              eq(distributionLines.recipientUnverified, true),
+            ),
+          )
+          .limit(1);
+        if (!line) throw lineNotFound();
+        const [holder] = await tx
+          .select({ id: shareholders.id })
+          .from(shareholders)
+          .innerJoin(user, eq(user.id, shareholders.userId))
+          .where(
+            and(
+              notBanned,
+              eq(shareholders.tenantId, tenantId),
+              eq(shareholders.id, line.shareholderId),
+              eq(shareholders.userId, recipientUserId),
+            ),
+          )
+          .limit(1)
+          .for("share", { of: [shareholders, user] });
+        if (!holder)
+          throw new HttpError(
+            422,
+            "RECIPIENT_NOT_FOUND",
+            "Akun penerima harus Owner tenant ini atau login pemegang saham baris ini.",
+          );
+      }
     }
     const [row] = await tx
       .update(distributionLines)

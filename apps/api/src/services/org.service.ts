@@ -74,6 +74,7 @@ import {
 import { withTenant } from "../db/tenant";
 import { provisionStandardChart } from "./accounting-provisioning.service";
 import { recordAudit } from "./core-audit";
+import { markHppStale } from "./hpp-invalidate";
 import {
   provisionOutletStockLocations,
   provisionStandardUoms,
@@ -558,6 +559,11 @@ export async function createOutlet(
     // tenants without UOMs get them here too; both calls are idempotent.
     await provisionStandardUoms(tx, context, null);
     await provisionOutletStockLocations(tx, context, inserted.id, null);
+    // A new outlet has no menu_costs rows yet: the next job tick rebuilds it.
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      outletId: inserted.id,
+    });
     // Default 5% dine-in service charge for this outlet only (legend-2qz7, Q25).
     const actor = userIdSchema.safeParse(actorUserId);
     await provisionDefaultServiceChargeRule(

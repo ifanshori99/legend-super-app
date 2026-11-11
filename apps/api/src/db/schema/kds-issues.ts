@@ -67,6 +67,15 @@ export const orderIssues = pgTable(
     priceDifferenceIdr: idrColumn("price_difference_idr"),
     /** Replacement unit catalogue price at resolve time (swap only). */
     replacementUnitPriceIdr: idrColumn("replacement_unit_price_idr"),
+    /**
+     * legend-rat9r, legend-hhm5m: what the guest paid for the ORIGINAL item of
+     * the swap chain (after promo, with service and PBJT), read at every swap,
+     * the extra of a dearer swap left out (it counts only once its charge is
+     * paid, read live). Bounds the swap voucher, every voucher and every later
+     * refund of that item. Null: a swap from before migration 0260 (the value
+     * is computed from the order).
+     */
+    paidValueIdr: idrColumn("paid_value_idr"),
     approvedBy: text("approved_by").references(() => user.id),
     /** Approval request that allowed a manual refund (ORD-09, legend-4qu). */
     approvalRequestId: uuid("approval_request_id"),

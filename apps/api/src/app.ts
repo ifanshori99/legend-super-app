@@ -52,6 +52,7 @@ import {
 import { qrOrderSettlementLookup } from "./services/qr-order.service";
 import { setTableSessionSettlementLookup } from "./services/table-session.service";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
+import { setWhatsAppWebhookSecrets } from "./lib/whatsapp-webhook-secrets";
 import { deliveryWebhookRouter } from "./routes/delivery-webhook.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { createPaymentWebhookRouter } from "./routes/payment-webhook.routes";
@@ -196,6 +197,7 @@ export function createApp({
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
+  setWhatsAppWebhookSecrets(app, whatsappWebhookSecrets);
   app.set("trust proxy", trustProxySetting());
 
   // The synthetic tenant fallback exists only where a synthetic dataset does:

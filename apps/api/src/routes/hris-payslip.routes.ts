@@ -4,7 +4,10 @@
 //   GET  /me/payslips                          own history, no amounts
 //   POST /me/payslips/:payslipId/view          open one with the PIN
 //   GET/PUT /me/payslip-pin                    status, first set / change
-//   POST /me/payslip-pin/reset-otp(/verify)    WhatsApp one-time code reset
+//   POST /me/payslip-pin/reset-wa              open a proof: employee sends RESET PIN <code>
+//   GET  /me/payslip-pin/reset-wa/:id          poll it
+//   POST /me/payslip-pin/reset-wa/:id/pin      new PIN with the verified proof
+//   POST /me/payslip-pin/reset-wa/:id/cancel
 //   POST /employees/:employeeId/payslip-pin/reset   HR (payroll.run) clears it
 // The self routes resolve the employee from the session, never from input
 // (HR-01); the services re-check `self.payslip.view` inside the transaction.
@@ -32,13 +35,28 @@ import {
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
+  cancelMyPayslipPinResetWa as cancelWaEndpoint,
+  completeMyPayslipPinResetWa as completeWaEndpoint,
+  getMyPayslipPinResetWa as getWaEndpoint,
   listMyPayslips as listMyPayslipsEndpoint,
-  requestMyPayslipPinResetOtp as requestOtpEndpoint,
   resetEmployeePayslipPin as resetEndpoint,
   setMyPayslipPin as setPinEndpoint,
-  verifyMyPayslipPinResetOtp as verifyOtpEndpoint,
+  startMyPayslipPinResetWa as startWaEndpoint,
   viewMyPayslip as viewMyPayslipEndpoint,
 } from "@starter/shared/hris/payroll";
+import {
+  PAYSLIP_PIN_PROOF_GRANT_MINUTES,
+  WA_PROOF_TTL_MINUTES,
+} from "@starter/shared/identity";
+import {
+  bindingDigestOf,
+  ensureBindingNonce,
+  PIN_RESET_BINDING,
+  readBindingNonce,
+  setBindingCookie,
+} from "../lib/login-binding";
+import { clientIpDigest } from "../lib/identity-digest";
+import { whatsAppWebhookSecretsOf } from "../lib/whatsapp-webhook-secrets";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -115,18 +133,32 @@ function selfContext(req: Request): ScopedTenantContext {
   return context;
 }
 
+/** The proof lives 5 minutes, the PIN grant 10 more, plus a minute of slack. */
+const RESET_BINDING_COOKIE_SECONDS =
+  (WA_PROOF_TTL_MINUTES + PAYSLIP_PIN_PROOF_GRANT_MINUTES + 1) * 60;
+
+/**
+ * The asking browser: signed session plus the pin-reset binding cookie. A
+ * request without the cookie gets a digest nothing matches, so it is refused
+ * the same way as a wrong one.
+ */
+function resetBrowser(req: Request): pins.WaResetBrowser {
+  const nonce = readBindingNonce(req, PIN_RESET_BINDING);
+  return {
+    sessionId: getAuth(req).session.id,
+    bindingHash: bindingDigestOf(nonce ?? "", PIN_RESET_BINDING),
+  };
+}
+
 export type HrisPayslipRouterDeps = {
   /** Private-bucket URL signer for the payslip PDF; default mints no URL. */
   readonly fileSigner?: HrisFileSigner;
-  /** WhatsApp code delivery; default none, so the reset code answers 503. */
-  readonly otpSender?: pins.PayslipPinOtpSender | null;
 };
 
 export function createHrisPayslipRouter(
   deps: HrisPayslipRouterDeps = {},
 ): Router {
   const signer = deps.fileSigner ?? noHrisFileSigner;
-  const otpSender = deps.otpSender ?? null;
   const router = Router();
   const base: RequestHandler[] = [
     requireAuth,
@@ -178,31 +210,79 @@ export function createHrisPayslipRouter(
     });
   });
 
-  router.post("/me/payslip-pin/reset-otp", self, jsonBody, async (req, res) => {
-    const body = requestOtpEndpoint.body.parse(req.body);
-    res.json({
-      data: await pins.requestPayslipPinResetOtp(
-        selfContext(req),
-        actor(req),
-        body,
-        otpSender,
-      ),
-    });
+  // Not idempotentHrisWrite: a stored response would hold the code (D-WA6).
+  router.post("/me/payslip-pin/reset-wa", self, jsonBody, async (req, res) => {
+    startWaEndpoint.body.parse(req.body);
+    const nonce = ensureBindingNonce(req, PIN_RESET_BINDING);
+    const issued = await pins.requestPayslipPinResetWa(
+      selfContext(req),
+      actor(req),
+      {
+        sessionId: getAuth(req).session.id,
+        bindingHash: bindingDigestOf(nonce, PIN_RESET_BINDING),
+        ipHash: req.ip ? clientIpDigest(req.ip) : null,
+        userAgent: req.get("user-agent") ?? null,
+        webhookSecrets: whatsAppWebhookSecretsOf(req),
+      },
+    );
+    setBindingCookie(
+      res,
+      nonce,
+      RESET_BINDING_COOKIE_SECONDS,
+      PIN_RESET_BINDING,
+    );
+    res.status(201).json({ data: issued });
   });
 
+  router.get(
+    "/me/payslip-pin/reset-wa/:challengeId",
+    self,
+    async (req, res) => {
+      const { challengeId } = getWaEndpoint.params.parse(req.params);
+      res.json({
+        data: await pins.getPayslipPinResetWa(
+          selfContext(req),
+          actor(req),
+          challengeId,
+          resetBrowser(req),
+        ),
+      });
+    },
+  );
+
   router.post(
-    "/me/payslip-pin/reset-otp/verify",
+    "/me/payslip-pin/reset-wa/:challengeId/pin",
     self,
     jsonBody,
     async (req, res) => {
-      const body = verifyOtpEndpoint.body.parse(req.body);
+      const { challengeId } = completeWaEndpoint.params.parse(req.params);
+      const body = completeWaEndpoint.body.parse(req.body);
       res.json({
-        data: await pins.verifyPayslipPinResetOtp(
+        data: await pins.completePayslipPinResetWa(
           selfContext(req),
           actor(req),
+          challengeId,
+          resetBrowser(req),
           body,
         ),
       });
+    },
+  );
+
+  router.post(
+    "/me/payslip-pin/reset-wa/:challengeId/cancel",
+    self,
+    jsonBody,
+    async (req, res) => {
+      const { challengeId } = cancelWaEndpoint.params.parse(req.params);
+      cancelWaEndpoint.body.parse(req.body);
+      await pins.cancelPayslipPinResetWa(
+        selfContext(req),
+        actor(req),
+        challengeId,
+        getAuth(req).session.id,
+      );
+      res.status(204).end();
     },
   );
 
@@ -227,5 +307,5 @@ export function createHrisPayslipRouter(
   return router;
 }
 
-/** Default instance: no PDF signer and no OTP sender (the lead wires both). */
+/** Default instance: no PDF signer (the lead wires it). */
 export const hrisPayslipRouter = createHrisPayslipRouter();

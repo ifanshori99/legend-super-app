@@ -19,6 +19,7 @@ import {
 import { env } from "../config/env";
 import { BODY_LIMIT_BYTES } from "../middleware/body";
 import { HttpError } from "../lib/http-error";
+import { logger } from "../lib/logger";
 import {
   parseKirimdevPayload,
   processInboundWhatsApp,
@@ -76,13 +77,33 @@ export function createWhatsAppWebhookRouter(options?: {
     }
     const messages = parseKirimdevPayload(payload);
     const results = [];
-    for (const message of messages)
-      results.push(await processInboundWhatsApp(message));
+    // legend-lgfru: a CONFLICT (a message id reused with different content)
+    // belongs to that one message. KirimDev treats most 4xx as permanent, so
+    // stopping here would drop every later message of the delivery. It is
+    // logged (id only, never the body) and the loop goes on; other errors
+    // still fail the delivery so KirimDev retries it.
+    let conflicts = 0;
+    for (const message of messages) {
+      try {
+        results.push(await processInboundWhatsApp(message));
+      } catch (error) {
+        if (!(error instanceof CoreError && error.code === "CONFLICT"))
+          throw error;
+        conflicts += 1;
+        logger.warn(
+          { providerMessageId: message.eventId },
+          "whatsapp webhook message conflicts with an earlier delivery",
+        );
+      }
+    }
     res.json({
       data: {
-        received: results.length,
+        received: messages.length,
         duplicates: results.filter((result) => result.duplicate).length,
         completed: results.filter((result) => result.kind === "login").length,
+        // legend-lgfru: payslip PIN reset proofs completed by this delivery.
+        proofs: results.filter((result) => result.kind === "proof").length,
+        conflicts,
       },
     });
   });

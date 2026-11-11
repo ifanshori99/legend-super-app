@@ -23,6 +23,7 @@ export const LOGIN_POLL_MS = 2_000;
 /** What the requesting browser can see of its own challenge. */
 export const LOGIN_OUTCOMES = [
   "pending",
+  "awaiting_confirmation",
   "signed_in",
   "expired",
   "cancelled",
@@ -40,11 +41,21 @@ export function loginChallengeOutcome(
   nowMs: number,
 ): LoginOutcome {
   const { challenge } = view;
+  // The message landed; the person still has to confirm the masked sender.
+  // The API reports this as status "completed" with no session (older shapes
+  // kept "pending"), so it is read before the completed branch.
+  if (
+    view.awaitingConfirmation === true &&
+    view.session === null &&
+    (challenge.status === "pending" || challenge.status === "completed")
+  )
+    return expiryMs(challenge, nowMs) === 0 ? "expired" : "awaiting_confirmation";
   if (challenge.status === "completed")
     return view.session !== null ? "signed_in" : "expired";
   if (challenge.status === "cancelled") return "cancelled";
   if (challenge.status === "expired") return "expired";
-  return expiryMs(challenge, nowMs) === 0 ? "expired" : "pending";
+  if (expiryMs(challenge, nowMs) === 0) return "expired";
+  return "pending";
 }
 
 function expiryMs(
