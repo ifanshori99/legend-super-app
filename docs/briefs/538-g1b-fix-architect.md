@@ -1,0 +1,8 @@
+# 538-G1b Fix temuan architect config codecs (ws/ten09-codecs)
+Cabang/worktree sama (.worktrees/ten09-codecs). Test gagal-dulu tiap temuan, commit per temuan, jangan merge/push.
+- P1 `packages/shared/src/tax/config-codec.ts:74-81`: export memilih versi tertinggi, bukan versi berlaku. Versi 2 (15%, mulai 2026-12-01) diekspor sendirian -> importer (`tenant-config-finance.ts:717` cap tanggal hari ini) menagih 15% sekarang; versi `isActive:false` masa depan juga membuat celah. Fix: parameter `asOf` tanggal bisnis, pilih versi per kode dengan aturan engine (`effectiveRuleVersions`/`later` di `tax/calculate.ts`); tolak ekspor bila ada versi masa depan atau bawa sebagai item terpisah. Perbarui `tests/platform-config-codecs-tax.test.mjs:14-52`.
+- P2 `tax/config-codec.ts:74`: aturan pajak per outlet dan tax settings (rounding mode, bill rounding) hilang saat ekspor. Fix: ekspor dengan lookup outlet-key seperti codec service charge, atau throw.
+- P2 `facility/config-codec.ts:214-220`, `platform/config-codecs.ts:183-189`: produk fasilitas outlet A boleh merujuk aturan pajak outlet B. Fix: simpan outlet pemilik aturan, tolak bila bukan tenant-wide/outlet produk (lihat `facility-products.service.ts:126`).
+- P3 `platform/config-codecs.ts:135,257`: opsi point-value lock wajib (`number | null`).
+- P3: `configBundleSchema` menolak bentuk lama zone/loyalty (`tests/platform-contract.test.mjs:798-803`). Pastikan template tersimpan tetap terbaca (jalur migrasi bentuk lama) atau buktikan tidak ada.
+Bukti selesai: test terarah + typecheck shared + eslint/prettier hijau. Lapor dengan angka subagent.
