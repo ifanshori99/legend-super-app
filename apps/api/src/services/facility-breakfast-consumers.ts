@@ -1,0 +1,523 @@
+// Breakfast order consumers of WS-05 payment events and the fire / unpaid
+// sweep (bead oa0qk; owner Q43: a ticket's breakfast MUST be paid before it
+// reaches the kitchen / KDS; PRD v1.7 §3 F22, FAC-10).
+//
+// Routed here by order-payment-consumers.ts `deliverOrderPaymentEvent` for an
+// order of channel `facility`, inside the outbox consumption transaction.
+// Every handler re-reads the locked rows; the event only says where to look.
+//
+// payment.paid is the ONLY source of the paid mark. The order becomes `paid`
+// (never fired here: the sweep or the staff endpoint fires it at fire_at) only
+// when (a) it is still `awaiting_payment`, (b) the event's intent is settled on
+// the order's link, (c) the link total equals the order total and is covered,
+// (d) one code covered it alone, (e) no refund is already filed against that
+// code, and (f) it is still before fire_at and the ticket is still usable.
+// Everything else that carries verified money goes back to the guest:
+// - a second code paid after the order was paid, or a payment on a cancelled
+//   order: a refund request for what the code holds (`requestBreakfastRefund`,
+//   `requestQrDoublePaymentRefund` for the `double_payment` funds);
+// - a bill covered only by several codes together, a payment after fire_at or
+//   for a dead ticket, or a code with a refund already filed: the order is
+//   cancelled and every code that put money toward it is refunded.
+// A replay finds the order paid / cancelled and files nothing twice (the
+// refund keys are once per intent and kind).
+//
+// Sweep (`fireDueBreakfastOrders`, worker relay tick): fires paid orders that
+// are due and cancels unpaid ones whose fire time passed. A payment that lands
+// on a cancelled order afterwards is refunded by the handler above.
+import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
+import type { EventEnvelope } from "@starter/shared/events";
+import { db } from "../db/index.ts";
+import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
+import { accessTickets, facilityLinkedOrders } from "../db/schema/facility.ts";
+import { orders } from "../db/schema/qr-order.ts";
+import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
+import { auditFacility } from "./facility-shared.ts";
+import {
+  BREAKFAST_PAID_INTENT_STATUSES,
+  cancelBreakfastOrderTx,
+  fireBreakfastOrderTx,
+  lockBreakfastOrder,
+  requestBreakfastRefund,
+  type LockedBreakfast,
+} from "./facility-breakfast-money.ts";
+import type { Tx } from "./menu-internals.ts";
+import { refundableBalance } from "./payment-admin.service.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { requestQrDoublePaymentRefund } from "./qr-order-late-payment.ts";
+
+export type BreakfastPaidOutcome =
+  | "ignored"
+  | "paid"
+  | "unchanged"
+  | "not_settled"
+  | "amount_mismatch"
+  | "currency_mismatch"
+  | "double_payment_refund_requested"
+  | "late_payment_on_cancelled_order"
+  | "late_payment_refunded"
+  | "refund_committed"
+  | "split_payment_refunded";
+
+export type BreakfastClosedOutcome = "ignored" | "unchanged";
+
+const paidPayloadSchema = z.looseObject({
+  intentId: uuidSchema,
+  paymentLinkId: uuidSchema,
+  currency: z.string().optional(),
+});
+const closedPayloadSchema = z.looseObject({
+  intentId: uuidSchema,
+  reason: z.string().optional(),
+});
+
+/** Intent statuses that put money on the bill (a completed refund moves on). */
+const SETTLED_INTENT_STATUSES: readonly string[] = [
+  ...BREAKFAST_PAID_INTENT_STATUSES,
+  "refunded",
+];
+
+/** A ticket in one of these statuses will never use its breakfast. */
+const DEAD_TICKET_STATUSES: readonly string[] = [
+  "cancelled",
+  "refunded",
+  "no_show",
+];
+
+/** The breakfast order that owns `paymentLinkId`, or null. */
+async function orderIdOfLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<string | null> {
+  const [order] = await tx
+    .select({ id: orders.id, channel: orders.channel })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, context.tenant.tenantId),
+        eq(orders.paymentLinkId, paymentLinkId),
+      ),
+    );
+  return order && order.channel === "facility" ? order.id : null;
+}
+
+/**
+ * What each settled code of the link put toward the bill: its provider
+ * evidence less the part booked as unallocated funds (overpayment or double
+ * payment). One statement, one snapshot (same record the QR consumer reads).
+ */
+async function allocatedIdrByIntent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<Map<string, number>> {
+  const result = await tx.execute<{ id: string; allocated: string }>(sql`
+    SELECT i.id,
+           (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+                       WHERE e.tenant_id = i.tenant_id
+                         AND e.payment_intent_id = i.id), 0)
+          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
+                       WHERE f.tenant_id = i.tenant_id
+                         AND f.payment_intent_id = i.id), 0))::text AS allocated
+      FROM payment_intents i
+     WHERE i.tenant_id = ${context.tenant.tenantId}
+       AND i.payment_link_id = ${paymentLinkId}
+       AND i.status IN ('paid', 'partially_refunded', 'refunded')`);
+  return new Map(result.rows.map((row) => [row.id, Number(row.allocated)]));
+}
+
+/** Refunds `intentId`'s double-payment funds; true when a request was filed. */
+async function refundDoublePayment(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: { id: string; outletId: string },
+  paymentLinkId: string,
+  intentId: string,
+  now: Date,
+): Promise<boolean> {
+  const ids = await requestQrDoublePaymentRefund(tx, context, {
+    order,
+    paymentLinkId,
+    intentId,
+    now,
+  });
+  return ids.length > 0;
+}
+
+/** ORD-02 for breakfast: marks a pay-first breakfast order paid. Replay safe. */
+export async function handleBreakfastPaymentPaid(
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  tx: Tx,
+  now = new Date(),
+): Promise<BreakfastPaidOutcome> {
+  if (event.name !== "payment.paid") return "ignored";
+  const tenantId = context.tenant.tenantId;
+  if (event.tenantId !== tenantId) return "ignored";
+  const payload = paidPayloadSchema.safeParse(event.payload);
+  if (!payload.success) return "ignored";
+  const { intentId, paymentLinkId, currency } = payload.data;
+  const orderId = await orderIdOfLink(tx, context, paymentLinkId);
+  if (orderId === null) return "ignored";
+  // Lock order: orders -> facility_linked_orders -> payment_intents.
+  const locked = await lockBreakfastOrder(tx, context, orderId);
+  if (!locked) return "ignored";
+  const { order, linked } = locked;
+
+  if (linked.status === "paid" || linked.status === "fired") {
+    // The same code again is a replay. Another code paid after the order was
+    // paid: WS-05 booked it as `double_payment` funds; give it back.
+    if (linked.paidIntentId === intentId) return "unchanged";
+    return (await refundDoublePayment(
+      tx,
+      context,
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    ))
+      ? "double_payment_refund_requested"
+      : "unchanged";
+  }
+
+  if (linked.status === "cancelled") {
+    // The cancel already filed the refund of the code that paid the order.
+    if (linked.paidIntentId === intentId) return "unchanged";
+    // Money that arrived after the order was cancelled never revives it.
+    const refund = await requestBreakfastRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      maxIdr: null,
+      kind: "late",
+      now,
+    });
+    const double = await refundDoublePayment(
+      tx,
+      context,
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    );
+    logger.warn(
+      { orderId: order.id, intentId, refundId: refund.refundId },
+      "Breakfast: payment settled after the order was cancelled; refund requested",
+    );
+    return refund.refundId !== null || double
+      ? "late_payment_on_cancelled_order"
+      : "unchanged";
+  }
+
+  // awaiting_payment
+  if (currency !== undefined && currency !== "IDR") return "currency_mismatch";
+  const [link] = await tx
+    .select({ paidIdr: paymentLinks.paidIdr, totalIdr: paymentLinks.totalIdr })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, tenantId),
+        eq(paymentLinks.id, paymentLinkId),
+      ),
+    );
+  if (!link) return "not_settled";
+  // PAY-01: the bill the guest paid is the server's order total, exactly.
+  if (link.totalIdr !== linked.totalIdr || order.totalIdr !== linked.totalIdr) {
+    logger.warn(
+      { orderId: order.id, paymentLinkId },
+      "Breakfast: payment link total differs from the order total",
+    );
+    return "amount_mismatch";
+  }
+  if (link.paidIdr < link.totalIdr) return "not_settled";
+  const [intent] = await tx
+    .select({ status: paymentIntents.status })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, intentId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+      ),
+    );
+  if (!intent || !SETTLED_INTENT_STATUSES.includes(intent.status))
+    return "not_settled";
+
+  const allocated = await allocatedIdrByIntent(tx, context, paymentLinkId);
+  const own = allocated.get(intentId) ?? 0;
+  // The code that covered the bill alone: the event's own, else the one other.
+  let payerId: string | null = null;
+  if (own >= linked.totalIdr) payerId = intentId;
+  else
+    for (const [id, amount] of allocated)
+      if (amount > 0 && amount >= linked.totalIdr) {
+        payerId = id;
+        break;
+      }
+  if (payerId === null && own === 0) {
+    // This code put nothing toward the bill and none covered it alone: the
+    // codes that did report with their own events. Its money goes back.
+    return (await refundDoublePayment(
+      tx,
+      context,
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    ))
+      ? "double_payment_refund_requested"
+      : "unchanged";
+  }
+
+  const contributors = [...allocated]
+    .filter(([id, amount]) => amount > 0 || id === payerId)
+    .map(([id]) => id);
+  const at = await lockIntentsForFact(
+    tx,
+    tenantId,
+    [intentId, ...(payerId === null ? [] : [payerId]), ...contributors],
+    now,
+  );
+
+  // Why this payment cannot become a sale (money goes back instead).
+  let refuse: "late" | "split" | "committed" | null = null;
+  if (payerId === null) refuse = "split";
+  else {
+    const [ticket] = await tx
+      .select({ status: accessTickets.status })
+      .from(accessTickets)
+      .where(
+        and(
+          eq(accessTickets.tenantId, tenantId),
+          eq(accessTickets.id, linked.accessTicketId),
+        ),
+      );
+    if (
+      !ticket ||
+      DEAD_TICKET_STATUSES.includes(ticket.status) ||
+      at.getTime() >= linked.fireAt.getTime()
+    )
+      refuse = "late";
+    else {
+      const [code] = await tx
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, tenantId),
+            eq(paymentIntents.id, payerId),
+            eq(paymentIntents.paymentLinkId, paymentLinkId),
+          ),
+        );
+      if (!code) return "not_settled";
+      // Any refund already filed against the code (even pending) means the
+      // money may go back: never sell the food on top of it.
+      if ((await refundableBalance(tx, code)).reserved > 0n)
+        refuse = "committed";
+    }
+  }
+
+  if (refuse !== null) {
+    await cancelBreakfastOrderTx(tx, context, locked, {
+      reason: `payment_${refuse}`,
+      actorUserId: null,
+      now: at,
+    });
+    const refundIds: (string | null)[] = [];
+    for (const id of new Set([intentId, ...contributors]))
+      refundIds.push(
+        (
+          await requestBreakfastRefund(tx, context, {
+            order,
+            paymentLinkId,
+            intentId: id,
+            maxIdr: null,
+            kind: "late",
+            now: at,
+          })
+        ).refundId,
+      );
+    await refundDoublePayment(tx, context, order, paymentLinkId, intentId, at);
+    logger.warn(
+      { orderId: order.id, intentId, refuse, refundIds },
+      "Breakfast: payment cannot become a sale; order cancelled, money refunded",
+    );
+    return refuse === "split"
+      ? "split_payment_refunded"
+      : refuse === "committed"
+        ? "refund_committed"
+        : "late_payment_refunded";
+  }
+
+  const [paid] = await tx
+    .update(facilityLinkedOrders)
+    .set({
+      status: "paid",
+      paidIdr: linked.totalIdr,
+      paidIntentId: payerId,
+      paidAt: at,
+      updatedAt: at,
+    })
+    .where(
+      and(
+        eq(facilityLinkedOrders.tenantId, tenantId),
+        eq(facilityLinkedOrders.id, linked.id),
+        eq(facilityLinkedOrders.status, "awaiting_payment"),
+      ),
+    )
+    .returning({ id: facilityLinkedOrders.id });
+  if (!paid) throw new Error("Breakfast paid mark returned no row");
+  await auditFacility(tx, context, null, at, {
+    action: "facility.breakfast.paid",
+    objectType: "facility_linked_order",
+    objectId: linked.id,
+    outletId: linked.outletId,
+    before: { id: linked.id, status: "awaiting_payment" },
+    after: { id: linked.id, status: "paid" },
+  });
+  // A code the guest switched away from, paid on the same bill as well.
+  if (
+    await refundDoublePayment(tx, context, order, paymentLinkId, intentId, at)
+  )
+    logger.warn(
+      { orderId: order.id, intentId },
+      "Breakfast: paid by a code whose bill another code also covered; refund requested",
+    );
+  return "paid";
+}
+
+/**
+ * payment.expired / payment.failed: nothing to undo. The order stays
+ * `awaiting_payment` (the guest may open another code on the same link) and
+ * the sweep cancels it at fire_at; a settlement that still arrives later is
+ * refunded by `handleBreakfastPaymentPaid`.
+ */
+export async function handleBreakfastPaymentClosed(
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  tx: Tx,
+): Promise<BreakfastClosedOutcome> {
+  if (event.name !== "payment.expired" && event.name !== "payment.failed")
+    return "ignored";
+  if (event.tenantId !== context.tenant.tenantId) return "ignored";
+  const payload = closedPayloadSchema.safeParse(event.payload);
+  if (!payload.success) return "ignored";
+  if (payload.data.reason === "superseded") return "ignored";
+  const [intent] = await tx
+    .select({ paymentLinkId: paymentIntents.paymentLinkId })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, payload.data.intentId),
+      ),
+    );
+  if (!intent) return "ignored";
+  return (await orderIdOfLink(tx, context, intent.paymentLinkId)) === null
+    ? "ignored"
+    : "unchanged";
+}
+
+// ---- Sweep (relay tick) ---------------------------------------------------------
+
+async function dueOrderIds(
+  context: ScopedTenantContext,
+  status: "paid" | "awaiting_payment",
+  now: Date,
+  limit: number,
+): Promise<string[]> {
+  const rows = await withTenant(db, context, (tx) =>
+    tx
+      .select({ orderId: facilityLinkedOrders.orderId })
+      .from(facilityLinkedOrders)
+      .where(
+        and(
+          eq(facilityLinkedOrders.tenantId, context.tenant.tenantId),
+          eq(facilityLinkedOrders.status, status),
+          lte(facilityLinkedOrders.fireAt, now),
+        ),
+      )
+      .orderBy(
+        asc(facilityLinkedOrders.fireAt),
+        asc(facilityLinkedOrders.orderId),
+      )
+      .limit(limit),
+  );
+  return rows.map((row) => row.orderId);
+}
+
+/**
+ * Fires paid breakfast orders whose fire_at passed and cancels unpaid ones
+ * whose fire_at passed. Each order has its own transaction under its row
+ * locks; a rerun finds it fired / cancelled and changes nothing. Only a `paid`
+ * order is ever fired (`fireBreakfastOrderTx`); one that fails is logged and
+ * retried on the next tick without blocking the others.
+ */
+export async function fireDueBreakfastOrders(
+  context: ScopedTenantContext,
+  now = new Date(),
+  limit = 100,
+): Promise<{ fired: number; cancelled: number; failed: number }> {
+  let fired = 0;
+  let cancelled = 0;
+  let failed = 0;
+  const run = async (
+    orderId: string,
+    act: (tx: Tx, locked: LockedBreakfast) => Promise<boolean>,
+    expected: "paid" | "awaiting_payment",
+  ): Promise<boolean> => {
+    try {
+      return await withTenant(db, context, async (tx) => {
+        const locked = await lockBreakfastOrder(tx, context, orderId);
+        if (!locked || locked.linked.status !== expected) return false;
+        return act(tx, locked);
+      });
+    } catch (error) {
+      failed += 1;
+      logger.error(
+        { orderId, err: error instanceof Error ? error.message : "unknown" },
+        "Breakfast sweep: order failed; retried on the next tick",
+      );
+      return false;
+    }
+  };
+  for (const orderId of await dueOrderIds(context, "paid", now, limit)) {
+    const done = await run(
+      orderId,
+      async (tx, locked) => {
+        const result = await fireBreakfastOrderTx(tx, context, locked, {
+          actorUserId: null,
+          now,
+        });
+        if (result.outcome === "cancelled") cancelled += 1;
+        return result.outcome === "fired";
+      },
+      "paid",
+    );
+    if (done) fired += 1;
+  }
+  for (const orderId of await dueOrderIds(
+    context,
+    "awaiting_payment",
+    now,
+    limit,
+  )) {
+    const done = await run(
+      orderId,
+      async (tx, locked) => {
+        await cancelBreakfastOrderTx(tx, context, locked, {
+          reason: "payment_window_closed",
+          actorUserId: null,
+          now,
+        });
+        return true;
+      },
+      "awaiting_payment",
+    );
+    if (done) cancelled += 1;
+  }
+  return { fired, cancelled, failed };
+}
