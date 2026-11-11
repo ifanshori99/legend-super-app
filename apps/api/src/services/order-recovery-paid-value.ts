@@ -33,6 +33,7 @@ import {
   livePromoApplicationOf,
   orderPromoPartialRefundPort,
 } from "./order-promo-refund.ts";
+import { orderGivenOf } from "./order-given.ts";
 import { OrderRevenueMismatch } from "./order-revenue.ts";
 import {
   recoveryRefundSplit,
@@ -309,8 +310,10 @@ export async function recoveryKeptLines(
  * through `issue` itself: the face value of every apology voucher of its
  * chain (issues whose item maps to the same original) plus, per issue, the
  * largest refund while that issue still has a live refund (same rule as
- * `recoveryReleasedOf`). `paidValueIdr` is the smallest paid value read on
- * the chain; null when no swap of the chain read one (no cap).
+ * `recoveryReleasedOf`). `paidValueIdr` is the smallest paid value stored on
+ * the chain plus the extra charges of its dearer swaps the guest really paid
+ * (legend-hhm5m: an unpaid extra never counts); null when no swap of the chain
+ * stored one (no swap, or a swap from before migration 0235).
  */
 export async function recoveryChainOf(
   tx: Tx,
@@ -327,7 +330,11 @@ export async function recoveryChainOf(
     row.paidValueIdr === null ? [] : [Number(row.paidValueIdr)],
   );
   if (chain.length === 0) return { paidValueIdr: null, givenIdr: 0 };
-  const ids = chain.map((row) => row.id);
+  const ids = () =>
+    sql.join(
+      chain.map((row) => sql`${row.id}::uuid`),
+      sql`, `,
+    );
   const voucherIds = chain.flatMap((row) =>
     row.voucherId === null ? [] : [row.voucherId],
   );
@@ -349,53 +356,25 @@ export async function recoveryChainOf(
          FROM (SELECT max(r.amount_idr) AS amt
                  FROM payment_refunds r
                 WHERE r.tenant_id = ${tenantId}
-                  AND r.order_issue_id IN (${sql.join(
-                    ids.map((id) => sql`${id}::uuid`),
-                    sql`, `,
-                  )})
+                  AND r.order_issue_id IN (${ids()})
                 GROUP BY r.order_issue_id
-               HAVING coalesce(bool_or(r.status <> 'failed'), false)) m)::text AS refunds
+               HAVING coalesce(bool_or(r.status <> 'failed'), false)) m)::text AS refunds,
+      (SELECT coalesce(sum(c.amount_idr), 0)
+         FROM order_issue_charges c
+        WHERE c.tenant_id = ${tenantId}
+          AND c.order_issue_id IN (${ids()})
+          AND c.status = 'paid')::text AS extra
   `);
   const row = given.rows[0];
   return {
-    paidValueIdr: paid.length === 0 ? null : Math.min(...paid),
+    paidValueIdr:
+      paid.length === 0
+        ? null
+        : Math.min(...paid) + Number(String(row?.extra ?? "0")),
     givenIdr:
       Number(String(row?.vouchers ?? "0")) +
       Number(String(row?.refunds ?? "0")),
   };
-}
-
-/**
- * legend-rat9r (architect H1): what an apology voucher for `lineId` may still
- * be worth under the paid value of its item chain, null when the chain read
- * no paid value (no cap). Takes the order row lock (after the caller's issue
- * lock, the consumer's sequence).
- */
-export async function voucherRoomOf(
-  tx: Tx,
-  context: ScopedTenantContext,
-  input: { orderId: string; issueId: string; lineId: string },
-  /** False for a read-only preview (the guest's options): no row lock. */
-  lock = true,
-): Promise<number | null> {
-  const tenantId = context.tenant.tenantId;
-  const query = tx
-    .select({ id: orders.id })
-    .from(orders)
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, input.orderId)));
-  const [order] = lock ? await query.for("update") : await query;
-  if (!order) throw new Error("Order of the reported line is missing");
-  const issues = await recoveryIssuesOf(tx, tenantId, order.id);
-  const chain = recoverySwapChain(issues);
-  const given = await recoveryChainOf(
-    tx,
-    tenantId,
-    { id: input.issueId, orderItemId: input.lineId },
-    issues,
-    chain.toOriginal,
-  );
-  if (given.paidValueIdr === null) return null;
-  return Math.max(0, given.paidValueIdr - given.givenIdr);
 }
 
 /** Carries the dry-run result out of the savepoint it rolls back. */
@@ -411,42 +390,92 @@ class PromoDryRun extends Error {
 
 const SWAP_PROMO_REASON = "Nilai dibayar item untuk penukaran (dry run)";
 
+const unreadablePaidValue = () =>
+  new HttpError(
+    422,
+    "VALIDATION_ERROR",
+    "Nilai yang dibayar untuk item ini tidak bisa dihitung; minta bantuan staf.",
+  );
+
+const swapChargePending = () =>
+  new HttpError(
+    422,
+    "VALIDATION_ERROR",
+    "Tagihan selisih penukaran sebelumnya untuk item ini belum selesai; selesaikan tagihan selisih dulu.",
+  );
+
 /**
- * legend-rat9r: the paid value of `lineId` for a cheaper swap of `issueId`,
- * and what its chain already gave back. Takes the order row lock (after the
- * caller's issue lock, the consumer's sequence). Writes nothing: the promo
- * recompute runs in a savepoint that is always rolled back.
+ * legend-hhm5m: the extra charges of the dearer swaps of a chain (those that
+ * wrote a replacement line; a blocked swap charges nothing). `paid`: the guest
+ * paid the extra (`amount_idr`, with service and PBJT), it adds to the paid
+ * value. `waived`/`expired`: never paid, so the line that swap wrote is worth
+ * its difference less (only the swap that wrote `lineId`: a later swap's
+ * difference is already measured against that lower list value). Anything
+ * else (`open`, `routed_pos`, no charge row yet): pending.
  */
-export async function swapPaidValueOf(
+async function chainChargesOf(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  chain: readonly RecoveryIssue[],
+  lineId: string,
+): Promise<{
+  paidExtraIdr: number;
+  waivedDifferenceIdr: number;
+  pending: boolean;
+}> {
+  const none = { paidExtraIdr: 0, waivedDifferenceIdr: 0, pending: false };
+  if (chain.length === 0) return none;
+  const result = await tx.execute(sql`
+    SELECT i.id::text AS issue_id, c.status,
+           c.amount_idr::text AS amount, c.difference_idr::text AS difference
+      FROM order_issues i
+      LEFT JOIN order_issue_charges c
+        ON c.tenant_id = i.tenant_id AND c.order_issue_id = i.id
+     WHERE i.tenant_id = ${tenantId}
+       AND i.id IN (${sql.join(
+         chain.map((row) => sql`${row.id}::uuid`),
+         sql`, `,
+       )})
+       AND i.status = 'resolved'
+       AND i.resolution = 'swap'
+       AND i.price_difference_idr > 0
+       AND i.replacement_order_item_id IS NOT NULL
+  `);
+  const writer = chain.find((row) => row.replacementOrderItemId === lineId);
+  const charges = { ...none };
+  for (const row of result.rows) {
+    const status = row.status === null ? null : String(row.status);
+    if (status === "paid")
+      charges.paidExtraIdr += Number(String(row.amount ?? "0"));
+    else if (status === "waived" || status === "expired") {
+      if (writer !== undefined && String(row.issue_id) === writer.id)
+        charges.waivedDifferenceIdr += Number(String(row.difference ?? "0"));
+    } else charges.pending = true;
+  }
+  return charges;
+}
+
+/**
+ * The paid value of the ORIGINAL item of the chain computed from the order
+ * (no swap of the chain stored one): a replay source's amount; else the
+ * line's pro-rata share, with a live promo the CRM recompute without the
+ * line run as a dry run (savepoint always rolled back). Writes nothing.
+ */
+async function computedPaidValueOf(
   tx: Tx,
   context: ScopedTenantContext,
-  input: { orderId: string; issueId: string; lineId: string; at: Date },
-): Promise<{ paidValueIdr: number; givenIdr: number }> {
+  input: {
+    order: typeof orders.$inferSelect;
+    issue: { id: string; orderItemId: string };
+    issues: readonly RecoveryIssue[];
+    chain: RecoverySwapChain;
+    items: Awaited<ReturnType<typeof recoveryOrderItemsOf>>;
+    original: Awaited<ReturnType<typeof recoveryOrderItemsOf>>[number];
+    at: Date;
+  },
+): Promise<number> {
   const tenantId = context.tenant.tenantId;
-  const [order] = await tx
-    .select()
-    .from(orders)
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, input.orderId)))
-    .for("update");
-  if (!order) throw new Error("Order of the swapped line is missing");
-  const issues = await recoveryIssuesOf(tx, tenantId, order.id);
-  const chain = recoverySwapChain(issues);
-  const issue = { id: input.issueId, orderItemId: input.lineId };
-  const given = await recoveryChainOf(
-    tx,
-    tenantId,
-    issue,
-    issues,
-    chain.toOriginal,
-  );
-  // A replacement swapped again: the paid value read at the first swap.
-  if (given.paidValueIdr !== null)
-    return { paidValueIdr: given.paidValueIdr, givenIdr: given.givenIdr };
-  const result = (paidValueIdr: number) => ({
-    paidValueIdr,
-    givenIdr: given.givenIdr,
-  });
-
+  const { order, issue, issues, chain } = input;
   const hasLivePromo = Boolean(
     await livePromoApplicationOf(tx, context, order.id),
   );
@@ -463,27 +492,23 @@ export async function swapPaidValueOf(
   // A `rejected` earlier refund paid nothing back: the guest still paid the
   // line, so its paid value is read below as for a first swap (legend-pbwzq
   // T6: the replacement line is refunded normally).
-  if (replay !== null && replay !== REPLAY_REJECTED)
-    return result(replay.amountIdr);
+  if (replay !== null && replay !== REPLAY_REJECTED) return replay.amountIdr;
 
-  const items = await recoveryOrderItemsOf(tx, tenantId, order.id);
-  const line = items.find((item) => item.id === input.lineId);
-  if (!line) throw new Error("Swapped line is missing");
   const { priorLinesIdr } = await recoveryReleasedOf(
     tx,
     tenantId,
     order.id,
-    input.issueId,
+    issue.id,
   );
   let promo: RecoveryRefundPromo | undefined;
   if (hasLivePromo) {
     const keptLines = await recoveryKeptLines(tx, tenantId, {
       order,
-      issueId: input.issueId,
-      failedLineId: input.lineId,
+      issueId: issue.id,
+      failedLineId: issue.orderItemId,
       issues,
       chain,
-      items,
+      items: input.items,
     });
     let recomputed: PromoDryRun["result"] | undefined;
     try {
@@ -506,11 +531,7 @@ export async function swapPaidValueOf(
     } catch (error) {
       if (error instanceof PromoDryRun) recomputed = error.result;
       else if (error instanceof HttpError && error.status === 422)
-        throw new HttpError(
-          422,
-          "VALIDATION_ERROR",
-          "Nilai yang dibayar untuk item ini tidak bisa dihitung; minta bantuan staf.",
-        );
+        throw unreadablePaidValue();
       else throw error;
     }
     if (recomputed?.adjusted)
@@ -521,25 +542,219 @@ export async function swapPaidValueOf(
       };
   }
   try {
-    return result(
-      recoveryRefundSplit({
-        order,
-        lineTotalIdr: line.lineTotalIdr,
-        priorLinesIdr,
-        releasedIdr: 0,
-        ...(promo === undefined ? {} : { promo }),
-      }).wantedIdr,
-    );
+    return recoveryRefundSplit({
+      order,
+      lineTotalIdr: input.original.lineTotalIdr,
+      priorLinesIdr,
+      releasedIdr: 0,
+      ...(promo === undefined ? {} : { promo }),
+    }).wantedIdr;
   } catch (error) {
     // Order amounts that fail their tax-mode identity: no paid value to read.
-    if (error instanceof OrderRevenueMismatch)
-      throw new HttpError(
-        422,
-        "VALIDATION_ERROR",
-        "Nilai yang dibayar untuk item ini tidak bisa dihitung; minta bantuan staf.",
-      );
+    if (error instanceof OrderRevenueMismatch) throw unreadablePaidValue();
     throw error;
   }
+}
+
+/** What a swap of a line may credit and what its difference is measured against. */
+export type SwapPaidValue = {
+  /** Paid value of the original item of the chain, dearer extras left out. */
+  baseIdr: number;
+  /** `baseIdr` plus the extra charges of the chain the guest really paid. */
+  paidValueIdr: number;
+  /** Vouchers and live refunds of the chain (other than the issue itself). */
+  givenIdr: number;
+  /** List value of the line a swap difference is measured against. */
+  listBaseIdr: number;
+};
+
+type PaidValueRead = SwapPaidValue & {
+  /** A dearer swap of the chain whose extra is not settled yet. */
+  chargePending: boolean;
+};
+
+/**
+ * legend-hhm5m: the paid value read behind a swap, a voucher room and their
+ * previews. Base: the smallest paid value stored on the chain, else computed
+ * from the order for the original item. Takes the order row lock unless
+ * `lock` is false (a read-only preview).
+ */
+async function readPaidValue(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { orderId: string; issueId: string; lineId: string; at: Date },
+  lock: boolean,
+): Promise<{ read: PaidValueRead; orderId: string }> {
+  const tenantId = context.tenant.tenantId;
+  const query = tx
+    .select()
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, input.orderId)));
+  const [order] = lock ? await query.for("update") : await query;
+  if (!order) throw new Error("Order of the reported line is missing");
+  const issues = await recoveryIssuesOf(tx, tenantId, order.id);
+  const chain = recoverySwapChain(issues);
+  const issue = { id: input.issueId, orderItemId: input.lineId };
+  const originalId = chain.toOriginal(input.lineId);
+  const chainIssues = issues.filter(
+    (row) =>
+      row.id !== input.issueId &&
+      chain.toOriginal(row.orderItemId) === originalId,
+  );
+  const given = await recoveryChainOf(
+    tx,
+    tenantId,
+    issue,
+    issues,
+    chain.toOriginal,
+  );
+  const charges = await chainChargesOf(tx, tenantId, chainIssues, input.lineId);
+  const items = await recoveryOrderItemsOf(tx, tenantId, order.id);
+  const line = items.find((item) => item.id === input.lineId);
+  const original = items.find((item) => item.id === originalId);
+  if (!line || !original) throw new Error("Reported line is missing");
+  const stored = chainIssues.flatMap((row) =>
+    row.paidValueIdr === null ? [] : [Number(row.paidValueIdr)],
+  );
+  const baseIdr =
+    stored.length > 0
+      ? Math.min(...stored)
+      : await computedPaidValueOf(tx, context, {
+          order,
+          issue,
+          issues,
+          chain,
+          items,
+          original,
+          at: input.at,
+        });
+  return {
+    orderId: order.id,
+    read: {
+      baseIdr,
+      paidValueIdr: baseIdr + charges.paidExtraIdr,
+      givenIdr: given.givenIdr,
+      listBaseIdr: line.lineTotalIdr - charges.waivedDifferenceIdr,
+      chargePending: charges.pending,
+    },
+  };
+}
+
+/**
+ * legend-5g9sn: what the order as a whole still leaves (vouchers, POS and
+ * recovery refunds of the order against what the guest paid for it). Read
+ * without a lock (`orderGivenOf`).
+ */
+async function orderRoomOf(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+): Promise<number> {
+  const given = await orderGivenOf(tx, tenantId, orderId);
+  return Math.max(0, given.paidIdr - given.givenIdr);
+}
+
+/** The item room of a read, clamped to the room of the order. */
+async function roomOfRead(
+  tx: Tx,
+  context: ScopedTenantContext,
+  read: PaidValueRead,
+  orderId: string,
+): Promise<number> {
+  return Math.min(
+    Math.max(0, read.paidValueIdr - read.givenIdr),
+    await orderRoomOf(tx, context.tenant.tenantId, orderId),
+  );
+}
+
+/**
+ * legend-rat9r (architect H1), legend-eajpb: what an apology voucher for
+ * `lineId` may still be worth: the paid value of its item chain (stored on a
+ * swap, else computed from the order) less the chain's vouchers and live
+ * refunds, clamped to the room of the order. Never unbounded. Takes the order
+ * row lock (after the caller's issue lock, the consumer's sequence); 422 when
+ * the paid value cannot be read.
+ */
+export async function voucherRoomOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { orderId: string; issueId: string; lineId: string; at?: Date },
+  /** False for a read-only preview (the guest's options): no row lock. */
+  lock = true,
+): Promise<number> {
+  const { read, orderId } = await readPaidValue(
+    tx,
+    context,
+    { ...input, at: input.at ?? new Date() },
+    lock,
+  );
+  return roomOfRead(tx, context, read, orderId);
+}
+
+/**
+ * legend-rat9r, legend-hhm5m: the paid value of the item of `lineId` for a
+ * swap of `issueId` (every swap, dearer or cheaper), what its chain already
+ * gave back, and the list value its difference is measured against. Takes the
+ * order row lock unless `lock` is false (preview). Writes nothing: the promo
+ * recompute runs in a savepoint that is always rolled back. 422 while a dearer
+ * swap of the chain has an extra charge not settled yet, or when the paid
+ * value cannot be read.
+ */
+export async function swapPaidValueOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { orderId: string; issueId: string; lineId: string; at: Date },
+  lock = true,
+): Promise<SwapPaidValue> {
+  const { read } = await readPaidValue(tx, context, input, lock);
+  if (read.chargePending) throw swapChargePending();
+  return {
+    baseIdr: read.baseIdr,
+    paidValueIdr: read.paidValueIdr,
+    givenIdr: read.givenIdr,
+    listBaseIdr: read.listBaseIdr,
+  };
+}
+
+/** The credit of a swap whose list difference is `differenceIdr` (< 0). */
+export function swapCreditOf(paid: SwapPaidValue, differenceIdr: number) {
+  return Math.min(
+    -differenceIdr,
+    Math.max(0, paid.paidValueIdr - paid.givenIdr),
+  );
+}
+
+/**
+ * legend-pqm3t: the guest's preview of an open issue, read once without a
+ * lock. `swap` null: no swap can be priced (a pending extra charge, or the
+ * paid value cannot be read); `voucherRoomIdr` null: the paid value cannot be
+ * read. The promo dry run locks the promo rows briefly.
+ */
+export async function recoveryPreviewOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { orderId: string; issueId: string; lineId: string; at: Date },
+): Promise<{ swap: SwapPaidValue | null; voucherRoomIdr: number | null }> {
+  let found: Awaited<ReturnType<typeof readPaidValue>>;
+  try {
+    found = await readPaidValue(tx, context, input, false);
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 422)
+      return { swap: null, voucherRoomIdr: null };
+    throw error;
+  }
+  const { read, orderId } = found;
+  return {
+    swap: read.chargePending
+      ? null
+      : {
+          baseIdr: read.baseIdr,
+          paidValueIdr: read.paidValueIdr,
+          givenIdr: read.givenIdr,
+          listBaseIdr: read.listBaseIdr,
+        },
+    voucherRoomIdr: await roomOfRead(tx, context, read, orderId),
+  };
 }
 
 /**
