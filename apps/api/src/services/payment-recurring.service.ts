@@ -26,6 +26,10 @@
 //   - A paid period that starts later than today waits in `next_period_*` and
 //     replaces the current one on its start date (`promoteDueSubscriptionPeriods`);
 //     `subscriptionHasAccess` checks both bounds of the period that covers today.
+//   - Grace (per outlet, default 3, 0..30): an `active` row keeps access for
+//     the grace days after its paid period; that use counts toward the NEXT
+//     period (`subscriptionAccessPeriod`), never extra quota, never past the
+//     grace days. The overdue worker reads the same per-outlet value.
 //
 // Webhook signature and store-first dedupe live in payment-webhook.service.ts;
 // `processDoitInvoiceEvent` only applies an already verified event. The
@@ -44,10 +48,15 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { subscriptionInvoiceCreatedEvent } from "@starter/shared/notification";
+import {
+  RECURRING_GRACE_DAYS_MAX,
+  RECURRING_GRACE_DAYS_MIN,
+} from "@starter/shared/payment/recurring";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { customerProfiles } from "../db/schema/crm-member";
 import {
+  paymentRecurringOutletSettings,
   paymentRecurringPlans,
   paymentRecurringSubscriptions,
   subscriptionInvoices,
@@ -689,43 +698,159 @@ async function loadSubscription(
 
 // -- Next period: access and promotion -------------------------------------------
 
-/** Founder decision pending (legend-rsrcb): does access continue through the
- * grace days after the paid period ends? `false` (restrictive, default): access
- * stops at the end of the paid period and the grace days only delay the
- * `past_due` status. `true`: access of the current period runs to
- * `period_end + RECURRING_GRACE_DAYS`. Change only this constant to flip it. */
-export const RECURRING_ACCESS_DURING_GRACE = false;
+/** Default grace (founder W5, PRD): days after the end of the paid period an
+ * `active` subscription keeps access while the next invoice is unpaid, and
+ * the days an open invoice may stay unpaid before the row turns `past_due`.
+ * Each outlet may set its own value (0..30) in
+ * `payment_recurring_outlet_settings`; no row = this default. */
+export const RECURRING_GRACE_DAYS = 3;
 
-/** True while the subscription is `active` and today (Asia/Jakarta) is inside
- * the current period or inside the paid next period; the start is inclusive,
- * the end exclusive. With RECURRING_ACCESS_DURING_GRACE false the grace days
- * (RECURRING_GRACE_DAYS) never add access: a day after the paid period has no
- * access even while the status is still `active`. Every other status (pending,
- * past_due, paused, cancelled, provisioning, needs_reconcile) never has
- * access. */
-export function subscriptionHasAccess(
-  subscription: Pick<
-    PaymentRecurringSubscription,
-    | "status"
-    | "currentPeriodStart"
-    | "currentPeriodEnd"
-    | "nextPeriodStart"
-    | "nextPeriodEnd"
-  >,
+/** Grace days used by the access check: a whole number in 0..30. Anything
+ * else (NaN, negative, fraction) gives no grace, more than 30 is capped, so a
+ * bad value can never extend access. */
+function safeGraceDays(graceDays: number): number {
+  if (!Number.isInteger(graceDays) || graceDays <= 0) return 0;
+  return Math.min(graceDays, RECURRING_GRACE_DAYS_MAX);
+}
+
+type AccessFields = Pick<
+  PaymentRecurringSubscription,
+  | "status"
+  | "currentPeriodStart"
+  | "currentPeriodEnd"
+  | "nextPeriodStart"
+  | "nextPeriodEnd"
+>;
+
+export type SubscriptionAccessPeriod = {
+  start: string;
+  /** Null while in grace with no paid next period yet. */
+  end: string | null;
+  inGrace: boolean;
+};
+
+/** The period whose quota today's use counts toward, or null without access.
+ * Only `active` rows have access. Inside the current or the paid next period
+ * (start inclusive, end exclusive): that period. Inside the grace days
+ * (`current_period_end <= today < current_period_end + graceDays`, with the
+ * next period not started yet): the NEXT period, starting at
+ * `current_period_end`, so grace use counts toward the new period's quota,
+ * never toward the old one and never toward extra quota. Grace 0 = access
+ * stops at the end of the paid period. Every other status (pending, past_due,
+ * paused, cancelled, provisioning, needs_reconcile) has no access. */
+export function subscriptionAccessPeriod(
+  subscription: AccessFields,
   now: Date,
-): boolean {
-  if (subscription.status !== "active") return false;
+  graceDays: number = RECURRING_GRACE_DAYS,
+): SubscriptionAccessPeriod | null {
+  if (subscription.status !== "active") return null;
   const today = businessDateOf(now);
   const inside = (start: string | null, end: string | null) =>
     start !== null && end !== null && start <= today && today < end;
-  const currentEnd =
-    RECURRING_ACCESS_DURING_GRACE && subscription.currentPeriodEnd !== null
-      ? addDaysToDate(subscription.currentPeriodEnd, RECURRING_GRACE_DAYS)
-      : subscription.currentPeriodEnd;
-  return (
-    inside(subscription.currentPeriodStart, currentEnd) ||
-    inside(subscription.nextPeriodStart, subscription.nextPeriodEnd)
+  const {
+    currentPeriodStart,
+    currentPeriodEnd,
+    nextPeriodStart,
+    nextPeriodEnd,
+  } = subscription;
+  if (inside(currentPeriodStart, currentPeriodEnd))
+    return {
+      start: currentPeriodStart as string,
+      end: currentPeriodEnd,
+      inGrace: false,
+    };
+  if (inside(nextPeriodStart, nextPeriodEnd))
+    return {
+      start: nextPeriodStart as string,
+      end: nextPeriodEnd,
+      inGrace: false,
+    };
+  const grace = safeGraceDays(graceDays);
+  if (
+    grace > 0 &&
+    currentPeriodEnd !== null &&
+    currentPeriodEnd <= today &&
+    today < addDaysToDate(currentPeriodEnd, grace) &&
+    // A next period that has already started and not covered today has ended:
+    // no grace after it (ragu = batasi).
+    (nextPeriodStart === null || today < nextPeriodStart)
+  )
+    return {
+      start: currentPeriodEnd,
+      end: nextPeriodEnd ?? null,
+      inGrace: true,
+    };
+  return null;
+}
+
+/** True when `subscriptionAccessPeriod` gives a period (see there). */
+export function subscriptionHasAccess(
+  subscription: AccessFields,
+  now: Date,
+  graceDays: number = RECURRING_GRACE_DAYS,
+): boolean {
+  return subscriptionAccessPeriod(subscription, now, graceDays) !== null;
+}
+
+/** Grace days of an outlet; no stored row = RECURRING_GRACE_DAYS. */
+export async function getRecurringGraceDays(
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<number> {
+  assertOutletInScope(context.outletScope, outletId);
+  return withTenant(db, context, (tx) =>
+    readGraceDays(tx, context.tenant.tenantId, outletId),
   );
+}
+
+async function readGraceDays(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: string,
+): Promise<number> {
+  const s = paymentRecurringOutletSettings;
+  const [row] = await tx
+    .select({ graceDays: s.graceDays })
+    .from(s)
+    .where(and(eq(s.tenantId, tenantId), eq(s.outletId, outletId as OutletId)));
+  return row ? row.graceDays : RECURRING_GRACE_DAYS;
+}
+
+/** Stores the grace days of an outlet (whole number 0..30, else
+ * VALIDATION_ERROR). Upsert; returns the stored value. */
+export async function setRecurringGraceDays(
+  context: ScopedTenantContext,
+  outletId: string,
+  graceDays: number,
+): Promise<number> {
+  assertOutletInScope(context.outletScope, outletId);
+  if (
+    !Number.isInteger(graceDays) ||
+    graceDays < RECURRING_GRACE_DAYS_MIN ||
+    graceDays > RECURRING_GRACE_DAYS_MAX
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      `Masa tenggang harus bilangan bulat ${RECURRING_GRACE_DAYS_MIN} sampai ${RECURRING_GRACE_DAYS_MAX} hari.`,
+    );
+  const s = paymentRecurringOutletSettings;
+  return withTenant(db, context, async (tx) => {
+    const now = new Date();
+    const [stored] = await tx
+      .insert(s)
+      .values({
+        tenantId: context.tenant.tenantId,
+        outletId: outletId as OutletId,
+        graceDays,
+      })
+      .onConflictDoUpdate({
+        target: [s.tenantId, s.outletId],
+        set: { graceDays, updatedAt: now },
+      })
+      .returning({ graceDays: s.graceDays });
+    if (!stored) throw notFound("Pengaturan outlet");
+    return stored.graceDays;
+  });
 }
 
 /** `YYYY-MM-DD` plus whole days. */
@@ -781,12 +906,6 @@ export async function promoteDueSubscriptionPeriods(
   return { promoted: rows.length };
 }
 
-/** Days after the due date (the start of the unpaid period) an open invoice
- * may stay unpaid before the subscription turns `past_due` (PRD): due D stays
- * `active` through D+3 and is `past_due` from D+4. The grace never extends
- * access: `subscriptionHasAccess` stops at the end of the paid period. */
-export const RECURRING_GRACE_DAYS = 3;
-
 /** `YYYY-MM-DD` minus whole days. */
 function subtractDays(date: string, days: number): string {
   const [year, month, day] = date.split("-").map(Number) as [
@@ -801,7 +920,9 @@ function subtractDays(date: string, days: number): string {
 
 /** `active` -> `past_due` for subscriptions with an `open` invoice for a period
  * beyond everything paid (`next_period_end`, else `current_period_end`) whose
- * start date plus the grace has passed. Idempotent: a second run finds nothing
+ * start date plus the grace of the subscription's outlet has passed (grace g:
+ * due D stays `active` through D+g, `past_due` from D+g+1; no settings row =
+ * RECURRING_GRACE_DAYS). Idempotent: a second run finds nothing
  * left to change. Rows are locked first and the condition is checked again in
  * a new statement, so a payment that commits meanwhile is never overwritten.
  * Returns the number of rows changed. A later verified `invoice.paid` turns the
@@ -813,11 +934,15 @@ export async function markOverdueSubscriptionsPastDue(
   const t = paymentRecurringSubscriptions;
   const i = subscriptionInvoices;
   const tenantId = context.tenant.tenantId;
-  const cutoff = subtractDays(businessDateOf(now), RECURRING_GRACE_DAYS);
+  const s = paymentRecurringOutletSettings;
+  const today = businessDateOf(now);
+  // Per-outlet grace read in the same statement (also in the re-check under
+  // the row lock). date - integer = date.
+  const graceDays = sql`COALESCE((SELECT ${s.graceDays} FROM ${s} WHERE ${s.tenantId} = ${t.tenantId} AND ${s.outletId} = ${t.outletId}), ${RECURRING_GRACE_DAYS})`;
   const overdue = and(
     eq(t.tenantId, tenantId),
     eq(t.status, "active"),
-    sql`EXISTS (SELECT 1 FROM ${i} WHERE ${i.tenantId} = ${t.tenantId} AND ${i.subscriptionId} = ${t.id} AND ${i.status} = 'open' AND ${i.periodStart} >= COALESCE(${t.nextPeriodEnd}, ${t.currentPeriodEnd}) AND ${i.periodStart} < ${cutoff}::date)`,
+    sql`EXISTS (SELECT 1 FROM ${i} WHERE ${i.tenantId} = ${t.tenantId} AND ${i.subscriptionId} = ${t.id} AND ${i.status} = 'open' AND ${i.periodStart} >= COALESCE(${t.nextPeriodEnd}, ${t.currentPeriodEnd}) AND ${i.periodStart} < ${today}::date - ${graceDays}::integer)`,
   );
   return withTenant(db, context, async (tx) => {
     const candidates = await tx

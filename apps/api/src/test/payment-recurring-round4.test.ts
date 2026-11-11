@@ -19,10 +19,25 @@
 //   refused (needs_reconcile / INTENT_EXPIRED, no DOIT call, CONFLICT).
 // - REC-41 (item 6): an event for an unknown subscription is answered 200
 //   ("parked"), stored durably, and processed once the subscription appears.
-// - REC-42 (item 7): active -> past_due after the 3 day grace, idempotent worker.
+// - REC-42 (item 7): active -> past_due after the (default 3 day) grace, idempotent worker.
 // - REC-43 (item 7): a late payment makes it active again, no duplicate period.
+// - REC-44..REC-51 (round 4b, docs/briefs/480-design.md "Putaran 4b"): the grace
+//   is a per-outlet setting (default 3, 0..30) instead of a constant; grace 0,
+//   expiry without payment, quota period during grace, cancelled / unpaid, the
+//   service get/set, per-outlet worker difference, tenant isolation, routes.
 //
 // ASSUMPTIONS
+// - Round 4b: `subscriptionHasAccess(sub, now, graceDays)` and
+//   `subscriptionAccessPeriod(sub, now, graceDays)` follow the design text. The
+//   grace window is `end <= day < end + graceDays`, but its exact last day is
+//   NOT asserted (the worker flips at due + grace + 1, as in REC-42): only the
+//   first grace days (due, due + 1) and days from due + grace + 1 on are asserted.
+// - The grace route answers the repo envelope `{ data: { graceDays } }` (a bare
+//   `{ graceDays }` is tolerated); a bad value answers 422; another outlet's
+//   or another tenant's outlet answers 403 or 404.
+// - The quota period start is what must be identical before and after a late
+//   payment; its `end` may be null before the payment (next period not stored
+//   yet) and the invoice end afterwards, so only `start` / `inGrace` are pinned.
 // - Error codes use the repo's `HttpError.code`: CONFLICT for the refusals
 //   (design: "CONFLICT/konflik status"); other codes are not pinned.
 // - Invoice due date = period_start of the invoice's period (design item 7); the
@@ -45,6 +60,8 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { cafeLegendAccessFixtures } from "@starter/shared/access";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -55,10 +72,13 @@ import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes"
 import {
   RECURRING_GRACE_DAYS,
   cancelSubscription,
+  getRecurringGraceDays,
   markOverdueSubscriptionsPastDue,
   pauseSubscription,
   resumeSubscription,
+  setRecurringGraceDays,
   startSubscription,
+  subscriptionAccessPeriod,
   subscriptionHasAccess,
 } from "../services/payment-recurring.service";
 import {
@@ -70,6 +90,7 @@ import {
   setIntegrationStatus,
   upsertIntegration,
 } from "../services/platform-integration.service";
+import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 import {
   createSecondTenant,
   removeSecondTenant,
@@ -95,11 +116,14 @@ const planIds: string[] = [];
 const subIds: string[] = [];
 const profileCleanups: (() => Promise<void>)[] = [];
 
-function context(): ScopedTenantContext {
+function contextFor(id: string): ScopedTenantContext {
   return establishScopedTenantContext(
-    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    establishTenantContext({ tenantId: id, brandId: null, source: "session" }),
     { kind: "tenant" },
   );
+}
+function context(): ScopedTenantContext {
+  return contextFor(tenantId);
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +299,7 @@ type SubStatus =
   | "needs_reconcile";
 
 type Sub = {
+  outletId: string;
   planId: string;
   providerPlanId: string;
   subId: string;
@@ -285,7 +310,7 @@ type Sub = {
 
 type Plan = { planId: string; providerPlanId: string };
 
-async function seedPlan(): Promise<Plan> {
+async function seedPlan(outlet: string = outletId): Promise<Plan> {
   const plan: Plan = {
     planId: randomUUID(),
     providerPlanId: `plan_${unique()}`,
@@ -293,14 +318,7 @@ async function seedPlan(): Promise<Plan> {
   await owner.query(
     `INSERT INTO payment_recurring_plans (id, tenant_id, outlet_id, provider, provider_plan_id, name, amount_idr, interval, status, gateway_integration_id)
      VALUES ($1, $2, $3, 'doit', $4, 'Paket Bulanan', $5, 'month', 'active', $6)`,
-    [
-      plan.planId,
-      tenantId,
-      outletId,
-      plan.providerPlanId,
-      PRICE,
-      integrationId,
-    ],
+    [plan.planId, tenantId, outlet, plan.providerPlanId, PRICE, integrationId],
   );
   planIds.push(plan.planId);
   return plan;
@@ -309,6 +327,8 @@ async function seedPlan(): Promise<Plan> {
 async function seedSub(
   options: {
     plan?: Plan;
+    /** Outlet of the subscription (and of a freshly seeded plan). */
+    outlet?: string;
     status?: SubStatus;
     providerSubId?: string | null;
     reconcileReason?: string | null;
@@ -320,9 +340,10 @@ async function seedSub(
     createdHoursAgo?: number;
   } = {},
 ): Promise<Sub> {
-  const plan = options.plan ?? (await seedPlan());
+  const plan = options.plan ?? (await seedPlan(options.outlet));
   const sub: Sub = {
     ...plan,
+    outletId: options.outlet ?? outletId,
     subId: randomUUID(),
     providerSubId:
       options.providerSubId === undefined
@@ -342,7 +363,7 @@ async function seedSub(
     [
       sub.subId,
       tenantId,
-      outletId,
+      sub.outletId,
       sub.planId,
       sub.customerProfileId,
       sub.providerSubId,
@@ -382,7 +403,7 @@ async function seedInvoice(
     [
       randomUUID(),
       tenantId,
-      outletId,
+      sub.outletId,
       sub.subId,
       providerInvoiceId,
       o.periodStart,
@@ -886,6 +907,7 @@ describe("REC-37 a start answered for another plan stores the DOIT id", () => {
     expect(row).toBeDefined();
     const sub: Sub = {
       ...plan,
+      outletId,
       subId: row!.id,
       providerSubId: providerId,
       customerProfileId: profileId,
@@ -1342,5 +1364,609 @@ describe("REC-43 a late payment makes a past_due subscription active again witho
     expect(await subRow(sub.subId)).toEqual(after);
     expect(await invoicesOfSub(sub.subId)).toEqual(invoicesAfter);
     expect(invoicesAfter).toEqual([{ status: "paid", period_start: D }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-44..REC-51 (round 4b): grace days per outlet
+// ---------------------------------------------------------------------------
+// Fixture: a subscription is active in [D-30, D) and its next invoice (D..D+30)
+// is open. "now" is always passed explicitly (noon Asia/Jakarta of a date), so
+// the tests do not depend on the clock; D is 5 days ago so a webhook payment
+// delivered today (real clock) still covers today, as in REC-43.
+
+const D4 = addDays(jakartaToday(), -5);
+const day = (offset: number) => noonJakarta(addDays(D4, offset));
+const accessLiteral = (over: Record<string, unknown> = {}) =>
+  ({
+    status: "active",
+    currentPeriodStart: addDays(D4, -30),
+    currentPeriodEnd: D4,
+    nextPeriodStart: null,
+    nextPeriodEnd: null,
+    ...over,
+  }) as never;
+
+async function seedOutlet(): Promise<string> {
+  const id = randomUUID();
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+     VALUES ($1, $2, $3, $4, $5, 'Outlet R4b', 'Jl. R4b', '{}')`,
+    [
+      id,
+      tenantId,
+      dedicated.brandId,
+      dedicated.legalEntityId,
+      `R4B-${unique()}`.toUpperCase(),
+    ],
+  );
+  return id;
+}
+
+/** Seeds a per-outlet setting as the owner (bypasses the service). */
+async function seedGrace(outlet: string, graceDays: number, tenant = tenantId) {
+  await owner.query(
+    `INSERT INTO payment_recurring_outlet_settings (tenant_id, outlet_id, grace_days)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id, outlet_id) DO UPDATE SET grace_days = EXCLUDED.grace_days`,
+    [tenant, outlet, graceDays],
+  );
+}
+
+async function graceRow(outlet: string, tenant = tenantId) {
+  const { rows } = await owner.query<{ grace_days: number }>(
+    `SELECT grace_days FROM payment_recurring_outlet_settings
+      WHERE tenant_id = $1 AND outlet_id = $2`,
+    [tenant, outlet],
+  );
+  return rows.map((row) => row.grace_days);
+}
+
+/** Active subscription due on D4 with an open invoice for the next period. */
+async function overdueOn(
+  outlet: string,
+  status: SubStatus = "active",
+  due = D4,
+) {
+  const sub = await seedSub({
+    outlet,
+    status,
+    periodStart: addDays(due, -30),
+    periodEnd: due,
+  });
+  const invoiceId = await seedInvoice(sub, {
+    status: "open",
+    periodStart: due,
+    periodEnd: addDays(due, 30),
+  });
+  return { sub, invoiceId };
+}
+
+async function hasAccessAt(sub: Sub, date: Date) {
+  const grace = await getRecurringGraceDays(context(), sub.outletId);
+  return subscriptionHasAccess(await accessInput(sub.subId), date, grace);
+}
+async function periodAt(sub: Sub, date: Date) {
+  const grace = await getRecurringGraceDays(context(), sub.outletId);
+  return subscriptionAccessPeriod(await accessInput(sub.subId), date, grace);
+}
+
+// (a) grace 0 ----------------------------------------------------------------
+
+describe("REC-44 grace 0: access stops at the end of the paid period and past_due starts the next day", () => {
+  it("REC-44 an outlet without a setting row uses the default of 3 days", async () => {
+    const outlet = await seedOutlet();
+    expect(await getRecurringGraceDays(context(), outlet)).toBe(3);
+    expect(RECURRING_GRACE_DAYS).toBe(3);
+  });
+
+  it("REC-44 pure: with grace 0 the due day has no access, the day before does", () => {
+    expect(subscriptionHasAccess(accessLiteral(), day(-1), 0)).toBe(true);
+    expect(subscriptionHasAccess(accessLiteral(), day(0), 0)).toBe(false);
+    expect(subscriptionHasAccess(accessLiteral(), day(1), 0)).toBe(false);
+    expect(subscriptionAccessPeriod(accessLiteral(), day(0), 0)).toBeNull();
+  });
+
+  it("REC-44 pure: the default grace is 3 when no third argument is passed", () => {
+    // Clearly inside (first grace day) and clearly outside (due + 4).
+    expect(subscriptionHasAccess(accessLiteral(), day(0))).toBe(true);
+    expect(subscriptionHasAccess(accessLiteral(), day(4))).toBe(false);
+  });
+
+  it("REC-44 an outlet with grace 0: still active on the due day, past_due on D+1, no access either day", async () => {
+    const outlet = await seedOutlet();
+    await seedGrace(outlet, 0);
+    const { sub } = await overdueOn(outlet);
+
+    await markOverdueSubscriptionsPastDue(context(), day(0));
+    expect((await subRow(sub.subId)).status).toBe("active");
+    expect(await hasAccessAt(sub, day(-1))).toBe(true);
+    expect(await hasAccessAt(sub, day(0))).toBe(false);
+    expect(await periodAt(sub, day(0))).toBeNull();
+
+    await markOverdueSubscriptionsPastDue(context(), day(1));
+    expect((await subRow(sub.subId)).status).toBe("past_due");
+    expect(await hasAccessAt(sub, day(1))).toBe(false);
+    expect(await periodAt(sub, day(1))).toBeNull();
+  });
+});
+
+// (b) beyond the grace without paying --------------------------------------
+
+describe("REC-45 past the grace without paying: past_due, no access, no quota period", () => {
+  it("REC-45 the default outlet (3 days): inside the grace it is active with access, on D+4 past_due and no access", async () => {
+    const outlet = await seedOutlet();
+    const { sub } = await overdueOn(outlet);
+
+    await markOverdueSubscriptionsPastDue(context(), day(1));
+    expect((await subRow(sub.subId)).status).toBe("active");
+    expect(await hasAccessAt(sub, day(1))).toBe(true);
+
+    await markOverdueSubscriptionsPastDue(context(), day(4));
+    expect((await subRow(sub.subId)).status).toBe("past_due");
+    expect(await hasAccessAt(sub, day(4))).toBe(false);
+    // FAC-07: no entitlement period to charge a use to.
+    expect(await periodAt(sub, day(4))).toBeNull();
+  });
+
+  it("REC-45 pure: inside the paid period the access period is that period, not in grace", () => {
+    expect(subscriptionAccessPeriod(accessLiteral(), day(-1), 3)).toEqual({
+      start: addDays(D4, -30),
+      end: D4,
+      inGrace: false,
+    });
+  });
+
+  it("REC-45 pure: past_due / paused / cancelled / pending never have access or a period, whatever the grace", () => {
+    for (const status of [
+      "past_due",
+      "paused",
+      "cancelled",
+      "pending_first_payment",
+    ])
+      for (const grace of [0, 3, 30]) {
+        const sub = accessLiteral({ status });
+        expect(subscriptionHasAccess(sub, day(-1), grace)).toBe(false);
+        expect(subscriptionAccessPeriod(sub, day(-1), grace)).toBeNull();
+        expect(subscriptionAccessPeriod(sub, day(1), grace)).toBeNull();
+      }
+  });
+});
+
+// (c) use during the grace belongs to the NEW period ---------------------
+
+describe("REC-46 use on a grace day points to the new period, also after a late payment, never a second quota", () => {
+  it("REC-46 pure: on grace days the period is the next one, flagged inGrace, never the old one", () => {
+    for (const offset of [0, 1]) {
+      const period = subscriptionAccessPeriod(accessLiteral(), day(offset), 3);
+      expect(period).toMatchObject({ start: D4, inGrace: true });
+      expect(period!.start).not.toBe(addDays(D4, -30));
+    }
+  });
+
+  it("REC-46 pure: when the next paid period is stored, access follows it and is not a grace use", () => {
+    const sub = accessLiteral({
+      nextPeriodStart: D4,
+      nextPeriodEnd: addDays(D4, 30),
+    });
+    expect(subscriptionHasAccess(sub, day(1), 0)).toBe(true);
+    expect(subscriptionAccessPeriod(sub, day(1), 0)).toEqual({
+      start: D4,
+      end: addDays(D4, 30),
+      inGrace: false,
+    });
+  });
+
+  it("REC-46 a grace-day use and a use after the late payment share one period start, one invoice, one period", async () => {
+    const outlet = await seedOutlet();
+    const { sub, invoiceId } = await overdueOn(outlet);
+
+    const before = await periodAt(sub, day(1));
+    expect(before).toMatchObject({ start: D4, inGrace: true });
+    expect(await hasAccessAt(sub, day(1))).toBe(true);
+
+    const body = invoiceEvent("invoice.paid", sub, {
+      invoiceId,
+      periodStart: D4,
+      periodEnd: addDays(D4, 30),
+    });
+    expect((await deliver(body)).status).toBe(200);
+    expect(await subRow(sub.subId)).toMatchObject({
+      status: "active",
+      period_start: D4,
+      period_end: addDays(D4, 30),
+    });
+
+    const after = await periodAt(sub, day(1));
+    expect(after).toMatchObject({ start: D4, inGrace: false });
+    expect(after!.start).toBe(before!.start);
+    // Still the same single paid invoice and period: no second quota opened.
+    expect(await invoicesOfSub(sub.subId)).toEqual([
+      { status: "paid", period_start: D4 },
+    ]);
+    // A redelivery and a worker run change nothing.
+    expect((await deliver(body)).status).toBe(200);
+    await markOverdueSubscriptionsPastDue(context(), day(10));
+    expect(await subRow(sub.subId)).toMatchObject({
+      status: "active",
+      period_start: D4,
+      period_end: addDays(D4, 30),
+    });
+    expect(await invoicesOfSub(sub.subId)).toHaveLength(1);
+  });
+});
+
+// (d) cancelled or unpaid: nothing opens afterwards -----------------------
+
+describe("REC-47 a cancelled or unpaid subscription has no access period on the following days and opens no next period", () => {
+  it("REC-47 cancelled: no access and no period on any day after the end, grace or not", async () => {
+    const outlet = await seedOutlet();
+    const { sub } = await overdueOn(outlet, "cancelled");
+    for (const offset of [-1, 0, 1, 2, 4, 10, 40]) {
+      expect(await hasAccessAt(sub, day(offset)), `D+${offset}`).toBe(false);
+      expect(await periodAt(sub, day(offset)), `D+${offset}`).toBeNull();
+    }
+  });
+
+  it("REC-47 never paid: after past_due every later day has no period, and no period or invoice appears", async () => {
+    const outlet = await seedOutlet();
+    const { sub } = await overdueOn(outlet);
+    await markOverdueSubscriptionsPastDue(context(), day(4));
+    const after = await subRow(sub.subId);
+    expect(after.status).toBe("past_due");
+    for (const offset of [4, 5, 10, 30, 60]) {
+      expect(await hasAccessAt(sub, day(offset)), `D+${offset}`).toBe(false);
+      expect(await periodAt(sub, day(offset)), `D+${offset}`).toBeNull();
+    }
+    await markOverdueSubscriptionsPastDue(context(), day(60));
+    expect(await subRow(sub.subId)).toEqual(after);
+    expect(await invoicesOfSub(sub.subId)).toEqual([
+      { status: "open", period_start: D4 },
+    ]);
+  });
+
+  it("REC-47 cancelling inside the grace removes access from then on", async () => {
+    const outlet = await seedOutlet();
+    const { sub } = await overdueOn(outlet);
+    expect(await hasAccessAt(sub, day(1))).toBe(true);
+    await owner.query(
+      `UPDATE payment_recurring_subscriptions SET status = 'cancelled', cancelled_at = now() WHERE id = $1`,
+      [sub.subId],
+    );
+    expect(await hasAccessAt(sub, day(1))).toBe(false);
+    expect(await periodAt(sub, day(1))).toBeNull();
+  });
+});
+
+// Service: get / set ---------------------------------------------------------
+
+describe("REC-48 get and set the grace days through the service", () => {
+  it("REC-48 no row: 3; set stores it, get reads it back, a second set updates the same row", async () => {
+    const outlet = await seedOutlet();
+    expect(await getRecurringGraceDays(context(), outlet)).toBe(3);
+    expect(await setRecurringGraceDays(context(), outlet, 0)).toBe(0);
+    expect(await getRecurringGraceDays(context(), outlet)).toBe(0);
+    expect(await graceRow(outlet)).toEqual([0]);
+    expect(await setRecurringGraceDays(context(), outlet, 12)).toBe(12);
+    expect(await getRecurringGraceDays(context(), outlet)).toBe(12);
+    expect(await graceRow(outlet)).toEqual([12]);
+  });
+
+  it("REC-48 the bounds 0 and 30 are accepted", async () => {
+    const outlet = await seedOutlet();
+    expect(await setRecurringGraceDays(context(), outlet, 30)).toBe(30);
+    expect(await setRecurringGraceDays(context(), outlet, 0)).toBe(0);
+  });
+
+  for (const bad of [-1, 31, 1.5, Number.NaN, 1e9, "3"]) {
+    it(`REC-48 ${String(bad)} is rejected and the stored value does not change`, async () => {
+      const outlet = await seedOutlet();
+      await setRecurringGraceDays(context(), outlet, 5);
+      expect(
+        await codeOf(setRecurringGraceDays(context(), outlet, bad as never)),
+      ).not.toBeNull();
+      expect(await getRecurringGraceDays(context(), outlet)).toBe(5);
+      expect(await graceRow(outlet)).toEqual([5]);
+    });
+  }
+
+  it("REC-48 the database itself refuses a value outside 0..30", async () => {
+    const outlet = await seedOutlet();
+    for (const bad of [-1, 31])
+      await expect(seedGrace(outlet, bad)).rejects.toThrow();
+    expect(await graceRow(outlet)).toEqual([]);
+  });
+
+  it("REC-48 a value set through the service drives the worker", async () => {
+    const outlet = await seedOutlet();
+    await setRecurringGraceDays(context(), outlet, 0);
+    const { sub } = await overdueOn(outlet);
+    await markOverdueSubscriptionsPastDue(context(), day(1));
+    expect((await subRow(sub.subId)).status).toBe("past_due");
+  });
+});
+
+// Per outlet -----------------------------------------------------------------
+
+describe("REC-49 outlets with different grace days get different worker results", () => {
+  it("REC-49 grace 0, grace 10 and no setting (3), same due date, run on D+1, D+5, D+11", async () => {
+    const [o0, o10, oDefault] = [
+      await seedOutlet(),
+      await seedOutlet(),
+      await seedOutlet(),
+    ] as [string, string, string];
+    await seedGrace(o0, 0);
+    await seedGrace(o10, 10);
+    const s0 = (await overdueOn(o0)).sub;
+    const s10 = (await overdueOn(o10)).sub;
+    const sDefault = (await overdueOn(oDefault)).sub;
+    const status = async () => [
+      (await subRow(s0.subId)).status,
+      (await subRow(s10.subId)).status,
+      (await subRow(sDefault.subId)).status,
+    ];
+
+    await markOverdueSubscriptionsPastDue(context(), day(1));
+    expect(await status()).toEqual(["past_due", "active", "active"]);
+
+    // Day 5: access of the 10 day outlet is a grace use of the new period,
+    // while the default outlet (3 days) is past the grace.
+    expect(await hasAccessAt(s10, day(5))).toBe(true);
+    expect(await periodAt(s10, day(5))).toMatchObject({
+      start: D4,
+      inGrace: true,
+    });
+    await markOverdueSubscriptionsPastDue(context(), day(5));
+    expect(await status()).toEqual(["past_due", "active", "past_due"]);
+    expect(await hasAccessAt(sDefault, day(5))).toBe(false);
+
+    await markOverdueSubscriptionsPastDue(context(), day(11));
+    expect(await status()).toEqual(["past_due", "past_due", "past_due"]);
+    expect(await hasAccessAt(s10, day(11))).toBe(false);
+    expect(await periodAt(s10, day(11))).toBeNull();
+  });
+
+  it("REC-49 changing one outlet does not change another", async () => {
+    const a = await seedOutlet();
+    const b = await seedOutlet();
+    await setRecurringGraceDays(context(), a, 7);
+    expect(await getRecurringGraceDays(context(), b)).toBe(3);
+    await setRecurringGraceDays(context(), b, 1);
+    expect(await getRecurringGraceDays(context(), a)).toBe(7);
+  });
+});
+
+// Tenant isolation -----------------------------------------------------------
+
+describe("REC-50 the grace setting is isolated per tenant", () => {
+  let other: SecondTenant;
+  beforeAll(async () => {
+    other = await createSecondTenant(owner, "round4b");
+  });
+  afterAll(async () => {
+    await owner.query(
+      "DELETE FROM payment_recurring_outlet_settings WHERE tenant_id = $1",
+      [other.tenantId],
+    );
+    await removeSecondTenant(owner, other);
+  });
+
+  it("REC-50 another tenant reads the default for our outlet, not our value", async () => {
+    const outlet = await seedOutlet();
+    await seedGrace(outlet, 9);
+    expect(await getRecurringGraceDays(context(), outlet)).toBe(9);
+    expect(
+      await getRecurringGraceDays(contextFor(other.tenantId), outlet),
+    ).toBe(3);
+  });
+
+  it("REC-50 another tenant cannot change our outlet's setting", async () => {
+    const outlet = await seedOutlet();
+    await seedGrace(outlet, 9);
+    await codeOf(setRecurringGraceDays(contextFor(other.tenantId), outlet, 1));
+    expect(await graceRow(outlet)).toEqual([9]);
+    expect(await graceRow(outlet, other.tenantId)).toEqual([]);
+  });
+
+  it("REC-50 each tenant keeps its own value for its own outlet", async () => {
+    await setRecurringGraceDays(contextFor(other.tenantId), other.outletId, 2);
+    expect(
+      await getRecurringGraceDays(contextFor(other.tenantId), other.outletId),
+    ).toBe(2);
+    expect(await getRecurringGraceDays(context(), other.outletId)).toBe(3);
+  });
+
+  it("REC-50 the worker of another tenant never flips our subscription", async () => {
+    const outlet = await seedOutlet();
+    await seedGrace(outlet, 0);
+    const { sub } = await overdueOn(outlet);
+    await markOverdueSubscriptionsPastDue(contextFor(other.tenantId), day(10));
+    expect((await subRow(sub.subId)).status).toBe("active");
+    await markOverdueSubscriptionsPastDue(context(), day(10));
+    expect((await subRow(sub.subId)).status).toBe("past_due");
+  });
+});
+
+// Routes ----------------------------------------------------------------------
+// Follows payment-recurring.test.ts (REC-06): the routes run on the cafe-legend
+// fixture tenant, whose seeded `owner` role carries the recurring permission.
+
+describe("REC-51 GET/PUT /api/payments/recurring/outlets/:outletId/grace", () => {
+  const fixtureTenant = cafeLegendPlatformFixtures.tenant.id;
+  const fixtureOutlet = cafeLegendAccessFixtures.outletIds.bandung;
+  const fixtureOutletOther = cafeLegendAccessFixtures.outletIds.bandung2;
+  const route = (outlet: string) =>
+    `/api/payments/recurring/outlets/${encodeURIComponent(outlet)}/grace`;
+  const graceOf = (body: {
+    data?: { graceDays?: number };
+    graceDays?: number;
+  }) => body.data?.graceDays ?? body.graceDays;
+  const userIds: string[] = [];
+  let manager: ReturnType<typeof agent>;
+  let outletBOnly: ReturnType<typeof agent>;
+  let noRole: ReturnType<typeof agent>;
+
+  async function signedIn(label: string, scope: "tenant" | "outlet" | "none") {
+    const client = agent(app);
+    const email = await signUp(client, label);
+    const session = await client.get("/api/auth/get-session");
+    const userId = session.body.user.id as string;
+    userIds.push(userId);
+    await verifySessionMfa(email);
+    if (scope !== "none") {
+      const role = await owner.query<{ id: string }>(
+        "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'owner'",
+        [fixtureTenant],
+      );
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
+        [
+          fixtureTenant,
+          userId,
+          role.rows[0]!.id,
+          scope,
+          scope === "outlet" ? fixtureOutletOther : null,
+        ],
+      );
+    }
+    return client;
+  }
+
+  const clearFixtureRows = () =>
+    owner.query(
+      `DELETE FROM payment_recurring_outlet_settings WHERE tenant_id = $1 AND outlet_id = ANY($2::uuid[])`,
+      [fixtureTenant, [fixtureOutlet, fixtureOutletOther]],
+    );
+
+  beforeAll(async () => {
+    manager = await signedIn("grace-manager", "tenant");
+    outletBOnly = await signedIn("grace-outlet", "outlet");
+    noRole = await signedIn("grace-none", "none");
+  });
+  beforeEach(async () => {
+    await clearFixtureRows();
+  });
+  afterAll(async () => {
+    await clearFixtureRows();
+    await owner.query(
+      "DELETE FROM role_assignments WHERE user_id = ANY($1::text[])",
+      [userIds],
+    );
+    await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
+      userIds,
+    ]);
+  });
+
+  it("REC-51 every call needs a session, and a PUT needs the web origin", async () => {
+    expect((await agent(app).get(route(fixtureOutlet))).status).toBe(401);
+    expect(
+      (
+        await agent(app)
+          .put(route(fixtureOutlet))
+          .set(originHeader)
+          .send({ graceDays: 1 })
+      ).status,
+    ).toBe(401);
+    const noOrigin = await manager
+      .put(route(fixtureOutlet))
+      .send({ graceDays: 1 });
+    expect([401, 403]).toContain(noOrigin.status);
+    expect(await graceRow(fixtureOutlet, fixtureTenant)).toEqual([]);
+  });
+
+  it("REC-51 a signed-in user without the recurring permission is refused", async () => {
+    expect((await noRole.get(route(fixtureOutlet))).status).toBe(403);
+    const put = await noRole
+      .put(route(fixtureOutlet))
+      .set(originHeader)
+      .send({ graceDays: 1 });
+    expect(put.status).toBe(403);
+    expect(await graceRow(fixtureOutlet, fixtureTenant)).toEqual([]);
+  });
+
+  it("REC-51 a manager reads the default 3, sets 0, reads 0, then sets 30", async () => {
+    const first = await manager.get(route(fixtureOutlet));
+    expect(first.status).toBe(200);
+    expect(graceOf(first.body)).toBe(3);
+
+    const zero = await manager
+      .put(route(fixtureOutlet))
+      .set(originHeader)
+      .send({ graceDays: 0 });
+    expect(zero.status).toBe(200);
+    expect(graceOf(zero.body)).toBe(0);
+    expect(graceOf((await manager.get(route(fixtureOutlet))).body)).toBe(0);
+    expect(await graceRow(fixtureOutlet, fixtureTenant)).toEqual([0]);
+    expect(
+      await getRecurringGraceDays(
+        contextFor(fixtureTenant),
+        fixtureOutlet as never,
+      ),
+    ).toBe(0);
+
+    const thirty = await manager
+      .put(route(fixtureOutlet))
+      .set(originHeader)
+      .send({ graceDays: 30 });
+    expect(thirty.status).toBe(200);
+    expect(graceOf((await manager.get(route(fixtureOutlet))).body)).toBe(30);
+  });
+
+  it("REC-51 invalid bodies answer 422 and change nothing", async () => {
+    await seedGrace(fixtureOutlet, 4, fixtureTenant);
+    for (const bad of [
+      { graceDays: -1 },
+      { graceDays: 31 },
+      { graceDays: 1.5 },
+      { graceDays: "3" },
+      { graceDays: null },
+      {},
+      { graceDays: 2, tenantId: randomUUID() },
+    ]) {
+      const response = await manager
+        .put(route(fixtureOutlet))
+        .set(originHeader)
+        .send(bad);
+      expect(response.status, JSON.stringify(bad)).toBe(422);
+    }
+    expect(await graceRow(fixtureOutlet, fixtureTenant)).toEqual([4]);
+  });
+
+  it("REC-51 a malformed outlet id answers 422", async () => {
+    expect((await manager.get(route("not-a-uuid"))).status).toBe(422);
+  });
+
+  it("REC-51 a manager scoped to another outlet cannot read or change this outlet, but can use its own", async () => {
+    await seedGrace(fixtureOutlet, 6, fixtureTenant);
+    const read = await outletBOnly.get(route(fixtureOutlet));
+    expect([403, 404]).toContain(read.status);
+    expect(JSON.stringify(read.body)).not.toContain('"graceDays":6');
+    const write = await outletBOnly
+      .put(route(fixtureOutlet))
+      .set(originHeader)
+      .send({ graceDays: 1 });
+    expect([403, 404]).toContain(write.status);
+    expect(await graceRow(fixtureOutlet, fixtureTenant)).toEqual([6]);
+
+    const own = await outletBOnly
+      .put(route(fixtureOutletOther))
+      .set(originHeader)
+      .send({ graceDays: 2 });
+    expect(own.status).toBe(200);
+    expect(
+      graceOf((await outletBOnly.get(route(fixtureOutletOther))).body),
+    ).toBe(2);
+  });
+
+  it("REC-51 an outlet of another tenant is refused and nothing is stored for it", async () => {
+    const response = await manager
+      .put(route(outletId))
+      .set(originHeader)
+      .send({ graceDays: 1 });
+    expect([403, 404]).toContain(response.status);
+    expect(await graceRow(outletId, fixtureTenant)).toEqual([]);
+    expect(await graceRow(outletId, tenantId)).toEqual([]);
+    expect([403, 404]).toContain((await manager.get(route(outletId))).status);
   });
 });

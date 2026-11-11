@@ -170,3 +170,43 @@ export const cancelRecurringSubscription = defineEndpoint({
   params: subscriptionParams,
   response: dataResponseSchema(recurringSubscriptionSchema),
 });
+
+/** Days after the end of the paid period a customer keeps using the
+ * subscription quota while the next invoice is unpaid (per outlet, default 3,
+ * 0 = access stops at the end of the paid period). Grace days count toward
+ * the next period, never toward an extra one. */
+export const RECURRING_GRACE_DAYS_MIN = 0;
+export const RECURRING_GRACE_DAYS_MAX = 30;
+export const recurringGraceDaysSchema = z
+  .number()
+  .int()
+  .min(RECURRING_GRACE_DAYS_MIN)
+  .max(RECURRING_GRACE_DAYS_MAX);
+
+export const recurringGraceSettingSchema = z.strictObject({
+  graceDays: recurringGraceDaysSchema,
+});
+export type RecurringGraceSetting = z.infer<typeof recurringGraceSettingSchema>;
+
+export const updateRecurringGraceInputSchema = z.strictObject({
+  graceDays: recurringGraceDaysSchema,
+});
+export type UpdateRecurringGraceInput = z.infer<
+  typeof updateRecurringGraceInputSchema
+>;
+
+const outletGraceParams = z.strictObject({ outletId: outletIdSchema });
+
+export const getRecurringOutletGrace = defineEndpoint({
+  method: "GET",
+  path: `${RECURRING}/outlets/:outletId/grace`,
+  params: outletGraceParams,
+  response: dataResponseSchema(recurringGraceSettingSchema),
+});
+export const updateRecurringOutletGrace = defineEndpoint({
+  method: "PUT",
+  path: `${RECURRING}/outlets/:outletId/grace`,
+  params: outletGraceParams,
+  body: updateRecurringGraceInputSchema,
+  response: dataResponseSchema(recurringGraceSettingSchema),
+});

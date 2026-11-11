@@ -11,7 +11,9 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -292,6 +294,38 @@ export const subscriptionInvoices = pgTable(
     check(
       "subscription_invoices_review_reason_check",
       sql`${table.status} <> 'needs_review' OR ${table.reviewReason} IS NOT NULL`,
+    ),
+  ],
+);
+
+// Per-outlet grace setting (PRD: grace days per outlet, default 3, may be 0).
+// No row = default 3. The overdue worker and the access check read it.
+export const paymentRecurringOutletSettings = pgTable(
+  "payment_recurring_outlet_settings",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    graceDays: integer("grace_days").notNull().default(3),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "payment_recurring_outlet_settings_pkey",
+      columns: [table.tenantId, table.outletId],
+    }),
+    foreignKey({
+      name: "payment_recurring_outlet_settings_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    check(
+      "payment_recurring_outlet_settings_grace_days_check",
+      sql`${table.graceDays} BETWEEN 0 AND 30`,
     ),
   ],
 );

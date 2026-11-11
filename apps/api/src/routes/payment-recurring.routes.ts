@@ -53,6 +53,8 @@ function byOutlet(outlet: (req: Request) => unknown): RequestHandler {
 }
 const outletQuery = byOutlet((req) => req.query.outletId);
 const outletBody = byOutlet((req) => req.body?.outletId);
+// Always the path outlet: never the caller's other reachable outlets.
+const outletParam = byOutlet((req) => req.params.outletId ?? "");
 // Record paths carry only an id: the service checks the row's outlet against
 // the reachable outlets of this permission.
 const record = requireMenuPermission(PERMISSION);
@@ -246,6 +248,44 @@ paymentRecurringRouter.post(
       data: subscriptionDto(
         await service.cancelSubscription(scope(req), subscriptionId),
       ),
+    });
+  },
+);
+
+paymentRecurringRouter.get(
+  route(contract.getRecurringOutletGrace.path),
+  outletParam,
+  async (req, res) => {
+    const { outletId } = contract.getRecurringOutletGrace.params.parse(
+      req.params,
+    );
+    res.json({
+      data: {
+        graceDays: await service.getRecurringGraceDays(scope(req), outletId),
+      },
+    });
+  },
+);
+
+paymentRecurringRouter.put(
+  route(contract.updateRecurringOutletGrace.path),
+  jsonBody,
+  outletParam,
+  async (req, res) => {
+    const { outletId } = contract.updateRecurringOutletGrace.params.parse(
+      req.params,
+    );
+    const { graceDays } = contract.updateRecurringOutletGrace.body.parse(
+      req.body,
+    );
+    res.json({
+      data: {
+        graceDays: await service.setRecurringGraceDays(
+          scope(req),
+          outletId,
+          graceDays,
+        ),
+      },
     });
   },
 );

@@ -3263,7 +3263,9 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
         subscriptionHasAccess(sub(), new Date("2026-01-31T16:59:59.000Z")),
       ).toBe(true);
       expect(
-        subscriptionHasAccess(sub(), new Date("2026-01-31T17:00:00.000Z")),
+        // Grace 0: the paid period alone decides (the outlet default of 3 days
+        // keeps access a few days longer, see REC-44).
+        subscriptionHasAccess(sub(), new Date("2026-01-31T17:00:00.000Z"), 0),
       ).toBe(false);
     });
     it("REC-24 the next period grants access after the current one, with no gap day", () => {
@@ -3412,7 +3414,9 @@ describe("REC-29 paying the period after the next one early does not lose the fi
     expect(
       subscriptionHasAccess(promoted, noonJakarta(addDays(week2End, 1))),
     ).toBe(true);
-    expect(subscriptionHasAccess(promoted, noonJakarta(week3End))).toBe(false);
+    expect(subscriptionHasAccess(promoted, noonJakarta(week3End), 0)).toBe(
+      false,
+    );
   });
 
   it("REC-29 an early payment that skips a week is still a PERIOD_MISMATCH and changes no access", async () => {
