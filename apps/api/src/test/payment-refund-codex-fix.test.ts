@@ -41,8 +41,6 @@ import {
   expect,
   it,
 } from "vitest";
-import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -65,9 +63,12 @@ import {
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 import { FakeRefundGateway } from "./refund-fake-gateway";
 
+import { paymentTestScope } from "./payment-test-scope";
+
+const scope = paymentTestScope();
 const app = createApp();
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = cafeLegendAccessFixtures.outletIds.bandung;
+const tenantId = scope.tenantId;
+const outletA = scope.outletId;
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 4,
@@ -122,7 +123,7 @@ async function signedIn(
   label: string,
   alsoSupervisor = false,
 ) {
-  const client = agent(app);
+  const client = agent(app).set("Host", scope.hostname);
   const email = await signUp(client, label);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
@@ -442,6 +443,7 @@ async function seedExtraFundRefund(intentId: string) {
 }
 
 beforeAll(async () => {
+  await scope.seed(owner);
   ({ userId: requesterId } = await signedIn("owner", "Codex fix requester"));
   ({ userId: financeAId } = await signedIn("finance", "Codex fix finance A"));
   ({ client: financeB, userId: financeBId } = await signedIn(
@@ -1138,7 +1140,7 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
 
   beforeAll(async () => {
     // Finance (MFA role) plus supervisor, whose session never verified MFA.
-    noMfa = agent(app);
+    noMfa = agent(app).set("Host", scope.hostname);
     await signUp(noMfa, "Codex fix no MFA");
     const session = await noMfa.get("/api/auth/get-session");
     const userId = session.body.user.id as string;

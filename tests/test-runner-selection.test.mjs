@@ -14,8 +14,13 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 // Execute the real runner while replacing process/Docker boundaries. No database
 // or child test process is started by these dispatch tests.
-async function dispatch(env = {}) {
+async function dispatch(
+  env = {},
+  { apiStatus = 0, rootStatus = 0, exitCode } = {},
+) {
   const calls = [];
+  const messages = [];
+  const cleanup = [];
   const fakeProcess = {
     argv: ["node", "scripts/test.mjs", "unit"],
     env,
@@ -25,7 +30,10 @@ async function dispatch(env = {}) {
   };
   const dependencies = {
     process: fakeProcess,
-    console: { log() {}, error() {} },
+    console: {
+      log: (...parts) => messages.push(parts.join(" ")),
+      error: (...parts) => messages.push(parts.join(" ")),
+    },
     URL,
     spawn(command, args, options) {
       calls.push({ command, args, env: options.env });
@@ -34,11 +42,20 @@ async function dispatch(env = {}) {
       queueMicrotask(() => {
         if (command === "docker" && args.includes("port"))
           child.stdout.emit("data", "127.0.0.1:55432\n");
-        child.emit("close", 0);
+        const status =
+          command === "/test/node"
+            ? rootStatus
+            : args.slice(0, 4).join(" ") === "--filter @starter/api run test"
+              ? apiStatus
+              : 0;
+        child.emit("close", status);
       });
       return child;
     },
-    spawnSync: () => ({ status: 0 }),
+    spawnSync: (command, args) => {
+      cleanup.push({ command, args });
+      return { status: 0 };
+    },
     randomBytes: (length) => Buffer.alloc(length, 1),
     readdirSync: () => ["one.test.mjs", "two.test.mjs", "ignored.txt"],
     resolve,
@@ -53,8 +70,8 @@ async function dispatch(env = {}) {
   await new AsyncFunction(...Object.keys(dependencies), source)(
     ...Object.values(dependencies),
   );
-  assert.equal(fakeProcess.exitCode, undefined, "Runner must complete");
-  return calls;
+  assert.equal(fakeProcess.exitCode, exitCode, "Runner exit status");
+  return Object.assign(calls, { messages, cleanup });
 }
 
 const apiCall = (calls) =>
@@ -63,6 +80,51 @@ const apiCall = (calls) =>
       call.args.slice(0, 4).join(" ") === "--filter @starter/api run test",
   );
 const rootCall = (calls) => calls.find((call) => call.command === "/test/node");
+
+test("API success and node:test failure are reported as separate steps", async () => {
+  const calls = await dispatch(
+    { LEGEND_TEST_FILES: "src/test/example.test.ts tests/one.test.mjs" },
+    { rootStatus: 1, exitCode: 1 },
+  );
+  assert.ok(apiCall(calls));
+  assert.ok(rootCall(calls));
+  assert.ok(calls.messages.includes("[vitest] Passed."));
+  assert.ok(
+    calls.messages.some((message) => message.startsWith("[node:test] Failed:")),
+  );
+  assert.equal(
+    calls.messages.some((message) => message.includes("Start Docker Desktop")),
+    false,
+  );
+  assert.ok(
+    calls.cleanup.some(
+      (call) => call.command === "docker" && call.args.includes("down"),
+    ),
+  );
+});
+
+test("Successful mixed selection reports both completed test steps", async () => {
+  const calls = await dispatch({
+    LEGEND_TEST_FILES: "src/test/example.test.ts tests/one.test.mjs",
+  });
+  assert.ok(calls.messages.includes("[vitest] Passed."));
+  assert.ok(calls.messages.includes("[node:test] Passed."));
+});
+
+test("API failure remains nonzero and is attributed to vitest", async () => {
+  const calls = await dispatch(
+    { LEGEND_TEST_FILES: "src/test/example.test.ts tests/one.test.mjs" },
+    { apiStatus: 1, exitCode: 1 },
+  );
+  assert.ok(
+    calls.messages.some((message) => message.startsWith("[vitest] Failed:")),
+  );
+  assert.equal(
+    calls.messages.some((message) => message.includes("[vitest] Passed.")),
+    false,
+  );
+  assert.ok(calls.cleanup.some((call) => call.args.includes("down")));
+});
 
 test("Root-only selection executes the selected root suite without API tests", async () => {
   const calls = await dispatch({ LEGEND_TEST_FILES: "tests/one.test.mjs" });

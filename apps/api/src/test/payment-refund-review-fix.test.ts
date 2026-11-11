@@ -38,8 +38,6 @@ import {
   expect,
   it,
 } from "vitest";
-import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -61,9 +59,12 @@ import {
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 import { FakeRefundGateway } from "./refund-fake-gateway";
 
+import { paymentTestScope } from "./payment-test-scope";
+
+const scope = paymentTestScope();
 const app = createApp();
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = cafeLegendAccessFixtures.outletIds.bandung;
+const tenantId = scope.tenantId;
+const outletA = scope.outletId;
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 4,
@@ -116,7 +117,7 @@ async function signedIn(
   templateKey: "owner" | "finance" | "supervisor",
   label: string,
 ) {
-  const client = agent(app);
+  const client = agent(app).set("Host", scope.hostname);
   const email = await signUp(client, label);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
@@ -408,6 +409,7 @@ const decide = (
   );
 
 beforeAll(async () => {
+  await scope.seed(owner);
   ({ client: requester, userId: requesterId } = await signedIn(
     "owner",
     "Review fix requester",
@@ -917,9 +919,9 @@ describe("PAY-04 review F: every approver of the chain must hold reconcile or su
     // still re-check authority at the refund's outlet (defence in depth), so the
     // two decisions are rewritten in the database to approvers who hold
     // pos.refund.approve / payment.reconcile only at another outlet.
-    const otherOutlet = cafeLegendAccessFixtures.outletIds.bandung2;
+    const otherOutlet = scope.otherOutletId;
     const elsewhere = async (label: string, templateKeys: string[]) => {
-      const client = agent(app);
+      const client = agent(app).set("Host", scope.hostname);
       const email = await signUp(client, label);
       const session = await client.get("/api/auth/get-session");
       const userId = session.body.user.id as string;

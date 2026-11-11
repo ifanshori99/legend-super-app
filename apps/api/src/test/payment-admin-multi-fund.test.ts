@@ -20,7 +20,6 @@ import {
   it,
   vi,
 } from "vitest";
-import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
@@ -33,9 +32,12 @@ import { sweepApprovedRefundPayouts } from "../services/payment-refund.service";
 import { FakeRefundGateway } from "./refund-fake-gateway";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 
+import { paymentTestScope } from "./payment-test-scope";
+
+const scope = paymentTestScope();
 const app = createApp();
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = cafeLegendAccessFixtures.outletIds.bandung;
+const tenantId = scope.tenantId;
+const outletA = scope.outletId;
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 3,
@@ -222,7 +224,8 @@ async function cleanupBills() {
 }
 
 beforeAll(async () => {
-  manager = agent(app);
+  await scope.seed(owner);
+  manager = agent(app).set("Host", scope.hostname);
   const email = await signUp(manager, "Multi fund admin");
   const session = await manager.get("/api/auth/get-session");
   userId = session.body.user.id as string;
@@ -237,7 +240,7 @@ beforeAll(async () => {
     [tenantId, userId, role.rows[0]!.id],
   );
   // Finance (tenant) + supervisor (outlet): may retry a held refund payout.
-  financeSup = agent(app);
+  financeSup = agent(app).set("Host", scope.hostname);
   const supEmail = await signUp(financeSup, "Multi fund finance supervisor");
   const supSession = await financeSup.get("/api/auth/get-session");
   financeSupId = supSession.body.user.id as string;
