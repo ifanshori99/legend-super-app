@@ -128,6 +128,7 @@ export function PinForgot() {
   useEffect(() => {
     if (!watching) return;
     if (polled === "verified") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- state follows the polled challenge status, the expiry timer and the screen change
       setStep("verified");
     } else if (polled === "expired" || polled === "cancelled") {
       block("expired");
@@ -150,6 +151,7 @@ export function PinForgot() {
   const refetchStatus = status.refetch;
   const expiresAt = challenge?.expiresAt;
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- state follows the polled challenge status, the expiry timer and the screen change
     setExpiryChecked(false);
   }, [challengeId, expiresAt]);
   useEffect(() => {
@@ -179,6 +181,7 @@ export function PinForgot() {
     if (previousScreen.current === screenKey) return;
     previousScreen.current = screenKey;
     if (screenKey === "verified") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- state follows the polled challenge status, the expiry timer and the screen change
       setAnnouncement("Nomor terverifikasi");
       return;
     }

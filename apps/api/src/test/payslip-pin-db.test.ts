@@ -23,7 +23,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import express from "express";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendPayrollFixtures } from "@starter/shared/hris/payroll";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
@@ -312,7 +312,6 @@ type Staff = {
 let world: World;
 let otherWorld: World; // a different tenant
 let otherTenantPayslipId: string;
-let otherOutletId: string;
 const otherRoles: string[] = [];
 let hr: { client: Client; userId: string };
 
@@ -455,7 +454,6 @@ beforeAll(async () => {
   const otherBrand = randomUUID();
   const otherEntity = randomUUID();
   const otherOutlet = randomUUID();
-  otherOutletId = otherOutlet;
   await asTenant(otherTenantId, async (client) => {
     await client.query(
       `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'b', 'Brand')`,

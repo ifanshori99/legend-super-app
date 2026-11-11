@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global window, document, getComputedStyle -- used only inside page.evaluate callbacks */
 // UI check for "Lupa PIN lewat WhatsApp masuk" (bead legend-ur82k).
 //
 // For every state below, at 390x844 and 1280x800: open the forgot-PIN page in
@@ -185,7 +186,9 @@ const STATES = [
     scenario: "unavailable-plain",
     prepare: async (page) => {
       await startWhatsApp(page);
-      await visible(page.getByText(/Hubungi HR atau supervisor di outlet/).first());
+      await visible(
+        page.getByText(/Hubungi HR atau supervisor di outlet/).first(),
+      );
       await visible(page.getByText(/3 hari/).first());
     },
   },
@@ -399,9 +402,7 @@ async function main() {
             (await waButtonOverlapsQr(page))
           )
             problems.push('"Buka WhatsApp" overlaps the QR');
-          const violations = viewport.overflowOnly
-            ? []
-            : await axe.run(page);
+          const violations = viewport.overflowOnly ? [] : await axe.run(page);
           await captureState(
             page,
             join(OUT_DIR, `${id}.png`),
