@@ -63,7 +63,13 @@ import {
   type KitchenTicketStatus,
 } from "@starter/shared/kitchen";
 import { db } from "../db/index.ts";
-import { menuItems, outlets, stations } from "../db/schema/index.ts";
+import { HttpError } from "../lib/http-error.ts";
+import {
+  facilityLinkedOrders,
+  menuItems,
+  outlets,
+  stations,
+} from "../db/schema/index.ts";
 import {
   kitchenStationFeed,
   kitchenTicketItems,
@@ -243,6 +249,48 @@ async function assertStationInOutlet(
 // ---- Routing (KDS-01) -------------------------------------------------------------
 
 /**
+ * App-level guard (the DB trigger `kitchen_tickets_breakfast_paid` is the
+ * backstop): a facility breakfast order (channel 'facility' or a linked row)
+ * reaches the kitchen only after its payment was verified.
+ */
+async function assertBreakfastPaid(
+  tx: Tx,
+  tenantId: string,
+  orderId: string,
+): Promise<void> {
+  const [order] = await tx
+    .select({ channel: orders.channel })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+    .limit(1);
+  const [linked] = await tx
+    .select({
+      status: facilityLinkedOrders.status,
+      paidAt: facilityLinkedOrders.paidAt,
+    })
+    .from(facilityLinkedOrders)
+    .where(
+      and(
+        eq(facilityLinkedOrders.tenantId, tenantId),
+        eq(facilityLinkedOrders.orderId, orderId),
+      ),
+    )
+    .limit(1);
+  if (order?.channel !== "facility" && !linked) return;
+  if (
+    linked &&
+    linked.paidAt !== null &&
+    (linked.status === "paid" || linked.status === "fired")
+  )
+    return;
+  throw new HttpError(
+    409,
+    "BREAKFAST_NOT_PAID",
+    "The breakfast order is not paid yet.",
+  );
+}
+
+/**
  * Routes fired order lines to their stations in the CALLER's transaction.
  * Lines whose menu item has no station are not kitchen items; lines already
  * routed are skipped (unique order_item_id), so firing twice never doubles.
@@ -268,6 +316,7 @@ export async function routeFiredItemsToKitchen(
   const outletId = outletIdSchema.parse(input.outletId);
   if (input.itemIds.length === 0) return { ticketIds: [], unroutedItemIds: [] };
   const tenantId = context.tenant.tenantId;
+  await assertBreakfastPaid(tx, tenantId, input.orderId);
   const rows = await tx
     .select({
       item: orderItems,
