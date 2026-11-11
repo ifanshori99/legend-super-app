@@ -591,8 +591,9 @@ export async function calculateServiceChargePoolAllocations(
 /**
  * Hands an approved pool to a payroll run: approved -> distributed, once. The
  * pool row is locked, so two distributions queue and the second sees
- * `distributed`. A locked, paid or reversed run is frozen (PAYR-02) and takes
- * nothing. The allocations must add up to the pool amount, else nothing moves.
+ * `distributed`. Only draft or simulated runs accept a distribution (Q42);
+ * approval freezes the amount that was reviewed. The allocations must add up
+ * to the pool amount, else nothing moves.
  * Lock order is always pool first, then run, so two distributions cannot
  * deadlock. Once both rows are locked the run must be a regular run of the
  * legal entity that owns the pool's outlet, and its period must cover the
@@ -633,7 +634,7 @@ export async function distributeServiceChargePoolToRun(
       .limit(1)
       .for("update");
     if (!run) throw notFound("Payroll run");
-    if (["locked", "paid", "reversed"].includes(run.status))
+    if (!["draft", "simulated"].includes(run.status))
       throw new PayrollError("PAYROLL_RUN_FROZEN");
 
     const [outlet] = await tx
