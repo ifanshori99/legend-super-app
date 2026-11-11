@@ -131,6 +131,7 @@ export function WhatsAppLogin({
   const handled = useRef(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const confirmYesRef = useRef<HTMLButtonElement>(null);
+  const startRef = useRef<HTMLButtonElement>(null);
   const lastFocusKey = useRef<string | null | undefined>(undefined);
   const start = useStartWhatsAppLogin();
   const cancel = useCancelWhatsAppLogin();
@@ -224,7 +225,10 @@ export function WhatsAppLogin({
   }
 
   async function giveUp() {
-    if (await abort()) setIssued(null);
+    if (!(await abort())) return;
+    setIssued(null);
+    // "Batal" unmounts with the waiting view; keep keyboard focus on the page.
+    requestAnimationFrame(() => startRef.current?.focus());
   }
 
   async function decline() {
@@ -315,6 +319,7 @@ export function WhatsAppLogin({
           </div>
         </div>
         <Button
+          ref={startRef}
           size="lg"
           className="w-full"
           loading={start.isPending}
@@ -400,6 +405,11 @@ export function WhatsAppLogin({
         )}
         {cancel.isError && (
           <InlineFailure error={cancel.error} onRetry={() => void decline()} />
+        )}
+        {/* Confirm went through but the follow-up poll failed: confirm is
+            idempotent, so retrying it refetches the session. */}
+        {poll.isError && !confirm.isError && !cancel.isError && (
+          <InlineFailure error={poll.error} onRetry={() => void accept()} />
         )}
         <p className="text-sm leading-5 text-muted-foreground">
           {t("login.whatsapp.confirmHint")}
