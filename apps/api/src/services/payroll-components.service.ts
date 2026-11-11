@@ -776,7 +776,7 @@ const OVERTIME_CODE = "LEMBUR";
 
 /** Whole hours as Decimal4, rounded down: a fraction is never paid. */
 const hoursOf = (minutes: number) =>
-  formatDecimal4((BigInt(minutes) * 10_000n) / 60n);
+  formatDecimal4((BigInt(minutes) / 60n) * 10_000n);
 
 /**
  * Gross, deductions, net and overtime of one employee for a period, from the
@@ -790,7 +790,8 @@ const hoursOf = (minutes: number) =>
  * deductions are cut, later display order first, so net is never below zero;
  * overtime requires an approved request and `out` logs that are valid, or
  * flagged and then accepted, capped by the largest attendance value and 720
- * minutes per day, on the overtime base of the employee's own earnings only.
+ * minutes per day, with hours rounded down per day and day type, on the
+ * overtime base of the employee's own earnings only.
  */
 export async function computeEmployeeGross(
   context: ScopedTenantContext,
@@ -1028,6 +1029,10 @@ export async function computeEmployeeGross(
       (sum, entry) => sum + entry.minutes,
       0,
     );
+    const overtimeHours = payableOvertime.reduce(
+      (sum, entry) => sum + BigInt(entry.minutes) / 60n,
+      0n,
+    );
     // No overtime base, no overtime pay: the minutes stay reported, unpaid.
     let overtimeIdr = idr(0);
     if (overtimeBase > 0)
@@ -1050,7 +1055,7 @@ export async function computeEmployeeGross(
           kind: "earning",
           amountIdr: overtimeIdr,
           taxable: true,
-          quantity: hoursOf(overtimeMinutes),
+          quantity: formatDecimal4(overtimeHours * 10_000n),
           sourceId: null,
         }),
       );

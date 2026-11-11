@@ -5,6 +5,7 @@ Scope: cabang `ws/payroll-engine`, worktree `.worktrees/payroll-engine`. Pelacak
 Pemilik berkas: implementer components hanya `apps/api/src/services/payroll-components.service.ts`; test-writer hanya `apps/api/src/test/payroll-gross-engine.test.ts`; implementer service-charge hanya service dan test distribusinya; parent menggabungkan, commit, dan menulis progress. Dua Explore memetakan business logic/schema dan concurrency/access.
 
 Urutan deliverable, masing-masing test gagal karena bug yang dimaksud, fix minimum, test hijau, lalu commit lokal:
+
 1. P0: request approved dalam periode, menit 1..720, tarif dayType, agregasi tier harian, cap total terhadap menit absensi valid/accepted hari itu. Absensi 600 tanpa approval menghasilkan 0.
 2. P1: irisan tanggal komponen dan periode payroll dengan joinDate..endDate inklusif, pembagi tetap hari kalender payroll, floor agar tidak melebihi nominal.
 3. P1/Q42: distribusi pool hanya ke run draft/simulated; hr_approved/approved ditolak tanpa perubahan uang/alokasi.

@@ -38,8 +38,8 @@
 //  A2 overtime counts only on attendance logs of type 'out' inside
 //     [periodStart, periodEnd] that are approved: validity 'valid' (review
 //     none/accepted) or flagged-then-accepted. Pending flagged and rejected
-//     logs never count. Hours are computed per business day (tiers are per
-//     day), using the approved request's dayType. Attendance alone never pays.
+//     logs never count. Paid hours are floored per business day and dayType,
+//     without carrying partial hours between days. Attendance alone never pays.
 //  A3 deductions beyond gross are cut in displayOrder order (earlier lines
 //     keep their full amount, the last ones shrink, then drop to 0).
 //  A4 no overtime minutes -> no overtime line; no components -> zero totals
@@ -1359,6 +1359,97 @@ describe("computeEmployeeGross: inactive components (538-G2b-P2)", () => {
         .filter((line) => line.kind === "deduction")
         .map((line) => line.amountIdr),
     ).toEqual([250_000]);
+  });
+});
+
+describe("computeEmployeeGross: whole-hour overtime (538-G2b-P3)", () => {
+  it.each([
+    [59, 0, null],
+    [90, 150_000, "1.0000"],
+    [119, 150_000, "1.0000"],
+  ] as const)(
+    "[538-G2b-P3] floors %i approved minutes to full hours",
+    async (minutes, expectedPay, quantity) => {
+      const employeeId = await seedEmployee();
+      const base = await earning({ overtimeBase: true });
+      await setAmount(employeeId, base.id, 17_300_000);
+      await seedLog(employeeId, {
+        businessDate: "2026-06-03",
+        overtimeMinutes: minutes,
+      });
+      await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes });
+
+      const result = await compute(employeeId);
+
+      expect(result.overtimeMinutes).toBe(minutes);
+      expect(result.overtimeIdr).toBe(expectedPay);
+      expect(result.netIdr).toBe(17_300_000 + expectedPay);
+      const overtime = result.lines.filter(
+        (line) => line.category === "overtime",
+      );
+      if (quantity === null) expect(overtime).toEqual([]);
+      else
+        expect(overtime).toEqual([
+          expect.objectContaining({ quantity, amountIdr: expectedPay }),
+        ]);
+    },
+  );
+
+  it("[538-G2b-P3] combines partial same-day requests before flooring hours", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    await seedLog(employeeId, {
+      businessDate: "2026-06-03",
+      overtimeMinutes: 60,
+    });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 30 });
+    await seedOvertimeRequest(employeeId, { date: "2026-06-03", minutes: 30 });
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(60);
+    expect(result.overtimeIdr).toBe(150_000);
+    expect(result.lines.filter((line) => line.category === "overtime")).toEqual(
+      [expect.objectContaining({ quantity: "1.0000", amountIdr: 150_000 })],
+    );
+  });
+
+  it("[538-G2b-P3] never carries partial hours between business days", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    for (const date of ["2026-06-03", "2026-06-04"]) {
+      await seedLog(employeeId, { businessDate: date, overtimeMinutes: 59 });
+      await seedOvertimeRequest(employeeId, { date, minutes: 59 });
+    }
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(118);
+    expect(result.overtimeIdr).toBe(0);
+    expect(result.netIdr).toBe(17_300_000);
+    expect(result.lines.some((line) => line.category === "overtime")).toBe(
+      false,
+    );
+  });
+
+  it("[538-G2b-P3] overtime quantity is the sum of paid daily full hours", async () => {
+    const employeeId = await seedEmployee();
+    const base = await earning({ overtimeBase: true });
+    await setAmount(employeeId, base.id, 17_300_000);
+    for (const date of ["2026-06-03", "2026-06-04"]) {
+      await seedLog(employeeId, { businessDate: date, overtimeMinutes: 90 });
+      await seedOvertimeRequest(employeeId, { date, minutes: 90 });
+    }
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(180);
+    expect(result.overtimeIdr).toBe(300_000);
+    expect(result.lines.filter((line) => line.category === "overtime")).toEqual(
+      [expect.objectContaining({ quantity: "2.0000", amountIdr: 300_000 })],
+    );
   });
 });
 
