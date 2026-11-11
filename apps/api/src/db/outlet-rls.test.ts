@@ -161,6 +161,11 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
       // legend-111j: member_profile_user_index, tenant-level ids only (a
       // member is not outlet-owned), see db/rls.test.ts; needs Opus review.
       "public.member_profile_user_index",
+      // legend-2qq: hpp_outlet_state holds only stale markers and tenant RLS
+      // only (0259_hpp_recompute.sql): an outlet-scoped actor must mark other
+      // outlets stale (markHppStale). Added by merge train batch48g; CTO and
+      // architect confirmation pending, same status as the entries above.
+      "public.hpp_outlet_state",
     ];
     const result = await ownerPool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table
