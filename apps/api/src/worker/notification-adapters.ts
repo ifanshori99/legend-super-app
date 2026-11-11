@@ -48,6 +48,7 @@ import {
   notificationPreferenceSchema,
   type NotificationCategory,
   type NotificationPolicy,
+  subscriptionInvoiceCreatedEvent,
   type NotificationPreference,
   type Reachability,
 } from "@starter/shared/notification";
@@ -67,6 +68,7 @@ import {
   pushSubscriptions,
   whatsappReservations,
 } from "../db/schema/notification.ts";
+import { customerProfiles } from "../db/schema/crm-member.ts";
 import { facilityIncidents } from "../db/schema/facility.ts";
 import { employees } from "../db/schema/hris.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
@@ -756,6 +758,43 @@ async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+const INVOICE_AMOUNT = new Intl.NumberFormat("id-ID");
+
+/** A recurring-billing invoice was created: the subscribing customer hears
+ * about it. The recipient is re-read from the customer profile row (never the
+ * payload); a missing, merged or user-less profile pages nobody. The hosted pay
+ * link goes in the body because a notification link must be an in-app path. */
+async function subscriptionInvoiceCreatedRule(input: RuleInput): Promise<Rule> {
+  const payload = subscriptionInvoiceCreatedEvent.payloadSchema.parse(
+    input.event.payload,
+  );
+  const [profile] = await input.tx
+    .select({
+      userId: customerProfiles.userId,
+      mergedIntoProfileId: customerProfiles.mergedIntoProfileId,
+    })
+    .from(customerProfiles)
+    .where(
+      and(
+        eq(customerProfiles.tenantId, input.tenantId),
+        eq(customerProfiles.id, payload.customerProfileId),
+      ),
+    );
+  const userIds =
+    profile?.userId && profile.mergedIntoProfileId === null
+      ? [profile.userId]
+      : [];
+  return {
+    userIds,
+    content: {
+      category: "subscription_billing",
+      title: "Tagihan langganan baru",
+      body: `Tagihan langganan ${payload.planName} untuk periode ${payload.periodStart} sampai ${payload.periodEnd} sebesar Rp${INVOICE_AMOUNT.format(payload.amountIdr)} sudah terbit. Bayar di ${payload.hostedUrl}`,
+      link: null,
+    },
+  };
+}
+
 const OWNER_CHANGE_TIME = new Intl.DateTimeFormat("id-ID", {
   timeZone: "Asia/Jakarta",
   dateStyle: "long",
@@ -938,6 +977,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return refundEscalatedRule(input);
     case "tenant_owner.changed":
       return tenantOwnerChangedRule(input);
+    case "subscription.invoice_created":
+      return subscriptionInvoiceCreatedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }

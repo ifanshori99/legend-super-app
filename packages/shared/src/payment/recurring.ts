@@ -1,0 +1,163 @@
+// Back-office contracts for DOIT recurring billing (bead legend-6c6; PRD
+// "Tagihan Berulang"): plans, subscriptions and their invoices. The tenant
+// always comes from the trusted session context and the plan price is server
+// truth. A subscription turns active only from a verified `invoice.paid`
+// webhook, never from a call on these routes. Provider ids stay server-side.
+
+import {
+  z,
+  dataResponseSchema,
+  idrSchema,
+  isoDateTimeSchema,
+  businessDateSchema,
+  outletIdSchema,
+  uuidSchema,
+} from "../core/index.ts";
+import { defineEndpoint } from "../api/endpoint.ts";
+
+const RECURRING = "/api/payments/recurring";
+
+export const recurringIntervalSchema = z.enum(["month", "week"]);
+export type RecurringInterval = z.infer<typeof recurringIntervalSchema>;
+
+export const recurringPlanStatusSchema = z.enum(["active", "archived"]);
+export const recurringSubscriptionStatusSchema = z.enum([
+  "pending_first_payment",
+  "active",
+  "past_due",
+  "paused",
+  "cancelled",
+]);
+export const subscriptionInvoiceStatusSchema = z.enum([
+  "open",
+  "paid",
+  "void",
+  "expired",
+  "needs_review",
+]);
+
+export const recurringPlanSchema = z.strictObject({
+  id: uuidSchema,
+  outletId: outletIdSchema,
+  name: z.string().min(1).max(120),
+  amountIdr: idrSchema.refine((n) => n > 0),
+  interval: recurringIntervalSchema,
+  status: recurringPlanStatusSchema,
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+});
+export type RecurringPlan = z.infer<typeof recurringPlanSchema>;
+
+export const recurringSubscriptionSchema = z.strictObject({
+  id: uuidSchema,
+  outletId: outletIdSchema,
+  planId: uuidSchema,
+  customerProfileId: uuidSchema,
+  status: recurringSubscriptionStatusSchema,
+  currentPeriodStart: businessDateSchema.nullable(),
+  currentPeriodEnd: businessDateSchema.nullable(),
+  activatedAt: isoDateTimeSchema.nullable(),
+  pausedAt: isoDateTimeSchema.nullable(),
+  cancelledAt: isoDateTimeSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+});
+export type RecurringSubscription = z.infer<typeof recurringSubscriptionSchema>;
+
+/** `subscription_invoices` row. `needs_review` means money or a mismatch a
+ * person must look at; it never grants access. */
+export const subscriptionInvoiceSchema = z.strictObject({
+  id: uuidSchema,
+  subscriptionId: uuidSchema,
+  periodStart: businessDateSchema,
+  periodEnd: businessDateSchema,
+  amountIdr: idrSchema.refine((n) => n > 0),
+  hostedUrl: z.string().max(512),
+  status: subscriptionInvoiceStatusSchema,
+  paidAt: isoDateTimeSchema.nullable(),
+  notifiedAt: isoDateTimeSchema.nullable(),
+  reviewReason: z.string().max(64).nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+});
+export type SubscriptionInvoiceDto = z.infer<typeof subscriptionInvoiceSchema>;
+
+/** Whole rupiah above zero; no tenant, provider or status from the client. */
+export const createRecurringPlanInputSchema = z.strictObject({
+  outletId: outletIdSchema,
+  name: z.string().trim().min(1).max(120),
+  amountIdr: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  interval: recurringIntervalSchema,
+});
+export type CreateRecurringPlanInput = z.infer<
+  typeof createRecurringPlanInputSchema
+>;
+
+export const listRecurringPlansQuerySchema = z.strictObject({
+  outletId: outletIdSchema.optional(),
+  status: recurringPlanStatusSchema.optional(),
+});
+
+export const startRecurringSubscriptionInputSchema = z.strictObject({
+  planId: uuidSchema,
+  customerProfileId: uuidSchema,
+});
+export type StartRecurringSubscriptionInput = z.infer<
+  typeof startRecurringSubscriptionInputSchema
+>;
+
+export const recurringSubscriptionStartedSchema = z.strictObject({
+  subscription: recurringSubscriptionSchema,
+  firstInvoiceUrl: z.string().max(512).nullable(),
+});
+
+const subscriptionParams = z.strictObject({ subscriptionId: uuidSchema });
+
+export const listRecurringPlans = defineEndpoint({
+  method: "GET",
+  path: `${RECURRING}/plans`,
+  query: listRecurringPlansQuerySchema,
+  response: dataResponseSchema(z.array(recurringPlanSchema)),
+});
+export const createRecurringPlan = defineEndpoint({
+  method: "POST",
+  path: `${RECURRING}/plans`,
+  body: createRecurringPlanInputSchema,
+  response: dataResponseSchema(recurringPlanSchema),
+});
+export const startRecurringSubscription = defineEndpoint({
+  method: "POST",
+  path: `${RECURRING}/subscriptions`,
+  body: startRecurringSubscriptionInputSchema,
+  response: dataResponseSchema(recurringSubscriptionStartedSchema),
+});
+export const getRecurringSubscription = defineEndpoint({
+  method: "GET",
+  path: `${RECURRING}/subscriptions/:subscriptionId`,
+  params: subscriptionParams,
+  response: dataResponseSchema(recurringSubscriptionSchema),
+});
+export const listSubscriptionInvoices = defineEndpoint({
+  method: "GET",
+  path: `${RECURRING}/subscriptions/:subscriptionId/invoices`,
+  params: subscriptionParams,
+  response: dataResponseSchema(z.array(subscriptionInvoiceSchema)),
+});
+export const pauseRecurringSubscription = defineEndpoint({
+  method: "POST",
+  path: `${RECURRING}/subscriptions/:subscriptionId/pause`,
+  params: subscriptionParams,
+  response: dataResponseSchema(recurringSubscriptionSchema),
+});
+export const resumeRecurringSubscription = defineEndpoint({
+  method: "POST",
+  path: `${RECURRING}/subscriptions/:subscriptionId/resume`,
+  params: subscriptionParams,
+  response: dataResponseSchema(recurringSubscriptionSchema),
+});
+export const cancelRecurringSubscription = defineEndpoint({
+  method: "POST",
+  path: `${RECURRING}/subscriptions/:subscriptionId/cancel`,
+  params: subscriptionParams,
+  response: dataResponseSchema(recurringSubscriptionSchema),
+});

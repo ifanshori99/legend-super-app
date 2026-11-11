@@ -13,9 +13,10 @@
 // agree, otherwise the row is `ignored` and nothing settles; a paid `amount`
 // that differs from the intent goes the AMOUNT_MISMATCH way (money parked).
 // Only `payment.paid` and `payment.expired` move an intent; `refund.succeeded`
-// and `refund.failed` close an approved refund (see processRefundEvent); any
-// other event type (`webhook.test`, `invoice.created`, ...) is stored
-// `ignored`.
+// and `refund.failed` close an approved refund (see processRefundEvent);
+// `invoice.created` and `invoice.paid` go to the recurring billing service
+// (payment-recurring.service.ts); any other event type (`webhook.test`, ...)
+// is stored `ignored`.
 // Failures before the signature is verified all answer with the same
 // UNAUTHORIZED error.
 
@@ -80,6 +81,12 @@ import {
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
 import { gatewayWebhookTolerance } from "./platform-payment-gateway.service";
+import { processDoitInvoiceEvent } from "./payment-recurring.service";
+import {
+  isDoitRecurringEvent,
+  parseDoitInvoiceEvent,
+  type DoitInvoiceEvent,
+} from "./payment-doit-recurring-wire";
 import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
@@ -123,7 +130,8 @@ type ProcessOutcome = "processed" | "ignored" | "failed";
  * refund events only the facts of `readDoitRefundFacts`. */
 type ParsedEvent =
   | { kind: "payment"; event: DoitWebhookEvent }
-  | { kind: "refund"; event: DoitRefundWebhookEvent };
+  | { kind: "refund"; event: DoitRefundWebhookEvent }
+  | { kind: "invoice"; event: DoitInvoiceEvent };
 type PaymentIntentRow = typeof paymentIntents.$inferSelect;
 /** `until` (epoch ms) is set on a previous-generation secret (D17-D18): it
  * verifies only while `now < until`. Checked at use time, not at load time, so
@@ -1190,6 +1198,10 @@ async function processRefundEvent(
 
 /** Parses the body of a verified event by its type. Null: not readable. */
 function parseEventBody(type: string, body: unknown): ParsedEvent | null {
+  if (isDoitRecurringEvent(type)) {
+    const invoice = parseDoitInvoiceEvent(body);
+    return invoice ? { kind: "invoice", event: invoice } : null;
+  }
   if (isDoitRefundEvent(type)) {
     const refund = doitRefundWebhookEventSchema.safeParse(body);
     return refund.success ? { kind: "refund", event: refund.data } : null;
@@ -1211,6 +1223,7 @@ function parseStoredEvent(payload: unknown): ParsedEvent | null {
 function eventProviderRef(parsed: ParsedEvent): string | null {
   let ref: string | undefined;
   if (parsed.kind === "payment") ref = parsed.event.data.id;
+  else if (parsed.kind === "invoice") ref = parsed.event.data.invoice.id;
   else {
     const facts = readDoitRefundFacts(parsed.event.data);
     ref = facts.refundId ?? facts.payment?.id;
@@ -1225,9 +1238,76 @@ async function processStoredEvent(
   now: Date,
   verifiedSecret?: string,
 ): Promise<ProcessOutcome> {
+  if (parsed.kind === "invoice")
+    return processInvoiceEvent(context, row, parsed.event, now);
   return parsed.kind === "refund"
     ? processRefundEvent(context, row, parsed.event, now, verifiedSecret)
     : processPaymentEvent(context, row, parsed.event, now, verifiedSecret);
+}
+
+/** Recurring billing `invoice.created` / `invoice.paid` (bead 6c6). An event
+ * for a subscription or invoice not known yet may just be early, so it is
+ * retried like an unknown payment reference; after that a paid event for an
+ * unseen invoice is kept for review and the rest is ignored. */
+async function processInvoiceEvent(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  event: DoitInvoiceEvent,
+  now: Date,
+): Promise<ProcessOutcome> {
+  try {
+    const early =
+      now.getTime() - row.receivedAt.getTime() <
+      WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
+    const result = await processDoitInvoiceEvent(context, event, now, {
+      sourceEventId: row.id,
+      storeUnseenPaidForReview: !early,
+      // The integration whose secret verified this event (stored first).
+      verifiedIntegrationId: row.integrationId,
+    });
+    if (
+      result.outcome === "unknown_subscription" ||
+      result.outcome === "unknown_invoice"
+    ) {
+      const code =
+        result.outcome === "unknown_subscription"
+          ? "UNKNOWN_SUBSCRIPTION"
+          : "UNKNOWN_INVOICE";
+      await markRow(
+        context,
+        row.id,
+        early
+          ? { status: "failed", lastErrorCode: code }
+          : { status: "ignored", lastErrorCode: code, processedAt: now },
+        now,
+      );
+      return early ? "failed" : "ignored";
+    }
+    const ignored = result.outcome === "ignored";
+    await markRow(
+      context,
+      row.id,
+      {
+        status: ignored ? "ignored" : "processed",
+        lastErrorCode: result.code,
+        processedAt: now,
+      },
+      now,
+    );
+    return ignored ? "ignored" : "processed";
+  } catch (error) {
+    await markRow(
+      context,
+      row.id,
+      { status: "failed", lastErrorCode: errorCodeOf(error) },
+      now,
+    ).catch(() => {});
+    throw new HttpError(
+      500,
+      "INTERNAL_ERROR",
+      "Webhook belum dapat diproses. Coba lagi.",
+    );
+  }
 }
 
 async function insertRow(
@@ -1440,7 +1520,8 @@ export async function receiveDoitWebhook(input: {
   if (
     envelope.success &&
     !isDoitPaymentEvent(envelope.data.type) &&
-    !isDoitRefundEvent(envelope.data.type)
+    !isDoitRefundEvent(envelope.data.type) &&
+    !isDoitRecurringEvent(envelope.data.type)
   ) {
     // Not a payment or refund event: stored (deduped by event id) and ignored, 200.
     const { id, type, created_at } = envelope.data;

@@ -1653,6 +1653,13 @@
       "when": 1794330000000,
       "tag": "0249_backfill_marketing_opt_in_from_consents",
       "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "7",
+      "when": 1794331000000,
+      "tag": "0285_payment_recurring_billing",
+      "breakpoints": true
     }
   ]
 }

@@ -57,6 +57,7 @@ import { tableLinksRouter } from "./table-links.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
+import { paymentRecurringRouter } from "./payment-recurring.routes.ts";
 import { accountingJournalRouter } from "./accounting-journal.routes";
 import { accountingRouter } from "./accounting.routes";
 import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
@@ -213,6 +214,8 @@ apiRouter.use("/inventory", createInventoryCountRouter());
 apiRouter.use("/inventory", createRecipeRouter());
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.
 apiRouter.use("/payments/admin", paymentAdminRouter);
+// DOIT recurring billing back office (legend-6c6); before the public /payments router.
+apiRouter.use("/payments/recurring", paymentRecurringRouter);
 apiRouter.use("/payments", paymentRouter);
 // Fail closed until production tenant membership and role resolvers are wired.
 apiRouter.use("/notifications", createNotificationRouter());

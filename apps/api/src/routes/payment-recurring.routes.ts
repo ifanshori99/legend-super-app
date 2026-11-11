@@ -1,0 +1,229 @@
+// DOIT recurring billing back office (bead legend-6c6). Paths and schemas are
+// shared with the web client; tenant and actor are always server-derived.
+// Nothing here activates a subscription: only a verified invoice.paid webhook
+// does (see payment-recurring.service.ts).
+import { Router, type Request, type RequestHandler } from "express";
+import { idempotencyKeySchema } from "@starter/shared/core";
+import type { PermissionCode } from "@starter/shared/access";
+import * as contract from "@starter/shared/payment/recurring";
+import { requireAuth } from "../middleware/auth.ts";
+import { jsonBody } from "../middleware/body.ts";
+import { requireTrustedOrigin } from "../middleware/origin.ts";
+import {
+  getScopedTenantContext,
+  requireMenuPermission,
+  requireOutletPermission,
+} from "../middleware/permissions.ts";
+import { requireTenantContext } from "../middleware/tenant.ts";
+import type {
+  PaymentRecurringPlan,
+  PaymentRecurringSubscription,
+  SubscriptionInvoice,
+} from "../db/schema/payment-recurring.ts";
+import * as service from "../services/payment-recurring.service.ts";
+
+export const paymentRecurringRouter = Router();
+paymentRecurringRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+);
+
+const PERMISSION: PermissionCode = "payment.recurring.manage";
+const base = "/api/payments/recurring";
+const route = (path: string) => path.slice(base.length) || "/";
+const scope = (req: Request) => getScopedTenantContext(req);
+const key = (req: Request) =>
+  idempotencyKeySchema.parse(req.get("Idempotency-Key"));
+
+/** An explicit outlet narrows the gate; otherwise the caller's reachable
+ * outlets for the permission apply (RLS and the service keep rows inside). */
+function byOutlet(outlet: (req: Request) => unknown): RequestHandler {
+  const reach = requireMenuPermission(PERMISSION);
+  return (req, res, next) => {
+    const id = outlet(req);
+    const gate =
+      id == null
+        ? reach
+        : requireOutletPermission(PERMISSION, () => String(id));
+    return gate(req, res, next);
+  };
+}
+const outletQuery = byOutlet((req) => req.query.outletId);
+const outletBody = byOutlet((req) => req.body?.outletId);
+// Record paths carry only an id: the service checks the row's outlet against
+// the reachable outlets of this permission.
+const record = requireMenuPermission(PERMISSION);
+
+const iso = (value: Date | null) => (value ? value.toISOString() : null);
+
+function planDto(row: PaymentRecurringPlan) {
+  return {
+    id: row.id,
+    outletId: row.outletId,
+    name: row.name,
+    amountIdr: row.amountIdr,
+    interval: row.interval,
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function subscriptionDto(row: PaymentRecurringSubscription) {
+  return {
+    id: row.id,
+    outletId: row.outletId,
+    planId: row.planId,
+    customerProfileId: row.customerProfileId,
+    status: row.status,
+    currentPeriodStart: row.currentPeriodStart,
+    currentPeriodEnd: row.currentPeriodEnd,
+    activatedAt: iso(row.activatedAt),
+    pausedAt: iso(row.pausedAt),
+    cancelledAt: iso(row.cancelledAt),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function invoiceDto(row: SubscriptionInvoice) {
+  return {
+    id: row.id,
+    subscriptionId: row.subscriptionId,
+    periodStart: row.periodStart,
+    periodEnd: row.periodEnd,
+    amountIdr: row.amountIdr,
+    hostedUrl: row.hostedUrl,
+    status: row.status,
+    paidAt: iso(row.paidAt),
+    notifiedAt: iso(row.notifiedAt),
+    reviewReason: row.reviewReason,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+paymentRecurringRouter.get(
+  route(contract.listRecurringPlans.path),
+  outletQuery,
+  async (req, res) => {
+    const plans = await service.listRecurringPlans(
+      scope(req),
+      contract.listRecurringPlans.query.parse(req.query),
+    );
+    res.json({ data: plans.map(planDto) });
+  },
+);
+
+paymentRecurringRouter.post(
+  route(contract.createRecurringPlan.path),
+  jsonBody,
+  outletBody,
+  async (req, res) => {
+    const input = contract.createRecurringPlan.body.parse(req.body);
+    const plan = await service.createRecurringPlan(scope(req), {
+      ...input,
+      idempotencyKey: key(req),
+    });
+    res
+      .status(201)
+      .location(`${base}/plans/${plan.id}`)
+      .json({ data: planDto(plan) });
+  },
+);
+
+paymentRecurringRouter.post(
+  route(contract.startRecurringSubscription.path),
+  jsonBody,
+  record,
+  async (req, res) => {
+    const input = contract.startRecurringSubscription.body.parse(req.body);
+    const started = await service.startSubscription(scope(req), {
+      ...input,
+      idempotencyKey: key(req),
+    });
+    res
+      .status(201)
+      .location(`${base}/subscriptions/${started.subscription.id}`)
+      .json({
+        data: {
+          subscription: subscriptionDto(started.subscription),
+          firstInvoiceUrl: started.firstInvoiceUrl,
+        },
+      });
+  },
+);
+
+paymentRecurringRouter.get(
+  route(contract.getRecurringSubscription.path),
+  record,
+  async (req, res) => {
+    const { subscriptionId } = contract.getRecurringSubscription.params.parse(
+      req.params,
+    );
+    res.json({
+      data: subscriptionDto(
+        await service.getSubscription(scope(req), subscriptionId),
+      ),
+    });
+  },
+);
+
+paymentRecurringRouter.get(
+  route(contract.listSubscriptionInvoices.path),
+  record,
+  async (req, res) => {
+    const { subscriptionId } = contract.listSubscriptionInvoices.params.parse(
+      req.params,
+    );
+    const invoices = await service.listSubscriptionInvoices(
+      scope(req),
+      subscriptionId,
+    );
+    res.json({ data: invoices.map(invoiceDto) });
+  },
+);
+
+paymentRecurringRouter.post(
+  route(contract.pauseRecurringSubscription.path),
+  record,
+  async (req, res) => {
+    const { subscriptionId } = contract.pauseRecurringSubscription.params.parse(
+      req.params,
+    );
+    res.json({
+      data: subscriptionDto(
+        await service.pauseSubscription(scope(req), subscriptionId),
+      ),
+    });
+  },
+);
+
+paymentRecurringRouter.post(
+  route(contract.resumeRecurringSubscription.path),
+  record,
+  async (req, res) => {
+    const { subscriptionId } =
+      contract.resumeRecurringSubscription.params.parse(req.params);
+    res.json({
+      data: subscriptionDto(
+        await service.resumeSubscription(scope(req), subscriptionId),
+      ),
+    });
+  },
+);
+
+paymentRecurringRouter.post(
+  route(contract.cancelRecurringSubscription.path),
+  record,
+  async (req, res) => {
+    const { subscriptionId } =
+      contract.cancelRecurringSubscription.params.parse(req.params);
+    res.json({
+      data: subscriptionDto(
+        await service.cancelSubscription(scope(req), subscriptionId),
+      ),
+    });
+  },
+);

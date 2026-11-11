@@ -135,6 +135,8 @@ const entries = [
   ["payment.transaction.view", ["payment", "finance"]],
   ["payment.reconcile", ["payment", "finance"]],
   ["payment.edc.manage", ["payment"]],
+  // DOIT recurring billing: plans, subscriptions and their invoices (legend-6c6).
+  ["payment.recurring.manage", ["payment"]],
 
   // Inventory, recipes, purchasing (§3.14–3.15, F13–F15)
   ["inventory.stock.view", []],

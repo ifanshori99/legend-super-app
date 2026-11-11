@@ -742,7 +742,6 @@ describe("PAY-02 a verified webhook settles the intent", () => {
     // see the next test and payment-doit-refund-webhook.test.ts.
     for (const [type, status] of [
       ["webhook.test", "pending"],
-      ["invoice.created", "pending"],
       ["payment.proof_uploaded", "pending"],
       // Not in the docs: never moves an intent either.
       ["payment.failed", "failed"],
