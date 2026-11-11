@@ -21,3 +21,14 @@ Tes: file baru per kartu di apps/api/src/test/. Token heavy: hanya engineer (say
 - Flag log: insert hris-attendance.service.ts:850-863 (validity, flagReasons, reviewStatus pending). `transitionAttendanceValidity` packages/shared/src/hris/attendance.ts:197-223 (valid -flag-> flagged).
 - RLS `attendance_logs` per outlet (0215:175-177): update log lintas outlet dari context cuti butuh fungsi SECURITY DEFINER BARU, pola 0276 (migrasi 0277 sementara; `when` > 1794331000000; cek `node scripts/migration-renumber.mjs check --from-idx 240`).
 - Koreksi: `applyApproved(tx, row, decidedBy, decidedAt, now)` hris-attendance-correction.service.ts:646, businessDate :655-658, insert valid :689-712. Dua pemanggil (:476 create-langsung, :791 settle). Cek cuti taruh di awal `applyApproved` (setelah businessDate), pakai `findApprovedLeaveOnDate` dari hris-leave-request.service.ts. Tolak 409.
+
+## Desain 5nt2z (diputuskan engineer dari peta schema)
+Fakta: tidak ada kolom half-day; `days` = hari kalender dikurangi `excludedHolidayDates` (bilangan bulat); akhir pekan dihitung. Jadi hari yang dibatalkan = 1 hari (setengah hari tidak ada di model; tidak dibangun, catat di laporan).
+- Hari log D di rentang [s..e] (cuti approved, outlet mana pun):
+  - D di `excludedHolidayDates`: hari itu tidak dibayar sebagai cuti -> tidak ada pemecahan, saldo tidak berubah, log valid (tidak ada bayaran ganda).
+  - D = s: baris asli dipersempit ke [D+1..e]. D = e: dipersempit ke [s..D-1]. Tengah: baris asli dipersempit ke head [s..D-1], BARIS BARU (id baru) tail [D+1..e], status approved, decidedBy/decidedAt disalin, attachmentKey NULL, createIdempotencyKey NULL, outletId sama, approvalChainId sesuai skema (null bila boleh), excludedHolidayDates difilter ke rentang masing-masing.
+  - Rentang yang menjadi kosong (s=e=D, kasus satu hari lama) tetap: status `cancelled` seperti sebelumnya.
+  - `days` head+tail = days asli - 1 (hitung dari tanggal dikurangi libur dalam rentang). Saldo `used` turun tepat 1 (moveBalance), sekali.
+  - Idempoten: panggilan kedua tidak menemukan cuti approved yang memuat D -> tidak mengubah apa pun, tidak mengembalikan lagi.
+  - Cek akhir STILL_APPROVED (tidak ada cuti approved memuat D) tetap berlaku; audit memuat id asli, id tail, rentang sebelum/sesudah.
+  - Hak: hr.leave.approve di outlet cuti (tetap).
