@@ -436,8 +436,10 @@ async function stallUpdates(
 
 /**
  * While the writer with backend `holderPid` is stalled, which happens first:
- * the competing call settles ("settled") or it waits on a row lock of
- * payment_intents held by the stalled writer ("blocked")? Polled, bounded.
+ * the competing call settles ("settled") or it waits on a row lock of the
+ * bill's POS order or payment_intents held by the stalled writer ("blocked")?
+ * Refund paths lock the POS order (the capture's first row) before the
+ * intent (lockRefundGraph), so they queue on pos_orders first. Polled, bounded.
  */
 async function raceAgainstStalled(
   holderPid: number,
@@ -456,7 +458,8 @@ async function raceAgainstStalled(
          AND $1::int = ANY(pg_blocking_pids(a.pid))
          AND EXISTS (SELECT 1 FROM pg_locks l
                      WHERE l.pid = a.pid AND l.locktype = 'tuple'
-                       AND l.relation = 'payment_intents'::regclass)
+                       AND l.relation IN ('pos_orders'::regclass,
+                                          'payment_intents'::regclass))
        LIMIT 1`,
       [holderPid],
     );
@@ -603,10 +606,12 @@ describe("legend-r5brx the paid webhook never captures money a refund reserves",
     const rows = await refundRows(bill.intentId);
     expect(rows).toHaveLength(2);
     // Found by who filed it, not by position: created_at can tie or step back.
-    expect(rows.find((row) => row.requested_by === "system:pos")).toMatchObject({
-      amount: "60000",
-      requested_by: "system:pos",
-    });
+    expect(rows.find((row) => row.requested_by === "system:pos")).toMatchObject(
+      {
+        amount: "60000",
+        requested_by: "system:pos",
+      },
+    );
     expect(await reservedOf(bill.intentId)).toBe(bill.amountIdr);
   });
 
