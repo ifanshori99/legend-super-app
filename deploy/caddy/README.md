@@ -18,7 +18,7 @@ proxy and test issuance/renewal for each custom domain. Cloudflare feature and
 custom-hostname limits must be verified for the chosen free-plan setup.
 
 The proxy preserves the application's Cache-Control: `robots.txt` and sitemap
-explicitly opt into public caching; SSR defaults to private/no-store. Do not
+explicitly opt into public caching, and so does anonymous (cookie-less) HTML for `/` and `/menu` (`Vary: Host`, see `docs/deployment.md` "Public HTML cache"); other SSR defaults to private/no-store. Do not
 create a cache-everything rule for tenant or authenticated responses. Cache
 keys for public responses must include the hostname. Verify cross-host and
 signed-in isolation before enabling additional CDN caching. Use `TRUST_PROXY=2`

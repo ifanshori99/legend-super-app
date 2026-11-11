@@ -26,6 +26,7 @@ import {
   publicRateLimit,
   type PublicRateLimitOptions,
 } from "./middleware/public-rate-limit";
+import { ssrVisitorIp } from "./middleware/ssr-visitor-ip";
 import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
@@ -284,6 +285,11 @@ export function createApp({
     req.headers[CLIENT_IP_HEADER] = req.ip ?? req.socket.remoteAddress ?? "";
     next();
   });
+
+  // Visitor IP the SSR web server forwards (legend-moe5): trusted only with
+  // the shared secret (SSR_SHARED_SECRET), and both headers are dropped here for
+  // every route, so no client-supplied value reaches the limiters or handlers.
+  app.use(ssrVisitorIp());
 
   // EDGE_MODE route split (legend-2pi, edge/mode.ts): deny by default. On an
   // edge node only the operational API prefixes are served; on the cloud the

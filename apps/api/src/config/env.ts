@@ -199,6 +199,14 @@ const schema = z
           .map((entry) => entry.trim())
           .filter(Boolean),
       ),
+    // Shared rate-limit window across API instances (legend-bpvf). Unset = each
+    // instance counts in its own memory, as on a single VM. Redis errors fall
+    // back to the in-process counter, never to a 5xx.
+    REDIS_URL: z.string().url().optional(),
+    // Secret the web server sends with the visitor IP it forwards (legend-moe5).
+    // The same value in web and API; unset = the forwarded IP is ignored and
+    // SSR calls keep skipping the per-IP bucket (PUBLIC_RATE_LIMIT_INTERNAL_IPS).
+    SSR_SHARED_SECRET: z.string().min(32).optional(),
     LOG_SQL: z
       .enum(["true", "false", "1", "0"])
       .optional()

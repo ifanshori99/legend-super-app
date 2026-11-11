@@ -21,10 +21,16 @@
 // with the proxies in front of the API (Cloudflare + reverse proxy = 2), or
 // every request shares the proxy's address — see docs/deployment.md.
 //
-// The store is in memory, like the session-extend limiter: fixed windows, an
-// LRU cap, and incremental expiry so the work per request stays bounded.
-// Several API instances each hold their own window; the Cloudflare rule
-// documented in docs/deployment.md is the edge layer in front of them.
+// The store is in memory by default, like the session-extend limiter: fixed
+// windows, an LRU cap, and incremental expiry so the work per request stays
+// bounded. With REDIS_URL set the windows live in one shared Redis instead, so
+// several API instances count as one (legend-bpvf); a Redis error or stall
+// falls back to this instance's own counter and never fails the request. The
+// Cloudflare rule documented in docs/deployment.md is the edge layer in front.
+//
+// Visitor IP: the web server's SSR calls arrive from its own address. When it
+// forwards the visitor IP with the shared secret (middleware/ssr-visitor-ip.ts,
+// legend-moe5), the per-IP bucket is charged with that address instead.
 
 import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
@@ -42,6 +48,13 @@ import { clientIpKey } from "../lib/client-ip-key";
 import { createFixedWindowCounter } from "../lib/fixed-window-counter";
 import { HttpError } from "../lib/http-error";
 import { whatsAppDigest } from "../lib/identity-digest";
+import { logger } from "../lib/logger";
+import {
+  createLocalWindowStore,
+  createRedisWindowStore,
+  withLocalFallback,
+  type SharedWindowStore,
+} from "../lib/shared-window-store";
 import { findTenantContext } from "./tenant";
 
 /** One fixed window for every public read; env limits are per minute. */
@@ -107,11 +120,58 @@ export type PublicRateLimitOptions = {
   capacity?: number;
   /** Test seam; production uses the wall clock. */
   now?: () => number;
+  /**
+   * Shared window store. Defaults to Redis when REDIS_URL is set, otherwise
+   * the windows stay in this process. A failing store falls back to it.
+   */
+  store?: SharedWindowStore;
 };
 
 // The counter lives in lib/fixed-window-counter.ts (env-free, so the edge
 // link server can use it too: legend-wg5t); re-exported for existing callers.
 export { createFixedWindowCounter };
+
+let defaultRedisStore: SharedWindowStore | undefined;
+let lastStoreErrorLog = 0;
+
+function logStoreError(error: unknown) {
+  const at = Date.now();
+  if (at - lastStoreErrorLog < MINUTE_MS) return;
+  lastStoreErrorLog = at;
+  logger.warn(
+    { err: error },
+    "Shared rate-limit store unavailable; using this instance's own window",
+  );
+}
+
+/**
+ * The window store the limiters count in: the given or Redis-backed shared one
+ * (with the in-process fallback), or the in-process counters alone.
+ */
+function resolveWindowStore(options: {
+  store?: SharedWindowStore;
+  capacity: number;
+  clock: () => number;
+}): SharedWindowStore {
+  const localCounter = (limit: number, windowMs: number) =>
+    createFixedWindowCounter({ limit, windowMs, capacity: options.capacity });
+  let shared = options.store;
+  if (!shared && env.REDIS_URL) {
+    defaultRedisStore ??= createRedisWindowStore(env.REDIS_URL);
+    shared = defaultRedisStore;
+  }
+  return shared
+    ? withLocalFallback(shared, localCounter, {
+        now: options.clock,
+        onError: logStoreError,
+      })
+    : createLocalWindowStore(localCounter, options.clock);
+}
+
+/** Whole seconds a client must wait, at least one. */
+function retrySeconds(retryAfterMs: number): number {
+  return Math.max(1, Math.ceil(retryAfterMs / 1000));
+}
 
 /**
  * The address Express resolved; never a raw client-supplied header. Buckets are
@@ -136,38 +196,40 @@ export function publicRateLimit(
   const internalIps = new Set(
     options.internalIps ?? env.PUBLIC_RATE_LIMIT_INTERNAL_IPS,
   );
-  const perIp = createFixedWindowCounter({
-    limit: options.perIp ?? env.PUBLIC_RATE_LIMIT_PER_MINUTE,
-    windowMs,
-    capacity,
-  });
-  const perTenant = createFixedWindowCounter({
-    limit: options.perTenant ?? env.PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE,
-    windowMs,
-    capacity,
-  });
+  const perIpLimit = options.perIp ?? env.PUBLIC_RATE_LIMIT_PER_MINUTE;
+  const perTenantLimit =
+    options.perTenant ?? env.PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE;
+  const store = resolveWindowStore({ store: options.store, capacity, clock });
 
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (skipsLimiter(req)) return next();
-    const now = clock();
     // Both buckets are charged, so one noisy IP cannot spend a tenant's whole
     // budget and one tenant's burst cannot hide behind many IPs.
-    // SSR calls from the web server arrive from its own address with no
-    // visitor IP (apps/web upstream.server.ts), so that address skips the
-    // per-IP bucket; the tenant bucket below still caps it.
-    const ip = clientIp(req);
-    const ipRetry = internalIps.has(ip)
-      ? null
-      : perIp.take(`ip:${clientIpKey(ip)}`, now);
+    // SSR calls from the web server arrive from its own address. With the
+    // shared secret the web server forwards the visitor IP (ssr-visitor-ip.ts)
+    // and the per-IP bucket is charged with it; without, that address skips the
+    // per-IP bucket, and the tenant bucket below still caps it.
+    const visitor = req.ssrVisitorIp;
+    const ip = visitor ?? clientIp(req);
     const tenant = findTenantContext(req);
-    const tenantRetry = tenant
-      ? perTenant.take(`tenant:${tenant.tenantId}`, now)
-      : null;
-    const retryAfter = ipRetry ?? tenantRetry;
-    if (retryAfter !== null) {
+    const [ipResult, tenantResult] = await Promise.all([
+      !visitor && internalIps.has(ip)
+        ? null
+        : store.take("ip", clientIpKey(ip), perIpLimit, windowMs),
+      tenant
+        ? store.take("tenant", tenant.tenantId, perTenantLimit, windowMs)
+        : null,
+    ]);
+    const limited =
+      ipResult && !ipResult.allowed
+        ? ipResult
+        : tenantResult && !tenantResult.allowed
+          ? tenantResult
+          : null;
+    if (limited) {
       // Whole seconds until the window reopens, so a client can wait exactly
       // that long. no-store keeps a CDN from replaying the 429.
-      res.setHeader("Retry-After", String(retryAfter));
+      res.setHeader("Retry-After", String(retrySeconds(limited.retryAfterMs)));
       res.setHeader("Cache-Control", "no-store");
       throw new HttpError(429, "RATE_LIMITED", PUBLIC_RATE_LIMIT_MESSAGE);
     }
@@ -251,11 +313,8 @@ export function guestSessionRateLimit(
   const windowMs = options.windowMs ?? PUBLIC_RATE_LIMIT_WINDOW_MS;
   const capacity = options.capacity ?? PUBLIC_RATE_LIMIT_CAPACITY;
   const clock = options.now ?? Date.now;
-  const perSession = createFixedWindowCounter({
-    limit: options.perSession ?? GUEST_SESSION_PER_MINUTE,
-    windowMs,
-    capacity,
-  });
+  const perSessionLimit = options.perSession ?? GUEST_SESSION_PER_MINUTE;
+  const store = resolveWindowStore({ store: options.store, capacity, clock });
   const ipAndTenant = publicRateLimit({
     ...options,
     perIp:
@@ -265,7 +324,7 @@ export function guestSessionRateLimit(
       options.perTenant ?? env.PUBLIC_RATE_LIMIT_GUEST_TENANT_PER_MINUTE,
   });
 
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (isStaffTableSessionCall(req)) return next();
     // Keyed on the credential, not the URL id: every device at a table shares
     // one credential (ORD-01), while a stranger who puts a victim's session id
@@ -277,11 +336,15 @@ export function guestSessionRateLimit(
     if (credential) {
       const tenant = findTenantContext(req);
       const digest = createHash("sha256").update(credential).digest("hex");
-      const retry = perSession.take(
-        `session:${tenant?.tenantId ?? ""}:${digest}`,
-        clock(),
+      const result = await store.take(
+        "session",
+        `${tenant?.tenantId ?? ""}:${digest}`,
+        perSessionLimit,
+        windowMs,
       );
-      if (retry !== null) rejectRateLimited(res, retry);
+      if (!result.allowed) {
+        rejectRateLimited(res, retrySeconds(result.retryAfterMs));
+      }
     }
     return ipAndTenant(req, res, next);
   };
@@ -311,6 +374,8 @@ export type PublicWriteRateLimitOptions = {
   contactWindowMs?: number;
   capacity?: number;
   now?: () => number;
+  /** Shared window store for the IP and tenant buckets; see PublicRateLimitOptions. */
+  store?: SharedWindowStore;
 };
 
 export function rejectRateLimited(
@@ -345,16 +410,9 @@ export function createPublicBookingLimits(
   const internalIps = new Set(
     options.internalIps ?? env.PUBLIC_RATE_LIMIT_INTERNAL_IPS,
   );
-  const perIp = createFixedWindowCounter({
-    limit: options.perIp ?? PUBLIC_WRITE_PER_IP,
-    windowMs,
-    capacity,
-  });
-  const perTenant = createFixedWindowCounter({
-    limit: options.perTenant ?? PUBLIC_WRITE_PER_TENANT,
-    windowMs,
-    capacity,
-  });
+  const perIpLimit = options.perIp ?? PUBLIC_WRITE_PER_IP;
+  const perTenantLimit = options.perTenant ?? PUBLIC_WRITE_PER_TENANT;
+  const store = resolveWindowStore({ store: options.store, capacity, clock });
   const perContact = createFixedWindowCounter({
     limit: options.perContact ?? PUBLIC_WRITE_PER_CONTACT,
     windowMs: contactWindowMs,
@@ -364,18 +422,31 @@ export function createPublicBookingLimits(
   const seenKeys = new Map<string, number>();
 
   return {
-    perRequest: (req, res, next) => {
-      const now = clock();
-      const ip = clientIp(req);
-      const ipRetry = internalIps.has(ip)
-        ? null
-        : perIp.take(`write-ip:${clientIpKey(ip)}`, now);
+    perRequest: async (req, res, next) => {
+      // Same visitor-IP rule as publicRateLimit (ssr-visitor-ip.ts).
+      const visitor = req.ssrVisitorIp;
+      const ip = visitor ?? clientIp(req);
       const tenant = findTenantContext(req);
-      const tenantRetry = tenant
-        ? perTenant.take(`write-tenant:${tenant.tenantId}`, now)
-        : null;
-      const retry = ipRetry ?? tenantRetry;
-      if (retry !== null) rejectRateLimited(res, retry);
+      const [ipResult, tenantResult] = await Promise.all([
+        !visitor && internalIps.has(ip)
+          ? null
+          : store.take("write-ip", clientIpKey(ip), perIpLimit, windowMs),
+        tenant
+          ? store.take(
+              "write-tenant",
+              tenant.tenantId,
+              perTenantLimit,
+              windowMs,
+            )
+          : null,
+      ]);
+      const limited =
+        ipResult && !ipResult.allowed
+          ? ipResult
+          : tenantResult && !tenantResult.allowed
+            ? tenantResult
+            : null;
+      if (limited) rejectRateLimited(res, retrySeconds(limited.retryAfterMs));
       next();
     },
     perContact: async (req, res, next) => {
