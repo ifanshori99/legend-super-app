@@ -1035,35 +1035,48 @@ export async function markOverdueSubscriptionsPastDue(
     eq(t.status, "active"),
     sql`EXISTS (SELECT 1 FROM ${i} WHERE ${i.tenantId} = ${t.tenantId} AND ${i.subscriptionId} = ${t.id} AND ${i.status} = 'open' AND ${i.periodStart} >= COALESCE(${t.nextPeriodEnd}, ${t.currentPeriodEnd}) AND ${i.periodStart} < ${today}::date - ${graceDays}::integer)`,
   );
-  return withTenant(db, context, async (tx) => {
-    const candidates = await tx
-      .select({ id: t.id })
-      .from(t)
-      .where(overdue)
-      .for("update");
-    if (candidates.length === 0) return 0;
-    const changed = await tx
-      .update(t)
-      .set({ status: "past_due", updatedAt: now })
-      .where(
-        and(
-          overdue,
-          inArray(
-            t.id,
-            candidates.map((row) => row.id),
-          ),
-        ),
-      )
-      .returning({
-        id: t.id,
-        customerProfileId: t.customerProfileId,
-        currentPeriodEnd: t.currentPeriodEnd,
+  // One transaction per subscription (legend-6qu47): a row lock and the grace
+  // revoke (customer lock) are held for one subscription only, so the sweep
+  // never blocks a pause or a payment on the others, and one bad row rolls
+  // back alone.
+  const candidates = await withTenant(db, context, (tx) =>
+    tx.select({ id: t.id }).from(t).where(overdue),
+  );
+  let changedCount = 0;
+  for (const candidate of candidates) {
+    try {
+      changedCount += await withTenant(db, context, async (tx) => {
+        const locked = await tx
+          .select({ id: t.id })
+          .from(t)
+          .where(and(overdue, eq(t.id, candidate.id)))
+          .for("update");
+        if (locked.length === 0) return 0;
+        const changed = await tx
+          .update(t)
+          .set({ status: "past_due", updatedAt: now })
+          .where(and(overdue, eq(t.id, candidate.id)))
+          .returning({
+            id: t.id,
+            customerProfileId: t.customerProfileId,
+            currentPeriodEnd: t.currentPeriodEnd,
+          });
+        // `past_due` is no access: the unused grace of the row goes with it.
+        for (const row of changed)
+          await revokeSubscriptionGrace(tx, context, row, now);
+        return changed.length;
       });
-    // `past_due` is no access: the unused grace of each row goes with it.
-    for (const row of changed)
-      await revokeSubscriptionGrace(tx, context, row, now);
-    return changed.length;
-  });
+    } catch (error) {
+      logger.warn(
+        {
+          job: "payment_gateway_poll",
+          errorName: error instanceof Error ? error.name : "unknown",
+        },
+        "Subscription past-due marking failed for one row",
+      );
+    }
+  }
+  return changedCount;
 }
 
 /** The row itself, or its promoted version when its next period is due. */
