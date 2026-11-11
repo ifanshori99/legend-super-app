@@ -80,6 +80,7 @@ import {
 } from "./order-promo-refund.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
+  recoveryRefundGoodsIdr,
   recoveryRefundReplaySplit,
   recoveryRefundSplit,
   type RecoveryRefundPromo,
@@ -681,13 +682,13 @@ export async function deliverOrderRecoveryRefundEvent(
     // refund of another item must not pay this share. The `nothing_left` audit
     // row of this issue is the once-only mark (the event is replayed).
     if (promo !== undefined && replay === null && swapCapIdr === 0) {
-      const goodsIdr = recoveryRefundSplit({
+      // Before the room cut: the ledger must hold the original's full share.
+      const goodsIdr = recoveryRefundGoodsIdr({
         order,
         lineTotalIdr: originalLineTotalIdr,
         priorLinesIdr,
-        releasedIdr,
         promo,
-      }).goodsIdr;
+      });
       const [done] = await tx
         .select({ id: auditLogs.id })
         .from(auditLogs)

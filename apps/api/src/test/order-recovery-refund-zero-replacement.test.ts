@@ -384,17 +384,6 @@ async function ledgerOf(
     : null;
 }
 
-/** The apology vouchers minted for an issue (the swap credit). */
-async function voucherValues(issueId: string): Promise<number[]> {
-  const { rows } = await owner.query<{ value_idr: string }>(
-    `SELECT v.value_idr FROM vouchers v
-     JOIN apology_vouchers a ON a.voucher_id = v.id AND a.tenant_id = v.tenant_id
-     WHERE a.tenant_id = $1 AND a.order_issue_id = $2`,
-    [w.tenant.tenantId, issueId],
-  );
-  return rows.map((row) => Number(row.value_idr));
-}
-
 /** Runs the failure hook on a refund row as `failRefund` does. */
 async function runHook(refundId: string) {
   const context = contextOf(w.tenant.tenantId);
@@ -428,11 +417,6 @@ async function filedRefund(itemId: string, amountIdr: number) {
   const refunds = await issueRefunds(made.issueId);
   expect(refunds, "first filing makes one refund").toHaveLength(1);
   return { ...made, refund: refunds[0]! };
-}
-
-/** Reports the kopi line and swaps it to `air`; the kitchen event writes the replacement line. */
-async function swapKopiToAir(paid: PaidOrder) {
-  return swapLineTo(paid.line(w.ids.kopi).id, airItem);
 }
 
 /** Reports one line and swaps it to `replacementItemId`; the kitchen event writes the replacement line. */
@@ -670,6 +654,78 @@ describe("legend-k0ub4 order promo completed: kopi di-swap (pengganti Rp0) lalu 
     const roti = await filedRefund(placed.line(w.ids.roti).id, ROTI_PRICE);
     expect(roti.refund.amount_idr).toBe(ROTI_REFUND_AFTER_KOPI);
     expect(await ledgerOf(w.tenant.tenantId, placed.order.id)).toBeNull();
+  });
+});
+
+describe("legend-k0ub4 temuan architect: ruang refund lebih kecil dari goods kopi", () => {
+  // Assumption: "room smaller than the kopi goods" is made with the pattern of the
+  // pti5r T8 test: another issue (teh, never resolved) holds a pending refund of
+  // 38.000 on the order's intent, so the room is 42.735 - 38.000 = 4.735 < 7.000
+  // (kopi goods). The hold is released (failed) before the roti refund, so the roti
+  // refund is judged by the ledger alone.
+  it("room 4.735 < goods kopi 7.000: nothing_left tetap mencatat goods penuh 7.000 (tidak dipotong ke room), lalu refund roti 20.790 tanpa porsi kopi, total <= sisa dana", async () => {
+    const { placed, issueId, event } = await completedZeroReplacement([
+      w.ids.kopi,
+      w.ids.teh,
+      w.ids.roti,
+    ]);
+    const { rows } = await owner.query<{ payment_intent_id: string }>(
+      "SELECT payment_intent_id FROM orders WHERE tenant_id = $1 AND id = $2",
+      [w.tenant.tenantId, toUuid(placed.order.id)],
+    );
+    const holder = (await w.report(placed.line(w.ids.teh).id)).body.data
+      .id as string;
+    const holdId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_refunds
+         (id, tenant_id, outlet_id, payment_intent_id, order_issue_id, amount_idr,
+          reason, status, requested_by)
+       VALUES ($1, $2, $3, $4, $5, 38000, 'Refund uji room', 'pending', 'user-uji')`,
+      [
+        holdId,
+        w.tenant.tenantId,
+        w.tenant.outletId,
+        rows[0]!.payment_intent_id,
+        holder,
+      ],
+    );
+
+    await deliver(event);
+
+    // Rp0 line: no refund, blocked nothing_left once, nothing paid out.
+    expect(await issueRefunds(issueId)).toEqual([]);
+    expectBlockedOnce(await auditRows([issueId], "order_issue.refund_blocked"));
+    expect(await w.outboxRows("order.refunded", placed.order.id)).toHaveLength(
+      0,
+    );
+    // The room (4.735) is below the kopi goods, yet the ledger holds all of them.
+    expect(await ledgerOf(w.tenant.tenantId, placed.order.id)).toEqual({
+      paid: KOPI_PAYOUT,
+      subtotal: KOPI_PRICE,
+    });
+
+    // Release the hold, then refund the roti: its own share only (20.790).
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'failed', failure_reason = 'provider_declined'
+        WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, holdId],
+    );
+    const roti = await filedRefund(placed.line(w.ids.roti).id, ROTI_PRICE);
+    expect(roti.refund.amount_idr).toBe(ROTI_REFUND_AFTER_KOPI);
+    expect(await ledgerOf(w.tenant.tenantId, placed.order.id)).toEqual({
+      paid: KOPI_PAYOUT + ROTI_PAYOUT,
+      subtotal: KOPI_PRICE + ROTI_PRICE,
+    });
+    const refunded = await refundedEvents(placed.order.id);
+    expect(refunded).toHaveLength(1);
+    expect(refunded[0]).toMatchObject({
+      refundId: roti.issueId,
+      amountIdr: ROTI_REFUND_AFTER_KOPI,
+    });
+    // Never more than the guest paid, and within what is left after the kopi share.
+    expect(ROTI_REFUND_AFTER_KOPI).toBeLessThanOrEqual(
+      ORDER_TOTAL - KOPI_REFUND,
+    );
   });
 });
 

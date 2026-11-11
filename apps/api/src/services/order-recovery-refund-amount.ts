@@ -306,6 +306,31 @@ export function recoveryRefundSplit(input: {
 }
 
 /**
+ * legend-k0ub4: the goods money of a line on the promo ledger basis, before any
+ * cap or room cut (the ledger paid the line out in full). For a line that
+ * ends `nothing_left` while the promo recompute already took it out: the
+ * ledger must hold its full share, or a later refund of another item would
+ * pay part of it. `recordPartialRefundPayout` caps it to what remains paid.
+ */
+export function recoveryRefundGoodsIdr(input: {
+  order: OrderRevenueInput & { depositAppliedIdr: number };
+  lineTotalIdr: number;
+  priorLinesIdr: number;
+  promo?: RecoveryRefundPromo;
+}): number {
+  const { order } = input;
+  if (order.subtotalIdr <= 0 || input.lineTotalIdr <= 0) return 0;
+  const split = orderRevenueSplit(order);
+  const parts = input.promo
+    ? promoParts(order, split, input.promo)
+    : proRataParts(order, split, input.lineTotalIdr, input.priorLinesIdr);
+  if (!parts) return 0;
+  const wanted = parts.gross - parts.discount + parts.service + parts.pbjt;
+  if (wanted <= 0n) return 0;
+  return Number(order.pricesIncludeTax ? wanted : parts.gross - parts.discount);
+}
+
+/**
  * legend-pti5r: the refund of a line reported again after a final failure
  * (not `rejected`) pays what the failed refund asked, with the same split
  * (`wantedIdr` and the `order.refunded` parts of the first filing). The promo
