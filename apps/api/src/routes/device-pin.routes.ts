@@ -65,7 +65,7 @@ import {
   getOwnPosOverrideApproval,
   getPosOverride,
 } from "../services/staff-override.service";
-import { deviceIdOf as signedDeviceIdOf } from "./device-id.ts";
+import { registeredDeviceIdOf } from "./device-id.ts";
 
 function idempotencyKeyOf(req: Request): string | null {
   const raw = req.get("Idempotency-Key");
@@ -87,6 +87,23 @@ function deviceIdOf(req: Request): string {
       "Hanya perangkat outlet terdaftar yang dapat memakai PIN.",
     );
   return payload.deviceId;
+}
+
+/**
+ * The device an override is requested or cancelled on (PIN throttle, audit):
+ * null without a device token; 401 when one is sent but the registry no
+ * longer accepts it (revoked, rotated out, another tenant), checked on every
+ * request so an old-generation token cannot be replayed.
+ */
+async function currentDeviceIdOf(req: Request): Promise<string | null> {
+  if (req.get(DEVICE_TOKEN_HEADER) === undefined) return null;
+  const deviceId = await registeredDeviceIdOf(req);
+  if (deviceId === null)
+    throw new CoreError(
+      "UNAUTHORIZED",
+      "Token perangkat ini tidak berlaku lagi. Daftarkan ulang perangkat.",
+    );
+  return deviceId;
 }
 
 export const staffPinRouter = Router();
@@ -159,6 +176,7 @@ posOverrideRouter.post("/", jsonBody, async (req, res) => {
       ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
       "Kasir aktif bukan untuk outlet ini.",
     );
+  const deviceId = await currentDeviceIdOf(req);
   let result: Awaited<ReturnType<typeof createPosOverride>>;
   try {
     result = await createPosOverride(
@@ -167,7 +185,7 @@ posOverrideRouter.post("/", jsonBody, async (req, res) => {
       input,
       {
         idempotencyKey: idempotencyKeyOf(req),
-        deviceId: signedDeviceIdOf(req),
+        deviceId,
       },
     );
   } catch (error) {
@@ -232,6 +250,7 @@ posOverrideRouter.post("/approvals/:requestId/cancel", async (req, res) => {
   const { requestId } = approvalRequestParamsSchema.parse(req.params);
   idempotencyKeyOf(req);
   const acting = requiredActingStaff(req);
+  const deviceId = await currentDeviceIdOf(req);
   res.setHeader("Cache-Control", "private, no-store");
   res.json({
     data: await cancelOwnPosOverrideApproval(
@@ -239,7 +258,7 @@ posOverrideRouter.post("/approvals/:requestId/cancel", async (req, res) => {
       acting.staffUserId,
       requestId,
       acting.outletId,
-      { deviceId: signedDeviceIdOf(req) },
+      { deviceId },
     ),
   });
 });

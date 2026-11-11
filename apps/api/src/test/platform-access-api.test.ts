@@ -21,6 +21,7 @@ import { setAuditWriter } from "../services/audit-writer";
 import { coreAuditWriter } from "../services/core-audit-writer";
 import { grantRoleAssignment } from "../services/access.service";
 import { createIsolatedTenant } from "./floor-test-helpers";
+import { deleteHires, seedHire } from "./hire-seed";
 import {
   agent,
   originHeader,
@@ -37,6 +38,7 @@ const owner = new Pool({
   max: 2,
 });
 const createdUserIds: string[] = [];
+const createdHireIds: string[] = [];
 const createdRoleIds: string[] = [];
 const createdStationIds: string[] = [];
 // Throwaway org rows of the seeded tenant made by the legend-ebt9f outlet
@@ -129,6 +131,19 @@ async function signedIn(name = "RBAC user", options: { mfa?: boolean } = {}) {
   // snapshot opt out with { mfa: false }.
   if (options.mfa ?? true) await verifySessionMfa(email);
   return { client, userId, email };
+}
+
+/** A signed-in account that is already a new hire of the tenant (G2). */
+async function signedInHire(name: string) {
+  const account = await signedIn(name);
+  createdHireIds.push(
+    await seedHire(owner, {
+      tenantId: seededTenantId,
+      userId: account.userId,
+      outletId: bandung,
+    }),
+  );
+  return account;
 }
 
 async function roleIdOf(
@@ -224,6 +239,7 @@ beforeAll(() => {
 
 afterAll(async () => {
   setAuditWriter(null);
+  await deleteHires(owner, seededTenantId, createdHireIds);
   if (createdUserIds.length > 0)
     await owner.query(
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
@@ -752,7 +768,7 @@ describe("§3.7 no self-elevation through role edits or assignment ends", () => 
   it("§3.7 ending an assignment never extends or re-activates it", async () => {
     const grantor = await signedIn("End Grantor");
     await assign(grantor.userId, "owner");
-    const grantee = await signedIn("End Grantee");
+    const grantee = await signedInHire("End Grantee");
     const now = new Date();
     const assignment = await grantRoleAssignment(
       scopedContext(),
@@ -801,7 +817,7 @@ describe("§3.7 Pemberian Role", () => {
 
     // A session whose second factor was verified within the 5-minute window
     // is the re-authentication (legend-ma2v): the grant goes through over HTTP.
-    const grantee = await signedIn("Grantee");
+    const grantee = await signedInHire("Grantee");
     const granted = await grantor.client
       .post("/api/access/role-assignments")
       .set(originHeader)
@@ -843,7 +859,7 @@ describe("§3.7 Pemberian Role", () => {
   it("TEN-03 a verified grant is scoped, audited, emitted and revocable", async () => {
     const grantor = await signedIn("Service Grantor");
     await assign(grantor.userId, "owner");
-    const grantee = await signedIn("Service Grantee");
+    const grantee = await signedInHire("Service Grantee");
     const context = scopedContext();
     const assignment = await grantRoleAssignment(
       context,
@@ -896,7 +912,7 @@ describe("§3.7 Pemberian Role", () => {
   it("TEN-03 an expired assignment grants nothing", async () => {
     const grantor = await signedIn("Window Grantor");
     await assign(grantor.userId, "owner");
-    const grantee = await signedIn("Window Grantee");
+    const grantee = await signedInHire("Window Grantee");
     const now = new Date();
     const assignment = await grantRoleAssignment(
       scopedContext(),

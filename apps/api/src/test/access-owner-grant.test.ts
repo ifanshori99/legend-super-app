@@ -124,7 +124,15 @@ async function createTenant(founderId: string) {
     permissions: roleTemplate("finance").permissions,
     allowedScopeTypes: ["tenant", "brand", "outlet"],
   });
-  return { tenantId, ownerRoleId, adminRoleId, financeRoleId };
+  // legend-495 G2: a grantee must already belong to the tenant. This role
+  // carries no permission; it only stands for "already on the team".
+  const memberRoleId = await insertRole(tenantId, {
+    name: "Team member",
+    templateKey: null,
+    permissions: [],
+    allowedScopeTypes: ["tenant"],
+  });
+  return { tenantId, ownerRoleId, adminRoleId, financeRoleId, memberRoleId };
 }
 
 async function assign(
@@ -146,6 +154,17 @@ async function assign(
     [tenantId, userId, roleId, assignedBy],
   );
   return rows[0]!.id;
+}
+
+/** A signed-in account that is already on the tenant's team (G2). */
+async function signedInMember(
+  tenant: Awaited<ReturnType<typeof createTenant>>,
+  founder: string,
+  name: string,
+) {
+  const userId = await signedIn(name);
+  await assign(tenant.tenantId, userId, tenant.memberRoleId, founder);
+  return userId;
 }
 
 const freshAuth = () => ({ reauthenticatedAt: new Date(), mfaVerified: true });
@@ -175,7 +194,11 @@ async function adminGrantsCustomRoleToB(
 ) {
   const admin = await signedIn("Owner Grant Admin");
   await assign(tenant.tenantId, admin, tenant.adminRoleId, founder);
-  const accountB = await signedIn("Owner Grant Account B");
+  const accountB = await signedInMember(
+    tenant,
+    founder,
+    "Owner Grant Account B",
+  );
   await grantRoleAssignment(
     scopedContext(tenant.tenantId),
     grantRoleSchema.parse({
@@ -241,7 +264,7 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
       }),
       admin,
     );
-    const accountB = await signedIn("Chain Account B");
+    const accountB = await signedInMember(tenant, founder, "Chain Account B");
     await grantRoleAssignment(
       context,
       grantRoleSchema.parse({
@@ -251,7 +274,7 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
       }),
       { actorUserId: admin, ...freshAuth() },
     );
-    const accountA = await signedIn("Chain Account A");
+    const accountA = await signedInMember(tenant, founder, "Chain Account A");
 
     await expect(
       grantOwnerTemplate(
@@ -262,8 +285,8 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
       ),
     ).rejects.toMatchObject({ status: 403, code: "PERMISSION_DENIED" });
     const { rows } = await owner.query(
-      "SELECT 1 FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
-      [tenant.tenantId, accountA],
+      "SELECT 1 FROM role_assignments WHERE tenant_id = $1 AND user_id = $2 AND role_id <> $3",
+      [tenant.tenantId, accountA, tenant.memberRoleId],
     );
     expect(rows).toHaveLength(0);
   });
@@ -282,7 +305,11 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
       founder,
       legacyRoleId,
     );
-    const accountA = await signedIn("Legacy Chain Account A");
+    const accountA = await signedInMember(
+      tenant,
+      founder,
+      "Legacy Chain Account A",
+    );
 
     await expect(
       grantOwnerTemplate(
@@ -313,7 +340,11 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
       from: "now() - interval '2 hours'",
       until: "now() - interval '1 hour'",
     });
-    const accountA = await signedIn("Expired Owner Account A");
+    const accountA = await signedInMember(
+      tenant,
+      founder,
+      "Expired Owner Account A",
+    );
 
     await expect(
       grantOwnerTemplate(
@@ -330,7 +361,7 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
     const tenant = await createTenant(founder);
     const realOwner = await signedIn("Real Owner");
     await assign(tenant.tenantId, realOwner, tenant.ownerRoleId, founder);
-    const accountA = await signedIn("Real Owner Target");
+    const accountA = await signedInMember(tenant, founder, "Real Owner Target");
 
     const granted = await grantOwnerTemplate(
       tenant.tenantId,
@@ -348,7 +379,7 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
     const tenant = await createTenant(founder);
     const admin = await signedIn("Finance Admin");
     await assign(tenant.tenantId, admin, tenant.adminRoleId, founder);
-    const target = await signedIn("Finance Target");
+    const target = await signedInMember(tenant, founder, "Finance Target");
 
     const granted = await grantRoleAssignment(
       scopedContext(tenant.tenantId),

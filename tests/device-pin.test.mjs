@@ -148,3 +148,115 @@ test("AUTH-06 · override outlet: saved entry wins, then the device outlet, else
   assert.equal(resolveOverrideOutlet(undefined, undefined), null);
   assert.equal(resolveOverrideOutlet(null, ""), null);
 });
+
+// legend-495 G4: one Idempotency-Key per override intent. A retry of the same
+// form (same fields, same method and approver) re-sends the same key; the key
+// changes only when the form changes or after the intent is finished.
+test("AUTH-06 · override intent: one idempotency key per intent, reused on retry", () => {
+  let made = 0;
+  const keeper = logic.createIntentKeyKeeper(() => `key-${++made}`);
+  const form = {
+    outletId: "o1",
+    action: "void_item",
+    objectType: "order",
+    objectId: "ord-1",
+    valueText: "350000",
+    reasonCode: "out_of_stock",
+    reason: " Bahan habis ",
+    method: "pin",
+    approverId: "u-sup",
+  };
+  const first = keeper.keyFor(logic.overrideIntentSignature(form));
+  const retry = keeper.keyFor(logic.overrideIntentSignature(form));
+  assert.equal(retry, first);
+  // Surrounding spaces in the reason do not make a new intent (trimmed on send).
+  assert.equal(
+    keeper.keyFor(
+      logic.overrideIntentSignature({ ...form, reason: "Bahan habis" }),
+    ),
+    first,
+  );
+  // A changed field is a new intent.
+  const changed = keeper.keyFor(
+    logic.overrideIntentSignature({ ...form, valueText: "400000" }),
+  );
+  assert.notEqual(changed, first);
+  assert.notEqual(
+    keeper.keyFor(
+      logic.overrideIntentSignature({
+        ...form,
+        valueText: "400000",
+        approverId: "u-2",
+      }),
+    ),
+    changed,
+  );
+  // After the intent finishes, the same form is a new intent.
+  const before = keeper.keyFor(logic.overrideIntentSignature(form));
+  keeper.reset();
+  assert.notEqual(keeper.keyFor(logic.overrideIntentSignature(form)), before);
+});
+
+// legend-495 G3: a phone approval is final only when the override itself is
+// settled as approved; the request alone (status approved) is not enough.
+test("AUTH-06 · phone outcome follows the settled override, not the request alone", () => {
+  const approvedRequest = { raw: "approved", decidedBy: "u-sup" };
+  const out = (settled, request = approvedRequest) =>
+    logic.phoneOutcome({ ...request, settled, requesterId: "u-cashier" });
+  // Request approved, settlement unknown or pending: keep waiting.
+  assert.deepEqual(out(null), { outcome: "pending", selfApproved: false });
+  assert.deepEqual(out({ status: "pending", approvedBy: null }), {
+    outcome: "pending",
+    selfApproved: false,
+  });
+  // Settled approved by another person: approved.
+  assert.deepEqual(out({ status: "approved", approvedBy: "u-sup" }), {
+    outcome: "approved",
+    selfApproved: false,
+  });
+  // Settled as anything else: shown as that end, never approved.
+  assert.equal(
+    out({ status: "rejected", approvedBy: null }).outcome,
+    "rejected",
+  );
+  assert.equal(
+    out({ status: "cancelled", approvedBy: null }).outcome,
+    "cancelled",
+  );
+  assert.equal(out({ status: "expired", approvedBy: null }).outcome, "expired");
+  // AUTH-06: approver missing or the requester: rejected, flagged.
+  assert.deepEqual(out({ status: "approved", approvedBy: "u-cashier" }), {
+    outcome: "rejected",
+    selfApproved: true,
+  });
+  assert.deepEqual(out(null, { raw: "approved", decidedBy: "u-cashier" }), {
+    outcome: "rejected",
+    selfApproved: true,
+  });
+  // A request that did not end approved needs no settlement.
+  for (const raw of ["pending", "rejected", "cancelled", "expired"])
+    assert.deepEqual(out(null, { raw, decidedBy: null }), {
+      outcome: raw,
+      selfApproved: false,
+    });
+});
+
+// legend-495 G5: closing a pending wait (X, Escape, outside click) cancels first.
+test("AUTH-06 · closing a pending wait is a cancel, not a plain close", () => {
+  assert.equal(
+    logic.closeAction({ waiting: true, outcome: "pending" }),
+    "cancel",
+  );
+  assert.equal(
+    logic.closeAction({ waiting: true, outcome: "approved" }),
+    "close",
+  );
+  assert.equal(
+    logic.closeAction({ waiting: true, outcome: "rejected" }),
+    "close",
+  );
+  assert.equal(
+    logic.closeAction({ waiting: false, outcome: "pending" }),
+    "close",
+  );
+});

@@ -9,6 +9,7 @@ import {
 import {
   cancelPosOverrideApproval,
   createPosOverride,
+  getPosOverride,
   getPosOverrideApproval,
   type CreatePosOverrideInput,
 } from "@starter/shared/access/override";
@@ -79,12 +80,22 @@ export const getApprovalRequestCall = (
   callEndpoint(getPosOverrideApproval, { params: { requestId } }, { signal });
 
 /**
+ * The settled override behind a phone approval (POS path). The approval
+ * request alone does not allow the action: only an override that reads
+ * "approved" here does (legend-495 G3).
+ */
+export const getPosOverrideCall = (overrideId: string, signal?: AbortSignal) =>
+  callEndpoint(getPosOverride, { params: { overrideId } }, { signal });
+
+/**
  * Supervisor override approved on this device: the approver's PIN travels in
  * the body (method supervisor_pin) and the server verifies it (AUTH-06).
+ * The caller owns the Idempotency-Key: one key per override intent, reused on
+ * every retry of it (legend-495 G4), so a retry never opens a second request.
  */
 export const createPosOverrideCall = (
   body: CreatePosOverrideInput,
-  idempotencyKey: string = crypto.randomUUID(),
+  idempotencyKey: string,
 ) =>
   callEndpoint(
     createPosOverride,

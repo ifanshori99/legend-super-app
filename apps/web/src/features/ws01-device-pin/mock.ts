@@ -48,6 +48,12 @@ const phoneOverrides = createMockStore(
   () => new Map<string, PosOverrideView>(),
 );
 
+// Test hooks (window.__legendDevicePinMock): how an approved phone request
+// settles as an override ("pending" = not settled yet), and a cancel that fails.
+type Settlement = "pending" | "rejected" | "cancelled" | "expired";
+let settleAs: Settlement | null = null;
+let cancelFails = false;
+
 function isPhoneOverrideRequest(requestId: string): boolean {
   for (const view of phoneOverrides.get().values())
     if (view.approvalRequestId === requestId) return true;
@@ -157,6 +163,8 @@ registerMock(cancelPosOverrideApproval, ({ params }) => {
   const row = requests.get().get(params.requestId);
   if (!row || row.requestedBy !== cashier.id || !isPhoneOverrideRequest(row.id))
     throw new ApiError(404, "NOT_FOUND", "Permintaan tidak ditemukan.");
+  if (cancelFails)
+    throw new ApiError(500, "INTERNAL", "Pembatalan gagal (mock).");
   if (row.status === "cancelled") return { data: row };
   if (row.status !== "pending" || Date.parse(row.deadlineAt) <= Date.now())
     throw new ApiError(409, "CONFLICT", "Permintaan sudah diputuskan.");
@@ -286,6 +294,18 @@ export function devicePinPosOverride(
       ? "expired"
       : request.status;
   if (status === "pending") return { data: view };
+  if (status === "approved" && settleAs !== null) {
+    // The request is approved but the override settled otherwise (or not yet).
+    if (settleAs === "pending") return { data: view };
+    return {
+      data: posOverrideViewSchema.parse({
+        ...view,
+        status: settleAs,
+        approvedBy: null,
+        resolvedAt: new Date().toISOString(),
+      }),
+    };
+  }
   // AUTH-06: an approval by the requester (or by nobody) is no override.
   const approvedBy =
     status === "approved" &&
@@ -325,6 +345,9 @@ declare global {
     __legendDevicePinMock?: {
       decide: (decision: Decision) => void;
       unlock: () => void;
+      settleOverride: (status: Settlement | null) => void;
+      failCancel: (on: boolean) => void;
+      requestStatuses: () => string[];
     };
   }
 }
@@ -359,5 +382,12 @@ if (typeof window !== "undefined") {
       }
     },
     unlock: () => attempts.set(resetStaffPinAttempts()),
+    settleOverride(status) {
+      settleAs = status;
+    },
+    failCancel(on) {
+      cancelFails = on;
+    },
+    requestStatuses: () => [...requests.get().values()].map((r) => r.status),
   };
 }

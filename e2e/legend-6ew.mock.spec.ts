@@ -319,6 +319,117 @@ for (const outcome of ["approved", "rejected", "expired"] as const) {
   });
 }
 
+// legend-495 G3/G5: helpers for the phone wait.
+type DevicePinMockHooks = {
+  decide: (v: string) => void;
+  settleOverride: (v: string | null) => void;
+  failCancel: (on: boolean) => void;
+};
+async function mockHook<K extends keyof DevicePinMockHooks>(
+  page: Page,
+  name: K,
+  arg: Parameters<DevicePinMockHooks[K]>[0],
+) {
+  await page.evaluate(
+    ([hook, value]) =>
+      (
+        window as unknown as {
+          __legendDevicePinMock: Record<string, (v: unknown) => void>;
+        }
+      ).__legendDevicePinMock[hook as string]?.(value),
+    [name, arg] as const,
+  );
+}
+
+async function openPhoneWait(page: Page) {
+  await page.goto(SWITCH, NAV);
+  await switchTo(page, "Nina Marlina", "246810");
+  await page.getByRole("button", { name: "Ajukan override" }).click();
+  const modal = page.getByTestId("override-modal");
+  await modal.getByRole("combobox", { name: "Kode alasan" }).click();
+  await page.getByRole("option", { name: "Stok habis" }).click();
+  await modal.getByLabel("Catatan alasan").fill("Bahan habis di dapur");
+  await modal.getByRole("radio", { name: "Persetujuan dari ponsel" }).click();
+  await modal
+    .getByRole("button", { name: "Kirim ke ponsel supervisor" })
+    .click();
+  await expect(page.getByTestId("override-pending")).toBeVisible();
+  return modal;
+}
+
+test("AUTH-06 · request approved but override not settled: no approval yet", async ({
+  page,
+}) => {
+  await openPhoneWait(page);
+  await mockHook(page, "settleOverride", "pending");
+  await mockHook(page, "decide", "approved");
+  // Past two poll cycles the request reads approved; still waiting, no result.
+  await page.waitForTimeout(7_000);
+  await expect(page.getByTestId("override-pending")).toBeVisible();
+  await expect(page.getByTestId("override-result")).toHaveCount(0);
+  // Once the override settles as approved, the result appears.
+  await mockHook(page, "settleOverride", null);
+  await expect(page.getByTestId("override-result")).toContainText(
+    "Persetujuan dari ponsel",
+    { timeout: 15_000 },
+  );
+});
+
+for (const settled of ["rejected", "cancelled", "expired"] as const) {
+  test(`AUTH-06 · request approved but override settled ${settled}: shown as not approved`, async ({
+    page,
+  }) => {
+    await openPhoneWait(page);
+    await mockHook(page, "settleOverride", settled);
+    await mockHook(page, "decide", "approved");
+    await expect(
+      page.getByTestId(
+        `override-${settled === "rejected" ? "rejected" : settled}`,
+      ),
+    ).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByTestId("override-result")).toHaveCount(0);
+  });
+}
+
+for (const closer of ["Escape", "X"] as const) {
+  test(`AUTH-06 · ${closer} on a pending wait cancels the request first`, async ({
+    page,
+  }) => {
+    const modal = await openPhoneWait(page);
+    if (closer === "Escape") await page.keyboard.press("Escape");
+    else await modal.getByRole("button", { name: "Tutup" }).first().click();
+    await expect(modal).toHaveCount(0);
+    // The request was withdrawn, not just hidden.
+    const statuses = await page.evaluate(() =>
+      (
+        window as unknown as {
+          __legendDevicePinMock: { requestStatuses: () => string[] };
+        }
+      ).__legendDevicePinMock.requestStatuses(),
+    );
+    expect(statuses).toEqual(["cancelled"]);
+  });
+
+  test(`AUTH-06 · ${closer} on a pending wait with a failing cancel keeps the dialog open`, async ({
+    page,
+  }) => {
+    const modal = await openPhoneWait(page);
+    await mockHook(page, "failCancel", true);
+    if (closer === "Escape") await page.keyboard.press("Escape");
+    else await modal.getByRole("button", { name: "Tutup" }).first().click();
+    await expect(page.getByTestId("override-pending")).toBeVisible();
+    await expect(
+      modal.getByText("Permintaan belum bisa dibatalkan", { exact: false }),
+    ).toBeVisible();
+    // Retrying after the failure clears works.
+    await mockHook(page, "failCancel", false);
+    await modal.getByRole("button", { name: "Berhenti menunggu" }).click();
+    await expect(modal).toHaveCount(0);
+  });
+}
+
 test("AUTH-06 · kitchen shell switch-user page, empty roster and offline hint", async ({
   page,
 }) => {

@@ -38,8 +38,12 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   approvalOutcome,
+  closeAction,
+  createIntentKeyKeeper,
   formatCountdown,
+  overrideIntentSignature,
   parseRupiah,
+  phoneOutcome,
   validateOverrideForm,
   type OverrideFormErrors,
 } from "../logic.ts";
@@ -47,6 +51,7 @@ import {
   useApprovalRequestPolling,
   useCancelApprovalRequest,
   useCreatePhoneOverride,
+  usePosOverrideSettlement,
 } from "../hooks.ts";
 import { createPosOverrideCall } from "../api.ts";
 import { ApiError } from "@/lib/api/errors";
@@ -89,10 +94,32 @@ export type OverrideRequestModalProps = {
 
 type Method = "pin" | "phone";
 
+/**
+ * Registered by the phone wait while its request is pending: runs the cancel
+ * that takes over the close (legend-495 G5). Null when nothing is pending.
+ */
+type CloseGuard = (cancel: (() => void) | null) => void;
+
 export function OverrideRequestModal(props: OverrideRequestModalProps) {
   const t = useT();
+  const guardRef = useRef<(() => void) | null>(null);
+  const closeGuard = useCallback<CloseGuard>((cancel) => {
+    guardRef.current = cancel;
+  }, []);
   return (
-    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+    <Dialog
+      open={props.open}
+      onOpenChange={(next) => {
+        // X, Escape and an outside click all arrive here. A pending phone
+        // request is withdrawn first; the wait closes the dialog once the
+        // cancel succeeded, and stays open with a message when it failed.
+        if (!next && guardRef.current) {
+          guardRef.current();
+          return;
+        }
+        props.onOpenChange(next);
+      }}
+    >
       <DialogContent data-testid="override-modal" className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{t("devicePin.override.title")}</DialogTitle>
@@ -100,7 +127,7 @@ export function OverrideRequestModal(props: OverrideRequestModalProps) {
             {t("devicePin.override.description")}
           </DialogDescription>
         </DialogHeader>
-        {props.open && <ModalBody {...props} />}
+        {props.open && <ModalBody {...props} closeGuard={closeGuard} />}
       </DialogContent>
     </Dialog>
   );
@@ -117,7 +144,8 @@ function ModalBody({
   defaultValueIdr,
   onApproved,
   onRejected,
-}: OverrideRequestModalProps) {
+  closeGuard,
+}: OverrideRequestModalProps & { closeGuard: CloseGuard }) {
   const t = useT();
   const deviceOutletId = useTenantContext().outlet?.id;
   const outletId =
@@ -129,7 +157,10 @@ function ModalBody({
   const [reasonCode, setReasonCode] = useState("");
   const [reason, setReason] = useState("");
   const [errors, setErrors] = useState<OverrideFormErrors>({});
-  const [requestId, setRequestId] = useState<string | null>(null);
+  const [phoneWait, setPhoneWait] = useState<{
+    requestId: string;
+    overrideId: string;
+  } | null>(null);
   const [sendError, setSendError] = useState(false);
   const [noRequester, setNoRequester] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -151,9 +182,32 @@ function ModalBody({
   const roster = useRoster();
   const [approverId, setApproverId] = useState<string | null>(null);
 
+  // One Idempotency-Key per override intent (G4): made when the intent first
+  // goes out, reused on every retry, replaced when the form changes and after
+  // the intent is finished. A new key per click would open a second request.
+  const [intentKeys] = useState(() =>
+    createIntentKeyKeeper(() => crypto.randomUUID()),
+  );
+  function intentKey(chosen: Method) {
+    return intentKeys.keyFor(
+      overrideIntentSignature({
+        outletId,
+        action,
+        objectType,
+        objectId,
+        valueText,
+        reasonCode,
+        reason,
+        method: chosen === "pin" ? "supervisor_pin" : "supervisor_phone",
+        approverId: chosen === "pin" ? approverId : null,
+      }),
+    );
+  }
+
   function finish(
     result: Omit<OverrideResult, "reasonCode" | "reason" | "valueIdr">,
   ) {
+    intentKeys.reset();
     onApproved({
       ...result,
       reasonCode,
@@ -193,7 +247,9 @@ function ModalBody({
         objectId,
         approval: { method: "supervisor_pin", approverUserId: userId, pin },
       };
-      return createPosOverrideCall(body);
+      // The PIN path signs the approver in the intent, so the key is the one
+      // for this approver; a retry after a wrong PIN keeps it.
+      return createPosOverrideCall(body, intentKey("pin"));
     },
     onVerified: (override) =>
       finish({
@@ -240,20 +296,26 @@ function ModalBody({
     setSendError(false);
     create.mutate(
       {
-        outletId: outletId as OutletId,
-        action,
-        valueIdr: idr(parseRupiah(valueText) ?? 0),
-        reason: reason.trim(),
-        reasonCode: posOverrideReasonCodeSchema.parse(reasonCode),
-        objectType,
-        objectId,
-        approval: { method: "supervisor_phone" },
+        body: {
+          outletId: outletId as OutletId,
+          action,
+          valueIdr: idr(parseRupiah(valueText) ?? 0),
+          reason: reason.trim(),
+          reasonCode: posOverrideReasonCodeSchema.parse(reasonCode),
+          objectType,
+          objectId,
+          approval: { method: "supervisor_phone" },
+        },
+        idempotencyKey: intentKey("phone"),
       },
       {
         onSuccess: ({ data }) =>
           data.approvalRequestId === null
             ? setSendError(true)
-            : setRequestId(data.approvalRequestId),
+            : setPhoneWait({
+                requestId: data.approvalRequestId,
+                overrideId: data.id,
+              }),
         onError: () => setSendError(true),
       },
     );
@@ -272,21 +334,27 @@ function ModalBody({
     </div>
   );
 
-  if (requestId !== null)
+  if (phoneWait !== null)
     return (
       <PhoneWait
-        requestId={requestId}
+        requestId={phoneWait.requestId}
+        overrideId={phoneWait.overrideId}
         requesterId={requesterId}
+        closeGuard={closeGuard}
         onApproved={(approvedBy) =>
           finish({
             method: "supervisor_phone",
             approverId: approvedBy,
             approverName: null,
-            approvalRequestId: requestId,
+            approvalRequestId: phoneWait.requestId,
           })
         }
         onRejected={(note) => onRejected?.(note)}
-        onRetry={() => setRequestId(null)}
+        onRetry={() => {
+          // "Ajukan ulang" after an end: a fresh intent, a fresh key.
+          intentKeys.reset();
+          setPhoneWait(null);
+        }}
         onClose={() => onOpenChange(false)}
       />
     );
@@ -444,14 +512,18 @@ function ModalBody({
 
 function PhoneWait({
   requestId,
+  overrideId,
   requesterId,
+  closeGuard,
   onApproved,
   onRejected,
   onRetry,
   onClose,
 }: {
   requestId: string;
+  overrideId: string;
   requesterId: string | null;
+  closeGuard: CloseGuard;
   onApproved: (approvedBy: string | null) => void;
   onRejected: (reason: string | null) => void;
   onRetry: () => void;
@@ -465,24 +537,61 @@ function PhoneWait({
   const request = poll.data?.data ?? null;
   const raw =
     request && nowMs !== null ? approvalOutcome(request, nowMs) : "pending";
+  // An approved request is not yet an approved override (G3): read the
+  // override itself and continue only when it is settled as approved.
+  const settlement = usePosOverrideSettlement(overrideId, raw === "approved");
+  const settled = settlement.data?.data ?? null;
   // The server enforces requester != approver; the device checks it again and
   // fails closed when the approver is missing or is the requester (AUTH-06).
-  const selfApproved =
-    raw === "approved" &&
-    (request?.decidedBy == null || request.decidedBy === requesterId);
-  const outcome = selfApproved ? "rejected" : raw;
+  const { outcome, selfApproved } = phoneOutcome({
+    raw,
+    decidedBy: request?.decidedBy ?? null,
+    settled,
+    requesterId,
+  });
 
   const notified = useRef(false);
   useEffect(() => {
     if (!request || notified.current) return;
     if (outcome === "approved") {
       notified.current = true;
-      onApproved(request.decidedBy);
+      onApproved(settled?.approvedBy ?? null);
     } else if (outcome === "rejected") {
       notified.current = true;
       onRejected(request.reason);
     }
-  }, [outcome, request, onApproved, onRejected]);
+  }, [outcome, request, settled, onApproved, onRejected]);
+
+  // Withdraw the request, then close. On 409 the request was decided
+  // meanwhile: re-read it, so an approval takes the approved path and any
+  // other end shows its result. Any other failure keeps the modal open with an
+  // error (never close on a request that may still be approved).
+  const cancelNow = useCallback(() => {
+    if (cancel.isPending) return;
+    setCancelFailed(false);
+    cancel.mutate(requestId, {
+      onSuccess: () => onClose(),
+      onError: (error) => {
+        if (error instanceof ApiError && error.status === 409) {
+          void poll.refetch().then((read) => {
+            const status = read.data?.data.status;
+            if (status === undefined || status === "pending")
+              setCancelFailed(true);
+          });
+          return;
+        }
+        setCancelFailed(true);
+      },
+    });
+  }, [cancel, requestId, onClose, poll]);
+
+  // X, Escape and an outside click run the same cancel while pending (G5).
+  const guarded = closeAction({ waiting: true, outcome }) === "cancel";
+  useEffect(() => {
+    if (!guarded) return;
+    closeGuard(cancelNow);
+    return () => closeGuard(null);
+  }, [guarded, closeGuard, cancelNow]);
 
   if (outcome === "pending")
     return (
@@ -511,7 +620,7 @@ function PhoneWait({
             })}
           </p>
         )}
-        {poll.isError && (
+        {(poll.isError || settlement.isError) && (
           <p className="text-sm text-warning">
             {t("devicePin.pending.pollError")}
           </p>
@@ -521,31 +630,11 @@ function PhoneWait({
             {t("devicePin.pending.cancelError")}
           </p>
         )}
-        {/* "Berhenti menunggu": withdraw the request first, then close. On 409
-            the request was decided meanwhile: re-read it, so an approval takes
-            the approved path and any other end shows its result. Any other
-            failure keeps the modal open with an error (never close on a
-            request that may still be approved). */}
+        {/* "Berhenti menunggu": same cancel as X / Escape / outside click. */}
         <Button
           variant="outline"
           loading={cancel.isPending}
-          onClick={() => {
-            setCancelFailed(false);
-            cancel.mutate(requestId, {
-              onSuccess: () => onClose(),
-              onError: (error) => {
-                if (error instanceof ApiError && error.status === 409) {
-                  void poll.refetch().then((read) => {
-                    const status = read.data?.data.status;
-                    if (status === undefined || status === "pending")
-                      setCancelFailed(true);
-                  });
-                  return;
-                }
-                setCancelFailed(true);
-              },
-            });
-          }}
+          onClick={cancelNow}
         >
           {t("devicePin.pending.cancel")}
         </Button>

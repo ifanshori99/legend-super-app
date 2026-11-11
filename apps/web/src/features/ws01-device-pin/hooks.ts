@@ -9,6 +9,7 @@ import {
   createPosOverrideCall,
   endPosSessionCall,
   getApprovalRequestCall,
+  getPosOverrideCall,
   startPosSessionCall,
   verifyStaffPinCall,
 } from "./api.ts";
@@ -51,7 +52,11 @@ export function useCreateApprovalRequest() {
  */
 export function useCreatePhoneOverride() {
   return useMutation({
-    mutationFn: (body: CreatePosOverrideInput) => createPosOverrideCall(body),
+    mutationFn: (input: {
+      body: CreatePosOverrideInput;
+      /** One key per override intent; the same key on every retry. */
+      idempotencyKey: string;
+    }) => createPosOverrideCall(input.body, input.idempotencyKey),
   });
 }
 
@@ -83,6 +88,26 @@ export function useApprovalRequestPolling(requestId: string | null) {
         ? APPROVAL_POLL_MS
         : false;
     },
+    refetchIntervalInBackground: false,
+    retry: false,
+    gcTime: 0,
+  });
+}
+
+/**
+ * Reads the override behind an approved phone request until it is settled
+ * (GET /api/pos-overrides/:overrideId). Only an override read as "approved"
+ * lets the caller continue; a failed read keeps trying (fail closed).
+ */
+export function usePosOverrideSettlement(overrideId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["device-pin", "override", overrideId],
+    queryFn: ({ signal }) => getPosOverrideCall(overrideId, signal),
+    enabled,
+    refetchInterval: (query) =>
+      query.state.data?.data.status === "pending" || !query.state.data
+        ? APPROVAL_POLL_MS
+        : false,
     refetchIntervalInBackground: false,
     retry: false,
     gcTime: 0,
