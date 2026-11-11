@@ -155,6 +155,7 @@ function WaResetWaiting({
         <p
           className="text-xl font-bold tracking-wide"
           data-testid="wa-reset-message"
+          translate="no"
         >
           RESET PIN{" "}
           <code
@@ -164,7 +165,7 @@ function WaResetWaiting({
             {code}
           </code>
         </p>
-        <p className="flex items-center gap-1.5 text-sm leading-5 text-muted-foreground">
+        <p className="flex items-center gap-1.5 text-base leading-6 tabular-nums md:text-sm md:leading-5 text-muted-foreground">
           <Clock className="size-4 shrink-0" aria-hidden="true" />
           {remainingMs === null
             ? "Berlaku sebentar lagi"
@@ -221,7 +222,7 @@ function WaResetWaiting({
           </div>
           <div className="grid gap-0.5" role="status" aria-live="polite">
             <p className="text-base font-bold">Menunggu pesan Anda…</p>
-            <p className="text-sm leading-5 text-muted-foreground">
+            <p className="text-base leading-6 md:text-sm md:leading-5 text-muted-foreground">
               Verifikasi muncul di sini, tanpa balasan WhatsApp.
             </p>
           </div>
@@ -243,7 +244,7 @@ function WaResetWaiting({
         <div className="grid gap-3 border-t border-border pt-4">
           <div className="grid gap-0.5">
             <p className="text-base font-bold">WhatsApp di perangkat lain?</p>
-            <p className="text-sm leading-5 text-muted-foreground">
+            <p className="text-base leading-6 md:text-sm md:leading-5 text-muted-foreground">
               Kirim pesan di atas ke nomor WhatsApp layanan
               {number ? (
                 <>
@@ -292,7 +293,7 @@ function WaResetWaiting({
           <p
             role="status"
             aria-live="polite"
-            className="min-h-5 text-sm leading-5 text-muted-foreground"
+            className="min-h-6 text-base leading-6 md:min-h-5 md:text-sm md:leading-5 text-muted-foreground"
           >
             {copied === "code" && "Pesan disalin. Tempel dan kirim lewat WhatsApp."}
             {copied === "number" && "Nomor tujuan disalin."}

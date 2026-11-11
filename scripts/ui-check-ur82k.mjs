@@ -3,7 +3,7 @@
 //
 // For every state below, at 390x844 and 1280x800: open the forgot-PIN page in
 // mock mode with the wanted ?waScenario=, drive it to the state, take a
-// full-page screenshot to docs/qa/ur82k/<state>-<390|1280|320>.png and run axe
+// full-page screenshot (see `captureState`) to docs/qa/ur82k/<state>-<390|1280|320>.png and run axe
 // (wcag2a, wcag2aa, wcag21aa, wcag22aa). A short summary of all violations goes to
 // docs/qa/ur82k/axe.json. Every state also fails on horizontal overflow
 // (scrollWidth > clientWidth); the waiting state fails when the "Buka WhatsApp"
@@ -24,7 +24,7 @@
 // bundle from node_modules/.pnpm. Exit code 1 when a state fails to render or
 // axe reports a serious/critical violation.
 import { createRequire } from "node:module";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
@@ -283,6 +283,50 @@ async function waButtonOverlapsQr(page) {
   );
 }
 
+/**
+ * The employee shell scrolls inside its own container (`main`, with fixed-height
+ * ancestors) and has a bottom nav, so a viewport or `fullPage` shot cuts the
+ * content or hides it behind the nav. Before the shot, let every scroll
+ * container and its ancestors grow to their content and make a fixed bottom
+ * nav static (it then sits at the end of the page), then take a `fullPage` shot.
+ */
+const EXPAND_CSS = `
+  [data-ur82k-expand] {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  [data-ur82k-static] { position: static !important; }
+`;
+
+const expandLayout = (page) =>
+  page.evaluate((css) => {
+    window.scrollTo(0, 0);
+    for (const el of document.querySelectorAll("*")) {
+      const style = getComputedStyle(el);
+      const scrolls =
+        (style.overflowY === "auto" || style.overflowY === "scroll") &&
+        el.scrollHeight > el.clientHeight;
+      if (scrolls) {
+        for (let node = el; node; node = node.parentElement)
+          node.setAttribute("data-ur82k-expand", "");
+      }
+      if (
+        style.position === "fixed" &&
+        (el.tagName === "NAV" || el.getAttribute("role") === "navigation")
+      )
+        el.setAttribute("data-ur82k-static", "");
+    }
+    const tag = document.createElement("style");
+    tag.textContent = css;
+    document.head.append(tag);
+  }, EXPAND_CSS);
+
+async function captureState(page, path, fixedViewport) {
+  if (!fixedViewport) await expandLayout(page);
+  await page.screenshot({ path, fullPage: !fixedViewport });
+}
+
 const summarize = (violations) =>
   violations.map((v) => ({
     id: v.id,
@@ -358,10 +402,12 @@ async function main() {
           const violations = viewport.overflowOnly
             ? []
             : await axe.run(page);
-          await page.screenshot({
-            path: join(OUT_DIR, `${id}.png`),
-            fullPage: true,
-          });
+          await captureState(
+            page,
+            join(OUT_DIR, `${id}.png`),
+            state.name === "terverifikasi",
+          );
+          await rm(join(OUT_DIR, `${id}.error.png`), { force: true });
           const blocking = violations.filter((v) =>
             BLOCKING_IMPACTS.has(v.impact ?? ""),
           );

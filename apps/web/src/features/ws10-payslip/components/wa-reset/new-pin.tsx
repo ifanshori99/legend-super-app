@@ -39,11 +39,24 @@ function WaResetNewPin({
   const pinRef = useRef<HTMLInputElement>(null);
   const confirmRef = useRef<HTMLInputElement>(null);
   const restartRef = useRef<HTMLButtonElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
 
   // Focus the first box on a mouse or trackpad only; on touch it would pop the
-  // keyboard over the screen before the employee has read it.
+  // keyboard over the screen before the employee has read it. There the card
+  // heading takes focus instead, so a screen reader announces the new screen.
   useEffect(() => {
-    if (window.matchMedia("(pointer: fine)").matches) pinRef.current?.focus();
+    if (window.matchMedia("(pointer: fine)").matches) {
+      pinRef.current?.focus();
+      return;
+    }
+    for (let el = formRef.current?.parentElement; el; el = el.parentElement) {
+      const heading = el.querySelector("h2");
+      if (heading) {
+        heading.tabIndex = -1;
+        heading.focus();
+        return;
+      }
+    }
   }, []);
 
   const proofGone = error === "proof-invalid";
@@ -107,6 +120,7 @@ function WaResetNewPin({
       busy={submitting}
     >
       <form
+        ref={formRef}
         className="grid gap-4"
         noValidate
         onSubmit={handleSubmit}
@@ -145,7 +159,7 @@ function WaResetNewPin({
 
         {proofGone && (
           <div role="alert" className="grid gap-0.5">
-            <p className="text-sm leading-5 font-semibold text-danger">
+            <p className="text-base leading-6 md:text-sm md:leading-5 font-semibold text-danger">
               Verifikasi WhatsApp sudah tidak berlaku
             </p>
             <p className="text-base leading-6 md:text-sm md:leading-5">
@@ -156,7 +170,7 @@ function WaResetNewPin({
         )}
         {error === "generic" && (
           <div role="alert" className="grid gap-0.5">
-            <p className="text-sm leading-5 font-semibold text-danger">
+            <p className="text-base leading-6 md:text-sm md:leading-5 font-semibold text-danger">
               PIN belum dapat disimpan
             </p>
             <p className="text-base leading-6 md:text-sm md:leading-5">

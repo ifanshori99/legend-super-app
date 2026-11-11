@@ -183,7 +183,7 @@ export function PinForgot() {
       return;
     }
     setAnnouncement(screenKey === "blocked:expired" ? "Kode kedaluwarsa" : "");
-    // new-pin focuses its own PIN box; stealing focus would undo that.
+    // new-pin sets its own focus (PIN box on fine pointers, heading on touch).
     if (screenKey === "new-pin") return;
     const heading = containerRef.current?.querySelector("h2");
     if (heading instanceof HTMLElement) {

@@ -87,7 +87,7 @@ function RateLimitedWait({ left }: { left: number | null }) {
       className="flex items-center gap-3 rounded-field border-l-4 border-danger bg-danger-subtle p-4"
     >
       <Clock className="size-5 shrink-0 text-danger" aria-hidden="true" />
-      <p className="text-base leading-6 font-semibold md:text-sm md:leading-5">
+      <p className="text-base leading-6 font-semibold tabular-nums md:text-sm md:leading-5">
         {left === null
           ? "Coba lagi nanti"
           : left > 0
@@ -226,11 +226,6 @@ function WaResetBlocked({
         backLink={<WaBackLink />}
         title="Terlalu banyak percobaan"
         description="Pemulihan lewat WhatsApp dibatasi sementara. Tunggu sebelum mencoba lagi."
-        side={
-          retryAfterSeconds !== undefined
-            ? "Waktu tunggu berasal dari server."
-            : undefined
-        }
       >
         <RateLimitedWait left={secondsLeft} />
         <p className={BODY_CLASS}>

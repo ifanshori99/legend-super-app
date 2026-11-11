@@ -8,6 +8,150 @@
     "wcag22aa"
   ],
   "results": {
+    "choose-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "choose-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "choose-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "menunggu-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "menunggu-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "menunggu-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "kode-disalin-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "kode-disalin-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "kode-disalin-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "terverifikasi-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "terverifikasi-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "terverifikasi-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "pin-baru-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pin-baru-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pin-baru-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "sukses-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "sukses-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "sukses-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "kedaluwarsa-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "kedaluwarsa-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "kedaluwarsa-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "pin-tidak-sama-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pin-tidak-sama-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pin-tidak-sama-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "mismatch-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "mismatch-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "mismatch-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "rate-limited-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "rate-limited-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "rate-limited-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "too-new-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "too-new-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "too-new-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "no-wa-hr-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "no-wa-hr-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "no-wa-hr-320": {
+      "status": "pass",
+      "violations": []
+    },
     "unavailable-plain-390": {
       "status": "pass",
       "violations": []
@@ -17,6 +161,30 @@
       "violations": []
     },
     "unavailable-plain-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "503-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "503-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "503-320": {
+      "status": "pass",
+      "violations": []
+    },
+    "bantuan-hr-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "bantuan-hr-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "bantuan-hr-320": {
       "status": "pass",
       "violations": []
     }

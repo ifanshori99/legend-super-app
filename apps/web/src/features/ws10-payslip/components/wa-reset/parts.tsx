@@ -39,7 +39,7 @@ function WaNotice({
       role={tone === "danger" ? "alert" : "status"}
       className={`grid gap-0.5 rounded-field p-4 ${TONE_CLASS[tone]}`}
     >
-      <p className="text-sm leading-5 font-semibold">{title}</p>
+      <p className="text-base leading-6 md:text-sm md:leading-5 font-semibold">{title}</p>
       {children && (
         <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
           {children}
