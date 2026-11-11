@@ -99,18 +99,22 @@ export function SettingsHubPage() {
         />
       ) : (
         <>
-          {rows.length > 0 && (
-            <section aria-labelledby="hub-primary" className="grid gap-3">
-              <div className="grid gap-0.5">
-                <h2 id="hub-primary" className="type-title">
-                  {t("auditSettings.hub.primary.title")}
-                </h2>
-                <p className="text-sm leading-5 text-muted-foreground">
-                  {t("auditSettings.hub.primary.hint")}
-                </p>
-              </div>
-              <CardShell>
-                <CardShellBody>
+          <section aria-labelledby="hub-primary" className="grid gap-3">
+            <div className="grid gap-0.5">
+              <h2 id="hub-primary" className="type-title">
+                {t("auditSettings.hub.primary.title")}
+              </h2>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("auditSettings.hub.primary.hint")}
+              </p>
+            </div>
+            <CardShell>
+              <CardShellBody>
+                {rows.length === 0 ? (
+                  <p className="px-4 py-4 text-sm leading-5 text-muted-foreground">
+                    {t("auditSettings.hub.primary.none")}
+                  </p>
+                ) : (
                   <ul className="grid grid-cols-[minmax(0,1fr)] divide-y divide-border">
                     {rows.map((entry) => {
                       const Icon = entry.icon;
@@ -142,10 +146,10 @@ export function SettingsHubPage() {
                       );
                     })}
                   </ul>
-                </CardShellBody>
-              </CardShell>
-            </section>
-          )}
+                )}
+              </CardShellBody>
+            </CardShell>
+          </section>
           {more.length > 0 && (
             <section aria-labelledby="hub-more" className="grid gap-4">
               <div className="grid gap-0.5">

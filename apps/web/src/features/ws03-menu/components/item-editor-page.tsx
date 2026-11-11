@@ -28,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { ApiError } from "@/lib/api/errors";
+import { focusFirstInvalid } from "@/lib/focus-first-invalid";
 import {
   menuItemPhotoMissing,
   updateItemInputSchema,
@@ -183,13 +184,12 @@ export function ItemEditorPage({ itemId }: { itemId: string }) {
       />
     );
 
-  if (itemQuery.isError || categoriesQuery.isError || stationsQuery.isError)
+  if (itemQuery.isError || categoriesQuery.isError)
     return (
       <ErrorState
         onRetry={() => {
           void itemQuery.refetch();
           void categoriesQuery.refetch();
-          void stationsQuery.refetch();
         }}
       />
     );
@@ -213,6 +213,8 @@ export function ItemEditorPage({ itemId }: { itemId: string }) {
       item={isNew ? null : (itemQuery.data?.data ?? null)}
       categories={categoriesQuery.data?.data ?? []}
       stations={stationsQuery.data?.data ?? []}
+      stationsFailed={stationsQuery.isError}
+      onRetryStations={() => void stationsQuery.refetch()}
     />
   );
 }
@@ -222,11 +224,15 @@ function ItemEditor({
   item,
   categories,
   stations,
+  stationsFailed,
+  onRetryStations,
 }: {
   itemId: string | null;
   item: MenuItemAdmin | null;
   categories: { id: string; name: string }[];
   stations: { id: string; name: string }[];
+  stationsFailed: boolean;
+  onRetryStations: () => void;
 }) {
   const t = useT();
   const toast = useToast();
@@ -246,6 +252,7 @@ function ItemEditor({
   // a new item or once the manager touches the field.
   const [typeTouched, setTypeTouched] = React.useState(false);
   const [formError, setFormError] = React.useState<string | undefined>();
+  const formRef = React.useRef<HTMLFormElement>(null);
 
   const requireType = itemId === null || typeTouched;
   const schema = React.useMemo(
@@ -310,6 +317,7 @@ function ItemEditor({
       setFormError(
         t("form.errorSummary", { count: parsed.error.issues.length }),
       );
+      focusFirstInvalid(formRef.current);
       return;
     }
     setErrors({});
@@ -353,9 +361,11 @@ function ItemEditor({
       });
       return;
     }
-    // Nothing changed: skip the request instead of sending an empty PATCH
-    // (the save button is disabled in this state; this guards Enter-submit).
-    if (unchanged) return;
+    // Nothing changed: skip the request instead of sending an empty PATCH.
+    if (unchanged) {
+      toast({ title: t("menu.editor.noChangesToast"), tone: "info" });
+      return;
+    }
     updateItem.mutate(
       { itemId, body: patch ?? body },
       {
@@ -420,7 +430,7 @@ function ItemEditor({
         </TabsList>
 
         <TabsContent value="content">
-          <form onSubmit={submit} className="grid gap-4">
+          <form ref={formRef} onSubmit={submit} className="grid gap-4">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
               <div className="grid content-start gap-4">
                 <CardShell>
@@ -615,6 +625,8 @@ function ItemEditor({
                   stationType={values.stationType}
                   stationId={values.stationId}
                   typeError={errors.stationType}
+                  loadFailed={stationsFailed}
+                  onRetry={onRetryStations}
                   onChange={(change) => {
                     if (change.stationType !== undefined) setTypeTouched(true);
                     update(change);
@@ -681,7 +693,6 @@ function ItemEditor({
               <Button
                 type="submit"
                 loading={createItem.isPending || updateItem.isPending}
-                disabled={unchanged}
               >
                 {t("menu.editor.save")}
               </Button>

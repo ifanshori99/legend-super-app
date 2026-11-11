@@ -152,6 +152,7 @@ export const auditSettingsMessages = {
     primary: {
       title: "Pengaturan",
       hint: "Pilih pengaturan yang ingin Anda kelola. Hanya halaman sesuai izin Anda yang ditampilkan.",
+      none: "Belum ada pengaturan yang tersedia. Hubungi administrator.",
     },
     more: {
       title: "Pengaturan lainnya",

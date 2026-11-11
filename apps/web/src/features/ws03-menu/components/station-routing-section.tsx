@@ -34,6 +34,8 @@ export function StationRoutingSection({
   stationType,
   stationId,
   typeError,
+  loadFailed = false,
+  onRetry,
   onChange,
 }: {
   /** "" while no type is chosen. */
@@ -41,6 +43,9 @@ export function StationRoutingSection({
   /** Override station id, or NO_STATION. */
   stationId: string;
   typeError?: string;
+  /** Station settings failed to load: show the error inside this card only. */
+  loadFailed?: boolean;
+  onRetry?: () => void;
   onChange: (patch: { stationType?: string; stationId?: string }) => void;
 }) {
   const t = useT();
@@ -142,11 +147,14 @@ export function StationRoutingSection({
               {t("menu.editor.station.loading")}
             </p>
           </div>
-        ) : outletsQuery.isError ? (
+        ) : outletsQuery.isError || loadFailed ? (
           <ErrorState
             title={t("menu.editor.station.loadErrorTitle")}
             description={t("menu.editor.station.loadErrorHint")}
-            onRetry={() => void outletsQuery.refetch()}
+            onRetry={() => {
+              void outletsQuery.refetch();
+              onRetry?.();
+            }}
           />
         ) : (
           <>

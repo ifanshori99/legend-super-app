@@ -2600,6 +2600,7 @@ export const id = {
       save: "Simpan item",
       createdToast: "Item tersimpan.",
       updatedToast: "Pengaturan item berhasil disimpan.",
+      noChangesToast: "Tidak ada perubahan untuk disimpan.",
       sections: {
         content: "Konten",
         variants: "Varian",
