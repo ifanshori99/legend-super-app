@@ -578,6 +578,7 @@ async function reverseLaterDepreciation(
   context: ScopedTenantContext,
   asset: FixedAssetRow,
   uptoPeriod: string,
+  eventDate: BusinessDate,
   actorId: UserId | null,
   now: Date,
 ): Promise<FixedAssetRow> {
@@ -619,7 +620,7 @@ async function reverseLaterDepreciation(
       and(
         eq(fixedAssetRevaluations.tenantId, tenantId),
         eq(fixedAssetRevaluations.fixedAssetId, asset.id),
-        gt(fixedAssetRevaluations.revaluedOn, periodBounds(uptoPeriod).end),
+        gt(fixedAssetRevaluations.revaluedOn, eventDate),
       ),
     )
     .limit(1);
@@ -627,7 +628,7 @@ async function reverseLaterDepreciation(
     throw new HttpError(
       409,
       "CONFLICT",
-      `The asset was revalued after ${uptoPeriod}; date the disposal/revaluation after that revaluation.`,
+      `The asset was revalued after ${eventDate}; date the disposal/revaluation after that revaluation.`,
     );
   const journals = await tx
     .select({
@@ -721,6 +722,7 @@ async function catchUpAsset(
     context,
     asset,
     uptoPeriod,
+    entryDate,
     actorId,
     now,
   );
@@ -866,22 +868,11 @@ export async function listDepreciationRuns(
     const lines =
       runs.length === 0
         ? []
-        : await tx
+        : // A run is a historical record: rows taken back by a backdated event
+          // stay, so each run's lines still add up to its posted amount.
+          await tx
             .select(getTableColumns(fixedAssetDepreciations))
             .from(fixedAssetDepreciations)
-            .leftJoin(
-              fixedAssetDepreciationReversals,
-              and(
-                eq(
-                  fixedAssetDepreciationReversals.tenantId,
-                  fixedAssetDepreciations.tenantId,
-                ),
-                eq(
-                  fixedAssetDepreciationReversals.depreciationId,
-                  fixedAssetDepreciations.id,
-                ),
-              ),
-            )
             .where(
               and(
                 eq(fixedAssetDepreciations.tenantId, tenantId),
@@ -889,7 +880,6 @@ export async function listDepreciationRuns(
                   fixedAssetDepreciations.runId,
                   runs.map((run) => run.id),
                 ),
-                isNull(fixedAssetDepreciationReversals.id),
               ),
             );
     return {

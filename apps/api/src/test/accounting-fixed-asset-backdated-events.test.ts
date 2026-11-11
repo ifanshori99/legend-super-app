@@ -40,6 +40,7 @@ import {
   createFixedAsset,
   disposeFixedAsset,
   getFixedAsset,
+  listDepreciationRuns,
   revalueFixedAsset,
   runDepreciation,
 } from "../services/accounting-fixed-assets.service";
@@ -508,6 +509,47 @@ describe("legend-i5kc backdated disposal / revaluation", () => {
     expect(fetched.accumulatedDepreciationIdr).toBe(2_400_000);
     expect(fetched.bookValueIdr).toBe(9_600_000);
     expect(await unbalancedEntries(entity)).toEqual([]);
+  });
+
+  it("ACC-01 the run list keeps taken-back rows, so every run still adds up to its posted amount after a backdated disposal", async () => {
+    const entity = await createEntity("Backdated run list");
+    await setupLedger(entity);
+    const machine = await asset(entity);
+    await run(entity, "2026-01");
+    await run(entity, "2026-02");
+    await run(entity, "2026-03");
+    await dispose(machine.id, "2026-02-20", 10_000_000);
+
+    const { data } = await listDepreciationRuns(tenantScope(), entity);
+    expect(data.map((row) => row.period)).toEqual([
+      "2026-03",
+      "2026-02",
+      "2026-01",
+    ]);
+    for (const listed of data) {
+      expect(listed.amountIdr).toBe(1_000_000);
+      expect(listed.lines).toEqual([
+        { fixedAssetId: machine.id, amountIdr: 1_000_000 },
+      ]);
+    }
+  });
+
+  it("ACC-01 a disposal dated before a later revaluation is refused 409 by the revaluation date, not the end of its month", async () => {
+    const entity = await createEntity("Backdated before revaluation");
+    await setupLedger(entity);
+    const machine = await asset(entity);
+    await run(entity, "2026-01");
+    await run(entity, "2026-02");
+    await run(entity, "2026-03");
+    await revalue(machine.id, "2026-03-25", 9_000_000);
+    await run(entity, "2026-04");
+    const settled = await footprint(entity, machine.id);
+
+    await expect(dispose(machine.id, "2026-03-10", 1)).rejects.toMatchObject({
+      status: 409,
+      code: "CONFLICT",
+    });
+    expect(await footprint(entity, machine.id)).toEqual(settled);
   });
 
   it("ACC-02 a backdated disposal or revaluation whose reversal would touch a closed month is refused PERIOD_CLOSED and writes nothing", async () => {
