@@ -26,6 +26,7 @@ import { Pool } from "pg";
 import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
 import { createApp } from "../app";
+import { totpCode, totpStep } from "../lib/totp";
 import { requireAuth } from "../middleware/auth";
 import { errorHandler } from "../middleware/error-handler";
 import { requireSessionMfa } from "../middleware/identity";
@@ -610,5 +611,248 @@ describe("Staff passkey MFA lockout, expiry and step-up (legend-jemg fixes)", ()
   it("jemg: enrolling the first passkey still verifies a session that had no factor", async () => {
     const { email } = await userWithPasskey();
     expect(await sessionStamp(email)).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Factor activation is re-checked when enrollment FINISHES (Codex second
+// opinion P1). Contract assumptions (docs/CONTRACT.md, "a second factor needs a
+// fresh proof of an existing one"):
+//  - Finishing enrollment of a factor, when the user already has ANOTHER
+//    verified factor, needs a session with fresh MFA; otherwise 403 MFA_REQUIRED
+//    (never proven) the same as at enrollment start. The check happens at
+//    activation time, not only when enrollment was started.
+//  - The first verified factor of a user never needs prior MFA.
+//  - A refused activation leaves the factor pending (verified_at NULL), leaves
+//    the refused session's mfaVerifiedAt NULL, and does not burn the TOTP code
+//    (last_used_step stays NULL, no failed attempt is counted).
+// ---------------------------------------------------------------------------
+
+/** Live session ids of a user, used to identify which session a sign-in made. */
+async function liveSessionIds(email: string): Promise<Set<string>> {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM "session"
+     WHERE revoked_at IS NULL
+       AND user_id = (SELECT id FROM "user" WHERE email = $1)`,
+    [email],
+  );
+  return new Set(rows.map((row) => row.id));
+}
+
+/** Signs in and returns the cookie plus the id of the session that sign-in created. */
+async function trackedSignIn(email: string) {
+  const before = await liveSessionIds(email);
+  const cookie = await signIn(email);
+  const created = [...(await liveSessionIds(email))].filter(
+    (id) => !before.has(id),
+  );
+  expect(created).toHaveLength(1);
+  return { cookie, sessionId: created[0]! };
+}
+
+async function sessionMfaStamp(sessionId: string): Promise<Date | null> {
+  const { rows } = await owner.query<{ mfa_verified_at: Date | null }>(
+    'SELECT mfa_verified_at FROM "session" WHERE id = $1',
+    [sessionId],
+  );
+  expect(rows).toHaveLength(1);
+  return rows[0]!.mfa_verified_at;
+}
+
+async function factorRow(factorId: string) {
+  const { rows } = await owner.query<{
+    verified_at: Date | null;
+    public_key: unknown;
+    last_used_step: string | null;
+    failed_attempts: number;
+  }>(
+    "SELECT verified_at, public_key, last_used_step, failed_attempts FROM mfa_factors WHERE id = $1",
+    [factorId],
+  );
+  expect(rows).toHaveLength(1);
+  return rows[0]!;
+}
+
+async function verifiedFactorCount(email: string): Promise<number> {
+  const { rows } = await owner.query<{ count: string }>(
+    `SELECT count(*) AS count FROM mfa_factors
+     WHERE verified_at IS NOT NULL
+       AND user_id::text = (SELECT id FROM "user" WHERE email = $1)`,
+    [email],
+  );
+  return Number(rows[0]!.count);
+}
+
+async function startTotp(cookie: string) {
+  const response = await post(cookie, "/api/auth/mfa/factors", {
+    type: "totp",
+  });
+  expect(response.status).toBe(201);
+  return {
+    factorId: response.body.data.factorId as string,
+    secretBase32: response.body.data.secretBase32 as string,
+  };
+}
+
+const finishTotp = (
+  cookie: string,
+  totp: { factorId: string; secretBase32: string },
+) =>
+  post(cookie, "/api/auth/mfa/verify", {
+    factorId: totp.factorId,
+    code: totpCode(totp.secretBase32, totpStep(new Date())),
+  });
+
+const passkeyAttestation = (challenge: string) =>
+  registrationResponse(createSoftwareAuthenticator(), {
+    challenge,
+    rpId: RP_ID,
+    origin: WEB_ORIGIN,
+  });
+
+describe("Finishing a factor re-checks the user's other verified factors (Codex P1)", () => {
+  it("jemg-activation: a passkey started before the victim's TOTP went live cannot be activated without MFA", async () => {
+    const email = await signUp(agent(app), "Korban");
+    const attacker = await trackedSignIn(email); // session A
+    const victim = await trackedSignIn(email); // session B
+
+    // A starts a passkey while the user has no verified factor yet.
+    const passkey = await startEnrollment(attacker.cookie);
+    // B starts TOTP and activates it with a correct code (first factor).
+    const totp = await startTotp(victim.cookie);
+    expect((await finishTotp(victim.cookie, totp)).status).toBe(200);
+    expect(await verifiedFactorCount(email)).toBe(1);
+
+    // A now tries to finish the passkey without ever proving the TOTP.
+    const refused = await finishEnrollment(
+      attacker.cookie,
+      passkey.factorId,
+      passkeyAttestation(passkey.challenge),
+    );
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.code).toBe("MFA_REQUIRED");
+
+    const factor = await factorRow(passkey.factorId);
+    expect(factor.verified_at).toBeNull();
+    expect(await sessionMfaStamp(attacker.sessionId)).toBeNull();
+    expect(await sessionIsVerified(attacker.cookie)).toBe(false);
+    expect(await verifiedFactorCount(email)).toBe(1);
+  });
+
+  it("jemg-activation: a TOTP started before a passkey went live cannot be activated without MFA", async () => {
+    const email = await signUp(agent(app), "Korban Terbalik");
+    const attacker = await trackedSignIn(email); // session A
+    const victim = await trackedSignIn(email); // session B
+
+    // A starts TOTP (pending); B starts a passkey and activates it (first factor).
+    const totp = await startTotp(attacker.cookie);
+    const passkey = await startEnrollment(victim.cookie);
+    expect(
+      (
+        await finishEnrollment(
+          victim.cookie,
+          passkey.factorId,
+          passkeyAttestation(passkey.challenge),
+        )
+      ).status,
+    ).toBe(200);
+    expect(await verifiedFactorCount(email)).toBe(1);
+
+    // A finishes TOTP with the correct code, but has no MFA proof.
+    const refused = await finishTotp(attacker.cookie, totp);
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.code).toBe("MFA_REQUIRED");
+
+    const factor = await factorRow(totp.factorId);
+    expect(factor.verified_at).toBeNull();
+    // The refused session must not burn the code or count a failed attempt.
+    expect(factor.last_used_step).toBeNull();
+    expect(factor.failed_attempts).toBe(0);
+    expect(await sessionMfaStamp(attacker.sessionId)).toBeNull();
+    expect(await sessionIsVerified(attacker.cookie)).toBe(false);
+    expect(await verifiedFactorCount(email)).toBe(1);
+  });
+
+  it("jemg-activation: two sessions finishing different first factors at once leave exactly one verified factor", async () => {
+    const email = await signUp(agent(app), "Serentak");
+    const sessionA = await trackedSignIn(email);
+    const sessionB = await trackedSignIn(email);
+
+    const passkey = await startEnrollment(sessionA.cookie);
+    const totp = await startTotp(sessionB.cookie);
+
+    const [passkeyResult, totpResult] = await Promise.all([
+      finishEnrollment(
+        sessionA.cookie,
+        passkey.factorId,
+        passkeyAttestation(passkey.challenge),
+      ),
+      finishTotp(sessionB.cookie, totp),
+    ]);
+
+    const statuses = [passkeyResult.status, totpResult.status].sort();
+    expect(statuses).toEqual([200, 403]);
+    const loser = passkeyResult.status === 200 ? totpResult : passkeyResult;
+    expect(loser.body.error.code).toBe("MFA_REQUIRED");
+
+    expect(await verifiedFactorCount(email)).toBe(1);
+    // Only the winning session carries an MFA proof.
+    const stamps = await Promise.all([
+      sessionMfaStamp(sessionA.sessionId),
+      sessionMfaStamp(sessionB.sessionId),
+    ]);
+    expect(stamps.filter((stamp) => stamp !== null)).toHaveLength(1);
+    expect(stamps[passkeyResult.status === 200 ? 0 : 1]).not.toBeNull();
+  });
+
+  it("jemg-activation: control, the first factor needs no prior MFA", async () => {
+    const email = await signUp(agent(app), "Faktor Pertama");
+    const session = await trackedSignIn(email);
+    const passkey = await startEnrollment(session.cookie);
+    const finished = await finishEnrollment(
+      session.cookie,
+      passkey.factorId,
+      passkeyAttestation(passkey.challenge),
+    );
+    expect(finished.status).toBe(200);
+    expect((await factorRow(passkey.factorId)).verified_at).not.toBeNull();
+    expect(await sessionMfaStamp(session.sessionId)).not.toBeNull();
+  });
+
+  it("jemg-activation: control, a session with fresh MFA can finish a second factor started earlier", async () => {
+    const email = await signUp(agent(app), "Segar");
+    const session = await trackedSignIn(email);
+
+    // Both factors are started while none is verified.
+    const passkey = await startEnrollment(session.cookie);
+    const totp = await startTotp(session.cookie);
+
+    // The passkey becomes the first factor and stamps this session.
+    expect(
+      (
+        await finishEnrollment(
+          session.cookie,
+          passkey.factorId,
+          passkeyAttestation(passkey.challenge),
+        )
+      ).status,
+    ).toBe(200);
+
+    // The same session now has fresh MFA, so it may also activate the TOTP.
+    const second = await finishTotp(session.cookie, totp);
+    expect(second.status).toBe(200);
+    expect(await verifiedFactorCount(email)).toBe(2);
+  });
+
+  it("jemg-activation: control, a session with fresh MFA can finish a second passkey", async () => {
+    const { email, enrollCookie } = await userWithPasskey();
+    const second = await startEnrollment(enrollCookie);
+    const finished = await finishEnrollment(
+      enrollCookie,
+      second.factorId,
+      passkeyAttestation(second.challenge),
+    );
+    expect(finished.status).toBe(200);
+    expect(await verifiedFactorCount(email)).toBe(2);
   });
 });

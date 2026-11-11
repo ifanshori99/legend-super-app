@@ -8,3 +8,6 @@ export const MFA_LOCK_MINUTES = 15;
 export const MFA_ENROLLMENT_TTL_MINUTES = 15;
 /** PRD is silent; a passkey sign-in challenge is valid this long (legend-jemg). */
 export const MFA_PASSKEY_CHALLENGE_TTL_MINUTES = 5;
+
+/** PRD is silent; five known authenticators is enough for one person. */
+export const MAX_VERIFIED_FACTORS = 5;

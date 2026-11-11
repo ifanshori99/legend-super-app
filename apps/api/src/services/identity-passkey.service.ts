@@ -47,6 +47,10 @@ import {
   MFA_LOCK_MINUTES,
   MFA_PASSKEY_CHALLENGE_TTL_MINUTES,
 } from "../lib/mfa-policy";
+import {
+  assertFactorActivationAllowed,
+  lockUserFactorActivation,
+} from "./mfa-activation";
 
 const passkeyLog = logger.child({ module: "identity-passkey" });
 
@@ -301,6 +305,9 @@ export async function finishPasskeyEnrollment(input: {
   const now = input.now ?? new Date();
   const { rpID, origin } = relyingParty();
   const outcome = await db.transaction(async (tx) => {
+    // Per-user activation lock first, factor row second (same order as
+    // verifyMfaFactor), so two activations for one user never interleave.
+    await lockUserFactorActivation(tx, input.userId);
     const factor = await lockFactor(tx, input.userId, input.factorId);
     if (!factor) return { error: notFound() };
     if (factor.type !== "passkey")
@@ -327,6 +334,16 @@ export async function finishPasskeyEnrollment(input: {
       };
     if (factor.lockedUntil && factor.lockedUntil.getTime() > now.getTime())
       return { error: lockedError() };
+    // Re-check the step-up rule enrollMfaFactor applied at the start: another
+    // factor may have become verified since. Before the challenge is consumed,
+    // so a session without the right keeps its challenge; nothing was written
+    // yet, so throwing just rolls back.
+    await assertFactorActivationAllowed(tx, {
+      userId: input.userId,
+      factorId: factor.id,
+      sessionId: input.sessionId,
+      now,
+    });
 
     const expectedChallenge = await consumeChallenge(tx, {
       factorId: factor.id,

@@ -35,11 +35,16 @@ import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
 import {
   MAX_MFA_ATTEMPTS,
+  MAX_VERIFIED_FACTORS,
   MFA_ENROLLMENT_TTL_MINUTES,
   MFA_LOCK_MINUTES,
 } from "../lib/mfa-policy";
 import { openSecret, sealSecret } from "../lib/secrets";
 import { beginPasskeyEnrollment } from "./identity-passkey.service";
+import {
+  assertFactorActivationAllowed,
+  lockUserFactorActivation,
+} from "./mfa-activation";
 import {
   auditRecoveryEvent,
   revokeMfaRecoveryCodes,
@@ -50,9 +55,12 @@ import {
   verifyTotpCode,
 } from "../lib/totp";
 
-/** PRD is silent; five known authenticators is enough for one person. */
-export const MAX_VERIFIED_FACTORS = 5;
-export { MAX_MFA_ATTEMPTS, MFA_ENROLLMENT_TTL_MINUTES, MFA_LOCK_MINUTES };
+export {
+  MAX_VERIFIED_FACTORS,
+  MAX_MFA_ATTEMPTS,
+  MFA_ENROLLMENT_TTL_MINUTES,
+  MFA_LOCK_MINUTES,
+};
 
 const mfaLog = logger.child({ module: "identity-mfa" });
 
@@ -206,6 +214,10 @@ export async function verifyMfaFactor(input: {
   // wrong code must still commit its counter, so the outcome is returned and
   // thrown only after the transaction commits.
   const outcome = await db.transaction(async (tx) => {
+    // Per-user activation lock first, factor row second (same order as
+    // finishPasskeyEnrollment): a pending factor can only be finished while no
+    // other activation for this user is in flight.
+    await lockUserFactorActivation(tx, input.userId);
     const [factor] = await tx
       .select()
       .from(mfaFactors)
@@ -244,6 +256,19 @@ export async function verifyMfaFactor(input: {
         ),
       };
     if (isLocked(factor, now)) return { error: lockedError() };
+    // Finishing a pending factor re-checks the step-up rule that
+    // enrollMfaFactor applied at the start: another factor may have become
+    // verified since. Checked before the code is counted, so a session without
+    // the right burns neither the code nor a wrong-attempt. (A null session only
+    // reaches verified factors, via verifyMfaCodeForUser.)
+    // Nothing was written yet, so throwing here just rolls the transaction back.
+    if (factor.verifiedAt === null && input.sessionId !== null)
+      await assertFactorActivationAllowed(tx, {
+        userId: input.userId,
+        factorId: factor.id,
+        sessionId: input.sessionId,
+        now,
+      });
 
     const secret = openSecret(
       factor.secretEncrypted,
