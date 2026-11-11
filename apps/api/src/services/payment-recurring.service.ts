@@ -55,7 +55,18 @@ import {
   RECURRING_GRACE_DAYS_MAX,
   RECURRING_GRACE_DAYS_MIN,
 } from "@starter/shared/payment/recurring";
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { db } from "../db";
 import { customerProfiles } from "../db/schema/crm-member";
 import {
@@ -72,6 +83,7 @@ import {
 } from "../db/schema/payment-recurring";
 import { withTenant } from "../db/tenant";
 import { logger } from "../lib/logger";
+import { revokeSubscriptionGrace } from "./facility-subscription-quota";
 import { appendNotificationEvent } from "./notification-events";
 import {
   createDoitRecurringClient,
@@ -355,6 +367,15 @@ const KEY_REUSED = (): CoreError =>
     "Kunci permintaan sudah dipakai untuk permintaan lain.",
   );
 
+/** Unique violation (SQLSTATE 23505), also when the driver error is wrapped. */
+function isUniqueViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "23505" || isUniqueViolation(candidate.cause, depth + 1)
+  );
+}
+
 /** A start older than this is never retried automatically: DOIT's idempotency
  * window may be over and a retry could create a second subscription. */
 const START_RETRY_WINDOW_MS = 24 * 3_600_000;
@@ -563,6 +584,64 @@ export async function startSubscription(
   const intent =
     existing ??
     (await withTenant(db, context, async (tx) => {
+      // Brief 488 item 1: one start at a time per customer + plan, taken
+      // BEFORE the intent is stored and so before DOIT is called. The loser
+      // waits here, then sees the winner's intent (or its pending / active
+      // row) and is refused, so DOIT is never asked for a second subscription.
+      // The unique partial index on live rows is the last line of defence.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`recurring-start:${tenantId}:${plan.id}:${input.customerProfileId}`}, 0))`,
+      );
+      const [sameKey] = await tx
+        .select()
+        .from(paymentRecurringSubscriptions)
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, tenantId),
+            eq(
+              paymentRecurringSubscriptions.startIdempotencyKey,
+              input.idempotencyKey,
+            ),
+          ),
+        );
+      if (sameKey) {
+        if (
+          sameKey.planId !== plan.id ||
+          sameKey.customerProfileId !== input.customerProfileId
+        )
+          throw KEY_REUSED();
+        return sameKey;
+      }
+      const [blocking] = await tx
+        .select({ id: paymentRecurringSubscriptions.id })
+        .from(paymentRecurringSubscriptions)
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, tenantId),
+            eq(paymentRecurringSubscriptions.planId, plan.id),
+            eq(
+              paymentRecurringSubscriptions.customerProfileId,
+              input.customerProfileId,
+            ),
+            or(
+              // The customer already holds this plan (also paused or past
+              // due: resuming or paying it would make a second live row).
+              inArray(paymentRecurringSubscriptions.status, [
+                "pending_first_payment",
+                "active",
+                "past_due",
+                "paused",
+              ]),
+              unresolvedSubscription(),
+            ),
+          ),
+        )
+        .limit(1);
+      if (blocking)
+        throw new CoreError(
+          "CONFLICT",
+          "Pelanggan ini sudah memiliki langganan untuk paket ini atau sedang diproses.",
+        );
       const [inserted] = await tx
         .insert(paymentRecurringSubscriptions)
         .values({
@@ -975,7 +1054,14 @@ export async function markOverdueSubscriptionsPastDue(
           ),
         ),
       )
-      .returning({ id: t.id });
+      .returning({
+        id: t.id,
+        customerProfileId: t.customerProfileId,
+        currentPeriodEnd: t.currentPeriodEnd,
+      });
+    // `past_due` is no access: the unused grace of each row goes with it.
+    for (const row of changed)
+      await revokeSubscriptionGrace(tx, context, row, now);
     return changed.length;
   });
 }
@@ -1030,6 +1116,25 @@ export async function listSubscriptionInvoices(
   });
 }
 
+/** A row whose state at the gateway is not settled: a start without a DOIT id
+ * (provisioning / needs_reconcile), or a needs_reconcile row that holds a DOIT
+ * id and can still be resumed (every reason except PLAN_MISMATCH), so DOIT may
+ * charge for it. */
+function unresolvedSubscription() {
+  const t = paymentRecurringSubscriptions;
+  return or(
+    and(
+      isNull(t.providerSubscriptionId),
+      inArray(t.status, ["provisioning", "needs_reconcile"]),
+    ),
+    and(
+      eq(t.status, "needs_reconcile"),
+      isNotNull(t.providerSubscriptionId),
+      or(isNull(t.reconcileReason), ne(t.reconcileReason, "PLAN_MISMATCH")),
+    ),
+  );
+}
+
 type SubscriptionAction = "pause" | "resume" | "cancel";
 
 /** Provider call first, then ONE locked local decision (`SELECT ... FOR
@@ -1081,6 +1186,39 @@ async function changeSubscription(
       "CONFLICT",
       "Status langganan di gateway belum dapat dipastikan.",
     );
+
+  // A resume makes DOIT charge again: refuse while another live or unresolved
+  // subscription of the same customer and plan exists (two would be paid).
+  if (action === "resume") {
+    const t = paymentRecurringSubscriptions;
+    const [other] = await withTenant(db, context, (tx) =>
+      tx
+        .select({ id: t.id })
+        .from(t)
+        .where(
+          and(
+            eq(t.tenantId, tenantId),
+            eq(t.planId, current.planId),
+            eq(t.customerProfileId, current.customerProfileId),
+            ne(t.id, current.id),
+            or(
+              inArray(t.status, [
+                "pending_first_payment",
+                "active",
+                "past_due",
+              ]),
+              unresolvedSubscription(),
+            ),
+          ),
+        )
+        .limit(1),
+    );
+    if (other)
+      throw new CoreError(
+        "CONFLICT",
+        "Pelanggan ini sudah memiliki langganan lain yang aktif untuk paket ini. Batalkan salah satunya lebih dulu.",
+      );
+  }
 
   // Only a resume can make DOIT charge again; pause and cancel must work even
   // when the integration is disabled or the provider left the tenant plan.
@@ -1200,9 +1338,23 @@ async function changeSubscription(
       )
       .returning();
     if (!updated) throw notFound("Langganan");
+    // Pause/cancel stop the access: the unused grace goes in the same
+    // transaction, under the row lock held here (no advisory lock: the sync
+    // takes it before the row, so this order cannot deadlock with it).
+    if (action !== "resume")
+      await revokeSubscriptionGrace(tx, context, updated, now);
     return action === "resume"
       ? withDuePromotion(tx, tenantId, updated, now)
       : updated;
+  }).catch((error: unknown) => {
+    // A resume back to pending / active meets the live (customer, plan) index
+    // when a new start already holds that slot: refuse, do not leak a 23505.
+    if (action === "resume" && isUniqueViolation(error))
+      throw new CoreError(
+        "CONFLICT",
+        "Pelanggan ini sudah memiliki langganan lain yang aktif untuk paket ini. Batalkan salah satunya lebih dulu.",
+      );
+    throw error;
   });
 }
 
@@ -1388,6 +1540,70 @@ async function periodTaken(
   return found !== undefined;
 }
 
+/** Review reason of an invoice parked behind an unpaid previous period. */
+const AWAITING_PREVIOUS_PERIOD = "AWAITING_PREVIOUS_PERIOD";
+
+/** True when the invoice is a valid period of the plan that starts exactly
+ * where an unpaid invoice of the subscription (open, or itself parked) ends:
+ * it is next in line, not wrong. Anything else stays PERIOD_MISMATCH. */
+async function awaitsPreviousPeriod(
+  tx: Tx,
+  tenantId: TenantId,
+  plan: PaymentRecurringPlan,
+  subscription: PaymentRecurringSubscription,
+  invoice: DoitInvoiceEvent["data"]["invoice"],
+): Promise<boolean> {
+  if (invoice.period_end !== addInterval(invoice.period_start, plan.interval))
+    return false;
+  const boundary = subscription.nextPeriodEnd ?? subscription.currentPeriodEnd;
+  if (boundary === null || invoice.period_start <= boundary) return false;
+  const [previous] = await tx
+    .select({ id: subscriptionInvoices.id })
+    .from(subscriptionInvoices)
+    .where(
+      and(
+        eq(subscriptionInvoices.tenantId, tenantId),
+        eq(subscriptionInvoices.subscriptionId, subscription.id),
+        eq(subscriptionInvoices.periodEnd, invoice.period_start),
+        or(
+          eq(subscriptionInvoices.status, "open"),
+          and(
+            eq(subscriptionInvoices.status, "needs_review"),
+            eq(subscriptionInvoices.reviewReason, AWAITING_PREVIOUS_PERIOD),
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  return previous !== undefined;
+}
+
+async function notifyInvoiceCreated(
+  tx: Tx,
+  context: ScopedTenantContext,
+  subscription: PaymentRecurringSubscription,
+  plan: PaymentRecurringPlan,
+  invoice: SubscriptionInvoice,
+  now: Date,
+): Promise<void> {
+  await appendNotificationEvent(tx, context, subscriptionInvoiceCreatedEvent, {
+    aggregateId: invoice.id,
+    outletId: subscription.outletId,
+    actorUserId: null,
+    payload: {
+      subscriptionInvoiceId: invoice.id,
+      subscriptionId: subscription.id,
+      customerProfileId: subscription.customerProfileId,
+      planName: plan.name,
+      amountIdr: invoice.amountIdr,
+      periodStart: invoice.periodStart,
+      periodEnd: invoice.periodEnd,
+      hostedUrl: invoice.hostedUrl,
+    },
+    now,
+  });
+}
+
 async function applyInvoiceCreated(
   tx: Tx,
   context: ScopedTenantContext,
@@ -1416,6 +1632,13 @@ async function applyInvoiceCreated(
       ? invoice.status
       : "open";
   let storedReason = reviewReason;
+  // Brief 488 item 8: a period that follows an unpaid one is parked, not
+  // refused for good; it is re-evaluated once the previous period is paid.
+  if (
+    reviewReason === "PERIOD_MISMATCH" &&
+    (await awaitsPreviousPeriod(tx, tenantId, plan, subscription, invoice))
+  )
+    storedReason = AWAITING_PREVIOUS_PERIOD;
   // A second invoice for a period already open/paid is never dropped: kept
   // for review, not notified, never able to activate.
   if (
@@ -1451,33 +1674,41 @@ async function applyInvoiceCreated(
   if (!inserted) return { outcome: "processed", code: "DUPLICATE" };
 
   if (notify)
-    await appendNotificationEvent(
-      tx,
-      context,
-      subscriptionInvoiceCreatedEvent,
-      {
-        aggregateId: inserted.id,
-        outletId: subscription.outletId,
-        actorUserId: null,
-        payload: {
-          subscriptionInvoiceId: inserted.id,
-          subscriptionId: subscription.id,
-          customerProfileId: subscription.customerProfileId,
-          planName: plan.name,
-          amountIdr: inserted.amountIdr,
-          periodStart: inserted.periodStart,
-          periodEnd: inserted.periodEnd,
-          hostedUrl: inserted.hostedUrl,
-        },
-        now,
-      },
-    );
+    await notifyInvoiceCreated(tx, context, subscription, plan, inserted, now);
   else if (storedReason)
     logger.warn(
       { subscriptionInvoiceId: inserted.id, reviewReason: storedReason },
       "Recurring invoice stored for review, customer not notified",
     );
   return { outcome: "processed", code: storedReason };
+}
+
+/** Terminal review reason for a paid payload on a parked invoice, or null when
+ * the parked invoice may still be released. PERIOD_MISMATCH is expected (the
+ * period lies beyond the unpaid previous one); anything else is wrong. */
+function parkedPaymentTerminalReason(
+  input: {
+    event: DoitInvoiceEvent;
+    subscription: PaymentRecurringSubscription;
+    reviewReason: string | null;
+  },
+  stored: SubscriptionInvoice,
+): string | null {
+  const invoice = input.event.data.invoice;
+  if (input.reviewReason && input.reviewReason !== "PERIOD_MISMATCH")
+    return input.reviewReason;
+  if (invoice.amount !== stored.amountIdr) return "AMOUNT_MISMATCH";
+  if (
+    invoice.period_start !== stored.periodStart ||
+    invoice.period_end !== stored.periodEnd
+  )
+    return "PERIOD_MISMATCH";
+  const status = input.subscription.status;
+  if (status === "cancelled") return "SUBSCRIPTION_CANCELLED";
+  if (status === "paused") return "SUBSCRIPTION_PAUSED";
+  if (status === "needs_reconcile" || status === "provisioning")
+    return "SUBSCRIPTION_NEEDS_RECONCILE";
+  return null;
 }
 
 async function applyInvoicePaid(
@@ -1550,11 +1781,22 @@ async function applyInvoicePaid(
   // Already under review: the money is real, so record when it was paid, but
   // the invoice stays `needs_review` and nothing is activated.
   if (stored.status === "needs_review") {
-    if (stored.paidAt === null)
+    // A parked invoice (AWAITING_PREVIOUS_PERIOD) is released later and then
+    // gets access. The payment must therefore be checked now: when the paid
+    // payload is wrong or the subscription cannot take it, the invoice becomes
+    // terminal (no access, ever) instead of waiting to be released.
+    const terminal =
+      stored.reviewReason === AWAITING_PREVIOUS_PERIOD
+        ? parkedPaymentTerminalReason(input, stored)
+        : null;
+    if (stored.paidAt === null || terminal)
       await tx
         .update(subscriptionInvoices)
         .set({
-          paidAt: invoice.paid_at ? new Date(invoice.paid_at) : now,
+          ...(terminal ? { reviewReason: terminal } : {}),
+          paidAt:
+            stored.paidAt ??
+            (invoice.paid_at ? new Date(invoice.paid_at) : now),
           updatedAt: now,
         })
         .where(
@@ -1563,7 +1805,12 @@ async function applyInvoicePaid(
             eq(subscriptionInvoices.id, stored.id),
           ),
         );
-    return { outcome: "processed", code: stored.reviewReason };
+    if (terminal)
+      logger.warn(
+        { subscriptionInvoiceId: stored.id, reviewReason: terminal },
+        "Paid parked recurring invoice is not valid, no access granted",
+      );
+    return { outcome: "processed", code: terminal ?? stored.reviewReason };
   }
 
   // Money arrived, access may not be granted: flag it, change nothing else.
@@ -1628,6 +1875,21 @@ async function applyInvoicePaid(
       ),
     );
 
+  await settlePaidPeriod(tx, tenantId, subscription, stored, now);
+  await releaseParkedInvoices(tx, input.context, plan, subscription.id, now);
+  return { outcome: "processed", code: null };
+}
+
+/** Moves the subscription to the period of an invoice just marked paid. Only
+ * for a period beyond what is already covered; access never comes from
+ * anything else. */
+async function settlePaidPeriod(
+  tx: Tx,
+  tenantId: TenantId,
+  subscription: PaymentRecurringSubscription,
+  stored: Pick<SubscriptionInvoice, "periodStart" | "periodEnd">,
+  now: Date,
+): Promise<void> {
   const first = subscription.status === "pending_first_payment";
   const today = businessDateOf(now);
   const live = or(
@@ -1644,8 +1906,7 @@ async function applyInvoicePaid(
   ) {
     // Only a period beyond everything already covered or waiting is stored.
     const covered = subscription.nextPeriodEnd ?? subscription.currentPeriodEnd;
-    if (covered !== null && stored.periodEnd <= covered)
-      return { outcome: "processed", code: null };
+    if (covered !== null && stored.periodEnd <= covered) return;
     // A second early period joins the first one: the waiting window keeps its
     // start and its end moves to the new period's end, but only when the new
     // period starts exactly where the covered range ends. Otherwise the stored
@@ -1667,7 +1928,7 @@ async function applyInvoicePaid(
           live,
         ),
       );
-    return { outcome: "processed", code: null };
+    return;
   }
 
   // The period only moves forward: a late or replayed older invoice never
@@ -1679,7 +1940,7 @@ async function applyInvoicePaid(
   // already ended (the end date is exclusive: start + one interval);
   // otherwise the invoice is just marked paid.
   const grants = advances && stored.periodEnd > today;
-  if (!advances) return { outcome: "processed", code: null };
+  if (!advances) return;
   await tx
     .update(paymentRecurringSubscriptions)
     .set({
@@ -1696,5 +1957,107 @@ async function applyInvoicePaid(
         live,
       ),
     );
-  return { outcome: "processed", code: null };
+}
+
+/** Re-evaluates the invoices parked behind the period that was just paid
+ * (brief 488 item 8). The one that now directly follows the covered range
+ * becomes `open` and the customer is notified, as for any new invoice; if the
+ * customer already paid it (money arrived while it was parked) it is settled
+ * like any paid invoice and the next one is looked at. An unpaid invoice stops
+ * the walk: nothing after it moves, and no access comes from an unpaid
+ * invoice. Runs under the subscription row lock of the webhook transaction. */
+async function releaseParkedInvoices(
+  tx: Tx,
+  context: ScopedTenantContext,
+  plan: PaymentRecurringPlan,
+  subscriptionId: string,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  // Bounded: one pass per parked period, never an endless loop.
+  for (let step = 0; step < 24; step += 1) {
+    const [row] = await tx
+      .select()
+      .from(paymentRecurringSubscriptions)
+      .where(
+        and(
+          eq(paymentRecurringSubscriptions.tenantId, tenantId),
+          eq(paymentRecurringSubscriptions.id, subscriptionId),
+        ),
+      );
+    if (!row || !LIVE_SUBSCRIPTION.includes(row.status)) return;
+    const subscription = await withDuePromotion(tx, tenantId, row, now);
+    const boundary =
+      subscription.nextPeriodEnd ?? subscription.currentPeriodEnd;
+    if (boundary === null) return;
+    const [parked] = await tx
+      .select()
+      .from(subscriptionInvoices)
+      .where(
+        and(
+          eq(subscriptionInvoices.tenantId, tenantId),
+          eq(subscriptionInvoices.subscriptionId, subscriptionId),
+          eq(subscriptionInvoices.status, "needs_review"),
+          eq(subscriptionInvoices.reviewReason, AWAITING_PREVIOUS_PERIOD),
+          eq(subscriptionInvoices.periodStart, boundary),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!parked) return;
+
+    // Still the server truth: the plan price and the plan interval.
+    const stillValid =
+      parked.amountIdr === plan.amountIdr &&
+      parked.periodEnd === addInterval(parked.periodStart, plan.interval);
+    const taken =
+      stillValid &&
+      (await periodTaken(tx, tenantId, subscriptionId, parked.periodStart));
+    if (!stillValid || taken) {
+      await tx
+        .update(subscriptionInvoices)
+        .set({
+          reviewReason: stillValid ? "DUPLICATE_PERIOD" : "AMOUNT_MISMATCH",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(subscriptionInvoices.tenantId, tenantId),
+            eq(subscriptionInvoices.id, parked.id),
+          ),
+        );
+      return;
+    }
+
+    const paid = parked.paidAt !== null;
+    const [released] = await tx
+      .update(subscriptionInvoices)
+      .set({
+        status: paid ? "paid" : "open",
+        reviewReason: null,
+        notifiedAt: paid ? parked.notifiedAt : now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(subscriptionInvoices.tenantId, tenantId),
+          eq(subscriptionInvoices.id, parked.id),
+          eq(subscriptionInvoices.status, "needs_review"),
+        ),
+      )
+      .returning();
+    if (!released) return;
+    if (!paid) {
+      await notifyInvoiceCreated(
+        tx,
+        context,
+        subscription,
+        plan,
+        released,
+        now,
+      );
+      return;
+    }
+    await settlePaidPeriod(tx, tenantId, subscription, released, now);
+  }
 }

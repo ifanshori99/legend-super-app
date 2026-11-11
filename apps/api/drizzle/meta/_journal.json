@@ -1674,6 +1674,13 @@
       "when": 1794333000000,
       "tag": "0300_blind_index_version",
       "breakpoints": true
+    },
+    {
+      "idx": 253,
+      "version": "7",
+      "when": 1794377066238,
+      "tag": "0301_recurring_live_customer_plan_key",
+      "breakpoints": true
     }
   ]
 }

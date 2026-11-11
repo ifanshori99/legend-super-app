@@ -185,6 +185,13 @@ export const paymentRecurringSubscriptions = pgTable(
     uniqueIndex("payment_recurring_subscriptions_start_key")
       .on(table.tenantId, table.startIdempotencyKey)
       .where(sql`${table.startIdempotencyKey} IS NOT NULL`),
+    // Brief 488 item 1: one pending or active subscription per customer and
+    // plan, whatever the idempotency key. `provisioning` / `needs_reconcile`
+    // rows hold no provider id yet and are guarded by the per customer + plan
+    // lock in `startSubscription`.
+    uniqueIndex("payment_recurring_subscriptions_live_customer_plan_key")
+      .on(table.tenantId, table.planId, table.customerProfileId)
+      .where(sql`${table.status} IN ('pending_first_payment', 'active')`),
     index("payment_recurring_subscriptions_outlet_idx").on(
       table.tenantId,
       table.outletId,

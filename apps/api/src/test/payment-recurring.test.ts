@@ -3173,10 +3173,20 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
       periodEnd: afterThat,
     });
     expect(row).toMatchObject({ status: "open", review_reason: null });
-    // And one that skips past the stored next period is still a mismatch.
-    const skipped = await createInvoice(fx, {
+    // The one right after that unpaid open invoice is parked (brief 488 item
+    // 8), not a mismatch; it opens once the open one is paid.
+    const parked = await createInvoice(fx, {
       periodStart: afterThat,
       periodEnd: jakartaMonthStart(4),
+    });
+    expect(parked.row).toMatchObject({
+      status: "needs_review",
+      review_reason: "AWAITING_PREVIOUS_PERIOD",
+    });
+    // And one that leaves a gap after everything stored is still a mismatch.
+    const skipped = await createInvoice(fx, {
+      periodStart: jakartaMonthStart(5),
+      periodEnd: jakartaMonthStart(6),
     });
     expect(skipped.row).toMatchObject({
       status: "needs_review",

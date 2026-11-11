@@ -342,21 +342,20 @@ describe("FAC-07 T1 grace 0: nothing after the paid period", () => {
 });
 
 describe("FAC-07 T2 grace 3: grace quota is capped and ends", () => {
-  it("FAC-07 T2 first grace day gives min(quota, 3) sessions that expire at D+3 00:00 Jakarta", async () => {
+  it("FAC-07 T2 first grace day gives maxPerDay (default 1) sessions that expire at D+1 00:00 Jakarta", async () => {
     const fixture = await setup({ grace: 3 });
     const result = await sync(fixture, day(0));
     expect(result.issued).toHaveLength(1);
     const [grant] = await grants(fixture);
-    expect(grant!.sessions).toBe(3);
+    expect(grant!.sessions).toBe(1);
     expect(grant!.expires_at?.getTime()).toBe(
-      jakartaMidnight(addDays(D, 3)).getTime(),
+      jakartaMidnight(addDays(D, 1)).getTime(),
     );
 
-    await redeem(fixture, day(2));
+    await redeem(fixture, day(0));
     expect(await ofType(fixture, "redeem")).toHaveLength(1);
 
-    // D+3: the grace is over, the rest of the grace quota is refused and no
-    // new row is written.
+    // D+3: the grace is over, nothing is usable and no new row is written.
     expect(await rejectionCode(redeem(fixture, day(3)))).toBe(
       "ENTITLEMENT_INSUFFICIENT",
     );
@@ -365,14 +364,18 @@ describe("FAC-07 T2 grace 3: grace quota is capped and ends", () => {
     expect(await rows(fixture)).toHaveLength(before.length);
   });
 
-  it("FAC-07 T2 the cap scales with the daily limit and never exceeds the quota", async () => {
+  it("FAC-07 T2 each grace day gives the daily limit and never exceeds the quota", async () => {
     const perDay = await setup({ grace: 3, maxPerDay: 2 });
     await sync(perDay, day(1));
-    expect((await grants(perDay))[0]!.sessions).toBe(6);
+    expect((await grants(perDay))[0]!.sessions).toBe(2);
 
     const big = await setup({ grace: 3, maxPerDay: 5 });
     await sync(big, day(1));
-    expect((await grants(big))[0]!.sessions).toBe(QUOTA);
+    expect((await grants(big))[0]!.sessions).toBe(5);
+
+    const small = await setup({ grace: 3, maxPerDay: 5, quota: 3 });
+    await sync(small, day(1));
+    expect((await grants(small))[0]!.sessions).toBe(3);
   });
 
   it("FAC-07 T2 the last grace day (D+2) still issues, grace 7 stretches the window", async () => {
@@ -412,16 +415,20 @@ describe("FAC-07 T3 past grace and unpaid", () => {
 describe("FAC-07 T4 late payment inside the grace", () => {
   it("FAC-07 T4 remaining grace quota is cancelled and the new quota tops up to exactly the quota", async () => {
     const fixture = await setup({ grace: 3 });
+    // One grace grant per day (each expires at the next Jakarta midnight):
+    // D and D+1 are used, the D+2 grant is still live and unused.
     await sync(fixture, day(0));
     await redeem(fixture, day(0));
+    await sync(fixture, day(1));
     await redeem(fixture, day(1));
+    await sync(fixture, day(2));
     await payLate(fixture);
 
-    const result = await sync(fixture, day(1));
+    const result = await sync(fixture, day(2));
     expect(result.cancelled).toBe(1);
 
     const grantRows = await grants(fixture);
-    expect(grantRows.map((row) => row.sessions).sort()).toEqual([3, 8]);
+    expect(grantRows.map((row) => row.sessions).sort()).toEqual([1, 1, 1, 8]);
     const cancels = await ofType(fixture, "cancel");
     expect(cancels).toHaveLength(1);
     expect(cancels[0]!.sessions).toBe(1);
@@ -447,8 +454,10 @@ describe("FAC-07 T5 late payment after the grace", () => {
   it("FAC-07 T5 used grace sessions count: the new quota is quota - used, total stays at the quota", async () => {
     const fixture = await setup({ grace: 3 });
     await sync(fixture, day(0));
+    await sync(fixture, day(1));
     await redeem(fixture, day(1));
-    // Grace lapses: the 2 unused sessions expire.
+    await sync(fixture, day(2));
+    // Grace lapses: the 2 unused grace sessions (D and D+2) expire.
     await entitlementsOf(fixture.world).expire(day(4));
     await markPastDue(fixture, day(4));
     expect(await statusOf(fixture)).toBe("past_due");
@@ -458,7 +467,7 @@ describe("FAC-07 T5 late payment after the grace", () => {
     await sync(fixture, day(5));
 
     const grantRows = await grants(fixture);
-    expect(grantRows.map((row) => row.sessions).sort()).toEqual([3, 9]);
+    expect(grantRows.map((row) => row.sessions).sort()).toEqual([1, 1, 1, 9]);
     expect(await netGranted(fixture)).toBe(QUOTA);
   });
 });
@@ -470,12 +479,14 @@ describe("FAC-07 T6 idempotency", () => {
     await sync(fixture, day(0));
     expect(await grants(fixture)).toHaveLength(1);
 
+    // The D grant expired at D+1 00:00 (unswept, unused); D+1 has its own grant.
+    await sync(fixture, day(1));
     await redeem(fixture, day(1));
     await payLate(fixture);
     await Promise.all([sync(fixture, day(1)), sync(fixture, day(1))]);
     const after = await rows(fixture);
 
-    expect(await grants(fixture)).toHaveLength(2);
+    expect(await grants(fixture)).toHaveLength(3);
     expect(await ofType(fixture, "cancel")).toHaveLength(1);
 
     const replay = await sync(fixture, day(1));
@@ -586,12 +597,12 @@ describe("FAC-07 T11 grace quota fully used, then paid", () => {
   it("FAC-07 T11 used = cap: the paid quota is quota - cap and the total never exceeds the quota", async () => {
     const fixture = await setup({ grace: 3 });
     await sync(fixture, day(0));
-    for (let i = 0; i < 3; i += 1) await redeem(fixture, day(0));
+    await redeem(fixture, day(0));
     await payLate(fixture);
     await sync(fixture, day(1));
 
     const grantRows = await grants(fixture);
-    expect(grantRows.map((row) => row.sessions).sort()).toEqual([3, 7]);
+    expect(grantRows.map((row) => row.sessions).sort()).toEqual([1, 9]);
     expect(sum(grantRows)).toBe(QUOTA);
     expect(await netGranted(fixture)).toBe(QUOTA);
     expect(sum(await ofType(fixture, "cancel"))).toBe(0);
@@ -618,7 +629,7 @@ describe("FAC-07 T13 plan re-pointed to another facility mid-grace", () => {
   it("FAC-07 T13 the slice total stays <= quota across facilities", async () => {
     const fixture = await setup({ grace: 3 });
     await sync(fixture, day(0));
-    for (let i = 0; i < 3; i += 1) await redeem(fixture, day(0));
+    await redeem(fixture, day(0));
 
     // The operator moves the facility plan to another facility of the outlet.
     const otherFacilityId = await seedFacility(fixture.world, fixture.outletId);
@@ -632,7 +643,7 @@ describe("FAC-07 T13 plan re-pointed to another facility mid-grace", () => {
     await sync(fixture, day(1));
 
     const grantRows = await grants(fixture);
-    expect(grantRows.map((row) => row.sessions).sort()).toEqual([3, 7]);
+    expect(grantRows.map((row) => row.sessions).sort()).toEqual([1, 9]);
     expect(await netGranted(fixture)).toBeLessThanOrEqual(QUOTA);
     expect(await netGranted(fixture)).toBe(QUOTA);
   });
