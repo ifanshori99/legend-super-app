@@ -19,6 +19,13 @@
 //     open/paid is kept as `needs_review` (DUPLICATE_PERIOD), never dropped.
 //   - Only the integration that created the plan may speak for its
 //     subscriptions (`gateway_integration_id`, INTEGRATION_MISMATCH).
+//   - A start is stored (`provisioning`) before DOIT is called and retried with
+//     the same reference; an unconfirmed outcome is `needs_reconcile`. Neither
+//     status notifies or activates. A pause/resume/cancel answer that does not
+//     confirm the action is `needs_reconcile` too, never success.
+//   - A paid period that starts later than today waits in `next_period_*` and
+//     replaces the current one on its start date (`promoteDueSubscriptionPeriods`);
+//     `subscriptionHasAccess` checks both bounds of the period that covers today.
 //
 // Webhook signature and store-first dedupe live in payment-webhook.service.ts;
 // `processDoitInvoiceEvent` only applies an already verified event. The
@@ -37,7 +44,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { subscriptionInvoiceCreatedEvent } from "@starter/shared/notification";
-import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { customerProfiles } from "../db/schema/crm-member";
 import {
@@ -48,6 +55,7 @@ import {
   type PaymentRecurringSubscription,
   type RecurringPlanInterval,
   type RecurringPlanStatus,
+  type RecurringSubscriptionStatus,
   type SubscriptionInvoice,
 } from "../db/schema/payment-recurring";
 import { withTenant } from "../db/tenant";
@@ -57,7 +65,11 @@ import {
   createDoitRecurringClient,
   type DoitRecurringClient,
 } from "./payment-doit-recurring";
-import type { DoitInvoiceEvent } from "./payment-doit-recurring-wire";
+import {
+  doitSubscriptionActionConfirmed,
+  type DoitInvoiceEvent,
+  type DoitRecurringSubscription,
+} from "./payment-doit-recurring-wire";
 import {
   loadActiveIntegrationCredentials,
   loadIntegrationCredentialsById,
@@ -67,6 +79,13 @@ import type { Tx } from "./permission-resolver";
 const PROVIDER = "doit";
 const JAKARTA_OFFSET_MS = 7 * 3_600_000;
 
+/** What the client is for. `bill` (a new plan, start, resume) can make DOIT
+ * charge: the integration must be `active`, otherwise its webhook secret is
+ * not loaded and every payment event would be refused. `stop` (pause, cancel)
+ * only ends billing: any integration status, and a provider withdrawn from the
+ * tenant plan still works (the tenant must always be able to stop a charge). */
+export type RecurringClientPurpose = "bill" | "stop";
+
 /** `integrationId` set: the client of exactly that integration (an existing
  * plan or subscription stays on the account that created it). Null: the
  * outlet's active integration (a new plan). */
@@ -74,6 +93,7 @@ export type RecurringClientLoader = (
   context: ScopedTenantContext,
   outletId: string,
   integrationId?: string | null,
+  purpose?: RecurringClientPurpose,
 ) => Promise<DoitRecurringClient>;
 
 /** Test seam: a fake DOIT client instead of the stored credentials. */
@@ -86,15 +106,28 @@ async function defaultClientFor(
   context: ScopedTenantContext,
   outletId: string,
   integrationId?: string | null,
+  purpose: RecurringClientPurpose = "bill",
 ): Promise<DoitRecurringClient> {
   const loaded = integrationId
-    ? await loadIntegrationCredentialsById(context, PROVIDER, integrationId)
+    ? await loadIntegrationCredentialsById(
+        context,
+        PROVIDER,
+        integrationId,
+        purpose === "stop" ? { forStoredIntent: true } : {},
+      )
     : await loadActiveIntegrationCredentials(context, PROVIDER, outletId);
   const apiKey = loaded?.credentials.apiKey;
   if (!loaded || !apiKey)
     throw new CoreError(
       "SERVICE_UNAVAILABLE",
       "Penagihan berulang belum dikonfigurasi.",
+    );
+  // A disabled or draft integration would let DOIT charge while its webhook
+  // secret is not loaded: refuse before any call (stop calls are exempt).
+  if (purpose === "bill" && loaded.integration.status !== "active")
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Integrasi penagihan berulang tidak aktif.",
     );
   const baseUrl = loaded.integration.config.baseUrl;
   const client = createDoitRecurringClient({
@@ -168,10 +201,9 @@ function periodMismatch(
   periodEnd: string,
 ): boolean {
   if (periodEnd !== addInterval(periodStart, plan.interval)) return true;
-  return (
-    subscription.currentPeriodEnd !== null &&
-    periodStart !== subscription.currentPeriodEnd
-  );
+  // A paid period waiting for its start date is the end of what is covered.
+  const boundary = subscription.nextPeriodEnd ?? subscription.currentPeriodEnd;
+  return boundary !== null && periodStart !== boundary;
 }
 
 // -- Plans --------------------------------------------------------------------
@@ -297,9 +329,63 @@ export type StartSubscriptionInput = {
   idempotencyKey: string;
 };
 
+const KEY_REUSED = (): CoreError =>
+  new CoreError(
+    "IDEMPOTENCY_KEY_REUSED",
+    "Kunci permintaan sudah dipakai untuk permintaan lain.",
+  );
+
+/** Marks a start whose outcome at the gateway is unconfirmed. Guarded: only a
+ * row that never got a provider id moves, and a failed write is logged, never
+ * allowed to hide the original error. */
+async function markStartNeedsReconcile(
+  context: ScopedTenantContext,
+  subscriptionId: string,
+  reason: "PROVIDER_ERROR" | "DUPLICATE_AT_PROVIDER" | "PLAN_MISMATCH",
+): Promise<void> {
+  try {
+    await withTenant(db, context, (tx) =>
+      tx
+        .update(paymentRecurringSubscriptions)
+        .set({
+          status: "needs_reconcile",
+          reconcileReason: reason,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, context.tenant.tenantId),
+            eq(paymentRecurringSubscriptions.id, subscriptionId),
+            isNull(paymentRecurringSubscriptions.providerSubscriptionId),
+            inArray(paymentRecurringSubscriptions.status, [
+              "provisioning",
+              "needs_reconcile",
+            ]),
+          ),
+        ),
+    );
+  } catch (error) {
+    logger.error(
+      {
+        subscriptionId,
+        reason,
+        errName: error instanceof Error ? error.name : "unknown",
+      },
+      "Could not mark recurring start for reconciliation",
+    );
+  }
+}
+
 /** Creates the subscription at DOIT and stores it `pending_first_payment`.
  * It becomes active only when the first invoice is paid (verified webhook).
- * `firstInvoiceUrl` is DOIT's link when it already knows it. */
+ * `firstInvoiceUrl` is DOIT's link when it already knows it (not on a replay of
+ * a start that already finished).
+ *
+ * The intent is stored (`provisioning`, caller key, row id) BEFORE the DOIT
+ * call and the row id is the DOIT `reference`: a lost answer, a timeout or a
+ * 409 leaves a `needs_reconcile` row, and a retry with the same key resends
+ * the same reference and key, so exactly one subscription and one local row
+ * exist. Such a row never notifies and never activates. */
 export async function startSubscription(
   context: ScopedTenantContext,
   input: StartSubscriptionInput,
@@ -309,87 +395,195 @@ export async function startSubscription(
   firstInvoiceUrl: string | null;
 }> {
   const tenantId = context.tenant.tenantId;
-  const { plan, customerFound } = await withTenant(db, context, async (tx) => {
-    const [found] = await tx
-      .select()
-      .from(paymentRecurringPlans)
-      .where(
-        and(
-          eq(paymentRecurringPlans.tenantId, tenantId),
-          eq(paymentRecurringPlans.id, input.planId),
-        ),
-      );
-    // The customer must be a live profile of this tenant (not merged away).
-    const [customer] = await tx
-      .select({ id: customerProfiles.id })
-      .from(customerProfiles)
-      .where(
-        and(
-          eq(customerProfiles.tenantId, tenantId),
-          eq(customerProfiles.id, input.customerProfileId),
-          isNull(customerProfiles.mergedIntoProfileId),
-        ),
-      );
-    return { plan: found ?? null, customerFound: customer !== undefined };
-  });
+  const { plan, customerFound, existing } = await withTenant(
+    db,
+    context,
+    async (tx) => {
+      const [found] = await tx
+        .select()
+        .from(paymentRecurringPlans)
+        .where(
+          and(
+            eq(paymentRecurringPlans.tenantId, tenantId),
+            eq(paymentRecurringPlans.id, input.planId),
+          ),
+        );
+      // The customer must be a live profile of this tenant (not merged away).
+      const [customer] = await tx
+        .select({ id: customerProfiles.id })
+        .from(customerProfiles)
+        .where(
+          and(
+            eq(customerProfiles.tenantId, tenantId),
+            eq(customerProfiles.id, input.customerProfileId),
+            isNull(customerProfiles.mergedIntoProfileId),
+          ),
+        );
+      const [replay] = await tx
+        .select()
+        .from(paymentRecurringSubscriptions)
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, tenantId),
+            eq(
+              paymentRecurringSubscriptions.startIdempotencyKey,
+              input.idempotencyKey,
+            ),
+          ),
+        );
+      return {
+        plan: found ?? null,
+        customerFound: customer !== undefined,
+        existing: replay ?? null,
+      };
+    },
+  );
   if (!plan) throw notFound("Paket");
   assertOutletInScope(context.outletScope, plan.outletId);
-  if (plan.status !== "active")
-    throw new CoreError("CONFLICT", "Paket sudah tidak aktif.");
-  if (!customerFound) throw notFound("Pelanggan");
+  if (existing) {
+    // Same key, other request: never answer with someone else's subscription.
+    if (
+      existing.planId !== plan.id ||
+      existing.customerProfileId !== input.customerProfileId
+    )
+      throw KEY_REUSED();
+    // Finished earlier: an idempotent replay, DOIT is not called again.
+    if (existing.providerSubscriptionId !== null)
+      return { subscription: existing, firstInvoiceUrl: null };
+  } else {
+    if (plan.status !== "active")
+      throw new CoreError("CONFLICT", "Paket sudah tidak aktif.");
+    if (!customerFound) throw notFound("Pelanggan");
+  }
 
-  const subscriptionId = randomUUID();
+  // Before anything is stored: a disabled integration leaves no row behind.
   const client = await clientLoader(deps)(
     context,
     plan.outletId,
     plan.gatewayIntegrationId,
+    "bill",
   );
-  const provider = await client.createSubscription(
-    { providerPlanId: plan.providerPlanId, reference: subscriptionId },
-    `subscription:${tenantId}:${input.idempotencyKey}`,
-  );
-  if (provider.plan_id !== plan.providerPlanId)
+
+  const intent =
+    existing ??
+    (await withTenant(db, context, async (tx) => {
+      const [inserted] = await tx
+        .insert(paymentRecurringSubscriptions)
+        .values({
+          id: randomUUID(),
+          tenantId,
+          outletId: plan.outletId,
+          planId: plan.id,
+          gatewayIntegrationId: plan.gatewayIntegrationId,
+          customerProfileId: input.customerProfileId,
+          providerSubscriptionId: null,
+          startIdempotencyKey: input.idempotencyKey,
+          status: "provisioning",
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted) return inserted;
+      // A concurrent request with the same key stored the intent first.
+      const [raced] = await tx
+        .select()
+        .from(paymentRecurringSubscriptions)
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, tenantId),
+            eq(
+              paymentRecurringSubscriptions.startIdempotencyKey,
+              input.idempotencyKey,
+            ),
+          ),
+        );
+      if (
+        !raced ||
+        raced.planId !== plan.id ||
+        raced.customerProfileId !== input.customerProfileId
+      )
+        throw KEY_REUSED();
+      return raced;
+    }));
+  if (intent.providerSubscriptionId !== null)
+    return { subscription: intent, firstInvoiceUrl: null };
+
+  let provider: DoitRecurringSubscription;
+  try {
+    provider = await client.createSubscription(
+      { providerPlanId: plan.providerPlanId, reference: intent.id },
+      `subscription:${tenantId}:${input.idempotencyKey}`,
+    );
+  } catch (error) {
+    // Whatever happened (timeout, lost answer, 409, bad answer), DOIT may or
+    // may not hold the subscription: keep the row, never guess.
+    const duplicate =
+      error instanceof CoreError && error.code === "IDEMPOTENCY_KEY_REUSED";
+    await markStartNeedsReconcile(
+      context,
+      intent.id,
+      duplicate ? "DUPLICATE_AT_PROVIDER" : "PROVIDER_ERROR",
+    );
+    throw duplicate
+      ? new CoreError(
+          "CONFLICT",
+          "Status langganan di gateway belum dapat dipastikan. Ulangi dengan kunci permintaan yang sama; aman diulang.",
+        )
+      : new CoreError(
+          "SERVICE_UNAVAILABLE",
+          "Status langganan di gateway belum dapat dipastikan. Ulangi dengan kunci permintaan yang sama; aman diulang.",
+        );
+  }
+  if (provider.plan_id !== plan.providerPlanId) {
+    await markStartNeedsReconcile(context, intent.id, "PLAN_MISMATCH");
     throw new CoreError(
       "CONFLICT",
-      "Langganan di gateway tidak sesuai dengan paket.",
+      "Langganan di gateway tidak sesuai dengan paket. Status di gateway belum dapat dipastikan.",
     );
+  }
 
   const subscription = await withTenant(db, context, async (tx) => {
-    const [inserted] = await tx
-      .insert(paymentRecurringSubscriptions)
-      .values({
-        id: subscriptionId,
-        tenantId,
-        outletId: plan.outletId,
-        planId: plan.id,
-        gatewayIntegrationId: plan.gatewayIntegrationId,
-        customerProfileId: input.customerProfileId,
-        providerSubscriptionId: provider.id,
-        status: "pending_first_payment",
-      })
-      .onConflictDoNothing()
-      .returning();
-    if (inserted) return inserted;
-    const [existing] = await tx
-      .select()
+    // DOIT answered with an id another local row already owns: not ours.
+    const [taken] = await tx
+      .select({ id: paymentRecurringSubscriptions.id })
       .from(paymentRecurringSubscriptions)
       .where(
         and(
           eq(paymentRecurringSubscriptions.tenantId, tenantId),
           eq(paymentRecurringSubscriptions.providerSubscriptionId, provider.id),
+          ne(paymentRecurringSubscriptions.id, intent.id),
         ),
       );
-    if (
-      !existing ||
-      existing.planId !== plan.id ||
-      existing.customerProfileId !== input.customerProfileId
-    )
-      throw new CoreError(
-        "CONFLICT",
-        "Langganan sudah ada dengan data berbeda.",
-      );
-    return existing;
+    if (taken) return null;
+    const [updated] = await tx
+      .update(paymentRecurringSubscriptions)
+      .set({
+        providerSubscriptionId: provider.id,
+        status: "pending_first_payment",
+        reconcileReason: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(paymentRecurringSubscriptions.tenantId, tenantId),
+          eq(paymentRecurringSubscriptions.id, intent.id),
+          isNull(paymentRecurringSubscriptions.providerSubscriptionId),
+          inArray(paymentRecurringSubscriptions.status, [
+            "provisioning",
+            "needs_reconcile",
+          ]),
+        ),
+      )
+      .returning();
+    // Not updated: a concurrent retry finished it first; return what is stored.
+    return updated ?? loadSubscription(tx, context, intent.id);
   });
+  if (!subscription) {
+    await markStartNeedsReconcile(context, intent.id, "DUPLICATE_AT_PROVIDER");
+    throw new CoreError(
+      "CONFLICT",
+      "Langganan di gateway sudah terhubung ke catatan lain. Status di gateway belum dapat dipastikan.",
+    );
+  }
   return { subscription, firstInvoiceUrl: provider.first_invoice_url };
 }
 
@@ -412,12 +606,106 @@ async function loadSubscription(
   return found;
 }
 
+// -- Next period: access and promotion -------------------------------------------
+
+/** True while the subscription is `active` and today (Asia/Jakarta) is inside
+ * the current period or inside the paid next period; the start is inclusive,
+ * the end exclusive. Every other status (pending, past_due, paused, cancelled,
+ * provisioning, needs_reconcile) never has access. */
+export function subscriptionHasAccess(
+  subscription: Pick<
+    PaymentRecurringSubscription,
+    | "status"
+    | "currentPeriodStart"
+    | "currentPeriodEnd"
+    | "nextPeriodStart"
+    | "nextPeriodEnd"
+  >,
+  now: Date,
+): boolean {
+  if (subscription.status !== "active") return false;
+  const today = businessDateOf(now);
+  const inside = (start: string | null, end: string | null) =>
+    start !== null && end !== null && start <= today && today < end;
+  return (
+    inside(subscription.currentPeriodStart, subscription.currentPeriodEnd) ||
+    inside(subscription.nextPeriodStart, subscription.nextPeriodEnd)
+  );
+}
+
+/** One UPDATE: for live rows whose next period has started, the next period
+ * becomes the current one and the next slot is cleared. The row turns (or
+ * stays) `active` when that period covers today, `activatedAt` is set on the
+ * first time. Paused, cancelled, provisioning and needs_reconcile rows are
+ * never touched. `subscriptionId` narrows it to one row. */
+async function promoteDueRows(
+  tx: Tx,
+  tenantId: TenantId,
+  now: Date,
+  subscriptionId?: string,
+): Promise<PaymentRecurringSubscription[]> {
+  const t = paymentRecurringSubscriptions;
+  const today = sql`${businessDateOf(now)}::date`;
+  const covers = sql`(${t.nextPeriodStart} <= ${today} AND ${t.nextPeriodEnd} > ${today})`;
+  return tx
+    .update(t)
+    .set({
+      currentPeriodStart: sql`${t.nextPeriodStart}`,
+      currentPeriodEnd: sql`${t.nextPeriodEnd}`,
+      nextPeriodStart: null,
+      nextPeriodEnd: null,
+      status: sql`CASE WHEN ${covers} THEN 'active' ELSE ${t.status} END`,
+      activatedAt: sql`CASE WHEN ${covers} AND ${t.activatedAt} IS NULL THEN ${now.toISOString()}::timestamptz ELSE ${t.activatedAt} END`,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(t.tenantId, tenantId),
+        subscriptionId ? eq(t.id, subscriptionId) : undefined,
+        inArray(t.status, LIVE_SUBSCRIPTION),
+        sql`${t.nextPeriodStart} IS NOT NULL AND ${t.nextPeriodStart} <= ${today}`,
+      ),
+    )
+    .returning();
+}
+
+/** Promotes the next period of every live subscription whose start date has
+ * come (the worker calls it; reads and invoice events also promote lazily). */
+export async function promoteDueSubscriptionPeriods(
+  context: ScopedTenantContext,
+  now: Date,
+): Promise<{ promoted: number }> {
+  const rows = await withTenant(db, context, (tx) =>
+    promoteDueRows(tx, context.tenant.tenantId, now),
+  );
+  return { promoted: rows.length };
+}
+
+/** The row itself, or its promoted version when its next period is due. */
+async function withDuePromotion(
+  tx: Tx,
+  tenantId: TenantId,
+  row: PaymentRecurringSubscription,
+  now: Date,
+): Promise<PaymentRecurringSubscription> {
+  if (row.nextPeriodStart === null || row.nextPeriodStart > businessDateOf(now))
+    return row;
+  const [promoted] = await promoteDueRows(tx, tenantId, now, row.id);
+  return promoted ?? row;
+}
+
 export async function getSubscription(
   context: ScopedTenantContext,
   subscriptionId: string,
+  now: Date = new Date(),
 ): Promise<PaymentRecurringSubscription> {
-  return withTenant(db, context, (tx) =>
-    loadSubscription(tx, context, subscriptionId),
+  return withTenant(db, context, async (tx) =>
+    withDuePromotion(
+      tx,
+      context.tenant.tenantId,
+      await loadSubscription(tx, context, subscriptionId),
+      now,
+    ),
   );
 }
 
@@ -445,8 +733,13 @@ export async function listSubscriptionInvoices(
 
 type SubscriptionAction = "pause" | "resume" | "cancel";
 
-/** Provider call first, then a guarded local update (the row must still be in
- * the status the decision was made on). A provider failure changes nothing. */
+/** Provider call first, then ONE locked local decision (`SELECT ... FOR
+ * UPDATE`, then update). A provider failure changes nothing. DOIT has already
+ * paused/cancelled when the local write runs, so the local row follows, with
+ * one rule: a cancelled row never goes back to paused (cancel always wins, in
+ * either order of two concurrent calls). An answer that is not about this
+ * subscription or not in the expected status is never success: the row becomes
+ * `needs_reconcile` (RESPONSE_MISMATCH) and the call fails. */
 async function changeSubscription(
   context: ScopedTenantContext,
   subscriptionId: string,
@@ -454,7 +747,8 @@ async function changeSubscription(
   now: Date,
   deps?: RecurringDeps,
 ): Promise<PaymentRecurringSubscription> {
-  const current = await getSubscription(context, subscriptionId);
+  const tenantId = context.tenant.tenantId;
+  const current = await getSubscription(context, subscriptionId, now);
 
   // Idempotent no-ops: the state already is the requested one.
   if (action === "cancel" && current.status === "cancelled") return current;
@@ -468,11 +762,21 @@ async function changeSubscription(
       "CONFLICT",
       "Hanya langganan yang dijeda yang dapat dilanjutkan.",
     );
+  // Without a provider id there is nothing to call (a start still unconfirmed).
+  const providerSubscriptionId = current.providerSubscriptionId;
+  if (providerSubscriptionId === null)
+    throw new CoreError(
+      "CONFLICT",
+      "Status langganan di gateway belum dapat dipastikan.",
+    );
 
+  // Only a resume can make DOIT charge again; pause and cancel must work even
+  // when the integration is disabled or the provider left the tenant plan.
   const client = await clientLoader(deps)(
     context,
     current.outletId,
     current.gatewayIntegrationId,
+    action === "resume" ? "bill" : "stop",
   );
   const key = `${action}:${current.id}:${current.updatedAt.toISOString()}`;
   const call =
@@ -481,68 +785,104 @@ async function changeSubscription(
       : action === "resume"
         ? client.resumeSubscription
         : client.cancelSubscription;
-  await call(current.providerSubscriptionId, key);
+  const answer = await call(providerSubscriptionId, key);
 
-  // Resume never grants access by itself: it returns to `active` only while
-  // the period of an earlier verified payment still runs, otherwise to
-  // `past_due` until the next verified invoice.paid.
-  let next: PaymentRecurringSubscription["status"];
-  const patch: Partial<typeof paymentRecurringSubscriptions.$inferInsert> = {
-    updatedAt: now,
-  };
-  if (action === "pause") {
-    next = "paused";
-    patch.pausedAt = now;
-  } else if (action === "cancel") {
-    next = "cancelled";
-    patch.cancelledAt = now;
-  } else {
-    next =
-      current.activatedAt !== null &&
-      current.currentPeriodEnd !== null &&
-      current.currentPeriodEnd > businessDateOf(now)
-        ? "active"
-        : "past_due";
-    patch.pausedAt = null;
+  if (
+    !doitSubscriptionActionConfirmed(action, answer, providerSubscriptionId)
+  ) {
+    await withTenant(db, context, (tx) =>
+      tx
+        .update(paymentRecurringSubscriptions)
+        .set({
+          status: "needs_reconcile",
+          reconcileReason: "RESPONSE_MISMATCH",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, tenantId),
+            eq(paymentRecurringSubscriptions.id, current.id),
+            // A concurrent cancel that already won stays cancelled.
+            ne(paymentRecurringSubscriptions.status, "cancelled"),
+          ),
+        ),
+    );
+    logger.warn(
+      { subscriptionId: current.id, action },
+      "DOIT answer to a subscription action did not confirm it",
+    );
+    throw new CoreError(
+      "CONFLICT",
+      "Status di gateway belum dapat dipastikan. Periksa langganan di gateway lalu coba lagi.",
+    );
   }
-  patch.status = next;
 
   return withTenant(db, context, async (tx) => {
+    const [locked] = await tx
+      .select()
+      .from(paymentRecurringSubscriptions)
+      .where(
+        and(
+          eq(paymentRecurringSubscriptions.tenantId, tenantId),
+          eq(paymentRecurringSubscriptions.id, current.id),
+        ),
+      )
+      .for("update");
+    if (!locked) throw notFound("Langganan");
+    assertOutletInScope(context.outletScope, locked.outletId);
+
+    if (action === "resume") {
+      // The decision was made on this status; anything else moved it.
+      if (locked.status !== current.status)
+        throw new CoreError(
+          "CONFLICT",
+          "Status langganan sudah berubah. Muat ulang lalu coba lagi.",
+        );
+    } else {
+      // Never move a cancelled row back to paused; already there: no-op.
+      if (locked.status === "cancelled") return locked;
+      if (action === "pause" && locked.status === "paused") return locked;
+    }
+
+    // Resume never grants access by itself: it returns to `active` only while
+    // the period of an earlier verified payment still runs, otherwise to
+    // `past_due` until the next verified invoice.paid (or the promotion of a
+    // paid next period that has started).
+    const patch: Partial<typeof paymentRecurringSubscriptions.$inferInsert> = {
+      updatedAt: now,
+    };
+    if (action === "pause") {
+      patch.status = "paused";
+      patch.pausedAt = now;
+    } else if (action === "cancel") {
+      patch.status = "cancelled";
+      patch.cancelledAt = now;
+    } else {
+      patch.status =
+        locked.activatedAt !== null &&
+        locked.currentPeriodEnd !== null &&
+        locked.currentPeriodEnd > businessDateOf(now)
+          ? "active"
+          : "past_due";
+      patch.pausedAt = null;
+    }
     const [updated] = await tx
       .update(paymentRecurringSubscriptions)
       .set(patch)
       .where(
         and(
-          eq(paymentRecurringSubscriptions.tenantId, context.tenant.tenantId),
-          eq(paymentRecurringSubscriptions.id, current.id),
-          eq(paymentRecurringSubscriptions.status, current.status),
+          eq(paymentRecurringSubscriptions.tenantId, tenantId),
+          eq(paymentRecurringSubscriptions.id, locked.id),
+          action === "pause"
+            ? ne(paymentRecurringSubscriptions.status, "cancelled")
+            : undefined,
         ),
       )
       .returning();
-    if (updated) return updated;
-    if (action === "resume")
-      throw new CoreError(
-        "CONFLICT",
-        "Status langganan sudah berubah. Muat ulang lalu coba lagi.",
-      );
-    // DOIT already cancelled/paused, so the local row must follow even when a
-    // concurrent invoice.paid moved it first: re-read and apply anyway.
-    const latest = await loadSubscription(tx, context, current.id);
-    if (latest.status === next) return latest;
-    // Never move a cancelled row back to paused.
-    if (latest.status === "cancelled") return latest;
-    const [cancelled] = await tx
-      .update(paymentRecurringSubscriptions)
-      .set(patch)
-      .where(
-        and(
-          eq(paymentRecurringSubscriptions.tenantId, context.tenant.tenantId),
-          eq(paymentRecurringSubscriptions.id, current.id),
-        ),
-      )
-      .returning();
-    if (!cancelled) throw notFound("Langganan");
-    return cancelled;
+    if (!updated) throw notFound("Langganan");
+    return action === "resume"
+      ? withDuePromotion(tx, tenantId, updated, now)
+      : updated;
   });
 }
 
@@ -588,17 +928,22 @@ export type InvoiceEventOptions = {
   /** invoice.paid for an invoice never seen: store it `needs_review`
    * (INVOICE_NOT_SEEN) instead of answering `unknown_invoice`. */
   storeUnseenPaidForReview?: boolean;
-  /** Id of the integration whose webhook secret verified the event. It must
-   * be the integration the subscription was created on; absent or different
-   * means INTEGRATION_MISMATCH and nothing changes (fails closed). */
+  /** Id of the integration whose webhook secret verified the event. */
   verifiedIntegrationId?: string | null;
-  /** Asked when `verifiedIntegrationId` is not the bound integration: true
-   * when the bound integration holds the secret that verified the event (a
-   * shared or rotated secret). Absent means fail closed. */
-  integrationAccepts?: (boundIntegrationId: string) => Promise<boolean>;
+  /** Further integrations that hold the secret which verified the event (a
+   * shared or rotated secret), worked out by the webhook layer BEFORE this
+   * transaction: this function does no lookup of its own under the row lock.
+   * The event is accepted when `verifiedIntegrationId` or any of these is the
+   * integration the subscription was created on; otherwise INTEGRATION_MISMATCH
+   * and nothing changes (fails closed). */
+  acceptedIntegrationIds?: string[];
 };
 
-const LIVE_SUBSCRIPTION = ["pending_first_payment", "active", "past_due"];
+const LIVE_SUBSCRIPTION: RecurringSubscriptionStatus[] = [
+  "pending_first_payment",
+  "active",
+  "past_due",
+];
 
 /** Applies one verified invoice event in a single transaction. */
 export async function processDoitInvoiceEvent(
@@ -610,7 +955,7 @@ export async function processDoitInvoiceEvent(
   const tenantId = context.tenant.tenantId;
   const invoice = event.data.invoice;
   return withTenant(db, context, async (tx): Promise<InvoiceEventResult> => {
-    const [subscription] = await tx
+    const [locked] = await tx
       .select()
       .from(paymentRecurringSubscriptions)
       .where(
@@ -623,27 +968,27 @@ export async function processDoitInvoiceEvent(
         ),
       )
       .for("update");
-    if (!subscription) return { outcome: "unknown_subscription" };
-    const verifiedBy = options.verifiedIntegrationId;
-    const direct =
-      !!verifiedBy &&
-      verifiedBy.toLowerCase() ===
-        subscription.gatewayIntegrationId.toLowerCase();
-    if (
-      !direct &&
-      !(await options.integrationAccepts?.(subscription.gatewayIntegrationId))
-    )
-      return { outcome: "ignored", code: "INTEGRATION_MISMATCH" };
+    // A row without a provider id (provisioning) never matches here.
+    if (!locked) return { outcome: "unknown_subscription" };
+    const bound = locked.gatewayIntegrationId.toLowerCase();
+    const accepted = [
+      options.verifiedIntegrationId,
+      ...(options.acceptedIntegrationIds ?? []),
+    ].some((id) => !!id && id.toLowerCase() === bound);
+    if (!accepted) return { outcome: "ignored", code: "INTEGRATION_MISMATCH" };
     const [plan] = await tx
       .select()
       .from(paymentRecurringPlans)
       .where(
         and(
           eq(paymentRecurringPlans.tenantId, tenantId),
-          eq(paymentRecurringPlans.id, subscription.planId),
+          eq(paymentRecurringPlans.id, locked.planId),
         ),
       );
     if (!plan) return { outcome: "ignored", code: "PLAN_MISSING" };
+    // A paid next period whose start date has come moves in first, so the
+    // continuity check below sees the real state of the subscription.
+    const subscription = await withDuePromotion(tx, tenantId, locked, now);
 
     // Server truth: the plan, not the payload, says what an invoice costs.
     const reviewReason =
@@ -832,6 +1177,12 @@ async function applyInvoicePaid(
   const { subscription, plan, now } = input;
   const invoice = input.event.data.invoice;
 
+  // The payload itself must say paid. Checked before anything is looked up or
+  // stored: an `invoice.paid` event whose invoice is still open (also one never
+  // seen) proves no payment and leaves no row behind.
+  if (invoice.status !== "paid")
+    return { outcome: "ignored", code: "PAYLOAD_NOT_PAID" };
+
   const stored = await findInvoice(tx, tenantId, invoice.id, true);
   if (!stored) {
     if (!input.storeUnseen) return { outcome: "unknown_invoice" };
@@ -857,6 +1208,8 @@ async function applyInvoicePaid(
         hostedUrl: invoice.hosted_url,
         status: "needs_review",
         reviewReason: unseenReason,
+        // The payload says paid: record when, like every other paid path.
+        paidAt: invoice.paid_at ? new Date(invoice.paid_at) : now,
         sourceEventId: input.sourceEventId,
       })
       .onConflictDoNothing()
@@ -874,9 +1227,6 @@ async function applyInvoicePaid(
   // Replay of an applied payment, or an invoice already under review.
   if (stored.status === "paid")
     return { outcome: "processed", code: "DUPLICATE" };
-  // The payload itself must say paid.
-  if (invoice.status !== "paid")
-    return { outcome: "ignored", code: "PAYLOAD_NOT_PAID" };
   // Already under review: the money is real, so record when it was paid, but
   // the invoice stays `needs_review` and nothing is activated.
   if (stored.status === "needs_review") {
@@ -916,7 +1266,10 @@ async function applyInvoicePaid(
       ? "SUBSCRIPTION_CANCELLED"
       : subscription.status === "paused"
         ? "SUBSCRIPTION_PAUSED"
-        : null);
+        : subscription.status === "provisioning" ||
+            subscription.status === "needs_reconcile"
+          ? "SUBSCRIPTION_NEEDS_RECONCILE"
+          : null);
   if (review) {
     await tx
       .update(subscriptionInvoices)
@@ -956,6 +1309,40 @@ async function applyInvoicePaid(
     );
 
   const first = subscription.status === "pending_first_payment";
+  const today = businessDateOf(now);
+  const live = or(
+    eq(paymentRecurringSubscriptions.status, "pending_first_payment"),
+    eq(paymentRecurringSubscriptions.status, "active"),
+    eq(paymentRecurringSubscriptions.status, "past_due"),
+  );
+  // A period that starts later than today never changes what is current: it
+  // waits in the next slot until its start date (promotion). Only for a row
+  // that has a current period or is still waiting for its first payment.
+  if (
+    stored.periodStart > today &&
+    (subscription.currentPeriodEnd !== null || first)
+  ) {
+    // Only a period beyond everything already covered or waiting is stored.
+    const covered = subscription.nextPeriodEnd ?? subscription.currentPeriodEnd;
+    if (covered !== null && stored.periodEnd <= covered)
+      return { outcome: "processed", code: null };
+    await tx
+      .update(paymentRecurringSubscriptions)
+      .set({
+        nextPeriodStart: stored.periodStart,
+        nextPeriodEnd: stored.periodEnd,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(paymentRecurringSubscriptions.tenantId, tenantId),
+          eq(paymentRecurringSubscriptions.id, subscription.id),
+          live,
+        ),
+      );
+    return { outcome: "processed", code: null };
+  }
+
   // The period only moves forward: a late or replayed older invoice never
   // shortens it.
   const advances =
@@ -964,30 +1351,22 @@ async function applyInvoicePaid(
   // Access is granted only for a period that moves forward and has not
   // already ended (the end date is exclusive: start + one interval);
   // otherwise the invoice is just marked paid.
-  const grants = advances && stored.periodEnd > businessDateOf(now);
+  const grants = advances && stored.periodEnd > today;
   if (!advances) return { outcome: "processed", code: null };
   await tx
     .update(paymentRecurringSubscriptions)
     .set({
       ...(grants ? { status: "active" as const } : {}),
       ...(grants && first ? { activatedAt: now } : {}),
-      ...(advances
-        ? {
-            currentPeriodStart: stored.periodStart,
-            currentPeriodEnd: stored.periodEnd,
-          }
-        : {}),
+      currentPeriodStart: stored.periodStart,
+      currentPeriodEnd: stored.periodEnd,
       updatedAt: now,
     })
     .where(
       and(
         eq(paymentRecurringSubscriptions.tenantId, tenantId),
         eq(paymentRecurringSubscriptions.id, subscription.id),
-        or(
-          eq(paymentRecurringSubscriptions.status, "pending_first_payment"),
-          eq(paymentRecurringSubscriptions.status, "active"),
-          eq(paymentRecurringSubscriptions.status, "past_due"),
-        ),
+        live,
       ),
     );
   return { outcome: "processed", code: null };

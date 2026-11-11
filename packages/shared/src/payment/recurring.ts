@@ -27,6 +27,10 @@ export const recurringSubscriptionStatusSchema = z.enum([
   "past_due",
   "paused",
   "cancelled",
+  // Start stored before the gateway call, or an outcome at the gateway that
+  // could not be confirmed. Never has access; a person or a retry resolves it.
+  "provisioning",
+  "needs_reconcile",
 ]);
 export const subscriptionInvoiceStatusSchema = z.enum([
   "open",
@@ -56,6 +60,11 @@ export const recurringSubscriptionSchema = z.strictObject({
   status: recurringSubscriptionStatusSchema,
   currentPeriodStart: businessDateSchema.nullable(),
   currentPeriodEnd: businessDateSchema.nullable(),
+  /** A paid period that has not started yet; it becomes current on its start. */
+  nextPeriodStart: businessDateSchema.nullable(),
+  nextPeriodEnd: businessDateSchema.nullable(),
+  /** Error code of an unconfirmed outcome (status `needs_reconcile`). */
+  reconcileReason: z.string().max(100).nullable(),
   activatedAt: isoDateTimeSchema.nullable(),
   pausedAt: isoDateTimeSchema.nullable(),
   cancelledAt: isoDateTimeSchema.nullable(),

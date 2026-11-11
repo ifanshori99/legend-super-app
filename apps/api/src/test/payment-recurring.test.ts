@@ -31,6 +31,8 @@
 //   by event name `subscription.invoice_created` and the invoice id inside
 //   the event payload text.
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { Pool } from "pg";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -44,12 +46,18 @@ import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
 import {
   cancelSubscription,
+  getSubscription,
   pauseSubscription,
+  promoteDueSubscriptionPeriods,
   resumeSubscription,
   startSubscription,
+  subscriptionHasAccess,
 } from "../services/payment-recurring.service";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
-import { clearDoitWebhookSecretCache } from "../services/payment-webhook.service";
+import {
+  clearDoitWebhookSecretCache,
+  reprocessStoredWebhookEvents,
+} from "../services/payment-webhook.service";
 import {
   setIntegrationStatus,
   upsertIntegration,
@@ -150,6 +158,7 @@ async function seedIntegration(
   tenantId: string,
   webhookSecret: string,
   outletId: string | null = null,
+  baseUrl = "http://127.0.0.1:9",
 ): Promise<string> {
   const context = contextFor(tenantId);
   const created = await upsertIntegration(
@@ -157,8 +166,8 @@ async function seedIntegration(
     {
       outletId: outletId as OutletId | null,
       provider: "doit",
-      // Never contacted: invoice events are webhook-only.
-      config: { baseUrl: "http://127.0.0.1:9" },
+      // Never contacted unless a test passes a fake DOIT server url.
+      config: { baseUrl },
       credentials: { apiKey: `doit-key-${unique()}`, webhookSecret },
     },
     actor,
@@ -430,7 +439,13 @@ type Fx = {
 };
 
 type SubStatus =
-  "pending_first_payment" | "active" | "past_due" | "paused" | "cancelled";
+  | "pending_first_payment"
+  | "active"
+  | "past_due"
+  | "paused"
+  | "cancelled"
+  | "provisioning"
+  | "needs_reconcile";
 
 async function seedFixture(
   options: {
@@ -442,6 +457,15 @@ async function seedFixture(
     /** DOIT integration the plan and subscription are bound to (fix round 1,
      * finding 1). Defaults to tenant A's tenant-wide integration. */
     gatewayIntegrationId?: string;
+    /** Round 3: null stores a row without a provider subscription id (only
+     * allowed for provisioning / needs_reconcile). The event helpers still
+     * carry `fx.providerSubId`. */
+    providerSubId?: string | null;
+    /** Round 3: a paid-ahead period stored next to the current one. Written by
+     * a separate UPDATE so seeds that do not use it never touch the new
+     * columns. */
+    nextPeriodStart?: string;
+    nextPeriodEnd?: string;
     /** "fixture" seeds on the shared cafe-legend fixture tenant (REC-06 route
      * tests only); the default is this file's dedicated tenant. */
     on?: "dedicated" | "fixture";
@@ -488,7 +512,7 @@ async function seedFixture(
       fx.outletId,
       fx.planId,
       randomUUID(),
-      fx.providerSubId,
+      options.providerSubId === null ? null : fx.providerSubId,
       status,
       options.periodStart ?? null,
       options.periodEnd ?? null,
@@ -496,6 +520,11 @@ async function seedFixture(
     ],
   );
   subIds.push(fx.subId);
+  if (options.nextPeriodStart && options.nextPeriodEnd)
+    await owner.query(
+      `UPDATE payment_recurring_subscriptions SET next_period_start = $2, next_period_end = $3 WHERE id = $1`,
+      [fx.subId, options.nextPeriodStart, options.nextPeriodEnd],
+    );
   return fx;
 }
 
@@ -1587,7 +1616,8 @@ describe("REC-11 cancel wins over a payment that lands while DOIT is being calle
             invoiceEvent("invoice.paid", fx, { invoiceId }),
           );
           expect(paid.status).toBe(200);
-          return {};
+          // Round 3 (item 10): DOIT's answer is checked (id + status).
+          return { id: fx.providerSubId, status: "cancelled" };
         },
       }) as never;
 
@@ -1945,7 +1975,8 @@ describe("REC-15 pause wins over a payment that lands while DOIT is being called
             }),
           );
           expect(paid.status).toBe(200);
-          return {};
+          // Round 3 (item 10): DOIT's answer is checked (id + status).
+          return { id: fx.providerSubId, status: "paused" };
         },
       }) as never;
 
@@ -2182,5 +2213,1122 @@ describe("REC-17 DOIT calls use the integration the plan and subscription are bo
       ).catch(() => undefined);
       expectBoundIntegration(calls);
     });
+  });
+});
+
+// ===========================================================================
+// Round 3 (docs/briefs/469-doit-recurring-fixes.md, items 1-12)
+// ===========================================================================
+// Written from docs/briefs/469-design.md (contract names), not from the
+// implementation. Items 3, 7 and 9 (webhook receipt, binding, parked events)
+// live in payment-recurring-reconcile.test.ts. Item 5 (no second connection
+// under FOR UPDATE) has no black-box handle: the option no longer exists and
+// shared-secret acceptance is covered by REC-13 and REC-27.
+//
+// ASSUMPTIONS
+// - DOIT answers to pause/resume/cancel are `{ id, status }` with status
+//   "paused" / "active" / "cancelled" (the wire enum also allows "canceled";
+//   only the double-l spelling is exercised here).
+// - A CoreError exposes `.code` ("SERVICE_UNAVAILABLE", "CONFLICT").
+// - `getSubscription(context, id)` and `subscriptionHasAccess` take the
+//   Drizzle-style camelCase row (dates as "YYYY-MM-DD" strings).
+// - The key stored in `start_idempotency_key` is the caller's key as given.
+// - Not expressible: the 409 -> DUPLICATE_AT_PROVIDER branch (the adapter's
+//   409 error shape is not in the contract) and item 5's pool-exhaustion case.
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function codeOf(run: Promise<unknown>): Promise<string | null> {
+  return run.then(
+    () => null,
+    (error: unknown) => (error as { code?: string }).code ?? "NO_CODE",
+  );
+}
+
+/** A promise pair: `started` resolves when the held DOIT call begins,
+ * `release()` lets it return. Makes interleavings deterministic (no sleeps). */
+function gate() {
+  let release!: () => void;
+  let started!: () => void;
+  return {
+    released: new Promise<void>((resolve) => (release = resolve)),
+    hasStarted: new Promise<void>((resolve) => (started = resolve)),
+    release: () => release(),
+    markStarted: () => started(),
+  };
+}
+
+async function addOutlet(label: string): Promise<string> {
+  const id = randomUUID();
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+     VALUES ($1, $2, $3, $4, $5, $6, 'Jl. R3', '{}')`,
+    [
+      id,
+      tenantW,
+      dedicatedTenant.brandId,
+      dedicatedTenant.legalEntityId,
+      `R3${label}-${unique()}`.toUpperCase(),
+      `Outlet ${label}`,
+    ],
+  );
+  return id;
+}
+
+async function subExtra(subId: string) {
+  const { rows } = await owner.query<{
+    status: string;
+    reconcile_reason: string | null;
+    provider_subscription_id: string | null;
+    paused_at: Date | null;
+    cancelled_at: Date | null;
+  }>(
+    `SELECT status, reconcile_reason, provider_subscription_id, paused_at, cancelled_at
+     FROM payment_recurring_subscriptions WHERE id = $1`,
+    [subId],
+  );
+  return rows[0]!;
+}
+
+async function subNext(subId: string) {
+  const { rows } = await owner.query<{
+    status: string;
+    period_start: string | null;
+    period_end: string | null;
+    next_start: string | null;
+    next_end: string | null;
+    activated_at: string | null;
+  }>(
+    `SELECT status,
+            to_char(current_period_start, 'YYYY-MM-DD') AS period_start,
+            to_char(current_period_end, 'YYYY-MM-DD') AS period_end,
+            to_char(next_period_start, 'YYYY-MM-DD') AS next_start,
+            to_char(next_period_end, 'YYYY-MM-DD') AS next_end,
+            activated_at::text AS activated_at
+     FROM payment_recurring_subscriptions WHERE id = $1`,
+    [subId],
+  );
+  return rows[0]!;
+}
+
+/** The camelCase row `subscriptionHasAccess` takes, read back from the DB. */
+async function accessInput(subId: string) {
+  const row = await subNext(subId);
+  return {
+    status: row.status,
+    currentPeriodStart: row.period_start,
+    currentPeriodEnd: row.period_end,
+    nextPeriodStart: row.next_start,
+    nextPeriodEnd: row.next_end,
+  } as never;
+}
+
+/** 12:00 Asia/Jakarta on a business date (05:00 UTC). */
+const noonJakarta = (date: string) => new Date(`${date}T05:00:00.000Z`);
+
+/** DOIT answer for a stop/resume call that the service must accept. */
+const okAnswer = (fx: Fx, status: "paused" | "active" | "cancelled") => ({
+  id: fx.providerSubId,
+  status,
+});
+
+// A real customer profile for tests that call startSubscription.
+async function seedProfile(): Promise<{
+  profileId: string;
+  cleanup: () => Promise<void>;
+}> {
+  const userId = randomUUID();
+  await owner.query(
+    `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, 'Pelanggan uji', $2, true)`,
+    [userId, `${userId}@example.test`],
+  );
+  const profileId = randomUUID();
+  await owner.query(
+    `INSERT INTO customer_profiles (id, tenant_id, user_id, name, membership_status, whatsapp_verified_at)
+     VALUES ($1, $2, $3, 'Pelanggan uji', 'active', now())`,
+    [profileId, tenantW, userId],
+  );
+  return {
+    profileId,
+    cleanup: async () => {
+      await owner.query("DELETE FROM customer_profiles WHERE id = $1", [
+        profileId,
+      ]);
+      await owner.query('DELETE FROM "user" WHERE id = $1', [userId]);
+    },
+  };
+}
+
+/** Rows startSubscription created for a plan (and registers them for cleanup). */
+async function startedRows(planId: string, seededId: string) {
+  const { rows } = await owner.query<{
+    id: string;
+    status: string;
+    reconcile_reason: string | null;
+    provider_subscription_id: string | null;
+    start_idempotency_key: string | null;
+  }>(
+    `SELECT id, status, reconcile_reason, provider_subscription_id, start_idempotency_key
+     FROM payment_recurring_subscriptions WHERE plan_id = $1 AND id <> $2`,
+    [planId, seededId],
+  );
+  for (const row of rows) subIds.push(row.id);
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// REC-18 / REC-19 (items 1, 2): which integrations may bill, which may stop
+// ---------------------------------------------------------------------------
+
+describe("REC-18 start and resume refuse an integration that is not active; REC-19 pause and cancel still reach DOIT", () => {
+  let server: http.Server;
+  let baseUrl = "";
+  let requests: { method: string; path: string }[] = [];
+  const sockets = new Set<import("node:net").Socket>();
+  let integrationActive = "";
+  let integrationDisabled = "";
+  let profile: Awaited<ReturnType<typeof seedProfile>>;
+
+  const recurringCalls = () =>
+    requests.filter((r) => r.path.includes("/recurring"));
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      requests.push({ method: req.method ?? "GET", path: req.url ?? "/" });
+      req.resume();
+      req.on("end", () => {
+        const match = /subscriptions\/([^/]+)\/(pause|resume|cancel)$/.exec(
+          req.url ?? "",
+        );
+        res.setHeader("content-type", "application/json");
+        if (!match) {
+          res.statusCode = 404;
+          res.end("{}");
+          return;
+        }
+        const status = {
+          pause: "paused",
+          resume: "active",
+          cancel: "cancelled",
+        }[match[2] as "pause" | "resume" | "cancel"];
+        res.end(
+          JSON.stringify({
+            id: decodeURIComponent(match[1]!),
+            plan_id: "plan_stub",
+            status,
+          }),
+        );
+      });
+    });
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", () => resolve()),
+    );
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    integrationActive = await seedIntegration(
+      tenantW,
+      `whsec-r3-act-${randomBytes(8).toString("hex")}`,
+      await addOutlet("ACT"),
+      baseUrl,
+    );
+    integrationDisabled = await seedIntegration(
+      tenantW,
+      `whsec-r3-dis-${randomBytes(8).toString("hex")}`,
+      await addOutlet("DIS"),
+      baseUrl,
+    );
+    await setIntegrationStatus(
+      contextFor(tenantW),
+      integrationDisabled,
+      { status: "disabled" },
+      actor,
+    );
+    profile = await seedProfile();
+  });
+
+  afterAll(async () => {
+    await profile?.cleanup();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    requests = [];
+  });
+
+  it("REC-18 resume with an active integration reaches DOIT (control for the refusals below)", async () => {
+    const fx = await seedFixture({
+      status: "paused",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationActive,
+    });
+    const result = await resumeSubscription(ctxW(), fx.subId, new Date());
+    expect(result.status).toBe("active");
+    expect(
+      recurringCalls().map((r) => r.method + " " + r.path.split("/").pop()),
+    ).toEqual(["POST resume"]);
+  });
+
+  it("REC-18 resume on a disabled integration is SERVICE_UNAVAILABLE and DOIT is never called", async () => {
+    const fx = await seedFixture({
+      status: "paused",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationDisabled,
+    });
+    expect(await codeOf(resumeSubscription(ctxW(), fx.subId, new Date()))).toBe(
+      "SERVICE_UNAVAILABLE",
+    );
+    expect(recurringCalls()).toEqual([]);
+    expect((await subRow(fx.subId)).status).toBe("paused");
+  });
+
+  it("REC-18 start on a disabled integration is SERVICE_UNAVAILABLE and DOIT is never called", async () => {
+    const fx = await seedFixture({ gatewayIntegrationId: integrationDisabled });
+    const code = await codeOf(
+      startSubscription(ctxW(), {
+        planId: fx.planId,
+        customerProfileId: profile.profileId,
+        idempotencyKey: `idem-${unique()}`,
+      }),
+    );
+    await startedRows(fx.planId, fx.subId); // register any row for cleanup
+    expect(code).toBe("SERVICE_UNAVAILABLE");
+    expect(recurringCalls()).toEqual([]);
+  });
+
+  it("REC-19 pause still reaches DOIT after the provider was withdrawn from the tenant plan", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationActive,
+    });
+    await withdrawDoitFromPlan(async () => {
+      const result = await pauseSubscription(ctxW(), fx.subId, new Date());
+      expect(result.status).toBe("paused");
+    });
+    expect(recurringCalls().map((r) => r.path.split("/").pop())).toEqual([
+      "pause",
+    ]);
+    expect((await subRow(fx.subId)).status).toBe("paused");
+  });
+
+  it("REC-19 cancel still reaches DOIT after the provider was withdrawn from the tenant plan", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationActive,
+    });
+    await withdrawDoitFromPlan(async () => {
+      const result = await cancelSubscription(ctxW(), fx.subId, new Date());
+      expect(result.status).toBe("cancelled");
+    });
+    expect(recurringCalls().map((r) => r.path.split("/").pop())).toEqual([
+      "cancel",
+    ]);
+    expect((await subRow(fx.subId)).status).toBe("cancelled");
+  });
+
+  it("REC-19 pause and cancel reach DOIT through a disabled integration", async () => {
+    const paused = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationDisabled,
+    });
+    expect(
+      (await pauseSubscription(ctxW(), paused.subId, new Date())).status,
+    ).toBe("paused");
+    const cancelled = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationDisabled,
+    });
+    expect(
+      (await cancelSubscription(ctxW(), cancelled.subId, new Date())).status,
+    ).toBe("cancelled");
+    expect(recurringCalls()).toHaveLength(2);
+  });
+});
+
+const ctxW = () => contextFor(tenantW);
+
+async function withdrawDoitFromPlan<T>(run: () => Promise<T>): Promise<T> {
+  await owner.query(
+    `UPDATE tenants SET feature_flags = '{"modules":[],"integrationProviders":[]}' WHERE id = $1`,
+    [tenantW],
+  );
+  try {
+    return await run();
+  } finally {
+    await owner.query(
+      `UPDATE tenants SET feature_flags = '{"modules":[],"integrationProviders":["doit"]}' WHERE id = $1`,
+      [tenantW],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// REC-20 (item 4): pause never overwrites cancel
+// ---------------------------------------------------------------------------
+
+describe("REC-20 pause vs cancel ends cancelled in either order", () => {
+  it("REC-20 a pause whose DOIT call is still running when the cancel completes does not undo the cancel", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+    });
+    const held = gate();
+    const pausing = pauseSubscription(ctxW(), fx.subId, new Date(), {
+      clientFor: async () =>
+        ({
+          pauseSubscription: async () => {
+            held.markStarted();
+            await held.released;
+            return okAnswer(fx, "paused");
+          },
+        }) as never,
+    }).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await held.hasStarted;
+    const cancelled = await cancelSubscription(ctxW(), fx.subId, new Date(), {
+      clientFor: async () =>
+        ({
+          cancelSubscription: async () => okAnswer(fx, "cancelled"),
+        }) as never,
+    });
+    expect(cancelled.status).toBe("cancelled");
+    held.release();
+    const outcome = await pausing;
+    // Contract: a cancelled row never goes back to paused; pause returns the
+    // latest state (it is not an error).
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.value.status).toBe("cancelled");
+    const after = await subExtra(fx.subId);
+    expect(after.status).toBe("cancelled");
+    expect(after.cancelled_at).not.toBeNull();
+  });
+
+  it("REC-20 a cancel whose DOIT call is still running when the pause completes still ends cancelled", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+    });
+    const held = gate();
+    const cancelling = cancelSubscription(ctxW(), fx.subId, new Date(), {
+      clientFor: async () =>
+        ({
+          cancelSubscription: async () => {
+            held.markStarted();
+            await held.released;
+            return okAnswer(fx, "cancelled");
+          },
+        }) as never,
+    });
+    await held.hasStarted;
+    const paused = await pauseSubscription(ctxW(), fx.subId, new Date(), {
+      clientFor: async () =>
+        ({ pauseSubscription: async () => okAnswer(fx, "paused") }) as never,
+    });
+    expect(paused.status).toBe("paused");
+    held.release();
+    expect((await cancelling).status).toBe("cancelled");
+    expect((await subExtra(fx.subId)).status).toBe("cancelled");
+  });
+
+  it.each([
+    ["pause finishes last", 120, 5],
+    ["cancel finishes last", 5, 120],
+  ])(
+    "REC-20 Promise.all of pause and cancel (%s) ends cancelled",
+    async (_label, pauseMs, cancelMs) => {
+      const fx = await seedFixture({
+        status: "active",
+        periodStart: P_CUR,
+        periodEnd: P_NEXT,
+      });
+      await Promise.allSettled([
+        pauseSubscription(ctxW(), fx.subId, new Date(), {
+          clientFor: async () =>
+            ({
+              pauseSubscription: async () => {
+                await sleep(pauseMs);
+                return okAnswer(fx, "paused");
+              },
+            }) as never,
+        }),
+        cancelSubscription(ctxW(), fx.subId, new Date(), {
+          clientFor: async () =>
+            ({
+              cancelSubscription: async () => {
+                await sleep(cancelMs);
+                return okAnswer(fx, "cancelled");
+              },
+            }) as never,
+        }),
+      ]);
+      expect((await subExtra(fx.subId)).status).toBe("cancelled");
+    },
+  );
+
+  it("REC-20 a resume whose row was cancelled while DOIT was being called is a CONFLICT and the row stays cancelled", async () => {
+    const fx = await seedFixture({
+      status: "paused",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+    });
+    const code = await codeOf(
+      resumeSubscription(ctxW(), fx.subId, new Date(), {
+        clientFor: async () =>
+          ({
+            resumeSubscription: async () => {
+              await owner.query(
+                "UPDATE payment_recurring_subscriptions SET status = 'cancelled', cancelled_at = now() WHERE id = $1",
+                [fx.subId],
+              );
+              return okAnswer(fx, "active");
+            },
+          }) as never,
+      }),
+    );
+    expect(code).toBe("CONFLICT");
+    expect((await subExtra(fx.subId)).status).toBe("cancelled");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-21 (item 6): paid_at of an unseen paid invoice comes from the payload
+// ---------------------------------------------------------------------------
+
+describe("REC-21 an unseen paid invoice keeps the payload's paid_at", () => {
+  it("REC-21 paid_at is the paid_at DOIT sent, not the receive time", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_PREV,
+      periodEnd: P_CUR,
+    });
+    const invoiceId = `inv_${unique()}`;
+    const body = invoiceEvent("invoice.paid", fx, { invoiceId });
+    const paidAt = new Date(Date.now() - 3 * 86_400_000);
+    (body.data.invoice as { paid_at?: string }).paid_at = paidAt.toISOString();
+    // Inside the early window an unseen paid invoice is retried (500 to DOIT);
+    // after it the money is stored for review. The worker retry runs later.
+    expect((await deliver(body)).status).toBe(500);
+    await reprocessStoredWebhookEvents(
+      ctxW(),
+      new Date(Date.now() + 16 * 60_000),
+    );
+    const [row] = await invoiceRows(invoiceId);
+    expect(row, "the unseen paid invoice is stored").toBeDefined();
+    expect(row!.paid_at).not.toBeNull();
+    expect(Math.abs(row!.paid_at!.getTime() - paidAt.getTime())).toBeLessThan(
+      1000,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-22 (item 8): start keeps a stable local intent and reference
+// ---------------------------------------------------------------------------
+
+describe("REC-22 start stores its intent before DOIT and retries with the same reference", () => {
+  let profile: Awaited<ReturnType<typeof seedProfile>>;
+  beforeAll(async () => {
+    profile = await seedProfile();
+  });
+  afterAll(async () => {
+    await profile?.cleanup();
+  });
+
+  const input = (fx: Fx, key: string) => ({
+    planId: fx.planId,
+    customerProfileId: profile.profileId,
+    idempotencyKey: key,
+  });
+  const created = (
+    fx: Fx,
+    subId = `sub_${unique()}`,
+    planId = fx.providerPlanId,
+  ) => ({
+    id: subId,
+    plan_id: planId,
+    status: "pending",
+    first_invoice_url: null,
+  });
+
+  it("REC-22 the local row exists as provisioning (no provider id) while DOIT is being called", async () => {
+    const fx = await seedFixture();
+    const key = `idem-${unique()}`;
+    let seenDuringCall: Awaited<ReturnType<typeof startedRows>> = [];
+    await startSubscription(ctxW(), input(fx, key), {
+      clientFor: async () =>
+        ({
+          createSubscription: async () => {
+            seenDuringCall = await startedRows(fx.planId, fx.subId);
+            return created(fx);
+          },
+        }) as never,
+    });
+    expect(seenDuringCall).toHaveLength(1);
+    expect(seenDuringCall[0]).toMatchObject({
+      status: "provisioning",
+      provider_subscription_id: null,
+      start_idempotency_key: key,
+    });
+    await startedRows(fx.planId, fx.subId);
+  });
+
+  it("REC-22 a response lost after DOIT accepted leaves needs_reconcile; the retry re-sends the same reference and ends with exactly one local row", async () => {
+    const fx = await seedFixture();
+    const key = `idem-${unique()}`;
+    const sent: string[] = [];
+    const providerId = `sub_${unique()}`;
+    const lose = {
+      clientFor: async () =>
+        ({
+          createSubscription: async (...args: unknown[]) => {
+            sent.push(safeJson(args));
+            throw new Error("ETIMEDOUT");
+          },
+        }) as never,
+    };
+    const firstCode = await codeOf(
+      startSubscription(ctxW(), input(fx, key), lose),
+    );
+    expect(["SERVICE_UNAVAILABLE", "CONFLICT"]).toContain(firstCode);
+    const afterFirst = await startedRows(fx.planId, fx.subId);
+    expect(afterFirst).toHaveLength(1);
+    expect(afterFirst[0]).toMatchObject({
+      status: "needs_reconcile",
+      reconcile_reason: "PROVIDER_ERROR",
+      provider_subscription_id: null,
+      start_idempotency_key: key,
+    });
+    const rowId = afterFirst[0]!.id;
+
+    const result = await startSubscription(ctxW(), input(fx, key), {
+      clientFor: async () =>
+        ({
+          createSubscription: async (...args: unknown[]) => {
+            sent.push(safeJson(args));
+            return created(fx, providerId);
+          },
+        }) as never,
+    });
+    expect(result.subscription.status).toBe("pending_first_payment");
+    // Same reference (the row id) and same idempotency key on both calls.
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBe(sent[0]);
+    expect(sent[0]).toContain(rowId);
+    const afterRetry = await startedRows(fx.planId, fx.subId);
+    expect(afterRetry).toHaveLength(1);
+    expect(afterRetry[0]).toMatchObject({
+      id: rowId,
+      status: "pending_first_payment",
+      provider_subscription_id: providerId,
+    });
+  });
+
+  it("REC-22 replaying a start that succeeded returns the same subscription without calling DOIT again", async () => {
+    const fx = await seedFixture();
+    const key = `idem-${unique()}`;
+    let calls = 0;
+    const deps = {
+      clientFor: async () =>
+        ({
+          createSubscription: async () => {
+            calls += 1;
+            return created(fx);
+          },
+        }) as never,
+    };
+    const first = await startSubscription(ctxW(), input(fx, key), deps);
+    const second = await startSubscription(ctxW(), input(fx, key), deps);
+    expect(calls).toBe(1);
+    expect(second.subscription.id).toBe(first.subscription.id);
+    expect(await startedRows(fx.planId, fx.subId)).toHaveLength(1);
+  });
+
+  it("REC-22 a DOIT answer for another plan is needs_reconcile PLAN_MISMATCH with a CONFLICT, never pending_first_payment", async () => {
+    const fx = await seedFixture();
+    const code = await codeOf(
+      startSubscription(ctxW(), input(fx, `idem-${unique()}`), {
+        clientFor: async () =>
+          ({
+            createSubscription: async () =>
+              created(fx, undefined, `plan_other_${unique()}`),
+          }) as never,
+      }),
+    );
+    expect(code).toBe("CONFLICT");
+    const rows = await startedRows(fx.planId, fx.subId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "needs_reconcile",
+      reconcile_reason: "PLAN_MISMATCH",
+    });
+  });
+
+  describe("a subscription that is not confirmed at the gateway never notifies or activates", () => {
+    for (const status of ["needs_reconcile", "provisioning"] as const) {
+      it(`REC-22 an invoice for a ${status} subscription is not notified`, async () => {
+        const fx = await seedFixture({ status });
+        const body = invoiceEvent("invoice.created", fx, {
+          invoiceId: `inv_${unique()}`,
+        });
+        await deliver(body);
+        const [row] = await invoiceRows(body.data.invoice.id);
+        if (row) expect(row.notified_at).toBeNull();
+        expect(await outboxCount(row?.id ?? randomUUID())).toBe(0);
+      });
+    }
+
+    it("REC-22 a paid invoice of a needs_reconcile subscription is needs_review SUBSCRIPTION_NEEDS_RECONCILE and never activates", async () => {
+      const fx = await seedFixture({ status: "needs_reconcile" });
+      const invoiceId = await seedInvoiceRow(fx, {
+        status: "open",
+        periodStart: P_CUR,
+        periodEnd: P_NEXT,
+      });
+      await deliver(invoiceEvent("invoice.paid", fx, { invoiceId }));
+      expect((await invoiceRows(invoiceId))[0]).toMatchObject({
+        status: "needs_review",
+        review_reason: "SUBSCRIPTION_NEEDS_RECONCILE",
+      });
+      const after = await subNext(fx.subId);
+      expect(after.status).toBe("needs_reconcile");
+      expect(after.activated_at).toBeNull();
+      expect(after.period_start).toBeNull();
+    });
+
+    it("REC-22 an event for a provisioning row without a provider id stays an unknown subscription", async () => {
+      const fx = await seedFixture({
+        status: "provisioning",
+        providerSubId: null,
+      });
+      const body = invoiceEvent("invoice.created", fx, {
+        invoiceId: `inv_${unique()}`,
+      });
+      await deliver(body);
+      expect(await invoiceRows(body.data.invoice.id)).toHaveLength(0);
+      const [stored] = await webhookEvent(tenantW, body.id);
+      expect(stored!.last_error_code).toBe("UNKNOWN_SUBSCRIPTION");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-23 (item 10): DOIT's answer to pause/resume/cancel is checked
+// ---------------------------------------------------------------------------
+
+describe("REC-23 a pause, resume or cancel is only a success when DOIT's answer says so", () => {
+  type Action = "pause" | "resume" | "cancel";
+  const actions: Record<
+    Action,
+    {
+      from: SubStatus;
+      expected: "paused" | "active" | "cancelled";
+      wrong: "paused" | "active" | "cancelled";
+      run: typeof pauseSubscription;
+      method: string;
+    }
+  > = {
+    pause: {
+      from: "active",
+      expected: "paused",
+      wrong: "active",
+      run: pauseSubscription,
+      method: "pauseSubscription",
+    },
+    resume: {
+      from: "paused",
+      expected: "active",
+      wrong: "paused",
+      run: resumeSubscription,
+      method: "resumeSubscription",
+    },
+    cancel: {
+      from: "active",
+      expected: "cancelled",
+      wrong: "active",
+      run: cancelSubscription,
+      method: "cancelSubscription",
+    },
+  };
+
+  function call(action: Action, fx: Fx, answer: unknown) {
+    const a = actions[action];
+    return a.run(ctxW(), fx.subId, new Date(), {
+      clientFor: async () => ({ [a.method]: async () => answer }) as never,
+    });
+  }
+
+  for (const action of ["pause", "resume", "cancel"] as const) {
+    const a = actions[action];
+    const seed = () =>
+      seedFixture({ status: a.from, periodStart: P_CUR, periodEnd: P_NEXT });
+
+    it(`REC-23 ${action}: a matching id and status succeeds`, async () => {
+      const fx = await seed();
+      const result = await call(action, fx, okAnswer(fx, a.expected));
+      expect(result.status).toBe(a.expected);
+      expect((await subExtra(fx.subId)).status).toBe(a.expected);
+    });
+
+    it.each([
+      [
+        "another subscription id",
+        () => ({ id: `sub_other_${unique()}`, status: a.expected }),
+      ],
+      [
+        "the wrong status",
+        (fx: Fx) => ({ id: fx.providerSubId, status: a.wrong }),
+      ],
+      [
+        "an unrecognized status",
+        (fx: Fx) => ({ id: fx.providerSubId, status: "weird" }),
+      ],
+      ["an empty answer", () => ({})],
+    ])(
+      `REC-23 ${action}: %s is needs_reconcile RESPONSE_MISMATCH with a CONFLICT`,
+      async (_label, answer) => {
+        const fx = await seed();
+        const code = await codeOf(call(action, fx, answer(fx)));
+        expect(code).toBe("CONFLICT");
+        expect(await subExtra(fx.subId)).toMatchObject({
+          status: "needs_reconcile",
+          reconcile_reason: "RESPONSE_MISMATCH",
+        });
+      },
+    );
+
+    it(`REC-23 ${action}: a provider error changes nothing`, async () => {
+      const fx = await seed();
+      const run = actions[action].run(ctxW(), fx.subId, new Date(), {
+        clientFor: async () =>
+          ({
+            [a.method]: async () => {
+              throw new Error("DOIT_DOWN");
+            },
+          }) as never,
+      });
+      await codeOf(run);
+      expect((await subExtra(fx.subId)).status).toBe(a.from);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// REC-24 (item 11): paying a future period keeps the current one
+// ---------------------------------------------------------------------------
+
+describe("REC-24 a payment for a future period is stored as the next period", () => {
+  it("REC-24 paying next month while active keeps the current period, stores the next one and access stays", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+    });
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart: P_NEXT,
+      periodEnd: P_AFTER_NEXT,
+    });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart: P_NEXT,
+        periodEnd: P_AFTER_NEXT,
+      }),
+    );
+    expect((await invoiceRows(invoiceId))[0]!.status).toBe("paid");
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "active",
+      period_start: P_CUR,
+      period_end: P_NEXT,
+      next_start: P_NEXT,
+      next_end: P_AFTER_NEXT,
+    });
+    expect(subscriptionHasAccess(await accessInput(fx.subId), new Date())).toBe(
+      true,
+    );
+    // The day the next period starts the current one is over but the paid
+    // next one carries the access.
+    expect(
+      subscriptionHasAccess(await accessInput(fx.subId), noonJakarta(P_NEXT)),
+    ).toBe(true);
+  });
+
+  it("REC-24 at period_start the next period moves into the current one and access continues", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      nextPeriodStart: P_NEXT,
+      nextPeriodEnd: P_AFTER_NEXT,
+    });
+    // Before the start date nothing moves (never touches a row that is not due).
+    await promoteDueSubscriptionPeriods(ctxW(), new Date());
+    expect(await subNext(fx.subId)).toMatchObject({
+      period_start: P_CUR,
+      next_start: P_NEXT,
+    });
+
+    const result = await promoteDueSubscriptionPeriods(
+      ctxW(),
+      noonJakarta(P_NEXT),
+    );
+    expect(result.promoted).toBeGreaterThanOrEqual(1);
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "active",
+      period_start: P_NEXT,
+      period_end: P_AFTER_NEXT,
+      next_start: null,
+      next_end: null,
+    });
+    expect(
+      subscriptionHasAccess(await accessInput(fx.subId), noonJakarta(P_NEXT)),
+    ).toBe(true);
+    // Promoting again changes nothing.
+    await promoteDueSubscriptionPeriods(ctxW(), noonJakarta(P_NEXT));
+    expect((await subNext(fx.subId)).period_start).toBe(P_NEXT);
+  });
+
+  it("REC-24 a first payment for a period that starts tomorrow gives no access today and activates when promoted", async () => {
+    const tomorrow = addDays(jakartaToday(), 1);
+    const end = addDays(tomorrow, 7);
+    const fx = await seedFixture({ interval: "week" });
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart: tomorrow,
+      periodEnd: end,
+    });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart: tomorrow,
+        periodEnd: end,
+      }),
+    );
+    expect((await invoiceRows(invoiceId))[0]!.status).toBe("paid");
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "pending_first_payment",
+      activated_at: null,
+      period_start: null,
+      next_start: tomorrow,
+      next_end: end,
+    });
+    expect(subscriptionHasAccess(await accessInput(fx.subId), new Date())).toBe(
+      false,
+    );
+
+    await promoteDueSubscriptionPeriods(ctxW(), noonJakarta(tomorrow));
+    const after = await subNext(fx.subId);
+    expect(after).toMatchObject({
+      status: "active",
+      period_start: tomorrow,
+      period_end: end,
+      next_start: null,
+    });
+    expect(after.activated_at).not.toBeNull();
+    expect(
+      subscriptionHasAccess(await accessInput(fx.subId), noonJakarta(tomorrow)),
+    ).toBe(true);
+  });
+
+  it("REC-24 continuity is checked against the stored next period: the invoice after it is accepted", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      nextPeriodStart: P_NEXT,
+      nextPeriodEnd: P_AFTER_NEXT,
+    });
+    const afterThat = jakartaMonthStart(3);
+    const { invoiceId, row } = await createInvoice(fx, {
+      periodStart: P_AFTER_NEXT,
+      periodEnd: afterThat,
+    });
+    expect(row).toMatchObject({ status: "open", review_reason: null });
+    // And one that skips past the stored next period is still a mismatch.
+    const skipped = await createInvoice(fx, {
+      periodStart: afterThat,
+      periodEnd: jakartaMonthStart(4),
+    });
+    expect(skipped.row).toMatchObject({
+      status: "needs_review",
+      review_reason: "PERIOD_MISMATCH",
+    });
+    void invoiceId;
+  });
+
+  it("REC-24 a period that already covers today is applied as before (current period moves)", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_PREV,
+      periodEnd: P_CUR,
+    });
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+    });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart: P_CUR,
+        periodEnd: P_NEXT,
+      }),
+    );
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "active",
+      period_start: P_CUR,
+      period_end: P_NEXT,
+      next_start: null,
+    });
+  });
+
+  it("REC-24 promotion never touches paused, cancelled or needs_reconcile rows", async () => {
+    const rows = [];
+    for (const status of ["paused", "cancelled", "needs_reconcile"] as const) {
+      const fx = await seedFixture({
+        status,
+        periodStart: P_PREV,
+        periodEnd: P_CUR,
+        nextPeriodStart: P_CUR,
+        nextPeriodEnd: P_NEXT,
+      });
+      rows.push({ fx, status });
+    }
+    await promoteDueSubscriptionPeriods(ctxW(), noonJakarta(P_CUR));
+    for (const { fx, status } of rows)
+      expect(await subNext(fx.subId)).toMatchObject({
+        status,
+        period_start: P_PREV,
+        next_start: P_CUR,
+      });
+  });
+
+  it("REC-24 reading a subscription promotes its own due next period", async () => {
+    const today = jakartaToday();
+    const fx = await seedFixture({
+      status: "active",
+      interval: "week",
+      periodStart: addDays(today, -7),
+      periodEnd: today,
+      nextPeriodStart: today,
+      nextPeriodEnd: addDays(today, 7),
+    });
+    const read = await getSubscription(ctxW(), fx.subId);
+    expect(read.status).toBe("active");
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "active",
+      period_start: today,
+      period_end: addDays(today, 7),
+      next_start: null,
+    });
+  });
+
+  describe("subscriptionHasAccess checks both bounds (start inclusive, end exclusive, Asia/Jakarta date)", () => {
+    const sub = (over: Record<string, unknown> = {}) =>
+      ({
+        status: "active",
+        currentPeriodStart: "2026-01-01",
+        currentPeriodEnd: "2026-02-01",
+        nextPeriodStart: null,
+        nextPeriodEnd: null,
+        ...over,
+      }) as never;
+    // 2026-01-01 00:00 Asia/Jakarta = 2025-12-31T17:00Z.
+    it("REC-24 the first day gives access, the day before does not", () => {
+      expect(
+        subscriptionHasAccess(sub(), new Date("2025-12-31T17:00:00.000Z")),
+      ).toBe(true);
+      expect(
+        subscriptionHasAccess(sub(), new Date("2025-12-31T16:59:59.000Z")),
+      ).toBe(false);
+    });
+    it("REC-24 the end date itself gives no access, the day before does", () => {
+      expect(
+        subscriptionHasAccess(sub(), new Date("2026-01-31T16:59:59.000Z")),
+      ).toBe(true);
+      expect(
+        subscriptionHasAccess(sub(), new Date("2026-01-31T17:00:00.000Z")),
+      ).toBe(false);
+    });
+    it("REC-24 the next period grants access after the current one, with no gap day", () => {
+      const withNext = sub({
+        nextPeriodStart: "2026-02-01",
+        nextPeriodEnd: "2026-03-01",
+      });
+      expect(
+        subscriptionHasAccess(withNext, new Date("2026-01-31T17:00:00.000Z")),
+      ).toBe(true);
+      expect(
+        subscriptionHasAccess(withNext, new Date("2026-02-28T16:59:59.000Z")),
+      ).toBe(true);
+      expect(
+        subscriptionHasAccess(withNext, new Date("2026-02-28T17:00:00.000Z")),
+      ).toBe(false);
+    });
+    it("REC-24 only an active subscription has access", () => {
+      for (const status of [
+        "pending_first_payment",
+        "past_due",
+        "paused",
+        "cancelled",
+        "provisioning",
+        "needs_reconcile",
+      ])
+        expect(
+          subscriptionHasAccess(
+            sub({ status }),
+            new Date("2026-01-15T05:00:00.000Z"),
+          ),
+        ).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-25 (item 12): a paid event whose payload is not paid is ignored
+// ---------------------------------------------------------------------------
+
+describe("REC-25 invoice.paid with a payload status other than paid is ignored before anything is stored", () => {
+  it.each(["open", "void"] as const)(
+    "REC-25 an unseen invoice in an invoice.paid event with payload status %s stores nothing",
+    async (status) => {
+      const fx = await seedFixture();
+      const body = invoiceEvent("invoice.paid", fx, {
+        invoiceId: `inv_${unique()}`,
+        status,
+      });
+      const before = await subRow(fx.subId);
+      await deliver(body);
+      expect(await invoiceRows(body.data.invoice.id)).toHaveLength(0);
+      expect(await subRow(fx.subId)).toEqual(before);
+      const [stored] = await webhookEvent(tenantW, body.id);
+      expect(["ignored", "processed"]).toContain(stored!.status);
+    },
+  );
+
+  it("REC-25 a stored open invoice stays open (never needs_review) when the paid event says open", async () => {
+    const fx = await seedFixture();
+    const { invoiceId } = await createInvoice(fx);
+    const before = (await invoiceRows(invoiceId))[0];
+    await deliver(
+      invoiceEvent("invoice.paid", fx, { invoiceId, status: "open" }),
+    );
+    expect((await invoiceRows(invoiceId))[0]).toEqual(before);
+    expect((await subRow(fx.subId)).status).toBe("pending_first_payment");
   });
 });

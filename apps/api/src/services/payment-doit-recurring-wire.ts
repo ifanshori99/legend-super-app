@@ -134,6 +134,28 @@ export type DoitRecurringSubscription = z.infer<
   typeof doitRecurringSubscriptionSchema
 >;
 
+/** Statuses DOIT reports after a pause / resume / cancel call (ASSUMED, like
+ * the rest of this file; `canceled` is accepted next to `cancelled`). */
+export const DOIT_SUBSCRIPTION_STATUS_AFTER = {
+  pause: ["paused"],
+  resume: ["active"],
+  cancel: ["cancelled", "canceled"],
+} as const satisfies Record<"pause" | "resume" | "cancel", readonly string[]>;
+
+/** True only when the answer is about this very subscription and carries the
+ * status the action should have produced. Anything else is unconfirmed. */
+export function doitSubscriptionActionConfirmed(
+  action: keyof typeof DOIT_SUBSCRIPTION_STATUS_AFTER,
+  answer: DoitRecurringSubscription,
+  providerSubscriptionId: string,
+): boolean {
+  const expected: readonly string[] = DOIT_SUBSCRIPTION_STATUS_AFTER[action];
+  return (
+    answer.id === providerSubscriptionId &&
+    expected.includes(answer.status.trim().toLowerCase())
+  );
+}
+
 // -- HTTP requests ----------------------------------------------------------
 
 export type DoitCreatePlanInput = {

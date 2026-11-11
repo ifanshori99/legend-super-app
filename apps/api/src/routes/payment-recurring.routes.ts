@@ -20,7 +20,9 @@ import type {
   PaymentRecurringSubscription,
   SubscriptionInvoice,
 } from "../db/schema/payment-recurring.ts";
+import { logger } from "../lib/logger.ts";
 import * as service from "../services/payment-recurring.service.ts";
+import { reprocessParkedRecurringEvents } from "../services/payment-webhook.service.ts";
 
 export const paymentRecurringRouter = Router();
 paymentRecurringRouter.use(
@@ -79,6 +81,9 @@ function subscriptionDto(row: PaymentRecurringSubscription) {
     status: row.status,
     currentPeriodStart: row.currentPeriodStart,
     currentPeriodEnd: row.currentPeriodEnd,
+    nextPeriodStart: row.nextPeriodStart,
+    nextPeriodEnd: row.nextPeriodEnd,
+    reconcileReason: row.reconcileReason,
     activatedAt: iso(row.activatedAt),
     pausedAt: iso(row.pausedAt),
     cancelledAt: iso(row.cancelledAt),
@@ -143,6 +148,23 @@ paymentRecurringRouter.post(
       ...input,
       idempotencyKey: key(req),
     });
+    // Invoice events that arrived before this row existed were parked as
+    // unknown; pick them up now. Best effort: the worker retries them anyway.
+    const providerSubscriptionId = started.subscription.providerSubscriptionId;
+    if (providerSubscriptionId)
+      try {
+        await reprocessParkedRecurringEvents(scope(req), new Date(), {
+          providerSubscriptionId,
+        });
+      } catch (error) {
+        logger.warn(
+          {
+            subscriptionId: started.subscription.id,
+            errName: error instanceof Error ? error.name : "unknown",
+          },
+          "Reprocessing parked recurring events after start failed",
+        );
+      }
     res
       .status(201)
       .location(`${base}/subscriptions/${started.subscription.id}`)

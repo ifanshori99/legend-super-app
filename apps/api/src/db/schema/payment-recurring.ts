@@ -31,7 +31,15 @@ import { outlets, tenants } from "./platform-org";
 export type RecurringPlanInterval = "month" | "week";
 export type RecurringPlanStatus = "active" | "archived";
 export type RecurringSubscriptionStatus =
-  "pending_first_payment" | "active" | "past_due" | "paused" | "cancelled";
+  | "pending_first_payment"
+  | "active"
+  | "past_due"
+  | "paused"
+  | "cancelled"
+  // Start intent stored before the DOIT call, and a start/pause/resume/cancel
+  // whose outcome at the gateway is unconfirmed: never notified, never active.
+  | "provisioning"
+  | "needs_reconcile";
 export type SubscriptionInvoiceStatus =
   "open" | "paid" | "void" | "expired" | "needs_review";
 
@@ -115,15 +123,25 @@ export const paymentRecurringSubscriptions = pgTable(
     gatewayIntegrationId: uuid("gateway_integration_id").notNull(),
     /** Plain UUID, no FK (customer profiles live in another workstream). */
     customerProfileId: uuid("customer_profile_id").notNull(),
+    /** Null only while `provisioning` / `needs_reconcile` (see the CHECK). */
     providerSubscriptionId: varchar("provider_subscription_id", {
       length: 100,
-    }).notNull(),
+    }),
+    /** Caller's start key; with the row id as DOIT `reference` it makes a start
+     * retry resend the same request instead of creating a second subscription. */
+    startIdempotencyKey: varchar("start_idempotency_key", { length: 200 }),
+    /** Error code only, e.g. PROVIDER_ERROR; never a message or payload. */
+    reconcileReason: varchar("reconcile_reason", { length: 100 }),
     status: varchar("status", { length: 30 })
       .$type<RecurringSubscriptionStatus>()
       .notNull()
       .default("pending_first_payment"),
     currentPeriodStart: businessDate("current_period_start"),
     currentPeriodEnd: businessDate("current_period_end"),
+    /** A paid period that starts later than today: kept apart until its start
+     * date, when it replaces the current period (promotion). */
+    nextPeriodStart: businessDate("next_period_start"),
+    nextPeriodEnd: businessDate("next_period_end"),
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -161,6 +179,10 @@ export const paymentRecurringSubscriptions = pgTable(
       columns: [table.gatewayIntegrationId],
       foreignColumns: [tenantIntegrations.id],
     }),
+    // Partial: only a start request carries a key.
+    uniqueIndex("payment_recurring_subscriptions_start_key")
+      .on(table.tenantId, table.startIdempotencyKey)
+      .where(sql`${table.startIdempotencyKey} IS NOT NULL`),
     index("payment_recurring_subscriptions_outlet_idx").on(
       table.tenantId,
       table.outletId,
@@ -172,7 +194,15 @@ export const paymentRecurringSubscriptions = pgTable(
     ),
     check(
       "payment_recurring_subscriptions_status_check",
-      sql`${table.status} IN ('pending_first_payment', 'active', 'past_due', 'paused', 'cancelled')`,
+      sql`${table.status} IN ('pending_first_payment', 'active', 'past_due', 'paused', 'cancelled', 'provisioning', 'needs_reconcile')`,
+    ),
+    check(
+      "payment_recurring_subscriptions_provider_sub_check",
+      sql`${table.providerSubscriptionId} IS NOT NULL OR ${table.status} IN ('provisioning', 'needs_reconcile')`,
+    ),
+    check(
+      "payment_recurring_subscriptions_next_period_check",
+      sql`(${table.nextPeriodStart} IS NULL) = (${table.nextPeriodEnd} IS NULL) AND (${table.nextPeriodStart} IS NULL OR ${table.nextPeriodEnd} > ${table.nextPeriodStart})`,
     ),
     check(
       "payment_recurring_subscriptions_period_check",

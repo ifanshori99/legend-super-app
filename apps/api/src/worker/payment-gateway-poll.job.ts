@@ -16,6 +16,7 @@ import { pollPendingGatewayIntents } from "../services/payment.service.ts";
 import { reprocessDuitkuWebhookEvents } from "../services/payment-duitku-webhook.service.ts";
 import {
   purgeRejectedWebhookEvents,
+  reprocessParkedRecurringEvents,
   reprocessStoredWebhookEvents,
 } from "../services/payment-webhook.service.ts";
 
@@ -52,6 +53,17 @@ export async function runPaymentGatewayPollJob(
   let failed = false;
   try {
     result.webhooks = await reprocessStoredWebhookEvents(context, now);
+  } catch {
+    failed = true;
+  }
+  try {
+    // Recurring invoice events parked until their subscription exists (no
+    // 24 h window, unlike the sweep above).
+    const parked = await reprocessParkedRecurringEvents(context, now);
+    result.webhooks = {
+      checked: result.webhooks.checked + parked.checked,
+      processed: result.webhooks.processed + parked.processed,
+    };
   } catch {
     failed = true;
   }
