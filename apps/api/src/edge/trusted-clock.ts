@@ -18,6 +18,12 @@ export type TrustedClock = {
   regressed(): boolean;
   /** Highest trusted time returned so far; persist this. */
   highWater(): Date;
+  /**
+   * Late load of the persisted high water (the local database was down at
+   * boot). Never lowers the clock; a wall clock more than 5 minutes behind it
+   * counts as regressed, like at boot.
+   */
+  adoptHighWater(persisted: Date): void;
 };
 
 /** A wall clock this far behind the persisted high water at boot is a regression. */
@@ -37,13 +43,13 @@ export function createTrustedClock(
   const bootWall = wall().getTime();
   const persistedMs =
     persisted !== undefined && Number.isFinite(persisted) ? persisted : null;
-  const anchorWall = Math.max(bootWall, persistedMs ?? -Infinity);
+  let anchorWall = Math.max(bootWall, persistedMs ?? -Infinity);
   let regressedUntil =
     persistedMs !== null &&
     bootWall < persistedMs - CLOCK_REGRESSION_TOLERANCE_MS
       ? persistedMs
       : null;
-  const anchorMono = mono();
+  let anchorMono = mono();
   let high = anchorWall;
 
   const read = (): number => {
@@ -64,5 +70,17 @@ export function createTrustedClock(
       return regressedUntil !== null;
     },
     highWater: () => new Date(read()),
+    adoptHighWater: (late) => {
+      const lateMs = late.getTime();
+      if (!Number.isFinite(lateMs)) return;
+      const current = read();
+      if (lateMs > current) {
+        anchorWall = lateMs;
+        anchorMono = mono();
+        high = lateMs;
+      }
+      if (wall().getTime() < lateMs - CLOCK_REGRESSION_TOLERANCE_MS)
+        regressedUntil = Math.max(regressedUntil ?? 0, lateMs);
+    },
   };
 }

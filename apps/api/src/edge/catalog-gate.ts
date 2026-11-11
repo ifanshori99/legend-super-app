@@ -23,6 +23,8 @@ import { createTrustedClock, type TrustedClock } from "./trusted-clock.ts";
 
 /** High water is written at most this often (and on an override grant). */
 export const CATALOG_GATE_PERSIST_MS = 60_000;
+/** Boot waits at most this long for the saved gate state (DB down: no hang). */
+export const CATALOG_GATE_BOOT_WAIT_MS = 3_000;
 
 export type CatalogGateOverride = NonNullable<SalesGateState["override"]>;
 
@@ -127,6 +129,8 @@ export async function startCatalogGate(options: {
   /** Boot: the wall clock was behind the saved high water (audit/log line). */
   onClockRegressed?: (info: { wallNow: Date; highWater: Date }) => void;
   persistMs?: number;
+  /** First load of the saved state waits this long; default 3 s. */
+  bootWaitMs?: number;
   database?: typeof db;
   /** Tests: wall and monotonic sources. */
   wall?: () => Date;
@@ -135,64 +139,75 @@ export async function startCatalogGate(options: {
   const { context, scope, overrides } = options;
   const database = options.database ?? db;
   const onError = options.onError ?? (() => {});
-  // Fail closed: until the persisted state loads, sales are blocked
-  // (GATE_UNAVAILABLE). Starting from "now" would reset the tracking start and
-  // could persist a lower high water, so keep retrying instead.
-  installSalesGateProvider(() => ({
+  // Fail closed and never hang (founder decision, legend-10nex): sales stay
+  // held (GATE_UNAVAILABLE) until the persisted state loads. A local database
+  // that is down at boot must not stall the rest of the edge runtime, so the
+  // first load gets a bounded wait and later attempts retry in the background.
+  const unavailable = (): SalesGateState => ({
     blocked: true,
     stale24h: false,
     reason: "GATE_UNAVAILABLE",
     staleSince: null,
     staleStreams: [],
     override: null,
-  }));
+  });
+  installSalesGateProvider(unavailable);
   const retryMs = Math.min(options.persistMs ?? CATALOG_GATE_PERSIST_MS, 5_000);
-  let persisted: PersistedCatalogGateState | null = null;
-  for (;;) {
+  const bootWaitMs = options.bootWaitMs ?? CATALOG_GATE_BOOT_WAIT_MS;
+  const loadBounded = async (
+    waitMs: number,
+  ): Promise<{ ok: true; state: PersistedCatalogGateState | null } | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      persisted = await loadCatalogGateState(
-        context,
-        scope.edgeNodeId,
-        database,
-      );
-      break;
+      return await Promise.race([
+        loadCatalogGateState(context, scope.edgeNodeId, database).then(
+          (state) => ({ ok: true as const, state }),
+        ),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), waitMs);
+        }),
+      ]);
     } catch (error) {
       onError(error);
-      await new Promise<void>((resolve) => setTimeout(resolve, retryMs));
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-  }
+  };
+  const first = await loadBounded(bootWaitMs);
+  // Provisional until the state loads: wall clock only, tracking from now.
   const clock = createTrustedClock({
     wall: options.wall,
     mono: options.mono,
-    persistedHighWater: persisted?.clockHighWaterAt ?? null,
+    persistedHighWater: first?.state?.clockHighWaterAt ?? null,
   });
-  if (clock.regressed()) {
-    try {
-      options.onClockRegressed?.({
-        wallNow: (options.wall ?? (() => new Date()))(),
-        highWater: persisted?.clockHighWaterAt ?? clock.now(),
-      });
-    } catch (error) {
-      onError(error);
-    }
-  }
-  const trackingStartedAt = persisted?.trackingStartedAt ?? clock.now();
+  let trackingStartedAt = first?.state?.trackingStartedAt ?? clock.now();
   const freshness = createCatalogFreshness({
     clock,
     trackingStartedAt,
     onOwnerAlarm: options.onOwnerAlarm,
   });
-
-  try {
-    await options.seed?.(freshness);
-  } catch (error) {
-    onError(error);
-  }
+  const reportRegression = (highWater: Date) => {
+    if (!clock.regressed()) return;
+    try {
+      options.onClockRegressed?.({
+        wallNow: (options.wall ?? (() => new Date()))(),
+        highWater,
+      });
+    } catch (error) {
+      onError(error);
+    }
+  };
+  if (first) reportRegression(first.state?.clockHighWaterAt ?? clock.now());
+  let ready = first !== null;
 
   let override: CatalogGateOverride | null = null;
   let stopped = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
   const persist = async () => {
+    // Never write provisional values over a state that did not load yet.
+    if (!ready) return;
     try {
       await saveCatalogGateState(
         context,
@@ -214,6 +229,7 @@ export async function startCatalogGate(options: {
   };
 
   installSalesGateProvider((): SalesGateState => {
+    if (!ready) return unavailable();
     const snap = freshness.snapshot();
     const at = clock.now().getTime();
     // An override that is in the future or runs past 24 h is ignored.
@@ -241,7 +257,7 @@ export async function startCatalogGate(options: {
   });
 
   const tick = async () => {
-    if (stopped) return;
+    if (stopped || !ready) return;
     // All critical streams within 24 h again: the episode ends.
     const observed = override;
     if (observed && !freshness.snapshot().salesGate.stale24h) {
@@ -256,9 +272,45 @@ export async function startCatalogGate(options: {
     await persist();
   };
 
+  const seedFreshness = async () => {
+    try {
+      await options.seed?.(freshness);
+    } catch (error) {
+      onError(error);
+    }
+  };
   // Boot: record the tracking start, then load an override that survived.
-  await persist();
-  await refreshOverride();
+  if (ready) {
+    await seedFreshness();
+    await persist();
+    await refreshOverride();
+  } else {
+    // Local database not readable yet: boot goes on with sales held; keep
+    // trying to load the saved state in the background.
+    const retry = async (): Promise<void> => {
+      if (stopped || ready) return;
+      const loaded = await loadBounded(bootWaitMs);
+      if (stopped) return;
+      if (loaded === null) {
+        const timer = setTimeout(() => void retry(), retryMs);
+        timer.unref?.();
+        retryTimer = timer;
+        return;
+      }
+      const state = loaded.state;
+      if (state) {
+        clock.adoptHighWater(state.clockHighWaterAt);
+        freshness.adoptTrackingStartedAt(state.trackingStartedAt);
+        trackingStartedAt = state.trackingStartedAt;
+      }
+      await seedFreshness();
+      ready = true;
+      reportRegression(state?.clockHighWaterAt ?? clock.now());
+      await persist();
+      await refreshOverride();
+    };
+    void retry();
+  }
   const timer = setInterval(
     () => void tick(),
     options.persistMs ?? CATALOG_GATE_PERSIST_MS,
@@ -277,6 +329,7 @@ export async function startCatalogGate(options: {
     async stop() {
       stopped = true;
       clearInterval(timer);
+      if (retryTimer) clearTimeout(retryTimer);
       installSalesGateProvider(null);
       await persist();
     },

@@ -74,6 +74,12 @@ export const catalogFreshnessSchema = z.strictObject({
           untilAt: isoDateTimeSchema,
         })
         .nullable(),
+      /**
+       * Promos and vouchers are off on this edge (their data is over 24 hours
+       * old or was never synced): sales go at the normal price. The owner
+       * override does not change this.
+       */
+      promoDisabled: z.boolean().optional(),
     })
     .optional(),
   streams: z.record(

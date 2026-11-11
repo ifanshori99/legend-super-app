@@ -3250,3 +3250,13 @@ Langkah berikut CTO baru:
 - Bukti: 20 file test terarah, 416 test hijau; tsc api, web, shared; eslint dan prettier file berubah; `db:generate` kosong. Review reviewer sonnet (3 cacat dibetulkan) dan architect xhigh (1 tinggi, 2 sedang, 3 rendah, semua dibetulkan).
 - Biaya sesi (session-usage): total 6867k unit biaya, 17 subagent, puncak konteks 248k, 0 compact.
 - Tersisa untuk founder: definisi promo dan voucher bukan stream kritis (promo basi bisa memberi diskon berlebih walau gerbang lolos); kunci izin ke owner saja (`device.registry.manage` via owner) dan faktor kedua; UI peringatan kasir butuh review UI founder.
+
+### Putaran 2 (keputusan CTO, legend-10nex)
+
+- Sudah: promo dan voucher basi lebih dari 24 jam dimatikan di edge (`edge/promo-gate.ts`, dibungkus ke port promo QR dan POS di `app.ts`); penjualan tidak ditahan, harga normal; kode voucher manual ditolak dengan pesan jelas; izin owner tidak membuka promo basi. Bukti kesegaran: checkpoint `catalog:promotions` dan `catalog:vouchers`. Stream itu belum ada di sinkron edge, jadi di edge promo mati sampai stream dibuat (gagal tertutup).
+- Boot dengan DB lokal mati tidak menggantung: `startCatalogGate` menunggu maks 3 detik, penjualan ditahan (`GATE_UNAVAILABLE`, pesan "database lokal edge belum bisa dibaca"), muat ulang di latar belakang, lalu beralih normal (jam tepercaya dan awal pelacakan diadopsi, tidak diturunkan). Jam mundur saat boot tetap menahan penjualan.
+- Teks UI dipindah ke katalog i18n `packages/shared` (`catalogSales.*`, `messages/ws02-catalog-sales.ts`); tombol izin owner disembunyikan untuk `GATE_UNAVAILABLE`; info "promo dimatikan" di banner kasir.
+- Halaman review founder: `design/screens/review-q61.html` (mock di `design/mockups/q61/`).
+- Bukti: 22 file test terarah (453 test) hijau ditambah 2 file baru (29 test), tsc api, web, shared, eslint, prettier, test i18n node, `db:generate` kosong.
+- Biaya sesi (session-usage, kumulatif): total 8824k unit biaya; 24 subagent; 1 compact.
+- Belum: bukti gagal-dulu (revert kode lalu test merah) untuk test baru tidak dijalankan; stream promo/voucher di sinkron edge belum ada.

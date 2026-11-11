@@ -95,6 +95,7 @@ import {
 } from "./staff-pin-pepper-store.ts";
 import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
 import { startCatalogGate } from "./catalog-gate.ts";
+import { startPromoGate } from "./promo-gate-runtime.ts";
 import {
   closeCatalogOverrides,
   loadActiveCatalogOverride,
@@ -1061,6 +1062,15 @@ export async function startEdgeRuntime(
   // A grant committed between the gate's boot load and the listener above
   // would be missed: load the active override once more.
   await catalogGate.refreshOverride();
+  // Promos and vouchers switch off (sales go on at the normal price) when
+  // their data is over 24 hours old; the owner override does not open them.
+  const promoGate = startPromoGate({
+    context: local.context,
+    edgeNodeId: local.scope.edgeNodeId,
+    clock: catalogGate.clock,
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge promo freshness step failed"),
+  });
   const masterSync = startEdgeMasterSyncLoop({
     config,
     intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
@@ -1124,6 +1134,7 @@ export async function startEdgeRuntime(
       ]);
       setCatalogOverrideListener(null);
       setCatalogOverrideClock(null);
+      promoGate.stop();
       await catalogGate.stop();
       if (registryPuller === puller) registryPuller = null;
       if (catalogFreshness === freshness) catalogFreshness = null;

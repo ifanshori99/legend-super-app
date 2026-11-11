@@ -82,7 +82,7 @@ export function assertCatalogSalesAllowed(): void {
   if (!state.blocked) return;
   const message =
     state.reason === "GATE_UNAVAILABLE"
-      ? "Penjualan ditahan: pemeriksaan katalog belum siap. Coba lagi sebentar; bila berlanjut, hubungi tim teknis."
+      ? "Penjualan ditahan: database lokal edge belum bisa dibaca. Hubungi teknisi; penjualan dibuka lagi otomatis setelah sistem pulih."
       : state.reason === "CLOCK_REGRESSED"
         ? "Penjualan ditahan: jam perangkat mundur dari waktu terakhir yang tercatat. Perbaiki jam perangkat atau minta owner untuk mengizinkan."
         : "Penjualan ditahan: katalog belum tersinkron lebih dari 24 jam. Minta owner untuk mengizinkan.";

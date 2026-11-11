@@ -40,6 +40,7 @@
 // stream starts without a success, and a failure counts from its first one.
 import type { CatalogFreshness } from "@starter/shared/edge";
 import type { CatalogStale } from "./protocol.ts";
+import { promosEnabled } from "./promo-gate.ts";
 import {
   CATALOG_SALES_BLOCK_AFTER_MS,
   getSalesGateState,
@@ -124,6 +125,11 @@ export type CatalogFreshnessTracker = {
    * stream's last success back; a stream that is not critical is ignored.
    */
   seedLastSuccess(stream: string, at: Date): void;
+  /**
+   * Late load of the persisted tracking start (local database was down at
+   * boot). Only moves the start earlier, never later.
+   */
+  adoptTrackingStartedAt(at: Date): void;
   snapshot(): CatalogFreshnessSnapshot;
 };
 
@@ -170,7 +176,7 @@ export function createCatalogFreshness(
     ? () => trustedClock.now()
     : (options.now ?? (() => new Date()));
   const blockAfterMs = options.blockAfterMs ?? CATALOG_SALES_BLOCK_AFTER_MS;
-  const trackingStartedAt = options.trackingStartedAt ?? now();
+  let trackingStartedAt = options.trackingStartedAt ?? now();
   const timeZone = options.timeZone ?? "Asia/Jakarta";
   const alarmAfterMs =
     options.staleAlarmAfterMs ?? CATALOG_STALE_ALARM_AFTER_MS;
@@ -319,6 +325,12 @@ export function createCatalogFreshness(
       state.lastSuccessAt = seeded;
       evaluate();
     },
+    adoptTrackingStartedAt(at) {
+      if (at.getTime() < trackingStartedAt.getTime()) {
+        trackingStartedAt = at;
+        evaluate();
+      }
+    },
     snapshot,
   };
 }
@@ -375,6 +387,7 @@ export function catalogFreshnessToDto(
             untilAt: gate.override.untilAt.toISOString(),
           }
         : null,
+      promoDisabled: !promosEnabled(),
     },
     streams: Object.fromEntries(
       Object.entries(snapshot.streams).map(([stream, entry]) => [

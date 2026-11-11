@@ -179,3 +179,56 @@ describe("legend-10nex clock regression is reported", () => {
     expect(regressedOf(clock)).toBe(false);
   });
 });
+
+// Round 2 (legend-10nex): the local database can be down at boot, so the
+// persisted high water arrives late through `adoptHighWater`.
+// Assumption: adopting behaves like having booted with that high water, except
+// that it never lowers anything already returned.
+describe("legend-10nex a late-adopted high water", () => {
+  const regressedOf = (clock: { regressed(): boolean }) => clock.regressed();
+
+  it("never lowers now() or the high water", () => {
+    const { clock, tick } = rig();
+    tick(10 * HOUR);
+    const before = clock.now().getTime();
+    const highBefore = clock.highWater().getTime();
+    clock.adoptHighWater(new Date(T0.getTime() - 50 * HOUR));
+    expect(clock.now().getTime()).toBeGreaterThanOrEqual(before);
+    expect(clock.highWater().getTime()).toBeGreaterThanOrEqual(highBefore);
+    expect(regressedOf(clock)).toBe(false);
+  });
+
+  it("raises now() when the stored high water is later, and keeps counting from it", () => {
+    const { clock, tick } = rig();
+    clock.adoptHighWater(new Date(T0.getTime() + 10 * HOUR));
+    expect(clock.now().getTime()).toBeGreaterThanOrEqual(
+      T0.getTime() + 10 * HOUR,
+    );
+    expect(clock.highWater().getTime()).toBeGreaterThanOrEqual(
+      T0.getTime() + 10 * HOUR,
+    );
+    const afterAdopt = clock.now().getTime();
+    tick(HOUR);
+    expect(clock.now().getTime()).toBeGreaterThanOrEqual(afterAdopt + HOUR);
+  });
+
+  it("reports regressed when the wall clock is more than 5 minutes behind it", () => {
+    const { clock } = rig();
+    clock.adoptHighWater(new Date(T0.getTime() + 6 * 60_000));
+    expect(regressedOf(clock)).toBe(true);
+  });
+
+  it("tolerates a wall clock less than 5 minutes behind it", () => {
+    const { clock } = rig();
+    clock.adoptHighWater(new Date(T0.getTime() + 4 * 60_000));
+    expect(regressedOf(clock)).toBe(false);
+  });
+
+  it("clears the regression once the wall clock catches up", () => {
+    const { clock, setWall } = rig();
+    clock.adoptHighWater(new Date(T0.getTime() + 24 * HOUR));
+    expect(regressedOf(clock)).toBe(true);
+    setWall(new Date(clock.now().getTime() + 1000));
+    expect(regressedOf(clock)).toBe(false);
+  });
+});

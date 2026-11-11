@@ -22,11 +22,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useT } from "@/components/i18n";
 import { useToast } from "@/components/ui/toast";
 import { Notice } from "@/features/ws04-pos-kasir/components/shared/notice";
 import { ApiError } from "@/lib/api/errors";
 import {
-  CATALOG_COPY,
   OVERRIDE_DEFAULT_MINUTES,
   OVERRIDE_MINUTES_OPTIONS,
   OVERRIDE_REASON_MAX,
@@ -45,6 +45,7 @@ import { useHydrated } from "../use-now.ts";
 
 function OverrideForm({ onDone }: { onDone: () => void }) {
   const reasonId = useId();
+  const t = useT();
   const toast = useToast();
   const grant = useGrantCatalogOverride();
   const [minutes, setMinutes] = useState(String(OVERRIDE_DEFAULT_MINUTES));
@@ -54,8 +55,9 @@ function OverrideForm({ onDone }: { onDone: () => void }) {
   function validate(value: string): string | undefined {
     const trimmed = value.trim();
     if (trimmed.length < OVERRIDE_REASON_MIN)
-      return CATALOG_COPY.reasonTooShort;
-    if (trimmed.length > OVERRIDE_REASON_MAX) return CATALOG_COPY.reasonTooLong;
+      return t("catalogSales.reasonTooShort", { min: OVERRIDE_REASON_MIN });
+    if (trimmed.length > OVERRIDE_REASON_MAX)
+      return t("catalogSales.reasonTooLong", { max: OVERRIDE_REASON_MAX });
     return undefined;
   }
 
@@ -68,7 +70,7 @@ function OverrideForm({ onDone }: { onDone: () => void }) {
       { minutes: Number(minutes), reason: reason.trim() },
       {
         onSuccess: () => {
-          toast({ title: CATALOG_COPY.granted, tone: "success" });
+          toast({ title: t("catalogSales.granted"), tone: "success" });
           onDone();
         },
       },
@@ -77,19 +79,19 @@ function OverrideForm({ onDone }: { onDone: () => void }) {
 
   const failure = grant.error
     ? grant.error instanceof ApiError && grant.error.status === 403
-      ? CATALOG_COPY.grantForbidden
+      ? t("catalogSales.grantForbidden")
       : grant.error instanceof ApiError && grant.error.status < 500
         ? grant.error.message
-        : CATALOG_COPY.grantFailed
+        : t("catalogSales.grantFailed")
     : null;
 
   return (
     <form onSubmit={submit} className="grid gap-4" noValidate>
       <DialogHeader>
-        <DialogTitle>{CATALOG_COPY.dialogTitle}</DialogTitle>
-        <DialogDescription>{CATALOG_COPY.dialogHint}</DialogDescription>
+        <DialogTitle>{t("catalogSales.dialogTitle")}</DialogTitle>
+        <DialogDescription>{t("catalogSales.dialogHint")}</DialogDescription>
       </DialogHeader>
-      <FormField label={CATALOG_COPY.durationLabel} required>
+      <FormField label={t("catalogSales.durationLabel")} required>
         <Select value={minutes} onValueChange={setMinutes}>
           <SelectTrigger>
             <SelectValue />
@@ -104,9 +106,9 @@ function OverrideForm({ onDone }: { onDone: () => void }) {
         </Select>
       </FormField>
       <FormField
-        label={CATALOG_COPY.reasonLabel}
+        label={t("catalogSales.reasonLabel")}
         id={reasonId}
-        hint={CATALOG_COPY.reasonHint}
+        hint={t("catalogSales.reasonHint")}
         error={reasonError}
         required
       >
@@ -126,10 +128,10 @@ function OverrideForm({ onDone }: { onDone: () => void }) {
       {failure && <Notice tone="danger" title={failure} />}
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onDone}>
-          {CATALOG_COPY.cancel}
+          {t("catalogSales.cancel")}
         </Button>
         <Button type="submit" loading={grant.isPending}>
-          {CATALOG_COPY.submit}
+          {t("catalogSales.submit")}
         </Button>
       </DialogFooter>
     </form>
@@ -138,6 +140,7 @@ function OverrideForm({ onDone }: { onDone: () => void }) {
 
 // The body mounts only while open, so a typed reason never lingers.
 function OverrideAction() {
+  const t = useT();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -148,7 +151,7 @@ function OverrideAction() {
         className="mt-3 bg-background"
         onClick={() => setOpen(true)}
       >
-        {CATALOG_COPY.action}
+        {t("catalogSales.action")}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
@@ -160,6 +163,7 @@ function OverrideAction() {
 }
 
 export function CatalogSalesNotice() {
+  const t = useT();
   const hydrated = useHydrated();
   const { data, dataUpdatedAt } = useEdgeStatus();
   const canGrant = useCanGrantCatalogOverride();
@@ -174,6 +178,17 @@ export function CatalogSalesNotice() {
     <Notice tone="warning" title={warning} className="mb-4" />
   ) : null;
 
+  // Promo data over 24 hours old: the edge sells at normal price. Shown next to
+  // the other non-blocking notices; a blocked gate sells nothing anyway.
+  const promoNotice = gate?.promoDisabled ? (
+    <Notice
+      tone="info"
+      title={t("catalogSales.promoOffNotice")}
+      className="mb-4"
+      data-catalog-sales="promo-off"
+    />
+  ) : null;
+
   if (gate?.blocked) {
     const clockRegressed = gate.reason === "CLOCK_REGRESSED";
     const unavailable = gate.reason === "GATE_UNAVAILABLE" || clockRegressed;
@@ -183,23 +198,25 @@ export function CatalogSalesNotice() {
         tone="danger"
         title={
           clockRegressed
-            ? CATALOG_COPY.clockRegressedTitle
+            ? t("catalogSales.clockRegressedTitle")
             : unavailable
-              ? CATALOG_COPY.unavailableTitle
-              : CATALOG_COPY.blockedTitle
+              ? t("catalogSales.unavailableTitle")
+              : t("catalogSales.blockedTitle")
         }
         className="mb-4"
         data-catalog-sales="blocked"
       >
         <p>
           {clockRegressed
-            ? CATALOG_COPY.clockRegressedHint
+            ? t("catalogSales.clockRegressedHint")
             : unavailable
-              ? CATALOG_COPY.unavailableHint
-              : CATALOG_COPY.blockedHint}
-          {since && !unavailable ? ` ${CATALOG_COPY.sinceLine(since)}` : ""}
+              ? t("catalogSales.unavailableHint")
+              : t("catalogSales.blockedHint")}
+          {since && !unavailable
+            ? ` ${t("catalogSales.sinceLine", { time: since })}`
+            : ""}
         </p>
-        {canGrant && <OverrideAction />}
+        {canGrant && gate.reason !== "GATE_UNAVAILABLE" && <OverrideAction />}
       </Notice>
     );
   }
@@ -209,13 +226,14 @@ export function CatalogSalesNotice() {
     return (
       <>
         {warningNotice}
+        {promoNotice}
         <Notice
           tone="info"
-          title={CATALOG_COPY.overrideTitle(until ?? "-")}
+          title={t("catalogSales.overrideTitle", { until: until ?? "-" })}
           className="mb-4"
           data-catalog-sales="override"
         >
-          <p>{CATALOG_COPY.overrideHint}</p>
+          <p>{t("catalogSales.overrideHint")}</p>
         </Notice>
       </>
     );
@@ -236,5 +254,11 @@ export function CatalogSalesNotice() {
     );
   }
 
-  return warningNotice;
+  if (!warningNotice && !promoNotice) return null;
+  return (
+    <>
+      {warningNotice}
+      {promoNotice}
+    </>
+  );
 }

@@ -1,5 +1,6 @@
 // Catalog-freshness sales gate on the edge (legend-10nex). Pure helpers and
-// the Indonesian copy for the notice and the owner override form. The edge
+// the constants for the notice and the owner override form (copy lives in the
+// shared catalog, namespace `catalogSales`). The edge
 // decides (salesGate.blocked); the web only shows it and lets an owner allow
 // sales. The API re-checks the owner role on every grant.
 import type { CatalogFreshness } from "@starter/shared/edge";
@@ -23,6 +24,8 @@ export type SalesGateView = {
   staleSince: string | null;
   staleStreams: string[];
   override: { grantedAt: string; untilAt: string } | null;
+  /** Promo and voucher are off because promo data is over 24 hours old. */
+  promoDisabled?: boolean;
 };
 
 /** The edge answers `salesGate` next to the existing freshness fields. */
@@ -60,35 +63,3 @@ export function minutesLabel(minutes: number): string {
   const hours = minutes / 60;
   return Number.isInteger(hours) ? `${hours} jam` : `${minutes} menit`;
 }
-
-export const CATALOG_COPY = {
-  blockedTitle: "Penjualan ditahan: katalog belum tersinkron lebih dari 24 jam",
-  blockedHint:
-    "Harga dan menu di perangkat ini mungkin sudah tidak sesuai. Minta owner untuk mengizinkan penjualan.",
-  unavailableTitle: "Penjualan ditahan: pemeriksaan katalog belum siap",
-  unavailableHint:
-    "Perangkat belum bisa memastikan katalog masih baru. Minta owner untuk mengizinkan penjualan.",
-  clockRegressedTitle:
-    "Jam perangkat mundur: penjualan ditahan, minta owner mengizinkan",
-  clockRegressedHint:
-    "Perangkat tidak bisa memastikan katalog masih baru. Minta owner untuk mengizinkan penjualan.",
-  sinceLine: (time: string) => `Terakhir tersinkron sejak ${time}.`,
-  overrideTitle: (until: string) => `Penjualan diizinkan owner sampai ${until}`,
-  overrideHint:
-    "Katalog masih belum tersinkron. Penjualan kembali ditahan setelah izin habis, kecuali sinkron berhasil.",
-  action: "Izinkan penjualan (owner)",
-  dialogTitle: "Izinkan penjualan sementara",
-  dialogHint:
-    "Penjualan berjalan dengan katalog lama. Izin ini tercatat atas nama Anda dan berakhir otomatis.",
-  durationLabel: "Lama izin",
-  reasonLabel: "Alasan",
-  reasonHint: "Contoh: internet toko mati sejak pagi, harga tidak berubah.",
-  reasonTooShort: `Alasan minimal ${OVERRIDE_REASON_MIN} karakter.`,
-  reasonTooLong: `Alasan maksimal ${OVERRIDE_REASON_MAX} karakter.`,
-  submit: "Izinkan penjualan",
-  cancel: "Batal",
-  grantFailed:
-    "Izin belum tersimpan. Periksa koneksi ke perangkat, lalu coba lagi.",
-  grantForbidden: "Hanya owner yang boleh mengizinkan penjualan.",
-  granted: "Penjualan diizinkan.",
-} as const;

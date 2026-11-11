@@ -551,3 +551,50 @@ describe("legend-10nex recordSuccess uses the time the page was stored", () => {
     expect(freshness.snapshot().alarmStreams[0]?.staleSince).toEqual(stored);
   });
 });
+
+// Round 2 (legend-10nex): the tracking start is persisted in the local
+// database, which can be down at boot. `adoptTrackingStartedAt` applies it late.
+// Assumption: a stream that never succeeded counts from the tracking start, so
+// the 24 hour hold (`salesGate.stale24h`) shows whether the adopted date took.
+describe("legend-10nex adoptTrackingStartedAt (late load of the stored start)", () => {
+  const HOUR = 60 * MIN;
+  const rigAdopt = () => {
+    let clock = T0.getTime();
+    const freshness = createCatalogFreshness({
+      now: () => new Date(clock),
+      timeZone: "Asia/Jakarta",
+    });
+    return {
+      freshness,
+      advance: (ms: number) => {
+        clock += ms;
+      },
+    };
+  };
+
+  it("moves the start earlier, so a never-synced edge is held sooner", () => {
+    const { freshness, advance } = rigAdopt();
+    freshness.adoptTrackingStartedAt(new Date(T0.getTime() - 20 * HOUR));
+    advance(4 * HOUR); // 24 h since the adopted start
+    expect(freshness.snapshot().salesGate.stale24h).toBe(false);
+    advance(1);
+    expect(freshness.snapshot().salesGate.stale24h).toBe(true);
+  });
+
+  it("never moves the start later", () => {
+    const { freshness, advance } = rigAdopt();
+    freshness.adoptTrackingStartedAt(new Date(T0.getTime() + 10 * HOUR));
+    advance(24 * HOUR + 1);
+    // Still counted from the boot time T0, not from the later date.
+    expect(freshness.snapshot().salesGate.stale24h).toBe(true);
+  });
+
+  it("an adopted start does not affect a stream that has synced", () => {
+    const { freshness, advance } = rigAdopt();
+    for (const name of CRITICAL_CATALOG_STREAMS as readonly string[])
+      freshness.recordSuccess(name);
+    freshness.adoptTrackingStartedAt(new Date(T0.getTime() - 100 * HOUR));
+    advance(HOUR);
+    expect(freshness.snapshot().salesGate.stale24h).toBe(false);
+  });
+});
