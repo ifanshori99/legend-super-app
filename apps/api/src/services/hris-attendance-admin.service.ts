@@ -543,6 +543,10 @@ export async function listAttendanceReviewQueue(
     );
     if (query.businessDate !== undefined)
       filters.push(eq(attendanceLogs.businessDate, query.businessDate));
+    if (query.flagReason !== undefined)
+      filters.push(
+        sql`${attendanceLogs.flagReasons} @> ${JSON.stringify([query.flagReason])}::jsonb`,
+      );
 
     let cursorFilter: SQL | undefined;
     if (query.cursor) {
