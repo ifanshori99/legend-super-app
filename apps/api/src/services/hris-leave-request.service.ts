@@ -1114,12 +1114,13 @@ async function cancelLeaveRequest(
 ): Promise<void> {
   const scoped = outletScoped(context, gateRow.outletId);
   await withTenant(db, scoped, async (tx) => {
+    // Employee lock first, then the leave row, then balances: the same order as
+    // cancelApprovedLeaveOnDateByHr (HR cancel), so the two cannot deadlock.
+    await lockEmployeeLeaveAttendance(tx, gateRow.tenantId, gateRow.employeeId);
     const row = await findRequest(tx, scoped.tenant.tenantId, gateRow.id, true);
     if (!row) throw notFound("Pengajuan cuti");
     if (row.status === "cancelled") return;
     transitionLeaveRequest(row.status as LeaveRequestStatus, "cancel");
-    // Employee lock before any balance write (same order as applyOutcome).
-    await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
     const scaledDays = parseDecimal4(row.days);
     if (row.status === "pending") {
       if (row.approvalChainId) {
