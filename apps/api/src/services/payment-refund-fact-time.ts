@@ -91,7 +91,7 @@ export async function lockIntentsForFact(
       (SELECT max(q.fired_at) FROM orders q
         WHERE q.tenant_id = ${tenantId}
           AND q.payment_intent_id IN (${list})
-          AND q.channel = 'qr' AND q.payment_mode = 'pay_first'
+          AND q.channel IN ('qr', 'facility') AND q.payment_mode = 'pay_first'
           AND q.fired_at IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM pos_orders sp
             WHERE sp.tenant_id = q.tenant_id AND sp.order_id = q.id)),

@@ -275,7 +275,7 @@ export async function getBreakfastMenuForMember(
 async function loadDeliveryTable(
   tx: Tx,
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   delivery: BreakfastDelivery,
 ) {
   if (delivery.mode !== "table") return null;

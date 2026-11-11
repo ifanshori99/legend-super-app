@@ -45,6 +45,7 @@ import {
   outletIdSchema,
   type OutletId,
   type ScopedTenantContext,
+  type TenantId,
   userIdSchema,
 } from "@starter/shared/core";
 import {
@@ -255,7 +256,7 @@ async function assertStationInOutlet(
  */
 async function assertBreakfastPaid(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   orderId: string,
 ): Promise<void> {
   const [order] = await tx

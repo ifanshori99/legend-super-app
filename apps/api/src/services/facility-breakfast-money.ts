@@ -21,13 +21,14 @@
 //   intent holds) and by what this order paid less what it already refunded;
 // - firing re-checks the paid intent under its row lock: a refund already
 //   filed against it (`reserved > 0`) cancels the order and returns the rest
-//   instead of selling food for money that is going back (facility sales are
-//   not part of `refundableBalance`'s "sale in use" yet; see the report).
+//   instead of selling food for money that is going back (a fired facility
+//   order counts as "sale in use" in `refundableBalance` like a fired QR one).
 import { and, eq, inArray, ne } from "drizzle-orm";
 import {
   createUlid,
   idr,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { FacilityError } from "@starter/shared/facility";
 import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
@@ -322,8 +323,16 @@ export async function fireBreakfastOrderTx(
     !(BREAKFAST_PAID_INTENT_STATUSES as readonly string[]).includes(
       intent.status,
     )
-  )
-    throw new FacilityError("BREAKFAST_NOT_PAID");
+  ) {
+    // The money is gone (refunded) or the intent is missing: nothing to sell.
+    // Cancel instead of throwing so the fire sweep does not retry forever.
+    const cancelled = await cancelBreakfastOrderTx(tx, context, locked, {
+      reason: "payment_refunded",
+      actorUserId: input.actorUserId,
+      now: input.now,
+    });
+    return { linked: cancelled.linked, outcome: "cancelled" };
+  }
   const at = await lockIntentsForFact(
     tx,
     context.tenant.tenantId,
@@ -419,7 +428,7 @@ export async function fireBreakfastOrderTx(
 /** Item ids of an order, for the DTO. */
 export async function breakfastLines(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   orderIds: readonly string[],
 ) {
   if (orderIds.length === 0) return [];

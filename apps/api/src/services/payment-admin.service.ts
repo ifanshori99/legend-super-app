@@ -246,7 +246,7 @@ async function qrSaleInUseOfIntent(
       AND (o.payment_intent_id = ${intentId}::uuid
            OR o.payment_link_id = (SELECT pi.payment_link_id FROM payment_intents pi
                                     WHERE pi.tenant_id = o.tenant_id AND pi.id = ${intentId}::uuid))
-      AND o.channel = 'qr' AND o.payment_mode = 'pay_first'
+      AND o.channel IN ('qr', 'facility') AND o.payment_mode = 'pay_first'
       AND o.fired_at IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM pos_orders sp
         WHERE sp.tenant_id = o.tenant_id AND sp.order_id = o.id)
