@@ -1,0 +1,7 @@
+# 545 WS-08 CRM loyalty promo backend (6 kartu)
+Peran: engineer (~/.agents/team/roles/engineer.md). Baca tiap kartu (`bd show <id>`), cek dulu `git log --all --grep=<id>` dan kode m1: kartu yang sudah selesai cukup dilaporkan.
+Worktree: `git worktree add .worktrees/ws08-crm -b ws/ws08-crm origin/milestone/m1`. Migrasi rentang 0371-0375 (ba8p 0371, 6m1w1 0372, fug4 0373), `when` di atas m1 terakhir.
+Kartu: legend-ba8p (FK komposit promo -> customer_profiles/facility products), legend-6m1w1 (program loyalty per legal entity, hapus parkir LOYALTY_LEGAL_ENTITY_AMBIGUOUS), legend-fug4 (sisa DP reservasi jadi saldo pelanggan), legend-77r0 + legend-a4yd (refund promo: deposit test, livePromoApplicationOf lewat port, edge case Q19b di crm-promo-refund.ts — satu worker), legend-fn7ur (alasan suspend member, balance_mismatch ganda, izin program loyalty).
+Jangan sentuh: payment-refund-approval-limits.ts, pos-order-corrections.ts (sedang dikerjakan thread lain), area edge, payroll, HRIS, akuntansi.
+Uang (saldo, DP, promo refund): test bukti tidak ada pihak dibayar lebih dan outlet tidak rugi; sisa DP hanya jadi saldo sekali (idempoten). Bila ragu, pilih aturan yang membatasi dan laporkan pertanyaannya.
+Paralel: Explore, test-writer, 1 implementer per kartu (77r0+a4yd satu), reviewer di akhir. Test gagal-dulu, test terarah lewat heavy, tsc api, eslint/prettier. Commit per kartu, jangan merge/push. Lapor dengan angka subagent.
