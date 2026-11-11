@@ -13,9 +13,16 @@
 //   live one (same rule as `recoveryReleasedOf`).
 // - Paid: the captured tenders of a POS order; otherwise the order total less
 //   the deposit applied, plus the dearer-swap charges the guest paid.
+// - Per line (Q25 is per item): the vouchers and live recovery refunds of the
+//   issues of each ORIGINAL line, a replacement line mapped back to the line it
+//   replaced through the swap chain (`originalOf`).
 
 import { sql } from "drizzle-orm";
-import { ulidToUuid, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  ulidToUuid,
+  uuidToUlid,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import type { Tx } from "./permission-resolver.ts";
 
 export type OrderGiven = {
@@ -26,6 +33,10 @@ export type OrderGiven = {
   recoveryRefundsIdr: number;
   /** vouchers + POS refunds + recovery refunds. */
   givenIdr: number;
+  /** Original line id -> vouchers + live recovery refunds of its issues. */
+  lineGivenIdr: Map<string, number>;
+  /** Maps a line (a replacement too) to the original line of its swap chain. */
+  toOriginal: (lineId: string) => string;
 };
 
 export async function orderGivenOf(
@@ -77,8 +88,49 @@ export async function orderGivenOf(
                   AND c.status = 'paid')
        END)::text AS paid
   `);
+  const perIssue = await tx.execute(sql`
+    SELECT i.order_item_id::text AS item,
+           i.replacement_order_item_id::text AS replacement,
+           (SELECT coalesce(sum(v.value_idr), 0)
+              FROM apology_vouchers a
+              JOIN vouchers v ON v.tenant_id = a.tenant_id AND v.id = a.voucher_id
+             WHERE a.tenant_id = i.tenant_id
+               AND (a.id = i.voucher_id OR a.order_issue_id = i.id))::text AS vouchers,
+           coalesce((SELECT max(r.amount_idr)
+                       FROM payment_refunds r
+                      WHERE r.tenant_id = i.tenant_id AND r.order_issue_id = i.id
+                     HAVING coalesce(bool_or(r.status <> 'failed'), false)), 0)::text AS refunds
+      FROM order_issues i
+     WHERE i.tenant_id = ${tenantId} AND i.order_id = ${orderUuid}::uuid
+  `);
   const row = result.rows[0];
   const read = (value: unknown) => Number(String(value ?? "0"));
+  const originalOf = new Map<string, string>();
+  for (const issue of perIssue.rows)
+    if (issue.replacement !== null && issue.replacement !== undefined)
+      originalOf.set(
+        uuidToUlid(String(issue.replacement)),
+        uuidToUlid(String(issue.item)),
+      );
+  const toOriginal = (lineId: string) => {
+    let id = lineId;
+    for (let hop = 0; hop <= originalOf.size; hop++) {
+      const original = originalOf.get(id);
+      if (original === undefined) break;
+      id = original;
+    }
+    return id;
+  };
+  const lineGivenIdr = new Map<string, number>();
+  for (const issue of perIssue.rows) {
+    const line = toOriginal(uuidToUlid(String(issue.item)));
+    lineGivenIdr.set(
+      line,
+      (lineGivenIdr.get(line) ?? 0) +
+        read(issue.vouchers) +
+        read(issue.refunds),
+    );
+  }
   const vouchersIdr = read(row?.vouchers);
   const posRefundsIdr = read(row?.pos_refunds);
   const recoveryRefundsIdr = read(row?.recovery_refunds);
@@ -88,5 +140,7 @@ export async function orderGivenOf(
     posRefundsIdr,
     recoveryRefundsIdr,
     givenIdr: vouchersIdr + posRefundsIdr + recoveryRefundsIdr,
+    lineGivenIdr,
+    toOriginal,
   };
 }
