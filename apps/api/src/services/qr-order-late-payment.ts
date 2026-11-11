@@ -211,6 +211,8 @@ export async function requestQrDoublePaymentRefund(
     paymentLinkId: string;
     intentId: string;
     now: Date;
+    /** Requester and reason text for a non-QR caller (facility breakfast). */
+    source?: { requestedBy: SystemRefundActor; reason: string };
   },
 ): Promise<string[]> {
   const tenantId = context.tenant.tenantId;
@@ -261,9 +263,10 @@ export async function requestQrDoublePaymentRefund(
         unallocatedFundId: fund.id,
         amountIdr: fund.amountIdr,
         reason:
+          input.source?.reason ??
           "Refund pembayaran ganda (pesanan QR sudah dibayar dengan kode lain)",
         note: null,
-        requestedBy: QR_SYSTEM_ACTOR,
+        requestedBy: input.source?.requestedBy ?? QR_SYSTEM_ACTOR,
         status: "pending",
       })
       .returning();

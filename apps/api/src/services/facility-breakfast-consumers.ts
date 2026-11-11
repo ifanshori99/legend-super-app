@@ -43,6 +43,7 @@ import {
   BREAKFAST_PAID_INTENT_STATUSES,
   cancelBreakfastOrderTx,
   DEAD_TICKET_STATUSES,
+  FACILITY_SYSTEM_ACTOR,
   fireBreakfastOrderTx,
   lockBreakfastOrder,
   requestBreakfastRefund,
@@ -141,6 +142,11 @@ async function refundDoublePayment(
     paymentLinkId,
     intentId,
     now,
+    source: {
+      requestedBy: FACILITY_SYSTEM_ACTOR,
+      reason:
+        "Refund pembayaran ganda (pesanan sarapan fasilitas sudah dibayar dengan kode lain)",
+    },
   });
   return ids.length > 0;
 }

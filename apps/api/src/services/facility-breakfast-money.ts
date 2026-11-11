@@ -32,6 +32,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { FacilityError } from "@starter/shared/facility";
+import type { SystemRefundActor } from "@starter/shared/payment/admin";
 import {
   paymentIntents,
   paymentLinks,
@@ -50,7 +51,6 @@ import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import { cancelPaymentLinkInTx } from "./payment.service.ts";
 import { pendingRefundIdr } from "./pos-order-late-payment.ts";
-import { QR_SYSTEM_ACTOR } from "./qr-order-late-payment.ts";
 import { appendQrOrderPaid } from "./qr-order-paid.ts";
 import { voidAwaitingPaymentOrderTx } from "./qr-order.service.ts";
 import { recordTaxSnapshots } from "./tax.service.ts";
@@ -74,6 +74,12 @@ export const DEAD_TICKET_STATUSES: readonly string[] = [
   "refunded",
   "no_show",
 ];
+
+/**
+ * Requester of every breakfast refund request (cancel, late, double payment).
+ * Listed in `systemRefundActorSchema`, so the refund screen names it.
+ */
+export const FACILITY_SYSTEM_ACTOR: SystemRefundActor = "system:facility";
 
 const REFUND_AUDIT_FIELDS = ["amountIdr", "status", "refundId"] as const;
 
@@ -174,7 +180,7 @@ export async function requestBreakfastRefund(
   return idempotentPaymentAdminWrite(
     tx,
     context,
-    QR_SYSTEM_ACTOR,
+    FACILITY_SYSTEM_ACTOR,
     `facility-breakfast-refund:${input.kind}:${intent.id}`,
     "refund.create",
     { paymentIntentId: intent.id, reason: `facility_breakfast_${input.kind}` },
@@ -202,7 +208,7 @@ export async function requestBreakfastRefund(
               ? "Refund pembatalan pesanan sarapan fasilitas"
               : "Refund pembayaran sarapan fasilitas yang tidak dapat diproses (terlambat, ganda, atau pesanan batal)",
           note: null,
-          requestedBy: QR_SYSTEM_ACTOR,
+          requestedBy: FACILITY_SYSTEM_ACTOR,
         })
         .returning();
       if (!inserted) throw new Error("Refund insert returned no row");
