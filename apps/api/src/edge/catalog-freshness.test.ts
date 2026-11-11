@@ -598,7 +598,7 @@ describe("521 Q62 elapsed time cannot be proven after an offline restart", () =>
     };
   }
 
-  it("warns and queues an owner alarm immediately while permitting sales even beyond 24 hours", () => {
+  it("warns and queues an owner alarm immediately, then blocks sales once the saved success is over 24 hours old even though elapsed time is unproven", () => {
     const { freshness, onOwnerAlarm, advance } = unprovenTracker();
     for (const stream of CRITICAL_CATALOG_STREAMS)
       freshness.seedLastSuccess(stream, T0);
@@ -622,9 +622,41 @@ describe("521 Q62 elapsed time cannot be proven after an offline restart", () =>
       reason: "NETWORK",
       cloudReachable: false,
     });
-    expect(freshness.snapshot().salesGate.stale24h).toBe(false);
+    // 533 A1 (money rule): the age counts from the live trusted clock, not from
+    // a boot-time lower bound, so the outlet never sells on prices that are
+    // really older than 24 hours.
+    expect(freshness.snapshot().salesGate.stale24h).toBe(true);
+    expect(freshness.snapshot().salesBlocked).toBe(true);
     expect(freshness.snapshot().ownerAlarm).toBe(true);
     expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+  });
+
+  it("533 A1 keeps counting after an offline restart: a catalog 20 hours stale at boot blocks sales 5 hours later", () => {
+    const { freshness, advance } = unprovenTracker();
+    // The saved checkpoint was 20 hours old when the terminal restarted offline.
+    const savedSuccess = new Date(T0.getTime() - 20 * 60 * MIN);
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(stream, savedSuccess);
+    expect(freshness.snapshot().salesBlocked).toBe(false);
+
+    advance(4 * 60 * MIN); // exactly 24 hours since the saved success
+    expect(freshness.snapshot().salesGate.stale24h).toBe(false);
+    expect(freshness.snapshot().salesBlocked).toBe(false);
+
+    advance(60 * MIN); // 25 hours, clock still unproven, still offline
+    freshness.recordFailure("price_lists", {
+      reason: "NETWORK",
+      cloudReachable: false,
+    });
+    const snapshot = freshness.snapshot();
+    expect(snapshot.salesGate.stale24h).toBe(true);
+    expect(snapshot.salesBlocked).toBe(true);
+    expect(snapshot.salesGate.staleStreams).toContain("price_lists");
+
+    // A live sync recovers the streams and lifts the block.
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.recordSuccess(stream);
+    expect(freshness.snapshot().salesBlocked).toBe(false);
   });
 
   it("a checkpoint seed cannot prove elapsed time, but a live sync recovers each critical stream", () => {

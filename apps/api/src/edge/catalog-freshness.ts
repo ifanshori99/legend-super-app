@@ -132,6 +132,12 @@ export type CatalogFreshnessTracker = {
    * boot). Only moves the start earlier, never later.
    */
   adoptTrackingStartedAt(at: Date): void;
+  /**
+   * The trusted clock was proven by the cloud's server time (533 A2): drop
+   * the unproven-time state of every stream. Saved last-success stamps stay,
+   * so ages keep counting from them.
+   */
+  clockProven(): void;
   snapshot(): CatalogFreshnessSnapshot;
 };
 
@@ -230,12 +236,11 @@ export function createCatalogFreshness(
       // Age basis of the sales rule: last success, or tracking start when
       // the stream never succeeded. Independent of any recorded failure.
       const basis = state.lastSuccessAt ?? trackingStartedAt;
-      // Q62 does not turn unknown downtime into a 24-hour hold. It also does
-      // not erase age already proven at the saved high water: an already-old
-      // checkpoint remains blocked. Freeze this lower bound until live sync.
-      const ageReference = state.timeUnproven
-        ? (unprovenAgeLowerBoundAt ?? at)
-        : at;
+      // Q62 does not turn unknown downtime into a 24-hour hold, but the age of
+      // the saved checkpoint keeps growing on the trusted clock (533 A1): a
+      // catalog 20 hours old at an offline restart blocks sales 4 hours later,
+      // so the outlet never sells on prices that are really over 24 hours old.
+      const ageReference = at;
       if (ageReference - basis.getTime() > blockAfterMs)
         blockedStreams.push({ stream, since: basis });
       streams[stream] = {
@@ -380,6 +385,13 @@ export function createCatalogFreshness(
       if (at.getTime() < trackingStartedAt.getTime()) {
         trackingStartedAt = at;
       }
+      evaluate();
+    },
+    clockProven() {
+      // A later late-adopted high water may find new doubt: let it be observed.
+      observedUnprovenTime = false;
+      unprovenAgeLowerBoundAt = null;
+      for (const state of states.values()) state.timeUnproven = false;
       evaluate();
     },
     snapshot,

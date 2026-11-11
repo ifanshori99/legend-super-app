@@ -758,10 +758,38 @@ export async function startEdgeRuntime(
     }
   };
   const catalogAlarmQueue = await openCatalogAlarmQueue({
-    directory: join(env.EDGE_SELFIE_DIR, "catalog-alarms"),
+    // 533 A5: its own state directory, not the selfie store.
+    directory: join(env.EDGE_STATE_DIR, "catalog-alarms"),
+    // Alarms queued by the previous build are imported once from here.
+    legacyDirectory: join(env.EDGE_SELFIE_DIR, "catalog-alarms"),
     edgeNodeId: local.scope.edgeNodeId,
     onError: reportCatalogAlarmError,
   });
+  // 533 A2: the cloud's HTTP Date (link upgrade) proves the device clock after
+  // an offline restart. The link can come up before the catalog gate exists, so
+  // keep the last server time with a monotonic stamp and apply it later.
+  let catalogClock: {
+    proveWithServerTime(serverTime: Date): void;
+    elapsedTimeUnproven(): boolean;
+  } | null = null;
+  let lastServerTime: { serverTime: Date; receivedMono: number } | null = null;
+  const applyServerTime = (): void => {
+    if (!catalogClock || !lastServerTime) return;
+    const wasUnproven = catalogClock.elapsedTimeUnproven();
+    // Age the stamp by the monotonic time since it was received.
+    catalogClock.proveWithServerTime(
+      new Date(
+        lastServerTime.serverTime.getTime() +
+          (performance.now() - lastServerTime.receivedMono),
+      ),
+    );
+    if (!wasUnproven || catalogClock.elapsedTimeUnproven()) return;
+    // Proven: the unproven-time state and its queued owner alarms are moot.
+    catalogFreshness?.clockProven();
+    void catalogAlarmQueue
+      .clearReason("CLOCK_ELAPSED_UNPROVEN")
+      .catch(reportCatalogAlarmError);
+  };
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
@@ -785,6 +813,10 @@ export async function startEdgeRuntime(
         );
     },
     onError: (error) => logger.warn(safeError(error), "Edge link error"),
+    onServerTime: (serverTime) => {
+      lastServerTime = { serverTime, receivedMono: performance.now() };
+      applyServerTime();
+    },
     // legend-10nex: stale prices/product status reach the owner through the
     // cloud, which only hears the edge while this link is up.
     catalogStale: () => {
@@ -1103,6 +1135,9 @@ export async function startEdgeRuntime(
   catalogAlarmRetry.unref();
   const freshness = catalogGate.freshness;
   catalogFreshness = freshness;
+  catalogClock = catalogGate.clock;
+  // The link may have connected before the gate existed.
+  applyServerTime();
   // The owner grants an override on the edge API: the provider must see it now.
   setCatalogOverrideClock(() => catalogGate.clock.now());
   setCatalogOverrideListener((change) =>

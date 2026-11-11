@@ -297,3 +297,93 @@ describe("521 trusted clock reports unproven offline elapsed time", () => {
     expect(elapsedTimeUnproven(clock)).toBe(true);
   });
 });
+
+// 533 A2: the cloud's HTTP `Date` header (seen on the link upgrade) can prove
+// the device clock after an offline restart. Expected API:
+//   clock.proveWithServerTime(serverTime: Date): void   (return value unused here)
+// Assumptions: it clears `elapsedTimeUnproven()` only when the server time is at
+// or after the boot high water AND within the 5 minute clock tolerance of the
+// current wall clock. It never touches `regressed()` (founder Q69 pending), and
+// never changes now() or highWater().
+describe("533 A2 trusted clock is proven by the cloud's server time", () => {
+  const MIN5 = 5 * 60_000;
+  const api = (clock: unknown) =>
+    clock as {
+      elapsedTimeUnproven(): boolean;
+      regressed(): boolean;
+      proveWithServerTime(serverTime: Date): unknown;
+    };
+  // A terminal that was off for days and booted with its date at the stamp.
+  const unprovenBoot = () => {
+    const persisted = new Date(T0.getTime() + HOUR);
+    const r = rig(persisted, persisted);
+    expect(api(r.clock).elapsedTimeUnproven()).toBe(true);
+    return { ...r, persisted };
+  };
+
+  it("clears the unproven flag when the server time agrees with the wall clock", () => {
+    const { clock, tick, persisted } = unprovenBoot();
+    tick(2 * 60_000);
+    api(clock).proveWithServerTime(new Date(persisted.getTime() + 2 * 60_000));
+    expect(api(clock).elapsedTimeUnproven()).toBe(false);
+    // And it stays proven while time passes.
+    tick(6 * HOUR);
+    expect(api(clock).elapsedTimeUnproven()).toBe(false);
+  });
+
+  it("accepts a server time within the 5 minute tolerance of the wall clock", () => {
+    const { clock, persisted } = unprovenBoot();
+    api(clock).proveWithServerTime(new Date(persisted.getTime() + MIN5 - 1000));
+    expect(api(clock).elapsedTimeUnproven()).toBe(false);
+  });
+
+  it("does not clear it when the server time is more than 5 minutes from the wall clock", () => {
+    const { clock, persisted } = unprovenBoot();
+    api(clock).proveWithServerTime(new Date(persisted.getTime() + MIN5 + 1000));
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+  });
+
+  it("does not clear it when the server time is behind the boot high water", () => {
+    const { clock, setWall, persisted } = unprovenBoot();
+    // A wall clock nudged back by 1 minute agrees with a server time that is
+    // still earlier than anything the device saw before shutdown.
+    const behind = new Date(persisted.getTime() - 60_000);
+    setWall(behind);
+    api(clock).proveWithServerTime(behind);
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+  });
+
+  it("ignores an invalid server time", () => {
+    const { clock } = unprovenBoot();
+    api(clock).proveWithServerTime(new Date(Number.NaN));
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+  });
+
+  it("proves a late-adopted high water too", () => {
+    const { clock, tick } = rig();
+    tick(HOUR);
+    clock.adoptHighWater(T0);
+    expect(api(clock).elapsedTimeUnproven()).toBe(true);
+    api(clock).proveWithServerTime(new Date(T0.getTime() + HOUR));
+    expect(api(clock).elapsedTimeUnproven()).toBe(false);
+  });
+
+  it("changes neither now() nor the high water", () => {
+    const { clock, tick, persisted } = unprovenBoot();
+    tick(60_000);
+    const now = clock.now().getTime();
+    const high = clock.highWater().getTime();
+    api(clock).proveWithServerTime(new Date(persisted.getTime() + 60_000));
+    expect(clock.now().getTime()).toBe(now);
+    expect(clock.highWater().getTime()).toBe(high);
+  });
+
+  it("does not clear a clock regression (A6 stays as is)", () => {
+    // The device date was set back a day: the server agrees with the wrong wall
+    // clock but is behind the persisted high water.
+    const { clock } = rig(new Date(T0.getTime() + 24 * HOUR));
+    expect(api(clock).regressed()).toBe(true);
+    api(clock).proveWithServerTime(T0);
+    expect(api(clock).regressed()).toBe(true);
+  });
+});

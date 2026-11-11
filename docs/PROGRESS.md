@@ -3325,3 +3325,12 @@ Langkah berikut CTO baru:
 - Gerbang final 22:58 WIB: `NODE_OPTIONS="--max-old-space-size=6144" heavy pnpm --filter @starter/api typecheck` exit 0 setelah koreksi fixture; test terkait diulang lewat `LEGEND_TEST_FILES="src/test/edge-catalog-loop.test.ts" heavy pnpm test`, 7/7 lulus, exit 0 (`/tmp/legend-521-loop-final.log`). Kode production tetap sama dengan run 435/435. ESLint dan Prettier semua file berubah diperiksa kembali setelah perubahan terakhir.
 - Snapshot akhir 22:58: Claude1 5h79%/7d70%, Claude2 4%/92%, Claude3 0%/96%; Codex2 65%/20%, Codex3 84%/42%, Codex4 100%/37%, Codex5 (sesi ini) 85%/34%. Angka akun mencakup seluruh sesi akun; bukan pengukuran biaya token per tugas.
 - Batas verifikasi: review architect Claude belum dijalankan (CTO menjadwalkan sesudah 00:45, brief 526). Build, e2e/browser nyata, dan suite penuh tidak dijalankan; suite penuh dilarang brief. Stream sinkron promo/voucher belum tersedia dari cabang dasar; setelah boot tak terbukti, promo tetap mati secara konservatif sampai boot dengan bukti elapsed time atau tersedia bukti live-sync eksplisit di masa depan.
+
+## 533 A: fix temuan architect 531, cabang ws/edge-catalog-fresh (tingkat K)
+
+- A1: usia katalog selalu dihitung dari `at` (high water saat boot + waktu monotonic), sehingga blokir 24 jam Q57 tetap berjalan saat offline setelah restart.
+- A2: waktu server cloud (header `Date` dari upgrade WebSocket link) membuktikan jam: bila server >= high water saat boot dan selisih jam <= 5 menit, status tak terbukti dan alarm antre dihapus. Jam mundur (CLOCK_REGRESSED, A6) tidak diubah, menunggu keputusan founder Q69.
+- A3: saat jam tak terbukti, checkpoint promo diterima hanya bila lastSuccessAt > high water boot + 125 detik (2x interval simpan 60 detik + 5 detik), karena high water hanya disimpan tiap 60 detik.
+- A4: antrean alarm owner: entri yang pernah terkirim dibuang setelah 5760 heartbeat (24 jam) atau 7 hari; entri yang belum terkirim tidak pernah dibuang karena umur. Cloud tidak membalas ack, jadi "diterima" diperkirakan dari terkirim lewat link terbuka.
+- A5: antrean alarm ke `EDGE_STATE_DIR` (baru, default `/var/lib/legend/edge-state`); alarm lama di `EDGE_SELFIE_DIR/catalog-alarms` diimpor sekali lalu dihapus. Direktori baru harus dibuat di host (README deploy diperbarui).
+- Bukti: gagal-dulu 19 + 11 test, sesudah fix 8 berkas test terarah (174 test) lulus, tsc API exit 0, eslint dan prettier berkas berubah hijau.

@@ -8,6 +8,7 @@ import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
+import { CATALOG_GATE_PERSIST_MS } from "./catalog-gate.ts";
 import {
   installPromoFreshnessProvider,
   PROMO_STALE_AFTER_MS,
@@ -22,6 +23,15 @@ export const PROMO_CHECKPOINT_STREAMS = [
 
 export const PROMO_GATE_REFRESH_MS = 60_000;
 
+/**
+ * The high water is persisted only every CATALOG_GATE_PERSIST_MS, and a
+ * lagging or failed persist can leave the saved value two ticks old, so a
+ * checkpoint written just before shutdown can be stamped after it. Evidence
+ * counts as written since the boot only beyond this margin (533 R1).
+ */
+export const PROMO_CHECKPOINT_PERSIST_MARGIN_MS =
+  2 * CATALOG_GATE_PERSIST_MS + 5_000;
+
 export type PromoGateHandle = {
   refresh(): Promise<void>;
   stop(): void;
@@ -31,7 +41,7 @@ export function startPromoGate(options: {
   context: ScopedTenantContext;
   edgeNodeId: string;
   clock: Pick<TrustedClock, "now"> &
-    Partial<Pick<TrustedClock, "elapsedTimeUnproven">>;
+    Partial<Pick<TrustedClock, "elapsedTimeUnproven" | "bootHighWater">>;
   onError?: (error: unknown) => void;
   intervalMs?: number;
   database?: typeof db;
@@ -68,13 +78,22 @@ export function startPromoGate(options: {
   installPromoFreshnessProvider(() => {
     // Fresh-looking saved checkpoints cannot prove time spent powered off.
     // Q62 allows ordinary sales in this case, while discounts stay closed.
-    // Reopening needs proven time on a later boot or an explicit live-sync
-    // proof API when these streams exist; saved timestamps are not that proof.
-    if (options.clock.elapsedTimeUnproven?.()) return false;
+    // 533 A3: a checkpoint written strictly after the boot high water plus the
+    // persist margin was made by a pull since this boot, so it proves itself;
+    // one at or before that could predate the shutdown and does not. Without a
+    // boot high water: closed.
+    const unproven = options.clock.elapsedTimeUnproven?.() === true;
+    const bootHigh = options.clock.bootHighWater?.()?.getTime();
+    if (unproven && bootHigh === undefined) return false;
     const at = options.clock.now().getTime();
     return PROMO_CHECKPOINT_STREAMS.every((stream) => {
       const last = lastSuccess.get(stream);
       if (!last) return false;
+      if (
+        unproven &&
+        last.getTime() <= bootHigh! + PROMO_CHECKPOINT_PERSIST_MARGIN_MS
+      )
+        return false;
       const age = at - last.getTime();
       return age >= 0 && age <= PROMO_STALE_AFTER_MS;
     });

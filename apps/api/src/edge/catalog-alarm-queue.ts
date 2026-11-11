@@ -8,11 +8,25 @@ import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { catalogStaleSchema, type CatalogStale } from "./protocol.ts";
 
+// 533 A4: an alarm about an old clock doubt must not nag the owner forever.
+// The cloud sends no delivery ack, so "delivered" means "sent in a heartbeat
+// over an open link". An entry expires after this many such heartbeats (24 h of
+// 15 s heartbeats), or, once it was sent at least once, after ALARM_MAX_AGE_MS
+// since it was first enqueued. An entry never sent is never dropped by age: an
+// offline edge or a wall clock jump forward must not delete an unsent alarm.
+export const ALARM_MAX_HEARTBEATS = 5760;
+export const ALARM_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+
 export type CatalogAlarmQueue = {
   enqueue(alarms: CatalogStale): Promise<void>;
   /** null pauses replay while the live tracker is unavailable or incompatible. */
   heartbeat(live: CatalogStale | null): CatalogStale;
   flush(): Promise<void>;
+  /**
+   * Drop every queued entry with this reason (533 A2: the clock was proven,
+   * so the unproven-time alarms are moot) and persist the result.
+   */
+  clearReason(reason: string): Promise<void>;
 };
 
 const keyOf = (alarm: CatalogStale[number]): string =>
@@ -21,12 +35,19 @@ const keyOf = (alarm: CatalogStale[number]): string =>
 export async function openCatalogAlarmQueue(options: {
   directory: string;
   edgeNodeId: string;
+  /** Previous location of this queue's file (import once, then remove). */
+  legacyDirectory?: string;
+  /** Test seam: wall clock for the 7 day expiry. */
+  now?: () => Date;
   onError?: (error: unknown) => void;
 }): Promise<CatalogAlarmQueue> {
   // Scope the file to the local node without allowing identifiers to become paths.
   const filename = `${createHash("sha256").update(options.edgeNodeId).digest("hex")}.json`;
   const filePath = join(options.directory, filename);
+  const now = options.now ?? (() => new Date());
   const entries = new Map<string, CatalogStale[number]>();
+  // Expiry bookkeeping per entry, persisted next to the alarm fields.
+  const meta = new Map<string, { enqueuedAt: number; heartbeats: number }>();
   let needsLoad = true;
   let dirty = false;
   const report = (error: unknown): void => {
@@ -36,43 +57,95 @@ export async function openCatalogAlarmQueue(options: {
       // An alarm sink failure must not hold ordinary sales.
     }
   };
-  const load = async (): Promise<void> => {
+  type Meta = { enqueuedAt: number; heartbeats: number };
+  // Validate every entry before merging so a malformed file cannot partly
+  // replace memory. Throws on any invalid content.
+  type Saved = { alarm: CatalogStale[number]; meta: Meta };
+  const parseQueue = (raw: string): Saved[] => {
+    const stored: unknown = JSON.parse(raw);
+    if (
+      !stored ||
+      typeof stored !== "object" ||
+      !("version" in stored) ||
+      stored.version !== 1 ||
+      !("entries" in stored) ||
+      !Array.isArray(stored.entries)
+    )
+      throw new Error("Invalid catalog alarm queue");
+    return stored.entries.map((entry: unknown) => {
+      const { enqueuedAt, heartbeats, ...alarm } = (entry ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const enqueuedMs =
+        typeof enqueuedAt === "string" ? Date.parse(enqueuedAt) : NaN;
+      return {
+        alarm: catalogStaleSchema.parse([alarm])[0]!,
+        meta: {
+          // A file from before 533 has no bookkeeping: its lease starts now.
+          enqueuedAt: Number.isFinite(enqueuedMs)
+            ? enqueuedMs
+            : now().getTime(),
+          heartbeats:
+            typeof heartbeats === "number" &&
+            Number.isInteger(heartbeats) &&
+            heartbeats >= 0
+              ? heartbeats
+              : 0,
+        },
+      };
+    });
+  };
+  const merge = (saved: Saved[]): void => {
+    for (const { alarm, meta: saveMeta } of saved) {
+      if (entries.has(keyOf(alarm))) continue;
+      entries.set(keyOf(alarm), alarm);
+      meta.set(keyOf(alarm), saveMeta);
+    }
+  };
+  const loadMain = async (): Promise<void> => {
     let raw: string;
     try {
       raw = await readFile(filePath, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      needsLoad = false;
       return;
     }
-    let saved: CatalogStale;
+    let saved: Saved[];
     try {
-      const stored: unknown = JSON.parse(raw);
-      if (
-        !stored ||
-        typeof stored !== "object" ||
-        !("version" in stored) ||
-        stored.version !== 1 ||
-        !("entries" in stored) ||
-        !Array.isArray(stored.entries)
-      )
-        throw new Error("Invalid catalog alarm queue");
-      // A persisted queue can hold many heartbeat batches. Validate every
-      // entry before merging so malformed files cannot partly replace memory.
-      saved = stored.entries.map(
-        (entry: unknown) => catalogStaleSchema.parse([entry])[0]!,
-      );
+      saved = parseQueue(raw);
     } catch (error) {
       // Preserve the exact unreadable bytes for recovery; never overwrite
       // them with an empty queue or make the POS wait for manual repair.
       await rename(filePath, `${filePath}.${randomUUID()}.corrupt`);
-      needsLoad = false;
       report(error);
       return;
     }
-    for (const alarm of saved)
-      if (!entries.has(keyOf(alarm))) entries.set(keyOf(alarm), alarm);
+    merge(saved);
+  };
+  // 533 R4: the previous build kept this queue in the selfie directory. Import
+  // that file once; it is unlinked only after the new file is persisted.
+  const legacyPath = options.legacyDirectory
+    ? join(options.legacyDirectory, filename)
+    : null;
+  let legacyToRemove: string | null = null;
+  let legacyDone = legacyPath === null || legacyPath === filePath;
+  const importLegacy = async (): Promise<void> => {
+    if (legacyDone || !legacyPath) return;
+    legacyDone = true;
+    try {
+      const saved = parseQueue(await readFile(legacyPath, "utf8"));
+      merge(saved);
+      legacyToRemove = legacyPath;
+      dirty = true;
+    } catch {
+      // Missing or unreadable legacy file: ignore it, leave it in place.
+    }
+  };
+  const load = async (): Promise<void> => {
+    await loadMain();
     needsLoad = false;
+    await importLegacy();
   };
   try {
     await load();
@@ -92,7 +165,14 @@ export async function openCatalogAlarmQueue(options: {
       const file = await open(temporary, "wx", 0o600);
       try {
         await file.writeFile(
-          JSON.stringify({ version: 1, entries: [...entries.values()] }),
+          JSON.stringify({
+            version: 1,
+            entries: [...entries].map(([key, alarm]) => ({
+              ...alarm,
+              enqueuedAt: new Date(meta.get(key)!.enqueuedAt).toISOString(),
+              heartbeats: meta.get(key)!.heartbeats,
+            })),
+          }),
         );
         await file.sync();
       } finally {
@@ -112,36 +192,96 @@ export async function openCatalogAlarmQueue(options: {
     }
   };
 
+  const removeLegacy = async (): Promise<void> => {
+    if (!legacyToRemove) return;
+    const path = legacyToRemove;
+    await unlink(path).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    });
+    legacyToRemove = null;
+  };
+
   const flush = (alarms: CatalogStale = []): Promise<void> => {
     pending = pending
       .catch(() => {})
       .then(async () => {
-        for (const alarm of alarms) entries.set(keyOf(alarm), { ...alarm });
+        for (const alarm of alarms) {
+          const key = keyOf(alarm);
+          entries.set(key, { ...alarm });
+          // The same episode again keeps its lease and heartbeat count.
+          if (!meta.has(key))
+            meta.set(key, { enqueuedAt: now().getTime(), heartbeats: 0 });
+        }
         if (alarms.length) dirty = true;
         if (needsLoad) await load();
-        if (!dirty) return;
-        await persist();
-        dirty = false;
+        if (dirty) {
+          await persist();
+          dirty = false;
+        }
+        // A failed unlink retries on every later flush.
+        await removeLegacy();
       });
     return pending;
   };
+
+  // Persist an imported legacy queue now; a failure stays dirty for a retry.
+  if (legacyToRemove) await flush().catch(report);
 
   return {
     enqueue: (alarms) => flush(catalogStaleSchema.parse(alarms)),
     heartbeat(live) {
       if (live === null) return [];
+      const liveAlarms = catalogStaleSchema.parse(live);
+      const nowMs = now().getTime();
+      for (const [key, entry] of meta)
+        if (
+          entry.heartbeats >= ALARM_MAX_HEARTBEATS ||
+          (entry.heartbeats >= 1 && nowMs - entry.enqueuedAt > ALARM_MAX_AGE_MS)
+        ) {
+          entries.delete(key);
+          meta.delete(key);
+          dirty = true;
+        }
       const combined = new Map(entries);
-      for (const alarm of catalogStaleSchema.parse(live))
-        combined.set(keyOf(alarm), alarm);
-      const all = [...combined.values()];
+      for (const alarm of liveAlarms) combined.set(keyOf(alarm), alarm);
+      const all = [...combined.entries()];
       if (!all.length) return [];
       const count = Math.min(16, all.length);
-      const batch = Array.from({ length: count }, (_, index) => ({
-        ...all[(cursor + index) % all.length]!,
-      }));
+      const batch = Array.from({ length: count }, (_, index) => {
+        const [key, alarm] = all[(cursor + index) % all.length]!;
+        // Only a stored entry that is not live any more spends its budget:
+        // a live alarm is current news, not a replay.
+        const entry = meta.get(key);
+        if (entry && !liveAlarms.some((item) => keyOf(item) === key)) {
+          entry.heartbeats += 1;
+          dirty = true;
+        }
+        return { ...alarm };
+      });
       cursor = (cursor + count) % all.length;
       return batch;
     },
     flush: () => flush(),
+    clearReason: (reason) => {
+      // Run behind queued writes so a pending enqueue cannot bring it back.
+      pending = pending
+        .catch(() => {})
+        .then(async () => {
+          if (needsLoad) await load();
+          for (const [key, alarm] of entries)
+            if (alarm.reason === reason) {
+              entries.delete(key);
+              meta.delete(key);
+              dirty = true;
+            }
+          if (dirty) {
+            await persist();
+            dirty = false;
+          }
+          // A failed unlink retries on every later flush.
+          await removeLegacy();
+        });
+      return pending;
+    },
   };
 }

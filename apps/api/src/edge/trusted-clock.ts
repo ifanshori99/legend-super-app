@@ -33,6 +33,20 @@ export type TrustedClock = {
    * counts as regressed, like at boot.
    */
   adoptHighWater(persisted: Date): void;
+  /**
+   * The cloud's server time (HTTP `Date` of the link upgrade, 533 A2). Clears
+   * `elapsedTimeUnproven()` when it is at or after the boot high water and
+   * within 5 minutes of the wall clock: the wall clock then agrees with the
+   * cloud and is not still sitting at the pre-shutdown stamp. Never touches
+   * `regressed()`, `now()` or `highWater()`.
+   */
+  proveWithServerTime(serverTime: Date): void;
+  /**
+   * The highest stamp known from before this boot (persisted, or adopted
+   * late); null when there was none. Evidence stamped strictly after it was
+   * written since the boot (533 A3).
+   */
+  bootHighWater(): Date | null;
 };
 
 /** A wall clock this far behind the persisted high water at boot is a regression. */
@@ -61,6 +75,8 @@ export function createTrustedClock(
   let unproven =
     persistedMs !== null &&
     bootWall <= persistedMs + CLOCK_REGRESSION_TOLERANCE_MS;
+  // The highest stamp known from before this boot (persisted or adopted late).
+  let bootHighWater = persistedMs;
   let anchorMono = mono();
   let high = anchorWall;
 
@@ -94,6 +110,7 @@ export function createTrustedClock(
       if (!Number.isFinite(lateMs)) return;
       // Compare with the original boot wall, even if DB recovery takes hours.
       if (bootWall <= lateMs + CLOCK_REGRESSION_TOLERANCE_MS) unproven = true;
+      bootHighWater = Math.max(bootHighWater ?? -Infinity, lateMs);
       const current = read();
       if (lateMs > current) {
         anchorWall = lateMs;
@@ -102,6 +119,17 @@ export function createTrustedClock(
       }
       if (wall().getTime() < lateMs - CLOCK_REGRESSION_TOLERANCE_MS)
         regressedUntil = Math.max(regressedUntil ?? 0, lateMs);
+    },
+    bootHighWater: () =>
+      bootHighWater === null ? null : new Date(bootHighWater),
+    proveWithServerTime: (serverTime) => {
+      const serverMs = serverTime.getTime();
+      if (!Number.isFinite(serverMs)) return;
+      if (!unproven) return;
+      if (bootHighWater !== null && serverMs < bootHighWater) return;
+      if (Math.abs(wall().getTime() - serverMs) > CLOCK_REGRESSION_TOLERANCE_MS)
+        return;
+      unproven = false;
     },
   };
 }
