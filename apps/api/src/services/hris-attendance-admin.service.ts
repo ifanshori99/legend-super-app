@@ -87,7 +87,10 @@ import {
   findApprovedLeaveOnDate,
 } from "./hris-leave-request.service.ts";
 import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
-import { reverseCollectiveLeaveForWorkedDay } from "./hris-leave-collective.service.ts";
+import {
+  redeductCollectiveLeaveForRejectedDay,
+  reverseCollectiveLeaveForWorkedDay,
+} from "./hris-leave-collective.service.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -823,6 +826,21 @@ export async function decideAttendanceReview(
         row.businessDate,
         now,
       );
+    // A log that counted as worked and no longer does (rejected, or flagged
+    // back to pending) takes a day it gave back out again (once, terminal).
+    if (
+      isInLog &&
+      countsAsWorked(row.validity, row.reviewStatus) &&
+      !countsAsWorked(validity, reviewStatus)
+    )
+      await redeductCollectiveLeaveForRejectedDay(
+        tx,
+        context,
+        actorUserId,
+        row.employeeId,
+        row.businessDate,
+        now,
+      );
     await recordAudit(
       tx,
       context,
@@ -846,6 +864,21 @@ export async function decideAttendanceReview(
       data: await toReviewItem(tx, context, access, updated, signPhoto, now),
     };
   });
+}
+
+/**
+ * Whether an `in` log counts as worked for a collective day: the same rule as
+ * `workedLogCondition` in hris-leave-collective.service.ts (valid and not
+ * rejected on review, or flagged and accepted).
+ */
+function countsAsWorked(
+  validity: LogRow["validity"],
+  reviewStatus: LogRow["reviewStatus"],
+): boolean {
+  return (
+    (validity === "valid" && reviewStatus !== "rejected") ||
+    (validity === "flagged" && reviewStatus === "accepted")
+  );
 }
 
 /** Flag reason of a clock-in on a day of approved leave (bead legend-9y6ri). */

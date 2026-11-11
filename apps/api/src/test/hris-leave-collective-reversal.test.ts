@@ -82,6 +82,18 @@ const DAY = {
   settleReject: "2049-03-12",
 } as const;
 
+// Fix F3 days. Inserted straight into the table by the F3 describe: once a
+// carry-over row for 2050 exists (F1 item 3), the service refuses holidays of
+// 2049, and creating them up front would shift the earlier cases' day counts.
+const F3 = {
+  reject: "2049-05-04",
+  reflag: "2049-05-05",
+  stays: "2049-05-06",
+  second: "2049-05-07",
+  settle: "2049-05-10",
+  closed: "2049-05-11",
+} as const;
+
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 3,
@@ -811,5 +823,319 @@ describe("F1 item 3: a closed collective year stays closed", () => {
 
     expect(await ledger(e.id, date)).toEqual([DEDUCTED]);
     expect(await usedOf(e.id)).toBe(used);
+  });
+});
+
+// ---- fix F3 (tier K, money): an accepted log later rejected / re-flagged
+
+const REDEDUCTION_KIND = "collective_leave_rededuction";
+const REDEDUCED: LedgerRow = { kind: REDEDUCTION_KIND, days: -1 };
+const KIND_ORDER = ["collective_leave", REVERSAL_KIND, REDEDUCTION_KIND];
+
+/** Deduction, reversal and rededuction rows of one employee and date, in that order. */
+async function chain(employeeId: string, date: string): Promise<LedgerRow[]> {
+  const rows = await sql<{ kind: string; days: string }>(
+    `SELECT kind, days FROM leave_accruals
+      WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3
+        AND period = $4 AND kind = ANY($5)`,
+    [tenantId, employeeId, annualTypeId, date, KIND_ORDER],
+  );
+  return rows
+    .map((row) => ({ kind: row.kind, days: Number(row.days) }))
+    .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind));
+}
+const DRX = [DEDUCTED, REVERSED, REDEDUCED];
+
+/** Used must equal the ledger net (D + R + X) of the year and stay in 0..pool. */
+async function expectChainConsistent(employeeId: string) {
+  const [row] = await sql<{ net: string | null }>(
+    `SELECT sum(days)::text AS net FROM leave_accruals
+      WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3
+        AND period LIKE '2049%' AND kind = ANY($4)`,
+    [tenantId, employeeId, annualTypeId, KIND_ORDER],
+  );
+  const used = await usedOf(employeeId);
+  expect(used).toBe(0 - Number(row?.net ?? "0"));
+  expect(used).toBeGreaterThanOrEqual(0);
+  expect(ENTITLED - used).toBeLessThanOrEqual(ENTITLED);
+}
+
+const decide = (
+  logId: string,
+  action: "accept" | "reject" | "flag",
+  idem = key(),
+) =>
+  decideAttendanceReview(
+    tenantScope(),
+    reviewer,
+    uuidToUlid(logId),
+    { action, idempotencyKey: idem } as never,
+    undefined,
+    NOW,
+  );
+
+describe("F3: an accepted day whose log is later rejected or re-flagged is deducted again", () => {
+  beforeAll(async () => {
+    for (const date of new Set(Object.values(F3)))
+      await sql(
+        `INSERT INTO holidays (tenant_id, outlet_id, date, name, type)
+         VALUES ($1, $2, $3, $4, 'collective')
+         ON CONFLICT DO NOTHING`,
+        [tenantId, outletA, date, `CBREV collective ${date}`],
+      );
+  });
+
+  it("accepted then rejected: one rededuction row, used back, D and R kept, replays add nothing", async () => {
+    const e = await employee();
+    const logId = await writeLog(e.id, F3.reject, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    const deducted = await usedOf(e.id);
+    await decide(logId, "accept");
+    expect(await chain(e.id, F3.reject)).toEqual([DEDUCTED, REVERSED]);
+    expect(await usedOf(e.id)).toBe(deducted - 1);
+
+    const idem = key();
+    await decide(logId, "reject", idem);
+
+    expect(await chain(e.id, F3.reject)).toEqual(DRX);
+    expect(await usedOf(e.id)).toBe(deducted);
+    await expectChainConsistent(e.id);
+
+    // Replays: same key, new key (409 on a rejected log), daily runs.
+    await decide(logId, "reject", idem).catch(() => undefined);
+    await expect(decide(logId, "reject")).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    await run();
+    await run();
+    expect(await chain(e.id, F3.reject)).toEqual(DRX);
+    expect(await usedOf(e.id)).toBe(deducted);
+    await expectChainConsistent(e.id);
+  });
+
+  it("accepted then re-flagged (pending): the same single rededuction", async () => {
+    const e = await employee();
+    const logId = await writeLog(e.id, F3.reflag, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    const deducted = await usedOf(e.id);
+    await decide(logId, "accept");
+    expect(await usedOf(e.id)).toBe(deducted - 1);
+
+    await decide(logId, "flag");
+
+    expect(await chain(e.id, F3.reflag)).toEqual(DRX);
+    expect(await usedOf(e.id)).toBe(deducted);
+    await run();
+    expect(await chain(e.id, F3.reflag)).toEqual(DRX);
+    expect(await usedOf(e.id)).toBe(deducted);
+    await expectChainConsistent(e.id);
+  });
+
+  it("after the rededuction the day stays deducted: a rejected log cannot be accepted (409) and even a reset log reverses nothing", async () => {
+    const e = await employee();
+    const logId = await writeLog(e.id, F3.stays, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    const deducted = await usedOf(e.id);
+    await decide(logId, "accept");
+    await decide(logId, "reject");
+    await expect(decide(logId, "accept")).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    expect(await usedOf(e.id)).toBe(deducted);
+
+    // Even a log put back to flagged / pending by hand and accepted again
+    // cannot give the day back a second time (reversal is once per day).
+    await sql(
+      `UPDATE attendance_logs SET validity = 'flagged', review_status = 'pending',
+              reviewed_by = NULL, reviewed_at = NULL WHERE id = $1`,
+      [logId],
+    );
+    await decide(logId, "accept");
+    await run();
+    expect(await chain(e.id, F3.stays)).toEqual(DRX);
+    expect(await usedOf(e.id)).toBe(deducted);
+    await expectChainConsistent(e.id);
+  });
+
+  it("a second qualifying in-log on the day keeps the reversal: rejecting one log takes nothing back", async () => {
+    const e = await employee();
+    const first = await writeLog(e.id, F3.second, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    const deducted = await usedOf(e.id);
+    await decide(first, "accept");
+    await writeLog(e.id, F3.second, { method: "outlet_device" });
+
+    await decide(first, "reject");
+
+    expect(await chain(e.id, F3.second)).toEqual([DEDUCTED, REVERSED]);
+    expect(await usedOf(e.id)).toBe(deducted - 1);
+    await expectChainConsistent(e.id);
+  });
+
+  it("a log rejected without ever being accepted adds no rededuction", async () => {
+    const e = await employee();
+    const logId = await writeLog(e.id, F3.second, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    const deducted = await usedOf(e.id);
+    await decide(logId, "reject");
+    expect(await chain(e.id, F3.second)).toEqual([DEDUCTED]);
+    expect(await usedOf(e.id)).toBe(deducted);
+  });
+
+  it("settlement: the day is not paid after the rededuction (same payout as before the accept)", async () => {
+    const e = await employee();
+    const logId = await writeLog(e.id, F3.settle, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    // Every collective day of this file is deducted: a bigger entitlement keeps
+    // the payable remainder above the zero floor so the comparison means something.
+    await sql(
+      `UPDATE leave_balances SET entitled_days = '40'
+        WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3 AND period_year = $4`,
+      [tenantId, e.id, annualTypeId, YEAR],
+    );
+    const offboarding = await createOffboarding(tenantScope(), hr, e.id, {
+      exitType: "termination",
+      reason: "Akhir hubungan kerja uji.",
+      lastWorkingDate: "2049-12-31",
+    } as CreateOffboardingInput);
+    const remaining = async () => {
+      const summary = await getFinalSettlement(
+        tenantScope(),
+        hr,
+        offboarding.id,
+        NOW,
+      );
+      return Number(
+        summary.leave.find(
+          (item) =>
+            item.leaveTypeId === annualTypeId && item.periodYear === YEAR,
+        )!.remainingDays,
+      );
+    };
+    const beforeAccept = await remaining();
+
+    await decide(logId, "accept");
+    expect(await remaining()).toBe(beforeAccept + 1);
+    await decide(logId, "reject");
+
+    expect(await remaining()).toBe(beforeAccept);
+    expect(beforeAccept).toBe(40 - (await usedOf(e.id)));
+    expect(beforeAccept).toBeLessThanOrEqual(40);
+  });
+
+  it("closed year (carry-over ran after the reversal): used +1 in the day's year and the next year's carry loses the day", async () => {
+    const e = await employee();
+    const logId = await writeLog(e.id, F3.closed, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    const deducted = await usedOf(e.id);
+    await decide(logId, "accept");
+    expect(await usedOf(e.id)).toBe(deducted - 1);
+    // Carry-over of 2049 into 2050 ran after the day was given back: 3 days.
+    await sql(
+      `INSERT INTO leave_accruals (tenant_id, employee_id, leave_type_id, kind, period, days)
+       VALUES ($1, $2, $3, 'carry_over', '2050', '3')`,
+      [tenantId, e.id, annualTypeId],
+    );
+    await sql(
+      `INSERT INTO leave_balances
+         (tenant_id, employee_id, leave_type_id, period_year, entitled_days, carried_over_days)
+       VALUES ($1, $2, $3, 2050, '12', '3')`,
+      [tenantId, e.id, annualTypeId],
+    );
+    const carryOf = async () =>
+      Number(
+        (
+          await sql<{ c: string }>(
+            `SELECT carried_over_days::text AS c FROM leave_balances
+              WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3
+                AND period_year = 2050`,
+            [tenantId, e.id, annualTypeId],
+          )
+        )[0]!.c,
+      );
+
+    await decide(logId, "reject");
+
+    expect(await chain(e.id, F3.closed)).toEqual(DRX);
+    expect(await usedOf(e.id)).toBe(deducted);
+    expect(await carryOf()).toBe(2);
+    await run();
+    await decide(logId, "reject").catch(() => undefined);
+    expect(await carryOf()).toBe(2);
+    expect(await usedOf(e.id)).toBe(deducted);
+  });
+});
+
+describe("F3: the review refuses a log that changed employee between the read and the row lock", () => {
+  it("409 ATTENDANCE_REVIEW_CHANGED, nothing changes", async () => {
+    const e = await employee();
+    const other = await employee();
+    const logId = await writeLog(e.id, F3.reject, {
+      validity: "flagged",
+      review: "pending",
+    });
+    const a = await owner.connect();
+    let b: Promise<unknown> = Promise.resolve();
+    try {
+      await a.query("BEGIN");
+      await a.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      // A holds the log row; B reads the log, takes the employee lock, then
+      // waits for the row lock.
+      await a.query(
+        "UPDATE attendance_logs SET employee_id = $2 WHERE id = $1",
+        [logId, other.id],
+      );
+      b = decide(logId, "reject");
+      b.catch(() => undefined);
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const { rows } = await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND wait_event = 'transactionid'
+              AND query ILIKE '%attendance_logs%'`,
+        );
+        if (rows[0]!.n > 0 || Date.now() > deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      await a.query("COMMIT").catch(() => undefined);
+      a.release();
+    }
+    await expect(b).rejects.toMatchObject({
+      status: 409,
+      code: "ATTENDANCE_REVIEW_CHANGED",
+    });
+    const [log] = await sql<{ validity: string; review_status: string }>(
+      "SELECT validity, review_status FROM attendance_logs WHERE id = $1",
+      [logId],
+    );
+    expect(log).toMatchObject({
+      validity: "flagged",
+      review_status: "pending",
+    });
   });
 });
