@@ -24,6 +24,7 @@
 //   the reason.
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
+import express from "express";
 import { Pool, type PoolClient } from "pg";
 import {
   afterAll,
@@ -64,7 +65,11 @@ import {
   cafeLegendPlatformFixtures,
 } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
-import { signDeviceToken } from "../lib/device-token.ts";
+import { signDeviceToken, verifyDeviceToken } from "../lib/device-token.ts";
+import { requestContext } from "../lib/request-context.ts";
+import { errorHandler } from "../middleware/error-handler.ts";
+import { tenantContext as resolveTenantContext } from "../middleware/tenant.ts";
+import { staffPinRouter } from "../routes/device-pin.routes.ts";
 import {
   installEdgeStaffPinPeppers,
   resetEdgeStaffPinPeppers,
@@ -80,10 +85,8 @@ import { enrollDevice } from "../services/device.service.ts";
 import { withEdgeModeEnv } from "./edge-mode-env.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
-// Attack path: the tenant comes from the request's DOMAIN (Host of the
-// tenant's verified hostname), not from the device token, so a stale token
-// still reaches the route. A token-only tenant resolution already answers 404
-// for a rotated-out token, which would hide the route check.
+// The clock attack uses the tenant's verified Host so a rotated-out token
+// reaches that route instead of receiving 404 from token-only tenant resolution.
 const DOMAIN_HOST = cafeLegendPlatformFixtures.domains[0].hostname;
 const PROOF_HEADER = "X-Pin-Proof";
 const PIN = "582914";
@@ -92,6 +95,32 @@ const KID = "stale-token-kid-1";
 const edge = createApp({ edgeMode: true });
 const cloud = createApp({ edgeMode: false });
 delete process.env.EDGE_MODE;
+
+// legend-or2pi Q55: isolate /verify's registry check from tenant resolution.
+// Both tokens have the same Host and source=device, established from their real
+// signatures. Production tenant resolution rejects stale tokens upstream; a
+// domain-derived context instead hits the route's source guard for either token.
+// Keep the real route, registry lookup and PIN/proof services below this seam.
+const registryVerifyApp = express();
+registryVerifyApp.use(requestContext);
+registryVerifyApp.use(
+  resolveTenantContext({
+    resolveDomain: async () => null,
+    verifyCredential: async (req) => {
+      const raw = req.get(DEVICE_TOKEN_HEADER);
+      const token = raw ? verifyDeviceToken(raw) : null;
+      return token
+        ? {
+            tenantId: token.tenantId,
+            brandId: token.brandId,
+            source: "device" as const,
+          }
+        : null;
+    },
+  }),
+);
+registryVerifyApp.use("/api/staff-pins", staffPinRouter);
+registryVerifyApp.use(errorHandler);
 
 const tenant = cafeLegendPlatformFixtures.tenant;
 const owner = new Pool({
@@ -234,6 +263,13 @@ const verify = (token: string, userId: string, host?: string) =>
   agent(cloud)
     .post("/api/staff-pins/verify")
     .set(host ? { Host: host } : {})
+    .set(DEVICE_TOKEN_HEADER, token)
+    .send({ userId, pin: PIN, purpose: "attendance_clock" });
+
+const verifyAtRegistry = (token: string, userId: string) =>
+  agent(registryVerifyApp)
+    .post("/api/staff-pins/verify")
+    .set("Host", DOMAIN_HOST)
     .set(DEVICE_TOKEN_HEADER, token)
     .send({ userId, pin: PIN, purpose: "attendance_clock" });
 
@@ -448,11 +484,14 @@ describe("legend-oaj3e POST /api/staff-pins/verify checks the device registry", 
     const device = await registeredDevice("Layar verifikasi");
     const fresh = await rotate(device.id);
 
-    const replay = await verify(device.oldToken, staff.userId, DOMAIN_HOST);
+    const replay = await verifyAtRegistry(device.oldToken, staff.userId);
     expect(replay.status, JSON.stringify(replay.body)).toBe(401);
+    expect(replay.body.error.message).toBe(
+      "Token perangkat ini tidak berlaku lagi. Daftarkan ulang perangkat.",
+    );
     expect(await proofRows(staff.userId)).toBe(0);
 
-    const current = await verify(fresh, staff.userId);
+    const current = await verifyAtRegistry(fresh, staff.userId);
     expect(current.status, JSON.stringify(current.body)).toBe(200);
     expect(typeof current.body.data.proof.token).toBe("string");
   });
