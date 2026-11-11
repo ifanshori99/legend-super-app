@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## legend-3jem1 UI tinjauan HR: absen masuk saat cuti disetujui (ui-engineer, cabang `ws/3jem1-hr-leave-review-ui` dari m1 3c7217b2 + merge `ws/5nt2z-leave-partial` 3a3750ed, 2026-11-11)
+
+- Sudah: fitur `apps/web/src/features/hr-leave-clockin-review/` (antrean `/kelola/absensi/tinjauan-cuti`, detail `$logId`, dialog konfirmasi tetap/batal, hasil, tanpa hak batal, koreksi manual, perlu ditinjau ulang, kosong, loading, error, gagal konfirmasi), i18n `leaveClockinReview.*`, mock (`?mock=empty|error|slow|offline`, `?leaveRights=keep-only`), test node `tests/legend-3jem1-leave-clockin.test.mjs`, spec `e2e/legend-3jem1.mock.spec.ts`, skrip axe `scripts/ui-check-leave-clockin.mjs`.
+- Keputusan: detail sebagai halaman (bukan modal seperti satu gambar mockup) supaya deep link + mobile; shell mockup (generatif) tidak ditiru; teks kosong-cari dan loading pakai bawaan `DataTableShell`; "Perlu ditinjau ulang" = cuti diputuskan setelah jam masuk (API tidak membedakan); data diperkaya di klien (karyawan, cuti, jam keluar) sampai `legend-eps6t`.
+- Merge 5nt2z: journal migrasi diselesaikan mekanis; bug urutan `when` 0276 vs 0247-0249 dicatat `legend-0kxb2` (P1, migrasi, bukan dibetulkan di sini).
+- Berikut: hasil e2e + ui-check + audit, lalu lapor ke CTO.
+
 ## legend-ilzrj WS-10 FE layar PIN slip gaji + sisa percobaan di API (ui-engineer, cabang `ws/payslip-pin-ui` dari `ws/hris-pii-pin` 8305fdc3 + merge `design/payslip-pin`, 2026-11-11)
 
 - Sudah: BE 403 `PAYSLIP_PIN_INVALID` membawa `error.remainingAttempts`, 423 membawa `error.lockedUntil` (field opsional di envelope error, bukan `details` yang berbentuk array); architect approve. Web: buat PIN, PIN tersimpan, buka slip (kartu periode, nominal tersembunyi), PIN salah + sisa, terkunci (`pin-locked.tsx`, menit berjalan), lupa PIN (teks HR/atasan tanpa nomor) + kode WhatsApp (503 belum tersedia, 429 dibatasi, kode hangus setelah 5 salah tanpa mengunci PIN), ubah PIN, daftar slip kosong/memuat/error, dialog reset HR dengan alasan. Logika murni `pin-state.ts` + `tests/payslip-pin-ui.test.mjs` (35). Mock: `?mock=pin-not-set|pin-locked|otp-ok|otp-rate-limited`.
