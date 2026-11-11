@@ -5,8 +5,9 @@
 // Not prefetched during SSR: the screens read the outlet from the tenant
 // context and the data is behind the HR permission, so they fetch in the
 // browser after hydration (hooks.ts).
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, replaceEqualDeep } from "@tanstack/react-query";
 import type { OutletId } from "@starter/shared/core";
+import { keepDecidedLeave } from "./enrich.ts";
 import { fetchLeaveReviewItems, loadLeaveClockinCases } from "./api.ts";
 import type { LeaveClockinCase } from "./types.ts";
 
@@ -67,6 +68,16 @@ export function leaveClockinCaseQuery(
       return null;
     },
     staleTime: 15_000,
+    // A refetch after "cancel leave" finds no approved leave any more: keep the
+    // leave and kind the screen already shows instead of blanking them.
+    structuralSharing: (oldData, newData) =>
+      replaceEqualDeep(
+        oldData,
+        keepDecidedLeave(
+          oldData as LeaveClockinCase | null | undefined,
+          newData as LeaveClockinCase | null | undefined,
+        ),
+      ),
   });
 }
 

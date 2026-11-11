@@ -16,9 +16,7 @@ export type LeaveClockinAction = "keep_leave" | "cancel_leave";
  * - `manual_correction`: the log was written by a manual attendance correction.
  */
 export type LeaveClockinCaseKind =
-  | "clock_in_on_leave"
-  | "re_review"
-  | "manual_correction";
+  "clock_in_on_leave" | "re_review" | "manual_correction";
 
 /** Decision state shown to HR. `kept_leave` is never rendered as "Ditolak". */
 export type LeaveClockinDecision = "pending" | "kept_leave" | "cancelled_leave";
@@ -40,6 +38,8 @@ export type LeaveClockinCase = {
   /** Null when the employee directory has no row for the id. */
   employeeName: string | null;
   outletId: string;
+  /** IANA time zone of the outlet; clock times are shown in it. */
+  timeZone: string;
   /** Business date of the clock-in (YYYY-MM-DD) in the outlet time zone. */
   businessDate: string;
   /** ISO instant of the clock-in. */
