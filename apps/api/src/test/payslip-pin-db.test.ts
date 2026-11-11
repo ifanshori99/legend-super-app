@@ -3,33 +3,27 @@
 // the brief, independent of the implementation. Runs the real Better Auth, the
 // RBAC resolver and PostgreSQL against the seeded Cafe Legend tenant; the
 // payslip router is mounted under `/api/hris` in a small wrapper app because
-// the lead mounts it in routes/index.ts, and the wrapper lets us inject the fake
-// WhatsApp sender.
+// the lead mounts it in routes/index.ts. The WhatsApp reset is covered by
+// payslip-pin-wa-reset.test.ts (legend-9h2oj; the outbound OTP is gone).
 //
 // Assumptions (the spec leaves these open):
 //  - A malformed body (PIN not 6 digits, missing reason) is answered 422, as
 //    for every other HRIS route (hris-api.test.ts TEN-02).
 //  - The attempt that makes the 5th failure answers 403 or 423; every later
 //    attempt, even with the right PIN, answers 423 PAYSLIP_PIN_LOCKED.
-//  - Set/change/reset/OTP writes answer 200 or 201.
+//  - Set/change/reset writes answer 200 or 201.
 //  - HR reset needs a payroll admin permission; the HR actor holds the whole
 //    payroll set (view/run/approve/lock) plus hr.employee.manage so the test
 //    does not depend on which of them the route picks.
-//  - `reset-otp` takes `{ idempotencyKey }`; the number it sends to is the
-//    employee's verified WhatsApp identity (user_identities, sealed as
-//    identity-account.service does: AAD `user_identity:whatsapp:<hash>`).
-//  - A wrong/expired/reused OTP code answers a 4xx (exact code left open);
-//    the PIN must stay unchanged and the code becomes unusable after 5 tries.
 //  - A replay (same idempotency key, same body) of a WRONG PIN answers the same
 //    403 without burning a second attempt (contract comment on
 //    viewMyPayslipInputSchema).
 //  - Lock window and column names (`failed_attempts`, `locked_until`,
-//    `expires_at`, `attempts`, `consumed_at`) are the ones in the brief.
+//    `expires_at`) are the ones in the brief.
 import { randomBytes, randomUUID } from "node:crypto";
 import express from "express";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { FakeMessagingProvider } from "@starter/shared/adapters";
 import { cafeLegendPayrollFixtures } from "@starter/shared/hris/payroll";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
@@ -43,8 +37,6 @@ import {
 import { hrisRequestFingerprint } from "../lib/hris-pii.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import { createHrisPayslipRouter } from "../routes/hris-payslip.routes.ts";
-import type { PayslipPinOtpSender } from "../services/payslip-pin.service.ts";
-import { createPayslipPinWhatsappSender } from "../services/payslip-pin-whatsapp-sender.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
 const tenant = cafeLegendPlatformFixtures.tenant;
@@ -57,25 +49,10 @@ const owner = new Pool({
 
 // ------------------------------------------------------------ test app
 
-type SentOtp = { employeeId: string; phoneE164: string; code: string };
-const sentOtps: SentOtp[] = [];
-/** In-memory fake of the `PayslipPinOtpSender` port: never sends anything. */
-const fakeOtpSender = {
-  async send(
-    _context: unknown,
-    message: { employeeId: string; phoneE164: string; code: string },
-  ) {
-    sentOtps.push({ ...message });
-  },
-};
-
 const PAYSLIP_PATH =
   /^\/(me\/payslips|me\/payslip-pin|employees\/[^/]+\/payslip-pin)/;
 
-function buildApp(
-  deps: { otpSender?: PayslipPinOtpSender },
-  tenantId: string = tenant.id,
-) {
+function buildApp(tenantId: string = tenant.id) {
   const gate = express.Router();
   gate.use(
     tenantContext({
@@ -89,7 +66,7 @@ function buildApp(
       }),
     }),
   );
-  gate.use(createHrisPayslipRouter(deps));
+  gate.use(createHrisPayslipRouter());
   gate.use(errorHandler);
   const app = express();
   app.use(requestContext);
@@ -101,8 +78,7 @@ function buildApp(
   return app;
 }
 
-const app = buildApp({ otpSender: fakeOtpSender });
-const appWithoutSender = buildApp({});
+const app = buildApp();
 
 // ------------------------------------------------------------ database
 
@@ -305,7 +281,7 @@ async function seedEmployee(userId: string | null, tenantId = tenant.id) {
   return id;
 }
 
-/** The employee's verified WhatsApp number (the OTP target; see assumptions). */
+/** The employee's verified WhatsApp number (seeded for completeness). */
 async function seedWhatsapp(userId: string): Promise<string> {
   const digits = `62812${Array.from(randomBytes(8), (b) => b % 10).join("")}`;
   const hash = randomBytes(32).toString("hex");
@@ -414,21 +390,6 @@ const hrReset = (employeeId: string, body: object = {}) =>
     .set(originHeader)
     .send({ reason: "Karyawan lupa PIN", idempotencyKey: key(), ...body });
 
-const requestOtp = (client: Client) =>
-  client
-    .post(`${STATUS}/reset-otp`)
-    .set(originHeader)
-    .send({ idempotencyKey: key() });
-
-const verifyOtp = (
-  client: Client,
-  body: { code: string; pin: string; idempotencyKey?: string },
-) =>
-  client
-    .post(`${STATUS}/reset-otp/verify`)
-    .set(originHeader)
-    .send({ idempotencyKey: key(), ...body });
-
 const ok = (status: number) => [200, 201].includes(status);
 
 async function pinRow(employeeId: string) {
@@ -462,24 +423,6 @@ async function audits(action: string, actorId: string) {
     [tenant.id, action, actorId],
   );
 }
-
-async function challenges(employeeId: string) {
-  return sql<{
-    code_hash: string;
-    attempts: number;
-    consumed_at: Date | null;
-  }>(
-    `SELECT code_hash, attempts, consumed_at FROM payslip_pin_reset_challenges
-      WHERE tenant_id = $1 AND employee_id = $2 ORDER BY created_at`,
-    [tenant.id, employeeId],
-  );
-}
-
-const lastCode = (employeeId: string) => {
-  const sent = [...sentOtps].reverse().find((s) => s.employeeId === employeeId);
-  if (!sent) throw new Error("No OTP was sent");
-  return sent.code;
-};
 
 /** Fails the PIN `times` times in a row. */
 async function failTimes(staff: Staff, times: number) {
@@ -569,7 +512,7 @@ afterAll(async () => {
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [
         w.tenantId,
       ]);
-      for (const table of ["payslip_pin_reset_challenges", "payslip_pins"])
+      for (const table of ["payslip_pins"])
         await client
           .query(`DELETE FROM ${table} WHERE tenant_id = $1`, [w.tenantId])
           .catch(() => undefined);
@@ -1066,26 +1009,6 @@ describe("payslip PIN: idempotent retries", () => {
         },
       }),
     );
-
-    // OTP code too.
-    await requestOtp(staff.client);
-    const otpKey = key();
-    await verifyOtp(staff.client, {
-      code: "000000",
-      pin: NEW_PIN,
-      idempotencyKey: otpKey,
-    });
-    expect(await fingerprintOf(otpKey)).not.toBe(
-      hrisRequestFingerprint(tenant.id, {
-        operation: "payslip_pin.otp_verify",
-        request: {
-          actor: staff.userId,
-          employeeId: staff.employeeId,
-          code: "000000",
-          pin: NEW_PIN,
-        },
-      }),
-    );
   });
 
   it("a retried set of the PIN with the same key does not change it twice", async () => {
@@ -1162,376 +1085,5 @@ describe("payslip PIN: HR reset", () => {
   it("answers 404 for an employee that does not exist in the tenant", async () => {
     const response = await hrReset(randomUUID());
     expect(response.status).toBe(404);
-  });
-});
-
-describe("payslip PIN: reset by WhatsApp OTP", () => {
-  it("without a configured sender the request answers 503 and nothing changes", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    // Same session cookie, app mounted without an OTP sender.
-    const noSender = agent(appWithoutSender);
-    const email = await signUp(noSender, "Staf Tanpa Sender");
-    void email;
-    const session = await noSender.get("/api/auth/get-session");
-    const userId = session.body.user.id as string;
-    createdUsers.push(userId);
-    await grantCustomRole(userId, ["self.payslip.view", "self.profile.view"], {
-      type: "outlet",
-      id: outlet.id,
-    });
-    const employeeId = await seedEmployee(userId);
-    await seedWhatsapp(userId);
-    const response = await noSender
-      .post(`${STATUS}/reset-otp`)
-      .set(originHeader)
-      .send({ idempotencyKey: key() });
-    expect(response.status).toBe(503);
-    expect(await challenges(employeeId)).toHaveLength(0);
-  });
-
-  it("caps code requests at 3 per employee per hour: the 4th answers 429 and adds no challenge", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    for (let i = 0; i < 3; i += 1)
-      expect(ok((await requestOtp(staff.client)).status)).toBe(true);
-    const sentBefore = sentOtps.length;
-    const fourth = await requestOtp(staff.client);
-    expect(fourth.status).toBe(429);
-    expect(sentOtps.length).toBe(sentBefore);
-    expect(await challenges(staff.employeeId)).toHaveLength(3);
-  });
-
-  it("sends a 6-digit code to the employee's WhatsApp number; the right code sets a new PIN", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    const before = sentOtps.length;
-
-    const requested = await requestOtp(staff.client);
-    expect(ok(requested.status)).toBe(true);
-    expect(sentOtps.length).toBe(before + 1);
-    const sent = sentOtps[sentOtps.length - 1]!;
-    expect(sent.employeeId).toBe(staff.employeeId);
-    expect(sent.phoneE164).toBe(staff.phone);
-    expect(sent.code).toMatch(/^\d{6}$/);
-
-    // The code is stored hashed only, and the request body never echoes it.
-    const stored = await challenges(staff.employeeId);
-    expect(stored).toHaveLength(1);
-    expect(stored[0]!.code_hash).not.toContain(sent.code);
-    expect(JSON.stringify(requested.body)).not.toContain(sent.code);
-
-    const verified = await verifyOtp(staff.client, {
-      code: sent.code,
-      pin: NEW_PIN,
-    });
-    expect(ok(verified.status)).toBe(true);
-
-    expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(403);
-    expect((await view(staff.client, staff.payslipId, NEW_PIN)).status).toBe(
-      200,
-    );
-    expect((await challenges(staff.employeeId))[0]!.consumed_at).not.toBeNull();
-
-    for (const action of [
-      "payslip_pin.otp_requested",
-      "payslip_pin.otp_reset",
-    ]) {
-      const audit = await audits(action, staff.userId);
-      expect(audit).toHaveLength(1);
-      expect(audit[0]!.raw).not.toContain(sent.code);
-      expect(audit[0]!.raw).not.toContain(NEW_PIN);
-      expect(audit[0]!.raw).not.toContain(staff.phone);
-    }
-  });
-
-  it("a wrong code is refused, counts an attempt, and the PIN stays; the right code still works", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    await requestOtp(staff.client);
-    const code = lastCode(staff.employeeId);
-    const wrongCode = code === "000000" ? "000001" : "000000";
-
-    const wrong = await verifyOtp(staff.client, {
-      code: wrongCode,
-      pin: NEW_PIN,
-    });
-    expect(wrong.status).toBeGreaterThanOrEqual(400);
-    expect(wrong.status).toBeLessThan(500);
-    expect((await challenges(staff.employeeId))[0]!.attempts).toBe(1);
-    expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(200);
-
-    const right = await verifyOtp(staff.client, { code, pin: NEW_PIN });
-    expect(ok(right.status)).toBe(true);
-  });
-
-  it("an expired code is refused and the PIN stays", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    await requestOtp(staff.client);
-    const code = lastCode(staff.employeeId);
-    await sql(
-      `UPDATE payslip_pin_reset_challenges SET expires_at = now() - interval '1 minute'
-        WHERE tenant_id = $1 AND employee_id = $2`,
-      [tenant.id, staff.employeeId],
-    );
-    const expired = await verifyOtp(staff.client, { code, pin: NEW_PIN });
-    expect(expired.status).toBeGreaterThanOrEqual(400);
-    expect(expired.status).toBeLessThan(500);
-    expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(200);
-    expect((await view(staff.client, staff.payslipId, NEW_PIN)).status).toBe(
-      403,
-    );
-  });
-
-  it("a code works once: reusing it is refused", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    await requestOtp(staff.client);
-    const code = lastCode(staff.employeeId);
-    expect(
-      ok((await verifyOtp(staff.client, { code, pin: NEW_PIN })).status),
-    ).toBe(true);
-    const reused = await verifyOtp(staff.client, { code, pin: OTHER });
-    expect(reused.status).toBeGreaterThanOrEqual(400);
-    expect(reused.status).toBeLessThan(500);
-    // The PIN from the first, valid reset is untouched by the replay.
-    expect((await view(staff.client, staff.payslipId, NEW_PIN)).status).toBe(
-      200,
-    );
-    expect((await view(staff.client, staff.payslipId, OTHER)).status).toBe(403);
-  });
-
-  it("five wrong codes burn the challenge: the right code is then refused", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    await requestOtp(staff.client);
-    const code = lastCode(staff.employeeId);
-    const wrongCode = code === "000000" ? "000001" : "000000";
-    for (let i = 0; i < 5; i += 1)
-      await verifyOtp(staff.client, { code: wrongCode, pin: NEW_PIN });
-    const late = await verifyOtp(staff.client, { code, pin: NEW_PIN });
-    expect(late.status).toBeGreaterThanOrEqual(400);
-    expect(late.status).toBeLessThan(500);
-    expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(200);
-  });
-
-  it("the 5th wrong code answers 423 PAYSLIP_PIN_LOCKED with lockedUntil", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    await requestOtp(staff.client);
-    const code = lastCode(staff.employeeId);
-    const wrongCode = code === "000000" ? "000001" : "000000";
-    for (let i = 0; i < 4; i += 1)
-      await verifyOtp(staff.client, { code: wrongCode, pin: NEW_PIN });
-    const fifth = await verifyOtp(staff.client, {
-      code: wrongCode,
-      pin: NEW_PIN,
-    });
-    expect(fifth.status).toBe(423);
-    expect(fifth.body.error.code).toBe("PAYSLIP_PIN_LOCKED");
-    const until = fifth.body.error.lockedUntil as string;
-    expect(new Date(until).toISOString()).toBe(until);
-  });
-
-  it("verify with a malformed new PIN is 422", async () => {
-    const staff = await makeStaff();
-    await setPin(staff.client, { pin: GOOD });
-    await requestOtp(staff.client);
-    const response = await verifyOtp(staff.client, {
-      code: lastCode(staff.employeeId),
-      pin: "12",
-    });
-    expect(response.status).toBe(422);
-  });
-});
-
-// legend-qih2m: the REAL WhatsApp adapter over FakeMessagingProvider (nothing
-// is ever sent). Assumptions: the message text carries the 6-digit code once
-// and "5 menit"; the recipient is the seeded number without the "+"; the 4th
-// request in an hour is 429 (existing cap test) and no 4th message is sent.
-// The 503-without-provider case is already covered above ("without a
-// configured sender ..."), and by payslip-pin-wire.test.ts through createApp.
-describe("payslip PIN: reset code through the WhatsApp adapter", () => {
-  const provider = new FakeMessagingProvider();
-  const appWhatsapp = buildApp({
-    otpSender: createPayslipPinWhatsappSender(provider),
-  });
-  const digitsOf = (phone: string) => phone.replace(/^\+/, "");
-  const sentTo = (phone: string) =>
-    provider.sent.filter((message) => message.recipient === digitsOf(phone));
-  const codeIn = (text: string) => {
-    const found = text.match(/(?<!\d)\d{6}(?!\d)/);
-    if (!found) throw new Error("No 6-digit code in the message");
-    return found[0];
-  };
-
-  it("sends one WhatsApp message with the code; that code sets a new PIN", async () => {
-    const staff = await makeStaff(undefined, appWhatsapp);
-    await setPin(staff.client, { pin: GOOD });
-
-    const requested = await requestOtp(staff.client);
-    expect(ok(requested.status), JSON.stringify(requested.body)).toBe(true);
-
-    const messages = sentTo(staff.phone);
-    expect(messages).toHaveLength(1);
-    const message = messages[0]!;
-    expect(message.tenantId).toBe(tenant.id);
-    expect(message.outletId).toBe(outlet.id);
-    expect(message.text).toContain("5 menit");
-    const code = codeIn(message.text);
-    expect(JSON.stringify(requested.body)).not.toContain(code);
-
-    const verified = await verifyOtp(staff.client, { code, pin: NEW_PIN });
-    expect(ok(verified.status), JSON.stringify(verified.body)).toBe(true);
-    expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(403);
-    expect((await view(staff.client, staff.payslipId, NEW_PIN)).status).toBe(
-      200,
-    );
-  });
-
-  // The employee's home outlet is A (the seeded employee row) but the role
-  // that carries self.payslip.view is assigned at outlet B, so the caller's
-  // OutletScope is {outlets:[B]}. Assumption: the code is then sent under the
-  // outlet the caller is actually scoped to (B), not the home outlet (A).
-  it("sends the code under the role's outlet when it differs from the home outlet", async () => {
-    const outletB = cafeLegendPlatformFixtures.outlets[1]!.id;
-    expect(outletB).not.toBe(outlet.id);
-    const staff = await makeStaff(undefined, appWhatsapp, outletB);
-    await setPin(staff.client, { pin: GOOD });
-
-    const requested = await requestOtp(staff.client);
-    expect(requested.status, JSON.stringify(requested.body)).toBe(200);
-
-    const messages = sentTo(staff.phone);
-    expect(messages).toHaveLength(1);
-    const message = messages[0]!;
-    expect(message.tenantId).toBe(tenant.id);
-    expect(message.outletId).toBe(outletB);
-
-    const verified = await verifyOtp(staff.client, {
-      code: codeIn(message.text),
-      pin: NEW_PIN,
-    });
-    expect(ok(verified.status), JSON.stringify(verified.body)).toBe(true);
-    expect((await view(staff.client, staff.payslipId, NEW_PIN)).status).toBe(
-      200,
-    );
-  });
-
-  it("never prints the code or the phone number, and never stores them in audit rows", async () => {
-    const staff = await makeStaff(undefined, appWhatsapp);
-    await setPin(staff.client, { pin: GOOD });
-
-    const written: string[] = [];
-    const capture = (chunk: unknown) => {
-      written.push(
-        typeof chunk === "string"
-          ? chunk
-          : Buffer.from(chunk as Uint8Array).toString(),
-      );
-      return true;
-    };
-    const spies = [
-      vi.spyOn(process.stdout, "write").mockImplementation(capture),
-      vi.spyOn(process.stderr, "write").mockImplementation(capture),
-      ...(["log", "info", "warn", "error", "debug"] as const).map((level) =>
-        vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
-          written.push(args.map(String).join(" "));
-        }),
-      ),
-    ];
-    let requested;
-    try {
-      requested = await requestOtp(staff.client);
-    } finally {
-      for (const spy of spies) spy.mockRestore();
-    }
-    expect(ok(requested.status), JSON.stringify(requested.body)).toBe(true);
-
-    const message = sentTo(staff.phone)[0]!;
-    const code = codeIn(message.text);
-    const output = written.join("\n");
-    expect(output).not.toContain(code);
-    expect(output).not.toContain(digitsOf(staff.phone));
-
-    const rows = await sql<{ raw: string }>(
-      `SELECT event::text AS raw FROM audit_logs
-        WHERE tenant_id = $1 AND event->>'actorId' = $2`,
-      [tenant.id, staff.userId],
-    );
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
-      expect(row.raw).not.toContain(code);
-      expect(row.raw).not.toContain(digitsOf(staff.phone));
-    }
-  });
-
-  it("sends only 3 messages in an hour: the 4th request answers 429", async () => {
-    const staff = await makeStaff(undefined, appWhatsapp);
-    await setPin(staff.client, { pin: GOOD });
-    for (let i = 0; i < 3; i += 1)
-      expect(ok((await requestOtp(staff.client)).status)).toBe(true);
-    expect(sentTo(staff.phone)).toHaveLength(3);
-
-    const fourth = await requestOtp(staff.client);
-    expect(fourth.status).toBe(429);
-    expect(sentTo(staff.phone)).toHaveLength(3);
-    expect(await challenges(staff.employeeId)).toHaveLength(3);
-  });
-
-  it("sends a second tenant's employee code under that tenant, not the first", async () => {
-    const appTenantB = buildApp(
-      { otpSender: createPayslipPinWhatsappSender(provider) },
-      otherWorld.tenantId,
-    );
-    const { client, userId } = await signedInClient("Staf Tenant B", {
-      app: appTenantB,
-    });
-    const roleId = randomUUID();
-    otherRoles.push(roleId);
-    await sql(
-      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
-       VALUES ($1, $2, $3, false, $4, '["outlet"]')`,
-      [
-        roleId,
-        otherWorld.tenantId,
-        `Payslip PIN B ${roleId.slice(0, 8)}`,
-        JSON.stringify(["self.payslip.view", "self.profile.view"]),
-      ],
-      otherWorld.tenantId,
-    );
-    await sql(
-      `INSERT INTO role_assignments
-         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
-      [otherWorld.tenantId, userId, roleId, otherOutletId],
-      otherWorld.tenantId,
-    );
-    const employeeId = randomUUID();
-    await sql(
-      `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Tenant B OTP', $5, 'pkwtt', '2025-03-01', 'active')`,
-      [
-        employeeId,
-        otherWorld.tenantId,
-        userId,
-        `SPB-${employeeId.slice(0, 8).toUpperCase()}`,
-        otherOutletId,
-      ],
-      otherWorld.tenantId,
-    );
-    await seedPayslip(otherWorld, employeeId, otherOutletId);
-    const phone = await seedWhatsapp(userId);
-    expect(ok((await setPin(client, { pin: GOOD })).status)).toBe(true);
-
-    const requested = await requestOtp(client);
-    expect(ok(requested.status), JSON.stringify(requested.body)).toBe(true);
-    const messages = sentTo(phone);
-    expect(messages).toHaveLength(1);
-    expect(messages[0]!.tenantId).toBe(otherWorld.tenantId);
-    expect(messages[0]!.tenantId).not.toBe(tenant.id);
-    expect(messages[0]!.outletId).toBe(otherOutletId);
   });
 });

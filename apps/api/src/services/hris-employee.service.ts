@@ -422,7 +422,7 @@ export async function getEmployeePii(
  */
 const GUESS_FIELDS_BY_OPERATION: Readonly<Record<string, readonly string[]>> = {
   "payslip_pin.set": ["pin", "currentPin"],
-  "payslip_pin.otp_verify": ["pin", "code"],
+  "payslip_pin.wa_reset": ["pin"],
 };
 
 function withoutGuessFields(operation: string, request: unknown): unknown {

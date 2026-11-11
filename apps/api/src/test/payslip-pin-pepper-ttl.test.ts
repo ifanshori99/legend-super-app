@@ -2,27 +2,18 @@
 //
 // Finding 4: the staff PIN pepper (`staffPinPepper`, per outlet/tenant, sent to
 // edge nodes) must never protect or verify a payslip PIN. Every payslip PIN
-// path (set/change, view check, OTP request + verify, HR reset, idempotency
-// fingerprint) must use the cloud-only `payslipPinPepper`.
+// path (set/change, view check, HR reset, idempotency fingerprint) must use the cloud-only `payslipPinPepper`.
 //   - Stored PIN hashes verify under `payslipPinPepper` and under NO staff pepper
 //     (any outlet of the tenant, any version the cloud can derive).
 //   - While every path runs, `staffPinPepper` (and its null/edge variants) is
 //     never called; `payslipPinPepper` is.
-// Finding 5: the reset code's expiry is judged with a clock read AFTER the
-// per-employee PIN lock is obtained. A verify that waited for the lock past the
-// code's expiry must be refused (a request read `now` while the code was still
-// valid but only acted on it later).
+// Finding 5 (the reset code's expiry judged after the PIN lock) belonged to the
+// outbound WhatsApp OTP, removed in legend-9h2oj; the inbound proof's grant
+// window is judged in the same way (clock read after the lock) in
+// payslip-pin.service completePayslipPinResetWa.
 //
 // Assumptions (the contract leaves them open):
-//  - The tests run through HTTP like payslip-pin-db.test.ts (the router passes
-//    no `now`, so the service reads the clock itself). "Waiting for the lock"
-//    is made real by holding the employee's advisory lock from a second
-//    connection (key `payslip-pin:<tenant>:<employee>`) until the in-flight
-//    request is observed waiting for it in pg_locks.
-//  - The clock moves forward with fake `Date` only (timers stay real), so the
-//    test depends on neither sleeps nor the wall clock.
-//  - An expired code answers a 4xx and leaves the PIN and challenge unchanged
-//    (contract: "expired ... answer like a wrong code (403) without counting").
+//  - The tests run through HTTP like payslip-pin-db.test.ts.
 //  - Peppers are inspected through the public pepper module: the staff pepper
 //    of every outlet of the fixture tenant for versions 1..current.
 import { randomBytes, randomUUID } from "node:crypto";
@@ -105,17 +96,6 @@ const owner = new Pool({
 
 // ------------------------------------------------------------ test app
 
-type SentOtp = { employeeId: string; code: string };
-const sentOtps: SentOtp[] = [];
-const fakeOtpSender = {
-  async send(
-    _context: unknown,
-    message: { employeeId: string; phoneE164: string; code: string },
-  ) {
-    sentOtps.push({ employeeId: message.employeeId, code: message.code });
-  },
-};
-
 const PAYSLIP_PATH =
   /^\/(me\/payslips|me\/payslip-pin|employees\/[^/]+\/payslip-pin)/;
 
@@ -133,7 +113,7 @@ function buildApp() {
       }),
     }),
   );
-  gate.use(createHrisPayslipRouter({ otpSender: fakeOtpSender }));
+  gate.use(createHrisPayslipRouter());
   gate.use(errorHandler);
   const app = express();
   app.use(requestContext);
@@ -377,18 +357,6 @@ const view = (client: Client, payslipId: string, pin: string) =>
     .set(originHeader)
     .send({ pin, idempotencyKey: key() });
 
-const requestOtp = (client: Client) =>
-  client
-    .post(`${STATUS}/reset-otp`)
-    .set(originHeader)
-    .send({ idempotencyKey: key() });
-
-const verifyOtp = (client: Client, body: { code: string; pin: string }) =>
-  client
-    .post(`${STATUS}/reset-otp/verify`)
-    .set(originHeader)
-    .send({ idempotencyKey: key(), ...body });
-
 const hrReset = (employeeId: string) =>
   hr.client
     .post(`/api/hris/employees/${employeeId}/payslip-pin/reset`)
@@ -396,12 +364,6 @@ const hrReset = (employeeId: string) =>
     .send({ reason: "Karyawan lupa PIN", idempotencyKey: key() });
 
 const ok = (status: number) => [200, 201].includes(status);
-
-const lastCode = (employeeId: string) => {
-  const sent = [...sentOtps].reverse().find((s) => s.employeeId === employeeId);
-  if (!sent) throw new Error("No OTP was sent");
-  return sent.code;
-};
 
 async function storedPin(employeeId: string) {
   const rows = await sql<{
@@ -468,7 +430,7 @@ afterAll(async () => {
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [
       tenant.id,
     ]);
-    for (const table of ["payslip_pin_reset_challenges", "payslip_pins"])
+    for (const table of ["payslip_pins"])
       await client
         .query(
           `DELETE FROM ${table} WHERE tenant_id = $1 AND employee_id = ANY($2::uuid[])`,
@@ -562,29 +524,23 @@ describe("payslip PIN pepper: the staff PIN pepper never protects a payslip PIN"
     }
   });
 
-  it("a PIN set by OTP reset or by HR reset + set is also hashed under the payslip pepper only", async () => {
+  it("a changed PIN, or one set after an HR reset, is also hashed under the payslip pepper only", async () => {
     const staff = await makeStaff();
     await setPin(staff.client, { pin: GOOD });
-    expect(ok((await requestOtp(staff.client)).status)).toBe(true);
     expect(
       ok(
-        (
-          await verifyOtp(staff.client, {
-            code: lastCode(staff.employeeId),
-            pin: NEW_PIN,
-          })
-        ).status,
+        (await setPin(staff.client, { pin: NEW_PIN, currentPin: GOOD })).status,
       ),
     ).toBe(true);
 
     const binding = payslipPinBinding(tenant.id, staff.employeeId);
-    const afterOtp = await storedPin(staff.employeeId);
+    const afterChange = await storedPin(staff.employeeId);
     expect(
       await verifyStaffPinHash({
-        pepper: payslipPinPepper(tenant.id, afterOtp.version),
+        pepper: payslipPinPepper(tenant.id, afterChange.version),
         binding,
         pin: NEW_PIN,
-        stored: afterOtp.stored,
+        stored: afterChange.stored,
       }),
     ).toBe(true);
 
@@ -601,7 +557,7 @@ describe("payslip PIN pepper: the staff PIN pepper never protects a payslip PIN"
     ).toBe(true);
     for (const { id: outletId } of cafeLegendPlatformFixtures.outlets)
       for (const [pin, stored] of [
-        [NEW_PIN, afterOtp.stored],
+        [NEW_PIN, afterChange.stored],
         [OTHER, afterHr.stored],
       ] as const)
         expect(
@@ -618,7 +574,7 @@ describe("payslip PIN pepper: the staff PIN pepper never protects a payslip PIN"
         ).toBe(false);
   });
 
-  it("no payslip PIN path (set, change, view, OTP request/verify, HR reset) touches the staff pepper", async () => {
+  it("no payslip PIN path (set, change, view, HR reset) touches the staff pepper", async () => {
     const staff = await makeStaff();
     expect(ok((await setPin(staff.client, { pin: GOOD })).status)).toBe(true);
     expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(200);
@@ -626,19 +582,7 @@ describe("payslip PIN pepper: the staff PIN pepper never protects a payslip PIN"
     expect(
       ok((await setPin(staff.client, { pin: OTHER, currentPin: GOOD })).status),
     ).toBe(true);
-    expect(ok((await requestOtp(staff.client)).status)).toBe(true);
-    // A wrong code and then the right one (both fingerprint + code hash paths).
-    const code = lastCode(staff.employeeId);
-    const wrongCode = code === "000000" ? "000001" : "000000";
-    expect(
-      (await verifyOtp(staff.client, { code: wrongCode, pin: NEW_PIN })).status,
-    ).toBeGreaterThanOrEqual(400);
-    expect(
-      ok((await verifyOtp(staff.client, { code, pin: NEW_PIN })).status),
-    ).toBe(true);
-    expect((await view(staff.client, staff.payslipId, NEW_PIN)).status).toBe(
-      200,
-    );
+    expect((await view(staff.client, staff.payslipId, OTHER)).status).toBe(200);
     expect(ok((await hrReset(staff.employeeId)).status)).toBe(true);
     expect(ok((await setPin(staff.client, { pin: GOOD })).status)).toBe(true);
 
