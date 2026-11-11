@@ -16,3 +16,18 @@ Akar: tiga "ruang" terpisah (rantai tukar, order POS, baris POS); tiap jalur bay
 
 Kunci tetap: issue -> order -> intent -> promo. `orderGivenOf` tanpa kunci (dipanggil di bawah kunci order).
 Test baru: `apps/api/src/test/order-recovery-q25-given.test.ts`, skenario angka di tabel (1-5, 7, 8), invarian: per baris dan per order, voucher + refund recovery + refund POS <= dibayar (+ extra dibayar).
+
+## Verifikasi architect atas 783f6ad9 (baris 10-12)
+
+Baris 1-3, 6-8 tertutup. Sisa:
+
+| # | Sev | Lokasi | Masalah | Fix |
+|---|---|---|---|---|
+| 10 (ex-4) | HIGH | `pos-order-corrections.ts:816` (`dueBill` :803) | `dueBill` kumulatif (`paidIn - refunded - kept`), tetapi yang dikurangi hanya voucher + refund recovery baris yang disebut di permintaan INI. Contoh: kopi 28.875 + voucher 20.000, roti R, item disimpan X >= 20.000. Refund 1 kopi bayar 8.875 (benar). Refund 2 hanya roti: due = 20.000 + R, room = R + X, bayar 20.000 + R. Roti dibayar 20.000 lebih, outlet rugi 20.000. | Kurangi recovery-given untuk SETIAP baris asal yang pernah dikembalikan: baris di baris refund POS sebelumnya + permintaan ini, tiap baris sekali. |
+| 11 (ex-5) | MED | `pos-order-corrections.ts:853` | `depositOwedIdr` memakai `dueBill`, bukan due yang sudah dikurangi; audit menyebut deposit berutang uang yang sudah jadi voucher (28.875, bukan 8.875). | `dueIdr - min(dueIdr, max(0, paid - refunded))` dengan `dueIdr` hasil baris 10. |
+| 12 | LOW | `order-recovery-paid-value.ts:436` | Tukar ulang membaca baris charge yang tidak ada sebagai waived, tetapi event yang datang kemudian (koreksi jumlah + event dikirim ulang) masih bisa membuka charge untuk baris yang sudah ditukar. | Saat tukar ulang membaca charge hilang sebagai waived: insert baris charge `waived` `ON CONFLICT DO NOTHING`, di bawah lock issue lalu order. |
+
+Test wajib (gagal-dulu di 783f6ad9, tambah ke `order-recovery-q25-given.test.ts`):
+- Baris 10: kopi + voucher 20.000 direfund dulu, lalu refund yang hanya menyebut roti membayar paling banyak bagian roti; total voucher + refund <= dibayar; item yang disimpan tidak tersentuh.
+- Baris 11: audit `depositOwedIdr` = 8.875 pada skenario di atas saat tender habis.
+- Baris 12: tukar ulang tanpa baris charge, lalu event charge datang terlambat: tidak ada charge terbuka untuk baris yang sudah ditukar.
