@@ -45,6 +45,8 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   AccessTicketStatus,
+  BreakfastDelivery,
+  BreakfastOrderStatus,
   CancellationPolicy,
   EntitlementRule,
   EntitlementSource,
@@ -68,6 +70,7 @@ import {
 } from "../columns.ts";
 import { inventoryItems } from "./inventory.ts";
 import { outlets, tenants } from "./platform-org.ts";
+import { orders } from "./qr-order.ts";
 import { user } from "./user.ts";
 
 const createdAt = timestamp("created_at", { withTimezone: true })
@@ -717,6 +720,127 @@ export const facilityIncidents = pgTable(
     check(
       "facility_incidents_type_check",
       sql`${table.type} IN ('panic', 'assist', 'damage')`,
+    ),
+  ],
+);
+
+/**
+ * Breakfast order tied to an access ticket (bead oa0qk; owner Q43: a ticket's
+ * breakfast MUST be paid before it reaches the kitchen / KDS). The order
+ * itself is an `orders` row of channel `facility` (pay_first); this row holds
+ * the money state machine awaiting_payment -> paid -> fired | cancelled.
+ *
+ * - `paid` / `fired` require a verified payment: paid_at, paid_intent_id and
+ *   paid_idr = total_idr (CHECK below). The same fact is enforced for the
+ *   kitchen by the `kitchen_tickets` BEFORE INSERT trigger
+ *   (kds.custom.sql, constraint `kitchen_tickets_breakfast_paid`), so no
+ *   path (retry, edge sync, captain, resend, worker) can queue an unpaid one.
+ * - `refunded_idr` never exceeds `paid_idr` (cancel after pay refunds at most
+ *   what was paid).
+ * - One live (not cancelled) breakfast order per ticket; a cancelled one may
+ *   be replaced. Create is idempotent per (ticket, idempotency_key).
+ */
+export const facilityLinkedOrders = pgTable(
+  "facility_linked_orders",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    facilityId: uuid("facility_id").notNull(),
+    accessTicketId: ulidInUuid("access_ticket_id").notNull(),
+    orderId: ulidInUuid("order_id").notNull(),
+    status: varchar("status", { length: 20 })
+      .$type<BreakfastOrderStatus>()
+      .notNull(),
+    delivery: jsonb("delivery").$type<BreakfastDelivery>().notNull(),
+    subtotalIdr: idrColumn("subtotal_idr").notNull(),
+    totalIdr: idrColumn("total_idr").notNull(),
+    paidIdr: idrColumn("paid_idr")
+      .notNull()
+      .default(sql`0`),
+    /** The verified WS-05 payment intent that settled this order. */
+    paidIntentId: uuid("paid_intent_id"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    /** Minutes before the ticket's ends_at the kitchen is fed (default 15). */
+    fireOffsetMinutes: integer("fire_offset_minutes").notNull(),
+    fireAt: timestamp("fire_at", { withTimezone: true }).notNull(),
+    firedAt: timestamp("fired_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    refundedIdr: idrColumn("refunded_idr")
+      .notNull()
+      .default(sql`0`),
+    idempotencyKey: varchar("idempotency_key", { length: 120 }).notNull(),
+    requestFingerprint: varchar("request_fingerprint", {
+      length: 64,
+    }).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    unique("facility_linked_orders_tenant_id_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    foreignKey({
+      name: "facility_linked_orders_facility_fk",
+      columns: [table.tenantId, table.outletId, table.facilityId],
+      foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
+    }),
+    foreignKey({
+      name: "facility_linked_orders_ticket_fk",
+      columns: [table.tenantId, table.accessTicketId],
+      foreignColumns: [accessTickets.tenantId, accessTickets.id],
+    }),
+    foreignKey({
+      name: "facility_linked_orders_order_fk",
+      columns: [table.tenantId, table.orderId],
+      foreignColumns: [orders.tenantId, orders.id],
+    }),
+    unique("facility_linked_orders_order_key").on(
+      table.tenantId,
+      table.orderId,
+    ),
+    // One live breakfast order per ticket; a cancelled one is replaceable.
+    uniqueIndex("facility_linked_orders_ticket_live_key")
+      .on(table.tenantId, table.accessTicketId)
+      .where(sql`${table.status} <> 'cancelled'`),
+    unique("facility_linked_orders_idempotency_key").on(
+      table.tenantId,
+      table.accessTicketId,
+      table.idempotencyKey,
+    ),
+    // The fire sweep reads paid orders that are due.
+    index("facility_linked_orders_fire_due_idx")
+      .on(table.tenantId, table.fireAt)
+      .where(sql`${table.status} = 'paid'`),
+    check(
+      "facility_linked_orders_status_check",
+      sql`${table.status} IN ('awaiting_payment', 'paid', 'fired', 'cancelled')`,
+    ),
+    check(
+      "facility_linked_orders_amounts_check",
+      sql`${table.subtotalIdr} >= 0 AND ${table.totalIdr} >= 0 AND ${table.paidIdr} >= 0 AND ${table.refundedIdr} >= 0`,
+    ),
+    check(
+      "facility_linked_orders_fire_offset_check",
+      sql`${table.fireOffsetMinutes} BETWEEN 0 AND 240`,
+    ),
+    // Paid / fired means a verified payment for exactly the total.
+    check(
+      "facility_linked_orders_paid_check",
+      sql`${table.status} NOT IN ('paid', 'fired') OR (${table.paidAt} IS NOT NULL AND ${table.paidIntentId} IS NOT NULL AND ${table.paidIdr} = ${table.totalIdr})`,
+    ),
+    check(
+      "facility_linked_orders_fired_check",
+      sql`${table.status} <> 'fired' OR ${table.firedAt} IS NOT NULL`,
+    ),
+    check(
+      "facility_linked_orders_cancelled_check",
+      sql`${table.status} <> 'cancelled' OR ${table.cancelledAt} IS NOT NULL`,
+    ),
+    check(
+      "facility_linked_orders_refund_check",
+      sql`${table.refundedIdr} <= ${table.paidIdr}`,
     ),
   ],
 );

@@ -13,6 +13,9 @@
 --    channel of the contract (ORDER_CHANNELS). Kept here (migration 0060), not
 --    in schema/qr-order.ts: the drizzle snapshot still records ('qr'), so a
 --    future edit of that check must carry this full list.
+--    Migration 0321 (bead oa0qk) added 'facility' (breakfast from an access
+--    ticket): ('qr', 'pos', 'captain', 'gofood', 'grabfood', 'shopeefood',
+--    'reservation', 'kiosk', 'facility').
 ALTER TABLE "orders" DROP CONSTRAINT "orders_channel_check";
 --> statement-breakpoint
 ALTER TABLE "orders" ADD CONSTRAINT "orders_channel_check"

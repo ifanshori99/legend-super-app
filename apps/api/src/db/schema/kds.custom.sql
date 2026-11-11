@@ -74,3 +74,36 @@ SELECT app.enforce_outlet_rls('public.kitchen_station_cursors'::regclass);
 REVOKE UPDATE, DELETE ON public.kitchen_ticket_status_changes FROM legend_app;
 --> statement-breakpoint
 REVOKE UPDATE ON public.kitchen_station_feed FROM legend_app;
+--> statement-breakpoint
+
+-- 4. Breakfast pay-before-kitchen (bead oa0qk, owner Q43; migration 0321).
+--    Backstop for every path (retry, edge sync, captain, resend, worker): a
+--    ticket for an `orders.channel = 'facility'` order is refused unless its
+--    `facility_linked_orders` row is paid (paid_at set, status paid / fired).
+--    The service checks first (HttpError 409 BREAKFAST_NOT_PAID); this raises
+--    23514 with constraint `kitchen_tickets_breakfast_paid`. Runs as the
+--    caller, so RLS applies like any kitchen write.
+CREATE FUNCTION app.kitchen_tickets_breakfast_paid() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF EXISTS (
+       SELECT 1 FROM public.orders o
+       WHERE o.tenant_id = NEW.tenant_id AND o.id = NEW.order_id
+         AND o.channel = 'facility'
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM public.facility_linked_orders f
+       WHERE f.tenant_id = NEW.tenant_id AND f.order_id = NEW.order_id
+         AND f.paid_at IS NOT NULL AND f.status IN ('paid', 'fired')
+     ) THEN
+    RAISE EXCEPTION 'breakfast order % is not paid and cannot reach the kitchen', NEW.order_id
+      USING ERRCODE = '23514', CONSTRAINT = 'kitchen_tickets_breakfast_paid';
+  END IF;
+  RETURN NEW;
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION app.kitchen_tickets_breakfast_paid() FROM PUBLIC;
+--> statement-breakpoint
+CREATE TRIGGER "kitchen_tickets_breakfast_paid_trg"
+  BEFORE INSERT ON "kitchen_tickets"
+  FOR EACH ROW EXECUTE FUNCTION app.kitchen_tickets_breakfast_paid();

@@ -61,3 +61,9 @@ SELECT app.enforce_outlet_rls('public.wifi_policies'::regclass);
 SELECT app.enforce_tenant_rls('public.facility_incidents'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.facility_incidents'::regclass);
+--> statement-breakpoint
+-- Breakfast pay-before-kitchen (bead oa0qk, migration 0321): the linked order
+-- row is tenant and outlet owned.
+SELECT app.enforce_tenant_rls('public.facility_linked_orders'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.facility_linked_orders'::regclass);
