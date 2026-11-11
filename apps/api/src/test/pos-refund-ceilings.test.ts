@@ -15,6 +15,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { posOverrideIdSchema } from "@starter/shared/access/override";
 import { createApp } from "../app";
 import { refundPosOrder } from "../services/pos-order-corrections";
 import { agent, signUp } from "./helpers";
@@ -201,7 +202,10 @@ async function approval(bill: Sale, amountIdr: number, approvedBy: string) {
       ],
     ),
   );
-  return { overrideId, approvedBy };
+  return {
+    overrideId: posOverrideIdSchema.parse(overrideId),
+    approvedBy: userIdSchema.parse(approvedBy),
+  };
 }
 
 async function refund(bill: Sale, amountIdr: number, level: Level) {

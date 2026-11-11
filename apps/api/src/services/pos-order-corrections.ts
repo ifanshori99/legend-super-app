@@ -26,6 +26,7 @@ import {
 import {
   assertCorrectionTargetsFinalOrder,
   assertRefundWithinPaid,
+  PosError,
   posRefundSchema,
   posVoidSchema,
   refundAllocation,
@@ -44,9 +45,16 @@ import {
   type PosRefundLineRow,
 } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
 import { livePromoApplicationOf } from "./order-promo-refund.ts";
+import { loadDeferredRefundCommitments } from "./payment-refund-edge-history.ts";
+import {
+  refundApprovalLimitRefused,
+  refundApprovalWithinLimit,
+  refundCommittedAmount,
+} from "./payment-refund-approval-limits.ts";
 import {
   assertBusinessDayOpen,
   cashOutExceedsDrawer,
@@ -589,6 +597,15 @@ export async function refundPosOrder(
   input: RefundInput,
   now = new Date(),
 ): Promise<PosRefund> {
+  // An edge snapshot cannot prove the bill's admin/POS refund history, even
+  // while its cloud link is connected. Require the authoritative cloud path;
+  // the static setting also covers the interval before edge runtime boots.
+  if (getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true")
+    throw new HttpError(
+      409,
+      "REFUND_HISTORY_UNVERIFIED",
+      "Refund harus dilakukan melalui server pusat agar riwayat refund terverifikasi.",
+    );
   const { idempotencyKey, ...request } = input;
   return correct(
     context,
@@ -814,6 +831,47 @@ export async function refundPosOrder(
         deviceId: caller.deviceId,
         now,
       });
+      // A Rp0 goods return only records item quantities: it has no refund
+      // lines, money event or gateway request, so it consumes no authority.
+      if (!goodsReturnOnly) {
+        const candidate = {
+          tenantId: context.tenant.tenantId,
+          outletId: order.outletId,
+          orderId: order.id,
+          amountIdr: payout,
+        };
+        // The order locks serialize this decision with admin approvals. Pending
+        // admin requests reserve money too; gateway mirrors count only once.
+        const committed = await refundCommittedAmount(tx, candidate, {
+          includePendingReservations: true,
+        });
+        if (committed > BigInt(paid)) throw new PosError("REFUND_EXCEEDS_PAID");
+        if (
+          !(await refundApprovalWithinLimit(
+            tx,
+            context,
+            override.approvedBy!,
+            candidate,
+            now,
+          ))
+        )
+          throw refundApprovalLimitRefused();
+      }
+      // Deferred money events have no complete per-tender/item history. Until
+      // each fact has its native refund row, allocating another refund could
+      // return more through one tender or return the same goods twice.
+      const deferred = await loadDeferredRefundCommitments(tx, {
+        tenantId: context.tenant.tenantId,
+        outletId: order.outletId,
+        orderIds: [order.id],
+      });
+      const nativeIds = new Set(refunds.map((row) => row.id.toLowerCase()));
+      if (deferred.some((fact) => !nativeIds.has(fact.refundId)))
+        throw new HttpError(
+          409,
+          "REFUND_HISTORY_UNVERIFIED",
+          "Riwayat refund edge perlu direkonsiliasi sebelum refund berikutnya.",
+        );
       const lines: PosRefundLineRow[] = goodsReturnOnly
         ? []
         : refundLinesByTender(tenders, refunds, payout);
@@ -855,7 +913,7 @@ export async function refundPosOrder(
           lines,
           items: requested,
           requestedBy: caller.userId,
-          approvedBy: input.approvedBy,
+          approvedBy: override.approvedBy!,
           approvalRequestId: override.approvalRequestId,
           overrideId: override.id,
           refundedAt: now,
@@ -894,7 +952,7 @@ export async function refundPosOrder(
         amountIdr: payout,
         reason: input.reason,
         reasonNote: input.reasonNote,
-        approvedBy: input.approvedBy,
+        approvedBy: override.approvedBy!,
         approvalRequestId: override.approvalRequestId,
         overrideId: override.id,
         ...split,
