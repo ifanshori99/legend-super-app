@@ -2,7 +2,7 @@
 // instead of adding new visual primitives: a tinted notice, an inline API
 // failure with its fix hint, a success panel, and the clock the code countdown
 // reads. Bead legend-baa.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode, type Ref } from "react";
 import { CheckCircle2, CircleAlert, type LucideIcon } from "lucide-react";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
@@ -28,6 +28,7 @@ export function Notice({
   tone,
   icon: Icon,
   title,
+  titleRef,
   hint,
   action,
   live = false,
@@ -36,6 +37,8 @@ export function Notice({
   tone: NoticeTone;
   icon: LucideIcon;
   title: string;
+  /** Makes the title a focusable heading, so a state swap can move focus here. */
+  titleRef?: Ref<HTMLHeadingElement>;
   hint?: ReactNode;
   action?: ReactNode;
   /** Announce appearance and changes to assistive tech. */
@@ -56,7 +59,17 @@ export function Notice({
         <Icon className="size-5" aria-hidden="true" />
       </span>
       <div className="grid min-w-0 gap-1">
-        <p className="type-heading">{title}</p>
+        {titleRef ? (
+          <h2
+            ref={titleRef}
+            tabIndex={-1}
+            className="rounded-xs type-heading outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            {title}
+          </h2>
+        ) : (
+          <p className="type-heading">{title}</p>
+        )}
         {hint && <div className="text-sm leading-5">{hint}</div>}
         {action && <div className="mt-1">{action}</div>}
       </div>
@@ -86,7 +99,7 @@ export function InlineFailure({
       <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <p className="min-w-0 flex-1">{t(loginErrorKey(error))}</p>
       {onRetry && (
-        <Button variant="link" size="sm" onClick={onRetry}>
+        <Button variant="link" size="sm" className="min-h-6" onClick={onRetry}>
           {t("common.retry")}
         </Button>
       )}

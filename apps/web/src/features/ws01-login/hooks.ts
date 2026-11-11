@@ -19,6 +19,21 @@ export function useLoginChallenge(challengeId: string | null) {
   });
 }
 
+/**
+ * "Ya, masuk": confirms the masked sender. The challenge query is refetched so
+ * the next poll yields the session.
+ */
+export function useConfirmWhatsAppLogin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (challengeId: string) => api.confirmWhatsAppLogin(challengeId),
+    onSuccess: (_data, challengeId) =>
+      queryClient.invalidateQueries({
+        queryKey: loginKeys.challenge(challengeId),
+      }),
+  });
+}
+
 /** "Batal": cancels this browser's challenge. */
 export function useCancelWhatsAppLogin() {
   return useMutation({
