@@ -1,9 +1,10 @@
 // Confirmation dialog of the leave clock-in decision (bead legend-3jem1). One
 // dialog for both outcomes; the copy names the date so a multi-day leave never
 // reads as cancelled in full. A failed save keeps the dialog open with the
-// reason in view and the confirm button ready to retry.
+// reason in view: a transient failure keeps the confirm button ready to retry,
+// a refusal that retrying cannot fix swaps it for "Kembali ke antrean".
 import * as React from "react";
-import { CircleAlert, LoaderCircle } from "lucide-react";
+import { CircleAlert, LoaderCircle, Undo2 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,7 +25,9 @@ export function DecisionDialog({
   offline,
   blocked,
   errorMessage,
+  keepFocus,
   onConfirm,
+  onBackToQueue,
   onOpenChange,
 }: {
   /** The decision being confirmed; null keeps the dialog closed. */
@@ -33,11 +36,15 @@ export function DecisionDialog({
   businessDate: string;
   pending: boolean;
   offline: boolean;
-  /** The failure cannot succeed on retry (409 / 403): confirm stays disabled. */
+  /** The failure cannot succeed on retry (409 / 403): no confirm button. */
   blocked: boolean;
   /** Human message of the last failed attempt; null when none. */
   errorMessage: string | null;
+  /** A result screen takes focus on close, so the dialog must not restore it. */
+  keepFocus: boolean;
   onConfirm: () => void;
+  /** Blocked failure: refresh the queue and leave for it. */
+  onBackToQueue: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
@@ -78,7 +85,13 @@ export function DecisionDialog({
         if (!pending) onOpenChange(open);
       }}
     >
-      <DialogContent className="sm:max-w-lg" hideClose={pending}>
+      <DialogContent
+        className="sm:max-w-lg"
+        hideClose={pending}
+        onCloseAutoFocus={(event) => {
+          if (keepFocus) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{copy.title}</DialogTitle>
           <DialogDescription>{copy.description}</DialogDescription>
@@ -87,7 +100,7 @@ export function DecisionDialog({
         {failure && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-container bg-danger-subtle p-3 text-sm leading-5 text-danger"
+            className="flex items-start gap-2 rounded-container bg-danger-subtle p-3 leading-6 text-danger"
           >
             <CircleAlert
               className="mt-0.5 size-4 shrink-0"
@@ -110,23 +123,29 @@ export function DecisionDialog({
           >
             {copy.back}
           </Button>
-          <Button
-            disabled={offline || blocked}
-            aria-disabled={pending || undefined}
-            aria-busy={pending || undefined}
-            onClick={() => {
-              // aria-disabled keeps focus on the button while saving.
-              if (!pending) onConfirm();
-            }}
-          >
-            {pending && (
-              <LoaderCircle
-                className="motion-safe:animate-spin"
-                aria-hidden="true"
-              />
-            )}
-            {pending ? copy.confirming : copy.confirm}
-          </Button>
+          {blocked ? (
+            <Button onClick={onBackToQueue}>
+              <Undo2 aria-hidden="true" />
+              {t("leaveClockinReview.detail.back")}
+            </Button>
+          ) : (
+            <Button
+              aria-disabled={pending || offline || undefined}
+              aria-busy={pending || undefined}
+              onClick={() => {
+                // aria-disabled keeps focus on the button while saving.
+                if (!pending && !offline) onConfirm();
+              }}
+            >
+              {pending && (
+                <LoaderCircle
+                  className="motion-safe:animate-spin"
+                  aria-hidden="true"
+                />
+              )}
+              {pending ? copy.confirming : copy.confirm}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
