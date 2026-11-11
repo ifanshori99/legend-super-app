@@ -3223,3 +3223,11 @@ Langkah berikut CTO baru:
 - Gerbang: typecheck 3 paket + root hijau; lint 0 error; `pnpm test` penuh 12577 lulus, 19 gagal: 3 flake (menu-print-db, access sort, tax-api ORD-03) lulus sendiri, 16 di pos-refund-gateway-autofile/multi-intent karena fixture override tanpa fingerprint asli (pengikatan perangkat legend-fjwxo), diperbaiki di fixture test (16/16 lulus); e2e 18 lulus, 1 skip. Architect xhigh: BERSIH, tanpa blocker.
 - Temuan architect belum dikerjakan (MINOR): 0247 hanya app yang menjaga "Owner tunggal"; reconcile penerima menerima user mana pun; dua perilaku kecil paidAt/late_payment di payment.service (duitku-406). MAJOR: cek tabel migrasi staging/produksi untuk 0239 sebelum rilis (kalau sudah jalan, perlu migrasi 0250).
 - Biaya sesi (session-usage): total 12641k, utama sonnet 498 req, subagent 23. Gerbang e2e payslip-pin mock (`test:e2e:mock`) tidak dijalankan di sini.
+
+## 2026-11-11: legend-cx3nb putar ulang approval.resolved mati (ws/cx3nb-replay-outbox, basis m1 a5d58300)
+
+- Basi sebagian: rute replay per-id sudah ada (legend-m119, `ops-outbox.routes.ts`); tidak ada replay massal, tidak dibuat (di luar kartu).
+- Kode produksi tidak diubah: konsumen pos_override idempoten dan gagal-tertutup (review architect). Test karakterisasi (a)-(e) dilulus, tidak ada gagal-dulu karena tidak ada cacat.
+- Runbook `worker-audit-writer-m1-window.md` bagian 4: prosedur replay (SQL, path `/api/ops/...`, ULID, per tenant, cek hasil).
+- Sisa operasional (butuh gerbang founder): replay di production setelah worker dengan audit writer terdeploy.
+- Temuan kecil non-uang: `pos-shift.service.ts:1412` `approvedAt` memakai `resolvedAt` (waktu proses), bukan waktu keputusan.
