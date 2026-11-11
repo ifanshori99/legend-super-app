@@ -199,18 +199,18 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
   ).toHaveCount(0);
   await shot(page, "override-pin-1440-light");
 
-  // The verify contract counts misses per staff (AUTH-06), so the supervisor
-  // whose PIN is typed is picked first; their own PIN is still refused below.
-  await modal
-    .getByRole("combobox", { name: "Supervisor yang memasukkan PIN" })
-    .click();
-  await page.getByRole("option", { name: "Yusuf Hidayat" }).click();
+  // The requester is picked as approver first: their own PIN is refused
+  // (AUTH-06). The verify contract counts misses per staff, so the approver
+  // the PIN is typed for is always the one picked.
+  const approverPicker = modal.getByRole("combobox", {
+    name: "Supervisor yang memasukkan PIN",
+  });
+  await approverPicker.click();
+  await page.getByRole("option", { name: "Nina Marlina" }).click();
   // Radix Select hands focus back to its trigger a moment after it closes.
   // Wait for that before blurring, or the first key reaches the pad and the
   // rest land on the combobox, which owns them (a PIN of 1 + the clicks below).
-  await expect(
-    modal.getByRole("combobox", { name: "Supervisor yang memasukkan PIN" }),
-  ).toBeFocused();
+  await expect(approverPicker).toBeFocused();
 
   await typePinOutsideFields(page, "246810");
   // The alert, not the static hint paragraph, which carries the same sentence.
@@ -220,6 +220,10 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
       .filter({ hasText: "Penyetuju tidak boleh sama dengan peminta" }),
   ).toBeVisible();
 
+  // The supervisor is picked now; their PIN completes the override.
+  await approverPicker.click();
+  await page.getByRole("option", { name: "Yusuf Hidayat" }).click();
+  await expect(approverPicker).toBeFocused();
   await expect(modal.getByRole("button", { name: "Angka 1" })).toBeEnabled();
   for (const digit of "482604")
     await modal.getByRole("button", { name: `Angka ${digit}` }).click();
@@ -227,6 +231,48 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
     "Yusuf Hidayat",
   );
   await expect(page.getByTestId("override-result")).toContainText("350.000");
+});
+
+// legend-6ew E4: an active staff entry saved before the outlet was stored has
+// no outletId. The device outlet stands in. (With no device outlet the POS area
+// shows its no-outlet page, so the "sign in again" notice has no e2e route.)
+async function openOverrideWithOldActiveEntry(page: Page, url: string) {
+  await page.goto(url, NAV);
+  await switchTo(page, "Nina Marlina", "246810");
+  await page.evaluate(() => {
+    const key = "legend-device-active-staff";
+    const entry = JSON.parse(localStorage.getItem(key) ?? "{}");
+    delete entry.outletId;
+    localStorage.setItem(key, JSON.stringify(entry));
+  });
+  await page.reload(NAV);
+  await expect(page.getByTestId("active-staff")).toContainText("Nina Marlina");
+  await page.getByRole("button", { name: "Ajukan override" }).click();
+  const modal = page.getByTestId("override-modal");
+  await expect(modal).toBeVisible();
+  return modal;
+}
+
+test("AUTH-06 · old active entry without outlet: the device outlet completes a PIN override", async ({
+  page,
+}) => {
+  const modal = await openOverrideWithOldActiveEntry(page, SWITCH);
+  await modal.getByRole("combobox", { name: "Kode alasan" }).click();
+  await page.getByRole("option", { name: "Pelanggan membatalkan" }).click();
+  await modal
+    .getByLabel("Catatan alasan")
+    .fill("Pelanggan batal sebelum dapur mulai");
+  const approverPicker = modal.getByRole("combobox", {
+    name: "Supervisor yang memasukkan PIN",
+  });
+  await approverPicker.click();
+  await page.getByRole("option", { name: "Yusuf Hidayat" }).click();
+  await expect(approverPicker).toBeFocused();
+  for (const digit of "482604")
+    await modal.getByRole("button", { name: `Angka ${digit}` }).click();
+  await expect(page.getByTestId("override-result")).toContainText(
+    "Yusuf Hidayat",
+  );
 });
 
 for (const outcome of ["approved", "rejected", "expired"] as const) {

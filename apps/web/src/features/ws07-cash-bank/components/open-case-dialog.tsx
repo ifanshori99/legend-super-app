@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { selectablePeople } from "@/features/ws01-access/lib";
 import { useAssignablePeople } from "@/features/ws01-access/people";
 import { useOpenReconciliationCase } from "../hooks";
 import {
@@ -86,7 +87,8 @@ function OpenCaseForm({
   const toast = useToast();
   const people = useAssignablePeople();
   const openCase = useOpenReconciliationCase();
-  const options = people.data?.people ?? [];
+  // Former staff (status inactive) cannot own a new case.
+  const options = selectablePeople(people.data?.people ?? []);
   const [ownerId, setOwnerId] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   // OpenCaseForm lives inside DialogContent, so it mounts once per opened

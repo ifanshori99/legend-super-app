@@ -11,10 +11,15 @@
 // its deadline to show the blocked/overdue state. One more pending request is
 // the sole Owner's own and carries `selfApprovalAllowed` (legend-mbhw1): the
 // mock lets them approve it, never reject it.
-import { findDevicePinRequest } from "@/features/ws01-device-pin/mock";
+import {
+  findDevicePinRequest,
+  listDevicePinRequests,
+  saveDevicePinRequest,
+} from "@/features/ws01-device-pin/mock";
 import {
   approvalRequestSchema,
   cafeLegendIdentityFixtures,
+  cancelApprovalRequest,
   decideApprovalRequest,
   getApprovalRequest,
   listApprovalRequests,
@@ -110,22 +115,33 @@ function asApiError(error: unknown): never {
   throw error;
 }
 
+/** Fixture requests plus the override requests raised from the PIN pad. */
+function allRequests(): ApprovalRequest[] {
+  return [...requests.get(), ...listDevicePinRequests()];
+}
+
+function save(row: ApprovalRequest) {
+  if (requests.get().some((item) => item.id === row.id))
+    requests.set(
+      requests.get().map((item) => (item.id === row.id ? row : item)),
+    );
+  else saveDevicePinRequest(row);
+}
+
 function find(requestId: string): ApprovalRequest {
-  const row = requests.get().find((item) => item.id === requestId);
+  const row = allRequests().find((item) => item.id === requestId);
   if (!row) throw new ApiError(404, "NOT_FOUND", "Permintaan tidak ditemukan.");
   return row;
 }
 
 registerMock(listApprovalRequests, ({ query, scenario }) =>
   paginateFixture(
-    requests
-      .get()
-      .filter(
-        (row) =>
-          (!query.status || row.status === query.status) &&
-          (!query.source || row.source === query.source) &&
-          (!query.actionType || row.actionType === query.actionType),
-      ),
+    allRequests().filter(
+      (row) =>
+        (!query.status || row.status === query.status) &&
+        (!query.source || row.source === query.source) &&
+        (!query.actionType || row.actionType === query.actionType),
+    ),
     query,
     (row) => row.id,
     scenario,
@@ -133,9 +149,10 @@ registerMock(listApprovalRequests, ({ query, scenario }) =>
 );
 
 registerMock(getApprovalRequest, ({ params }) => {
-  const own = requests.get().find((item) => item.id === params.requestId);
-  // Override requests raised from the PIN pad (ws01-device-pin) live in its store.
-  const request = own ?? findDevicePinRequest(params.requestId);
+  // Override requests raised from the PIN pad (ws01-device-pin) are in the list too.
+  const request =
+    requests.get().find((item) => item.id === params.requestId) ??
+    findDevicePinRequest(params.requestId);
   if (!request)
     throw new ApiError(404, "NOT_FOUND", "Permintaan tidak ditemukan.");
   return { data: request };
@@ -157,8 +174,7 @@ registerMock(decideApprovalRequest, ({ params, body, scenario, headers }) => {
   const row = find(params.requestId);
   const me = cafeLegendIdentityFixtures.usersByKey.owner;
   // Approvers of earlier levels of the same chain (same object and action).
-  const priorApproverIds = requests
-    .get()
+  const priorApproverIds = allRequests()
     .filter(
       (item) =>
         item.objectId === row.objectId &&
@@ -210,9 +226,34 @@ registerMock(decideApprovalRequest, ({ params, body, scenario, headers }) => {
     ...decided,
     requestedBy: row.requestedBy,
   });
-  requests.set(
-    requests.get().map((item) => (item.id === row.id ? decided : item)),
-  );
+  save(decided);
   if (key) replays.get().set(key, { fingerprint, result: decided });
   return { data: decided };
+});
+
+// The requester withdraws their own pending request ("Berhenti menunggu").
+// Only the requester sees it (404 for anyone else), pending-only; repeating a
+// cancel is a no-op 200. Requests raised from the PIN pad belong to the mock
+// device's cashier, fixture requests to the signed-in owner.
+registerMock(cancelApprovalRequest, ({ params }) => {
+  const row = find(params.requestId);
+  const fromPinPad = findDevicePinRequest(row.id) !== undefined;
+  const requester = fromPinPad
+    ? cafeLegendIdentityFixtures.usersByKey.cashier
+    : cafeLegendIdentityFixtures.usersByKey.owner;
+  if (row.requestedBy !== requester.id)
+    throw new ApiError(404, "NOT_FOUND", "Permintaan tidak ditemukan.");
+  if (row.status === "cancelled") return { data: row };
+  if (row.status !== "pending")
+    throw new ApiError(
+      409,
+      "APPROVAL_NOT_PENDING",
+      "Permintaan sudah diputuskan.",
+    );
+  const cancelled = approvalRequestSchema.parse({
+    ...row,
+    status: "cancelled",
+  });
+  save(cancelled);
+  return { data: cancelled };
 });

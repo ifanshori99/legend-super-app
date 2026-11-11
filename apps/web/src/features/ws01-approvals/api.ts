@@ -1,6 +1,7 @@
 // Typed endpoint callers for the approval inbox (docs/frontend.md "Typed
 // endpoints and mock mode"). Components use the hooks in ./hooks.ts.
 import {
+  cancelApprovalRequest,
   decideApprovalRequest,
   getApprovalRequest,
   listApprovalRequests,
@@ -38,6 +39,15 @@ export function decideApproval(
   return callEndpoint(
     decideApprovalRequest,
     { params: { requestId }, body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
+}
+
+/** The requester withdraws their own pending request (POST .../cancel). */
+export function cancelApproval(requestId: string, idempotencyKey: string) {
+  return callEndpoint(
+    cancelApprovalRequest,
+    { params: { requestId } },
     { headers: { "Idempotency-Key": idempotencyKey } },
   );
 }

@@ -120,6 +120,9 @@ export const devicePinMessages = {
     sameApprover: "Penyetuju tidak boleh sama dengan peminta (AUTH-06).",
     noRequester:
       "Peminta belum diketahui. Masuk dulu dengan PIN Anda, lalu ajukan override.",
+    outletUnknown:
+      "Outlet untuk sesi PIN Anda belum diketahui. Masuk lagi dengan PIN Anda, lalu ajukan override.",
+    relogin: "Masuk dengan PIN lagi",
     pinSuccess: "Disetujui oleh {name}.",
     sending: "Mengirim permintaan…",
     sendError: "Permintaan belum terkirim. Periksa koneksi lalu coba lagi.",
@@ -136,6 +139,7 @@ export const devicePinMessages = {
     deadline: "Batas waktu: {time}",
     remaining: "Sisa {time}",
     cancel: "Berhenti menunggu",
+    cancelError: "Permintaan belum bisa dibatalkan. Coba lagi sebentar.",
     pollError: "Status belum bisa dibaca. Perangkat mencoba lagi otomatis.",
     live: "Menunggu keputusan supervisor",
   },

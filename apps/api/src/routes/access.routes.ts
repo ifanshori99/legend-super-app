@@ -15,6 +15,7 @@ import {
   createCustomRoleSchema,
   endRoleAssignmentSchema,
   grantRoleSchema,
+  listAccessUsersQuerySchema,
   listRoleAssignmentsQuerySchema,
   updateCustomRoleSchema,
 } from "@starter/shared/access";
@@ -38,6 +39,7 @@ import {
   endRoleAssignment,
   getApprovalMatrix,
   grantRoleAssignment,
+  listAccessUsers,
   listRoleAssignments,
   listRoles,
   replaceApprovalMatrix,
@@ -106,6 +108,23 @@ accessRouter.patch(
         mfaVerified: reauthenticatedAt !== null,
       }),
     });
+  },
+);
+
+// ------------------------------------------------------- staff directory
+
+accessRouter.get(
+  "/users",
+  requireTenantPermission("access.role.view"),
+  async (req, res) => {
+    const query = listAccessUsersQuerySchema.parse(req.query);
+    res.json(
+      await listAccessUsers(
+        getScopedTenantContext(req),
+        query,
+        getAuth(req).user.id,
+      ),
+    );
   },
 );
 

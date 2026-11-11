@@ -23,21 +23,26 @@ function fixedId(prefix: string, n: number): string {
   return `${prefix}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 }
 
+const menuStationId = (n: number) =>
+  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
 const { tenant, brand, outlets } = cafeLegendFixtures;
 const bandung = outlets[0].id;
 const bandung2 = outlets[1].id;
 const SEEDED_AT = "2026-10-15T02:00:00.000Z";
 
+// Station ids are the menu fixture station ids (bead legend-7art; contract test
+// apps/api/src/test/access-fixtures-contract.test.ts): ids 200-203 and 205 of the menu
+// fixtures, so station-scoped grants line up with real menu stations.
 const stationRows = [
-  ["bar_kopi", "Bar Kopi", bandung],
-  ["bar_nonkopi", "Bar Nonkopi", bandung],
-  ["dapur_panas", "Dapur Panas", bandung],
-  ["dapur_dingin", "Dapur Dingin", bandung],
-  ["pastry", "Pastry", bandung],
-  ["bar_kopi_2", "Bar Kopi", bandung2],
+  ["bar_kopi", "Bar Kopi", bandung, 200],
+  ["bar_nonkopi", "Bar Nonkopi", bandung, 201],
+  ["dapur_panas", "Dapur Panas", bandung, 202],
+  ["pastry", "Pastry", bandung, 203],
+  ["bar_kopi_2", "Bar Kopi", bandung2, 205],
 ] as const;
-const stations = stationRows.map(([code, name, outletId], index) => ({
-  id: stationIdSchema.parse(fixedId("5a710000", index + 1)),
+const stations = stationRows.map(([code, name, outletId, menuStationNo]) => ({
+  id: stationIdSchema.parse(menuStationId(menuStationNo)),
   code,
   name,
   outletId: outletId as OutletId,

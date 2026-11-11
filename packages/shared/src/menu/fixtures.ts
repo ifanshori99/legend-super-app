@@ -38,15 +38,29 @@ const categories = groups.map(([name], i) => ({
   parentId: null,
   sortOrder: i,
 }));
-const stations = groups.map(([name], i) => ({
-  ...base(200 + i),
-  outletId: outlets[0].id,
-  name,
-  type: (["coffee_bar", "beverage_bar", "hot_kitchen", "pastry"] as const)[i],
+const stationBase = {
   printerDeviceId: null,
   targetSeconds: 600,
   updatedAt: "2026-01-01T00:00:00.000Z",
-}));
+};
+const stations = [
+  ...groups.map(([name], i) => ({
+    ...base(200 + i),
+    outletId: outlets[0].id,
+    name,
+    type: (["coffee_bar", "beverage_bar", "hot_kitchen", "pastry"] as const)[i],
+    ...stationBase,
+  })),
+  // Extra station (id 205, outlet 2) so every access fixture station (bead
+  // legend-7art) exists here with the same id and outlet. Items only use 200-203.
+  {
+    ...base(205),
+    outletId: outlets[1].id,
+    name: "Kopi",
+    type: "coffee_bar" as const,
+    ...stationBase,
+  },
+];
 const items: MenuItem[] = groups.flatMap(([, names], group) =>
   names.split("|").map((name, i) => ({
     ...base(1000 + group * 100 + i),

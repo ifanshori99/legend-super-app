@@ -37,6 +37,8 @@ import { defineEndpoint } from "../api/index.ts";
 import { defineDomainEvent } from "../events/index.ts";
 import {
   MAX_STAFF_PIN_ATTEMPTS,
+  approvalRequestParamsSchema,
+  approvalRequestSchema,
   identityDigestSchema,
   objectIdSchema,
   objectTypeSchema,
@@ -168,6 +170,21 @@ export const POS_OVERRIDE_STATUSES = [
 ] as const;
 export type PosOverrideStatus = (typeof POS_OVERRIDE_STATUSES)[number];
 
+/**
+ * Closed list of override reason codes (PRD v1.7 §3 F6, bead legend-5vlw).
+ * The POS modal offers exactly these; any other code is a 422.
+ */
+export const posOverrideReasonCodes = [
+  "wrong_item",
+  "customer_cancel",
+  "out_of_stock",
+  "quality_complaint",
+  "price_mismatch",
+  "other",
+] as const;
+export const posOverrideReasonCodeSchema = z.enum(posOverrideReasonCodes);
+export type PosOverrideReasonCode = z.infer<typeof posOverrideReasonCodeSchema>;
+
 const overrideReasonSchema = z.string().trim().min(3).max(500);
 const overrideValueSchema = idrSchema.refine(
   (value) => value >= 0,
@@ -186,7 +203,7 @@ export const createPosOverrideSchema = clientInputSchema({
   /** Value affected; 0 for a no-sale drawer open (posOverrideSchema). */
   valueIdr: overrideValueSchema,
   reason: overrideReasonSchema,
-  reasonCode: z.string().trim().min(1).max(50).optional(),
+  reasonCode: posOverrideReasonCodeSchema.optional(),
   /** The object the override acts on (order, order_item, cash_drawer...). */
   objectType: objectTypeSchema,
   objectId: objectIdSchema,
@@ -312,6 +329,34 @@ export const getPosOverride = defineEndpoint({
   path: "/api/pos-overrides/:overrideId",
   params: posOverrideParamsSchema,
   response: dataResponseSchema(posOverrideViewSchema),
+});
+
+/**
+ * PhoneWait poll (sub-brief E3): the acting cashier reads their own phone
+ * override's approval request (`:requestId` = its `approvalRequestId`) at the
+ * device's outlet, as the latest level of its chain. Same guards and scope as
+ * `cancelPosOverrideApproval`; anything else is 404.
+ */
+export const getPosOverrideApproval = defineEndpoint({
+  method: "GET",
+  path: "/api/pos-overrides/approvals/:requestId",
+  params: approvalRequestParamsSchema,
+  response: dataResponseSchema(approvalRequestSchema),
+});
+
+/**
+ * POS "Berhenti menunggu" (sub-brief E3): the device's acting cashier
+ * withdraws their own pending phone override (`createPosOverride` with
+ * `supervisor_phone`; `:requestId` = its `approvalRequestId`) at the device's
+ * outlet; the override then ends as `cancelled`. Needs the device token and
+ * the X-Acting-Staff token, not the back-office MFA. 200 cancelled (also on a
+ * repeat), 404 for anyone else's or a non-POS request, 409 once decided.
+ */
+export const cancelPosOverrideApproval = defineEndpoint({
+  method: "POST",
+  path: "/api/pos-overrides/approvals/:requestId/cancel",
+  params: approvalRequestParamsSchema,
+  response: dataResponseSchema(approvalRequestSchema),
 });
 
 // ------------------------------------------------------------------- events

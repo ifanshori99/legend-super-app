@@ -412,10 +412,12 @@ async function insertApprovalRequest(input: {
   outletId: string | null;
   requestedBy: string;
   approverRoleIds: string[];
-  decided?: { by: string };
+  decided?: { by: string; status?: string };
 }): Promise<string> {
   const id = randomUUID();
   requestIds.push(id);
+  const status = input.decided?.status ?? "rejected";
+  const isDecision = status === "approved" || status === "rejected";
   await owner.query(
     `INSERT INTO approval_requests
        (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type, object_id,
@@ -430,10 +432,12 @@ async function insertApprovalRequest(input: {
       randomUUID(),
       input.requestedBy,
       JSON.stringify([{ level: 1, approverRoleIds: input.approverRoleIds }]),
-      input.decided ? "rejected" : "pending",
-      input.decided?.by ?? null,
-      input.decided ? new Date() : null,
-      input.decided ? "Ditolak dalam uji" : null,
+      input.decided ? status : "pending",
+      // The decision check only allows a decider and reason on approved/rejected;
+      // expired and cancelled rows carry none.
+      input.decided && isDecision ? input.decided.by : null,
+      input.decided && isDecision ? new Date() : null,
+      input.decided && isDecision ? "Ditolak dalam uji" : null,
     ],
   );
   return id;
@@ -693,6 +697,41 @@ describe("legend-18qw notification recipient resolver", () => {
     ]);
   });
 
+  it("legend-18qw approval.requested skips holders whose assignment is expired or not yet valid", async () => {
+    // Same role and tenant scope as tenantApprover, but the window is not open.
+    const notYetValid = await createUser(
+      "Penyetuju belum berlaku",
+      "supervisor",
+      { type: "tenant" },
+      { validFrom: "+1 hour" },
+    );
+    const requestId = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: users.requester,
+      approverRoleIds: [await roleIdOf("supervisor")],
+    });
+    const event = envelope("approval.requested", bandung, {
+      requestId,
+      actionType: "void",
+      objectType: "order",
+      objectId: randomUUID(),
+      source: "user",
+      level: 1,
+      requiredLevels: 1,
+      requestedBy: users.requester,
+      amountIdr: null,
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const ids = ours(await resolve({ email: true, push: true }, event)).map(
+      (r) => r.userId,
+    );
+    expect(ids).not.toContain(users.lapsedApprover);
+    expect(ids).not.toContain(notYetValid);
+    // The active holders are still paged, so the skip is not an empty result.
+    expect(ids).toContain(users.tenantApprover);
+    expect(ids).toContain(users.outletApprover);
+  });
+
   it("legend-18qw disabled channels are never reachable", async () => {
     const requestId = await insertApprovalRequest({
       outletId: bandung,
@@ -756,6 +795,45 @@ describe("legend-18qw notification recipient resolver", () => {
       link: `/kelola/persetujuan/${requestId}`,
     });
   });
+
+  it.each([
+    ["approved", /disetujui/i],
+    ["rejected", /ditolak/i],
+    ["expired", /kedaluwarsa/i],
+    ["cancelled", /dibatalkan/i],
+  ] as const)(
+    "legend-18qw approval.resolved (%s) reaches the requester with its own text",
+    async (outcome, titlePattern) => {
+      const requestId = await insertApprovalRequest({
+        outletId: bandung,
+        requestedBy: users.outletApprover,
+        approverRoleIds: [await roleIdOf("supervisor")],
+        decided: { by: users.tenantApprover, status: outcome },
+      });
+      const event = envelope("approval.resolved", bandung, {
+        chainId: requestId,
+        requestId,
+        sourceModule: "payment",
+        actionType: "void",
+        objectType: "order",
+        objectId: randomUUID(),
+        source: "user",
+        outcome,
+        level: 1,
+        requiredLevels: 1,
+        requestedBy: users.outletApprover,
+        decidedBy: users.tenantApprover,
+        amountIdr: null,
+      });
+      const recipients = await resolve({ email: true, push: true }, event);
+      expect(recipients.map((r) => r.userId)).toEqual([users.outletApprover]);
+      expect(recipients[0]).toMatchObject({
+        category: "approval_request",
+        link: `/kelola/persetujuan/${requestId}`,
+      });
+      expect(recipients[0]?.title).toMatch(titlePattern);
+    },
+  );
 
   it("legend-18qw a banned account is never notified; a malformed preference falls back to defaults", async () => {
     const supervisor = await roleIdOf("supervisor");

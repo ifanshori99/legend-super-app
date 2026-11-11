@@ -18,6 +18,8 @@ const LOCK_KEY = "legend-device-pin-lock";
 const ACTIVE_KEY = ACTIVE_STAFF_STORAGE_KEY;
 
 export type RosterEntry = { userId: string; displayName: string };
+/** The signed-in cashier plus the outlet their PIN session opened on. */
+export type ActiveStaff = RosterEntry & { outletId?: string };
 export type PinLockState = {
   failedAttempts: number;
   lockedUntil: string | null;
@@ -92,12 +94,12 @@ export function clearPinLock() {
   writePinLock({ failedAttempts: 0, lockedUntil: null });
 }
 
-let activeCache: { raw: string | null; value: RosterEntry | null } = {
+let activeCache: { raw: string | null; value: ActiveStaff | null } = {
   raw: null,
   value: null,
 };
 
-function activeSnapshot(): RosterEntry | null {
+function activeSnapshot(): ActiveStaff | null {
   let raw: string | null = null;
   try {
     raw = window.localStorage.getItem(ACTIVE_KEY);
@@ -105,9 +107,9 @@ function activeSnapshot(): RosterEntry | null {
     raw = null;
   }
   if (raw === activeCache.raw) return activeCache.value;
-  let value: RosterEntry | null = null;
+  let value: ActiveStaff | null = null;
   try {
-    value = raw === null ? null : (JSON.parse(raw) as RosterEntry);
+    value = raw === null ? null : (JSON.parse(raw) as ActiveStaff);
   } catch {
     value = null;
   }
@@ -115,12 +117,12 @@ function activeSnapshot(): RosterEntry | null {
   return value;
 }
 
-export function setActiveStaff(entry: RosterEntry) {
+export function setActiveStaff(entry: ActiveStaff) {
   write(ACTIVE_KEY, entry);
 }
 
 /** The staff member signed in on this device; null on the server render. */
-export function useActiveStaff(): RosterEntry | null {
+export function useActiveStaff(): ActiveStaff | null {
   return useSyncExternalStore(subscribe, activeSnapshot, () => null);
 }
 

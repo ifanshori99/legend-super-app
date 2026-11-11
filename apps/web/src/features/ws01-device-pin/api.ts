@@ -2,11 +2,16 @@
 // use the hooks in ./hooks.ts.
 import {
   createApprovalRequest,
-  getApprovalRequest,
   verifyStaffPin,
   type CreateApprovalRequestInput,
   type VerifyStaffPinInput,
 } from "@starter/shared/identity";
+import {
+  cancelPosOverrideApproval,
+  createPosOverride,
+  getPosOverrideApproval,
+  type CreatePosOverrideInput,
+} from "@starter/shared/access/override";
 import { defineEndpoint } from "@starter/shared/api";
 import { dataResponseSchema } from "@starter/shared/core";
 import {
@@ -62,7 +67,39 @@ export async function endPosSessionCall(): Promise<void> {
 export const createApprovalRequestCall = (body: CreateApprovalRequestInput) =>
   callEndpoint(createApprovalRequest, { body });
 
+/**
+ * The phone override's approval request, read on the POS path (device +
+ * X-Acting-Staff): the active cashier is the requester, and the back-office
+ * GET /api/approvals/:id would read as the session owner behind its MFA gate.
+ */
 export const getApprovalRequestCall = (
   requestId: string,
   signal?: AbortSignal,
-) => callEndpoint(getApprovalRequest, { params: { requestId } }, { signal });
+) =>
+  callEndpoint(getPosOverrideApproval, { params: { requestId } }, { signal });
+
+/**
+ * Supervisor override approved on this device: the approver's PIN travels in
+ * the body (method supervisor_pin) and the server verifies it (AUTH-06).
+ */
+export const createPosOverrideCall = (
+  body: CreatePosOverrideInput,
+  idempotencyKey: string = crypto.randomUUID(),
+) =>
+  callEndpoint(
+    createPosOverride,
+    { body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
+
+/**
+ * "Berhenti menunggu": the active cashier withdraws their own pending request
+ * through the POS path (device + X-Acting-Staff, no back-office MFA), so the
+ * button never fails on a missing second factor.
+ */
+export const cancelApprovalRequestCall = (requestId: string) =>
+  callEndpoint(
+    cancelPosOverrideApproval,
+    { params: { requestId } },
+    { headers: { "Idempotency-Key": crypto.randomUUID() } },
+  );

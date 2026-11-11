@@ -857,7 +857,7 @@ describe("legend-dxb AUTH-06 supervisor override with PIN", () => {
     const supervisor = await staffWithPin("supervisor");
     const input = overrideInput(
       { method: "supervisor_pin", approverUserId: supervisor, pin: PIN },
-      { reasonCode: "salah_input" },
+      { reasonCode: "wrong_item" },
     );
     const { override, replayed } = await createPosOverride(
       tenant,
@@ -874,7 +874,7 @@ describe("legend-dxb AUTH-06 supervisor override with PIN", () => {
       requestedBy: cashier,
       approvedBy: supervisor,
       reason: input.reason,
-      reasonCode: "salah_input",
+      reasonCode: "wrong_item",
       valueIdr: 45_000,
       approvalRequestId: null,
     });
@@ -902,7 +902,7 @@ describe("legend-dxb AUTH-06 supervisor override with PIN", () => {
       method: "supervisor_pin",
       // legend-kyie: the cloud writes the audit row of an edge override.
       reason: input.reason,
-      reasonCode: "salah_input",
+      reasonCode: "wrong_item",
     });
     // The pin stays out of the event.
     expect(JSON.stringify(events)).not.toContain(PIN);

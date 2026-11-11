@@ -42,6 +42,7 @@ import {
   formatInstant,
   SCOPE_LABEL_KEY,
   scopeName,
+  selectablePeople,
   type AssignmentRow,
   type AssignmentStatus,
 } from "../lib";
@@ -100,6 +101,11 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
   const roleById = React.useMemo(
     () => new Map((roles.data?.data ?? []).map((row) => [row.id, row])),
     [roles.data],
+  );
+  // Inactive people still resolve names below, but cannot be granted a role.
+  const grantablePeople = React.useMemo(
+    () => selectablePeople(people.data?.people ?? []),
+    [people.data],
   );
   const peopleByName = React.useMemo(
     () => new Map((people.data?.people ?? []).map((row) => [row.id, row.name])),
@@ -324,7 +330,7 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
         open={grantOpen}
         onOpenChange={setGrantOpen}
         roles={roles.data?.data ?? []}
-        people={people.data?.people ?? []}
+        people={grantablePeople}
         lookup={lookup}
         onGranted={() => setEnding(null)}
       />

@@ -1,14 +1,19 @@
 // Reusable supervisor override request (PRD v1.7 §3.6 "Override Supervisor",
 // §4 Alur E, AUTH-06). Records reason code, reason and value, then gets the
 // approver either from a PIN typed on this device or from the supervisor's
-// phone through the approval service (create request, then poll it).
+// phone (POST /api/pos-overrides with supervisor_phone, then poll the linked
+// approval request; "Berhenti menunggu" cancels it on the POS path).
 // The approver is never the requester (AUTH-06).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleCheck, Clock, OctagonX, TimerOff } from "lucide-react";
 import { idr } from "@starter/shared/core";
 import type { OutletId } from "@starter/shared/core";
 import type { PosOverrideAction } from "@starter/shared/access";
-import type { StaffPinSwitch } from "@starter/shared/identity";
+import {
+  posOverrideReasonCodes,
+  posOverrideReasonCodeSchema,
+  type CreatePosOverrideInput,
+} from "@starter/shared/access/override";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,22 +45,18 @@ import {
 } from "../logic.ts";
 import {
   useApprovalRequestPolling,
-  useCreateApprovalRequest,
+  useCancelApprovalRequest,
+  useCreatePhoneOverride,
 } from "../hooks.ts";
+import { createPosOverrideCall } from "../api.ts";
+import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
+import { resolveOverrideOutlet } from "../override-outlet.ts";
 import { useRoster } from "../storage.ts";
 import { usePinSession } from "../use-pin-session.ts";
 import { useClockMs } from "../use-clock.ts";
 import { LockoutNotice } from "./lockout-notice.tsx";
 import { PinPad } from "./pin-pad.tsx";
-
-export const OVERRIDE_REASON_CODES = [
-  "wrong_item",
-  "customer_cancel",
-  "out_of_stock",
-  "quality_complaint",
-  "price_mismatch",
-  "other",
-] as const;
 
 export type OverrideResult = {
   method: "supervisor_pin" | "supervisor_phone";
@@ -75,7 +76,10 @@ export type OverrideRequestModalProps = {
   /** snake_case object type, e.g. "order" (approval_requests.object_type). */
   objectType: string;
   objectId: string;
+  /** The outlet the requester's PIN session opened on; the device outlet stands in. */
   outletId?: string;
+  /** Offered when no outlet is known: send the requester back to the PIN sign-in. */
+  onRelogin?: () => void;
   /** The signed-in staff member asking; a PIN from the same person is refused. */
   requesterId: string | null;
   defaultValueIdr?: number;
@@ -107,13 +111,17 @@ function ModalBody({
   action,
   objectType,
   objectId,
-  outletId,
+  outletId: savedOutletId,
+  onRelogin,
   requesterId,
   defaultValueIdr,
   onApproved,
   onRejected,
 }: OverrideRequestModalProps) {
   const t = useT();
+  const deviceOutletId = useTenantContext().outlet?.id;
+  const outletId =
+    resolveOverrideOutlet(savedOutletId, deviceOutletId) ?? undefined;
   const [method, setMethod] = useState<Method>("pin");
   const [valueText, setValueText] = useState(
     defaultValueIdr === undefined ? "" : String(defaultValueIdr),
@@ -123,6 +131,7 @@ function ModalBody({
   const [errors, setErrors] = useState<OverrideFormErrors>({});
   const [requestId, setRequestId] = useState<string | null>(null);
   const [sendError, setSendError] = useState(false);
+  const [noRequester, setNoRequester] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   const values = { valueText, reasonCode, reason };
@@ -135,9 +144,10 @@ function ModalBody({
       return next;
     });
   }
-  const create = useCreateApprovalRequest();
-  // The verify contract counts misses per staff (AUTH-06), so the supervisor
-  // whose PIN is being typed must be named. The roster is the mock/device list.
+  const create = useCreatePhoneOverride();
+  // The server counts PIN misses per staff (AUTH-06), so the supervisor whose
+  // PIN is being typed must be named. The roster is the mock/device list
+  // (no eligible-approvers endpoint exists yet).
   const roster = useRoster();
   const [approverId, setApproverId] = useState<string | null>(null);
 
@@ -153,25 +163,46 @@ function ModalBody({
   }
 
   // Fail closed (AUTH-06): with no known requester the approver cannot be
-  // told apart from them, so no PIN approves.
-  const accept = useCallback(
-    (result: StaffPinSwitch) =>
+  // told apart from them, so no PIN is sent. The server checks it again.
+  const precheck = useCallback(
+    () =>
       requesterId === null
         ? t("devicePin.override.noRequester")
-        : result.user.id === requesterId
+        : approverId === requesterId
           ? t("devicePin.override.sameApprover")
-          : null,
-    [requesterId, t],
+          : outletId
+            ? null
+            : t("devicePin.override.outletUnknown"),
+    [requesterId, approverId, outletId, t],
   );
+  // The PIN goes inside POST /api/pos-overrides (method supervisor_pin): the
+  // server verifies it and records the approved override in one call.
   const session = usePinSession({
+    mode: "override",
     userId: approverId,
-    accept,
-    onVerified: (result) =>
+    precheck,
+    overrideCall: ({ userId, pin }) => {
+      const code = posOverrideReasonCodeSchema.parse(reasonCode);
+      const body: CreatePosOverrideInput = {
+        outletId: outletId as OutletId,
+        action,
+        valueIdr: idr(parseRupiah(valueText) ?? 0),
+        reason: reason.trim(),
+        reasonCode: code,
+        objectType,
+        objectId,
+        approval: { method: "supervisor_pin", approverUserId: userId, pin },
+      };
+      return createPosOverrideCall(body);
+    },
+    onVerified: (override) =>
       finish({
         method: "supervisor_pin",
-        approverId: result.user.id,
-        approverName: result.user.displayName,
-        approvalRequestId: null,
+        approverId: override.approvedBy,
+        approverName:
+          roster.find((entry) => entry.userId === override.approvedBy)
+            ?.displayName ?? null,
+        approvalRequestId: override.approvalRequestId,
       }),
   });
 
@@ -195,23 +226,51 @@ function ModalBody({
     const found = validateOverrideForm(values);
     setErrors(found);
     if (Object.keys(found).length > 0) return;
+    // The override is recorded at an outlet; without one the alert below
+    // offers the PIN sign-in again.
+    if (!outletId) return;
+    // Same fail-closed rule as the PIN path: the phone wait can only be
+    // cancelled or read by the requester, so no request is opened without one.
+    if (requesterId === null) {
+      setSendError(false);
+      setNoRequester(true);
+      return;
+    }
+    setNoRequester(false);
     setSendError(false);
     create.mutate(
       {
-        actionType: action,
+        outletId: outletId as OutletId,
+        action,
+        valueIdr: idr(parseRupiah(valueText) ?? 0),
+        reason: reason.trim(),
+        reasonCode: posOverrideReasonCodeSchema.parse(reasonCode),
         objectType,
         objectId,
-        amountIdr: idr(parseRupiah(valueText) ?? 0),
-        requestReason: reason.trim(),
-        payload: { reasonCode },
-        ...(outletId ? { outletId: outletId as OutletId } : {}),
+        approval: { method: "supervisor_phone" },
       },
       {
-        onSuccess: ({ data }) => setRequestId(data.id),
+        onSuccess: ({ data }) =>
+          data.approvalRequestId === null
+            ? setSendError(true)
+            : setRequestId(data.approvalRequestId),
         onError: () => setSendError(true),
       },
     );
   }
+
+  const outletAlert = !outletId && (
+    <div role="alert" className="grid justify-items-start gap-2">
+      <p className="text-sm font-semibold text-danger">
+        {t("devicePin.override.outletUnknown")}
+      </p>
+      {onRelogin && (
+        <Button variant="outline" size="sm" onClick={onRelogin}>
+          {t("devicePin.override.relogin")}
+        </Button>
+      )}
+    </div>
+  );
 
   if (requestId !== null)
     return (
@@ -277,7 +336,7 @@ function ModalBody({
             />
           </SelectTrigger>
           <SelectContent>
-            {OVERRIDE_REASON_CODES.map((code) => (
+            {posOverrideReasonCodes.map((code) => (
               <SelectItem key={code} value={code}>
                 {t(`devicePin.override.reasonCode.${code}`)}
               </SelectItem>
@@ -340,6 +399,7 @@ function ModalBody({
           <p className="text-sm text-muted-foreground">
             {t("devicePin.override.pinHint")}
           </p>
+          {outletAlert}
           {session.lock.locked && (
             <LockoutNotice remainingMs={session.lock.remainingMs} />
           )}
@@ -355,6 +415,12 @@ function ModalBody({
           <p className="text-sm text-muted-foreground">
             {t("devicePin.override.phoneHint")}
           </p>
+          {outletAlert}
+          {noRequester && (
+            <p role="alert" className="text-sm font-semibold text-danger">
+              {t("devicePin.override.noRequester")}
+            </p>
+          )}
           {sendError && (
             <p role="alert" className="text-sm font-semibold text-danger">
               {t("devicePin.override.sendError")}
@@ -394,6 +460,8 @@ function PhoneWait({
   const t = useT();
   const nowMs = useClockMs();
   const poll = useApprovalRequestPolling(requestId);
+  const cancel = useCancelApprovalRequest();
+  const [cancelFailed, setCancelFailed] = useState(false);
   const request = poll.data?.data ?? null;
   const raw =
     request && nowMs !== null ? approvalOutcome(request, nowMs) : "pending";
@@ -448,7 +516,37 @@ function PhoneWait({
             {t("devicePin.pending.pollError")}
           </p>
         )}
-        <Button variant="outline" onClick={onClose}>
+        {cancelFailed && (
+          <p role="alert" className="text-sm text-danger">
+            {t("devicePin.pending.cancelError")}
+          </p>
+        )}
+        {/* "Berhenti menunggu": withdraw the request first, then close. On 409
+            the request was decided meanwhile: re-read it, so an approval takes
+            the approved path and any other end shows its result. Any other
+            failure keeps the modal open with an error (never close on a
+            request that may still be approved). */}
+        <Button
+          variant="outline"
+          loading={cancel.isPending}
+          onClick={() => {
+            setCancelFailed(false);
+            cancel.mutate(requestId, {
+              onSuccess: () => onClose(),
+              onError: (error) => {
+                if (error instanceof ApiError && error.status === 409) {
+                  void poll.refetch().then((read) => {
+                    const status = read.data?.data.status;
+                    if (status === undefined || status === "pending")
+                      setCancelFailed(true);
+                  });
+                  return;
+                }
+                setCancelFailed(true);
+              },
+            });
+          }}
+        >
           {t("devicePin.pending.cancel")}
         </Button>
       </div>

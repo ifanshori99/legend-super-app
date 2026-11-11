@@ -22,6 +22,7 @@ type KitchenFixtureInput = z.input<typeof kitchenFixtureSchema>;
 const { tenant, outlets } = cafeLegendFixtures;
 const outletId = outlets[0].id;
 const scope = { tenantId: tenant.id, outletId };
+const scope2 = { tenantId: tenant.id, outletId: outlets[1].id };
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -31,6 +32,8 @@ const stationId = {
   beverage: id(201),
   kitchen: id(202),
   pastry: id(203),
+  // Second outlet (Bandung 2), mirrors coffee (legend-7art).
+  coffee2: id(205),
 };
 const menuItemId = {
   kopiSusuAren: id(1004),
@@ -137,6 +140,14 @@ export const stationConfigs: KitchenFixtureInput["stationConfigs"] = [
     displayOrder: 3,
     isActive: true,
     autoPrintFallback: false,
+  },
+  {
+    ...scope2,
+    id: id(704),
+    stationId: stationId.coffee2,
+    displayOrder: 0,
+    isActive: true,
+    autoPrintFallback: true,
   },
 ];
 
@@ -282,6 +293,24 @@ export const capacityRules: KitchenFixtureInput["capacityRules"] = [
     nearCapacityBp: 9000,
     schedule: [{ daysOfWeek: [0, 6], start: "09:00", end: "18:00" }],
     channelPriority: ["dine_in", "takeaway"],
+  },
+  {
+    ...scope2,
+    id: id(855),
+    stationId: stationId.coffee2,
+    windowMinutes: 15,
+    capacityPoints: 30,
+    nearCapacityBp: 9000,
+    schedule: [
+      { daysOfWeek: [0, 1, 2, 3, 4, 5, 6], start: "08:00", end: "22:00" },
+    ],
+    channelPriority: [
+      "dine_in",
+      "takeaway",
+      "gofood",
+      "grabfood",
+      "shopeefood",
+    ],
   },
 ];
 
@@ -750,8 +779,9 @@ const pacingRow = (
   usedPoints: number,
   queuedItems: number,
   statusValue: KitchenFixtureInput["pacing"]["stations"][number]["status"],
+  rowScope: typeof scope = scope,
 ) => ({
-  ...scope,
+  ...rowScope,
   stationId: stationIdValue,
   windowMinutes: 15,
   windowStart: "2026-11-01T04:00:00.000Z",
@@ -770,6 +800,7 @@ export const pacing: KitchenFixtureInput["pacing"] = {
     pacingRow(stationId.coffee, 30, 9000, 29, 11, "near_capacity"),
     pacingRow(stationId.beverage, 24, 9000, 9, 4, "available"),
     pacingRow(stationId.pastry, 12, 9000, 12, 5, "at_capacity"),
+    pacingRow(stationId.coffee2, 30, 9000, 6, 2, "available", scope2),
   ],
 };
 
@@ -1307,14 +1338,17 @@ const OPEN_TICKET_STATUSES = ["new", "in_progress", "recalled"];
 export const stationSummary: KitchenFixtureInput["stationSummary"] = {
   ...scope,
   generatedAt: "2026-11-01T04:10:00.000Z",
-  stations: stationConfigs.map((config) => ({
-    stationId: config.stationId,
-    openTickets: tickets.filter(
-      (ticket) =>
-        ticket.stationId === config.stationId &&
-        OPEN_TICKET_STATUSES.includes(ticket.status),
-    ).length,
-  })),
+  // The summary is scoped to the first outlet; the Bandung 2 station is not in it.
+  stations: stationConfigs
+    .filter((config) => config.outletId === outletId)
+    .map((config) => ({
+      stationId: config.stationId,
+      openTickets: tickets.filter(
+        (ticket) =>
+          ticket.stationId === config.stationId &&
+          OPEN_TICKET_STATUSES.includes(ticket.status),
+      ).length,
+    })),
 };
 
 /** What a cook reads (legend-gt7f); names and types follow the menu stations. */

@@ -97,6 +97,29 @@ export const listRoleAssignmentsQuerySchema = cursorPageQuerySchema.extend({
 
 export const roleAssignmentListItemSchema = roleAssignmentSchema;
 
+/**
+ * GET /api/access/users (bead legend-i6ff): the staff directory the role
+ * assignment picker reads. Staff only (a user with at least one role
+ * assignment in the tenant); no email, phone, image or PIN data.
+ */
+export const ACCESS_USER_KINDS = ["staff"] as const;
+export const ACCESS_USER_STATUSES = ["active", "inactive"] as const;
+
+export const accessUserSchema = z.strictObject({
+  userId: userIdSchema,
+  displayName: z.string().trim().min(1).max(150),
+  kind: z.enum(ACCESS_USER_KINDS),
+  /** "active": not banned and holds an assignment valid now. */
+  status: z.enum(ACCESS_USER_STATUSES),
+});
+export type AccessUser = z.infer<typeof accessUserSchema>;
+
+export const listAccessUsersQuerySchema = cursorPageQuerySchema.extend({
+  /** Name search, case-insensitive; `%` and `_` match themselves. */
+  q: z.string().trim().max(100).optional(),
+});
+export type ListAccessUsersQuery = z.infer<typeof listAccessUsersQuerySchema>;
+
 export const myOutletSchema = z.strictObject({
   id: outletIdSchema,
   name: z.string().min(1).max(150),

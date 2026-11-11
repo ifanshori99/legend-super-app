@@ -136,7 +136,7 @@ test("AUTH-06 · the matrix states the distinct-approver rule and saves a new ti
       exact: true,
     }),
   ).toBeVisible();
-  // Fixture matrix: 14 of the 30 approval actions have a policy.
+  // Fixture matrix: 14 of the 30 approval actions (edc_standalone joined upstream) have a policy.
   await expect(
     page.getByText("14 dari 30 tindakan memiliki kebijakan."),
   ).toBeVisible();

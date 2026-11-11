@@ -64,20 +64,35 @@ let createdRule = 0;
 const nextRuleId = () =>
   `00000000-0000-4000-8000-${String(2100 + createdRule++).padStart(12, "0")}`;
 
-registerMock(listKitchenStations, ({ scenario }) => {
+// Like the API, every read is scoped to the outlet in the path.
+registerMock(listKitchenStations, ({ params, scenario }) => {
   if (scenario === "empty") return { data: [] };
-  return { data: stationConfigs };
+  return {
+    data: stationConfigs.filter(
+      (config) => config.outletId === params.outletId,
+    ),
+  };
 });
 
-registerMock(listCapacityRules, ({ scenario }) => {
+registerMock(listCapacityRules, ({ params, scenario }) => {
   if (scenario === "empty") return { data: [] };
-  return { data: rules.get() };
+  return {
+    data: rules.get().filter((rule) => rule.outletId === params.outletId),
+  };
 });
 
-registerMock(getPacing, ({ scenario }) => {
+registerMock(getPacing, ({ params, scenario }) => {
   const snapshot = pacingStore.get();
   if (scenario === "empty") return { data: { ...snapshot, stations: [] } };
-  return { data: snapshot };
+  return {
+    data: {
+      ...snapshot,
+      outletId: params.outletId,
+      stations: snapshot.stations.filter(
+        (row) => row.outletId === params.outletId,
+      ),
+    },
+  };
 });
 
 registerMock(getServingTimeSummary, ({ query, scenario }) => {
@@ -107,7 +122,8 @@ registerMock(updateCapacityRules, ({ params, body }) => {
   const config = stationConfigs.find(
     (station) => station.stationId === params.stationId,
   );
-  if (!config) throw new ApiError(404, "NOT_FOUND", "Stasiun tidak ditemukan.");
+  if (!config || config.outletId !== params.outletId)
+    throw new ApiError(404, "NOT_FOUND", "Stasiun tidak ditemukan.");
   const scope = { tenantId: config.tenantId, outletId: config.outletId };
   const rows: CapacityRule[] = body.rules.map((rule) => ({
     ...scope,

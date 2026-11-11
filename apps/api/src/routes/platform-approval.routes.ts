@@ -1,7 +1,7 @@
 // Approval inbox API (bead legend-y5q; PRD v1.7 §3 F7 "Kotak Approval",
 // AUTH-06, MCP-04). Paths and schemas are exactly the identity contract:
 // listApprovalRequests, createApprovalRequest, getApprovalRequest,
-// decideApprovalRequest (@starter/shared/identity/endpoints).
+// decideApprovalRequest, cancelApprovalRequest (@starter/shared/identity/endpoints).
 //
 // Thin routes: identity, trusted origin, tenant (from the domain/credential,
 // TEN-02) and the back-office AUTH-05 gate run first. Permission and outlet
@@ -29,6 +29,7 @@ import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { sessionMfaVerifiedAt } from "../lib/mfa";
 import {
+  cancelOwnApprovalRequest,
   createApprovalRequestFromInbox,
   decideApprovalRequest,
   getApprovalRequest,
@@ -99,6 +100,22 @@ approvalRouter.post("/:requestId/decisions", jsonBody, async (req, res) => {
         mfaVerified: (await sessionMfaVerifiedAt(req)) !== null,
         idempotencyKey: idempotencyKeyOf(req),
       },
+    ),
+  });
+});
+
+// The requester withdraws their own pending request (legend-6hr8). Naturally
+// idempotent; the optional Idempotency-Key is validated like on create. No
+// jsonBody: the browser sends this POST with no body and no content-type.
+approvalRouter.post("/:requestId/cancel", async (req, res) => {
+  const { requestId } = approvalRequestParamsSchema.parse(req.params);
+  idempotencyKeyOf(req);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    data: await cancelOwnApprovalRequest(
+      getTenantContext(req),
+      getAuth(req).user.id,
+      requestId,
     ),
   });
 });

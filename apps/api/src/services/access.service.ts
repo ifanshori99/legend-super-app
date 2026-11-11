@@ -40,6 +40,7 @@ import {
   roleUpdatedEvent,
   scopeCovers,
   type AccessTarget,
+  type AccessUser,
   type ApprovalPolicy,
   type PermissionCode,
   type Role,
@@ -642,6 +643,85 @@ export async function updateCustomRole(
       { tx, context },
     );
     return toRole(row);
+  });
+}
+
+// ------------------------------------------------------- staff directory
+
+/**
+ * Staff directory for the role picker (bead legend-i6ff). Staff only: users
+ * with at least one assignment in this tenant, filtered in SQL. Returns the
+ * listed fields and nothing else (no email, phone, image or PIN data).
+ */
+export async function listAccessUsers(
+  context: ScopedTenantContext,
+  query: { limit: number; cursor?: string; q?: string },
+  actorUserId: string,
+  now = new Date(),
+): Promise<{
+  data: AccessUser[];
+  meta: { limit: number; nextCursor: string | null };
+}> {
+  return withTenant(db, context, async (tx) => {
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.role.view",
+      now,
+    );
+    const filters = [eq(roleAssignments.tenantId, context.tenant.tenantId)];
+    if (query.q) {
+      // `%`, `_` and the escape character match themselves.
+      const escaped = query.q.replace(/[\\%_]/g, (char) => `\\${char}`);
+      filters.push(sql`${user.name} ILIKE ${`%${escaped}%`} ESCAPE '\\'`);
+    }
+    if (query.cursor) {
+      const [name, id] = decodeCursor(query.cursor);
+      if (typeof name !== "string" || typeof id !== "string")
+        throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+      filters.push(
+        or(
+          sql`${user.name} > ${name}`,
+          and(eq(user.name, name), sql`${user.id} > ${id}`),
+        )!,
+      );
+    }
+    const rows = await tx
+      .select({
+        userId: user.id,
+        displayName: user.name,
+        banned: user.banned,
+        banExpires: user.banExpires,
+        current: sql<boolean>`bool_or(${roleAssignments.validFrom} <= ${now} and (${roleAssignments.validUntil} is null or ${roleAssignments.validUntil} > ${now}))`,
+      })
+      .from(roleAssignments)
+      .innerJoin(user, eq(user.id, roleAssignments.userId))
+      .where(and(...filters))
+      .groupBy(user.id)
+      .orderBy(asc(user.name), asc(user.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      data: page.map((row): AccessUser => {
+        const banned =
+          row.banned === true && (!row.banExpires || row.banExpires > now);
+        return {
+          userId: userIdSchema.parse(row.userId),
+          displayName: row.displayName,
+          kind: "staff",
+          status: row.current && !banned ? "active" : "inactive",
+        };
+      }),
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.displayName, last.userId])
+            : null,
+      },
+    };
   });
 }
 

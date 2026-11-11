@@ -196,6 +196,17 @@ export function activeHolderCounts(
   return counts;
 }
 
+/**
+ * Who a grant or approver picker may offer. A former staff member (status
+ * "inactive") stays in the directory so names still resolve, but cannot be
+ * picked for a new assignment or approval. The API refuses the grant as well.
+ */
+export function selectablePeople<T extends { readonly status: string }>(
+  people: readonly T[],
+): T[] {
+  return people.filter((row) => row.status === "active");
+}
+
 export function filterRoles(
   roles: readonly Role[],
   filters: { search?: string; kind?: RoleKind },

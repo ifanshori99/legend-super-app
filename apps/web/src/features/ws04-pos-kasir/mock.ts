@@ -23,6 +23,10 @@ import {
   getPosOverride,
 } from "@starter/shared/access/override";
 import { ApiError } from "@/lib/api/errors";
+import {
+  devicePinOverride,
+  devicePinPosOverride,
+} from "@/features/ws01-device-pin/mock";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { callPosKasirEngine } from "./mock-engine";
@@ -222,6 +226,8 @@ registerMock(closePosDay, ({ body }) =>
 );
 
 registerMock(createPosOverride, ({ body }) => {
+  const devicePin = devicePinOverride(body);
+  if (devicePin) return devicePin;
   if (body.approval.method !== "supervisor_pin")
     throw new ApiError(
       409,
@@ -245,6 +251,9 @@ registerMock(createPosOverride, ({ body }) => {
 });
 
 registerMock(getPosOverride, ({ params }) => {
+  // A phone override raised from the device PIN modal (ws01-device-pin).
+  const devicePin = devicePinPosOverride(params.overrideId);
+  if (devicePin) return devicePin;
   const override = callPosKasirEngine((engine) =>
     engine.override(params.overrideId),
   );

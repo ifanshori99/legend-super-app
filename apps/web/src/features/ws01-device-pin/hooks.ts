@@ -1,9 +1,12 @@
 // Hooks for the device PIN pad and the override modal. Exported for the POS,
 // captain and KDS beads (see index.ts).
 import { useMutation, useQuery } from "@tanstack/react-query";
+import type { CreatePosOverrideInput } from "@starter/shared/access/override";
 import type { VerifyStaffPinInput } from "@starter/shared/identity";
 import {
+  cancelApprovalRequestCall,
   createApprovalRequestCall,
+  createPosOverrideCall,
   endPosSessionCall,
   getApprovalRequestCall,
   startPosSessionCall,
@@ -41,11 +44,27 @@ export function useCreateApprovalRequest() {
   return useMutation({ mutationFn: createApprovalRequestCall });
 }
 
+/**
+ * Asks the supervisor's phone for an override (POST /api/pos-overrides,
+ * method supervisor_phone): the active cashier is the requester and the
+ * answer links the approval request (approvalRequestId) to wait on.
+ */
+export function useCreatePhoneOverride() {
+  return useMutation({
+    mutationFn: (body: CreatePosOverrideInput) => createPosOverrideCall(body),
+  });
+}
+
+/** Withdraws the active cashier's own pending phone approval (POS cancel, E3). */
+export function useCancelApprovalRequest() {
+  return useMutation({ mutationFn: cancelApprovalRequestCall });
+}
+
 /** UI cadence for the phone-approval wait; not a policy number. */
 export const APPROVAL_POLL_MS = 3_000;
 
 /**
- * Polls one approval request until it is decided. Polling stops once the
+ * Polls one phone override's approval request (POS path) until it is decided. Polling stops once the
  * status leaves "pending" or the deadline passes (the screen then shows it
  * expired), pauses while the tab is hidden and ends on unmount. A failed read
  * keeps trying (the wait is on the supervisor, not on this device).
