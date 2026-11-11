@@ -78,6 +78,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
+import { swapPaidValueOf } from "./order-recovery-paid-value.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 import {
   lockGuestSessionForPayment,
@@ -110,6 +111,7 @@ const AUDIT_SAFE_FIELDS = [
   "approvalRequestId",
   "voucherId",
   "replacementItemId",
+  "creditIdr",
 ];
 
 const deniedOutlet = () =>
@@ -931,6 +933,13 @@ type Settlement = {
   replacementUnitPriceIdr: number | null;
   voucherId: string | null;
   priceDifferenceIdr: number | null;
+  /**
+   * legend-rat9r: what the guest paid for the swapped item (cheaper swap only),
+   * the cap of its voucher and of every later refund of it.
+   */
+  paidValueIdr: number | null;
+  /** Value of the swap credit voucher (cheaper swap only; 0 = none minted). */
+  creditIdr: number | null;
   approvedBy: string | null;
   approvalRequestId: string | null;
   reasonNote: string | null;
@@ -963,6 +972,8 @@ async function settleIssue(
         settlement.priceDifferenceIdr === null
           ? null
           : idr(settlement.priceDifferenceIdr),
+      paidValueIdr:
+        settlement.paidValueIdr === null ? null : idr(settlement.paidValueIdr),
       approvedBy: settlement.approvedBy,
       approvalRequestId: settlement.approvalRequestId,
       ...(settlement.reasonNote === null
@@ -1015,6 +1026,9 @@ async function settleIssue(
         approvalRequestId: settlement.approvalRequestId,
         voucherId: settlement.voucherId,
         replacementItemId: settlement.replacementItemId,
+        ...(settlement.creditIdr === null
+          ? {}
+          : { creditIdr: settlement.creditIdr }),
       },
     },
     now,
@@ -1160,7 +1174,26 @@ async function swapSettlement(
     };
   }
   let voucherId: string | null = null;
+  let paidValueIdr: number | null = null;
+  let creditIdr: number | null = null;
   if (difference < 0) {
+    // legend-rat9r (founder W4 Q25): the credit is the list difference at most
+    // what the guest paid for the item, less what its chain already gave back
+    // (vouchers, live refunds). A credit of 0 mints no voucher and needs no
+    // approval.
+    const paid = await swapPaidValueOf(tx, context, {
+      orderId: found.order.id,
+      issueId: found.issue.id,
+      lineId: found.line.id,
+      at: now,
+    });
+    paidValueIdr = paid.paidValueIdr;
+    creditIdr = Math.min(
+      -difference,
+      Math.max(0, paid.paidValueIdr - paid.givenIdr),
+    );
+  }
+  if (creditIdr !== null && creditIdr > 0) {
     const creditReason =
       `Kredit selisih harga penukaran ${found.line.name}`.slice(0, 500);
     let creditApprovalId: string | null = null;
@@ -1168,7 +1201,7 @@ async function swapSettlement(
       const matrix = await requireSwapCreditApproval(tx, context, {
         orderIssueId: found.issue.id,
         outletId: found.issue.outletId,
-        valueIdr: -difference,
+        valueIdr: creditIdr,
         reason: creditReason,
         requestedBy: actor.userId,
         approvalRequestId: actor.approvalRequestId,
@@ -1187,7 +1220,7 @@ async function swapSettlement(
     const credit = await mintApologyVoucher(tx, context, {
       outletId: found.issue.outletId,
       issuedBy: found.issue.reportedBy,
-      valueIdr: -difference,
+      valueIdr: creditIdr,
       reason: creditReason,
       orderIssueId: found.issue.id,
       customerProfileId: found.order.customerProfileId,
@@ -1203,6 +1236,8 @@ async function swapSettlement(
     replacementUnitPriceIdr: replacement.unitPriceIdr,
     voucherId,
     priceDifferenceIdr: difference,
+    paidValueIdr,
+    creditIdr,
     approvedBy: approval?.approvedBy ?? null,
     approvalRequestId: approval?.approvalRequestId ?? null,
     reasonNote: null,
@@ -1234,6 +1269,8 @@ async function systemVoucherSettlement(
     replacementUnitPriceIdr: null,
     voucherId: minted.apologyVoucherId,
     priceDifferenceIdr: null,
+    paidValueIdr: null,
+    creditIdr: null,
     approvedBy: null,
     approvalRequestId: null,
     reasonNote: null,
@@ -1477,6 +1514,8 @@ export async function resolveOrderIssue(
           replacementUnitPriceIdr: null,
           voucherId: apology.id,
           priceDifferenceIdr: null,
+          paidValueIdr: null,
+          creditIdr: null,
           approvedBy: null,
           approvalRequestId: null,
           reasonNote: null,
@@ -1500,6 +1539,8 @@ export async function resolveOrderIssue(
           replacementUnitPriceIdr: null,
           voucherId: null,
           priceDifferenceIdr: null,
+          paidValueIdr: null,
+          creditIdr: null,
           approvedBy: approval.approvedBy,
           approvalRequestId: input.approvalRequestId,
           reasonNote: reason,

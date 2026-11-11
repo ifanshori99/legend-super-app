@@ -1548,6 +1548,13 @@
       "when": 1794315000000,
       "tag": "0234_uom_is_system",
       "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1794357545492,
+      "tag": "0235_order_issue_paid_value",
+      "breakpoints": true
     }
   ]
 }

@@ -917,3 +917,36 @@ describe("legend-rat9r 7: isolasi tenant", () => {
     expect(Number(rows[0]!.refunds), "other tenant refunds").toBe(0);
   });
 });
+
+describe("legend-rat9r 8: setelah voucher, refund teh tidak membayar uang kopi", () => {
+  /** Teh of the promo order paid back on its own: goods 12.000 x 1,155. */
+  const TEH_PAID = 13_860;
+  const TEH_PRICE = 12_000;
+
+  it("kopi ditukar ke air (voucher 8.085), air gagal (refund 0), lalu teh gagal: refund teh 13.860, bukan bagian kopi", async () => {
+    const { paid, swapIssueId, replacementLineId } = await kopiSwappedDirectly(
+      "pay_first",
+      airItem,
+    );
+    expect(await voucherValues(swapIssueId)).toEqual([KOPI_PAID]);
+    const b = await approvedRefund(replacementLineId, AIR_PRICE);
+    await deliver(b.event);
+    expect(await refundedTotal(b.issueId)).toBe(0);
+    // The Rp0 air refund still booked the kopi goods on the promo ledger.
+    expect((await ledgerOf(w.tenant.tenantId, paid.order.id))?.paid).toBe(
+      KOPI_PAYOUT,
+    );
+
+    const teh = await approvedRefund(paid.line(w.ids.teh).id, TEH_PRICE);
+    await deliver(teh.event);
+
+    // Without the kopi on the ledger the teh would take 19.000 goods (21.945).
+    expect(await refundedTotal(teh.issueId)).toBe(TEH_PAID);
+    await expectSplitConsistent(paid.order.id, teh.issueId);
+    expect(
+      KOPI_PAID +
+        (await refundedTotal(b.issueId)) +
+        (await refundedTotal(teh.issueId)),
+    ).toBeLessThanOrEqual(KOPI_PAID + TEH_PAID);
+  });
+});
