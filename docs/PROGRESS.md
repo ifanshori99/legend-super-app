@@ -3215,3 +3215,8 @@ Langkah berikut CTO baru:
 - `moveSessionItemsOperation`: setelah lock, order berstatus `voided` di set terkunci ditolak 409 dengan pesan yang sama ("Item yang sudah dibatalkan tidak dapat dipindah."). Cek lama membaca baris sebelum lock.
 - 2 test baru (pindah seluruh order dan sebagian) untuk void POS yang commit saat pindah item menunggu lock. Pada service lama: seluruh order 500 (trigger final-order POS-04 menggagalkan transaksi, data aman) dan sebagian 409 dengan pesan lain; sesudah perbaikan keduanya 409 "dibatalkan". Gate: typecheck api, eslint, prettier hijau; 49 test area lulus. Reviewer sonnet: tanpa temuan.
 - Tersisa (tidak dikerjakan): cek void tingkat item masih memakai baris sebelum lock; hanya relevan bila POS bisa membatalkan satu baris tanpa membatalkan order.
+
+### legend-16iyk: penerima reconcile dibatasi ke tenant, 11 Nov 2026
+- `resolveUnverifiedRecipientService`: penerima non-null harus punya role assignment valid di tenant (scope apa pun) atau menjadi `shareholders.user_id` milik pemegang saham baris itu, dan tidak ber-ban. Selain itu 422 `RECIPIENT_NOT_FOUND` (kode sama untuk akun tak ada dan akun tenant lain, tanpa bocor keberadaan akun). Cek di tx yang sama, `FOR SHARE` pada baris role assignment dan shareholder. `null` tetap boleh.
+- Test gagal-dulu: kasus (a) user tenant lain dan (b) tanpa keanggotaan gagal sebelum perbaikan (200). Sekarang 26/26 lulus, tsc api 0, prettier bersih.
+- Review architect (tingkat K): lolos dengan syarat; M1 (test lebih tegas, kadaluarsa, shareholder lain, UUID acak), L1 (ban), L2 (lock) dikerjakan. Butuh keputusan founder: anggota tenant berperan apa pun (mis. kasir) boleh jadi penerima dan lalu membaca laporan bagi hasil baris itu.
