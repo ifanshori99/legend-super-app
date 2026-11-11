@@ -1003,3 +1003,136 @@ describe("legend-rat9r 9: setelah voucher selisih, tamu memilih voucher untuk li
     expect(Number(rows[0]!.total), "vouchers of the chain").toBe(1);
   });
 });
+
+// legend-rat9r (voucherRoomOf): the guest voucher, the staff apology voucher and the
+// guest options preview of a REPLACEMENT line are bounded by what is left of the kopi
+// paid value (8.085) after the swap voucher and the live refunds of the chain.
+// Numbers: Rp20.000 swap -> voucher 5.000, room 3.085; Rp5.000 swap -> voucher 8.085,
+// room 0. Pinned from the founder's rule (paid - voucher), not from the service.
+describe("legend-rat9r 10: tamu memilih voucher untuk lini pengganti: dipotong ke sisa nilai dibayar", () => {
+  it("menu 20.000 (voucher selisih 5.000): voucher tamu untuk lini pengganti = 3.085, total voucher rantai <= 8.085", async () => {
+    expect(MID_ROOM).toBe(3_085);
+    const { paid, swapIssueId, replacementLineId } = await kopiSwappedDirectly(
+      "pay_first",
+      midItem,
+    );
+    expect(await voucherValues(swapIssueId)).toEqual([LIST_DIFF_MID]);
+
+    const midIssueId = await reportLine(replacementLineId);
+    const chosen = await w
+      .as(paid.guest)
+      .choose(midIssueId, { choice: "voucher" });
+    expect(chosen.status, JSON.stringify(chosen.body)).toBe(200);
+
+    // The line is worth 20.000 (about 23.100 paid) but only 3.085 of the kopi paid
+    // value is left, so the voucher is cut to exactly that.
+    expect(await voucherValues(midIssueId)).toEqual([MID_ROOM]);
+    expect(await voucherValues(swapIssueId)).toEqual([LIST_DIFF_MID]);
+    expect(LIST_DIFF_MID + MID_ROOM).toBeLessThanOrEqual(KOPI_PAID);
+    expect(
+      await refundedTotal(midIssueId),
+      "no refund besides the voucher",
+    ).toBe(0);
+  });
+});
+
+describe("legend-rat9r 11: voucher maaf staf untuk lini pengganti: di atas sisa 422, sampai sisa lolos", () => {
+  /** Staff issues an apology voucher for the issue and resolves it with that voucher. */
+  async function resolveWithApologyVoucher(issueId: string, valueIdr: number) {
+    const issued = await w.staffPost(w.supervisor, "/api/apology-vouchers", {
+      valueIdr,
+      reason: "Item pengganti gagal, mohon maaf",
+      orderIssueId: issueId,
+    });
+    // Whether the cap refuses at issue time or at resolve time is not pinned: a
+    // refusal at issue time is a 422 as well and the voucher id is then absent.
+    if (issued.status !== 201) return issued;
+    return w.staffPost(w.supervisor, `/api/order-issues/${issueId}/resolve`, {
+      resolution: "voucher",
+      voucherId: issued.body.data.id as string,
+    });
+  }
+
+  it("apology voucher 3.086 (di atas sisa 3.085): 422, tidak ada voucher baru untuk lini itu", async () => {
+    const { swapIssueId, replacementLineId } = await kopiSwappedDirectly(
+      "pay_first",
+      midItem,
+    );
+    const midIssueId = await reportLine(replacementLineId);
+
+    const refused = await resolveWithApologyVoucher(midIssueId, MID_ROOM + 1);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(await voucherValues(swapIssueId)).toEqual([LIST_DIFF_MID]);
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM order_issues WHERE tenant_id = $1 AND id = $2",
+      [w.tenant.tenantId, midIssueId],
+    );
+    expect(rows[0]!.status, "the issue stays open").toBe("open");
+  });
+
+  it("apology voucher 3.085 (tepat sisa): lolos, issue selesai dengan voucher itu", async () => {
+    const { swapIssueId, replacementLineId } = await kopiSwappedDirectly(
+      "pay_first",
+      midItem,
+    );
+    const midIssueId = await reportLine(replacementLineId);
+
+    const resolved = await resolveWithApologyVoucher(midIssueId, MID_ROOM);
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    expect(resolved.body.data).toMatchObject({
+      status: "resolved",
+      resolution: "voucher",
+    });
+    expect(await voucherValues(midIssueId)).toEqual([MID_ROOM]);
+    expect(LIST_DIFF_MID + MID_ROOM).toBeLessThanOrEqual(KOPI_PAID);
+    expect(await voucherValues(swapIssueId)).toEqual([LIST_DIFF_MID]);
+  });
+
+  it("apology voucher 1.000 (di bawah sisa): lolos", async () => {
+    const { replacementLineId } = await kopiSwappedDirectly(
+      "pay_first",
+      midItem,
+    );
+    const midIssueId = await reportLine(replacementLineId);
+    const resolved = await resolveWithApologyVoucher(midIssueId, 1_000);
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+  });
+});
+
+describe("legend-rat9r 12: pratinjau pilihan tamu (options.voucher) untuk lini pengganti", () => {
+  it("contoh founder (air, voucher 8.085): options.voucher = {allowed: false, valueIdr: 0}", async () => {
+    const { paid, swapIssueId, replacementLineId } = await kopiSwappedDirectly(
+      "pay_first",
+      airItem,
+    );
+    expect(await voucherValues(swapIssueId)).toEqual([KOPI_PAID]);
+    const airIssueId = await reportLine(replacementLineId);
+
+    const options = await w.as(paid.guest).issueOptions(airIssueId);
+    expect(options.status, JSON.stringify(options.body)).toBe(200);
+    expect(options.body.data.voucher).toEqual({ allowed: false, valueIdr: 0 });
+  });
+
+  it("menu 20.000 (voucher 5.000): options.voucher = {allowed: true, valueIdr: 3.085}, sama dengan voucher yang dimint", async () => {
+    const { paid, replacementLineId } = await kopiSwappedDirectly(
+      "pay_first",
+      midItem,
+    );
+    const midIssueId = await reportLine(replacementLineId);
+
+    const options = await w.as(paid.guest).issueOptions(midIssueId);
+    expect(options.status, JSON.stringify(options.body)).toBe(200);
+    expect(options.body.data.voucher).toEqual({
+      allowed: true,
+      valueIdr: MID_ROOM,
+    });
+
+    const chosen = await w
+      .as(paid.guest)
+      .choose(midIssueId, { choice: "voucher" });
+    expect(chosen.status, JSON.stringify(chosen.body)).toBe(200);
+    expect(await voucherValues(midIssueId)).toEqual([
+      options.body.data.voucher.valueIdr,
+    ]);
+  });
+});
