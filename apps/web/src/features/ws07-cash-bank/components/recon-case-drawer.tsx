@@ -29,6 +29,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { selectablePeople } from "@/features/ws01-access/lib";
 import { useAssignablePeople } from "@/features/ws01-access/people";
 import {
   CASE_TYPE_KEYS,
@@ -85,6 +86,8 @@ function CaseDetail({
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const peopleOptions = people.data?.people ?? [];
+  // Former staff keep their name on old cases but cannot take a new one.
+  const ownerOptions = selectablePeople(peopleOptions);
   const peopleUnavailable = people.data?.unavailable ?? false;
 
   const run = (
@@ -148,7 +151,7 @@ function CaseDetail({
 
   const row = query.data;
   const actions = reconciliationCaseActions(row.status);
-  const effectiveOwner = ownerId || row.ownerId || peopleOptions[0]?.id || "";
+  const effectiveOwner = ownerId || row.ownerId || ownerOptions[0]?.id || "";
   const done = row.status === "resolved" || row.status === "written_off";
 
   return (
@@ -254,7 +257,7 @@ function CaseDetail({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {peopleOptions.map((person) => (
+                      {ownerOptions.map((person) => (
                         <SelectItem key={person.id} value={person.id}>
                           {person.name}
                         </SelectItem>

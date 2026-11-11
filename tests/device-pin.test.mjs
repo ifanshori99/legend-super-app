@@ -128,3 +128,23 @@ test("AUTH-06 · a full PIN waits while checking and the pad shows typed digits"
   assert.equal(logic.pinPadDots(2, true, 6), 2);
   assert.equal(logic.pinPadDots(0, false, 6), 0);
 });
+
+// legend-6ew E4: an active staff entry saved before the outlet was stored has
+// no outletId. The device's own outlet stands in; with neither, the caller must
+// ask for a PIN sign-in again instead of showing a generic failure.
+test("AUTH-06 · override outlet: saved entry wins, then the device outlet, else none", async () => {
+  const { resolveOverrideOutlet } =
+    await import("../apps/web/src/features/ws01-device-pin/override-outlet.ts");
+  assert.equal(
+    resolveOverrideOutlet("outlet-saved", "outlet-device"),
+    "outlet-saved",
+  );
+  assert.equal(
+    resolveOverrideOutlet(undefined, "outlet-device"),
+    "outlet-device",
+  );
+  assert.equal(resolveOverrideOutlet("", "outlet-device"), "outlet-device");
+  assert.equal(resolveOverrideOutlet("  ", "outlet-device"), "outlet-device");
+  assert.equal(resolveOverrideOutlet(undefined, undefined), null);
+  assert.equal(resolveOverrideOutlet(null, ""), null);
+});

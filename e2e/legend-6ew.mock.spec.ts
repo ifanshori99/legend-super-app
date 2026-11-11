@@ -233,6 +233,48 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
   await expect(page.getByTestId("override-result")).toContainText("350.000");
 });
 
+// legend-6ew E4: an active staff entry saved before the outlet was stored has
+// no outletId. The device outlet stands in. (With no device outlet the POS area
+// shows its no-outlet page, so the "sign in again" notice has no e2e route.)
+async function openOverrideWithOldActiveEntry(page: Page, url: string) {
+  await page.goto(url, NAV);
+  await switchTo(page, "Nina Marlina", "246810");
+  await page.evaluate(() => {
+    const key = "legend-device-active-staff";
+    const entry = JSON.parse(localStorage.getItem(key) ?? "{}");
+    delete entry.outletId;
+    localStorage.setItem(key, JSON.stringify(entry));
+  });
+  await page.reload(NAV);
+  await expect(page.getByTestId("active-staff")).toContainText("Nina Marlina");
+  await page.getByRole("button", { name: "Ajukan override" }).click();
+  const modal = page.getByTestId("override-modal");
+  await expect(modal).toBeVisible();
+  return modal;
+}
+
+test("AUTH-06 · old active entry without outlet: the device outlet completes a PIN override", async ({
+  page,
+}) => {
+  const modal = await openOverrideWithOldActiveEntry(page, SWITCH);
+  await modal.getByRole("combobox", { name: "Kode alasan" }).click();
+  await page.getByRole("option", { name: "Pelanggan membatalkan" }).click();
+  await modal
+    .getByLabel("Catatan alasan")
+    .fill("Pelanggan batal sebelum dapur mulai");
+  const approverPicker = modal.getByRole("combobox", {
+    name: "Supervisor yang memasukkan PIN",
+  });
+  await approverPicker.click();
+  await page.getByRole("option", { name: "Yusuf Hidayat" }).click();
+  await expect(approverPicker).toBeFocused();
+  for (const digit of "482604")
+    await modal.getByRole("button", { name: `Angka ${digit}` }).click();
+  await expect(page.getByTestId("override-result")).toContainText(
+    "Yusuf Hidayat",
+  );
+});
+
 for (const outcome of ["approved", "rejected", "expired"] as const) {
   test(`AUTH-06 · phone approval ends ${outcome}`, async ({ page }) => {
     await page.goto(SWITCH, NAV);

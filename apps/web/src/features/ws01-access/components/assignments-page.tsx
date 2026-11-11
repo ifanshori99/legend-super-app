@@ -42,6 +42,7 @@ import {
   formatInstant,
   SCOPE_LABEL_KEY,
   scopeName,
+  selectablePeople,
   type AssignmentRow,
   type AssignmentStatus,
 } from "../lib";
@@ -103,7 +104,7 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
   );
   // Inactive people still resolve names below, but cannot be granted a role.
   const grantablePeople = React.useMemo(
-    () => (people.data?.people ?? []).filter((row) => row.status === "active"),
+    () => selectablePeople(people.data?.people ?? []),
     [people.data],
   );
   const peopleByName = React.useMemo(

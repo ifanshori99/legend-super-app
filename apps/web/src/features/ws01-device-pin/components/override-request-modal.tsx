@@ -1,7 +1,8 @@
 // Reusable supervisor override request (PRD v1.7 §3.6 "Override Supervisor",
 // §4 Alur E, AUTH-06). Records reason code, reason and value, then gets the
 // approver either from a PIN typed on this device or from the supervisor's
-// phone through the approval service (create request, then poll it).
+// phone (POST /api/pos-overrides with supervisor_phone, then poll the linked
+// approval request; "Berhenti menunggu" cancels it on the POS path).
 // The approver is never the requester (AUTH-06).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleCheck, Clock, OctagonX, TimerOff } from "lucide-react";
@@ -45,10 +46,12 @@ import {
 import {
   useApprovalRequestPolling,
   useCancelApprovalRequest,
-  useCreateApprovalRequest,
+  useCreatePhoneOverride,
 } from "../hooks.ts";
 import { createPosOverrideCall } from "../api.ts";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
+import { resolveOverrideOutlet } from "../override-outlet.ts";
 import { useRoster } from "../storage.ts";
 import { usePinSession } from "../use-pin-session.ts";
 import { useClockMs } from "../use-clock.ts";
@@ -73,7 +76,10 @@ export type OverrideRequestModalProps = {
   /** snake_case object type, e.g. "order" (approval_requests.object_type). */
   objectType: string;
   objectId: string;
+  /** The outlet the requester's PIN session opened on; the device outlet stands in. */
   outletId?: string;
+  /** Offered when no outlet is known: send the requester back to the PIN sign-in. */
+  onRelogin?: () => void;
   /** The signed-in staff member asking; a PIN from the same person is refused. */
   requesterId: string | null;
   defaultValueIdr?: number;
@@ -105,13 +111,17 @@ function ModalBody({
   action,
   objectType,
   objectId,
-  outletId,
+  outletId: savedOutletId,
+  onRelogin,
   requesterId,
   defaultValueIdr,
   onApproved,
   onRejected,
 }: OverrideRequestModalProps) {
   const t = useT();
+  const deviceOutletId = useTenantContext().outlet?.id;
+  const outletId =
+    resolveOverrideOutlet(savedOutletId, deviceOutletId) ?? undefined;
   const [method, setMethod] = useState<Method>("pin");
   const [valueText, setValueText] = useState(
     defaultValueIdr === undefined ? "" : String(defaultValueIdr),
@@ -133,7 +143,7 @@ function ModalBody({
       return next;
     });
   }
-  const create = useCreateApprovalRequest();
+  const create = useCreatePhoneOverride();
   // The server counts PIN misses per staff (AUTH-06), so the supervisor whose
   // PIN is being typed must be named. The roster is the mock/device list
   // (no eligible-approvers endpoint exists yet).
@@ -161,7 +171,7 @@ function ModalBody({
           ? t("devicePin.override.sameApprover")
           : outletId
             ? null
-            : t("devicePin.error.generic"),
+            : t("devicePin.override.outletUnknown"),
     [requesterId, approverId, outletId, t],
   );
   // The PIN goes inside POST /api/pos-overrides (method supervisor_pin): the
@@ -215,23 +225,43 @@ function ModalBody({
     const found = validateOverrideForm(values);
     setErrors(found);
     if (Object.keys(found).length > 0) return;
+    // The override is recorded at an outlet; without one the alert below
+    // offers the PIN sign-in again.
+    if (!outletId) return;
     setSendError(false);
     create.mutate(
       {
-        actionType: action,
+        outletId: outletId as OutletId,
+        action,
+        valueIdr: idr(parseRupiah(valueText) ?? 0),
+        reason: reason.trim(),
+        reasonCode: posOverrideReasonCodeSchema.parse(reasonCode),
         objectType,
         objectId,
-        amountIdr: idr(parseRupiah(valueText) ?? 0),
-        requestReason: reason.trim(),
-        payload: { reasonCode },
-        ...(outletId ? { outletId: outletId as OutletId } : {}),
+        approval: { method: "supervisor_phone" },
       },
       {
-        onSuccess: ({ data }) => setRequestId(data.id),
+        onSuccess: ({ data }) =>
+          data.approvalRequestId === null
+            ? setSendError(true)
+            : setRequestId(data.approvalRequestId),
         onError: () => setSendError(true),
       },
     );
   }
+
+  const outletAlert = !outletId && (
+    <div role="alert" className="grid justify-items-start gap-2">
+      <p className="text-sm font-semibold text-danger">
+        {t("devicePin.override.outletUnknown")}
+      </p>
+      {onRelogin && (
+        <Button variant="outline" size="sm" onClick={onRelogin}>
+          {t("devicePin.override.relogin")}
+        </Button>
+      )}
+    </div>
+  );
 
   if (requestId !== null)
     return (
@@ -360,6 +390,7 @@ function ModalBody({
           <p className="text-sm text-muted-foreground">
             {t("devicePin.override.pinHint")}
           </p>
+          {outletAlert}
           {session.lock.locked && (
             <LockoutNotice remainingMs={session.lock.remainingMs} />
           )}
@@ -375,6 +406,7 @@ function ModalBody({
           <p className="text-sm text-muted-foreground">
             {t("devicePin.override.phoneHint")}
           </p>
+          {outletAlert}
           {sendError && (
             <p role="alert" className="text-sm font-semibold text-danger">
               {t("devicePin.override.sendError")}

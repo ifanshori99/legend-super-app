@@ -16,6 +16,18 @@
 //                             bound to the body. 201 new, 200 replay.
 //   GET  /:overrideId         requester/approver polls (settles a phone
 //                             approval once its chain ends).
+//   GET  /approvals/:requestId
+//                             POS phone-approval poll (sub-brief E3): the
+//                             acting cashier reads their own pos_override
+//                             request at the device's outlet (same guards and
+//                             scope as the cancel below); else 404.
+//   POST /approvals/:requestId/cancel
+//                             POS "Berhenti menunggu" (sub-brief E3): the
+//                             acting cashier (signed device + X-Acting-Staff
+//                             required) withdraws their own pending phone
+//                             override (:requestId = its approvalRequestId)
+//                             at the device's outlet. No back-office MFA
+//                             gate; any other request is 404.
 // Tenant always from the domain or device token (TEN-02); outlet from the
 // device (verify), the path (set, checked against membership/permission) or
 // the requester's membership (override).
@@ -28,6 +40,7 @@ import {
 } from "@starter/shared/access/override";
 import { CoreError, idempotencyKeySchema } from "@starter/shared/core";
 import {
+  approvalRequestParamsSchema,
   setStaffPinSchema,
   staffPinParamsSchema,
 } from "@starter/shared/identity";
@@ -47,7 +60,9 @@ import {
   verifyStaffPinWithProof,
 } from "../services/staff-pin-proof.service";
 import {
+  cancelOwnPosOverrideApproval,
   createPosOverride,
+  getOwnPosOverrideApproval,
   getPosOverride,
 } from "../services/staff-override.service";
 import { deviceIdOf as signedDeviceIdOf } from "./device-id.ts";
@@ -179,3 +194,54 @@ posOverrideRouter.get("/:overrideId", async (req, res) => {
     ),
   });
 });
+
+/**
+ * The device's acting cashier, required by the MFA-free approval paths:
+ * resolveActingStaff has verified the device signature, the session, the
+ * device's outlet and the staff member's active membership. Without it the
+ * session owner would be the actor, which these paths must never allow.
+ */
+function requiredActingStaff(req: Request) {
+  const acting = req.actingStaff;
+  if (!acting)
+    throw new HttpError(
+      401,
+      ACTING_STAFF_ERROR_CODES.INVALID,
+      "Masukkan PIN kasir aktif dulu untuk melihat atau membatalkan permintaan ini.",
+    );
+  return acting;
+}
+
+// Two segments deep: no clash with GET /:overrideId.
+posOverrideRouter.get("/approvals/:requestId", async (req, res) => {
+  const { requestId } = approvalRequestParamsSchema.parse(req.params);
+  const acting = requiredActingStaff(req);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    data: await getOwnPosOverrideApproval(
+      getTenantContext(req),
+      acting.staffUserId,
+      requestId,
+      acting.outletId,
+    ),
+  });
+});
+
+posOverrideRouter.post(
+  "/approvals/:requestId/cancel",
+  jsonBody,
+  async (req, res) => {
+    const { requestId } = approvalRequestParamsSchema.parse(req.params);
+    idempotencyKeyOf(req);
+    const acting = requiredActingStaff(req);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      data: await cancelOwnPosOverrideApproval(
+        getTenantContext(req),
+        acting.staffUserId,
+        requestId,
+        acting.outletId,
+      ),
+    });
+  },
+);

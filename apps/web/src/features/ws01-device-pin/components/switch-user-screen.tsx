@@ -232,6 +232,14 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
         objectId={DEMO_OBJECT_ID}
         requesterId={active?.userId ?? null}
         outletId={active?.outletId}
+        onRelogin={() => {
+          setOverrideOpen(false);
+          if (active)
+            setPicked({
+              userId: active.userId,
+              displayName: active.displayName,
+            });
+        }}
         defaultValueIdr={350_000}
         onApproved={(result) => {
           setOverrideDone(result);

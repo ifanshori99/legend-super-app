@@ -37,6 +37,8 @@ import { defineEndpoint } from "../api/index.ts";
 import { defineDomainEvent } from "../events/index.ts";
 import {
   MAX_STAFF_PIN_ATTEMPTS,
+  approvalRequestParamsSchema,
+  approvalRequestSchema,
   identityDigestSchema,
   objectIdSchema,
   objectTypeSchema,
@@ -327,6 +329,34 @@ export const getPosOverride = defineEndpoint({
   path: "/api/pos-overrides/:overrideId",
   params: posOverrideParamsSchema,
   response: dataResponseSchema(posOverrideViewSchema),
+});
+
+/**
+ * POS "Berhenti menunggu" (sub-brief E3): the device's acting cashier
+ * withdraws their own pending phone override (`createPosOverride` with
+ * `supervisor_phone`; `:requestId` = its `approvalRequestId`) at the device's
+ * outlet; the override then ends as `cancelled`. Needs the device token and
+ * the X-Acting-Staff token, not the back-office MFA. 200 cancelled (also on a
+ * repeat), 404 for anyone else's or a non-POS request, 409 once decided.
+ */
+/**
+ * PhoneWait poll (sub-brief E3): the acting cashier reads their own phone
+ * override's approval request (`:requestId` = its `approvalRequestId`) at the
+ * device's outlet, as the latest level of its chain. Same guards and scope as
+ * `cancelPosOverrideApproval`; anything else is 404.
+ */
+export const getPosOverrideApproval = defineEndpoint({
+  method: "GET",
+  path: "/api/pos-overrides/approvals/:requestId",
+  params: approvalRequestParamsSchema,
+  response: dataResponseSchema(approvalRequestSchema),
+});
+
+export const cancelPosOverrideApproval = defineEndpoint({
+  method: "POST",
+  path: "/api/pos-overrides/approvals/:requestId/cancel",
+  params: approvalRequestParamsSchema,
+  response: dataResponseSchema(approvalRequestSchema),
 });
 
 // ------------------------------------------------------------------- events

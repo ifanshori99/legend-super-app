@@ -51,6 +51,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
+import type { ApprovalRequest } from "@starter/shared/identity";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { approvalRequests } from "../db/schema/platform-approval";
@@ -75,6 +76,8 @@ import {
   type Tx,
 } from "./permission-resolver";
 import {
+  cancelOwnModuleApprovalRequest,
+  getOwnModuleApprovalRequest,
   openApprovalRequest,
   resolveApprovalChainOutcome,
 } from "./platform-approval.service";
@@ -864,4 +867,59 @@ export async function settlePosOverrideForApproval(
     if (!row) return null;
     return toView(await settlePending(tx, context.tenant, context, row, now));
   });
+}
+
+/**
+ * POST /api/pos-overrides/approvals/:requestId/cancel (sub-brief E3, POS
+ * "Berhenti menunggu"): the device's acting cashier withdraws their own
+ * pending phone-approval override. `requestId` is the override's
+ * `approvalRequestId`. Only a `pos_override` request requested by that
+ * cashier at the device's outlet qualifies (cancelOwnModuleApprovalRequest);
+ * anything else is 404, decided or expired is 409, a repeat is 200. The
+ * override row is then settled at once (cancelled: no override), so the next
+ * poll sees it; the approval.resolved consumer would settle it too
+ * (idempotent).
+ */
+export async function cancelOwnPosOverrideApproval(
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  outletId: string,
+  now = new Date(),
+): Promise<ApprovalRequest> {
+  const { request, chainId } = await cancelOwnModuleApprovalRequest(
+    tenant,
+    actorUserId,
+    requestId,
+    { outletId, sourceModule: POS_OVERRIDE_SOURCE_MODULE },
+    now,
+  );
+  await settlePosOverrideForApproval(
+    outletContext(tenant, outletId),
+    chainId,
+    now,
+  );
+  return request;
+}
+
+/**
+ * GET /api/pos-overrides/approvals/:requestId (sub-brief E3): the acting
+ * cashier polls their own phone override's approval request (PhoneWait reads
+ * its deadline, decider and reason). Same scope as the cancel: a
+ * `pos_override` request by that cashier at the device's outlet, else 404.
+ */
+export async function getOwnPosOverrideApproval(
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  outletId: string,
+  now = new Date(),
+): Promise<ApprovalRequest> {
+  return getOwnModuleApprovalRequest(
+    tenant,
+    actorUserId,
+    requestId,
+    { outletId, sourceModule: POS_OVERRIDE_SOURCE_MODULE },
+    now,
+  );
 }

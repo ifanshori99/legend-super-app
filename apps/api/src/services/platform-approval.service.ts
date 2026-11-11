@@ -880,21 +880,110 @@ export async function cancelOwnApprovalRequest(
   requestId: string,
   now = new Date(),
 ): Promise<ApprovalRequest> {
+  return (await cancelOwnRequest(tenant, actorUserId, requestId, null, now))
+    .request;
+}
+
+/**
+ * A source module's own cancel path (sub-brief E3, POS "Berhenti menunggu"):
+ * the requester withdraws their pending request of `sourceModule` at one
+ * outlet. Same rules as the back-office cancel; the SQL read adds the outlet
+ * and the source module, so another module's request, another outlet or
+ * another tenant answers 404 exactly like a missing one. The caller owns the
+ * guards (POS: signed device + acting cashier; `actorUserId` and `outletId`
+ * come from the verified token, never from the body).
+ */
+export async function cancelOwnModuleApprovalRequest(
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  scope: { readonly outletId: string; readonly sourceModule: string },
+  now = new Date(),
+): Promise<{ request: ApprovalRequest; chainId: string }> {
+  return cancelOwnRequest(
+    tenant,
+    actorUserId,
+    requestId,
+    {
+      outletId: outletIdSchema.parse(scope.outletId),
+      sourceModule: scope.sourceModule,
+    },
+    now,
+  );
+}
+
+/**
+ * GET /api/pos-overrides/approvals/:requestId (sub-brief E3, PhoneWait poll):
+ * the requester reads their own request of `sourceModule` at one outlet, with
+ * the same SQL scope as cancelOwnModuleApprovalRequest (anything else is
+ * 404). Reports the chain's latest level, so a 2-level chain read by its
+ * level-1 id is pending until the last level ends.
+ */
+export async function getOwnModuleApprovalRequest(
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  scope: { readonly outletId: string; readonly sourceModule: string },
+  now = new Date(),
+): Promise<ApprovalRequest> {
   const caller = await loadCaller(tenant, actorUserId, false, now);
   const membership = membershipContext(tenant, actorUserId, caller.data, now);
   if (membership === null) throw notFound();
   const context = establishScopedTenantContext(tenant, { kind: "tenant" });
   return withTenant(db, context, async (tx) => {
-    const [row] = await tx
-      .select()
-      .from(approvalRequests)
-      .where(
-        and(
-          eq(approvalRequests.tenantId, tenant.tenantId),
-          eq(approvalRequests.id, requestId),
-          eq(approvalRequests.requestedBy, actorUserId),
-        ),
-      );
+    const row = await findOwnRequest(tx, tenant, actorUserId, requestId, {
+      outletId: outletIdSchema.parse(scope.outletId),
+      sourceModule: scope.sourceModule,
+    });
+    if (!row || (row.outletId !== null && !covers(membership, row.outletId)))
+      throw notFound();
+    const latest = (await chainRows(tx, row.chainId)).at(-1);
+    return toView(latest ?? row, now, actorUserId);
+  });
+}
+
+/** The caller's own request by id; `scope` adds the outlet and source module. */
+async function findOwnRequest(
+  tx: Tx,
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  scope: { readonly outletId: OutletId; readonly sourceModule: string } | null,
+): Promise<Row | undefined> {
+  const [row] = await tx
+    .select()
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenant.tenantId),
+        eq(approvalRequests.id, requestId),
+        eq(approvalRequests.requestedBy, actorUserId),
+        ...(scope === null
+          ? []
+          : [
+              eq(approvalRequests.outletId, scope.outletId),
+              eq(approvalRequests.sourceModule, scope.sourceModule),
+            ]),
+      ),
+    );
+  return row;
+}
+
+/** `scope` null = back-office cancel of an inbox request (any outlet reached). */
+async function cancelOwnRequest(
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  scope: { readonly outletId: OutletId; readonly sourceModule: string } | null,
+  now: Date,
+): Promise<{ request: ApprovalRequest; chainId: string }> {
+  const sourceModule = scope?.sourceModule ?? INBOX_SOURCE_MODULE;
+  const caller = await loadCaller(tenant, actorUserId, false, now);
+  const membership = membershipContext(tenant, actorUserId, caller.data, now);
+  if (membership === null) throw notFound();
+  const context = establishScopedTenantContext(tenant, { kind: "tenant" });
+  return withTenant(db, context, async (tx) => {
+    const row = await findOwnRequest(tx, tenant, actorUserId, requestId, scope);
     if (!row) throw notFound();
     if (row.outletId !== null && !covers(membership, row.outletId))
       throw notFound();
@@ -903,9 +992,10 @@ export async function cancelOwnApprovalRequest(
         "CONFLICT",
         "Permintaan approval sudah diputuskan atau kedaluwarsa dan tidak bisa dibatalkan.",
       );
-    // Only inbox-opened requests are withdrawn here; other modules cancel
-    // their own through cancelApprovalRequest.
-    if (row.sourceModule !== INBOX_SOURCE_MODULE) throw conflict();
+    // Back office: only inbox-opened requests are withdrawn here; other
+    // modules cancel their own through cancelApprovalRequest or their scoped
+    // path (cancelOwnModuleApprovalRequest).
+    if (row.sourceModule !== sourceModule) throw conflict();
     // Apply the deadline first: a pending request past it is expired (409,
     // which rolls the expiry back for the sweep to announce), not cancelled.
     const current = await resolveApprovalChainOutcome(tx, context, {
@@ -927,7 +1017,10 @@ export async function cancelOwnApprovalRequest(
     // The chain's terminal row, not the row of the id sent: a 2-level chain
     // cancelled via its level-1 id reports the cancelled level-2 row.
     const terminal = (await chainRows(tx, row.chainId)).at(-1);
-    return toView(terminal ?? row, now, actorUserId);
+    return {
+      request: toView(terminal ?? row, now, actorUserId),
+      chainId: row.chainId,
+    };
   });
 }
 
