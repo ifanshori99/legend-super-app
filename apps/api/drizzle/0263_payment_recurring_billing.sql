@@ -67,6 +67,11 @@ CREATE TABLE "subscription_invoices" (
 	CONSTRAINT "subscription_invoices_review_reason_check" CHECK ("subscription_invoices"."status" <> 'needs_review' OR "subscription_invoices"."review_reason" IS NOT NULL)
 );
 --> statement-breakpoint
+-- outlets and tenant_integrations force RLS: ADD CONSTRAINT ... FOREIGN KEY by a non-superuser
+-- owner fails with "tenant context is required" while forced (merge train batch48h, same
+-- pattern as 0202). RLS is re-forced right after the FK block.
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.tenant_integrations NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "payment_recurring_plans" ADD CONSTRAINT "payment_recurring_plans_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_recurring_plans" ADD CONSTRAINT "payment_recurring_plans_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_recurring_plans" ADD CONSTRAINT "payment_recurring_plans_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -80,6 +85,8 @@ ALTER TABLE "subscription_invoices" ADD CONSTRAINT "subscription_invoices_tenant
 ALTER TABLE "subscription_invoices" ADD CONSTRAINT "subscription_invoices_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "subscription_invoices" ADD CONSTRAINT "subscription_invoices_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "subscription_invoices" ADD CONSTRAINT "subscription_invoices_subscription_fk" FOREIGN KEY ("tenant_id","subscription_id") REFERENCES "public"."payment_recurring_subscriptions"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.tenant_integrations FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE INDEX "payment_recurring_plans_outlet_idx" ON "payment_recurring_plans" USING btree ("tenant_id","outlet_id","status");--> statement-breakpoint
 CREATE INDEX "payment_recurring_subscriptions_outlet_idx" ON "payment_recurring_subscriptions" USING btree ("tenant_id","outlet_id","status");--> statement-breakpoint
 CREATE INDEX "payment_recurring_subscriptions_customer_idx" ON "payment_recurring_subscriptions" USING btree ("tenant_id","customer_profile_id");--> statement-breakpoint
