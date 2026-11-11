@@ -74,6 +74,7 @@ import {
   type World,
 } from "./order-recovery-helpers.ts";
 import { owner } from "./floor-test-helpers.ts";
+import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 
 // Each case builds a paid order through the HTTP flow; allow for a loaded machine.
 vi.setConfig({ testTimeout: 120_000 });
@@ -620,7 +621,18 @@ async function refundInput(
       w.supervisor.userId,
       amountIdr,
       toUlid(orderId),
-      randomUUID().replaceAll("-", "").padEnd(64, "0"),
+      // The POS order consumer re-derives the fingerprint from the stored row
+      // (legend-fjwxo), so a raw fixture row needs a real one.
+      pinOverrideFixtureFingerprint({
+        requestedBy: cashierId,
+        outletId: w.tenant.outletId,
+        action: "refund",
+        valueIdr: amountIdr,
+        reason: "Pelanggan salah pesan",
+        objectType: "order",
+        objectId: toUlid(orderId),
+        approverUserId: w.supervisor.userId,
+      }),
     ],
   );
   return {
