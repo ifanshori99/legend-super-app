@@ -3,9 +3,9 @@
 -- inside the leave range) is NOT a leave day. app.approved_leaves_on no longer
 -- returns it and app.flag_attendance_for_leave no longer flags a log made on
 -- it, so the day is paid as work and never sits in HR review as a clash. Same
--- bodies as 0276 and 0277 plus that one condition; grants are unchanged.
+-- bodies as 0256 and 0257 plus that one condition; grants are unchanged.
 -- F2: backfill, last statement. Clock-ins that clashed with an approved leave
--- before 0277 existed were never flagged. The final UPDATE flags them with the
+-- before 0257 existed were never flagged. The final UPDATE flags them with the
 -- same rule as app.flag_attendance_for_leave: `in` log, validity valid or
 -- flagged, review_status none, pending or accepted (an old acceptance is
 -- reopened, reviewed_by and reviewed_at cleared), business date inside an

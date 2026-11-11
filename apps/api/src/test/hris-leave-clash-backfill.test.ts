@@ -21,7 +21,7 @@
 //    target is swapped for the view). If the statement cannot be scoped that
 //    way, it runs unscoped.
 //  - An accepted log (validity valid, review accepted) is reopened, like
-//    app.flag_attendance_for_leave (0277); a rejected log and an `out` log are
+//    app.flag_attendance_for_leave (0257); a rejected log and an `out` log are
 //    never touched.
 //  - A holiday known at request time is stored in leave excluded_holiday_dates;
 //    the test sets it on the pending leave by SQL (the HTTP holiday path is not
@@ -617,7 +617,7 @@ function backfillStatement(): string {
   const update = statements.find((part) =>
     /^UPDATE\s+(?:public\.)?"?attendance_logs"?/i.test(part),
   );
-  expect(update, "0278 has one backfill UPDATE of attendance_logs").toBeDefined();
+  expect(update, "0258 has one backfill UPDATE of attendance_logs").toBeDefined();
   return update!.replace(/;\s*$/, "");
 }
 
@@ -688,7 +688,7 @@ async function runBackfill(
   }
 }
 
-describe("[F2] 0278 backfill flags old leave + attendance clashes", () => {
+describe("[F2] 0258 backfill flags old leave + attendance clashes", () => {
   it("[F2] flags valid and accepted `in` logs inside an approved leave, leaves every other log alone", async () => {
     const s = await newScenario("f2a");
     await s.seedLeave({
@@ -812,7 +812,7 @@ describe("[F2] 0278 backfill flags old leave + attendance clashes", () => {
   });
 });
 
-describe("[P2-2] 0278 backfill leaves closed payroll periods alone", () => {
+describe("[P2-2] 0258 backfill leaves closed payroll periods alone", () => {
   it("[P2-2] a log on a day inside a locked payroll run is not reopened; a log on an open day is flagged", async () => {
     const s = await newScenario("p22");
     await s.seedLeave({

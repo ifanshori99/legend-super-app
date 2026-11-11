@@ -14,7 +14,7 @@
 -- reviewer). A rejected log is never touched. Result: validity flagged,
 -- review_status pending, reason leave_approved appended once. Calling it again
 -- changes nothing (idempotent).
--- Pattern of app.approved_leaves_on (0276): tied to the tenant (nothing happens
+-- Pattern of app.approved_leaves_on (0256): tied to the tenant (nothing happens
 -- unless the caller's own app.tenant_id is p_tenant), SECURITY DEFINER, pinned
 -- search_path, the caller's app.outlet_ids restored before returning, EXECUTE
 -- for legend_app only. Returns the log and outlet of every row it changed.
