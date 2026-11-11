@@ -1070,6 +1070,7 @@ export async function markOverdueSubscriptionsPastDue(
       logger.warn(
         {
           job: "payment_gateway_poll",
+          subscriptionId: candidate.id,
           errorName: error instanceof Error ? error.name : "unknown",
         },
         "Subscription past-due marking failed for one row",
