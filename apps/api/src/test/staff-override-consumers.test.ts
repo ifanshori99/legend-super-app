@@ -31,7 +31,10 @@ import { setStaffPin } from "../services/device-pin.service.ts";
 import { setAuditWriter, type AuditEntry } from "../services/audit-writer.ts";
 import { decideApprovalRequest } from "../services/platform-approval.service.ts";
 import { handleApprovalResolved } from "../services/staff-override-consumers.ts";
-import { createPosOverride } from "../services/staff-override.service.ts";
+import {
+  createPosOverride,
+  getPosOverride,
+} from "../services/staff-override.service.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const bandung = cafeLegendAccessFixtures.outletIds.bandung;
@@ -467,6 +470,176 @@ describe("legend-obh5 approval.resolved consumer (sourceModule pos_override)", (
       status: "approved",
       approved_by: supervisor,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// legend-cx3nb: an approval.resolved event that died in the m1 window (worker
+// had no audit writer) is replayed by the operator long after the chain's
+// deadline. The consumer must judge the chain by what the database says now:
+// a decision made in time stands, an undecided overdue chain is expired.
+//
+// Assumptions (the brief leaves them open): the deadline is moved into the past
+// by rewriting approval_requests timestamps on the owner pool, like
+// device-pin-service.test.ts does; the late event for the overdue pending chain
+// is a well-formed "approved" envelope (the replay of a dead event never
+// carries more than the DB allows); "poll" is getPosOverride by the cashier.
+// ---------------------------------------------------------------------------
+
+/** Pretend the chain was opened 2h ago, decided 90 min ago, due 1h ago. */
+async function backdateDecidedChain(chainId: string) {
+  await owner.query(
+    `UPDATE approval_requests
+       SET created_at = now() - interval '2 hours',
+           decided_at = CASE WHEN decided_at IS NULL THEN NULL
+                             ELSE now() - interval '90 minutes' END,
+           deadline_at = now() - interval '1 hour'
+     WHERE tenant_id = $1 AND chain_id = $2`,
+    [tenantId, chainId],
+  );
+}
+
+function deniedAudits(overrideId: string) {
+  return audits.filter(
+    (row) => row.action === "pos_override.denied" && row.objectId === overrideId,
+  );
+}
+
+function recordedAudits(overrideId: string) {
+  return audits.filter(
+    (row) =>
+      row.action === "pos_override.recorded" && row.objectId === overrideId,
+  );
+}
+
+describe("legend-cx3nb late replay of a dead approval.resolved event", () => {
+  it("legend-cx3nb AUTH-06 (a) approved in time, consumed after the deadline: approved once, a second replay is a no-op", async () => {
+    const cashier = await createUser("cashier");
+    const supervisor = await createUser("supervisor");
+    const pending = await phoneOverride(cashier);
+    await approve(supervisor, pending.approvalRequestId!);
+    const event = await resolvedEventOf(pending.approvalRequestId!);
+    // The decision was in time; only the consumer is late.
+    await backdateDecidedChain(pending.approvalRequestId!);
+
+    await handleApprovalResolved(workerContext, event);
+    const settled = await overrideRow(pending.id);
+    expect(settled).toMatchObject({
+      status: "approved",
+      approved_by: supervisor,
+      requested_by: cashier,
+    });
+    expect(settled?.resolved_at).not.toBeNull();
+    expect((await recordedEvents(pending.id)).map((row) => row.name)).toEqual([
+      "pos_override.recorded",
+    ]);
+    expect(recordedAudits(pending.id)).toHaveLength(1);
+
+    await handleApprovalResolved(workerContext, event);
+    expect(await overrideRow(pending.id)).toEqual(settled);
+    expect((await recordedEvents(pending.id)).map((row) => row.name)).toEqual([
+      "pos_override.recorded",
+    ]);
+    expect(recordedAudits(pending.id)).toHaveLength(1);
+    expect(deniedAudits(pending.id)).toHaveLength(0);
+  });
+
+  it("legend-cx3nb AUTH-06 (b) still pending past the deadline at consumption: expired, no override recorded", async () => {
+    const cashier = await createUser("cashier");
+    const supervisor = await createUser("supervisor");
+    const pending = await phoneOverride(cashier);
+    await owner.query(
+      `UPDATE approval_requests
+         SET created_at = now() - interval '2 hours',
+             deadline_at = now() - interval '1 hour'
+       WHERE tenant_id = $1 AND chain_id = $2`,
+      [tenantId, pending.approvalRequestId],
+    );
+
+    const late = forgedResolved({
+      chainId: pending.approvalRequestId!,
+      objectId: pending.id,
+      requestedBy: cashier,
+      decidedBy: supervisor,
+    });
+    await handleApprovalResolved(workerContext, late);
+    const expired = await overrideRow(pending.id);
+    expect(expired).toMatchObject({ status: "expired", approved_by: null });
+    expect(await recordedEvents(pending.id)).toHaveLength(0);
+    expect(recordedAudits(pending.id)).toHaveLength(0);
+
+    // Replaying again keeps it expired and records nothing.
+    await handleApprovalResolved(workerContext, late);
+    expect(await overrideRow(pending.id)).toEqual(expired);
+    expect(await recordedEvents(pending.id)).toHaveLength(0);
+    expect(recordedAudits(pending.id)).toHaveLength(0);
+  });
+
+  it("legend-cx3nb AUTH-06 (c) already settled by the cashier's poll, then the event is replayed: nothing changes, no second audit or event", async () => {
+    const cashier = await createUser("cashier");
+    const supervisor = await createUser("supervisor");
+    const pending = await phoneOverride(cashier);
+    await approve(supervisor, pending.approvalRequestId!);
+    const event = await resolvedEventOf(pending.approvalRequestId!);
+
+    // Poll settles it first (the worker never delivered the event).
+    expect(await getPosOverride(tenant, cashier, pending.id)).toMatchObject({
+      status: "approved",
+      approvedBy: supervisor,
+    });
+    const settled = await overrideRow(pending.id);
+    expect(settled?.status).toBe("approved");
+    expect(recordedAudits(pending.id)).toHaveLength(1);
+
+    await backdateDecidedChain(pending.approvalRequestId!);
+    await handleApprovalResolved(workerContext, event);
+    await handleApprovalResolved(workerContext, event);
+
+    expect(await overrideRow(pending.id)).toEqual(settled);
+    expect((await recordedEvents(pending.id)).map((row) => row.name)).toEqual([
+      "pos_override.recorded",
+    ]);
+    expect(recordedAudits(pending.id)).toHaveLength(1);
+    expect(deniedAudits(pending.id)).toHaveLength(0);
+  });
+
+  // (d) lives in pos-order-approval.test.ts: it needs a real POS order and the
+  // void consumeApproval path, whose fixtures are built there.
+
+  // (e) Assumptions: "revoke the override permission" = the supervisor's role
+  // assignments are removed after the approval and before the replay (the
+  // chain stays approved in the database); the denial reason is recorded in
+  // the audit entry's `reason` field.
+  it("legend-cx3nb AUTH-06 (e) supervisor loses the override permission after approving, then the event is replayed: rejected, denial audited, nothing recorded", async () => {
+    const cashier = await createUser("cashier");
+    const supervisor = await createUser("supervisor");
+    const pending = await phoneOverride(cashier);
+    await approve(supervisor, pending.approvalRequestId!);
+    const event = await resolvedEventOf(pending.approvalRequestId!);
+    await owner.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+      [tenantId, supervisor],
+    );
+
+    await handleApprovalResolved(workerContext, event);
+    expect(await overrideRow(pending.id)).toMatchObject({
+      status: "rejected",
+    });
+    const denied = deniedAudits(pending.id);
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.reason).toBe("approver_lacks_override_permission");
+    expect(recordedAudits(pending.id)).toHaveLength(0);
+    expect(
+      (await recordedEvents(pending.id)).filter(
+        (row) => row.name === "pos_override.recorded",
+      ),
+    ).toHaveLength(0);
+
+    // A second replay changes nothing.
+    await handleApprovalResolved(workerContext, event);
+    expect(await overrideRow(pending.id)).toMatchObject({ status: "rejected" });
+    expect(deniedAudits(pending.id)).toHaveLength(1);
+    expect(await recordedEvents(pending.id)).toHaveLength(0);
   });
 });
 

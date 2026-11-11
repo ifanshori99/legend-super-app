@@ -48,6 +48,24 @@ GROUP BY tenant_id, destination ORDER BY jumlah DESC;
 
 Baris yang jatuh di jendela m1 bisa diputar ulang lewat rute operator replay outbox (hanya baris `dead`). Pisahkan yang mati karena sebab lain dulu (lihat log worker pada waktu itu: `AuditUnavailableError`).
 
+Putar ulang (legend-cx3nb), hanya SETELAH worker dengan audit writer terdeploy (gerbang rilis founder):
+
+1. Daftar id baris dalam jendela, hanya yang pos_override (modul lain, misalnya cuti, refund, jurnal, punya konsumen sendiri: putuskan terpisah):
+
+   ```sql
+   SELECT id, tenant_id, destination, dead_lettered_at
+   FROM domain_event_outbox
+   WHERE dispatch_state = 'dead'
+     AND event->>'name' = 'approval.resolved'
+     AND event->'payload'->>'sourceModule' = 'pos_override'
+   ORDER BY dead_lettered_at;
+   ```
+
+2. Per id: `POST /api/ops/outbox/:outboxId/replay` dengan body `{ "reason": "legend-cx3nb: dead di jendela m1 tanpa audit writer" }`. Perlu izin `ops.outbox.replay` dan sesi operator di tenant baris itu (jalankan per tenant). `:outboxId` harus ULID 26 karakter, bukan uuid dari kolom `id`: ubah dulu dengan `uuidToUlid` dari `@starter/shared/core`. Rute ini per id (tidak ada replay massal); mulai dengan satu baris dan cek hasilnya sebelum sisanya.
+3. Cek: baris keluar dari `dead`, `pos_overrides.status` bukan `pending`, ada jejak di `domain_event_replays`.
+
+Aman dari sisi uang (review architect, test `legend-cx3nb AUTH-06 (a)-(e)` di `staff-override-consumers.test.ts` dan `pos-order-approval.test.ts`): konsumen idempoten dan gagal-tertutup. Chain yang lewat batas waktu menjadi `expired` tanpa override. Chain yang disetujui tepat waktu hanya dicatat dan tidak memindahkan uang; uang bergerak lewat `consumeApproval`, yang menuntut persetujuan segar (jendela 15 menit dari waktu keputusan, bukan waktu replay). Terbukti dengan test untuk void; refund dan diskon memakai jalur yang sama menurut review architect, tetapi belum ada test sendiri. Izin approver dicek ulang saat replay; dicabut berarti `rejected`.
+
 ## 5. Event edge yang diparkir lalu ditandai `refused` selamanya
 
 ```sql

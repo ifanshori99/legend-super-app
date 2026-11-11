@@ -3256,3 +3256,10 @@ Langkah berikut CTO baru:
 - `resolveUnverifiedRecipientService` jalur (a) kini hanya Owner tenant (`roles.templateKey='owner'`, `scopeType='tenant'`, valid sekarang, tidak ber-ban). Kasir, manajer, dan peran custom ditolak 422 `RECIPIENT_NOT_FOUND`. Jalur (b) (`shareholders.user_id` baris itu) tidak berubah. `FOR SHARE` kini juga mengunci baris `user`.
 - Test gagal-dulu: kasir dan manajer tenant sama dapat 200 sebelum perubahan (2 gagal dari 29). Sesudah: 32/32 lulus, tsc api 0, prettier bersih. Kasus baru: custom role dengan izin manage, Owner tenant lain, Owner scope outlet, Owner lain lulus, login pemegang saham ber-ban ditolak.
 - Review architect xhigh: approve; 3 celah test dan #4 (lock user) dikerjakan.
+## 2026-11-11: legend-cx3nb putar ulang approval.resolved mati (ws/cx3nb-replay-outbox, basis m1 a5d58300)
+
+- Basi sebagian: rute replay per-id sudah ada (legend-m119, `ops-outbox.routes.ts`); tidak ada replay massal, tidak dibuat (di luar kartu).
+- Kode produksi tidak diubah: konsumen pos_override idempoten dan gagal-tertutup (review architect). Test karakterisasi (a)-(e) dilulus, tidak ada gagal-dulu karena tidak ada cacat.
+- Runbook `worker-audit-writer-m1-window.md` bagian 4: prosedur replay (SQL, path `/api/ops/...`, ULID, per tenant, cek hasil).
+- Sisa operasional (butuh gerbang founder): replay di production setelah worker dengan audit writer terdeploy.
+- Temuan kecil non-uang: `pos-shift.service.ts:1412` `approvedAt` memakai `resolvedAt` (waktu proses), bukan waktu keputusan.

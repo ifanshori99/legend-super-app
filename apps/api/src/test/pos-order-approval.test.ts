@@ -25,7 +25,13 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import {
+  eventEnvelopeSchema,
+  type EventEnvelope,
+} from "@starter/shared/events";
+import { approvalResolvedEvent } from "@starter/shared/identity";
 import { createApp } from "../app.ts";
+import { handleApprovalResolved } from "../services/staff-override-consumers.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
 import { voidPosOrder } from "../services/pos-order.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
@@ -217,7 +223,9 @@ async function phoneApproval(input: {
   base: Date;
   decidedMinutesAgo: number[];
   processedMinutesAgo: number;
-}): Promise<{ approvedBy: string; overrideId: string }> {
+  /** legend-cx3nb: the override row is still pending (the consumer never ran). */
+  unsettled?: boolean;
+}): Promise<{ approvedBy: string; overrideId: string; chainId: string }> {
   const overrideId = createUlid(input.base.getTime());
   const overrideUuid = ulidToUuid(overrideId);
   const at = (minutes: number) =>
@@ -256,23 +264,24 @@ async function phoneApproval(input: {
          (id, tenant_id, outlet_id, action, method, status, requested_by, approved_by,
           reason, value_idr, object_type, object_id, approval_request_id,
           request_fingerprint, created_at, resolved_at)
-       VALUES ($1, $2, $3, 'void', 'supervisor_phone', 'approved', $4, $5,
+       VALUES ($1, $2, $3, 'void', 'supervisor_phone', $11, $4, $5,
                'Pelanggan salah pesan', 1000000, 'order', $6, $7, $8, $9, $10)`,
       [
         overrideUuid,
         tenant.tenantId,
         tenant.outletId,
         cashier.userId,
-        supervisor.userId,
+        input.unsettled ? null : supervisor.userId,
         input.orderId,
         chainId,
         randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
         at(60),
-        at(input.processedMinutesAgo),
+        input.unsettled ? null : at(input.processedMinutesAgo),
+        input.unsettled ? "pending" : "approved",
       ],
     );
   });
-  return { approvedBy: supervisor.userId, overrideId };
+  return { approvedBy: supervisor.userId, overrideId, chainId };
 }
 
 async function voidWith(
@@ -589,6 +598,78 @@ describe("POS approval carries the override id (legend-0gy1)", () => {
     const voided = await voidWith(fresh.orderId, fresh.status, recent, base);
     expect(voided.status).toBe("voided");
     expect(await usesOf(recent.overrideId)).toBe(1);
+  });
+
+  // legend-cx3nb (d): a dead approval.resolved event replayed late settles the
+  // override NOW (resolvedAt fresh), but the 15-minute window of a phone
+  // approval counts from the supervisor's decision on the chain (decidedAt).
+  // Assumptions: the chain and the still-pending override are inserted directly
+  // (like phoneApproval), the replayed event is a well-formed "approved"
+  // envelope for that chain, the worker context is tenant-wide from a job.
+  it("legend-cx3nb AUTH-06 (d) a late replay of the approval event does not make the approval fresh: void is refused after 15 minutes from the decision, 0 uses", async () => {
+    const base = new Date();
+    const order = await openOrder();
+    const { chainId, ...approval } = await phoneApproval({
+      orderId: order.orderId,
+      base,
+      decidedMinutesAgo: [20],
+      processedMinutesAgo: 0,
+      unsettled: true,
+    });
+    const replayed = approvalResolvedEvent.envelopeSchema.parse({
+      id: createUlid(),
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      name: approvalResolvedEvent.name,
+      version: approvalResolvedEvent.version,
+      aggregateType: approvalResolvedEvent.entry.aggregateType,
+      aggregateId: chainId,
+      sequence: 1,
+      occurredAt: new Date(base.getTime() - 20 * MINUTE).toISOString(),
+      actor: { type: "user", id: supervisor.userId },
+      deviceId: null,
+      idempotencyKey: `cx3nb-late:${chainId}`,
+      payloadSchemaRef: approvalResolvedEvent.payloadSchemaRef,
+      payload: {
+        chainId,
+        requestId: chainId,
+        sourceModule: "pos_override",
+        actionType: "void",
+        objectType: "pos_override",
+        objectId: approval.overrideId,
+        source: "user",
+        outcome: "approved",
+        level: 1,
+        requiredLevels: 1,
+        requestedBy: cashier.userId,
+        decidedBy: supervisor.userId,
+        amountIdr: 1_000_000,
+      },
+    }) as EventEnvelope;
+    eventEnvelopeSchema.parse(replayed);
+    await handleApprovalResolved(
+      establishScopedTenantContext(
+        establishTenantContext({
+          tenantId: tenantIdSchema.parse(tenant.tenantId),
+          brandId: null,
+          source: "job",
+        }),
+        { kind: "tenant" },
+      ),
+      replayed,
+    );
+    const settled = await owner.query<{ status: string; resolved_at: Date }>(
+      `SELECT status, resolved_at FROM pos_overrides WHERE id = $1::uuid`,
+      [ulidToUuid(approval.overrideId)],
+    );
+    // The replay did approve it just now: resolvedAt is fresh, the decision is not.
+    expect(settled.rows[0]?.status).toBe("approved");
+    expect(settled.rows[0]?.resolved_at).not.toBeNull();
+
+    await expect(
+      voidWith(order.orderId, order.status, approval, new Date()),
+    ).rejects.toMatchObject({ code: "VOID_APPROVAL_REQUIRED" });
+    expect(await usesOf(approval.overrideId)).toBe(0);
   });
 
   it("a multi-level phone approval is as old as its last level's decision", async () => {
