@@ -143,6 +143,15 @@ export const myAccessViewSchema = z.strictObject({
       expiresAt: z.string(),
     })
     .nullable(),
+  /**
+   * True when the caller's assignments can ever pass PATCH
+   * /employees/:id/manager: HR (`hr.employee.manage`) or a GM whose
+   * `hr.attendance.manage` comes from a brand/tenant assignment. An outlet
+   * manager or supervisor holds the permission but is always refused, so the
+   * web hides "Ubah atasan" for them. Presentation only: the API checks again.
+   * Defaults to false so an older server's view still parses.
+   */
+  canChangeEmployeeManager: z.boolean().default(false),
 });
 export type MyAccessView = z.infer<typeof myAccessViewSchema>;
 

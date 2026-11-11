@@ -1117,6 +1117,34 @@ async function seedForeignTenantEmployee() {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/me/access: canChangeEmployeeManager (presentation hint for the
+// "Ubah atasan" button; PATCH stays the authority and re-checks the scope)
+// ---------------------------------------------------------------------------
+describe("GET /api/me/access canChangeEmployeeManager", () => {
+  const hintOf = async (client: Client) => {
+    const res = await client.get("/api/me/access");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.data.canChangeEmployeeManager as unknown;
+  };
+
+  it("is true for HR (hr.employee.manage) and for a brand-scoped GM", async () => {
+    expect(await hintOf(hr.client)).toBe(true);
+    expect(await hintOf(gm.client)).toBe(true);
+  });
+
+  it("is false for an outlet-scoped supervisor and outlet manager, which PATCH answers 403", async () => {
+    expect(await hintOf(sup.client)).toBe(false);
+    expect(await hintOf(om.client)).toBe(false);
+    const target = await seedEmployee();
+    expect((await patchManager(om.client, target, null)).status).toBe(403);
+  });
+
+  it("is false for plain staff", async () => {
+    expect(await hintOf(staff.client)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cleanup (audit_logs is append-only: delete with triggers off, like the GM test)
 // ---------------------------------------------------------------------------
 afterAll(async () => {

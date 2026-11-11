@@ -94,7 +94,7 @@ export const employeeMasterMessages = {
       selectPlaceholder: "Pilih atasan",
       none: "Tanpa atasan",
       optionLabel: "{name} ({employeeNo})",
-      reasonLabel: "Alasan (opsional)",
+      reasonLabel: "Alasan",
       reasonHint: "Maksimal 200 karakter.",
       save: "Simpan atasan",
       savedTitle: "Atasan diperbarui",

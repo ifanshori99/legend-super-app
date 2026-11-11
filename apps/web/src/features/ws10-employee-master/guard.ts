@@ -34,16 +34,14 @@ export function canEditEmployeePii(access: AreaAccess): boolean {
 }
 
 /**
- * Ubah atasan: HR (`hr.employee.manage`) or a brand GM (`hr.attendance.manage`).
- * Presentation only: the API decides by assignment scope and answers 403.
+ * Ubah atasan: the server says whether the caller's assignments can ever pass
+ * PATCH /employees/:id/manager (`canChangeEmployeeManager` in GET /api/me/access:
+ * HR, or a GM with brand/tenant scope). An outlet manager or supervisor holds
+ * `hr.attendance.manage` but is always refused, so permissions alone would
+ * show a dead button. Presentation only: the API still answers 403.
  */
-export const EMPLOYEE_MANAGER_CHANGE_PERMISSIONS = [
-  "hr.employee.manage",
-  "hr.attendance.manage",
-] as const;
-
 export function canChangeEmployeeManager(access: AreaAccess): boolean {
-  return holdsAny(access, EMPLOYEE_MANAGER_CHANGE_PERMISSIONS);
+  return access.canChangeEmployeeManager === true;
 }
 
 /** True when the visitor may read the employee master (presentation only). */

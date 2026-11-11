@@ -161,6 +161,7 @@ function ManagerChangeForm({
       <FormField
         label={t("employeeMaster.profile.manager.selectLabel")}
         id="manager-select"
+        required
       >
         <Select value={selected} onValueChange={setSelected}>
           <SelectTrigger>

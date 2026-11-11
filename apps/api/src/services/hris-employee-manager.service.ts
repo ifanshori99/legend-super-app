@@ -16,7 +16,8 @@
 // - Audit: exactly one `hris.employee_manager_change` row with before/after.
 
 import { and, eq, sql } from "drizzle-orm";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import type { ScopedTenantContext, TenantContext } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { z } from "@starter/shared/core";
 import {
   changeEmployeeManagerEndpoint,
@@ -64,6 +65,36 @@ function mayChangeManager(access: HrisAccess, homeOutletId: string): boolean {
   return reach.outletIds.some(
     (id) => id.toLowerCase() === homeOutletId.toLowerCase(),
   );
+}
+
+/**
+ * Whether this actor can change any employee's manager (hint for GET
+ * /api/me/access; the PATCH decides per employee). Keep in step with
+ * `mayChangeManager`: HR through any assignment, or a brand/tenant GM.
+ */
+export function mayChangeAnyEmployeeManager(access: HrisAccess): boolean {
+  return (
+    access.reach([HRIS_MANAGE_CODE]) !== null ||
+    access.brandOrWiderReach([GM_MANAGE_CODE]) !== null
+  );
+}
+
+/** Presentation hint for /me/access: false on any failure, never throws. */
+export async function canChangeAnyEmployeeManager(
+  tenant: TenantContext,
+  actorUserId: string,
+  now = new Date(),
+): Promise<boolean> {
+  try {
+    const context = establishScopedTenantContext(tenant, { kind: "tenant" });
+    return await withTenant(db, context, async (tx) =>
+      mayChangeAnyEmployeeManager(
+        await loadHrisAccess(tx, context, actorUserId, now),
+      ),
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function selectEmployee(

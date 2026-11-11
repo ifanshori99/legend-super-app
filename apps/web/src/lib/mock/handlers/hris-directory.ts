@@ -14,6 +14,7 @@
 // still lands in the shared attendance read model.
 import {
   cafeLegendHrisFixtures,
+  changeEmployeeManagerEndpoint,
   getEmployee,
   getEmployeePii,
   getEmploymentContract,
@@ -93,19 +94,24 @@ function viewerKindFor(role: Exclude<MockRole, "none">): HrisViewerKind {
   }
 }
 
-/** The mock's signed-in HRIS viewer, or null when it cannot be known. */
-export function mockHrisViewer(): HrisViewer | null {
+/** The role template from the `legend-mock-role` cookie, or null off the browser. */
+function mockRoleFromCookie(): MockRole | null {
   if (typeof document === "undefined") return null;
   const prefix = `${MOCK_ROLE_COOKIE}=`;
   const cookie = document.cookie
     .split("; ")
     .find((entry) => entry.startsWith(prefix));
-  const role = parseMockRole(
+  return parseMockRole(
     cookie === undefined
       ? undefined
       : decodeURIComponent(cookie.slice(prefix.length)),
   );
-  if (role === "none") return null;
+}
+
+/** The mock's signed-in HRIS viewer, or null when it cannot be known. */
+export function mockHrisViewer(): HrisViewer | null {
+  const role = mockRoleFromCookie();
+  if (role === null || role === "none") return null;
   const kind = viewerKindFor(role);
   return {
     kind,
@@ -290,11 +296,34 @@ registerMock(getMyHrisProfile, ({ scenario }) => {
   return { data: { employee: MOCK_ME, outlet: MOCK_OUTLET } };
 });
 
+// ---- Direct manager (legend-f4uvg) ------------------------------------------
+
+/**
+ * employeeId -> managerId, mutable so "Ubah atasan" shows the new manager on
+ * refetch. Seeded from the fixtures; reset with the other mock stores.
+ */
+export const hrisMockManagerStore = createMockStore<
+  Record<string, string | null>
+>(() =>
+  Object.fromEntries(
+    employees.map((employee) => [employee.id, employee.managerId]),
+  ),
+);
+
+/** The fixture employees with their current (possibly changed) manager. */
+export function hrisMockEmployees(): Employee[] {
+  const managers = hrisMockManagerStore.get();
+  return employees.map((employee) => ({
+    ...employee,
+    managerId: (managers[employee.id] ?? null) as Employee["managerId"],
+  }));
+}
+
 registerMock(listEmployees, ({ query, scenario }) => {
   // HR-01: an employee lists their own row only. Master data carries no PII,
   // so a back-office viewer (or the SSR loader, viewer unknown) gets the list.
   const viewer = mockHrisViewer();
-  const rows = employees
+  const rows = hrisMockEmployees()
     .filter((employee) => inViewerScope(viewer, employee))
     .filter(
       (employee) =>
@@ -319,10 +348,106 @@ registerMock(getEmployee, ({ params }) => {
   const viewer = mockHrisViewer();
   if (viewer?.kind === "self" && viewer.employeeId !== params.employeeId)
     throw new ApiError(404, "NOT_FOUND", "Karyawan tidak ditemukan.");
-  const employee = employees.find((row) => row.id === params.employeeId);
+  const employee = hrisMockEmployees().find(
+    (row) => row.id === params.employeeId,
+  );
   if (!employee)
     throw new ApiError(404, "NOT_FOUND", "Karyawan tidak ditemukan.");
   return { data: employee };
+});
+
+// ---- Ubah atasan (mirrors apps/api hris-employee-manager.service.ts) --------
+
+/**
+ * The mock has no role per employee, so "junior" is read from the position
+ * name (the API reads role templates: cashier, waiter, barista_cook, kitchen
+ * lead, warehouse...). Barista, cook, server and cashier are junior; head
+ * barista/chef/server, managers, HR, finance and marketing are not. An
+ * employee without a position counts as junior (vacuously, like the API).
+ */
+const JUNIOR_POSITION_NAMES: readonly string[] = [
+  "barista",
+  "cook",
+  "server",
+  "cashier",
+];
+
+function isJuniorEmployee(employee: Employee): boolean {
+  const position = cafeLegendHrisFixtures.positions.find(
+    (row) => row.id === employee.positionId,
+  );
+  return (
+    position === undefined ||
+    JUNIOR_POSITION_NAMES.includes(position.name.toLowerCase())
+  );
+}
+
+/** Same rule the shell uses to show the button: HR, owner and brand GM. */
+function mayChangeManagerInMock(role: MockRole): boolean {
+  return accessForMockRole(role).canChangeEmployeeManager === true;
+}
+
+registerMock(changeEmployeeManagerEndpoint, ({ params, body }) => {
+  const role = mockRoleFromCookie();
+  const viewer = mockHrisViewer();
+  if (viewer === null || role === null)
+    throw new ApiError(401, "UNAUTHENTICATED", "Masuk terlebih dahulu.");
+  const all = hrisMockEmployees();
+  const target = all.find((row) => row.id === params.employeeId);
+  if (!target)
+    throw new ApiError(404, "NOT_FOUND", "Karyawan tidak ditemukan.");
+  if (!mayChangeManagerInMock(role))
+    throw new ApiError(
+      403,
+      "FORBIDDEN",
+      "Peran Anda tidak boleh mengubah atasan karyawan ini.",
+    );
+  const newManagerId = body.managerId;
+  if (newManagerId === target.id)
+    throw new ApiError(
+      422,
+      "VALIDATION_ERROR",
+      "Karyawan tidak bisa menjadi atasan dirinya sendiri.",
+    );
+  if (target.managerId === newManagerId)
+    throw new ApiError(422, "VALIDATION_ERROR", "Atasan tidak berubah.");
+  if (newManagerId !== null) {
+    const manager = all.find((row) => row.id === newManagerId);
+    if (!manager || manager.status !== "active")
+      throw new ApiError(
+        422,
+        "MANAGER_NOT_ELIGIBLE",
+        "Atasan harus karyawan aktif di perusahaan ini.",
+      );
+    // Walk up from the new manager (iterative, visited set, depth cap 1000);
+    // reaching the employee, or a chain too deep to verify, is a cycle.
+    const managerOf = new Map<string, string | null>(
+      all.map((row) => [row.id, row.managerId]),
+    );
+    const seen = new Set<string>();
+    let current: string | null = manager.id;
+    while (current !== null && !seen.has(current)) {
+      if (current === target.id || seen.size > 1000)
+        throw new ApiError(
+          409,
+          "MANAGER_CYCLE",
+          "Atasan ini berada di bawah karyawan tersebut; hierarki tidak boleh melingkar.",
+        );
+      seen.add(current);
+      current = managerOf.get(current) ?? null;
+    }
+    if (!isJuniorEmployee(target) && isJuniorEmployee(manager))
+      throw new ApiError(
+        422,
+        "MANAGER_ROLE_TOO_LOW",
+        "Jabatan atasan lebih rendah dari karyawan ini.",
+      );
+  }
+  hrisMockManagerStore.set({
+    ...hrisMockManagerStore.get(),
+    [target.id]: newManagerId,
+  });
+  return { data: { ...target, managerId: newManagerId } };
 });
 
 /**

@@ -2155,3 +2155,11 @@ Cabang `ws/hris-leave-guard`, kartu 0c5yg, qmte, j06v, 5nv1 tetap terbuka (ditut
 - Web: tombol "Ubah atasan" + dialog di profil karyawan (komponen Select yang ada). Runbook diarahkan ke jalur ini untuk daftar manual dan rollback.
 - Review architect xhigh atas seluruh diff cabang: 1 blocking (atasan di luar jangkauan pemanggil, kebocoran lintas brand) dan 3 kecil dibetulkan (FOR SHARE atas atasan, ubah atasan sendiri, runbook). Sisa tidak diubah: tombol tampil bagi outlet manager (pemegang `hr.attendance.manage` scope outlet) lalu 403 saat simpan.
 - Bukti: 40 tes `hris-employee-manager-change.test.ts` + 39 tes backfill lulus; mutasi (izin dibuka, cek siklus/peran/jangkauan/diri sendiri dimatikan) membuat 9 dan 4 tes merah; 24 tes HRIS terkait lulus; typecheck shared/api/web, eslint, prettier hijau. Test kontrak root `tests/hris-contract.test.mjs` hanya di gerbang penuh merge train.
+
+## 2026-11-11: legend-f4uvg lanjutan (keputusan CTO: tombol tersembunyi, mock, review Q58)
+- Aturan 403 untuk ubah atasan sendiri disetujui CTO.
+- Tombol "Ubah atasan" disembunyikan bagi yang pasti ditolak server: `GET /api/me/access` kini memuat `canChangeEmployeeManager` (HR di scope mana pun, atau GM dengan assignment scope brand/tenant; false di support session read_only atau bila gagal dihitung). Dihitung oleh `canChangeAnyEmployeeManager` di `hris-employee-manager.service.ts`, selaras dengan `mayChangeManager`. Web membaca flag itu (`guard.ts`); server tetap penentu di PATCH. 3 tes baru.
+- Handler mock PATCH di `apps/web/src/lib/mock/handlers/hris-directory.ts` (store atasan yang bisa diubah, 403/404/422/409 cermin API; junior ditentukan dari nama jabatan).
+- Label dialog dirapikan: "(opsional)" tidak lagi dobel, pilihan atasan ditandai wajib.
+- Screenshot mock (desktop 1280, ponsel 390) dan halaman review founder `design/screens/review-q58.html` (satu pertanyaan Q58). Shot "atasan tidak aktif" (422) tidak bisa dibuat: pilihan atasan hanya memuat karyawan aktif, jadi UI sudah mencegahnya; server tetap menolak.
+- Gate: typecheck shared/api/web, eslint, prettier, 91 tes terarah, 154 tes node (access-contract, areas) hijau.
