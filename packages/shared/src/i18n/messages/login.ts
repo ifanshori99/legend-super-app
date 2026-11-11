@@ -52,14 +52,15 @@ export const loginMessages = {
       "Kode masuk hanya berlaku 5 menit. Minta kode baru untuk melanjutkan.",
     restart: "Minta kode baru",
     confirmHeading: "Konfirmasi nomor WhatsApp",
-    confirmPrompt:
-      "Pesan diterima dari {sender}. Masuk sebagai nomor ini?",
+    confirmPrompt: "Pesan diterima dari {sender}. Masuk sebagai nomor ini?",
+    confirmPromptNoSender:
+      "Pesan diterima dari nomor WhatsApp-mu. Masuk sebagai nomor ini?",
     confirmYes: "Ya, masuk",
     confirmNo: "Bukan saya",
     confirmHint:
       "Bukan nomormu? Tekan Bukan saya. Kodenya dibatalkan dan tidak ada yang masuk ke akunmu.",
     declined:
-      "Login dibatalkan. Kirim ulang pesan dari nomor WhatsApp-mu sendiri.",
+      "Masuk dibatalkan. Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri.",
     cancelledTitle: "Kode dibatalkan",
     cancelledHint:
       "Tidak ada sesi yang dibuat. Kamu bisa mulai lagi kapan saja.",

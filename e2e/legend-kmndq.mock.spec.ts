@@ -14,8 +14,8 @@ import { captureScreenshot } from "./screenshots.ts";
 //    sends it). Confirm completes it; cancel ends it.
 //  - Card copy: "Pesan diterima dari <masked>. Masuk sebagai nomor ini?",
 //    buttons "Ya, masuk" and "Bukan saya".
-//  - Bukan saya shows "Login dibatalkan. Kirim ulang pesan dari nomor
-//    WhatsApp-mu sendiri." and offers a button to start again (the existing
+//  - Bukan saya shows "Masuk dibatalkan. Minta kode baru, lalu kirim pesannya
+//    dari nomor WhatsApp-mu sendiri." and offers a button to start again (the existing
 //    "Masuk dengan WhatsApp" start button or "Minta kode baru").
 //  - Expired on confirm: CHALLENGE_EXPIRED shows the existing
 //    "Kode sudah kedaluwarsa" end state.
@@ -33,7 +33,7 @@ const CARD_TEXT = new RegExp(
   `Pesan diterima dari ${MASKED.replace(/[+*]/g, "\\$&")}\\. Masuk sebagai nomor ini\\?`,
 );
 const CANCELLED_TEXT =
-  "Login dibatalkan. Kirim ulang pesan dari nomor WhatsApp-mu sendiri.";
+  "Masuk dibatalkan. Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri.";
 const CONFIRM_ID = "POST /api/auth/login-challenges/:challengeId/confirm";
 
 const VIEWPORTS = [

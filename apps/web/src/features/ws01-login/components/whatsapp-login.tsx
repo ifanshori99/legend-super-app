@@ -14,14 +14,14 @@
 // lands: the card shows the masked sender the API reports and asks "Masuk
 // sebagai nomor ini?". "Ya, masuk" confirms; "Bukan saya" cancels the code and
 // returns to the start with a message.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   CircleSlash,
   Clock3,
   Hourglass,
   MessageCircle,
   ShieldAlert,
-  ShieldCheck,
+  Smartphone,
   TimerOff,
   type LucideIcon,
 } from "lucide-react";
@@ -52,6 +52,13 @@ export type WhatsAppCopy = {
   hint: string;
   action: string;
 };
+
+/** Stands in for the sender while the prompt is split around it. */
+const SENDER_MARK = "\u0001";
+
+/** Keyboard and screen-reader users land on the new block after a state swap. */
+const HEADING_FOCUS =
+  "rounded-xs outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 /** Every way a code can end; each one offers a fresh code. */
 type EndState = ChallengeFailure | "cancelled";
@@ -122,6 +129,9 @@ export function WhatsAppLogin({
   // "Bukan saya" was tapped: the start view shows why there is no code.
   const [declined, setDeclined] = useState(false);
   const handled = useRef(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const confirmYesRef = useRef<HTMLButtonElement>(null);
+  const lastFocusKey = useRef<string | null | undefined>(undefined);
   const start = useStartWhatsAppLogin();
   const cancel = useCancelWhatsAppLogin();
   const confirm = useConfirmWhatsAppLogin();
@@ -157,6 +167,30 @@ export function WhatsAppLogin({
         ? "cancelled"
         : null);
 
+  // The block that replaced the old one gets focus, except on first mount.
+  const focusKey = endState
+    ? `end-${endState}`
+    : issued === null
+      ? declined
+        ? "declined"
+        : null
+      : outcome === "awaiting_confirmation" && view
+        ? "confirm"
+        : null;
+  useEffect(() => {
+    const previous = lastFocusKey.current;
+    lastFocusKey.current = focusKey;
+    if (previous === undefined || focusKey === null || focusKey === previous) {
+      return;
+    }
+    headingRef.current?.focus();
+  }, [focusKey]);
+
+  // A failed confirm leaves the card up; focus returns to the primary action.
+  useEffect(() => {
+    if (confirm.isError) confirmYesRef.current?.focus();
+  }, [confirm.isError]);
+
   useEffect(() => {
     if (outcome !== "signed_in" || !view?.session || handled.current) return;
     handled.current = true;
@@ -175,23 +209,34 @@ export function WhatsAppLogin({
     }
   }
 
-  async function abort() {
-    if (!issued) return;
+  /** Cancels the code. Only a successful cancel drops it; a failure keeps the
+   *  current view with a retryable error. Resolves true when the code is gone. */
+  async function abort(): Promise<boolean> {
+    if (!issued) return false;
+    confirm.reset();
     try {
       await cancel.mutateAsync(issued.challenge.id);
     } catch {
-      // A failed cancel still drops the code here; it expires on its own.
+      // Rendered from cancel.error below, with a retry.
+      return false;
     }
-    setIssued(null);
+    return true;
+  }
+
+  async function giveUp() {
+    if (await abort()) setIssued(null);
   }
 
   async function decline() {
-    await abort();
+    if (!(await abort())) return;
+    // One batch: the start view never renders a frame without the notice.
     setDeclined(true);
+    setIssued(null);
   }
 
   async function accept() {
     if (!issued) return;
+    cancel.reset();
     try {
       await confirm.mutateAsync(issued.challenge.id);
     } catch {
@@ -208,16 +253,25 @@ export function WhatsAppLogin({
     }
   }
 
-  // ---------------------------------------------------------------- end states
+  // What the persistent live region holds for the current state, and the
+  // block the rest of the screen shows below it. The region stays mounted
+  // across states so its changes are announced.
+  let liveContent: ReactNode = null;
+  let liveClass = "sr-only";
+  let heading: ReactNode = null;
+  let content: ReactNode = null;
+
   if (endState) {
+    // ------------------------------------------------------------- end states
     const meta = END_COPY[endState];
-    return (
+    liveClass = "";
+    liveContent = (
       <Notice
         tone={meta.tone}
         icon={meta.icon}
         title={t(meta.title)}
+        titleRef={headingRef}
         hint={t(meta.hint)}
-        live
         action={
           meta.restart === false ? undefined : (
             <Button
@@ -232,20 +286,21 @@ export function WhatsAppLogin({
         }
       />
     );
-  }
-
-  // -------------------------------------------------------------- start state
-  if (issued === null) {
-    return (
+  } else if (issued === null) {
+    // ------------------------------------------------------------ start state
+    if (declined) {
+      liveClass = "";
+      liveContent = (
+        <Notice
+          tone="muted"
+          icon={CircleSlash}
+          title={t("login.whatsapp.declined")}
+          titleRef={headingRef}
+        />
+      );
+    }
+    content = (
       <section aria-labelledby="login-whatsapp-heading" className="grid gap-4">
-        {declined && (
-          <Notice
-            tone="muted"
-            icon={CircleSlash}
-            title={t("login.whatsapp.declined")}
-            live
-          />
-        )}
         <div className="flex items-start gap-3">
           <span className="grid size-10 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
             <MessageCircle className="size-5" aria-hidden="true" />
@@ -274,34 +329,53 @@ export function WhatsAppLogin({
         </p>
       </section>
     );
-  }
-
-  // ------------------------------------------------------- confirm card state
-  if (outcome === "awaiting_confirmation" && view) {
-    return (
-      <section
-        aria-labelledby="login-confirm-heading"
-        className="grid gap-4"
+  } else if (outcome === "awaiting_confirmation" && view) {
+    // ------------------------------------------------------- confirm card state
+    const expiryLine = t("login.whatsapp.expiresIn", {
+      time: formatRemaining(loginCodeRemainingMs(issued.challenge, judgedAt)),
+    });
+    const [promptBefore, promptAfter] = (
+      view.senderMasked
+        ? t("login.whatsapp.confirmPrompt", { sender: SENDER_MARK })
+        : t("login.whatsapp.confirmPromptNoSender")
+    ).split(SENDER_MARK);
+    heading = (
+      <h2
+        id="login-confirm-heading"
+        ref={headingRef}
+        tabIndex={-1}
+        className={`font-brand type-title ${HEADING_FOCUS}`}
       >
-        <h2 id="login-confirm-heading" className="sr-only">
-          {t("login.whatsapp.confirmHeading")}
-        </h2>
-        <div
-          role="status"
-          aria-live="polite"
-          className="flex items-start gap-3 rounded-container bg-surface-2 p-card"
-        >
-          <span className="grid size-10 shrink-0 place-items-center rounded-container bg-background/70">
-            <ShieldCheck className="size-5" aria-hidden="true" />
-          </span>
-          <p className="min-w-0 pt-2 type-heading">
-            {t("login.whatsapp.confirmPrompt", {
-              sender: view.senderMasked ?? "",
-            })}
-          </p>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2">
+        {t("login.whatsapp.confirmHeading")}
+      </h2>
+    );
+    liveClass = "flex items-start gap-3 rounded-container bg-surface-2 p-card";
+    liveContent = (
+      <>
+        <span className="grid size-10 shrink-0 place-items-center rounded-container bg-background/70">
+          <Smartphone className="size-5" aria-hidden="true" />
+        </span>
+        <p className="min-w-0 pt-2 type-heading">
+          {promptBefore}
+          {promptAfter !== undefined && (
+            <>
+              <bdi translate="no" className="font-semibold tabular">
+                {view.senderMasked}
+              </bdi>
+              {promptAfter}
+            </>
+          )}
+        </p>
+      </>
+    );
+    content = (
+      <section aria-labelledby="login-confirm-heading" className="grid gap-4">
+        <p className="text-sm leading-5 text-muted-foreground tabular">
+          {expiryLine}
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
           <Button
+            ref={confirmYesRef}
             size="lg"
             className="w-full"
             loading={confirm.isPending}
@@ -324,122 +398,142 @@ export function WhatsAppLogin({
         {confirm.isError && (
           <InlineFailure error={confirm.error} onRetry={() => void accept()} />
         )}
+        {cancel.isError && (
+          <InlineFailure error={cancel.error} onRetry={() => void decline()} />
+        )}
         <p className="text-sm leading-5 text-muted-foreground">
           {t("login.whatsapp.confirmHint")}
         </p>
       </section>
     );
-  }
-
-  // ---------------------------------------------------------- waiting state
-  const { challenge } = issued;
-  const expiryLine = t("login.whatsapp.expiresIn", {
-    time: formatRemaining(loginCodeRemainingMs(challenge, judgedAt)),
-  });
-
-  return (
-    <section aria-labelledby="login-challenge-heading" className="grid gap-5">
-      <div className="grid gap-1">
-        <h2
-          id="login-challenge-heading"
-          className="type-eyebrow text-muted-foreground"
-        >
-          {t("login.whatsapp.codeLabel")}
-        </h2>
-        <p
-          className="font-mono type-display tracking-widest tabular"
-          aria-live="polite"
-        >
-          {issued.codeFormatted}
-        </p>
-        <p className="text-sm leading-5 text-muted-foreground tabular">
-          {expiryLine}
-        </p>
-      </div>
-
-      <div className="grid gap-4 border-t-(length:--border-w) pt-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
-        <div className="hidden sm:block">
-          <QrCode
-            value={issued.whatsAppDeepLink}
-            label={t("login.whatsapp.qrLabel", { code: issued.codeFormatted })}
-            size={148}
-            className="rounded-container border-(length:--border-w) p-2"
-          />
-        </div>
-        <div className="grid gap-3">
-          <Button asChild size="lg" className="w-full">
-            <a
-              href={issued.whatsAppDeepLink}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <MessageCircle aria-hidden="true" />
-              {t("login.whatsapp.openWhatsApp")}
-            </a>
-          </Button>
-          <p className="hidden text-sm leading-5 text-muted-foreground sm:block">
-            {t("login.whatsapp.qrHint")}
+  } else {
+    // ---------------------------------------------------------- waiting state
+    const { challenge } = issued;
+    const expiryLine = t("login.whatsapp.expiresIn", {
+      time: formatRemaining(loginCodeRemainingMs(challenge, judgedAt)),
+    });
+    if (outcome === "signed_in") {
+      liveContent = t("login.whatsapp.successTitle");
+    }
+    content = (
+      <section aria-labelledby="login-challenge-heading" className="grid gap-5">
+        <div className="grid gap-1">
+          <h2
+            id="login-challenge-heading"
+            className="type-eyebrow text-muted-foreground"
+          >
+            {t("login.whatsapp.codeLabel")}
+          </h2>
+          <p
+            className="font-mono type-display tracking-widest tabular"
+            aria-live="polite"
+          >
+            {issued.codeFormatted}
+          </p>
+          <p className="text-sm leading-5 text-muted-foreground tabular">
+            {expiryLine}
           </p>
         </div>
-      </div>
 
-      <ol className="grid gap-2 text-sm leading-5">
-        {(
-          [
-            ["step1", "login.whatsapp.step1"],
-            ["step2", "login.whatsapp.step2"],
-            ["step3", "login.whatsapp.step3"],
-          ] as const
-        ).map(([step, key], index) => (
-          <li key={step} className="flex items-start gap-2">
-            <span
-              aria-hidden="true"
-              className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-surface-3 text-xs font-semibold tabular"
-            >
-              {index + 1}
-            </span>
-            <span className="min-w-0">{t(key)}</span>
-          </li>
-        ))}
-      </ol>
+        <div className="grid gap-4 border-t-(length:--border-w) pt-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
+          <div className="hidden sm:block">
+            <QrCode
+              value={issued.whatsAppDeepLink}
+              label={t("login.whatsapp.qrLabel", {
+                code: issued.codeFormatted,
+              })}
+              size={148}
+              className="rounded-container border-(length:--border-w) p-2"
+            />
+          </div>
+          <div className="grid gap-3">
+            <Button asChild size="lg" className="w-full">
+              <a
+                href={issued.whatsAppDeepLink}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <MessageCircle aria-hidden="true" />
+                {t("login.whatsapp.openWhatsApp")}
+              </a>
+            </Button>
+            <p className="hidden text-sm leading-5 text-muted-foreground sm:block">
+              {t("login.whatsapp.qrHint")}
+            </p>
+          </div>
+        </div>
 
-      <p
-        role="status"
-        className="flex items-center gap-2 rounded-container bg-surface-2 px-3 py-2 text-sm leading-5 font-medium"
-      >
-        <Hourglass className="size-4 shrink-0" aria-hidden="true" />
-        {t("login.whatsapp.waiting")}
-      </p>
+        <ol className="grid gap-2 text-sm leading-5">
+          {(
+            [
+              ["step1", "login.whatsapp.step1"],
+              ["step2", "login.whatsapp.step2"],
+              ["step3", "login.whatsapp.step3"],
+            ] as const
+          ).map(([step, key], index) => (
+            <li key={step} className="flex items-start gap-2">
+              <span
+                aria-hidden="true"
+                className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-surface-3 text-xs font-semibold tabular"
+              >
+                {index + 1}
+              </span>
+              <span className="min-w-0">{t(key)}</span>
+            </li>
+          ))}
+        </ol>
 
-      <div className="flex flex-wrap gap-2">
-        <Button
-          variant="outline"
-          loading={checking}
-          onClick={() => void check()}
+        <p
+          role="status"
+          className="flex items-center gap-2 rounded-container bg-surface-2 px-3 py-2 text-sm leading-5 font-medium"
         >
-          {t("login.whatsapp.sent")}
-        </Button>
-        <Button
-          variant="ghost"
-          loading={cancel.isPending}
-          onClick={() => void abort()}
-        >
-          {t("login.whatsapp.cancel")}
-        </Button>
-      </div>
-
-      {poll.isError && (
-        <InlineFailure error={poll.error} onRetry={() => void check()} />
-      )}
-
-      <p className="text-sm leading-5 text-muted-foreground">
-        {t("login.whatsapp.noReply")}
-      </p>
-      {API_MOCK && (
-        <p className="text-sm leading-5 text-muted-foreground">
-          {t("login.whatsapp.mockHint")}
+          <Hourglass className="size-4 shrink-0" aria-hidden="true" />
+          {t("login.whatsapp.waiting")}
         </p>
-      )}
-    </section>
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            loading={checking}
+            onClick={() => void check()}
+          >
+            {t("login.whatsapp.sent")}
+          </Button>
+          <Button
+            variant="ghost"
+            loading={cancel.isPending}
+            onClick={() => void giveUp()}
+          >
+            {t("login.whatsapp.cancel")}
+          </Button>
+        </div>
+
+        {poll.isError && (
+          <InlineFailure error={poll.error} onRetry={() => void check()} />
+        )}
+        {cancel.isError && (
+          <InlineFailure error={cancel.error} onRetry={() => void giveUp()} />
+        )}
+
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("login.whatsapp.noReply")}
+        </p>
+        {API_MOCK && (
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("login.whatsapp.mockHint")}
+          </p>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <div className="grid gap-4">
+      {heading}
+      <div role="status" aria-live="polite" className={liveClass}>
+        {liveContent}
+      </div>
+      {content}
+    </div>
   );
 }

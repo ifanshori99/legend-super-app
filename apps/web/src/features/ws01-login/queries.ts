@@ -25,10 +25,13 @@ export function loginChallengeQuery(challengeId: string) {
     staleTime: 0,
     refetchInterval: (query) => {
       const view = query.state.data;
-      if (!view || view.challenge.status !== "pending") return false;
-      // Waiting for a tap on "Ya, masuk" / "Bukan saya": the confirm mutation
-      // invalidates this query, which resumes the poll.
+      if (!view) return false;
+      // Waiting for a tap on "Ya, masuk" / "Bukan saya": the API reports this
+      // as completed with no session (or pending on older shapes). The poll
+      // stays stopped; the confirm mutation invalidates this query, which
+      // refetches once to claim the session.
       if (view.awaitingConfirmation === true) return false;
+      if (view.challenge.status !== "pending") return false;
       return Date.parse(view.challenge.expiresAt) > Date.now()
         ? LOGIN_POLL_MS
         : false;

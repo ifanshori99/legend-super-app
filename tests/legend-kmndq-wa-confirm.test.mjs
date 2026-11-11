@@ -7,12 +7,16 @@
 //
 // ASSUMPTIONS (the spec only names the behaviour, not the code surface):
 //  - flow.ts `loginChallengeOutcome` gains a fifth outcome
-//    "awaiting_confirmation": status pending, unexpired, awaitingConfirmation.
-//  - An awaiting challenge keeps challenge.status "pending" (no session yet).
+//    "awaiting_confirmation": awaitingConfirmation, session null, status
+//    pending or completed, unexpired.
+//  - An awaiting challenge has the REAL API shape (identity-login.service
+//    :586-599): challenge.status "completed", session null,
+//    awaitingConfirmation true. Confirm is idempotent; before the message
+//    lands (status pending) it throws CHALLENGE_NOT_PENDING.
 //  - The FE mock (handlers/login-challenge.ts) with requireConfirm:true answers
 //    the first poll "pending" and the second poll awaiting with
-//    senderMasked "+62 812-****-7890"; confirm completes it so the NEXT poll
-//    hands out the session once; cancel ends it as "cancelled".
+//    senderMasked "+62 812-****-7890"; confirm lets the NEXT poll hand out
+//    the session once; cancel ends it as "cancelled".
 //  - The client sends `requireConfirm: true` from ws01-login/api.ts.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -38,10 +42,10 @@ function awaitingViewAt(at, overrides = {}) {
     tenantId: fx.tenantId,
     brandId: fx.brandId,
     channel: "whatsapp_inbound",
-    status: "pending",
+    status: "completed",
     expiresAt: new Date(at + 5 * MINUTE_MS).toISOString(),
-    completedAt: null,
-    matchedUserId: null,
+    completedAt: new Date(at).toISOString(),
+    matchedUserId: fx.usersByKey.sari.id,
     createdAt: new Date(at).toISOString(),
     ...overrides.challenge,
   });
@@ -80,6 +84,30 @@ describe("kmndq: challenge outcome while awaiting confirmation", () => {
     );
   });
 
+  test("kmndq: the old pending-shaped awaiting view still reads awaiting_confirmation", () => {
+    const at = Date.parse("2026-11-11T09:00:00Z");
+    const view = awaitingViewAt(at, {
+      challenge: { status: "pending", completedAt: null, matchedUserId: null },
+    });
+    assert.equal(
+      loginChallengeOutcome(view, at + MINUTE_MS),
+      "awaiting_confirmation",
+    );
+  });
+
+  test("kmndq: completed + no session + awaitingConfirmation reads awaiting_confirmation, not expired", () => {
+    // The old flow.ts returned "expired" for any completed view without a
+    // session (the first completed-branch line), so this fails there.
+    const at = Date.parse("2026-11-11T09:00:00Z");
+    const view = awaitingViewAt(at);
+    assert.equal(view.challenge.status, "completed");
+    assert.equal(view.session, null);
+    assert.equal(
+      loginChallengeOutcome(view, at + MINUTE_MS),
+      "awaiting_confirmation",
+    );
+  });
+
   test("kmndq: an awaiting challenge past its 5 minutes reads expired", () => {
     const at = Date.parse("2026-11-11T09:00:00Z");
     assert.equal(
@@ -91,7 +119,7 @@ describe("kmndq: challenge outcome while awaiting confirmation", () => {
   test("kmndq: an awaiting challenge cancelled elsewhere reads cancelled", () => {
     const at = Date.parse("2026-11-11T09:00:00Z");
     const view = awaitingViewAt(at, {
-      challenge: { status: "cancelled" },
+      challenge: { status: "cancelled", completedAt: null, matchedUserId: null },
       view: { awaitingConfirmation: false, senderMasked: undefined },
     });
     assert.equal(loginChallengeOutcome(view, at + MINUTE_MS), "cancelled");
@@ -100,6 +128,7 @@ describe("kmndq: challenge outcome while awaiting confirmation", () => {
   test("kmndq: without the awaiting flag a pending challenge stays pending", () => {
     const at = Date.parse("2026-11-11T09:00:00Z");
     const view = awaitingViewAt(at, {
+      challenge: { status: "pending", completedAt: null, matchedUserId: null },
       view: { awaitingConfirmation: false, senderMasked: undefined },
     });
     assert.equal(loginChallengeOutcome(view, at + MINUTE_MS), "pending");
@@ -118,7 +147,7 @@ describe("kmndq: mock challenge with requireConfirm", () => {
     const second = await poll(issued.challenge.id);
     assert.equal(second.awaitingConfirmation, true);
     assert.equal(second.senderMasked, MASKED);
-    assert.equal(second.challenge.status, "pending");
+    assert.equal(second.challenge.status, "completed");
     assert.equal(second.session, null, "no session before the person confirms");
 
     const third = await poll(issued.challenge.id);
@@ -154,6 +183,35 @@ describe("kmndq: mock challenge with requireConfirm", () => {
     assert.equal(view.challenge.status, "cancelled");
     assert.equal(view.session, null);
     assert.notEqual(view.awaitingConfirmation, true);
+  });
+
+  test("kmndq: a double confirm is idempotent and still hands the session out once", async () => {
+    const issued = await issue({ requireConfirm: true });
+    await poll(issued.challenge.id);
+    await poll(issued.challenge.id);
+
+    await confirm(issued.challenge.id);
+    await confirm(issued.challenge.id);
+
+    const done = await poll(issued.challenge.id);
+    assert.ok(done.session, "session after the confirm");
+    await confirm(issued.challenge.id);
+    const again = await poll(issued.challenge.id);
+    assert.equal(again.session, null, "single use (AUTH-01)");
+  });
+
+  test("kmndq: confirm before the message lands is CHALLENGE_NOT_PENDING", async () => {
+    const issued = await issue({ requireConfirm: true });
+    await assert.rejects(confirm(issued.challenge.id), (error) => {
+      assert.equal(error.code, "CHALLENGE_NOT_PENDING");
+      return true;
+    });
+    // One poll in the message still has not landed.
+    await poll(issued.challenge.id);
+    await assert.rejects(confirm(issued.challenge.id), (error) => {
+      assert.equal(error.code, "CHALLENGE_NOT_PENDING");
+      return true;
+    });
   });
 
   test("kmndq: a cancelled challenge can no longer be confirmed", async () => {
