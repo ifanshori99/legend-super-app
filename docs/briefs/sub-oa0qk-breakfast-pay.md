@@ -127,3 +127,11 @@ bila lunas setelah fire_at, sweep berikut langsung mengirim. Sweep membatalkan o
   order_item_id, ticket_id`. Edit 0321 + kds.custom.sql + kds.service.ts. db:generate tetap kosong.
 - D test-writer: ubah test kontrol "trigger lets a paid order through" -> hanya 'fired' lolos, 'paid' ditolak; test pay setelah batal / tiket berakhir -> 422
   dan link tertutup; test fire menulis event order.paid. File test breakfast saja.
+
+### Temuan reviewer (271ccdc3) -> perbaikan E
+- Lock order: konvensi repo link -> intent (`pos-order-payment.ts:601,934`, komentar `cancelPaymentLinkInTx`). Di `fireBreakfastOrderTx`
+  (cabang ticketDead / reserved>0) dan cabang `refuse` consumer, link dikunci SETELAH intent -> deadlock 40P01 dengan konfirmasi webhook.
+  Perbaikan: kunci baris `payment_links` FOR UPDATE sebelum lock intent di kedua jalur (urutan: order -> linked -> link -> intent).
+- Sweep: kandidat unpaid hanya yang tiketnya mati atau now >= ends_at (join di query `dueOrderIds`), supaya baris unpaid yang belum boleh
+  dibatalkan tidak memenuhi batch 100.
+- Satukan `DEAD_TICKET_STATUSES` (satu sumber, di money.ts; consumers & service impor dari sana).

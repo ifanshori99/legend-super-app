@@ -32,7 +32,11 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { FacilityError } from "@starter/shared/facility";
-import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
+import {
+  paymentIntents,
+  paymentLinks,
+  paymentRefunds,
+} from "../db/schema/index.ts";
 import { accessTickets, facilityLinkedOrders } from "../db/schema/facility.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -65,7 +69,11 @@ export const BREAKFAST_PAID_INTENT_STATUSES = [
 ] as const;
 
 /** A ticket in one of these statuses will never use its breakfast. */
-const DEAD_TICKET_STATUSES = ["cancelled", "refunded", "no_show"] as const;
+export const DEAD_TICKET_STATUSES: readonly string[] = [
+  "cancelled",
+  "refunded",
+  "no_show",
+];
 
 const REFUND_AUDIT_FIELDS = ["amountIdr", "status", "refundId"] as const;
 
@@ -99,6 +107,29 @@ export async function lockBreakfastOrder(
     )
     .for("update");
   return linked ? { order, linked } : null;
+}
+
+/**
+ * Locks the pay link row. Repo lock order is link -> intent (the WS-05
+ * confirmation, `cancelPaymentLinkInTx`), so take this BEFORE locking any
+ * intent of the link in a transaction that may close the link: the full order
+ * is orders -> facility_linked_orders -> payment_links -> payment_intents.
+ */
+export async function lockBreakfastPayLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  linkId: string,
+): Promise<void> {
+  await tx
+    .select({ id: paymentLinks.id })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, context.tenant.tenantId),
+        eq(paymentLinks.id, linkId),
+      ),
+    )
+    .for("update");
 }
 
 /**
@@ -320,6 +351,8 @@ export async function fireBreakfastOrderTx(
   )
     throw new FacilityError("BREAKFAST_NOT_PAID");
 
+  // Link before intent: the cancel paths below close the link.
+  await lockBreakfastPayLink(tx, context, order.paymentLinkId);
   const [intent] = await tx
     .select()
     .from(paymentIntents)
@@ -362,9 +395,7 @@ export async function fireBreakfastOrderTx(
         eq(accessTickets.id, linked.accessTicketId),
       ),
     );
-  const ticketDead =
-    !ticket ||
-    (DEAD_TICKET_STATUSES as readonly string[]).includes(ticket.status);
+  const ticketDead = !ticket || DEAD_TICKET_STATUSES.includes(ticket.status);
   const balance = await refundableBalance(tx, intent);
   if (ticketDead || balance.reserved > 0n) {
     const cancelled = await cancelBreakfastOrderTx(tx, context, locked, {

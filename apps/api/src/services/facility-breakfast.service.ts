@@ -58,12 +58,13 @@ import {
 import {
   breakfastLines,
   cancelBreakfastOrderTx,
+  DEAD_TICKET_STATUSES,
   fireBreakfastOrderTx,
   lockBreakfastOrder,
+  lockBreakfastPayLink,
   type BreakfastLinkedRow,
   type BreakfastOrderRow,
 } from "./facility-breakfast-money.ts";
-import { DEAD_TICKET_STATUSES } from "./facility-breakfast-consumers.ts";
 import { reserveMenuItemDailyLimit } from "./menu-availability.ts";
 import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
 import { operationsFingerprint } from "./operations-idempotency.ts";
@@ -613,7 +614,7 @@ export async function payBreakfastOrderForMember(
   _body: { idempotencyKey: string },
   now = new Date(),
 ): Promise<BreakfastPayment> {
-  return withTenant(db, context, async (tx) => {
+  const result = await withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     const { order, linked, ticket } = await lockOwnOrder(
       tx,
@@ -629,12 +630,24 @@ export async function payBreakfastOrderForMember(
     if (linked.status !== "awaiting_payment")
       return breakfastPaymentSchema.parse({ order: dto, paymentToken: null });
     // No new code or link for a dead ticket or an ended session: a payment
-    // made then would only be refunded.
+    // made then would only be refunded. The sweep would cancel this order for
+    // the same reason, so cancel now: that closes the pay link the guest may
+    // already hold. Refused after the commit, or the cancel would roll back.
     if (
       DEAD_TICKET_STATUSES.includes(ticket.status) ||
       now.getTime() >= ticket.endsAt.getTime()
-    )
-      throw new FacilityError("BREAKFAST_UNAVAILABLE");
+    ) {
+      // Link before intent (the cancel updates both).
+      if (order.paymentLinkId !== null)
+        await lockBreakfastPayLink(tx, context, order.paymentLinkId);
+      await cancelBreakfastOrderTx(
+        tx,
+        context,
+        { order, linked },
+        { reason: "payment_window_closed", actorUserId: null, now },
+      );
+      return null;
+    }
     if (order.status !== "awaiting_payment")
       throw new CoreError("CONFLICT", "Pesanan ini tidak menunggu pembayaran.");
     const aad = linkSealAad(tenantId, order.id);
@@ -679,6 +692,8 @@ export async function payBreakfastOrderForMember(
       paymentToken: opened.token,
     });
   });
+  if (result === null) throw new FacilityError("BREAKFAST_UNAVAILABLE");
+  return result;
 }
 
 // ---- Cancel and fire --------------------------------------------------------

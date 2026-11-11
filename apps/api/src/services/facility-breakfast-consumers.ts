@@ -29,7 +29,7 @@
 // ends_at) or the ticket is dead; until then an unpaid order stays
 // `awaiting_payment`. A payment that lands on a cancelled order afterwards is
 // refunded by the handler above.
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
@@ -42,6 +42,7 @@ import { auditFacility } from "./facility-shared.ts";
 import {
   BREAKFAST_PAID_INTENT_STATUSES,
   cancelBreakfastOrderTx,
+  DEAD_TICKET_STATUSES,
   fireBreakfastOrderTx,
   lockBreakfastOrder,
   requestBreakfastRefund,
@@ -81,13 +82,6 @@ const closedPayloadSchema = z.looseObject({
 const SETTLED_INTENT_STATUSES: readonly string[] = [
   ...BREAKFAST_PAID_INTENT_STATUSES,
   "refunded",
-];
-
-/** A ticket in one of these statuses will never use its breakfast. */
-export const DEAD_TICKET_STATUSES: readonly string[] = [
-  "cancelled",
-  "refunded",
-  "no_show",
 ];
 
 /** The breakfast order that owns `paymentLinkId`, or null. */
@@ -226,7 +220,10 @@ export async function handleBreakfastPaymentPaid(
         eq(paymentLinks.tenantId, tenantId),
         eq(paymentLinks.id, paymentLinkId),
       ),
-    );
+    )
+    // Link before intent (WS-05 order): the refuse path below closes the link
+    // after locking the intents.
+    .for("update");
   if (!link) return "not_settled";
   // PAY-01: the bill the guest paid is the server's order total, exactly.
   if (link.totalIdr !== linked.totalIdr || order.totalIdr !== linked.totalIdr) {
@@ -437,11 +434,28 @@ async function dueOrderIds(
     tx
       .select({ orderId: facilityLinkedOrders.orderId })
       .from(facilityLinkedOrders)
+      .leftJoin(
+        accessTickets,
+        and(
+          eq(accessTickets.tenantId, facilityLinkedOrders.tenantId),
+          eq(accessTickets.id, facilityLinkedOrders.accessTicketId),
+        ),
+      )
       .where(
         and(
           eq(facilityLinkedOrders.tenantId, context.tenant.tenantId),
           eq(facilityLinkedOrders.status, status),
           lte(facilityLinkedOrders.fireAt, now),
+          // An unpaid order is a candidate only once the cancel is allowed
+          // (ticket dead or session over), so rows that may still be paid do
+          // not fill the batch.
+          status === "awaiting_payment"
+            ? or(
+                isNull(accessTickets.id),
+                inArray(accessTickets.status, [...DEAD_TICKET_STATUSES]),
+                lte(accessTickets.endsAt, now),
+              )
+            : undefined,
         ),
       )
       // Least recently touched first: a row that keeps failing is bumped
