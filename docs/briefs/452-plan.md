@@ -23,4 +23,11 @@ Cabang `ws/5nt2z-leave-partial`. Brief induk: `docs/briefs/452-leave-codex-fixes
 ## F3 antrean
 - `queued()` di hris-attendance-admin.service.ts: log `flagged` yang `flag_reasons` memuat `leave_approved` selalu masuk antrean, apa pun `sampling.flaggedAlways`.
 
-## F5 cloud-sync, F6 payload: menunggu hasil pemetaan Explore (lihat bagian bawah bila sudah ditambah).
+## F5 cloud-sync event untuk split/batal
+- Sekarang hanya ada `leave.approved` (packages/shared/src/hris/events.ts:104, catalog.ts:56, fixtures.ts, appender `appendLeaveApproved` hris-leave-request.service.ts:326).
+- Tambah event baru `leave.changed` v1 (strictObject, destination cloud-sync): leaveRequestId, employeeId, outletId, startDate, endDate, days, excludedHolidayDates, status (approved|cancelled), changeReason (`range_split`|`range_cancelled`), splitFromLeaveRequestId (nullable, diisi pada baris tail baru). Appender sejajar `appendLeaveApproved`, sequence per aggregate memakai `nextLeaveEventSequence`.
+- `cancelApprovedLeaveOnDateByHr` menerbitkan satu `leave.changed` per baris leave yang berubah (dipersempit / dibatalkan / tail baru) di transaksi yang sama dengan UPDATE+INSERT: semua ada atau tidak ada.
+- Daftarkan di hrisDomainEvents, catalog, fixtures, dan tes katalog/kontrak yang ada.
+
+## F6 batas bayar
+- `attendance.logged` (appendAttendanceLogged hris-attendance.service.ts:523) sudah membawa `validity`. Test kontrak: log benturan cuti menerbitkan `attendance.logged` dengan `validity: "flagged"`. Tambah komentar kontrak di events.ts: consumer WAJIB mengecualikan validity flagged/rejected dan review_status pending (flag dapat berubah sesudah event lewat `leave_approved`, jadi baca ulang status sebelum menghitung bayar/timing). Tidak ada consumer gaji yang membaca log hari ini (payroll belum membaca absensi): catat di kartu legend-em8y2.
