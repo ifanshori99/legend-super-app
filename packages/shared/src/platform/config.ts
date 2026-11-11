@@ -570,6 +570,58 @@ export function parseConfigBundle(
   };
 }
 
+/** Pre-codec zone exports carried presentation data, not importable charges. */
+const legacyStoredZoneItemSchema = z.strictObject({
+  key: itemKey,
+  name: shortName,
+  tableCount: z.number().int().nonnegative().optional(),
+});
+
+/**
+ * Read old persisted payloads without manufacturing the financial fields their
+ * exporters never wrote. Import still validates the untouched payload through
+ * strictConfigBundleSchema. Only the former zone shape and kind-less loyalty
+ * JSON get this compatibility path; malformed current items remain errors.
+ */
+const storedConfigBundleSchema = bundleSchemaOf(false).superRefine(
+  (bundle, ctx) => {
+    const sections = { ...bundle.sections };
+    const zones = sections.zones;
+    if (
+      zones?.version === 1 &&
+      zones.items.length > 0 &&
+      zones.items.every(
+        (item) => legacyStoredZoneItemSchema.safeParse(item).success,
+      )
+    )
+      delete sections.zones;
+    const loyalty = sections.loyalty_policy;
+    if (
+      loyalty?.version === 1 &&
+      loyalty.items.length > 0 &&
+      loyalty.items.every(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          !Object.hasOwn(item, "kind"),
+      )
+    )
+      delete sections.loyalty_policy;
+
+    // The remaining sections keep the current item and reference checks. A
+    // legacy section is unavailable for those checks, like a partial template
+    // whose referenced configuration will be supplied by the target tenant.
+    const current = configBundleSchema.safeParse({ ...bundle, sections });
+    if (!current.success)
+      for (const issue of current.error.issues) ctx.addIssue({ ...issue });
+    for (const issue of findBundleIdentifiers(bundle))
+      ctx.addIssue({
+        code: "custom",
+        message: `${issue.path}: ${issue.reason}`,
+      });
+  },
+);
+
 /** `config_templates` (global). `sourceTenantId` is provenance metadata on
  * the row, never inside the payload. */
 export const configTemplateSchema = z.strictObject({
@@ -577,7 +629,7 @@ export const configTemplateSchema = z.strictObject({
   name: z.string().trim().min(3).max(120),
   sourceTenantId: tenantIdSchema.nullable(),
   version: z.number().int().positive(),
-  payload: configBundleSchema,
+  payload: storedConfigBundleSchema,
   createdBy: userIdSchema,
   createdAt: isoDateTimeSchema,
 });

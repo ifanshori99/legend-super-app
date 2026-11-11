@@ -9,3 +9,7 @@ Root owns shared integration: domain barrel exports, platform registry/decode or
 Verification: focused root tests through `LEGEND_TEST_FILES` and `heavy pnpm test`; shared package typecheck through `heavy`; eslint and prettier on changed files. One fresh reviewer checks the complete diff while tests run. Root fixes genuine findings and reruns affected checks, documents evidence in PROGRESS, and commits locally per card. No push or merge.
 
 Review focus: source identifiers and transactions omitted; cross-section references resolved or rejected; duplicate keys rejected; monetary values preserved exactly and invalid values refused; current stored bundle exports remain parseable.
+
+## 538-G1b architect fixes
+
+Source: main checkout `docs/briefs/538-g1b-fix-architect.md`. Tax implementer owns P1 effective-date/asOf engine ordering, then separate P2 explicit refusal of unsupported outlet/settings exports. Facilities implementer owns P2 tax ownership; root changes registry ownership map, keeping tenant-wide versus matching outlet references. Loyalty implementer and root enforce P3 explicit point-lock decision (`number | null`); stored-template implementer owns P3 read compatibility without relaxing modern import. Each finding gets failing-first tests and a separate local commit. Root runs one heavy command at a time and combines final focused tests, shared typecheck and changed-file lint/format with one fresh review of fixes. No push/merge.
