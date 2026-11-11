@@ -39,13 +39,17 @@ async function tenantManager(label: string) {
   const userId = session.body.user.id as string;
   userIds.push(userId);
   await verifySessionMfa(email);
+  // valid_from is stamped by the database clock but checked against the API
+  // clock; the test DB (Colima VM) can run ahead of the API, so back-date the
+  // grant by an hour (as payment-admin-multi-fund does), not a minute. A grant
+  // still in the API's future answers 403/404 on the outlet list.
   const role = await owner.query<{ id: string }>(
     "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'owner'",
     [tenantId],
   );
   await owner.query(
     `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
     [tenantId, userId, role.rows[0]!.id],
   );
   return client;
@@ -108,7 +112,7 @@ async function listFunds(
   const response = await client.get(
     `/api/payments/admin/unallocated-funds?outletId=${outletA}&status=${status}&limit=100`,
   );
-  expect(response.status).toBe(200);
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
   return response.body.data as FundRow[];
 }
 

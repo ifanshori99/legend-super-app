@@ -216,6 +216,12 @@ export const paymentRefunds = pgTable(
     uniqueIndex("payment_refunds_approval_chain_uq")
       .on(t.tenantId, t.approvalChainId)
       .where(sql`${t.approvalChainId} IS NOT NULL`),
+    // One live refund per unallocated fund (same rule as resolveUnallocatedFund); a failed one frees the fund for a retry.
+    uniqueIndex("payment_refunds_unallocated_fund_live_uq")
+      .on(t.tenantId, t.unallocatedFundId)
+      .where(
+        sql`${t.unallocatedFundId} IS NOT NULL AND ${t.status} <> 'failed'`,
+      ),
     index("payment_refunds_order_issue_idx")
       .on(t.tenantId, t.orderIssueId)
       .where(sql`${t.orderIssueId} IS NOT NULL`),
