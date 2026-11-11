@@ -39,7 +39,7 @@ test("registry has codecs for roles, approval_policies, chart_of_accounts", () =
     assert.equal(codec.version, 1);
     assert.equal(platform.configSectionCodec(section), codec);
   }
-  assert.equal(platform.configSectionCodec("zones"), undefined);
+  assert.equal(platform.configSectionCodec("wifi_policies"), undefined);
 });
 
 test("roles: toTemplate is tenant-free, keys are unique and stable", () => {
@@ -250,6 +250,7 @@ test("decodeConfigBundle resolves cross-section role keys in one pass", () => {
     "approval_policies",
     "chart_of_accounts",
     "roles",
+    "zones",
   ]);
 
   // Importing only approval_policies needs the target tenant's role keys.
@@ -328,7 +329,8 @@ test("decodeConfigBundle reports sections it has no codec for", () => {
   ).bundle;
   const decoded = platform.decodeConfigBundle(bundle);
   assert.equal(decoded.ok, true);
-  assert.ok(decoded.withoutCodec.includes("zones"));
+  assert.ok(decoded.withoutCodec.includes("modules"));
+  assert.ok(!decoded.withoutCodec.includes("zones"));
   assert.ok(!decoded.withoutCodec.includes("roles"));
 });
 
@@ -756,6 +758,7 @@ test("legend-5cwrq: a kind-shaped bundle parses and decodes in one pass", () => 
     "approval_policies",
     "chart_of_accounts",
     "roles",
+    "zones",
   ]);
   // approval_policies alone needs the target tenant's role keys.
   const only = platform.decodeConfigBundle(parsed.bundle, {

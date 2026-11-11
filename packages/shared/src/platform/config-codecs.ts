@@ -18,9 +18,8 @@
 // (legend-5cwrq); the codecs still read the old kind-less shape so stored
 // templates and old exports import. Item and reference checks run for both.
 //
-// Registered here: roles, approval_policies, chart_of_accounts. Remaining
-// generic sections stay free-form JSON (identifier scan only) until their
-// owning domain registers a codec: add it to `CONFIG_SECTION_CODECS`.
+// Remaining sections without a codec stay free-form JSON (identifier scan
+// only) until their owning domain registers one here.
 
 import {
   approvalPoliciesConfigCodec,
@@ -31,11 +30,23 @@ import {
   type ChartOfAccountsMappingDraft,
 } from "../accounting/index.ts";
 import type { ConfigBundle, ConfigSection } from "./config.ts";
+import { taxRulesConfigCodec } from "../tax/config-codec.ts";
+import { serviceChargeRulesConfigCodec } from "../tax/service-charge-config-codec.ts";
+import { zonesConfigCodec } from "../qr-order/config-codec.ts";
+import { checklistsConfigCodec } from "../operations/config-codec.ts";
+import { loyaltyPolicyConfigCodec } from "../crm/config-codec.ts";
+import { facilitiesConfigCodec } from "../facility/config-codec.ts";
 
 export const CONFIG_SECTION_CODECS = {
   roles: rolesConfigCodec,
   approval_policies: approvalPoliciesConfigCodec,
   chart_of_accounts: chartOfAccountsConfigCodec,
+  tax_rules: taxRulesConfigCodec,
+  zones: zonesConfigCodec,
+  service_charge_rules: serviceChargeRulesConfigCodec,
+  checklists: checklistsConfigCodec,
+  loyalty_policy: loyaltyPolicyConfigCodec,
+  facilities: facilitiesConfigCodec,
 } as const;
 
 export type CodecSection = keyof typeof CONFIG_SECTION_CODECS;
@@ -88,6 +99,12 @@ const DECODE_ORDER: readonly CodecSection[] = [
   "roles",
   "approval_policies",
   "chart_of_accounts",
+  "tax_rules",
+  "zones",
+  "service_charge_rules",
+  "checklists",
+  "loyalty_policy",
+  "facilities",
 ];
 
 type DraftsOf<C extends { fromTemplate: (...args: never[]) => unknown }> =
@@ -98,9 +115,7 @@ type DraftsOf<C extends { fromTemplate: (...args: never[]) => unknown }> =
     : never;
 
 export type DecodedConfigDrafts = {
-  roles?: DraftsOf<typeof rolesConfigCodec>;
-  approval_policies?: DraftsOf<typeof approvalPoliciesConfigCodec>;
-  chart_of_accounts?: DraftsOf<typeof chartOfAccountsConfigCodec>;
+  [Section in CodecSection]?: DraftsOf<(typeof CONFIG_SECTION_CODECS)[Section]>;
 };
 
 export type DecodeConfigBundleOptions = {
@@ -108,6 +123,16 @@ export type DecodeConfigBundleOptions = {
   sections?: readonly ConfigSection[];
   /** Role keys already in the target tenant, for `approval_policies` alone. */
   existingRoleKeys?: ReadonlySet<string>;
+  /** Target outlet codes when the importer has resolved them. */
+  existingOutletKeys?: ReadonlySet<string>;
+  /** Target zones for importing dependent sections without a zones section. */
+  existingZoneOutletKeyByKey?: ReadonlyMap<string, string>;
+  /** Target tax rule keys for a facilities-only import. */
+  existingTaxRuleKeys?: ReadonlySet<string>;
+  /** Target menu keys referenced by loyalty reward/mission configuration. */
+  existingMenuItemKeys?: ReadonlySet<string>;
+  /** Target point valuation, locked once the tenant has a ledger entry. */
+  lockedPointValueIdr?: number;
 };
 
 export type DecodeConfigBundleResult =
@@ -147,6 +172,22 @@ export function decodeConfigBundle(
     for (const item of (sections.roles?.items ?? []) as { key: string }[])
       roleKeys.add(item.key);
 
+  const zoneOutletKeyByKey = new Map(options.existingZoneOutletKeyByKey ?? []);
+  if (wanted.has("zones"))
+    for (const item of (sections.zones?.items ?? []) as {
+      key: string;
+      outletKey: string;
+    }[])
+      zoneOutletKeyByKey.set(item.key, item.outletKey);
+  const zoneKeys = new Set(zoneOutletKeyByKey.keys());
+  const taxRuleKeys = new Set(options.existingTaxRuleKeys ?? []);
+  if (wanted.has("tax_rules"))
+    for (const item of (sections.tax_rules?.items ?? []) as {
+      key: string;
+      kind: string;
+    }[])
+      if (item.kind === "rule") taxRuleKeys.add(item.key);
+
   for (const section of DECODE_ORDER) {
     const value = sections[section];
     if (!wanted.has(section) || !value) continue;
@@ -159,29 +200,75 @@ export function decodeConfigBundle(
         });
       continue;
     }
-    const result =
-      section === "approval_policies"
-        ? approvalPoliciesConfigCodec.fromTemplate(
+    const result = (() => {
+      switch (section) {
+        case "approval_policies":
+          return approvalPoliciesConfigCodec.fromTemplate(
             value.items as Parameters<
               typeof approvalPoliciesConfigCodec.fromTemplate
             >[0],
             { roleKeys },
-          )
-        : section === "roles"
-          ? rolesConfigCodec.fromTemplate(
-              value.items as Parameters<
-                typeof rolesConfigCodec.fromTemplate
-              >[0],
-            )
-          : chartOfAccountsConfigCodec.fromTemplate(
-              value.items as Parameters<
-                typeof chartOfAccountsConfigCodec.fromTemplate
-              >[0],
-            );
+          );
+        case "roles":
+          return rolesConfigCodec.fromTemplate(
+            value.items as Parameters<typeof rolesConfigCodec.fromTemplate>[0],
+          );
+        case "chart_of_accounts":
+          return chartOfAccountsConfigCodec.fromTemplate(
+            value.items as Parameters<
+              typeof chartOfAccountsConfigCodec.fromTemplate
+            >[0],
+          );
+        case "tax_rules": {
+          const missingOutlets = options.existingOutletKeys
+            ? (value.items as { key: string; outletKey: string | null }[])
+                .filter(
+                  (item) =>
+                    item.outletKey !== null &&
+                    !options.existingOutletKeys!.has(item.outletKey),
+                )
+                .map(
+                  (item) =>
+                    `Tax item ${item.key}: outletKey ${item.outletKey} is not a known outlet`,
+                )
+            : [];
+          if (missingOutlets.length > 0)
+            return { ok: false as const, issues: missingOutlets };
+          return taxRulesConfigCodec.fromTemplate(value.items);
+        }
+        case "zones":
+          return zonesConfigCodec.fromTemplate(value.items, {
+            outletKeys: options.existingOutletKeys,
+          });
+        case "service_charge_rules":
+          return serviceChargeRulesConfigCodec.fromTemplate(value.items, {
+            outletKeys: options.existingOutletKeys,
+            zoneKeys,
+            zoneOutletKeyByKey,
+          });
+        case "checklists":
+          return checklistsConfigCodec.fromTemplate(value.items, {
+            outletKeys: options.existingOutletKeys,
+            zoneOutletKeyByKey,
+            roleKeys,
+          });
+        case "loyalty_policy":
+          return loyaltyPolicyConfigCodec.fromTemplate(value.items, {
+            lockedPointValueIdr: options.lockedPointValueIdr,
+            menuItemKeys: options.existingMenuItemKeys,
+          });
+        case "facilities":
+          return facilitiesConfigCodec.fromTemplate(value.items, {
+            outletKeys: options.existingOutletKeys,
+            taxRuleKeys,
+          });
+      }
+    })();
     if (result.ok) {
       Object.assign(drafts, { [section]: result.drafts });
       if ("mappings" in result) accountMappings = result.mappings;
-    } else for (const message of result.issues) issues.push({ section, message });
+    } else
+      for (const message of result.issues) issues.push({ section, message });
   }
   const withoutCodec = (Object.keys(sections) as ConfigSection[]).filter(
     (section) => wanted.has(section) && !configSectionCodec(section),
@@ -202,14 +289,67 @@ export function configBundleReferenceIssues(
   bundle: ConfigBundle,
 ): ConfigItemIssue[] {
   const policies = bundle.sections.approval_policies;
+  const checklists = bundle.sections.checklists;
   const existingRoleKeys = bundle.sections.roles
     ? undefined
-    : new Set(
-        ((policies?.items ?? []) as { approverRoleKey?: string }[]).flatMap(
+    : new Set([
+        ...((policies?.items ?? []) as { approverRoleKey?: string }[]).flatMap(
           (item) => (item.approverRoleKey ? [item.approverRoleKey] : []),
         ),
+        ...((checklists?.items ?? []) as { roleKey?: string | null }[]).flatMap(
+          (item) => (item.roleKey ? [item.roleKey] : []),
+        ),
+      ]);
+  // A partial template can reference configuration already in the target.
+  // Saving it checks structure; decodeConfigBundle checks the supplied target
+  // keys during import. When a referenced section travels, its keys are
+  // authoritative and dangling/cross-outlet references are rejected here.
+  const existingZoneOutletKeyByKey = bundle.sections.zones
+    ? undefined
+    : new Map<string, string>();
+  if (existingZoneOutletKeyByKey) {
+    for (const item of (checklists?.items ?? []) as {
+      outletKey: string;
+      schedule: { zoneKey: string | null };
+    }[])
+      if (item.schedule.zoneKey)
+        existingZoneOutletKeyByKey.set(item.schedule.zoneKey, item.outletKey);
+    for (const item of (bundle.sections.service_charge_rules?.items ?? []) as {
+      outletKey: string | null;
+      zoneKey: string | null;
+    }[])
+      if (item.zoneKey && !existingZoneOutletKeyByKey.has(item.zoneKey))
+        existingZoneOutletKeyByKey.set(
+          item.zoneKey,
+          item.outletKey ?? "external",
+        );
+  }
+  const existingTaxRuleKeys = bundle.sections.tax_rules
+    ? undefined
+    : new Set(
+        (
+          (bundle.sections.facilities?.items ?? []) as {
+            taxRuleKey?: string | null;
+          }[]
+        ).flatMap((item) => (item.taxRuleKey ? [item.taxRuleKey] : [])),
       );
-  const decoded = decodeConfigBundle(bundle, { existingRoleKeys });
+  const existingMenuItemKeys = new Set(
+    (
+      (bundle.sections.loyalty_policy?.items ?? []) as {
+        menuItemKey?: string | null;
+        rule?: { menuItemKeys?: string[] };
+      }[]
+    ).flatMap((item) => [
+      ...(item.menuItemKey ? [item.menuItemKey] : []),
+      ...(item.rule?.menuItemKeys ?? []),
+    ]),
+  );
+  const decoded = decodeConfigBundle(bundle, {
+    existingRoleKeys,
+    existingZoneOutletKeyByKey,
+    existingTaxRuleKeys,
+    existingMenuItemKeys,
+  });
   return decoded.ok
     ? []
     : decoded.issues.map((issue) => ({

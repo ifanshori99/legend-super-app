@@ -795,12 +795,12 @@ test("TEN-09 every config section has a strict item schema keyed by reference, n
     ).success,
     false,
   );
-  // The browser preview stays loose: it diffs any keyed item.
+  // Codec-backed sections require the portable domain contract.
   assert.equal(
     platform.configBundleSchema.safeParse(
       bundle({ zones: { version: 1, items: [{ key: "a", name: "x" }] } }),
     ).success,
-    true,
+    false,
   );
   assert.equal(
     platform.configBundleSchema.safeParse(
@@ -810,14 +810,14 @@ test("TEN-09 every config section has a strict item schema keyed by reference, n
     ).success,
     false,
   );
-  // Loyalty and payroll keep the generic JSON item until their tables exist.
+  // Loyalty now has a domain codec and rejects arbitrary JSON items.
   assert.equal(
     platform.configBundleSchema.safeParse(
       bundle({
         loyalty_policy: { version: 1, items: [{ key: "tier", any: 1 }] },
       }),
     ).success,
-    true,
+    false,
   );
   // An item carrying an id is refused by the identifier scan.
   const leaked = bundle({

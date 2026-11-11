@@ -17,11 +17,12 @@
 // here (modules, textOverrides, theme). The rest carry `items` validated by
 // `configSectionItemSchemas` (strict, one schema per section; multi-kind
 // sections discriminate on `kind`). Items reference each other by `*Key`
-// fields, never by id. `loyalty_policy` and `payroll_settings` have no tables
-// yet and keep the generic JSON item.
+// fields, never by id. `payroll_settings` keeps the generic JSON item until
+// its owning domain registers a codec.
 
 import {
   basisPointsSchema,
+  businessDateSchema,
   isoDateTimeSchema,
   posDiscountThresholdBpSchema,
   roundingModeSchema,
@@ -60,6 +61,7 @@ import {
   taxTypeSchema,
 } from "../tax/schemas.ts";
 import { textOverrideSetSchema } from "../text/index.ts";
+import { loyaltyPolicyConfigItemSchema } from "../crm/config-codec.ts";
 import {
   configBundleReferenceIssues,
   configSectionItemIssues,
@@ -197,6 +199,8 @@ const taxItemSchema = z.discriminatedUnion("kind", [
     }),
     priceIncludesTax: z.boolean(),
     includeServiceInBase: z.boolean(),
+    /** Older stored exports did not carry the effective business date. */
+    effectiveFrom: businessDateSchema.optional(),
     isActive: z.boolean(),
   }),
   z.strictObject({
@@ -231,6 +235,8 @@ const serviceChargeItemSchema = z.strictObject({
     .array(itemTaxClassSchema)
     .min(1)
     .max(itemTaxClassSchema.options.length),
+  /** Older stored exports did not carry the effective business date. */
+  effectiveFrom: businessDateSchema.optional(),
   isActive: z.boolean(),
 });
 
@@ -383,7 +389,7 @@ const wifiPolicyItemSchema = z.strictObject({
   tierBonusMinutes: z.record(z.string(), z.number().int().min(0).max(720)),
 });
 
-/** No tables yet (loyalty, payroll): any plain JSON object with a key. */
+/** Sections without a domain codec: any plain JSON object with a key. */
 const unsupportedItemSchema = jsonObject.and(z.object({ key: itemKey }));
 
 /** One strict item schema per generic section. */
@@ -396,7 +402,7 @@ export const configSectionItemSchemas: Record<GenericConfigSection, z.ZodType> =
     service_charge_rules: serviceChargeItemSchema,
     zones: zoneItemSchema,
     checklists: checklistItemSchema,
-    loyalty_policy: unsupportedItemSchema,
+    loyalty_policy: loyaltyPolicyConfigItemSchema,
     facilities: facilityItemSchema,
     wifi_policies: wifiPolicyItemSchema,
     payroll_settings: unsupportedItemSchema,
