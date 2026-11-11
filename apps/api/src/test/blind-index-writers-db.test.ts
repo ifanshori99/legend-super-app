@@ -9,7 +9,13 @@
 // Assumption: a create that carries a duplicate NIK is covered by the same
 // pre-check as the PII update.
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+// The default active version is 1; these writers run under the v2 cutover.
+vi.hoisted(() => {
+  process.env.BLIND_INDEX_ACTIVE_VERSION = "2";
+});
+
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { blindIndexAt } from "../lib/blind-index.ts";

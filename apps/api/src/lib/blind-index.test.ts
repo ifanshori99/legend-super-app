@@ -31,9 +31,9 @@ const hmacHex = (key: Buffer, purpose: string, value: string) =>
     .digest("hex");
 
 describe("legend-n039 blind index versions", () => {
-  it("supports versions 1 and 2, and defaults to 2", () => {
+  it("supports versions 1 and 2, and defaults to 1", () => {
     expect([...BLIND_INDEX_VERSIONS]).toEqual([1, 2]);
-    expect(BLIND_INDEX_ACTIVE_VERSION).toBe(2);
+    expect(BLIND_INDEX_ACTIVE_VERSION).toBe(1);
   });
 
   it("v1 is byte-identical to the legacy secrets.blindIndex (no lockout)", () => {
@@ -119,6 +119,18 @@ describe("legend-n039 active version rollback lever", () => {
     try {
       const mod = await import("./blind-index.ts");
       expect(mod.BLIND_INDEX_ACTIVE_VERSION).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("BLIND_INDEX_ACTIVE_VERSION=2 makes v2 the active version", async () => {
+    vi.resetModules();
+    vi.stubEnv("BLIND_INDEX_ACTIVE_VERSION", "2");
+    try {
+      const mod = await import("./blind-index.ts");
+      expect(mod.BLIND_INDEX_ACTIVE_VERSION).toBe(2);
     } finally {
       vi.unstubAllEnvs();
       vi.resetModules();

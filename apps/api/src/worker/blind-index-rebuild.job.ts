@@ -16,6 +16,12 @@
 // conflicts and 0 failed or incomplete tenants is the proof that a version is
 // no longer needed.
 //
+// Verify cannot inspect a row another transaction has locked (SKIP LOCKED). It
+// counts those rows as `skipped` (rows of the tenant minus rows it saw) and the
+// tenant is then incomplete and retryable; a verify run is clean only with
+// `skipped` 0 and `rewrites` 0 (legend-488). A locked row counts as skipped even
+// when its digest is right: verify cannot know while it is locked.
+//
 // Built like worker/hris-pii-reseal.job.ts: batches of 200 ordered by id, one
 // tenant transaction each, rows selected FOR UPDATE SKIP LOCKED, safe to repeat
 // and to kill; a second run after a finished one changes 0 rows. After the
@@ -90,6 +96,8 @@ export type BlindIndexRebuildResult = {
   rewrites: number;
   /** Tenants with stale rows that are not conflicts (locked rows): a retry can finish them. */
   retryableTenants: number;
+  /** Verify only: rows it could not inspect because another transaction held the lock. */
+  skipped: number;
 };
 
 export type BlindIndexRebuildOptions = {
@@ -176,6 +184,25 @@ async function countStale(
         ),
       );
     return Number(staleEmployees?.n ?? 0) + Number(staleEntities?.n ?? 0);
+  });
+}
+
+/** Rows of a tenant per table, counted without SKIP LOCKED (verify skip check). */
+async function countRows(
+  database: Database,
+  context: ScopedTenantContext,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    const [rowsEmployees] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(employees)
+      .where(eq(employees.tenantId, tenantId));
+    const [rowsEntities] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(legalEntities)
+      .where(eq(legalEntities.tenantId, tenantId));
+    return Number(rowsEmployees?.n ?? 0) + Number(rowsEntities?.n ?? 0);
   });
 }
 
@@ -407,6 +434,7 @@ export async function runBlindIndexRebuild(
     verify,
     rewrites: 0,
     retryableTenants: 0,
+    skipped: 0,
   };
 
   const steps = [
@@ -421,6 +449,7 @@ export async function runBlindIndexRebuild(
     const context = jobContext(tenantId);
     assertTrustedScopedContext(context);
     let tenantStaleConflicts = 0;
+    let tenantSeen = 0;
     try {
       for (const [table, runBatch] of steps) {
         let afterId: string | null = null;
@@ -441,6 +470,7 @@ export async function runBlindIndexRebuild(
             );
           if (batch.seen === 0) break;
           afterId = batch.lastId;
+          tenantSeen += batch.seen;
           result.conflicts += batch.conflicts;
           tenantStaleConflicts += batch.staleConflicts;
           if (table === "employees") result.employees += batch.moved;
@@ -452,13 +482,20 @@ export async function runBlindIndexRebuild(
       }
       if (!result.aborted) {
         const stale = await countStale(database, context, active);
-        if (stale > 0) {
+        // Verify scans every row: any row it did not see was locked by another
+        // transaction (or is new), so the proof is not complete yet.
+        const skipped = verify
+          ? Math.max(0, (await countRows(database, context)) - tenantSeen)
+          : 0;
+        result.skipped += skipped;
+        if (stale > 0 || skipped > 0) {
           result.incompleteTenants += 1;
           log.error(
-            `Blind-index rebuild incomplete for tenant ${tenantId}: rows still on another version (conflicts, or locked by another transaction)`,
+            `Blind-index rebuild incomplete for tenant ${tenantId}: rows still on another version or not inspected (conflicts, or locked by another transaction)`,
           );
-          // Stale rows beyond the conflicts were locked: a retry can finish them.
-          if (stale > tenantStaleConflicts) result.retryableTenants += 1;
+          // Stale rows beyond the conflicts, or skipped rows, were locked: a retry can finish them.
+          if (stale > tenantStaleConflicts || skipped > 0)
+            result.retryableTenants += 1;
         }
       }
     } catch (error) {

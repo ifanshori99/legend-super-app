@@ -108,14 +108,16 @@ const schema = z
       .max(HRIS_PII_MAX_KEY_VERSION)
       .default(1),
     // Blind-index key version (legend-n039, lib/blind-index.ts): 1 = legacy
-    // HMAC under the raw data key, 2 = HKDF subkey. New writes use this one;
-    // setting 1 is the rollback lever (then rerun blind-index-rebuild).
+    // HMAC under the raw data key, 2 = HKDF subkey. New writes use this one.
+    // Default 1 (legend-488): during a rolling deploy an old pod cannot read v2
+    // digests. Set 2 by hand only after every pod runs this build
+    // (docs/deployment.md); setting 1 again is the rollback lever.
     BLIND_INDEX_ACTIVE_VERSION: z.coerce
       .number()
       .int()
       .min(1)
       .max(2)
-      .default(2),
+      .default(1),
     BETTER_AUTH_URL: origin(
       "Use the API's origin, e.g. http://localhost:4000.",
     ).default("http://localhost:4000"),

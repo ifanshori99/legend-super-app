@@ -22,7 +22,7 @@ export type BlindIndexVersion = (typeof BLIND_INDEX_VERSIONS)[number];
 
 /** Version new digests are written under. */
 export const BLIND_INDEX_ACTIVE_VERSION: BlindIndexVersion =
-  env.BLIND_INDEX_ACTIVE_VERSION === 1 ? 1 : 2;
+  env.BLIND_INDEX_ACTIVE_VERSION === 2 ? 2 : 1;
 
 const V2_INFO = "legend:blind-index:v2";
 

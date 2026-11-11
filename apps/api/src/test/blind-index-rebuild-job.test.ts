@@ -1,7 +1,8 @@
 // legend-n039: blind-index rebuild job against PostgreSQL with the restricted
-// app role (RLS enforced). Active blind-index version is 2 (the default);
-// rows are forced back to version 1 / legacy digests to stand for data written
-// before the cutover.
+// app role (RLS enforced). The default active version is 1 (legend-488); this
+// file sets BLIND_INDEX_ACTIVE_VERSION=2 before the config loads, as the
+// operator does after a rollout. Rows are forced back to version 1 / legacy
+// digests to stand for data written before the cutover.
 //
 // Assumptions (contract: docs/design legend-n039):
 // - run entry `runBlindIndexRebuild({ batchSize, log, listTenantIds })` and
@@ -10,7 +11,12 @@
 //   incompleteTenants, failedTenants}.
 // - the queued payload names the target as `targetVersion`.
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.hoisted(() => {
+  process.env.BLIND_INDEX_ACTIVE_VERSION = "2";
+});
+
 import {
   BLIND_INDEX_ACTIVE_VERSION,
   blindIndexAt,
