@@ -460,7 +460,8 @@ test("legend-307w3 security email still needs a verified address", () => {
 
 test("legend-307w3 other categories keep the tenant email switch and the user opt-out", () => {
   for (const category of n.NOTIFICATION_CATEGORIES) {
-    if (category === "security") continue;
+    // Mandatory-email categories (security, tenant_invitation) have their own test above/below.
+    if (n.isEmailMandatory(category)) continue;
     assert.equal(
       decision(
         plan({
@@ -489,6 +490,26 @@ test("legend-307w3 other categories keep the tenant email switch and the user op
       "opted_out",
       category,
     );
+  }
+});
+
+test("legend-fy5y the first-admin invitation email ignores the tenant email switch and the user opt-out", () => {
+  const emailOff = { ...f.policy, emailEnabled: false };
+  const optedOut = {
+    ...f.baristaPreference,
+    categories: {
+      tenant_invitation: { web_push: false, email: false, whatsapp: false },
+    },
+  };
+  for (const preference of [null, f.baristaPreference, optedOut]) {
+    const result = plan({
+      category: "tenant_invitation",
+      policy: emailOff,
+      preference,
+      now: lateNight,
+    });
+    assert.equal(decision(result, "email").decision, "send");
+    assert.equal(decision(result, "email").notBefore, null);
   }
 });
 
