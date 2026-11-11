@@ -759,6 +759,30 @@ describe("PAY-02 a verified webhook settles the intent", () => {
       // The same event again is a duplicate.
       expect((await deliver(body)).body.status).toBe("duplicate");
     }
+    // Invoice events that are not DOIT recurring billing (no
+    // `data.invoice.subscription_id`) keep the old path: stored `ignored`, HTTP
+    // 200, never MALFORMED or 5xx (6c6 fix round 2, finding 1).
+    for (const [type, data] of [
+      ["invoice.created", {}],
+      ["invoice.paid", {}],
+      ["invoice.created", { invoice: { id: "inv_other", amount: 1000 } }],
+    ] as const) {
+      const body = {
+        id: newEventId(),
+        type,
+        created_at: new Date().toISOString(),
+        data,
+      };
+      const response = await deliver(body);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ received: true, status: "ignored" });
+      const [row, ...rest] = await eventRows(tenantA, body.id);
+      expect(rest).toEqual([]);
+      expect(row).toMatchObject({
+        status: "ignored",
+        last_error_code: "EVENT_TYPE_IGNORED",
+      });
+    }
     await expectUntouched(bill);
     expect(await unallocatedCount(bill.intentId)).toBe(0);
   });

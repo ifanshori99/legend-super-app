@@ -457,6 +457,41 @@ async function signedByIntentIntegration(
   );
 }
 
+/** Recurring billing twin of `signedByIntentIntegration`: the event counts as
+ * signed by the integration a subscription is bound to when that integration
+ * verified it, or holds the same (current, or previous in grace) secret that
+ * verified it (two integrations may share a secret, a secret may rotate). An
+ * unknown or other integration with another secret never passes. */
+async function signedBySubscriptionIntegration(
+  context: ScopedTenantContext,
+  boundIntegrationId: string,
+  row: GatewayWebhookEvent,
+  verifiedSecret: string | undefined,
+  now: Date,
+): Promise<boolean> {
+  if (row.integrationId === boundIntegrationId) return true;
+  const loaded = await loadIntegrationCredentialsById(
+    context,
+    PROVIDER,
+    boundIntegrationId,
+  );
+  if (!loaded) return false;
+  if (row.integrationId !== null && loaded.integration.id === row.integrationId)
+    return true;
+  if (verifiedSecret === undefined) return false;
+  const secret = loaded.credentials.webhookSecret;
+  if (typeof secret === "string" && secret === verifiedSecret) return true;
+  const previous = previousWebhookSecretOf(
+    loaded.credentials,
+    loaded.integration.id,
+  );
+  return (
+    previous !== null &&
+    inGrace(previous, now) &&
+    previous.secret === verifiedSecret
+  );
+}
+
 /**
  * Money arrived that cannot settle the intent (closed as failed, or
  * AMOUNT_MISMATCH): parked once as unallocated funds, keyed by the provider
@@ -1196,6 +1231,27 @@ async function processRefundEvent(
   }
 }
 
+/** An invoice event of recurring billing names a subscription. One without
+ * `data.invoice.subscription_id` is not ours and keeps the old path (stored,
+ * ignored, 200); one that names it but is otherwise malformed is MALFORMED. */
+function isRecurringInvoiceEvent(type: string, body: unknown): boolean {
+  if (!isDoitRecurringEvent(type)) return false;
+  const data =
+    typeof body === "object" && body !== null
+      ? (body as { data?: unknown }).data
+      : undefined;
+  const invoice =
+    typeof data === "object" && data !== null
+      ? (data as { invoice?: unknown }).invoice
+      : undefined;
+  return (
+    typeof invoice === "object" &&
+    invoice !== null &&
+    typeof (invoice as { subscription_id?: unknown }).subscription_id ===
+      "string"
+  );
+}
+
 /** Parses the body of a verified event by its type. Null: not readable. */
 function parseEventBody(type: string, body: unknown): ParsedEvent | null {
   if (isDoitRecurringEvent(type)) {
@@ -1239,7 +1295,7 @@ async function processStoredEvent(
   verifiedSecret?: string,
 ): Promise<ProcessOutcome> {
   if (parsed.kind === "invoice")
-    return processInvoiceEvent(context, row, parsed.event, now);
+    return processInvoiceEvent(context, row, parsed.event, now, verifiedSecret);
   return parsed.kind === "refund"
     ? processRefundEvent(context, row, parsed.event, now, verifiedSecret)
     : processPaymentEvent(context, row, parsed.event, now, verifiedSecret);
@@ -1254,6 +1310,7 @@ async function processInvoiceEvent(
   row: GatewayWebhookEvent,
   event: DoitInvoiceEvent,
   now: Date,
+  verifiedSecret?: string,
 ): Promise<ProcessOutcome> {
   try {
     const early =
@@ -1264,6 +1321,16 @@ async function processInvoiceEvent(
       storeUnseenPaidForReview: !early,
       // The integration whose secret verified this event (stored first).
       verifiedIntegrationId: row.integrationId,
+      // Another integration holding the verifying secret (shared or rotated)
+      // may speak for the subscription too.
+      integrationAccepts: (boundIntegrationId) =>
+        signedBySubscriptionIntegration(
+          context,
+          boundIntegrationId,
+          row,
+          verifiedSecret,
+          now,
+        ),
     });
     if (
       result.outcome === "unknown_subscription" ||
@@ -1521,9 +1588,9 @@ export async function receiveDoitWebhook(input: {
     envelope.success &&
     !isDoitPaymentEvent(envelope.data.type) &&
     !isDoitRefundEvent(envelope.data.type) &&
-    !isDoitRecurringEvent(envelope.data.type)
+    !isRecurringInvoiceEvent(envelope.data.type, json)
   ) {
-    // Not a payment or refund event: stored (deduped by event id) and ignored, 200.
+    // Not a payment, refund or recurring invoice event: stored (deduped by event id) and ignored, 200.
     const { id, type, created_at } = envelope.data;
     const stored = await insertRow(context, {
       integrationId: verified.integrationId,

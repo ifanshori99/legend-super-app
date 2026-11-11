@@ -89,6 +89,12 @@ describe("parseDoitInvoiceEvent", () => {
       "a period ending before it starts",
       envelope({ period_end: "2026-10-31" }),
     ],
+    // Period end is EXCLUSIVE (fix round 2, finding 8): an empty period would
+    // otherwise be treated as one that covers a day.
+    [
+      "a period with the same start and end date",
+      envelope({ period_start: "2026-11-01", period_end: "2026-11-01" }),
+    ],
     ["an http hosted url", envelope({ hosted_url: "http://pay.doit.id/i/1" })],
     [
       "a hosted url with credentials",

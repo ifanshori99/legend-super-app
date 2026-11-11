@@ -44,12 +44,12 @@ import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
 import {
   cancelSubscription,
+  pauseSubscription,
+  resumeSubscription,
   startSubscription,
 } from "../services/payment-recurring.service";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
-import {
-  clearDoitWebhookSecretCache,
-} from "../services/payment-webhook.service";
+import { clearDoitWebhookSecretCache } from "../services/payment-webhook.service";
 import {
   setIntegrationStatus,
   upsertIntegration,
@@ -113,10 +113,15 @@ const secretB = `whsec-rec-b-${randomBytes(16).toString("hex")}`;
 const secretAOther = `whsec-rec-a2-${randomBytes(16).toString("hex")}`;
 let integrationA = "";
 let integrationAOther = "";
-// REC-06 FK anchor on the shared fixture tenant. Never active: a disabled row
-// cannot be picked as the tenant's gateway by parallel suites (payment-webhook-api
-// polls through the active DOIT account of the same tenant). No DOIT calls are
-// made with it, so it needs no credentials to be usable. Deleted by id only.
+// REC-06 FK anchor. The plan/subscription rows that REC-06 seeds on the shared
+// fixture tenant need a gateway_integration_id (FK by id only, no tenant or
+// provider in the key). The anchor lives on OUR dedicated tenantW, never on the
+// fixture tenant: payment-webhook-api and the integration suites list every
+// tenant_integrations row of the fixture tenant and parse each one, so any
+// row of ours there (an unparseable provider, or an "active" row without a full
+// credential reference) breaks them with 422 "An active integration needs
+// stored credentials". Disabled, a valid provider value no other test seeds on
+// tenantW, no credentials. Deleted by id.
 let integrationFixture = "";
 
 let dedicatedTenant: SecondTenant;
@@ -163,20 +168,19 @@ async function seedIntegration(
   return created.id;
 }
 
-// Raw INSERT, never upsertIntegration: the service upserts on the unique key
-// (tenant, provider, outlet), which on the shared fixture tenant collides with
-// other test files' own DOIT integration (parallel files) and would overwrite
-// then disable THEIR row. Status 'disabled' so gateway selection on the shared
-// tenant can never choose it; a fresh id; outlet-less with a provider value no
-// other test seeds, so no unique index (tenant, provider[, outlet]) can clash.
+// Raw INSERT, never upsertIntegration (it would need credentials and DOIT
+// config). Status 'disabled' so gateway selection can never choose it;
+// outlet-less with provider 'wifi_vendor' (a member of INTEGRATION_PROVIDERS so
+// listIntegrations can parse it, unlike an invented value) which no test seeds
+// on tenantW, so neither unique index (tenant, provider[, outlet]) can clash.
 // It is deliberately NOT in integrationIds: the afterAll intent/child cleanup
-// scoped to integrationIds must never touch rows of the shared tenant.
+// scoped to integrationIds must not touch it; it is deleted by its own id.
 async function seedFixtureAnchorIntegration(): Promise<string> {
   const id = randomUUID();
   await owner.query(
     `INSERT INTO tenant_integrations (id, tenant_id, outlet_id, provider, config, status)
-     VALUES ($1, $2, NULL, 'recurring_anchor', '{}'::jsonb, 'disabled')`,
-    [id, fixtureTenant],
+     VALUES ($1, $2, NULL, 'wifi_vendor', '{}'::jsonb, 'disabled')`,
+    [id, tenantW],
   );
   const check = await owner.query<{ status: string }>(
     "SELECT status FROM tenant_integrations WHERE id = $1",
@@ -269,35 +273,59 @@ beforeAll(async () => {
 afterAll(async () => {
   // tenantW and tenantB belong to this file alone, so tenant-wide deletes are
   // safe for them. The fixture tenant is shared: only rows we created, by id.
-  await owner.query(
-    "DELETE FROM domain_event_outbox WHERE tenant_id = ANY($1::uuid[])",
-    [[tenantW, tenantB]],
+  // Every step runs in its own try/catch so one failure cannot skip the rest
+  // (a skipped step used to leave rows that broke other suites); the first
+  // error is rethrown at the end so a leak still fails this file visibly.
+  const errors: unknown[] = [];
+  const step = async (run: () => Promise<unknown>) => {
+    try {
+      await run();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  const query = (text: string, values: unknown[]) => () =>
+    owner.query(text, values);
+  const ours = [tenantW, tenantB];
+  const intents =
+    "(SELECT id FROM payment_intents WHERE gateway_integration_id = ANY($1::uuid[]))";
+
+  await step(
+    query("DELETE FROM domain_event_outbox WHERE tenant_id = ANY($1::uuid[])", [
+      ours,
+    ]),
   );
-  await owner.query(
-    "DELETE FROM subscription_invoices WHERE subscription_id = ANY($1::uuid[])",
-    [subIds],
+  await step(
+    query(
+      "DELETE FROM subscription_invoices WHERE subscription_id = ANY($1::uuid[])",
+      [subIds],
+    ),
   );
-  await owner.query(
-    "DELETE FROM payment_recurring_subscriptions WHERE id = ANY($1::uuid[])",
-    [subIds],
+  await step(
+    query(
+      "DELETE FROM payment_recurring_subscriptions WHERE id = ANY($1::uuid[])",
+      [subIds],
+    ),
   );
-  await owner.query(
-    "DELETE FROM payment_recurring_plans WHERE id = ANY($1::uuid[])",
-    [planIds],
+  await step(
+    query("DELETE FROM payment_recurring_plans WHERE id = ANY($1::uuid[])", [
+      planIds,
+    ]),
   );
-  await owner.query(
-    "DELETE FROM gateway_webhook_events WHERE tenant_id = ANY($1::uuid[])",
-    [[tenantW, tenantB]],
+  await step(
+    query(
+      "DELETE FROM gateway_webhook_events WHERE tenant_id = ANY($1::uuid[])",
+      [ours],
+    ),
   );
-  await owner.query(
-    `DELETE FROM payment_evidence WHERE payment_intent_id IN
-       (SELECT id FROM payment_intents WHERE gateway_integration_id = ANY($1::uuid[]))`,
-    [integrationIds],
+  await step(
+    query(
+      `DELETE FROM payment_evidence WHERE payment_intent_id IN ${intents}`,
+      [integrationIds],
+    ),
   );
   // Intents minted on our own integrations can carry children: clear every
   // FK child first, scoped to our integration ids.
-  const intents =
-    "(SELECT id FROM payment_intents WHERE gateway_integration_id = ANY($1::uuid[]))";
   for (const table of [
     "payment_unallocated_funds",
     "payment_refunds",
@@ -305,34 +333,83 @@ afterAll(async () => {
     "edc_transactions",
     "order_issue_charges",
   ])
-    await owner.query(
-      `DELETE FROM ${table} WHERE payment_intent_id IN ${intents}`,
-      [integrationIds],
+    await step(
+      query(`DELETE FROM ${table} WHERE payment_intent_id IN ${intents}`, [
+        integrationIds,
+      ]),
     );
-  await owner.query(
-    `UPDATE reservations SET deposit_payment_id = NULL WHERE deposit_payment_id IN ${intents}`,
-    [integrationIds],
+  await step(
+    query(
+      `UPDATE reservations SET deposit_payment_id = NULL WHERE deposit_payment_id IN ${intents}`,
+      [integrationIds],
+    ),
   );
-  await owner.query(
-    "DELETE FROM payment_intents WHERE gateway_integration_id = ANY($1::uuid[])",
-    [integrationIds],
+  await step(
+    query(
+      "DELETE FROM payment_intents WHERE gateway_integration_id = ANY($1::uuid[])",
+      [integrationIds],
+    ),
   );
-  await owner.query(
-    "DELETE FROM tenant_integrations WHERE id = ANY($1::uuid[])",
-    [integrationIds],
+  await step(
+    query("DELETE FROM tenant_integrations WHERE id = ANY($1::uuid[])", [
+      integrationIds,
+    ]),
   );
-  // Fixture-tenant anchor: our own row, by id (plans above are already gone).
-  await owner.query("DELETE FROM tenant_integrations WHERE id = $1", [
-    integrationFixture,
-  ]);
-  await owner.query(
-    "DELETE FROM role_assignments WHERE user_id = ANY($1::text[])",
-    [userIds],
+  // Anchor row (tenantW): our own row, by id (plans above are already gone).
+  await step(
+    query("DELETE FROM tenant_integrations WHERE id = $1", [
+      integrationFixture || randomUUID(),
+    ]),
   );
-  await owner.query("DELETE FROM tenants WHERE id = $1", [tenantB]);
-  await removeSecondTenant(owner, dedicatedTenant);
-  await owner.end();
+  await step(
+    query("DELETE FROM role_assignments WHERE user_id = ANY($1::text[])", [
+      userIds,
+    ]),
+  );
+  // Whatever else the services wrote for our two tenants (audit_logs is the
+  // known one: audit_logs_outlet_fk blocked removeSecondTenant). audit_logs is
+  // append-only (trigger guard_audit_log), so deletes run with triggers off
+  // (session_replication_role = replica, owner role) inside one transaction per
+  // tenant. The child tables are discovered from the foreign keys that point
+  // at tenants/outlets/brands/legal_entities, so a new child table cannot
+  // reintroduce the leak. Scoped to tenantW and tenantB only.
+  for (const tenantId of ours) await step(() => sweepTenantRows(tenantId));
+  await step(query("DELETE FROM tenants WHERE id = $1", [tenantB]));
+  await step(() => removeSecondTenant(owner, dedicatedTenant));
+  await step(() => owner.end());
+  if (errors.length > 0) throw errors[0];
 });
+
+async function sweepTenantRows(tenantId: string): Promise<void> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    const { rows } = await client.query<{ tbl: string }>(
+      `SELECT DISTINCT c.conrelid::regclass::text AS tbl
+         FROM pg_constraint c
+         JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+        WHERE c.contype = 'f'
+          AND c.confrelid IN ('public.tenants'::regclass, 'public.outlets'::regclass,
+                              'public.brands'::regclass, 'public.legal_entities'::regclass)
+          AND c.conrelid NOT IN ('public.tenants'::regclass, 'public.outlets'::regclass,
+                                 'public.brands'::regclass, 'public.legal_entities'::regclass)`,
+    );
+    // `tbl` comes from pg_catalog (regclass text, already quoted), not input.
+    for (const { tbl } of rows)
+      await client.query(`DELETE FROM ${tbl} WHERE tenant_id = $1`, [tenantId]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 beforeEach(() => {
   resetPaymentWebhookRateLimits();
@@ -353,11 +430,7 @@ type Fx = {
 };
 
 type SubStatus =
-  | "pending_first_payment"
-  | "active"
-  | "past_due"
-  | "paused"
-  | "cancelled";
+  "pending_first_payment" | "active" | "past_due" | "paused" | "cancelled";
 
 async function seedFixture(
   options: {
@@ -580,7 +653,9 @@ async function createInvoice(fx: Fx, o: Partial<EventOptions> = {}) {
 describe("REC-01 invoice.created stores the invoice and notifies the customer once", () => {
   it("REC-01 a verified invoice.created stores an open invoice and queues one notification", async () => {
     const fx = await seedFixture();
-    const body = invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` });
+    const body = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
     const response = await deliver(body);
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ received: true, status: "processed" });
@@ -628,7 +703,9 @@ describe("REC-01 invoice.created stores the invoice and notifies the customer on
 
   it("REC-01 the same event id delivered twice stores one invoice and notifies once", async () => {
     const fx = await seedFixture();
-    const body = invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` });
+    const body = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
     expect((await deliver(body)).status).toBe(200);
     const second = await deliver(body);
     expect(second.status).toBe(200);
@@ -647,7 +724,8 @@ describe("REC-01 invoice.created stores the invoice and notifies the customer on
     expect(notifiedAt).not.toBeNull();
 
     expect(
-      (await deliver(invoiceEvent("invoice.created", fx, { invoiceId }))).status,
+      (await deliver(invoiceEvent("invoice.created", fx, { invoiceId })))
+        .status,
     ).toBe(200);
     const rows = await invoiceRows(invoiceId);
     expect(rows).toHaveLength(1);
@@ -657,7 +735,9 @@ describe("REC-01 invoice.created stores the invoice and notifies the customer on
 
   it("REC-01 concurrent deliveries of one invoice.created store and notify once", async () => {
     const fx = await seedFixture();
-    const body = invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` });
+    const body = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
     const responses = await Promise.all([deliver(body), deliver(body)]);
     expect(responses.map((r) => r.status)).toEqual([200, 200]);
     const rows = await invoiceRows(body.data.invoice.id);
@@ -671,7 +751,9 @@ describe("REC-01 invoice.created stores the invoice and notifies the customer on
   it("REC-01 two open invoices for one period never both stay open", async () => {
     const fx = await seedFixture();
     await createInvoice(fx, { invoiceId: `inv_${unique()}` });
-    await deliver(invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` }));
+    await deliver(
+      invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` }),
+    );
     const { rows } = await owner.query(
       "SELECT 1 FROM subscription_invoices WHERE subscription_id = $1 AND period_start = $2 AND status IN ('open','paid')",
       [fx.subId, P_CUR],
@@ -746,8 +828,10 @@ describe("REC-03 invoice.paid activates only when verified, open and matching", 
       activated_at: null,
     });
     const [row] = await invoiceRows(invoiceId);
-    expect(row!.status).not.toBe("paid");
-    expect(row!.paid_at).toBeNull();
+    // Money did arrive with the wrong amount: the invoice is parked for
+    // review with paid_at recorded, and never settled as paid.
+    expect(row!.status).toBe("needs_review");
+    expect(row!.paid_at).not.toBeNull();
   });
 
   it("REC-03 an event carrying a non-paid invoice status never activates", async () => {
@@ -762,7 +846,9 @@ describe("REC-03 invoice.paid activates only when verified, open and matching", 
 
   it("REC-03 a paid event for an invoice that was never stored does not activate", async () => {
     const fx = await seedFixture();
-    await deliver(invoiceEvent("invoice.paid", fx, { invoiceId: `inv_${unique()}` }));
+    await deliver(
+      invoiceEvent("invoice.paid", fx, { invoiceId: `inv_${unique()}` }),
+    );
     expect(await subRow(fx.subId)).toMatchObject({
       status: "pending_first_payment",
       activated_at: null,
@@ -797,11 +883,13 @@ describe("REC-03 invoice.paid activates only when verified, open and matching", 
       periodStart: P_CUR,
       periodEnd: P_NEXT,
     });
-    await deliver(invoiceEvent("invoice.paid", fx, {
-      invoiceId,
-      periodStart: P_CUR,
-      periodEnd: P_NEXT,
-    }));
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart: P_CUR,
+        periodEnd: P_NEXT,
+      }),
+    );
     expect(await subRow(fx.subId)).toMatchObject({
       status: "active",
       period_start: P_CUR,
@@ -926,7 +1014,9 @@ describe("REC-04 paused and cancelled subscriptions", () => {
 describe("REC-05 signature and tenant derivation", () => {
   it("REC-05 a bad signature answers 401 and stores no invoice", async () => {
     const fx = await seedFixture();
-    const body = invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` });
+    const body = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
     const response = await deliver(body, { secret: "not-the-tenant-secret" });
     expect(response.status).toBe(401);
     expect(await invoiceRows(body.data.invoice.id)).toHaveLength(0);
@@ -954,26 +1044,39 @@ describe("REC-05 signature and tenant derivation", () => {
     const response = await request(app)
       .post(webhookPath(tenantW))
       .set("Content-Type", "application/json")
-      .send(JSON.stringify(invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` })));
+      .send(
+        JSON.stringify(
+          invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` }),
+        ),
+      );
     expect(response.status).toBe(401);
   });
 
   it("REC-05 an event for tenant A's subscription sent to tenant B's webhook creates nothing", async () => {
     const fx = await seedFixture();
-    const body = invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` });
+    const body = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
     // Correctly signed for tenant B: verification passes, the subscription
     // lookup is scoped to tenant B and finds nothing.
     await deliver(body, { tenantId: tenantB, secret: secretB });
     expect(await invoiceRows(body.data.invoice.id)).toHaveLength(0);
     expect((await subRow(fx.subId)).status).toBe("pending_first_payment");
     const stored = await webhookEvent(tenantB, body.id);
-    expect(stored.every((row) => ["failed", "ignored"].includes(row.status))).toBe(true);
+    expect(
+      stored.every((row) => ["failed", "ignored"].includes(row.status)),
+    ).toBe(true);
   });
 
   it("REC-05 tenant A's secret does not verify on tenant B's webhook", async () => {
     const fx = await seedFixture();
-    const body = invoiceEvent("invoice.created", fx, { invoiceId: `inv_${unique()}` });
-    const response = await deliver(body, { tenantId: tenantB, secret: secretA });
+    const body = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
+    const response = await deliver(body, {
+      tenantId: tenantB,
+      secret: secretA,
+    });
     expect(response.status).toBe(401);
     expect(await invoiceRows(body.data.invoice.id)).toHaveLength(0);
   });
@@ -1010,7 +1113,8 @@ describe("REC-06 recurring routes", () => {
       (await agent(app).get(`${base}/subscriptions/${fx.subId}`)).status,
     ).toBe(401);
     expect(
-      (await agent(app).post(`${base}/plans`).set(originHeader).send({})).status,
+      (await agent(app).post(`${base}/plans`).set(originHeader).send({}))
+        .status,
     ).toBe(401);
   });
 
@@ -1039,12 +1143,18 @@ describe("REC-06 recurring routes", () => {
 
     const plans = await manager.get(`${base}/plans?outletId=${fixtureOutlet}`);
     expect(plans.status).toBe(200);
-    expect(plans.body.data.map((p: { id: string }) => p.id)).toContain(fx.planId);
+    expect(plans.body.data.map((p: { id: string }) => p.id)).toContain(
+      fx.planId,
+    );
 
-    const invoices = await manager.get(`${base}/subscriptions/${fx.subId}/invoices`);
+    const invoices = await manager.get(
+      `${base}/subscriptions/${fx.subId}/invoices`,
+    );
     expect(invoices.status).toBe(200);
     expect(Array.isArray(invoices.body.data)).toBe(true);
-    expect(invoices.body.data.map((i: { id: string }) => i.id)).toContain(invoiceRowId);
+    expect(invoices.body.data.map((i: { id: string }) => i.id)).toContain(
+      invoiceRowId,
+    );
   });
 
   it("REC-06 a manager scoped to another outlet cannot read this outlet's subscription or invoices", async () => {
@@ -1447,7 +1557,9 @@ describe("REC-10 the invoice must be signed by the integration the subscription 
     const accepted = invoiceEvent("invoice.created", fx, {
       invoiceId: `inv_${unique()}`,
     });
-    expect((await deliver(accepted, { secret: secretAOther })).status).toBe(200);
+    expect((await deliver(accepted, { secret: secretAOther })).status).toBe(
+      200,
+    );
     const [row] = await invoiceRows(accepted.data.invoice.id);
     expect(row).toMatchObject({ status: "open", review_reason: null });
 
@@ -1585,11 +1697,7 @@ describe("REC-12 a subscription can only be started for a live customer profile 
   });
 
   it("REC-12 another tenant's customer profile is refused before DOIT is called", async () => {
-    const profileB = await insertProfile(
-      tenantB,
-      await insertUser(),
-      "active",
-    );
+    const profileB = await insertProfile(tenantB, await insertUser(), "active");
     await expectRefused(profileB);
   });
 
@@ -1597,5 +1705,482 @@ describe("REC-12 a subscription can only be started for a live customer profile 
     const target = await insertProfile(tenantW, await insertUser(), "active");
     const merged = await insertProfile(tenantW, null, "closed", target);
     await expectRefused(merged);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 2 (architect round 2, findings 2, 3, 5, 6, 7; 1 and 8 live in
+// payment-webhook-api.test.ts and payment-doit-recurring-wire.test.ts).
+// Money rule: when in doubt, the choice that limits payment/access.
+// ASSUMPTIONS:
+// - Finding 2: two active integrations of the tenant may share one webhook
+//   secret; an event signed with it is verified for both, so a subscription
+//   bound to either one must accept it. The rotated-secret case is not
+//   expressible without the rotation API of the integration service: not
+//   covered here.
+// - Finding 7: `deps.clientFor` receives the integration (id or row) it must
+//   build the DOIT client for. Its argument shape is not pinned: the fake
+//   records its arguments and the test looks for the integration id in them.
+//   The fake throws once built, so nothing is sent to DOIT.
+// ---------------------------------------------------------------------------
+
+function jakartaToday(): string {
+  return new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
+}
+
+function safeJson(value: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(value, (_key, v: unknown) => {
+    if (typeof v === "bigint") return v.toString();
+    if (typeof v === "object" && v !== null) {
+      if (seen.has(v)) return "[circular]";
+      seen.add(v);
+    }
+    return v;
+  });
+}
+
+describe("REC-13 an event verified by the integration the subscription is bound to is accepted", () => {
+  let outletW3 = "";
+  let integrationShared = "";
+
+  beforeAll(async () => {
+    outletW3 = randomUUID();
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+       VALUES ($1, $2, $3, $4, $5, 'Outlet B3', 'Jl. B3', '{}')`,
+      [
+        outletW3,
+        tenantW,
+        dedicatedTenant.brandId,
+        dedicatedTenant.legalEntityId,
+        `ISO3-${unique()}`.toUpperCase(),
+      ],
+    );
+    // A second active integration of tenant A that shares tenant A's secret.
+    integrationShared = await seedIntegration(tenantW, secretA, outletW3);
+  });
+
+  it("REC-13 a subscription bound to the integration that shares a secret accepts an event signed with it", async () => {
+    const fx = await seedFixture({ gatewayIntegrationId: integrationShared });
+    const body = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
+    const response = await deliver(body, { secret: secretA });
+    expect(response.status).toBe(200);
+    const [row] = await invoiceRows(body.data.invoice.id);
+    expect(row).toMatchObject({ status: "open", review_reason: null });
+    expect(row!.notified_at).not.toBeNull();
+    const [stored] = await webhookEvent(tenantW, body.id);
+    expect(stored!.last_error_code).toBeNull();
+  });
+
+  it("REC-13 the integration that shares the secret does not lose the subscription bound to the tenant-wide one", async () => {
+    const fx = await seedFixture(); // bound to integration A
+    const { invoiceId } = await createInvoice(fx);
+    const paid = await deliver(invoiceEvent("invoice.paid", fx, { invoiceId }));
+    expect(paid.status).toBe(200);
+    expect((await subRow(fx.subId)).status).toBe("active");
+    expect((await invoiceRows(invoiceId))[0]!.status).toBe("paid");
+  });
+
+  it("REC-13 an invoice.paid signed with the shared secret activates a subscription bound to the sharing integration", async () => {
+    const fx = await seedFixture({ gatewayIntegrationId: integrationShared });
+    const created = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
+    expect((await deliver(created, { secret: secretA })).status).toBe(200);
+    const paid = invoiceEvent("invoice.paid", fx, {
+      invoiceId: created.data.invoice.id,
+    });
+    expect((await deliver(paid, { secret: secretA })).status).toBe(200);
+    expect((await subRow(fx.subId)).status).toBe("active");
+  });
+
+  it("REC-13 a secret that belongs to no integration the subscription is bound to is still INTEGRATION_MISMATCH", async () => {
+    const fx = await seedFixture({ gatewayIntegrationId: integrationShared });
+    const body = invoiceEvent("invoice.created", fx, {
+      invoiceId: `inv_${unique()}`,
+    });
+    await deliver(body, { secret: secretAOther });
+    expect(await invoiceRows(body.data.invoice.id)).toHaveLength(0);
+    const [stored] = await webhookEvent(tenantW, body.id);
+    expect(stored!.last_error_code).toBe("INTEGRATION_MISMATCH");
+  });
+});
+
+describe("REC-14 a paid event on a needs_review invoice records the payment and never activates", () => {
+  const paidAt = async (providerInvoiceId: string) =>
+    (await invoiceRows(providerInvoiceId))[0]!.paid_at;
+
+  it("REC-14 an AMOUNT_MISMATCH invoice that is paid keeps needs_review, gets paid_at and never activates", async () => {
+    const fx = await seedFixture();
+    const wrong = PRICE - 50_000;
+    const { invoiceId } = await createInvoice(fx, { amount: wrong });
+    expect((await invoiceRows(invoiceId))[0]!.paid_at).toBeNull();
+
+    const paid = await deliver(
+      invoiceEvent("invoice.paid", fx, { invoiceId, amount: wrong }),
+    );
+    expect(paid.status).toBe(200);
+    const [row] = await invoiceRows(invoiceId);
+    expect(row).toMatchObject({
+      status: "needs_review",
+      review_reason: "AMOUNT_MISMATCH",
+    });
+    expect(row!.paid_at).not.toBeNull();
+    expect(await subRow(fx.subId)).toMatchObject({
+      status: "pending_first_payment",
+      activated_at: null,
+      period_start: null,
+      period_end: null,
+    });
+  });
+
+  it("REC-14 a second paid event for the same needs_review invoice does not move paid_at", async () => {
+    const fx = await seedFixture();
+    const wrong = PRICE - 50_000;
+    const { invoiceId } = await createInvoice(fx, { amount: wrong });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, { invoiceId, amount: wrong }),
+    );
+    const first = await paidAt(invoiceId);
+    expect(first).not.toBeNull();
+
+    await deliver(
+      invoiceEvent("invoice.paid", fx, { invoiceId, amount: wrong }),
+    );
+    const [row] = await invoiceRows(invoiceId);
+    expect(row!.status).toBe("needs_review");
+    expect(row!.paid_at!.getTime()).toBe(first!.getTime());
+  });
+
+  it("REC-14 a paid invoice on a cancelled subscription is needs_review with paid_at set and the subscription stays cancelled", async () => {
+    const fx = await seedFixture({
+      status: "cancelled",
+      periodStart: P_PREV,
+      periodEnd: P_CUR,
+    });
+    const { invoiceId } = await createInvoice(fx);
+    await deliver(invoiceEvent("invoice.paid", fx, { invoiceId }));
+    const [row] = await invoiceRows(invoiceId);
+    expect(row!.status).toBe("needs_review");
+    expect(row!.paid_at).not.toBeNull();
+    expect((await subRow(fx.subId)).status).toBe("cancelled");
+  });
+
+  it("REC-14 a paid PERIOD_MISMATCH invoice keeps needs_review, gets paid_at and never activates", async () => {
+    const fx = await seedFixture();
+    const periodEnd = addDays(P_CUR, 7);
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart: P_CUR,
+      periodEnd,
+    });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart: P_CUR,
+        periodEnd,
+      }),
+    );
+    const [row] = await invoiceRows(invoiceId);
+    expect(row).toMatchObject({
+      status: "needs_review",
+      review_reason: "PERIOD_MISMATCH",
+    });
+    expect(row!.paid_at).not.toBeNull();
+    expect((await subRow(fx.subId)).status).toBe("pending_first_payment");
+  });
+
+  it("REC-14 a paid DUPLICATE_PERIOD invoice keeps needs_review, gets paid_at and the subscription is untouched", async () => {
+    const fx = await seedFixture();
+    await seedInvoiceRow(fx, {
+      status: "paid",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+    });
+    const before = await subRow(fx.subId);
+    const { invoiceId } = await createInvoice(fx);
+    await deliver(invoiceEvent("invoice.paid", fx, { invoiceId }));
+    const [row] = await invoiceRows(invoiceId);
+    expect(row).toMatchObject({
+      status: "needs_review",
+      review_reason: "DUPLICATE_PERIOD",
+    });
+    expect(row!.paid_at).not.toBeNull();
+    expect(await subRow(fx.subId)).toEqual(before);
+  });
+});
+
+describe("REC-15 pause wins over a payment that lands while DOIT is being called", () => {
+  async function pausedAt(subId: string): Promise<Date | null> {
+    const { rows } = await owner.query<{ paused_at: Date | null }>(
+      "SELECT paused_at FROM payment_recurring_subscriptions WHERE id = $1",
+      [subId],
+    );
+    return rows[0]!.paused_at;
+  }
+
+  async function pauseDuringPayment(status: "active" | "past_due") {
+    const fx = await seedFixture({
+      status,
+      periodStart: P_PREV,
+      periodEnd: P_CUR,
+    });
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+    });
+    let pauseCalls = 0;
+    const clientFor = async () =>
+      ({
+        pauseSubscription: async () => {
+          pauseCalls += 1;
+          // The verified payment arrives while the pause call is in flight.
+          const paid = await deliver(
+            invoiceEvent("invoice.paid", fx, {
+              invoiceId,
+              periodStart: P_CUR,
+              periodEnd: P_NEXT,
+            }),
+          );
+          expect(paid.status).toBe(200);
+          return {};
+        },
+      }) as never;
+
+    const result = await pauseSubscription(
+      contextFor(tenantW),
+      fx.subId,
+      new Date(),
+      { clientFor },
+    );
+    expect(pauseCalls).toBe(1);
+    return { fx, invoiceId, result };
+  }
+
+  it("REC-15 an active subscription whose renewal is paid during the DOIT pause call ends paused, never a CONFLICT", async () => {
+    const { fx, invoiceId, result } = await pauseDuringPayment("active");
+    expect(result.status).toBe("paused");
+    expect((await subRow(fx.subId)).status).toBe("paused");
+    expect(await pausedAt(fx.subId)).not.toBeNull();
+    // The money is not hidden: the invoice that raced in is recorded as paid.
+    expect((await invoiceRows(invoiceId))[0]!.status).toBe("paid");
+  });
+
+  it("REC-15 a past_due subscription paid during the DOIT pause call ends paused, never a CONFLICT", async () => {
+    // Assumption: pausing a past_due subscription is allowed.
+    const { fx, result } = await pauseDuringPayment("past_due");
+    expect(result.status).toBe("paused");
+    expect((await subRow(fx.subId)).status).toBe("paused");
+    expect(await pausedAt(fx.subId)).not.toBeNull();
+  });
+});
+
+describe("REC-16 the period end is exclusive: a period ending today no longer gives access", () => {
+  // Weekly plans keep the periods easy to place around the Asia/Jakarta
+  // business date: (today - 7, today) is over, (today - 6, tomorrow) is not.
+  it("REC-16 a first payment for a period that ends today does not activate; the invoice is paid", async () => {
+    const today = jakartaToday();
+    const fx = await seedFixture({ interval: "week" });
+    const periodStart = addDays(today, -7);
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart,
+      periodEnd: today,
+    });
+    const paid = await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart,
+        periodEnd: today,
+      }),
+    );
+    expect(paid.status).toBe(200);
+    expect(await subRow(fx.subId)).toMatchObject({
+      status: "pending_first_payment",
+      activated_at: null,
+    });
+    expect((await invoiceRows(invoiceId))[0]!.status).toBe("paid");
+  });
+
+  it("REC-16 a first payment for a period that ends tomorrow activates", async () => {
+    const tomorrow = addDays(jakartaToday(), 1);
+    const fx = await seedFixture({ interval: "week" });
+    const periodStart = addDays(tomorrow, -7);
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart,
+      periodEnd: tomorrow,
+    });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart,
+        periodEnd: tomorrow,
+      }),
+    );
+    expect(await subRow(fx.subId)).toMatchObject({
+      status: "active",
+      period_start: periodStart,
+      period_end: tomorrow,
+    });
+  });
+
+  it("REC-16 a past_due subscription paid for a period that ends today stays past_due", async () => {
+    const today = jakartaToday();
+    const periodStart = addDays(today, -7);
+    const fx = await seedFixture({
+      status: "past_due",
+      interval: "week",
+      periodStart: addDays(today, -14),
+      periodEnd: periodStart,
+    });
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart,
+      periodEnd: today,
+    });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart,
+        periodEnd: today,
+      }),
+    );
+    expect((await subRow(fx.subId)).status).toBe("past_due");
+    expect((await invoiceRows(invoiceId))[0]!.status).toBe("paid");
+  });
+
+  it("REC-16 a past_due subscription paid for a period that ends tomorrow becomes active", async () => {
+    const tomorrow = addDays(jakartaToday(), 1);
+    const periodStart = addDays(tomorrow, -7);
+    const fx = await seedFixture({
+      status: "past_due",
+      interval: "week",
+      periodStart: addDays(tomorrow, -14),
+      periodEnd: periodStart,
+    });
+    const { invoiceId } = await createInvoice(fx, {
+      periodStart,
+      periodEnd: tomorrow,
+    });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId,
+        periodStart,
+        periodEnd: tomorrow,
+      }),
+    );
+    expect(await subRow(fx.subId)).toMatchObject({
+      status: "active",
+      period_end: tomorrow,
+    });
+  });
+});
+
+describe("REC-17 DOIT calls use the integration the plan and subscription are bound to", () => {
+  // The subscription belongs to outlet W but is bound to the integration of
+  // outlet W2. The outlet's own active integration is the tenant-wide one (A),
+  // so a service that picks "the outlet's current integration" builds the
+  // client for the wrong DOIT account.
+  function recorder() {
+    const calls: unknown[][] = [];
+    const clientFor = (async (...args: unknown[]) => {
+      calls.push(args);
+      throw new Error("CLIENT_BUILT");
+    }) as never;
+    return { calls, clientFor };
+  }
+
+  function expectBoundIntegration(calls: unknown[][]) {
+    expect(calls.length).toBeGreaterThan(0);
+    const seen = safeJson(calls);
+    expect(seen).toContain(integrationAOther);
+    expect(seen).not.toContain(integrationA);
+  }
+
+  it("REC-17 pause builds the DOIT client for the subscription's own integration", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationAOther,
+    });
+    const { calls, clientFor } = recorder();
+    await pauseSubscription(contextFor(tenantW), fx.subId, new Date(), {
+      clientFor,
+    }).catch(() => undefined);
+    expectBoundIntegration(calls);
+    // Nothing was sent to DOIT, so nothing changed.
+    expect((await subRow(fx.subId)).status).toBe("active");
+  });
+
+  it("REC-17 resume builds the DOIT client for the subscription's own integration", async () => {
+    const fx = await seedFixture({
+      status: "paused",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationAOther,
+    });
+    const { calls, clientFor } = recorder();
+    await resumeSubscription(contextFor(tenantW), fx.subId, new Date(), {
+      clientFor,
+    }).catch(() => undefined);
+    expectBoundIntegration(calls);
+    expect((await subRow(fx.subId)).status).toBe("paused");
+  });
+
+  it("REC-17 cancel builds the DOIT client for the subscription's own integration", async () => {
+    const fx = await seedFixture({
+      status: "active",
+      periodStart: P_CUR,
+      periodEnd: P_NEXT,
+      gatewayIntegrationId: integrationAOther,
+    });
+    const { calls, clientFor } = recorder();
+    await cancelSubscription(contextFor(tenantW), fx.subId, new Date(), {
+      clientFor,
+    }).catch(() => undefined);
+    expectBoundIntegration(calls);
+    expect((await subRow(fx.subId)).status).toBe("active");
+  });
+
+  describe("start", () => {
+    let profileId = "";
+    let profileUserId = "";
+
+    beforeAll(async () => {
+      profileUserId = randomUUID();
+      await owner.query(
+        `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, 'Pelanggan uji', $2, true)`,
+        [profileUserId, `${profileUserId}@example.test`],
+      );
+      profileId = randomUUID();
+      await owner.query(
+        `INSERT INTO customer_profiles (id, tenant_id, user_id, name, membership_status, whatsapp_verified_at)
+         VALUES ($1, $2, $3, 'Pelanggan uji', 'active', now())`,
+        [profileId, tenantW, profileUserId],
+      );
+    });
+
+    afterAll(async () => {
+      await owner.query("DELETE FROM customer_profiles WHERE id = $1", [
+        profileId,
+      ]);
+      await owner.query('DELETE FROM "user" WHERE id = $1', [profileUserId]);
+    });
+
+    it("REC-17 start builds the DOIT client for the plan's own integration", async () => {
+      const fx = await seedFixture({ gatewayIntegrationId: integrationAOther });
+      const { calls, clientFor } = recorder();
+      await startSubscription(
+        contextFor(tenantW),
+        {
+          planId: fx.planId,
+          customerProfileId: profileId,
+          idempotencyKey: `idem-${unique()}`,
+        },
+        { clientFor },
+      ).catch(() => undefined);
+      expectBoundIntegration(calls);
+    });
   });
 });

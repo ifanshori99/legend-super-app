@@ -101,13 +101,13 @@ export type DoitInvoiceEvent = z.infer<typeof doitInvoiceEventSchema>;
 
 /** The invoice event in `body`, or null when it is not a well-formed
  * `invoice.created` / `invoice.paid` (the caller stores and ignores it).
- * A period that ends before it starts is malformed too. Paths and values of a
+ * A period that does not end after it starts is malformed too. Paths and values of a
  * bad body are never reported. */
 export function parseDoitInvoiceEvent(body: unknown): DoitInvoiceEvent | null {
   const parsed = doitInvoiceEventSchema.safeParse(body);
   if (!parsed.success) return null;
   const { invoice } = parsed.data.data;
-  if (invoice.period_end < invoice.period_start) return null;
+  if (invoice.period_end <= invoice.period_start) return null;
   return parsed.data;
 }
 

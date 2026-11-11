@@ -51,7 +51,12 @@ let actorId: string;
 let actorBId: string;
 const createdUsers: string[] = [];
 
-type Graph = { plan: string; sub: string; invoice: string; providerSub: string };
+type Graph = {
+  plan: string;
+  sub: string;
+  invoice: string;
+  providerSub: string;
+};
 const integrationIds = { a: randomUUID(), b: randomUUID() };
 const graphA: Graph = {
   plan: randomUUID(),
@@ -66,6 +71,13 @@ const graphB: Graph = {
   providerSub: `sub_iso_b_${randomUUID().slice(0, 8)}`,
 };
 
+// Status 'disabled', never 'active': tenant A is the shared fixture tenant, and
+// an active DOIT row with only `credentials_encrypted` (no secret ref, field
+// names, set-at/by) satisfies the DB check but fails the TenantIntegration
+// contract parse. payment-webhook-api (parallel file, same tenant) lists every
+// row of the tenant and parses it, so it answered 422 "An active integration
+// needs stored credentials" for as long as this row existed. The recurring
+// rows below only need the id for their gateway_integration_id foreign key.
 async function insertIntegration(
   id: string,
   tenantId: string,
@@ -73,7 +85,7 @@ async function insertIntegration(
 ): Promise<void> {
   await owner.query(
     `INSERT INTO tenant_integrations (id, tenant_id, outlet_id, provider, config, status, credentials_encrypted)
-     VALUES ($1, $2, $3, 'doit', '{}', 'active', 'sealed')`,
+     VALUES ($1, $2, $3, 'doit', '{}', 'disabled', 'sealed')`,
     [id, tenantId, outletId],
   );
 }
@@ -87,7 +99,13 @@ async function insertGraph(
   await owner.query(
     `INSERT INTO payment_recurring_plans (id, tenant_id, outlet_id, provider, provider_plan_id, name, amount_idr, interval, status, gateway_integration_id)
      VALUES ($1, $2, $3, 'doit', $4, 'Isolation plan', 150000, 'month', 'active', $5)`,
-    [ids.plan, tenantId, outletId, `plan_${ids.plan.slice(0, 8)}`, integrationId],
+    [
+      ids.plan,
+      tenantId,
+      outletId,
+      `plan_${ids.plan.slice(0, 8)}`,
+      integrationId,
+    ],
   );
   await owner.query(
     `INSERT INTO payment_recurring_subscriptions (id, tenant_id, outlet_id, plan_id, customer_profile_id, provider_subscription_id, status,
@@ -159,7 +177,12 @@ beforeAll(async () => {
   await insertIntegration(integrationIds.a, tenantAId, outletAId);
   await insertIntegration(integrationIds.b, tenantB.tenantId, tenantB.outletId);
   await insertGraph(tenantAId, outletAId, graphA, integrationIds.a);
-  await insertGraph(tenantB.tenantId, tenantB.outletId, graphB, integrationIds.b);
+  await insertGraph(
+    tenantB.tenantId,
+    tenantB.outletId,
+    graphB,
+    integrationIds.b,
+  );
 
   client = agent(app);
   const userA = await createUser("Isolation recurring", client);

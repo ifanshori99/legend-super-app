@@ -58,15 +58,22 @@ import {
   type DoitRecurringClient,
 } from "./payment-doit-recurring";
 import type { DoitInvoiceEvent } from "./payment-doit-recurring-wire";
-import { loadActiveIntegrationCredentials } from "./platform-integration.service";
+import {
+  loadActiveIntegrationCredentials,
+  loadIntegrationCredentialsById,
+} from "./platform-integration.service";
 import type { Tx } from "./permission-resolver";
 
 const PROVIDER = "doit";
 const JAKARTA_OFFSET_MS = 7 * 3_600_000;
 
+/** `integrationId` set: the client of exactly that integration (an existing
+ * plan or subscription stays on the account that created it). Null: the
+ * outlet's active integration (a new plan). */
 export type RecurringClientLoader = (
   context: ScopedTenantContext,
   outletId: string,
+  integrationId?: string | null,
 ) => Promise<DoitRecurringClient>;
 
 /** Test seam: a fake DOIT client instead of the stored credentials. */
@@ -78,12 +85,11 @@ const clientIntegrationIds = new WeakMap<DoitRecurringClient, string>();
 async function defaultClientFor(
   context: ScopedTenantContext,
   outletId: string,
+  integrationId?: string | null,
 ): Promise<DoitRecurringClient> {
-  const loaded = await loadActiveIntegrationCredentials(
-    context,
-    PROVIDER,
-    outletId,
-  );
+  const loaded = integrationId
+    ? await loadIntegrationCredentialsById(context, PROVIDER, integrationId)
+    : await loadActiveIntegrationCredentials(context, PROVIDER, outletId);
   const apiKey = loaded?.credentials.apiKey;
   if (!loaded || !apiKey)
     throw new CoreError(
@@ -333,7 +339,11 @@ export async function startSubscription(
   if (!customerFound) throw notFound("Pelanggan");
 
   const subscriptionId = randomUUID();
-  const client = await clientLoader(deps)(context, plan.outletId);
+  const client = await clientLoader(deps)(
+    context,
+    plan.outletId,
+    plan.gatewayIntegrationId,
+  );
   const provider = await client.createSubscription(
     { providerPlanId: plan.providerPlanId, reference: subscriptionId },
     `subscription:${tenantId}:${input.idempotencyKey}`,
@@ -459,7 +469,11 @@ async function changeSubscription(
       "Hanya langganan yang dijeda yang dapat dilanjutkan.",
     );
 
-  const client = await clientLoader(deps)(context, current.outletId);
+  const client = await clientLoader(deps)(
+    context,
+    current.outletId,
+    current.gatewayIntegrationId,
+  );
   const key = `${action}:${current.id}:${current.updatedAt.toISOString()}`;
   const call =
     action === "pause"
@@ -486,7 +500,7 @@ async function changeSubscription(
     next =
       current.activatedAt !== null &&
       current.currentPeriodEnd !== null &&
-      current.currentPeriodEnd >= businessDateOf(now)
+      current.currentPeriodEnd > businessDateOf(now)
         ? "active"
         : "past_due";
     patch.pausedAt = null;
@@ -506,14 +520,16 @@ async function changeSubscription(
       )
       .returning();
     if (updated) return updated;
-    if (action !== "cancel")
+    if (action === "resume")
       throw new CoreError(
         "CONFLICT",
         "Status langganan sudah berubah. Muat ulang lalu coba lagi.",
       );
-    // DOIT already cancelled, so the local row must follow even when a
-    // concurrent invoice.paid moved it first: re-read and cancel anyway.
+    // DOIT already cancelled/paused, so the local row must follow even when a
+    // concurrent invoice.paid moved it first: re-read and apply anyway.
     const latest = await loadSubscription(tx, context, current.id);
+    if (latest.status === next) return latest;
+    // Never move a cancelled row back to paused.
     if (latest.status === "cancelled") return latest;
     const [cancelled] = await tx
       .update(paymentRecurringSubscriptions)
@@ -576,6 +592,10 @@ export type InvoiceEventOptions = {
    * be the integration the subscription was created on; absent or different
    * means INTEGRATION_MISMATCH and nothing changes (fails closed). */
   verifiedIntegrationId?: string | null;
+  /** Asked when `verifiedIntegrationId` is not the bound integration: true
+   * when the bound integration holds the secret that verified the event (a
+   * shared or rotated secret). Absent means fail closed. */
+  integrationAccepts?: (boundIntegrationId: string) => Promise<boolean>;
 };
 
 const LIVE_SUBSCRIPTION = ["pending_first_payment", "active", "past_due"];
@@ -605,10 +625,13 @@ export async function processDoitInvoiceEvent(
       .for("update");
     if (!subscription) return { outcome: "unknown_subscription" };
     const verifiedBy = options.verifiedIntegrationId;
+    const direct =
+      !!verifiedBy &&
+      verifiedBy.toLowerCase() ===
+        subscription.gatewayIntegrationId.toLowerCase();
     if (
-      !verifiedBy ||
-      verifiedBy.toLowerCase() !==
-        subscription.gatewayIntegrationId.toLowerCase()
+      !direct &&
+      !(await options.integrationAccepts?.(subscription.gatewayIntegrationId))
     )
       return { outcome: "ignored", code: "INTEGRATION_MISMATCH" };
     const [plan] = await tx
@@ -851,11 +874,27 @@ async function applyInvoicePaid(
   // Replay of an applied payment, or an invoice already under review.
   if (stored.status === "paid")
     return { outcome: "processed", code: "DUPLICATE" };
-  if (stored.status === "needs_review")
-    return { outcome: "ignored", code: "ALREADY_NEEDS_REVIEW" };
   // The payload itself must say paid.
   if (invoice.status !== "paid")
     return { outcome: "ignored", code: "PAYLOAD_NOT_PAID" };
+  // Already under review: the money is real, so record when it was paid, but
+  // the invoice stays `needs_review` and nothing is activated.
+  if (stored.status === "needs_review") {
+    if (stored.paidAt === null)
+      await tx
+        .update(subscriptionInvoices)
+        .set({
+          paidAt: invoice.paid_at ? new Date(invoice.paid_at) : now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(subscriptionInvoices.tenantId, tenantId),
+            eq(subscriptionInvoices.id, stored.id),
+          ),
+        );
+    return { outcome: "processed", code: stored.reviewReason };
+  }
 
   // Money arrived, access may not be granted: flag it, change nothing else.
   const review =
@@ -881,7 +920,12 @@ async function applyInvoicePaid(
   if (review) {
     await tx
       .update(subscriptionInvoices)
-      .set({ status: "needs_review", reviewReason: review, updatedAt: now })
+      .set({
+        status: "needs_review",
+        reviewReason: review,
+        paidAt: invoice.paid_at ? new Date(invoice.paid_at) : now,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(subscriptionInvoices.tenantId, tenantId),
@@ -918,8 +962,9 @@ async function applyInvoicePaid(
     subscription.currentPeriodEnd === null ||
     stored.periodEnd > subscription.currentPeriodEnd;
   // Access is granted only for a period that moves forward and has not
-  // already ended; otherwise the invoice is just marked paid.
-  const grants = advances && stored.periodEnd >= businessDateOf(now);
+  // already ended (the end date is exclusive: start + one interval);
+  // otherwise the invoice is just marked paid.
+  const grants = advances && stored.periodEnd > businessDateOf(now);
   if (!advances) return { outcome: "processed", code: null };
   await tx
     .update(paymentRecurringSubscriptions)

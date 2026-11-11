@@ -31,17 +31,9 @@ import { outlets, tenants } from "./platform-org";
 export type RecurringPlanInterval = "month" | "week";
 export type RecurringPlanStatus = "active" | "archived";
 export type RecurringSubscriptionStatus =
-  | "pending_first_payment"
-  | "active"
-  | "past_due"
-  | "paused"
-  | "cancelled";
+  "pending_first_payment" | "active" | "past_due" | "paused" | "cancelled";
 export type SubscriptionInvoiceStatus =
-  | "open"
-  | "paid"
-  | "void"
-  | "expired"
-  | "needs_review";
+  "open" | "paid" | "void" | "expired" | "needs_review";
 
 export const paymentRecurringPlans = pgTable(
   "payment_recurring_plans",
@@ -159,7 +151,10 @@ export const paymentRecurringSubscriptions = pgTable(
     foreignKey({
       name: "payment_recurring_subscriptions_plan_fk",
       columns: [table.tenantId, table.planId],
-      foreignColumns: [paymentRecurringPlans.tenantId, paymentRecurringPlans.id],
+      foreignColumns: [
+        paymentRecurringPlans.tenantId,
+        paymentRecurringPlans.id,
+      ],
     }),
     foreignKey({
       name: "payment_recurring_subscriptions_gateway_integration_fk",
