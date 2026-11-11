@@ -47,6 +47,7 @@ export const KELOLA_OUTLET_SCOPED_PREFIXES: readonly string[] = [
   "/kelola/pengaturan/open-bill",
   "/kelola/absensi/qr",
   "/kelola/absensi/selfie",
+  "/kelola/absensi/tinjauan-cuti",
 ];
 
 /** True when a Kelola screen at `pathname` works in the selected outlet. */
