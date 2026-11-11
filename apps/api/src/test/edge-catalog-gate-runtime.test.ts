@@ -644,6 +644,103 @@ describe("legend-10nex a regressed device clock holds sales", () => {
   });
 });
 
+// 533c P1 (founder Q2, money: no sale while the device clock is wrong): the
+// wall clock set back WHILE running holds sales with CLOCK_REGRESSED, tells the
+// owner (CLOCK_ELAPSED_UNPROVEN alarm), calls onClockRegressed once per episode,
+// still honours a valid owner override, and recovers when the clock is fixed.
+// Assumption: the alarm reaches onOwnerAlarm after the next explicit tick().
+describe("533c a wall clock set back while running holds sales", () => {
+  async function startLive(
+    rig: Rig,
+    clock: ReturnType<typeof clocks>,
+    overrides: CatalogGateOverrides = overrideStub().stub,
+  ) {
+    const alarms: string[] = [];
+    const onClockRegressed = vi.fn();
+    const handle = await startCatalogGate({
+      context: rig.context,
+      scope: rig.scope,
+      overrides,
+      onOwnerAlarm: (alarm) => {
+        for (const entry of alarm.streams) alarms.push(entry.reason);
+      },
+      onClockRegressed,
+      seed: async (freshness) => {
+        for (const name of STREAMS) freshness.seedLastSuccess(name, T0);
+      },
+      persistMs: 24 * HOUR,
+      wall: clock.wall,
+      mono: clock.mono,
+    });
+    handles.push(handle);
+    setSalesGateEdgeModeForTests(() => true);
+    return { handle, alarms, onClockRegressed };
+  }
+
+  it("blocks with CLOCK_REGRESSED, alarms the owner, reports once, and recovers when the wall catches up", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const { handle, alarms, onClockRegressed } = await startLive(rig, clock);
+    expect(getSalesGateState().blocked).toBe(false);
+    expect(onClockRegressed).not.toHaveBeenCalled();
+
+    clock.tick(1000);
+    clock.setWall(new Date(T0.getTime() - HOUR)); // cashier sets the date back 1 h
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      reason: "CLOCK_REGRESSED",
+      override: null,
+    });
+    await handle.tick();
+    expect(alarms).toContain("CLOCK_ELAPSED_UNPROVEN");
+
+    // Same episode: more reads and ticks do not report again.
+    clock.tick(MIN);
+    expect(getSalesGateState().reason).toBe("CLOCK_REGRESSED");
+    await handle.tick();
+    expect(onClockRegressed).toHaveBeenCalledTimes(1);
+
+    // The device date is corrected: sales resume.
+    clock.setWall(new Date(T0.getTime() + HOUR));
+    const state = getSalesGateState();
+    expect(state.blocked).toBe(false);
+    expect(state.reason).toBeNull();
+  });
+
+  it("a valid owner override still lets sales through", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const stubbed = overrideStub({
+      id: randomUUID(),
+      grantedBy: randomUUID(),
+      grantedAt: new Date(T0.getTime() - MIN),
+      untilAt: new Date(T0.getTime() + 4 * HOUR),
+      reason: "Jam perangkat salah",
+    });
+    await startLive(rig, clock, stubbed.stub);
+    clock.tick(1000);
+    clock.setWall(new Date(T0.getTime() - HOUR));
+    const state = getSalesGateState();
+    expect(state.blocked).toBe(false);
+    expect(state.override).not.toBeNull();
+  });
+
+  it("does not hold sales for drift under 5 minutes or a forward jump", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const { handle, alarms, onClockRegressed } = await startLive(rig, clock);
+    clock.tick(1000);
+    clock.setWall(new Date(T0.getTime() + 1000 - 4 * MIN));
+    await handle.tick();
+    expect(getSalesGateState()).toMatchObject({ blocked: false, reason: null });
+    clock.setWall(new Date(T0.getTime() + 2 * HOUR));
+    await handle.tick();
+    expect(getSalesGateState().reason).not.toBe("CLOCK_REGRESSED");
+    expect(onClockRegressed).not.toHaveBeenCalled();
+    expect(alarms).not.toContain("CLOCK_ELAPSED_UNPROVEN");
+  });
+});
+
 // F4 (architect): a grant committed after the boot load but before the listener
 // is registered must not be lost; the startup reload picks it up.
 // Assumption: `refreshOverride()` is that reload (the runtime calls it after

@@ -439,8 +439,9 @@ describe("533b trusted clock proof uses boot wall plus monotonic elapsed time", 
   it("proves when the server time matches boot wall plus monotonic elapsed, whatever the wall clock shows now", () => {
     const { clock, tick, setWall, persisted } = unprovenBoot();
     tick(30 * 60_000);
-    // The date was set back by a day after boot; real time kept running.
-    setWall(new Date(persisted.getTime() - 24 * HOUR));
+    // The date was set back 4 minutes after boot (inside the 5 minute
+    // tolerance, so not a regression); real time kept running.
+    setWall(new Date(persisted.getTime() + 26 * 60_000));
     api(clock).proveWithServerTime(new Date(persisted.getTime() + 30 * 60_000));
     expect(api(clock).elapsedTimeUnproven()).toBe(false);
   });
@@ -498,5 +499,102 @@ describe("533b trusted clock proof uses boot wall plus monotonic elapsed time", 
     expect(api(clock).elapsedTimeUnproven()).toBe(true);
     api(clock).proveWithServerTime(new Date(persisted.getTime() + 5 * 60_000));
     expect(api(clock).elapsedTimeUnproven()).toBe(false);
+  });
+});
+
+// 533c P1 (founder Q2): a wall clock set back WHILE the process runs must be
+// detected, not only at boot. Expected behaviour (from the brief):
+//   - wall more than 5 minutes behind (boot wall + monotonic elapsed) => regressed()
+//     is true, now()/highWater() never go down, elapsedTimeUnproven() is true
+//     (time spent with a wrong clock cannot be proven).
+//   - it clears when the wall clock catches up with the trusted time.
+//   - drift below 5 minutes and any forward jump never trigger it.
+// Assumption: elapsedTimeUnproven() stays true after regressed() clears (only
+// proveWithServerTime may clear it); wall-vs-expected is a strict "<" check, so
+// the 5 minute boundary itself is not asserted.
+describe("533c trusted clock detects a wall clock set back while running", () => {
+  const MIN5 = 5 * 60_000;
+  const unproven = (clock: unknown) =>
+    (clock as { elapsedTimeUnproven(): boolean }).elapsedTimeUnproven();
+
+  it("flags a regression one hour back after 1 s of monotonic time and never lowers now()", () => {
+    const { clock, tick, setWall } = rig();
+    expect(clock.regressed()).toBe(false);
+    tick(1000);
+    const before = clock.now().getTime();
+    expect(before).toBe(T0.getTime() + 1000);
+    setWall(new Date(T0.getTime() - HOUR));
+    expect(clock.regressed()).toBe(true);
+    expect(clock.now().getTime()).toBeGreaterThanOrEqual(before);
+    expect(clock.highWater().getTime()).toBeGreaterThanOrEqual(before);
+    tick(1000);
+    expect(clock.now().getTime()).toBe(before + 1000);
+    expect(clock.regressed()).toBe(true);
+  });
+
+  it("detects it on the first read even if now() was never called in between", () => {
+    const { clock, tick, setWall } = rig();
+    tick(1000);
+    setWall(new Date(T0.getTime() - HOUR));
+    expect(clock.regressed()).toBe(true);
+  });
+
+  // The server time cannot tell a wall step from real time (it compares with
+  // boot wall + monotonic), so it must not clear what a live regression set:
+  // the owner alarm would vanish as soon as the cloud answers (533c review).
+  it("a server time proof does not clear the unproven state a live regression set", () => {
+    const { clock, tick, setWall } = rig();
+    tick(1000);
+    setWall(new Date(T0.getTime() - HOUR));
+    (
+      clock as unknown as { proveWithServerTime(d: Date): void }
+    ).proveWithServerTime(new Date(T0.getTime() + 1000));
+    expect(unproven(clock)).toBe(true);
+    expect(clock.regressed()).toBe(true);
+  });
+
+  it("marks elapsed time as unproven", () => {
+    const { clock, tick, setWall } = rig();
+    expect(unproven(clock)).toBe(false);
+    tick(1000);
+    setWall(new Date(T0.getTime() - HOUR));
+    expect(unproven(clock)).toBe(true);
+  });
+
+  it("clears once the wall clock catches up with the trusted time", () => {
+    const { clock, tick, setWall } = rig();
+    tick(1000);
+    setWall(new Date(T0.getTime() - HOUR));
+    expect(clock.regressed()).toBe(true);
+    // Still behind the trusted time after 30 real minutes: still held.
+    tick(30 * 60_000);
+    expect(clock.regressed()).toBe(true);
+    // The device date is corrected to the real time (and a little ahead).
+    setWall(new Date(clock.now().getTime() + 1000));
+    expect(clock.regressed()).toBe(false);
+    expect(clock.now().getTime()).toBeGreaterThanOrEqual(
+      T0.getTime() + 1000 + 30 * 60_000,
+    );
+    expect(unproven(clock)).toBe(true);
+  });
+
+  it("does not trigger on drift under 5 minutes", () => {
+    const { clock, tick, setWall } = rig();
+    tick(1000);
+    setWall(new Date(T0.getTime() + 1000 - (MIN5 - 1000)));
+    expect(clock.regressed()).toBe(false);
+    expect(unproven(clock)).toBe(false);
+    tick(60_000);
+    expect(clock.regressed()).toBe(false);
+    expect(unproven(clock)).toBe(false);
+  });
+
+  it("does not trigger on a forward jump", () => {
+    const { clock, tick, setWall } = rig();
+    tick(1000);
+    setWall(new Date(T0.getTime() + 30 * HOUR));
+    expect(clock.regressed()).toBe(false);
+    expect(unproven(clock)).toBe(false);
+    expect(clock.now().getTime()).toBe(T0.getTime() + 30 * HOUR);
   });
 });

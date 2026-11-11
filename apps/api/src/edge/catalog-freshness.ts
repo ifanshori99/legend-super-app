@@ -200,6 +200,9 @@ export function createCatalogFreshness(
   let episodeAlarmed = false;
   let observedUnprovenTime = false;
   let unprovenAgeLowerBoundAt: number | null = null;
+  // False until the boot evaluation below ran; a later observation (a wall
+  // clock set back while running, 533c) must raise the owner alarm itself.
+  let started = false;
 
   // A high water loaded after a database outage can discover uncertainty
   // after this tracker was created. Adopt it once, then allow each live pull
@@ -209,6 +212,7 @@ export function createCatalogFreshness(
     observedUnprovenTime = true;
     unprovenAgeLowerBoundAt = now().getTime();
     for (const state of states.values()) state.timeUnproven = true;
+    if (started) evaluate();
   };
 
   // A success stamp from a wall clock ahead of the trusted one (the puller
@@ -342,6 +346,7 @@ export function createCatalogFreshness(
 
   // Queue the boot warning/alarm even if no checkpoint or failed tick exists.
   evaluate();
+  started = true;
 
   return {
     now,

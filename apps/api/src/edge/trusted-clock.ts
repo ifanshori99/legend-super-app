@@ -13,16 +13,22 @@
 export type TrustedClock = {
   now(): Date;
   /**
-   * True when, at boot, the wall clock was more than 5 minutes behind the
-   * persisted high water, until the wall clock catches up to it. Once false it
-   * stays false.
+   * True while the wall clock is more than 5 minutes behind trusted time:
+   * at boot (behind the persisted high water) or set back while running
+   * (a jump back of more than 5 minutes against the previous reading plus the
+   * monotonic time elapsed, 533c). Every call re-checks the wall clock, so a
+   * set-back is seen on the first read. It latches until the wall clock catches up with the trusted
+   * time reached when the regression was seen, then clears. Detecting it also
+   * makes `elapsedTimeUnproven()` true until the next restart: a server time
+   * proof cannot clear it, as it cannot tell a wall step from real time.
    */
   regressed(): boolean;
   /**
    * A reboot at or behind the persisted high water cannot prove how long the
    * device was powered off. This stays true: the running monotonic clock only
    * measures time since this boot. Fresh catalog syncs provide separate proof
-   * of catalog age; they do not prove the missing powered-off time.
+   * of catalog age; they do not prove the missing powered-off time. Also
+   * becomes true when a wall clock set back while running is detected (533c).
    */
   elapsedTimeUnproven(): boolean;
   /** Highest trusted time returned so far; persist this. */
@@ -83,12 +89,38 @@ export function createTrustedClock(
   let anchorMono = bootMono;
   let high = anchorWall;
 
+  // The previous wall reading and its monotonic stamp: a wall clock that kept
+  // real time since then is at lastWall + elapsed. Comparing with the previous
+  // reading (not with the anchor) detects a step back once, as an event; a wall
+  // clock that stays behind afterwards is not a new regression.
+  let lastWall = bootWall;
+  let lastMono = bootMono;
+  // Set once a wall clock step back is seen while running. The server time
+  // proof compares with boot wall + monotonic, which a wall step does not move,
+  // so it could not tell the step from real time and would erase the owner
+  // alarm; elapsed time stays unproven until the next restart (533c).
+  let steppedBack = false;
+
   const read = (): number => {
     const monoNow = mono();
-    const value = Math.max(
-      wall().getTime(),
-      anchorWall + (monoNow - anchorMono),
-    );
+    const wallNow = wall().getTime();
+    // Where a wall clock that kept real time since the last anchor would be.
+    // Taken before any reanchor below, so a forward jump never hides a set-back.
+    const expected = anchorWall + (monoNow - anchorMono);
+    if (
+      wallNow <
+      lastWall + (monoNow - lastMono) - CLOCK_REGRESSION_TOLERANCE_MS
+    ) {
+      // The wall clock was set back while running (533c). Hold until it catches
+      // up with the trusted time. Time spent with a wrong clock cannot be
+      // proven, so elapsed time is unproven too (owner alarm, promos off).
+      regressedUntil = Math.max(regressedUntil ?? 0, expected);
+      unproven = true;
+      steppedBack = true;
+    }
+    lastWall = wallNow;
+    lastMono = monoNow;
+    const value = Math.max(wallNow, expected);
     if (value > high) {
       high = value;
       // A forward wall jump becomes the new origin for elapsed real time.
@@ -102,11 +134,16 @@ export function createTrustedClock(
   return {
     now: () => new Date(read()),
     regressed: () => {
+      // Detect a wall clock set back while running before judging the latch.
+      read();
       if (regressedUntil === null) return false;
       if (wall().getTime() >= regressedUntil) regressedUntil = null;
       return regressedUntil !== null;
     },
-    elapsedTimeUnproven: () => unproven,
+    elapsedTimeUnproven: () => {
+      read();
+      return unproven;
+    },
     highWater: () => new Date(read()),
     adoptHighWater: (late) => {
       const lateMs = late.getTime();
@@ -128,6 +165,9 @@ export function createTrustedClock(
     proveWithServerTime: (serverTime) => {
       const serverMs = serverTime.getTime();
       if (!Number.isFinite(serverMs)) return;
+      // Observe a wall clock set back first, so the proof below can clear it.
+      read();
+      if (steppedBack) return;
       if (!unproven) return;
       if (bootHighWater !== null && serverMs < bootHighWater) return;
       // Where the clock stands if it kept real time since boot, whatever the

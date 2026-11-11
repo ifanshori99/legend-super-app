@@ -198,8 +198,15 @@ export async function startCatalogGate(options: {
     trackingStartedAt,
     onOwnerAlarm: options.onOwnerAlarm,
   });
+  // One report per regression episode; re-armed once the clock recovers.
+  let regressionReported = false;
   const reportRegression = (highWater: Date) => {
-    if (!clock.regressed()) return;
+    if (!clock.regressed()) {
+      regressionReported = false;
+      return;
+    }
+    if (regressionReported) return;
+    regressionReported = true;
     try {
       options.onClockRegressed?.({
         wallNow: (options.wall ?? (() => new Date()))(),
@@ -257,6 +264,8 @@ export async function startCatalogGate(options: {
         ? override
         : null;
     const stale24h = snap.salesGate.stale24h;
+    // A wall clock set back while running shows up here, so report it too.
+    reportRegression(clock.highWater());
     const regressed = clock.regressed();
     return {
       blocked: (stale24h || regressed) && !active,
@@ -274,6 +283,7 @@ export async function startCatalogGate(options: {
 
   const tick = async () => {
     if (stopped || !ready) return;
+    reportRegression(clock.highWater());
     // Close only once the catalog and device clock have both recovered.
     const observed = override;
     const snapshot = freshness.snapshot();
