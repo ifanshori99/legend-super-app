@@ -35,6 +35,8 @@ export const posCaptainTablesMessages = {
     callsButton: "Panggilan waiter",
     callsButtonNew: "Panggilan waiter · {count} baru",
     loading: "Memuat meja…",
+    stale:
+      "Daftar meja belum bisa diperbarui. Yang tampil adalah data terakhir.",
     empty: {
       title: "Belum ada meja",
       description:

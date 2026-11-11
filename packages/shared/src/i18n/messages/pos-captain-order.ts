@@ -9,6 +9,7 @@ export const posCaptainOrderMessages = {
   },
   sample: "Contoh data",
   contractPending: "Fitur ini belum tersambung ke server.",
+  stale: "Data belum bisa diperbarui. Yang tampil adalah data terakhir.",
   order: {
     title: "Pesanan meja",
     subtitle: "Pantau item dan kirim yang ditahan.",
@@ -26,6 +27,10 @@ export const posCaptainOrderMessages = {
     firing: "Mengirim…",
     fireFailed:
       "Item belum terkirim ke dapur. Item tetap ditahan, coba kirim lagi.",
+    fireAll: "Kirim {course} ke dapur ({count} item)",
+    notFoundTitle: "Meja tidak ditemukan",
+    notFoundHint: "Meja ini tidak ada atau sudah dihapus. Pilih meja lain.",
+    backToTables: "Kembali ke daftar meja",
   },
   add: {
     title: "Tambah pesanan",
@@ -58,6 +63,7 @@ export const posCaptainOrderMessages = {
     review: "Tinjau pesanan · {count} item",
     reviewNote: "Item baru belum dikirim ke dapur",
     emptyBar: "Pilih menu untuk memulai pesanan.",
+    addOther: "Tambah varian {name}",
   },
   review: {
     title: "Tinjau pesanan",
@@ -82,6 +88,7 @@ export const posCaptainOrderMessages = {
     emptyAction: "Pilih menu",
     submitFailed:
       "Pesanan belum terkirim. Item Anda masih aman di sini, coba kirim lagi.",
+    submitFailedReason: "Penyebab: {message}",
     loading: "Memuat meja…",
     loadFailedTitle: "Meja belum termuat",
     loadFailedHint: "Periksa koneksi lalu coba lagi.",

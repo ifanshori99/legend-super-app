@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { Minus, Plus } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { ApiError } from "@/lib/api/errors";
 import { ModifierDialog } from "@/features/ws04-pos-order/components/modifier-dialog";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
@@ -62,6 +63,12 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
     );
   }, [catalog.data, query, category]);
 
+  const tableMissing =
+    tableOrder.isError &&
+    !tableOrder.data &&
+    tableOrder.error instanceof ApiError &&
+    tableOrder.error.status === 404;
+
   const reviewHref = "/pos/captain/meja/$tableId/tinjau" as const;
 
   return (
@@ -113,7 +120,34 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
           </Notice>
         )}
 
-        {catalog.isPending ? (
+        {catalog.isError && catalog.data && (
+          <Notice tone="warning" title={t("posCaptainOrder.stale")} />
+        )}
+
+        {tableMissing ? (
+          <EmptyState
+            title={t("posCaptainOrder.order.notFoundTitle")}
+            description={t("posCaptainOrder.order.notFoundHint")}
+            action={
+              <Button asChild>
+                <Link to="/pos/captain">
+                  {t("posCaptainOrder.order.backToTables")}
+                </Link>
+              </Button>
+            }
+          />
+        ) : tableOrder.isError && !tableOrder.data ? (
+          <ErrorState
+            title={t("posCaptainOrder.review.loadFailedTitle")}
+            description={
+              isContractPending(tableOrder.error)
+                ? t("posCaptainOrder.contractPending")
+                : t("posCaptainOrder.review.loadFailedHint")
+            }
+            error={tableOrder.error}
+            onRetry={() => void tableOrder.refetch()}
+          />
+        ) : catalog.isPending ? (
           <div
             role="status"
             aria-busy="true"
@@ -126,7 +160,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
               <Skeleton key={key} className="h-24 rounded-container" />
             ))}
           </div>
-        ) : catalog.isError ? (
+        ) : !catalog.data ? (
           <ErrorState
             title={t("posCaptainOrder.add.loadFailedTitle")}
             description={
@@ -303,6 +337,17 @@ function MenuRow({
           </Button>
         )}
       </div>
+      {!item.soldOut && only && item.modifierGroups.length > 0 && (
+        <Button
+          variant="ghost"
+          aria-label={t("posCaptainOrder.add.addOther", { name: item.name })}
+          onClick={onPick}
+          className="mt-2 underline underline-offset-4"
+        >
+          <Plus aria-hidden="true" />
+          {t("posCaptainOrder.add.add")}
+        </Button>
+      )}
     </div>
   );
 }

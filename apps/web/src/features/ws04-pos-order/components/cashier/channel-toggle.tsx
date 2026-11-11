@@ -272,7 +272,7 @@ function TableList({
     );
   }
 
-  if (tables.isError) {
+  if (!tables.data) {
     return (
       <div className="grid gap-3">
         <Notice
@@ -305,17 +305,22 @@ function TableList({
   }
 
   return (
-    <ul className="grid max-h-[60dvh] grid-cols-2 gap-2 overflow-y-auto">
-      {tables.data.map((table) => (
-        <li key={table.id}>
-          <TableChoice
-            table={table}
-            selected={selected === table.label}
-            onPick={onPick}
-          />
-        </li>
-      ))}
-    </ul>
+    <div className="grid gap-3">
+      {tables.isError && (
+        <Notice tone="warning" title={t("posOrderCart.table.refreshFailed")} />
+      )}
+      <ul className="grid max-h-[60dvh] grid-cols-2 gap-2 overflow-y-auto">
+        {tables.data.map((table) => (
+          <li key={table.id}>
+            <TableChoice
+              table={table}
+              selected={selected === table.label}
+              onPick={onPick}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

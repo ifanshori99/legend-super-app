@@ -54,6 +54,8 @@ export const posOrderCartMessages = {
     emptyTitle: "Belum ada meja",
     emptyDescription: "Daftar meja outlet ini masih kosong.",
     error: "Meja belum bisa dimuat.",
+    refreshFailed:
+      "Meja belum bisa diperbarui. Daftar terakhir tetap ditampilkan.",
     close: "Tutup",
   },
   call: {
@@ -78,12 +80,15 @@ export const posOrderCartMessages = {
     parkedOk:
       "Pesanan ditahan. Buka lewat “Pesanan ditahan” untuk melanjutkan.",
     resumedOk: "Pesanan ditahan dibuka kembali di keranjang.",
-    heldReleased: "Item ditahan akan dikirim bersama pesanan ini.",
+    heldReleased: "{count} item ditahan akan dikirim bersama pesanan ini.",
+    placed: "Pesanan {number} terkirim. Pembayaran dilakukan oleh kasir.",
   },
   error: {
     pendingTitle: "Fitur ini belum tersambung ke server",
     submitTitle: "Pesanan belum terkirim",
     submitBody: "Keranjang tetap tersimpan. Coba lagi.",
+    submitFixCart:
+      "Hapus atau ganti item yang bermasalah di keranjang, lalu coba lagi.",
     parkTitle: "Pesanan belum bisa ditahan",
     parkBody: "Keranjang tetap tersimpan. Coba lagi.",
     resumeTitle: "Pesanan belum bisa dibuka",
@@ -97,6 +102,8 @@ export const posOrderCartMessages = {
     emptyTitle: "Belum ada pesanan ditahan",
     emptyDescription: "Pesanan yang kamu tahan akan muncul di sini.",
     error: "Pesanan ditahan belum bisa dimuat.",
+    refreshFailed:
+      "Daftar belum bisa diperbarui. Daftar terakhir tetap ditampilkan.",
     meta: "{count} item · {channel} · {time}",
     resume: "Lanjutkan",
     resumeLabel: "Lanjutkan {label}",

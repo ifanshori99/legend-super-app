@@ -11,7 +11,6 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
-import { useRef } from "react";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
@@ -28,6 +27,7 @@ import {
   submitOrder,
 } from "./api";
 import { orderDemoSeed, readDemoSeed } from "./demo-seed";
+import { readDraft, writeDraft } from "./draft-store";
 import {
   callNumberQuery,
   captainTablesQuery,
@@ -75,23 +75,30 @@ function useReady(): boolean {
  * One idempotency key per intent. The same input keeps the same key until the
  * call succeeds (`clear`), so a retry after a timeout or a double tap is
  * recognised by the server; a changed input is a new intent and a new key.
+ * The key lives in this module, per draft key, not in the component: the cart
+ * screen can unmount and mount again (navigation, reload of the route) while
+ * the call is in flight, and a retry from the new screen must still reuse it.
+ * The fingerprint carries the outlet, so another outlet never shares a key.
  */
-function useIntentKey(prefix: string) {
-  const current = useRef<{ fingerprint: string; key: string } | null>(null);
-  return {
-    keyFor(input: unknown): string {
-      const fingerprint = JSON.stringify(input);
-      if (current.current?.fingerprint !== fingerprint)
-        current.current = {
-          fingerprint,
-          key: `${prefix}:${globalThis.crypto.randomUUID()}`,
-        };
-      return current.current.key;
-    },
-    clear() {
-      current.current = null;
-    },
-  };
+const intentKeys = new Map<string, { fingerprint: string; key: string }>();
+
+function intentKeyFor(
+  prefix: string,
+  draftKey: string,
+  outletId: string,
+  input: unknown,
+): string {
+  const slot = `${prefix}:${draftKey}`;
+  const fingerprint = JSON.stringify([outletId, input]);
+  const current = intentKeys.get(slot);
+  if (current?.fingerprint === fingerprint) return current.key;
+  const key = `${prefix}:${globalThis.crypto.randomUUID()}`;
+  intentKeys.set(slot, { fingerprint, key });
+  return key;
+}
+
+function clearIntentKey(prefix: string, draftKey: string): void {
+  intentKeys.delete(`${prefix}:${draftKey}`);
 }
 
 // ---- Cashier ---------------------------------------------------------------
@@ -126,19 +133,27 @@ export function useNextCallNumber(enabled: boolean): UseQueryResult<string> {
   return useQuery({ ...callNumberQuery(outletId), enabled: enabled && ready });
 }
 
-export function useSubmitOrder(): UseMutationResult<
-  PosOrderView,
-  Error,
-  SubmitOrderInput
-> {
+/**
+ * `draftKey` is the cart this order is made from. The draft is emptied here,
+ * on the mutation itself, so it is cleared even when the screen that started
+ * the call is gone by the time it succeeds; the screen only navigates.
+ */
+export function useSubmitOrder({
+  draftKey,
+}: {
+  draftKey: string;
+}): UseMutationResult<PosOrderView, Error, SubmitOrderInput> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
-  const intent = useIntentKey("order");
   return useMutation<PosOrderView, Error, SubmitOrderInput>({
     mutationFn: (input) =>
-      submitOrder(outletId, { ...input, idempotencyKey: intent.keyFor(input) }),
+      submitOrder(outletId, {
+        ...input,
+        idempotencyKey: intentKeyFor("order", draftKey, outletId, input),
+      }),
     onSuccess: () => {
-      intent.clear();
+      clearIntentKey("order", draftKey);
+      writeDraft(draftKey, []);
       // A takeaway order used its call number: the next one moves on.
       void queryClient.invalidateQueries({
         queryKey: posOrderKeys.callNumber(outletId),
@@ -180,15 +195,22 @@ export function useParkDraft(): UseMutationResult<
   });
 }
 
-export function useResumeDraft(): UseMutationResult<
-  ParkedDraft,
-  Error,
-  { id: string }
-> {
+/**
+ * The parked draft is taken off the list by the server; its lines are added to
+ * the draft `draftKey` here, on the mutation, so they are not lost if the
+ * sheet that started the call has closed.
+ */
+export function useResumeDraft({
+  draftKey,
+}: {
+  draftKey: string;
+}): UseMutationResult<ParkedDraft, Error, { id: string }> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
   return useMutation<ParkedDraft, Error, { id: string }>({
     mutationFn: ({ id }) => resumeDraft(outletId, id),
+    onSuccess: (resumed) =>
+      writeDraft(draftKey, [...readDraft(draftKey), ...resumed.lines]),
     // Taken or already gone: either way the list must be read again.
     onSettled: () =>
       void queryClient.invalidateQueries({
@@ -214,19 +236,23 @@ export function useTableOrder(tableId: string): UseQueryResult<TableOrderView> {
   });
 }
 
-export function useAddToTable(): UseMutationResult<
-  TableOrderView,
-  Error,
-  AddToTableInput
-> {
+/** `draftKey` is the table's cart (`captain:${tableId}`), emptied on success. */
+export function useAddToTable({
+  draftKey,
+}: {
+  draftKey: string;
+}): UseMutationResult<TableOrderView, Error, AddToTableInput> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
-  const intent = useIntentKey("table-order");
   return useMutation<TableOrderView, Error, AddToTableInput>({
     mutationFn: (input) =>
-      addToTable(outletId, { ...input, idempotencyKey: intent.keyFor(input) }),
+      addToTable(outletId, {
+        ...input,
+        idempotencyKey: intentKeyFor("table-order", draftKey, outletId, input),
+      }),
     onSuccess: (view, input) => {
-      intent.clear();
+      clearIntentKey("table-order", draftKey);
+      writeDraft(draftKey, []);
       queryClient.setQueryData(
         posOrderKeys.tableOrder(outletId, input.tableId),
         view,

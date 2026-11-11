@@ -67,7 +67,7 @@ function ParkedList({
 }) {
   const t = useT();
   const drafts = useParkedDrafts();
-  const resume = useResumeDraft();
+  const resume = useResumeDraft({ draftKey: "kasir" });
 
   if (drafts.isPending) {
     return (
@@ -80,7 +80,7 @@ function ParkedList({
     );
   }
 
-  if (drafts.isError) {
+  if (!drafts.data) {
     const pending = isContractPending(drafts.error);
     return (
       <div className="grid gap-3">
@@ -115,6 +115,12 @@ function ParkedList({
 
   return (
     <div className="grid gap-3">
+      {drafts.isError && (
+        <Notice
+          tone="warning"
+          title={t("posOrderCart.parkedSheet.refreshFailed")}
+        />
+      )}
       {resume.isError && (
         <Notice
           tone="danger"

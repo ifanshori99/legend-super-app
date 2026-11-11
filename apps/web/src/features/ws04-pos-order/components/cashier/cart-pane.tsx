@@ -144,6 +144,7 @@ export function CartPane({
               <CartLineRow
                 key={line.lineId}
                 line={line}
+                locked={submitting}
                 onSetQuantity={onSetQuantity}
                 onToggleHold={onToggleHold}
               />
@@ -154,7 +155,11 @@ export function CartPane({
 
       <div className="grid gap-2 border-t border-border pt-3">
         {feedback}
-        <div className="flex items-baseline justify-between gap-3 text-xl font-semibold">
+        {/* The one live region for the total; line rows announce nothing. */}
+        <div
+          role="status"
+          className="flex items-baseline justify-between gap-3 text-xl font-semibold"
+        >
           <span>
             {t("posOrderCart.cart.subtotal", { count: totals.itemCount })}
           </span>
@@ -214,10 +219,13 @@ export function CartPane({
 
 function CartLineRow({
   line,
+  locked,
   onSetQuantity,
   onToggleHold,
 }: {
   line: CartLine;
+  /** A submit is in flight: the lines must not change under it. */
+  locked: boolean;
   onSetQuantity: (lineId: string, quantity: number) => void;
   onToggleHold: (lineId: string) => void;
 }) {
@@ -252,7 +260,10 @@ function CartLineRow({
               : "posOrderCart.line.decrease",
             { name: line.name },
           )}
-          onClick={() => onSetQuantity(line.lineId, line.quantity - 1)}
+          aria-disabled={locked ? true : undefined}
+          onClick={() =>
+            locked ? undefined : onSetQuantity(line.lineId, line.quantity - 1)
+          }
         >
           {removing ? (
             <Trash2 aria-hidden="true" />
@@ -260,11 +271,8 @@ function CartLineRow({
             <Minus aria-hidden="true" />
           )}
         </Button>
-        <span
-          role="status"
-          aria-label={t("posOrderCart.line.quantity")}
-          className="min-w-8 text-center text-lg font-semibold tabular"
-        >
+        <span className="min-w-8 text-center text-lg font-semibold tabular">
+          <span className="sr-only">{t("posOrderCart.line.quantity")} </span>
           {line.quantity}
         </span>
         <Button
@@ -272,7 +280,10 @@ function CartLineRow({
           variant="outline"
           size="icon"
           aria-label={t("posOrderCart.line.increase", { name: line.name })}
-          onClick={() => onSetQuantity(line.lineId, line.quantity + 1)}
+          aria-disabled={locked ? true : undefined}
+          onClick={() =>
+            locked ? undefined : onSetQuantity(line.lineId, line.quantity + 1)
+          }
         >
           <Plus aria-hidden="true" />
         </Button>
@@ -287,7 +298,8 @@ function CartLineRow({
               : "posOrderCart.line.holdLabel",
             { name: line.name },
           )}
-          onClick={() => onToggleHold(line.lineId)}
+          aria-disabled={locked ? true : undefined}
+          onClick={() => (locked ? undefined : onToggleHold(line.lineId))}
           className="rounded-full"
         >
           {line.hold

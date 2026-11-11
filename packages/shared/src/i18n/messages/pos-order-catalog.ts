@@ -35,6 +35,12 @@ export const posOrderCatalogMessages = {
     pendingTitle: "Fitur ini belum tersambung ke server",
     pendingBody:
       "Katalog kasir belum bisa dipakai di outlet ini. Hubungi admin.",
+    refreshFailed:
+      "Menu belum bisa diperbarui. Menu terakhir tetap ditampilkan.",
+  },
+  scan: {
+    notFound: "Kode {code} tidak ditemukan.",
+    soldOut: "{name} stok habis.",
   },
   modifier: {
     description: "Pilih opsi dan tambahkan catatan untuk dapur.",

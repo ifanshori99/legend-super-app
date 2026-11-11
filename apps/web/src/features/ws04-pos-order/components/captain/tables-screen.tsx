@@ -114,6 +114,10 @@ export function TablesScreen() {
           />
         )}
 
+        {tablesQuery.isError && tables && (
+          <Notice tone="warning" title={t("posCaptainTables.tables.stale")} />
+        )}
+
         {tablesQuery.isPending ? (
           <div
             role="status"
@@ -129,7 +133,7 @@ export function TablesScreen() {
               ))}
             </div>
           </div>
-        ) : tablesQuery.isError ? (
+        ) : tablesQuery.isError && !tables ? (
           <ErrorState
             error={tablesQuery.error}
             title={

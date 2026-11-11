@@ -66,6 +66,7 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
   const connectivity = useOrderingConnectivity();
   const [query, setQuery] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
 
   const data = catalog.data;
   const items = useMemo(() => {
@@ -82,7 +83,7 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
 
   if (catalog.isPending) return <CatalogSkeleton />;
 
-  if (catalog.isError || !data) {
+  if (!data) {
     const pending = isContractPending(catalog.error);
     return (
       <ErrorState
@@ -129,14 +130,27 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
     const match = data?.items.find(
       (item) => item.code !== null && normalize(item.code) === code,
     );
-    if (match && !match.soldOut) {
+    if (!match) {
+      setScanMessage(
+        t("posOrderCatalog.scan.notFound", { code: query.trim() }),
+      );
+    } else if (match.soldOut) {
+      setScanMessage(t("posOrderCatalog.scan.soldOut", { name: match.name }));
+    } else {
       onPick(match);
       setQuery("");
+      setScanMessage(null);
     }
   }
 
   return (
     <div className="grid min-w-0 gap-3">
+      {catalog.isError && (
+        <Notice
+          tone="warning"
+          title={t("posOrderCatalog.error.refreshFailed")}
+        />
+      )}
       {offline && (
         <Notice
           tone="warning"
@@ -163,7 +177,10 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
           aria-label={t("posOrderCatalog.search.label")}
           placeholder={t("posOrderCatalog.search.placeholder")}
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setScanMessage(null);
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
@@ -173,6 +190,12 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
           className="h-15 pl-12 text-lg"
         />
       </div>
+      <p
+        role="status"
+        className="-mt-1 text-base font-semibold text-foreground empty:hidden"
+      >
+        {scanMessage}
+      </p>
 
       <nav
         aria-label={t("posOrderCatalog.categories.label")}

@@ -29,7 +29,7 @@ export const SERVICE_CALLS_POLL_MS = 10_000;
 export function catalogQuery(outletId: string) {
   return queryOptions({
     queryKey: posOrderKeys.catalog(outletId),
-    queryFn: () => fetchCatalog(outletId),
+    queryFn: () => fetchCatalog(),
     retry: false,
   });
 }
@@ -37,7 +37,7 @@ export function catalogQuery(outletId: string) {
 export function callNumberQuery(outletId: string) {
   return queryOptions({
     queryKey: posOrderKeys.callNumber(outletId),
-    queryFn: () => fetchNextCallNumber(outletId),
+    queryFn: () => fetchNextCallNumber(),
     retry: false,
   });
 }
@@ -45,7 +45,7 @@ export function callNumberQuery(outletId: string) {
 export function parkedDraftsQuery(outletId: string) {
   return queryOptions({
     queryKey: posOrderKeys.parked(outletId),
-    queryFn: () => fetchParkedDrafts(outletId),
+    queryFn: () => fetchParkedDrafts(),
     retry: false,
   });
 }
@@ -53,7 +53,7 @@ export function parkedDraftsQuery(outletId: string) {
 export function captainTablesQuery(outletId: string) {
   return queryOptions({
     queryKey: posOrderKeys.tables(outletId),
-    queryFn: () => fetchCaptainTables(outletId),
+    queryFn: () => fetchCaptainTables(),
     retry: false,
   });
 }
@@ -69,7 +69,7 @@ export function tableOrderQuery(outletId: string, tableId: string) {
 export function serviceCallsQuery(outletId: string) {
   return queryOptions({
     queryKey: posOrderKeys.calls(outletId),
-    queryFn: () => fetchServiceCalls(outletId),
+    queryFn: () => fetchServiceCalls(),
     refetchInterval: SERVICE_CALLS_POLL_MS,
     refetchIntervalInBackground: false,
     retry: false,

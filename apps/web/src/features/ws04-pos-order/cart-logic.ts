@@ -4,7 +4,12 @@
 // sent to the kitchen later.
 //
 // Plain TypeScript: Node tests load it directly.
-import type { CartLine, MenuItem, SelectedModifier } from "./types.ts";
+import type {
+  CartLine,
+  MenuItem,
+  OrderLine,
+  SelectedModifier,
+} from "./types.ts";
 
 export const MAX_LINE_QUANTITY = 99;
 
@@ -19,17 +24,22 @@ function clampQuantity(quantity: number): number {
   return Math.min(MAX_LINE_QUANTITY, Math.floor(quantity));
 }
 
-/** Same item, same modifiers (in any order) and same note make one line. */
+/**
+ * Same item, same modifiers (in any order), same note and the same hold state
+ * make one line: a held line never absorbs a fresh one (or the reverse), or
+ * the item that should go to the kitchen now would stay held.
+ */
 function lineSignature(
   menuItemId: string,
   modifiers: readonly SelectedModifier[],
   note: string,
+  hold: boolean,
 ): string {
   const picked = modifiers
     .map((modifier) => `${modifier.groupId}:${modifier.optionId}`)
     .sort()
     .join("|");
-  return `${menuItemId}#${picked}#${note.trim()}`;
+  return `${menuItemId}#${picked}#${note.trim()}#${hold ? "held" : "now"}`;
 }
 
 function newLineId(): string {
@@ -47,10 +57,9 @@ export function lineUnitPriceIdr(
   return Math.round(line.unitPriceIdr + deltas);
 }
 
-export function lineTotalIdr(
-  line: Pick<CartLine, "unitPriceIdr" | "modifiers" | "quantity">,
-): number {
-  return lineUnitPriceIdr(line) * line.quantity;
+/** Whole-rupiah total of a draft or sent line: unit price x quantity. */
+export function lineTotalIdr(line: CartLine | OrderLine): number {
+  return Math.round(lineUnitPriceIdr(line) * line.quantity);
 }
 
 /** Adds an item; merges into the existing line when item, modifiers and note match. */
@@ -61,10 +70,11 @@ export function addLine(
 ): CartLine[] {
   const quantity = clampQuantity(opts.quantity);
   const note = opts.note.trim();
-  const signature = lineSignature(item.id, opts.modifiers, note);
+  const signature = lineSignature(item.id, opts.modifiers, note, false);
   const existing = lines.find(
     (line) =>
-      lineSignature(line.menuItemId, line.modifiers, line.note) === signature,
+      lineSignature(line.menuItemId, line.modifiers, line.note, line.hold) ===
+      signature,
   );
   if (existing)
     return lines.map((line) =>
@@ -91,13 +101,18 @@ export function addLine(
   ];
 }
 
-/** A quantity of 0 or less removes the line; more than 99 is capped at 99. */
+/**
+ * A quantity of 0 or less removes the line; more than 99 is capped at 99. NaN
+ * or a fraction is not a quantity: the line stays as it is.
+ */
 export function setQuantity(
   lines: readonly CartLine[],
   lineId: string,
   quantity: number,
 ): CartLine[] {
-  if (!(quantity > 0)) return removeLine(lines, lineId);
+  if (!Number.isFinite(quantity) || !Number.isInteger(quantity))
+    return [...lines];
+  if (quantity <= 0) return removeLine(lines, lineId);
   const next = clampQuantity(quantity);
   return lines.map((line) =>
     line.lineId === lineId ? { ...line, quantity: next } : line,
@@ -142,7 +157,8 @@ export function cartTotals(lines: readonly CartLine[]): {
 
 /**
  * A group is wrong when fewer options are picked than it needs (a required
- * group needs at least one) or more than its maximum. Both are listed in
+ * group needs at least one), more than its maximum, or the same option twice.
+ * All of them are listed in
  * `missingGroupIds`; the screen shows "Pilih <grup> sebelum menambahkan.".
  */
 export function validateModifiers(
@@ -151,11 +167,15 @@ export function validateModifiers(
 ): { ok: true } | { ok: false; missingGroupIds: string[] } {
   const missingGroupIds: string[] = [];
   for (const group of item.modifierGroups) {
-    const picked = modifiers.filter(
+    const inGroup = modifiers.filter(
       (modifier) => modifier.groupId === group.id,
-    ).length;
+    );
+    const picked = inGroup.length;
+    const duplicated =
+      new Set(inGroup.map((modifier) => modifier.optionId)).size !== picked;
     const needed = Math.max(group.min, group.required ? 1 : 0);
-    if (picked < needed || picked > group.max) missingGroupIds.push(group.id);
+    if (duplicated || picked < needed || picked > group.max)
+      missingGroupIds.push(group.id);
   }
   return missingGroupIds.length === 0
     ? { ok: true }

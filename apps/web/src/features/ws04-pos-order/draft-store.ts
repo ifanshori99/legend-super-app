@@ -4,6 +4,7 @@
 // Storage can be blocked (private mode, quota): then the cart lives in memory.
 import { useMemo, useSyncExternalStore } from "react";
 import {
+  MAX_LINE_QUANTITY,
   addLine,
   removeLine,
   setQuantity,
@@ -26,6 +27,46 @@ function storage(): Storage | null {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isText(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isCartLine(value: unknown): value is CartLine {
+  if (!isRecord(value)) return false;
+  const course = value.course;
+  return (
+    isText(value.lineId) &&
+    isText(value.menuItemId) &&
+    isText(value.name) &&
+    typeof value.unitPriceIdr === "number" &&
+    Number.isFinite(value.unitPriceIdr) &&
+    typeof value.quantity === "number" &&
+    Number.isInteger(value.quantity) &&
+    value.quantity >= 1 &&
+    value.quantity <= MAX_LINE_QUANTITY &&
+    Array.isArray(value.modifiers) &&
+    value.modifiers.every(
+      (modifier) =>
+        isRecord(modifier) &&
+        isText(modifier.groupId) &&
+        isText(modifier.optionId) &&
+        isText(modifier.name) &&
+        typeof modifier.priceDeltaIdr === "number" &&
+        Number.isFinite(modifier.priceDeltaIdr),
+    ) &&
+    isText(value.note) &&
+    isRecord(course) &&
+    isText(course.id) &&
+    isText(course.label) &&
+    typeof course.order === "number" &&
+    typeof value.hold === "boolean"
+  );
+}
+
 function load(key: string): CartLine[] {
   const store = storage();
   if (!store) return EMPTY;
@@ -33,7 +74,11 @@ function load(key: string): CartLine[] {
     const raw = store.getItem(STORAGE_PREFIX + key);
     if (!raw) return EMPTY;
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as CartLine[]) : EMPTY;
+    if (Array.isArray(parsed) && parsed.every(isCartLine))
+      return parsed.length === 0 ? EMPTY : parsed;
+    // Not a list of cart lines (stale or tampered): drop it, start empty.
+    store.removeItem(STORAGE_PREFIX + key);
+    return EMPTY;
   } catch {
     // A stale or tampered snapshot must never break the screen: start empty.
     return EMPTY;

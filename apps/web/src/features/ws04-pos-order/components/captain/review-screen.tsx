@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Minus, Plus } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { ApiError } from "@/lib/api/errors";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,6 +21,7 @@ import {
   Notice,
   PosPageHeading,
 } from "@/features/ws04-pos-kasir/components/shared";
+import { lineTotalIdr } from "@/features/ws04-pos-order/cart-logic";
 import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
@@ -31,7 +33,6 @@ import { CaptainShell } from "./captain-shell";
 import {
   SampleBadge,
   lineDetails,
-  lineTotalIdr,
   tableSessionText,
 } from "./captain-order-parts";
 
@@ -45,7 +46,7 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
   const navigate = useNavigate();
   const tableOrder = useTableOrder(tableId);
   const draft = useDraftCart(`captain:${tableId}`);
-  const submit = useAddToTable();
+  const submit = useAddToTable({ draftKey: `captain:${tableId}` });
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const tableLabel = tableOrder.data?.table.label;
@@ -60,7 +61,6 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
       { tableId, lines: draft.lines },
       {
         onSuccess: () => {
-          draft.clear();
           void navigate({
             to: "/pos/captain/meja/$tableId",
             params: { tableId },
@@ -122,8 +122,12 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
             tone="danger"
             title={t("posCaptainOrder.review.submitFailed")}
           >
-            {isContractPending(submit.error) &&
-              t("posCaptainOrder.contractPending")}
+            {isContractPending(submit.error)
+              ? t("posCaptainOrder.contractPending")
+              : submit.error instanceof ApiError &&
+                t("posCaptainOrder.review.submitFailedReason", {
+                  message: submit.error.message,
+                })}
           </Notice>
         )}
 

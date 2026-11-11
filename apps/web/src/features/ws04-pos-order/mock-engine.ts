@@ -203,9 +203,15 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
   /**
    * The client never sets a price. Each line is rebuilt from the catalog item:
    * name, base price, course and every chosen option's name and price delta.
-   * A sold-out item, an unknown option or a missing required group is refused.
+   * A sold-out item, an unknown or repeated option or a missing required group
+   * is refused. Parking a draft ("park") only checks the shape: a sold-out item
+   * or a missing required group can still be kept aside, the order itself will
+   * refuse it later.
    */
-  function normalizeLines(lines: readonly CartLine[]): CartLine[] {
+  function normalizeLines(
+    lines: readonly CartLine[],
+    mode: "order" | "park" = "order",
+  ): CartLine[] {
     if (lines.length === 0)
       throw new ApiError(422, "EMPTY_ORDER", "Pilih menu sebelum melanjutkan.");
     if (lines.length > MAX_ORDER_LINES)
@@ -223,7 +229,7 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
           "ITEM_UNAVAILABLE",
           "Menu tidak tersedia. Muat ulang katalog.",
         );
-      if (item.soldOut)
+      if (mode === "order" && item.soldOut)
         throw new ApiError(409, "ITEM_SOLD_OUT", `${item.name} sedang habis.`);
       if (
         !Number.isInteger(line.quantity) ||
@@ -251,8 +257,22 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
           priceDeltaIdr: option.priceDeltaIdr,
         };
       });
+      const repeated = modifiers.some(
+        (picked, index) =>
+          modifiers.findIndex(
+            (entry) =>
+              entry.groupId === picked.groupId &&
+              entry.optionId === picked.optionId,
+          ) !== index,
+      );
+      if (repeated)
+        throw new ApiError(
+          422,
+          "INVALID_MODIFIER",
+          "Pilihan tidak boleh dipilih dua kali.",
+        );
       const check = validateModifiers(item, modifiers);
-      if (!check.ok) {
+      if (mode === "order" && !check.ok) {
         const group = item.modifierGroups.find(
           (entry) => entry.id === check.missingGroupIds[0],
         );
@@ -385,7 +405,7 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
 
     parkDraft(input: ParkDraftInput): ParkedDraft {
       const s = ensure();
-      const lines = normalizeLines(input.lines);
+      const lines = normalizeLines(input.lines, "park");
       s.counters.draft += 1;
       const channelName: Record<SaleChannel, string> = {
         dine_in: "Dine-in",
@@ -426,6 +446,13 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
       if (s.idempotency[input.idempotencyKey]) return tableView(input.tableId);
       const lines = toOrderLines(normalizeLines(input.lines));
       let order = tableOrderOf(tableRow.id);
+      // Validate before anything is created: a refused call leaves no order.
+      if ((order?.lines.length ?? 0) + lines.length > MAX_ORDER_LINES)
+        throw new ApiError(
+          422,
+          "TOO_MANY_LINES",
+          "Terlalu banyak baris pesanan.",
+        );
       if (!order) {
         s.counters.order += 1;
         order = {
@@ -439,12 +466,6 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
         };
         s.orders.push(order);
       }
-      if (order.lines.length + lines.length > MAX_ORDER_LINES)
-        throw new ApiError(
-          422,
-          "TOO_MANY_LINES",
-          "Terlalu banyak baris pesanan.",
-        );
       order.lines.push(...lines);
       if (tableRow.status === "empty") {
         s.counters.session += 1;

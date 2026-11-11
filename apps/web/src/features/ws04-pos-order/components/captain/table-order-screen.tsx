@@ -29,8 +29,11 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
   const query = useTableOrder(tableId);
   const fire = useFireTableLines();
   const view = query.data;
-  const firingLineId =
-    fire.isPending && fire.variables ? fire.variables.lineIds[0] : null;
+  const firingLineIds =
+    fire.isPending && fire.variables ? fire.variables.lineIds : [];
+  const heldLines = (view?.order?.lines ?? []).filter(
+    (line) => line.status === "held",
+  );
 
   return (
     <CaptainShell
@@ -56,6 +59,10 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
           </Notice>
         )}
 
+        {query.isError && view && (
+          <Notice tone="warning" title={t("posCaptainOrder.stale")} />
+        )}
+
         {query.isPending ? (
           <div
             role="status"
@@ -67,7 +74,7 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
             <Skeleton className="h-36 rounded-container" />
             <Skeleton className="h-16 rounded-control" />
           </div>
-        ) : query.isError ? (
+        ) : query.isError && !view ? (
           <ErrorState
             title={t("posCaptainOrder.order.loadFailedTitle")}
             description={
@@ -86,9 +93,20 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
                   <li key={line.lineId}>
                     <OrderLineCard
                       line={line}
-                      firing={firingLineId === line.lineId}
+                      firing={firingLineIds.includes(line.lineId)}
+                      busy={fire.isPending}
+                      courseHeldCount={
+                        heldLines.filter(
+                          (held) => held.course.id === line.course.id,
+                        ).length
+                      }
                       onFire={() =>
-                        fire.mutate({ tableId, lineIds: [line.lineId] })
+                        fire.mutate({
+                          tableId,
+                          lineIds: heldLines
+                            .filter((held) => held.course.id === line.course.id)
+                            .map((held) => held.lineId),
+                        })
                       }
                     />
                   </li>
@@ -116,10 +134,14 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
 function OrderLineCard({
   line,
   firing,
+  busy,
+  courseHeldCount,
   onFire,
 }: {
   line: OrderLine;
   firing: boolean;
+  busy: boolean;
+  courseHeldCount: number;
   onFire: () => void;
 }) {
   const t = useT();
@@ -158,13 +180,23 @@ function OrderLineCard({
           <p className="text-base text-muted-foreground">
             {t("posCaptainOrder.order.heldHint")}
           </p>
-          <Button onClick={onFire} loading={firing} className="w-full">
+          <Button
+            onClick={onFire}
+            loading={firing}
+            disabled={busy && !firing}
+            className="w-full"
+          >
             <Send aria-hidden="true" />
             {firing
               ? t("posCaptainOrder.order.firing")
-              : t("posCaptainOrder.order.fireCourse", {
-                  course: line.course.label.toLocaleLowerCase("id-ID"),
-                })}
+              : courseHeldCount > 1
+                ? t("posCaptainOrder.order.fireAll", {
+                    course: line.course.label.toLocaleLowerCase("id-ID"),
+                    count: courseHeldCount,
+                  })
+                : t("posCaptainOrder.order.fireCourse", {
+                    course: line.course.label.toLocaleLowerCase("id-ID"),
+                  })}
           </Button>
         </div>
       )}

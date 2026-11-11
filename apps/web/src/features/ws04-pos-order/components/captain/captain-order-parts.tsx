@@ -4,17 +4,6 @@ import { API_MOCK } from "@/lib/api/mock-flag";
 import type { Translate } from "@starter/shared/i18n";
 import type { CaptainTable, CartLine } from "@/features/ws04-pos-order/types";
 
-/** One unit: base price plus every chosen modifier (whole rupiah). */
-export function lineTotalIdr(
-  line: Pick<CartLine, "unitPriceIdr" | "quantity" | "modifiers">,
-): number {
-  const unit = line.modifiers.reduce(
-    (sum, modifier) => sum + modifier.priceDeltaIdr,
-    line.unitPriceIdr,
-  );
-  return unit * line.quantity;
-}
-
 /** Chosen modifier names, then the note, as short detail parts. */
 export function lineDetails(
   line: Pick<CartLine, "modifiers" | "note">,

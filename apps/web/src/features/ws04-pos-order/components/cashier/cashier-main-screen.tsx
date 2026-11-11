@@ -1,7 +1,10 @@
 import { useState, type ReactNode } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouteContext } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
+import { ApiError } from "@/lib/api/errors";
+import type { AreaAccess } from "@/lib/areas/access";
+import { holdsAny } from "@/lib/areas/guard";
 import { ModifierDialog } from "@/features/ws04-pos-order/components/modifier-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,7 +25,20 @@ import type { ChannelDetailError } from "./channel-toggle";
 import { MobileCartBar } from "./mobile-cart-bar";
 import { ParkedDraftsSheet } from "./parked-drafts-sheet";
 
-type StatusMessage = "parkedOk" | "resumedOk" | "heldReleased";
+type StatusMessage = "parkedOk" | "resumedOk" | "heldReleased" | "placed";
+
+interface Status {
+  key: StatusMessage;
+  params?: Record<string, string | number>;
+}
+
+// Errors the cashier fixes in the cart (not by retrying the same cart).
+const CART_FIX_CODES = new Set([
+  "ITEM_SOLD_OUT",
+  "ITEM_UNAVAILABLE",
+  "INVALID_MODIFIER",
+  "MODIFIER_REQUIRED",
+]);
 
 // /pos/kasir: the cashier's main sale screen. The menu (C1) sits on the left,
 // the cart on the right; below 701 px they are two views and a bottom bar opens
@@ -31,7 +47,12 @@ export function CashierMainScreen() {
   const t = useT();
   const navigate = useNavigate();
   const cart = useDraftCart("kasir");
-  const submit = useSubmitOrder();
+  const access = (useRouteContext({ strict: false }) as { access?: AreaAccess })
+    .access;
+  const canAcceptPayment = access
+    ? holdsAny(access, ["pos.payment.accept"])
+    : false;
+  const submit = useSubmitOrder({ draftKey: "kasir" });
   const park = useParkDraft();
 
   const [meta, setMeta] = useState<CartOrderMeta>({
@@ -44,7 +65,7 @@ export function CashierMainScreen() {
   const [pickedItem, setPickedItem] = useState<MenuItem | null>(null);
   const [parkedOpen, setParkedOpen] = useState(false);
   const [fieldError, setFieldError] = useState<ChannelDetailError>(null);
-  const [status, setStatus] = useState<StatusMessage | null>(null);
+  const [status, setStatus] = useState<Status | null>(null);
 
   const totals = cartTotals(cart.lines);
 
@@ -93,12 +114,17 @@ export function CashierMainScreen() {
         lines: cart.lines,
       },
       {
+        // The hook empties the draft; here the screen only moves on. Only a
+        // cashier who may take payment goes to the payment screen.
         onSuccess: (order) => {
-          cart.clear();
-          void navigate({
-            to: "/pos/bayar/$orderId",
-            params: { orderId: order.orderId },
-          });
+          if (canAcceptPayment) {
+            void navigate({
+              to: "/pos/bayar/$orderId",
+              params: { orderId: order.orderId },
+            });
+            return;
+          }
+          setStatus({ key: "placed", params: { number: order.number } });
         },
       },
     );
@@ -111,7 +137,7 @@ export function CashierMainScreen() {
       {
         onSuccess: () => {
           cart.clear();
-          setStatus("parkedOk");
+          setStatus({ key: "parkedOk" });
         },
       },
     );
@@ -120,28 +146,33 @@ export function CashierMainScreen() {
   // The order does not exist on the server yet, so "send held items" releases
   // every held line: they go to the kitchen together with the order.
   const releaseHeld = () => {
+    setStatus({ key: "heldReleased", params: { count: totals.heldCount } });
     cart.replace(cart.lines.map((line) => ({ ...line, hold: false })));
-    setStatus("heldReleased");
   };
 
   const resumed = (draft: ParkedDraft) => {
-    cart.replace([...cart.lines, ...draft.lines]);
+    // useResumeDraft already added the draft's lines to the cart.
     setMeta((current) => ({ ...current, channel: draft.channel }));
     setFieldError(null);
     setParkedOpen(false);
-    setStatus("resumedOk");
+    setStatus({ key: "resumedOk" });
   };
 
   const feedback: ReactNode = (
     <div aria-live="polite" className="grid gap-2 empty:hidden">
       {status && (
-        <Notice tone="info" title={t(`posOrderCart.status.${status}`)} />
+        <Notice
+          tone="info"
+          role="status"
+          title={t(`posOrderCart.status.${status.key}`, status.params)}
+        />
       )}
       {submit.isError && (
         <ActionError
           pending={isContractPending(submit.error)}
           title={t("posOrderCart.error.submitTitle")}
           body={t("posOrderCart.error.submitBody")}
+          error={submit.error}
           onRetry={continueOrder}
         />
       )}
@@ -150,6 +181,7 @@ export function CashierMainScreen() {
           pending={isContractPending(park.error)}
           title={t("posOrderCart.error.parkTitle")}
           body={t("posOrderCart.error.parkBody")}
+          error={park.error}
           onRetry={parkOrder}
         />
       )}
@@ -235,14 +267,21 @@ function ActionError({
   pending,
   title,
   body,
+  error,
   onRetry,
 }: {
   pending: boolean;
   title: string;
   body: string;
+  error: unknown;
   onRetry: () => void;
 }) {
   const t = useT();
+  // The server's own message says what went wrong; the generic body is the
+  // fallback when the failure has none (network, unknown).
+  const apiError = error instanceof ApiError ? error : null;
+  const causes = apiError?.details?.map((detail) => detail.message) ?? [];
+  const needsCartFix = apiError ? CART_FIX_CODES.has(apiError.code) : false;
   return (
     <Notice
       tone="danger"
@@ -250,7 +289,15 @@ function ActionError({
     >
       {!pending && (
         <div className="grid gap-2">
-          <p>{body}</p>
+          <p>{apiError?.message || body}</p>
+          {causes.length > 0 && (
+            <ul className="list-disc pl-5">
+              {causes.map((cause, index) => (
+                <li key={index}>{cause}</li>
+              ))}
+            </ul>
+          )}
+          {needsCartFix && <p>{t("posOrderCart.error.submitFixCart")}</p>}
           <Button type="button" variant="outline" onClick={onRetry}>
             {t("posOrderCart.error.retry")}
           </Button>

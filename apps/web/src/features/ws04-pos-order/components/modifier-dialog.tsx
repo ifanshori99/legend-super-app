@@ -101,6 +101,8 @@ function ModifierForm({
   const t = useT();
   const [chosen, setChosen] = useState<Record<string, string[]>>({});
   const [note, setNote] = useState("");
+  // Required-group errors stay quiet until the first "Tambah ke keranjang" tap.
+  const [attempted, setAttempted] = useState(false);
   const groupRefs = useRef<Record<string, HTMLFieldSetElement | null>>({});
 
   const modifiers: SelectedModifier[] = item.modifierGroups.flatMap((group) =>
@@ -137,6 +139,7 @@ function ModifierForm({
 
   function submit() {
     if (missing.length > 0) {
+      setAttempted(true);
       groupRefs.current[missing[0]!]
         ?.querySelector<HTMLInputElement>("input")
         ?.focus();
@@ -161,7 +164,7 @@ function ModifierForm({
           key={group.id}
           group={group}
           selectedIds={chosen[group.id] ?? []}
-          missing={missing.includes(group.id)}
+          missing={attempted && missing.includes(group.id)}
           onChoose={(optionId) => choose(group, optionId)}
           fieldsetRef={(el) => {
             groupRefs.current[group.id] = el;

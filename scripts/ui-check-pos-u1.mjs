@@ -364,7 +364,11 @@ async function showModifierError(page) {
  * Adds one item. If the modifier dialog opens (item with a required group), it
  * picks `option`, writes `note` and confirms.
  */
-async function addItem(page, name, { option = "Pedas sedang", note = "" } = {}) {
+async function addItem(
+  page,
+  name,
+  { option = "Pedas sedang", note = "" } = {},
+) {
   await clickMenuItem(page, name);
   const dialog = page.getByRole("dialog");
   const opened = await dialog
@@ -379,9 +383,7 @@ async function addItem(page, name, { option = "Pedas sedang", note = "" } = {}) 
   if ((await choice.count()) > 0) await choice.click();
   else await dialog.getByText(option).first().click();
   if (note) await dialog.getByRole("textbox").fill(note);
-  await dialog
-    .getByRole("button", { name: /Tambah ke keranjang/ })
-    .click();
+  await dialog.getByRole("button", { name: /Tambah ke keranjang/ }).click();
   await dialog.waitFor({ state: "hidden", timeout: COLD_TIMEOUT });
 }
 

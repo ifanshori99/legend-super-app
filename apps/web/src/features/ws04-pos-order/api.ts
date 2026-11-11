@@ -45,7 +45,7 @@ function local<T>(
 // ---- Cashier ---------------------------------------------------------------
 
 /** DEMO-CONTRACT: cashier catalog with modifiers, courses and sold-out flag. */
-export async function fetchCatalog(_outletId: string): Promise<Catalog> {
+export async function fetchCatalog(): Promise<Catalog> {
   const catalog = await local("katalog kasir", (e) => e.catalog(), "query");
   return {
     ...catalog,
@@ -57,7 +57,7 @@ export async function fetchCatalog(_outletId: string): Promise<Catalog> {
 }
 
 /** DEMO-CONTRACT: the call number the next takeaway order gets ("A-12"). */
-export function fetchNextCallNumber(_outletId: string): Promise<string> {
+export function fetchNextCallNumber(): Promise<string> {
   return local("nomor panggilan", (e) => e.nextCallNumber(), "query");
 }
 
@@ -79,7 +79,7 @@ export function fireLines(
   );
 }
 
-export function fetchParkedDrafts(_outletId: string): Promise<ParkedDraft[]> {
+export function fetchParkedDrafts(): Promise<ParkedDraft[]> {
   return local("pesanan ditahan", (e) => e.parkedDrafts(), "query");
 }
 
@@ -99,7 +99,7 @@ export function resumeDraft(
 
 // ---- Captain ---------------------------------------------------------------
 
-export function fetchCaptainTables(_outletId: string): Promise<CaptainTable[]> {
+export function fetchCaptainTables(): Promise<CaptainTable[]> {
   return local("daftar meja captain", (e) => e.captainTables(), "query");
 }
 
@@ -129,7 +129,7 @@ export function fireTableLines(
 // ---- Waiter calls ----------------------------------------------------------
 
 /** DEMO-CONTRACT: listServiceRequests has no table label or display reason. */
-export function fetchServiceCalls(_outletId: string): Promise<ServiceCall[]> {
+export function fetchServiceCalls(): Promise<ServiceCall[]> {
   return local("panggilan waiter", (e) => e.serviceCalls(), "query");
 }
 
