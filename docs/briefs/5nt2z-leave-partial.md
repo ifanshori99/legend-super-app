@@ -15,3 +15,9 @@ Koreksi manual absensi yang disetujui (hris-attendance-correction.service.ts ~:6
 - 7o3hd: file BARU services/hris-leave-attendance-flag.service.ts (fungsi `flagAttendanceForApprovedLeave(tx, ctx, leave)`); pemilik 5nt2z memanggilnya dari applyOutcome.
 - em8y2: hris-attendance-correction.service.ts.
 Tes: file baru per kartu di apps/api/src/test/. Token heavy: hanya engineer (saya).
+
+## Hasil peta (applyOutcome + koreksi)
+- `applyOutcome(tx, context: ScopedTenantContext, row, outcome, now)` hris-leave-request.service.ts:1246; context outlet-scoped ke outlet home cuti, row terkunci. Titik sisip: setelah `appendLeaveApproved(tx, context, approved, now)` (:1285), sebelum `return "approved"`; `approved` (hasil .returning()) = leave; `approved.decidedBy` ada. Jalur ke approved: settle :1361 dan cancel-chain :1057, keduanya lewat applyOutcome; cek :929 `transitionLeaveRequest("pending","approve")` apakah jalur ketiga.
+- Flag log: insert hris-attendance.service.ts:850-863 (validity, flagReasons, reviewStatus pending). `transitionAttendanceValidity` packages/shared/src/hris/attendance.ts:197-223 (valid -flag-> flagged).
+- RLS `attendance_logs` per outlet (0215:175-177): update log lintas outlet dari context cuti butuh fungsi SECURITY DEFINER BARU, pola 0276 (migrasi 0277 sementara; `when` > 1794331000000; cek `node scripts/migration-renumber.mjs check --from-idx 240`).
+- Koreksi: `applyApproved(tx, row, decidedBy, decidedAt, now)` hris-attendance-correction.service.ts:646, businessDate :655-658, insert valid :689-712. Dua pemanggil (:476 create-langsung, :791 settle). Cek cuti taruh di awal `applyApproved` (setelah businessDate), pakai `findApprovedLeaveOnDate` dari hris-leave-request.service.ts. Tolak 409.
