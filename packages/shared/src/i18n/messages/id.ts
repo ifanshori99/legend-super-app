@@ -2646,6 +2646,9 @@ export const id = {
         followsNone: "Mengikuti tipe: belum dipilih",
         customStation: "Stasiun khusus: {name}",
         unavailable: "Stasiun tidak tersedia",
+        uncheckedItem: "Stasiun tersimpan (belum diperiksa)",
+        unchecked:
+          "Stasiun khusus yang tersimpan belum bisa diperiksa karena ada outlet yang gagal dimuat.",
         loading: "Memuat pengaturan stasiun…",
         loadErrorTitle: "Pengaturan stasiun belum bisa dimuat",
         loadErrorHint: "Periksa koneksi, lalu coba lagi.",

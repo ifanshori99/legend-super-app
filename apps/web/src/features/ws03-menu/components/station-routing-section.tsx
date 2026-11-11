@@ -65,10 +65,17 @@ export function StationRoutingSection({
   const overrideIndex = stationsByOutlet.findIndex((rows) =>
     rows.some((row) => row.id === stationId),
   );
+  // A saved override that no loaded outlet lists, while some outlet failed to
+  // load: it may sit in a failed outlet, so it cannot be checked yet.
+  const unresolved =
+    allSettled && stationId !== NO_STATION && overrideIndex < 0;
+  const firstErrorIndex = stationQueries.findIndex((query) => query.isError);
+  const unchecked = unresolved && firstErrorIndex >= 0;
   const selectedIndex = (() => {
     const picked = outlets.findIndex((outlet) => outlet.id === pickedOutletId);
     if (picked >= 0) return picked;
-    return overrideIndex >= 0 ? overrideIndex : 0;
+    if (overrideIndex >= 0) return overrideIndex;
+    return unchecked ? firstErrorIndex : 0;
   })();
   const outlet = outlets[selectedIndex];
   const selectedQuery = stationQueries[selectedIndex];
@@ -87,11 +94,7 @@ export function StationRoutingSection({
   const station = stations.find((row) => row.id === stationId);
   // A saved override that no loaded outlet lists (deleted or moved station):
   // keep it visible instead of silently showing "follow the type".
-  const unavailable =
-    allSettled &&
-    !stationQueries.some((query) => query.isError) &&
-    stationId !== NO_STATION &&
-    overrideIndex < 0;
+  const unavailable = unresolved && !unchecked;
 
   const typeLabel = (value: string) =>
     (STATION_TYPES as readonly string[]).includes(value)
@@ -100,15 +103,17 @@ export function StationRoutingSection({
 
   const destination = station
     ? t("menu.editor.station.customStation", { name: station.name })
-    : unavailable
-      ? t("menu.editor.station.customStation", {
-          name: t("menu.editor.station.unavailable"),
-        })
-      : stationType && typeLabel(stationType)
-        ? t("menu.editor.station.followsType", {
-            type: typeLabel(stationType) ?? "",
+    : unchecked
+      ? t("menu.editor.station.unchecked")
+      : unavailable
+        ? t("menu.editor.station.customStation", {
+            name: t("menu.editor.station.unavailable"),
           })
-        : t("menu.editor.station.followsNone");
+        : stationType && typeLabel(stationType)
+          ? t("menu.editor.station.followsType", {
+              type: typeLabel(stationType) ?? "",
+            })
+          : t("menu.editor.station.followsNone");
 
   return (
     <CardShell>
@@ -214,11 +219,18 @@ export function StationRoutingSection({
                     </p>
                   </div>
                 ) : stationsFailed ? (
-                  <ErrorState
-                    title={t("menu.editor.station.loadErrorTitle")}
-                    description={t("menu.editor.station.loadErrorHint")}
-                    onRetry={() => void selectedQuery?.refetch()}
-                  />
+                  <>
+                    <ErrorState
+                      title={t("menu.editor.station.loadErrorTitle")}
+                      description={t("menu.editor.station.loadErrorHint")}
+                      onRetry={() => void selectedQuery?.refetch()}
+                    />
+                    {unchecked && (
+                      <p className="text-sm leading-5 text-muted-foreground">
+                        {t("menu.editor.station.unchecked")}
+                      </p>
+                    )}
+                  </>
                 ) : (
                   <>
                     <FormField
@@ -230,10 +242,17 @@ export function StationRoutingSection({
                       }
                     >
                       <Select
-                        value={station || unavailable ? stationId : NO_STATION}
-                        onValueChange={(value) =>
-                          onChange({ stationId: value })
+                        value={
+                          station || unavailable || unchecked
+                            ? stationId
+                            : NO_STATION
                         }
+                        // Pin the outlet so clearing or changing the override
+                        // does not make the section jump to another outlet.
+                        onValueChange={(value) => {
+                          setPickedOutletId(outlet.id);
+                          onChange({ stationId: value });
+                        }}
                       >
                         <SelectTrigger>
                           <SelectValue />
@@ -245,6 +264,11 @@ export function StationRoutingSection({
                           {unavailable && (
                             <SelectItem value={stationId}>
                               {t("menu.editor.station.unavailable")}
+                            </SelectItem>
+                          )}
+                          {unchecked && (
+                            <SelectItem value={stationId}>
+                              {t("menu.editor.station.uncheckedItem")}
                             </SelectItem>
                           )}
                           {stations.map((row) => (
