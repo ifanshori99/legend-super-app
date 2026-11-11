@@ -22,6 +22,9 @@ const SYSTEM_KEY_PREFIXES = [
   "reservation-refund:",
   "order-recovery-refund:",
   "facility-breakfast-refund:",
+  // Re-file after a failed refund (facility-breakfast-money.ts).
+  "fb-refile:cancel:",
+  "fb-refile:late:",
 ];
 
 /** Run inside the mutation's tenant transaction, after authorization. */

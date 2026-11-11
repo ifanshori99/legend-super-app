@@ -71,10 +71,17 @@ export type BreakfastPaidOutcome =
 
 export type BreakfastClosedOutcome = "ignored" | "unchanged";
 
+export type BreakfastFundsOutcome =
+  "ignored" | "unchanged" | "funds_refund_requested";
+
 const paidPayloadSchema = z.looseObject({
   intentId: uuidSchema,
   paymentLinkId: uuidSchema,
   currency: z.string().optional(),
+});
+const fundsPayloadSchema = z.looseObject({
+  unallocatedFundId: uuidSchema,
+  intentId: uuidSchema,
 });
 const closedPayloadSchema = z.looseObject({
   intentId: uuidSchema,
@@ -428,6 +435,60 @@ export async function handleBreakfastPaymentClosed(
   return (await orderIdOfLink(tx, context, intent.paymentLinkId)) === null
     ? "ignored"
     : "unchanged";
+}
+
+/**
+ * payment.funds_unallocated of a breakfast bill (bead 519): verified money the
+ * gateway parked because the code can no longer settle the bill (cancelled
+ * order, closed code, wrong amount). It is never kept: exactly one full refund
+ * request per fund goes back to the guest, whatever the order state. A fund
+ * that is resolved, or already has a live refund, files nothing (replay safe);
+ * the amount is the locked fund row's, never the event's.
+ */
+export async function handleBreakfastFundsUnallocated(
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  tx: Tx,
+  now = new Date(),
+): Promise<BreakfastFundsOutcome> {
+  if (event.name !== "payment.funds_unallocated") return "ignored";
+  if (event.tenantId !== context.tenant.tenantId) return "ignored";
+  const payload = fundsPayloadSchema.safeParse(event.payload);
+  if (!payload.success) return "ignored";
+  const { unallocatedFundId, intentId } = payload.data;
+  const [intent] = await tx
+    .select({ paymentLinkId: paymentIntents.paymentLinkId })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    );
+  if (!intent) return "ignored";
+  const orderId = await orderIdOfLink(tx, context, intent.paymentLinkId);
+  if (orderId === null) return "ignored";
+  // Lock order: orders -> facility_linked_orders -> intent -> fund -> refund.
+  const locked = await lockBreakfastOrder(tx, context, orderId);
+  if (!locked) return "ignored";
+  const ids = await requestQrDoublePaymentRefund(tx, context, {
+    order: locked.order,
+    paymentLinkId: intent.paymentLinkId,
+    intentId,
+    now,
+    fundId: unallocatedFundId,
+    source: {
+      requestedBy: FACILITY_SYSTEM_ACTOR,
+      reason:
+        "Refund uang sarapan fasilitas yang masuk setelah tagihan tidak bisa dipakai (pesanan dibatalkan atau kode ditutup)",
+    },
+  });
+  if (ids.length === 0) return "unchanged";
+  logger.warn(
+    { orderId: locked.order.id, intentId, unallocatedFundId, refundIds: ids },
+    "Breakfast: unallocated funds refund requested",
+  );
+  return "funds_refund_requested";
 }
 
 // ---- Sweep (relay tick) ---------------------------------------------------------

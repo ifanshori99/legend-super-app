@@ -23,7 +23,7 @@
 //   filed against it (`reserved > 0`) cancels the order and returns the rest
 //   instead of selling food for money that is going back (a fired facility
 //   order counts as "sale in use" in `refundableBalance` like a fired QR one).
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -154,6 +154,8 @@ export async function requestBreakfastRefund(
     intentId: string;
     maxIdr: number | null;
     kind: "cancel" | "late";
+    /** Refund that failed and is being replaced: own key, same lock and cap. */
+    keySuffix?: string;
     now: Date;
   },
 ): Promise<{ refundId: string | null; amountIdr: number }> {
@@ -181,17 +183,33 @@ export async function requestBreakfastRefund(
     tx,
     context,
     FACILITY_SYSTEM_ACTOR,
-    `facility-breakfast-refund:${input.kind}:${intent.id}`,
+    // The re-file key must stay within idempotencyKeySchema (100 chars):
+    // "fb-refile:cancel:" (17) + intent uuid (36) + ":" + refund uuid (36) = 90,
+    // "fb-refile:late:" (15) gives 88. The longer
+    // `facility-breakfast-refund:cancel:` form would be 106. Both prefixes are
+    // reserved (payment-admin-idempotency.ts) and the late one is a
+    // late-payment refund prefix (payment-refund.service.ts).
+    input.keySuffix
+      ? `fb-refile:${input.kind}:${intent.id}:${input.keySuffix}`
+      : `facility-breakfast-refund:${input.kind}:${intent.id}`,
     "refund.create",
-    { paymentIntentId: intent.id, reason: `facility_breakfast_${input.kind}` },
+    {
+      paymentIntentId: intent.id,
+      reason: `facility_breakfast_${input.kind}`,
+      ...(input.keySuffix ? { failedRefundId: input.keySuffix } : {}),
+    },
     async () => {
       const { cap, reserved } = await refundableBalance(tx, intent);
       // A cancel never adds to a refund that is already filed (even pending).
       // A late or double payment follows the QR rule: a pending refund is not
       // subtracted, its approval fails `cap_exceeded` if both would pay.
+      // A re-file (keySuffix) of either kind subtracts pending too: it only
+      // files the real remainder, so live refunds never exceed what was paid.
       const pending = await pendingRefundIdr(tx, tenantId, intent.id);
       const free =
-        input.kind === "cancel" ? cap - reserved : cap - (reserved - pending);
+        input.kind === "cancel" || input.keySuffix
+          ? cap - reserved
+          : cap - (reserved - pending);
       const wanted =
         input.maxIdr === null ? free : BigInt(Math.max(0, input.maxIdr));
       const amount = free < wanted ? free : wanted;
@@ -253,6 +271,108 @@ export async function requestBreakfastRefund(
       return { refundId: row.id, amountIdr: Number(amount) };
     },
   );
+}
+
+/**
+ * A refund failed (rejected, expired, provider failure) on the intent of a
+ * CANCELLED breakfast order: the cancel may have found the money held by that
+ * refund (admin refund pending, nothing free), so the guest is owed it again.
+ * Files the remaining obligation (paid less the refunds still live) under its
+ * own key `fb-refile:cancel:<intentId>:<failedRefundId>`, with
+ * the same intent lock and cap as the cancel refund, so live refunds never add
+ * up to more than was paid. No loop: a failed breakfast refund (requested by
+ * `system:facility`) and a fund refund are not filed again. The same holds for
+ * the LATE refund of the intent (`facility-breakfast-refund:late:<intentId>`,
+ * filed for a late, double or split payment, or a cancel that found the order
+ * paid by another code): when a refund other than that one fails, the rest is
+ * filed again as kind late under `fb-refile:late:<intentId>:<failedRefundId>`
+ * (maxIdr null, `cap - reserved` formula like every re-file, so pending refunds
+ * are subtracted and the live total never passes what was paid). Called from
+ * `failRefund` (payment-refund.service.ts) inside its transaction, which
+ * already holds the intent lock; the order and linked rows are only read, never
+ * locked, so the repo lock order (orders -> linked -> link -> intents) is not
+ * inverted. `refunded_idr` is not touched for the same reason.
+ */
+export async function refileBreakfastRefundAfterFailure(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: typeof paymentRefunds.$inferSelect,
+  now: Date,
+): Promise<void> {
+  if (
+    refund.unallocatedFundId !== null ||
+    refund.requestedBy === FACILITY_SYSTEM_ACTOR
+  )
+    return;
+  const tenantId = context.tenant.tenantId;
+  const [intent] = await tx
+    .select({ paymentLinkId: paymentIntents.paymentLinkId })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, refund.paymentIntentId),
+      ),
+    );
+  if (!intent) return;
+  const [row] = await tx
+    .select({
+      order: { id: orders.id, outletId: orders.outletId },
+      status: facilityLinkedOrders.status,
+      paidIntentId: facilityLinkedOrders.paidIntentId,
+      paidIdr: facilityLinkedOrders.paidIdr,
+      refundedIdr: facilityLinkedOrders.refundedIdr,
+    })
+    .from(orders)
+    .innerJoin(
+      facilityLinkedOrders,
+      and(
+        eq(facilityLinkedOrders.tenantId, orders.tenantId),
+        eq(facilityLinkedOrders.orderId, orders.id),
+      ),
+    )
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.paymentLinkId, intent.paymentLinkId),
+        eq(orders.channel, "facility"),
+      ),
+    )
+    .limit(1);
+  if (!row) return;
+  if (row.status === "cancelled" && row.paidIntentId === refund.paymentIntentId)
+    await requestBreakfastRefund(tx, context, {
+      order: row.order,
+      paymentLinkId: intent.paymentLinkId,
+      intentId: refund.paymentIntentId,
+      maxIdr: Math.max(0, row.paidIdr - row.refundedIdr),
+      kind: "cancel",
+      keySuffix: refund.id,
+      now,
+    });
+  // Late path: the intent has a late refund request (once per intent) and the
+  // refund that failed is not it (a failed late refund stays failed: no loop).
+  const lateKey = `facility-breakfast-refund:late:${refund.paymentIntentId}`;
+  const keys = await tx.execute(sql`
+    SELECT response->>'refundId' AS refund_id
+      FROM payment_admin_idempotency
+     WHERE tenant_id = ${tenantId}
+       AND (key = ${lateKey} OR key LIKE ${`${lateKey}:%`})
+  `);
+  if (
+    keys.rows.length === 0 ||
+    keys.rows.some((key) => key.refund_id === refund.id)
+  )
+    return;
+  await requestBreakfastRefund(tx, context, {
+    order: row.order,
+    paymentLinkId: intent.paymentLinkId,
+    intentId: refund.paymentIntentId,
+    maxIdr: null,
+    kind: "late",
+    keySuffix: refund.id,
+    now,
+  });
 }
 
 /**

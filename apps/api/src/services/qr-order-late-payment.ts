@@ -213,6 +213,12 @@ export async function requestQrDoublePaymentRefund(
     now: Date;
     /** Requester and reason text for a non-QR caller (facility breakfast). */
     source?: { requestedBy: SystemRefundActor; reason: string };
+    /**
+     * Refund only this fund of the intent, whatever its reason (a
+     * `payment.funds_unallocated` event names its fund). Without it: every
+     * unresolved `double_payment` fund of the intent.
+     */
+    fundId?: string;
   },
 ): Promise<string[]> {
   const tenantId = context.tenant.tenantId;
@@ -236,7 +242,9 @@ export async function requestQrDoublePaymentRefund(
       and(
         eq(paymentUnallocatedFunds.tenantId, tenantId),
         eq(paymentUnallocatedFunds.paymentIntentId, intent.id),
-        eq(paymentUnallocatedFunds.reason, "double_payment"),
+        input.fundId === undefined
+          ? eq(paymentUnallocatedFunds.reason, "double_payment")
+          : eq(paymentUnallocatedFunds.id, input.fundId),
         isNull(paymentUnallocatedFunds.resolution),
       ),
     )
