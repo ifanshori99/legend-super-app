@@ -3263,3 +3263,9 @@ Langkah berikut CTO baru:
 - Runbook `worker-audit-writer-m1-window.md` bagian 4: prosedur replay (SQL, path `/api/ops/...`, ULID, per tenant, cek hasil).
 - Sisa operasional (butuh gerbang founder): replay di production setelah worker dengan audit writer terdeploy.
 - Temuan kecil non-uang: `pos-shift.service.ts:1412` `approvedAt` memakai `resolvedAt` (waktu proses), bukan waktu keputusan.
+
+## 2026-11-11: o1i9j + elb8c test root merah m1 (ws/o1i9j-root-tests, basis m1 3c7217b2)
+
+- legend-o1i9j: hanya test, kode produk tidak berubah. qr-journey-mock ORD-06 mengirim `payerSecret` format asli (skema `createGuestPaymentInputSchema` mewajibkan untuk target split sejak claim-payer-secret); tes baru: bayar split tanpa secret ditolak 422 dan sisa tagihan tidak berkurang. split-bill-contract: `getSplitClaim` kini diassert POST (r77pq).
+- legend-elb8c: menu-print-db "concurrent renders" kini menghitung hanya objek dokumen baru milik test (snapshot id sebelum render), tetap gagal bila ada objek yatim atau objek pengganti terhapus. Akar sisa baris tetangga belum terbukti (core-storage-access cleanup sudah id-scoped dan `asOwner` sudah `outlet_ids='*'`); asersi tidak lagi bergantung pada kebersihan file lain.
+- Bukti: `node --test` dua file root 22/22 lulus; vitest 5 file (menu-print-db + 4 tetangga) lulus 3x (61/61); typecheck @starter/api 0; eslint + prettier bersih.
