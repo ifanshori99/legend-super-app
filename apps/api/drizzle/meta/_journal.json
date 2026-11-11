@@ -1674,6 +1674,20 @@
       "when": 1794403618109,
       "tag": "0326_edge_catalog_sales_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 253,
+      "version": "7",
+      "when": 1794415455441,
+      "tag": "0333_edge_promo_streams",
+      "breakpoints": true
+    },
+    {
+      "idx": 254,
+      "version": "7",
+      "when": 1794415777888,
+      "tag": "0334_edge_voucher_catalog",
+      "breakpoints": true
     }
   ]
 }

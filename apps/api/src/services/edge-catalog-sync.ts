@@ -67,6 +67,7 @@ import {
 } from "../db/schema/menu.ts";
 import { inventoryItems } from "../db/schema/inventory.ts";
 import { recipes } from "../db/schema/recipe.ts";
+import { promotions, vouchers } from "../db/schema/crm-promo.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
@@ -532,6 +533,89 @@ const scanners: Record<
         effectiveFrom: row.effectiveFrom,
         items,
         ...stamps(row),
+      },
+    }));
+  },
+  async promotions({ tx, tenantId, outletId, since, take }) {
+    const t = promotions;
+    // Never filter inactive/outlet-ineligible headers: revocations must arrive.
+    // Child state is read in the same statement so one parent version is whole.
+    const rows = await tx
+      .select({
+        row: t,
+        txid: txidOf(t.syncTxid),
+        outletOverrides: sql<unknown[]>`coalesce((
+          select jsonb_agg(jsonb_build_object(
+            'outletId', po.outlet_id,
+            'enabled', po.enabled,
+            'updatedBy', po.updated_by,
+            'updatedAt', po.updated_at
+          ) order by po.outlet_id)
+          from promotion_outlets po
+          where po.tenant_id = "promotions"."tenant_id"
+            and po.promotion_id = "promotions"."id"
+            and po.outlet_id = ${outletId}::uuid
+        ), '[]'::jsonb)`,
+        stackingSettings: sql<unknown>`(
+          select jsonb_build_object(
+            'stackingPolicy', ps.stacking_policy,
+            'updatedBy', ps.updated_by,
+            'updatedAt', ps.updated_at,
+            'syncTxid', ps.sync_txid::text
+          ) from promo_settings ps
+          where ps.tenant_id = "promotions"."tenant_id"
+        )`,
+      })
+      .from(t)
+      .where(
+        and(
+          eq(t.tenantId, tenantId),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
+        ),
+      )
+      .orderBy(asc(t.syncTxid), asc(t.id))
+      .limit(take);
+    return rows.map(({ row, txid, outletOverrides, stackingSettings }) => ({
+      txid,
+      keys: [row.id],
+      record: {
+        ...row,
+        outletId,
+        syncTxid: txid,
+        startsAt: iso(row.startsAt),
+        endsAt: row.endsAt === null ? null : iso(row.endsAt),
+        createdAt: iso(row.createdAt),
+        updatedAt: iso(row.updatedAt),
+        outletOverrides,
+        stackingSettings,
+      },
+    }));
+  },
+  async vouchers({ tx, tenantId, since, take }) {
+    const t = vouchers;
+    const rows = await tx
+      .select({ row: t, txid: txidOf(t.syncTxid) })
+      .from(t)
+      .where(
+        and(
+          eq(t.tenantId, tenantId),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
+        ),
+      )
+      .orderBy(asc(t.syncTxid), asc(t.id))
+      .limit(take);
+    return rows.map(({ row, txid }) => ({
+      txid,
+      keys: [row.id],
+      record: {
+        ...row,
+        syncTxid: txid,
+        validFrom: iso(row.validFrom),
+        validUntil: row.validUntil === null ? null : iso(row.validUntil),
+        issuedAt: iso(row.issuedAt),
+        redeemedAt: row.redeemedAt === null ? null : iso(row.redeemedAt),
       },
     }));
   },

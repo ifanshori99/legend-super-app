@@ -224,6 +224,8 @@ const MINE: Record<Table, string[]> = {
   price_list_items: [ids.pli1, ids.pli2, ids.pli3, ids.pliChg, ids.pliBad],
   recipes: [ids.rec1],
   recipe_lines: [ids.line1, ids.line2],
+  promotions: [],
+  vouchers: [],
 };
 const isMine = (stream: Stream, rec: Rec): boolean =>
   stream === "menu_item_modifier_groups"
@@ -242,6 +244,8 @@ const ORDER: Stream[] = [
   "menu_item_modifier_groups",
   "price_lists",
   "recipes",
+  "promotions",
+  "vouchers",
 ];
 /** Every table to compare edge vs cloud, parents first. */
 const TABLE_ORDER: Table[] = [
@@ -618,6 +622,8 @@ const WHERE_COLUMN: Record<Table, string> = {
   price_list_items: "id",
   recipes: "id",
   recipe_lines: "id",
+  promotions: "id",
+  vouchers: "id",
 };
 
 /** Table rows for the seeded ids, without time stamps. */
@@ -1000,7 +1006,7 @@ describe("97p cloud export: paging, tombstones, commit-safe boundary", () => {
     for (const own of MINE.menu_items) expect(exported).toContain(own);
   });
 
-  it("24318 the stream list is the 10 parent-first streams (stations and inventory_items first; no recipe_lines, no price_list_items)", () => {
+  it("24318/528 the 12 parent-first streams put promotions before vouchers and keep child documents inline", () => {
     expect([...CATALOG_SYNC_STREAMS]).toEqual(ORDER);
     expect(CATALOG_SYNC_STREAMS).not.toContain("recipe_lines");
     expect(CATALOG_SYNC_STREAMS).not.toContain("price_list_items");
@@ -1610,8 +1616,15 @@ describe("97p edge pull: resume and broken connection", () => {
     await expectEdgeEqualsCloud();
     expect(await edgePriceRows()).toHaveLength(MINE.price_list_items.length);
     expect(await edgeLineIds()).toHaveLength(MINE.recipe_lines.length);
-    for (const row of await checkpoints())
-      expect(decodeCursor(String(row.watermark))[0]).toBe("cat2");
+    for (const row of await checkpoints()) {
+      if (row.watermark === null) {
+        // This legacy fixture owns no promo/voucher documents; an empty
+        // stream still has a successful checkpoint, with no cursor yet.
+        expect(["catalog:promotions", "catalog:vouchers"]).toContain(
+          row.stream,
+        );
+      } else expect(decodeCursor(String(row.watermark))[0]).toBe("cat2");
+    }
   });
 
   it("24318 a checkpoint left by the old time cursor (cat1) is treated as none: the next pull starts from the beginning and converges", async () => {
@@ -1630,8 +1643,13 @@ describe("97p edge pull: resume and broken connection", () => {
       cloud.calls.slice(before).find((c) => c.stream === stream);
     for (const stream of ORDER) expect(firstCallOf(stream)?.since).toBeNull();
     await expectEdgeEqualsCloud();
-    for (const row of await checkpoints())
-      expect(decodeCursor(String(row.watermark))[0]).toBe("cat2");
+    for (const row of await checkpoints()) {
+      if (row.watermark === null) {
+        expect(["catalog:promotions", "catalog:vouchers"]).toContain(
+          row.stream,
+        );
+      } else expect(decodeCursor(String(row.watermark))[0]).toBe("cat2");
+    }
   });
 
   const edgeLineIds = async () => Object.keys(await edgeLines()).sort();

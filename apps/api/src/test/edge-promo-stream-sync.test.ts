@@ -1,6 +1,6 @@
 // legend-09sxa / brief 528: authoritative promotions and voucher metadata
 // travel through the existing catalog pipeline. Cloud and edge are separate
-// databases; no mocked SQL or financial writes are used by these checks.
+// databases; real SQL and order-engine quotes exercise imported metadata.
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import {
@@ -14,9 +14,11 @@ import {
 } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import {
+  createUlid,
   decodeCursor,
   encodeCursor,
   outletIdSchema,
+  ulidToUuid,
 } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -30,6 +32,7 @@ import {
 } from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
 import {
   promosEnabled,
@@ -43,6 +46,8 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { listCatalogRecordsSince } from "../services/edge-catalog-sync.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
+import { loadStackingPolicy } from "../services/crm-promo-engine.ts";
+import { orderPromoPort } from "../services/order-promo.ts";
 import { settleCloud } from "./helpers/catalog-cloud.ts";
 import {
   cloneMainOutlet,
@@ -162,6 +167,25 @@ const checkpoint = (stream: Stream) =>
     [nodeId, `catalog:${stream}`],
   );
 
+const edgeQuote = () =>
+  withTenant(edge.database, scope("device"), (tx) =>
+    orderPromoPort.quote(tx, scope("device"), {
+      outletId: outletIdSchema.parse(outletId),
+      channel: "dine_in",
+      lines: [
+        {
+          menuItemId: itemId as never,
+          quantity: 1,
+          unitPriceIdr: 10_000 as never,
+          lineTotalIdr: 10_000 as never,
+        },
+      ],
+      customer: null,
+      voucherCode: null,
+      at: new Date("2026-11-11T03:00:00.000Z"),
+    }),
+  );
+
 async function pull(
   fetchPage: (stream: string, since: string | null) => Promise<unknown> = (
     stream,
@@ -171,7 +195,7 @@ async function pull(
   maxPages?: number,
 ) {
   return pullCatalog({
-    database: edge.database,
+    database: edge.database as typeof db,
     context: scope("device"),
     edgeNodeId: nodeId,
     streams: streams as never,
@@ -234,7 +258,9 @@ beforeEach(async () => {
     await client.query("SET LOCAL session_replication_role = replica");
     await client.query("DELETE FROM promotion_outlets");
     await client.query("DELETE FROM vouchers");
+    await client.query("DELETE FROM edge_voucher_catalog");
     await client.query("DELETE FROM promotions");
+    await client.query("DELETE FROM promo_settings");
     await client.query("DELETE FROM edge_pull_checkpoints");
     await client.query("COMMIT");
   } catch (error) {
@@ -263,8 +289,8 @@ afterAll(async () => {
     await q("DELETE FROM promotions WHERE id = ANY($1::uuid[])", [
       [promoId, foreignPromoId],
     ]);
-    await q("DELETE FROM edge_nodes WHERE id = $1", [nodeId]);
-    await q("DELETE FROM outlets WHERE id = $1", [outletId]);
+    // Protected nodes are retained in the disposable cloud database; its
+    // teardown drops the private node/outlet together.
     await q("DELETE FROM tenants WHERE id = $1", [otherTenant]);
   } finally {
     await owner.end();
@@ -343,15 +369,18 @@ describe("528 promotions and voucher catalog streams", () => {
       { status: "active", benefit: { kind: "nominal_off", amountIdr: 7_777 } },
     ]);
     expect(
-      await edge.rows("SELECT status, value_idr FROM vouchers WHERE id = $1", [
-        voucherId,
-      ]),
+      await edge.rows(
+        "SELECT payload->>'status' AS status, (payload->>'valueIdr')::integer AS value_idr FROM edge_voucher_catalog WHERE id = $1",
+        [voucherId],
+      ),
     ).toEqual([{ status: "issued", value_idr: 7_777 }]);
+    expect(await edge.rows("SELECT id FROM vouchers")).toEqual([]);
   });
 
   it("syncs a cloud deactivation and expiry without an old page reviving them", async () => {
     const oldPromos = await all("promotions");
     await pull();
+    expect((await edgeQuote()).totalDiscountIdr).toBe(7_777);
     await q(
       "UPDATE promotions SET status = 'paused', ends_at = '2026-11-10T00:00:00Z' WHERE id = $1",
       [promoId],
@@ -368,11 +397,13 @@ describe("528 promotions and voucher catalog streams", () => {
     );
     expect(updated[0]?.status).toBe("paused");
     expect(updated[0]?.ends_at).toEqual(new Date("2026-11-10T00:00:00.000Z"));
+    expect((await edgeQuote()).totalDiscountIdr).toBe(0);
     expect(
       (
-        await edge.rows("SELECT status FROM vouchers WHERE id = $1", [
-          voucherId,
-        ])
+        await edge.rows(
+          "SELECT payload->>'status' AS status FROM edge_voucher_catalog WHERE id = $1",
+          [voucherId],
+        )
       )[0]?.status,
     ).toBe("cancelled");
     const saved = await checkpoint("promotions");
@@ -393,6 +424,289 @@ describe("528 promotions and voucher catalog streams", () => {
         ])
       )[0]?.status,
     ).toBe("paused");
+    expect((await edgeQuote()).totalDiscountIdr).toBe(0);
+  });
+
+  it("an active promotion expired in the cloud gives no edge discount after sync", async () => {
+    await pull();
+    expect((await edgeQuote()).totalDiscountIdr).toBe(7_777);
+    await q(
+      "UPDATE promotions SET ends_at = '2026-11-10T00:00:00Z' WHERE id = $1",
+      [promoId],
+    );
+    await settleCloud(owner);
+    await pull();
+    expect((await edgeQuote()).totalDiscountIdr).toBe(0);
+  });
+
+  it("cloud metadata resync retains locally consumed uses and rupiah", async () => {
+    await pull();
+    const version = await edge.rows(
+      "SELECT sync_txid FROM promotions WHERE id = $1",
+      [promoId],
+    );
+    const client = await edge.owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "UPDATE promotions SET uses_total = 2, spent_idr = 15554, updated_at = now() WHERE id = $1",
+        [promoId],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    expect(
+      await edge.rows("SELECT sync_txid FROM promotions WHERE id = $1", [
+        promoId,
+      ]),
+    ).toEqual(version);
+    await q(
+      "UPDATE promotions SET description = 'Cloud metadata revision' WHERE id = $1",
+      [promoId],
+    );
+    await settleCloud(owner);
+    await pull();
+    expect(
+      await edge.rows(
+        "SELECT description, uses_total, spent_idr::integer AS spent_idr FROM promotions WHERE id = $1",
+        [promoId],
+      ),
+    ).toEqual([
+      {
+        description: "Cloud metadata revision",
+        uses_total: 2,
+        spent_idr: 15_554,
+      },
+    ]);
+  });
+
+  it("syncs a customer-bound voucher without its holder locally and never makes it redeemable", async () => {
+    const holderId = randomUUID();
+    const boundVoucherId = randomUUID();
+    const code = `BOUND${randomUUID().replaceAll("-", "").toUpperCase()}`;
+    await q(
+      `INSERT INTO customer_profiles (id, tenant_id, user_id, name, membership_status)
+       VALUES ($1,$2,$3,'Cloud-only voucher holder','pending_verification')`,
+      [holderId, tenantId, randomUUID()],
+    );
+    await q(
+      `INSERT INTO vouchers
+         (id,tenant_id,customer_profile_id,code_hash,source,value_idr,valid_from,valid_until)
+       VALUES ($1,$2,$3,$4,'manual',7777,$5,$6)`,
+      [
+        boundVoucherId,
+        tenantId,
+        holderId,
+        createHash("sha256").update(code).digest("hex"),
+        before,
+        after,
+      ],
+    );
+    try {
+      await settleCloud(owner);
+      expect(
+        await edge.rows("SELECT id FROM customer_profiles WHERE id = $1", [
+          holderId,
+        ]),
+      ).toEqual([]);
+      const result = await pull();
+      // Before the shadow catalog exists, canonical vouchers.customer_profile_id
+      // rejects this otherwise valid cloud document and freshness stays closed.
+      expect(
+        result.streams["vouchers" as keyof typeof result.streams]?.error,
+      ).toBeUndefined();
+      const saved = await edge.rows(
+        "SELECT payload FROM edge_voucher_catalog WHERE id = $1",
+        [boundVoucherId],
+      );
+      expect(saved[0]?.payload).toMatchObject({
+        id: boundVoucherId,
+        customerProfileId: holderId,
+        status: "issued",
+        valueIdr: 7_777,
+      });
+      expect(
+        await edge.rows("SELECT id FROM vouchers WHERE id = $1", [
+          boundVoucherId,
+        ]),
+      ).toEqual([]);
+      expect((await checkpoint("vouchers"))[0]?.last_success_at).not.toEqual(
+        new Date(0),
+      );
+      setPromoGateEdgeModeForTests(() => true);
+      gate = startPromoGate({
+        context: scope("device"),
+        edgeNodeId: nodeId,
+        database: edge.database as typeof db,
+        clock: { now: () => new Date(), elapsedTimeUnproven: () => false },
+      });
+      await gate.refresh();
+      expect(promosEnabled()).toBe(true);
+      await expect(
+        withTenant(edge.database, scope("device"), (tx) =>
+          orderPromoPort.quote(tx, scope("device"), {
+            outletId: outletIdSchema.parse(outletId),
+            channel: "dine_in",
+            lines: [
+              {
+                menuItemId: itemId as never,
+                quantity: 1,
+                unitPriceIdr: 10_000 as never,
+                lineTotalIdr: 10_000 as never,
+              },
+            ],
+            customer: null,
+            voucherCode: code,
+            at: new Date("2026-11-11T03:00:00.000Z"),
+          }),
+        ),
+      ).rejects.toThrow(/online|cloud/i);
+      expect(
+        await edge.rows(
+          "SELECT payload FROM edge_voucher_catalog WHERE id = $1",
+          [boundVoucherId],
+        ),
+      ).toEqual(saved);
+      expect(
+        await edge.rows("SELECT id FROM vouchers WHERE id = $1", [
+          boundVoucherId,
+        ]),
+      ).toEqual([]);
+      const redeemedOrderId = createUlid();
+      await q(
+        "UPDATE vouchers SET status = 'redeemed', redeemed_at = now(), redeemed_order_id = $2 WHERE id = $1",
+        [boundVoucherId, ulidToUuid(redeemedOrderId)],
+      );
+      await settleCloud(owner);
+      const redeemedPull = await pull();
+      expect(
+        redeemedPull.streams["vouchers" as keyof typeof redeemedPull.streams]
+          ?.error,
+      ).toBeUndefined();
+      expect(
+        (
+          await edge.rows(
+            "SELECT payload FROM edge_voucher_catalog WHERE id = $1",
+            [boundVoucherId],
+          )
+        )[0]?.payload,
+      ).toMatchObject({
+        id: boundVoucherId,
+        customerProfileId: holderId,
+        status: "redeemed",
+        redeemedOrderId,
+      });
+      expect(
+        await edge.rows("SELECT id FROM orders WHERE id = $1", [
+          ulidToUuid(redeemedOrderId),
+        ]),
+      ).toEqual([]);
+      expect(
+        await edge.rows("SELECT id FROM vouchers WHERE id = $1", [
+          boundVoucherId,
+        ]),
+      ).toEqual([]);
+    } finally {
+      await q("DELETE FROM vouchers WHERE id = $1", [boundVoucherId]);
+      await q("DELETE FROM customer_profiles WHERE id = $1", [holderId]);
+    }
+  });
+
+  it("an older distinct promotion cannot reopen a newer restrictive stacking policy", async () => {
+    const source = (await all("promotions")).find(
+      (record) => record.id === promoId,
+    )!;
+    const baseVersion = BigInt(String(source.syncTxid));
+    const exclusive = {
+      mode: "exclusive",
+      maxStacked: 1,
+      allowSameGroup: false,
+    };
+    const permissive = {
+      mode: "stackable",
+      maxStacked: 2,
+      allowSameGroup: true,
+    };
+    const apply = async (record: Rec) =>
+      pull(
+        async () => ({
+          protocolVersion: CATALOG_PROTOCOL_VERSION,
+          stream: "promotions",
+          records: [record],
+          nextCursor: encodeCursor([
+            "cat2",
+            String(record.syncTxid),
+            String(record.id),
+          ]),
+          hasMore: false,
+        }),
+        ["promotions"],
+      );
+    const settings = (stackingPolicy: unknown, version: bigint) => ({
+      stackingPolicy,
+      updatedBy: null,
+      updatedAt: new Date().toISOString(),
+      syncTxid: String(version),
+    });
+    await apply({
+      ...source,
+      stackable: true,
+      stackGroup: "newer",
+      syncTxid: String(baseVersion + 100n),
+      stackingSettings: settings(exclusive, baseVersion + 100n),
+    });
+    await apply({
+      ...source,
+      id: randomUUID(),
+      name: "Older unseen promotion",
+      stackable: true,
+      stackGroup: "older",
+      syncTxid: String(baseVersion + 50n),
+      stackingSettings: settings(permissive, baseVersion + 50n),
+    });
+    expect(
+      await withTenant(edge.database, scope("device"), (tx) =>
+        loadStackingPolicy(tx, scope("device")),
+      ),
+    ).toEqual(exclusive);
+    expect((await edgeQuote()).totalDiscountIdr).toBe(7_777);
+
+    // A later permissive setting is legitimate; deleting that setting must
+    // restore the exclusive default with a versioned tombstone.
+    await apply({
+      ...source,
+      stackable: true,
+      stackGroup: "newer",
+      syncTxid: String(baseVersion + 200n),
+      stackingSettings: settings(permissive, baseVersion + 200n),
+    });
+    expect((await edgeQuote()).totalDiscountIdr).toBe(10_000);
+    await apply({
+      ...source,
+      stackable: true,
+      stackGroup: "newer",
+      syncTxid: String(baseVersion + 300n),
+      stackingSettings: null,
+    });
+    await apply({
+      ...source,
+      id: randomUUID(),
+      name: "Stale policy after deletion",
+      stackable: true,
+      stackGroup: "stale",
+      syncTxid: String(baseVersion + 250n),
+      stackingSettings: settings(permissive, baseVersion + 250n),
+    });
+    expect(
+      await withTenant(edge.database, scope("device"), (tx) =>
+        loadStackingPolicy(tx, scope("device")),
+      ),
+    ).toEqual(exclusive);
+    expect((await edgeQuote()).totalDiscountIdr).toBe(7_777);
   });
 
   it("carries outlet disablement and later removal as a new parent document", async () => {
@@ -427,7 +741,7 @@ describe("528 promotions and voucher catalog streams", () => {
     await pull();
     const saved = await checkpoint("vouchers");
     const stored = await edge.rows(
-      "SELECT row_to_json(t) AS row FROM vouchers t WHERE id = $1",
+      "SELECT row_to_json(t) AS row FROM edge_voucher_catalog t WHERE id = $1",
       [voucherId],
     );
     const result = await pull(async (stream, since) => {
@@ -437,10 +751,13 @@ describe("528 promotions and voucher catalog streams", () => {
     expect(
       result.streams["vouchers" as keyof typeof result.streams]?.error,
     ).toBeDefined();
-    expect(await checkpoint("vouchers")).toEqual(saved);
+    expect((await checkpoint("vouchers"))[0]).toEqual({
+      watermark: saved[0]?.watermark,
+      last_success_at: new Date(0),
+    });
     expect(
       await edge.rows(
-        "SELECT row_to_json(t) AS row FROM vouchers t WHERE id = $1",
+        "SELECT row_to_json(t) AS row FROM edge_voucher_catalog t WHERE id = $1",
         [voucherId],
       ),
     ).toEqual(stored);
@@ -465,7 +782,10 @@ describe("528 promotions and voucher catalog streams", () => {
     expect(
       result.streams["promotions" as keyof typeof result.streams]?.error,
     ).toBeDefined();
-    expect(await checkpoint("promotions")).toEqual(saved);
+    expect((await checkpoint("promotions"))[0]).toEqual({
+      watermark: saved[0]?.watermark,
+      last_success_at: new Date(0),
+    });
     expect(
       await edge.rows("SELECT id FROM promotions WHERE id = $1", [
         foreignPromoId,
@@ -486,7 +806,7 @@ describe("528 promotions and voucher catalog streams", () => {
     gate = startPromoGate({
       context: scope("device"),
       edgeNodeId: nodeId,
-      database: edge.database,
+      database: edge.database as typeof db,
       clock: { now: () => new Date(), elapsedTimeUnproven: () => false },
     });
     await gate.refresh();
@@ -523,5 +843,31 @@ describe("528 promotions and voucher catalog streams", () => {
     );
     await gate.refresh();
     expect(promosEnabled()).toBe(true);
+  });
+
+  it("an in-flight failed pull closes cached freshness before reading the first page", async () => {
+    await pull();
+    setPromoGateEdgeModeForTests(() => true);
+    gate = startPromoGate({
+      context: scope("device"),
+      edgeNodeId: nodeId,
+      database: edge.database as typeof db,
+      clock: { now: () => new Date(), elapsedTimeUnproven: () => false },
+    });
+    await gate.refresh();
+    expect(promosEnabled()).toBe(true);
+    let checkedDuringFetch = false;
+    const result = await pull(async () => {
+      checkedDuringFetch = true;
+      expect(promosEnabled()).toBe(false);
+      throw new Error("Cloud reply was interrupted");
+    }, ["promotions"]);
+    expect(checkedDuringFetch).toBe(true);
+    expect(
+      result.streams["promotions" as keyof typeof result.streams]?.error,
+    ).toBeDefined();
+    expect(promosEnabled()).toBe(false);
+    await gate.refresh();
+    expect(promosEnabled()).toBe(false);
   });
 });

@@ -35,6 +35,9 @@
 //   the cursor error): one more pull of that stream from the start.
 // - Read only: nothing here writes to the cloud. Errors carry codes, never
 //   record data.
+// - Promotions/vouchers fail closed while a pull is incomplete. Their cursor
+//   still advances page by page, but freshness is invalidated durably before
+//   fetching and only restored after a complete stream (including empty).
 import {
   CATALOG_PROTOCOL_MIN_VERSION,
   CATALOG_PROTOCOL_VERSION,
@@ -63,6 +66,10 @@ import {
   type DeferredCategoryParent,
 } from "../services/edge-catalog-apply.ts";
 import { EdgeCloudHttpError } from "./cloud-http.ts";
+import {
+  completePromoCatalogStream,
+  markPromoCatalogStreamPending,
+} from "./promo-gate.ts";
 
 type Database = typeof db;
 
@@ -80,7 +87,12 @@ const PARENT_STREAMS: Readonly<
   menu_items: ["stations"],
   modifiers: ["stations"],
   recipes: ["inventory_items"],
+  vouchers: ["promotions"],
 };
+
+const PROMO_INVALIDATED_AT = new Date(0);
+const isPromoStream = (stream: CatalogSyncStream): boolean =>
+  stream === "promotions" || stream === "vouchers";
 
 /** Key of a stream's row in `edge_pull_checkpoints` (varchar(40)). */
 export function catalogCheckpointStream(
@@ -131,7 +143,8 @@ export type CatalogStreamPullResult = Omit<
   readonly backlog: boolean;
   /**
    * When the last page of this pull was stored (the checkpoint's
-   * `last_success_at`); null when no page was stored.
+   * `last_success_at`); null when no page was stored, or when a discount
+   * stream has only stored partial pages.
    */
   readonly lastSuccessAt: Date | null;
   /** Set when the stream stopped early; its checkpoint is the last applied page. */
@@ -495,7 +508,10 @@ async function pullStream(
 
     if (page.records.length > 0 && page.nextCursor !== null)
       watermark = page.nextCursor;
-    const succeededAt = now();
+    // Revocations may be on a later page. Until the whole discount stream is
+    // applied its cursor may advance, but its freshness must remain closed.
+    const succeededAt =
+      isPromoStream(stream) && page.hasMore ? PROMO_INVALIDATED_AT : now();
     const checkpoint = watermark;
     // Apply and checkpoint together: both land, or neither does.
     const result = await withTenant(database, options.context, async (tx) => {
@@ -562,7 +578,8 @@ async function pullStream(
     // The page is committed: only now does the stream's progress move.
     rejectedCursor = null;
     progress.watermark = checkpoint;
-    progress.lastSuccessAt = succeededAt;
+    progress.lastSuccessAt =
+      isPromoStream(stream) && page.hasMore ? null : succeededAt;
     progress.applied += result.applied;
     progress.skipped += result.skipped;
     progress.deleted += result.deleted;
@@ -675,6 +692,11 @@ export async function pullCatalog(
   };
   const failed = new Set<CatalogSyncStream>();
   for (const stream of streams) {
+    // Runtime freshness caches checkpoint reads. Close it synchronously before
+    // a pull can expose a partial discount snapshot; failure keeps it closed.
+    const promoGeneration = markPromoCatalogStreamPending(
+      catalogCheckpointStream(stream),
+    );
     const progress: StreamProgress = {
       applied: 0,
       skipped: 0,
@@ -691,6 +713,29 @@ export async function pullCatalog(
       failed.has(parent),
     );
     try {
+      if (isPromoStream(stream))
+        await withTenant(database, options.context, async (tx) => {
+          await lockCatalogStream(tx, options.context.tenant.tenantId, stream);
+          const [row] = await tx
+            .select({ watermark: edgePullCheckpoints.watermark })
+            .from(edgePullCheckpoints)
+            .where(
+              and(
+                eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+                eq(edgePullCheckpoints.stream, catalogCheckpointStream(stream)),
+              ),
+            )
+            .limit(1);
+          // Durable invalidation also survives a restart after an interrupted
+          // pull. The cursor is retained so the next pull resumes its work.
+          await saveCatalogCheckpoint(
+            tx,
+            options.edgeNodeId,
+            stream,
+            row?.watermark ?? null,
+            PROMO_INVALIDATED_AT,
+          );
+        });
       if (blockedBy !== undefined)
         throw new CatalogParentFailedError(blockedBy);
       const stored = await loadCatalogCheckpoint(
@@ -700,10 +745,16 @@ export async function pullCatalog(
         stream,
       );
       await pullStream(options, stream, stored, progress);
+      if (!progress.backlog)
+        completePromoCatalogStream(
+          catalogCheckpointStream(stream),
+          promoGeneration,
+        );
     } catch (caught) {
       error = describeError(caught);
     }
-    if (error) failed.add(stream);
+    if (error || (isPromoStream(stream) && progress.backlog))
+      failed.add(stream);
     results[stream] = error ? { ...progress, error } : { ...progress };
     total.applied += progress.applied;
     total.skipped += progress.skipped;

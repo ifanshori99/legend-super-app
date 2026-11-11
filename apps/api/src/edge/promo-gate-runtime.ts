@@ -1,14 +1,14 @@
 // Edge wiring of the promo freshness gate (edge/promo-gate.ts). Evidence is
-// the pull checkpoint of the promo and voucher catalog streams. No such
-// stream is synced to the edge today, so promos stay off on an edge until one
-// exists (fail closed). Ages use the trusted clock; a read failure keeps the
-// last known success times, which only age.
+// the pull checkpoint of the promo and voucher catalog streams. Missing
+// checkpoints keep promos off (fail closed). Ages use the trusted clock; a read
+// failure keeps the last known success times, which only age.
 import { and, eq, sql } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  installPromoClockProvider,
   installPromoFreshnessProvider,
   PROMO_STALE_AFTER_MS,
 } from "./promo-gate.ts";
@@ -37,6 +37,7 @@ export function startPromoGate(options: {
   database?: typeof db;
 }): PromoGateHandle {
   const database = options.database ?? db;
+  installPromoClockProvider(() => options.clock.now());
   const lastSuccess = new Map<string, Date>();
   const refresh = async () => {
     try {
@@ -90,6 +91,7 @@ export function startPromoGate(options: {
     stop() {
       clearInterval(timer);
       installPromoFreshnessProvider(null);
+      installPromoClockProvider(null);
     },
   };
 }
