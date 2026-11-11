@@ -55,6 +55,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 // Shared registrations other features also import (one mock per endpoint).
 import "../../lib/mock/handlers/login-challenge.ts";
 import "../../lib/mock/handlers/subscription-plans.ts";
+import { registerExternalPaymentLink } from "../../lib/mock/payment-link-bridge.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { readFacilityAdminConfig } from "../facility-admin/mock.ts";
@@ -67,12 +68,14 @@ import {
   BREAKFAST_MAX_QUANTITY,
   breakfastMenuItemSchema,
   breakfastOrderSchema,
+  cancelBreakfastOrder,
   createBreakfastOrder,
   getBreakfastMenu,
+  payBreakfastOrder,
   type BreakfastMenuItem,
   type BreakfastOrder,
   type BreakfastTable,
-} from "./breakfast.ts";
+} from "@starter/shared/facility";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const MINUTE = 60_000;
@@ -797,13 +800,17 @@ registerMock(updateFacilitySubscription, ({ params, body }) => {
 
 // ---- Breakfast from the ticket (alur Z, FAC-10) -----------------------------
 //
-// The ticket-linked breakfast endpoints are not in the shared contract yet
-// (see breakfast.ts), so the mock is the only implementation for now. The
-// order is held until `slot.endsAt - fireOffsetMinutes`; the subtotal is
-// computed here from the menu's own prices, never from anything the client
-// sends, and a ticket holds at most one order (no double order, no double pay).
+// Mirrors the API rules (bead oa0qk, founder Q43): the order is created
+// `awaiting_payment`, becomes `paid` only when the payment is verified, and is
+// fired to the kitchen only after that. The mock never marks an order paid from
+// the pay call (that is the payment event's job in the API); a test or demo
+// settles it with `settleBreakfastPaymentInMock`. The subtotal is computed here
+// from the menu's own prices, never from anything the client sends, and a
+// ticket holds at most one live order.
 
 const BREAKFAST_FIRE_OFFSET_MINUTES = 5;
+/** PB1 10%, added on top of the menu price (founder Q59, same as the API). */
+const BREAKFAST_PB1_RATE = 0.1;
 
 const breakfastMenuItems: BreakfastMenuItem[] = [
   breakfastMenuItemSchema.parse({
@@ -822,9 +829,16 @@ const breakfastOrders = createMockStore<Map<string, BreakfastOrder>>(
   () => new Map(),
 );
 /** Idempotency key -> order, so a retried submit returns the same order. */
-const breakfastReplies = createMockStore<Map<string, BreakfastOrder>>(
-  () => new Map(),
-);
+const breakfastReplies = createMockStore<
+  Map<string, { fingerprint: string; order: BreakfastOrder }>
+>(() => new Map());
+/** Order id -> payment link token: created once, reused on every pay call. */
+const breakfastTokens = createMockStore<Map<string, string>>(() => new Map());
+
+/** PB1 of a menu subtotal, whole rupiah, half up. */
+function breakfastPb1Idr(subtotalIdr: number): number {
+  return Math.round(subtotalIdr * BREAKFAST_PB1_RATE);
+}
 
 function myTicket(ticketId: string): AccessTicket {
   const ticket = tickets.get().find((item) => item.id === ticketId);
@@ -833,32 +847,88 @@ function myTicket(ticketId: string): AccessTicket {
   return ticket;
 }
 
+function breakfastOrderOf(ticketId: string, orderId: string): BreakfastOrder {
+  const ticket = myTicket(ticketId);
+  const order = breakfastOrders.get().get(ticket.id);
+  if (!order || order.id !== orderId)
+    throw new ApiError(404, "NOT_FOUND", "Pesanan sarapan tidak ditemukan.");
+  return order;
+}
+
+function saveBreakfastOrder(order: BreakfastOrder): BreakfastOrder {
+  breakfastOrders.get().set(order.ticketId, order);
+  return order;
+}
+
+/** Sends a paid order to the kitchen once its fire time has come. */
+function fireDueBreakfast(order: BreakfastOrder): BreakfastOrder {
+  if (
+    order.status === "paid" &&
+    Date.parse(order.fireAt) <= Date.parse(facilityAnchor(showerFacility))
+  )
+    return saveBreakfastOrder({
+      ...order,
+      status: "fired",
+      firedAt: facilityAnchor(showerFacility),
+    });
+  return order;
+}
+
+/**
+ * Test/demo stand-in for the verified `payment.paid` event: marks the ticket's
+ * order paid in full (and fired when its time has come). No-op unless the order
+ * is awaiting payment, so a second settle never counts twice.
+ */
+export function settleBreakfastPaymentInMock(ticketId: string) {
+  const order = breakfastOrders.get().get(ticketId);
+  if (!order || order.status !== "awaiting_payment") return order ?? null;
+  return fireDueBreakfast(
+    saveBreakfastOrder({
+      ...order,
+      status: "paid",
+      paidAt: facilityAnchor(showerFacility),
+    }),
+  );
+}
+
 registerMock(getBreakfastMenu, ({ params, scenario }) => {
   const ticket = myTicket(params.ticketId);
+  const order = breakfastOrders.get().get(ticket.id);
   return {
     data: {
       items: scenario === "empty" ? [] : breakfastMenuItems,
       tables: breakfastTables,
       fireOffsetMinutes: BREAKFAST_FIRE_OFFSET_MINUTES,
-      order: breakfastOrders.get().get(ticket.id) ?? null,
+      // A cancelled order is returned too: the screen then offers a new order.
+      order: order ?? null,
     },
   };
 });
 
 registerMock(createBreakfastOrder, ({ params, body }) => {
   const ticket = myTicket(params.ticketId);
+  const fingerprint = JSON.stringify([body.lines, body.delivery]);
   const replay = breakfastReplies.get().get(body.idempotencyKey);
-  if (replay && replay.ticketId === ticket.id) return { data: replay };
+  if (replay && replay.order.ticketId === ticket.id) {
+    if (replay.fingerprint !== fingerprint)
+      throw new ApiError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "Kunci permintaan ini sudah dipakai untuk pesanan lain.",
+      );
+    return { data: replay.order };
+  }
   if (!ticketAllowsBreakfast(ticket.status))
     throw new ApiError(
       422,
-      "TICKET_NOT_ORDERABLE",
+      "BREAKFAST_UNAVAILABLE",
       "Tiket ini sudah tidak dapat memesan sarapan.",
     );
-  if (breakfastOrders.get().has(ticket.id))
+  const existing = breakfastOrders.get().get(ticket.id);
+  if (existing && existing.status !== "cancelled")
     throw new ApiError(
       409,
-      "CONFLICT",
+      "BREAKFAST_ORDER_EXISTS",
       "Tiket ini sudah punya pesanan sarapan.",
     );
   // Merge duplicate menu ids, then cap the portions per dish.
@@ -903,25 +973,72 @@ registerMock(createBreakfastOrder, ({ params, body }) => {
     ticket.slot.endsAt,
     BREAKFAST_FIRE_OFFSET_MINUTES,
   );
+  const subtotalIdr = lines.reduce(
+    (sum, line) => sum + line.unitPriceIdr * line.quantity,
+    0,
+  );
   const order = breakfastOrderSchema.parse({
     id: `bfo-${nextUlid()}`,
     ticketId: ticket.id,
-    status:
-      Date.parse(fireAt) > Date.parse(facilityAnchor(showerFacility))
-        ? "held"
-        : "fired",
+    status: "awaiting_payment",
     lines,
     delivery,
-    subtotalIdr: lines.reduce(
-      (sum, line) => sum + line.unitPriceIdr * line.quantity,
-      0,
-    ),
+    subtotalIdr,
+    totalIdr: subtotalIdr + breakfastPb1Idr(subtotalIdr),
     fireOffsetMinutes: BREAKFAST_FIRE_OFFSET_MINUTES,
     fireAt,
+    paidAt: null,
+    firedAt: null,
   });
-  breakfastOrders.get().set(ticket.id, order);
-  breakfastReplies.get().set(body.idempotencyKey, order);
+  saveBreakfastOrder(order);
+  breakfastReplies.get().set(body.idempotencyKey, { fingerprint, order });
   return { data: order };
+});
+
+registerMock(payBreakfastOrder, ({ params }) => {
+  const order = breakfastOrderOf(params.ticketId, params.orderId);
+  if (order.status === "cancelled")
+    throw new ApiError(
+      409,
+      "BREAKFAST_ORDER_CANCELLED",
+      "Pesanan sarapan ini sudah dibatalkan.",
+    );
+  // Already paid (or in the kitchen): nothing left to pay, no new link.
+  if (order.status !== "awaiting_payment")
+    return { data: { order, paymentToken: null } };
+  const tokens = breakfastTokens.get();
+  const paymentToken = tokens.get(order.id) ?? `pl_mock_${nextUlid()}`;
+  tokens.set(order.id, paymentToken);
+  // The payment page serves this token with the order's own bill; paying it
+  // there settles the order, as the verified payment event does in the API.
+  registerExternalPaymentLink({
+    token: paymentToken,
+    reference: `Sarapan ${order.id.slice(-8)}`,
+    subtotalIdr: order.subtotalIdr,
+    taxIdr: order.totalIdr - order.subtotalIdr,
+    returnPath: `/member/fasilitas/${order.ticketId}`,
+    onPaid: () => settleBreakfastPaymentInMock(order.ticketId),
+  });
+  return { data: { order, paymentToken } };
+});
+
+registerMock(cancelBreakfastOrder, ({ params }) => {
+  const order = breakfastOrderOf(params.ticketId, params.orderId);
+  if (order.status === "cancelled") return { data: { order, refundIdr: 0 } };
+  if (order.status === "fired")
+    throw new ApiError(
+      409,
+      "BREAKFAST_ALREADY_FIRED",
+      "Pesanan sarapan sudah dikirim ke dapur dan tidak dapat dibatalkan.",
+    );
+  // Refund at most what was paid: nothing before payment, the total after.
+  const refundIdr = order.status === "paid" ? order.totalIdr : 0;
+  return {
+    data: {
+      order: saveBreakfastOrder({ ...order, status: "cancelled" }),
+      refundIdr,
+    },
+  };
 });
 
 // ---- Identity + subscription plans ------------------------------------------

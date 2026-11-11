@@ -3,8 +3,8 @@
 // Contract (brief): pure `breakfastFireAt(slotEndsAt, fireOffsetMinutes)` in
 // features/facility/flow.ts returning an ISO string; a mock for
 // GET  /api/facility/tickets/:ticketId/breakfast-menu  and
-// POST /api/facility/tickets/:ticketId/breakfast-orders (web-local contract,
-// TODO move to @starter/shared/facility with the backend bead).
+// POST /api/facility/tickets/:ticketId/breakfast-orders (contract now in
+// @starter/shared/facility, bead oa0qk: pay first, then fire; founder Q43).
 // Validation: at least one line, and a delivery choice (table with a table id,
 // or pickup).
 //
@@ -18,7 +18,7 @@ import { cafeLegendFacilityFixtures as fx } from "../packages/shared/src/facilit
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
 import { setScenario } from "../apps/web/src/lib/mock/control.ts";
 import { breakfastFireAt } from "../apps/web/src/features/facility/flow.ts";
-import "../apps/web/src/features/facility/mock.ts";
+import { settleBreakfastPaymentInMock } from "../apps/web/src/features/facility/mock.ts";
 
 const ticketId = fx.tickets[0].id;
 const request = (method, path, body) => dispatchMock({ method, path, body });
@@ -75,7 +75,7 @@ describe("breakfast from the ticket mock (legend-ijv8)", () => {
     assert.deepEqual((await menu()).items, []);
   });
 
-  test("a pickup order is held and fires at slot end minus the offset", async () => {
+  test("a pickup order awaits payment and fires at slot end minus the offset", async () => {
     const data = await menu();
     const dish = data.items[0];
     const placed = (
@@ -93,7 +93,14 @@ describe("breakfast from the ticket mock (legend-ijv8)", () => {
     );
     assert.equal(placed.subtotalIdr, dish.priceIdr * 2);
     assert.equal(placed.delivery.mode, "pickup");
-    assert.equal(placed.status, "held");
+    assert.equal(placed.status, "awaiting_payment");
+    // PB1 10% exclusive on top of the menu price (founder Q59).
+    assert.equal(
+      placed.totalIdr,
+      placed.subtotalIdr + Math.round(placed.subtotalIdr * 0.1),
+    );
+    assert.equal(placed.paidAt, null);
+    assert.equal(placed.firedAt, null);
     // A reload shows the order instead of the empty form.
     assert.equal((await menu()).order.id, placed.id);
   });
@@ -135,6 +142,86 @@ describe("breakfast from the ticket mock (legend-ijv8)", () => {
         delivery: { mode: "pickup" },
       }),
       bad,
+    );
+  });
+});
+
+describe("breakfast pay-first (legend-oa0qk)", () => {
+  const payPath = (orderId, action = "pay") =>
+    `/api/facility/tickets/${ticketId}/breakfast-orders/${orderId}/${action}`;
+  const key = () => ({
+    idempotencyKey: `oa0qk-${Math.random().toString(36).slice(2)}-abcdef`,
+  });
+  const place = async () => {
+    const dish = (await menu()).items[0];
+    return (
+      await order({
+        lines: [{ menuItemId: dish.id, quantity: 1 }],
+        delivery: { mode: "pickup" },
+      })
+    ).data;
+  };
+
+  test("paying reuses one payment link and never marks the order paid", async () => {
+    const placed = await place();
+    const first = (await request("POST", payPath(placed.id), key())).data;
+    const second = (await request("POST", payPath(placed.id), key())).data;
+    assert.ok(first.paymentToken);
+    assert.equal(second.paymentToken, first.paymentToken);
+    assert.equal(first.order.status, "awaiting_payment");
+    assert.equal((await menu()).order.status, "awaiting_payment");
+  });
+
+  test("a settled payment makes the order paid once, with no new link", async () => {
+    const placed = await place();
+    await request("POST", payPath(placed.id), key());
+    const paid = settleBreakfastPaymentInMock(ticketId);
+    assert.ok(["paid", "fired"].includes(paid.status));
+    assert.ok(paid.paidAt);
+    const again = settleBreakfastPaymentInMock(ticketId);
+    assert.equal(again.paidAt, paid.paidAt);
+    const afterPay = (await request("POST", payPath(placed.id), key())).data;
+    assert.equal(afterPay.paymentToken, null);
+  });
+
+  test("cancelling an unpaid order refunds nothing, a paid one at most the total", async () => {
+    const unpaid = await place();
+    const cancelled = (
+      await request("POST", payPath(unpaid.id, "cancel"), key())
+    ).data;
+    assert.equal(cancelled.order.status, "cancelled");
+    assert.equal(cancelled.refundIdr, 0);
+    await assert.rejects(
+      request("POST", payPath(unpaid.id), key()),
+      (e) => e.status === 409,
+    );
+    const paidOrder = await place();
+    settleBreakfastPaymentInMock(ticketId);
+    const refunded = (
+      await request("POST", payPath(paidOrder.id, "cancel"), key())
+    ).data;
+    assert.ok(refunded.refundIdr <= paidOrder.totalIdr);
+    const repeat = (
+      await request("POST", payPath(paidOrder.id, "cancel"), key())
+    ).data;
+    assert.equal(repeat.refundIdr, 0);
+  });
+
+  test("the same key with another payload is refused", async () => {
+    const dish = (await menu()).items[0];
+    const idempotencyKey = "oa0qk-same-key-abcdef";
+    await order({
+      idempotencyKey,
+      lines: [{ menuItemId: dish.id, quantity: 1 }],
+      delivery: { mode: "pickup" },
+    });
+    await assert.rejects(
+      order({
+        idempotencyKey,
+        lines: [{ menuItemId: dish.id, quantity: 2 }],
+        delivery: { mode: "pickup" },
+      }),
+      (e) => e.status === 409,
     );
   });
 });

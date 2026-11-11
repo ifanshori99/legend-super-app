@@ -535,6 +535,10 @@ async function applyApproval(
 const LATE_PAYMENT_REFUND_KEY_PREFIXES = [
   "pos-late-payment-refund:",
   "qr-late-payment-refund:",
+  // Facility breakfast (`requestBreakfastRefund`, kind "late"): same rule, so a
+  // pending admin refund does not make the guest's late refund fail the cap.
+  "facility-breakfast-refund:late:",
+  "fb-refile:late:",
 ];
 
 /**
@@ -637,6 +641,11 @@ async function failRefund(
     },
   });
   await refileQrLatePaymentAfterFailure(tx, context, updated, input.now);
+  // Breakfast order cancelled while this refund held the money: file the rest
+  // again. Lazy import: facility-breakfast-money imports this module (cycle).
+  const { refileBreakfastRefundAfterFailure } =
+    await import("./facility-breakfast-money.ts");
+  await refileBreakfastRefundAfterFailure(tx, context, updated, input.now);
   // legend-94q2l: a failed-item refund that did not fail by a person's
   // rejection is filed again. Lazy import: order-recovery-refund imports this
   // module (cycle).

@@ -211,6 +211,7 @@ export const systemRefundActorSchema = z.enum([
   "system:pos",
   "system:qr",
   "system:recovery",
+  "system:facility",
 ]);
 export type SystemRefundActor = z.infer<typeof systemRefundActorSchema>;
 /** Display names for system requesters (no `user` row exists for them). */
@@ -219,6 +220,7 @@ export const systemRefundActorNames: Record<SystemRefundActor, string> = {
   "system:pos": "Sistem (kasir)",
   "system:qr": "Sistem (pesanan QR)",
   "system:recovery": "Sistem (pemulihan pesanan)",
+  "system:facility": "Sistem (sarapan fasilitas)",
 };
 
 export const refundViewSchema = z.strictObject({

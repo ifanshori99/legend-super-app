@@ -14,13 +14,13 @@ import type {
   FacilitySlotOption,
   FacilitySubscriptionView,
 } from "@starter/shared/facility";
+import { BREAKFAST_MAX_QUANTITY } from "@starter/shared/facility";
 import type { LoginChallengeView } from "@starter/shared/identity";
 import type {
   BreakfastDelivery,
   BreakfastMenuItem,
   CreateBreakfastOrderBody,
-} from "./breakfast.ts";
-import { BREAKFAST_MAX_QUANTITY } from "./breakfast.ts";
+} from "@starter/shared/facility";
 
 /**
  * Outlet wall-clock zone until the outlet context bead supplies the outlet's

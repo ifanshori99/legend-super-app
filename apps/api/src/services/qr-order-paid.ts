@@ -41,7 +41,12 @@ export async function appendQrOrderPaid(
   tx: Tx,
   context: ScopedTenantContext,
   order: OrderRow,
-  input: { now: Date; paidIntentId: string | null },
+  input: {
+    now: Date;
+    paidIntentId: string | null;
+    /** `facility`: a ticket's breakfast order (bead oa0qk) books the same way. */
+    channel?: "qr" | "facility";
+  },
 ): Promise<void> {
   const split = orderRevenueSplit(order);
   const dueIdr = order.totalIdr - order.depositAppliedIdr;
@@ -69,7 +74,7 @@ export async function appendQrOrderPaid(
       orderId: order.id,
       outletId: order.outletId,
       businessDate: order.businessDate,
-      channel: "qr",
+      channel: input.channel ?? "qr",
       serviceType: order.serviceType,
       ...split,
       paidCashIdr: 0,

@@ -103,6 +103,7 @@ const CHANNEL_LABELS: Record<string, string> = {
   shopeefood: "ShopeeFood",
   reservation: "Reservasi",
   kiosk: "Kiosk",
+  facility: "Sarapan fasilitas",
 };
 
 // ---- Typed endpoints (raw) -------------------------------------------------

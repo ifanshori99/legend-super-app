@@ -1856,6 +1856,20 @@
       "when": 1794360000000,
       "tag": "0278_collective_leave_rededuction",
       "breakpoints": true
+    },
+    {
+      "idx": 279,
+      "version": "7",
+      "when": 1794401690199,
+      "tag": "0279_facility_breakfast_pay",
+      "breakpoints": true
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1794402000000,
+      "tag": "0280_facility_breakfast_fire_window",
+      "breakpoints": true
     }
   ]
 }

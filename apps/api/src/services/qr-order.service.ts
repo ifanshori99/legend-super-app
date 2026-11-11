@@ -2441,6 +2441,31 @@ export async function voidUnpaidQrOrderTx(
   input: { reason: string; actorUserId: string | null },
   now: Date,
 ): Promise<QrOrder> {
+  const voided = await voidAwaitingPaymentOrderTx(
+    tx,
+    context,
+    orderId,
+    input,
+    now,
+  );
+  const items = await orderItemsOf(tx, context, [voided.id]);
+  const swaps = await swapReplacementIdsOf(tx, context, [voided.id]);
+  return orderDto(voided, items.get(voided.id) ?? [], swaps.get(voided.id));
+}
+
+/**
+ * The void itself, without the QR order DTO: items voided, daily limits
+ * released, promo released, audited. Safe for orders that have no table
+ * session (facility breakfast orders). Returns the voided order row; an
+ * already voided order is returned as is.
+ */
+export async function voidAwaitingPaymentOrderTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  input: { reason: string; actorUserId: string | null },
+  now: Date,
+): Promise<OrderRow> {
   const reason = input.reason.trim().slice(0, 100);
   if (reason.length === 0)
     throw new CoreError("VALIDATION_ERROR", "Alasan pembatalan wajib diisi.");
@@ -2452,11 +2477,7 @@ export async function voidUnpaidQrOrderTx(
     .for("update");
   if (!order) throw new CoreError("NOT_FOUND", "Pesanan tidak ditemukan.");
   assertOutletInScope(context.outletScope, order.outletId);
-  if (order.status === "voided") {
-    const items = await orderItemsOf(tx, context, [order.id]);
-    const swaps = await swapReplacementIdsOf(tx, context, [order.id]);
-    return orderDto(order, items.get(order.id) ?? [], swaps.get(order.id));
-  }
+  if (order.status === "voided") return order;
   if (order.status !== "awaiting_payment")
     throw new CoreError(
       "CONFLICT",
@@ -2520,9 +2541,7 @@ export async function voidUnpaidQrOrderTx(
     },
     now,
   );
-  const items = await orderItemsOf(tx, context, [order.id]);
-  const swaps = await swapReplacementIdsOf(tx, context, [order.id]);
-  return orderDto(voided, items.get(order.id) ?? [], swaps.get(order.id));
+  return voided;
 }
 
 // ---- Shared with order-recovery.service.ts -------------------------------------------------------

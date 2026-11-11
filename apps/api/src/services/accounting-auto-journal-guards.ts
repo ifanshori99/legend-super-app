@@ -459,7 +459,7 @@ function saleAtOf(o: string) {
   const pos = `FROM pos_orders sp WHERE sp.tenant_id = ${o}.tenant_id AND sp.order_id = ${o}.id`;
   return sql.raw(`(CASE WHEN EXISTS (SELECT 1 ${pos})
     THEN (SELECT sp.completed_at ${pos})
-    WHEN ${o}.channel = 'qr' AND ${o}.payment_mode = 'pay_first' THEN ${o}.fired_at
+    WHEN ${o}.channel IN ('qr', 'facility') AND ${o}.payment_mode = 'pay_first' THEN ${o}.fired_at
     END)`);
 }
 
@@ -846,7 +846,7 @@ async function intentBackedAt(
     sql`(${orders.paymentIntentId} = ${intentId}::uuid
       OR ${orders.paymentLinkId} = (SELECT pi.payment_link_id FROM payment_intents pi
         WHERE pi.tenant_id = ${tenantId} AND pi.id = ${intentId}::uuid))`,
-    eq(orders.channel, "qr"),
+    inArray(orders.channel, ["qr", "facility"]),
     eq(orders.paymentMode, "pay_first"),
     sql`NOT EXISTS (SELECT 1 FROM pos_orders sp
       WHERE sp.tenant_id = ${orders.tenantId} AND sp.order_id = ${orders.id})`,

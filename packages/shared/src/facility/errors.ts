@@ -35,6 +35,16 @@ export const facilityErrorHttpStatus = {
   ALREADY_CLOSED: 409,
   /** The caller already holds a place in the queue for this facility. */
   ALREADY_QUEUED: 409,
+  /** Founder Q43: a breakfast order reaches the kitchen only after it is paid in full. */
+  BREAKFAST_NOT_PAID: 409,
+  /** The ticket already has a live (not cancelled) breakfast order. */
+  BREAKFAST_ORDER_EXISTS: 409,
+  /** The kitchen already has this breakfast order; it can no longer be cancelled. */
+  BREAKFAST_ALREADY_FIRED: 409,
+  /** The breakfast order was cancelled and cannot be paid or fired. */
+  BREAKFAST_ORDER_CANCELLED: 409,
+  /** The ticket cannot hold a breakfast order (not yours, wrong status, or past the fire time). */
+  BREAKFAST_UNAVAILABLE: 422,
 } as const satisfies Record<string, number>;
 
 export type FacilityErrorCode = keyof typeof facilityErrorHttpStatus;
@@ -63,6 +73,13 @@ const defaultMessages: Record<FacilityErrorCode, string> = {
   LOCK_CREDENTIAL_EXPIRED: "Kredensial pintu sudah kedaluwarsa.",
   ALREADY_CLOSED: "Data ini sudah ditutup.",
   ALREADY_QUEUED: "Anda sudah berada dalam antrean fasilitas ini.",
+  BREAKFAST_NOT_PAID:
+    "Pesanan sarapan belum lunas, jadi belum dapat dikirim ke dapur.",
+  BREAKFAST_ORDER_EXISTS: "Tiket ini sudah punya pesanan sarapan.",
+  BREAKFAST_ALREADY_FIRED:
+    "Pesanan sarapan sudah dikirim ke dapur dan tidak dapat dibatalkan.",
+  BREAKFAST_ORDER_CANCELLED: "Pesanan sarapan ini sudah dibatalkan.",
+  BREAKFAST_UNAVAILABLE: "Tiket ini sudah tidak dapat memesan sarapan.",
 };
 
 export class FacilityError extends Error {

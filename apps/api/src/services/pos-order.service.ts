@@ -511,6 +511,11 @@ export async function createPosOrder(
       "VALIDATION_ERROR",
       "Pesanan QR dibuat dari meja pelanggan, bukan dari POS.",
     );
+  if (input.channel === "facility")
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Pesanan sarapan fasilitas dibuat dari tiket member, bukan dari POS.",
+    );
   const ojol = OJOL_CHANNELS.has(input.channel);
   const externalRef = input.externalRef ?? null;
   if (ojol && externalRef === null)

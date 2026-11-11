@@ -12,6 +12,8 @@
 // own. `payment.expired` / `payment.failed` of a link that belongs to a POS
 // tender go to `handlePosPaymentClosed` (bead legend-b0au) inside the
 // consumption transaction: the still-authorized tender becomes `failed`.
+// A link that belongs to a ticket's breakfast order (channel `facility`, bead
+// oa0qk) goes to facility-breakfast-consumers.ts the same way.
 // A link that belongs to a dearer-swap difference charge (legend-i83ls) goes to
 // order-recovery-charge-payment.ts the same way, after the order check.
 // Events of another tenant are refused before any query (TEN-01).
@@ -23,6 +25,14 @@ import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  handleBreakfastFundsUnallocated,
+  handleBreakfastPaymentClosed,
+  handleBreakfastPaymentPaid,
+  type BreakfastClosedOutcome,
+  type BreakfastFundsOutcome,
+  type BreakfastPaidOutcome,
+} from "./facility-breakfast-consumers.ts";
 import type { Tx } from "./menu-internals.ts";
 import {
   dispatchIssueChargeClosed,
@@ -47,6 +57,8 @@ export const ORDER_PAYMENT_EVENT_NAMES = [
   "payment.paid",
   "payment.expired",
   "payment.failed",
+  // bead 519: only a breakfast bill consumes it; every other bill ignores it.
+  "payment.funds_unallocated",
 ] as const;
 type OrderPaymentEventName = (typeof ORDER_PAYMENT_EVENT_NAMES)[number];
 
@@ -64,6 +76,12 @@ export type OrderPaymentDispatch =
       /** legend-i83ls: the link of a dearer-swap difference charge. */
       readonly route: "issue_charge";
       readonly outcome: IssueChargePaidOutcome | IssueChargeClosedOutcome;
+    }
+  | {
+      /** oa0qk: a ticket's breakfast order (channel `facility`). */
+      readonly route: "facility";
+      readonly outcome:
+        BreakfastPaidOutcome | BreakfastClosedOutcome | BreakfastFundsOutcome;
     }
   | { readonly route: "pos" };
 
@@ -111,6 +129,13 @@ async function dispatchInTx(
           eq(orders.paymentLinkId, linkId),
         ),
       );
+    // Parked funds belong to the breakfast consumer only; the QR, charge and
+    // POS consumers never saw this event and still do not.
+    if (
+      event.name === "payment.funds_unallocated" &&
+      order?.channel !== "facility"
+    )
+      return { route: "ignored" };
     if (order?.channel === "qr")
       return {
         route: "qr",
@@ -118,6 +143,18 @@ async function dispatchInTx(
           event.name === "payment.paid"
             ? await handleQrOrderPaymentPaid(context, event, tx, now)
             : await handleQrOrderPaymentClosed(context, event, tx, now),
+      };
+    // oa0qk: a facility breakfast order is paid only by its verified event;
+    // it never falls through to the POS consumer.
+    if (order?.channel === "facility")
+      return {
+        route: "facility",
+        outcome:
+          event.name === "payment.paid"
+            ? await handleBreakfastPaymentPaid(context, event, tx, now)
+            : event.name === "payment.funds_unallocated"
+              ? await handleBreakfastFundsUnallocated(context, event, tx, now)
+              : await handleBreakfastPaymentClosed(context, event, tx),
       };
     // legend-i83ls: a swap-difference charge has its own link; anything that
     // is not one falls through to the POS consumer.
@@ -127,6 +164,7 @@ async function dispatchInTx(
         : await dispatchIssueChargeClosed(context, event, tx, now);
     if (charge !== null) return { route: "issue_charge", outcome: charge };
   }
+  if (event.name === "payment.funds_unallocated") return { route: "ignored" };
   if (event.name === "payment.paid") return "pos";
   return (await handlePosPaymentClosed(context, event, tx, now))
     ? { route: "pos" }

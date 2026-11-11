@@ -78,6 +78,7 @@ import { coreAuditWriter } from "./services/core-audit-writer";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import { fireDueBreakfastOrders } from "./services/facility-breakfast-consumers.ts";
 import { setQrOrderDepositCreditLookup } from "./services/qr-order-ports.ts";
 import { qrOrderSettlementLookup } from "./services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "./services/table-session.service.ts";
@@ -731,6 +732,13 @@ const relay = createRelayRuntime({
       await sweepUnpaidQrOrders(context, new Date());
     } catch {
       console.error("Unpaid QR order sweep failed");
+    }
+    // oa0qk (owner Q43): send paid ticket breakfast orders to the kitchen at
+    // fire_at and cancel unpaid ones. Only a `paid` order is ever fired.
+    try {
+      await fireDueBreakfastOrders(context, new Date());
+    } catch {
+      console.error("Facility breakfast sweep failed");
     }
     // ORD-07 (legend-7qg): escalate waiter calls / bill requests left open
     // past SERVICE_REQUEST_OVERDUE_SECONDS, once each. The relay ticks every

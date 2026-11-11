@@ -6,7 +6,7 @@ import { ApiError } from "@/lib/api/errors.ts";
 import * as api from "./api";
 import { facilityKeys } from "./queries";
 import { cancelWhatsAppLogin, startWhatsAppLogin } from "./wa-login";
-import type { CreateBreakfastOrderBody } from "./breakfast.ts";
+import type { CreateBreakfastOrderBody } from "@starter/shared/facility";
 import {
   breakfastMenuQuery,
   loginChallengeQuery,
@@ -172,5 +172,41 @@ export function useOrderBreakfast(ticketId: string) {
           queryKey: facilityKeys.breakfast(ticketId),
         });
     },
+  });
+}
+
+/** Resolves with the payment link token; the screen then opens `/bayar/$token`. */
+export function usePayBreakfast(ticketId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      orderId,
+      idempotencyKey,
+    }: {
+      orderId: string;
+      idempotencyKey: string;
+    }) => api.payBreakfast(ticketId, orderId, { idempotencyKey }),
+    // The order may already be paid or cancelled elsewhere: refetch either way.
+    onSettled: () =>
+      queryClient.invalidateQueries({
+        queryKey: facilityKeys.breakfast(ticketId),
+      }),
+  });
+}
+
+export function useCancelBreakfast(ticketId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      orderId,
+      idempotencyKey,
+    }: {
+      orderId: string;
+      idempotencyKey: string;
+    }) => api.cancelBreakfast(ticketId, orderId, { idempotencyKey }),
+    onSettled: () =>
+      queryClient.invalidateQueries({
+        queryKey: facilityKeys.breakfast(ticketId),
+      }),
   });
 }

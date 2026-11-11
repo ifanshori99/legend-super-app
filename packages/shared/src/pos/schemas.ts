@@ -135,6 +135,7 @@ export const ORDER_CHANNELS = [
   "shopeefood",
   "reservation",
   "kiosk",
+  "facility",
 ] as const;
 export const orderChannelSchema = z.enum(ORDER_CHANNELS);
 export type OrderChannel = z.infer<typeof orderChannelSchema>;
