@@ -51,7 +51,6 @@ const VIEWPORTS = [
 const ROLE_COOKIE = "legend-mock-role";
 const COLD = 60_000; // Vite compiles a route on its first request.
 const ESPRESSO_ID = "00000000-0000-4000-8000-000000001000"; // fixture item
-const ENTITY = "Entitas · tanpa outlet";
 
 const visible = (locator, timeout = COLD) =>
   locator.waitFor({ state: "visible", timeout });
