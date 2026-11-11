@@ -59,3 +59,46 @@ Cabang `ws/rat9r-voucher-cap` dari `ws/pti5r-promo-refund` (326bfbfa). Worktree
 - Test terarah: `LEGEND_TEST_FILES="src/test/x.test.ts" heavy pnpm test` dari
   root worktree, `run_in_background`, tunggu notifikasi, jangan sleep.
 - Jangan commit, jangan `git stash`. Jangan baca `.env*`.
+
+## Desain architect (xhigh, 11 Nov) — wajib diikuti
+
+Rumus tetap `credit = min(-difference, max(0, P - voucher rantai - refund hidup rantai))`.
+
+1. Nilai dibayar saat tukar (read-only): file baru
+   `apps/api/src/services/order-recovery-paid-value.ts`. Pindahkan dari
+   `order-recovery-refund.ts` query `releasedResult`/`priorLinesIdr` (~361-380) dan
+   pembangun kept-lines (~482-553); consumer memanggil kode yang dipindah.
+   - Tanpa promo hidup: `recoveryRefundSplit({order, lineTotalIdr, priorLinesIdr,
+     releasedIdr: 0}).wantedIdr`.
+   - Promo hidup: di `tx.transaction(sp => ...)` panggil
+     `recomputeAfterPartialRefund` (`deferPayout: true`, item asli dihitung gagal),
+     lempar error `DryRun` membawa hasil, tangkap, lalu `recoveryRefundSplit({...,
+     promo})`. Savepoint selalu rollback. 422 dari recompute = tukar ditolak
+     ("minta bantuan staf").
+2. Simpan: `apps/api/src/db/schema/kds-issues.ts:69` kolom
+   `paidValueIdr: idrColumn("paid_value_idr")` nullable, `heavy pnpm db:generate`
+   (migrasi baru, periksa SQL). `order-recovery.service.ts`: `Settlement` (~927)
+   + `paidValueIdr`; `swapSettlement` (~1133-1187) hanya bila `difference < 0`:
+   `P` = `paidValueIdr` swap sebelumnya di rantai, atau `swapPaidValueIdr`;
+   `credit` ke `requireSwapCreditApproval` (~1168) dan `mintApologyVoucher`
+   (~1187); credit 0 = tanpa voucher, tanpa approval. `settleIssue` (~954) tulis
+   `paidValueIdr`. Audit (~1021) + `AUDIT_SAFE_FIELDS` (~107): `creditIdr`.
+3. Consumer `order-recovery-refund.ts` (di bawah kunci issue+intent): query issue
+   (~406) ambil `voucherId`, `paidValueIdr`; rantai = issue dengan
+   `toOriginal(orderItemId) === toOriginal(issue.orderItemId)` kecuali issue ini;
+   `chainCap = max(0, min(paidValueIdr) - Σ voucher - Σ refund hidup)` (refund hidup
+   = refund terbesar per issue, lewati issue yang semua refundnya gagal);
+   `capIdr = min(swapCapIdr, chainCap)` di filing pertama dan replay (~608); audit
+   `voucherCapIdr` (~754). `paidValueIdr` null = tanpa cap tambahan.
+4. Cegah bayar lebih saat cap memotong ke 0: cabang ini sudah me-merge
+   `ws/k0ub4-zero-replacement` (jalur `nothing_left` mencatat
+   `recoveryRefundGoodsIdr` ke ledger promo, sekali per issue, audit
+   `nothing_left` sebagai penanda). Perluas kondisinya dari `swapCapIdr === 0`
+   ke "cap (swap atau voucher) memotong ke 0" untuk order promo. Jangan buat
+   jalur payout kedua.
+5. Test baru tambahan: setelah voucher, refund teh tidak membayar uang kopi.
+   Test 7 kombinasi di `order-recovery-swap-voucher-paid-cap.test.ts` (sudah ada,
+   13/17 gagal di 326bfbfa) harus lulus tanpa diubah ekspektasinya; bila satu
+   ekspektasi salah menurut desain, laporkan, jangan ubah diam-diam.
+6. Di luar cakupan (catat saja): refund kasir POS (`refundPosOrder`) mengabaikan
+   voucher.
