@@ -297,6 +297,8 @@ describe("legend-t4y7 GET /api/me/access", () => {
       stations: [],
       // No assignment, no outlet reach (legend-ebt9f).
       outlets: [],
+      // No assigned outlet, so none is active (legend-6vgv).
+      activeOutletId: null,
       // Not an impersonated support session (legend-cg071).
       supportSession: null,
     });
