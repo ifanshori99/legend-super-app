@@ -18,42 +18,70 @@
 // record stores the new row id, never the amount.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import {
   businessDateSchema,
   createUlid,
   encodeCursor,
+  formatDecimal4,
+  idr,
   type BusinessDate,
   type CursorPage,
   type CursorPageQuery,
+  type Idr,
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
 import {
   createPayComponentInputSchema,
   employeePayComponentSchema,
+  computeOvertimePay,
+  FROZEN_PAYROLL_RUN_STATUSES,
   payComponentIdSchema,
   payComponentKindOf,
+  overtimeParametersSchema,
+  PayrollError,
   payComponentSchema,
+  payslipLineSchema,
   setEmployeePayComponentInputSchema,
   updatePayComponentInputSchema,
   type CreatePayComponentInput,
   type EmployeePayComponent,
+  type OvertimeParameters,
   type PayComponent,
+  type PayslipLine,
   type SetEmployeePayComponentInput,
   type UpdatePayComponentInput,
 } from "@starter/shared/hris/payroll";
 import { CoreError } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
-import { employeePayComponents, payComponents } from "../db/schema/payroll.ts";
+import { attendanceLogs } from "../db/schema/hris-attendance.ts";
+import { outlets } from "../db/schema/platform-org.ts";
+import {
+  employeePayComponents,
+  payComponents,
+  payrollRuns,
+} from "../db/schema/payroll.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
   openPayrollAmount,
   PAYROLL_SEAL_KEY_VERSION,
   sealPayrollAmount,
+  sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
@@ -413,6 +441,61 @@ async function assertEmployeeInTenant(
   if (!row) throw notFound();
 }
 
+/**
+ * The latest period end among the frozen (locked, paid, reversed) payroll runs
+ * that cover this employee, or null when none is frozen (legend-8xf32). The
+ * employee's legal entity is the one on the employee row, else the one of the
+ * home outlet; when neither resolves, every legal entity of the tenant counts
+ * (the rule that pays less). Runs of every type count: a frozen run never
+ * changes, whatever it paid.
+ */
+async function latestFrozenPeriodEnd(
+  tx: Tx,
+  context: ScopedTenantContext,
+  employeeId: string,
+): Promise<BusinessDate | null> {
+  const [employee] = await tx
+    .select({
+      legalEntityId: employees.legalEntityId,
+      outletLegalEntityId: outlets.legalEntityId,
+    })
+    .from(employees)
+    .leftJoin(
+      outlets,
+      and(
+        eq(outlets.tenantId, employees.tenantId),
+        eq(outlets.id, employees.homeOutletId),
+      ),
+    )
+    .where(
+      and(
+        eq(employees.tenantId, context.tenant.tenantId),
+        eq(employees.id, employeeId),
+      ),
+    )
+    .limit(1);
+  if (!employee) throw notFound();
+  const legalEntityId =
+    employee.legalEntityId ?? employee.outletLegalEntityId ?? null;
+  const [latest] = await tx
+    .select({
+      periodEnd: sql<
+        string | null
+      >`to_char(max(${payrollRuns.periodEnd}), 'YYYY-MM-DD')`,
+    })
+    .from(payrollRuns)
+    .where(
+      and(
+        eq(payrollRuns.tenantId, context.tenant.tenantId),
+        inArray(payrollRuns.status, [...FROZEN_PAYROLL_RUN_STATUSES]),
+        ...(legalEntityId
+          ? [eq(payrollRuns.legalEntityId, legalEntityId)]
+          : []),
+      ),
+    );
+  return latest?.periodEnd ? businessDateSchema.parse(latest.periodEnd) : null;
+}
+
 /** Amount history of one employee, newest start first. */
 export async function listEmployeePayComponents(
   context: ScopedTenantContext,
@@ -464,7 +547,10 @@ export async function listEmployeePayComponents(
  * Sets an amount from `effectiveFrom`. The open row of the same (employee,
  * component) ends the day before; the same start date is a 409 (amounts are
  * never rewritten), an earlier start than the open row's, or one that overlaps
- * a closed row, is a 422.
+ * a closed row, is a 422. A start on or before the period end of the latest
+ * frozen payroll run is a 409 PAYROLL_RUN_FROZEN: closing the previous row
+ * backwards would rewrite the amount of a month already locked or paid. The
+ * explicit rapel (back-pay) flow has no contract yet, so it is refused too.
  */
 export async function setEmployeePayComponent(
   context: ScopedTenantContext,
@@ -544,6 +630,17 @@ export async function setEmployeePayComponent(
           )
         )
           throw invalid("Tanggal berlaku bertumpuk dengan nominal sebelumnya.");
+
+        const frozenUntil = await latestFrozenPeriodEnd(
+          tx,
+          context,
+          employeeId,
+        );
+        if (frozenUntil && body.effectiveFrom <= frozenUntil)
+          throw new PayrollError(
+            "PAYROLL_RUN_FROZEN",
+            "Tanggal berlaku jatuh di periode payroll yang sudah dikunci. Pakai tanggal setelah periode itu.",
+          );
 
         const closeUntil = open ? addDays(body.effectiveFrom, -1) : null;
         if (open && closeUntil)
@@ -625,5 +722,282 @@ export async function setEmployeePayComponent(
       .limit(1);
     if (!row) throw new Error("Employee pay component was not stored");
     return toEmployeeComponent(row);
+  });
+}
+
+// ---- Gross engine (bead legend-8di9d) -------------------------------------
+
+export type EmployeeGrossInput = {
+  employeeId: string;
+  periodStart: BusinessDate;
+  periodEnd: BusinessDate;
+  /** Payslip row id the sealed calculation binds to. */
+  payslipId: string;
+  overtimeParameters: OvertimeParameters;
+};
+
+export type EmployeeGross = {
+  grossIdr: Idr;
+  deductionsIdr: Idr;
+  netIdr: Idr;
+  overtimeIdr: Idr;
+  /** Approved overtime minutes inside the period (one value per day). */
+  overtimeMinutes: number;
+  lines: PayslipLine[];
+  /** `payslips.calculation`: bound to tenant, table, row and field. */
+  sealed: { calculation: Buffer; keyVersion: number };
+};
+
+const OVERTIME_CODE = "LEMBUR";
+
+/** Whole hours as Decimal4, rounded down: a fraction is never paid. */
+const hoursOf = (minutes: number) =>
+  formatDecimal4((BigInt(minutes) * 10_000n) / 60n);
+
+/**
+ * Gross, deductions, net and overtime of one employee for a period, from the
+ * pay components in effect during the period and the approved overtime minutes of
+ * the period's attendance (PRD §3 D.29/D.30). Nothing is written: the caller
+ * stores `sealed.calculation` on the payslip row.
+ *
+ * Money guards (never pay more): an amount is never negative and a zero amount
+ * has no line; a component appears once, prorated by calendar day over the
+ * rows that overlap the period (floor, never above the full amount);
+ * deductions are cut, later display order first, so net is never below zero;
+ * overtime counts only `out` logs that are valid, or flagged and then
+ * accepted, one day at a time with the largest value of that day, hours rounded
+ * down, on the overtime base of the employee's own earnings only.
+ */
+export async function computeEmployeeGross(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  input: EmployeeGrossInput,
+): Promise<EmployeeGross> {
+  const start = businessDateSchema.safeParse(input.periodStart);
+  const end = businessDateSchema.safeParse(input.periodEnd);
+  if (!start.success || !end.success) throw invalid("Periode tidak valid.");
+  if (end.data < start.data)
+    throw invalid("Akhir periode tidak boleh sebelum awal periode.");
+  const parameters = overtimeParametersSchema.safeParse(
+    input.overtimeParameters,
+  );
+  if (!parameters.success) throw invalid("Aturan lembur tidak valid.");
+  const { employeeId, payslipId } = input;
+  const periodStart = start.data;
+  const periodEnd = end.data;
+  return withTenant(db, context, async (tx) => {
+    // The employee comes first: another tenant's employee is a plain 404.
+    await assertEmployeeInTenant(tx, context, employeeId);
+    await assertPayrollTenantCan(tx, context, actorUserId, WRITE_CODE);
+
+    const rows = await tx
+      .select({ amount: employeePayComponents, component: payComponents })
+      .from(employeePayComponents)
+      .innerJoin(
+        payComponents,
+        and(
+          eq(payComponents.tenantId, employeePayComponents.tenantId),
+          eq(payComponents.id, employeePayComponents.componentId),
+        ),
+      )
+      .where(
+        and(
+          eq(employeePayComponents.tenantId, context.tenant.tenantId),
+          eq(employeePayComponents.employeeId, employeeId),
+          eq(payComponents.isActive, true),
+          // Every row that overlaps [periodStart, periodEnd] (inclusive dates).
+          lte(employeePayComponents.effectiveFrom, periodEnd),
+          or(
+            isNull(employeePayComponents.effectiveTo),
+            gte(employeePayComponents.effectiveTo, periodStart),
+          ),
+        ),
+      );
+
+    // Proration by calendar day: one amount per component, the sum over its
+    // overlapping rows of floor(amount * activeDays / periodDays) in BigInt.
+    // A row covering the whole period pays its full amount; rows of one
+    // component never overlap (setEmployeePayComponent closes the open row),
+    // so the sum is never above the largest amount. Zero rows add nothing.
+    const dayNumber = (date: string) =>
+      Math.floor(Date.parse(date) / 86_400_000);
+    const periodDays = BigInt(
+      dayNumber(periodEnd) - dayNumber(periodStart) + 1,
+    );
+    const byComponent = new Map<
+      string,
+      {
+        component: (typeof rows)[number]["component"];
+        amountIdr: number;
+        /**
+         * Overtime base of this component: the LOWEST positive nominal among
+         * its rows overlapping the period, not prorated. Pay-limiting choice
+         * (when in doubt, cap what is paid): a mid-period raise never lifts
+         * the overtime rate for the whole period. Summed over the employee's
+         * overtimeBase earning components; a component with no positive row
+         * adds nothing.
+         */
+        baseIdr: number;
+      }
+    >();
+    for (const { amount, component } of rows) {
+      const nominal = toEmployeeComponent(amount).amountIdr;
+      if (nominal <= 0) continue;
+      const activeDays = BigInt(
+        dayNumber(
+          amount.effectiveTo && amount.effectiveTo < periodEnd
+            ? amount.effectiveTo
+            : periodEnd,
+        ) -
+          dayNumber(
+            amount.effectiveFrom > periodStart
+              ? amount.effectiveFrom
+              : periodStart,
+          ) +
+          1,
+      );
+      if (activeDays <= 0n) continue;
+      const share = Number((BigInt(nominal) * activeDays) / periodDays);
+      const entry = byComponent.get(component.id);
+      if (entry) {
+        entry.amountIdr += share;
+        entry.baseIdr = Math.min(entry.baseIdr, nominal);
+      } else {
+        byComponent.set(component.id, {
+          component,
+          amountIdr: share,
+          baseIdr: nominal,
+        });
+      }
+    }
+    const amounts = [...byComponent.values()]
+      .filter(({ amountIdr }) => amountIdr > 0)
+      .sort(
+        (a, b) =>
+          a.component.displayOrder - b.component.displayOrder ||
+          a.component.code.localeCompare(b.component.code),
+      );
+
+    const lineOf = (
+      { component }: (typeof amounts)[number],
+      amount: Idr,
+    ): PayslipLine =>
+      payslipLineSchema.parse({
+        componentCode: component.code,
+        name: component.name,
+        category: component.category,
+        kind: component.kind,
+        amountIdr: amount,
+        taxable: component.taxable,
+        quantity: null,
+        sourceId: null,
+      });
+
+    const earningLines = amounts
+      .filter(({ component }) => component.kind === "earning")
+      .map((entry) => lineOf(entry, idr(entry.amountIdr)));
+    const overtimeBase = idr(
+      amounts
+        .filter(
+          ({ component }) =>
+            component.kind === "earning" && component.overtimeBase,
+        )
+        .reduce((sum, { baseIdr }) => sum + baseIdr, 0),
+    );
+
+    // Overtime minutes: approved `out` logs of the period, one value per day.
+    const logs = await tx
+      .select({
+        businessDate: attendanceLogs.businessDate,
+        minutes: sql<number>`max(${attendanceLogs.overtimeMinutes})::int`,
+      })
+      .from(attendanceLogs)
+      .where(
+        and(
+          eq(attendanceLogs.tenantId, context.tenant.tenantId),
+          eq(attendanceLogs.employeeId, employeeId),
+          eq(attendanceLogs.type, "out"),
+          gte(attendanceLogs.businessDate, periodStart),
+          lte(attendanceLogs.businessDate, periodEnd),
+          sql`${attendanceLogs.overtimeMinutes} > 0`,
+          or(
+            and(
+              eq(attendanceLogs.validity, "valid"),
+              inArray(attendanceLogs.reviewStatus, ["none", "accepted"]),
+            ),
+            and(
+              eq(attendanceLogs.validity, "flagged"),
+              eq(attendanceLogs.reviewStatus, "accepted"),
+            ),
+          ),
+        ),
+      )
+      .groupBy(attendanceLogs.businessDate);
+    const overtimeMinutes = logs.reduce((sum, log) => sum + log.minutes, 0);
+    // No overtime base, no overtime pay: the minutes stay reported, unpaid.
+    let overtimeIdr = idr(0);
+    if (overtimeBase > 0)
+      for (const log of logs)
+        overtimeIdr = idr(
+          overtimeIdr +
+            computeOvertimePay(
+              parameters.data,
+              "workday",
+              hoursOf(log.minutes),
+              overtimeBase,
+            ),
+        );
+    if (overtimeIdr > 0)
+      earningLines.push(
+        payslipLineSchema.parse({
+          componentCode: OVERTIME_CODE,
+          name: "Lembur",
+          category: "overtime",
+          kind: "earning",
+          amountIdr: overtimeIdr,
+          taxable: true,
+          quantity: hoursOf(overtimeMinutes),
+          sourceId: null,
+        }),
+      );
+    const grossIdr = idr(
+      earningLines.reduce((sum, line) => sum + line.amountIdr, 0),
+    );
+
+    // Deductions never take net below zero: later display order is cut first.
+    let room = grossIdr as number;
+    const deductionLines: PayslipLine[] = [];
+    for (const entry of amounts.filter(
+      ({ component }) => component.kind === "deduction",
+    )) {
+      const taken = Math.min(entry.amountIdr, room);
+      if (taken <= 0) continue;
+      room -= taken;
+      deductionLines.push(lineOf(entry, idr(taken)));
+    }
+    const deductionsIdr = idr(
+      deductionLines.reduce((sum, line) => sum + line.amountIdr, 0),
+    );
+    const netIdr = idr(grossIdr - deductionsIdr);
+    const lines = [...earningLines, ...deductionLines];
+
+    const calculation = sealPayrollValue(
+      JSON.stringify({ grossIdr, deductionsIdr, netIdr, overtimeIdr, lines }),
+      {
+        tenantId: context.tenant.tenantId,
+        table: "payslips",
+        rowId: payslipId,
+        field: "calculation",
+      },
+    );
+    return {
+      grossIdr,
+      deductionsIdr,
+      netIdr,
+      overtimeIdr,
+      overtimeMinutes,
+      lines,
+      sealed: { calculation, keyVersion: PAYROLL_SEAL_KEY_VERSION },
+    };
   });
 }

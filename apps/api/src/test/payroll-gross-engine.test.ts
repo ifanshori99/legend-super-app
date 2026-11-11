@@ -29,8 +29,12 @@
 //  - the calculation is sealed (payslips.calculation, AAD-bound to the row).
 //
 // Assumptions where the spec is silent:
-//  A1 amount of a component for the period = the row in effect on periodEnd
-//     (no proration); inactive components are skipped.
+//  A1 (money review decision) amount of a component for the period = sum over
+//     its rows overlapping the period of floor(amount * activeDays / periodDays)
+//     (inclusive calendar days), never above the full amount; a full-period
+//     row pays the full amount; one line per component. Inactive components
+//     are skipped. A component is stopped by setting amount 0 from the day
+//     after its last day.
 //  A2 overtime counts only on attendance logs of type 'out' inside
 //     [periodStart, periodEnd] that are approved: validity 'valid' (review
 //     none/accepted) or flagged-then-accepted. Pending flagged and rejected
@@ -45,11 +49,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  createUlid,
-  outletIdSchema,
-  ulidToUuid,
-} from "@starter/shared/core";
+import { createUlid, outletIdSchema, ulidToUuid } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -283,10 +283,7 @@ async function seedLog(employeeId: string, input: LogInput) {
   );
 }
 
-const compute = (
-  employeeId: string,
-  overrides: Record<string, unknown> = {},
-) =>
+const compute = (employeeId: string, overrides: Record<string, unknown> = {}) =>
   service.computeEmployeeGross(ctx, actorId, {
     employeeId,
     periodStart: PERIOD_START,
@@ -371,14 +368,12 @@ describe("computeEmployeeGross: earnings and deductions", () => {
     expect(result.overtimeIdr).toBe(0);
     const earnings = result.lines.filter((l) => l.kind === "earning");
     const deductions = result.lines.filter((l) => l.kind === "deduction");
-    expect(earnings.map((l) => l.amountIdr).sort()).toEqual([
+    expect(earnings.map((l) => l.amountIdr).sort((a, b) => a - b)).toEqual([
       600_000, 5_000_000,
     ]);
     expect(deductions.map((l) => l.amountIdr)).toEqual([250_000]);
     // Line totals agree with the payslip arithmetic of the shared validator.
-    expect(earnings.reduce((s, l) => s + l.amountIdr, 0)).toBe(
-      result.grossIdr,
-    );
+    expect(earnings.reduce((s, l) => s + l.amountIdr, 0)).toBe(result.grossIdr);
     expect(deductions.reduce((s, l) => s + l.amountIdr, 0)).toBe(
       result.deductionsIdr,
     );
@@ -387,7 +382,7 @@ describe("computeEmployeeGross: earnings and deductions", () => {
     expect(deductions.every((l) => !l.taxable)).toBe(true);
   });
 
-  it("[EARN-DEDUCT] uses the amount in effect at period end and skips inactive components", async () => {
+  it("[EARN-DEDUCT] prorates a mid-period change by calendar day and skips inactive and future components", async () => {
     const employeeId = await seedEmployee();
     const raise = await earning({ displayOrder: 1 });
     const stopped = await earning({ displayOrder: 2 });
@@ -403,8 +398,9 @@ describe("computeEmployeeGross: earnings and deductions", () => {
 
     const result = await compute(employeeId);
 
-    expect(result.grossIdr).toBe(1_200_000);
-    expect(result.lines.map((l) => l.amountIdr)).toEqual([1_200_000]);
+    // 30-day period: 10 days at 1,000,000 + 20 days at 1,200,000, floored.
+    expect(result.grossIdr).toBe(333_333 + 800_000);
+    expect(result.lines.map((l) => l.amountIdr)).toEqual([1_133_333]);
   });
 
   it("[EMPTY] employee without components or attendance gets zero totals and no lines", async () => {
@@ -585,7 +581,9 @@ describe("computeEmployeeGross: money guards", () => {
     const second = await compute(employeeId);
 
     expect(first.lines).toHaveLength(1);
-    expect(first.grossIdr).toBe(3_300_000);
+    // 30-day period: 14 days at 3,000,000 + 16 days at 3,300,000, floored per row.
+    expect(first.grossIdr).toBe(1_400_000 + 1_760_000);
+    expect(first.lines[0]!.amountIdr).toBe(3_160_000);
     expect(second.grossIdr).toBe(first.grossIdr);
     expect(second.lines).toEqual(first.lines);
   });
@@ -600,7 +598,123 @@ describe("computeEmployeeGross: money guards", () => {
     const result = await compute(employeeId);
 
     expect(result.lines.filter((l) => l.kind === "earning")).toHaveLength(1);
-    expect(result.grossIdr).toBe(2_200_000);
+    // Rows in the 30-day period: 1 day at 2,000,000 (to 06-01), 18 days at
+    // 2,100,000 (06-02..06-19), 11 days at 2,200,000 (06-20..06-30), each
+    // floored: 66,666 + 1,260,000 + 806,666. Never above the top amount.
+    expect(result.grossIdr).toBe(66_666 + 1_260_000 + 806_666);
+    expect(result.grossIdr).toBeLessThanOrEqual(2_200_000);
+  });
+});
+
+describe("computeEmployeeGross: proration by calendar day", () => {
+  // Decision (money review, 12 Nov): each component = sum over its rows that
+  // overlap the period of floor(amount * activeDaysInPeriod / periodDays),
+  // inclusive dates, never more than the full amount. A row that covers the
+  // whole period pays the full amount. A row ended by setting amount 0 from
+  // the next day (the only way the contract offers to stop a component).
+  it("[PRORATE] a raise on the 28th of a 31-day period pays 27 days old + 4 days new, not the new amount for the month", async () => {
+    const employeeId = await seedEmployee();
+    const salary = await earning({ displayOrder: 1 });
+    await setAmount(employeeId, salary.id, 5_000_000);
+    await setAmount(employeeId, salary.id, 6_000_000, "2026-07-28");
+
+    const result = await compute(employeeId, {
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-31",
+    });
+
+    // floor(5,000,000 * 27 / 31) = 4,354,838 ; floor(6,000,000 * 4 / 31) = 774,193
+    expect(result.grossIdr).toBe(4_354_838 + 774_193);
+    expect(result.grossIdr).toBe(5_129_031);
+    expect(result.grossIdr).toBeLessThan(6_000_000);
+    expect(result.lines.filter((l) => l.kind === "earning")).toHaveLength(1);
+  });
+
+  it("[PRORATE] a raise on the 28th of a 30-day period", async () => {
+    const employeeId = await seedEmployee();
+    const salary = await earning({ displayOrder: 1 });
+    await setAmount(employeeId, salary.id, 5_000_000);
+    await setAmount(employeeId, salary.id, 6_000_000, "2026-06-28");
+
+    const result = await compute(employeeId);
+
+    // 27 days old (4,500,000) + 3 days new (600,000)
+    expect(result.grossIdr).toBe(5_100_000);
+  });
+
+  it("[PRORATE] a row that ends on the 10th is paid for 10 days only and is not lost", async () => {
+    const employeeId = await seedEmployee();
+    const allowance = await earning({ displayOrder: 1 });
+    await setAmount(employeeId, allowance.id, 1_200_000);
+    await setAmount(employeeId, allowance.id, 0, "2026-06-11"); // ends 06-10
+
+    const result = await compute(employeeId);
+
+    // floor(1,200,000 * 10 / 30)
+    expect(result.grossIdr).toBe(400_000);
+    expect(result.lines.filter((l) => l.amountIdr > 0)).toHaveLength(1);
+    expect(result.lines.every((l) => l.amountIdr >= 0)).toBe(true);
+  });
+
+  it("[PRORATE] an allowance that starts on the 28th is paid for 3 days only", async () => {
+    const employeeId = await seedEmployee();
+    const allowance = await earning({ displayOrder: 1 });
+    await setAmount(employeeId, allowance.id, 900_000, "2026-06-28");
+
+    const result = await compute(employeeId);
+
+    // floor(900,000 * 3 / 30)
+    expect(result.grossIdr).toBe(90_000);
+  });
+
+  it("[PRORATE] a row starting after the period or ending before it adds nothing", async () => {
+    const employeeId = await seedEmployee();
+    const later = await earning({ displayOrder: 1 });
+    const earlier = await earning({ displayOrder: 2 });
+    await setAmount(employeeId, later.id, 900_000, "2026-07-01");
+    await setAmount(employeeId, earlier.id, 800_000, "2026-01-01");
+    await setAmount(employeeId, earlier.id, 0, "2026-06-01"); // ends 05-31
+
+    const result = await compute(employeeId);
+
+    expect(result.grossIdr).toBe(0);
+    expect(result.lines.filter((l) => l.amountIdr > 0)).toEqual([]);
+  });
+
+  it("[PRORATE] a full-period row still pays the full amount", async () => {
+    const employeeId = await seedEmployee();
+    const salary = await earning({ displayOrder: 1 });
+    await setAmount(employeeId, salary.id, 4_321_001);
+
+    const result = await compute(employeeId);
+
+    expect(result.grossIdr).toBe(4_321_001);
+  });
+
+  it("[PRORATE] a raise never pays more than the highest amount, whatever the day", async () => {
+    // Raise from 3,000,000 to 3,100,000 starting on each of several days.
+    for (const day of [2, 10, 15, 28, 30]) {
+      const employeeId = await seedEmployee();
+      const salary = await earning({ displayOrder: 1 });
+      await setAmount(employeeId, salary.id, 3_000_000);
+      await setAmount(
+        employeeId,
+        salary.id,
+        3_100_000,
+        `2026-06-${String(day).padStart(2, "0")}`,
+      );
+
+      const result = await compute(employeeId);
+
+      const expected =
+        Math.floor((3_000_000 * (day - 1)) / 30) +
+        Math.floor((3_100_000 * (31 - day)) / 30);
+      expect(result.grossIdr).toBe(expected);
+      expect(result.grossIdr).toBeLessThanOrEqual(3_100_000);
+      // Only the per-row floor may lose a rupiah or two against the old amount.
+      expect(result.grossIdr).toBeGreaterThanOrEqual(3_000_000 - 2);
+      expect(result.lines.every((l) => l.amountIdr <= 3_100_000)).toBe(true);
+    }
   });
 });
 

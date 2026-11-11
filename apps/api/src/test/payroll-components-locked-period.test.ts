@@ -182,7 +182,12 @@ async function seedTenant(label: string): Promise<Seed> {
       `INSERT INTO employees (id, tenant_id, employee_no, full_name, home_outlet_id,
                               employment_type, join_date, status)
        VALUES ($1, $2, $3, 'Karyawan Periode Terkunci', $4, 'pkwtt', '2025-03-01', 'active')`,
-      [seed.employeeId, tenantId, `LP-${seed.employeeId.slice(0, 8).toUpperCase()}`, outletId],
+      [
+        seed.employeeId,
+        tenantId,
+        `LP-${seed.employeeId.slice(0, 8).toUpperCase()}`,
+        outletId,
+      ],
     );
     await client.query(
       `INSERT INTO pay_components
@@ -219,7 +224,10 @@ async function rowsOf(seed: Seed) {
         ORDER BY effective_from`,
       [seed.tenantId, seed.employeeId, seed.componentId],
     );
-    return result.rows as { effective_from: string; effective_to: string | null }[];
+    return result.rows as {
+      effective_from: string;
+      effective_to: string | null;
+    }[];
   });
 }
 
@@ -278,7 +286,9 @@ afterAll(async () => {
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
     for (const tenantId of createdTenants) {
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+        tenantId,
+      ]);
       for (const table of [
         "hris_idempotency",
         "role_assignments",
@@ -292,7 +302,9 @@ afterAll(async () => {
         "legal_entities",
         "brands",
       ])
-        await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [tenantId]);
+        await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
+          tenantId,
+        ]);
       await client.query("DELETE FROM tenants WHERE id = $1", [tenantId]);
     }
     await client.query("COMMIT");
@@ -301,7 +313,9 @@ afterAll(async () => {
   } finally {
     client.release();
   }
-  await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]).catch(() => undefined);
+  await owner
+    .query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers])
+    .catch(() => undefined);
   await owner.end();
 });
 
