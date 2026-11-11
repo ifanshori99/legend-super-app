@@ -47,6 +47,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import type { CatalogSyncStream } from "@starter/shared/edge";
 import type { EventEnvelope, SyncDirection } from "@starter/shared/events";
 import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { outlets, tenants } from "./platform-org.ts";
@@ -449,7 +450,9 @@ export const edgePullCheckpoints = pgTable(
     outletId: outletIdColumn(() => outlets.id).notNull(),
     edgeNodeId: uuid("edge_node_id").notNull(),
     stream: varchar("stream", { length: 40 })
-      .$type<"device_registry" | "staff_pins">()
+      .$type<
+        "device_registry" | "staff_pins" | `catalog:${CatalogSyncStream}`
+      >()
       .notNull(),
     watermark: text("watermark"),
     lastSuccessAt: timestamp("last_success_at", {
@@ -468,8 +471,9 @@ export const edgePullCheckpoints = pgTable(
     }),
     check(
       "edge_pull_checkpoints_stream_check",
-      // staff_pins: the staff pin down-sync (legend-yvhw8).
-      sql`${table.stream} IN ('device_registry', 'staff_pins')`,
+      // staff_pins: the staff pin down-sync (legend-yvhw8). catalog:<stream>:
+      // the menu, price and recipe down-sync (legend-97p, 10 streams).
+      sql`${table.stream} IN ('device_registry', 'staff_pins') OR ${table.stream} LIKE 'catalog:%'`,
     ),
   ],
 );

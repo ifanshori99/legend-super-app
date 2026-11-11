@@ -2,6 +2,12 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## legend-97p WS-02 BE down-sync katalog cloud -> edge (engineer, cabang `ws/97p-master-downsync` dari m1 a5d58300, 2026-11-11 08:10-09:05)
+
+Sudah: cek basi (PIN, device, people/role/karyawan sudah ada; menu, harga, resep belum). Dibuat stream katalog inkremental (kursor keyset (updated_at,id), resumable, idempotent, cloud wins): menu_categories, modifier_groups, modifiers, menu_items, item_variants, menu_item_modifier_groups, price_lists (membawa semua itemnya), recipes (membawa semua barisnya). Cloud: `GET /api/edge-sync/catalog` (`services/edge-catalog-sync.ts`, filter brand+outlet dari credential). Edge: `services/edge-catalog-apply.ts`, `edge/catalog-puller.ts` (checkpoint satu transaksi dengan apply, lock advisory, isolasi error per stream). Migrasi `0250_catalog_pull_checkpoints` (bukan 0280; kosong di semua cabang, merge train cek tabrakan). Test `src/test/edge-catalog-sync.test.ts` 57 lulus; typecheck API 0; eslint dan prettier bersih; `db:generate` kosong.
+Keputusan: harga/resep disalin persis, header tidak pernah tanpa anak (review architect: header+anak satu snapshot); `recipes.updated_by` belum ada di edge ditolak tanpa memajukan checkpoint (transien); `output_item_id` dan `station_id` dijadikan null bila target tak ada di edge (inventory_items dan stations tidak disinkronkan).
+Belum: puller belum disambung ke loop `master-sync.ts`; stream inventory_items/stations; modifier_groups/modifiers tanpa kolom brand (tenant-wide); review ulang architect atas putaran perbaikan (second-opinion Codex per area disarankan).
+
 ## legend-ilzrj WS-10 FE layar PIN slip gaji + sisa percobaan di API (ui-engineer, cabang `ws/payslip-pin-ui` dari `ws/hris-pii-pin` 8305fdc3 + merge `design/payslip-pin`, 2026-11-11)
 
 - Sudah: BE 403 `PAYSLIP_PIN_INVALID` membawa `error.remainingAttempts`, 423 membawa `error.lockedUntil` (field opsional di envelope error, bukan `details` yang berbentuk array); architect approve. Web: buat PIN, PIN tersimpan, buka slip (kartu periode, nominal tersembunyi), PIN salah + sisa, terkunci (`pin-locked.tsx`, menit berjalan), lupa PIN (teks HR/atasan tanpa nomor) + kode WhatsApp (503 belum tersedia, 429 dibatasi, kode hangus setelah 5 salah tanpa mengunci PIN), ubah PIN, daftar slip kosong/memuat/error, dialog reset HR dengan alasan. Logika murni `pin-state.ts` + `tests/payslip-pin-ui.test.mjs` (35). Mock: `?mock=pin-not-set|pin-locked|otp-ok|otp-rate-limited`.

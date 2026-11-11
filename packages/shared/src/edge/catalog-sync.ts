@@ -1,0 +1,283 @@
+// Catalog down-sync cloud -> outlet edge (bead legend-97p; PRD v1.7 §3 F8
+// Master Menu & Harga, §3 F16 Resep & BOM, §5 "cloud wins" for master data).
+// `GET /api/edge-sync/catalog?stream=<stream>&since=<cursor>&limit=<1..100>`.
+//
+// One stream per table; the edge pulls stream by stream and keeps one cursor
+// per stream. Rows are read-only on the edge (never written back to the cloud
+// through this path). Amounts are copied exactly: `priceIdr` is the whole
+// rupiah integer of the cloud row, `quantity` / `theoreticalCostIdr` the exact
+// NUMERIC(14,4) decimal string. Nothing is converted or rounded in transit.
+//
+// Tombstones: a soft-deleted row travels with `deletedAt` set (the edge removes
+// or hides its copy). `recipes` have no tombstone (deactivated through
+// `isActive`, never deleted). Recipes and price lists travel as WHOLE
+// documents: a `recipes` record carries all its lines (`lines`), a `price_lists`
+// record carries all its live items (`items`). There are no `recipe_lines` or
+// `price_list_items` streams: the cloud bumps the parent's `updated_at` on every
+// line / item change, so one parent version always matches its children and the
+// edge replaces the children in the same transaction (a header never exists
+// without its lines / items, and two versions never mix).
+//
+// Scope: the edge only receives the brand of its own outlet (`outlets.brand_id`
+// of the credential) for categories, items and recipes; price lists are only
+// those of its own outlet.
+//
+// Cursor is opaque to the edge. `nextCursor` is the position of the last
+// record of the page (or the echoed `since` for an empty page, null when the
+// stream has never produced a row): the edge stores it as the checkpoint once
+// the page is applied. `hasMore` says whether another page follows.
+
+import {
+  businessDateSchema,
+  cursorSchema,
+  decimal4Schema,
+  idrSchema,
+  isoDateTimeSchema,
+  PAGE_LIMIT_MAX,
+  uuidSchema,
+  z,
+} from "../core/index.ts";
+
+export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
+
+export const CATALOG_SYNC_STREAMS = [
+  "menu_categories",
+  "modifier_groups",
+  "modifiers",
+  "menu_items",
+  "item_variants",
+  "menu_item_modifier_groups",
+  "price_lists",
+  "recipes",
+] as const;
+export const catalogSyncStreamSchema = z.enum(CATALOG_SYNC_STREAMS);
+export type CatalogSyncStream = z.infer<typeof catalogSyncStreamSchema>;
+
+export const CATALOG_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
+
+export const catalogSyncQuerySchema = z.strictObject({
+  stream: catalogSyncStreamSchema,
+  since: cursorSchema.optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PAGE_LIMIT_MAX)
+    .default(CATALOG_SYNC_LIMIT_DEFAULT),
+});
+export type CatalogSyncQuery = z.infer<typeof catalogSyncQuerySchema>;
+
+const STATION_TYPES = [
+  "coffee_bar",
+  "beverage_bar",
+  "hot_kitchen",
+  "cold_kitchen",
+  "pastry",
+] as const;
+const MENU_CHANNELS = [
+  "dine_in",
+  "takeaway",
+  "gofood",
+  "grabfood",
+  "shopeefood",
+  "reservation",
+] as const;
+
+const name = z.string().min(1).max(150);
+const stamps = {
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  deletedAt: isoDateTimeSchema.nullable(),
+};
+
+export const menuCategorySyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  brandId: uuidSchema,
+  name,
+  parentId: uuidSchema.nullable(),
+  sortOrder: z.number().int(),
+  ...stamps,
+});
+
+export const menuItemSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  brandId: uuidSchema,
+  categoryId: uuidSchema,
+  name,
+  description: z.string(),
+  type: z.enum(["single", "combo"]),
+  stationId: uuidSchema.nullable(),
+  stationType: z.enum(STATION_TYPES).nullable(),
+  course: z.string().max(20).nullable(),
+  recipeId: uuidSchema.nullable(),
+  taxRuleId: uuidSchema.nullable(),
+  labels: z.array(z.string()),
+  allergens: z.array(z.string()),
+  mediaId: uuidSchema.nullable(),
+  isActive: z.boolean(),
+  sortOrder: z.number().int(),
+  ...stamps,
+});
+
+export const itemVariantSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  menuItemId: uuidSchema,
+  name,
+  recipeId: uuidSchema.nullable(),
+  ...stamps,
+});
+
+export const modifierGroupSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  name,
+  minSelect: z.number().int().min(0),
+  maxSelect: z.number().int().min(0).max(50),
+  ...stamps,
+});
+
+export const modifierSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  groupId: uuidSchema,
+  name,
+  /** Whole rupiah, exactly the cloud value. */
+  priceIdr: idrSchema,
+  recipeId: uuidSchema.nullable(),
+  stationId: uuidSchema.nullable(),
+  ...stamps,
+});
+
+/** Join row; no `id` column in the cloud: the key is (menuItemId, groupId). */
+export const menuItemModifierGroupSyncRecordSchema = z.strictObject({
+  tenantId: uuidSchema,
+  menuItemId: uuidSchema,
+  groupId: uuidSchema,
+  sortOrder: z.number().int(),
+  ...stamps,
+});
+
+/**
+ * One live item of a price list. Only live (not soft-deleted) items travel, so
+ * there is no `deletedAt`: an item missing from `items` is gone.
+ */
+export const priceListItemRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  priceListId: uuidSchema,
+  itemId: uuidSchema,
+  variantId: uuidSchema.nullable(),
+  /** Whole rupiah, exactly the cloud value. Never converted or rounded. */
+  priceIdr: idrSchema,
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+});
+
+/**
+ * `items` = ALL live items of the list at export time (empty when none), read
+ * in the same statement as the header: the edge replaces its items with this
+ * set (deletes the others) in the same transaction as the header upsert.
+ */
+export const priceListSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  outletId: uuidSchema,
+  channel: z.enum(MENU_CHANNELS),
+  effectiveFrom: businessDateSchema,
+  items: z.array(priceListItemRecordSchema),
+  ...stamps,
+});
+
+/** One line of a recipe; no `updated_at` / `deleted_at` in the cloud. */
+export const recipeLineRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  recipeId: uuidSchema,
+  sortOrder: z.number().int(),
+  componentType: z.enum(["item", "recipe"]),
+  componentId: uuidSchema,
+  quantity: decimal4Schema,
+  uomId: uuidSchema,
+  wastePctBp: z.number().int().min(0).max(9999),
+});
+
+/**
+ * No tombstone: a recipe is deactivated (`isActive`), never deleted.
+ * `lines` = ALL lines the recipe has in the cloud at export time (empty when
+ * every line was removed), read in the same statement as the recipe row: the
+ * edge replaces its lines with this set (deletes the others) in the same
+ * transaction as the recipe upsert.
+ */
+export const recipeSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  brandId: uuidSchema,
+  name,
+  outputItemId: uuidSchema.nullable(),
+  yieldQuantity: decimal4Schema,
+  yieldUomId: uuidSchema,
+  version: z.number().int().min(1),
+  isActive: z.boolean(),
+  theoreticalCostIdr: decimal4Schema,
+  updatedBy: z.string().min(1),
+  lines: z.array(recipeLineRecordSchema),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+});
+
+export const catalogSyncRecordSchemas = {
+  menu_categories: menuCategorySyncRecordSchema,
+  modifier_groups: modifierGroupSyncRecordSchema,
+  modifiers: modifierSyncRecordSchema,
+  menu_items: menuItemSyncRecordSchema,
+  item_variants: itemVariantSyncRecordSchema,
+  menu_item_modifier_groups: menuItemModifierGroupSyncRecordSchema,
+  price_lists: priceListSyncRecordSchema,
+  recipes: recipeSyncRecordSchema,
+} as const;
+
+export type MenuCategorySyncRecord = z.infer<
+  typeof menuCategorySyncRecordSchema
+>;
+export type MenuItemSyncRecord = z.infer<typeof menuItemSyncRecordSchema>;
+export type ItemVariantSyncRecord = z.infer<typeof itemVariantSyncRecordSchema>;
+export type ModifierGroupSyncRecord = z.infer<
+  typeof modifierGroupSyncRecordSchema
+>;
+export type ModifierSyncRecord = z.infer<typeof modifierSyncRecordSchema>;
+export type MenuItemModifierGroupSyncRecord = z.infer<
+  typeof menuItemModifierGroupSyncRecordSchema
+>;
+export type PriceListSyncRecord = z.infer<typeof priceListSyncRecordSchema>;
+export type PriceListItemRecord = z.infer<typeof priceListItemRecordSchema>;
+export type RecipeSyncRecord = z.infer<typeof recipeSyncRecordSchema>;
+export type RecipeLineRecord = z.infer<typeof recipeLineRecordSchema>;
+
+export type CatalogSyncRecordOf<S extends CatalogSyncStream> = z.infer<
+  (typeof catalogSyncRecordSchemas)[S]
+>;
+
+function pageOf<S extends CatalogSyncStream>(stream: S) {
+  return z.strictObject({
+    stream: z.literal(stream),
+    records: z.array(catalogSyncRecordSchemas[stream]),
+    /** Position after the last record; the checkpoint once the page is applied. */
+    nextCursor: cursorSchema.nullable(),
+    hasMore: z.boolean(),
+  });
+}
+
+export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
+  pageOf("menu_categories"),
+  pageOf("modifier_groups"),
+  pageOf("modifiers"),
+  pageOf("menu_items"),
+  pageOf("item_variants"),
+  pageOf("menu_item_modifier_groups"),
+  pageOf("price_lists"),
+  pageOf("recipes"),
+]);
+export type CatalogSyncPage = z.infer<typeof catalogSyncPageSchema>;
