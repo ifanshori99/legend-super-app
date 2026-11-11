@@ -1,6 +1,5 @@
 -- WhatsApp proof purpose (bead legend-lgfru, design
--- docs/design/whatsapp-inbound-verification.md §5.1). Renumbered from temporary 0272;
--- the merge train assigns the final one.
+-- docs/design/whatsapp-inbound-verification.md §5.1). Renumbered from temporary 0272 by the merge train.
 -- login_challenges gains purpose / expected_sender_hash / consumed_at and three
 -- CHECKs, so a payslip PIN reset proof can never carry a login result.
 -- user_identities gains linked_at (existing rows: the migration time, design

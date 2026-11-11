@@ -169,7 +169,9 @@ test("simulator headers carry X-Kirim-Event-Id; verifier rejects a delivery with
     "e-1",
   );
   await verifyKirimWebhook({ headers, rawBody, secrets: [SECRET] });
-  const { "X-Kirim-Event-Id": _omit, ...withoutEventId } = headers;
+  const withoutEventId = Object.fromEntries(
+    Object.entries(headers).filter(([name]) => name !== "X-Kirim-Event-Id"),
+  );
   await assert.rejects(
     verifyKirimWebhook({ headers: withoutEventId, rawBody, secrets: [SECRET] }),
     (error) => error.code === "VALIDATION_ERROR",

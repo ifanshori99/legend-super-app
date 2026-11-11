@@ -112,6 +112,7 @@ async function awaitingChallenge() {
   return c;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function viewField(data: any, name: string): unknown {
   return data?.[name] ?? data?.challenge?.[name];
 }
@@ -146,6 +147,7 @@ function expectMaskedNumberOnly(data: unknown) {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function expectNoSession(res: { body: any; headers: any }) {
   expect(res.body.data?.session ?? null).toBeNull();
   expect(res.headers["set-cookie"]).toBeUndefined();

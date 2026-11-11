@@ -144,12 +144,15 @@ async function awaitingChallenge(
   return c;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function viewField(data: any, name: string): unknown {
   return data?.[name] ?? data?.challenge?.[name];
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const cancel = (c: { browser: any; path: string }) =>
   c.browser.post(`${c.path}/cancel`).set(originHeader).send();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const confirm = (c: { browser: any; path: string }) =>
   c.browser.post(`${c.path}/confirm`).set(originHeader).send();
 

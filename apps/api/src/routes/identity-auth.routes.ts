@@ -83,7 +83,7 @@ loginChallengeRouter.post(
   async (req, res) => {
     // The contract's body is `{ returnTo? }` and nothing else: returnTo stays
     // in the browser and is never stored server-side.
-    const body = createWhatsAppLoginChallengeSchema.parse(req.body);
+    createWhatsAppLoginChallengeSchema.parse(req.body);
     const signedIn = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),
       query: { disableCookieCache: true },

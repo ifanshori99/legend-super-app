@@ -24,7 +24,7 @@ import { captureScreenshot } from "./screenshots.ts";
 //  - Screenshots go through captureScreenshot (docs/ paths are guarded by
 //    tests/e2e-screenshot-paths.test.mjs): test-results/screenshots/kmndq/
 //    by default, docs/design/screenshots/kmndq/ with
-//    LEGEND_CAPTURE_SCREENSHOTS=1. The brief's docs/qa/kmndq is not used.
+//    LEGEND_CAPTURE_SCREENSHOTS=1. The brief's separate QA folder is not used.
 //
 // Run: pnpm test:e2e:mock e2e/legend-kmndq.mock.spec.ts
 
@@ -111,9 +111,13 @@ for (const viewport of VIEWPORTS) {
       test.slow();
       await startLogin(page);
 
-      await expect(page.getByRole("link", { name: "Buka WhatsApp" })).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Buka WhatsApp" }),
+      ).toBeVisible();
       await expect(page.getByText(CARD_TEXT)).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "Ya, masuk" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Ya, masuk" })).toHaveCount(
+        0,
+      );
       await capture(page, `kmndq/waiting-${viewport.width}.png`);
     });
 
@@ -197,7 +201,9 @@ for (const viewport of VIEWPORTS) {
       await expect(
         page.getByRole("button", { name: "Minta kode baru" }),
       ).toBeVisible();
-      await expect(page.getByRole("button", { name: "Ya, masuk" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Ya, masuk" })).toHaveCount(
+        0,
+      );
       await capture(page, `kmndq/expired-${viewport.width}.png`);
     });
 
@@ -220,7 +226,9 @@ for (const viewport of VIEWPORTS) {
         ),
       ).toBeVisible();
       await expect(page.getByText(CARD_TEXT)).toBeVisible();
-      await expect(page.getByRole("button", { name: "Ya, masuk" })).toBeEnabled();
+      await expect(
+        page.getByRole("button", { name: "Ya, masuk" }),
+      ).toBeEnabled();
       await capture(page, `kmndq/network-error-${viewport.width}.png`);
 
       await page.getByRole("button", { name: "Ya, masuk" }).click();

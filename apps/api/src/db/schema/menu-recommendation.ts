@@ -1,7 +1,7 @@
 // AI-01 menu recommendation rules: one settings row per outlet plus per-item
 // overrides (block, daily time window). Co-occurrence is computed live from
 // order_items, so nothing here is materialised. Tenant + outlet RLS is applied
-// in the 0282_menu_recommendations migration.
+// in the 0254_menu_recommendations migration.
 import { sql } from "drizzle-orm";
 import {
   boolean,
