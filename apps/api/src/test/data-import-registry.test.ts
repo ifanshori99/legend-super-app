@@ -160,6 +160,10 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-37wom (Codex 411, batch48d)
   "0249_backfill_marketing_opt_in_from_consents.sql":
     "sets customer_profiles.marketing_opt_in from each profile's latest marketing consent decision (highest seq) where the flag differs; edits only that one column, never inserts or deletes rows, idempotent, FORCE RLS on consents and customer_profiles lifted and restored in the same migration",
+  "0257_flag_attendance_for_leave.sql":
+    "defines app.flag_attendance_for_leave: when a leave is approved, UPDATEs the employee's countable or flagged `in` attendance logs inside the leave dates to validity flagged, review pending, reason leave_approved (reopening an HR-accepted log); never inserts or deletes rows, idempotent, tenant-tied SECURITY DEFINER function, runs only when called",
+  "0258_leave_clash_backfill.sql":
+    "redefines the two leave functions and runs one backfill UPDATE of attendance_logs that flags old logs clashing with an already approved leave (pending review, reason leave_approved); skips logs in closed payroll runs, never inserts or deletes rows, idempotent, FORCE RLS on the touched tables lifted and restored in the same migration",
 };
 
 // Entrypoints that open a database pool but import no data.
