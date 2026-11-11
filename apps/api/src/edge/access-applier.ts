@@ -581,7 +581,9 @@ async function applyParked(
  * either parked reason) of `outletId`, oldest first, and marks each one with
  * its outcome. Each row has its own savepoint (a refusal undoes only that
  * row and marks it `refused`); any other failure abandons the whole drain
- * (its own savepoint) and never fails the caller. Returns the rows marked.
+ * (its own savepoint) and propagates to the caller so background sweeps can
+ * count failed outlets. The live handler isolates drain failures. Returns
+ * the rows marked.
  */
 export async function drainParkedAccessEvents(
   tx: EdgeTx,
@@ -660,10 +662,14 @@ export async function drainParkedAccessEvents(
         );
       return rows.length;
     });
-  } catch {
-    // Intentionally silent: the rows stay parked for the next access event;
-    // no payload or ids in logs (ports.ts rule).
-    return 0;
+  } catch (error) {
+    // The drain savepoint rolled back: nothing was marked. No payload,
+    // message or ids in logs (ports.ts rule).
+    logger.warn(
+      { drained: 0, errorClasses: [errorClassOf(error)] },
+      "Parked edge access drain failed",
+    );
+    throw error;
   }
 }
 
@@ -688,7 +694,12 @@ function liveHandler(
     // the drain is undone too and the rows wait for the next accepted access
     // event (they stay unmarked, nothing is lost).
     const outletId = await assertEdgeEventScope(tx, event, meta);
-    await drainParkedAccessEvents(tx, meta, outletId);
+    try {
+      await drainParkedAccessEvents(tx, meta, outletId);
+    } catch {
+      // A failed drain has already rolled back and logged safe metadata.
+      // The live event can still apply; the parked rows wait for a retry.
+    }
     await apply(tx, event, meta);
   };
 }
