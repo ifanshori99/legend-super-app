@@ -324,6 +324,39 @@ export async function recoveryChainOf(
   };
 }
 
+/**
+ * legend-rat9r (architect H1): what an apology voucher for `lineId` may still
+ * be worth under the paid value of its item chain, null when the chain read
+ * no paid value (no cap). Takes the order row lock (after the caller's issue
+ * lock, the consumer's sequence).
+ */
+export async function voucherRoomOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { orderId: string; issueId: string; lineId: string },
+  /** False for a read-only preview (the guest's options): no row lock. */
+  lock = true,
+): Promise<number | null> {
+  const tenantId = context.tenant.tenantId;
+  const query = tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, input.orderId)));
+  const [order] = lock ? await query.for("update") : await query;
+  if (!order) throw new Error("Order of the reported line is missing");
+  const issues = await recoveryIssuesOf(tx, tenantId, order.id);
+  const chain = recoverySwapChain(issues);
+  const given = await recoveryChainOf(
+    tx,
+    tenantId,
+    { id: input.issueId, orderItemId: input.lineId },
+    issues,
+    chain.toOriginal,
+  );
+  if (given.paidValueIdr === null) return null;
+  return Math.max(0, given.paidValueIdr - given.givenIdr);
+}
+
 /** Carries the dry-run result out of the savepoint it rolls back. */
 class PromoDryRun extends Error {
   constructor(
