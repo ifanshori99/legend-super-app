@@ -12,11 +12,15 @@
 // The proof service is imported dynamically so a missing export fails each
 // test on its own instead of the whole file.
 
+// Must stay the first import: it sets TRUST_PROXY before ../app reads the env.
+import {
+  FILE_CLIENT_IP,
+  releaseTrustedProxy,
+} from "./helpers/identity-client-ip";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { Request, Response } from "express";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { signKirimWebhook } from "@starter/shared/adapters";
 import {
   LOGIN_CODE_TTL_MINUTES,
@@ -48,16 +52,27 @@ import * as loginBinding from "../lib/login-binding";
 import { sealSecret } from "../lib/secrets";
 import { resolveAdminAccount } from "../services/platform-admin-provision.service";
 import { agent, originHeader, signUp } from "./helpers";
+import {
+  createIdentityScope,
+  createIdentityTenant,
+  uniqueDigits,
+} from "./helpers/identity-isolation";
 
 const SECRET = "test-kirim-webhook-secret";
-const fixtures = cafeLegendPlatformFixtures;
-const TENANT_A = fixtures.tenant.id;
-const TENANT_B = "b0a10000-0000-4000-8000-0000000000c7" as typeof TENANT_A;
-const TENANT_C = "b0a10000-0000-4000-8000-0000000000c8" as typeof TENANT_A; // no integration
-const NUMBER_A = "628111000071";
-const NUMBER_B = "628111000072";
-const EMPLOYEE = "6281234500071";
-const STRANGER = "6281234500099";
+// Own tenants, host, receiving numbers and senders: this file never shares rows
+// with the other identity files (legend-5opkl).
+const TENANT_A: string = randomUUID();
+const TENANT_B = "b0a10000-0000-4000-8000-0000000000c7";
+const TENANT_C = "b0a10000-0000-4000-8000-0000000000c8"; // no integration
+const NUMBER_A = `62811${uniqueDigits(7)}`;
+const NUMBER_B = `62811${uniqueDigits(7)}`;
+const EMPLOYEE = `62812${uniqueDigits(8)}`;
+const STRANGER = `62812${uniqueDigits(8)}`;
+const OTHER_EMPLOYEE = `62812${uniqueDigits(8)}`;
+let HOST = "";
+
+const fileAgent = (target: Parameters<typeof agent>[0]) =>
+  agent(target).set("X-Forwarded-For", FILE_CLIENT_IP);
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -174,18 +189,17 @@ async function auditActions(challengeId: string) {
   return rows;
 }
 
-async function countRows(table: string): Promise<number> {
-  const { rows } = await owner.query<{ n: number }>(
-    `SELECT count(*)::int AS n FROM ${table}`,
-  );
-  return rows[0]!.n;
+function countRows(
+  table: "login_challenges" | "user_identities" | "identity_merges" | "session",
+): Promise<number> {
+  return isolation.count(table);
 }
 
 async function seedTenant(id: string, slug: string) {
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
      VALUES ($1, $2, $2, 'lengkap', 'active', 'shared',
-             '{"modules":[],"integrationProviders":[]}', $3, 'test')
+             '{"modules":[],"integrationProviders":[]}', $3, $4)
      ON CONFLICT (id) DO NOTHING`,
     [
       id,
@@ -199,6 +213,8 @@ async function seedTenant(id: string, slug: string) {
         aiCostCapIdr: 0,
         emailCostCapIdr: 0,
       }),
+      // The platform tenant list parses created_by as a user id (uuid).
+      randomUUID(),
     ],
   );
 }
@@ -216,41 +232,28 @@ async function seedWhatsAppIntegration(
   );
 }
 
-async function cleanup() {
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
-  await owner.query("DELETE FROM user_identities");
-  // A merge test leaves a banned wa.invalid account and its merge row; other
-  // files delete those accounts, which the merge row would block.
-  // identity_merges is append-only; the owner connection may switch the guard
-  // off for the cleanup, as identity-merge.test.ts does.
-  await owner.query("ALTER TABLE identity_merges DISABLE TRIGGER USER");
-  try {
-    await owner.query("DELETE FROM identity_merges");
-  } finally {
-    await owner.query("ALTER TABLE identity_merges ENABLE TRIGGER USER");
-  }
-  await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
-}
+const isolation = createIdentityScope(owner);
+isolation.scope.tenantIds.push(TENANT_A, TENANT_B, TENANT_C);
+isolation.scope.receivingNumbers.push(NUMBER_A, NUMBER_B);
+isolation.scope.senders.push(EMPLOYEE, STRANGER, OTHER_EMPLOYEE);
+const cleanup = isolation.cleanup;
 
 beforeAll(async () => {
+  const tenant = await createIdentityTenant(owner, "wa-proof", NUMBER_A, {
+    id: TENANT_A,
+  });
+  HOST = tenant.hostname;
   await seedTenant(TENANT_B, "uji-bukti-wa-b");
   await seedTenant(TENANT_C, "uji-bukti-wa-c");
-  await seedWhatsAppIntegration(TENANT_A, NUMBER_A);
   await seedWhatsAppIntegration(TENANT_B, NUMBER_B);
 });
 
 beforeEach(cleanup);
 
 afterAll(async () => {
+  releaseTrustedProxy();
   await cleanup();
-  await owner.query(
-    "DELETE FROM tenant_integrations WHERE tenant_id = ANY($1)",
-    [[TENANT_B, TENANT_C]],
-  );
-  await owner.query("DELETE FROM tenants WHERE id = ANY($1)", [
-    [TENANT_B, TENANT_C],
-  ]);
+  await isolation.dropTenants([TENANT_A, TENANT_B, TENANT_C]);
   await owner.end();
 });
 
@@ -863,7 +866,7 @@ describe("legend-lgfru D-WA3 identity age", () => {
     const unverified = randomUUID();
     await insertIdentity({
       userId: unverified,
-      number: "6281234500055",
+      number: OTHER_EMPLOYEE,
       verified: false,
       linkedAt: new Date(now.getTime() - 2 * minAge),
     });
@@ -911,7 +914,8 @@ describe("legend-lgfru D-WA3 identity age", () => {
     );
     expect(login.kind).toBe("login");
     const { rows: held } = await owner.query<{ user_id: string }>(
-      "SELECT user_id FROM user_identities WHERE type = 'whatsapp'",
+      "SELECT user_id FROM user_identities WHERE type = 'whatsapp' AND value_hash = $1",
+      [await whatsAppDigest(EMPLOYEE)],
     );
     expect(held).toHaveLength(1);
     const absorbedUserId = held[0]!.user_id;
@@ -922,10 +926,11 @@ describe("legend-lgfru D-WA3 identity age", () => {
     expect(await eligibility(absorbedUserId)).not.toBeNull();
 
     // U: signed in and OLDER than V, so U survives and V's identity moves.
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     await signUp(browser);
     const current = await browser.get("/api/auth/get-session");
     const userId: string = current.body.user.id;
+    isolation.scope.userIds.push(userId);
     await owner.query('UPDATE "user" SET created_at = $2 WHERE id = $1', [
       userId,
       new Date(Date.now() - 400 * DAY_MS),
@@ -936,7 +941,8 @@ describe("legend-lgfru D-WA3 identity age", () => {
     );
     expect(outcome.kind).toBe("login");
     const { rows: moved } = await owner.query<{ user_id: string }>(
-      "SELECT user_id FROM user_identities WHERE type = 'whatsapp'",
+      "SELECT user_id FROM user_identities WHERE type = 'whatsapp' AND value_hash = $1",
+      [await whatsAppDigest(EMPLOYEE)],
     );
     expect(moved).toEqual([{ user_id: userId }]);
     expect(await countRows("identity_merges")).toBeGreaterThan(0);
@@ -1017,8 +1023,8 @@ describe("legend-lgfru m1 login fixes", () => {
 
   async function postWebhook(body: string) {
     const signature = await signKirimWebhook({ rawBody: body, secret: SECRET });
-    return agent(app)
-      .host(fixtures.domains[0]!.hostname)
+    return fileAgent(app)
+      .host(HOST)
       .post("/api/webhooks/whatsapp")
       .set("Content-Type", "application/json")
       .set("X-Kirim-Signature", signature)
@@ -1125,7 +1131,7 @@ describe("legend-lgfru m1 login fixes", () => {
   it("(c) a WhatsApp login challenge is refused with 503 while KIRIM_WEBHOOK_SECRET is empty", async () => {
     const closed = createApp({ whatsappWebhookSecrets: [] });
     const res = await agent(closed)
-      .host(fixtures.domains[0]!.hostname)
+      .host(HOST)
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
       .send({});
@@ -1140,8 +1146,8 @@ describe("legend-lgfru m1 login fixes", () => {
     ).rejects.toBeInstanceOf(CoreError);
     expect(await countRows("login_challenges")).toBe(0);
     // With a secret the same request still works.
-    const open = await agent(app)
-      .host(fixtures.domains[0]!.hostname)
+    const open = await fileAgent(app)
+      .host(HOST)
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
       .send({});

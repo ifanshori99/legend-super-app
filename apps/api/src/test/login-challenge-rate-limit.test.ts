@@ -24,6 +24,11 @@
 // - Express routes paths case-insensitively and ignores a trailing slash, so
 //   those spellings reach the issue handler and must share the issue budget.
 
+// Must stay the first import: it sets TRUST_PROXY before ../app reads the env.
+import {
+  FILE_CLIENT_IP,
+  releaseTrustedProxy,
+} from "./helpers/identity-client-ip";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import { Pool } from "pg";
@@ -38,19 +43,24 @@ import {
   it,
   vi,
 } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import { db, pool } from "../db";
 import { errorHandler, notFound } from "../middleware/error-handler";
 import { loginChallengeRateLimit } from "../middleware/login-challenge-rate-limit";
 import { agent, originHeader } from "./helpers";
+import {
+  createIdentityScope,
+  createIdentityTenant,
+  uniqueDigits,
+} from "./helpers/identity-isolation";
 
 const SECRET = "test-kirim-webhook-secret";
-const fixtures = cafeLegendPlatformFixtures;
-const TENANT_A = fixtures.tenant.id;
-const HOST = fixtures.domains[0]!.hostname;
+// Own tenant, host and receiving number: this file never shares rows with the
+// other identity files (legend-5opkl).
+const TENANT_A: string = randomUUID();
+let HOST = "";
 const UNKNOWN_HOST = "no-such-tenant.example.test";
-const NUMBER_A = "628111000001";
+const NUMBER_A = `62811${uniqueDigits(7)}`;
 const ISSUE = "/api/auth/login-challenges/whatsapp";
 const CHALLENGES = "/api/auth/login-challenges";
 const WINDOW_MS = 60_000;
@@ -59,6 +69,9 @@ const LIMITER_MESSAGE = "Terlalu banyak permintaan. Coba lagi sebentar.";
 type Overrides = NonNullable<
   NonNullable<Parameters<typeof createApp>[0]>["loginChallengeRateLimit"]
 >;
+
+const fileAgent = (target: Parameters<typeof agent>[0]) =>
+  agent(target).set("X-Forwarded-For", FILE_CLIENT_IP);
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -86,7 +99,7 @@ type App = ReturnType<typeof createApp>;
 
 /** A browser that has no cookie yet. */
 function freshBrowser(app: App, host = HOST) {
-  return agent(app).host(host);
+  return fileAgent(app).host(host);
 }
 
 function issue(browser: ReturnType<typeof freshBrowser>) {
@@ -122,45 +135,24 @@ async function countAuditRows(action = "login_challenge.%"): Promise<number> {
   return rows[0]!.count;
 }
 
-async function countChallenges(): Promise<number> {
-  const { rows } = await owner.query<{ count: number }>(
-    "SELECT count(*)::int AS count FROM login_challenges",
-  );
-  return rows[0]!.count;
+const isolation = createIdentityScope(owner);
+isolation.scope.tenantIds.push(TENANT_A);
+isolation.scope.receivingNumbers.push(NUMBER_A);
+
+function countChallenges(): Promise<number> {
+  return isolation.count("login_challenges");
 }
 
 beforeAll(async () => {
-  await owner.query(
-    `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
-     VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')
-     ON CONFLICT (tenant_id, provider) WHERE outlet_id IS NULL
-     DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
-    [
-      TENANT_A,
-      JSON.stringify({ vendor: "kirimdev", receivingNumber: NUMBER_A }),
-    ],
-  );
+  HOST = (
+    await createIdentityTenant(owner, "rate-limit", NUMBER_A, { id: TENANT_A })
+  ).hostname;
 });
 
 beforeEach(async () => {
   clock = 1_000_000;
-  // AUTH-04 windows are time based: each test owns the whole login state.
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
-  await owner.query("DELETE FROM user_identities");
-  // Dropping the identities alone orphans the invited-admin accounts that
-  // earlier files created through POST /api/platform/tenants (email
-  // <digest>@wa.invalid). A later file that provisions the same WhatsApp number
-  // would then claim a fresh identity, hit the taken email and get 409 "first
-  // admin's contact is already used" (legend-5tmye). Remove those accounts too,
-  // as identity-login.test.ts does.
-  await owner.query(
-    `DELETE FROM role_assignments
-      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
-         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
-    ["%@wa.invalid"],
-  );
-  await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
+  // AUTH-04 windows are time based: each test owns this file's login state.
+  await isolation.cleanup();
 });
 
 afterEach(() => {
@@ -168,7 +160,9 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  await owner.query("DELETE FROM login_challenges");
+  releaseTrustedProxy();
+  await isolation.cleanup();
+  await isolation.dropTenants([TENANT_A]);
   await owner.end();
 });
 
