@@ -77,15 +77,22 @@ export function KoneksiScreen({
   const runAlert = data?.deviceRegistry?.receiptRunAlert === true;
   // Confirms a manual refresh that found no receipt-run alert (legend-s7szu).
   const [refreshed, setRefreshed] = useState(false);
+  // Spinner only for a manual refresh: background fetches on mount would make
+  // the client markup differ from the server HTML (hydration mismatch).
+  const [refreshing, setRefreshing] = useState(false);
   const refresh = () => {
     setRefreshed(false);
-    void status.refetch().then((result) => {
-      if (
-        result.isSuccess &&
-        result.data.data.deviceRegistry?.receiptRunAlert !== true
-      )
-        setRefreshed(true);
-    });
+    setRefreshing(true);
+    void status
+      .refetch()
+      .then((result) => {
+        if (
+          result.isSuccess &&
+          result.data.data.deviceRegistry?.receiptRunAlert !== true
+        )
+          setRefreshed(true);
+      })
+      .finally(() => setRefreshing(false));
   };
 
   return (
@@ -100,14 +107,14 @@ export function KoneksiScreen({
         <Button
           variant="outline"
           className="w-full sm:w-auto"
-          loading={status.isFetching}
+          loading={refreshing}
           onClick={refresh}
         >
           {t("edge.refresh")}
         </Button>
       </header>
 
-      {refreshed && !runAlert && !status.isFetching && (
+      {refreshed && !runAlert && !refreshing && (
         <p
           role="status"
           className="rounded-container border-(length:--border-w) border-success bg-success-subtle p-4 text-sm leading-5 font-semibold text-foreground"
