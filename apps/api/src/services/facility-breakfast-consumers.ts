@@ -11,20 +11,24 @@
 // when (a) it is still `awaiting_payment`, (b) the event's intent is settled on
 // the order's link, (c) the link total equals the order total and is covered,
 // (d) one code covered it alone, (e) no refund is already filed against that
-// code, and (f) it is still before fire_at and the ticket is still usable.
+// code, and (f) the ticket is still usable and the session has not ended
+// (at < ends_at; a payment between fire_at and ends_at is still a sale and the
+// next sweep fires it).
 // Everything else that carries verified money goes back to the guest:
 // - a second code paid after the order was paid, or a payment on a cancelled
 //   order: a refund request for what the code holds (`requestBreakfastRefund`,
 //   `requestQrDoublePaymentRefund` for the `double_payment` funds);
-// - a bill covered only by several codes together, a payment after fire_at or
-//   for a dead ticket, or a code with a refund already filed: the order is
+// - a bill covered only by several codes together, a payment at or after the
+//   ticket's ends_at or for a dead ticket, or a code with a refund already filed: the order is
 //   cancelled and every code that put money toward it is refunded.
 // A replay finds the order paid / cancelled and files nothing twice (the
 // refund keys are once per intent and kind).
 //
 // Sweep (`fireDueBreakfastOrders`, worker relay tick): fires paid orders that
-// are due and cancels unpaid ones whose fire time passed. A payment that lands
-// on a cancelled order afterwards is refunded by the handler above.
+// are due and cancels unpaid ones only once the ticket session ended (now >=
+// ends_at) or the ticket is dead; until then an unpaid order stays
+// `awaiting_payment`. A payment that lands on a cancelled order afterwards is
+// refunded by the handler above.
 import { and, asc, eq, lte, sql } from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
@@ -287,7 +291,7 @@ export async function handleBreakfastPaymentPaid(
   if (payerId === null) refuse = "split";
   else {
     const [ticket] = await tx
-      .select({ status: accessTickets.status })
+      .select({ status: accessTickets.status, endsAt: accessTickets.endsAt })
       .from(accessTickets)
       .where(
         and(
@@ -298,7 +302,7 @@ export async function handleBreakfastPaymentPaid(
     if (
       !ticket ||
       DEAD_TICKET_STATUSES.includes(ticket.status) ||
-      at.getTime() >= linked.fireAt.getTime()
+      at.getTime() >= ticket.endsAt.getTime()
     )
       refuse = "late";
     else {
@@ -392,7 +396,7 @@ export async function handleBreakfastPaymentPaid(
 /**
  * payment.expired / payment.failed: nothing to undo. The order stays
  * `awaiting_payment` (the guest may open another code on the same link) and
- * the sweep cancels it at fire_at; a settlement that still arrives later is
+ * the sweep cancels it once the ticket session ends; a settlement that still arrives later is
  * refunded by `handleBreakfastPaymentPaid`.
  */
 export async function handleBreakfastPaymentClosed(
@@ -451,7 +455,8 @@ async function dueOrderIds(
 
 /**
  * Fires paid breakfast orders whose fire_at passed and cancels unpaid ones
- * whose fire_at passed. Each order has its own transaction under its row
+ * whose fire_at passed only when the ticket session ended or the ticket is
+ * dead. Each order has its own transaction under its row
  * locks; a rerun finds it fired / cancelled and changes nothing. Only a `paid`
  * order is ever fired (`fireBreakfastOrderTx`); one that fails is logged and
  * retried on the next tick without blocking the others.
@@ -508,6 +513,27 @@ export async function fireDueBreakfastOrders(
     const done = await run(
       orderId,
       async (tx, locked) => {
+        // The guest may still pay until the ticket session ends: a paid-late
+        // order is fired by the next paid pass. Cancel only when the session is
+        // over or the ticket is dead.
+        const [ticket] = await tx
+          .select({
+            status: accessTickets.status,
+            endsAt: accessTickets.endsAt,
+          })
+          .from(accessTickets)
+          .where(
+            and(
+              eq(accessTickets.tenantId, context.tenant.tenantId),
+              eq(accessTickets.id, locked.linked.accessTicketId),
+            ),
+          );
+        if (
+          ticket &&
+          !DEAD_TICKET_STATUSES.includes(ticket.status) &&
+          now.getTime() < ticket.endsAt.getTime()
+        )
+          return false;
         await cancelBreakfastOrderTx(tx, context, locked, {
           reason: "payment_window_closed",
           actorUserId: null,

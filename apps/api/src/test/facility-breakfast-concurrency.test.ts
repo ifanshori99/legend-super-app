@@ -270,10 +270,12 @@ describe("BRK-CONC-02 two intents settled at the same time are paid once", () =>
         token: await payLink(world, one.member, one.ticketId, one.order.id),
       };
     })();
+    // The guest opened two codes before paying: both intents exist before the
+    // link is paid (opening one after payment is refused with 409).
     const first = await openIntent(world, token);
+    const second = await openIntent(world, token);
     await settle(world, first.id, order.totalIdr);
     await deliver(world, await paidEvent(world, first.id));
-    const second = await openIntent(world, token);
     await settle(world, second.id, order.totalIdr);
     const secondEvent = await paidEvent(world, second.id);
 
@@ -397,6 +399,8 @@ describe("BRK-CONC-04 the sweep and staff fire never double-fire", () => {
     await expectNoFiredUnpaid();
   });
 
+  // Fire time passed but the ticket (default: ends in 60 min) is still running,
+  // so an unpaid order is not cancelled by the sweep (brief "Keputusan sweep unpaid").
   it("BRK-CONC-04 a sweep racing the pay consumer on a due order fires only if the payment committed", async () => {
     const { order, event } = await settledNotDelivered();
     await setFireAt(world, order.id, new Date(Date.now() - MINUTE));

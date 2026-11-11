@@ -161,13 +161,15 @@ describe("BRK-PAY-01 an unpaid breakfast never reaches the kitchen", () => {
     expect((await linkedOf(world, order.id)).status).toBe("paid");
   });
 
-  it("BRK-PAY-01 the worker sweep skips an unpaid order even when its fire time has passed", async () => {
-    const { member, ticketId } = await newTicket();
+  it("BRK-PAY-01 the worker sweep keeps an unpaid order awaiting payment after its fire time while the ticket is still running", async () => {
+    // Brief "Keputusan sweep unpaid": the guest may still pay until the ticket
+    // session ends (access_tickets.ends_at), so the sweep neither fires nor cancels.
+    const { member, ticketId } = await newTicket({ endsInMinutes: 60 });
     const order = await placeOrder(world, member, ticketId);
     await setFireAt(world, order.id, new Date(Date.now() - 5 * MINUTE));
 
     await runSweep(world);
-    await runSweep(world, new Date(Date.now() + 120 * MINUTE));
+    await runSweep(world, new Date(Date.now() + 30 * MINUTE));
 
     expect(await kitchenTicketCount(world, order.id)).toBe(0);
     expect((await linkedOf(world, order.id)).status).toBe("awaiting_payment");
@@ -176,6 +178,22 @@ describe("BRK-PAY-01 an unpaid breakfast never reaches the kitchen", () => {
         (status) => status === "held",
       ),
     ).toBe(true);
+  });
+
+  it("BRK-PAY-01 once the ticket has ended the sweep cancels an unpaid order: no kitchen ticket, refund 0", async () => {
+    const { member, ticketId } = await newTicket({ endsInMinutes: 60 });
+    const order = await placeOrder(world, member, ticketId);
+    await setFireAt(world, order.id, new Date(Date.now() - 5 * MINUTE));
+
+    // "now" is past the ticket's ends_at (60 min).
+    await runSweep(world, new Date(Date.now() + 90 * MINUTE));
+
+    const linked = await linkedOf(world, order.id);
+    expect(linked.status).toBe("cancelled");
+    expect(linked.cancelledAt).not.toBeNull();
+    expect(linked.paid).toBe(0);
+    expect(linked.refunded).toBe(0);
+    expect(await kitchenTicketCount(world, order.id)).toBe(0);
   });
 
   it("BRK-PAY-01 a cancelled unpaid order is not fired by the sweep either", async () => {
@@ -412,11 +430,17 @@ describe("BRK-PAY-02 double payment never marks paid twice", () => {
 
   it("BRK-PAY-02 a payment that lands after the order was fired is refunded in full and fires nothing more", async () => {
     const { member, ticketId } = await newTicket();
-    const { order, token } = await placePaidOrder(world, member, ticketId);
+    const order = await placeOrder(world, member, ticketId);
+    const token = await payLink(world, member, ticketId, order.id);
+    // The guest opened two codes before paying; both intents exist before the
+    // link is paid (opening one after payment is refused with 409).
+    const first = await openIntent(world, token);
+    const late = await openIntent(world, token);
+    await settle(world, first.id, order.totalIdr);
+    await deliver(world, await paidEvent(world, first.id));
     expect((await staffFire(world, order.id)).status).toBe(200);
     expect(await kitchenTicketCount(world, order.id)).toBe(1);
 
-    const late = await openIntent(world, token);
     await settle(world, late.id, order.totalIdr);
     await deliver(world, await paidEvent(world, late.id));
 

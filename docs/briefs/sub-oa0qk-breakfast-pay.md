@@ -110,3 +110,8 @@ Signature tetap `services/facility-breakfast.service.ts` (I4):
 - `fireBreakfastOrderByStaff(context, actorUserId: string, orderId, body: { idempotencyKey }, now?): Promise<BreakfastOrder>`
 Error: lempar HttpError / FacilityError dengan kode brief. Ticket bukan milik member -> 404 NOT_FOUND.
 I6: `routes/facility-breakfast.routes.ts` + registrasi `routes/index.ts` memakai signature di atas (parse body/params dengan schema shared, balas `{ data }`).
+
+### Keputusan sweep unpaid (engineer, setelah run test 1)
+Order `awaiting_payment` yang lewat fire_at TIDAK dibatalkan langsung: tamu masih boleh bayar sampai sesi tiket berakhir (`access_tickets.ends_at`);
+bila lunas setelah fire_at, sweep berikut langsung mengirim. Sweep membatalkan order unpaid hanya bila now >= ends_at tiket atau tiket mati
+(DEAD_TICKET_STATUSES). Pembayaran yang datang setelah batal -> refund penuh (sudah ada).
