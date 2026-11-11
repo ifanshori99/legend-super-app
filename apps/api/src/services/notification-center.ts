@@ -27,6 +27,7 @@ import {
   notificationRead,
   notificationPreferenceUpdated,
   notificationCategorySchema,
+  isEmailMandatory,
 } from "@starter/shared/notification";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type * as schema from "../db/schema/index.ts";
@@ -281,6 +282,24 @@ export function createNotificationService(
           }
           case "updatePreferences": {
             const body = updateNotificationPreferences.body.parse(input.body);
+            // Email for a mandatory category (security) cannot be switched
+            // off by the user (legend-307w3); reject before any write.
+            for (const [category, channels] of Object.entries(
+              body.categories,
+            )) {
+              const parsed = notificationCategorySchema.safeParse(category);
+              if (
+                channels?.email === false &&
+                parsed.success &&
+                isEmailMandatory(parsed.data)
+              ) {
+                throw new HttpError(
+                  422,
+                  "VALIDATION_ERROR",
+                  `Email untuk kategori ${category} wajib aktif dan tidak bisa dimatikan.`,
+                );
+              }
+            }
             // Lock any existing row so the diff in the event matches what this
             // transaction replaces.
             const before = await tx.execute(
