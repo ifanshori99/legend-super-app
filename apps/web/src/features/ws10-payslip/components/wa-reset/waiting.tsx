@@ -6,12 +6,28 @@
 // Copying or opening WhatsApp is never shown as success of the verification.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { Check, ChevronLeft, Clock, Copy, MessageCircle } from "lucide-react";
+import {
+  Check,
+  ChevronLeft,
+  Clock,
+  Copy,
+  LoaderCircle,
+  MessageCircle,
+} from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { QrCode } from "@/components/ui/qr-code";
 import { isWaMeLink } from "../../wa-reset-api.ts";
 import { PinLayout } from "../pin-layout.tsx";
+
+// "6281200004250" -> "+62 812-0000-4250" so the number can be read back
+// when typed on another phone. Copy still uses the raw digits.
+function formatWaNumber(digits: string): string {
+  const m = /^62(\d{3})(\d+)$/.exec(digits);
+  if (!m) return `+${digits}`;
+  const groups = m[2].match(/\d{1,4}/g) ?? [];
+  return `+62 ${[m[1], ...groups].join("-")}`;
+}
 
 type WaResetWaitingProps = {
   /** Code from the server, e.g. "K7Q4-M2XD". */
@@ -221,7 +237,13 @@ function WaResetWaiting({
             </p>
           </div>
           <div className="grid gap-0.5" role="status" aria-live="polite">
-            <p className="text-base font-bold">Menunggu pesan Anda…</p>
+            <p className="flex items-center gap-2 text-base font-bold">
+              <LoaderCircle
+                aria-hidden="true"
+                className="size-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
+              />
+              Menunggu pesan Anda…
+            </p>
             <p className="text-base leading-6 md:text-sm md:leading-5 text-muted-foreground">
               Verifikasi muncul di sini, tanpa balasan WhatsApp.
             </p>
@@ -252,7 +274,7 @@ function WaResetWaiting({
                     translate="no"
                     className="whitespace-nowrap text-foreground"
                   >
-                    +{number}
+                    {formatWaNumber(number)}
                   </strong>
                 </>
               ) : (
@@ -293,7 +315,7 @@ function WaResetWaiting({
           <p
             role="status"
             aria-live="polite"
-            className="min-h-6 text-base leading-6 md:min-h-5 md:text-sm md:leading-5 text-muted-foreground"
+            className="text-base leading-6 empty:-mt-3 md:text-sm md:leading-5 text-muted-foreground"
           >
             {copied === "code" && "Pesan disalin. Tempel dan kirim lewat WhatsApp."}
             {copied === "number" && "Nomor tujuan disalin."}
