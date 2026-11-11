@@ -3,12 +3,13 @@
 // parallel WS-10 beads never edit the same catalog lines.
 export const leaveClockinReviewMessages = {
   nav: {
-    label: "Tinjauan cuti",
+    label: "Tinjauan absensi",
   },
   queue: {
     title: "Tinjauan absensi",
     description: "Tinjau absensi yang memerlukan keputusan HR.",
     searchLabel: "Cari nama karyawan",
+    searchPlaceholder: "Cari nama karyawan…",
     sectionTitle: "Perlu ditinjau",
     tableLabel: "Antrean tinjauan absensi saat cuti",
     columnStatus: "Status",
@@ -129,6 +130,10 @@ export const leaveClockinReviewMessages = {
     cancelledDetail:
       "Cuti pada {date} dibatalkan dan saldo untuk hari itu dikembalikan. Hari itu menjadi dasar hadir; cuti di tanggal lain tetap berlaku.",
     decisionLabel: "Keputusan",
+    employee: "Karyawan",
+    date: "Tanggal",
+    caseKind: "Jenis kasus",
+    status: "Status",
     back: "Kembali ke antrean",
   },
   toast: {
@@ -138,12 +143,13 @@ export const leaveClockinReviewMessages = {
   },
   errors: {
     forbidden: "Anda tidak punya akses untuk memutuskan tinjauan ini.",
-    notFound: "Absensi tidak ditemukan atau sudah diputuskan.",
+    notFound:
+      "Absensi tidak ditemukan atau sudah diputuskan. Kembali ke antrean untuk melihat keadaan terbaru.",
     unknown: "Terjadi kesalahan. Coba lagi.",
     ATTENDANCE_LEAVE_DECISION_NOT_ALLOWED:
-      "Keputusan cuti hanya untuk absensi masuk pada hari cuti disetujui yang belum diputuskan.",
+      "Keputusan cuti hanya untuk absensi masuk pada hari cuti disetujui yang belum diputuskan. Keadaan sudah berubah. Kembali ke antrean untuk melihat keadaan terbaru.",
     ATTENDANCE_LEAVE_NOT_APPROVED:
-      "Tidak ada cuti disetujui pada hari itu. Muat ulang antrean untuk melihat keadaan terbaru.",
+      "Tidak ada cuti disetujui pada hari itu. Keadaan sudah berubah. Kembali ke antrean untuk melihat keadaan terbaru.",
     ATTENDANCE_LEAVE_NOT_REACHABLE:
       "Cuti tidak dapat dibatalkan dari akses Anda saat ini. Pilih tetap cuti atau minta HR yang berwenang.",
     ATTENDANCE_LEAVE_DAYS_MISMATCH:

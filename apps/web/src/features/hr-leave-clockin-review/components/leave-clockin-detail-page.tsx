@@ -3,37 +3,30 @@
 // cancels it for this date only; both go through a confirmation dialog, and the
 // saved decision replaces the actions on this same page.
 import * as React from "react";
-import { Link } from "@tanstack/react-router";
-import {
-  ArrowLeft,
-  CircleCheck,
-  Info,
-  Lock,
-  PencilLine,
-  RotateCcw,
-  TriangleAlert,
-  WifiOff,
-} from "lucide-react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, CircleCheck, Info, Lock, WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useToast } from "@/components/ui/toast";
 import { formatBusinessDate } from "@/features/ws10-attendance-qr/format.ts";
 import { ApiError } from "@/lib/api/errors";
 import { useOnline } from "@/lib/use-online";
 import type { MessageKey } from "@starter/shared/i18n";
-import { formatClockMinutes } from "../format.ts";
+import { compactDateRange, formatClockMinutes } from "../format.ts";
 import {
   leaveClockinErrorKey,
   useDecideLeaveClockin,
   useLeaveClockinCase,
   useLeaveClockinPermissions,
 } from "../hooks.ts";
+import { leaveClockinKeys } from "../queries.ts";
 import type { LeaveClockinAction, LeaveClockinCase } from "../types.ts";
 import { DecisionDialog } from "./decision-dialog.tsx";
 import { DecisionResult } from "./decision-result.tsx";
+import { KindPill } from "./kind-pill.tsx";
 
 const CANCEL_REASON_ID = "leave-clockin-cancel-reason";
 const KEEP_REASON_ID = "leave-clockin-keep-reason";
@@ -68,7 +61,8 @@ function actionOfDecision(
 
 export function LeaveClockinDetailPage({ logId }: { logId: string }) {
   const t = useT();
-  const toast = useToast();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const online = useOnline();
   const query = useLeaveClockinCase(logId);
   const decide = useDecideLeaveClockin();
@@ -109,18 +103,21 @@ export function LeaveClockinDetailPage({ logId }: { logId: string }) {
       idempotencyKey.current = null;
       setDecided({ leaveCase: saved, action: confirmed });
       setAction(null);
-      toast({
-        title:
-          confirmed === "keep_leave"
-            ? t("leaveClockinReview.toast.kept")
-            : t("leaveClockinReview.toast.cancelled"),
-        tone: "success",
-      });
     } catch {
       // Shown in the dialog through `decide.error`; the key stays for a retry.
     } finally {
       inFlight.current = false;
     }
+  };
+  // A refusal that retrying cannot fix: the queue is stale, so refetch it and
+  // leave for it instead of leaving the reviewer on a dead dialog.
+  const backToQueue = () => {
+    idempotencyKey.current = null;
+    setAction(null);
+    void queryClient.invalidateQueries({
+      queryKey: leaveClockinKeys.cases(leaveCase?.outletId),
+    });
+    void navigate({ to: "/kelola/absensi/tinjauan-cuti" });
   };
   const errorMessage = decide.error
     ? t(leaveClockinErrorKey(decide.error) as MessageKey)
@@ -165,7 +162,11 @@ export function LeaveClockinDetailPage({ logId }: { logId: string }) {
     );
   } else if (decided !== null) {
     body = (
-      <DecisionResult leaveCase={decided.leaveCase} action={decided.action} />
+      <DecisionResult
+        leaveCase={decided.leaveCase}
+        action={decided.action}
+        focusOnMount
+      />
     );
   } else if (savedAction !== null) {
     // Decided elsewhere (another tab, a refetch): no live buttons.
@@ -186,7 +187,7 @@ export function LeaveClockinDetailPage({ logId }: { logId: string }) {
           <StatusPill status="warning" icon={WifiOff}>
             {t("leaveClockinReview.offline.title")}
           </StatusPill>
-          <p className="text-sm leading-5 text-warning">
+          <p className="leading-6 text-warning">
             {t("leaveClockinReview.offline.description")}
           </p>
         </div>
@@ -200,7 +201,9 @@ export function LeaveClockinDetailPage({ logId }: { logId: string }) {
           offline={!online}
           blocked={isTerminalError(decide.error)}
           errorMessage={errorMessage}
+          keepFocus={decided !== null}
           onConfirm={() => void confirm()}
+          onBackToQueue={backToQueue}
           onOpenChange={(next) => {
             if (!next) close();
           }}
@@ -240,29 +243,6 @@ function DetailSkeleton({ label }: { label: string }) {
   );
 }
 
-function kindStatus(kind: LeaveClockinCase["kind"]) {
-  switch (kind) {
-    case "manual_correction":
-      return {
-        status: "info",
-        icon: PencilLine,
-        label: "leaveClockinReview.status.manualCorrection",
-      } as const;
-    case "re_review":
-      return {
-        status: "warning",
-        icon: RotateCcw,
-        label: "leaveClockinReview.status.reReview",
-      } as const;
-    default:
-      return {
-        status: "warning",
-        icon: TriangleAlert,
-        label: "leaveClockinReview.status.leaveClockIn",
-      } as const;
-  }
-}
-
 function DecisionPanel({
   leaveCase,
   onChoose,
@@ -274,7 +254,6 @@ function DecisionPanel({
   const permissions = useLeaveClockinPermissions();
 
   const date = formatBusinessDate(leaveCase.businessDate);
-  const kind = kindStatus(leaveCase.kind);
   const unknown = t("leaveClockinReview.detail.unknownValue");
   const leave = leaveCase.leave;
   const canCancel = permissions.canCancelLeave;
@@ -305,10 +284,10 @@ function DecisionPanel({
         <span className="tabular">
           {leave.startDate === leave.endDate
             ? formatBusinessDate(leave.startDate)
-            : t("leaveClockinReview.detail.leavePeriodRange", {
-                start: formatBusinessDate(leave.startDate),
-                end: formatBusinessDate(leave.endDate),
-              })}
+            : t(
+                "leaveClockinReview.detail.leavePeriodRange",
+                compactDateRange(leave.startDate, leave.endDate),
+              )}
         </span>
       ) : (
         unknown
@@ -349,16 +328,14 @@ function DecisionPanel({
           <h3 id="leave-clockin-summary" className="type-heading">
             {t("leaveClockinReview.detail.summaryTitle")}
           </h3>
-          <StatusPill status={kind.status} icon={kind.icon}>
-            {t(kind.label)}
-          </StatusPill>
+          <KindPill kind={leaveCase.kind} />
         </div>
         {leaveCase.kind === "re_review" && (
-          <p className="text-sm leading-5 font-medium text-warning">
+          <p className="leading-6 font-medium text-warning">
             {t("leaveClockinReview.reReview.note")}
           </p>
         )}
-        <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[12rem_1fr]">
+        <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-[12rem_1fr]">
           {facts.map((fact) => (
             <div
               key={fact.label}
@@ -371,7 +348,7 @@ function DecisionPanel({
             </div>
           ))}
         </dl>
-        <p className="flex items-start gap-2 rounded-container bg-info-subtle p-3 text-sm leading-5 text-info">
+        <p className="flex items-start gap-2 rounded-container bg-info-subtle p-3 leading-6 text-info">
           <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
           {t("leaveClockinReview.detail.pending")}
         </p>
@@ -385,7 +362,7 @@ function DecisionPanel({
           <h3 id="leave-clockin-decision" className="type-heading">
             {t("leaveClockinReview.decision.title")}
           </h3>
-          <p className="text-sm leading-5">
+          <p className="leading-6">
             {t("leaveClockinReview.decision.prompt", { date })}
           </p>
         </div>
@@ -407,7 +384,7 @@ function DecisionPanel({
             {!canKeep && (
               <p
                 id={KEEP_REASON_ID}
-                className="flex items-start gap-1.5 text-sm leading-5 text-muted-foreground"
+                className="flex items-start gap-1.5 leading-6 text-foreground"
               >
                 <Lock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
                 {t("leaveClockinReview.decision.noKeepRight")}
@@ -417,7 +394,7 @@ function DecisionPanel({
           <div className="grid gap-2">
             <Button
               variant="outline"
-              className="min-h-11 w-full whitespace-normal aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+              className="min-h-11 w-full whitespace-normal aria-disabled:border-dashed aria-disabled:bg-surface-2 aria-disabled:text-muted-foreground aria-disabled:opacity-100 aria-disabled:shadow-none"
               aria-disabled={canCancel ? undefined : "true"}
               aria-describedby={canCancel ? undefined : CANCEL_REASON_ID}
               onClick={() => {
@@ -429,7 +406,7 @@ function DecisionPanel({
             {!canCancel && (
               <p
                 id={CANCEL_REASON_ID}
-                className="flex items-start gap-1.5 text-sm leading-5 text-muted-foreground"
+                className="flex items-start gap-1.5 leading-6 text-foreground"
               >
                 <Lock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
                 {t("leaveClockinReview.decision.noCancelRight")}
@@ -438,7 +415,7 @@ function DecisionPanel({
           </div>
         </div>
 
-        <div className="grid gap-1.5 rounded-container bg-surface-2 p-3 text-sm leading-5 text-muted-foreground">
+        <div className="grid gap-1.5 rounded-container bg-surface-2 p-3 leading-6 text-muted-foreground">
           <p>{t("leaveClockinReview.decision.impact")}</p>
           {(leave?.multiDay ?? false) && (
             <p className="font-medium text-foreground">
