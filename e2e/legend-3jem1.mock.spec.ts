@@ -24,7 +24,7 @@
 //   POST /api/hris/attendance/logs/:logId/review failures use the standard
 //     window.__legendMock.failNext (endpoint id from packages/shared endpoints.ts).
 // Heading levels follow the kelola shell (same as e2e/legend-0z5k.mock.spec.ts):
-// the shell banner owns the page's h1 (the menu label "Tinjauan cuti") and the
+// the shell banner owns the page's h1 (the menu label "Tinjauan absensi") and the
 // screen's own title "Tinjauan absensi" is an h2.
 // The queue renders a table (desktop) and cards (mobile) side by side and hides
 // one with CSS, so text locators on the queue page only count visible matches.
@@ -129,7 +129,7 @@ function seen(locator: Locator): Locator {
   return locator.filter({ visible: true });
 }
 
-/** The screen's own title: an h2 under the shell's h1 "Tinjauan cuti". */
+/** The screen's own title: an h2 under the shell's h1 "Tinjauan absensi". */
 function queueTitle(page: Page) {
   return page.getByRole("heading", { level: 2, name: "Tinjauan absensi" });
 }
@@ -140,7 +140,7 @@ function reviewLinks(page: Page) {
 
 async function expectQueueLoaded(page: Page) {
   await expect(
-    page.getByRole("heading", { level: 1, name: "Tinjauan cuti" }),
+    page.getByRole("heading", { level: 1, name: "Tinjauan absensi" }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
   await expect(queueTitle(page)).toBeVisible();
   await expect(reviewLinks(page)).toHaveCount(CASE_COUNT, {
@@ -259,7 +259,7 @@ test("legend-3jem1 queue 1280: HR sees the cases that need a decision, with leav
   ).toBeVisible();
   // The area menu offers the screen.
   await expect(
-    page.getByRole("link", { name: "Tinjauan cuti" }).first(),
+    page.getByRole("link", { name: "Tinjauan absensi" }).first(),
   ).toBeVisible();
 
   const table = page.getByRole("table");
@@ -819,7 +819,7 @@ test("legend-3jem1 guard: a role without the attendance review right gets no pag
   await expect(
     page.getByRole("heading", { name: "Tinjauan absensi" }),
   ).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Tinjauan cuti" })).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByRole("link", { name: "Tinjauan absensi" }),
+  ).toHaveCount(0);
 });
