@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-k0ub4 item pengganti Rp0 di order promo selesai (engineer Opus, cabang `ws/k0ub4-zero-replacement` dari ws/pti5r-promo-refund 326bfbfa, 2026-11-11)
+
+- Sudah: jalur `nothing_left` untuk pengganti Rp0 di order promo mencatat goods baris asli (sebelum cap dan potongan ruang, `recoveryRefundGoodsIdr`) ke ledger promo, sekali per issue (audit `nothing_left` jadi penanda). Refund item lain sesudahnya tidak membayar porsi promo item asli.
+- Test: `order-recovery-refund-zero-replacement.test.ts` 6 test, gagal-dulu 4/6 di 326bfbfa; area 12 file 199/199. tsc, eslint, prettier bersih.
+- Architect xhigh: skenario Rp0 tidak bisa terjadi lewat API (ORD-09, event amount > 0), jadi ini pertahanan berlapis; satu temuan Rendah (goods dipotong ruang) sudah dibetulkan + test. Risiko di luar diff: `priorLinesIdr` ikut menghitung baris pengganti, cap swap pengganti berharga bisa jatuh ke 0.
+- Berikut: review CTO; dipakai ulang oleh legend-rat9r.
+
 ## legend-iu91r + legend-8kilj refund recovery: edge, kegagalan final, four-eyes payout, release pin (engineer, cabang `ws/refund-recovery-fix` dari ws/94q2l-impl 3b94e7ad + merge milestone/m1 0f2802e7, 2026-11-10)
 
 - R1: `worker-main.ts` menjalankan `deliverOrderRecoveryRefundEvent` hanya bila `sweepsRefunds` (cloud), seperti refund lain (legend-jm5c).
