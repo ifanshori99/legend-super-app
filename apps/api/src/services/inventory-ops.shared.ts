@@ -34,6 +34,7 @@ import {
   type BusinessDayClock,
   type Decimal4,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   convertQuantity,
@@ -43,7 +44,11 @@ import {
   type UomConversion,
 } from "@starter/shared/inventory";
 import type * as schema from "../db/schema/index.ts";
-import { inventoryItems, uomConversions } from "../db/schema/inventory.ts";
+import {
+  inventoryItems,
+  stockLocations,
+  uomConversions,
+} from "../db/schema/inventory.ts";
 import { inventoryOpsIdempotency } from "../db/schema/inventory-ops.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -305,6 +310,33 @@ export async function completeIdempotency(
 }
 
 // ------------------------------------------------------------------ locks
+
+/**
+ * legend-89zm: which of `locationIds` are stock locations of this outlet, with
+ * their active flag. A recipe is brand-wide, so a recipe line may name a
+ * location of another outlet; the deduction and the HPP snapshot share this
+ * lookup to tell such a foreign location (fallback to the outlet sale
+ * location) from an own one.
+ */
+export async function outletLocationStates(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: string,
+  locationIds: readonly string[],
+): Promise<Map<string, boolean>> {
+  if (locationIds.length === 0) return new Map();
+  const rows = await tx
+    .select({ id: stockLocations.id, isActive: stockLocations.isActive })
+    .from(stockLocations)
+    .where(
+      and(
+        eq(stockLocations.tenantId, tenantId),
+        eq(stockLocations.outletId, outletId),
+        inArray(stockLocations.id, [...new Set(locationIds)]),
+      ),
+    );
+  return new Map(rows.map((row) => [row.id, row.isActive]));
+}
 
 /**
  * Takes the per-location advisory locks in ascending order (same key as the

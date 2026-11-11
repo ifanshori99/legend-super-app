@@ -120,6 +120,7 @@ import {
   cursorUuid,
   loadOutletClock,
   lockLocations,
+  outletLocationStates,
   recordOpsAudit,
   requestFingerprint,
   requireOpsPermission,
@@ -365,7 +366,10 @@ function byItemThenLocation(
  * skips the whole deduction as `no_sale_location` (nothing is half posted);
  * with no sale location any other failure also reads `no_sale_location`, as
  * before. A named location that is not a location of this outlet (recipes are
- * brand-wide, locations belong to one outlet) is a `recipe_error`.
+ * brand-wide, locations belong to one outlet) falls back to the outlet sale
+ * location, noted `location_fallback: <original location ids>` on the plan
+ * note (stored in the deduction `reason`); an inactive own location is a
+ * `recipe_error`.
  */
 export async function planDeduction(
   tx: Tx,
@@ -398,27 +402,30 @@ export async function planDeduction(
       ),
     ),
   ];
-  if (namedLocations.length > 0) {
-    // An inactive location is as unusable as a foreign one.
-    const own = await tx
-      .select({ id: stockLocations.id })
-      .from(stockLocations)
-      .where(
-        and(
-          eq(stockLocations.tenantId, context.tenant.tenantId),
-          eq(stockLocations.outletId, outletId),
-          ...(options.allowInactiveLocations
-            ? []
-            : [eq(stockLocations.isActive, true)]),
-          inArray(stockLocations.id, namedLocations),
-        ),
-      );
-    if (own.length !== namedLocations.length) return failed("recipe_error");
+  // A named location of another outlet is not usable here: the draw falls back
+  // to this outlet's sale location (and is recorded as `location_fallback`). An
+  // own location that is inactive is as unusable as before (`recipe_error`).
+  const states = await outletLocationStates(
+    tx,
+    context.tenant.tenantId,
+    outletId,
+    namedLocations,
+  );
+  const fallbackFrom = new Set<string>();
+  for (const locationId of namedLocations) {
+    const active = states.get(locationId);
+    if (active === undefined) fallbackFrom.add(locationId);
+    else if (!active && !options.allowInactiveLocations)
+      return failed("recipe_error");
   }
+  const resolve = (draw: { locationId: string | null }) =>
+    draw.locationId === null || fallbackFrom.has(draw.locationId)
+      ? saleLocationId
+      : draw.locationId;
   if (
     !options.allowInactiveLocations &&
     saleLocationId !== null &&
-    result.draws.some((draw) => draw.locationId === null)
+    result.draws.some((draw) => resolve(draw) === saleLocationId)
   ) {
     // The outlet sale location may have been deactivated since it was set.
     const [active] = await tx
@@ -435,7 +442,7 @@ export async function planDeduction(
   }
   const merged = new Map<string, PlannedDraw>();
   for (const draw of result.draws) {
-    const locationId = draw.locationId ?? saleLocationId;
+    const locationId = resolve(draw);
     if (locationId === null) return failed("no_sale_location");
     const scaled = parseDecimal4(draw.quantity);
     if (scaled <= 0n) continue;
@@ -447,9 +454,16 @@ export async function planDeduction(
   if (merged.size === 0) return failed("no_recipe");
   const draws = [...merged.values()];
   const note =
-    result.unmappedMenuItemIds.length === 0
-      ? null
-      : `no recipe: ${result.unmappedMenuItemIds.join(",")}`;
+    [
+      fallbackFrom.size === 0
+        ? null
+        : `location_fallback: ${[...fallbackFrom].sort().join(",")}`,
+      result.unmappedMenuItemIds.length === 0
+        ? null
+        : `no recipe: ${result.unmappedMenuItemIds.join(",")}`,
+    ]
+      .filter((part): part is string => part !== null)
+      .join("; ") || null;
   return { ok: true, draws, note };
 }
 

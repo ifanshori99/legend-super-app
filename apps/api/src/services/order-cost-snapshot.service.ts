@@ -18,7 +18,11 @@ import { parseDecimal4, type ScopedTenantContext } from "@starter/shared/core";
 import { stockBalances } from "../db/schema/inventory.ts";
 import { outletInventorySettings } from "../db/schema/recipe.ts";
 import { logger } from "../lib/logger.ts";
-import { scaledCostToIdr, type Tx } from "./inventory-ops.shared.ts";
+import {
+  outletLocationStates,
+  scaledCostToIdr,
+  type Tx,
+} from "./inventory-ops.shared.ts";
 import type { DeductionMenuLine } from "./recipe-deduction.service.ts";
 import { explodeMenuLinesEach } from "./recipe-bom.service.ts";
 
@@ -83,13 +87,23 @@ async function computeInSavepoint(
   );
 
   // legend-89zm: a draw is costed at the location it is deducted from, i.e.
-  // its recipe line's location, else the sale location (same resolver as the
-  // deduction). A draw with no location makes its line unknown (null).
-  const locationOf = (draw: { locationId: string | null }) =>
-    draw.locationId ?? saleLocationId;
+  // its recipe line's location when that is a location of this outlet, else the
+  // sale location (same resolver as the deduction, including the fallback for a
+  // line location of another outlet). A draw with no location makes its line
+  // unknown (null).
   const draws = outcomes.flatMap((outcome) =>
     outcome.ok ? outcome.draws : [],
   );
+  const ownLocations = await outletLocationStates(
+    tx,
+    tenantId,
+    outletId,
+    draws.flatMap((draw) => draw.locationId ?? []),
+  );
+  const locationOf = (draw: { locationId: string | null }) =>
+    draw.locationId !== null && ownLocations.has(draw.locationId)
+      ? draw.locationId
+      : saleLocationId;
   const locationIds = [
     ...new Set(draws.flatMap((draw) => locationOf(draw) ?? [])),
   ];
