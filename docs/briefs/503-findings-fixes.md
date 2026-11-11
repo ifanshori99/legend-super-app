@@ -16,3 +16,5 @@ Peran: engineer Sonnet (~/.agents/team/roles/engineer.md). Spawn test-writer + i
 
 Aturan uang: tidak ada nominal yang bisa dibalik/diposting lebih dari sekali; bila ragu, tolak (409) daripada tulis.
 Laporan: bukti gagal-dulu per butir, gate (tsc api heap 6144, eslint, prettier, db:generate), angka subagent, temuan architect. Push ke origin/ws/ledger-guards.
+
+Langkah 0: repo di /Users/ifanshori99/Projects/legend super app/legend. Buat worktree sendiri: `git -C <repo> fetch origin ws/ledger-guards && git -C <repo> worktree add .worktrees/ledger-guards-fixes ws/ledger-guards` (cabang sudah ada; jangan buat cabang baru). Kerja hanya di worktree itu, PORT dan nama DB sendiri.

@@ -7,3 +7,5 @@ Keputusan CTO: filter alasan di server (parameter query di endpoint API yang dip
 
 Cara kerja: spawn test-writer (API: filter alasan + cursor; web: semua halaman termuat) dan implementer API + implementer web paralel, reviewer sonnet di akhir. Fail-first wajib. Gate: tsc api (heap 6144) dan web, eslint, prettier, test terkait lewat `heavy`.
 Selesai: commit + push ke origin/ws/3jem1-hr-leave-review-ui. Laporan: sha, bukti gagal-dulu, angka subagent (total, puncak, pemegang heavy).
+
+Langkah 0: repo di /Users/ifanshori99/Projects/legend super app/legend. Buat worktree sendiri: `git -C <repo> fetch origin ws/3jem1-hr-leave-review-ui && git -C <repo> worktree add .worktrees/3jem1-filter ws/3jem1-hr-leave-review-ui` (cabang sudah ada; jangan buat cabang baru). Kerja hanya di worktree itu, PORT dan nama DB sendiri.
