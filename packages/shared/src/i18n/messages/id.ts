@@ -2596,11 +2596,41 @@ export const id = {
         descriptionHint:
           "Tampil di menu pelanggan. Jelaskan isi dan rasanya, tanpa klaim kesehatan.",
         station: "Stasiun produksi",
+        stationType: "Tipe stasiun",
         course: "Course",
         labels: "Label",
         allergens: "Alergen",
         photo: "Foto",
         active: "Tampil di menu",
+      },
+      station: {
+        title: "Routing stasiun",
+        description:
+          "Pesanan diteruskan ke stasiun produksi yang sesuai di setiap outlet.",
+        brandBadge: "Item merek",
+        typeLabel: "Tipe stasiun",
+        typePlaceholder: "Pilih tipe stasiun",
+        typeHint:
+          "Berlaku untuk merek. Setiap outlet menggunakan stasiun dengan tipe ini.",
+        typeRequired: "Pilih tipe stasiun untuk item ini.",
+        overrideTitle: "Stasiun khusus outlet",
+        overrideHint:
+          "Opsional. Pilih stasiun tertentu untuk menggantikan pemilihan berdasarkan tipe di outlet ini.",
+        outlet: "Outlet",
+        override: "Stasiun khusus",
+        optional: "(opsional)",
+        useType: "Gunakan tipe stasiun",
+        overrideScopeHint: "Pilihan ini hanya berlaku di outlet yang dipilih.",
+        overrideEmpty:
+          "Belum ada stasiun khusus di outlet ini. Item tetap mengikuti tipe stasiun.",
+        noOutlets: "Belum ada outlet. Item tetap mengikuti tipe stasiun.",
+        destination: "Tujuan untuk {outlet}",
+        followsType: "Mengikuti tipe: {type}",
+        followsNone: "Mengikuti tipe: belum dipilih",
+        customStation: "Stasiun khusus: {name}",
+        loading: "Memuat pengaturan stasiun…",
+        loadErrorTitle: "Pengaturan stasiun belum bisa dimuat",
+        loadErrorHint: "Periksa koneksi, lalu coba lagi.",
       },
       type: { single: "Item tunggal", combo: "Paket" },
       course: {

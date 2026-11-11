@@ -43,6 +43,12 @@ import {
 import { useMenuWrites } from "../access";
 import { ImageField, type MenuImageValue } from "./image-field";
 import { ModifierSection } from "./modifier-section";
+import {
+  NO_STATION,
+  StationRoutingSection,
+  STATION_TYPES,
+  type StationTypeValue,
+} from "./station-routing-section";
 import { VariantSection } from "./variant-section";
 
 const LABEL_KEYS = {
@@ -70,6 +76,9 @@ type FormValues = {
   categoryId: string;
   description: string;
   type: "single" | "combo";
+  /** Brand-level station type; "" until one is chosen. */
+  stationType: string;
+  /** Outlet-only override station, or NO_STATION. */
   stationId: string;
   course: string;
   labels: string[];
@@ -86,7 +95,8 @@ function initialValues(item: MenuItemAdmin | null): FormValues {
     categoryId: item?.categoryId ?? "",
     description: item?.description ?? "",
     type: item?.type ?? "single",
-    stationId: item?.stationId ?? NONE,
+    stationType: item?.stationType ?? "",
+    stationId: item?.stationId ?? NO_STATION,
     course: item?.course ?? NONE,
     labels: item?.labels ?? [],
     allergens: item?.allergens ?? [],
@@ -121,8 +131,10 @@ function itemPatch(values: FormValues, item: MenuItemAdmin): ItemPatch {
   if (values.description !== initial.description)
     patch.description = values.description;
   if (values.type !== initial.type) patch.type = values.type;
+  if (values.stationType !== initial.stationType && values.stationType)
+    patch.stationType = values.stationType as StationTypeValue;
   if (values.stationId !== initial.stationId)
-    patch.stationId = values.stationId === NONE ? null : values.stationId;
+    patch.stationId = values.stationId === NO_STATION ? null : values.stationId;
   if (values.course !== initial.course)
     patch.course = values.course === NONE ? null : values.course;
   if (!sameList(values.labels, initial.labels)) patch.labels = values.labels;
@@ -241,6 +253,12 @@ function ItemEditor({
           .min(1, t("menu.errors.required"))
           .max(150, t("menu.errors.tooLong", { max: 150 })),
         categoryId: z.string().min(1, t("menu.errors.required")),
+        stationType: z
+          .string()
+          .refine(
+            (value) => (STATION_TYPES as readonly string[]).includes(value),
+            t("menu.editor.station.typeRequired"),
+          ),
         description: z
           .string()
           .max(1000, t("menu.errors.tooLong", { max: 1000 })),
@@ -302,7 +320,8 @@ function ItemEditor({
       categoryId: parsed.data.categoryId,
       description: parsed.data.description,
       type: values.type,
-      stationId: values.stationId === NONE ? null : values.stationId,
+      stationType: parsed.data.stationType as StationTypeValue,
+      stationId: values.stationId === NO_STATION ? null : values.stationId,
       course: values.course === NONE ? null : values.course,
       labels: values.labels,
       allergens: values.allergens,
@@ -397,203 +416,202 @@ function ItemEditor({
         <TabsContent value="content">
           <form onSubmit={submit} className="grid gap-4">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-              <CardShell>
-                <Card className="gap-4">
-                  <FormField
-                    label={t("menu.editor.fields.name")}
-                    hint={t("menu.editor.fields.nameHint")}
-                    error={errors.name}
-                    required
-                  >
-                    <Input
-                      value={values.name}
-                      onChange={(event) => update({ name: event.target.value })}
-                      autoComplete="off"
-                    />
-                  </FormField>
-
-                  <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid content-start gap-4">
+                <CardShell>
+                  <Card className="gap-4">
                     <FormField
-                      label={t("menu.editor.fields.category")}
-                      error={errors.categoryId}
+                      label={t("menu.editor.fields.name")}
+                      hint={t("menu.editor.fields.nameHint")}
+                      error={errors.name}
                       required
                     >
-                      <Select
-                        value={values.categoryId}
-                        onValueChange={(value) => update({ categoryId: value })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue
-                            placeholder={t("menu.list.filters.category")}
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {categories.map((category) => (
-                            <SelectItem key={category.id} value={category.id}>
-                              {category.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FormField>
-                    <FormField label={t("menu.editor.fields.type")} required>
-                      <Select
-                        value={values.type}
-                        onValueChange={(value) =>
-                          update({ type: value as FormValues["type"] })
+                      <Input
+                        value={values.name}
+                        onChange={(event) =>
+                          update({ name: event.target.value })
                         }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="single">
-                            {t("menu.editor.type.single")}
-                          </SelectItem>
-                          <SelectItem value="combo">
-                            {t("menu.editor.type.combo")}
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
+                        autoComplete="off"
+                      />
                     </FormField>
-                  </div>
 
-                  <FormField
-                    label={t("menu.editor.fields.description")}
-                    hint={t("menu.editor.fields.descriptionHint")}
-                    error={errors.description}
-                  >
-                    <Textarea
-                      value={values.description}
-                      onChange={(event) =>
-                        update({ description: event.target.value })
-                      }
-                      rows={3}
-                    />
-                  </FormField>
-
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField label={t("menu.editor.fields.station")}>
-                      <Select
-                        value={values.stationId}
-                        onValueChange={(value) => update({ stationId: value })}
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        label={t("menu.editor.fields.category")}
+                        error={errors.categoryId}
+                        required
                       >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={NONE}>
-                            {t("menu.list.noStation")}
-                          </SelectItem>
-                          {stations.map((station) => (
-                            <SelectItem key={station.id} value={station.id}>
-                              {station.name}
+                        <Select
+                          value={values.categoryId}
+                          onValueChange={(value) =>
+                            update({ categoryId: value })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue
+                              placeholder={t("menu.list.filters.category")}
+                            />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {categories.map((category) => (
+                              <SelectItem key={category.id} value={category.id}>
+                                {category.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </FormField>
+                      <FormField label={t("menu.editor.fields.type")} required>
+                        <Select
+                          value={values.type}
+                          onValueChange={(value) =>
+                            update({ type: value as FormValues["type"] })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="single">
+                              {t("menu.editor.type.single")}
                             </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FormField>
+                            <SelectItem value="combo">
+                              {t("menu.editor.type.combo")}
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </FormField>
+                    </div>
+
                     <FormField
-                      label={t("menu.editor.fields.course")}
-                      hint={t("menu.editor.courseHint")}
+                      label={t("menu.editor.fields.description")}
+                      hint={t("menu.editor.fields.descriptionHint")}
+                      error={errors.description}
                     >
-                      <Select
-                        value={values.course}
-                        onValueChange={(value) => update({ course: value })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={NONE}>
-                            {t("menu.editor.course.none")}
-                          </SelectItem>
-                          {COURSES.map((course) => (
-                            <SelectItem key={course} value={course}>
-                              {t(`menu.editor.course.${course}`)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <Textarea
+                        value={values.description}
+                        onChange={(event) =>
+                          update({ description: event.target.value })
+                        }
+                        rows={3}
+                      />
                     </FormField>
-                  </div>
 
-                  <fieldset className="grid gap-2">
-                    <legend className="text-sm font-semibold">
-                      {t("menu.editor.fields.labels")}
-                    </legend>
-                    <p className="text-sm leading-5 text-muted-foreground">
-                      {t("menu.editor.labelHint")}
-                    </p>
-                    <div className="flex flex-wrap gap-x-4 gap-y-2">
-                      {labelOptions.map((label) => {
-                        const id = `item-label-${label}`;
-                        return (
-                          <div key={label} className="flex items-center gap-2">
-                            <Checkbox
-                              id={id}
-                              checked={values.labels.includes(label)}
-                              onCheckedChange={() =>
-                                update({
-                                  labels: toggle(values.labels, label),
-                                })
-                              }
-                            />
-                            <Label htmlFor={id} className="font-normal">
-                              {label in LABEL_KEYS
-                                ? t(
-                                    LABEL_KEYS[
-                                      label as keyof typeof LABEL_KEYS
-                                    ],
-                                  )
-                                : label}
-                            </Label>
-                          </div>
-                        );
-                      })}
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        label={t("menu.editor.fields.course")}
+                        hint={t("menu.editor.courseHint")}
+                      >
+                        <Select
+                          value={values.course}
+                          onValueChange={(value) => update({ course: value })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={NONE}>
+                              {t("menu.editor.course.none")}
+                            </SelectItem>
+                            {COURSES.map((course) => (
+                              <SelectItem key={course} value={course}>
+                                {t(`menu.editor.course.${course}`)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </FormField>
                     </div>
-                  </fieldset>
 
-                  <fieldset className="grid gap-2">
-                    <legend className="text-sm font-semibold">
-                      {t("menu.editor.fields.allergens")}
-                    </legend>
-                    <p className="text-sm leading-5 text-muted-foreground">
-                      {t("menu.editor.allergenHint")}
-                    </p>
-                    <div className="flex flex-wrap gap-x-4 gap-y-2">
-                      {allergenOptions.map((allergen) => {
-                        const id = `item-allergen-${allergen}`;
-                        return (
-                          <div
-                            key={allergen}
-                            className="flex items-center gap-2"
-                          >
-                            <Checkbox
-                              id={id}
-                              checked={values.allergens.includes(allergen)}
-                              onCheckedChange={() =>
-                                update({
-                                  allergens: toggle(values.allergens, allergen),
-                                })
-                              }
-                            />
-                            <Label htmlFor={id} className="font-normal">
-                              {allergen in ALLERGEN_KEYS
-                                ? t(
-                                    ALLERGEN_KEYS[
-                                      allergen as keyof typeof ALLERGEN_KEYS
-                                    ],
-                                  )
-                                : allergen}
-                            </Label>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </fieldset>
-                </Card>
-              </CardShell>
+                    <fieldset className="grid gap-2">
+                      <legend className="text-sm font-semibold">
+                        {t("menu.editor.fields.labels")}
+                      </legend>
+                      <p className="text-sm leading-5 text-muted-foreground">
+                        {t("menu.editor.labelHint")}
+                      </p>
+                      <div className="flex flex-wrap gap-x-4 gap-y-2">
+                        {labelOptions.map((label) => {
+                          const id = `item-label-${label}`;
+                          return (
+                            <div
+                              key={label}
+                              className="flex items-center gap-2"
+                            >
+                              <Checkbox
+                                id={id}
+                                checked={values.labels.includes(label)}
+                                onCheckedChange={() =>
+                                  update({
+                                    labels: toggle(values.labels, label),
+                                  })
+                                }
+                              />
+                              <Label htmlFor={id} className="font-normal">
+                                {label in LABEL_KEYS
+                                  ? t(
+                                      LABEL_KEYS[
+                                        label as keyof typeof LABEL_KEYS
+                                      ],
+                                    )
+                                  : label}
+                              </Label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </fieldset>
+
+                    <fieldset className="grid gap-2">
+                      <legend className="text-sm font-semibold">
+                        {t("menu.editor.fields.allergens")}
+                      </legend>
+                      <p className="text-sm leading-5 text-muted-foreground">
+                        {t("menu.editor.allergenHint")}
+                      </p>
+                      <div className="flex flex-wrap gap-x-4 gap-y-2">
+                        {allergenOptions.map((allergen) => {
+                          const id = `item-allergen-${allergen}`;
+                          return (
+                            <div
+                              key={allergen}
+                              className="flex items-center gap-2"
+                            >
+                              <Checkbox
+                                id={id}
+                                checked={values.allergens.includes(allergen)}
+                                onCheckedChange={() =>
+                                  update({
+                                    allergens: toggle(
+                                      values.allergens,
+                                      allergen,
+                                    ),
+                                  })
+                                }
+                              />
+                              <Label htmlFor={id} className="font-normal">
+                                {allergen in ALLERGEN_KEYS
+                                  ? t(
+                                      ALLERGEN_KEYS[
+                                        allergen as keyof typeof ALLERGEN_KEYS
+                                      ],
+                                    )
+                                  : allergen}
+                              </Label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </fieldset>
+                  </Card>
+                </CardShell>
+
+                <StationRoutingSection
+                  stationType={values.stationType}
+                  stationId={values.stationId}
+                  typeError={errors.stationType}
+                  onChange={update}
+                />
+              </div>
 
               <CardShell className="self-start">
                 <Card className="gap-4">
@@ -814,9 +832,16 @@ function ReadOnlyItemContent({
               {item.description || "—"}
             </ReadOnlyRow>
             <div className="grid gap-4 sm:grid-cols-2">
+              <ReadOnlyRow label={t("menu.editor.fields.stationType")}>
+                {item.stationType
+                  ? t(`menu.stations.types.${item.stationType}`)
+                  : "—"}
+              </ReadOnlyRow>
               <ReadOnlyRow label={t("menu.editor.fields.station")}>
                 {station?.name ?? t("menu.list.noStation")}
               </ReadOnlyRow>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
               <ReadOnlyRow label={t("menu.editor.fields.course")}>
                 {course && COURSES.includes(course)
                   ? t(`menu.editor.course.${course}`)
