@@ -17,3 +17,8 @@ Berkas: `cashier-main-*.png`, `captain-*.png` + html sumbernya.
 Berkas: `<layar>-desktop.png`, `<layar>-mobile.png` + html sumbernya.
 
 Commit path-scoped hanya folder bagianmu. Laporan sesuai peran: path gambar, 3 keputusan desain, asumsi untuk founder.
+
+## Bagian C (thread C): HRIS + akses dukungan, folder `design/mockups/hris/` dan `design/mockups/platform/`
+- legend-ydf2 (P1) HRIS karyawan + supervisor: ajukan tukar/ganti shift, cuti, lembur (HP karyawan 390); antrean persetujuan supervisor (1280 + 390). Selaraskan dengan layar tinjauan cuti HR yang sudah dibangun (`docs/design/screenshots/legend-3jem1/` di cabang `origin/ws/3jem1-hr-leave-review-ui`).
+- legend-8r77t (P1) Owner menyetujui/menolak permintaan akses dukungan read_write (siapa, alasan, cakupan, durasi, cabut).
+Keadaan: kosong, sukses, ditolak, offline.
