@@ -1182,3 +1182,4 @@ Langkah berikut CTO baru:
 - 07:46 Founder gate UI kmndq: setuju; tombol email/Google tetap tampil. legend-lnbtp siap, menunggu slot Claude.
 - 07:50 G2xsg 9y6ri selesai f516b937 (110/110, architect xhigh 2 putaran boleh merge, migrasi 0276, cherry-pick f0cbea6d) -> resolve. Kartu P2 legend-7o3hd, legend-em8y2 (wajib sebelum payroll baca absensi). Tanya founder W8: pembatalan cuti sebagian. Brief 442 lnbtp siap; slot Claude 8/8.
 - 07:52 G3x61 Q26 selesai 244ce0e4 (Owner tenant + login pemegang saham saja; architect xhigh approve, 32/32) -> resolve. Mulai G9e2v Sonnet #3 lnbtp (brief 442).
+- 07:53 Founder W8 Q27: batalkan cuti hanya hari datang -> legend-5nt2z (bundel dengan 7o3hd, em8y2, basis ws/9y6ri-leave-clockin-flag; reopen G2xsg saat slot ada).
