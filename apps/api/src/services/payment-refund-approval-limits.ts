@@ -254,6 +254,20 @@ export function refundApprovalDecisionTime(
 }
 
 /**
+ * legend-ykk88: decision time of a chain approval of a payment refund, taken
+ * after the bill lock. Later than every fact already committed on the bill but
+ * without the database clock, so it stays comparable with the application
+ * clock the rest of the request reads.
+ */
+export function refundChainDecisionTime(
+  tx: Tx,
+  refund: Refund,
+  now: Date,
+): Promise<Date> {
+  return billFactTime(tx, refund, now, false);
+}
+
+/**
  * legend-ykk88: fact time of a native POS refund or void of `orderId`, to be
  * taken after the order lock so it is monotonic against every fact of the bill.
  */

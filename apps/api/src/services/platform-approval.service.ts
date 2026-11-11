@@ -110,7 +110,7 @@ import {
 import { PROFIT_SHARE_APPROVAL_SOURCE_MODULE } from "./profit-share-approval";
 import {
   lockRefundApprovalScope,
-  refundApprovalDecisionTime,
+  refundChainDecisionTime,
   refundApprovalLimitRefused,
   refundApprovalWithinLimit,
 } from "./payment-refund-approval-limits.ts";
@@ -1384,7 +1384,7 @@ export async function decideApprovalRequest(
           tenant.tenantId,
           refund.paymentIntentId,
         );
-        decisionAt = await refundApprovalDecisionTime(tx, refund, now);
+        decisionAt = await refundChainDecisionTime(tx, refund, now);
       }
     }
     await lockChain(tx, found.chainId);
@@ -1581,7 +1581,14 @@ export async function decideApprovalRequest(
         payload: requestedPayload(next),
       });
     } else {
-      await emitResolved(tx, context, updated, input.decision, actor, now);
+      await emitResolved(
+        tx,
+        context,
+        updated,
+        input.decision,
+        actor,
+        decisionAt,
+      );
     }
 
     await recordAudit(
