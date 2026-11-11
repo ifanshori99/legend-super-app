@@ -178,10 +178,26 @@ export async function changeEmployeeManager(
         );
         const row = await selectEmployee(tx, context, employeeId, "update");
         if (!row) throw notFound();
-        // The pre-lock check used an unlocked read: the home outlet may have
-        // moved since, so authorise again on the locked row.
-        if (access.viewerFor(row) === null) throw notFound();
-        if (!mayChangeEmployeeManager(access, row)) throw forbidden();
+        // Lock the actor's role assignments (FOR SHARE, as the backfill does
+        // for managers): a revoke or shortening is an UPDATE/DELETE of these
+        // rows, so it cannot commit between the fresh access load below and our
+        // writes, and a revoke that committed while we waited is seen.
+        await tx.execute(
+          sql`SELECT id FROM role_assignments
+              WHERE tenant_id = ${tenantId}::uuid AND user_id = ${access.actorUserId}
+              ORDER BY id FOR SHARE`,
+        );
+        // The pre-lock access was read before waiting on the locks: the role
+        // may have been revoked or expired, and the home outlet may have moved.
+        // Authorise again with the latest access, at the current time.
+        const locked = await loadHrisAccess(
+          tx,
+          context,
+          actorUserId,
+          new Date(),
+        );
+        if (locked.viewerFor(row) === null) throw notFound();
+        if (!mayChangeEmployeeManager(locked, row)) throw forbidden();
         const newManagerId = input.managerId;
         if (newManagerId === row.id)
           throw new HttpError(
@@ -206,7 +222,7 @@ export async function changeEmployeeManager(
           if (
             !manager ||
             manager.status !== "active" ||
-            access.viewerFor(manager) === null
+            locked.viewerFor(manager) === null
           )
             throw new HttpError(
               422,
