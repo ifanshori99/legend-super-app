@@ -9,6 +9,10 @@
 -- exist the index cannot be built; instead of an opaque 23505 this stops with
 -- the rows to resolve by hand (cancel the extra DOIT subscription at the
 -- gateway first, then mark the local row `cancelled`). Nothing is changed here.
+-- The duplicate check reads a FORCE RLS table; a non-superuser owner migrator has no tenant
+-- context and the read fails with "tenant context is required". RLS is un-forced for the
+-- check and forced again right after (merge train batch48h, same pattern as 0202).
+ALTER TABLE public.payment_recurring_subscriptions NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 DO $$
 DECLARE
   dup_count integer;
@@ -25,4 +29,5 @@ BEGIN
   END IF;
 END
 $$;--> statement-breakpoint
+ALTER TABLE public.payment_recurring_subscriptions FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE UNIQUE INDEX "payment_recurring_subscriptions_live_customer_plan_key" ON "payment_recurring_subscriptions" USING btree ("tenant_id","plan_id","customer_profile_id") WHERE "payment_recurring_subscriptions"."status" IN ('pending_first_payment', 'active');

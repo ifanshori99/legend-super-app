@@ -164,6 +164,12 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "defines app.flag_attendance_for_leave: when a leave is approved, UPDATEs the employee's countable or flagged `in` attendance logs inside the leave dates to validity flagged, review pending, reason leave_approved (reopening an HR-accepted log); never inserts or deletes rows, idempotent, tenant-tied SECURITY DEFINER function, runs only when called",
   "0258_leave_clash_backfill.sql":
     "redefines the two leave functions and runs one backfill UPDATE of attendance_logs that flags old logs clashing with an already approved leave (pending review, reason leave_approved); skips logs in closed payroll runs, never inserts or deletes rows, idempotent, FORCE RLS on the touched tables lifted and restored in the same migration",
+  "0270_ledger_version_period_guards.sql":
+    "trigger body that bumps legal_entities.ledger_version when a fiscal period closes or reopens (runtime only, no rows written by the migration)",
+  "0271_depreciation_active_and_reversal_fn.sql":
+    "one backfill UPDATE that stamps fixed_asset_depreciations.reversed_at from existing reversal rows, plus the record_depreciation_reversal function body",
+  "0273_leave_flag_closed_payroll.sql":
+    "redefines app.flag_attendance_for_leave (function body UPDATE of attendance_logs, now skipping logs in closed payroll runs); no rows written by the migration",
 };
 
 // Entrypoints that open a database pool but import no data.

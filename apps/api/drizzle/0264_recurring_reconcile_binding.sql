@@ -24,9 +24,14 @@ CREATE TABLE "payment_recurring_outlet_settings" (
 	CONSTRAINT "payment_recurring_outlet_settings_grace_days_check" CHECK ("payment_recurring_outlet_settings"."grace_days" BETWEEN 0 AND 30)
 );
 --> statement-breakpoint
+-- outlets and tenant_integrations force RLS: ADD CONSTRAINT ... FOREIGN KEY by a non-superuser
+-- owner fails with "tenant context is required" while forced (merge train batch48h, same
+-- pattern as 0202). RLS is re-forced right after the FK block.
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "payment_recurring_outlet_settings" ADD CONSTRAINT "payment_recurring_outlet_settings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_recurring_outlet_settings" ADD CONSTRAINT "payment_recurring_outlet_settings_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_recurring_outlet_settings" ADD CONSTRAINT "payment_recurring_outlet_settings_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 -- TEN-01/TEN-03: tenant + outlet owned (outlet_id NOT NULL).
 SELECT app.enforce_tenant_rls('public.payment_recurring_outlet_settings'::regclass);
 --> statement-breakpoint
