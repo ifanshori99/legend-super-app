@@ -32,3 +32,10 @@ Fakta: tidak ada kolom half-day; `days` = hari kalender dikurangi `excludedHolid
   - Idempoten: panggilan kedua tidak menemukan cuti approved yang memuat D -> tidak mengubah apa pun, tidak mengembalikan lagi.
   - Cek akhir STILL_APPROVED (tidak ada cuti approved memuat D) tetap berlaku; audit memuat id asli, id tail, rentang sebelum/sesudah.
   - Hak: hr.leave.approve di outlet cuti (tetap).
+
+## Review architect (putaran 1) -> perbaikan wajib
+F1 (uang; aturan "ragu = batasi pembayaran", keputusan dilaporkan ke CTO): `0277_flag_attendance_for_leave.sql:~52` filter `review_status IN ('none','pending')` melewatkan log yang sudah `accepted` (mis. setelah cancel_leave log valid/accepted, lalu cuti diajukan lagi di hari itu dan disetujui -> dibayar ganda). Tambah `'accepted'` ke filter dan di SET kosongkan `reviewed_by = NULL, reviewed_at = NULL` (check `attendance_logs_review_check`), review_status pending. Migrasi 0277 belum pernah dipakai di luar cabang ini: ubah di tempat. Log rejected tetap tidak disentuh.
+F2: `hris-attendance-admin.service.ts:~606` menolak semua review untuk log `method = manual_correction`; log koreksi yang kemudian ditandai leave_approved tidak bisa diputuskan. Guard hanya berlaku bila action bukan keep_leave/cancel_leave (aksi lain tetap ditolak).
+F3: `hris-attendance-correction.service.ts` ~:821 (`settleAttendanceCorrection`): rantai bisa diputuskan lewat inbox umum (platform-approval.routes.ts) melewati gate, atau cuti disetujui di antara gate dan settle; `applyApproved` melempar 409 -> rantai approved tapi koreksi macet pending. Sebelum `applyApproved` cek `findApprovedLeaveOnDate`; bila ada cuti, tolak koreksi dengan cause `leave_approved` meniru jalur `payroll_locked` (koreksi berakhir ditolak, bukan macet).
+Tes baru: apps/api/src/test/hris-leave-review-followups.test.ts (file baru per F1/F2/F3).
+Pemilik file: F1 = 0277 sql saja; F2 = hris-attendance-admin.service.ts; F3 = hris-attendance-correction.service.ts.
