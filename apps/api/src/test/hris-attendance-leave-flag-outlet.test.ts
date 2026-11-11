@@ -22,9 +22,10 @@
 //    stays approved.
 //  - `accept` on a log flagged leave_approved is refused (409 or 422) and the
 //    log does not become "valid" (that would pay leave and work).
-//  - cancel_leave is allowed only for a one-day leave equal to the log's
-//    business date; a multi-day leave answers 409 and changes nothing (the
-//    whole transaction rolls back). keep_leave still works.
+//  - cancel_leave on a multi-day leave cancels only the log's business date
+//    (bead legend-5nt2z, founder W8 Q27): 200, the leave is split, exactly one
+//    day goes back to the balance, the other days stay approved. Details are in
+//    hris-attendance-leave-split.test.ts. keep_leave keeps the whole leave.
 //  - Night shift: the shift's business date (yesterday, WIB) is the date used
 //    for detection, so a leave on yesterday flags the clock-in and a leave
 //    only on today (the wall-clock date) does not.
@@ -629,8 +630,8 @@ describe("[F25] HR with access to outlet B only decides a leave that belongs to 
 
 // ---- 3. multi-day leave -------------------------------------------------------
 
-describe("[F25] cancel_leave on a leave that spans several days", () => {
-  it("[F25] cancel_leave answers 409 and changes nothing; keep_leave still works", async () => {
+describe("[F25] cancel_leave on a leave that spans several days (day-only cancel)", () => {
+  it("[F25] cancel_leave cancels only today: the leave is split, one day goes back, the other two stay approved", async () => {
     const staff = await newStaff("m1");
     // Yesterday..tomorrow, 3 days: today is one day inside a longer leave.
     const leaveId = await seedApprovedLeave(staff, -1, 1, 3);
@@ -641,9 +642,50 @@ describe("[F25] cancel_leave on a leave that spans several days", () => {
     );
 
     const cancelled = await review(log.id, { action: "cancel_leave" });
-    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(409);
-    // Whole decision rolled back: no refund of any part of the 3 days.
-    await expectUntouched(staff, leaveId, log, "3.0000");
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(cancelled.body.data.reviewStatus).not.toBe("pending");
+
+    // The original row (yesterday) stays approved; a new approved row (tomorrow) exists.
+    expect(await leaveStatus(staff, leaveId)).toBe("approved");
+    const rows = await asTenant(async (client) => {
+      const { rows } = await client.query(
+        `SELECT id, status, start_date::text AS start, end_date::text AS "end", days::float8 AS days
+           FROM leave_requests
+          WHERE tenant_id = $1 AND employee_id = $2
+          ORDER BY start_date`,
+        [tenant.id, staff.employeeId],
+      );
+      return rows as {
+        id: string;
+        status: string;
+        start: string;
+        end: string;
+        days: number;
+      }[];
+    });
+    expect(rows.map((row) => [row.start, row.end, row.days, row.status])).toEqual(
+      [
+        [wibDate(Date.now() - DAY), wibDate(Date.now() - DAY), 1, "approved"],
+        [wibDate(Date.now() + DAY), wibDate(Date.now() + DAY), 1, "approved"],
+      ],
+    );
+    // Exactly one of the three days is refunded.
+    expect(await balance(staff)).toMatchObject({
+      entitled: "12.0000",
+      used: "2.0000",
+      pending: "0.0000",
+    });
+    expect(await validityOf(staff, log.id)).toBe("valid");
+    expect((await queueEntry(outletA, log.id))?.reviewStatus).not.toBe(
+      "pending",
+    );
+  });
+
+  it("[F25] keep_leave on a multi-day leave keeps all three days and rejects the log", async () => {
+    const staff = await newStaff("m3");
+    const leaveId = await seedApprovedLeave(staff, -1, 1, 3);
+    const log = await clockIn(staff);
+    expect(log.validity).toBe("flagged");
 
     const kept = await review(log.id, { action: "keep_leave" });
     expect(kept.status, JSON.stringify(kept.body)).toBe(200);
