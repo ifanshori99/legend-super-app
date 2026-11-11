@@ -36,3 +36,13 @@ Semua kartu berikut sebelumnya tercakup sebagian. Tautan membuka HTML dengan pil
 | `legend-6om3` | `supervisor.html`: detail selisih tutup shift | [Inbox persetujuan](pos-extra-6om3-inbox.html): supervisor, peminta, kosong, memuat, gagal |
 
 Contoh penutupan: Rp2.230.000 − Rp2.250.000 = −Rp20.000. Contoh pembayaran: Rp220.000 + Rp8.000 + Rp20.000 − Rp100.000 = Rp148.000. QRIS adalah ilustrasi, bukan kode pembayaran. Status yang belum pasti memerlukan pemeriksaan sebelum kode baru disiapkan.
+
+## Tambahan layar dapur — KDS
+
+Mockup layar dapur pada lebar 1280 piksel menggunakan data contoh. Keadaan tersedia melalui pilihan pada masing-masing HTML dan gambar dengan awalan nama kartu yang sama.
+
+| Kartu | Mockup | Cakupan |
+| --- | --- | --- |
+| `legend-sonf` | [Konfigurasi stasiun](pos-extra-kds-sonf-konfigurasi.html) | Urutan tab, status stasiun, dan cetak cadangan |
+| `legend-v4ht` | [Tab stasiun](pos-extra-kds-v4ht-tabs.html) | Pilihan stasiun dengan jumlah pada setiap tab |
+| `legend-uqfu` | [Aksi scanner](pos-extra-kds-uqfu-scanner.html) | Masukan scanner dan umpan balik hasil |
