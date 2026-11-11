@@ -78,7 +78,12 @@ import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
-import { swapPaidValueOf, voucherRoomOf } from "./order-recovery-paid-value.ts";
+import {
+  recoveryPreviewOf,
+  swapCreditOf,
+  swapPaidValueOf,
+  voucherRoomOf,
+} from "./order-recovery-paid-value.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 import {
   lockGuestSessionForPayment,
@@ -836,6 +841,17 @@ export async function listSessionOrderIssues(
     const views: GuestOrderIssue[] = [];
     for (const row of rows) {
       const open = row.issue.status === "open";
+      // legend-pqm3t: one read of the paid value per open issue, without a
+      // lock; the credit shown is the one the swap would mint.
+      const preview = open
+        ? await recoveryPreviewOf(tx, guest, {
+            orderId: row.issue.orderId,
+            issueId: row.issue.id,
+            lineId: row.issue.orderItemId,
+            at: now,
+          })
+        : null;
+      const swap = preview?.swap ?? null;
       views.push(
         guestOrderIssueSchema.parse({
           id: row.issue.id,
@@ -848,34 +864,35 @@ export async function listSessionOrderIssues(
           status: row.issue.status,
           options: {
             swap: {
-              allowed: open,
-              items: open
-                ? candidates
-                    .filter(
-                      (item) =>
-                        item.menuItemId !== row.menuItemId &&
-                        item.unitPriceIdr * row.quantity <= row.lineTotalIdr,
-                    )
-                    .map((item) => ({
-                      menuItemId: item.menuItemId,
-                      name: item.name,
-                      priceIdr: item.unitPriceIdr,
-                      differenceIdr:
-                        item.unitPriceIdr * row.quantity - row.lineTotalIdr,
-                    }))
-                : [],
+              allowed: swap !== null,
+              items:
+                swap === null
+                  ? []
+                  : candidates
+                      .filter(
+                        (item) =>
+                          item.menuItemId !== row.menuItemId &&
+                          item.unitPriceIdr * row.quantity <= swap.listBaseIdr,
+                      )
+                      .map((item) => {
+                        const difference =
+                          item.unitPriceIdr * row.quantity - swap.listBaseIdr;
+                        return {
+                          menuItemId: item.menuItemId,
+                          name: item.name,
+                          priceIdr: item.unitPriceIdr,
+                          // Negative = credited: cut to the paid value left.
+                          differenceIdr:
+                            difference < 0
+                              ? -swapCreditOf(swap, difference)
+                              : difference,
+                        };
+                      }),
             },
-            voucher: await voucherOffer(open, row.lineTotalIdr, () =>
-              voucherRoomOf(
-                tx,
-                guest,
-                {
-                  orderId: row.issue.orderId,
-                  issueId: row.issue.id,
-                  lineId: row.issue.orderItemId,
-                },
-                false,
-              ),
+            voucher: voucherOffer(
+              open,
+              row.lineTotalIdr,
+              preview?.voucherRoomIdr ?? null,
             ),
           },
           resolution: row.issue.resolution,
@@ -898,17 +915,17 @@ export async function listSessionOrderIssues(
 
 /**
  * The voucher a guest is offered for an open issue: the line total, cut to
- * what the item's paid value still leaves (legend-rat9r). Nothing left: not
+ * what the item's paid value still leaves (legend-rat9r, legend-eajpb).
+ * Nothing left, or a paid value that cannot be read (`room` null): not
  * offered.
  */
-async function voucherOffer(
+function voucherOffer(
   open: boolean,
   lineTotalIdr: number,
-  room: () => Promise<number | null>,
-): Promise<{ allowed: boolean; valueIdr: number }> {
-  if (!open) return { allowed: false, valueIdr: 0 };
-  const left = await room();
-  const valueIdr = left === null ? lineTotalIdr : Math.min(lineTotalIdr, left);
+  room: number | null,
+): { allowed: boolean; valueIdr: number } {
+  if (!open || room === null) return { allowed: false, valueIdr: 0 };
+  const valueIdr = Math.min(lineTotalIdr, room);
   return { allowed: valueIdr > 0, valueIdr };
 }
 
@@ -945,17 +962,19 @@ export async function getOrderIssueOptions(
           .slice(0, SUGGESTED_SWAP_LIMIT)
           .map((item) => item.menuItemId),
       },
-      voucher: await voucherOffer(open, found.line.lineTotalIdr, () =>
-        voucherRoomOf(
-          tx,
-          guest,
-          {
-            orderId: found.order.id,
-            issueId: found.issue.id,
-            lineId: found.line.id,
-          },
-          false,
-        ),
+      voucher: voucherOffer(
+        open,
+        found.line.lineTotalIdr,
+        open
+          ? (
+              await recoveryPreviewOf(tx, guest, {
+                orderId: found.order.id,
+                issueId: found.issue.id,
+                lineId: found.line.id,
+                at: now,
+              })
+            ).voucherRoomIdr
+          : null,
       ),
       manualRefundOfferedToCustomer: false,
     });
@@ -972,8 +991,9 @@ type Settlement = {
   voucherId: string | null;
   priceDifferenceIdr: number | null;
   /**
-   * legend-rat9r: what the guest paid for the swapped item (cheaper swap only),
-   * the cap of its voucher and of every later refund of it.
+   * legend-rat9r, legend-hhm5m: what the guest paid for the original item of
+   * the swap chain (every swap; dearer extras left out, read live), the cap
+   * of its vouchers and of every later refund of it.
    */
   paidValueIdr: number | null;
   /** Value of the swap credit voucher (cheaper swap only; 0 = none minted). */
@@ -1182,9 +1202,19 @@ async function swapSettlement(
   const replacement = priced.get(replacementItemId);
   if (!replacement)
     throw unprocessable("Menu pengganti tidak tersedia di outlet ini.");
-  // Against the whole old line (modifiers included): negative is credited.
+  // legend-rat9r, legend-hhm5m: every swap reads the paid value of the
+  // original item of its chain (stored on the issue, the cap of every later
+  // voucher and refund of the item). The difference is measured against the
+  // whole old line (modifiers included) less an extra the guest never paid;
+  // negative is credited. 422 while an earlier extra charge is not settled.
+  const paid = await swapPaidValueOf(tx, context, {
+    orderId: found.order.id,
+    issueId: found.issue.id,
+    lineId: found.line.id,
+    at: now,
+  });
   const difference =
-    replacement.unitPriceIdr * found.line.quantity - found.line.lineTotalIdr;
+    replacement.unitPriceIdr * found.line.quantity - paid.listBaseIdr;
   let approval: {
     approvedBy: string | null;
     approvalRequestId: string;
@@ -1212,25 +1242,13 @@ async function swapSettlement(
     };
   }
   let voucherId: string | null = null;
-  let paidValueIdr: number | null = null;
-  let creditIdr: number | null = null;
-  if (difference < 0) {
-    // legend-rat9r (founder W4 Q25): the credit is the list difference at most
-    // what the guest paid for the item, less what its chain already gave back
-    // (vouchers, live refunds). A credit of 0 mints no voucher and needs no
-    // approval.
-    const paid = await swapPaidValueOf(tx, context, {
-      orderId: found.order.id,
-      issueId: found.issue.id,
-      lineId: found.line.id,
-      at: now,
-    });
-    paidValueIdr = paid.paidValueIdr;
-    creditIdr = Math.min(
-      -difference,
-      Math.max(0, paid.paidValueIdr - paid.givenIdr),
-    );
-  }
+  // The base only: a paid extra is read live from its charge.
+  const paidValueIdr = paid.baseIdr;
+  // legend-rat9r (founder W4 Q25): the credit is the list difference at most
+  // what the guest paid for the item (with the extras really paid), less what
+  // its chain already gave back (vouchers, live refunds). A credit of 0 mints
+  // no voucher and needs no approval.
+  const creditIdr = difference < 0 ? swapCreditOf(paid, difference) : null;
   if (creditIdr !== null && creditIdr > 0) {
     const creditReason =
       `Kredit selisih harga penukaran ${found.line.name}`.slice(0, 500);
@@ -1287,11 +1305,13 @@ async function voucherRoom(
   tx: Tx,
   context: ScopedTenantContext,
   found: IssueContext,
-): Promise<number | null> {
+  now: Date,
+): Promise<number> {
   return voucherRoomOf(tx, context, {
     orderId: found.order.id,
     issueId: found.issue.id,
     lineId: found.line.id,
+    at: now,
   });
 }
 
@@ -1301,9 +1321,9 @@ const voucherSpent = () =>
   );
 
 /**
- * System-issued voucher worth the line total, no approval matrix. A line of a
- * swap chain with a paid value gets at most what that value still leaves
- * (legend-rat9r, founder W4 Q25); nothing left refuses the voucher.
+ * System-issued voucher worth the line total, no approval matrix, at most
+ * what the paid value of the item still leaves (legend-rat9r, legend-hhm5m,
+ * founder W4 Q25); nothing left refuses the voucher.
  */
 async function systemVoucherSettlement(
   tx: Tx,
@@ -1312,11 +1332,8 @@ async function systemVoucherSettlement(
   now: Date,
 ): Promise<Settlement> {
   assertRecoverable(found);
-  const room = await voucherRoom(tx, context, found);
-  const valueIdr =
-    room === null
-      ? found.line.lineTotalIdr
-      : Math.min(found.line.lineTotalIdr, room);
+  const room = await voucherRoom(tx, context, found, now);
+  const valueIdr = Math.min(found.line.lineTotalIdr, room);
   if (valueIdr <= 0) throw voucherSpent();
   const minted = await mintApologyVoucher(tx, context, {
     outletId: found.issue.outletId,
@@ -1577,8 +1594,8 @@ export async function resolveOrderIssue(
           );
         // legend-rat9r: a voucher above what the item's paid value still
         // leaves would pay the guest more than they paid.
-        const room = await voucherRoom(tx, context, found);
-        if (room !== null && Number(apology.valueIdr) > room)
+        const room = await voucherRoom(tx, context, found, now);
+        if (Number(apology.valueIdr) > room)
           throw room <= 0
             ? voucherSpent()
             : unprocessable(
