@@ -9,6 +9,7 @@ Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke 
 - Review: reviewer 5ac3+j0kd, reviewer 0frf+s7szu, architect pajak (aman), reviewer perbaikan pajak, reviewer akhir seluruh cabang (tanpa cacat kebenaran; 3 temuan kecil dibetulkan d14a2890). ui-auditor 2 putaran; T1-T7 dan H1-H2 dibetulkan.
 - Keputusan: d5pz "Tetap nonaktifkan" = draf versi nonaktif (model berversi tetap), toast "Penonaktifan disimpan sebagai draf. Terbitkan agar berlaku."; satu tombol utama "Buat aturan" di header.
 - Menunggu CTO: s7szu memakai layar POS koneksi (mockup menunjukkan "Status edge" backoffice dengan tabel node, butuh API cloud baru); alur 5ac3 "Ajukan untuk persetujuan" belum ada; hub j0kd memakai hub Pengaturan yang ada (mockup 4 baris "Pengaturan tenant").
+- Verifikasi (11 Nov 16:00-16:45): typecheck web + api hijau (web diulang setelah perbaikan akhir), `tests/ws05-tax.test.mjs` 29/29, `tax-archive-draft.test.ts` lulus, e2e mock 8 spec 35/35 lalu woc1+efr+0frf 15/15 setelah perbaikan akhir, ui-check `scripts/ui-check-bo-config.mjs` screenshot 1280 dan 390 di `design/screens/ui-bo-config/` 84 state lulus, axe 0 pelanggaran.
 - Biaya sesi f05bdb0a (15:02-16:20): ~11.0M unit biaya*, 36+ subagent (Claude saja; sonnet 530 req, haiku 66, opus 16), puncak 8, rata 1,35 subagent berjalan.
 
 ## legend-ilzrj WS-10 FE layar PIN slip gaji + sisa percobaan di API (ui-engineer, cabang `ws/payslip-pin-ui` dari `ws/hris-pii-pin` 8305fdc3 + merge `design/payslip-pin`, 2026-11-11)
