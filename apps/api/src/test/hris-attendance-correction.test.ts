@@ -164,15 +164,32 @@ async function templateRoleId(templateKey: string): Promise<string> {
   return rows[0].id;
 }
 
-async function seedEmployee(userId: string | null, outletId: string) {
+/**
+ * A supervisor sees only direct reports, so every employee of the outlet under
+ * test (once the manager's own employee exists) reports to that manager.
+ */
+async function seedEmployee(
+  userId: string | null,
+  outletId: string,
+  managerId: string | null = outletId === outlet?.id
+    ? (managerEmployeeId ?? null)
+    : null,
+) {
   const id = randomUUID();
   createdEmployees.push(id);
   await ownerTx((db) =>
     db.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Absensi API', $5, 'pkwtt', '2025-03-01', 'active')`,
-      [id, tenant.id, userId, `AC-${id.slice(0, 8).toUpperCase()}`, outletId],
+                              employment_type, join_date, status, manager_id)
+       VALUES ($1, $2, $3, $4, 'Karyawan Absensi API', $5, 'pkwtt', '2025-03-01', 'active', $6)`,
+      [
+        id,
+        tenant.id,
+        userId,
+        `AC-${id.slice(0, 8).toUpperCase()}`,
+        outletId,
+        managerId,
+      ],
     ),
   );
   return id;
@@ -220,6 +237,7 @@ let managerOther: Actor; // outlet_manager template at the other outlet
 let noAccess: Actor; // staff without manage or approve permission
 let corrStaff: Actor;
 let employeeCorr: string;
+let managerEmployeeId: string | undefined;
 let employeeMealId: string;
 
 type ClockKind = "valid" | "flagged";
@@ -327,6 +345,7 @@ beforeAll(async () => {
     type: "outlet",
     id: outlet.id,
   });
+  managerEmployeeId = await seedEmployee(manager.userId, outlet.id, null);
   managerOther = await signedInClient("Manajer Lain Absensi API", {
     mfa: true,
   });
@@ -951,8 +970,8 @@ describe("hris.attendance.review own logs and sensitive data", () => {
       type: "outlet",
       id: outlet.id,
     });
-    await seedEmployee(actor.userId, outlet.id);
-    return actor;
+    const employeeId = await seedEmployee(actor.userId, outlet.id);
+    return { ...actor, employeeId };
   }
 
   /** A flagged selfie/geo clock-in by `actor`, optionally from a device. */
@@ -1007,7 +1026,8 @@ describe("hris.attendance.review own logs and sensitive data", () => {
       type: "outlet",
       id: outlet.id,
     });
-    await seedEmployee(staff.userId, outlet.id);
+    // This supervisor reviews only their own direct report.
+    await seedEmployee(staff.userId, outlet.id, supervisor.employeeId);
     const staffLog = await clockFlagged(staff, deviceA);
     const ownLog = await clockFlagged(supervisor, deviceB);
 

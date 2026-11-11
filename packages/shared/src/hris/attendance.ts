@@ -371,6 +371,15 @@ export const attendancePolicyViewSchema = z.strictObject({
 export type AttendancePolicyView = z.infer<typeof attendancePolicyViewSchema>;
 
 /**
+ * The part of the effective policy a staff member sees on the clock-in screen
+ * (GET /api/hris/me/attendance-policy). No retention days, sampling or ids.
+ */
+export const myAttendancePolicySchema = attendancePolicySchema.omit({
+  selfieRetentionDays: true,
+});
+export type MyAttendancePolicy = z.infer<typeof myAttendancePolicySchema>;
+
+/**
  * Flag reasons the server may attach to a stored log. A superset of
  * `attendanceFlagReasonSchema`, kept separate so existing exhaustive
  * consumers of the older enum stay valid.

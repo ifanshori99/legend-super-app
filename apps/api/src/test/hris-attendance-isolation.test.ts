@@ -328,6 +328,18 @@ beforeAll(async () => {
   employeeA2 = await seedEmployee(tenantAId, outletA2);
   employeeA3 = await seedEmployee(tenantAId, outletA3);
   employeeSelf = await seedEmployee(tenantAId, outletA2, selfActor.userId);
+  // An outlet-scoped supervisor reviews only direct reports (manager_id).
+  const supervisorEmployee = await seedEmployee(
+    tenantAId,
+    outletA2,
+    managerOutletA2.userId,
+  );
+  await ownerTx(tenantAId, (client) =>
+    client.query(
+      "UPDATE employees SET manager_id = $1 WHERE tenant_id = $2 AND id = $3",
+      [supervisorEmployee, tenantAId, employeeA2],
+    ),
+  );
   const employeeB = await seedEmployee(tenantB.tenantId, tenantB.outletId);
 
   fixA2 = await seedFixture(tenantAId, outletA2, employeeA2, {

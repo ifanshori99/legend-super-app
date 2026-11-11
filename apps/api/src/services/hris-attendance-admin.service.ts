@@ -28,7 +28,17 @@
 //   policy is `hr.attendance.manage` only, tenant default needs tenant-wide
 //   reach.
 
-import { and, desc, eq, inArray, isNull, lt, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import {
   createUlid,
@@ -76,6 +86,11 @@ import {
   cancelApprovedLeaveOnDateByHr,
   findApprovedLeaveOnDate,
 } from "./hris-leave-request.service.ts";
+import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
+import {
+  redeductCollectiveLeaveForRejectedDay,
+  reverseCollectiveLeaveForWorkedDay,
+} from "./hris-leave-collective.service.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -84,6 +99,8 @@ import {
   loadHrisAccess,
   notFound,
   uniqueViolation,
+  isReachedEmployee,
+  reachedEmployeeCondition,
   type HrisAccess,
   type HrisReach,
   type Tx,
@@ -508,6 +525,22 @@ export async function listAttendanceReviewQueue(
       filters.push(eq(attendanceLogs.outletId, query.outletId));
     else if (reach.kind === "outlets")
       filters.push(inArray(attendanceLogs.outletId, [...reach.outletIds]));
+    // HR keeps its reach; a supervisor-only holder reviews only subordinates,
+    // plus sees their own log (read only: nobody decides their own review).
+    const reachedRows = reachedEmployeeCondition(
+      tx,
+      context.tenant.tenantId,
+      access,
+      ATTENDANCE_SUPERVISOR_CODES,
+      attendanceLogs.outletId,
+      attendanceLogs.employeeId,
+    );
+    filters.push(
+      or(
+        ...(reachedRows ? [reachedRows] : []),
+        ...(access.own ? [eq(attendanceLogs.employeeId, access.own.id)] : []),
+      ) ?? sql`false`,
+    );
     if (query.businessDate !== undefined)
       filters.push(eq(attendanceLogs.businessDate, query.businessDate));
 
@@ -597,6 +630,25 @@ export async function decideAttendanceReview(
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const reach = access.reach(ATTENDANCE_SUPERVISOR_CODES);
     if (reach === null) throw forbidden();
+    // Lock order: employee lock, then the log row, then the balance and the
+    // ledger. The log's employee is read without a lock to take the employee
+    // lock first; the locked row is checked against it below.
+    const [peek] = await tx
+      .select({ employeeId: attendanceLogs.employeeId })
+      .from(attendanceLogs)
+      .where(
+        and(
+          eq(attendanceLogs.tenantId, context.tenant.tenantId),
+          eq(attendanceLogs.id, logId),
+        ),
+      )
+      .limit(1);
+    if (peek)
+      await lockEmployeeLeaveAttendance(
+        tx,
+        context.tenant.tenantId,
+        peek.employeeId,
+      );
     const [row] = await tx
       .select()
       .from(attendanceLogs)
@@ -610,9 +662,28 @@ export async function decideAttendanceReview(
       .for("update");
     // Another outlet answers like a missing row.
     if (!row || !inReach(reach, row.outletId)) throw notFound("Absensi");
+    // The row moved to another employee between the peek and the lock: the
+    // lock held is the wrong one, so refuse instead of reversing under it.
+    if (!peek || lower(peek.employeeId) !== lower(row.employeeId))
+      throw conflict(
+        "ATTENDANCE_REVIEW_CHANGED",
+        "Absensi berubah saat diproses. Muat ulang lalu coba lagi.",
+      );
     // Nobody reviews their own attendance, whatever their reach.
     if (access.own !== null && lower(access.own.id) === lower(row.employeeId))
       throw forbidden();
+    // Another supervisor's employee answers like a missing row.
+    if (
+      !(await isReachedEmployee(
+        tx,
+        context.tenant.tenantId,
+        access,
+        ATTENDANCE_SUPERVISOR_CODES,
+        row.outletId,
+        row.employeeId,
+      ))
+    )
+      throw notFound("Absensi");
     // A manual correction is decided through its approval chain, so only the
     // leave decisions (on a leave-flagged log) may review it.
     const isLeaveDecision =
@@ -744,6 +815,28 @@ export async function decideAttendanceReview(
       )
       .returning();
     if (!updated) throw new Error("Attendance review update returned no row");
+    // An accepted `in` log counts as worked: give back a collective-leave
+    // deduction for that day in this transaction (idempotent; none on reject).
+    if (isInLog && reviewStatus === "accepted" && validity === "valid")
+      await reverseCollectiveLeaveForWorkedDay(
+        tx,
+        context,
+        actorUserId,
+        row.employeeId,
+        row.businessDate,
+        now,
+      );
+    // An `in` log that is REJECTED takes a day it gave back out again (once,
+    // terminal). Flagging back to pending writes nothing (founder Q42).
+    if (isInLog && reviewStatus === "rejected")
+      await redeductCollectiveLeaveForRejectedDay(
+        tx,
+        context,
+        actorUserId,
+        row.employeeId,
+        row.businessDate,
+        now,
+      );
     await recordAudit(
       tx,
       context,

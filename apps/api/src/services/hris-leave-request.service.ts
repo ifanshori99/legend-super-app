@@ -89,6 +89,10 @@ import {
 import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
 import { flagAttendanceForApprovedLeave } from "./hris-leave-attendance-flag.service.ts";
 import {
+  assertPayrollOpenInRange,
+  isPayrollClosedInRange,
+} from "./hris-payroll-lock.ts";
+import {
   countLeaveDays,
   expireBalanceCarryOver,
   lockBalanceForUpdate,
@@ -130,11 +134,37 @@ const LEAVE_BALANCE_AUDIT_SAFE_FIELDS = [
   "carriedOverDays",
 ] as const;
 
-/** RLS scope of exactly one outlet: approval rows are outlet-owned (TEN-03). */
+const LEAVE_REQUEST_AUDIT_SAFE_FIELDS = [
+  ...HRIS_AUDIT_SAFE_FIELDS,
+  "cause",
+] as const;
+
+const PAYROLL_LOCKED_MESSAGE =
+  "Periode payroll sudah dikunci; cuti pada tanggal itu tidak bisa diubah.";
+
+/** legend-0c5yg: 409 when any day of the leave lies in a closed payroll run. */
+function assertLeaveRangeOpen(
+  tx: Tx,
+  tenantId: TenantId,
+  employeeId: string,
+  start: string,
+  end: string,
+): Promise<void> {
+  return assertPayrollOpenInRange(
+    tx,
+    tenantId,
+    employeeId,
+    start,
+    end,
+    PAYROLL_LOCKED_MESSAGE,
+  );
+}
+
 function conflict(code: string, message: string): HttpError {
   return new HttpError(409, code, message);
 }
 
+/** RLS scope of exactly one outlet: approval rows are outlet-owned (TEN-03). */
 function outletScoped(
   context: ScopedTenantContext,
   outletId: string,
@@ -789,6 +819,16 @@ export async function createLeaveRequest(
       return presentRequest(tx, scoped, access, replayed, signer, now);
     }
 
+    // Before any write: leave on a date in a closed payroll run would change
+    // pay already settled (backdated filing included).
+    await assertLeaveRangeOpen(
+      tx,
+      tenantId,
+      own.id,
+      input.startDate,
+      input.endDate,
+    );
+
     const type = await loadLeaveType(tx, tenantId, input.leaveTypeId, true);
     if (!type || !type.row.isActive)
       throw new HttpError(
@@ -1062,6 +1102,16 @@ export async function decideLeaveRequest(
     if (replay) return { row, openId: null, replay: true };
     // Validates the transition (409 CONFLICT when not allowed).
     transitionLeaveRequest(row.status as LeaveRequestStatus, input.action);
+    // Refuse before the approval chain records the decision (applyOutcome
+    // checks again under the employee lock).
+    if (input.action === "approve")
+      await assertLeaveRangeOpen(
+        tx,
+        context.tenant.tenantId,
+        row.employeeId,
+        row.startDate,
+        row.endDate,
+      );
     let openId: string | null = null;
     if (input.action !== "cancel" && row.approvalChainId) {
       const [open] = await tx
@@ -1117,7 +1167,7 @@ async function cancelLeaveRequest(
     // Employee lock first, then the leave row, then balances: the same order as
     // cancelApprovedLeaveOnDateByHr (HR cancel), so the two cannot deadlock.
     await lockEmployeeLeaveAttendance(tx, gateRow.tenantId, gateRow.employeeId);
-    const row = await findRequest(tx, scoped.tenant.tenantId, gateRow.id, true);
+    let row = await findRequest(tx, scoped.tenant.tenantId, gateRow.id, true);
     if (!row) throw notFound("Pengajuan cuti");
     if (row.status === "cancelled") return;
     transitionLeaveRequest(row.status as LeaveRequestStatus, "cancel");
@@ -1132,10 +1182,23 @@ async function cancelLeaveRequest(
         });
         // The chain finished first (approved/rejected): settle decides, not us.
         if (outcome !== "cancelled" && outcome !== "pending") {
-          await applyOutcome(tx, scoped, row, outcome, now);
-          return;
+          const settled = await applyOutcome(tx, scoped, row, outcome, now);
+          // Approver won the race and the leave is now approved: the end state
+          // is the serial order approve-then-cancel, so go on into the
+          // approved-cancel branch below (payroll guard included).
+          if (outcome !== "approved" || settled.status !== "approved") return;
+          const settledRow = await findRequest(
+            tx,
+            scoped.tenant.tenantId,
+            gateRow.id,
+            true,
+          );
+          if (!settledRow) throw notFound("Pengajuan cuti");
+          row = settledRow;
         }
       }
+    }
+    if (row.status === "pending") {
       await moveBalance(
         tx,
         scoped,
@@ -1145,6 +1208,14 @@ async function cancelLeaveRequest(
         now,
       );
     } else {
+      // approved: giving the days back would change pay of a closed period.
+      await assertLeaveRangeOpen(
+        tx,
+        scoped.tenant.tenantId,
+        row.employeeId,
+        row.startDate,
+        row.endDate,
+      );
       // approved: only before the first day of leave.
       if (row.startDate <= localDateOf(now))
         throw new HttpError(
@@ -1294,6 +1365,15 @@ export async function cancelApprovedLeaveOnDateByHr(
       unpaid.add(row.id);
       continue;
     }
+    // legend-0c5yg: cancelling changes pay of the whole leave, so any day of
+    // it in a closed payroll run refuses (the tx rolls back, nothing changed).
+    await assertLeaveRangeOpen(
+      tx,
+      tenantId,
+      row.employeeId,
+      row.startDate,
+      row.endDate,
+    );
     const pieces = [
       leavePiece(row, row.startDate, addDays(day, -1)),
       leavePiece(row, addDays(day, 1), row.endDate),
@@ -1471,19 +1551,35 @@ function leavePiece(row: LeaveRequestRow, start: string, end: string) {
 
 // --------------------------------------------------------------- settle
 
-/** Chain outcome (not pending) → request + balance. Caller holds the row lock. */
+/**
+ * Chain outcome (not pending) → request + balance. Caller holds the row lock.
+ * `cause` is set when an approval ends rejected because the period is closed.
+ */
 async function applyOutcome(
   tx: Tx,
   context: ScopedTenantContext,
   row: LeaveRequestRow,
   outcome: "approved" | "rejected" | "expired" | "cancelled",
   now: Date,
-): Promise<LeaveRequestStatus> {
+): Promise<{ status: LeaveRequestStatus; cause?: "payroll_locked" }> {
   // legend-x0avw F1: before any leave or balance write, serialise with
   // clock-ins and corrections of this employee (lock first, always).
   await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
   const scaledDays = parseDecimal4(row.days);
-  if (outcome === "approved") {
+  // legend-0c5yg: approving moves the balance and flags the clash logs; both
+  // change pay. Approved through the general inbox while the period closed
+  // (the chain is already approved, a 409 would loop): end rejected by the
+  // system, days released, nothing deducted or flagged.
+  const payrollLocked =
+    outcome === "approved" &&
+    (await isPayrollClosedInRange(
+      tx,
+      context.tenant.tenantId,
+      row.employeeId,
+      row.startDate,
+      row.endDate,
+    ));
+  if (outcome === "approved" && !payrollLocked) {
     const [final] = await tx
       .select({
         decidedBy: approvalRequests.decidedBy,
@@ -1516,12 +1612,13 @@ async function applyOutcome(
     if (!approved) throw new Error("Leave request update returned no row");
     await appendLeaveApproved(tx, context, approved, now);
     await flagAttendanceForApprovedLeave(tx, context, approved);
-    return "approved";
+    return { status: "approved" };
   }
   // A human rejection keeps the chain's last decision. A matrix expiry or a
   // system cancel has no human decider: decidedBy stays null (never the
   // requester) and decidedAt is the settle time.
-  const systemEnded = outcome === "expired" || outcome === "cancelled";
+  const systemEnded =
+    outcome === "expired" || outcome === "cancelled" || payrollLocked;
   const [last] = await tx
     .select({
       decidedBy: approvalRequests.decidedBy,
@@ -1556,7 +1653,9 @@ async function applyOutcome(
       updatedAt: now,
     })
     .where(eq(leaveRequests.id, row.id));
-  return "rejected";
+  return payrollLocked
+    ? { status: "rejected", cause: "payroll_locked" }
+    : { status: "rejected" };
 }
 
 /**
@@ -1570,13 +1669,20 @@ export async function settleLeaveRequest(
   leaveRequestId: string,
   now = new Date(),
 ): Promise<LeaveRequestStatus> {
-  const outletId = await withTenant(db, context, async (tx) => {
+  const target = await withTenant(db, context, async (tx) => {
     const row = await findRequest(tx, context.tenant.tenantId, leaveRequestId);
-    return row?.outletId ?? null;
+    return row ? { outletId: row.outletId, employeeId: row.employeeId } : null;
   });
-  if (outletId === null) throw notFound("Pengajuan cuti");
-  const scoped = outletScoped(context, outletId);
+  if (target === null) throw notFound("Pengajuan cuti");
+  const scoped = outletScoped(context, target.outletId);
   return withTenant(db, scoped, async (tx) => {
+    // Employee lock first, then the leave row: the one order every leave path
+    // uses (cancelLeaveRequest, HR cancel), so settle cannot deadlock with them.
+    await lockEmployeeLeaveAttendance(
+      tx,
+      scoped.tenant.tenantId,
+      target.employeeId,
+    );
     const row = await findRequest(
       tx,
       scoped.tenant.tenantId,
@@ -1591,7 +1697,7 @@ export async function settleLeaveRequest(
       sourceModule: HRIS_LEAVE_SOURCE_MODULE,
     });
     if (outcome === "pending") return "pending";
-    const status = await applyOutcome(tx, scoped, row, outcome, now);
+    const { status, cause } = await applyOutcome(tx, scoped, row, outcome, now);
     const [updated] = await tx
       .select()
       .from(leaveRequests)
@@ -1610,15 +1716,15 @@ export async function settleLeaveRequest(
               action: `hris.leave_request.${status}`,
               objectType: HRIS_LEAVE_OBJECT_TYPE,
               objectId: updated.id,
-              after: { status },
+              after: cause ? { status, cause } : { status },
             },
           ),
-          // System end (expired / system cancel) has no human actor.
+          // System end (expired / system cancel / closed period) has no human actor.
           ...(updated.decidedBy
             ? {}
             : { actorType: "system" as const, actorId: null }),
         },
-        HRIS_AUDIT_SAFE_FIELDS,
+        LEAVE_REQUEST_AUDIT_SAFE_FIELDS,
       );
     return status;
   });

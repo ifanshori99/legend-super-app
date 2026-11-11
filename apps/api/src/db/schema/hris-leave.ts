@@ -135,7 +135,11 @@ export const leaveBalances = pgTable(
  * Idempotency ledger for accrual, carry-over, carry-over expiry and the
  * collective-leave ("cuti bersama") deduction. `period` is `YYYY` or `YYYY-MM`,
  * or the holiday date `YYYY-MM-DD` for `collective_leave`; `days` is signed
- * (expiry and collective leave are negative).
+ * (expiry and collective leave are negative). `collective_leave_reversal` is
+ * the compensating +1 row of a deduction whose day was later worked (the
+ * deduction row is never deleted); one per employee and date.
+ * `collective_leave_rededuction` (-1) takes that day back when the accepted
+ * log is later rejected or re-flagged; once per employee and date, terminal.
  */
 export const leaveAccruals = pgTable(
   "leave_accruals",
@@ -144,9 +148,14 @@ export const leaveAccruals = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     employeeId: uuid("employee_id").notNull(),
     leaveTypeId: uuid("leave_type_id").notNull(),
-    kind: varchar("kind", { length: 20 })
+    kind: varchar("kind", { length: 30 })
       .$type<
-        "grant" | "carry_over" | "carry_over_expiry" | "collective_leave"
+        | "grant"
+        | "carry_over"
+        | "carry_over_expiry"
+        | "collective_leave"
+        | "collective_leave_reversal"
+        | "collective_leave_rededuction"
       >()
       .notNull(),
     period: varchar("period", { length: 10 }).notNull(),
@@ -167,6 +176,14 @@ export const leaveAccruals = pgTable(
     uniqueIndex("leave_accruals_collective_leave_key")
       .on(table.tenantId, table.employeeId, table.period)
       .where(sql`${table.kind} = 'collective_leave'`),
+    // The compensating row is once per employee and date as well.
+    uniqueIndex("leave_accruals_collective_leave_reversal_key")
+      .on(table.tenantId, table.employeeId, table.period)
+      .where(sql`${table.kind} = 'collective_leave_reversal'`),
+    // And the rededuction, terminal after the reversal.
+    uniqueIndex("leave_accruals_collective_leave_rededuction_key")
+      .on(table.tenantId, table.employeeId, table.period)
+      .where(sql`${table.kind} = 'collective_leave_rededuction'`),
     foreignKey({
       name: "leave_accruals_employee_fk",
       columns: [table.tenantId, table.employeeId],
@@ -179,7 +196,7 @@ export const leaveAccruals = pgTable(
     }),
     check(
       "leave_accruals_kind_check",
-      sql`${table.kind} IN ('grant', 'carry_over', 'carry_over_expiry', 'collective_leave')`,
+      sql`${table.kind} IN ('grant', 'carry_over', 'carry_over_expiry', 'collective_leave', 'collective_leave_reversal', 'collective_leave_rededuction')`,
     ),
     check(
       "leave_accruals_period_check",

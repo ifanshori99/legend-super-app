@@ -555,7 +555,11 @@ function clockInBody() {
 }
 
 async function clockIn(s: Scenario) {
-  const response = await post(s.staff, "/api/hris/attendance/clock", clockInBody());
+  const response = await post(
+    s.staff,
+    "/api/hris/attendance/clock",
+    clockInBody(),
+  );
   expect(response.status, JSON.stringify(response.body)).toBe(201);
   return response.body.data as { id: string; validity: string };
 }
@@ -675,9 +679,10 @@ async function runBackfill(
     await client.query("DROP VIEW pg_temp.attendance_logs_scope");
     if (runIds.length > 0) {
       await client.query("SET LOCAL session_replication_role = replica");
-      await client.query("DELETE FROM payroll_runs WHERE id = ANY($1::uuid[])", [
-        runIds,
-      ]);
+      await client.query(
+        "DELETE FROM payroll_runs WHERE id = ANY($1::uuid[])",
+        [runIds],
+      );
     }
     await client.query("COMMIT");
   } catch (error) {
@@ -784,9 +789,9 @@ describe("[F2] 0258 backfill flags old leave + attendance clashes", () => {
 
     await runBackfill([s.employeeId]);
     const afterFirst = [await dbLog(first), await dbLog(second)];
-    expect(afterFirst.map((row) => countReason(row, "leave_approved"))).toEqual([
-      1, 1,
-    ]);
+    expect(afterFirst.map((row) => countReason(row, "leave_approved"))).toEqual(
+      [1, 1],
+    );
 
     await runBackfill([s.employeeId]);
     expect([await dbLog(first), await dbLog(second)]).toEqual(afterFirst);
@@ -850,7 +855,7 @@ describe("[P2-2] 0258 backfill leaves closed payroll periods alone", () => {
 });
 
 describe("[P2-2] app.flag_attendance_for_leave in a closed payroll period", () => {
-  it("[P2-2] does not reopen an accepted log in a locked run, still flags a valid log there", async () => {
+  it("[P2-2] flags neither an accepted nor a valid log inside a locked run (legend-0c5yg)", async () => {
     const s = await newScenario("p22f");
     await s.seedLeave({
       status: "approved",
@@ -865,6 +870,7 @@ describe("[P2-2] app.flag_attendance_for_leave in a closed payroll period", () =
     });
     const valid = await seedLog(s, { validity: "valid", offsetDays: 1 });
     const acceptedBefore = await dbLog(accepted);
+    const validBefore = await dbLog(valid);
 
     // Both days sit in a locked run that exists only inside this transaction,
     // which is rolled back after the reads.
@@ -897,12 +903,13 @@ describe("[P2-2] app.flag_attendance_for_leave in a closed payroll period", () =
         "SELECT log_id FROM app.flag_attendance_for_leave($1::uuid, $2::uuid, $3::date, $4::date)",
         [tenant.id, s.employeeId, dateAt(0), dateAt(1)],
       );
-      expect(flagged.rows.map((row) => row.log_id)).toEqual([valid]);
+      expect(flagged.rows.map((row) => row.log_id)).toEqual([]);
     } finally {
       await client.query("ROLLBACK").catch(() => undefined);
       client.release();
     }
     expect(await dbLog(accepted)).toEqual(acceptedBefore);
+    expect(await dbLog(valid)).toEqual(validBefore);
   });
 });
 

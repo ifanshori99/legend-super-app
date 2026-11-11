@@ -1835,6 +1835,27 @@
       "when": 1794357000000,
       "tag": "0275_depreciation_insert_reversed_at_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 276,
+      "version": "7",
+      "when": 1794358000000,
+      "tag": "0276_leave_flag_closed_payroll",
+      "breakpoints": true
+    },
+    {
+      "idx": 277,
+      "version": "7",
+      "when": 1794359000000,
+      "tag": "0277_collective_leave_reversal",
+      "breakpoints": true
+    },
+    {
+      "idx": 278,
+      "version": "7",
+      "when": 1794360000000,
+      "tag": "0278_collective_leave_rededuction",
+      "breakpoints": true
     }
   ]
 }

@@ -50,6 +50,7 @@ const owner = new Pool({
 const createdUsers: string[] = [];
 const createdRoles: string[] = [];
 const createdEmployees: string[] = [];
+let managerEmployeeId: string;
 const createdOutlets: string[] = [];
 const KEY_PREFIX = "att-corr-leave-";
 let insertedApprovalPolicy = false;
@@ -240,6 +241,23 @@ beforeAll(async () => {
   manager = await signedInClient("Manajer Koreksi Cuti", { mfa: true });
   await assignRole(manager.userId, managerRole, outletA);
   await assignRole(manager.userId, managerRole, outletB);
+  // A supervisor decides only for direct reports, so the manager is an employee.
+  managerEmployeeId = randomUUID();
+  createdEmployees.push(managerEmployeeId);
+  await ownerTx((db) =>
+    db.query(
+      `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
+                              employment_type, join_date, status)
+       VALUES ($1, $2, $3, $4, 'Manajer Koreksi Cuti', $5, 'pkwtt', '2025-03-01', 'active')`,
+      [
+        managerEmployeeId,
+        tenant.id,
+        manager.userId,
+        `CM-${managerEmployeeId.slice(0, 8).toUpperCase()}`,
+        outletA,
+      ],
+    ),
+  );
 
   const type = await post(hr.client, "/api/hris/leave/types", {
     code: `CLD_${randomUUID().slice(0, 8).toUpperCase().replace(/-/g, "")}`,
@@ -373,14 +391,15 @@ async function newScenario(label: string): Promise<Scenario> {
   await ownerTx((db) =>
     db.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Koreksi Cuti', $5, 'pkwtt', '2025-03-01', 'active')`,
+                              employment_type, join_date, status, manager_id)
+       VALUES ($1, $2, $3, $4, 'Karyawan Koreksi Cuti', $5, 'pkwtt', '2025-03-01', 'active', $6)`,
       [
         employeeId,
         tenant.id,
         staff.userId,
         `CL-${employeeId.slice(0, 8).toUpperCase()}`,
         outletA,
+        managerEmployeeId,
       ],
     ),
   );

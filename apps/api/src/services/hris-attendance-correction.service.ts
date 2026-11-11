@@ -62,7 +62,6 @@ import {
   attendanceLogs,
 } from "../db/schema/hris-attendance.ts";
 import { shiftAssignments } from "../db/schema/hris-scheduling.ts";
-import { payrollRuns } from "../db/schema/payroll.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -73,8 +72,10 @@ import {
   cursorPair,
   forbidden,
   hrisAuditEntry,
+  isReachedEmployee,
   loadHrisAccess,
   notFound,
+  reachedEmployeeCondition,
   uniqueViolation,
   type HrisAccess,
   type Tx,
@@ -82,6 +83,7 @@ import {
 import { computeWorkTiming } from "./hris-attendance-logic.ts";
 import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
 import { findApprovedLeaveOnDate } from "./hris-leave-request.service.ts";
+import { assertPayrollOpen, isPayrollClosed } from "./hris-payroll-lock.ts";
 import { loadOutletTimeZone } from "./hris-scheduling-common.ts";
 import {
   decideApprovalRequest,
@@ -175,27 +177,46 @@ async function auditCorrection(
 
 // ------------------------------------------------------------ visibility
 
-/** Outlets whose corrections the caller may list/decide, plus their own rows. */
-function visibleCondition(access: HrisAccess): SQL | null {
-  const reach = access.reach(MANAGE_CODES);
+/**
+ * Corrections the caller may list/decide, plus their own rows. Tenant-wide
+ * reach (HR) sees all; outlet reach (supervisor) only direct reports inside
+ * those outlets (employees.manager_id).
+ */
+function visibleCondition(
+  tx: Tx,
+  tenantId: TenantId,
+  access: HrisAccess,
+): SQL | null {
   const conditions: SQL[] = [];
-  if (reach?.kind === "tenant") return sql`true`;
-  if (reach)
-    conditions.push(
-      inArray(attendanceCorrections.outletId, [...reach.outletIds]),
-    );
+  const managed = reachedEmployeeCondition(
+    tx,
+    tenantId,
+    access,
+    MANAGE_CODES,
+    attendanceCorrections.outletId,
+    attendanceCorrections.employeeId,
+  );
+  if (managed) conditions.push(managed);
+  // Reach without reports (no employee record): an empty list, not a 403.
+  else if (access.reach(MANAGE_CODES) !== null) conditions.push(sql`false`);
   if (access.own)
     conditions.push(eq(attendanceCorrections.employeeId, access.own.id));
   return conditions.length === 0 ? null : or(...conditions)!;
 }
 
-function canSee(access: HrisAccess, row: CorrectionRow): boolean {
+async function canSee(
+  tx: Tx,
+  access: HrisAccess,
+  row: CorrectionRow,
+): Promise<boolean> {
   if (access.own && lower(access.own.id) === lower(row.employeeId)) return true;
-  const reach = access.reach(MANAGE_CODES);
-  if (!reach) return false;
-  return (
-    reach.kind === "tenant" ||
-    reach.outletIds.some((id) => id === lower(row.outletId))
+  return isReachedEmployee(
+    tx,
+    row.tenantId,
+    access,
+    MANAGE_CODES,
+    row.outletId,
+    row.employeeId,
   );
 }
 
@@ -221,58 +242,9 @@ async function findCorrection(
 
 // --------------------------------------------------------------- payroll
 
-/**
- * 409 when a closed payroll run (locked, paid or reversed) covers any of the
- * dates. The run has no outlet; with a legal entity on the employee only that
- * entity's runs count, otherwise every run of the tenant does (fail closed).
- */
-async function assertPayrollOpen(
-  tx: Tx,
-  tenantId: TenantId,
-  employeeId: string,
-  dates: readonly string[],
-): Promise<void> {
-  if (!(await isPayrollClosed(tx, tenantId, employeeId, dates))) return;
-  throw new HttpError(
-    409,
-    "PAYROLL_PERIOD_LOCKED",
-    "Periode payroll sudah dikunci; koreksi absensi tidak bisa diajukan.",
-  );
-}
-
-async function isPayrollClosed(
-  tx: Tx,
-  tenantId: TenantId,
-  employeeId: string,
-  dates: readonly string[],
-): Promise<boolean> {
-  const [employee] = await tx
-    .select({ legalEntityId: employees.legalEntityId })
-    .from(employees)
-    .where(and(eq(employees.tenantId, tenantId), eq(employees.id, employeeId)))
-    .limit(1);
-  const filters: SQL[] = [
-    eq(payrollRuns.tenantId, tenantId),
-    or(
-      inArray(payrollRuns.status, ["locked", "paid", "reversed"]),
-      isNotNull(payrollRuns.lockedAt),
-    )!,
-    or(
-      ...dates.map(
-        (date) =>
-          sql`(${payrollRuns.periodStart} <= ${date}::date AND ${payrollRuns.periodEnd} >= ${date}::date)`,
-      ),
-    )!,
-  ];
-  if (employee?.legalEntityId)
-    filters.push(eq(payrollRuns.legalEntityId, employee.legalEntityId));
-  const [closed] = await tx
-    .select({ id: payrollRuns.id })
-    .from(payrollRuns)
-    .where(and(...filters))
-    .limit(1);
-  return closed !== undefined;
-}
+// The closed-period check itself lives in hris-payroll-lock.ts (shared with leave).
+const PAYROLL_LOCKED_MESSAGE =
+  "Periode payroll sudah dikunci; koreksi absensi tidak bisa diajukan.";
 
 /** Outlet-local dates a correction touches: the requested time and the log's own day. */
 async function correctionDates(
@@ -444,7 +416,13 @@ export async function requestAttendanceCorrection(
       attendanceLogId: input.attendanceLogId,
       requestedOccurredAt: requestedAt,
     });
-    await assertPayrollOpen(tx, tenantId, own.id, dates);
+    await assertPayrollOpen(
+      tx,
+      tenantId,
+      own.id,
+      dates,
+      PAYROLL_LOCKED_MESSAGE,
+    );
 
     const [inserted] = await tx
       .insert(attendanceCorrections)
@@ -523,7 +501,7 @@ export async function listAttendanceCorrections(
 ): Promise<Page<AttendanceCorrection>> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId);
-    const visible = visibleCondition(access);
+    const visible = visibleCondition(tx, context.tenant.tenantId, access);
     if (visible === null) throw forbidden();
     const filters: SQL[] = [
       eq(attendanceCorrections.tenantId, context.tenant.tenantId),
@@ -580,7 +558,8 @@ async function getCorrection(
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId);
     const row = await findCorrection(tx, context.tenant.tenantId, correctionId);
-    if (!row || !canSee(access, row)) throw notFound("Koreksi absensi");
+    if (!row || !(await canSee(tx, access, row)))
+      throw notFound("Koreksi absensi");
     return toCorrection(row);
   });
 }
@@ -603,7 +582,8 @@ export async function decideAttendanceCorrection(
   const gate = await withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const row = await findCorrection(tx, context.tenant.tenantId, correctionId);
-    if (!row || !canSee(access, row)) throw notFound("Koreksi absensi");
+    if (!row || !(await canSee(tx, access, row)))
+      throw notFound("Koreksi absensi");
     if (
       !access.snapshot.allows(APPROVE_CODE, {
         type: "outlet",
@@ -622,7 +602,13 @@ export async function decideAttendanceCorrection(
     );
     if (input.action === "approve") {
       const { dates, timeZone, logDate } = await correctionDates(tx, row);
-      await assertPayrollOpen(tx, row.tenantId, row.employeeId, dates);
+      await assertPayrollOpen(
+        tx,
+        row.tenantId,
+        row.employeeId,
+        dates,
+        PAYROLL_LOCKED_MESSAGE,
+      );
       // Before decideApprovalRequest: a refused day must not leave an
       // approved chain behind a pending correction.
       await assertNoApprovedLeave(
@@ -763,6 +749,31 @@ async function applyApproved(
 }
 
 /**
+ * Whether the last decider of the chain reaches the correction's employee at
+ * its outlet (tenant reach, HR, or direct supervisor), the same rule as the
+ * correction endpoints (`canSee`). Re-read here because the inbox decision
+ * only checks role and outlet.
+ */
+async function deciderReachesEmployee(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: CorrectionRow,
+  decidedBy: string | null,
+  now: Date,
+): Promise<boolean> {
+  if (decidedBy === null) return false;
+  const access = await loadHrisAccess(tx, context, decidedBy, now);
+  return isReachedEmployee(
+    tx,
+    row.tenantId,
+    access,
+    MANAGE_CODES,
+    row.outletId,
+    row.employeeId,
+  );
+}
+
+/**
  * Applies the approval chain outcome to the correction. Locks the row,
  * re-reads the chain from the database (an event payload is a trigger, never
  * the authority) and does nothing when the correction is no longer pending or
@@ -825,7 +836,14 @@ export async function settleAttendanceCorrection(
       // ends rejected instead of failing later in applyApproved.
       await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
       const { dates, timeZone, logDate } = await correctionDates(tx, row);
-      if (await isPayrollClosed(tx, row.tenantId, row.employeeId, dates)) {
+      if (!(await deciderReachesEmployee(tx, scoped, row, decidedBy, now))) {
+        // Approved through the general inbox (skips the decision gate's reach
+        // check) by an approver who is not this employee's supervisor or HR:
+        // never write the log. No decider on an approved chain fails closed.
+        cause = "not_supervisor";
+      } else if (
+        await isPayrollClosed(tx, row.tenantId, row.employeeId, dates)
+      ) {
         // Approved, but the period closed while the chain was open: no log.
         cause = "payroll_locked";
       } else if (
