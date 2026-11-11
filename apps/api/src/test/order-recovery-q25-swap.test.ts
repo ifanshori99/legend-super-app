@@ -666,7 +666,7 @@ describe("legend-hhm5m 1: tukar berantai, tambahan belum dibayar tidak dihitung"
     const { first, secondIssueId } = await refusedReswap(paid);
 
     // The same open issue can still be settled by an approved refund of what was paid.
-    const event = await resolveForRefund(secondIssueId, ITEM_A_PAID);
+    const event = await resolveForRefund(secondIssueId, ITEM_B_PRICE);
     await deliver(event);
 
     const total =
