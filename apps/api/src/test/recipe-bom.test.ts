@@ -603,7 +603,7 @@ async function ledgerRows(locationId: string, itemId: string) {
   }>(
     `SELECT movement_type, source_type, quantity::text AS quantity
      FROM stock_ledger WHERE tenant_id = $1 AND location_id = $2 AND inventory_item_id = $3
-     ORDER BY occurred_at, id`,
+     ORDER BY posting_seq`,
     [tenantA, locationId, itemId],
   );
   return rows;

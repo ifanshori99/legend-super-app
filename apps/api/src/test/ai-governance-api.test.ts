@@ -225,7 +225,7 @@ describe("PATCH /api/ai/governance", () => {
     ]);
     const audit = await owner.query(
       `SELECT event -> 'maskedChanges' -> 'after' AS after FROM audit_logs
-        WHERE tenant_id = $1 AND event ->> 'action' = 'ai_settings.updated' ORDER BY created_at DESC LIMIT 1`,
+        WHERE tenant_id = $1 AND event ->> 'action' = 'ai_settings.updated' ORDER BY event ->> 'createdAt' DESC, id DESC LIMIT 1`,
       [tenant.id],
     );
     expect(audit.rows[0].after).toMatchObject({
@@ -234,7 +234,7 @@ describe("PATCH /api/ai/governance", () => {
     });
     const outbox = await owner.query(
       `SELECT event -> 'payload' -> 'changedFields' AS fields FROM domain_event_outbox
-        WHERE tenant_id = $1 AND aggregate_type = 'ai_settings' ORDER BY created_at DESC LIMIT 1`,
+        WHERE tenant_id = $1 AND aggregate_type = 'ai_settings' ORDER BY sequence DESC, id DESC LIMIT 1`,
       [tenant.id],
     );
     expect(outbox.rows[0].fields).toEqual(

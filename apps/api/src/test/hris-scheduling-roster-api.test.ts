@@ -1689,7 +1689,7 @@ describe("§28 Roster Mingguan: publication, events and notifications", () => {
               WHERE tenant_id = $1 AND event->>'name' = 'shift.published'
                 AND event->'payload'->>'outletId' = $2
                 AND ($3::boolean IS FALSE OR destination = 'notification')
-              ORDER BY created_at`,
+              ORDER BY aggregate_id, sequence, id`,
             [tenant.id, jkt, onlyNotification],
           );
           return rows.map((row) => row.event);

@@ -887,7 +887,7 @@ describe("F17 production batches (PRD §17 Produksi Batch, INV-02)", () => {
     // production_orders.recipe_id has a real FK (legend-tk7i): the recipe row
     // must exist; the in-memory source still supplies its lines.
     const { rows: brandRows } = await owner.query<{ id: string }>(
-      "SELECT id FROM brands WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+      "SELECT id FROM brands WHERE tenant_id = $1 ORDER BY id LIMIT 1",
       [tenantA],
     );
     const { rows: recipeRows } = await owner.query<{ id: string }>(

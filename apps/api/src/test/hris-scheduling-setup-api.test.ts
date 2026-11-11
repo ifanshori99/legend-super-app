@@ -232,7 +232,7 @@ async function policyAuditRows(): Promise<
   { outlet_id: string | null; event: Record<string, unknown> }[]
 > {
   const { rows } = await owner.query(
-    "SELECT outlet_id, event FROM audit_logs WHERE tenant_id = $1 AND event->>'action' = 'hris.shift_policy.updated' ORDER BY created_at, id",
+    "SELECT outlet_id, event FROM audit_logs WHERE tenant_id = $1 AND event->>'action' = 'hris.shift_policy.updated' ORDER BY event->>'createdAt', id",
     [tenant.id],
   );
   return rows;

@@ -496,7 +496,8 @@ describe("legend-leqj6 the POS late-payment refund ignores refunds still pending
     expect(await tenderOf(tenderId)).toMatchObject({ status: "voided" });
     const rows = await refundRows(bill.intentId);
     expect(rows).toHaveLength(2);
-    expect(rows[1]).toMatchObject({
+    // Found by who filed it, not by position: created_at can tie or step back.
+    expect(rows.find((row) => row.requested_by === "system:pos")).toMatchObject({
       amount: "60000",
       requested_by: "system:pos",
     });

@@ -271,7 +271,7 @@ async function auditRows(
       WHERE tenant_id = $1 AND event->>'action' = $2
         AND ($3::text IS NULL OR event->>'actorId' = $3)
         AND ($4::text IS NULL OR event->>'objectId' = $4)
-      ORDER BY created_at, id`,
+      ORDER BY event->>'createdAt', id`,
     [forTenantId, action, filter.actorId ?? null, filter.objectId ?? null],
   );
   return result.rows.map((row) => row.event);

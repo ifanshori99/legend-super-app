@@ -693,7 +693,7 @@ export async function outboxEvents(
     const { rows } = await client.query<{ payload: Record<string, unknown> }>(
       `SELECT event->'payload' AS payload FROM domain_event_outbox
         WHERE tenant_id = $1 AND event->>'name' = $2 AND event->'payload'->>'customerProfileId' = $3
-        ORDER BY created_at`,
+        ORDER BY aggregate_id, sequence, id`,
       [tenantId, name, profileId],
     );
     return rows;

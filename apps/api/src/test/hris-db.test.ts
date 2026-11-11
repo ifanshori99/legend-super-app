@@ -199,7 +199,7 @@ async function auditRows(objectId: string) {
     client.query<{ event: Record<string, unknown>; raw: string }>(
       `SELECT event, event::text AS raw FROM audit_logs
         WHERE tenant_id = $1 AND event->>'objectId' = $2
-        ORDER BY created_at, id`,
+        ORDER BY event->>'createdAt', id`,
       [tenantId, objectId],
     ),
   );

@@ -473,12 +473,16 @@ const ACCOUNTING_EVENTS = [
   "order.refunded",
 ];
 
-/** Every accounting input of the tenant, in outbox order. */
+/**
+ * Every accounting input of the tenant in causal order (a payment before its
+ * order and before its refund). created_at is not a key: the DB clock can step
+ * back, so rows inserted in sequence may swap.
+ */
 async function accountingInputs(): Promise<EventEnvelope[]> {
   const { rows } = await owner.query<{ event: unknown }>(
     `SELECT event FROM domain_event_outbox
       WHERE tenant_id = $1 AND event->>'name' = ANY($2::text[])
-      ORDER BY created_at, id`,
+      ORDER BY array_position($2::text[], event->>'name'), created_at, id`,
     [tenant.tenantId, ACCOUNTING_EVENTS],
   );
   return rows.map((row) => eventEnvelopeSchema.parse(row.event));

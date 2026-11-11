@@ -178,7 +178,7 @@ async function refundsOf(fundIds: string[]) {
     amount_idr: string;
     status: string;
   }>(
-    "SELECT unallocated_fund_id, amount_idr::text, status FROM payment_refunds WHERE unallocated_fund_id = ANY($1::uuid[]) ORDER BY created_at",
+    "SELECT unallocated_fund_id, amount_idr::text, status FROM payment_refunds WHERE unallocated_fund_id = ANY($1::uuid[]) ORDER BY array_position($1::uuid[], unallocated_fund_id)",
     [fundIds],
   );
   return rows;

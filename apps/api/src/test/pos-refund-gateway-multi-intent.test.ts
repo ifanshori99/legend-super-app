@@ -422,10 +422,10 @@ describe("legend-ghgei F2 partial POS refund of a multi-QRIS order", () => {
     await posRefund(sale, await refundInput(sale, 50_000));
     await posRefund(sale, await refundInput(sale, 30_000));
 
-    expect((await refundRows(a.intentId)).map((r) => r.amount)).toEqual([
-      "50000",
-      "10000",
-    ]);
+    // Sorted: created_at can tie or step back, the set of amounts is the point.
+    expect(
+      (await refundRows(a.intentId)).map((r) => r.amount).sort(),
+    ).toEqual(["10000", "50000"]);
     expect((await refundRows(b.intentId)).map((r) => r.amount)).toEqual([
       "20000",
     ]);

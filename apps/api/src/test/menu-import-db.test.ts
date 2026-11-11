@@ -57,11 +57,18 @@ const file = (...lines: string[]) => ({
   brandId: brand.id,
 });
 
-const testStartedAt = new Date();
+// Taken from the DB clock with a margin: created_at defaults to now() of the
+// DB host, which can step back against this process's clock (Colima).
+let testStartedAt = new Date();
 let staff: Staff;
 const isolatedTenants: IsolatedTenant[] = [];
 
 beforeAll(async () => {
+  testStartedAt = (
+    await owner.query<{ t: Date }>(
+      "SELECT now() - interval '5 seconds' AS t",
+    )
+  ).rows[0]!.t;
   staff = await staffWithRole(app, { template: "owner", tenantId });
   const client = await owner.connect();
   try {
