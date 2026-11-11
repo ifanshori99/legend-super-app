@@ -163,8 +163,10 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
       "public.member_profile_user_index",
       // legend-2qq: hpp_outlet_state holds only stale markers and tenant RLS
       // only (0259_hpp_recompute.sql): an outlet-scoped actor must mark other
-      // outlets stale (markHppStale). Added by merge train batch48g; CTO and
-      // architect confirmation pending, same status as the entries above.
+      // outlets stale (markHppStale). Architect audit (merge train batch48g,
+      // CTO-ordered): no user-facing path reads this table, only the HPP
+      // worker under a trusted context. A new outlet-scoped read path needs
+      // a new review before it may read it.
       "public.hpp_outlet_state",
     ];
     const result = await ownerPool.query<{ table: string }>(
