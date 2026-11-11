@@ -125,6 +125,11 @@ export type PublicRateLimitOptions = {
    * the windows stay in this process. A failing store falls back to it.
    */
   store?: SharedWindowStore;
+  /**
+   * Prefix of the shared-store bucket names (`<prefix>:ip`, `<prefix>:tenant`),
+   * so limiters with different limits never share a Redis key. Default "public".
+   */
+  bucketPrefix?: string;
 };
 
 // The counter lives in lib/fixed-window-counter.ts (env-free, so the edge
@@ -199,6 +204,8 @@ export function publicRateLimit(
   const perIpLimit = options.perIp ?? env.PUBLIC_RATE_LIMIT_PER_MINUTE;
   const perTenantLimit =
     options.perTenant ?? env.PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE;
+  const ipBucket = `${options.bucketPrefix ?? "public"}:ip`;
+  const tenantBucket = `${options.bucketPrefix ?? "public"}:tenant`;
   const store = resolveWindowStore({ store: options.store, capacity, clock });
 
   return async (req, res, next) => {
@@ -215,9 +222,9 @@ export function publicRateLimit(
     const [ipResult, tenantResult] = await Promise.all([
       !visitor && internalIps.has(ip)
         ? null
-        : store.take("ip", clientIpKey(ip), perIpLimit, windowMs),
+        : store.take(ipBucket, clientIpKey(ip), perIpLimit, windowMs),
       tenant
-        ? store.take("tenant", tenant.tenantId, perTenantLimit, windowMs)
+        ? store.take(tenantBucket, tenant.tenantId, perTenantLimit, windowMs)
         : null,
     ]);
     const limited =
@@ -245,7 +252,11 @@ export function publicRateLimit(
 // differences so a venue is never blocked on one NAT address: the per-IP
 // budget is sized for a whole dining room (every guest shares one address),
 // and one table session also has its own bucket (keyed on its credential) so a
-// single runaway table cannot spend the venue's budget. Staff POSTs on the same
+// single runaway table is capped at its own session budget. IP and tenant are
+// checked first (legend-494: a random bearer must not create a key before that
+// check passes), so a request the session bucket refuses has already been
+// charged to the IP and tenant buckets: a table that keeps retrying after its
+// 429 still spends the venue's shared budget. Staff POSTs on the same
 // prefix that carry a staff session cookie are not counted here.
 
 /** Per-IP guest budget as a multiple of the public per-IP budget (venue NAT). */
@@ -299,8 +310,17 @@ function isStaffTableSessionCall(req: Request): boolean {
 
 const GUEST_CREDENTIAL_HEADER = /^Bearer ([A-Za-z0-9_-]{20,256})$/;
 
-export type GuestSessionRateLimitOptions = Partial<PublicRateLimitOptions> & {
+export type GuestSessionRateLimitOptions = Partial<
+  Omit<PublicRateLimitOptions, "bucketPrefix">
+> & {
   perSession?: number;
+  /**
+   * Credential-bearing requests allowed per client IP in one window. Bounds the
+   * session keys one IP can create in the shared store. Off by default (no
+   * extra store call): `guest:ip` already bounds those keys at the guest per-IP
+   * limit. Set it to bound them tighter.
+   */
+  perIpCredentials?: number;
 };
 
 /**
@@ -314,18 +334,36 @@ export function guestSessionRateLimit(
   const capacity = options.capacity ?? PUBLIC_RATE_LIMIT_CAPACITY;
   const clock = options.now ?? Date.now;
   const perSessionLimit = options.perSession ?? GUEST_SESSION_PER_MINUTE;
+  const perIpLimit =
+    options.perIp ??
+    env.PUBLIC_RATE_LIMIT_PER_MINUTE * GUEST_SESSION_NAT_FACTOR;
+  const perIpCredentialsLimit = options.perIpCredentials;
+  const internalIps = new Set(
+    options.internalIps ?? env.PUBLIC_RATE_LIMIT_INTERNAL_IPS,
+  );
   const store = resolveWindowStore({ store: options.store, capacity, clock });
+  // "guest" buckets, apart from the public reads': same IP, different limits.
   const ipAndTenant = publicRateLimit({
     ...options,
-    perIp:
-      options.perIp ??
-      env.PUBLIC_RATE_LIMIT_PER_MINUTE * GUEST_SESSION_NAT_FACTOR,
+    perIp: perIpLimit,
     perTenant:
       options.perTenant ?? env.PUBLIC_RATE_LIMIT_GUEST_TENANT_PER_MINUTE,
+    bucketPrefix: "guest",
   });
 
   return async (req, res, next) => {
     if (isStaffTableSessionCall(req)) return next();
+    // IP and tenant first: a request they refuse answers 429 before any
+    // credential key exists, so a flood of random bearers from a limited IP
+    // creates nothing in the shared store.
+    let passed = false;
+    let passedArg: unknown;
+    await ipAndTenant(req, res, (arg?: unknown) => {
+      passed = true;
+      passedArg = arg;
+    });
+    if (!passed) return;
+    if (passedArg !== undefined) return next(passedArg as Error);
     // Keyed on the credential, not the URL id: every device at a table shares
     // one credential (ORD-01), while a stranger who puts a victim's session id
     // in the URL with a junk credential only spends their own bucket. A request
@@ -334,10 +372,30 @@ export function guestSessionRateLimit(
       req.get("authorization") ?? "",
     )?.[1];
     if (credential) {
+      // Optional (perIpCredentials): credential-bearing requests capped per IP
+      // per window, charged before the session bucket, so one IP creates at
+      // most that many session keys per window. Same visitor-IP rule as
+      // publicRateLimit.
+      const visitor = req.ssrVisitorIp;
+      const ip = visitor ?? clientIp(req);
+      if (
+        perIpCredentialsLimit !== undefined &&
+        (visitor || !internalIps.has(ip))
+      ) {
+        const credIp = await store.take(
+          "guest:cred-ip",
+          clientIpKey(ip),
+          perIpCredentialsLimit,
+          windowMs,
+        );
+        if (!credIp.allowed) {
+          rejectRateLimited(res, retrySeconds(credIp.retryAfterMs));
+        }
+      }
       const tenant = findTenantContext(req);
       const digest = createHash("sha256").update(credential).digest("hex");
       const result = await store.take(
-        "session",
+        "guest:session",
         `${tenant?.tenantId ?? ""}:${digest}`,
         perSessionLimit,
         windowMs,
@@ -346,7 +404,7 @@ export function guestSessionRateLimit(
         rejectRateLimited(res, retrySeconds(result.retryAfterMs));
       }
     }
-    return ipAndTenant(req, res, next);
+    next();
   };
 }
 
@@ -430,10 +488,10 @@ export function createPublicBookingLimits(
       const [ipResult, tenantResult] = await Promise.all([
         !visitor && internalIps.has(ip)
           ? null
-          : store.take("write-ip", clientIpKey(ip), perIpLimit, windowMs),
+          : store.take("booking:ip", clientIpKey(ip), perIpLimit, windowMs),
         tenant
           ? store.take(
-              "write-tenant",
+              "booking:tenant",
               tenant.tenantId,
               perTenantLimit,
               windowMs,
