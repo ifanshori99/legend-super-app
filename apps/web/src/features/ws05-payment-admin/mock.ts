@@ -47,8 +47,6 @@ const ACTOR = {
   name: "Budi Supervisor",
 };
 
-const ONLINE_METHODS = new Set(["qris", "card", "ewallet", "va", "paylater"]);
-
 type MockState = {
   routes: PaymentRoute[];
   outletRoutes: PaymentRoute[];
@@ -533,16 +531,24 @@ function approveRefundOnce(refundId: string, note: string | undefined) {
       "CONFLICT",
       "Refund ini sudah diputuskan sebelumnya.",
     );
-  // A gateway refund settles immediately; a manual transfer/EDC refund stays
-  // `approved` until finance completes it (PRD "Refund").
-  const online = ONLINE_METHODS.has(refund.method);
+  // Fail closed like the API: the server-computed `viewerCanApprove` stands for
+  // payment.reconcile + pos.refund.approve (or an open approval chain level) at
+  // the outlet. Without it nothing is approved.
+  if (!refund.viewerCanApprove)
+    throw new ApiError(
+      403,
+      "PERMISSION_DENIED",
+      "Akun Anda tidak dapat melakukan tindakan ini.",
+    );
+  // Approval never completes a refund: only the provider payout (or finance
+  // for a manual refund) does, so it ends `approved` with no provider ref.
   const updated: RefundView = {
     ...refund,
-    status: online ? "completed" : "approved",
+    status: "approved",
     approvedBy: ACTOR.id,
     approvedByName: ACTOR.name,
     viewerCanApprove: false,
-    providerRef: online ? `RF-${Date.now().toString(36).toUpperCase()}` : null,
+    providerRef: null,
     note: note ?? refund.note,
     decidedAt: now(),
   };
@@ -581,6 +587,13 @@ function resolveFundOnce(fundId: string, body: ResolveUnallocatedFundInput) {
   if (!fund) throw new ApiError(404, "NOT_FOUND", "Dana tidak ditemukan.");
   if (fund.status === "resolved")
     throw new ApiError(409, "CONFLICT", "Dana ini sudah diselesaikan.");
+  // Credit has no approved ledger adapter; never represent it as completed.
+  if (body.resolution === "credit")
+    throw new ApiError(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "Persetujuan kredit belum tersedia.",
+    );
   const updated: UnallocatedFundView = {
     ...fund,
     resolution: body.resolution,

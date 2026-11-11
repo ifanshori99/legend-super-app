@@ -22,12 +22,7 @@ import {
 } from "@starter/shared/payment/admin";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import {
-  outlets,
-  paymentRoutingRules,
-  roleAssignments,
-  user,
-} from "../db/schema";
+import { outlets, paymentRoutingRules, user } from "../db/schema";
 import {
   paymentEdcTerminals,
   paymentCashierDefaults,
@@ -43,7 +38,11 @@ import {
 import { listPlatformGateways } from "./platform-payment-gateway.service";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { appendPaymentEvent, assertPaymentPermission } from "./payment-support";
-import type { Tx } from "./permission-resolver";
+import {
+  loadTenantAccessInTransaction,
+  resolveAccessSnapshot,
+  type Tx,
+} from "./permission-resolver";
 import type { z } from "zod";
 
 async function authorize(
@@ -73,6 +72,25 @@ async function outletName(tx: Tx, ctx: ScopedTenantContext, outletId: string) {
     );
   if (!row) throw new CoreError("NOT_FOUND", "Outlet not found.");
   return row.name;
+}
+/** True when the user holds an active assignment whose role grants
+ * pos.payment.accept at this outlet (outlet scope for it, or tenant scope):
+ * the people a cashier default can be kept for (TEN-03). */
+async function isOutletCashier(
+  tx: Tx,
+  ctx: ScopedTenantContext,
+  userId: string,
+  outletId: string,
+  now: Date,
+) {
+  const data = await loadTenantAccessInTransaction(tx, ctx, userId);
+  return resolveAccessSnapshot({
+    tenant: ctx.tenant,
+    userId,
+    ...data,
+    mfaVerified: false,
+    now,
+  }).allows("pos.payment.accept", { type: "outlet", id: outletId });
 }
 type ConfigEvent =
   | "payment_route.updated"
@@ -509,6 +527,29 @@ export async function updateEdcTerminal(
           terminalChanges(old),
           terminalChanges(row),
         );
+        // EDC-07: an inactive terminal must not stay a cashier's default.
+        if (row.status !== "active") {
+          const cleared = await tx
+            .delete(paymentCashierDefaults)
+            .where(
+              and(
+                eq(paymentCashierDefaults.tenantId, ctx.tenant.tenantId),
+                eq(paymentCashierDefaults.terminalId, row.id),
+              ),
+            )
+            .returning();
+          for (const gone of cleared)
+            await record(
+              tx,
+              ctx,
+              actor,
+              gone.outletId,
+              "cashier_payment_default.updated",
+              gone.id,
+              defaultChanges(gone),
+              { ...defaultChanges(gone), terminalId: null, removed: true },
+            );
+        }
         return terminalView(row, name);
       },
     );
@@ -532,16 +573,30 @@ export async function getEdcCashierDefaults(
           eq(paymentEdcTerminals.outletId, q.outletId),
         ),
       );
-    const cashiers = await tx
+    const rows = await tx
       .select({ row: paymentCashierDefaults, name: user.name })
       .from(paymentCashierDefaults)
-      .innerJoin(user, eq(user.id, paymentCashierDefaults.cashierId))
+      .innerJoin(
+        user,
+        eq(user.id, sql`${paymentCashierDefaults.cashierId}::text`),
+      )
       .where(
         and(
           eq(paymentCashierDefaults.tenantId, ctx.tenant.tenantId),
           eq(paymentCashierDefaults.outletId, q.outletId),
         ),
       );
+    // Only current cashiers of this outlet, and never a dead terminal.
+    const active = new Set(
+      terminals.filter((t) => t.status === "active").map((t) => t.id),
+    );
+    const now = new Date();
+    const cashiers = [];
+    for (const c of rows) {
+      if (c.row.terminalId && !active.has(c.row.terminalId)) continue;
+      if (await isOutletCashier(tx, ctx, c.row.cashierId, q.outletId, now))
+        cashiers.push(c);
+    }
     return {
       outletId: q.outletId,
       outletName: name,
@@ -563,15 +618,18 @@ export async function updateEdcCashierDefault(
     const [cashier] = await tx
       .select({ name: user.name })
       .from(user)
-      .innerJoin(roleAssignments, eq(roleAssignments.userId, user.id))
-      .where(
-        and(
-          eq(user.id, params.cashierId),
-          eq(roleAssignments.tenantId, ctx.tenant.tenantId),
-          sql`(${roleAssignments.scopeType} = 'tenant' OR (${roleAssignments.scopeType} = 'outlet' AND ${roleAssignments.scopeId} = ${body.outletId}))`,
-        ),
-      );
-    if (!cashier) throw new CoreError("NOT_FOUND", "Cashier not found.");
+      .where(eq(user.id, params.cashierId));
+    if (
+      !cashier ||
+      !(await isOutletCashier(
+        tx,
+        ctx,
+        params.cashierId,
+        body.outletId,
+        new Date(),
+      ))
+    )
+      throw new CoreError("NOT_FOUND", "Cashier not found.");
     if (body.defaultMethod !== "qris_doit") {
       if (!body.terminalId)
         throw new CoreError("VALIDATION_ERROR", "Terminal required.");
