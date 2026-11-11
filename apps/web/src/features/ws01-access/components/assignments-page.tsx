@@ -101,6 +101,11 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
     () => new Map((roles.data?.data ?? []).map((row) => [row.id, row])),
     [roles.data],
   );
+  // Inactive people still resolve names below, but cannot be granted a role.
+  const grantablePeople = React.useMemo(
+    () => (people.data?.people ?? []).filter((row) => row.status === "active"),
+    [people.data],
+  );
   const peopleByName = React.useMemo(
     () => new Map((people.data?.people ?? []).map((row) => [row.id, row.name])),
     [people.data],
@@ -324,7 +329,7 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
         open={grantOpen}
         onOpenChange={setGrantOpen}
         roles={roles.data?.data ?? []}
-        people={people.data?.people ?? []}
+        people={grantablePeople}
         lookup={lookup}
         onGranted={() => setEnding(null)}
       />

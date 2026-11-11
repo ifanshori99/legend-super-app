@@ -3,6 +3,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { VerifyStaffPinInput } from "@starter/shared/identity";
 import {
+  cancelApprovalRequestCall,
   createApprovalRequestCall,
   endPosSessionCall,
   getApprovalRequestCall,
@@ -39,6 +40,11 @@ export function useEndPosSession() {
 
 export function useCreateApprovalRequest() {
   return useMutation({ mutationFn: createApprovalRequestCall });
+}
+
+/** Withdraws the requester's own pending phone approval (A1 cancel endpoint). */
+export function useCancelApprovalRequest() {
+  return useMutation({ mutationFn: cancelApprovalRequestCall });
 }
 
 /** UI cadence for the phone-approval wait; not a policy number. */

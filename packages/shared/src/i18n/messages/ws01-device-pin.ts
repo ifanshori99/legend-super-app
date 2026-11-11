@@ -136,6 +136,7 @@ export const devicePinMessages = {
     deadline: "Batas waktu: {time}",
     remaining: "Sisa {time}",
     cancel: "Berhenti menunggu",
+    cancelError: "Permintaan belum bisa dibatalkan. Coba lagi sebentar.",
     pollError: "Status belum bisa dibaca. Perangkat mencoba lagi otomatis.",
     live: "Menunggu keputusan supervisor",
   },

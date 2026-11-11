@@ -10,6 +10,7 @@ export function mockAssignablePeople(): AssignablePerson[] {
       id: user.id,
       name: user.displayName,
       kind: "staff" as const,
+      status: "active" as const,
     }))
     .sort((a, b) => a.name.localeCompare(b.name, "id-ID"));
 }

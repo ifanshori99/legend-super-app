@@ -861,6 +861,76 @@ export async function cancelApprovalRequest(
   return "cancelled";
 }
 
+// ------------------------------------------------------------ HTTP: cancel
+
+/**
+ * POST /api/approvals/:requestId/cancel (bead legend-6hr8): the requester
+ * withdraws their own pending request (POS "Berhenti menunggu"). The row is
+ * read by tenant AND id AND requester in SQL, so another user's request and
+ * another tenant's request are both 404 (no leak). The read runs on the
+ * tenant-wide context because a tenant-level request has no outlet and RLS
+ * hides it from outlet-scoped callers; the requester filter is what scopes it
+ * and an outlet request must still be inside the caller's own outlets.
+ * Idempotent: an already-cancelled chain returns 200 with the same view;
+ * approved/rejected/expired is 409 and the outcome stands.
+ */
+export async function cancelOwnApprovalRequest(
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  now = new Date(),
+): Promise<ApprovalRequest> {
+  const caller = await loadCaller(tenant, actorUserId, false, now);
+  const membership = membershipContext(tenant, actorUserId, caller.data, now);
+  if (membership === null) throw notFound();
+  const context = establishScopedTenantContext(tenant, { kind: "tenant" });
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, tenant.tenantId),
+          eq(approvalRequests.id, requestId),
+          eq(approvalRequests.requestedBy, actorUserId),
+        ),
+      );
+    if (!row) throw notFound();
+    if (row.outletId !== null && !covers(membership, row.outletId))
+      throw notFound();
+    const conflict = () =>
+      new CoreError(
+        "CONFLICT",
+        "Permintaan approval sudah diputuskan atau kedaluwarsa dan tidak bisa dibatalkan.",
+      );
+    // Only inbox-opened requests are withdrawn here; other modules cancel
+    // their own through cancelApprovalRequest.
+    if (row.sourceModule !== INBOX_SOURCE_MODULE) throw conflict();
+    // Apply the deadline first: a pending request past it is expired (409,
+    // which rolls the expiry back for the sweep to announce), not cancelled.
+    const current = await resolveApprovalChainOutcome(tx, context, {
+      chainId: row.chainId,
+      sourceModule: row.sourceModule,
+      now,
+    });
+    if (current !== "pending" && current !== "cancelled") throw conflict();
+    const outcome =
+      current === "cancelled"
+        ? current
+        : await cancelApprovalRequest(tx, context, {
+            chainId: row.chainId,
+            sourceModule: row.sourceModule,
+            actorUserId,
+            now,
+          });
+    if (outcome !== "cancelled") throw conflict();
+    // The chain's terminal row, not the row of the id sent: a 2-level chain
+    // cancelled via its level-1 id reports the cancelled level-2 row.
+    const terminal = (await chainRows(tx, row.chainId)).at(-1);
+    return toView(terminal ?? row, now, actorUserId);
+  });
+}
+
 // ------------------------------------------------------------ HTTP: create
 
 /**

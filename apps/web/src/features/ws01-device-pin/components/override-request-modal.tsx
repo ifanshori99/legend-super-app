@@ -8,7 +8,11 @@ import { CircleCheck, Clock, OctagonX, TimerOff } from "lucide-react";
 import { idr } from "@starter/shared/core";
 import type { OutletId } from "@starter/shared/core";
 import type { PosOverrideAction } from "@starter/shared/access";
-import type { StaffPinSwitch } from "@starter/shared/identity";
+import {
+  posOverrideReasonCodes,
+  posOverrideReasonCodeSchema,
+  type CreatePosOverrideInput,
+} from "@starter/shared/access/override";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,22 +44,16 @@ import {
 } from "../logic.ts";
 import {
   useApprovalRequestPolling,
+  useCancelApprovalRequest,
   useCreateApprovalRequest,
 } from "../hooks.ts";
+import { createPosOverrideCall } from "../api.ts";
+import { ApiError } from "@/lib/api/errors";
 import { useRoster } from "../storage.ts";
 import { usePinSession } from "../use-pin-session.ts";
 import { useClockMs } from "../use-clock.ts";
 import { LockoutNotice } from "./lockout-notice.tsx";
 import { PinPad } from "./pin-pad.tsx";
-
-export const OVERRIDE_REASON_CODES = [
-  "wrong_item",
-  "customer_cancel",
-  "out_of_stock",
-  "quality_complaint",
-  "price_mismatch",
-  "other",
-] as const;
 
 export type OverrideResult = {
   method: "supervisor_pin" | "supervisor_phone";
@@ -136,8 +134,9 @@ function ModalBody({
     });
   }
   const create = useCreateApprovalRequest();
-  // The verify contract counts misses per staff (AUTH-06), so the supervisor
-  // whose PIN is being typed must be named. The roster is the mock/device list.
+  // The server counts PIN misses per staff (AUTH-06), so the supervisor whose
+  // PIN is being typed must be named. The roster is the mock/device list
+  // (no eligible-approvers endpoint exists yet).
   const roster = useRoster();
   const [approverId, setApproverId] = useState<string | null>(null);
 
@@ -153,25 +152,46 @@ function ModalBody({
   }
 
   // Fail closed (AUTH-06): with no known requester the approver cannot be
-  // told apart from them, so no PIN approves.
-  const accept = useCallback(
-    (result: StaffPinSwitch) =>
+  // told apart from them, so no PIN is sent. The server checks it again.
+  const precheck = useCallback(
+    () =>
       requesterId === null
         ? t("devicePin.override.noRequester")
-        : result.user.id === requesterId
+        : approverId === requesterId
           ? t("devicePin.override.sameApprover")
-          : null,
-    [requesterId, t],
+          : outletId
+            ? null
+            : t("devicePin.error.generic"),
+    [requesterId, approverId, outletId, t],
   );
+  // The PIN goes inside POST /api/pos-overrides (method supervisor_pin): the
+  // server verifies it and records the approved override in one call.
   const session = usePinSession({
+    mode: "override",
     userId: approverId,
-    accept,
-    onVerified: (result) =>
+    precheck,
+    overrideCall: ({ userId, pin }) => {
+      const code = posOverrideReasonCodeSchema.parse(reasonCode);
+      const body: CreatePosOverrideInput = {
+        outletId: outletId as OutletId,
+        action,
+        valueIdr: idr(parseRupiah(valueText) ?? 0),
+        reason: reason.trim(),
+        reasonCode: code,
+        objectType,
+        objectId,
+        approval: { method: "supervisor_pin", approverUserId: userId, pin },
+      };
+      return createPosOverrideCall(body);
+    },
+    onVerified: (override) =>
       finish({
         method: "supervisor_pin",
-        approverId: result.user.id,
-        approverName: result.user.displayName,
-        approvalRequestId: null,
+        approverId: override.approvedBy,
+        approverName:
+          roster.find((entry) => entry.userId === override.approvedBy)
+            ?.displayName ?? null,
+        approvalRequestId: override.approvalRequestId,
       }),
   });
 
@@ -277,7 +297,7 @@ function ModalBody({
             />
           </SelectTrigger>
           <SelectContent>
-            {OVERRIDE_REASON_CODES.map((code) => (
+            {posOverrideReasonCodes.map((code) => (
               <SelectItem key={code} value={code}>
                 {t(`devicePin.override.reasonCode.${code}`)}
               </SelectItem>
@@ -394,6 +414,8 @@ function PhoneWait({
   const t = useT();
   const nowMs = useClockMs();
   const poll = useApprovalRequestPolling(requestId);
+  const cancel = useCancelApprovalRequest();
+  const [cancelFailed, setCancelFailed] = useState(false);
   const request = poll.data?.data ?? null;
   const raw =
     request && nowMs !== null ? approvalOutcome(request, nowMs) : "pending";
@@ -448,7 +470,37 @@ function PhoneWait({
             {t("devicePin.pending.pollError")}
           </p>
         )}
-        <Button variant="outline" onClick={onClose}>
+        {cancelFailed && (
+          <p role="alert" className="text-sm text-danger">
+            {t("devicePin.pending.cancelError")}
+          </p>
+        )}
+        {/* "Berhenti menunggu": withdraw the request first, then close. On 409
+            the request was decided meanwhile: re-read it, so an approval takes
+            the approved path and any other end shows its result. Any other
+            failure keeps the modal open with an error (never close on a
+            request that may still be approved). */}
+        <Button
+          variant="outline"
+          loading={cancel.isPending}
+          onClick={() => {
+            setCancelFailed(false);
+            cancel.mutate(requestId, {
+              onSuccess: () => onClose(),
+              onError: (error) => {
+                if (error instanceof ApiError && error.status === 409) {
+                  void poll.refetch().then((read) => {
+                    const status = read.data?.data.status;
+                    if (status === undefined || status === "pending")
+                      setCancelFailed(true);
+                  });
+                  return;
+                }
+                setCancelFailed(true);
+              },
+            });
+          }}
+        >
           {t("devicePin.pending.cancel")}
         </Button>
       </div>

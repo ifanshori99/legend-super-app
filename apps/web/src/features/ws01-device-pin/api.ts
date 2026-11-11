@@ -7,6 +7,10 @@ import {
   type CreateApprovalRequestInput,
   type VerifyStaffPinInput,
 } from "@starter/shared/identity";
+import {
+  createPosOverride,
+  type CreatePosOverrideInput,
+} from "@starter/shared/access/override";
 import { defineEndpoint } from "@starter/shared/api";
 import { dataResponseSchema } from "@starter/shared/core";
 import {
@@ -15,6 +19,7 @@ import {
   type PosSessionResponse,
 } from "@starter/shared/pos/acting-staff";
 import { callEndpoint } from "@/lib/api/endpoint";
+import { cancelApproval } from "../ws01-approvals/api.ts";
 import { releaseActingStaffToken, writeActingStaffToken } from "./storage.ts";
 
 // The API owns these two routes (apps/api/src/routes/pos-acting-staff.routes.ts);
@@ -66,3 +71,21 @@ export const getApprovalRequestCall = (
   requestId: string,
   signal?: AbortSignal,
 ) => callEndpoint(getApprovalRequest, { params: { requestId } }, { signal });
+
+/**
+ * Supervisor override approved on this device: the approver's PIN travels in
+ * the body (method supervisor_pin) and the server verifies it (AUTH-06).
+ */
+export const createPosOverrideCall = (
+  body: CreatePosOverrideInput,
+  idempotencyKey: string = crypto.randomUUID(),
+) =>
+  callEndpoint(
+    createPosOverride,
+    { body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
+
+/** "Berhenti menunggu": the requester withdraws their own pending request. */
+export const cancelApprovalRequestCall = (requestId: string) =>
+  cancelApproval(requestId, crypto.randomUUID());

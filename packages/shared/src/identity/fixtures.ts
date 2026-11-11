@@ -9,7 +9,7 @@
 // drives the login, inbox and RBAC screens.
 
 import { cafeLegendFixtures } from "../core/index.ts";
-import { cafeLegendAccessFixtures } from "../access/index.ts";
+import { accessUserSchema, cafeLegendAccessFixtures } from "../access/index.ts";
 import {
   maskEmail,
   maskWhatsAppNumber,
@@ -683,6 +683,30 @@ const approvalRequests: ApprovalRequest[] = [
   }),
 ];
 
+/**
+ * GET /api/access/users rows (legend-i6ff): the people the RBAC assignments
+ * reference (the access fixture users, not the identity users above). Active
+ * means an assignment valid at NOW; everyone else is inactive.
+ */
+const accessUsers = Object.values(cafeLegendAccessFixtures.users).map(
+  (person) =>
+    accessUserSchema.parse({
+      userId: person.id,
+      displayName: person.displayName,
+      kind: "staff",
+      status: cafeLegendAccessFixtures.assignments.some(
+        (assignment) =>
+          assignment.userId === person.id &&
+          Date.parse(assignment.validFrom) <= Date.parse(NOW) &&
+          (assignment.validUntil === null ||
+            assignment.validUntil === undefined ||
+            Date.parse(assignment.validUntil) > Date.parse(NOW)),
+      )
+        ? "active"
+        : "inactive",
+    }),
+);
+
 const currentAuth: CurrentAuthView = currentAuthViewSchema.parse({
   user: usersByKey.cashier,
   identities: identities.filter((row) => row.userId === staff.cashier.id),
@@ -702,6 +726,7 @@ export const cafeLegendIdentityFixtures = {
   login,
   users,
   usersByKey,
+  accessUsers,
   identities,
   loginChallenges,
   loginChallengeIssued,

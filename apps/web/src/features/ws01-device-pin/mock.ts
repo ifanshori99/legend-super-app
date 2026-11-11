@@ -7,6 +7,11 @@
 // Phone approvals stay pending until decided from the console / e2e:
 //   window.__legendDevicePinMock.decide("approved" | "rejected" | "expired")
 import {
+  createPosOverride,
+  posOverrideViewSchema,
+} from "@starter/shared/access/override";
+import { createUlid } from "@starter/shared/core";
+import {
   APPROVAL_DEADLINE_MINUTES,
   MINUTE_MS,
   approvalRequestSchema,
@@ -35,15 +40,23 @@ const PINS: Record<string, User> = {
 const attempts = createMockStore(() => resetStaffPinAttempts());
 const requests = createMockStore(() => new Map<string, ApprovalRequest>());
 
-/** The PIN rules shared by /verify and /pos-session: lockout, then the PIN table. */
-function checkPin(body: { pin: string }, now: Date): User {
+/**
+ * The PIN rules shared by /verify and /pos-session: lockout, then the PIN
+ * table. With `onlyUserId` the PIN counts only for that user (the override's
+ * picked approver): another user's PIN is a miss, never a reset.
+ */
+function checkPin(body: { pin: string }, now: Date, onlyUserId?: string): User {
   const state = attempts.get();
   if (
     state.lockedUntil !== null &&
     Date.parse(state.lockedUntil) > now.getTime()
   )
     throw new ApiError(423, "PIN_LOCKED", "PIN terkunci.");
-  const user = PINS[body.pin];
+  const found = PINS[body.pin];
+  const user =
+    found !== undefined && (onlyUserId === undefined || found.id === onlyUserId)
+      ? found
+      : undefined;
   attempts.set(
     recordStaffPinAttempt({ state, correct: user !== undefined, now }),
   );
@@ -112,9 +125,57 @@ registerMock(createApprovalRequest, ({ body }) => {
   return { data: request };
 });
 
-/** Read by ws01-approvals/mock.ts, which owns the getApprovalRequest handler. */
+// Supervisor override with the PIN typed on this device (legend-5vlw): the
+// approver's PIN rides in the body, like the real POST /api/pos-overrides.
+registerMock(createPosOverride, ({ body }) => {
+  const now = new Date();
+  if (body.approval.method !== "supervisor_pin")
+    throw new ApiError(
+      400,
+      "VALIDATION_ERROR",
+      "Persetujuan ponsel memakai kotak approval.",
+    );
+  const approver = checkPin(body.approval, now, body.approval.approverUserId);
+  if (approver.id === cashier.id)
+    throw new ApiError(
+      403,
+      "APPROVER_IS_REQUESTER",
+      "Penyetuju tidak boleh sama dengan peminta.",
+    );
+  return {
+    data: posOverrideViewSchema.parse({
+      id: createUlid(),
+      tenantId: fx.tenantId,
+      outletId: body.outletId,
+      action: body.action,
+      method: "supervisor_pin",
+      status: "approved",
+      requestedBy: cashier.id,
+      approvedBy: approver.id,
+      reasonCode: body.reasonCode ?? null,
+      reason: body.reason,
+      valueIdr: body.valueIdr,
+      objectType: body.objectType,
+      objectId: body.objectId,
+      approvalRequestId: null,
+      createdAt: now.toISOString(),
+      resolvedAt: now.toISOString(),
+    }),
+  };
+});
+
+/**
+ * Read by ws01-approvals/mock.ts, which merges these requests into the inbox
+ * (one list, one decide, one cancel) next to its own fixtures.
+ */
 export function findDevicePinRequest(requestId: string) {
   return requests.get().get(requestId);
+}
+export function listDevicePinRequests(): ApprovalRequest[] {
+  return [...requests.get().values()];
+}
+export function saveDevicePinRequest(request: ApprovalRequest) {
+  requests.get().set(request.id, request);
 }
 
 type Decision = "approved" | "rejected" | "expired";

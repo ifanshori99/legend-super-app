@@ -168,6 +168,21 @@ export const POS_OVERRIDE_STATUSES = [
 ] as const;
 export type PosOverrideStatus = (typeof POS_OVERRIDE_STATUSES)[number];
 
+/**
+ * Closed list of override reason codes (PRD v1.7 §3 F6, bead legend-5vlw).
+ * The POS modal offers exactly these; any other code is a 422.
+ */
+export const posOverrideReasonCodes = [
+  "wrong_item",
+  "customer_cancel",
+  "out_of_stock",
+  "quality_complaint",
+  "price_mismatch",
+  "other",
+] as const;
+export const posOverrideReasonCodeSchema = z.enum(posOverrideReasonCodes);
+export type PosOverrideReasonCode = z.infer<typeof posOverrideReasonCodeSchema>;
+
 const overrideReasonSchema = z.string().trim().min(3).max(500);
 const overrideValueSchema = idrSchema.refine(
   (value) => value >= 0,
@@ -186,7 +201,7 @@ export const createPosOverrideSchema = clientInputSchema({
   /** Value affected; 0 for a no-sale drawer open (posOverrideSchema). */
   valueIdr: overrideValueSchema,
   reason: overrideReasonSchema,
-  reasonCode: z.string().trim().min(1).max(50).optional(),
+  reasonCode: posOverrideReasonCodeSchema.optional(),
   /** The object the override acts on (order, order_item, cash_drawer...). */
   objectType: objectTypeSchema,
   objectId: objectIdSchema,

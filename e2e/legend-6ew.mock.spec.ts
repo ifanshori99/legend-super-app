@@ -199,18 +199,18 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
   ).toHaveCount(0);
   await shot(page, "override-pin-1440-light");
 
-  // The verify contract counts misses per staff (AUTH-06), so the supervisor
-  // whose PIN is typed is picked first; their own PIN is still refused below.
-  await modal
-    .getByRole("combobox", { name: "Supervisor yang memasukkan PIN" })
-    .click();
-  await page.getByRole("option", { name: "Yusuf Hidayat" }).click();
+  // The requester is picked as approver first: their own PIN is refused
+  // (AUTH-06). The verify contract counts misses per staff, so the approver
+  // the PIN is typed for is always the one picked.
+  const approverPicker = modal.getByRole("combobox", {
+    name: "Supervisor yang memasukkan PIN",
+  });
+  await approverPicker.click();
+  await page.getByRole("option", { name: "Nina Marlina" }).click();
   // Radix Select hands focus back to its trigger a moment after it closes.
   // Wait for that before blurring, or the first key reaches the pad and the
   // rest land on the combobox, which owns them (a PIN of 1 + the clicks below).
-  await expect(
-    modal.getByRole("combobox", { name: "Supervisor yang memasukkan PIN" }),
-  ).toBeFocused();
+  await expect(approverPicker).toBeFocused();
 
   await typePinOutsideFields(page, "246810");
   // The alert, not the static hint paragraph, which carries the same sentence.
@@ -220,6 +220,10 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
       .filter({ hasText: "Penyetuju tidak boleh sama dengan peminta" }),
   ).toBeVisible();
 
+  // The supervisor is picked now; their PIN completes the override.
+  await approverPicker.click();
+  await page.getByRole("option", { name: "Yusuf Hidayat" }).click();
+  await expect(approverPicker).toBeFocused();
   await expect(modal.getByRole("button", { name: "Angka 1" })).toBeEnabled();
   for (const digit of "482604")
     await modal.getByRole("button", { name: `Angka ${digit}` }).click();

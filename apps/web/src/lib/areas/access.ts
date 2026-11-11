@@ -134,10 +134,13 @@ export function parseMockRole(value: string | undefined | null): MockRole {
     : "none";
 }
 
-/** Mock station reach: the kitchen fixtures' stations (menu fixtures, ids 200-203). */
-const MOCK_STATIONS: readonly StationId[] = cafeLegendMenuFixtures.stations.map(
-  (station) => stationIdSchema.parse(station.id),
-);
+/**
+ * Mock station reach: the menu fixture stations of the mock session's outlet
+ * (the first fixture outlet, ids 200-203); other outlets' stations are out of reach.
+ */
+const MOCK_STATIONS: readonly StationId[] = cafeLegendMenuFixtures.stations
+  .filter((station) => station.outletId === cafeLegendFixtures.outlets[0].id)
+  .map((station) => stationIdSchema.parse(station.id));
 
 function mockStationsFor(role: RoleTemplateKey): readonly StationId[] {
   const template = roleTemplate(role);

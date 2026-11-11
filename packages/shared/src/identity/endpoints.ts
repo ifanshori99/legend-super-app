@@ -20,10 +20,12 @@
 import { cursorPageSchema, dataResponseSchema, z } from "../core/index.ts";
 import { defineEndpoint } from "../api/index.ts";
 import {
+  accessUserSchema,
   approvalPolicySchema,
   createCustomRoleSchema,
   endRoleAssignmentSchema,
   grantRoleSchema,
+  listAccessUsersQuerySchema,
   listRoleAssignmentsQuerySchema,
   roleAssignmentSchema,
   roleSchema,
@@ -280,6 +282,14 @@ export const decideApprovalRequest = defineEndpoint({
   response: dataResponseSchema(approvalRequestSchema),
 });
 
+/** The requester withdraws their own pending request; repeating it is a 200. */
+export const cancelApprovalRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/approvals/:requestId/cancel",
+  params: approvalRequestParamsSchema,
+  response: dataResponseSchema(approvalRequestSchema),
+});
+
 // ------------------------------------------------------- roles & the matrix
 
 export const listRoles = defineEndpoint({
@@ -309,6 +319,14 @@ export const listRoleAssignments = defineEndpoint({
   path: "/api/access/role-assignments",
   query: listRoleAssignmentsQuerySchema,
   response: cursorPageSchema(roleAssignmentSchema),
+});
+
+/** Staff directory for the role picker (legend-i6ff); `access.role.view`. */
+export const listAccessUsers = defineEndpoint({
+  method: "GET",
+  path: "/api/access/users",
+  query: listAccessUsersQuerySchema,
+  response: cursorPageSchema(accessUserSchema),
 });
 
 /** Grant a role: re-auth required, never to yourself (§3 F7 "Pemberian Role"). */

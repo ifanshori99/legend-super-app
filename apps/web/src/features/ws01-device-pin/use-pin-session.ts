@@ -1,7 +1,10 @@
 // Verifies a typed PIN and turns the answer into pad state. mode "verify"
 // (default) calls POST /api/staff-pins/verify (supervisor approvals); mode
 // "pos-session" calls POST /api/staff-pins/pos-session instead and keeps the
-// acting-staff token (POS switch; one call per PIN, never both). Pad state: shake + attempts left on PIN_INVALID, the lockout
+// acting-staff token (POS switch; one call per PIN, never both). mode
+// "override" sends the PIN inside POST /api/pos-overrides (supervisor_pin, the
+// server verifies it and records the override in one call; bead legend-5vlw).
+// Pad state: shake + attempts left on PIN_INVALID, the lockout
 // window on PIN_LOCKED, a network hint when the edge node is unreachable.
 import { useCallback, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
@@ -10,6 +13,7 @@ import type {
   VerifyStaffPinInput,
 } from "@starter/shared/identity";
 import { userIdSchema } from "@starter/shared/core";
+import type { PosOverrideView } from "@starter/shared/access/override";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import {
@@ -19,7 +23,7 @@ import {
 } from "./api.ts";
 import { usePinLock } from "./use-pin-lock.ts";
 
-export type PinSessionMode = "verify" | "pos-session";
+export type PinSessionMode = "verify" | "pos-session" | "override";
 /** What a POS switch knows about the staff member who is now active. */
 export type PosSessionStaff = {
   user: { id: string; displayName: string };
@@ -27,12 +31,20 @@ export type PosSessionStaff = {
 };
 type PinResult<M extends PinSessionMode> = M extends "pos-session"
   ? PosSessionStaff
-  : StaffPinSwitch;
+  : M extends "override"
+    ? PosOverrideView
+    : StaffPinSwitch;
 
 export type UsePinSessionOptions<M extends PinSessionMode = "verify"> = {
   mode?: M;
   /** The staff member whose PIN is being typed: the API counts misses per staff. */
   userId: string | null;
+  /** mode "override": sends the PIN with the override request (required there). */
+  overrideCall?: (
+    input: VerifyStaffPinInput,
+  ) => Promise<{ data: PosOverrideView }>;
+  /** Runs before the PIN leaves the device; return an error text to refuse. */
+  precheck?: () => string | null;
   onVerified: (result: PinResult<M>) => void;
   /** Return an error text to refuse a correct PIN (wrong person, same approver). */
   accept?: (result: PinResult<M>) => string | null;
@@ -41,6 +53,8 @@ export type UsePinSessionOptions<M extends PinSessionMode = "verify"> = {
 export function usePinSession<M extends PinSessionMode = "verify">({
   mode,
   userId,
+  overrideCall,
+  precheck,
   onVerified,
   accept,
 }: UsePinSessionOptions<M>) {
@@ -50,6 +64,10 @@ export function usePinSession<M extends PinSessionMode = "verify">({
   // once; the reset on settle below drops it from the mutation too.
   const verify = useMutation({
     mutationFn: async (input: VerifyStaffPinInput) => {
+      if (mode === "override") {
+        if (!overrideCall) throw new Error("overrideCall is required");
+        return overrideCall(input);
+      }
       if (mode !== "pos-session") return verifyStaffPinCall(input);
       const { data } = await startPosSessionCall(input);
       // The token is already stored; the screen only needs who and where.
@@ -73,6 +91,11 @@ export function usePinSession<M extends PinSessionMode = "verify">({
   const submit = useCallback(
     (pin: string) => {
       setError(null);
+      const refusal = precheck?.() ?? null;
+      if (refusal) {
+        fail(refusal);
+        return;
+      }
       // Fail closed: without a valid picked staff the API cannot count the
       // attempt (AUTH-06 per-staff lockout), so the PIN is not sent at all.
       const pickedUserId = userIdSchema.safeParse(userId);
@@ -87,13 +110,13 @@ export function usePinSession<M extends PinSessionMode = "verify">({
           // variables until reset (no PIN in the query client, ever).
           onSettled: () => verify.reset(),
           onSuccess: ({ data: answer }) => {
-            const data = answer as PinResult<M>;
-            const refusal = accept?.(data) ?? null;
-            if (refusal) {
+            const data = answer as unknown as PinResult<M>;
+            const refused = accept?.(data) ?? null;
+            if (refused) {
               // The API already made this person the active cashier; undo it.
               if (mode === "pos-session")
                 void endPosSessionCall().catch(() => {});
-              fail(refusal);
+              fail(refused);
               return;
             }
             lock.recordSuccess();
@@ -124,7 +147,7 @@ export function usePinSession<M extends PinSessionMode = "verify">({
         },
       );
     },
-    [userId, verify, mode, accept, fail, lock, onVerified, t],
+    [userId, verify, mode, precheck, accept, fail, lock, onVerified, t],
   );
 
   const clear = useCallback(() => setClearSignal((n) => n + 1), []);
