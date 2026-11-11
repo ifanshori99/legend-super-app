@@ -60,6 +60,7 @@ import type {
   SubscriptionInterval,
   TicketAddon,
 } from "@starter/shared/facility";
+import type { WfcProductKind } from "@starter/shared/wfc";
 import {
   idrColumn,
   outletIdColumn,
@@ -425,6 +426,11 @@ export const facilityProducts = pgTable(
     maxPerDay: integer("max_per_day"),
     /** Menu package that carries this component (WS-03). */
     menuItemId: uuid("menu_item_id"),
+    /**
+     * WFC product kind (legend-bz9h): only a `single` product of a coworking
+     * facility may carry one (the service enforces it); null = ordinary.
+     */
+    wfcKind: varchar("wfc_kind", { length: 20 }).$type<WfcProductKind>(),
     isActive: boolean("is_active").notNull().default(true),
     createdAt,
     updatedAt,
@@ -449,6 +455,10 @@ export const facilityProducts = pgTable(
     check(
       "facility_products_type_check",
       sql`${table.type} IN ('single', 'package_component', 'subscription_plan')`,
+    ),
+    check(
+      "facility_products_wfc_kind_check",
+      sql`${table.wfcKind} IS NULL OR (${table.wfcKind} IN ('day_pass', 'seat_reservation') AND ${table.type} = 'single')`,
     ),
     check(
       "facility_products_amount_check",

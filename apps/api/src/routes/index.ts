@@ -72,6 +72,7 @@ import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityCustomerRouter } from "./facility-customer.routes";
 import { facilityEntitlementRouter } from "./facility-entitlement.routes";
 import { facilityRouter } from "./facility.routes";
+import { wfcRouter } from "./wfc.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { wifiGuestRouter } from "./wifi-guest.routes.ts";
 import { payrollLoanPolicyRouter } from "./payroll-loan-policy.routes";
@@ -336,6 +337,8 @@ apiRouter.use(reservationPublicRouter);
 apiRouter.use("/facility", facilityCustomerRouter);
 // WS-09 facility slots (legend-nm4f).
 apiRouter.use("/facility", facilityRouter);
+// WS-09 work-from-cafe seats, day passes, bundles, RevPASH (legend-bz9h).
+apiRouter.use("/facility/wfc", wfcRouter);
 // WS-09 staff entitlements (legend-fjk5), after facilityRouter.
 apiRouter.use("/facility", facilityEntitlementRouter);
 // WS-09 guest Wi-Fi sessions of a member (legend-kmd3). Before wifiConfigRouter, which requires a staff session on the same prefix.

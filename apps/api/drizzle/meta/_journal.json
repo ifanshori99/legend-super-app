@@ -1653,6 +1653,13 @@
       "when": 1794330000000,
       "tag": "0249_backfill_marketing_opt_in_from_consents",
       "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "7",
+      "when": 1794361944148,
+      "tag": "0250_wfc_products",
+      "breakpoints": true
     }
   ]
 }

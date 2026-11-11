@@ -3223,3 +3223,8 @@ Langkah berikut CTO baru:
 - Gerbang: typecheck 3 paket + root hijau; lint 0 error; `pnpm test` penuh 12577 lulus, 19 gagal: 3 flake (menu-print-db, access sort, tax-api ORD-03) lulus sendiri, 16 di pos-refund-gateway-autofile/multi-intent karena fixture override tanpa fingerprint asli (pengikatan perangkat legend-fjwxo), diperbaiki di fixture test (16/16 lulus); e2e 18 lulus, 1 skip. Architect xhigh: BERSIH, tanpa blocker.
 - Temuan architect belum dikerjakan (MINOR): 0247 hanya app yang menjaga "Owner tunggal"; reconcile penerima menerima user mana pun; dua perilaku kecil paidAt/late_payment di payment.service (duitku-406). MAJOR: cek tabel migrasi staging/produksi untuk 0239 sebelum rilis (kalau sudah jalan, perlu migrasi 0250).
 - Biaya sesi (session-usage): total 12641k, utama sonnet 498 req, subagent 23. Gerbang e2e payslip-pin mock (`test:e2e:mock`) tidak dijalankan di sini.
+
+## legend-bz9h WFC produk + min-spend + RevPASH (cabang ws/bz9h-wfc-products)
+- Sudah: kursi WFC, reservasi kursi, day pass, bundel (Pagi Produktif), monitor min-spend + nudge sopan, RevPASH per zona per jam; migrasi 0250 wfc_products (RLS, exclusion kursi); rute /facility/wfc.
+- Verifikasi: 8 file test 149 lulus; typecheck api 0. Review architect xhigh: 5 temuan dibetulkan (refund day pass, slot mulai, sourceRef, izin refund, parse input).
+- Keputusan founder tertunda: (a) pembayaran belum diverifikasi ke capture nyata (paymentRef diketik staf); (b) harga reservasi tidak dikali durasi; (c) metrik harian revpash/seat_occupancy_pct belum dihidupkan (mematahkan test lama); (d) day pass tidak bisa dicicil refund.

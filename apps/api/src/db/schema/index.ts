@@ -167,3 +167,8 @@ export * from "./crm-tiers";
 
 // legend-dn4 WhatsApp login reply policy, default off (AUTH-03).
 export * from "./wa-login-reply";
+
+// legend-bz9h WFC seats, reservations, day pass, bundles, min-spend windows.
+export * from "./wfc-seat";
+export * from "./wfc-bundle";
+export * from "./wfc-spend";
