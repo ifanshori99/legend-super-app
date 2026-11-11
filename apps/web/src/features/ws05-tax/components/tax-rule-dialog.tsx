@@ -50,7 +50,7 @@ import {
   TAX_TYPE_KEYS,
 } from "../labels";
 import {
-  isOnlyActiveFoodBeverageRule,
+  foodBeverageCoverLoss,
   parseRatePercent,
   suggestEffectiveFrom,
   type FoodBeverageRuleVersion,
@@ -239,21 +239,20 @@ export function TaxRuleDialog({
     today,
     /^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom) ? effectiveFrom : today,
   );
-  const lastRuleChange: "inactive" | "class" | null = !isActive
-    ? "inactive"
-    : !itemClasses.includes("food_beverage")
-      ? "class"
-      : null;
-  const publishedRules = allPublishedQuery.data?.data;
-  const losesLastFoodBeverageRule =
-    lastRuleChange !== null &&
-    (publishedRules
-      ? isOnlyActiveFoodBeverageRule(
-          publishedRules,
-          { code: (rule?.code ?? code).trim(), outletId: scopeOutletId },
-          changeDate,
-        )
-      : mode !== "create");
+  const lastRuleChange = foodBeverageCoverLoss({
+    publishedRules: allPublishedQuery.data?.data,
+    loadedRules: versions,
+    chain: { code: (rule?.code ?? code).trim(), outletId: scopeOutletId },
+    date: changeDate,
+    mustExist: mode !== "create",
+    next: {
+      isActive,
+      appliesTo: { itemClasses, categoryIds, itemIds },
+      channels,
+      regionCode: region === "" ? null : region,
+    },
+  });
+  const losesLastFoodBeverageRule = lastRuleChange !== null;
 
   function validate(rateBp: number | null): Errors {
     const next: Errors = {};
@@ -291,11 +290,19 @@ export function TaxRuleDialog({
     setZeroNote(true);
   }
 
+  /** Undo the part of the edit that would drop or limit food and beverage. */
   function keepFoodBeverage() {
     setConfirmingOff(false);
-    setItemClasses((current) =>
-      toggleValue<ItemTaxClass>(current, "food_beverage", true),
-    );
+    if (lastRuleChange === "narrowed") {
+      setChannels([]);
+      setRegion("");
+      setCategoryIds([]);
+      setItemIds([]);
+    } else {
+      setItemClasses((current) =>
+        toggleValue<ItemTaxClass>(current, "food_beverage", true),
+      );
+    }
     setErrors({});
   }
 
@@ -674,7 +681,9 @@ export function TaxRuleDialog({
               {t(
                 lastRuleChange === "inactive"
                   ? "tax.deactivate.title"
-                  : "tax.deactivate.removeTitle",
+                  : lastRuleChange === "narrowed"
+                    ? "tax.deactivate.narrowTitle"
+                    : "tax.deactivate.removeTitle",
               )}
             </DialogTitle>
             <DialogDescription>
@@ -690,7 +699,11 @@ export function TaxRuleDialog({
                 {t("tax.deactivate.impactTitle")}
               </p>
               <p className="text-sm leading-5">
-                {t("tax.deactivate.impactBody")}
+                {t(
+                  lastRuleChange === "narrowed"
+                    ? "tax.deactivate.narrowImpactBody"
+                    : "tax.deactivate.impactBody",
+                )}
               </p>
             </div>
             {lastRuleChange === "inactive" && (
@@ -735,7 +748,9 @@ export function TaxRuleDialog({
               {t(
                 lastRuleChange === "inactive"
                   ? "tax.deactivate.setZero"
-                  : "tax.deactivate.removeKeep",
+                  : lastRuleChange === "narrowed"
+                    ? "tax.deactivate.narrowKeep"
+                    : "tax.deactivate.removeKeep",
               )}
             </Button>
             <Button

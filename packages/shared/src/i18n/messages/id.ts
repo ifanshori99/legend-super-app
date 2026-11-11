@@ -3402,6 +3402,10 @@ export const id = {
       error: "Aturan belum dinonaktifkan. Periksa koneksi lalu coba lagi.",
       zeroNote:
         "Buat versi aturan aktif dengan tarif 0% untuk transaksi bebas pajak.",
+      narrowTitle: "Batasi aturan makanan & minuman terakhir?",
+      narrowImpactBody:
+        "Makanan dan minuman di luar pembatasan ini tidak punya aturan pajak, sehingga transaksi POS dan pesanan QR-nya tidak dapat dihitung.",
+      narrowKeep: "Hapus pembatasan",
       removeTitle: "Lepas makanan & minuman dari aturan terakhir?",
       removeKeep: "Pertahankan makanan & minuman",
       removeConfirm: "Tetap simpan",

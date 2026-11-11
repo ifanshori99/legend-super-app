@@ -80,6 +80,7 @@ import {
   type PbjtMonthlyRecap,
   type ServiceChargeRule,
   type TaxCalculationInput,
+  type TaxSettingsId,
   type TaxCalculationResult,
   type TaxRuleConflict,
   type TaxRuleTie,
@@ -1431,7 +1432,7 @@ export async function createTaxSettings(
   });
 }
 
-async function lockTaxSettings(tx: Tx, tenantId: TenantId, id: string) {
+async function lockTaxSettings(tx: Tx, tenantId: TenantId, id: TaxSettingsId) {
   const [row] = await tx
     .select()
     .from(taxSettings)

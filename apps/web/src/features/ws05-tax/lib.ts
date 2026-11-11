@@ -219,8 +219,14 @@ export type FoodBeverageRuleVersion = RuleVersion & {
   regionCode: string | null;
 };
 
+/** The fields that decide whether a rule covers all food and beverage. */
+export type FoodBeverageCoverage = Pick<
+  FoodBeverageRuleVersion,
+  "isActive" | "appliesTo" | "channels" | "regionCode"
+>;
+
 /** Active, covers food_beverage, and no channel/region/item/category limit. */
-function coversAllFoodBeverage(version: FoodBeverageRuleVersion): boolean {
+export function coversAllFoodBeverage(version: FoodBeverageCoverage): boolean {
   return (
     version.isActive &&
     version.appliesTo.itemClasses.includes("food_beverage") &&
@@ -250,6 +256,18 @@ export function isOnlyActiveFoodBeverageRule<T extends FoodBeverageRuleVersion>(
   chain: { code: string; outletId: string | null },
   date: string,
 ): boolean {
+  return lastFoodBeverageCover(versions, chain, date) !== undefined;
+}
+
+/**
+ * The chain's version in force when it is the last rule covering
+ * food_beverage (see `isOnlyActiveFoodBeverageRule`), else undefined.
+ */
+function lastFoodBeverageCover<T extends FoodBeverageRuleVersion>(
+  versions: readonly T[],
+  chain: { code: string; outletId: string | null },
+  date: string,
+): T | undefined {
   const inForce = versions.filter((version) =>
     isEffectiveVersion(version, versions, date),
   );
@@ -263,7 +281,7 @@ export function isOnlyActiveFoodBeverageRule<T extends FoodBeverageRuleVersion>(
     !own.appliesTo.itemClasses.includes("food_beverage")
   )
     // Nothing in force to lose: no version yet, or already off.
-    return false;
+    return undefined;
   for (const version of inForce) {
     if (version.code === chain.code) continue;
     if (version.outletId !== null && version.outletId !== chain.outletId)
@@ -281,9 +299,58 @@ export function isOnlyActiveFoodBeverageRule<T extends FoodBeverageRuleVersion>(
       );
       if (overridden) continue;
     }
-    return false;
+    return undefined;
   }
-  return true;
+  return own;
+}
+
+/** How an edit takes the last food-and-beverage cover away. */
+export type FoodBeverageLoss = "inactive" | "class" | "narrowed";
+
+/**
+ * Whether saving this rule version would leave food and beverage without a
+ * full-cover rule, and how (legend-d5pz). `null` = safe.
+ *
+ * - switched off ("inactive"), food_beverage removed ("class"), or a channel,
+ *   region, category or item limit added to a rule that had none ("narrowed")
+ *   all break lines that matched before;
+ * - judged against `publishedRules` (every published version, all pages) on
+ *   `date`; when that read is missing, warn whenever the chain exists: the
+ *   caller says so with `mustExist` (editing or versioning a rule), or the
+ *   typed code is found in the loaded `rules`. When unsure, warn.
+ */
+export function foodBeverageCoverLoss<
+  T extends FoodBeverageRuleVersion,
+>(input: {
+  publishedRules: readonly T[] | undefined;
+  /** The list the screen loaded (may be one page), for the fallback only. */
+  loadedRules: readonly T[];
+  chain: { code: string; outletId: string | null };
+  date: string;
+  mustExist: boolean;
+  next: FoodBeverageCoverage;
+}): FoodBeverageLoss | null {
+  const { next, chain } = input;
+  const change: FoodBeverageLoss | null = !next.isActive
+    ? "inactive"
+    : !next.appliesTo.itemClasses.includes("food_beverage")
+      ? "class"
+      : !coversAllFoodBeverage(next)
+        ? "narrowed"
+        : null;
+  if (change === null) return null;
+  if (input.publishedRules === undefined) {
+    const known = input.loadedRules.some(
+      (version) =>
+        version.code === chain.code && version.outletId === chain.outletId,
+    );
+    return input.mustExist || known ? change : null;
+  }
+  const own = lastFoodBeverageCover(input.publishedRules, chain, input.date);
+  if (!own) return null;
+  // Limiting a rule that was already limited loses nothing new.
+  if (change === "narrowed" && !coversAllFoodBeverage(own)) return null;
+  return change;
 }
 
 /** Tax error code → catalog key; every code has a fix hint in the catalog. */

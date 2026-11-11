@@ -598,3 +598,199 @@ test("isOnlyActiveFoodBeverageRule: an outlet chain accepts a tenant-wide replac
     true,
   );
 });
+
+test("isOnlyActiveFoodBeverageRule: an outlet override only disqualifies a replacement for its own outlet", () => {
+  const outletA = "0d7a9d6e-6666-4666-8666-666666666666";
+  const outletB = "0d7a9d6e-7777-4777-8777-777777777777";
+  const own = fbVersion({ outletId: outletA });
+  const chain = { code: "FB", outletId: outletA };
+  const replacement = fbVersion({ code: "X" });
+  // X is switched off at outlet B only: still a safety net for outlet A.
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [
+        own,
+        replacement,
+        fbVersion({ code: "X", id: "X-b", outletId: outletB, isActive: false }),
+      ],
+      chain,
+      "2026-11-11",
+    ),
+    false,
+  );
+  // X is switched off at outlet A itself: no safety net there.
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [
+        own,
+        replacement,
+        fbVersion({ code: "X", id: "X-a", outletId: outletA, isActive: false }),
+      ],
+      chain,
+      "2026-11-11",
+    ),
+    true,
+  );
+  // For a tenant-wide chain any outlet override that is off disqualifies it.
+  assert.equal(
+    lib.isOnlyActiveFoodBeverageRule(
+      [
+        fbVersion(),
+        replacement,
+        fbVersion({ code: "X", id: "X-b", outletId: outletB, isActive: false }),
+      ],
+      { code: "FB", outletId: null },
+      "2026-11-11",
+    ),
+    true,
+  );
+});
+
+function nextRule(overrides = {}) {
+  return {
+    isActive: true,
+    appliesTo: {
+      itemClasses: ["food_beverage"],
+      categoryIds: [],
+      itemIds: [],
+    },
+    channels: [],
+    regionCode: null,
+    ...overrides,
+  };
+}
+
+function loss(overrides = {}) {
+  return lib.foodBeverageCoverLoss({
+    publishedRules: [fbVersion()],
+    loadedRules: [fbVersion()],
+    chain: { code: "FB", outletId: null },
+    date: "2026-11-11",
+    mustExist: true,
+    next: nextRule(),
+    ...overrides,
+  });
+}
+
+test("foodBeverageCoverLoss: an unchanged full cover is safe", () => {
+  assert.equal(loss(), null);
+});
+
+test("foodBeverageCoverLoss: switching off or dropping food_beverage warns", () => {
+  assert.equal(loss({ next: nextRule({ isActive: false }) }), "inactive");
+  assert.equal(
+    loss({
+      next: nextRule({
+        appliesTo: { itemClasses: ["facility"], categoryIds: [], itemIds: [] },
+      }),
+    }),
+    "class",
+  );
+});
+
+test("foodBeverageCoverLoss: adding a channel, region, category or item limit to the last full cover warns", () => {
+  const limited = [
+    nextRule({ channels: ["dine_in"] }),
+    nextRule({ regionCode: "ID-JB-3273" }),
+    nextRule({
+      appliesTo: {
+        itemClasses: ["food_beverage"],
+        categoryIds: ["0d7a9d6e-8888-4888-8888-888888888888"],
+        itemIds: [],
+      },
+    }),
+    nextRule({
+      appliesTo: {
+        itemClasses: ["food_beverage"],
+        categoryIds: [],
+        itemIds: ["0d7a9d6e-9999-4999-8999-999999999999"],
+      },
+    }),
+  ];
+  for (const next of limited)
+    assert.equal(loss({ next }), "narrowed", JSON.stringify(next));
+});
+
+test("foodBeverageCoverLoss: narrowing is safe when another full cover exists or the rule was already limited", () => {
+  const next = nextRule({ channels: ["dine_in"] });
+  const withReplacement = [fbVersion(), fbVersion({ code: "X" })];
+  assert.equal(loss({ publishedRules: withReplacement, next }), null);
+  const alreadyLimited = [fbVersion({ channels: ["takeaway"] })];
+  assert.equal(loss({ publishedRules: alreadyLimited, next }), null);
+  assert.equal(
+    loss({
+      publishedRules: alreadyLimited,
+      next: nextRule({ isActive: false }),
+    }),
+    "inactive",
+  );
+});
+
+test("foodBeverageCoverLoss: a change with nothing in force to lose is safe", () => {
+  assert.equal(
+    loss({ publishedRules: [], next: nextRule({ isActive: false }) }),
+    null,
+  );
+  assert.equal(
+    loss({
+      publishedRules: [fbVersion({ effectiveFrom: "2027-03-01" })],
+      next: nextRule({ isActive: false }),
+    }),
+    null,
+  );
+});
+
+test("foodBeverageCoverLoss: without the published list it warns when the rule must exist or the typed code is known", () => {
+  const off = nextRule({ isActive: false });
+  // Editing or versioning an existing rule: unsure, so warn.
+  assert.equal(
+    loss({ publishedRules: undefined, loadedRules: [], next: off }),
+    "inactive",
+  );
+  // Creating with a code the loaded list already has: warn.
+  assert.equal(
+    loss({
+      publishedRules: undefined,
+      loadedRules: [fbVersion()],
+      mustExist: false,
+      next: off,
+    }),
+    "inactive",
+  );
+  assert.equal(
+    loss({
+      publishedRules: undefined,
+      loadedRules: [fbVersion()],
+      mustExist: false,
+      next: nextRule({ channels: ["dine_in"] }),
+    }),
+    "narrowed",
+  );
+  // Creating a brand-new code, or the same code at another outlet: nothing to lose.
+  assert.equal(
+    loss({
+      publishedRules: undefined,
+      loadedRules: [fbVersion()],
+      chain: { code: "NEW", outletId: null },
+      mustExist: false,
+      next: off,
+    }),
+    null,
+  );
+  assert.equal(
+    loss({
+      publishedRules: undefined,
+      loadedRules: [
+        fbVersion({ outletId: "0d7a9d6e-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      ],
+      mustExist: false,
+      next: off,
+    }),
+    null,
+  );
+  // A safe edit never warns, data or not.
+  assert.equal(
+    loss({ publishedRules: undefined, loadedRules: [], next: nextRule() }),
+    null,
+  );
+});
