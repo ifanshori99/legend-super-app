@@ -431,15 +431,34 @@ type VersionLike = {
   publishedBy: UserId | null;
 };
 
+/** The sibling shape publish needs to spot a same-date published version. */
+type PublishedSiblingLike = {
+  id: string;
+  type: string;
+  status: StatutoryVersionStatus;
+  effectiveFrom: BusinessDate;
+};
+
 /**
  * Publishes a draft. `today` is the business date the server computed
  * (businessDateOf), never the client's clock. A backdated version is refused:
  * a regulation change that applies retroactively is settled by a correction
  * in an open payroll run, never by rewriting a locked one (PAYR-02).
+ *
+ * `existing` are the other versions of the tenant. A published sibling of the
+ * same type with the same effectiveFrom makes the resolver ambiguous, so the
+ * second one is refused with PAYROLL_STATUTORY_TABLE_AMBIGUOUS (PAYR-02).
  */
-export function publishStatutoryVersion<T extends VersionLike>(
+export function publishStatutoryVersion<
+  T extends VersionLike & { id: string; type: string },
+>(
   version: T,
-  options: { today: BusinessDate; actorId: UserId; at: IsoDateTime },
+  options: {
+    today: BusinessDate;
+    actorId: UserId;
+    at: IsoDateTime;
+    existing?: readonly PublishedSiblingLike[];
+  },
 ): T {
   if (!canTransitionStatutoryVersion(version.status, "published"))
     throw new PayrollError(
@@ -449,6 +468,16 @@ export function publishStatutoryVersion<T extends VersionLike>(
     );
   if (version.effectiveFrom < options.today)
     throw new PayrollError("PAYROLL_STATUTORY_TABLE_BACKDATED");
+  if (
+    options.existing?.some(
+      (other) =>
+        other.id !== version.id &&
+        other.type === version.type &&
+        other.status === "published" &&
+        other.effectiveFrom === version.effectiveFrom,
+    )
+  )
+    throw new PayrollError("PAYROLL_STATUTORY_TABLE_AMBIGUOUS");
   return {
     ...version,
     status: "published",

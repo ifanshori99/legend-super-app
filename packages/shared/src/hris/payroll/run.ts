@@ -483,6 +483,14 @@ export const payrollRunSchema = z
         "approvedByFinance",
         "The two approvals come from different people",
       );
+    if (
+      run.approvedByFinance !== null &&
+      run.approvedByFinance === run.createdBy
+    )
+      issue(
+        "approvedByFinance",
+        "The final approver is not the person who created the run",
+      );
     if (run.reversal !== null && rank < 4)
       issue("reversal", "Only a locked run can carry a reversal");
     if (run.status === "reversed" && run.reversal?.status !== "approved")
@@ -563,6 +571,9 @@ export function applyPayrollRunCommand(
         throw new PayrollError("PAYROLL_RUN_NOT_APPROVED");
       if (command.actorId === run.approvedByHr)
         throw new PayrollError("PAYROLL_APPROVER_NOT_DISTINCT");
+      // PAYR-01: the person who created the run cannot approve it finally.
+      if (command.actorId === run.createdBy)
+        throw new PayrollError("PAYROLL_APPROVER_NOT_DISTINCT");
       return {
         ...base,
         approvedByFinance: command.actorId,
@@ -574,6 +585,7 @@ export function applyPayrollRunCommand(
         run.approvedByHr === null ||
         run.approvedByFinance === null ||
         run.approvedByHr === run.approvedByFinance ||
+        run.approvedByFinance === run.createdBy ||
         run.totals === null ||
         run.configSnapshot === null
       )

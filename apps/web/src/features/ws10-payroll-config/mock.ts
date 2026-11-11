@@ -273,6 +273,7 @@ registerMock(publishStatutoryTable, ({ params, body }) =>
         today: businessDateToday(),
         actorId: ACTOR_ID,
         at: now(),
+        existing: state.statutoryTables,
       });
     } catch (error) {
       return toApiError(error);

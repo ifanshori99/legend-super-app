@@ -8,9 +8,12 @@
 //   statutory tables, policies, components, THR      payroll.run (write), payroll.view (read)
 //   employee pay components (salary, HR-03)          payroll.view / payroll.run
 //   runs: create, simulate, return, approve_hr       payroll.run
-//   runs: approve_final                              payroll.approve (≠ HR approver)
+//   runs: list + detail (read)                       payroll.view; payroll.approve and
+//                                                    payroll.lock may also read them (legend-t3f5)
+//   runs: /runs/:id/employees (read)                 payroll.view
+//   runs: approve_final                              payroll.approve (≠ HR approver, ≠ run creator)
 //   runs: lock                                       payroll.lock
-//   runs: mark paid, bank file, tax export           payroll.lock
+//   runs: mark paid, bank file, tax export           payroll.lock (tax export: locked runs only)
 //   runs: reversal request                           payroll.run
 //   runs: reversal decision                          payroll.cancel.approve (≠ requester)
 //   service-charge pools                             payroll.run / payroll.approve
