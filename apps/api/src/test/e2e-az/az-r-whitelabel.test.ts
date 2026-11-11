@@ -38,6 +38,7 @@ import {
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../../app";
 import { signDeviceToken } from "../../lib/device-token";
+import { registerTestDevice } from "../device-seed";
 import { setDeviceOutletResolver } from "../../services/device-pin.service";
 import { createBrevoEmailProvider } from "../../worker/notification-adapters";
 import {
@@ -438,6 +439,11 @@ describe("Alur R struk dan PDF tenant B (TEN-08, POS-07)", () => {
       setDeviceOutletResolver(async ({ tenantId, deviceId: id }) =>
         tenantId === t.tenantId && id === deviceId ? t.outletId : null,
       );
+      await registerTestDevice(owner, {
+        tenantId: t.tenantId,
+        outletId: t.outletId,
+        deviceId,
+      });
       const deviceToken = signDeviceToken({
         version: 1,
         tenantId: t.tenantId,
