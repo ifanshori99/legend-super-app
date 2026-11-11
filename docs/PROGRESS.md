@@ -1225,3 +1225,4 @@ Langkah berikut CTO baru:
 - Founder menunggu jawab: W12 (layar lupa PIN), W8 (mockup tinjauan cuti HR), W18 (harga WFC). Kontrak DOIT recurring = asumsi sampai sandbox DOIT (legend-saov) ada: beri tahu founder, rekomendasi tunggu sandbox sebelum rilis.
 - Akun: Claude #1 default (7d 36%), #3 5h hampir habis reset 10:09, #2 hindari s/d 13 Nov 05:59.
 - Cron yang harus dibuat ulang: retro 3 jam `43 1,4,7,10,13,16,19,22 * * *` (retro-brief.md), push `git push origin --all` tanpa --force (lapor founder hanya bila gagal).
+- 10:00 Serah terima CTO tertunda: hook RAM tolak coordinator create (Claude 8/8). Dibuat saat slot lepas. Founder dikabari 2 kartu persetujuan + DOIT asumsi.
