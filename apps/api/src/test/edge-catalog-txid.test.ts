@@ -405,7 +405,7 @@ afterAll(async () => {
 const STREAM_TABLES = [...CATALOG_SYNC_STREAMS];
 
 describe("0mus6 cloud sync_txid column and trigger", () => {
-  it("every stream table has a NOT NULL bigint sync_txid column and an index that starts with it", async () => {
+  it("every stream table has a NOT NULL bigint sync_txid column and an index on (tenant_id, sync_txid, ...)", async () => {
     for (const table of STREAM_TABLES) {
       const column = (
         await q(
@@ -425,7 +425,7 @@ describe("0mus6 cloud sync_txid column and trigger", () => {
         )
       ).rows.map((r) => String(r.indexdef));
       expect(
-        indexes.some((def) => /\(sync_txid[,)]/.test(def)),
+        indexes.some((def) => /\(tenant_id, sync_txid[,)]/.test(def)),
         `${table} index on sync_txid`,
       ).toBe(true);
     }

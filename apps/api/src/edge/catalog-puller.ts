@@ -53,6 +53,7 @@ import { isCatalogSyncCursorError } from "../services/edge-catalog-sync.ts";
 import {
   applyCatalogRecords,
   CatalogMissingRefError,
+  lockCatalogStream,
   repairCategoryParents,
   resetCatalogSyncTxid,
   unresolvedCategoryParents,
@@ -360,9 +361,29 @@ async function pullStream(
     const checkpoint = watermark;
     // Apply and checkpoint together: both land, or neither does.
     const result = await withTenant(database, options.context, async (tx) => {
+      // The stream lock comes BEFORE the checkpoint is read, so pages of one
+      // stream (this pull's and a concurrent pull's) apply one after another.
+      await lockCatalogStream(tx, tenantId, stream);
       // A full pull (no checkpoint): local stamps are not the cloud's, so they
       // are zeroed first and every cloud record wins (same commit as the page).
-      if (since === null) await resetCatalogSyncTxid(tx, tenantId, stream);
+      // The checkpoint is read again under the lock: a concurrent pull that
+      // already applied newer rows moved it, and zeroing their stamps now would
+      // let this (older) page win over them.
+      if (since === null) {
+        const [row] = await tx
+          .select({ watermark: edgePullCheckpoints.watermark })
+          .from(edgePullCheckpoints)
+          .where(
+            and(
+              eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+              eq(edgePullCheckpoints.stream, catalogCheckpointStream(stream)),
+            ),
+          )
+          .limit(1);
+        const current = row?.watermark ?? null;
+        if (current === null || !isCurrentCursor(current))
+          await resetCatalogSyncTxid(tx, tenantId, stream);
+      }
       const outcome = await applyCatalogRecords(tx, {
         tenantId,
         stream,

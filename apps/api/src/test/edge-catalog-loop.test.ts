@@ -280,9 +280,11 @@ describe("24318 the master-sync loop pulls the catalog", () => {
     });
     startLoop();
     await tick();
-    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalled();
+      expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThanOrEqual(1);
+    });
     const before = callsTo(spy, CATALOG_PATH).length;
-    expect(before).toBeGreaterThanOrEqual(1);
     await tick();
     await vi.waitFor(() =>
       expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThan(before),
