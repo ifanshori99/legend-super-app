@@ -419,8 +419,11 @@ export async function swapPaidValueOf(
     order.paymentMode === "pay_first",
     hasLivePromo,
   );
-  if (replay === REPLAY_REJECTED) return result(0);
-  if (replay !== null) return result(replay.amountIdr);
+  // A `rejected` earlier refund paid nothing back: the guest still paid the
+  // line, so its paid value is read below as for a first swap (legend-pbwzq
+  // T6: the replacement line is refunded normally).
+  if (replay !== null && replay !== REPLAY_REJECTED)
+    return result(replay.amountIdr);
 
   const items = await recoveryOrderItemsOf(tx, tenantId, order.id);
   const line = items.find((item) => item.id === input.lineId);

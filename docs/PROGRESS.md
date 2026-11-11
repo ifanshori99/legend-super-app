@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-rat9r voucher selisih tukar + refund item <= nilai dibayar tamu (engineer Opus, cabang `ws/rat9r-voucher-cap` dari ws/pti5r-promo-refund 326bfbfa + merge k0ub4, 2026-11-11)
+
+- Sudah: keputusan founder W4 Q25. Kolom baru `order_issues.paid_value_idr` (migrasi 0235) menyimpan nilai dibayar saat tukar ke menu lebih murah. Voucher = `min(selisih daftar, nilai dibayar - voucher rantai - refund hidup rantai)`; credit 0 = tanpa voucher dan tanpa approval. Consumer refund memotong ke `min(cap fwe4l, sisa rantai)` (audit `voucherCapIdr`); cap 0 di order promo lewat jalur `nothing_left` k0ub4 (ledger tetap). Voucher lini pengganti, voucher sistem, dan voucher maaf staf yang terikat laporan dibatasi sisa yang sama (422). Modul baru `order-recovery-paid-value.ts`.
+- Test: `order-recovery-swap-voucher-paid-cap.test.ts` (12 kelompok, 25 test). Test fwe4l diperbarui ke angka Q25 (kopi 8.085: voucher 8.085, refund pengganti 0). Area 17 file 299 test + tsc api/web lulus; ulang 5 file 97/97 setelah fix terakhir.
+- Review: architect xhigh (H1 voucher lini pengganti, M1 UI) dibetulkan; reviewer fix terakhir: lock urut issue lalu order, replay idempoten aman.
+- Keputusan terbuka untuk CTO/founder: voucher maaf staf di lini tanpa rantai tukar belum dibatasi nilai dibayar; arti `rejected` (refund lama ditolak, lalu tukar tetap memberi voucher di bawah cap, test pbwzq T6); rumus lebih ketat `paid - harga pengganti`; teks pratinjau pilihan tukar masih selisih daftar; tukar sebelum migrasi tanpa cap; refund kasir POS mengabaikan voucher; migrasi 0235 bentrok nomor dengan milestone/m1 (renumber saat merge).
+- Berikut: review CTO, second-opinion Codex area refund recovery sebelum gerbang rilis.
+
 ## legend-k0ub4 item pengganti Rp0 di order promo selesai (engineer Opus, cabang `ws/k0ub4-zero-replacement` dari ws/pti5r-promo-refund 326bfbfa, 2026-11-11)
 
 - Sudah: jalur `nothing_left` untuk pengganti Rp0 di order promo mencatat goods baris asli (sebelum cap dan potongan ruang, `recoveryRefundGoodsIdr`) ke ledger promo, sekali per issue (audit `nothing_left` jadi penanda). Refund item lain sesudahnya tidak membayar porsi promo item asli.

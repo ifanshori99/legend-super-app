@@ -56,6 +56,7 @@ import { openSecret, sealSecret } from "../lib/secrets.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { appendPromoEvent, hashPromoCode } from "./crm-promo-engine.ts";
+import { voucherRoomOf } from "./order-recovery-paid-value.ts";
 import { promoIdempotentCommand } from "./crm-promo-idempotency.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
@@ -867,6 +868,22 @@ export async function issueApologyVoucherForStaff(
         "CONFLICT",
         "Laporan ini sudah diselesaikan atau dibatalkan.",
       );
+    // legend-rat9r (founder W4 Q25): a voucher that settles an issue of a
+    // swap chain stays under what the item's paid value still leaves. Order
+    // lock after the issue lock (the consumer's sequence).
+    if (issue !== null && orderIssueId !== null) {
+      const room = await voucherRoomOf(tx, context, {
+        orderId: issue.orderId,
+        issueId: orderIssueId,
+        lineId: issue.orderItemId,
+      });
+      if (room !== null && input.valueIdr > room)
+        throw unprocessable(
+          room <= 0
+            ? "Nilai item ini sudah dikembalikan penuh lewat voucher atau refund sebelumnya. Minta bantuan staf."
+            : `Voucher maaf melebihi sisa nilai yang dibayar tamu untuk item ini (maks ${room}).`,
+        );
+    }
 
     let approvalRequestId: string | null = input.approvalRequestId ?? null;
     if (approvalRequestId !== null) {
