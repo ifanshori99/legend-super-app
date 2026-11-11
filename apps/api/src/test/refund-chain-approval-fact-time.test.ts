@@ -223,7 +223,7 @@ async function pendingChainRefund(bill: Sale, amountIdr: number) {
       .from(paymentRefunds)
       .where(
         and(
-          eq(paymentRefunds.tenantId, seededTenantId),
+          eq(paymentRefunds.tenantId, tenantIdSchema.parse(seededTenantId)),
           eq(paymentRefunds.id, refundId),
         ),
       );
@@ -381,7 +381,7 @@ async function revalidatesWithinLimit(refundId: string, approver: string) {
       .from(paymentRefunds)
       .where(
         and(
-          eq(paymentRefunds.tenantId, seededTenantId),
+          eq(paymentRefunds.tenantId, tenantIdSchema.parse(seededTenantId)),
           eq(paymentRefunds.id, refundId),
         ),
       );

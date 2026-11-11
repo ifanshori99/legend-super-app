@@ -249,7 +249,9 @@ async function applyWhileManagerLocked(
 describe("legend-c79uy P2 backfill uses the latest time after the manager lock", () => {
   it("control: a manager whose assignment stays valid is applied after waiting on the lock", async () => {
     const s = await buildScenario(null);
-    const result = await applyWhileManagerLocked(s, () => sleep(300));
+    const result = await applyWhileManagerLocked(s, async () => {
+      await sleep(300);
+    });
     expect(count(result.applied)).toBe(1);
     expect(await managerOf(s.tenantId, s.target)).toBe(s.omEmployee);
     expect(await auditCount(s.tenantId)).toBe(1);
