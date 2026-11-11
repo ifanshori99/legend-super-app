@@ -1158,7 +1158,8 @@ test("legend-5cwrq: a template role key must be its templateKey or <templateKey>
   assert.equal(customOk.ok, true, JSON.stringify(customOk.issues));
 
   // Legacy items (no `kind`) are unchanged: key must equal templateKey.
-  const { kind: _kind, ...legacyBase } = base;
+  const legacyBase = { ...base };
+  delete legacyBase.kind;
   const legacyOk = rolesCodec.fromTemplate([
     { ...legacyBase, key: "cashier", templateKey: "cashier" },
   ]);
