@@ -164,7 +164,7 @@ function ReviewLink({
 }) {
   const t = useT();
   return (
-    <Button asChild className={className}>
+    <Button asChild variant="outline" className={className}>
       <Link
         to="/kelola/absensi/tinjauan-cuti/$logId"
         params={{ logId: item.logId }}
