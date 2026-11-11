@@ -23,6 +23,7 @@
 import {
   basisPointsSchema,
   isoDateTimeSchema,
+  posDiscountThresholdBpSchema,
   roundingModeSchema,
   tenantIdSchema,
   userIdSchema,
@@ -150,7 +151,7 @@ const approvalItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("pos_discount"),
     /** null = the tenant-wide threshold. */
     outletKey: outletKeySchema.nullable(),
-    discountThresholdBp: basisPointsSchema,
+    discountThresholdBp: posDiscountThresholdBpSchema,
   }),
 ]);
 

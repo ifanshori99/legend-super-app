@@ -38,6 +38,7 @@ import {
 } from "@starter/shared/core";
 import {
   canTransitionPosOrder,
+  capDiscountThresholdBp,
   createPosOrder as createPosOrderEndpoint,
   firePosOrderItems as fireEndpoint,
   listPosOrderEvents as listEventsEndpoint,
@@ -448,7 +449,9 @@ export async function discountThresholdBp(
     .where(eq(posApprovalPolicies.tenantId, context.tenant.tenantId));
   const outletRow = rows.find((row) => row.outletId === outletId);
   const tenantRow = rows.find((row) => row.outletId === null);
-  return (outletRow ?? tenantRow)?.discountThresholdBp ?? 1;
+  const stored = (outletRow ?? tenantRow)?.discountThresholdBp;
+  // Founder decision W9: stored values above 5000 bp are clamped on read.
+  return capDiscountThresholdBp(stored ?? 1);
 }
 
 /** GET .../actions — what the payment panel may offer now. */

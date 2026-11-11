@@ -1517,6 +1517,71 @@ describe("TEN-09 role and checklist safety on import", () => {
   });
 });
 
+// Founder decision: the cashier discount approval threshold is at most 5000 bp
+// (50%) and at least 1 bp. A pos_discount item outside 1..5000 is refused with
+// 422 (either CONFIG_BUNDLE_INVALID or CONFIG_IMPORT_FAILED; both are 422) and
+// nothing is written. 5000 is accepted and stored as is.
+describe("TEN-09 pos_discount threshold range (1..5000 bp)", () => {
+  const posDiscountBundle = (discountThresholdBp: number) => ({
+    formatVersion: 1,
+    exportedAt: new Date().toISOString(),
+    sections: {
+      approval_policies: {
+        version: 1,
+        items: [
+          {
+            key: "pos.discount.tenant",
+            kind: "pos_discount",
+            outletKey: null,
+            discountThresholdBp,
+          },
+        ],
+      },
+    },
+  });
+  const storedThresholds = async (tenantId: string) =>
+    (
+      await owner.query<{ bp: number }>(
+        `SELECT discount_threshold_bp::int AS bp FROM pos_approval_policies
+          WHERE tenant_id = $1 ORDER BY outlet_id NULLS FIRST`,
+        [tenantId],
+      )
+    ).rows.map((row) => row.bp);
+
+  it.each([5_001, 7_500, 10_000, 0])(
+    "TEN-09 discount-cap-5000 an import with a pos_discount threshold of %i is refused and nothing is written",
+    async (discountThresholdBp) => {
+      const target = await newTarget(admin);
+      const before = await snapshot(target.tenantId);
+      const response = await postImport(admin, target.tenantId, {
+        bundle: posDiscountBundle(discountThresholdBp),
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(await snapshot(target.tenantId)).toEqual(before);
+      expect(await storedThresholds(target.tenantId)).toEqual([]);
+      expect(
+        (await importRows(target.tenantId)).filter(
+          (row) => row.status === "applied",
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it.each([5_000, 1])(
+    "TEN-09 discount-cap-5000 an import with a pos_discount threshold of %i is accepted and stored as is",
+    async (discountThresholdBp) => {
+      const target = await newTarget(admin);
+      const imported = await importOk(admin, target.tenantId, {
+        bundle: posDiscountBundle(discountThresholdBp),
+      });
+      expect(imported.status).toBe("applied");
+      expect(await storedThresholds(target.tenantId)).toEqual([
+        discountThresholdBp,
+      ]);
+    },
+  );
+});
+
 describe("TEN-09 access", () => {
   it("TEN-09 answers 401 without a session and 403 to tenant admins, legacy admins and plain users on every endpoint", async () => {
     const target = await newTarget(admin);
