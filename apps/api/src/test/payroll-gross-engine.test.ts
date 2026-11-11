@@ -958,6 +958,95 @@ describe("computeEmployeeGross: proration by calendar day", () => {
   });
 });
 
+describe("computeEmployeeGross: employment dates (538-G2b-P1, founder Q43)", () => {
+  it.each([
+    ["2026-06-16", null, 1_500_000],
+    ["2025-03-01", "2026-06-10", 1_000_000],
+    ["2026-06-11", "2026-06-20", 1_000_000],
+    ["2026-06-30", "2026-06-30", 100_000],
+    ["2026-07-01", null, 0],
+    ["2025-03-01", "2026-05-31", 0],
+  ])(
+    "[538-G2b-P1] pays only inclusive employment days %s through %s",
+    async (joinDate, endDate, expectedGross) => {
+      const employeeId = await seedEmployee();
+      const salary = await earning();
+      await setAmount(employeeId, salary.id, 3_000_000);
+      await asTenant(tenant.id, (db) =>
+        db.query(
+          "UPDATE employees SET join_date = $2::date, end_date = $3::date WHERE id = $1",
+          [employeeId, joinDate, endDate],
+        ),
+      );
+
+      const result = await compute(employeeId);
+
+      expect(result.grossIdr).toBe(expectedGross);
+      expect(result.netIdr).toBe(expectedGross);
+      expect(result.grossIdr).toBeLessThanOrEqual(3_000_000);
+    },
+  );
+
+  it("[538-G2b-P1] intersects salary history with employment days before proration", async () => {
+    const employeeId = await seedEmployee();
+    const salary = await earning();
+    await setAmount(employeeId, salary.id, 3_000_000);
+    await setAmount(employeeId, salary.id, 6_000_000, "2026-06-21");
+    await asTenant(tenant.id, (db) =>
+      db.query("UPDATE employees SET join_date = '2026-06-16' WHERE id = $1", [
+        employeeId,
+      ]),
+    );
+
+    const result = await compute(employeeId);
+
+    expect(result.grossIdr).toBe(500_000 + 2_000_000);
+    expect(result.netIdr).toBe(2_500_000);
+  });
+
+  it("[538-G2b-P1] prorates deductions over the same inclusive employment days", async () => {
+    const employeeId = await seedEmployee();
+    const salary = await earning();
+    const loan = await deduction();
+    await setAmount(employeeId, salary.id, 3_000_000);
+    await setAmount(employeeId, loan.id, 600_000);
+    await asTenant(tenant.id, (db) =>
+      db.query("UPDATE employees SET join_date = '2026-06-16' WHERE id = $1", [
+        employeeId,
+      ]),
+    );
+
+    const result = await compute(employeeId);
+
+    expect(result.grossIdr).toBe(1_500_000);
+    expect(result.deductionsIdr).toBe(300_000);
+    expect(result.netIdr).toBe(1_200_000);
+  });
+
+  it("[538-G2b-P1] approved overtime outside employment dates cannot increase net pay", async () => {
+    const employeeId = await seedEmployee();
+    const salary = await earning({ overtimeBase: true });
+    await setAmount(employeeId, salary.id, 17_300_000);
+    await asTenant(tenant.id, (db) =>
+      db.query(
+        "UPDATE employees SET join_date = '2026-06-11', end_date = '2026-06-20' WHERE id = $1",
+        [employeeId],
+      ),
+    );
+    for (const date of ["2026-06-10", "2026-06-21"]) {
+      await seedLog(employeeId, { businessDate: date, overtimeMinutes: 120 });
+      await seedOvertimeRequest(employeeId, { date, minutes: 120 });
+    }
+
+    const result = await compute(employeeId);
+
+    expect(result.overtimeMinutes).toBe(0);
+    expect(result.overtimeIdr).toBe(0);
+    expect(result.grossIdr).toBe(5_766_666);
+    expect(result.netIdr).toBe(5_766_666);
+  });
+});
+
 describe("computeEmployeeGross: sealed result", () => {
   it("[SEAL] seals the calculation bound to the payslip row and keeps it unreadable in the clear", async () => {
     const employeeId = await seedEmployee();

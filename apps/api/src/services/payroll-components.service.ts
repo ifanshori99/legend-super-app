@@ -430,9 +430,13 @@ async function assertEmployeeInTenant(
   tx: Tx,
   context: ScopedTenantContext,
   employeeId: string,
-): Promise<void> {
+): Promise<Pick<typeof employees.$inferSelect, "id" | "joinDate" | "endDate">> {
   const [row] = await tx
-    .select({ id: employees.id })
+    .select({
+      id: employees.id,
+      joinDate: employees.joinDate,
+      endDate: employees.endDate,
+    })
     .from(employees)
     .where(
       and(
@@ -442,6 +446,7 @@ async function assertEmployeeInTenant(
     )
     .limit(1);
   if (!row) throw notFound();
+  return row;
 }
 
 /**
@@ -790,8 +795,14 @@ export async function computeEmployeeGross(
   const periodEnd = end.data;
   return withTenant(db, context, async (tx) => {
     // The employee comes first: another tenant's employee is a plain 404.
-    await assertEmployeeInTenant(tx, context, employeeId);
+    const employee = await assertEmployeeInTenant(tx, context, employeeId);
     await assertPayrollTenantCan(tx, context, actorUserId, WRITE_CODE);
+    const employmentStart =
+      employee.joinDate > periodStart ? employee.joinDate : periodStart;
+    const employmentEnd =
+      employee.endDate && employee.endDate < periodEnd
+        ? employee.endDate
+        : periodEnd;
 
     const rows = await tx
       .select({ amount: employeePayComponents, component: payComponents })
@@ -818,8 +829,9 @@ export async function computeEmployeeGross(
       );
 
     // Proration by calendar day: one amount per component, the sum over its
-    // overlapping rows of floor(amount * activeDays / periodDays) in BigInt.
-    // A row covering the whole period pays its full amount; rows of one
+    // overlapping employment days of floor(amount * activeDays / periodDays)
+    // in BigInt; the divisor remains the full payroll period.
+    // Employment and a row covering the whole period pay the full amount; rows of one
     // component never overlap (setEmployeePayComponent closes the open row),
     // so the sum is never above the largest amount. Zero rows add nothing.
     const dayNumber = (date: string) =>
@@ -848,14 +860,14 @@ export async function computeEmployeeGross(
       if (nominal <= 0) continue;
       const activeDays = BigInt(
         dayNumber(
-          amount.effectiveTo && amount.effectiveTo < periodEnd
+          amount.effectiveTo && amount.effectiveTo < employmentEnd
             ? amount.effectiveTo
-            : periodEnd,
+            : employmentEnd,
         ) -
           dayNumber(
-            amount.effectiveFrom > periodStart
+            amount.effectiveFrom > employmentStart
               ? amount.effectiveFrom
-              : periodStart,
+              : employmentStart,
           ) +
           1,
       );
@@ -920,8 +932,8 @@ export async function computeEmployeeGross(
           eq(attendanceLogs.tenantId, context.tenant.tenantId),
           eq(attendanceLogs.employeeId, employeeId),
           eq(attendanceLogs.type, "out"),
-          gte(attendanceLogs.businessDate, periodStart),
-          lte(attendanceLogs.businessDate, periodEnd),
+          gte(attendanceLogs.businessDate, employmentStart),
+          lte(attendanceLogs.businessDate, employmentEnd),
           sql`${attendanceLogs.overtimeMinutes} > 0`,
           or(
             and(
@@ -948,8 +960,8 @@ export async function computeEmployeeGross(
           eq(overtimeRequests.tenantId, context.tenant.tenantId),
           eq(overtimeRequests.employeeId, employeeId),
           eq(overtimeRequests.status, "approved"),
-          gte(overtimeRequests.date, periodStart),
-          lte(overtimeRequests.date, periodEnd),
+          gte(overtimeRequests.date, employmentStart),
+          lte(overtimeRequests.date, employmentEnd),
           gte(overtimeRequests.minutes, 1),
           lte(overtimeRequests.minutes, 720),
           inArray(overtimeRequests.dayType, [...OVERTIME_DAY_TYPES]),
