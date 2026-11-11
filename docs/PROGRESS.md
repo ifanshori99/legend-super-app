@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## 516 WS-05 admin pembayaran + refund (engineer, sesi e05f3e30 G92j5, cabang `ws/ws05-pay-admin` dari m1 6ae8cf22, 2026-11-11)
+
+- Sudah: legend-lnit 3b1c1bd8 (terminal EDC nonaktif/metode dicabut menghapus default kasir + audit; default kasir wajib assignment aktif dengan `pos.payment.accept` di outlet; bug 500 PG 42883 `text = uuid` di GET cashier-defaults; mock web fail-closed). legend-fuv7 005d37cc (`reason` + `approvalRef` di kontrak dana belum teralokasi; `paymentRoutingSchema.outletId` nullable). legend-7tc4 c430380a (9 test balapan refund: request paralel, approval paralel, retry gateway; semua lulus di basis). Gelombang 2 (temuan architect): assert panggilan provider tepat 1, race approval wajib [200,409] + Rp60.000 dibayar, migrasi 0328 partial unique index refund hidup per dana, replay idempotent default kasir.
+- Keputusan: dana tetap `open` (approvalRef null) sampai refund selesai; approvalRef = id refund saat selesai (desain lama dipertahankan, test diperbaiki). Predikat 0328 `status <> 'failed'` = aturan service.
+- Bukti: 12 file test terarah 200/200; typecheck 3/3; eslint + prettier 9 file hijau; db:generate kosong; `migration-renumber.mjs check` ok.
+- Terbuka: batas nominal per level/penyetuju approval refund belum ada (pertanyaan founder). Sebelum rilis 0328: cek duplikat refund hidup per dana di staging/prod.
+- Biaya: 4692k unit (utama 1843k, subagent opus 761k, sonnet 2087k); 14 subagent, puncak 3, rata 0,7; 33 menit.
+
 ## legend-ilzrj WS-10 FE layar PIN slip gaji + sisa percobaan di API (ui-engineer, cabang `ws/payslip-pin-ui` dari `ws/hris-pii-pin` 8305fdc3 + merge `design/payslip-pin`, 2026-11-11)
 
 - Sudah: BE 403 `PAYSLIP_PIN_INVALID` membawa `error.remainingAttempts`, 423 membawa `error.lockedUntil` (field opsional di envelope error, bukan `details` yang berbentuk array); architect approve. Web: buat PIN, PIN tersimpan, buka slip (kartu periode, nominal tersembunyi), PIN salah + sisa, terkunci (`pin-locked.tsx`, menit berjalan), lupa PIN (teks HR/atasan tanpa nomor) + kode WhatsApp (503 belum tersedia, 429 dibatasi, kode hangus setelah 5 salah tanpa mengunci PIN), ubah PIN, daftar slip kosong/memuat/error, dialog reset HR dengan alasan. Logika murni `pin-state.ts` + `tests/payslip-pin-ui.test.mjs` (35). Mock: `?mock=pin-not-set|pin-locked|otp-ok|otp-rate-limited`.

@@ -48,3 +48,13 @@ Test vitest API di `apps/api/src/test/`, pola seeding dari `payment-admin-api.te
 - File 1 `payment-admin-ws05-fuv7.test.ts`: A1, A2, A3.
 - File 2 `payment-admin-ws05-lnit.test.ts`: B1, B2.
 - File 3 `payment-refund-ws05-race.test.ts`: C1, C2.
+
+## Perbaikan temuan architect (gelombang 2)
+
+R1 (test-writer) `apps/api/src/test/payment-refund-ws05-race.test.ts`:
+- Fake provider dedupe di `refund-fake-gateway.ts:75-76`, test hanya hitung eksekusi. Tambah assert jumlah PANGGILAN provider tepat 1 di test retry/approve-twice (sekitar :409, :430, :470, :490, :520); :490 juga `executionCount === 0`. Harus gagal bila cek "send hanya di attempt pertama" `payment-refund.service.ts:2169` dilewati (bila fake tidak mencatat panggilan, tambah penghitung di fake: file test-helper boleh diedit).
+- Approval race (:369-407): wajib status `[200, 409]` (urut bebas), tepat satu `completed`, `providerPaidTotal === 60_000`.
+R2 (test-writer) `payment-admin-ws05-lnit.test.ts`: menghapus `card` dari `supportedMethods` terminal → default `edc_card` yang menunjuk terminal itu terhapus/tersembunyi; replay `updateEdcCashierDefault` dengan key sama setelah terminal nonaktif → respons tersimpan yang sama (bukan 422/404).
+
+I1 (implementer) `apps/api/src/services/payment-admin-config.service.ts`: (a) `updateEdcTerminal` (~:531) juga hapus default yang metodenya tidak lagi didukung terminal, plus read (~:595) saring itu; (b) `updateEdcCashierDefault`: langkah idempotency (~:660) sebelum pengecekan (~:618-659) supaya replay mengembalikan respons tersimpan. Plus `apps/web/src/features/ws05-payment-admin/mock.ts:597-604`: resolve refund membiarkan dana `open` (resolution null, approvalRef null) seperti API.
+I2 (implementer) migrasi `0328`: partial unique index `payment_refunds(tenant_id, unallocated_fund_id)` untuk refund yang masih hidup. Predikat status HARUS sama persis dengan aturan service (`payment-admin-funds.service.ts` ~:207, cek status apa yang dianggap "tidak hidup": failed, rejected, dll). Lewat schema drizzle `db/schema/payment-admin.ts` + `pnpm db:generate` (ganti nama file/tag ke `0328_...`, journal konsisten). Cek data lama bisa melanggar? Bila ya, berhenti dan lapor.
