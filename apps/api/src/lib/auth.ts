@@ -7,7 +7,7 @@ import {
 } from "better-auth/api";
 import { admin } from "better-auth/plugins";
 import { createHmac } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import {
   ac,
   ADMIN_ROLES,
@@ -19,6 +19,7 @@ import { siteConfig } from "@starter/shared/site";
 import { env } from "../config/env";
 import { db } from "../db";
 import * as schema from "../db/schema";
+import { withTenant } from "../db/tenant";
 import type { SessionAuthMethod } from "../db/schema/session";
 import {
   assertImpersonationAllowed,
@@ -26,12 +27,14 @@ import {
   ImpersonationRefused,
   impersonationSessionEnd,
   isPlatformAdmin,
+  platformTenantContext,
   recordImpersonationEnded,
   recordImpersonationStarted,
   type ImpersonationEndCause,
   type ImpersonationMatch,
 } from "../services/platform-support.service";
 import { contactDigestSecret, emailDigest } from "./identity-digest";
+import { resolveHostname } from "../services/org-resolve.service";
 import { logger } from "./logger";
 import { sealSecret } from "./secrets";
 
@@ -132,6 +135,47 @@ const SESSION_AUTH_METHODS: readonly SessionAuthMethod[] = [
   "google",
   "legacy",
 ];
+
+/*
+ * Tenant of a staff login (legend-488 item 5). Only the email/password sign-in
+ * path, and only on a tenant host: the tenant comes from the Host header via
+ * resolveHostname (never client input) and counts only when the user holds an
+ * active role assignment there. Anything else (no host, unknown host, no
+ * role, other sign-in path) leaves session.tenant_id NULL. `role_assignments`
+ * forces row level security, so the read runs inside withTenant.
+ */
+async function staffLoginTenantId(
+  path: string | undefined,
+  host: string | null | undefined,
+  userId: string,
+): Promise<string | null> {
+  if (path !== "/sign-in/email" || !host) return null;
+  const resolution = await resolveHostname(host);
+  if (!resolution.ok) return null;
+  const { tenantId } = resolution;
+  const now = new Date();
+  const [assignment] = await withTenant(
+    db,
+    platformTenantContext(tenantId),
+    (tx) =>
+      tx
+        .select({ id: schema.roleAssignments.id })
+        .from(schema.roleAssignments)
+        .where(
+          and(
+            eq(schema.roleAssignments.tenantId, tenantId),
+            eq(schema.roleAssignments.userId, userId),
+            lte(schema.roleAssignments.validFrom, now),
+            or(
+              isNull(schema.roleAssignments.validUntil),
+              gt(schema.roleAssignments.validUntil, now),
+            ),
+          ),
+        )
+        .limit(1),
+  );
+  return assignment ? tenantId : null;
+}
 
 function sessionAuthMethodFor(
   path: string | undefined,
@@ -382,8 +426,21 @@ export const auth = betterAuth({
             ctx?.path === undefined &&
             (session as { authCrossDevice?: unknown }).authCrossDevice === true;
           const adminUserId = session.impersonatedBy;
-          if (typeof adminUserId !== "string" || !adminUserId)
-            return { data: { ...session, authMethod, authCrossDevice } };
+          if (typeof adminUserId !== "string" || !adminUserId) {
+            const tenantId = await staffLoginTenantId(
+              ctx?.path,
+              ctx?.headers?.get("host"),
+              session.userId,
+            );
+            return {
+              data: {
+                ...session,
+                authMethod,
+                authCrossDevice,
+                ...(tenantId ? { tenantId } : {}),
+              },
+            };
+          }
           const now = new Date();
           let matches: ImpersonationMatch[];
           try {
@@ -547,6 +604,13 @@ export const auth = betterAuth({
         required: false,
         input: false,
         defaultValue: false,
+      },
+      // legend-488 item 5: tenant of a staff login on a tenant host. Set only
+      // by the session create hook (staffLoginTenantId); NULL otherwise.
+      tenantId: {
+        type: "string",
+        required: false,
+        input: false,
       },
     },
   },

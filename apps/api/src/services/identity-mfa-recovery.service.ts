@@ -9,7 +9,7 @@
 // Neither the code nor its digest ever reaches the audit log or the logger.
 
 import { randomUUID } from "node:crypto";
-import { and, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import { AccessError } from "@starter/shared/access";
 import {
@@ -44,6 +44,7 @@ import {
   generateRecoveryCode,
   normalizeRecoveryCode,
   recoveryCodeHash,
+  recoveryCodeHashCandidates,
 } from "../lib/mfa-recovery-code";
 import { MAX_MFA_ATTEMPTS, MFA_LOCK_MINUTES } from "../lib/mfa-policy";
 import { recordAudit } from "./core-audit";
@@ -292,7 +293,10 @@ export async function verifyMfaRecoveryCode(input: {
   readonly now?: Date;
 }): Promise<MfaRecoveryVerificationResult> {
   const now = input.now ?? new Date();
-  const hash = recoveryCodeHash(
+  // Both blind index versions: a code issued before a cutover still verifies.
+  // The two digests of one code differ, so at most one row matches and the
+  // single-use update below still spends it once.
+  const hashes = recoveryCodeHashCandidates(
     input.userId,
     normalizeRecoveryCode(input.code),
   );
@@ -321,7 +325,7 @@ export async function verifyMfaRecoveryCode(input: {
       .where(
         and(
           eq(mfaRecoveryCodes.setId, set.id),
-          eq(mfaRecoveryCodes.codeHash, hash),
+          inArray(mfaRecoveryCodes.codeHash, hashes),
           isNull(mfaRecoveryCodes.usedAt),
         ),
       )

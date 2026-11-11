@@ -35,6 +35,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -80,6 +81,11 @@ export const bankAccounts = pgTable(
     accountName: varchar("account_name", { length: 150 }).notNull(),
     accountNumberEncrypted: bytea("account_number_encrypted").notNull(),
     accountNumberHmac: varchar("account_number_hmac", { length: 64 }).notNull(),
+    /** Blind-index key version of `accountNumberHmac` (lib/blind-index.ts,
+     * legend-baxdx). Rows before 0267 are version 1. */
+    accountNumberHmacVersion: smallint("account_number_hmac_version")
+      .notNull()
+      .default(1),
     accountNumberLast4: char("account_number_last4", { length: 4 }).notNull(),
     accountNumberKeyVersion: integer("account_number_key_version").notNull(),
     glAccountId: uuid("gl_account_id").notNull(),
@@ -127,6 +133,10 @@ export const bankAccounts = pgTable(
     check(
       "bank_accounts_hmac_check",
       sql`${t.accountNumberHmac} ~ ${sql.raw(HMAC_FORMAT)}`,
+    ),
+    check(
+      "bank_accounts_account_number_hmac_version_check",
+      sql`${t.accountNumberHmacVersion} IN (1, 2)`,
     ),
     check(
       "bank_accounts_key_version_check",

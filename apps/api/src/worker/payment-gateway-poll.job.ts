@@ -12,10 +12,17 @@ import {
   assertTrustedScopedContext,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { logger } from "../lib/logger";
+import { syncSubscriptionQuotas } from "../services/facility-subscription-quota.ts";
 import { pollPendingGatewayIntents } from "../services/payment.service.ts";
+import {
+  markOverdueSubscriptionsPastDue,
+  promoteDueSubscriptionPeriods,
+} from "../services/payment-recurring.service.ts";
 import { reprocessDuitkuWebhookEvents } from "../services/payment-duitku-webhook.service.ts";
 import {
   purgeRejectedWebhookEvents,
+  reprocessParkedRecurringEvents,
   reprocessStoredWebhookEvents,
 } from "../services/payment-webhook.service.ts";
 
@@ -27,6 +34,8 @@ const lastRunByTenant = new Map<string, number>();
 export type PaymentGatewayPollResult = {
   polled: { checked: number; settled: number };
   webhooks: { checked: number; processed: number };
+  promoted: number;
+  pastDue: number;
 };
 
 export async function runPaymentGatewayPollJob(
@@ -48,10 +57,23 @@ export async function runPaymentGatewayPollJob(
   const result: PaymentGatewayPollResult = {
     polled: { checked: 0, settled: 0 },
     webhooks: { checked: 0, processed: 0 },
+    promoted: 0,
+    pastDue: 0,
   };
   let failed = false;
   try {
     result.webhooks = await reprocessStoredWebhookEvents(context, now);
+  } catch {
+    failed = true;
+  }
+  try {
+    // Recurring invoice events parked until their subscription exists (no
+    // 24 h window, unlike the sweep above).
+    const parked = await reprocessParkedRecurringEvents(context, now);
+    result.webhooks = {
+      checked: result.webhooks.checked + parked.checked,
+      processed: result.webhooks.processed + parked.processed,
+    };
   } catch {
     failed = true;
   }
@@ -68,6 +90,48 @@ export async function runPaymentGatewayPollJob(
     result.polled = await pollPendingGatewayIntents(context, now);
   } catch {
     failed = true;
+  }
+  try {
+    // Early-paid next periods that have become current. Best effort: access
+    // checks also promote on read, so a failure here must not fail the sweep.
+    result.promoted = (
+      await promoteDueSubscriptionPeriods(context, now)
+    ).promoted;
+  } catch (error) {
+    logger.warn(
+      {
+        job: "payment_gateway_poll",
+        errorName: error instanceof Error ? error.name : "unknown",
+      },
+      "Subscription period promotion failed",
+    );
+  }
+  try {
+    // Active subscriptions whose invoice stayed unpaid past the grace period.
+    // Idempotent and best effort, like the promotion above.
+    result.pastDue = await markOverdueSubscriptionsPastDue(context, now);
+  } catch (error) {
+    logger.warn(
+      {
+        job: "payment_gateway_poll",
+        errorName: error instanceof Error ? error.name : "unknown",
+      },
+      "Subscription past-due marking failed",
+    );
+  }
+  try {
+    // Facility quota grants of paid and grace subscriptions (legend-9f1p3).
+    // Runs after the past-due marking so a row that just lost access gets
+    // nothing. Idempotent and best effort, like the sweeps above.
+    await syncSubscriptionQuotas(context, now);
+  } catch (error) {
+    logger.warn(
+      {
+        job: "payment_gateway_poll",
+        errorName: error instanceof Error ? error.name : "unknown",
+      },
+      "Subscription quota sync failed",
+    );
   }
   try {
     // Retention for bad-signature rows; the count is not needed here.

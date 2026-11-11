@@ -10,8 +10,10 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
+  CONTROL_PLANE_TENANT_ID,
   eventActorSchema,
   eventEnvelopeSchema,
+  isControlPlaneDestination,
   outboxRowSchema,
   type EventEnvelope,
 } from "@starter/shared/events";
@@ -38,6 +40,15 @@ export async function appendOutbox(
   const event = eventEnvelopeSchema.parse(input.event);
   if (event.tenantId !== context.tenant.tenantId)
     throw new Error("Event tenant does not match context");
+  // 488 item 4: the control-plane stream and its destinations belong together,
+  // both ways. A tenant event on a control destination would never be relayed
+  // for that tenant; a sentinel event on an ordinary destination would reach a
+  // transport that no one scoped to the control plane.
+  if (
+    (event.tenantId === CONTROL_PLANE_TENANT_ID) !==
+    isControlPlaneDestination(input.destination)
+  )
+    throw new Error("Control-plane events and destinations must match");
   if (event.outletId) assertOutletInScope(context.outletScope, event.outletId);
   else if (context.outletScope.kind !== "tenant")
     throw new Error("Tenant-wide event requires tenant scope");
@@ -121,7 +132,14 @@ export async function relayOutbox(
     generation: number;
   }) => Promise<string>,
   requestMissing: (gap: GapRequest) => Promise<void> = async () => {},
+  options: {
+    /** Claim and gap-scan only these destinations (control-plane sweep). */
+    destinations?: readonly string[];
+  } = {},
 ) {
+  const destinationFilter = options.destinations
+    ? sql`o.destination = ANY(${`{${options.destinations.join(",")}}`}::text[])`
+    : sql`TRUE`;
   // A vanished pg-boss job leaves its row queued; recover it before claiming so
   // this sweep re-enqueues it under the advanced generation.
   await recoverExpiredDispatches(database, context);
@@ -132,7 +150,7 @@ export async function relayOutbox(
         ? sql`TRUE`
         : sql`outlet_id = ANY(${outletArray(context)}::uuid[])`;
     const result = await tx.execute(
-      sql`UPDATE domain_event_outbox SET dispatch_lease_token = ${token}::uuid, dispatch_lease_until = now() + interval '60 seconds' WHERE id IN (SELECT id FROM domain_event_outbox o WHERE dispatch_state = 'ready' AND status <> 'delivered' AND available_at <= now() AND (dispatch_lease_until IS NULL OR dispatch_lease_until < now()) AND ${outletFilter} AND sequence = COALESCE((SELECT last_sequence FROM domain_event_offsets x WHERE x.tenant_id = o.tenant_id AND x.consumer = o.destination AND x.aggregate_type = o.aggregate_type AND x.aggregate_id = o.aggregate_id), 0) + 1 ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 100) RETURNING id, dispatch_generation`,
+      sql`UPDATE domain_event_outbox SET dispatch_lease_token = ${token}::uuid, dispatch_lease_until = now() + interval '60 seconds' WHERE id IN (SELECT id FROM domain_event_outbox o WHERE dispatch_state = 'ready' AND status <> 'delivered' AND available_at <= now() AND (dispatch_lease_until IS NULL OR dispatch_lease_until < now()) AND ${outletFilter} AND ${destinationFilter} AND sequence = COALESCE((SELECT last_sequence FROM domain_event_offsets x WHERE x.tenant_id = o.tenant_id AND x.consumer = o.destination AND x.aggregate_type = o.aggregate_type AND x.aggregate_id = o.aggregate_id), 0) + 1 ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 100) RETURNING id, dispatch_generation`,
     );
     return result.rows as { id: string; dispatch_generation: number }[];
   });
@@ -142,7 +160,7 @@ export async function relayOutbox(
         ? sql`TRUE`
         : sql`o.outlet_id = ANY(${outletArray(context)}::uuid[])`;
     const result = await tx.execute(
-      sql`SELECT DISTINCT o.destination, o.aggregate_type, o.event->>'aggregateId' AS aggregate_id, COALESCE(x.last_sequence, 0) + 1 AS missing_sequence FROM domain_event_outbox o LEFT JOIN domain_event_offsets x ON x.tenant_id = o.tenant_id AND x.consumer = o.destination AND x.aggregate_type = o.aggregate_type AND x.aggregate_id = o.aggregate_id WHERE ${outletFilter} AND o.status <> 'delivered' AND o.sequence > COALESCE(x.last_sequence, 0) + 1 AND NOT EXISTS (SELECT 1 FROM domain_event_outbox p WHERE p.tenant_id = o.tenant_id AND p.destination = o.destination AND p.aggregate_type = o.aggregate_type AND p.aggregate_id = o.aggregate_id AND p.sequence = COALESCE(x.last_sequence, 0) + 1) LIMIT 100`,
+      sql`SELECT DISTINCT o.destination, o.aggregate_type, o.event->>'aggregateId' AS aggregate_id, COALESCE(x.last_sequence, 0) + 1 AS missing_sequence FROM domain_event_outbox o LEFT JOIN domain_event_offsets x ON x.tenant_id = o.tenant_id AND x.consumer = o.destination AND x.aggregate_type = o.aggregate_type AND x.aggregate_id = o.aggregate_id WHERE ${outletFilter} AND ${destinationFilter} AND o.status <> 'delivered' AND o.sequence > COALESCE(x.last_sequence, 0) + 1 AND NOT EXISTS (SELECT 1 FROM domain_event_outbox p WHERE p.tenant_id = o.tenant_id AND p.destination = o.destination AND p.aggregate_type = o.aggregate_type AND p.aggregate_id = o.aggregate_id AND p.sequence = COALESCE(x.last_sequence, 0) + 1) LIMIT 100`,
     );
     return result.rows;
   });

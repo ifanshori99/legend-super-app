@@ -12,6 +12,11 @@
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, ilike, lt, or } from "drizzle-orm";
 import {
+  CONTROL_PLANE_DESTINATION,
+  CONTROL_PLANE_PACKAGE_DESTINATION,
+  CONTROL_PLANE_TENANT_ID,
+} from "@starter/shared/events";
+import {
   PAYMENT_GATEWAY_PROVIDERS,
   PlatformError,
   platformEvents,
@@ -68,6 +73,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { seedTenantRoleTemplates } from "./access.service.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { appendControlPlaneEvent } from "./control-plane-events.ts";
 import { toOutlet } from "./org.service.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
@@ -191,6 +197,50 @@ export async function getTenantOrThrow(tenantId: string): Promise<Tenant> {
 /** Consumers receive platform events through the cloud sync stream. */
 const EVENT_DESTINATION = "cloud-sync";
 
+type EventTx = Parameters<typeof appendOutbox>[0];
+
+/**
+ * A change of an existing tenant (`tenant.status_changed`,
+ * `tenant.package_changed`), appended on the caller's transaction so the
+ * change, its audit row and the event commit together. The event goes to the
+ * control-plane stream (488 items 4 and 9), not the subject tenant's own
+ * `cloud-sync` stream: the relay only sweeps active tenants, so a suspend or
+ * archive event on the tenant's own stream would never be relayed. The subject
+ * tenant is the aggregate id. A status change is routed (`control-plane`); a
+ * package change has no consumer yet, so it is parked on its own destination
+ * and stays pending instead of being marked delivered by a no-op.
+ */
+async function appendTenantChangeEvent(
+  tx: EventTx,
+  context: ScopedTenantContext,
+  name: "tenant.status_changed" | "tenant.package_changed",
+  payload: Record<string, unknown>,
+  actorUserId: string,
+  now: Date,
+): Promise<void> {
+  await appendControlPlaneEvent(tx, {
+    definition: platformEvents[name],
+    destination:
+      name === "tenant.status_changed"
+        ? CONTROL_PLANE_DESTINATION
+        : CONTROL_PLANE_PACKAGE_DESTINATION,
+    aggregateId: context.tenant.tenantId,
+    payload,
+    actor: { type: "user", id: actorUserId },
+    now,
+  });
+}
+
+/** Keys of `limits` whose value differs, for `tenant.package_changed`. */
+function changedLimitKeys(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): string[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter((key) => before[key] !== after[key])
+    .sort();
+}
+
 /**
  * Tenant-wide context for a platform action on `tenantId`. The id is chosen by
  * the platform action (a new tenant, or a route parameter behind the platform
@@ -262,6 +312,9 @@ export async function createTenant(
       }
 
   const tenantId = randomUUID();
+  // The control-plane stream owns this reserved id; it is never a tenant.
+  if (tenantId === CONTROL_PLANE_TENANT_ID)
+    throw new Error("Tenant id is reserved");
   const context = platformTenantScope(tenantId);
   return withTenant(db, context, async (tx) => {
     const [row] = await tx
@@ -440,6 +493,15 @@ export async function setTenantStatus(
       },
       { tx, context },
     );
+    // legend-fy5y (TEN-06): consumers stop or resume serving the tenant.
+    await appendTenantChangeEvent(
+      tx,
+      context,
+      "tenant.status_changed",
+      { from: current.status, to: row.status, reason: input.reason },
+      actorUserId,
+      now,
+    );
     return toTenant(row);
   });
 }
@@ -503,6 +565,16 @@ export async function restoreTenant(
         sensitiveAccess: false,
       },
       { tx, context },
+    );
+    // legend-5zb6g: consumers resume serving the tenant, same event as a
+    // suspend or archive, committed with the status change and its audit row.
+    await appendTenantChangeEvent(
+      tx,
+      context,
+      "tenant.status_changed",
+      { from: "archived", to: row.status, reason: input.reason },
+      actorUserId,
+      now,
     );
     return toTenant(row);
   });
@@ -661,6 +733,7 @@ export async function setTenantPackage(
   tenantId: string,
   input: SetTenantPackageInput,
   actorUserId: string,
+  now: Date = new Date(),
 ): Promise<Tenant> {
   const pkg = await assignablePackage(input.plan);
   const outside = modulesOutsidePackage(input.featureFlags.modules, pkg);
@@ -707,6 +780,23 @@ export async function setTenantPackage(
         sensitiveAccess: false,
       },
       { tx, context },
+    );
+    // legend-fy5y: consumers re-read the module gate and the quotas.
+    const before = new Set<string>(current.featureFlags.modules);
+    const after = new Set<string>(row.featureFlags.modules);
+    await appendTenantChangeEvent(
+      tx,
+      context,
+      "tenant.package_changed",
+      {
+        plan: row.plan,
+        modulesEnabled: [...after].filter((module) => !before.has(module)),
+        modulesDisabled: [...before].filter((module) => !after.has(module)),
+        limitsChanged: changedLimitKeys(current.limits, row.limits),
+        reason: input.reason,
+      },
+      actorUserId,
+      now,
     );
     return toTenant(row);
   });

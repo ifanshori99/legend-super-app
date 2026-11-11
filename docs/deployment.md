@@ -354,10 +354,37 @@ Versi lama boleh dipensiunkan dari `HRIS_PII_KEYS` hanya jika kedua syarat ini t
 Versi 1 (`DATA_ENCRYPTION_KEY`) tidak bisa dipensiunkan dengan rotasi ini. Kunci itu masih dipakai oleh:
 
 - Rahasia tersegel lain lewat `sealSecret` dan `openSecret` di `apps/api/src/lib/secrets.ts`, misalnya token QR, struk POS, token deposit reservasi, PIN payslip, recovery code MFA, kredensial integrasi platform, dan NPWP. Daftar pemanggilnya: `grep -rl "sealSecret(" apps/api/src`.
-- Blind index HMAC (`blindIndex` di `lib/secrets.ts`), termasuk `hrisBlindIndex` untuk kolom `*_hmac`. Blind index tidak dirotasi, karena harus tetap sama agar pencarian dan unique index tetap valid.
+- Blind index HMAC: versi 1 memakai `DATA_ENCRYPTION_KEY` langsung (`blindIndex` di `lib/secrets.ts`), versi 2 memakai subkey HKDF darinya (`lib/blind-index.ts`). Keduanya tetap turunan kunci ini, jadi blind index tidak ikut rotasi `HRIS_PII_KEYS` (lihat bagian "Versi blind index" di bawah).
 - Fallback `DATA_ENCRYPTION_KEY ?? BETTER_AUTH_SECRET` untuk HMAC token (misalnya `services/qr-token.ts`, `pos-receipt-delivery.service.ts`, `purchasing-send.service.ts`).
 
 Jadi `DATA_ENCRYPTION_KEY` harus tetap di env production. Mengganti nilainya akan membuat rahasia tersegel di atas tidak bisa dibuka dan blind index berubah. Rotasi ini hanya memindahkan data HRIS dan payroll yang disegel ke versi baru.
+
+### Versi blind index (legend-n039)
+
+Blind index (kolom `employees.*_hmac`, `legal_entities.npwp_hash`, dan fingerprint idempotency HRIS) punya versi sendiri, terpisah dari ring `HRIS_PII_KEYS`. Versi 1 adalah HMAC dengan `DATA_ENCRYPTION_KEY` langsung (data lama). Versi 2 adalah HMAC dengan subkey HKDF dari kunci yang sama, jadi kunci yang mengindeks nilai bukan kunci yang menyegelnya, dan tidak ada secret baru. `BLIND_INDEX_ACTIVE_VERSION` (1 atau 2, default 1) menentukan versi untuk tulisan baru. Default 1 sengaja: saat rolling deploy pod lama tidak bisa membaca digest versi 2, jadi versi 2 dinyalakan manual setelah semua pod menjalankan build baru. Kolom `employees.blind_index_version` dan `legal_entities.npwp_hash_version` (migrasi `0265`, default 1) mencatat versi tiap baris.
+
+Rilis ke versi 2:
+
+1. Jalankan migrasi `0265`, lalu deploy API dan worker dengan `BLIND_INDEX_ACTIVE_VERSION` belum diisi (versi 1). Tunggu sampai semua pod API dan worker menjalankan build baru, tidak ada pod lama yang tersisa.
+2. Setelah semua pod menjalankan build baru, set `BLIND_INDEX_ACTIVE_VERSION=2` di API dan worker lalu restart. Baru sesudah itu antrikan job `blind-index-rebuild` dengan `{"targetVersion": 2}`. Job tanpa nilai itu, atau dengan versi lain dari versi aktif worker, ditolak. Job idempotent, per batch, dan bisa dijalankan ulang. Sebelum menulis ulang sebuah baris, job memeriksa bahwa digest barunya tidak bentrok dengan baris lain di tenant yang sama.
+3. Pastikan log selesai dengan `failedTenants`, `incompleteTenants`, dan `conflicts` bernilai 0 di semua tenant, termasuk yang suspended. Cek di database sebagai superuser atau role dengan BYPASSRLS; keduanya harus 0:
+
+```sql
+SELECT count(*) FROM employees WHERE blind_index_version <> 2;
+SELECT count(*) FROM legal_entities WHERE npwp_hash_version <> 2;
+```
+
+Selama dua versi hidup bersama, unique index `(tenant, digest)` tidak melihat nilai yang sama di versi 1 dan 2. Karena itu penulisan NIK, NPWP, BPJS, dan NPWP badan usaha mengambil lock per tenant lalu memeriksa kedua versi, dan job memakai lock yang sama. Pengecualian: saat rolling deploy, pod lama menulis versi 1 tanpa lock itu. Duplikat yang lolos hanya bisa antara versi 1 dan 2, dan job melaporkannya sebagai `conflicts` (log berisi id tenant, id baris, dan nama kolom, tidak pernah nilainya). Baris itu tetap di versi lama sampai orang memperbaiki datanya, lalu job dijalankan ulang.
+
+Konflik itu permanen: data harus diperbaiki orang. Karena itu job tidak gagal karena `conflicts` (pg-boss tidak mengulangnya terus), hanya mencatat error dan melaporkan `conflicts` di hasil. Job gagal dan diulang pg-boss hanya bila ada tenant `failedTenants` atau baris stale yang terkunci transaksi lain (`retryableTenants`). Setelah data diperbaiki, antrikan job lagi.
+
+Mode verify: `{"targetVersion": 2, "verify": true}` memindai SEMUA baris, bukan hanya yang versinya `<>` aktif, menghitung ulang digest aktif dari nilai tersegel, dan menulis ulang baris yang digest atau versinya berbeda (lock dan pemeriksaan bentrok lintas versi sama dengan mode biasa). Hasilnya melaporkan `rewrites` dan `skipped`. `skipped` adalah baris yang tidak bisa diperiksa karena dikunci transaksi lain; baris terkunci dihitung terlewat walau digestnya benar. Tenant dengan `skipped` lebih dari 0 dianggap `incompleteTenants` dan `retryableTenants`, sehingga job gagal dan diulang pg-boss. Verify bersih hanya bila `skipped` 0 dan `rewrites` 0. Kolom versi saja bukan bukti: baris bisa berversi aktif dengan digest yang ditulis versi lain.
+
+Rollback: set `BLIND_INDEX_ACTIVE_VERSION=1` di API dan worker, restart, antrikan job dengan `{"targetVersion": 1}`, lalu cek 0 baris dengan versi `<> 1`. Job memindahkan baris ke dua arah. Build ini membaca kedua versi fingerprint idempotency (1 dan 2) walau versi aktif 1, jadi retry di sekitar pergantian tetap menjawab dengan hasil tersimpan, bukan menjalankan tulisan lagi atau gagal dengan `IDEMPOTENCY_KEY_REUSED` palsu.
+
+Rollback kode (kembali ke build sebelum kartu ini) hanya aman bila tidak ada baris di versi 2, karena kode lama hanya mengenal digest versi 1. Urutannya: set `BLIND_INDEX_ACTIVE_VERSION=1` di API dan worker, restart, antrikan job `{"targetVersion": 1}`, cek 0 baris dengan versi `<> 1` (dua query di atas dengan `<> 1`), baru kembalikan kode. Tulisan baru juga memakai versi 1 selama pengaturan itu aktif, jadi tidak ada baris versi 2 baru. Build berikutnya (setelah rollback) tetap membaca kedua versi fingerprint idempotency, jadi respons tersimpan dengan fingerprint versi 2 tetap diputar ulang.
+
+Versi 1 belum boleh dihapus dari kode: itu butuh kartu lanjutan yang membuktikan 0 baris di versi 1 di semua tenant dan masa simpan idempotency sudah lewat. Bukti itu wajib memuat satu run verify (`{"targetVersion": 2, "verify": true}`) dengan `skipped` 0, `rewrites` 0, `conflicts` 0, `failedTenants` 0, dan `incompleteTenants` 0 di semua tenant. Rekening bank (`bank_accounts`) ikut dibangun ulang dan diverifikasi job ini (legend-v0kta), dengan lock `acc-cashbank:<tenant>:<badan usaha>` yang sama dengan penulisnya. Kode recovery MFA tidak punya kolom versi dan dicocokkan ke kedua digest, jadi menghapus versi 1 juga butuh 0 set recovery code yang dibuat sebelum cutover v2 (`created_at` < waktu cutover), atau set lama itu dibuat ulang lebih dulu. `mfa-recovery-code.ts` masih memakai `blindIndex` lama dan di luar lingkup job ini.
 
 ## Edge host (outlet) (legend-svy91)
 

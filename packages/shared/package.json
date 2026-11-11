@@ -17,6 +17,7 @@
     "./audit": "./src/audit/index.ts",
     "./payment": "./src/payment/index.ts",
     "./payment/admin": "./src/payment/admin.ts",
+    "./payment/recurring": "./src/payment/recurring.ts",
     "./edge": "./src/edge/index.ts",
     "./edge/master-sync": "./src/edge/master-sync.ts",
     "./edge/people-snapshot": "./src/edge/people-snapshot.ts",

@@ -18,15 +18,19 @@ import {
   setTenantPackageInputSchema,
   setTenantStatusInputSchema,
   platformEndpoints,
+  listOutboxGapsQuerySchema,
+  outboxGapIdSchema,
   restoreOutletInputSchema,
   restoreTenantInputSchema,
   replaceTenantOwnerInputSchema,
+  skipOutboxGapInputSchema,
   requestSupportAccessInputSchema,
   requestSupportWriteAccessInputSchema,
   supportAccessGrantIdSchema,
   tenantOwnerAssignmentIdSchema,
 } from "@starter/shared/platform";
 import { outletIdSchema, tenantIdSchema, z } from "@starter/shared/core";
+import { db } from "../db/index";
 import { verifiedMfaAt } from "../lib/mfa";
 import { getAuth } from "../middleware/auth";
 import { requireSessionMfa } from "../middleware/identity";
@@ -37,6 +41,10 @@ import {
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
+  listOpenOutboxGaps,
+  skipOutboxGap,
+} from "../services/core-outbox-gap-actions.ts";
+import {
   createTenant,
   getOutletRestoreWindow,
   getTenantOrThrow,
@@ -46,6 +54,7 @@ import {
   restoreOutlet,
   restoreTenant,
   setTenantPackage,
+  platformTenantScope,
   setTenantStatus,
 } from "../services/platform-org.service";
 import {
@@ -76,6 +85,10 @@ const tenantParams = z.strictObject({ tenantId: tenantIdSchema });
 const outletParams = z.strictObject({
   tenantId: tenantIdSchema,
   outletId: outletIdSchema,
+});
+const gapParams = z.strictObject({
+  tenantId: tenantIdSchema,
+  gapId: outboxGapIdSchema,
 });
 const grantParams = z.strictObject({ grantId: supportAccessGrantIdSchema });
 const ownerAssignmentParams = z.strictObject({
@@ -154,6 +167,34 @@ platformRouter.get(
   async (req, res) => {
     const { tenantId, outletId } = outletParams.parse(req.params);
     res.json({ data: await getOutletRestoreWindow(tenantId, outletId) });
+  },
+);
+
+// legend-jcil (permission platform.event_gap.manage): open outbox sequence
+// gaps of a tenant, and the audited operator action that skips one.
+platformRouter.get("/tenants/:tenantId/outbox-gaps", async (req, res) => {
+  const { tenantId } = tenantParams.parse(req.params);
+  const { limit } = listOutboxGapsQuerySchema.parse(req.query);
+  res.json({
+    data: await listOpenOutboxGaps(db, platformTenantScope(tenantId), limit),
+  });
+});
+
+platformRouter.post(
+  "/tenants/:tenantId/outbox-gaps/:gapId/skip",
+  jsonBody,
+  async (req, res) => {
+    const { tenantId, gapId } = gapParams.parse(req.params);
+    const input = skipOutboxGapInputSchema.parse(req.body);
+    res.json({
+      data: await skipOutboxGap(
+        db,
+        platformTenantScope(tenantId),
+        gapId,
+        input,
+        getAuth(req).user.id,
+      ),
+    });
   },
 );
 

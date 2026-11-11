@@ -200,6 +200,15 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "AI-09",
   },
+  // legend-fy5y: first-admin invitation of a new tenant. The only category
+  // that may reach an unverified address (see UNVERIFIED_EMAIL_CATEGORIES).
+  tenant_invitation: {
+    audience: "staff",
+    realtime: false,
+    bypassQuietHours: true,
+    defaultChannels: ["email"],
+    prd: "TEN-01",
+  },
   // legend-078b: a QR line with no kitchen station, or a kitchen void of a QR
   // order. Not `waiter_call` (a guest request) or `order_ready` (a done order).
   kitchen_alert: {
@@ -225,7 +234,22 @@ export const notificationCategorySchema = z.enum(NOTIFICATION_CATEGORIES);
  */
 export const MANDATORY_EMAIL_CATEGORIES: readonly NotificationCategory[] = [
   "security",
+  "tenant_invitation",
 ];
+
+/**
+ * Narrow exception (legend-fy5y): the first-admin invitation is the only kind
+ * that may be sent to an address that is not verified yet, because the link in
+ * it is what verifies the address. Every other category keeps requiring a
+ * verified email.
+ */
+export const UNVERIFIED_EMAIL_CATEGORIES: readonly NotificationCategory[] = [
+  "tenant_invitation",
+] as const;
+
+export function allowsUnverifiedEmail(category: NotificationCategory): boolean {
+  return UNVERIFIED_EMAIL_CATEGORIES.includes(category);
+}
 
 export function isEmailMandatory(category: NotificationCategory): boolean {
   return MANDATORY_EMAIL_CATEGORIES.includes(category);

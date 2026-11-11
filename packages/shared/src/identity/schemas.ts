@@ -251,6 +251,22 @@ export const magicLinkVerifyBodySchema = z.strictObject({
 });
 export type MagicLinkVerifyBody = z.infer<typeof magicLinkVerifyBodySchema>;
 
+// legend-fy5y: body of POST /api/auth/login-challenges/invitation. The link is
+// on the platform origin (a new tenant has no domain yet), so the tenant id
+// travels in the fragment next to the token. It is client input: the service
+// only ever uses it to find the row whose token digest also matches.
+export const invitationAcceptBodySchema = z.strictObject({
+  token: magicLinkTokenSchema,
+  tenantId: tenantIdSchema,
+});
+export type InvitationAcceptBody = z.infer<typeof invitationAcceptBodySchema>;
+
+/** The accept marks the email verified; it issues no session. */
+export const invitationAcceptedSchema = z.strictObject({
+  verified: z.literal(true),
+});
+export type InvitationAccepted = z.infer<typeof invitationAcceptedSchema>;
+
 // legend-k2l: what a verified magic link yields. The session itself travels in
 // the Set-Cookie header; `crossDevice` tells the page the link was opened in
 // another browser than the one that asked (design ws08 M2: such a session may

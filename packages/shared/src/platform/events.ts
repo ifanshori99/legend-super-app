@@ -7,8 +7,11 @@
 //   session (legend-c9kbk); `support_access.granted` drives the tenant-admin notification and the
 //   audit row (TEN-04); `support_access.ended` closes it (expiry or early end).
 // - `usage_limit.reached` is the R18 alert at 80% and the stop at 100%.
-// - `tenant.status_changed` lets consumers stop serving a suspended tenant
-//   (the worker registry view drops it on its own, see ACTIVE_TENANT_REGISTRY).
+// - `tenant.status_changed` and `tenant.package_changed` are written to the
+//   control-plane stream (events/control-plane.ts), not the tenant's own
+//   stream: the worker registry view drops a suspended tenant on its own (see
+//   ACTIVE_TENANT_REGISTRY), so its own stream would never be relayed. The
+//   subject tenant is the aggregate id.
 
 import {
   brandIdSchema,

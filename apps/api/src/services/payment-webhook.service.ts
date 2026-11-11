@@ -13,9 +13,10 @@
 // agree, otherwise the row is `ignored` and nothing settles; a paid `amount`
 // that differs from the intent goes the AMOUNT_MISMATCH way (money parked).
 // Only `payment.paid` and `payment.expired` move an intent; `refund.succeeded`
-// and `refund.failed` close an approved refund (see processRefundEvent); any
-// other event type (`webhook.test`, `invoice.created`, ...) is stored
-// `ignored`.
+// and `refund.failed` close an approved refund (see processRefundEvent);
+// `invoice.created` and `invoice.paid` go to the recurring billing service
+// (payment-recurring.service.ts); any other event type (`webhook.test`, ...)
+// is stored `ignored`.
 // Failures before the signature is verified all answer with the same
 // UNAUTHORIZED error.
 
@@ -50,6 +51,7 @@ import {
   gatewayWebhookEvents,
   paymentIntents,
   paymentEvidence,
+  paymentRecurringSubscriptions,
   paymentRefunds,
   paymentUnallocatedFunds,
   tenants,
@@ -80,6 +82,13 @@ import {
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
 import { gatewayWebhookTolerance } from "./platform-payment-gateway.service";
+import { processDoitInvoiceEvent } from "./payment-recurring.service";
+import {
+  DOIT_RECURRING_EVENT_TYPES,
+  isDoitRecurringEvent,
+  parseDoitInvoiceEvent,
+  type DoitInvoiceEvent,
+} from "./payment-doit-recurring-wire";
 import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
@@ -98,6 +107,9 @@ const SIGNATURE_MESSAGE = "Tanda tangan webhook tidak valid.";
  * attempt, for events received within this window. Older rows that are still
  * `failed` stay `failed` for manual review. */
 export const WEBHOOK_RETRY_WINDOW_MS = 24 * 3_600_000;
+/** A `received` event not finished after this long is picked up by the sweep
+ * even beyond the retry window. */
+export const WEBHOOK_STUCK_RECEIVED_MS = 5 * 60_000;
 const WEBHOOK_RETRY_MAX_BACKOFF_MINUTES = 60;
 /** An event for a reference we do not know yet may just be early (the intent
  * stores its provider ref after the create call): retried this long. */
@@ -114,16 +126,19 @@ const REFUND_MISMATCH_AUDIT_FIELDS = [
 /** Audit snapshot keys of a refund event with unreadable facts (ids only). */
 const REFUND_FACTS_AUDIT_FIELDS = ["eventId", "refundId", "invalid"] as const;
 
+/** `parked`: stored durably, waiting for its local subscription (answered
+ * 200: the sweep processes it once the subscription exists). */
 export type WebhookResultStatus =
-  "processed" | "duplicate" | "ignored" | "failed";
+  "processed" | "duplicate" | "ignored" | "failed" | "parked";
 
 type DoitWebhookEvent = ReturnType<typeof doitWebhookEventSchema.parse>;
-type ProcessOutcome = "processed" | "ignored" | "failed";
+type ProcessOutcome = "processed" | "ignored" | "failed" | "parked";
 /** A verified event after parsing: payment events carry a payment object,
  * refund events only the facts of `readDoitRefundFacts`. */
 type ParsedEvent =
   | { kind: "payment"; event: DoitWebhookEvent }
-  | { kind: "refund"; event: DoitRefundWebhookEvent };
+  | { kind: "refund"; event: DoitRefundWebhookEvent }
+  | { kind: "invoice"; event: DoitInvoiceEvent };
 type PaymentIntentRow = typeof paymentIntents.$inferSelect;
 /** `until` (epoch ms) is set on a previous-generation secret (D17-D18): it
  * verifies only while `now < until`. Checked at use time, not at load time, so
@@ -318,6 +333,119 @@ async function mintingIntegrationSecret(
   const previous = previousWebhookSecretOf(loaded.credentials, integrationId);
   if (previous && inGrace(previous, now)) entries.push(previous);
   return entries;
+}
+
+/** `data.invoice.subscription_id` of a body, when it is a plain string. */
+function invoiceSubscriptionIdOf(json: unknown): string | null {
+  const data =
+    typeof json === "object" && json !== null
+      ? (json as { data?: unknown }).data
+      : undefined;
+  const invoice =
+    typeof data === "object" && data !== null
+      ? (data as { invoice?: unknown }).invoice
+      : undefined;
+  const id =
+    typeof invoice === "object" && invoice !== null
+      ? (invoice as { subscription_id?: unknown }).subscription_id
+      : undefined;
+  return typeof id === "string" && id.length > 0 && id.length <= 200
+    ? id
+    : null;
+}
+
+/**
+ * Recurring billing twin of `mintingIntegrationSecret`: secret of the
+ * integration a subscription is bound to, whatever its status (disabled
+ * since, or the provider withdrawn from the plan): a renewal already billed
+ * there must still be verifiable. The body is not trusted here; it only picks
+ * which stored secret to try (tenant scoped, no lock), the signature decides.
+ */
+async function subscriptionIntegrationSecret(
+  context: ScopedTenantContext,
+  json: unknown,
+  tried: readonly WebhookSecretEntry[],
+  now: Date,
+): Promise<WebhookSecretEntry[]> {
+  const subscriptionId = invoiceSubscriptionIdOf(json);
+  if (subscriptionId === null) return [];
+  const integrationId = await withTenant(db, context, async (tx) => {
+    const [found] = await tx
+      .select({
+        integrationId: paymentRecurringSubscriptions.gatewayIntegrationId,
+      })
+      .from(paymentRecurringSubscriptions)
+      .where(
+        and(
+          eq(paymentRecurringSubscriptions.tenantId, context.tenant.tenantId),
+          eq(
+            paymentRecurringSubscriptions.providerSubscriptionId,
+            subscriptionId,
+          ),
+        ),
+      )
+      .limit(1);
+    return found?.integrationId ?? null;
+  });
+  if (
+    integrationId === null ||
+    tried.some((entry) => entry.integrationId === integrationId)
+  )
+    return [];
+  const loaded = await loadIntegrationCredentialsById(
+    context,
+    PROVIDER,
+    integrationId,
+    { forStoredIntent: true },
+  );
+  if (!loaded) return [];
+  const secret = loaded.credentials.webhookSecret;
+  const entries: WebhookSecretEntry[] = [];
+  if (typeof secret === "string" && secret.length > 0)
+    entries.push({ secret, integrationId });
+  const previous = previousWebhookSecretOf(loaded.credentials, integrationId);
+  if (previous && inGrace(previous, now)) entries.push(previous);
+  return entries;
+}
+
+/**
+ * Verification binding of a recurring invoice event, stored with the row at
+ * receipt: the integration that matched plus every other integration of the
+ * tenant (any status) whose current or in-grace previous webhook secret is the
+ * very secret that verified the event (two integrations may share a secret).
+ * The worker accepts the event for any of them later without re-verifying, so
+ * a rotation between receipt and processing cannot strand a paid renewal.
+ */
+async function verifiedIntegrationIdsOf(
+  context: ScopedTenantContext,
+  verified: WebhookSecretEntry,
+  now: Date,
+): Promise<string[]> {
+  const ids = new Set<string>([verified.integrationId]);
+  const { data } = await listIntegrations(context);
+  for (const row of data) {
+    if (row.provider !== PROVIDER || ids.has(row.id)) continue;
+    let loaded: Awaited<ReturnType<typeof loadIntegrationCredentialsById>>;
+    try {
+      loaded = await loadIntegrationCredentialsById(context, PROVIDER, row.id, {
+        forStoredIntent: true,
+      });
+    } catch {
+      // Unreadable keys: this integration is skipped, never a failed webhook.
+      continue;
+    }
+    if (!loaded) continue;
+    const secret = loaded.credentials.webhookSecret;
+    const previous = previousWebhookSecretOf(loaded.credentials, row.id);
+    if (
+      (typeof secret === "string" && secret === verified.secret) ||
+      (previous !== null &&
+        inGrace(previous, now) &&
+        previous.secret === verified.secret)
+    )
+      ids.add(row.id);
+  }
+  return [...ids];
 }
 
 function readableEventId(value: unknown): string | null {
@@ -1188,8 +1316,33 @@ async function processRefundEvent(
   }
 }
 
+/** An invoice event of recurring billing names a subscription. One without
+ * `data.invoice.subscription_id` is not ours and keeps the old path (stored,
+ * ignored, 200); one that names it but is otherwise malformed is MALFORMED. */
+function isRecurringInvoiceEvent(type: string, body: unknown): boolean {
+  if (!isDoitRecurringEvent(type)) return false;
+  const data =
+    typeof body === "object" && body !== null
+      ? (body as { data?: unknown }).data
+      : undefined;
+  const invoice =
+    typeof data === "object" && data !== null
+      ? (data as { invoice?: unknown }).invoice
+      : undefined;
+  return (
+    typeof invoice === "object" &&
+    invoice !== null &&
+    typeof (invoice as { subscription_id?: unknown }).subscription_id ===
+      "string"
+  );
+}
+
 /** Parses the body of a verified event by its type. Null: not readable. */
 function parseEventBody(type: string, body: unknown): ParsedEvent | null {
+  if (isDoitRecurringEvent(type)) {
+    const invoice = parseDoitInvoiceEvent(body);
+    return invoice ? { kind: "invoice", event: invoice } : null;
+  }
   if (isDoitRefundEvent(type)) {
     const refund = doitRefundWebhookEventSchema.safeParse(body);
     return refund.success ? { kind: "refund", event: refund.data } : null;
@@ -1211,6 +1364,7 @@ function parseStoredEvent(payload: unknown): ParsedEvent | null {
 function eventProviderRef(parsed: ParsedEvent): string | null {
   let ref: string | undefined;
   if (parsed.kind === "payment") ref = parsed.event.data.id;
+  else if (parsed.kind === "invoice") ref = parsed.event.data.invoice.id;
   else {
     const facts = readDoitRefundFacts(parsed.event.data);
     ref = facts.refundId ?? facts.payment?.id;
@@ -1225,9 +1379,90 @@ async function processStoredEvent(
   now: Date,
   verifiedSecret?: string,
 ): Promise<ProcessOutcome> {
+  if (parsed.kind === "invoice")
+    return processInvoiceEvent(context, row, parsed.event, now);
   return parsed.kind === "refund"
     ? processRefundEvent(context, row, parsed.event, now, verifiedSecret)
     : processPaymentEvent(context, row, parsed.event, now, verifiedSecret);
+}
+
+/** Recurring billing `invoice.created` / `invoice.paid` (bead 6c6). An event
+ * for a subscription or invoice not known yet may just be early, so it is
+ * retried like an unknown payment reference; after that a paid event for an
+ * unseen invoice is kept for review and the rest is ignored. */
+async function processInvoiceEvent(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  event: DoitInvoiceEvent,
+  now: Date,
+): Promise<ProcessOutcome> {
+  try {
+    const early =
+      now.getTime() - row.receivedAt.getTime() <
+      WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
+    const result = await processDoitInvoiceEvent(context, event, now, {
+      sourceEventId: row.id,
+      storeUnseenPaidForReview: !early,
+      // The integration whose secret verified this event (stored first).
+      verifiedIntegrationId: row.integrationId,
+      // The binding stored at receipt (every integration holding the verifying
+      // secret). Never re-verified against the current secrets: a rotation
+      // after receipt must not strand an event that was verified.
+      acceptedIntegrationIds:
+        row.verifiedIntegrationIds ??
+        (row.integrationId === null ? [] : [row.integrationId]),
+    });
+    if (result.outcome === "unknown_subscription") {
+      // Parked, never ignored: kept `failed` so it is processed once the
+      // local subscription exists (see `reprocessParkedRecurringEvents`).
+      await markRow(
+        context,
+        row.id,
+        { status: "failed", lastErrorCode: "UNKNOWN_SUBSCRIPTION" },
+        now,
+      );
+      return "parked";
+    }
+    if (result.outcome === "unknown_invoice") {
+      await markRow(
+        context,
+        row.id,
+        early
+          ? { status: "failed", lastErrorCode: "UNKNOWN_INVOICE" }
+          : {
+              status: "ignored",
+              lastErrorCode: "UNKNOWN_INVOICE",
+              processedAt: now,
+            },
+        now,
+      );
+      return early ? "failed" : "ignored";
+    }
+    const ignored = result.outcome === "ignored";
+    await markRow(
+      context,
+      row.id,
+      {
+        status: ignored ? "ignored" : "processed",
+        lastErrorCode: result.code,
+        processedAt: now,
+      },
+      now,
+    );
+    return ignored ? "ignored" : "processed";
+  } catch (error) {
+    await markRow(
+      context,
+      row.id,
+      { status: "failed", lastErrorCode: errorCodeOf(error) },
+      now,
+    ).catch(() => {});
+    throw new HttpError(
+      500,
+      "INTERNAL_ERROR",
+      "Webhook belum dapat diproses. Coba lagi.",
+    );
+  }
 }
 
 async function insertRow(
@@ -1430,6 +1665,24 @@ export async function receiveDoitWebhook(input: {
         : await mintingIntegrationSecret(context, json, entries, now);
     verified = minting.find(signedWith);
   }
+  if (
+    !verified &&
+    input.signatureHeader !== undefined &&
+    typeof json === "object" &&
+    json !== null &&
+    typeof (json as { type?: unknown }).type === "string" &&
+    isRecurringInvoiceEvent((json as { type: string }).type, json)
+  ) {
+    // A renewal of a subscription whose integration was disabled (or its
+    // provider withdrawn) since: verify with the integration it is bound to.
+    const bound = await subscriptionIntegrationSecret(
+      context,
+      json,
+      entries,
+      now,
+    );
+    verified = bound.find(signedWith);
+  }
   if (!verified) {
     // A tenant without any DOIT secret has nothing to audit against.
     if (entries.length > 0)
@@ -1440,9 +1693,10 @@ export async function receiveDoitWebhook(input: {
   if (
     envelope.success &&
     !isDoitPaymentEvent(envelope.data.type) &&
-    !isDoitRefundEvent(envelope.data.type)
+    !isDoitRefundEvent(envelope.data.type) &&
+    !isRecurringInvoiceEvent(envelope.data.type, json)
   ) {
-    // Not a payment or refund event: stored (deduped by event id) and ignored, 200.
+    // Not a payment, refund or recurring invoice event: stored (deduped by event id) and ignored, 200.
     const { id, type, created_at } = envelope.data;
     const stored = await insertRow(context, {
       integrationId: verified.integrationId,
@@ -1490,9 +1744,16 @@ export async function receiveDoitWebhook(input: {
   }
   const event = parsedEvent.event;
 
+  // Recurring invoice events keep who verified them (see
+  // `verifiedIntegrationIdsOf`); other event kinds leave the column null.
+  const verifiedIntegrationIds =
+    parsedEvent.kind === "invoice" && envelope.success
+      ? await verifiedIntegrationIdsOf(context, verified, now)
+      : undefined;
   // STORE FIRST: a retry of the same event id hits the unique index.
   let row = await insertRow(context, {
     integrationId: verified.integrationId,
+    ...(verifiedIntegrationIds ? { verifiedIntegrationIds } : {}),
     signatureValid: true,
     eventId: event.id,
     eventType: event.type.slice(0, 60),
@@ -1546,6 +1807,7 @@ export async function receiveDoitWebhook(input: {
             payload: event as unknown as Record<string, unknown>,
             eventType: event.type.slice(0, 60),
             providerRef: eventProviderRef(parsedEvent),
+            ...(verifiedIntegrationIds ? { verifiedIntegrationIds } : {}),
             updatedAt: now,
           })
           .where(
@@ -1621,10 +1883,24 @@ export async function reprocessStoredWebhookEvents(
           eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
           eq(gatewayWebhookEvents.provider, PROVIDER),
           eq(gatewayWebhookEvents.signatureValid, true),
-          inArray(gatewayWebhookEvents.status, ["received", "failed"]),
           isNotNull(gatewayWebhookEvents.payload),
-          gt(gatewayWebhookEvents.receivedAt, windowStart),
-          sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
+          or(
+            and(
+              inArray(gatewayWebhookEvents.status, ["received", "failed"]),
+              gt(gatewayWebhookEvents.receivedAt, windowStart),
+              sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
+            ),
+            // Stuck `received` (the request died mid-processing): retried
+            // after a short wait even past the 24 h window, so a recurring
+            // invoice event is never stranded. Idempotent via the dedupe.
+            and(
+              eq(gatewayWebhookEvents.status, "received"),
+              lt(
+                gatewayWebhookEvents.updatedAt,
+                new Date(now.getTime() - WEBHOOK_STUCK_RECEIVED_MS),
+              ),
+            ),
+          ),
         ),
       )
       .orderBy(asc(gatewayWebhookEvents.receivedAt))
@@ -1655,7 +1931,86 @@ export async function reprocessStoredWebhookEvents(
         now,
         verifiedSecret,
       );
-      if (outcome !== "failed") processed += 1;
+      if (outcome !== "failed" && outcome !== "parked") processed += 1;
+    } catch {
+      // Already recorded on the row; the next run retries.
+    }
+  }
+  return { checked: rows.length, processed };
+}
+
+/**
+ * Recurring invoice events that are still `failed`: parked because no local
+ * subscription matched yet (UNKNOWN_SUBSCRIPTION), or hit by any later error.
+ * No error-code filter, so a later error cannot orphan a parked event. They
+ * stay without a time limit and are processed once the subscription exists:
+ * by the worker sweep (with backoff, skipped once the subscription exists), or right after a start when
+ * `providerSubscriptionId` names the new subscription (the backoff is skipped
+ * then). `invoice.created` runs before `invoice.paid`, then oldest first.
+ * Processed with the binding stored at receipt, like every other invoice
+ * event. A per-event error leaves the row `failed` (processInvoiceEvent
+ * records it) and is skipped; the next sweep retries.
+ */
+export async function reprocessParkedRecurringEvents(
+  context: ScopedTenantContext,
+  now: Date = new Date(),
+  opts: { providerSubscriptionId?: string; limit?: number } = {},
+): Promise<{ checked: number; processed: number }> {
+  const backoff = sql`least(power(2, least(${gatewayWebhookEvents.attempts}, 6)), ${WEBHOOK_RETRY_MAX_BACKOFF_MINUTES}) * interval '1 minute'`;
+  const conditions = [
+    eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
+    eq(gatewayWebhookEvents.provider, PROVIDER),
+    eq(gatewayWebhookEvents.signatureValid, true),
+    eq(gatewayWebhookEvents.status, "failed"),
+    inArray(gatewayWebhookEvents.eventType, [...DOIT_RECURRING_EVENT_TYPES]),
+    isNotNull(gatewayWebhookEvents.payload),
+    // An unreadable body stays unreadable: not retried forever here.
+    sql`coalesce(${gatewayWebhookEvents.lastErrorCode}, '') <> 'MALFORMED'`,
+  ];
+  if (opts.providerSubscriptionId !== undefined)
+    conditions.push(
+      sql`${gatewayWebhookEvents.payload}->'data'->'invoice'->>'subscription_id' = ${opts.providerSubscriptionId}`,
+    );
+  else
+    // Backoff is skipped once the subscription the event names exists
+    // locally: it is processed on the next sweep, not minutes later, so
+    // created-before-paid holds across sweeps.
+    conditions.push(
+      sql`(${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz or exists (select 1 from ${paymentRecurringSubscriptions} where ${paymentRecurringSubscriptions.tenantId} = ${context.tenant.tenantId} and ${paymentRecurringSubscriptions.providerSubscriptionId} = ${gatewayWebhookEvents.payload}->'data'->'invoice'->>'subscription_id'))`,
+    );
+  const rows = await withTenant(db, context, async (tx) =>
+    tx
+      .select()
+      .from(gatewayWebhookEvents)
+      .where(and(...conditions))
+      // `invoice.created` first so a renewal's invoice exists before its paid
+      // event is applied; then oldest first.
+      .orderBy(
+        sql`case when ${gatewayWebhookEvents.eventType} = 'invoice.created' then 0 else 1 end`,
+        asc(gatewayWebhookEvents.receivedAt),
+      )
+      .limit(opts.limit ?? 100),
+  );
+  let processed = 0;
+  for (const row of rows) {
+    const parsed = parseStoredEvent(row.payload);
+    if (!parsed || parsed.kind !== "invoice") {
+      await markRow(
+        context,
+        row.id,
+        { status: "failed", lastErrorCode: "MALFORMED" },
+        now,
+      ).catch(() => {});
+      continue;
+    }
+    try {
+      const outcome = await processInvoiceEvent(
+        context,
+        row,
+        parsed.event,
+        now,
+      );
+      if (outcome !== "failed" && outcome !== "parked") processed += 1;
     } catch {
       // Already recorded on the row; the next run retries.
     }

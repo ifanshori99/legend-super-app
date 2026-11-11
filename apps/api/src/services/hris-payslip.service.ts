@@ -32,7 +32,10 @@ import { hrisIdempotency } from "../db/schema/hris.ts";
 import { payrollRuns, payslips } from "../db/schema/payroll.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { hrisRequestFingerprint } from "../lib/hris-pii.ts";
+import {
+  hrisFingerprintMatches,
+  hrisRequestFingerprint,
+} from "../lib/hris-pii.ts";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import { cursorPair, hrisAuditEntry, notFound } from "./hris-access.ts";
@@ -202,7 +205,11 @@ async function idempotentFailureWrite(
   if (existing) {
     if (
       existing.operation !== operation ||
-      existing.fingerprint !== fingerprint
+      !hrisFingerprintMatches(
+        context.tenant.tenantId,
+        { operation, request },
+        existing.fingerprint,
+      )
     )
       throw new CoreError(
         "IDEMPOTENCY_KEY_REUSED",

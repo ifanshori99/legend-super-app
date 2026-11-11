@@ -53,6 +53,8 @@ const entries = [
   ["platform.health.view", ["platform"]],
   ["platform.support_access.request", ["platform"]],
   ["platform.config_template.manage", ["platform"]],
+  // Inspect and skip outbox sequence gaps (legend-jcil); audited, reason required.
+  ["platform.event_gap.manage", ["platform"]],
 
   // Organisation & configuration (§3.1, §3.7, F46)
   ["org.structure.manage", []],
@@ -135,6 +137,8 @@ const entries = [
   ["payment.transaction.view", ["payment", "finance"]],
   ["payment.reconcile", ["payment", "finance"]],
   ["payment.edc.manage", ["payment"]],
+  // DOIT recurring billing: plans, subscriptions and their invoices (legend-6c6).
+  ["payment.recurring.manage", ["payment"]],
 
   // Inventory, recipes, purchasing (§3.14–3.15, F13–F15)
   ["inventory.stock.view", []],

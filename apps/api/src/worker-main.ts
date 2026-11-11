@@ -2,6 +2,11 @@ import "./load-env";
 import { Pool } from "pg";
 import { assertDeploymentEnv } from "@starter/shared/env";
 import {
+  CONTROL_PLANE_DESTINATION,
+  CONTROL_PLANE_RELAYED_DESTINATIONS,
+  CONTROL_PLANE_TENANT_ID,
+} from "@starter/shared/events";
+import {
   loadWorkerConfig,
   resolveMaintenanceDatabaseUrl,
 } from "./worker/production-config.ts";
@@ -22,6 +27,8 @@ import {
   relayOutbox,
 } from "./services/core-outbox";
 import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
+import { deliverControlPlaneEvent } from "./services/control-plane-events.ts";
+import { deliverIdentityEvent } from "./services/identity-events.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
@@ -133,6 +140,7 @@ import {
 } from "./services/core-storage-runtime.ts";
 import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-purge.job.ts";
 import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sweep.job.ts";
+import { registerBlindIndexRebuildJob } from "./worker/blind-index-rebuild.job.ts";
 import { registerHrisPiiResealJob } from "./worker/hris-pii-reseal.job.ts";
 import { logger } from "./lib/logger";
 
@@ -205,11 +213,21 @@ const registry = new Pool({
 registry.on("error", () => console.error("Worker registry connection error"));
 async function resolveContext(tenantId: string) {
   const parsed = tenantIdSchema.parse(tenantId);
-  const result = await registry.query(
-    "SELECT id FROM app.active_tenant_registry WHERE id = $1",
-    [parsed],
-  );
-  if (result.rowCount !== 1) throw new Error("Worker tenant is not active");
+  // 488 item 4: the control-plane sentinel is not a tenant row, so it skips the
+  // registry, but only on a cloud worker; an edge worker never serves it. Any
+  // other non-active tenant still throws.
+  if (parsed === CONTROL_PLANE_TENANT_ID) {
+    if (!postsInventoryGl)
+      throw new Error(
+        "Control-plane stream is served by the cloud worker only",
+      );
+  } else {
+    const result = await registry.query(
+      "SELECT id FROM app.active_tenant_registry WHERE id = $1",
+      [parsed],
+    );
+    if (result.rowCount !== 1) throw new Error("Worker tenant is not active");
+  }
   const context = await handlers.resolveContext(parsed);
   assertTrustedScopedContext(context);
   if (context.outletScope.kind !== "tenant")
@@ -242,12 +260,35 @@ const runtime = createWorkerRuntime({
           direction: row.direction === null ? null : String(row.direction),
           peerId: row.peer_id === null ? null : String(row.peer_id),
         };
-        if (route.destination === "notification") {
+        // 488 item 4: control-plane rows and the sentinel tenant belong together,
+        // both ways. A control row never reaches the transport or the cloud-sync
+        // consumers; a tenant row never reaches the control-plane consumer.
+        const controlTenant =
+          context.tenant.tenantId === CONTROL_PLANE_TENANT_ID;
+        if (controlTenant !== (route.destination === CONTROL_PLANE_DESTINATION))
+          throw new Error("Control-plane route does not match tenant");
+        if (controlTenant) {
+          await deliverControlPlaneEvent(context, event, tx);
+          return;
+        }
+        if (route.destination === "identity") {
+          // legend-83ll: session.revoked closes the session row (idempotent).
+          await deliverIdentityEvent(context, event, tx);
+          await handlers.deliverEvent(context, event, key, tx, route);
+        } else if (route.destination === "notification") {
           await createNotificationConsumer(
             context,
             handlers.resolveNotificationRecipients,
           )(event, key, tx);
         } else {
+          // legend-fy5y: a new tenant's first admin is invited by email (cloud
+          // only, where email is sent). Replay safe: the consumer dedupes on
+          // (tenant, source event) and the notification dedupe key.
+          if (event.name === "tenant.created" && sendsReceiptEmails)
+            await createNotificationConsumer(
+              context,
+              handlers.resolveNotificationRecipients,
+            )(event, key, tx);
           // RSV-02 (legend-t8bz): a paid DP confirms its reservation first
           // (idempotent, replay safe), then the deployment consumer runs.
           if (event.name === "payment.paid")
@@ -340,6 +381,31 @@ const runtime = createWorkerRuntime({
 const relay = createRelayRuntime({
   scheduler: createRelayScheduler(workerUrl),
   listener: createWakeListener(workerUrl),
+  // 488 item 4 (cloud only): sweep the control-plane stream every tick, with
+  // no tenant-status filter, claiming only the routed destination.
+  controlPlaneRelay: postsInventoryGl
+    ? async () => {
+        const controlContext = await resolveContext(CONTROL_PLANE_TENANT_ID);
+        await relayOutbox(
+          db,
+          controlContext,
+          runtime.enqueue,
+          async (gap) => {
+            try {
+              await handlers.requestMissing(controlContext, gap);
+            } catch {
+              console.error("Outbox gap request could not be recorded");
+            }
+          },
+          { destinations: CONTROL_PLANE_RELAYED_DESTINATIONS },
+        );
+        try {
+          await resolveFilledOutboxGaps(db, controlContext);
+        } catch {
+          console.error("Outbox gap resolution sweep failed");
+        }
+      }
+    : undefined,
   listActiveTenantIds: async () =>
     (
       await registry.query<{ id: string }>(
@@ -777,6 +843,12 @@ try {
   // w8dfz.2: WhatsApp messages (90 days) and finished challenges (30 days);
   // service-scoped tables, so it runs on the app connection, not the maintenance login.
   await registerWaInboundRetentionJob({ boss, log: consoleLikeLog(logger) });
+  // legend-n039: on-demand rebuild of blind indexes after a version change.
+  await registerBlindIndexRebuildJob({
+    boss,
+    database: db,
+    log: consoleLikeLog(logger),
+  });
   // legend-dzh9q: the selfie purge deletes objects, so it needs the object
   // storage. Without STORAGE_* the worker still starts, with the job off.
   const storageRuntime = createStorageRuntimeFromEnv(

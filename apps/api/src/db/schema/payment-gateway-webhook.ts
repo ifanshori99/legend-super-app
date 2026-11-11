@@ -30,6 +30,11 @@ export const gatewayWebhookEvents = pgTable(
     outletId: outletIdColumn(() => outlets.id),
     /** tenant_integrations row whose secret verified the signature. */
     integrationId: uuid("integration_id"),
+    /** Recurring invoice events only: every integration of the tenant whose
+     * (current or in-grace previous) secret equals the one that verified the
+     * event, plus the matching one. The worker accepts the bound integration
+     * from this set and never re-verifies with a later (rotated) secret. */
+    verifiedIntegrationIds: uuid("verified_integration_ids").array(),
     provider: varchar("provider", { length: 20 }).notNull(),
     /** null when the signature failed (the body is not trusted). */
     eventId: varchar("event_id", { length: 200 }),
