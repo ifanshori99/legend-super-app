@@ -14,6 +14,10 @@ DECLARE
   target_type varchar(30);
   target_entity uuid;
 BEGIN
+  -- Same lock order as accounting-period.service (legal entity row first):
+  -- a raw INSERT waits for an in-flight close, and a close waits for it.
+  PERFORM 1 FROM public.legal_entities
+    WHERE tenant_id = NEW.tenant_id AND id = NEW.legal_entity_id FOR SHARE;
   SELECT period, legal_entity_id, status INTO period_key, period_entity, period_status
     FROM public.fiscal_periods
     WHERE id = NEW.fiscal_period_id AND tenant_id = NEW.tenant_id;

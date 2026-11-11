@@ -400,6 +400,142 @@ describe("legend-brq1 closed fiscal month is sealed by a database trigger", () =
     expect(await entryCount(closed, closed.jan)).toBe(1);
   });
 
+  it("ACC-02 an open month that sits before a later closed month refuses a raw insert (cumulative snapshot would go stale)", async () => {
+    const fx = await makeFixture();
+    // Close February alone with plain SQL: January stays open, which the close
+    // service never allows, but a reopened January behind a closed February is
+    // the same state and the trigger must hold for it.
+    await owner.query(
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now()
+        WHERE id = $1`,
+      [fx.feb, closer],
+    );
+    await expect(
+      ownerInsert(fx, { periodId: fx.jan, date: "2025-01-15", amount: 4_000 }),
+    ).rejects.toThrow(/PERIOD_CLOSED/);
+    await expect(
+      appRoleInsert(fx, {
+        periodId: fx.jan,
+        date: "2025-01-16",
+        amount: 4_000,
+      }),
+    ).rejects.toThrow(/PERIOD_CLOSED/);
+    expect(await entryCount(fx, fx.jan)).toBe(0);
+    expect(await entryCount(fx, fx.feb)).toBe(0);
+  });
+
+  it("ACC-02 race: an insert that meets a close in flight waits for it and is then refused, nothing slips into the closed month", async () => {
+    const fx = await makeFixture();
+    const closing = await owner.connect();
+    const inserting = await owner.connect();
+    try {
+      // The close path takes the legal entity row first (accounting-period
+      // .service lock order); it keeps it while it flips the period.
+      await closing.query("BEGIN");
+      await closing.query(
+        "SELECT 1 FROM legal_entities WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE",
+        [tenantId, fx.entity],
+      );
+
+      await inserting.query("BEGIN");
+      const { rows: pidRows } = await inserting.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      const insertPid = pidRows[0]!.pid;
+      const insert = rawInsertEntry(inserting, fx, {
+        periodId: fx.jan,
+        date: "2025-01-12",
+        amount: 6_000,
+      }).then(
+        () => ({ ok: true as const }),
+        (error: Error) => ({ ok: false as const, error }),
+      );
+
+      // The insert must be parked on the entity lock, not already decided.
+      let waiting = false;
+      for (let attempt = 0; attempt < 50 && !waiting; attempt += 1) {
+        const { rows } = await closing.query(
+          "SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'",
+          [insertPid],
+        );
+        waiting = rows.length > 0;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(waiting).toBe(true);
+
+      await closing.query(
+        `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now()
+          WHERE id = $1`,
+        [fx.jan, closer],
+      );
+      await closing.query("COMMIT");
+
+      const outcome = await insert;
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error.message).toMatch(/PERIOD_CLOSED/);
+    } finally {
+      await inserting.query("ROLLBACK").catch(() => undefined);
+      await closing.query("ROLLBACK").catch(() => undefined);
+      inserting.release();
+      closing.release();
+    }
+    expect(await entryCount(fx, fx.jan)).toBe(0);
+    expect(await unbalancedEntries(fx)).toBe(0);
+  });
+
+  it("ACC-02 race: a close waits for a raw insert in flight, so the closed month holds that entry", async () => {
+    const fx = await makeFixture();
+    const inserting = await owner.connect();
+    const closing = await owner.connect();
+    try {
+      await inserting.query("BEGIN");
+      await rawInsertEntry(inserting, fx, {
+        periodId: fx.jan,
+        date: "2025-01-12",
+        amount: 6_000,
+      });
+
+      await closing.query("BEGIN");
+      const { rows: pidRows } = await closing.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      const closePid = pidRows[0]!.pid;
+      const lock = closing
+        .query(
+          "SELECT 1 FROM legal_entities WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE",
+          [tenantId, fx.entity],
+        )
+        .then(() => true);
+
+      let waiting = false;
+      for (let attempt = 0; attempt < 50 && !waiting; attempt += 1) {
+        const { rows } = await inserting.query(
+          "SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'",
+          [closePid],
+        );
+        waiting = rows.length > 0;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(waiting).toBe(true);
+
+      await inserting.query("COMMIT");
+      await lock;
+      await closing.query(
+        `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now()
+          WHERE id = $1`,
+        [fx.jan, closer],
+      );
+      await closing.query("COMMIT");
+    } finally {
+      await inserting.query("ROLLBACK").catch(() => undefined);
+      await closing.query("ROLLBACK").catch(() => undefined);
+      inserting.release();
+      closing.release();
+    }
+    expect(await entryCount(fx, fx.jan)).toBe(1);
+    expect(await totals(fx, fx.jan)).toEqual({ debit: 6_000, credit: 6_000 });
+  });
+
   it("ACC-02 a reopened month accepts a raw insert again", async () => {
     const fx = await closedJanuary();
     const request = await requestPeriodReopen(

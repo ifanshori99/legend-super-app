@@ -247,4 +247,27 @@ describe("legend-brq1 metrics legal_entity dimension (DASH-02)", () => {
     for (const value of netSalesByDimension(response.body).values())
       expect(value).toBe(0);
   });
+
+  it("DASH-02 a percent metric without a split source (gross_margin_pct) is dimension_not_supported by legal entity, never a mixed-entity ratio", async () => {
+    // gross_margin_pct has no splitFrom (numerator/denominator pair) in the GL
+    // source map, so a per-entity percent is not computed. The documented
+    // answer is 200 with availability "unavailable" / dimension_not_supported
+    // and only null points; it must never return the tenant ratio as if it
+    // belonged to one entity.
+    const response = await query({
+      metricCodes: ["gross_margin_pct"],
+      groupBy: "legal_entity",
+    });
+    expect(response.status).toBe(200);
+    const parsed = metricQueryResponseSchema.parse(response.body);
+    expect(parsed.data.availability).toEqual([
+      expect.objectContaining({
+        metricCode: "gross_margin_pct",
+        status: "unavailable",
+        reason: "dimension_not_supported",
+      }),
+    ]);
+    for (const series of parsed.data.series)
+      for (const point of series.points) expect(point.value).toBeNull();
+  });
 });
