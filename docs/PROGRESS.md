@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## legend-oa0qk sarapan tiket wajib lunas sebelum dapur (engineer, cabang `ws/breakfast-pay` dari `ws/ui-mixed-q36`, 2026-11-11)
+
+- Sudah: kontrak sarapan pindah ke `@starter/shared/facility` (pay/cancel/fire + kode BREAKFAST_*; channel order `facility`); API menu/pesan/bayar (link `/bayar/$token`)/batal/kirim-staf; consumer `payment.paid` channel facility; sweep worker kirim saat fire_at; tabel `facility_linked_orders` + trigger DB (SECURITY DEFINER) yang menolak tiket KDS untuk sarapan belum lunas (migrasi 0321); refund cap menghitung sarapan terkirim sebagai penjualan.
+- Keputusan: order belum lunas tetap bisa dibayar sampai sesi tiket berakhir (ends_at), lalu dibatalkan sweep; bayar setelah batal/terkirim = refund penuh (request, approve tetap WS-05); batal setelah terkirim 409; POS tidak bisa membuat order channel facility.
+- Terbuka: jurnal/pajak penjualan sarapan (order.paid) belum ditulis; menu sarapan = semua menu outlet (tanpa flag sarapan); UI tombol bayar baru (perlu review UI).
+- Berikut: bukti gagal-dulu lewat mutasi, temuan architect, push.
+
 ## UI campuran Q36: wwyyk, wpqs, rp3fk, ijv8, wjz1 (ui-engineer, cabang `ws/ui-mixed-q36` dari `origin/milestone/m1`, 2026-11-11)
 
 - Sudah: klaim bagian split di ponsel (bilah bawah, token di sessionStorage 24 jam, mock claim + settle diperbaiki); pemilih badan usaha payroll untuk kebijakan dan THR pertama (kosong/gagal/validasi, tanpa ubah hitungan); email security terkunci di preferensi notifikasi (payload selalu email=true, mock 422, validasi jam tenang); sarapan dari tiket (menu, meja/ambil, `breakfastFireAt`, mock 409/422/idempotensi, pengingat 5 menit in-app); label prep (cetak 1 halaman, garis kiri baris terpilih, "−22 °C hingga −16 °C").
