@@ -4,13 +4,7 @@
 // ulang" with its own note. The decision happens on the detail page.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import {
-  CalendarOff,
-  PencilLine,
-  RefreshCw,
-  WifiOff,
-  type LucideIcon,
-} from "lucide-react";
+import { WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,26 +26,8 @@ import { useOnline } from "@/lib/use-online";
 import { formatBusinessDate } from "../../ws10-attendance-qr/format.ts";
 import { formatClockMinutes } from "../format.ts";
 import { useLeaveClockinCases } from "../hooks.ts";
-import type { MessageKey } from "@starter/shared/i18n";
-import type { LeaveClockinCase, LeaveClockinCaseKind } from "../types.ts";
-
-const KIND_PILL: Record<
-  LeaveClockinCaseKind,
-  { labelKey: MessageKey; icon: LucideIcon }
-> = {
-  clock_in_on_leave: {
-    labelKey: "leaveClockinReview.status.leaveClockIn",
-    icon: CalendarOff,
-  },
-  manual_correction: {
-    labelKey: "leaveClockinReview.status.manualCorrection",
-    icon: PencilLine,
-  },
-  re_review: {
-    labelKey: "leaveClockinReview.status.reReview",
-    icon: RefreshCw,
-  },
-};
+import type { LeaveClockinCase } from "../types.ts";
+import { KindPill } from "./kind-pill.tsx";
 
 /**
  * Keyed by outlet: switching outlet in the shell starts a fresh queue, so a
@@ -161,20 +137,6 @@ function LeaveClockinQueueContent() {
         )}
       </DataTableShell>
     </div>
-  );
-}
-
-function KindPill({ kind }: { kind: LeaveClockinCaseKind }) {
-  const t = useT();
-  const { labelKey, icon } = KIND_PILL[kind];
-  return (
-    <StatusPill
-      status={kind === "re_review" ? "warning" : "info"}
-      icon={icon}
-      className="whitespace-nowrap"
-    >
-      {t(labelKey)}
-    </StatusPill>
   );
 }
 
