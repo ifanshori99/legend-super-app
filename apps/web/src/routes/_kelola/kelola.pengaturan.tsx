@@ -1,6 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
-import { SettingsHubPage } from "@/features/ws11-audit/components/settings-hub-page";
+import {
+  SettingsHubError,
+  SettingsHubPage,
+  SettingsHubPending,
+} from "@/features/ws11-audit/components/settings-hub-page";
 
 const t = createTranslator();
 
@@ -20,4 +24,6 @@ export const Route = createFileRoute("/_kelola/kelola/pengaturan")({
     ],
   }),
   component: SettingsHubPage,
+  pendingComponent: SettingsHubPending,
+  errorComponent: ({ reset }) => <SettingsHubError reset={reset} />,
 });

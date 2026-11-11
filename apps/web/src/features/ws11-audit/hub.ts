@@ -143,6 +143,17 @@ export const HUB_ITEMS: readonly HubItem[] = [
 ];
 
 /**
+ * The four rows of the hub's main list (mockup settings-hub-j0kd), in order.
+ * Every other entry is listed under "Pengaturan lainnya" so it stays reachable.
+ */
+export const PRIMARY_HUB_KEYS = [
+  "integrations",
+  "theme",
+  "terms",
+  "config",
+] as const;
+
+/**
  * Items grouped by scope, keeping only those whose route exists and whose
  * permission the visitor holds. Without `permissions` (unit tests of route
  * availability) the permission check is skipped.

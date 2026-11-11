@@ -3,7 +3,7 @@
 export const auditSettingsMessages = {
   nav: {
     audit: "Log audit",
-    settings: "Pengaturan",
+    settings: "Pengaturan tenant",
   },
   audit: {
     title: "Log audit",
@@ -147,9 +147,24 @@ export const auditSettingsMessages = {
     },
   },
   hub: {
-    title: "Pengaturan",
-    subtitle:
-      "Semua konfigurasi tenant, brand, dan outlet dalam satu tempat. Buka kartu untuk mengubahnya.",
+    title: "Pengaturan tenant",
+    subtitle: "Kelola integrasi, tampilan, istilah, dan konfigurasi tenant.",
+    primary: {
+      title: "Pengaturan",
+      hint: "Pilih pengaturan yang ingin Anda kelola. Hanya halaman sesuai izin Anda yang ditampilkan.",
+    },
+    more: {
+      title: "Pengaturan lainnya",
+      hint: "Konfigurasi bisnis, brand, dan outlet di bagian lain Legend.",
+    },
+    loading: {
+      label: "Memuat pengaturan",
+      text: "Memuat pengaturan…",
+    },
+    error: {
+      title: "Pengaturan belum bisa dimuat",
+      hint: "Periksa koneksi Anda, lalu coba lagi.",
+    },
     empty: {
       title: "Belum ada pengaturan yang tersedia",
       hint: "Akun Anda belum memiliki izin untuk mengelola pengaturan tenant. Hubungi administrator untuk meminta akses.",

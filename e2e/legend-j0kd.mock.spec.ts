@@ -1,9 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import { waitForHydration } from "./hydration.ts";
 
-// Settings hub links the tenant settings pages (bead legend-j0kd; mockup
-// design/mockups/backoffice/settings-hub-j0kd.html). Each card is gated by the
-// permission its page guard checks: Integrasi (org.integration.manage), Tema
+// Settings hub "Pengaturan tenant" lists the tenant settings pages as rows
+// (bead legend-j0kd; mockup design/mockups/backoffice/settings-hub-j0kd.html);
+// every other settings screen stays reachable under "Pengaturan lainnya". Each
+// row is gated by the permission its page guard checks: Integrasi (org.integration.manage), Tema
 // (org.theme.manage), Kamus istilah (Super Admin only), Konfigurasi
 // (org.config.export).
 //
@@ -99,6 +100,29 @@ test.describe("legend-j0kd settings hub", () => {
     await expect(
       page.getByText("Belum ada pengaturan yang tersedia"),
     ).toHaveCount(0);
+  });
+
+  test("the hub shows the mockup heading and keeps other settings reachable", async ({
+    page,
+  }) => {
+    test.slow();
+    await openAs(page, "all");
+    await expect(
+      page.getByRole("heading", { name: "Pengaturan", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "Kelola integrasi, tampilan, istilah, dan konfigurasi tenant.",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Pengaturan lainnya" }),
+    ).toBeVisible();
+    await expect(card(page, "Pajak & layanan")).toHaveAttribute(
+      "href",
+      "/kelola/pajak",
+    );
+    await expect(card(page, "Keamanan akun")).toBeVisible();
   });
 
   test("the hub fits a 390px phone", async ({ page }) => {
