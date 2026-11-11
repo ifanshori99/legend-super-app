@@ -35,6 +35,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { agent, originHeader } from "./helpers.ts";
 import { routeFiredItemsToKitchen } from "../services/kds.service.ts";
+import { idempotentPaymentAdminWrite } from "../services/payment-admin-idempotency.ts";
 import {
   MINUTE,
   asOwnerTenant,
@@ -1013,5 +1014,28 @@ describe("BRK-PAY-07 a breakfast is never sent to the kitchen at or after the ti
     expect(okTicket.error).toBeNull();
     expect(await rawTicketItem(okOrder.id, okTicket.id!)).toBeNull();
     expect(await kitchenTicketCount(world, okOrder.id)).toBe(1);
+  });
+});
+
+describe("BRK-PAY-08 the breakfast refund key is reserved for the system", () => {
+  it("BRK-PAY-08 a staff user cannot pre-claim facility-breakfast-refund:* (422 IDEMPOTENCY_KEY_RESERVED), so the system refund can still be filed", async () => {
+    let ran = false;
+    await expect(
+      withTenant(db, world.context, (tx) =>
+        idempotentPaymentAdminWrite(
+          tx,
+          world.context,
+          world.staff.userId,
+          `facility-breakfast-refund:cancel:${randomUUID()}`,
+          "refund.create",
+          { paymentIntentId: randomUUID(), reason: "Pre-claim kunci sistem" },
+          async () => {
+            ran = true;
+            return null;
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 422, code: "IDEMPOTENCY_KEY_RESERVED" });
+    expect(ran).toBe(false);
   });
 });

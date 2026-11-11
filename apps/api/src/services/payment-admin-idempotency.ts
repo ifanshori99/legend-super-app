@@ -21,6 +21,7 @@ const SYSTEM_KEY_PREFIXES = [
   "pos-refund-gateway:",
   "reservation-refund:",
   "order-recovery-refund:",
+  "facility-breakfast-refund:",
 ];
 
 /** Run inside the mutation's tenant transaction, after authorization. */
