@@ -1253,3 +1253,5 @@ Langkah berikut CTO baru:
 - 11:38 Akun Claude #1 limit 5h (reset 14:39). G1bpq/G8x04/G8ugp dipindah ke #3 (7d 81%); G26w0/G1ttt/G2455 sedang di tengah giliran -> pindah saat giliran berhenti. #2 dihindari (7d 91%).
 - 11:44 G26w0, G1ttt dipindah ke akun #3. G1ttt 480 butir 1-7 ditulis, tunggu typecheck; tenggang 3 hari sementara pembatas (konstanta) -> founder W5. Antre kunci heavy penuh (pnpm test G2mm1 + ui-check G2455).
 - 12:00 G26w0 bz9h 474+tz4dg selesai a73998a9 (286 test, architect xhigh 4 temuan dibetulkan) -> resolve, siap batch48h (migrasi 0250/0251 nomor sementara, renumber). Keputusan CTO: refund POS diblok sampai WFC refund penuh (ketat); order berdiskon tetap ditolak (c8gsw). Kartu legend-7pw8b harga x durasi tunggu W4. Mulai G1mng brief 482 akun #3.
+- 12:02 Founder W5: akses tetap selama tenggang, lama tenggang per outlet (default 3, boleh 0) -> dikirim ke G1ttt dengan 4 test pembatas.
+- 12:03 Founder W17: tetap jual + peringatan + notifikasi owner 30 menit -> G1mng.
