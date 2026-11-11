@@ -7,6 +7,7 @@
 import {
   cafeLegendIdentityFixtures as idFx,
   cancelLoginChallenge,
+  confirmLoginChallenge,
   formatLoginCode,
   getLoginChallenge,
   loginChallengeExpiry,
@@ -26,6 +27,8 @@ type MockChallenge = {
   polls: number;
   /** AUTH-01 single use: the session is handed to this browser once. */
   claimed: boolean;
+  /** Card kmndq: the person must tap "Ya, masuk" before a session exists. */
+  requireConfirm: boolean;
 };
 const challenges = createMockStore<Map<string, MockChallenge>>(() => new Map());
 
@@ -45,7 +48,10 @@ function demoDeepLink(): string {
 /** How many polls the mock browser makes before the "message" lands. */
 const POLLS_TO_COMPLETE = 2;
 
-registerMock(requestWhatsAppLoginChallenge, () => {
+/** The masked sender the API shows while a challenge awaits confirmation. */
+const MOCK_SENDER_MASKED = "+62 812-****-7890";
+
+registerMock(requestWhatsAppLoginChallenge, ({ body }) => {
   const createdAt = new Date();
   const challenge = loginChallengeSchema.parse({
     id: newIdempotencyKey(),
@@ -61,7 +67,12 @@ registerMock(requestWhatsAppLoginChallenge, () => {
     matchedUserId: null,
     createdAt: createdAt.toISOString(),
   });
-  saveChallenge({ challenge, polls: 0, claimed: false });
+  saveChallenge({
+    challenge,
+    polls: 0,
+    claimed: false,
+    requireConfirm: body.requireConfirm === true,
+  });
   return {
     data: {
       challenge,
@@ -83,7 +94,7 @@ registerMock(getLoginChallenge, ({ params }) => {
   if (challenge.status === "pending") {
     if (now.getTime() >= Date.parse(challenge.expiresAt))
       challenge = { ...challenge, status: "expired" };
-    else if (polls >= POLLS_TO_COMPLETE)
+    else if (polls >= POLLS_TO_COMPLETE && !entry.requireConfirm)
       challenge = loginChallengeSchema.parse({
         ...challenge,
         status: "completed",
@@ -98,17 +109,27 @@ registerMock(getLoginChallenge, ({ params }) => {
       ? newCustomerSession(now)
       : null;
   saveChallenge({
+    ...entry,
     challenge,
     polls,
     claimed: entry.claimed || session !== null,
   });
   if (session) auth.set("customer");
+  // With requireConfirm the message lands on the second poll but no session
+  // exists until the person confirms (stays pending, session null).
+  const awaiting =
+    entry.requireConfirm &&
+    challenge.status === "pending" &&
+    polls >= POLLS_TO_COMPLETE;
   return {
     data: {
       challenge,
       session,
       mfaRequired: false,
       mfaEnrollmentRequired: false,
+      ...(awaiting
+        ? { senderMasked: MOCK_SENDER_MASKED, awaitingConfirmation: true }
+        : {}),
     },
   };
 });
@@ -120,4 +141,32 @@ registerMock(cancelLoginChallenge, ({ params }) => {
     ...entry,
     challenge: { ...entry.challenge, status: "cancelled" },
   });
+});
+
+registerMock(confirmLoginChallenge, ({ params }) => {
+  const entry = challenges.get().get(params.challengeId);
+  if (!entry)
+    throw new ApiError(404, "NOT_FOUND", "Permintaan masuk tidak ditemukan.");
+  const { challenge } = entry;
+  if (challenge.status === "pending") {
+    const now = new Date();
+    if (now.getTime() >= Date.parse(challenge.expiresAt))
+      throw new ApiError(410, "CHALLENGE_EXPIRED", "Kode sudah kedaluwarsa.");
+    // Completing hands the session out on the NEXT poll, once (AUTH-01).
+    saveChallenge({
+      ...entry,
+      challenge: loginChallengeSchema.parse({
+        ...challenge,
+        status: "completed",
+        completedAt: now.toISOString(),
+        matchedUserId: idFx.usersByKey.sari.id,
+      }),
+    });
+    return;
+  }
+  throw new ApiError(
+    409,
+    "CHALLENGE_NOT_PENDING",
+    "Permintaan masuk ini sudah tidak aktif.",
+  );
 });

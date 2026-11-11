@@ -8,6 +8,7 @@ import { callEndpoint } from "@/lib/api/endpoint.ts";
 import {
   cancelLoginChallenge,
   completeMagicLink,
+  confirmLoginChallenge,
   getCurrentAuth,
   getLoginChallenge,
   requestMagicLink,
@@ -18,7 +19,9 @@ import {
 /** POST /api/auth/login-challenges/whatsapp — code + deep link, shown once. */
 export async function startWhatsAppLogin(returnTo?: string) {
   const response = await callEndpoint(requestWhatsAppLoginChallenge, {
-    body: returnTo ? { returnTo } : {},
+    body: returnTo
+      ? { returnTo, requireConfirm: true }
+      : { requireConfirm: true },
   });
   return response.data;
 }
@@ -34,6 +37,11 @@ export async function fetchLoginChallenge(
     { signal },
   );
   return response.data;
+}
+
+/** POST .../:id/confirm — "Ya, masuk": the bound browser confirms the sender. */
+export async function confirmWhatsAppLogin(challengeId: string) {
+  await callEndpoint(confirmLoginChallenge, { params: { challengeId } });
 }
 
 /** POST .../:id/cancel — "Bukan saya" from the same browser. */

@@ -23,6 +23,7 @@ export const LOGIN_POLL_MS = 2_000;
 /** What the requesting browser can see of its own challenge. */
 export const LOGIN_OUTCOMES = [
   "pending",
+  "awaiting_confirmation",
   "signed_in",
   "expired",
   "cancelled",
@@ -44,7 +45,11 @@ export function loginChallengeOutcome(
     return view.session !== null ? "signed_in" : "expired";
   if (challenge.status === "cancelled") return "cancelled";
   if (challenge.status === "expired") return "expired";
-  return expiryMs(challenge, nowMs) === 0 ? "expired" : "pending";
+  if (expiryMs(challenge, nowMs) === 0) return "expired";
+  // The message landed; the person still has to confirm the masked sender.
+  return view.awaitingConfirmation === true
+    ? "awaiting_confirmation"
+    : "pending";
 }
 
 function expiryMs(

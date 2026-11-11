@@ -15,7 +15,8 @@ export const loginKeys = {
 /**
  * Polls this browser's own challenge while it is pending and unexpired; the
  * server hands out the session once the WhatsApp message lands (AUTH-01).
- * A completed, cancelled or expired challenge stops the poll.
+ * A completed, cancelled or expired challenge stops the poll, and so does a
+ * challenge that awaits the person's confirmation.
  */
 export function loginChallengeQuery(challengeId: string) {
   return queryOptions({
@@ -25,6 +26,9 @@ export function loginChallengeQuery(challengeId: string) {
     refetchInterval: (query) => {
       const view = query.state.data;
       if (!view || view.challenge.status !== "pending") return false;
+      // Waiting for a tap on "Ya, masuk" / "Bukan saya": the confirm mutation
+      // invalidates this query, which resumes the poll.
+      if (view.awaitingConfirmation === true) return false;
       return Date.parse(view.challenge.expiresAt) > Date.now()
         ? LOGIN_POLL_MS
         : false;

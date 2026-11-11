@@ -6,8 +6,14 @@
 // opens WhatsApp with the message filled in (QR on a desktop), and sends it.
 // This browser polls its own challenge and signs in by itself. The system never
 // sends a WhatsApp message; the code lives only in component state and is shown
-// once. States: start → waiting → signed in / expired / cancelled / browser
-// mismatch / rate limited, plus inline failures with a retry.
+// once. States: start → waiting → (message landed: confirm card) → signed in /
+// expired / cancelled / browser mismatch / rate limited, plus inline failures
+// with a retry.
+//
+// With a confirm step (bead kmndq) the sign-in does not finish when the message
+// lands: the card shows the masked sender the API reports and asks "Masuk
+// sebagai nomor ini?". "Ya, masuk" confirms; "Bukan saya" cancels the code and
+// returns to the start with a message.
 import { useEffect, useRef, useState } from "react";
 import {
   CircleSlash,
@@ -15,6 +21,7 @@ import {
   Hourglass,
   MessageCircle,
   ShieldAlert,
+  ShieldCheck,
   TimerOff,
   type LucideIcon,
 } from "lucide-react";
@@ -33,6 +40,7 @@ import {
 } from "../flow";
 import {
   useCancelWhatsAppLogin,
+  useConfirmWhatsAppLogin,
   useLoginChallenge,
   useStartWhatsAppLogin,
 } from "../hooks";
@@ -111,9 +119,12 @@ export function WhatsAppLogin({
   const t = useT();
   const [issued, setIssued] = useState<LoginChallengeIssued | null>(null);
   const [checking, setChecking] = useState(false);
+  // "Bukan saya" was tapped: the start view shows why there is no code.
+  const [declined, setDeclined] = useState(false);
   const handled = useRef(false);
   const start = useStartWhatsAppLogin();
   const cancel = useCancelWhatsAppLogin();
+  const confirm = useConfirmWhatsAppLogin();
   const poll = useLoginChallenge(issued?.challenge.id ?? null);
   const view = poll.data;
 
@@ -132,7 +143,9 @@ export function WhatsAppLogin({
     ? challengeFailure(poll.error)
     : start.error
       ? challengeFailure(start.error)
-      : null;
+      : confirm.error
+        ? challengeFailure(confirm.error)
+        : null;
   // A local countdown that reached zero is expired per the contract's own rule
   // (isLoginChallengeExpired), even before the server sweeps the row; a
   // challenge another tab cancelled reads as cancelled here too.
@@ -152,7 +165,9 @@ export function WhatsAppLogin({
 
   async function begin() {
     handled.current = false;
+    setDeclined(false);
     cancel.reset();
+    confirm.reset();
     try {
       setIssued(await start.mutateAsync(returnTo));
     } catch {
@@ -168,6 +183,20 @@ export function WhatsAppLogin({
       // A failed cancel still drops the code here; it expires on its own.
     }
     setIssued(null);
+  }
+
+  async function decline() {
+    await abort();
+    setDeclined(true);
+  }
+
+  async function accept() {
+    if (!issued) return;
+    try {
+      await confirm.mutateAsync(issued.challenge.id);
+    } catch {
+      // Rendered from confirm.error below, or as an end state.
+    }
   }
 
   async function check() {
@@ -209,6 +238,14 @@ export function WhatsAppLogin({
   if (issued === null) {
     return (
       <section aria-labelledby="login-whatsapp-heading" className="grid gap-4">
+        {declined && (
+          <Notice
+            tone="muted"
+            icon={CircleSlash}
+            title={t("login.whatsapp.declined")}
+            live
+          />
+        )}
         <div className="flex items-start gap-3">
           <span className="grid size-10 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
             <MessageCircle className="size-5" aria-hidden="true" />
@@ -234,6 +271,61 @@ export function WhatsAppLogin({
         {start.isError && <InlineFailure error={start.error} />}
         <p className="text-sm leading-5 text-muted-foreground">
           {t("login.whatsapp.noReply")}
+        </p>
+      </section>
+    );
+  }
+
+  // ------------------------------------------------------- confirm card state
+  if (outcome === "awaiting_confirmation" && view) {
+    return (
+      <section
+        aria-labelledby="login-confirm-heading"
+        className="grid gap-4"
+      >
+        <h2 id="login-confirm-heading" className="sr-only">
+          {t("login.whatsapp.confirmHeading")}
+        </h2>
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-start gap-3 rounded-container bg-surface-2 p-card"
+        >
+          <span className="grid size-10 shrink-0 place-items-center rounded-container bg-background/70">
+            <ShieldCheck className="size-5" aria-hidden="true" />
+          </span>
+          <p className="min-w-0 pt-2 type-heading">
+            {t("login.whatsapp.confirmPrompt", {
+              sender: view.senderMasked ?? "",
+            })}
+          </p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button
+            size="lg"
+            className="w-full"
+            loading={confirm.isPending}
+            disabled={cancel.isPending}
+            onClick={() => void accept()}
+          >
+            {t("login.whatsapp.confirmYes")}
+          </Button>
+          <Button
+            size="lg"
+            variant="outline"
+            className="w-full"
+            loading={cancel.isPending}
+            disabled={confirm.isPending}
+            onClick={() => void decline()}
+          >
+            {t("login.whatsapp.confirmNo")}
+          </Button>
+        </div>
+        {confirm.isError && (
+          <InlineFailure error={confirm.error} onRetry={() => void accept()} />
+        )}
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("login.whatsapp.confirmHint")}
         </p>
       </section>
     );
