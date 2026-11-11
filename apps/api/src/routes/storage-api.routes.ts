@@ -52,6 +52,15 @@ export const HRIS_SIGNED_SEGMENTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Exact `/me...` paths (lower case, no trailing slash) owned by `hrisRouter`:
+ * the own employee row and the own attendance policy (legend-j06v).
+ */
+export const HRIS_OWNED_ME_PATHS: ReadonlySet<string> = new Set([
+  "/me",
+  "/me/attendance-policy",
+]);
+
+/**
  * The /api routes that need the object storage (legend-dzh9q): core-storage
  * upload and signed URL, plus the attendance routers that mint selfie URLs.
  * Mounted by createApp ahead of `apiRouter`. Without a runtime, uploads answer
@@ -171,7 +180,7 @@ export function createStorageApiRouter(options: {
       segment !== undefined &&
       (HRIS_SIGNED_SEGMENTS.has(segment) ||
         (segment === "me" &&
-          req.path.replace(/\/+$/, "").toLowerCase() === "/me"));
+          HRIS_OWNED_ME_PATHS.has(req.path.replace(/\/+$/, "").toLowerCase())));
     return owned ? hris(req, res, next) : next();
   });
   return router;

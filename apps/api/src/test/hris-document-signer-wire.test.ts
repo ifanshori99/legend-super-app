@@ -14,7 +14,10 @@ import type { ObjectStorage } from "@starter/shared/adapters";
 import { createApp } from "../app.ts";
 import { createHrisLeaveRouter } from "../routes/hris-leave.routes.ts";
 import { createHrisRouter } from "../routes/hris.routes.ts";
-import { HRIS_SIGNED_SEGMENTS } from "../routes/storage-api.routes.ts";
+import {
+  HRIS_OWNED_ME_PATHS,
+  HRIS_SIGNED_SEGMENTS,
+} from "../routes/storage-api.routes.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, signUp, verifySessionMfa } from "./helpers.ts";
@@ -324,8 +327,11 @@ describe("the /hris segment gate", () => {
     expect(paths).not.toHaveLength(0);
     for (const path of paths) {
       const [segment] = path.split("/").filter(Boolean);
-      // `/me` is matched exactly by the gate, beside the set.
-      if (path === "/me") continue;
+      // `/me...` paths are matched exactly by the gate, beside the set.
+      if (segment === "me") {
+        expect(HRIS_OWNED_ME_PATHS.has(path), path).toBe(true);
+        continue;
+      }
       expect(HRIS_SIGNED_SEGMENTS.has(segment ?? ""), path).toBe(true);
     }
   });

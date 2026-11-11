@@ -85,6 +85,7 @@ import {
   attendancePolicySchema,
   attendancePolicyViewSchema,
   attendanceQrRotationSchema,
+  myAttendancePolicySchema,
   attendanceReviewActionSchema,
   attendanceReviewItemSchema,
   attendanceReviewStatusSchema,
@@ -567,6 +568,13 @@ export const getAttendancePolicy = defineEndpoint({
   path: "/api/hris/attendance/policy",
   query: z.strictObject({ outletId: outletIdSchema.optional() }),
   response: dataResponseSchema(attendancePolicyViewSchema),
+});
+
+/** The caller's own outlet policy, clock-in fields only (self.attendance.clock). */
+export const getMyAttendancePolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/me/attendance-policy",
+  response: dataResponseSchema(myAttendancePolicySchema),
 });
 
 /** `outletId` null writes the tenant default; otherwise an outlet override. */

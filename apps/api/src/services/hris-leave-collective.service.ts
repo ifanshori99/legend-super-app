@@ -17,9 +17,12 @@
 //   unique per employee and date whatever the leave type (partial unique
 //   index), so re-runs, racing workers and a type switch deduct once. The balance may go below
 //   zero (mandated deduction); each such balance is audited.
-// - There is no attendance table yet, so an employee who worked on the
-//   collective day is still deducted (overtime pays that day as a workday,
-//   hris-overtime.service.ts).
+// - An employee who worked on the collective day is not deducted (overtime
+//   pays that day as a workday, hris-overtime.service.ts): an `in`
+//   attendance log on that business date that is valid (not rejected on
+//   review) or flagged and accepted. A flagged log still pending or
+//   unreviewed also skips the pair, with no ledger row, so the next run
+//   decides it. A rejected log (validity or review) deducts.
 // - National and company holidays never deduct. A leave request counts its
 //   days once, at filing (countLeaveDays excludes the holidays that exist
 //   then, stored in `excluded_holiday_dates`). A collective day inside a
@@ -57,6 +60,7 @@ import {
 } from "@starter/shared/hris";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
+import { attendanceLogs } from "../db/schema/hris-attendance.ts";
 import {
   holidays,
   hrisLeaveSettings,
@@ -353,6 +357,37 @@ async function datesCountedByRequests(
 }
 
 /**
+ * `employeeId|date` pairs whose collective day the employee worked or may have
+ * worked: an `in` log on that business date that is valid, or flagged, and not
+ * rejected on review. Flagged and accepted counts as worked; flagged and still
+ * pending/unreviewed is skipped too, so no ledger row is written and a later
+ * run re-evaluates it once reviewed (rejected then deducts).
+ */
+async function datesWorkedOrUnderReview(
+  tx: Tx,
+  tenantId: SettingsRow["tenantId"],
+  range: { from: string; today: string },
+): Promise<Set<string>> {
+  const logs = await tx
+    .selectDistinct({
+      employeeId: attendanceLogs.employeeId,
+      businessDate: attendanceLogs.businessDate,
+    })
+    .from(attendanceLogs)
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, tenantId),
+        eq(attendanceLogs.type, "in"),
+        gte(attendanceLogs.businessDate, range.from),
+        lt(attendanceLogs.businessDate, range.today),
+        inArray(attendanceLogs.validity, ["valid", "flagged"]),
+        ne(attendanceLogs.reviewStatus, "rejected"),
+      ),
+    );
+  return new Set(logs.map((row) => `${row.employeeId}|${row.businessDate}`));
+}
+
+/**
  * Deducts one annual-leave day per past collective holiday (current and
  * previous Asia/Jakarta year) for each employee in scope. Idempotent through
  * the `leave_accruals` ledger; `granted` = deductions made now, `skipped` =
@@ -455,6 +490,10 @@ export async function applyCollectiveLeaveDeductions(
       from,
       today,
     });
+    const worked = await datesWorkedOrUnderReview(tx, tenantId, {
+      from,
+      today,
+    });
     // Previous-year dates for employees whose carry-over into this year ran.
     const thisYear = today.slice(0, 4);
     const carried = new Set(
@@ -496,6 +535,7 @@ export async function applyCollectiveLeaveDeductions(
           continue;
         const pair = `${employee.id}|${holiday.date}`;
         if (counted.has(pair)) continue;
+        if (worked.has(pair)) continue;
         if (holiday.date.slice(0, 4) < thisYear && carried.has(employee.id))
           continue;
         if (done.has(pair)) {

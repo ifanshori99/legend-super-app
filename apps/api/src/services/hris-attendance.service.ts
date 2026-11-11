@@ -66,6 +66,7 @@ import {
   type AttendanceFlagReason,
   type AttendanceLog,
   type AttendanceMethod,
+  type MyAttendancePolicy,
   type AttendancePolicy,
   type AttendancePolicyView,
   type AttendanceQrRotation,
@@ -275,6 +276,78 @@ export async function loadAttendancePolicy(
     policy: attendancePolicySchema.parse(row.policy),
     sampling: attendanceSamplingConfigSchema.parse(row.sampling),
     updatedAt: row.updatedAt.toISOString(),
+  });
+}
+
+/**
+ * The outlet an employee's clock lands in right now: the outlet of the shift
+ * they work, else their home outlet. Refuses an employee who is not active or
+ * onboarding. Shared by clockAttendance and getMyAttendancePolicy so the policy
+ * shown is the policy applied.
+ */
+async function resolveClockOutlet(
+  tx: Tx,
+  tenantId: TenantId,
+  own: { id: string; homeOutletId: string },
+  now: Date,
+): Promise<{ outletId: string }> {
+  const [employee] = await tx
+    .select({ status: employees.status })
+    .from(employees)
+    .where(and(eq(employees.tenantId, tenantId), eq(employees.id, own.id)))
+    .limit(1);
+  if (!employee) throw forbidden();
+  if (employee.status !== "active" && employee.status !== "onboarding")
+    throw validation("Karyawan tidak aktif; tidak bisa absen.");
+  const timeZone = await loadOutletTimeZone(tx, tenantId, own.homeOutletId);
+  if (timeZone === null) throw notFound("Outlet");
+  const shift = await resolveEmployeeShift(tx, tenantId, own.id, now, timeZone);
+  return { outletId: shift?.outletId ?? own.homeOutletId };
+}
+
+/**
+ * GET /api/hris/me/attendance-policy: the effective policy of the outlet the
+ * caller's clock lands in (current shift outlet, else home outlet), clock-in
+ * fields only. The employee comes from the session (HR-01), never from the
+ * request; the clock permission is checked here too.
+ */
+export async function getMyAttendancePolicy(
+  context: ScopedTenantContext,
+  actorUserId: string,
+): Promise<MyAttendancePolicy> {
+  return withTenant(db, context, async (tx) => {
+    const access = await loadHrisAccess(tx, context, actorUserId);
+    if (
+      access.own === null ||
+      !access.snapshot.permissions.includes(HRIS_ATTENDANCE_CLOCK_CODE)
+    )
+      throw forbidden();
+    const target = await resolveClockOutlet(
+      tx,
+      context.tenant.tenantId,
+      access.own,
+      new Date(),
+    );
+    if (
+      !access.snapshot.allows(HRIS_ATTENDANCE_CLOCK_CODE, {
+        type: "outlet",
+        id: target.outletId,
+      })
+    )
+      throw forbidden();
+    const { policy } = await loadAttendancePolicy(
+      tx,
+      context.tenant.tenantId,
+      target.outletId,
+    );
+    return {
+      geofenceRadiusM: policy.geofenceRadiusM,
+      outsideGeofenceAction: policy.outsideGeofenceAction,
+      unboundDeviceAction: policy.unboundDeviceAction,
+      requireSelfie: policy.requireSelfie,
+      requireDeviceBinding: policy.requireDeviceBinding,
+      allowRotatingQr: policy.allowRotatingQr,
+    };
   });
 }
 
@@ -1056,24 +1129,7 @@ export async function clockAttendance(
       assertClockReplayOwner(original, own.id, body.type);
       return { replayed: original };
     }
-    const [employee] = await tx
-      .select({ status: employees.status })
-      .from(employees)
-      .where(and(eq(employees.tenantId, tenantId), eq(employees.id, own.id)))
-      .limit(1);
-    if (!employee) throw forbidden();
-    if (employee.status !== "active" && employee.status !== "onboarding")
-      throw validation("Karyawan tidak aktif; tidak bisa absen.");
-    const timeZone = await loadOutletTimeZone(tx, tenantId, own.homeOutletId);
-    if (timeZone === null) throw notFound("Outlet");
-    const shift = await resolveEmployeeShift(
-      tx,
-      tenantId,
-      own.id,
-      now,
-      timeZone,
-    );
-    const outletId = shift?.outletId ?? own.homeOutletId;
+    const { outletId } = await resolveClockOutlet(tx, tenantId, own, now);
     // The clock permission must hold at the outlet the log lands in, not just
     // somewhere (legend-whiwv #1).
     if (

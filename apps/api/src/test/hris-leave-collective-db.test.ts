@@ -330,6 +330,11 @@ afterAll(async () => {
       [tenantId, createdTypes],
     );
     await client.query(
+      `DELETE FROM attendance_logs WHERE tenant_id = $1
+         AND employee_id IN (SELECT id FROM employees WHERE tenant_id = $1 AND created_by = ANY($2))`,
+      [tenantId, createdUsers],
+    );
+    await client.query(
       "DELETE FROM employees WHERE tenant_id = $1 AND created_by = ANY($2)",
       [tenantId, createdUsers],
     );
@@ -1152,5 +1157,205 @@ describe("collective day and carry-over expiry", () => {
     );
     expect(forfeits).toHaveLength(1);
     expect(Number(forfeits[0]!.after.forfeitedDays)).toBe(1);
+  });
+});
+
+// legend-qmte: staff who still clocked in on a collective day worked it, so
+// the day is not taken from their annual leave.
+//
+// Assumptions (from the card, not from the service): a log counts as "worked"
+// when it is type 'in' on business_date = the holiday date and neither its
+// validity nor its review_status is 'rejected'. A flagged or pending-review
+// 'in' log is undecided: the day is skipped with no ledger row and is
+// re-evaluated on the next run (a later rejection deducts it). Money rule,
+// doubt restricts payment: nobody is deducted twice and nobody is deducted
+// while a valid-ish clock-in exists.
+describe("collective day and attendance (clock-in means worked)", () => {
+  const D = {
+    valid: "2044-06-02",
+    rejectedLater: "2044-06-04",
+    rejectedOnly: "2044-06-09",
+    reviewRejected: "2044-06-10",
+    none: "2044-06-11",
+    outOnly: "2044-06-12",
+    otherDate: "2044-06-13",
+    flagged: "2044-06-14",
+    accepted: "2044-05-30",
+    flaggedRejected: "2044-05-31",
+  } as const;
+
+  beforeAll(async () => {
+    for (const date of Object.values(D))
+      await holiday(date, "collective", outletA);
+  });
+
+  type LogInput = {
+    type?: "in" | "out";
+    validity?: "valid" | "flagged" | "rejected";
+    review?: "none" | "pending" | "accepted" | "rejected";
+    businessDate: string;
+  };
+  const writeLog = (employeeId: string, input: LogInput) => {
+    const review = input.review ?? "none";
+    const reviewed = review === "accepted" || review === "rejected";
+    const id = randomUUID();
+    return sql(
+      `INSERT INTO attendance_logs
+         (id, tenant_id, outlet_id, employee_id, type, method, occurred_at,
+          validity, flag_reasons, business_date, client_event_id,
+          review_status, reviewed_by, reviewed_at)
+       VALUES ($1, $2, $3, $4, $5, 'rotating_qr', ($6::date + time '08:00') AT TIME ZONE 'Asia/Jakarta',
+               $7, '[]'::jsonb, $6::date, $8, $9, $10,
+               CASE WHEN $11::boolean THEN now() END)`,
+      [
+        id,
+        tenantId,
+        outletA,
+        employeeId,
+        input.type ?? "in",
+        input.businessDate,
+        input.validity ?? "valid",
+        `cbdb-log-${id}`,
+        review,
+        reviewed ? "reviewer" : null,
+        reviewed,
+      ],
+    ).then(() => id);
+  };
+  const rejectLog = (logId: string) =>
+    sql(
+      `UPDATE attendance_logs
+          SET validity = 'rejected', review_status = 'rejected',
+              reviewed_by = 'reviewer', reviewed_at = now()
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, logId],
+    );
+  const run = () =>
+    applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+  const rowsFor = async (employeeId: string, date: string) =>
+    (await periodsOf(employeeId)).filter((period) => period === date);
+  // Days of 2044 deducted for dates other than `skip` (other describes leave
+  // their own collective holidays that a fresh employee also receives).
+  const usedExcept = async (employeeId: string, skip: string[]) =>
+    (await periodsOf(employeeId)).filter(
+      (period) => period.startsWith("2044") && !skip.includes(period),
+    ).length;
+
+  it("a valid clock-in on the day is not deducted: no ledger row, used unchanged, stable across reruns", async () => {
+    const worked = await employee(outletA, "2040-01-02");
+    const idle = await employee(outletA, "2040-01-02");
+    await writeLog(worked.id, { businessDate: D.valid });
+
+    await run();
+    await run();
+
+    expect(await rowsFor(worked.id, D.valid)).toEqual([]);
+    expect(Number((await usedOf(worked.id, 2044)) ?? 0)).toBe(
+      await usedExcept(worked.id, [D.valid]),
+    );
+    // A colleague without a clock-in is still deducted (log is per employee).
+    expect(await rowsFor(idle.id, D.valid)).toEqual([D.valid]);
+  });
+
+  it("a later rerun after that log is rejected deducts the day", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    const logId = await writeLog(e.id, { businessDate: D.rejectedLater });
+    await run();
+    expect(await rowsFor(e.id, D.rejectedLater)).toEqual([]);
+    const usedBefore = Number((await usedOf(e.id, 2044)) ?? 0);
+
+    await rejectLog(logId);
+    await run();
+
+    expect(await rowsFor(e.id, D.rejectedLater)).toEqual([D.rejectedLater]);
+    expect(Number(await usedOf(e.id, 2044))).toBe(usedBefore + 1);
+    // And not twice.
+    await run();
+    expect(await rowsFor(e.id, D.rejectedLater)).toEqual([D.rejectedLater]);
+    expect(Number(await usedOf(e.id, 2044))).toBe(usedBefore + 1);
+  });
+
+  it("an employee whose only log on the day is rejected is deducted", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    await writeLog(e.id, {
+      businessDate: D.rejectedOnly,
+      validity: "rejected",
+    });
+    await run();
+    expect(await rowsFor(e.id, D.rejectedOnly)).toEqual([D.rejectedOnly]);
+    expect(Number(await usedOf(e.id, 2044))).toBe(await usedExcept(e.id, []));
+  });
+
+  it("a log whose review was rejected is deducted even if its validity said valid", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    await writeLog(e.id, {
+      businessDate: D.reviewRejected,
+      validity: "valid",
+      review: "rejected",
+    });
+    await run();
+    expect(await rowsFor(e.id, D.reviewRejected)).toEqual([D.reviewRejected]);
+  });
+
+  it("an employee with no log on the day is deducted", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    await run();
+    expect(await rowsFor(e.id, D.none)).toEqual([D.none]);
+    expect(Number(await usedOf(e.id, 2044))).toBe(await usedExcept(e.id, []));
+  });
+
+  it("only a clock-out on the day, or a clock-in on another date, does not protect the day", async () => {
+    const outOnly = await employee(outletA, "2040-01-02");
+    await writeLog(outOnly.id, { businessDate: D.outOnly, type: "out" });
+    const otherDay = await employee(outletA, "2040-01-02");
+    await writeLog(otherDay.id, { businessDate: "2044-06-06" });
+    await run();
+    expect(await rowsFor(outOnly.id, D.outOnly)).toEqual([D.outOnly]);
+    expect(await rowsFor(otherDay.id, D.otherDate)).toEqual([D.otherDate]);
+  });
+
+  it("a flagged, pending-review clock-in skips the day without a ledger row and is re-evaluated next run", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    const logId = await writeLog(e.id, {
+      businessDate: D.flagged,
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    expect(await rowsFor(e.id, D.flagged)).toEqual([]);
+    const usedWhileFlagged = Number((await usedOf(e.id, 2044)) ?? 0);
+    expect(usedWhileFlagged).toBe(await usedExcept(e.id, [D.flagged]));
+
+    // Still undecided on the next run: still no row, nothing charged.
+    await run();
+    expect(await rowsFor(e.id, D.flagged)).toEqual([]);
+    expect(Number((await usedOf(e.id, 2044)) ?? 0)).toBe(usedWhileFlagged);
+
+    // The reviewer rejects the clock-in: the day is deducted exactly once.
+    await rejectLog(logId);
+    await run();
+    await run();
+    expect(await rowsFor(e.id, D.flagged)).toEqual([D.flagged]);
+    expect(Number(await usedOf(e.id, 2044))).toBe(usedWhileFlagged + 1);
+  });
+
+  it("a flagged clock-in the reviewer accepted counts as worked; a flagged one rejected is deducted", async () => {
+    const accepted = await employee(outletA, "2040-01-02");
+    await writeLog(accepted.id, {
+      businessDate: D.accepted,
+      validity: "flagged",
+      review: "accepted",
+    });
+    const rejected = await employee(outletA, "2040-01-02");
+    await writeLog(rejected.id, {
+      businessDate: D.flaggedRejected,
+      validity: "flagged",
+      review: "rejected",
+    });
+    await run();
+    expect(await rowsFor(accepted.id, D.accepted)).toEqual([]);
+    expect(await rowsFor(rejected.id, D.flaggedRejected)).toEqual([
+      D.flaggedRejected,
+    ]);
   });
 });
