@@ -6,13 +6,12 @@
 // a guest can change it.
 //
 // `sessionTimerState` is shared with the tests; the 5-minute reminder is this
-// screen's job while it is open. Web push delivery is WS-06 (bead follow-up).
-import { useEffect, useRef, useState } from "react";
+// screen's job while it is open (the banner below, no toast on top of it). Web push delivery is WS-06 (bead follow-up).
+import { useEffect, useState } from "react";
 import { AlarmClock } from "lucide-react";
 import type { AccessTicketView } from "@starter/shared/facility";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
-import { useToast } from "@/components/ui/toast";
 import { cn } from "cn";
 import {
   formatClock,
@@ -32,7 +31,6 @@ export function SessionTimer({
   className?: string;
 }) {
   const t = useT();
-  const toast = useToast();
   const [mountedAt] = useState(() => Date.now());
   // First render: the documented server instant, identical on server and client.
   const [now, setNow] = useState(() => Date.parse(view.serverTime));
@@ -52,18 +50,6 @@ export function SessionTimer({
     endsAt: view.session.scheduledEndsAt,
     endedAt: view.session.endedAt,
   });
-
-  // Announce the 5-minute reminder once per ticket, not on every tick.
-  const reminded = useRef(false);
-  useEffect(() => {
-    if (state !== "reminder" || reminded.current) return;
-    reminded.current = true;
-    toast({
-      title: t("facility.ticket.reminderTitle"),
-      description: t("facility.ticket.reminderBody"),
-      tone: "info",
-    });
-  }, [state, toast, t]);
 
   const opensIn = Date.parse(doorWindow.validFrom) - now;
   const remaining = remainingMs(now, view.session.scheduledEndsAt);
@@ -136,9 +122,15 @@ export function SessionTimer({
           style={{ width: `${progress}%` }}
         />
       </div>
+      {/* Mounted from the start (empty) so the reminder is announced. */}
+      <p role="status" className="sr-only">
+        {state === "reminder"
+          ? `${t("facility.ticket.reminderTitle")}. ${t("facility.ticket.reminderBody")}`
+          : ""}
+      </p>
       {state === "reminder" && (
         <p
-          role="status"
+          aria-hidden="true"
           className="rounded-container bg-warning-subtle px-3 py-2 text-sm leading-5 text-warning"
         >
           <span className="font-semibold">

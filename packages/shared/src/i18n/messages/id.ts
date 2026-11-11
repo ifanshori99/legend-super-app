@@ -71,6 +71,7 @@ import { rosterMessages } from "./ws10-roster.ts";
 import { facilityStaffMessages } from "./facility-staff.ts";
 import { facilityAdminMessages } from "./facility-admin.ts";
 import { facilityReportMessages } from "./facility-report.ts";
+import { facilityBreakfastMessages } from "./facility-breakfast.ts";
 import { opsEquipmentMessages } from "./ops-equipment.ts";
 import { opsFoodSafetyMessages } from "./ops-food-safety.ts";
 import { opsChecklistMessages } from "./ops-checklist.ts";
@@ -216,6 +217,7 @@ export const id = {
   facilityStaff: facilityStaffMessages,
   facilityAdmin: facilityAdminMessages,
   facilityReport: facilityReportMessages,
+  facilityBreakfast: facilityBreakfastMessages,
   opsEquipment: opsEquipmentMessages,
   opsFoodSafety: opsFoodSafetyMessages,
   opsChecklist: opsChecklistMessages,
@@ -1349,11 +1351,13 @@ export const id = {
       errorHint: "Periksa koneksi, lalu coba lagi.",
     },
     preferences: {
-      hint: "Pilih kanal per kategori. Notifikasi in-app selalu aktif karena menjadi catatan resmi.",
+      hint: "Pilih kanal per kategori. Notifikasi in-app selalu aktif sebagai catatan resmi.",
       categoriesHeading: "Kategori & kanal",
       channelWebPush: "Web push",
       channelEmail: "Email",
       channelWhatsapp: "WhatsApp",
+      emailLocked: "Wajib",
+      emailLockedHint: "Email wajib aktif untuk pemberitahuan keamanan.",
       whatsappPolicyOff:
         "WhatsApp dimatikan oleh kebijakan tenant; pilihan Anda disimpan untuk nanti.",
       whatsappPolicyUnknown:
@@ -1367,11 +1371,15 @@ export const id = {
       quietHoursStart: "Mulai",
       quietHoursEnd: "Selesai",
       quietHoursSameTime: "Jam mulai dan selesai tidak boleh sama.",
+      quietHoursRequired: "Jam wajib diisi.",
       timeZone: "Zona waktu",
       save: "Simpan preferensi",
       discard: "Batalkan perubahan",
-      saved: "Preferensi notifikasi tersimpan",
-      saveError: "Preferensi belum tersimpan. Periksa koneksi, lalu coba lagi.",
+      saved: "Preferensi notifikasi tersimpan.",
+      saveError: "Preferensi belum tersimpan.",
+      saveErrorHint: "Periksa koneksi, lalu coba lagi.",
+      emptyTitle: "Belum ada preferensi tersimpan",
+      emptyAction: "Atur preferensi",
       errorTitle: "Preferensi tidak dapat dimuat",
       errorHint: "Periksa koneksi, lalu coba lagi.",
     },

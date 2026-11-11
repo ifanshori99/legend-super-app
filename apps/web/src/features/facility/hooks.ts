@@ -2,10 +2,13 @@
 // directly (docs/frontend.md, "Custom hooks"). Mutations invalidate the keys
 // they can change, so a new ticket also refreshes the queue and the quota.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiError } from "@/lib/api/errors.ts";
 import * as api from "./api";
 import { facilityKeys } from "./queries";
 import { cancelWhatsAppLogin, startWhatsAppLogin } from "./wa-login";
+import type { CreateBreakfastOrderBody } from "./breakfast.ts";
 import {
+  breakfastMenuQuery,
   loginChallengeQuery,
   availabilityQuery,
   currentSubscriptionQuery,
@@ -145,5 +148,29 @@ export function useLoginChallenge(challengeId: string | null) {
 export function useCancelWhatsAppLogin() {
   return useMutation({
     mutationFn: (challengeId: string) => cancelWhatsAppLogin(challengeId),
+  });
+}
+
+export function useBreakfastMenu(ticketId: string, enabled = true) {
+  return useQuery({ ...breakfastMenuQuery(ticketId), enabled });
+}
+
+export function useOrderBreakfast(ticketId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateBreakfastOrderBody) =>
+      api.orderBreakfast(ticketId, body),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: facilityKeys.breakfast(ticketId),
+      }),
+    // 409: the ticket already has an order (another tab). Refetch so the held
+    // order shows instead of the form with an error.
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409)
+        return queryClient.invalidateQueries({
+          queryKey: facilityKeys.breakfast(ticketId),
+        });
+    },
   });
 }

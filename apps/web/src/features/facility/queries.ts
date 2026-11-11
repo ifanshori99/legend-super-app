@@ -16,6 +16,8 @@ export const facilityKeys = {
   tickets: () => [...facilityKeys.all, "tickets"] as const,
   ticket: (ticketId: string) =>
     [...facilityKeys.all, "ticket", ticketId] as const,
+  breakfast: (ticketId: string) =>
+    [...facilityKeys.all, "breakfast", ticketId] as const,
   subscription: () => [...facilityKeys.all, "subscription"] as const,
   plans: (facilityId: string) =>
     [...facilityKeys.all, "plans", facilityId] as const,
@@ -95,5 +97,14 @@ export function subscriptionPlansQuery(facilityId: string) {
   return queryOptions({
     queryKey: facilityKeys.plans(facilityId),
     queryFn: ({ signal }) => api.fetchSubscriptionPlans(facilityId, signal),
+  });
+}
+
+/** Breakfast menu of one ticket; the order must be fresh, so never stale. */
+export function breakfastMenuQuery(ticketId: string) {
+  return queryOptions({
+    queryKey: facilityKeys.breakfast(ticketId),
+    queryFn: ({ signal }) => api.fetchBreakfastMenu(ticketId, signal),
+    staleTime: 0,
   });
 }

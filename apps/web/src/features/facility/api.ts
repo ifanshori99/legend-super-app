@@ -20,6 +20,11 @@ import {
 } from "@starter/shared/facility";
 import type { EndpointInput } from "@starter/shared/api";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
+import {
+  createBreakfastOrder,
+  getBreakfastMenu,
+  type CreateBreakfastOrderBody,
+} from "./breakfast.ts";
 
 /** Request bodies exactly as the contract accepts them (branded ids parsed). */
 export type BookTicketBody = EndpointInput<typeof bookAccessTicket>["body"];
@@ -144,6 +149,30 @@ export async function updateSubscription(
 ) {
   const response = await callEndpoint(updateFacilitySubscription, {
     params: { subscriptionId },
+    body,
+  });
+  return response.data;
+}
+
+/** Breakfast menu, tables and the ticket's existing order (see breakfast.ts). */
+export async function fetchBreakfastMenu(
+  ticketId: string,
+  signal?: AbortSignal,
+) {
+  const response = await callEndpoint(
+    getBreakfastMenu,
+    { params: { ticketId } },
+    { signal },
+  );
+  return response.data;
+}
+
+export async function orderBreakfast(
+  ticketId: string,
+  body: CreateBreakfastOrderBody,
+) {
+  const response = await callEndpoint(createBreakfastOrder, {
+    params: { ticketId },
     body,
   });
   return response.data;
