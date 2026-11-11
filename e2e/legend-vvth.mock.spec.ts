@@ -26,7 +26,7 @@ const AREAS = [
   { path: "/kelola/inventori", title: "Inventori" },
   { path: "/kelola/akuntansi", title: "Akuntansi" },
   { path: "/kelola/loyalty", title: "Loyalty" },
-  { path: "/kelola/pajak", title: "Pajak & service charge" },
+  { path: "/kelola/pajak", title: "Pajak & layanan" },
   { path: "/kelola/pembayaran", title: "Pembayaran" },
   { path: "/kelola/pengadaan", title: "Pengadaan" },
 ] as const;
@@ -79,7 +79,7 @@ test.describe("legend-vvth · finance & stock v3 sweep", () => {
       },
       {
         path: "/kelola/pajak",
-        nav: "Pajak & service charge",
+        nav: "Pajak & layanan",
         current: "Aturan pajak",
       },
     ] as const;
