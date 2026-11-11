@@ -79,12 +79,12 @@ export function posPriceChannel(
     case "shopeefood":
     case "reservation":
       return channel;
+    // A facility breakfast order is a delivered meal: dine-in or takeaway
+    // list by service type, like POS.
     case "qr":
     case "pos":
     case "captain":
     case "kiosk":
-    // A facility breakfast order is a delivered meal: dine-in or takeaway
-    // list by service type, like POS.
     case "facility":
       return serviceType === "dine_in" ? "dine_in" : "takeaway";
     default: {

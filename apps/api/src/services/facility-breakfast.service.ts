@@ -572,7 +572,8 @@ export async function createBreakfastOrderForMember(
         updatedAt: now,
       })
       .returning();
-    if (!linked) throw new Error("Breakfast linked order insert returned no row");
+    if (!linked)
+      throw new Error("Breakfast linked order insert returned no row");
     await auditFacility(tx, context, null, now, {
       action: "facility.breakfast.created",
       objectType: "facility_linked_order",
