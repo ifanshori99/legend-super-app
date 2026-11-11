@@ -38,11 +38,21 @@
 //   no-op or is rejected with 409. Both are fine; paying twice is not.
 // - A repeated day pass purchase with the same paymentRef (same product and
 //   customer) resolves with the FIRST sale (same id), not a 409.
-// - `reserveWfcSeat` rejects a slot longer than `facility_products
-//   .duration_minutes` with 409 DURATION_EXCEEDS_PRODUCT; a product without a
-//   duration cannot be reserved (status 400/404/409/422, code not asserted).
+// - Round 4 (D7): `reserveWfcSeat` input is `{ seatId, productId,
+//   customerProfileId, startsAt, idempotencyKey }`; `endsAt` is rejected
+//   (strict schema, 400/422). The server sets endsAt = startsAt +
+//   `facility_products.duration_minutes` minutes exactly; the result DTO still
+//   returns `endsAt`. A seat_reservation product without a duration cannot
+//   exist (check constraint), so "no duration" is tested with a non-seat product.
 //   `setWfcProductKind({ productId, wfcKind, durationMinutes })` rejects a
 //   seat_reservation without a duration in 1..1440 (400/409/422).
+// - Round 4 (D4): an unused day pass (refundedIdr = 0) is not refundable once
+//   its expiry has passed: 409 PASS_EXPIRED, before or after the expiry sweep.
+//   (D5): after a first partial refund, later refunds only need to fit in
+//   paid - refunded. (D6): confirming a reservation whose slot has started is
+//   409 SLOT_STARTED and does not consume the capture. (D8): without the
+//   optional `now` argument the service reads the DB clock (real time).
+//   (D10): wfc_seats' zone FK is composite (tenant, outlet, zone).
 // - The day pass refund entry point is `refundDayPass({ paymentRef,
 //   refundIdr })` (the spec names no function for it).
 // - "end of the outlet-local business day" is somewhere after NOW and no later
@@ -433,7 +443,6 @@ async function setup() {
       productId: string;
       customerProfileId: string;
       startsAt: string;
-      endsAt: string;
       idempotencyKey: string;
     }> = {},
   ) =>
@@ -445,7 +454,6 @@ async function setup() {
         productId: reservationProductId,
         customerProfileId: customer.id,
         startsAt: at(2),
-        endsAt: at(4),
         idempotencyKey: `idem-${randomUUID()}`,
         ...over,
       },
@@ -622,15 +630,15 @@ describe("F39 seats", () => {
 
   it("F39 the database ties a seat's zone to the seat's outlet (composite FK on tenant, outlet, zone)", async () => {
     const s = await setup();
-    // Item 5 of round 2: the FK is added only when floor_zones already has a
-    // unique (tenant_id, outlet_id, id); otherwise the service check above is
-    // the guard and this test has nothing to assert.
+    // D10 (round 4): floor_zones has a unique (tenant_id, outlet_id, id) and
+    // wfc_seats' zone FK is composite on it, so the database itself refuses a
+    // seat whose zone belongs to another outlet (no service check involved).
     const hasUnique = await owner.query(
       `SELECT 1 FROM pg_indexes
         WHERE tablename = 'floor_zones' AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
           AND indexdef LIKE '%(tenant_id, outlet_id, id)%'`,
     );
-    if (hasUnique.rowCount === 0) return;
+    expect(hasUnique.rowCount).toBeGreaterThan(0);
     const zoneB = await seedZone(s.world, s.world.outletB);
     // 23503 = foreign_key_violation
     await expect(
@@ -643,6 +651,16 @@ describe("F39 seats", () => {
       ),
     ).rejects.toMatchObject({ code: "23503" });
     expect(await countRows(s.world.tenantId, "wfc_seats")).toBe(0);
+    // A zone of the seat's own outlet is fine.
+    await expect(
+      asTenant(s.world.tenantId, (client) =>
+        client.query(
+          `INSERT INTO wfc_seats (id, tenant_id, outlet_id, zone_id, code, status)
+           VALUES ($1, $2, $3, $4, 'FK2', 'active')`,
+          [randomUUID(), s.world.tenantId, s.world.outletA, s.zoneId],
+        ),
+      ),
+    ).resolves.toBeTruthy();
   });
 
   it("F39 an actor without the facility permission cannot create a seat", async () => {
@@ -673,7 +691,6 @@ describe("F39 seats", () => {
           productId: s.reservationProductId,
           customerProfileId: s.customer.id,
           startsAt: at(2),
-          endsAt: at(3),
           idempotencyKey: `idem-${randomUUID()}`,
         },
         NOW,
@@ -717,7 +734,6 @@ describe("F39 seat reservation", () => {
             productId: s.reservationProductId,
             customerProfileId: s.customer.id,
             startsAt: at(2),
-            endsAt: at(3),
             idempotencyKey: key,
             priceIdr: 1,
             amount: 1,
@@ -798,39 +814,102 @@ describe("F39 seat reservation", () => {
     expect([400, 404, 422]).toContain(rejected.status);
   });
 
-  it("F39 a slot that ends before or at its start is rejected", async () => {
+  it("F39 D7 a client supplied endsAt is rejected (strict input), even a matching one", async () => {
     const s = await setup();
     const seatId = await s.makeSeat();
-    for (const [startsAt, endsAt] of [
-      [at(3), at(2)],
-      [at(2), at(2)],
-    ] as const) {
-      const rejected = await failure(s.reserve(seatId, { startsAt, endsAt }));
-      expect([400, 409, 422]).toContain(rejected.status);
+    for (const endsAt of [at(3), at(2), at(2 + SEAT_DURATION / 60)]) {
+      const rejected = await failure(
+        reserveWfcSeat(
+          s.ctx,
+          s.actor,
+          {
+            seatId,
+            productId: s.reservationProductId,
+            customerProfileId: s.customer.id,
+            startsAt: at(2),
+            endsAt,
+            idempotencyKey: `idem-${randomUUID()}`,
+          } as never,
+          NOW,
+        ),
+      );
+      expect([400, 422], endsAt).toContain(rejected.status);
     }
     expect(await countRows(s.world.tenantId, "wfc_seat_reservations")).toBe(0);
   });
-});
 
-describe("F39 reservation duration (facility_products.duration_minutes)", () => {
-  /** A slot of `minutes` starting at 2 hours from NOW. */
-  const slot = (minutes: number) => ({
-    startsAt: at(2),
-    endsAt: at(2 + minutes / 60),
-  });
-
-  it("F39 a slot up to the product duration is accepted, one minute more is 409 DURATION_EXCEEDS_PRODUCT", async () => {
+  it("F39 a start that is not a valid instant is rejected", async () => {
     const s = await setup();
     const seatId = await s.makeSeat();
-    expect(
-      await failure(s.reserve(seatId, slot(SEAT_DURATION + 1))),
-    ).toMatchObject({ status: 409, code: "DURATION_EXCEEDS_PRODUCT" });
+    for (const startsAt of ["not-a-date", ""]) {
+      const rejected = await failure(s.reserve(seatId, { startsAt }));
+      expect([400, 422], startsAt).toContain(rejected.status);
+    }
     expect(await countRows(s.world.tenantId, "wfc_seat_reservations")).toBe(0);
-    await expect(s.reserve(seatId, slot(SEAT_DURATION))).resolves.toBeTruthy();
-    await expect(s.reserve(await s.makeSeat(), slot(30))).resolves.toBeTruthy();
   });
 
-  it("F39 the limit is the duration of the chosen product, not a global one", async () => {
+  // Round 4b F4. `s.reserve` injects `now = NOW`. Assumption: a slot that starts
+  // at or before `now` is rejected with code INVALID_SLOT (status 400 or 409,
+  // like the other slot check); the exact boundary `startsAt == now` counts as
+  // already started.
+  it("F4 a slot that already started cannot be reserved (INVALID_SLOT) and nothing is written", async () => {
+    const s = await setup();
+    const seatId = await s.makeSeat();
+    for (const startsAt of [at(-3), at(-1), NOW.toISOString()]) {
+      const rejected = await failure(s.reserve(seatId, { startsAt }));
+      expect(rejected.status, startsAt).toBe(422);
+      expect(rejected.code, startsAt).toBe("INVALID_SLOT");
+    }
+    expect(await countRows(s.world.tenantId, "wfc_seat_reservations")).toBe(0);
+  });
+
+  it("F4 a slot starting in the future still works, even one millisecond after now", async () => {
+    const s = await setup();
+    const seatId = await s.makeSeat();
+    const soon = new Date(NOW.getTime() + 1).toISOString();
+    const first = idOf(await s.reserve(seatId, { startsAt: soon }));
+    const second = idOf(await s.reserve(seatId, { startsAt: at(5) }));
+    expect(first).not.toBe(second);
+    expect((await reservationRow(s.world.tenantId, first)).status).toBe(
+      "pending_payment",
+    );
+    expect((await reservationRow(s.world.tenantId, second)).status).toBe(
+      "pending_payment",
+    );
+    expect(await countRows(s.world.tenantId, "wfc_seat_reservations")).toBe(2);
+  });
+});
+
+describe("F39 D7 reservation end = start + product duration (facility_products.duration_minutes)", () => {
+  const MIN = 60_000;
+  /** Slot bounds as stored, in epoch ms. */
+  const slotOf = (tenantId: string, reservationId: string) =>
+    asTenant(tenantId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT (extract(epoch FROM lower(slot)) * 1000)::bigint::text AS starts,
+                (extract(epoch FROM upper(slot)) * 1000)::bigint::text AS ends
+           FROM wfc_seat_reservations WHERE id = $1`,
+        [reservationId],
+      );
+      return { starts: Number(rows[0].starts), ends: Number(rows[0].ends) };
+    });
+
+  it("D7 the server sets endsAt = startsAt + the product duration, in the row and in the result", async () => {
+    const s = await setup();
+    const seatId = await s.makeSeat();
+    const result = await s.reserve(seatId, { startsAt: at(3) });
+    const reservationId = idOf(result);
+    const start = Date.parse(at(3));
+    expect(await slotOf(s.world.tenantId, reservationId)).toEqual({
+      starts: start,
+      ends: start + SEAT_DURATION * MIN,
+    });
+    expect(Date.parse((result as { endsAt: string }).endsAt)).toBe(
+      start + SEAT_DURATION * MIN,
+    );
+  });
+
+  it("D7 the length is the duration of the chosen product, not a global one", async () => {
     const s = await setup();
     const short60 = await seedProduct(s.world, {
       outletId: s.world.outletA,
@@ -839,14 +918,58 @@ describe("F39 reservation duration (facility_products.duration_minutes)", () => 
       price: 20_000,
       durationMinutes: 60,
     });
+    const reservationId = idOf(
+      await s.reserve(await s.makeSeat(), { productId: short60 }),
+    );
+    const start = Date.parse(at(2));
+    expect(await slotOf(s.world.tenantId, reservationId)).toEqual({
+      starts: start,
+      ends: start + 60 * MIN,
+    });
+  });
+
+  it("D7 the computed end blocks the seat for the whole duration and not a minute longer", async () => {
+    const s = await setup();
     const seatId = await s.makeSeat();
+    await s.reserve(seatId, { startsAt: at(2) }); // 2h..4h
+    // One minute before the computed end still overlaps.
     expect(
-      (await failure(s.reserve(seatId, { productId: short60, ...slot(61) })))
-        .code,
-    ).toBe("DURATION_EXCEEDS_PRODUCT");
+      (
+        await failure(
+          s.reserve(seatId, {
+            startsAt: new Date(
+              Date.parse(at(2)) + (SEAT_DURATION - 1) * MIN,
+            ).toISOString(),
+          }),
+        )
+      ).status,
+    ).toBe(409);
+    // Exactly at the computed end is free.
     await expect(
-      s.reserve(seatId, { productId: short60, ...slot(60) }),
+      s.reserve(seatId, {
+        startsAt: new Date(
+          Date.parse(at(2)) + SEAT_DURATION * MIN,
+        ).toISOString(),
+      }),
     ).resolves.toBeTruthy();
+  });
+
+  it("D7 a product that has no duration (not a seat product) cannot be reserved", async () => {
+    const s = await setup();
+    // A seat_reservation product without a duration cannot exist (check
+    // constraint, tested below); a day pass / plain product has none.
+    const plain = await seedProduct(s.world, {
+      outletId: s.world.outletA,
+      facilityId: s.facilityId,
+      wfcKind: null,
+      price: 20_000,
+      durationMinutes: null,
+    });
+    const rejected = await failure(
+      s.reserve(await s.makeSeat(), { productId: plain }),
+    );
+    expect([400, 404, 409, 422]).toContain(rejected.status);
+    expect(await countRows(s.world.tenantId, "wfc_seat_reservations")).toBe(0);
   });
 
   it("F39 the database refuses a seat_reservation product without a duration (check constraint)", async () => {
@@ -926,15 +1049,15 @@ describe("F39 reservation duration (facility_products.duration_minutes)", () => 
       return rows[0] as { wfc_kind: string; duration_minutes: number };
     });
     expect(row).toEqual({ wfc_kind: "seat_reservation", duration_minutes: 90 });
-    // The new product can be reserved up to its duration and not beyond.
-    const seatId = await s.makeSeat();
-    expect(
-      (await failure(s.reserve(seatId, { productId: plain, ...slot(91) })))
-        .code,
-    ).toBe("DURATION_EXCEEDS_PRODUCT");
-    await expect(
-      s.reserve(seatId, { productId: plain, ...slot(90) }),
-    ).resolves.toBeTruthy();
+    // The new product is reserved for exactly its duration.
+    const reservationId = idOf(
+      await s.reserve(await s.makeSeat(), { productId: plain }),
+    );
+    const start = Date.parse(at(2));
+    expect(await slotOf(s.world.tenantId, reservationId)).toEqual({
+      starts: start,
+      ends: start + 90 * MIN,
+    });
   });
 
   it("F39 setWfcProductKind rejects a seat_reservation without a duration in 1..1440 and changes nothing", async () => {
@@ -995,14 +1118,10 @@ describe("M5 a seat cannot be double-booked", () => {
   it("M5 an overlapping slot on the same seat is a 409", async () => {
     const s = await setup();
     const seatId = await s.makeSeat();
-    await s.reserve(seatId, { startsAt: at(2), endsAt: at(4) });
-    for (const [startsAt, endsAt] of [
-      [at(2), at(4)],
-      [at(3), at(5)],
-      [at(1), at(3)],
-      [at(2.5), at(3)],
-    ] as const) {
-      const rejected = await failure(s.reserve(seatId, { startsAt, endsAt }));
+    // Every slot lasts the product duration (2h): 2h..4h is taken.
+    await s.reserve(seatId, { startsAt: at(2) });
+    for (const startsAt of [at(2), at(3), at(1), at(2.5)]) {
+      const rejected = await failure(s.reserve(seatId, { startsAt }));
       expect(rejected.status).toBe(409);
     }
     expect(await countRows(s.world.tenantId, "wfc_seat_reservations")).toBe(1);
@@ -1011,13 +1130,10 @@ describe("M5 a seat cannot be double-booked", () => {
   it("M5 back-to-back slots on the same seat are allowed", async () => {
     const s = await setup();
     const seatId = await s.makeSeat();
-    await s.reserve(seatId, { startsAt: at(2), endsAt: at(4) });
-    await expect(
-      s.reserve(seatId, { startsAt: at(4), endsAt: at(6) }),
-    ).resolves.toBeTruthy();
-    await expect(
-      s.reserve(seatId, { startsAt: at(0.5), endsAt: at(2) }),
-    ).resolves.toBeTruthy();
+    // 4h..6h is taken; 6h..8h (after) and 2h..4h (before) touch it only.
+    await s.reserve(seatId, { startsAt: at(4) });
+    await expect(s.reserve(seatId, { startsAt: at(6) })).resolves.toBeTruthy();
+    await expect(s.reserve(seatId, { startsAt: at(2) })).resolves.toBeTruthy();
   });
 
   it("M5 the same time on another seat is allowed", async () => {
@@ -1056,9 +1172,7 @@ describe("M5 a seat cannot be double-booked", () => {
   it("M5 the database itself refuses an overlapping active row (exclusion constraint)", async () => {
     const s = await setup();
     const seatId = await s.makeSeat();
-    const first = idOf(
-      await s.reserve(seatId, { startsAt: at(2), endsAt: at(4) }),
-    );
+    const first = idOf(await s.reserve(seatId, { startsAt: at(2) }));
     const insert = (status: string, from: string, to: string) =>
       asTenant(s.world.tenantId, (client) =>
         client.query(
@@ -1707,6 +1821,61 @@ describe("M2 slot timing and refund permission of a reservation", () => {
     );
   });
 
+  it("D6 confirming once the slot has started is 409 SLOT_STARTED; the capture is not consumed", async () => {
+    const s = await setup();
+    const reservationId = await s.reserved();
+    const t = await s.tender(PRICE);
+    for (const now of [started, inHours(3, NOW), inHours(5, NOW)]) {
+      expect(
+        await failure(
+          confirmWfcReservationPaid(
+            s.ctx,
+            s.actor,
+            { reservationId, paymentRef: t.ref },
+            now,
+          ),
+        ),
+        now.toISOString(),
+      ).toMatchObject({ status: 409, code: "SLOT_STARTED" });
+    }
+    expect(await reservationRow(s.world.tenantId, reservationId)).toMatchObject(
+      { status: "pending_payment", paid_idr: 0 },
+    );
+    // Nothing was recorded: the tender is still free to be refunded by the POS
+    // (or to fund another sale).
+    expect(await countRows(s.world.tenantId, "wfc_payment_captures")).toBe(0);
+    const other = await s.reserved();
+    await s.confirm(other, t.ref);
+    expect((await reservationRow(s.world.tenantId, other)).status).toBe(
+      "confirmed",
+    );
+  });
+
+  it("D6 the slot check comes before the payment check, and one millisecond before the start still confirms", async () => {
+    const s = await setup();
+    const reservationId = await s.reserved();
+    // Started slot with a bogus payment: SLOT_STARTED, not PAYMENT_NOT_CAPTURED.
+    expect(
+      await failure(
+        confirmWfcReservationPaid(
+          s.ctx,
+          s.actor,
+          { reservationId, paymentRef: `pay-${randomUUID()}` },
+          started,
+        ),
+      ),
+    ).toMatchObject({ status: 409, code: "SLOT_STARTED" });
+    await confirmWfcReservationPaid(
+      s.ctx,
+      s.actor,
+      { reservationId, paymentRef: await s.capture(PRICE) },
+      new Date(started.getTime() - 1),
+    );
+    expect((await reservationRow(s.world.tenantId, reservationId)).status).toBe(
+      "confirmed",
+    );
+  });
+
   it("M2 a no_show reservation is not refundable", async () => {
     const s = await setup();
     const reservationId = await s.paid();
@@ -2100,6 +2269,129 @@ describe("M2 M4 day pass refund rules", () => {
     });
   });
 
+  /** Buys a day pass of its own price (a product of 100.000, a capture of the same). */
+  const buyBigPass = async (s: Awaited<ReturnType<typeof setup>>) => {
+    const productId = await seedProduct(s.world, {
+      outletId: s.world.outletA,
+      facilityId: s.facilityId,
+      wfcKind: "day_pass",
+      price: 100_000,
+    });
+    const paymentRef = await s.capture(100_000);
+    const purchase = await s.buyDayPass({ productId, paymentRef });
+    return { id: purchase.id, paymentRef };
+  };
+  const refundAt = (
+    s: Awaited<ReturnType<typeof setup>>,
+    paymentRef: string,
+    refundIdr: number,
+    now: Date = NOW,
+  ) => refundDayPass(s.ctx, s.actor, { paymentRef, refundIdr }, now);
+  /** The pass is valid until the end of the business day: 25h after NOW it has expired. */
+  const afterExpiry = inHours(25, NOW);
+  const cancels = async (tenantId: string) =>
+    (await ledgerRows(tenantId)).filter((r) => r.type === "cancel");
+
+  it("D4 an unused pass that has expired is not refundable (409 PASS_EXPIRED), even before the expiry sweep ran", async () => {
+    const s = await setup();
+    const purchase = await s.buyDayPass();
+    // The sweep has not run: the grant is still active in the ledger.
+    expect((await ledgerRows(s.world.tenantId)).map((r) => r.type)).toEqual([
+      "grant",
+    ]);
+    for (const refundIdr of [10_000, DAY_PASS_PRICE]) {
+      expect(
+        await failure(refundAt(s, purchase.paymentRef, refundIdr, afterExpiry)),
+      ).toMatchObject({ status: 409, code: "PASS_EXPIRED" });
+    }
+    expect(await dayPassRow(s.world.tenantId, purchase.id)).toEqual({
+      status: "paid",
+      refunded: 0,
+    });
+    expect(await cancels(s.world.tenantId)).toHaveLength(0);
+  });
+
+  it("D4 after the expiry sweep an unused pass is still not refundable (409 PASS_EXPIRED) and nothing is recorded", async () => {
+    const s = await setup();
+    const purchase = await s.buyDayPass();
+    await entitlementsOf(s.world).expire(afterExpiry);
+    expect(
+      (await ledgerRows(s.world.tenantId)).some((r) => r.type === "expire"),
+    ).toBe(true);
+    expect(
+      await failure(
+        refundAt(s, purchase.paymentRef, DAY_PASS_PRICE, afterExpiry),
+      ),
+    ).toMatchObject({ status: 409, code: "PASS_EXPIRED" });
+    expect(await dayPassRow(s.world.tenantId, purchase.id)).toEqual({
+      status: "paid",
+      refunded: 0,
+    });
+    expect(await cancels(s.world.tenantId)).toHaveLength(0);
+  });
+
+  it("D4 a pass that has not expired yet is refundable", async () => {
+    const s = await setup();
+    const purchase = await s.buyDayPass();
+    await refundAt(s, purchase.paymentRef, DAY_PASS_PRICE, inHours(1, NOW));
+    expect(await dayPassRow(s.world.tenantId, purchase.id)).toEqual({
+      status: "refunded",
+      refunded: DAY_PASS_PRICE,
+    });
+  });
+
+  it("D5 after a first refund revoked the pass, later refunds only need to fit in paid - refunded: 40.000 then 60.000 of 100.000", async () => {
+    const s = await setup();
+    const pass = await buyBigPass(s);
+    await refundAt(s, pass.paymentRef, 40_000);
+    expect(await dayPassRow(s.world.tenantId, pass.id)).toEqual({
+      status: "paid",
+      refunded: 40_000,
+    });
+    await refundAt(s, pass.paymentRef, 60_000);
+    expect(await dayPassRow(s.world.tenantId, pass.id)).toEqual({
+      status: "refunded",
+      refunded: 100_000,
+    });
+    // The grant was cancelled once, by the first refund only.
+    expect(await cancels(s.world.tenantId)).toHaveLength(1);
+  });
+
+  it("D5 40.000 then 61.000 of 100.000 is a 409 and the second refund records nothing", async () => {
+    const s = await setup();
+    const pass = await buyBigPass(s);
+    await refundAt(s, pass.paymentRef, 40_000);
+    expect((await failure(refundAt(s, pass.paymentRef, 61_000))).status).toBe(
+      409,
+    );
+    expect(await dayPassRow(s.world.tenantId, pass.id)).toEqual({
+      status: "paid",
+      refunded: 40_000,
+    });
+    // The rest is still refundable, and not a rupiah more.
+    await refundAt(s, pass.paymentRef, 60_000);
+    // A fully refunded pass answers any further refund as an idempotent no-op
+    // (M2): nothing more is recorded.
+    await refundAt(s, pass.paymentRef, 1);
+    expect(await dayPassRow(s.world.tenantId, pass.id)).toEqual({
+      status: "refunded",
+      refunded: 100_000,
+    });
+    expect(await cancels(s.world.tenantId)).toHaveLength(1);
+  });
+
+  it("D5 the second refund works after the expiry too (D4 only blocks a pass with nothing refunded yet)", async () => {
+    const s = await setup();
+    const pass = await buyBigPass(s);
+    await refundAt(s, pass.paymentRef, 40_000);
+    await entitlementsOf(s.world).expire(afterExpiry);
+    await refundAt(s, pass.paymentRef, 60_000, afterExpiry);
+    expect(await dayPassRow(s.world.tenantId, pass.id)).toEqual({
+      status: "refunded",
+      refunded: 100_000,
+    });
+  });
+
   it("M2 M4 a redeemed pass can never be refunded, not even partially", async () => {
     const s = await setup();
     const purchase = await s.buyDayPass();
@@ -2166,8 +2458,7 @@ describe("TEN-01..03 tenant and outlet isolation", () => {
 
     // B tries to use A's seat with B's own product and customer.
     expect(
-      (await failure(b.reserve(seatId, { startsAt: at(10), endsAt: at(11) })))
-        .status,
+      (await failure(b.reserve(seatId, { startsAt: at(10) }))).status,
     ).toBeGreaterThanOrEqual(400);
     expect(await countRows(b.world.tenantId, "wfc_seat_reservations")).toBe(0);
     expect(await countRows(a.world.tenantId, "wfc_seat_reservations")).toBe(1);
@@ -2241,5 +2532,67 @@ describe("TEN-01..03 tenant and outlet isolation", () => {
     expect(listOf(await listWfcSeats(outletB, a.actor, {}, NOW)).length).toBe(
       0,
     );
+  });
+});
+
+describe("D8 without an injected `now` the service reads the database clock", () => {
+  // NOW (2026-11-08 10:00 Jakarta) is in the past of the real clock, so a
+  // service that took a JS clock fixed at NOW, or ignored the DB clock, behaves
+  // differently from one that reads the real time.
+  const realIn = (hours: number) =>
+    new Date(Date.now() + hours * HOUR).toISOString();
+
+  it("D8 reserving and confirming a slot in the real future works without now", async () => {
+    const s = await setup();
+    const seatId = await s.makeSeat();
+    const reservation = await reserveWfcSeat(s.ctx, s.actor, {
+      seatId,
+      productId: s.reservationProductId,
+      customerProfileId: s.customer.id,
+      startsAt: realIn(3),
+      idempotencyKey: `idem-${randomUUID()}`,
+    });
+    const reservationId = idOf(reservation);
+    await confirmWfcReservationPaid(s.ctx, s.actor, {
+      reservationId,
+      paymentRef: await s.capture(PRICE),
+    });
+    expect((await reservationRow(s.world.tenantId, reservationId)).status).toBe(
+      "confirmed",
+    );
+  });
+
+  it("D8 confirming a slot that started in the past of the real clock is 409 SLOT_STARTED without now", async () => {
+    const s = await setup();
+    // Reserved with NOW injected (slot 2026-11-08 12:00 Jakarta, long over).
+    const reservationId = await s.reserved();
+    expect(
+      await failure(
+        confirmWfcReservationPaid(s.ctx, s.actor, {
+          reservationId,
+          paymentRef: await s.capture(PRICE),
+        }),
+      ),
+    ).toMatchObject({ status: 409, code: "SLOT_STARTED" });
+    expect((await reservationRow(s.world.tenantId, reservationId)).status).toBe(
+      "pending_payment",
+    );
+  });
+
+  it("D8 a day pass bought without now expires at the end of the REAL business day", async () => {
+    const s = await setup();
+    const purchase = await purchaseDayPass(s.ctx, s.actor, {
+      productId: s.dayPassProductId,
+      customerProfileId: s.customer.id,
+      paymentRef: await s.capture(DAY_PASS_PRICE),
+    });
+    const [grant] = (await ledgerRows(s.world.tenantId)).filter(
+      (r) => r.type === "grant",
+    );
+    expect(grant!.source_ref).toBe(purchase.id);
+    const expiresAt = grant!.expires_at!.getTime();
+    // Not in the past (NOW-based expiry would be 2026-11-08) and within a day (+ slack).
+    expect(expiresAt).toBeGreaterThan(Date.now() - 60_000);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 25 * HOUR);
   });
 });

@@ -14,7 +14,7 @@ import {
   uuidSchema,
 } from "../core/index.ts";
 
-/** Longest seat reservation: one day (a day pass covers the rest). */
+/** Longest seat reservation: one day (equals the product duration cap). */
 export const WFC_MAX_RESERVATION_MINUTES = 24 * 60;
 
 const positiveIdr = idrSchema.refine((value) => value > 0, {
@@ -116,12 +116,16 @@ export const setWfcProductKindSchema = clientInputSchema({
 });
 export type SetWfcProductKindInput = z.input<typeof setWfcProductKindSchema>;
 
+/**
+ * No `endsAt`: the server sets it to `startsAt` plus the product's duration, so
+ * a client cannot book a slot longer or shorter than the product it pays for
+ * (a strict schema rejects the field). The read model still returns `endsAt`.
+ */
 export const reserveWfcSeatSchema = clientInputSchema({
   seatId: uuidSchema,
   productId: uuidSchema,
   customerProfileId: uuidSchema,
   startsAt: isoDateTimeSchema,
-  endsAt: isoDateTimeSchema,
   idempotencyKey: idempotencyKeySchema,
 });
 export type ReserveWfcSeatInput = z.input<typeof reserveWfcSeatSchema>;

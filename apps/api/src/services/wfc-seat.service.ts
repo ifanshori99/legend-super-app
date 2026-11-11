@@ -12,8 +12,14 @@
 // - M2: a refund never exceeds paid - refunded; a fully refunded row answers a
 //   second refund with the unchanged row (no-op), so nothing is paid twice.
 // - M4: the day-pass entitlement is issued only after payment (this function
-//   runs after capture), once per payment reference, and is revoked by every
-//   refund (partial too). A pass that was already used cannot be refunded.
+//   runs after capture), once per payment reference, and is revoked by the
+//   first refund. A pass that was already used or has expired unused cannot be
+//   refunded (409 PASS_ALREADY_USED / PASS_EXPIRED); later partial refunds
+//   only obey the cap paid - refunded.
+// - M6: time is the database clock read after every lock (services/wfc-clock.ts);
+//   an injected `now` is for tests. The slot end is startsAt + product duration,
+//   never client input; confirming a started slot is 409 SLOT_STARTED before
+//   the capture is touched.
 // - M5: the exclusion constraint of wfc_seat_reservations (wfc-seat.custom.sql)
 //   makes a double booking impossible; the service maps its error to 409.
 //
@@ -29,7 +35,6 @@ import {
   type z,
 } from "@starter/shared/core";
 import {
-  WFC_MAX_RESERVATION_MINUTES,
   confirmWfcReservationPaidSchema,
   cancelWfcReservationSchema,
   createWfcSeatSchema,
@@ -74,6 +79,7 @@ import {
   localDate,
   operatingDayEndAfter,
 } from "./facility-entitlement.service.ts";
+import { wfcNow } from "./wfc-clock.ts";
 import {
   findLedgerSale,
   paymentAlreadyUsed,
@@ -485,12 +491,11 @@ export async function reserveWfcSeat(
   context: ScopedTenantContext,
   actorUserId: string,
   input: ReserveWfcSeatInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcSeatReservation> {
   const actor = userIdSchema.parse(actorUserId);
   const parsed = parseInput(reserveWfcSeatSchema, input);
   const startsAt = new Date(parsed.startsAt);
-  const endsAt = new Date(parsed.endsAt);
   return withTenant(db, context, async (tx) => {
     const seat = await loadSeat(tx, context, parsed.seatId);
     if (!seat) throw notFound("Kursi");
@@ -513,17 +518,6 @@ export async function reserveWfcSeat(
       create: async () => {
         if (seat.status !== "active")
           throw new HttpError(409, "SEAT_INACTIVE", "Kursi tidak aktif.");
-        const minutes = (endsAt.getTime() - startsAt.getTime()) / MINUTE;
-        if (
-          !(minutes > 0) ||
-          minutes > WFC_MAX_RESERVATION_MINUTES ||
-          endsAt.getTime() <= now.getTime()
-        )
-          throw new HttpError(
-            422,
-            "INVALID_SLOT",
-            "Slot reservasi tidak valid.",
-          );
         const { product } = await loadWfcProduct(
           tx,
           context,
@@ -536,18 +530,25 @@ export async function reserveWfcSeat(
             "NOT_WFC_PRODUCT",
             "Produk dan kursi berada di outlet berbeda.",
           );
-        // A product without a duration cannot be reserved; a slot is capped by it.
+        // A product without a duration cannot be reserved; the slot is exactly
+        // the product duration, the client never sends an end time (D7).
         if (product.durationMinutes === null)
           throw new HttpError(
             409,
             "PRODUCT_DURATION_MISSING",
             "Produk reservasi ini belum punya durasi.",
           );
-        if (minutes > product.durationMinutes)
+        const endsAt = new Date(
+          startsAt.getTime() + product.durationMinutes * MINUTE,
+        );
+        // The database clock, read after the locks createOnce holds (D8).
+        const now = await wfcNow(tx, injectedNow);
+        // A slot that already started could never be confirmed (D6): refuse it.
+        if (startsAt.getTime() <= now.getTime())
           throw new HttpError(
-            409,
-            "DURATION_EXCEEDS_PRODUCT",
-            "Durasi reservasi melebihi durasi produk.",
+            422,
+            "INVALID_SLOT",
+            "Slot reservasi tidak valid.",
           );
         let row: ReservationRow;
         try {
@@ -606,11 +607,12 @@ async function changeReservation(
   context: ScopedTenantContext,
   actor: string,
   reservationId: string,
-  now: Date,
+  injectedNow: Date | undefined,
   action: string,
   change: (
     row: ReservationRow,
     tx: Tx,
+    now: Date,
   ) => Promise<Partial<typeof wfcSeatReservations.$inferInsert> | null>,
   permission: typeof OPERATE_PERMISSION = OPERATE_PERMISSION,
 ): Promise<WfcSeatReservation> {
@@ -624,7 +626,9 @@ async function changeReservation(
       permission,
       row.outletId,
     );
-    const patch = await change(row, tx);
+    // The database clock, read after the row lock (D8).
+    const now = await wfcNow(tx, injectedNow);
+    const patch = await change(row, tx, now);
     if (patch === null) return toReservation(row);
     let updated: ReservationRow;
     try {
@@ -670,7 +674,7 @@ export async function confirmWfcReservationPaid(
   context: ScopedTenantContext,
   actorUserId: string,
   input: ConfirmWfcReservationPaidInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcSeatReservation> {
   const actor = userIdSchema.parse(actorUserId);
   const parsed = parseInput(confirmWfcReservationPaidSchema, input);
@@ -678,9 +682,9 @@ export async function confirmWfcReservationPaid(
     context,
     actor,
     parsed.reservationId,
-    now,
+    injectedNow,
     "wfc_reservation.confirmed",
-    async (row, tx) => {
+    async (row, tx, now) => {
       // Payment references are stored lowercase: every spelling is one payment.
       const paymentRef = parsed.paymentRef.toLowerCase();
       if (row.status === "confirmed") {
@@ -699,6 +703,9 @@ export async function confirmWfcReservationPaid(
           "INVALID_STATE",
           "Reservasi tidak menunggu pembayaran.",
         );
+      // A slot that has started cannot be confirmed. Checked BEFORE the payment
+      // so the capture is not consumed and stays refundable by the POS (D6).
+      if (now.getTime() >= row.startsAt.getTime()) throw slotStarted();
       const product = await loadProductRow(tx, context, row.productId);
       await requireCapturedPayment(tx, context, {
         outletId: row.outletId,
@@ -709,6 +716,10 @@ export async function confirmWfcReservationPaid(
         saleId: row.id,
         customerProfileId: row.customerProfileId,
       });
+      // The payment locks may have waited: the slot must still lie ahead. Throwing
+      // rolls the capture back with the transaction (D6, D8).
+      if ((await wfcNow(tx, injectedNow)).getTime() >= row.startsAt.getTime())
+        throw slotStarted();
       return {
         status: "confirmed",
         paidIdr: row.priceIdr,
@@ -726,7 +737,7 @@ export async function cancelWfcReservation(
   context: ScopedTenantContext,
   actorUserId: string,
   input: CancelWfcReservationInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcSeatReservation> {
   const actor = userIdSchema.parse(actorUserId);
   const parsed = parseInput(cancelWfcReservationSchema, input);
@@ -734,9 +745,9 @@ export async function cancelWfcReservation(
     context,
     actor,
     parsed.reservationId,
-    now,
+    injectedNow,
     "wfc_reservation.cancelled",
-    async (row) => {
+    async (row, _tx, now) => {
       if (row.status === "cancelled") return null;
       if (row.status !== "pending_payment" && row.status !== "confirmed")
         throw new HttpError(
@@ -761,7 +772,7 @@ export async function refundWfcReservation(
   context: ScopedTenantContext,
   actorUserId: string,
   input: RefundWfcReservationInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcSeatReservation> {
   const actor = userIdSchema.parse(actorUserId);
   const parsed = parseInput(refundWfcReservationSchema, input);
@@ -769,9 +780,9 @@ export async function refundWfcReservation(
     context,
     actor,
     parsed.reservationId,
-    now,
+    injectedNow,
     "wfc_reservation.refunded",
-    async (row) => {
+    async (row, _tx, now) => {
       if (row.status === "refunded") return null;
       if (row.status !== "confirmed" && row.status !== "cancelled")
         throw new HttpError(
@@ -806,7 +817,7 @@ export async function purchaseDayPass(
   context: ScopedTenantContext,
   actorUserId: string,
   input: PurchaseDayPassInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcDayPassPurchase> {
   const actor = userIdSchema.parse(actorUserId);
   const parsed = parseInput(purchaseDayPassSchema, input);
@@ -862,6 +873,8 @@ export async function purchaseDayPass(
       throw error;
     }
 
+    // The database clock, read after the payment locks (D8).
+    const now = await wfcNow(tx, injectedNow);
     const timeZone = await outletTimeZone(tx, context, facility.outletId);
     const expiresAt = operatingDayEndAfter(
       facility.operatingHours,
@@ -941,7 +954,7 @@ export async function refundDayPass(
   context: ScopedTenantContext,
   actorUserId: string,
   input: RefundDayPassInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcDayPassPurchase> {
   const actor = userIdSchema.parse(actorUserId);
   const parsed = parseInput(refundDayPassSchema, input);
@@ -956,24 +969,43 @@ export async function refundDayPass(
       row.outletId,
     );
     if (row.status === "refunded") return toDayPass(row);
+    // The database clock, read after the purchase row lock (D8).
+    const now = await wfcNow(tx, injectedNow);
+    // An unused pass that has expired is not refundable, whether or not the
+    // expiry sweep ran yet (D4). Nothing is recorded.
+    if (
+      row.refundedIdr === 0 &&
+      row.expiresAt !== null &&
+      now.getTime() >= row.expiresAt.getTime()
+    )
+      throw new HttpError(
+        409,
+        "PASS_EXPIRED",
+        "Day pass sudah kedaluwarsa, tidak bisa di-refund.",
+      );
     const remaining = row.paidIdr - row.refundedIdr;
     if (parsed.refundIdr > remaining) throw refundExceeds();
     const refunded = idr(row.refundedIdr + parsed.refundIdr);
     const full = refunded === row.paidIdr;
-    const cancelled = await cancelEntitlementsForSource(tx, context, {
-      sourceRef: row.id,
-      sourceTypes: ["purchase"],
-      reason: "Refund day pass",
-      occurredAt: now,
-    });
-    // Nothing to revoke: the pass was used or has lapsed. Throwing rolls the
-    // transaction back, so no money moves.
-    if (cancelled.cancelledSessions === 0)
-      throw new HttpError(
-        409,
-        "PASS_ALREADY_USED",
-        "Day pass sudah dipakai atau kedaluwarsa, tidak bisa di-refund.",
-      );
+    // The first refund revokes the grant and needs it unredeemed. A later
+    // partial refund finds it already revoked by the first one: only the cap
+    // paid - refunded applies (D5).
+    if (row.refundedIdr === 0) {
+      const cancelled = await cancelEntitlementsForSource(tx, context, {
+        sourceRef: row.id,
+        sourceTypes: ["purchase"],
+        reason: "Refund day pass",
+        occurredAt: now,
+      });
+      // Nothing to revoke: the pass was used or has lapsed. Throwing rolls the
+      // transaction back, so no money moves.
+      if (cancelled.cancelledSessions === 0)
+        throw new HttpError(
+          409,
+          "PASS_ALREADY_USED",
+          "Day pass sudah dipakai atau kedaluwarsa, tidak bisa di-refund.",
+        );
+    }
     const [updated] = await tx
       .update(wfcDayPassPurchases)
       .set({

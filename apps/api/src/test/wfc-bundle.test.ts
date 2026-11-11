@@ -12,6 +12,12 @@
 // sales. The bundle price floor is 50% of the component list total and is
 // re-checked at purchase against the CURRENT list prices.
 //
+// Round 4 (spec bz9h-spec4): D3 component rows are locked FOR SHARE (products
+// then plans) before their prices are read, so a concurrent price UPDATE is
+// waited for and the floor/price checks see committed prices; D8 without an
+// injected `now` the time is the DB clock read AFTER the locks; D9 the redeemed
+// value of a grant is a BigInt ceil(allocated * used / granted), never a float.
+//
 // Assumptions: a bundle without menu_item_id is refused with 409 and either
 // PAYMENT_NOT_CAPTURED or BUNDLE_NOT_SELLABLE (the spec names both). The seat
 // reservation / day pass half of "one tender funds one sale" lives in
@@ -259,7 +265,7 @@ async function seedTender(
            (id, tenant_id, outlet_id, order_id, menu_item_id, name, quantity,
             unit_price_idr, modifiers_total_idr, line_total_idr, fire_status, status,
             reserved_business_date)
-         VALUES ($1, $2, $3, $4, $5, 'Menu uji', $6, 1000000, 0, $7, 'fired', $8, $9)`,
+         VALUES ($1, $2, $3, $4, $5, 'Menu uji', $6, $10, 0, $7, 'fired', $8, $9)`,
         [
           randomUUID(),
           world.tenantId,
@@ -267,9 +273,11 @@ async function seedTender(
           ulidToUuid(orderUlid!),
           menuItemId,
           quantity,
-          LINE_UNIT_IDR * quantity,
+          // The line must cover the price it funds (a cheaper line never pays).
+          Math.max(LINE_UNIT_IDR, amountIdr) * quantity,
           options.lineStatus ?? "served",
           DATE,
+          Math.max(LINE_UNIT_IDR, amountIdr),
         ],
       ),
     );
@@ -1301,4 +1309,310 @@ describe("[legend-bz9h] WFC bundles", () => {
       ),
     ).toBe("NOT_FOUND");
   });
+});
+
+// ---- Round 4 (spec bz9h-spec4) ---------------------------------------------------
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Another transaction (migration owner, tenant GUCs set) that runs `statement`,
+ * keeps its row locks for `holdMs`, then commits. Resolves once the statement ran
+ * (the lock is held); `done` resolves with the DB clock read right before the
+ * commit. `beforeCommit` runs in the holder just before that reading.
+ */
+async function holdRowLock(
+  tenantId: string,
+  statement: string,
+  params: unknown[],
+  holdMs: number,
+  beforeCommit: () => void = () => undefined,
+): Promise<{ done: Promise<Date> }> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    await client.query(statement, params);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    client.release();
+    throw error;
+  }
+  const done = (async () => {
+    try {
+      await sleep(holdMs);
+      beforeCommit();
+      const { rows } = await client.query("SELECT clock_timestamp() AS now");
+      await client.query("COMMIT");
+      return rows[0].now as Date;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  })();
+  return { done };
+}
+
+/** Tracks whether a promise settled, without changing its outcome. */
+function track<T>(promise: Promise<T>) {
+  const state = { settled: false };
+  const outcome = promise.then(
+    (value) => {
+      state.settled = true;
+      return { value } as { value: T; error?: undefined };
+    },
+    (error: unknown) => {
+      state.settled = true;
+      return { error } as { value?: undefined; error: unknown };
+    },
+  );
+  return { state, outcome };
+}
+
+describe("[legend-bz9h] WFC bundles, round 4", () => {
+  // A shower product (15.000) and a Pagi Produktif plan (50.000): list total 65.000.
+  async function seedMixed() {
+    const s = await seed();
+    const plan = await seedPlan(s.world, s.wfcFacility, 50_000, 5);
+    const input = {
+      name: "Pagi Produktif plan",
+      priceIdr: 55_000 as never,
+      menuItemId: s.menuItemId,
+      items: [
+        {
+          facilityId: s.showerFacility,
+          productId: s.showerProduct,
+          quantity: 1,
+        },
+        { facilityId: s.wfcFacility, planId: plan, quantity: 1 },
+      ],
+      idempotencyKey: key(),
+    };
+    return { s, plan, input };
+  }
+
+  // The new price pushes the list total to 110.001, so the floor (55.001) is
+  // above the 55.000 bundle price: the check only refuses if it sees this price.
+  const priceUpdates = [
+    {
+      kind: "product",
+      sql: "UPDATE facility_products SET price_idr = 60001 WHERE tenant_id = $1 AND id = $2",
+      target: (m: { s: Seeded; plan: string }) => m.s.showerProduct,
+    },
+    {
+      kind: "plan",
+      sql: "UPDATE facility_subscription_plans SET price_idr = 95001 WHERE tenant_id = $1 AND id = $2",
+      target: (m: { s: Seeded; plan: string }) => m.plan,
+    },
+  ] as const;
+
+  for (const update of priceUpdates) {
+    it(`[D3] createWfcBundle waits for a concurrent ${update.kind} price update and checks the committed price`, async () => {
+      const m = await seedMixed();
+      let settledWhileHeld: boolean | null = null;
+      // Read by the hold callback before the call exists: assigned once, later.
+      // eslint-disable-next-line prefer-const
+      let call: ReturnType<typeof track<unknown>> | undefined;
+      const hold = await holdRowLock(
+        m.s.world.tenantId,
+        update.sql,
+        [m.s.world.tenantId, update.target(m)],
+        700,
+        () => {
+          settledWhileHeld = call?.state.settled ?? null;
+        },
+      );
+      call = track(createWfcBundle(m.s.world.context, m.s.actor, m.input, NOW));
+      await hold.done;
+      const result = await call.outcome;
+
+      // The write lock is not bypassed: the create was still waiting.
+      expect(settledWhileHeld).toBe(false);
+      // After the update committed the 55.000 price is below the new floor.
+      expect((result.error as Rejection | undefined)?.code).toBe(
+        "BUNDLE_PRICE_BELOW_FLOOR",
+      );
+      expect(
+        await listWfcBundles(m.s.world.context, m.s.actor, {
+          outletId: m.s.world.outletA,
+        }),
+      ).toHaveLength(0);
+    });
+
+    it(`[D3] purchaseWfcBundle waits for a concurrent ${update.kind} price update and re-checks the committed floor`, async () => {
+      const m = await seedMixed();
+      const bundle = await createWfcBundle(
+        m.s.world.context,
+        m.s.actor,
+        m.input,
+        NOW,
+      );
+      const customer = await newCustomer(m.s);
+      const tender = await seedTender(m.s, 55_000);
+      let settledWhileHeld: boolean | null = null;
+      // Read by the hold callback before the call exists: assigned once, later.
+      // eslint-disable-next-line prefer-const
+      let call: ReturnType<typeof track<unknown>> | undefined;
+      const hold = await holdRowLock(
+        m.s.world.tenantId,
+        update.sql,
+        [m.s.world.tenantId, update.target(m)],
+        700,
+        () => {
+          settledWhileHeld = call?.state.settled ?? null;
+        },
+      );
+      call = track(purchase(m.s, bundle.id, customer, tender.id));
+      await hold.done;
+      const result = await call.outcome;
+
+      expect(settledWhileHeld).toBe(false);
+      expect((result.error as Rejection | undefined)?.code).toBe(
+        "BUNDLE_PRICE_BELOW_FLOOR",
+      );
+      // Nothing issued, nothing recorded; the tender is not burned.
+      expect(
+        await ledgerRows(m.s.world.tenantId, { customerProfileId: customer }),
+      ).toHaveLength(0);
+      expect(await purchaseRowCount(m.s)).toBe(0);
+    });
+  }
+
+  it("[D8] without an injected now, created_at and the grant expiry come from the DB clock read after the component lock", async () => {
+    const s = await seed();
+    const bundle = await createBundle(s);
+    const customer = await newCustomer(s);
+    const tender = await seedTender(s, 55_000);
+    let settledWhileHeld: boolean | null = null;
+    // Read by the hold callback before the call exists: assigned once, later.
+    // eslint-disable-next-line prefer-const
+    let call: ReturnType<typeof track<unknown>> | undefined;
+    // A holds the day pass component row for 1.5s; the purchase must wait for it.
+    const hold = await holdRowLock(
+      s.world.tenantId,
+      "SELECT id FROM facility_products WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+      [s.world.tenantId, s.dayPassProduct],
+      1_500,
+      () => {
+        settledWhileHeld = call?.state.settled ?? null;
+      },
+    );
+    const bought = purchaseWfcBundle(s.world.context, s.actor, {
+      bundleId: bundle.id,
+      customerProfileId: customer,
+      paymentRef: tender.id,
+    });
+    call = track(bought);
+    const releasedAt = await hold.done;
+    const result = await call.outcome;
+
+    expect(settledWhileHeld).toBe(false);
+    expect(result.error).toBeUndefined();
+    const row = result.value as { createdAt: string; status: string };
+    expect(row.status).toBe("paid");
+    // Time is read after the lock was released: not the call time (1.5s earlier).
+    expect(Date.parse(row.createdAt)).toBeGreaterThanOrEqual(
+      releasedAt.getTime(),
+    );
+    // And not unboundedly later: it is the clock of this moment.
+    expect(Date.parse(row.createdAt)).toBeLessThan(
+      releasedAt.getTime() + 60_000,
+    );
+
+    // Assumption: the grants stay valid at least `validityDays` days from the
+    // purchase moment (any rounding to the end of the day only moves it later).
+    const grants = (
+      await ledgerRows(s.world.tenantId, { customerProfileId: customer })
+    ).filter((entry) => entry.type === "grant");
+    expect(grants).toHaveLength(2);
+    for (const grant of grants)
+      expect(grant.expires_at!.getTime()).toBeGreaterThanOrEqual(
+        releasedAt.getTime() + bundle.validityDays * 86_400_000,
+      );
+  });
+
+  // [D9] The redeemed value of a package grant is BigInt
+  // ceil(allocated * used / granted): the part of the paid price that is gone is
+  // rounded UP, so the refund (paid - redeemed value) is rounded down and the
+  // outlet never pays back a rupiah of redeemed value.
+  const usedValueCases = [
+    // 100 x 1/3 = 33,33: redeemed value 34, refundable 66 (not 67).
+    {
+      name: "small price, 1 of 3 sessions",
+      allocated: 100,
+      granted: 3,
+      used: 1,
+    },
+    // 3 x 4.400.000.000.000.015 exceeds 2^53: the float product is rounded and its
+    // ceil is 1 below the exact 1.885.714.285.714.293 (refundable 1 too high).
+    {
+      name: "huge price, 3 of 7 sessions (float product loses precision)",
+      allocated: 4_400_000_000_000_015,
+      granted: 7,
+      used: 3,
+    },
+  ];
+  for (const c of usedValueCases)
+    it(`[D9] the redeemed value is an exact BigInt ceil: ${c.name}`, async () => {
+      const s = await seed();
+      const plan = await seedPlan(
+        s.world,
+        s.wfcFacility,
+        c.allocated,
+        c.granted,
+      );
+      const bundle = await createWfcBundle(
+        s.world.context,
+        s.actor,
+        {
+          name: "Satu langganan",
+          priceIdr: c.allocated as never,
+          menuItemId: s.menuItemId,
+          items: [{ facilityId: s.wfcFacility, planId: plan, quantity: 1 }],
+          idempotencyKey: key(),
+        },
+        NOW,
+      );
+      const customer = await newCustomer(s);
+      const bought = await buy(s, bundle.id, customer, c.allocated);
+      expect(bought.pricePaidIdr).toBe(c.allocated);
+      expect(bought.allocations.map((row) => row.allocatedIdr)).toEqual([
+        c.allocated,
+      ]);
+      for (let i = 0; i < c.used; i += 1)
+        await entitlementsOf(s.world).redeem({
+          facilityId: s.wfcFacility,
+          customerProfileId: customer,
+        });
+
+      const allocated = BigInt(c.allocated);
+      const granted = BigInt(c.granted);
+      const usedValue = (allocated * BigInt(c.used) + granted - 1n) / granted; // ceil
+      const refundable = Number(allocated - usedValue);
+
+      // One rupiah above the exact refundable is refused and records nothing.
+      expect(
+        await rejectionCode(
+          refundWfcBundle(
+            s.world.context,
+            s.actor,
+            { purchaseId: bought.id, refundIdr: (refundable + 1) as never },
+            NOW,
+          ),
+        ),
+      ).toBe("REFUND_EXCEEDS_REFUNDABLE");
+      const refunded = await refundWfcBundle(
+        s.world.context,
+        s.actor,
+        { purchaseId: bought.id, refundIdr: refundable as never },
+        NOW,
+      );
+      expect(refunded.refundedIdr).toBe(refundable);
+    });
 });

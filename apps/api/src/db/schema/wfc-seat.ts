@@ -81,13 +81,13 @@ export const wfcSeats = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
-    // The zone must sit in this outlet: floor_zones has no unique
-    // (tenant_id, outlet_id, id) to reference (the floor schema is not ours to
-    // alter), so `createWfcSeat` checks `zone.outletId === outletId`.
+    // The zone must sit in this outlet: composite FK on floor_zones'
+    // unique (tenant_id, outlet_id, id); `createWfcSeat` checks the outlet only
+    // to answer with a friendly error.
     foreignKey({
       name: "wfc_seats_zone_fk",
-      columns: [table.tenantId, table.zoneId],
-      foreignColumns: [floorZones.tenantId, floorZones.id],
+      columns: [table.tenantId, table.outletId, table.zoneId],
+      foreignColumns: [floorZones.tenantId, floorZones.outletId, floorZones.id],
     }),
     index("wfc_seats_zone_idx").on(table.tenantId, table.zoneId),
     check(

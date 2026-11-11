@@ -72,6 +72,7 @@ import {
   issueEntitlement,
   lockCustomer,
 } from "./facility-entitlement.service.ts";
+import { wfcNow } from "./wfc-clock.ts";
 import { findLedgerSale, requireCapturedPayment } from "./wfc-payment.ts";
 import {
   assertFacilityPermission,
@@ -216,6 +217,51 @@ async function loadAllocations(
     );
 }
 
+/**
+ * Locks every component row FOR SHARE (products, then plans, each in id
+ * order) until commit: a concurrent price update waits, so the price and floor
+ * checks that follow see committed values and keep seeing them (M3).
+ */
+async function lockComponents(
+  tx: Tx,
+  context: ScopedTenantContext,
+  items: ItemRow[],
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const productIds = [
+    ...new Set(
+      items.flatMap((item) => (item.productId ? [item.productId] : [])),
+    ),
+  ].sort();
+  const planIds = [
+    ...new Set(items.flatMap((item) => (item.planId ? [item.planId] : []))),
+  ].sort();
+  if (productIds.length > 0)
+    await tx
+      .select({ id: facilityProducts.id })
+      .from(facilityProducts)
+      .where(
+        and(
+          eq(facilityProducts.tenantId, tenantId),
+          inArray(facilityProducts.id, productIds),
+        ),
+      )
+      .orderBy(asc(facilityProducts.id))
+      .for("share");
+  if (planIds.length > 0)
+    await tx
+      .select({ id: facilitySubscriptionPlans.id })
+      .from(facilitySubscriptionPlans)
+      .where(
+        and(
+          eq(facilitySubscriptionPlans.tenantId, tenantId),
+          inArray(facilitySubscriptionPlans.id, planIds),
+        ),
+      )
+      .orderBy(asc(facilitySubscriptionPlans.id))
+      .for("share");
+}
+
 /** Resolves every item to its grant size and list price, from the database (M1). */
 async function resolveComponents(
   tx: Tx,
@@ -223,6 +269,7 @@ async function resolveComponents(
   items: ItemRow[],
 ): Promise<Component[]> {
   const tenantId = context.tenant.tenantId;
+  await lockComponents(tx, context, items);
   const components: Component[] = [];
   for (const item of items) {
     if (item.productId !== null) {
@@ -321,7 +368,7 @@ export async function createWfcBundle(
   context: ScopedTenantContext,
   actorUserId: string,
   rawInput: CreateWfcBundleInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcBundle> {
   const actor = userIdSchema.parse(actorUserId);
   // Strict parse at the service boundary: callers cannot bypass the schema.
@@ -383,10 +430,13 @@ export async function createWfcBundle(
               productId: item.productId ?? null,
               planId: item.planId ?? null,
               quantity: item.quantity,
-              createdAt: now,
+              // Placeholder: drafts are never stored, rows get `now` below.
+              createdAt: new Date(0),
             }) as ItemRow,
         );
         const components = await resolveComponents(tx, context, draftItems);
+        // Time is read after the component locks (D8).
+        const now = await wfcNow(tx, injectedNow);
         if (!isValidBundlePrice(input.priceIdr, listTotal(components)))
           throw invalid(
             "BUNDLE_PRICE_INVALID",
@@ -490,7 +540,7 @@ export async function purchaseWfcBundle(
   context: ScopedTenantContext,
   actorUserId: string,
   rawInput: PurchaseWfcBundleInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcBundlePurchase> {
   const actor = userIdSchema.parse(actorUserId);
   // Strict parse at the service boundary: callers cannot bypass the schema.
@@ -614,6 +664,8 @@ export async function purchaseWfcBundle(
       }
       throw error;
     }
+    // Time is read after every lock, the capture's included (D8).
+    const now = await wfcNow(tx, injectedNow);
 
     const [purchase] = await tx
       .insert(wfcBundlePurchases)
@@ -704,10 +756,11 @@ function usedValue(
   if (grantedSessions <= 0 || usedSessions >= grantedSessions)
     return allocatedIdr;
   if (usedSessions <= 0) return 0;
-  return Math.min(
-    allocatedIdr,
-    Math.ceil((allocatedIdr * usedSessions) / grantedSessions),
-  );
+  // Exact integer ceil(allocated x used / granted): no floating point.
+  const granted = BigInt(grantedSessions);
+  const ceil =
+    (BigInt(allocatedIdr) * BigInt(usedSessions) + granted - 1n) / granted;
+  return Number(ceil < BigInt(allocatedIdr) ? ceil : BigInt(allocatedIdr));
 }
 
 /**
@@ -797,7 +850,7 @@ export async function refundWfcBundle(
   context: ScopedTenantContext,
   actorUserId: string,
   rawInput: RefundWfcBundleInput,
-  now = new Date(),
+  injectedNow?: Date,
 ): Promise<WfcBundlePurchase> {
   const actor = userIdSchema.parse(actorUserId);
   // Strict parse at the service boundary: callers cannot bypass the schema.
@@ -853,6 +906,8 @@ export async function refundWfcBundle(
     ].sort();
     for (const facilityId of facilityIds)
       await lockCustomer(tx, context, purchase.customerProfileId, facilityId);
+    // Time is read after every lock (D8).
+    const now = await wfcNow(tx, injectedNow);
 
     const refundable = await refundableIdr(
       tx,

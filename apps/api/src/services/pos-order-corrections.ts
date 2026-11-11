@@ -71,6 +71,7 @@ import {
 } from "./pos-order-support.ts";
 import { requestPosRefundGatewayPart } from "./pos-refund-gateway.ts";
 import { assertShiftOutflowBound } from "./pos-shift-support.ts";
+import { assertNoActiveWfcSale } from "./wfc-payment.ts";
 
 type VoidCorrectionInput = z.output<typeof voidCorrectionEndpoint.body>;
 type RefundInput = z.output<typeof refundEndpoint.body>;
@@ -209,6 +210,7 @@ export async function voidPosOrderCorrection(
       request,
     },
     async (tx, { order }) => {
+      await assertNoActiveWfcSale(tx, context.tenant.tenantId, order.id);
       const { voids, refunds } = await correctionsOf(tx, context, order.id);
       if (voids.length > 0)
         throw new CoreError("CONFLICT", "Transaksi ini sudah di-void.");
@@ -601,6 +603,7 @@ export async function refundPosOrder(
       request,
     },
     async (tx, { order }) => {
+      await assertNoActiveWfcSale(tx, context.tenant.tenantId, order.id);
       const { voids, refunds } = await correctionsOf(tx, context, order.id);
       if (voids.length > 0)
         throw new CoreError("CONFLICT", "Transaksi ini sudah di-void.");

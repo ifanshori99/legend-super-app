@@ -36,7 +36,12 @@
 // line) serialize concurrent sales so the loser sees the winner's committed
 // row; the primary key of the ledger is the last line of defence.
 import { sql } from "drizzle-orm";
-import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  type ScopedTenantContext,
+  ulidToUuid,
+  uuidToUlid,
+} from "@starter/shared/core";
 import { wfcPaymentCaptures } from "../db/schema/wfc-payment-capture.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -44,6 +49,7 @@ import {
   pgErrorCode,
   type Tx,
 } from "./facility-shared.ts";
+import { lockPosOrder } from "./pos-order-support.ts";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -153,9 +159,13 @@ async function findTender(
       FROM pos_order_tenders t
       JOIN pos_orders po
         ON po.tenant_id = t.tenant_id AND po.order_id = t.order_id
+      JOIN orders o
+        ON o.tenant_id = t.tenant_id AND o.id = t.order_id
      WHERE t.tenant_id = ${context.tenant.tenantId}
        AND t.outlet_id = ${outletId}
        AND t.status = 'captured'
+       -- D1: only an order paid in full and final proves the payment.
+       AND o.status = 'completed'
        AND t.amount_idr >= ${input.priceIdr}
        AND po.is_training = false
        AND ${refMatch}
@@ -198,9 +208,25 @@ export async function requireCapturedPayment(
 ): Promise<CapturedPayment> {
   const menuItemId = input.menuItemId ?? input.productMenuItemId;
   if (!menuItemId) throw paymentNotCaptured();
-  const tender = await findTender(tx, context, input, menuItemId);
-  if (!tender) throw paymentNotCaptured();
+  const candidate = await findTender(tx, context, input, menuItemId);
+  if (!candidate) throw paymentNotCaptured();
   const tenantId = context.tenant.tenantId;
+
+  // D2: take the SAME lock as the POS corrections (orders, then pos_orders FOR
+  // UPDATE; lock order in pos-order-support.ts) before any WFC advisory lock,
+  // then re-check: a void/refund that committed while we waited disqualifies
+  // the tender.
+  await lockPosOrder(
+    tx,
+    context,
+    outletIdSchema.parse(input.outletId),
+    uuidToUlid(candidate.order_id),
+  );
+  const tender = await findTender(tx, context, input, menuItemId);
+  // The re-check must land on the order that was locked (two tenders can share
+  // an EDC reference): any other order is not locked, so it proves nothing.
+  if (!tender || tender.order_id !== candidate.order_id)
+    throw paymentNotCaptured();
 
   // Serialize every sale funded by this capture, then by this order line.
   await tx.execute(
@@ -252,4 +278,50 @@ export async function requireCapturedPayment(
     orderId: tender.order_id,
     menuItemId,
   };
+}
+
+export const wfcSaleActive = () =>
+  new HttpError(
+    409,
+    "WFC_SALE_ACTIVE",
+    "Penjualan WFC dari pembayaran ini masih aktif; batalkan dulu.",
+  );
+
+/**
+ * D11: a POS void/refund of an order must not take back money that funds a
+ * live WFC sale. Active = a sale not yet refunded: seat reservation of any
+ * status but refunded (a cancelled one still holds its paid money), day pass
+ * not refunded, bundle purchase not refunded IN FULL (a partial WFC refund
+ * returns only the unused value; the used value stays paid). Call it right
+ * after the order is locked, before any money moves. Throws 409 WFC_SALE_ACTIVE.
+ */
+export async function assertNoActiveWfcSale(
+  tx: Tx,
+  tenantId: string,
+  /** The POS order id, as the POS code carries it: a ULID. */
+  orderUlid: string,
+): Promise<void> {
+  const orderId = ulidToUuid(orderUlid);
+  const result = await tx.execute(sql`
+    SELECT 1
+      FROM wfc_payment_captures c
+     WHERE c.tenant_id = ${tenantId}
+       AND c.order_id = ${orderId}::uuid
+       AND (
+         (c.sale_kind = 'seat_reservation' AND EXISTS (
+            SELECT 1 FROM wfc_seat_reservations r
+             WHERE r.tenant_id = c.tenant_id AND r.id = c.sale_id
+               AND r.status <> 'refunded'))
+         OR (c.sale_kind = 'day_pass' AND EXISTS (
+            SELECT 1 FROM wfc_day_pass_purchases d
+             WHERE d.tenant_id = c.tenant_id AND d.id = c.sale_id
+               AND d.status <> 'refunded'))
+         OR (c.sale_kind = 'bundle' AND EXISTS (
+            SELECT 1 FROM wfc_bundle_purchases b
+             WHERE b.tenant_id = c.tenant_id AND b.id = c.sale_id
+               AND NOT (b.status = 'refunded'
+                        AND b.refunded_idr >= b.price_paid_idr)))
+       )
+     LIMIT 1`);
+  if (result.rows.length > 0) throw wfcSaleActive();
 }

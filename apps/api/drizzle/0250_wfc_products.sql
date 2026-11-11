@@ -153,7 +153,8 @@ ALTER TABLE "wfc_seat_reservations" ADD CONSTRAINT "wfc_seat_reservations_custom
 ALTER TABLE "wfc_seats" ADD CONSTRAINT "wfc_seats_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "wfc_seats" ADD CONSTRAINT "wfc_seats_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "wfc_seats" ADD CONSTRAINT "wfc_seats_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wfc_seats" ADD CONSTRAINT "wfc_seats_zone_fk" FOREIGN KEY ("tenant_id","zone_id") REFERENCES "public"."floor_zones"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "floor_zones" ADD CONSTRAINT "floor_zones_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id");--> statement-breakpoint
+ALTER TABLE "wfc_seats" ADD CONSTRAINT "wfc_seats_zone_fk" FOREIGN KEY ("tenant_id","outlet_id","zone_id") REFERENCES "public"."floor_zones"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "wfc_bundle_items" ADD CONSTRAINT "wfc_bundle_items_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "wfc_bundle_items" ADD CONSTRAINT "wfc_bundle_items_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "wfc_bundle_items" ADD CONSTRAINT "wfc_bundle_items_bundle_fk" FOREIGN KEY ("tenant_id","outlet_id","bundle_id") REFERENCES "public"."wfc_bundles"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

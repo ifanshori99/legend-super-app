@@ -10,6 +10,11 @@
 // by the stored price. The services re-check the permission on the record's
 // outlet (TEN-03).
 //
+// A reservation body is `{ seatId, productId, customerProfileId, startsAt,
+// idempotencyKey }`: `endsAt` is rejected, the server sets it to `startsAt` plus
+// the product duration. Routes pass no `now`: the services read the database
+// clock after their locks.
+//
 // Config (seats, product kind, bundle create) and refunds are gated by
 // `facility.config.manage`; the floor reads and operations by
 // `facility.booth.operate`. RevPASH is a config-level report. The min-spend

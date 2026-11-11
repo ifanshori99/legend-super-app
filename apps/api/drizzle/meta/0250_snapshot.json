@@ -9644,6 +9644,15 @@
             "tenant_id",
             "id"
           ]
+        },
+        "floor_zones_tenant_outlet_id_key": {
+          "name": "floor_zones_tenant_outlet_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ]
         }
       },
       "policies": {},
@@ -77385,10 +77394,12 @@
           "tableTo": "floor_zones",
           "columnsFrom": [
             "tenant_id",
+            "outlet_id",
             "zone_id"
           ],
           "columnsTo": [
             "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",

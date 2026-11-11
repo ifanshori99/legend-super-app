@@ -245,7 +245,6 @@ async function voidLine(tenantId: string, lineId: string): Promise<void> {
   });
 }
 
-
 /**
  * A POS-04 correction (void or refund) recorded against a completed order. The
  * tender stays captured and the lines stay non-voided, exactly as the real
@@ -618,7 +617,6 @@ describe("C1 a POS tender is accepted only for an order that bought the product"
   });
 });
 
-
 describe("A1 a corrected or underpriced POS sale never pays (architect round 3)", () => {
   async function lineWorld(unitPriceIdr?: number, tenderIdr = PRICE) {
     const world = await createWorld();
@@ -732,6 +730,380 @@ describe("A1 a corrected or underpriced POS sale never pays (architect round 3)"
         productMenuItemId: removed.menuItemId,
       }),
     ).resolves.not.toThrow();
+  });
+});
+
+// ---- D1 (bz9h round 4): only a COMPLETED order's tender pays -----------------
+//
+// Spec bz9h-spec4 D1: findTender also requires `orders.status = 'completed'`
+// (paid in full and final). A tender of an open (draft) order may still be
+// captured, but the order can still change, so it never pays: 409
+// PAYMENT_NOT_CAPTURED. `seedOrder` seeds 'completed' by default; the fixtures
+// above rely on that and stay unchanged.
+
+/** Flips the status of a seeded order (the row is frozen once final, so bypass its trigger). */
+async function setOrderStatus(
+  tenantId: string,
+  orderUlid: string,
+  status: "draft" | "completed",
+): Promise<void> {
+  await asTenant(tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      "UPDATE orders SET status = $3 WHERE tenant_id = $1 AND id = $2",
+      [tenantId, ulidToUuid(orderUlid), status],
+    );
+  });
+}
+
+describe("D1 a tender pays only when its order is completed", () => {
+  async function orderWorld(status: "draft" | "completed") {
+    const world = await createWorld();
+    const [menuItemId] = await seedMenuItems(world, 1);
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: null,
+      status,
+    });
+    await seedLine(world.tenantId, {
+      orderUlid,
+      outletId: world.outletA,
+      menuItemId: menuItemId!,
+    });
+    const tender = await seedTender({
+      tenantId: world.tenantId,
+      outletId: world.outletA,
+      orderUlid,
+      amountIdr: PRICE,
+    });
+    return { world, menuItemId: menuItemId!, orderUlid, tender };
+  }
+
+  it("D1 a captured tender of a completed order is accepted by id and by reference", async () => {
+    const { world, menuItemId, tender } = await orderWorld("completed");
+    for (const paymentRef of [tender.id, tender.reference])
+      await expect(
+        check(world, {
+          outletId: world.outletA,
+          paymentRef,
+          productMenuItemId: menuItemId,
+        }),
+      ).resolves.not.toThrow();
+  });
+
+  it("D1 a captured tender of an order that is not completed (draft) is rejected 409 PAYMENT_NOT_CAPTURED", async () => {
+    const { world, menuItemId, tender } = await orderWorld("draft");
+    for (const paymentRef of [tender.id, tender.reference])
+      expect(
+        await failure(
+          check(world, {
+            outletId: world.outletA,
+            paymentRef,
+            productMenuItemId: menuItemId,
+          }),
+        ),
+      ).toMatchObject(NOT_CAPTURED);
+  });
+
+  it("D1 the same tender is rejected while its order is open and accepted once the order is completed", async () => {
+    const { world, menuItemId, orderUlid, tender } = await orderWorld("draft");
+    const input = {
+      outletId: world.outletA,
+      paymentRef: tender.id,
+      productMenuItemId: menuItemId,
+    };
+    expect(await failure(check(world, input))).toMatchObject(NOT_CAPTURED);
+    await setOrderStatus(world.tenantId, orderUlid, "completed");
+    await expect(check(world, input)).resolves.not.toThrow();
+  });
+
+  it("D1 an order that stops being completed no longer proves the payment", async () => {
+    const { world, menuItemId, orderUlid, tender } =
+      await orderWorld("completed");
+    const input = {
+      outletId: world.outletA,
+      paymentRef: tender.id,
+      productMenuItemId: menuItemId,
+    };
+    await expect(check(world, input)).resolves.not.toThrow();
+    await setOrderStatus(world.tenantId, orderUlid, "draft");
+    expect(await failure(check(world, input))).toMatchObject(NOT_CAPTURED);
+  });
+
+  it("D1 the rejection is the same answer as for an unknown reference (nothing leaked)", async () => {
+    const { world, menuItemId, tender } = await orderWorld("draft");
+    const open = await failure(
+      check(world, {
+        outletId: world.outletA,
+        paymentRef: tender.id,
+        productMenuItemId: menuItemId,
+      }),
+    );
+    const unknown = await failure(
+      check(world, {
+        outletId: world.outletA,
+        paymentRef: randomUUID(),
+        productMenuItemId: menuItemId,
+      }),
+    );
+    expect(open).toMatchObject(NOT_CAPTURED);
+    expect(open.message).toBe(unknown.message);
+    expect(open.message).not.toContain(tender.id);
+  });
+
+  it("D1 a day pass cannot be bought with a tender of an open order; nothing is recorded", async () => {
+    const s = await setup();
+    const orderUlid = await seedOrder(s.world.tenantId, {
+      outletId: s.world.outletA,
+      profileId: null,
+      status: "draft",
+    });
+    await seedLine(s.world.tenantId, {
+      orderUlid,
+      outletId: s.world.outletA,
+      menuItemId: s.passMenu,
+    });
+    const tender = await seedTender({
+      tenantId: s.world.tenantId,
+      outletId: s.world.outletA,
+      orderUlid,
+      amountIdr: DAY_PASS_PRICE,
+    });
+    expect(await failure(s.buyPass(tender.id))).toMatchObject(NOT_CAPTURED);
+    expect(await salesCount(s)).toBe(0);
+    expect(await captureRows(s.world.tenantId)).toHaveLength(0);
+    // Once the order is completed the very same tender buys the pass.
+    await setOrderStatus(s.world.tenantId, orderUlid, "completed");
+    const pass = await s.buyPass(tender.id);
+    expect(pass.id).toBeTruthy();
+    expect(await captureRows(s.world.tenantId)).toHaveLength(1);
+  });
+});
+
+// ---- D2 (bz9h round 4): the POS order is locked, then the tender re-checked ----
+//
+// Spec bz9h-spec4 D2: after finding a candidate tender, requireCapturedPayment
+// locks its POS order with the same lock as POS corrections (orders FOR UPDATE,
+// then pos_orders FOR UPDATE) and RE-RUNS the lookup. A correction (void or
+// refund) that commits while the sale waits for that lock must therefore make
+// the sale fail 409 PAYMENT_NOT_CAPTURED, instead of paying with a capture that
+// was just refunded.
+//
+// The test plays the POS correction by hand: transaction A takes the lock pair
+// (same SQL order as the POS correction), the sale runs in B and must wait for
+// A, then A records the correction and commits.
+
+type HeldPosLock = {
+  pid: number;
+  recordCorrection: (kind: "void" | "refund") => Promise<void>;
+  commit: () => Promise<void>;
+  rollback: () => Promise<void>;
+};
+
+/** Opens a transaction that holds `orders` then `pos_orders` FOR UPDATE for one order. */
+async function holdPosOrderLock(
+  tenantId: string,
+  outletId: string,
+  orderUlid: string,
+): Promise<HeldPosLock> {
+  const client = await owner.connect();
+  const orderId = ulidToUuid(orderUlid);
+  let finished = false;
+  const finish = async (statement: "COMMIT" | "ROLLBACK") => {
+    if (finished) return;
+    finished = true;
+    try {
+      await client.query(statement);
+    } finally {
+      client.release();
+    }
+  };
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    await client.query(
+      "SELECT 1 FROM orders WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+      [tenantId, orderId],
+    );
+    await client.query(
+      "SELECT 1 FROM pos_orders WHERE tenant_id = $1 AND order_id = $2 FOR UPDATE",
+      [tenantId, orderId],
+    );
+    const { rows } = await client.query("SELECT pg_backend_pid() AS pid");
+    return {
+      pid: rows[0].pid as number,
+      recordCorrection: async (kind) => {
+        // Same fixture shortcut as seedCorrection: skip FKs (no shift/override rows).
+        await client.query("SET LOCAL session_replication_role = replica");
+        if (kind === "void")
+          await client.query(
+            `INSERT INTO pos_order_voids
+               (tenant_id, outlet_id, order_id, receipt_number, amount_idr, reason, reason_note,
+                requested_by, approved_by, approval_request_id, voided_at)
+             VALUES ($1, $2, $3, 'R-1', 50000, 'mistake', 'uji', 'a', 'b', $4, now())`,
+            [tenantId, outletId, orderId, randomUUID()],
+          );
+        else
+          await client.query(
+            `INSERT INTO pos_order_refunds
+               (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note, lines,
+                requested_by, approved_by, approval_request_id, refunded_at)
+             VALUES ($1, $2, $3, 50000, 'mistake', 'uji',
+                     '[{"method":"cash","amountIdr":50000}]'::jsonb, 'a', 'b', $4, now())`,
+            [tenantId, outletId, orderId, randomUUID()],
+          );
+      },
+      commit: () => finish("COMMIT"),
+      rollback: () => finish("ROLLBACK"),
+    };
+  } catch (error) {
+    await finish("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Resolves true once some backend is waiting on `pid`'s locks, false if `done()`
+ * turned true first (the call under test finished without ever waiting).
+ * Polls the server instead of sleeping a fixed time.
+ */
+async function waitUntilBlockedBy(
+  pid: number,
+  done: () => boolean,
+  timeoutMs = 15_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (done()) return false;
+    const { rows } = await owner.query(
+      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+      [pid],
+    );
+    if ((rows[0].n as number) > 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    "Timed out waiting for the sale to wait on the POS order lock",
+  );
+}
+
+describe("D2 a correction committed while the sale waits for the POS order lock rejects the sale", () => {
+  async function lockWorld() {
+    const world = await createWorld();
+    const [menuItemId] = await seedMenuItems(world, 1);
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: null,
+    });
+    await seedLine(world.tenantId, {
+      orderUlid,
+      outletId: world.outletA,
+      menuItemId: menuItemId!,
+    });
+    const tender = await seedTender({
+      tenantId: world.tenantId,
+      outletId: world.outletA,
+      orderUlid,
+      amountIdr: PRICE,
+    });
+    return { world, menuItemId: menuItemId!, orderUlid, tender };
+  }
+
+  for (const kind of ["refund", "void"] as const) {
+    it(`D2 a ${kind} committed after the payment check began makes requireCapturedPayment reject 409 PAYMENT_NOT_CAPTURED`, async () => {
+      const { world, menuItemId, orderUlid, tender } = await lockWorld();
+      const held = await holdPosOrderLock(
+        world.tenantId,
+        world.outletA,
+        orderUlid,
+      );
+      try {
+        let settled = false;
+        const outcome = settle(
+          check(world, {
+            outletId: world.outletA,
+            paymentRef: tender.id,
+            productMenuItemId: menuItemId,
+          }),
+        ).finally(() => {
+          settled = true;
+        });
+        const waited = await waitUntilBlockedBy(held.pid, () => settled);
+        expect(
+          waited,
+          "the payment check must wait for the POS order lock held by the correction",
+        ).toBe(true);
+        await held.recordCorrection(kind);
+        await held.commit();
+        expect(await outcome).toMatchObject(NOT_CAPTURED);
+      } finally {
+        await held.rollback();
+      }
+    });
+  }
+
+  it("D2 when the lock holder commits no correction, the waiting payment check passes", async () => {
+    const { world, menuItemId, orderUlid, tender } = await lockWorld();
+    const held = await holdPosOrderLock(
+      world.tenantId,
+      world.outletA,
+      orderUlid,
+    );
+    try {
+      let settled = false;
+      const outcome = settle(
+        check(world, {
+          outletId: world.outletA,
+          paymentRef: tender.id,
+          productMenuItemId: menuItemId,
+        }),
+      ).finally(() => {
+        settled = true;
+      });
+      const waited = await waitUntilBlockedBy(held.pid, () => settled);
+      expect(
+        waited,
+        "the payment check must wait for the POS order lock held by the correction",
+      ).toBe(true);
+      await held.commit();
+      expect(await outcome).toBeNull();
+    } finally {
+      await held.rollback();
+    }
+  });
+
+  it("D2 a day pass bought while a refund commits is rejected and leaves no sale and no capture row", async () => {
+    const s = await setup();
+    const { orderUlid, tender } = await s.funded({
+      lines: [{ menuItemId: s.passMenu }],
+      tenders: [DAY_PASS_PRICE],
+    });
+    const held = await holdPosOrderLock(
+      s.world.tenantId,
+      s.world.outletA,
+      orderUlid,
+    );
+    try {
+      let settled = false;
+      const outcome = settle(s.buyPass(tender.id)).finally(() => {
+        settled = true;
+      });
+      const waited = await waitUntilBlockedBy(held.pid, () => settled);
+      expect(
+        waited,
+        "the sale must wait for the POS order lock held by the correction",
+      ).toBe(true);
+      await held.recordCorrection("refund");
+      await held.commit();
+      expect(await outcome).toMatchObject(NOT_CAPTURED);
+    } finally {
+      await held.rollback();
+    }
+    expect(await salesCount(s)).toBe(0);
+    expect(await captureRows(s.world.tenantId)).toHaveLength(0);
   });
 });
 
@@ -1029,7 +1401,6 @@ async function setup() {
           productId,
           customerProfileId,
           startsAt: at(2),
-          endsAt: at(4),
           idempotencyKey: `idem-${randomUUID()}`,
         },
         NOW,
