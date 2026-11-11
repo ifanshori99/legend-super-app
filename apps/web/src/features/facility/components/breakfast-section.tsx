@@ -1,9 +1,11 @@
 // Breakfast from the ticket (PRD §3 F22 "Sarapan Siap Saat Keluar Shower",
-// alur Z, FAC-10). The guest picks dishes and where to receive them; the order
-// is held and fired `fireOffsetMinutes` before the session ends. The 5-minute
+// alur Z, FAC-10). The guest picks dishes and where to receive them, pays the
+// order (founder Q43: never sent to the kitchen unpaid), and the paid order is
+// fired `fireOffsetMinutes` before the session ends. The 5-minute
 // end-of-session reminder is the session timer's job (session-timer.tsx); web
 // push is WS-06 and is not built here.
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { Check, CircleAlert, Minus, Plus } from "lucide-react";
 import { RadioGroup } from "radix-ui";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -22,7 +24,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { newIdempotencyKey } from "@/lib/idempotency.ts";
 import { cn } from "cn";
-import type { BreakfastMenu, BreakfastOrder } from "../breakfast";
+import type { BreakfastMenu, BreakfastOrder } from "@starter/shared/facility";
 import {
   breakfastChosenLines,
   breakfastDraftErrors,
@@ -34,7 +36,7 @@ import {
   setBreakfastQuantity,
   type BreakfastDraft,
 } from "../flow";
-import { useBreakfastMenu, useOrderBreakfast } from "../hooks";
+import { useBreakfastMenu, useOrderBreakfast, usePayBreakfast } from "../hooks";
 import { ApiFailure } from "./shared";
 
 const TABLE_FIELD_ID = "breakfast-table";
@@ -81,7 +83,7 @@ export function BreakfastSection({
       </div>
       {/* Stays mounted so the screen reader announces the result. */}
       <p role="status" className="sr-only">
-        {justOrdered ? t("facilityBreakfast.successTitle") : ""}
+        {justOrdered ? t("facilityBreakfast.awaitingTitle") : ""}
       </p>
       {menu.isPending ? (
         <BreakfastSkeleton />
@@ -94,8 +96,9 @@ export function BreakfastSection({
             onRetry={() => menu.refetch()}
           />
         </Card>
-      ) : menu.data.order ? (
+      ) : menu.data.order && menu.data.order.status !== "cancelled" ? (
         <BreakfastHeld
+          ticketId={ticketId}
           order={menu.data.order}
           tables={menu.data.tables}
           focusOnMount={justOrdered}
@@ -113,13 +116,23 @@ export function BreakfastSection({
           />
         </Card>
       ) : (
-        <BreakfastForm
-          key={ticketId}
-          ticketId={ticketId}
-          slotEndsAt={slotEndsAt}
-          menu={menu.data}
-          onOrdered={() => setJustOrdered(true)}
-        />
+        <>
+          {menu.data.order?.status === "cancelled" && (
+            <p
+              className="text-sm leading-5 text-muted-foreground"
+              data-testid="breakfast-cancelled"
+            >
+              {t("facilityBreakfast.cancelledNote")}
+            </p>
+          )}
+          <BreakfastForm
+            key={ticketId}
+            ticketId={ticketId}
+            slotEndsAt={slotEndsAt}
+            menu={menu.data}
+            onOrdered={() => setJustOrdered(true)}
+          />
+        </>
       )}
     </section>
   );
@@ -162,12 +175,17 @@ function BreakfastSkeleton() {
   );
 }
 
-/** Success state: the order exists and waits for its fire time. */
+/**
+ * The order exists: unpaid (pay now), paid (waits for its fire time) or fired.
+ * Only the payment page can make it paid; the button just opens that page.
+ */
 function BreakfastHeld({
+  ticketId,
   order,
   tables,
   focusOnMount,
 }: {
+  ticketId: string;
   order: BreakfastOrder;
   tables: BreakfastMenu["tables"];
   focusOnMount: boolean;
@@ -178,6 +196,29 @@ function BreakfastHeld({
     if (focusOnMount) titleRef.current?.focus();
   }, [focusOnMount]);
   const fired = order.status === "fired";
+  const awaitingPayment = order.status === "awaiting_payment";
+  const navigate = useNavigate();
+  const pay = usePayBreakfast(ticketId);
+  // One key per order: tapping "Bayar" again reuses the same payment link.
+  const payKey = useRef<string | null>(null);
+
+  async function handlePay() {
+    payKey.current ??= newIdempotencyKey();
+    try {
+      const result = await pay.mutateAsync({
+        orderId: order.id,
+        idempotencyKey: payKey.current,
+      });
+      // null token: already paid elsewhere; the refetch shows the new status.
+      if (result.paymentToken)
+        await navigate({
+          to: "/bayar/$token",
+          params: { token: result.paymentToken },
+        });
+    } catch {
+      // The failure is rendered next to the action by ApiFailure.
+    }
+  }
   const deliveryLabel = (delivery: BreakfastOrder["delivery"]) => {
     if (delivery.mode === "pickup") return t("facilityBreakfast.summaryPickup");
     const { tableId } = delivery;
@@ -193,14 +234,18 @@ function BreakfastHeld({
           <p ref={titleRef} tabIndex={-1} className="type-heading outline-none">
             {fired
               ? t("facilityBreakfast.firedTitle")
-              : t("facilityBreakfast.successTitle")}
+              : awaitingPayment
+                ? t("facilityBreakfast.awaitingTitle")
+                : t("facilityBreakfast.successTitle")}
           </p>
           <p className="text-sm leading-5 text-muted-foreground">
             {fired
               ? t("facilityBreakfast.firedBody")
-              : t("facilityBreakfast.successBody", {
-                  time: formatClock(order.fireAt),
-                })}
+              : awaitingPayment
+                ? t("facilityBreakfast.awaitingBody")
+                : t("facilityBreakfast.successBody", {
+                    time: formatClock(order.fireAt),
+                  })}
           </p>
         </div>
         <dl className="grid gap-2 text-sm leading-5">
@@ -227,12 +272,31 @@ function BreakfastHeld({
             <dd className="font-semibold">{deliveryLabel(order.delivery)}</dd>
           </div>
           <div className="flex items-baseline justify-between gap-3 border-t-(length:--border-w) pt-2 text-base">
-            <dt className="font-semibold">{t("facilityBreakfast.subtotal")}</dt>
+            <dt className="font-semibold">
+              {awaitingPayment
+                ? t("facilityBreakfast.total")
+                : t("facilityBreakfast.subtotal")}
+            </dt>
             <dd className="font-semibold tabular">
-              {formatRupiah(order.subtotalIdr)}
+              {formatRupiah(
+                awaitingPayment ? order.totalIdr : order.subtotalIdr,
+              )}
             </dd>
           </div>
         </dl>
+        {awaitingPayment && (
+          <>
+            <Button
+              size="lg"
+              loading={pay.isPending}
+              onClick={handlePay}
+              data-testid="breakfast-pay"
+            >
+              {t("facilityBreakfast.pay")}
+            </Button>
+            {pay.isError && <ApiFailure error={pay.error} />}
+          </>
+        )}
       </div>
     </Card>
   );
@@ -513,7 +577,7 @@ function BreakfastForm({
           </Button>
           {order.isError && <ApiFailure error={order.error} />}
           <p className="text-sm leading-5 text-muted-foreground">
-            {t("facilityBreakfast.holdNote")}
+            {t("facilityBreakfast.payFirstNote")}
           </p>
         </Card>
       </div>

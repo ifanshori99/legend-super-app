@@ -6,6 +6,13 @@
 import {
   bookAccessTicket,
   cancelAccessTicket,
+  cancelBreakfastOrder,
+  createBreakfastOrder,
+  getBreakfastMenu,
+  payBreakfastOrder,
+  type CancelBreakfastOrderBody,
+  type CreateBreakfastOrderBody,
+  type PayBreakfastOrderBody,
   getAccessTicket,
   getCurrentFacilityQueueEntry,
   getCurrentFacilitySubscription,
@@ -20,11 +27,6 @@ import {
 } from "@starter/shared/facility";
 import type { EndpointInput } from "@starter/shared/api";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
-import {
-  createBreakfastOrder,
-  getBreakfastMenu,
-  type CreateBreakfastOrderBody,
-} from "./breakfast.ts";
 
 /** Request bodies exactly as the contract accepts them (branded ids parsed). */
 export type BookTicketBody = EndpointInput<typeof bookAccessTicket>["body"];
@@ -154,7 +156,7 @@ export async function updateSubscription(
   return response.data;
 }
 
-/** Breakfast menu, tables and the ticket's existing order (see breakfast.ts). */
+/** Breakfast menu, tables and the ticket's existing order (`@starter/shared/facility` breakfast contract). */
 export async function fetchBreakfastMenu(
   ticketId: string,
   signal?: AbortSignal,
@@ -173,6 +175,31 @@ export async function orderBreakfast(
 ) {
   const response = await callEndpoint(createBreakfastOrder, {
     params: { ticketId },
+    body,
+  });
+  return response.data;
+}
+
+/** Starts (or reuses) the payment link of an unpaid breakfast order. */
+export async function payBreakfast(
+  ticketId: string,
+  orderId: string,
+  body: PayBreakfastOrderBody,
+) {
+  const response = await callEndpoint(payBreakfastOrder, {
+    params: { ticketId, orderId },
+    body,
+  });
+  return response.data;
+}
+
+export async function cancelBreakfast(
+  ticketId: string,
+  orderId: string,
+  body: CancelBreakfastOrderBody,
+) {
+  const response = await callEndpoint(cancelBreakfastOrder, {
+    params: { ticketId, orderId },
     body,
   });
   return response.data;
