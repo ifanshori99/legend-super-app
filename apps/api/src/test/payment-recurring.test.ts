@@ -3061,13 +3061,17 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
       next_start: P_NEXT,
       next_end: P_AFTER_NEXT,
     });
-    expect(subscriptionHasAccess(await accessInput(fx.subId), new Date())).toBe(
-      true,
-    );
+    expect(
+      subscriptionHasAccess(await accessInput(fx.subId), new Date(), 3),
+    ).toBe(true);
     // The day the next period starts the current one is over but the paid
     // next one carries the access.
     expect(
-      subscriptionHasAccess(await accessInput(fx.subId), noonJakarta(P_NEXT)),
+      subscriptionHasAccess(
+        await accessInput(fx.subId),
+        noonJakarta(P_NEXT),
+        3,
+      ),
     ).toBe(true);
   });
 
@@ -3099,7 +3103,11 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
       next_end: null,
     });
     expect(
-      subscriptionHasAccess(await accessInput(fx.subId), noonJakarta(P_NEXT)),
+      subscriptionHasAccess(
+        await accessInput(fx.subId),
+        noonJakarta(P_NEXT),
+        3,
+      ),
     ).toBe(true);
     // Promoting again changes nothing.
     await promoteDueSubscriptionPeriods(ctxW(), noonJakarta(P_NEXT));
@@ -3129,9 +3137,9 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
       next_start: tomorrow,
       next_end: end,
     });
-    expect(subscriptionHasAccess(await accessInput(fx.subId), new Date())).toBe(
-      false,
-    );
+    expect(
+      subscriptionHasAccess(await accessInput(fx.subId), new Date(), 3),
+    ).toBe(false);
 
     await promoteDueSubscriptionPeriods(ctxW(), noonJakarta(tomorrow));
     const after = await subNext(fx.subId);
@@ -3143,7 +3151,11 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
     });
     expect(after.activated_at).not.toBeNull();
     expect(
-      subscriptionHasAccess(await accessInput(fx.subId), noonJakarta(tomorrow)),
+      subscriptionHasAccess(
+        await accessInput(fx.subId),
+        noonJakarta(tomorrow),
+        3,
+      ),
     ).toBe(true);
   });
 
@@ -3252,15 +3264,15 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
     // 2026-01-01 00:00 Asia/Jakarta = 2025-12-31T17:00Z.
     it("REC-24 the first day gives access, the day before does not", () => {
       expect(
-        subscriptionHasAccess(sub(), new Date("2025-12-31T17:00:00.000Z")),
+        subscriptionHasAccess(sub(), new Date("2025-12-31T17:00:00.000Z"), 3),
       ).toBe(true);
       expect(
-        subscriptionHasAccess(sub(), new Date("2025-12-31T16:59:59.000Z")),
+        subscriptionHasAccess(sub(), new Date("2025-12-31T16:59:59.000Z"), 3),
       ).toBe(false);
     });
     it("REC-24 the end date itself gives no access, the day before does", () => {
       expect(
-        subscriptionHasAccess(sub(), new Date("2026-01-31T16:59:59.000Z")),
+        subscriptionHasAccess(sub(), new Date("2026-01-31T16:59:59.000Z"), 3),
       ).toBe(true);
       expect(
         // Grace 0: the paid period alone decides (the outlet default of 3 days
@@ -3274,13 +3286,25 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
         nextPeriodEnd: "2026-03-01",
       });
       expect(
-        subscriptionHasAccess(withNext, new Date("2026-01-31T17:00:00.000Z")),
+        subscriptionHasAccess(
+          withNext,
+          new Date("2026-01-31T17:00:00.000Z"),
+          3,
+        ),
       ).toBe(true);
       expect(
-        subscriptionHasAccess(withNext, new Date("2026-02-28T16:59:59.000Z")),
+        subscriptionHasAccess(
+          withNext,
+          new Date("2026-02-28T16:59:59.000Z"),
+          3,
+        ),
       ).toBe(true);
       expect(
-        subscriptionHasAccess(withNext, new Date("2026-02-28T17:00:00.000Z")),
+        subscriptionHasAccess(
+          withNext,
+          new Date("2026-02-28T17:00:00.000Z"),
+          3,
+        ),
       ).toBe(false);
     });
     it("REC-24 only an active subscription has access", () => {
@@ -3296,6 +3320,7 @@ describe("REC-24 a payment for a future period is stored as the next period", ()
           subscriptionHasAccess(
             sub({ status }),
             new Date("2026-01-15T05:00:00.000Z"),
+            3,
           ),
         ).toBe(false);
     });
@@ -3392,14 +3417,14 @@ describe("REC-29 paying the period after the next one early does not lose the fi
       next_end: week3End,
     });
     const input = await accessInput(fx.subId);
-    expect(subscriptionHasAccess(input, new Date())).toBe(true);
-    expect(subscriptionHasAccess(input, noonJakarta(addDays(curEnd, 1)))).toBe(
-      true,
-    );
+    expect(subscriptionHasAccess(input, new Date(), 3)).toBe(true);
     expect(
-      subscriptionHasAccess(input, noonJakarta(addDays(week2End, 1))),
+      subscriptionHasAccess(input, noonJakarta(addDays(curEnd, 1)), 3),
     ).toBe(true);
-    expect(subscriptionHasAccess(input, noonJakarta(week3End))).toBe(false);
+    expect(
+      subscriptionHasAccess(input, noonJakarta(addDays(week2End, 1)), 3),
+    ).toBe(true);
+    expect(subscriptionHasAccess(input, noonJakarta(week3End), 3)).toBe(false);
 
     // When the first early week starts, the whole paid range becomes current.
     await promoteDueSubscriptionPeriods(ctxW(), noonJakarta(curEnd));
@@ -3412,7 +3437,7 @@ describe("REC-29 paying the period after the next one early does not lose the fi
     });
     const promoted = await accessInput(fx.subId);
     expect(
-      subscriptionHasAccess(promoted, noonJakarta(addDays(week2End, 1))),
+      subscriptionHasAccess(promoted, noonJakarta(addDays(week2End, 1)), 3),
     ).toBe(true);
     expect(subscriptionHasAccess(promoted, noonJakarta(week3End), 0)).toBe(
       false,
@@ -3785,9 +3810,9 @@ describe("REC-34 the worker job promotes a due next period", () => {
       next_start: null,
       next_end: null,
     });
-    expect(subscriptionHasAccess(await accessInput(fx.subId), new Date())).toBe(
-      true,
-    );
+    expect(
+      subscriptionHasAccess(await accessInput(fx.subId), new Date(), 3),
+    ).toBe(true);
   });
 
   it("REC-34 the job leaves a paused subscription's next period alone", async () => {

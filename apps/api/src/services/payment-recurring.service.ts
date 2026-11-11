@@ -29,7 +29,10 @@
 //   - Grace (per outlet, default 3, 0..30): an `active` row keeps access for
 //     the grace days after its paid period; that use counts toward the NEXT
 //     period (`subscriptionAccessPeriod`), never extra quota, never past the
-//     grace days. The overdue worker reads the same per-outlet value.
+//     grace days. The overdue worker reads the same per-outlet value. The
+//     access check takes the grace days as a required argument (no default):
+//     a caller must read the outlet value (`readRecurringGraceDays`), so a
+//     hard-coded 3 can never grant access an outlet with grace 0 refused.
 //
 // Webhook signature and store-first dedupe live in payment-webhook.service.ts;
 // `processDoitInvoiceEvent` only applies an already verified event. The
@@ -182,10 +185,18 @@ function businessDateOf(now: Date): string {
   return new Date(now.getTime() + JAKARTA_OFFSET_MS).toISOString().slice(0, 10);
 }
 
+/** Instant at which the business date `YYYY-MM-DD` (Asia/Jakarta) starts. */
+export function businessDayStart(date: string): Date {
+  return new Date(`${date}T00:00:00+07:00`);
+}
+
 /** `YYYY-MM-DD` plus one plan interval: a week is 7 days, a month is one
  * calendar month with the day clamped to the month end (Jan 31 -> Feb 28),
  * like Postgres `date + interval '1 month'`. */
-function addInterval(date: string, interval: RecurringPlanInterval): string {
+export function addInterval(
+  date: string,
+  interval: RecurringPlanInterval,
+): string {
   const [year, month, day] = date.split("-").map(Number) as [
     number,
     number,
@@ -741,7 +752,7 @@ export type SubscriptionAccessPeriod = {
 export function subscriptionAccessPeriod(
   subscription: AccessFields,
   now: Date,
-  graceDays: number = RECURRING_GRACE_DAYS,
+  graceDays: number,
 ): SubscriptionAccessPeriod | null {
   if (subscription.status !== "active") return null;
   const today = businessDateOf(now);
@@ -787,7 +798,7 @@ export function subscriptionAccessPeriod(
 export function subscriptionHasAccess(
   subscription: AccessFields,
   now: Date,
-  graceDays: number = RECURRING_GRACE_DAYS,
+  graceDays: number,
 ): boolean {
   return subscriptionAccessPeriod(subscription, now, graceDays) !== null;
 }
@@ -799,11 +810,12 @@ export async function getRecurringGraceDays(
 ): Promise<number> {
   assertOutletInScope(context.outletScope, outletId);
   return withTenant(db, context, (tx) =>
-    readGraceDays(tx, context.tenant.tenantId, outletId),
+    readRecurringGraceDays(tx, context.tenant.tenantId, outletId),
   );
 }
 
-async function readGraceDays(
+/** Grace days of an outlet inside an open transaction (no row = default). */
+export async function readRecurringGraceDays(
   tx: Tx,
   tenantId: TenantId,
   outletId: string,

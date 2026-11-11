@@ -700,7 +700,7 @@ describe("REC-35 a needs_reconcile subscription with a DOIT id can pause, resume
   it("REC-35 resume after a mismatch restores access for a subscription whose period covers today", async () => {
     const sub = await seedMismatch();
     expect(
-      subscriptionHasAccess(await accessInput(sub.subId), new Date()),
+      subscriptionHasAccess(await accessInput(sub.subId), new Date(), 3),
     ).toBe(false);
     const { deps } = fakeDoit("resumeSubscription", {
       id: sub.providerSubId,
@@ -708,7 +708,7 @@ describe("REC-35 a needs_reconcile subscription with a DOIT id can pause, resume
     });
     await resumeSubscription(context(), sub.subId, new Date(), deps);
     expect(
-      subscriptionHasAccess(await accessInput(sub.subId), new Date()),
+      subscriptionHasAccess(await accessInput(sub.subId), new Date(), 3),
     ).toBe(true);
   });
 
@@ -1236,7 +1236,7 @@ describe("REC-42 an unpaid invoice moves an active subscription to past_due afte
     const changed = await markOverdueSubscriptionsPastDue(context(), now);
     expect(changed).toBeGreaterThanOrEqual(1);
     expect((await subRow(sub.subId)).status).toBe("past_due");
-    expect(subscriptionHasAccess(await accessInput(sub.subId), now)).toBe(
+    expect(subscriptionHasAccess(await accessInput(sub.subId), now, 3)).toBe(
       false,
     );
   });
@@ -1339,7 +1339,7 @@ describe("REC-43 a late payment makes a past_due subscription active again witho
       period_end: addDays(D, 30),
     });
     expect(
-      subscriptionHasAccess(await accessInput(sub.subId), new Date()),
+      subscriptionHasAccess(await accessInput(sub.subId), new Date(), 3),
     ).toBe(true);
   });
 
@@ -1467,10 +1467,18 @@ describe("REC-44 grace 0: access stops at the end of the paid period and past_du
     expect(subscriptionAccessPeriod(accessLiteral(), day(0), 0)).toBeNull();
   });
 
-  it("REC-44 pure: the default grace is 3 when no third argument is passed", () => {
+  it("REC-44 pure: graceDays is required (no default); an explicit 3 gives the 3-day grace", () => {
+    // legend-9f1p3: a forgotten argument must not compile, so no caller can get
+    // 3 days by accident.
+    try {
+      // @ts-expect-error graceDays is required
+      subscriptionHasAccess(accessLiteral(), day(0));
+    } catch {
+      // Throwing at runtime is fine; only the compile error is asserted.
+    }
     // Clearly inside (first grace day) and clearly outside (due + 4).
-    expect(subscriptionHasAccess(accessLiteral(), day(0))).toBe(true);
-    expect(subscriptionHasAccess(accessLiteral(), day(4))).toBe(false);
+    expect(subscriptionHasAccess(accessLiteral(), day(0), 3)).toBe(true);
+    expect(subscriptionHasAccess(accessLiteral(), day(4), 3)).toBe(false);
   });
 
   it("REC-44 an outlet with grace 0: still active on the due day, past_due on D+1, no access either day", async () => {

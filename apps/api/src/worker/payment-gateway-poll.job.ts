@@ -13,6 +13,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { logger } from "../lib/logger";
+import { syncSubscriptionQuotas } from "../services/facility-subscription-quota.ts";
 import { pollPendingGatewayIntents } from "../services/payment.service.ts";
 import {
   markOverdueSubscriptionsPastDue,
@@ -116,6 +117,20 @@ export async function runPaymentGatewayPollJob(
         errorName: error instanceof Error ? error.name : "unknown",
       },
       "Subscription past-due marking failed",
+    );
+  }
+  try {
+    // Facility quota grants of paid and grace subscriptions (legend-9f1p3).
+    // Runs after the past-due marking so a row that just lost access gets
+    // nothing. Idempotent and best effort, like the sweeps above.
+    await syncSubscriptionQuotas(context, now);
+  } catch (error) {
+    logger.warn(
+      {
+        job: "payment_gateway_poll",
+        errorName: error instanceof Error ? error.name : "unknown",
+      },
+      "Subscription quota sync failed",
     );
   }
   try {
