@@ -69,7 +69,7 @@ const CASE_MATCH = {
     !text.includes("Perlu ditinjau ulang"),
   annual: (text) =>
     text.includes("Absen saat cuti") &&
-    text.includes("Cuti tahunan") &&
+    text.toLowerCase().includes("cuti tahunan") &&
     !text.includes("Belum absen keluar") &&
     !text.includes("Koreksi absen manual") &&
     !text.includes("Perlu ditinjau ulang"),
