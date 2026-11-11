@@ -216,6 +216,11 @@ registerMock(listAttendanceReviewQueue, ({ query, scenario }) => {
     )
     .filter(
       (item) =>
+        query.flagReason === undefined ||
+        item.flagReasons.includes(query.flagReason),
+    )
+    .filter(
+      (item) =>
         query.businessDate === undefined ||
         localDateOf(item.log.occurredAt, MOCK_OUTLET.timeZone) ===
           query.businessDate,

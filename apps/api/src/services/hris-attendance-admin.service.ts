@@ -28,7 +28,17 @@
 //   policy is `hr.attendance.manage` only, tenant default needs tenant-wide
 //   reach.
 
-import { and, desc, eq, inArray, isNull, lt, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import {
   createUlid,
@@ -510,6 +520,10 @@ export async function listAttendanceReviewQueue(
       filters.push(inArray(attendanceLogs.outletId, [...reach.outletIds]));
     if (query.businessDate !== undefined)
       filters.push(eq(attendanceLogs.businessDate, query.businessDate));
+    if (query.flagReason !== undefined)
+      filters.push(
+        sql`${attendanceLogs.flagReasons} @> ${JSON.stringify([query.flagReason])}::jsonb`,
+      );
 
     let cursorFilter: SQL | undefined;
     if (query.cursor) {

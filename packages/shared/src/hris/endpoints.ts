@@ -88,6 +88,7 @@ import {
   attendanceReviewActionSchema,
   attendanceReviewItemSchema,
   attendanceReviewStatusSchema,
+  attendanceStoredFlagReasonSchema,
   attendanceSamplingConfigSchema,
   attendanceLogSchema,
   attendanceMethodSchema,
@@ -589,6 +590,8 @@ export const listAttendanceReviewQueue = defineEndpoint({
     outletId: outletIdSchema.optional(),
     businessDate: businessDateSchema.optional(),
     reviewStatus: attendanceReviewStatusSchema.optional(),
+    /** Only logs carrying this flag reason (server-side; scope unchanged). */
+    flagReason: attendanceStoredFlagReasonSchema.optional(),
   }),
   response: cursorPageSchema(attendanceReviewItemSchema),
 });
