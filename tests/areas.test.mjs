@@ -351,6 +351,7 @@ describe("FE-AREA-09 resolveAreaAccess reads the access view, fails closed", () 
     mfaVerified: false,
     stations: ["11111111-1111-4111-8111-111111111111"],
     outlets: [],
+    activeOutletId: null,
     supportSession: null,
     ...extra,
   });
@@ -559,6 +560,7 @@ describe("FE-AREA-10 outlet selection from the session outlets", () => {
       mfaVerified: false,
       stations: [],
       outlets: [a, b],
+      activeOutletId: null,
       supportSession: null,
     };
     const access = await accessLib.resolveAreaAccess(session, async () => view);

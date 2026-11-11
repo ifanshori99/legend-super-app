@@ -8,8 +8,12 @@
 // only: every API request is authorized again by the permission middleware.
 
 import { Router } from "express";
-import { myAccessViewSchema } from "@starter/shared/access";
+import {
+  myAccessViewSchema,
+  setActiveOutletInputSchema,
+} from "@starter/shared/access";
 import { getAuth, requireAuth } from "../middleware/auth";
+import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
   getRequestAccessData,
@@ -18,6 +22,10 @@ import {
 import { supportSessionOf } from "../middleware/support-session";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { canChangeAnyEmployeeManager } from "../services/hris-employee-manager.service";
+import {
+  activeOutletOf,
+  setActiveOutlet,
+} from "../services/me-active-outlet.service";
 import { listMyOutlets } from "../services/me-outlets.service";
 
 export const meRouter = Router();
@@ -67,10 +75,33 @@ meRouter.get("/access", async (req, res) => {
       mfaVerified: snapshot.mfaVerified,
       stations,
       outlets,
+      // Pinned outlet (legend-6vgv), re-checked against the assigned list.
+      activeOutletId: await activeOutletOf({
+        tenant: getTenantContext(req),
+        sessionId: getAuth(req).session.id,
+        assignedIds: outlets.map((outlet) => outlet.id),
+      }),
       supportSession: support
         ? { accessMode: support.accessMode, expiresAt: support.expiresAt }
         : null,
       canChangeEmployeeManager,
     }),
   });
+});
+
+// Pin the outlet the outlet-less floor routes work on (legend-6vgv). The id is
+// schema-checked, then must be one of the caller's own assigned outlets;
+// another tenant's outlet and an unknown id answer the same 404.
+meRouter.put("/active-outlet", jsonBody, async (req, res) => {
+  const input = setActiveOutletInputSchema.parse(req.body);
+  await loadRequestAccess(req);
+  const activeOutletId = await setActiveOutlet({
+    tenant: getTenantContext(req),
+    userId: getAuth(req).user.id,
+    sessionId: getAuth(req).session.id,
+    data: getRequestAccessData(req),
+    outletId: input.outletId,
+    now: new Date(),
+  });
+  res.json({ data: { activeOutletId } });
 });

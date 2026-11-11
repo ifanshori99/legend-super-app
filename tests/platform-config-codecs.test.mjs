@@ -31,15 +31,27 @@ function customRole(name, overrides = {}) {
   });
 }
 
-test("registry has codecs for roles, approval_policies, chart_of_accounts", () => {
-  for (const section of ["roles", "approval_policies", "chart_of_accounts"]) {
+test("registry has a codec for every section except loyalty_policy and payroll_settings", () => {
+  for (const section of [
+    "roles",
+    "approval_policies",
+    "chart_of_accounts",
+    "zones",
+    "tax_rules",
+    "service_charge_rules",
+    "checklists",
+    "facilities",
+    "wifi_policies",
+  ]) {
     const codec = platform.CONFIG_SECTION_CODECS[section];
     assert.ok(codec, section);
     assert.equal(codec.section, section);
     assert.equal(codec.version, 1);
     assert.equal(platform.configSectionCodec(section), codec);
   }
-  assert.equal(platform.configSectionCodec("zones"), undefined);
+  // No table exists yet for these two, so they intentionally have no codec.
+  assert.equal(platform.configSectionCodec("loyalty_policy"), undefined);
+  assert.equal(platform.configSectionCodec("payroll_settings"), undefined);
 });
 
 test("roles: toTemplate is tenant-free, keys are unique and stable", () => {
@@ -250,6 +262,7 @@ test("decodeConfigBundle resolves cross-section role keys in one pass", () => {
     "approval_policies",
     "chart_of_accounts",
     "roles",
+    "zones",
   ]);
 
   // Importing only approval_policies needs the target tenant's role keys.
@@ -322,14 +335,16 @@ test("bundle: parse refuses references that could never be imported", () => {
 });
 
 test("decodeConfigBundle reports sections it has no codec for", () => {
-  const bundle = platform.parseConfigBundle(
-    platform.cafeLegendPlatformFixtures.configBundle,
-    SOURCE_IDS,
-  ).bundle;
-  const decoded = platform.decodeConfigBundle(bundle);
+  const raw = structuredClone(platform.cafeLegendPlatformFixtures.configBundle);
+  // loyalty_policy has no codec yet (no table), unlike zones.
+  raw.sections.loyalty_policy = { version: 1, items: [{ key: "tier" }] };
+  const parsed = platform.parseConfigBundle(raw, SOURCE_IDS);
+  assert.equal(parsed.ok, true, JSON.stringify(parsed.issues));
+  const decoded = platform.decodeConfigBundle(parsed.bundle);
   assert.equal(decoded.ok, true);
-  assert.ok(decoded.withoutCodec.includes("zones"));
+  assert.ok(decoded.withoutCodec.includes("loyalty_policy"));
   assert.ok(!decoded.withoutCodec.includes("roles"));
+  assert.ok(!decoded.withoutCodec.includes("zones"));
 });
 
 // ---------------------------------------------------------------------------
@@ -756,6 +771,7 @@ test("legend-5cwrq: a kind-shaped bundle parses and decodes in one pass", () => 
     "approval_policies",
     "chart_of_accounts",
     "roles",
+    "zones",
   ]);
   // approval_policies alone needs the target tenant's role keys.
   const only = platform.decodeConfigBundle(parsed.bundle, {

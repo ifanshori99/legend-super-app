@@ -1,5 +1,6 @@
 import {
   bigint,
+  check,
   index,
   integer,
   jsonb,
@@ -10,6 +11,8 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { session } from "./session";
 
 // Second factors (PRD v1.7 §6 B `mfa_factors`, global). TOTP today; a passkey
 // row keeps the WebAuthn public key once the assertion contract lands.
@@ -39,6 +42,12 @@ export const mfaFactors = pgTable(
      * even while it is still inside the ±1 step window.
      */
     lastUsedStep: bigint("last_used_step", { mode: "number" }),
+    /**
+     * Passkeys: the authenticator's last accepted signature counter. A
+     * response whose counter does not rise above it (while either is above
+     * zero) is a cloned-authenticator signal and is refused (legend-jemg).
+     */
+    signCount: bigint("sign_count", { mode: "number" }).notNull().default(0),
     failedAttempts: integer("failed_attempts").notNull().default(0),
     lockedUntil: timestamp("locked_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -46,6 +55,42 @@ export const mfaFactors = pgTable(
       .notNull(),
   },
   (table) => [index("mfa_factors_user_id_idx").on(table.userId)],
+);
+
+// Pending WebAuthn challenges (legend-jemg; global like mfa_factors). One row per
+// (factor, session, purpose): asking again replaces it, and verification
+// deletes it first, so a challenge is single use, bound to the session that
+// asked, and expires. The challenge is random per request, not a secret.
+export const mfaPasskeyChallenges = pgTable(
+  "mfa_passkey_challenges",
+  {
+    id: uuid("id").primaryKey(),
+    factorId: uuid("factor_id")
+      .notNull()
+      .references(() => mfaFactors.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => session.id, { onDelete: "cascade" }),
+    /** `register` (finish enrollment) | `authenticate` (verify a session). */
+    purpose: varchar("purpose", { length: 12 }).notNull(),
+    /** base64url challenge exactly as sent to the browser. */
+    challenge: text("challenge").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("mfa_passkey_challenges_factor_session_purpose_key").on(
+      table.factorId,
+      table.sessionId,
+      table.purpose,
+    ),
+    check(
+      "mfa_passkey_challenges_purpose_check",
+      sql`${table.purpose} IN ('register', 'authenticate')`,
+    ),
+  ],
 );
 
 // Recovery codes for staff MFA (global, no tenant RLS, like mfa_factors; user_id

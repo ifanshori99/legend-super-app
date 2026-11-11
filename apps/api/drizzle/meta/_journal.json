@@ -1870,6 +1870,27 @@
       "when": 1794402000000,
       "tag": "0280_facility_breakfast_fire_window",
       "breakpoints": true
+    },
+    {
+      "idx": 281,
+      "version": "7",
+      "when": 1794403000000,
+      "tag": "0281_session_active_outlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 282,
+      "version": "7",
+      "when": 1794404000000,
+      "tag": "0282_mfa_passkey",
+      "breakpoints": true
+    },
+    {
+      "idx": 283,
+      "version": "7",
+      "when": 1794405000000,
+      "tag": "0283_identity_unlink_permission_backfill",
+      "breakpoints": true
     }
   ]
 }

@@ -9,9 +9,9 @@
 //
 // PRD-silent defaults (reported): five verified factors, fifteen-minute
 // enrollment window for a pending factor, five wrong codes lock the factor for
-// fifteen minutes (mirrors the staff-pin rule in §3 F6). Recovery codes and
-// WebAuthn assertions are not in the wire contract yet; passkey enrollment
-// answers 501 instead of pretending to work (see the report).
+// fifteen minutes (mirrors the staff-pin rule in §3 F6). Passkey (WebAuthn)
+// enrollment, challenges and assertions live in identity-passkey.service.ts
+// (legend-jemg); this file starts passkey enrollment after the shared checks.
 
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
@@ -24,14 +24,27 @@ import {
   type MfaFactorType,
   type MfaVerificationResult,
 } from "@starter/shared/identity";
-import { AccessError } from "@starter/shared/access";
+import {
+  AccessError,
+  ROLE_GRANT_REAUTH_MAX_AGE_MS,
+} from "@starter/shared/access";
 import { CoreError } from "@starter/shared/core";
 import { db } from "../db";
 import { mfaFactors, session } from "../db/schema";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
-import { MAX_MFA_ATTEMPTS, MFA_LOCK_MINUTES } from "../lib/mfa-policy";
+import {
+  MAX_MFA_ATTEMPTS,
+  MAX_VERIFIED_FACTORS,
+  MFA_ENROLLMENT_TTL_MINUTES,
+  MFA_LOCK_MINUTES,
+} from "../lib/mfa-policy";
 import { openSecret, sealSecret } from "../lib/secrets";
+import { beginPasskeyEnrollment } from "./identity-passkey.service";
+import {
+  assertFactorActivationAllowed,
+  lockUserFactorActivation,
+} from "./mfa-activation";
 import {
   auditRecoveryEvent,
   revokeMfaRecoveryCodes,
@@ -42,11 +55,12 @@ import {
   verifyTotpCode,
 } from "../lib/totp";
 
-/** PRD is silent; five known authenticators is enough for one person. */
-export const MAX_VERIFIED_FACTORS = 5;
-/** PRD is silent; a pending factor cannot be scanned after this window. */
-export const MFA_ENROLLMENT_TTL_MINUTES = 15;
-export { MAX_MFA_ATTEMPTS, MFA_LOCK_MINUTES };
+export {
+  MAX_VERIFIED_FACTORS,
+  MAX_MFA_ATTEMPTS,
+  MFA_ENROLLMENT_TTL_MINUTES,
+  MFA_LOCK_MINUTES,
+};
 
 const mfaLog = logger.child({ module: "identity-mfa" });
 
@@ -112,23 +126,25 @@ export async function enrollMfaFactor(input: {
   readonly accountName: string;
   readonly type: MfaFactorType;
   readonly issuer: string;
-  /** Whether the caller's session already verified a second factor. */
-  readonly sessionMfaVerified: boolean;
+  /** When the caller's session last verified a second factor, or null. */
+  readonly sessionMfaVerifiedAt: Date | null;
+  /** The caller's session: a passkey challenge is bound to it. */
+  readonly sessionId: string;
   readonly now?: Date;
 }): Promise<MfaEnrollment> {
-  if (input.type === "passkey")
-    throw new HttpError(
-      501,
-      "MFA_PASSKEY_UNSUPPORTED",
-      "Pendaftaran passkey belum tersedia. Gunakan aplikasi autentikator (TOTP).",
-    );
   const now = input.now ?? new Date();
   const verified = await listMfaFactors(input.userId);
   // Step-up (AUTH-05): once a user has a factor, adding another needs a
-  // session that already proved one. Otherwise a stolen password alone could
-  // enroll the attacker's authenticator and mark the session MFA-verified.
-  if (verified.length > 0 && !input.sessionMfaVerified)
-    throw new AccessError("MFA_REQUIRED");
+  // session that proved one recently (same age rule as the role-grant path),
+  // not just once. Otherwise a hijacked session could enroll the attacker's
+  // authenticator and then pass re-auth with it. The first factor needs none.
+  if (verified.length > 0) {
+    if (input.sessionMfaVerifiedAt === null)
+      throw new AccessError("MFA_REQUIRED");
+    const age = now.getTime() - input.sessionMfaVerifiedAt.getTime();
+    if (!(age >= 0 && age <= ROLE_GRANT_REAUTH_MAX_AGE_MS))
+      throw new AccessError("REAUTH_REQUIRED");
+  }
   if (verified.length >= MAX_VERIFIED_FACTORS)
     throw new CoreError(
       "CONFLICT",
@@ -140,10 +156,18 @@ export async function enrollMfaFactor(input: {
     .where(
       and(
         eq(mfaFactors.userId, input.userId),
-        eq(mfaFactors.type, "totp"),
+        eq(mfaFactors.type, input.type),
         isNull(mfaFactors.verifiedAt),
       ),
     );
+
+  if (input.type === "passkey")
+    return beginPasskeyEnrollment({
+      userId: input.userId,
+      accountName: input.accountName,
+      sessionId: input.sessionId,
+      now,
+    });
 
   const factorId = randomUUID();
   const secretBase32 = generateTotpSecret();
@@ -190,6 +214,10 @@ export async function verifyMfaFactor(input: {
   // wrong code must still commit its counter, so the outcome is returned and
   // thrown only after the transaction commits.
   const outcome = await db.transaction(async (tx) => {
+    // Per-user activation lock first, factor row second (same order as
+    // finishPasskeyEnrollment): a pending factor can only be finished while no
+    // other activation for this user is in flight.
+    await lockUserFactorActivation(tx, input.userId);
     const [factor] = await tx
       .select()
       .from(mfaFactors)
@@ -228,6 +256,19 @@ export async function verifyMfaFactor(input: {
         ),
       };
     if (isLocked(factor, now)) return { error: lockedError() };
+    // Finishing a pending factor re-checks the step-up rule that
+    // enrollMfaFactor applied at the start: another factor may have become
+    // verified since. Checked before the code is counted, so a session without
+    // the right burns neither the code nor a wrong-attempt. (A null session only
+    // reaches verified factors, via verifyMfaCodeForUser.)
+    // Nothing was written yet, so throwing here just rolls the transaction back.
+    if (factor.verifiedAt === null && input.sessionId !== null)
+      await assertFactorActivationAllowed(tx, {
+        userId: input.userId,
+        factorId: factor.id,
+        sessionId: input.sessionId,
+        now,
+      });
 
     const secret = openSecret(
       factor.secretEncrypted,
@@ -275,6 +316,10 @@ export async function verifyMfaFactor(input: {
       .where(eq(mfaFactors.id, factor.id));
     // The session row is global; scope by user so a leaked session id cannot
     // be marked verified for someone else.
+    //
+    // Finishing the enrollment of a new factor only fills an empty stamp: it
+    // must not refresh a proof the user did not just make with a code, or a
+    // hijacked session could mint a fresh re-auth by adding its own factor.
     if (input.sessionId !== null)
       await tx
         .update(session)
@@ -283,6 +328,9 @@ export async function verifyMfaFactor(input: {
           and(
             eq(session.id, input.sessionId),
             eq(session.userId, input.userId),
+            ...(factor.verifiedAt === null
+              ? [isNull(session.mfaVerifiedAt)]
+              : []),
           ),
         );
     return { factor };

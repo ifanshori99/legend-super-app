@@ -416,10 +416,20 @@ const configBundle = configBundleSchema.parse({
     zones: {
       version: 1,
       items: [
-        { key: "indoor", name: "Indoor", tableCount: 12 },
-        { key: "outdoor", name: "Teras", tableCount: 8 },
-        { key: "wfc", name: "Zona WFC", tableCount: 10 },
-      ],
+        ["indoor", "Indoor"],
+        ["outdoor", "Teras"],
+        ["wfc", "Zona WFC"],
+      ].map(([key, name], sortOrder) => ({
+        key,
+        outletKey: outlets[0].code.toLowerCase(),
+        name,
+        paymentMode: "pay_first",
+        serviceChargeBp: 0,
+        minimumSpendIdr: 0,
+        hours: [],
+        status: "active",
+        sortOrder,
+      })),
     },
   },
 });

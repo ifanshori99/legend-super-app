@@ -3679,3 +3679,22 @@ Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; s
 - Butir 3: `payment.funds_unallocated` milik sarapan: `handleBreakfastFundsUnallocated` -> satu refund penuh per fund (`requestQrDoublePaymentRefund` opsi `fundId`, tanpa mengubah perilaku QR lama). Test `facility-breakfast-funds-unallocated.test.ts` (BRK-PAY-09).
 - Gagal-dulu: 10 merah / 4 hijau (kontrol) sebelum fix, sebab benar. Akhir: tsc API 0, eslint dan prettier berkas berubah 0, `db:generate` kosong, 27 berkas sarapan/refund/QR terarah lulus kecuali flake paralel PAY-04 (payment-refund-approval, manual-settle, review-fix, settled-fund-conflict, codex-fix): berubah tiap run, lulus 119/119 dan 43/43 saat dijalankan sendiri.
 - Architect xhigh putaran 1: 2 temuan (prefix refile tidak dicadangkan; refile jalur late) sudah dibetulkan; putaran 3: refile pakai `cap - reserved` agar tidak menumpuk refund pending. Tersisa: tidak ada migrasi baru; `pnpm check`/e2e penuh tidak dijalankan.
+
+## 2026-11-11: WS-01 identitas (ws/ws01-identity, basis origin/ws/sec-small 8c197789)
+
+- Commit: tct8 c587bccb (codec section config, 9 codec; loyalty_policy dan payroll_settings belum ada tabel, tanpa codec), 6vgv 7eeccf25 (PUT /api/me/active-outlet, migrasi 0324), jemg c86136f1 (passkey enrol+verify, migrasi 0325, @simplewebauthn/server 14.0.3, snapshot 0256 agar db:generate kosong), 7wzy 5aba809a (unlink WA diaudit, izin baru `crm.customer.identity.unlink`).
+- Unlink WA hanya mengosongkan tautan profil pelanggan tenant pemanggil; baris global `user_identities` tidak dihapus (akan mematikan login WA, PIN slip gaji, login owner tenant lain). Wajib MFA segar dan `reason`.
+- Review architect xhigh: 2 blocker + 1 medium + lows dibetulkan (unlink tenant-scoped, izin baru, MFA segar untuk faktor kedua, kunci codec).
+- Bukti: vitest terarah 17 file hijau; tsc shared/api/web 0; db:generate kosong; root mjs 2053 lulus, 4 gagal = tes DB yang butuh DB terisolasi (belum dijalankan terpisah).
+- Belum: migrasi backfill baris peran untuk izin baru (batas 0324-0325), keputusan CTO soal profil `active` turun ke `pending_verification` saat unlink, hapus identitas global (step-up pemilik atau support platform).
+- Biaya sesi: total 10949k (utama sonnet 6696k, subagent sonnet 3548k, opus 582k, haiku 123k); 22 subagent tercatat; 13:03-13:56 UTC.
+
+## 2026-11-11: WS-01 ronde 2 (ws/ws01-identity)
+
+- Keputusan CTO: profil `active` turun ke `pending_verification` saat unlink disetujui (perilaku sekarang sudah begitu).
+- legend-xhlbz 06dd859a: migrasi 0331 backfill `crm.customer.identity.unlink` ke template owner dan tenant_admin tenant lama; custom role tidak disentuh; idempoten; ada tes.
+- P1 second-opinion Codex fbcef120: aktivasi faktor (passkey dan TOTP) diserialkan per user (advisory lock `mfa-activate:`), dan bila ada faktor terverifikasi lain wajib MFA segar di sesi penyelesai (MFA_REQUIRED / REAUTH_REQUIRED). Tes dua sesi (3 skenario + 3 kontrol).
+- e518bf1e: tes sesi dukungan read_only ditolak 403 SUPPORT_ACCESS_READ_ONLY di PUT /api/me/active-outlet (tidak ada baris pin); kontrol read_write 200.
+- Gagal-dulu: semua kode produksi 4 kartu dibalik ke basis 8c197789: 7 file tes merah, 92 gagal (mis. passkey 501, codec tidak terdaftar, unlink 200/204 bukan 404). P1 dibalik sendiri: 3 merah. Guard support dimatikan: 1 merah. Dipulihkan, tidak di-commit.
+- tests/database.test.mjs + db-role-provisioning.test.mjs pada Postgres sekali pakai: 41/41 lulus. Catatan: `LEGEND_TEST_DB_NAME` tidak ada di repo; DB sekali pakai dibuat dengan alur scripts/test.mjs.
+- vitest terarah 8 file / 118 tes lulus; tsc api 0; eslint+prettier bersih; db:generate kosong.

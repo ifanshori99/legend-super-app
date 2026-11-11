@@ -150,6 +150,8 @@ export * from "./sales-targets";
 export * from "./menu-recommendation";
 // legend-k2l
 export * from "./identity-merge";
+// legend-6vgv pinned outlet of a staff session.
+export * from "./session-active-outlet";
 // WS-12 per-tenant AI provider config (legend-dwrr).
 export * from "./ai-provider";
 // WS-03 table link groups (legend-1nmh).

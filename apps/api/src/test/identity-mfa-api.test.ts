@@ -329,18 +329,8 @@ describe("Staff MFA factors and the AUTH-05 gate", () => {
     expect(foreign.body.error.code).toBe("NOT_FOUND");
   });
 
-  it("AUTH-05 passkey enrollment is refused explicitly until WebAuthn lands", async () => {
-    const client = agent(app);
-    const email = await signUp(client, "Passkey");
-    const cookie = await signInCookie(email);
-    const response = await request(app)
-      .post("/api/auth/mfa/factors")
-      .set(originHeader)
-      .set("Cookie", cookie)
-      .send({ type: "passkey" });
-    expect(response.status).toBe(501);
-    expect(response.body.error.code).toBe("MFA_PASSKEY_UNSUPPORTED");
-  });
+  // Passkey enrollment/verification now lives in identity-passkey-api.test.ts
+  // (legend-jemg); the 501 MFA_PASSKEY_UNSUPPORTED stub is gone.
 
   it("AUTH-05 platform support access re-verifies the second factor per request", async () => {
     const client = agent(app);
@@ -468,5 +458,103 @@ describe("Staff MFA factors and the AUTH-05 gate", () => {
       totpCode(enrollment.secretBase32, step + 1),
     );
     expect(next.status).toBe(429);
+  });
+});
+
+describe("Adding a second factor needs a fresh second factor (legend-jemg fixes)", () => {
+  async function verifiedTotpSession(name: string) {
+    const email = await signUp(agent(app), name);
+    const cookie = await signInCookie(email);
+    const enrollment = await enrollTotp(cookie);
+    const verified = await verifyCode(
+      cookie,
+      enrollment.factorId,
+      totpCode(enrollment.secretBase32, totpStep(new Date())),
+    );
+    expect(verified.status).toBe(200);
+    return { email, cookie, enrollment };
+  }
+
+  const stamp = (email: string, at: Date | null) =>
+    owner.query(
+      `UPDATE "session" SET mfa_verified_at = $2
+       WHERE revoked_at IS NULL
+         AND user_id = (SELECT id FROM "user" WHERE email = $1)`,
+      [email, at],
+    );
+
+  const readStamp = async (email: string) => {
+    const { rows } = await owner.query<{ mfa_verified_at: Date | null }>(
+      `SELECT mfa_verified_at FROM "session"
+       WHERE revoked_at IS NULL
+         AND user_id = (SELECT id FROM "user" WHERE email = $1)
+       ORDER BY created_at DESC LIMIT 1`,
+      [email],
+    );
+    return rows[0]?.mfa_verified_at ?? null;
+  };
+
+  const startEnroll = (cookie: string, type: "totp" | "passkey") =>
+    request(app)
+      .post("/api/auth/mfa/factors")
+      .set(originHeader)
+      .set("Cookie", cookie)
+      .send({ type });
+
+  it("jemg: the first factor can be enrolled by a session with no second factor", async () => {
+    const { email } = await verifiedTotpSession("Faktor Pertama");
+    expect(await readStamp(email)).not.toBeNull();
+  });
+
+  it("jemg: a second factor is refused when the session never proved one", async () => {
+    const { email } = await verifiedTotpSession("Tanpa Bukti");
+    const cookie = await signInCookie(email);
+    const refused = await startEnroll(cookie, "totp");
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.code).toBe("MFA_REQUIRED");
+  });
+
+  it("jemg: a second factor is refused when the session's MFA is stale", async () => {
+    const { email, cookie } = await verifiedTotpSession("Bukti Basi");
+    await stamp(email, new Date(Date.now() - 10 * 60_000));
+    for (const type of ["totp", "passkey"] as const) {
+      const refused = await startEnroll(cookie, type);
+      expect(refused.status).toBe(401);
+      expect(refused.body.error.code).toBe("REAUTH_REQUIRED");
+    }
+  });
+
+  it("jemg: a second factor is allowed with a fresh proof", async () => {
+    const { cookie } = await verifiedTotpSession("Bukti Segar");
+    expect((await startEnroll(cookie, "totp")).status).toBe(201);
+  });
+
+  it("jemg: finishing a second TOTP does not overwrite the session's mfaVerifiedAt", async () => {
+    const { email, cookie } = await verifiedTotpSession("Tanpa Timpa");
+    const earlier = new Date(Date.now() - 2 * 60_000);
+    await stamp(email, earlier);
+    const second = await enrollTotp(cookie);
+    const done = await verifyCode(
+      cookie,
+      second.factorId,
+      totpCode(second.secretBase32, totpStep(new Date()) + 1),
+    );
+    expect(done.status).toBe(200);
+    expect((await readStamp(email))?.getTime()).toBe(earlier.getTime());
+  });
+
+  it("jemg: re-verifying an already enrolled factor still refreshes mfaVerifiedAt", async () => {
+    const { email, cookie, enrollment } = await verifiedTotpSession("Re-auth");
+    const earlier = new Date(Date.now() - 2 * 60_000);
+    await stamp(email, earlier);
+    const again = await verifyCode(
+      cookie,
+      enrollment.factorId,
+      totpCode(enrollment.secretBase32, totpStep(new Date()) + 1),
+    );
+    expect(again.status).toBe(200);
+    expect((await readStamp(email))!.getTime()).toBeGreaterThan(
+      earlier.getTime(),
+    );
   });
 });

@@ -155,6 +155,15 @@ export const myAccessViewSchema = z.strictObject({
    */
   outlets: z.array(myOutletSchema),
   /**
+   * The outlet the outlet-less staff routes (/api/floor, zones, tables,
+   * layout) work on (legend-6vgv): the outlet this session pinned with
+   * PUT /api/me/active-outlet while it is still assigned, else the only
+   * assigned outlet, else null (several outlets and no valid pin, or none
+   * assigned). Always one of `outlets` or null. Presentation only: every
+   * request is authorized again against its outlet.
+   */
+  activeOutletId: outletIdSchema.nullable(),
+  /**
    * Set only while the request runs in a support session (a platform admin
    * impersonating a tenant user under an active support access grant); null
    * for every normal session. The web app uses it to show the notice and to
@@ -177,6 +186,20 @@ export const myAccessViewSchema = z.strictObject({
   canChangeEmployeeManager: z.boolean().default(false),
 });
 export type MyAccessView = z.infer<typeof myAccessViewSchema>;
+
+/**
+ * Pin the outlet for outlet-less staff routes (legend-6vgv). The tenant comes
+ * from the domain or token (TEN-02), never from this body.
+ */
+export const setActiveOutletInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+});
+export type SetActiveOutletInput = z.infer<typeof setActiveOutletInputSchema>;
+
+export const activeOutletSchema = z.strictObject({
+  activeOutletId: outletIdSchema,
+});
+export type ActiveOutlet = z.infer<typeof activeOutletSchema>;
 
 /** Upsert one matrix row. */
 export const upsertApprovalPolicySchema = clientInputSchema({

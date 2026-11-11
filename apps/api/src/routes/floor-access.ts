@@ -4,9 +4,10 @@
 //
 // `resolveFloorContext` loads the access snapshot and mints a context only for
 // an outlet the permission actually reaches. When a tenant-wide role reaches
-// several outlets, the first active outlet (created_at, id) is the working
-// outlet, matching the development bootstrap; a later WS-01 bead exposes the
-// staff's assigned outlets so the UI can pick one explicitly.
+// several outlets, the outlet the session pinned with PUT /api/me/active-outlet
+// (legend-6vgv) is the working outlet when the permission still reaches it;
+// without a valid pin the first active outlet (created_at, id) is, matching
+// the development bootstrap.
 //
 // `requireTenantContext`, `requireAuth` and `requireTrustedOrigin` run before
 // this helper on every route that uses it.
@@ -22,8 +23,10 @@ import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { HttpError } from "../lib/http-error";
 import { getTenantContext } from "../middleware/tenant";
+import { getAuth } from "../middleware/auth";
 import { loadRequestAccess } from "../middleware/permissions";
 import { listTenantOutletIds } from "../services/floor.service";
+import { pinnedOutletOf } from "../services/me-active-outlet.service";
 
 export type FloorAccess = {
   readonly context: ScopedTenantContext;
@@ -80,7 +83,18 @@ export async function resolveFloorContext(
         (raw) => raw.toLowerCase() === req.actingStaff!.outletId.toLowerCase(),
       )
     : outletIds;
-  for (const raw of candidates) {
+  // The pinned outlet goes first. It is only a preference: the permission
+  // must still reach it, else the loop falls through to the other outlets.
+  const pinned = req.auth
+    ? await pinnedOutletOf(tenant, getAuth(req).session.id)
+    : null;
+  const ordered = pinned
+    ? [
+        ...candidates.filter((raw) => raw.toLowerCase() === pinned),
+        ...candidates.filter((raw) => raw.toLowerCase() !== pinned),
+      ]
+    : candidates;
+  for (const raw of ordered) {
     const outletId = outletIdSchema.parse(raw);
     const context = snapshot.contextFor(permission, {
       type: "outlet",

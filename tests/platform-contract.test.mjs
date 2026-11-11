@@ -795,12 +795,22 @@ test("TEN-09 every config section has a strict item schema keyed by reference, n
     ).success,
     false,
   );
-  // The browser preview stays loose: it diffs any keyed item.
+  // The browser preview stays loose: it diffs any keyed item in sections
+  // that have no codec.
+  assert.equal(
+    platform.configBundleSchema.safeParse(
+      bundle({
+        loyalty_policy: { version: 1, items: [{ key: "a", name: "x" }] },
+      }),
+    ).success,
+    true,
+  );
+  // zones sekarang punya codec, so the loose schema judges its items too.
   assert.equal(
     platform.configBundleSchema.safeParse(
       bundle({ zones: { version: 1, items: [{ key: "a", name: "x" }] } }),
     ).success,
-    true,
+    false,
   );
   assert.equal(
     platform.configBundleSchema.safeParse(

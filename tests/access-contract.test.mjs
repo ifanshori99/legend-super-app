@@ -1388,6 +1388,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaVerified: false,
       stations: [],
       outlets: [],
+      activeOutletId: null,
       supportSession: null,
     });
     assert.deepEqual(view.permissions, [
@@ -1402,6 +1403,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaVerified: true,
       stations: [station("bar_kopi")],
       outlets: [],
+      activeOutletId: null,
       supportSession: null,
     });
     assert.deepEqual(withStation.stations, [station("bar_kopi")]);
@@ -1413,6 +1415,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         mfaVerified: true,
         stations: [],
         outlets: [],
+        activeOutletId: null,
         supportSession: null,
       }).success,
       false,
@@ -1423,6 +1426,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         mfaRequired: false,
         stations: [],
         outlets: [],
+        activeOutletId: null,
         supportSession: null,
       }).success,
       false,
@@ -1442,6 +1446,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaRequired: false,
       mfaVerified: false,
       stations: [],
+      activeOutletId: null,
       supportSession: null,
     };
     const view = access.myAccessViewSchema.parse({
@@ -1451,6 +1456,21 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
     assert.deepEqual(
       view.outlets.map((row) => row.id),
       [first.id, second.id],
+    );
+    // The active outlet (legend-6vgv) is an outlet id or null, never omitted.
+    const pinned = access.myAccessViewSchema.parse({
+      ...base,
+      outlets: [outlet(first), outlet(second)],
+      activeOutletId: first.id,
+    });
+    assert.equal(pinned.activeOutletId, first.id);
+    assert.equal(
+      access.myAccessViewSchema.safeParse({
+        ...base,
+        outlets: [],
+        activeOutletId: "not-a-uuid",
+      }).success,
+      false,
     );
     // An empty list is valid (an account with no assignment).
     assert.equal(
