@@ -9,7 +9,6 @@ export const leaveClockinReviewMessages = {
     title: "Tinjauan absensi",
     description: "Tinjau absensi yang memerlukan keputusan HR.",
     searchLabel: "Cari nama karyawan",
-    searchPlaceholder: "Cari nama karyawan",
     sectionTitle: "Perlu ditinjau",
     tableLabel: "Antrean tinjauan absensi saat cuti",
     columnStatus: "Status",
@@ -24,8 +23,6 @@ export const leaveClockinReviewMessages = {
     clockOutMissing: "Belum absen keluar",
     clockInLabel: "Masuk",
     clockOutLabel: "Keluar",
-    noSearchResult: "Tidak ada hasil",
-    noSearchResultHint: "Tidak ada tinjauan yang cocok dengan pencarian itu.",
   },
   status: {
     leaveClockIn: "Absen saat cuti",
@@ -143,8 +140,6 @@ export const leaveClockinReviewMessages = {
     forbidden: "Anda tidak punya akses untuk memutuskan tinjauan ini.",
     notFound: "Absensi tidak ditemukan atau sudah diputuskan.",
     unknown: "Terjadi kesalahan. Coba lagi.",
-    ATTENDANCE_LEAVE_MULTI_DAY:
-      "Cuti ini mencakup beberapa hari dan belum bisa dibatalkan per tanggal. Pilih tetap cuti atau hubungi tim teknis.",
     ATTENDANCE_LEAVE_DECISION_NOT_ALLOWED:
       "Keputusan cuti hanya untuk absensi masuk pada hari cuti disetujui yang belum diputuskan.",
     ATTENDANCE_LEAVE_NOT_APPROVED:

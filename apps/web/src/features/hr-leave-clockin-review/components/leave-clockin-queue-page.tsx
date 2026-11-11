@@ -31,7 +31,6 @@ import {
 import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { formatBusinessDate } from "../../ws10-attendance-qr/format.ts";
-import { ATTENDANCE_TIME_ZONE } from "../../ws10-attendance-qr/outlet.ts";
 import { formatClockMinutes } from "../format.ts";
 import { useLeaveClockinCases } from "../hooks.ts";
 import type { MessageKey } from "@starter/shared/i18n";
@@ -182,7 +181,7 @@ function ClockOut({ item }: { item: LeaveClockinCase }) {
     </span>
   ) : (
     <span className="tabular">
-      {formatClockMinutes(item.clockOutAt, ATTENDANCE_TIME_ZONE)}
+      {formatClockMinutes(item.clockOutAt, item.timeZone)}
     </span>
   );
 }
@@ -255,7 +254,7 @@ function QueueTable({
               </TableCell>
               <TableCell>{item.leave?.typeName ?? "–"}</TableCell>
               <TableCell className="tabular whitespace-nowrap">
-                {formatClockMinutes(item.clockInAt, ATTENDANCE_TIME_ZONE)}
+                {formatClockMinutes(item.clockInAt, item.timeZone)}
               </TableCell>
               <TableCell className="whitespace-nowrap">
                 <ClockOut item={item} />
@@ -312,7 +311,7 @@ function QueueCard({
               {t("leaveClockinReview.queue.clockInLabel")}
             </dt>
             <dd className="tabular font-semibold">
-              {formatClockMinutes(item.clockInAt, ATTENDANCE_TIME_ZONE)}
+              {formatClockMinutes(item.clockInAt, item.timeZone)}
             </dd>
           </div>
         </div>

@@ -21,7 +21,6 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { formatBusinessDate } from "@/features/ws10-attendance-qr/format.ts";
-import { ATTENDANCE_TIME_ZONE } from "@/features/ws10-attendance-qr/outlet.ts";
 import { ApiError } from "@/lib/api/errors";
 import { useOnline } from "@/lib/use-online";
 import type { MessageKey } from "@starter/shared/i18n";
@@ -323,7 +322,7 @@ function DecisionPanel({
       label: t("leaveClockinReview.detail.clockIn"),
       value: (
         <span className="tabular">
-          {formatClockMinutes(leaveCase.clockInAt, ATTENDANCE_TIME_ZONE)}
+          {formatClockMinutes(leaveCase.clockInAt, leaveCase.timeZone)}
         </span>
       ),
     },
@@ -334,7 +333,7 @@ function DecisionPanel({
           t("leaveClockinReview.detail.clockOutMissing")
         ) : (
           <span className="tabular">
-            {formatClockMinutes(leaveCase.clockOutAt, ATTENDANCE_TIME_ZONE)}
+            {formatClockMinutes(leaveCase.clockOutAt, leaveCase.timeZone)}
           </span>
         ),
     },

@@ -36,6 +36,44 @@ export function businessDateOfLog(
   return localDateOf(occurredAt, timeZone);
 }
 
+/** The calendar day before an ISO business date (YYYY-MM-DD). */
+function previousDate(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day - 1))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * Business dates a log can belong to. The server uses the shift's business
+ * date when the log has a shift, else the outlet-zone calendar date; a night
+ * shift clock-in after midnight therefore belongs to the day before.
+ */
+export function candidateBusinessDates(
+  log: Pick<AttendanceLog, "occurredAt" | "shiftAssignmentId">,
+  timeZone: string,
+): string[] {
+  const local = businessDateOfLog(log.occurredAt, timeZone);
+  return log.shiftAssignmentId == null ? [local] : [local, previousDate(local)];
+}
+
+/**
+ * Business date of a log: for a log with a shift, the date whose day list holds
+ * the log; the pure calendar date when no list does (or none was read).
+ */
+export function resolveBusinessDate(
+  log: Pick<AttendanceLog, "id" | "occurredAt" | "shiftAssignmentId">,
+  timeZone: string,
+  dayLogsOf: (
+    businessDate: string,
+  ) => readonly Pick<AttendanceLog, "id">[] | null | undefined,
+): string {
+  const [local, ...earlier] = candidateBusinessDates(log, timeZone);
+  for (const date of [local, ...earlier])
+    if (dayLogsOf(date)?.some((row) => row.id === log.id)) return date;
+  return local;
+}
+
 /** Queue status → decision shown to HR. `rejected` means "kept leave". */
 export function decisionOfReviewStatus(
   status: AttendanceReviewStatus,
@@ -53,10 +91,11 @@ export function decisionOfReviewStatus(
 export function findCoveringLeave(
   leaves: readonly LeaveRequest[],
   businessDate: string,
+  status: LeaveRequest["status"] = "approved",
 ): LeaveRequest | null {
   let best: LeaveRequest | null = null;
   for (const leave of leaves) {
-    if (leave.status !== "approved") continue;
+    if (leave.status !== status) continue;
     if (leave.startDate > businessDate || leave.endDate < businessDate)
       continue;
     if (
@@ -69,8 +108,10 @@ export function findCoveringLeave(
 }
 
 /**
- * The last clock-out of the employee after the clock-in, or null ("Belum absen
- * keluar"). `dayLogs` may hold other employees; they are ignored.
+ * The clock-out that closes the clock-in: the first `out` of the employee after
+ * it and before their next `in` (a split day has several), or null ("Belum
+ * absen keluar"). Rejected rows are not real punches and are skipped. `dayLogs`
+ * may hold other employees; they are ignored.
  */
 export function findClockOut(
   dayLogs: readonly AttendanceLog[],
@@ -78,14 +119,22 @@ export function findClockOut(
   clockInAt: string,
 ): string | null {
   const clockInMs = Date.parse(clockInAt);
-  let latest: string | null = null;
-  for (const log of dayLogs) {
-    if (log.employeeId !== employeeId || log.type !== "out") continue;
-    const at = Date.parse(log.occurredAt);
-    if (at <= clockInMs) continue;
-    if (latest === null || at > Date.parse(latest)) latest = log.occurredAt;
+  const later = dayLogs
+    .filter(
+      (log) =>
+        log.employeeId === employeeId &&
+        log.validity !== "rejected" &&
+        Date.parse(log.occurredAt) > clockInMs,
+    )
+    .sort(
+      (left, right) =>
+        Date.parse(left.occurredAt) - Date.parse(right.occurredAt),
+    );
+  for (const log of later) {
+    if (log.type === "in") return null;
+    if (log.type === "out") return log.occurredAt;
   }
-  return latest;
+  return null;
 }
 
 /**
@@ -116,6 +165,13 @@ export type LeaveClockinLookups = {
   leaves: readonly LeaveRequest[] | null;
   /** Logs of the outlet on the case's business date; null when it failed. */
   dayLogs: readonly AttendanceLog[] | null;
+  /**
+   * Business date resolved from the day lists (night shift = D-1); the
+   * calendar date in the outlet zone when omitted.
+   */
+  businessDate?: string;
+  /** Cancelled leave of THIS employee, read for a cancelled decision only. */
+  cancelledLeaves?: readonly LeaveRequest[] | null;
 };
 
 export function buildLeaveClockinCase(
@@ -124,13 +180,20 @@ export function buildLeaveClockinCase(
   lookups: LeaveClockinLookups,
 ): LeaveClockinCase {
   const { log } = item;
-  const businessDate = businessDateOfLog(log.occurredAt, timeZone);
+  const businessDate =
+    lookups.businessDate ?? businessDateOfLog(log.occurredAt, timeZone);
+  const decision = decisionOfReviewStatus(item.reviewStatus);
   const employee =
     lookups.employees?.find((row) => row.id === log.employeeId) ?? null;
+  // After "cancel leave" the leave is no longer approved: a deep link to the
+  // decided case still shows the original leave from the cancelled rows.
   const request =
-    lookups.leaves === null
+    (lookups.leaves === null
       ? null
-      : findCoveringLeave(lookups.leaves, businessDate);
+      : findCoveringLeave(lookups.leaves, businessDate)) ??
+    (decision === "cancelled_leave" && lookups.cancelledLeaves != null
+      ? findCoveringLeave(lookups.cancelledLeaves, businessDate, "cancelled")
+      : null);
   const leave: LeaveClockinLeave | null =
     request === null
       ? null
@@ -155,8 +218,13 @@ export function buildLeaveClockinCase(
         ? null
         : findClockOut(lookups.dayLogs, log.employeeId, log.occurredAt),
     leave,
-    kind: leaveClockinKind(log, request),
-    decision: decisionOfReviewStatus(item.reviewStatus),
+    // A cancelled row's decidedAt is the cancellation, not the approval.
+    kind: leaveClockinKind(
+      log,
+      request?.status === "approved" ? request : null,
+    ),
+    decision,
+    timeZone,
     item,
   };
 }
@@ -183,6 +251,26 @@ export function applyDecidedItem(
     decision: decisionOfAction(action),
     item: decided,
   };
+}
+
+/**
+ * A refetch of a decided case must not blank its leave: once the leave is
+ * cancelled the approved-leave lookup finds nothing, so the cached leave and
+ * kind (from before the decision) are kept.
+ */
+export function keepDecidedLeave(
+  previous: LeaveClockinCase | null | undefined,
+  next: LeaveClockinCase | null | undefined,
+): LeaveClockinCase | null | undefined {
+  if (
+    previous == null ||
+    next == null ||
+    next.decision === "pending" ||
+    next.leave !== null ||
+    previous.leave === null
+  )
+    return next;
+  return { ...next, leave: previous.leave, kind: previous.kind };
 }
 
 /** Queue order: newest business date first, then latest clock-in, then id. */

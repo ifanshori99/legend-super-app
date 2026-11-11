@@ -17,7 +17,9 @@ import {
   findClockOut,
   findCoveringLeave,
   isLeaveClockinItem,
+  keepDecidedLeave,
   leaveClockinKind,
+  resolveBusinessDate,
 } from "../apps/web/src/features/hr-leave-clockin-review/enrich.ts";
 
 const ZONE = "Asia/Jakarta";
@@ -127,7 +129,7 @@ test("covering leave: inclusive bounds, approved only, latest decision wins", ()
   assert.equal(findCoveringLeave([], "2026-10-26"), null);
 });
 
-test("clock-out: last out after the clock-in, own employee only, else null", () => {
+test("clock-out: first out after the clock-in, own employee only, else null", () => {
   const logs = [
     log({ id: "a", type: "out", occurredAt: "2026-10-26T01:00:00.000Z" }), // before the in
     log({ id: "b", type: "out", occurredAt: "2026-10-26T08:00:00.000Z" }),
@@ -146,13 +148,146 @@ test("clock-out: last out after the clock-in, own employee only, else null", () 
   ];
   assert.equal(
     findClockOut(logs, "e1", "2026-10-26T01:50:00.000Z"),
-    "2026-10-26T09:05:00.000Z",
+    "2026-10-26T08:00:00.000Z",
   );
   assert.equal(
     findClockOut(logs.slice(0, 1), "e1", "2026-10-26T01:50:00.000Z"),
     null,
   );
   assert.equal(findClockOut([], "e1", "2026-10-26T01:50:00.000Z"), null);
+});
+
+test("clock-out: a split day stops at the next in; a rejected out is skipped", () => {
+  const split = [
+    log({ id: "o1", type: "out", occurredAt: "2026-10-26T05:00:00.000Z" }),
+    log({ id: "i2", type: "in", occurredAt: "2026-10-26T07:00:00.000Z" }),
+    log({ id: "o2", type: "out", occurredAt: "2026-10-26T10:00:00.000Z" }),
+  ];
+  assert.equal(
+    findClockOut(split, "e1", "2026-10-26T01:50:00.000Z"),
+    "2026-10-26T05:00:00.000Z",
+  );
+  // The second session's clock-in gets the second out, not the first.
+  assert.equal(
+    findClockOut(split, "e1", "2026-10-26T07:00:00.000Z"),
+    "2026-10-26T10:00:00.000Z",
+  );
+  // No out between the clock-in and the next in: still "belum absen keluar".
+  assert.equal(
+    findClockOut(split.slice(1), "e1", "2026-10-26T01:50:00.000Z"),
+    null,
+  );
+  const rejected = [
+    log({
+      id: "r",
+      type: "out",
+      validity: "rejected",
+      occurredAt: "2026-10-26T05:00:00.000Z",
+    }),
+    log({ id: "v", type: "out", occurredAt: "2026-10-26T09:00:00.000Z" }),
+  ];
+  assert.equal(
+    findClockOut(rejected, "e1", "2026-10-26T01:50:00.000Z"),
+    "2026-10-26T09:00:00.000Z",
+  );
+  assert.equal(
+    findClockOut(rejected.slice(0, 1), "e1", "2026-10-26T01:50:00.000Z"),
+    null,
+  );
+});
+
+test("business date: a shift log takes the day list that holds it (night shift = D-1)", () => {
+  // 00:30 Jakarta on 27 Oct, inside the night shift that began on 26 Oct.
+  const night = log({
+    id: "night",
+    occurredAt: "2026-10-26T17:30:00.000Z",
+    shiftAssignmentId: "s1",
+  });
+  const lists = {
+    "2026-10-26": [{ id: "night" }],
+    "2026-10-27": [{ id: "other" }],
+  };
+  const of = (date) => lists[date];
+  assert.equal(resolveBusinessDate(night, ZONE, of), "2026-10-26");
+  // Listed under its own calendar date: that date wins.
+  assert.equal(
+    resolveBusinessDate(night, ZONE, (date) =>
+      date === "2026-10-27" ? [{ id: "night" }] : [],
+    ),
+    "2026-10-27",
+  );
+  // No list read (failed lookup): the pure calendar date.
+  assert.equal(
+    resolveBusinessDate(night, ZONE, () => null),
+    "2026-10-27",
+  );
+  // No shift: never looks at the lists.
+  assert.equal(
+    resolveBusinessDate({ ...night, shiftAssignmentId: null }, ZONE, of),
+    "2026-10-27",
+  );
+  const built = buildLeaveClockinCase(item({ log: night }), ZONE, {
+    employees: null,
+    leaveTypes: null,
+    leaves: [leave()],
+    dayLogs: null,
+    businessDate: "2026-10-26",
+  });
+  assert.equal(built.businessDate, "2026-10-26");
+  assert.equal(built.leave?.leaveRequestId, "l1");
+  assert.equal(built.timeZone, ZONE);
+});
+
+test("a decided case keeps its leave when a refetch no longer finds it approved", () => {
+  const lookups = {
+    employees: null,
+    leaveTypes: [{ id: "lt1", name: "Cuti Tahunan" }],
+    leaves: [leave()],
+    dayLogs: null,
+  };
+  const before = applyDecidedItem(
+    buildLeaveClockinCase(item({ flagReasons: ["leave_approved"] }), ZONE, {
+      ...lookups,
+      leaves: [leave({ decidedAt: "2026-10-26T04:30:00.000Z" })],
+    }),
+    item({ reviewStatus: "accepted" }),
+    "cancel_leave",
+  );
+  assert.equal(before.kind, "re_review");
+  const refetched = buildLeaveClockinCase(
+    item({ reviewStatus: "accepted" }),
+    ZONE,
+    { ...lookups, leaves: [] },
+  );
+  assert.equal(refetched.leave, null);
+  const kept = keepDecidedLeave(before, refetched);
+  assert.equal(kept?.leave?.leaveRequestId, "l1");
+  assert.equal(kept?.kind, "re_review");
+  // Pending refetch, or no cached leave: nothing is merged.
+  assert.equal(
+    keepDecidedLeave(before, { ...refetched, decision: "pending" })?.leave,
+    null,
+  );
+  assert.equal(keepDecidedLeave(null, refetched), refetched);
+  // A deep link to a cancelled case reads the leave from the cancelled rows.
+  const deepLink = buildLeaveClockinCase(
+    item({ reviewStatus: "accepted" }),
+    ZONE,
+    {
+      ...lookups,
+      leaves: [],
+      cancelledLeaves: [leave({ status: "cancelled" })],
+    },
+  );
+  assert.equal(deepLink.leave?.leaveRequestId, "l1");
+  assert.equal(deepLink.kind, "clock_in_on_leave");
+  // ...but only for a cancelled decision.
+  const pending = buildLeaveClockinCase(item(), ZONE, {
+    ...lookups,
+    leaves: [],
+    cancelledLeaves: [leave({ status: "cancelled" })],
+  });
+  assert.equal(pending.leave, null);
 });
 
 test("kind: manual correction wins, later-approved leave is a re-review", () => {
