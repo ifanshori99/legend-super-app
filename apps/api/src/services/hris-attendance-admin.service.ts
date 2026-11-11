@@ -565,6 +565,10 @@ async function withLeaveCase(
 const SCAN_BATCH = 200;
 const SCAN_MAX_ROWS = 4_000;
 
+function decided(row: LogRow): boolean {
+  return row.reviewStatus === "accepted" || row.reviewStatus === "rejected";
+}
+
 /** Whether an unreviewed log belongs in the queue under its outlet's sampling. */
 function queued(
   row: LogRow,
@@ -613,7 +617,7 @@ export async function listAttendanceReviewQueue(
     const filters: SQL[] = [
       eq(attendanceLogs.tenantId, context.tenant.tenantId),
     ];
-    // A log asked for by id is a direct lookup of one item, open or decided.
+    // A log asked for by id must still be queued unless already decided.
     const byId = query.logId !== undefined && query.reviewStatus === undefined;
     const openItems = and(
       inArray(attendanceLogs.reviewStatus, ["none", "pending"]),
@@ -637,12 +641,10 @@ export async function listAttendanceReviewQueue(
       filters.push(eq(attendanceLogs.reviewStatus, query.reviewStatus!));
     } else if (byId) {
       filters.push(
-        inArray(attendanceLogs.reviewStatus, [
-          "none",
-          "pending",
-          "accepted",
-          "rejected",
-        ]),
+        or(
+          inArray(attendanceLogs.reviewStatus, ["accepted", "rejected"]),
+          openItems,
+        )!,
       );
     } else if (query.reviewStatus) {
       filters.push(
@@ -714,7 +716,8 @@ export async function listAttendanceReviewQueue(
       for (const row of batch) {
         if (selected.length > query.limit) break;
         lastScanned = row;
-        if (reviewed || byId || queued(row, samplingOf)) selected.push(row);
+        if (reviewed || (byId && decided(row)) || queued(row, samplingOf))
+          selected.push(row);
       }
       scanned += batch.length;
       if (batch.length < SCAN_BATCH) {

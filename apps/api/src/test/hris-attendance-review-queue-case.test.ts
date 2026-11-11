@@ -636,6 +636,53 @@ async function flaggedLeaveCase(
 
 // ---- tests --------------------------------------------------------------------
 
+describe("[538-G4b] by-id review queue eligibility", () => {
+  it.each([
+    { method: "selfie_geo", validity: "valid" },
+    { method: "selfie_geo", validity: "rejected" },
+    { method: "manual_correction", validity: "valid" },
+  ])(
+    "[538-G4b P2] hides unqueued $method/$validity logs by id",
+    async (fixture) => {
+      const employeeId = await seedEmployee(
+        null,
+        outletA,
+        "Karyawan tanpa antrean",
+      );
+      const logId = createUlid();
+      await asTenant((client) =>
+        client.query(
+          `INSERT INTO attendance_logs
+             (id, tenant_id, outlet_id, employee_id, type, method, occurred_at, received_at,
+              geo_distance_m, validity, flag_reasons, business_date, client_event_id, review_status)
+           VALUES ($1, $2, $3, $4, 'in', $5, now(), now(), 10, $6,
+                   '[]'::jsonb, $7, $8, 'none')`,
+          [
+            ulidToUuid(logId),
+            tenant.id,
+            outletA,
+            employeeId,
+            fixture.method,
+            fixture.validity,
+            wibDate(Date.now()),
+            `qc-unqueued-${logId}`,
+          ],
+        ),
+      );
+
+      const response = await hr.get(
+        `/api/hris/attendance/review-queue?outletId=${outletA}&logId=${logId}`,
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(
+        response.body.data,
+        `${fixture.method}/${fixture.validity}`,
+      ).toEqual([]);
+      expect(response.body.meta.nextCursor).toBeNull();
+    },
+  );
+});
+
 describe("[eps6t] review queue item carries the leave case data", () => {
   it("[eps6t] a clock-in on approved leave shows employee name, business date, leave snapshot, case kind and cancel right", async () => {
     const { staff, leaveId, log } = await flaggedLeaveCase("d1");
