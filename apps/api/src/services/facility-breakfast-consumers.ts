@@ -25,7 +25,9 @@
 // refund keys are once per intent and kind).
 //
 // Sweep (`fireDueBreakfastOrders`, worker relay tick): fires paid orders that
-// are due and cancels unpaid ones only once the ticket session ended (now >=
+// are due (a paid order whose fire time is at or after ends_at is cancelled and
+// refunded in full instead, even if the worker was down; it counts as
+// cancelled) and cancels unpaid ones only once the ticket session ended (now >=
 // ends_at) or the ticket is dead; until then an unpaid order stays
 // `awaiting_payment`. A payment that lands on a cancelled order afterwards is
 // refunded by the handler above.
@@ -556,7 +558,8 @@ export async function fireDueBreakfastOrders(
           actorUserId: null,
           now,
         });
-        if (result.outcome === "cancelled") cancelled += 1;
+        if (result.outcome === "cancelled" || result.outcome === "ended")
+          cancelled += 1;
         return result.outcome === "fired";
       },
       "paid",

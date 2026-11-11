@@ -1730,6 +1730,13 @@
       "when": 1794401690199,
       "tag": "0321_facility_breakfast_pay",
       "breakpoints": true
+    },
+    {
+      "idx": 261,
+      "version": "7",
+      "when": 1794402000000,
+      "tag": "0322_facility_breakfast_fire_window",
+      "breakpoints": true
     }
   ]
 }

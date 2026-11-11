@@ -729,7 +729,7 @@ export async function fireBreakfastOrderByStaff(
   _body: { idempotencyKey: string },
   now = new Date(),
 ): Promise<BreakfastOrder> {
-  return withTenant(db, context, async (tx) => {
+  const result = await withTenant(db, context, async (tx) => {
     if (!ulidSchema.safeParse(orderId).success) throw notFound("Pesanan");
     const locked = await lockBreakfastOrder(tx, context, orderId);
     if (!locked) throw notFound("Pesanan");
@@ -742,12 +742,19 @@ export async function fireBreakfastOrderByStaff(
     );
     // Refuses anything not paid (BREAKFAST_NOT_PAID); a fired order answers
     // with itself. A refund already filed or a dead ticket cancels instead.
-    const { linked } = await fireBreakfastOrderTx(tx, context, locked, {
-      actorUserId,
-      now,
-    });
+    const { linked, outcome } = await fireBreakfastOrderTx(
+      tx,
+      context,
+      locked,
+      { actorUserId, now },
+    );
+    // At or after ends_at the order was cancelled and refunded in full above;
+    // refused after the commit, or the cancel would roll back.
+    if (outcome === "ended") return null;
     return toBreakfastOrder(tx, context, linked);
   });
+  if (result === null) throw new FacilityError("BREAKFAST_UNAVAILABLE");
+  return result;
 }
 
 export type { BreakfastOrderRow };

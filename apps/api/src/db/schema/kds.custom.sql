@@ -86,6 +86,10 @@ REVOKE UPDATE ON public.kitchen_station_feed FROM legend_app;
 --    docs/deployment.md; same as ai.custom.sql) so RLS scope cannot hide the
 --    order and make the check pass. Breakfast = orders.channel = 'facility' OR
 --    a facility_linked_orders row exists.
+--    Migration 0322 narrows the pass condition: the fired order must also have
+--    fired_at < access_tickets.ends_at (missing ticket = not paid), so a send
+--    to the kitchen at or after the ticket end is refused even if the worker
+--    was down. fired_at, not now(), keeps the answer deterministic.
 CREATE FUNCTION app.breakfast_order_unpaid(p_tenant uuid, p_order uuid) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
   SELECT (
@@ -100,8 +104,11 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
          )
          AND NOT EXISTS (
            SELECT 1 FROM public.facility_linked_orders f
+           JOIN public.access_tickets a
+             ON a.tenant_id = f.tenant_id AND a.id = f.access_ticket_id
            WHERE f.tenant_id = p_tenant AND f.order_id = p_order
              AND f.paid_at IS NOT NULL AND f.status = 'fired'
+             AND f.fired_at IS NOT NULL AND f.fired_at < a.ends_at
          );
 $$;
 --> statement-breakpoint

@@ -328,14 +328,21 @@ export async function cancelBreakfastOrderTx(
   return { linked: cancelled, refundIdr };
 }
 
-export type BreakfastFireOutcome = "fired" | "already_fired" | "cancelled";
+export type BreakfastFireOutcome =
+  | "fired"
+  | "already_fired"
+  | "cancelled"
+  // Cancelled and refunded in full because the fact time is at or after the
+  // ticket's ends_at (the ticket itself is not dead).
+  | "ended";
 
 /**
  * THE way a breakfast order reaches the kitchen. Refuses anything that is not
  * `paid` (BREAKFAST_NOT_PAID), is idempotent for a fired order, and refuses a
  * cancelled one. Re-checks the paid intent under its row lock: a refund already
- * filed against it, or a ticket that will never be used, cancels the order and
- * returns the rest instead of firing.
+ * filed against it, a ticket that will never be used, or a fact time at or
+ * after the ticket's ends_at cancels the order and returns the rest instead of
+ * firing (outcome `ended` for the last one).
  */
 export async function fireBreakfastOrderTx(
   tx: Tx,
@@ -393,7 +400,7 @@ export async function fireBreakfastOrderTx(
   );
 
   const [ticket] = await tx
-    .select({ status: accessTickets.status })
+    .select({ status: accessTickets.status, endsAt: accessTickets.endsAt })
     .from(accessTickets)
     .where(
       and(
@@ -402,14 +409,23 @@ export async function fireBreakfastOrderTx(
       ),
     );
   const ticketDead = !ticket || DEAD_TICKET_STATUSES.includes(ticket.status);
+  // Never to the kitchen at or after ends_at, even if the worker was down.
+  const ended = !!ticket && at.getTime() >= ticket.endsAt.getTime();
   const balance = await refundableBalance(tx, intent);
-  if (ticketDead || balance.reserved > 0n) {
+  if (ticketDead || ended || balance.reserved > 0n) {
     const cancelled = await cancelBreakfastOrderTx(tx, context, locked, {
-      reason: ticketDead ? "ticket_closed" : "refund_committed",
+      reason: ticketDead
+        ? "ticket_closed"
+        : ended
+          ? "ticket_ended"
+          : "refund_committed",
       actorUserId: input.actorUserId,
       now: at,
     });
-    return { linked: cancelled.linked, outcome: "cancelled" };
+    return {
+      linked: cancelled.linked,
+      outcome: ended && !ticketDead ? "ended" : "cancelled",
+    };
   }
 
   const [fired] = await tx
