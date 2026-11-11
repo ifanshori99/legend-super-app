@@ -205,6 +205,7 @@ async function billFactTime(
   tx: Tx,
   refund: RefundApprovalSubject,
   now: Date,
+  useDbClock: boolean,
 ): Promise<Date> {
   const { rows } = await tx.execute<{ at_ms: string }>(sql`
     WITH ${refundScope(refund)}, facts AS (
@@ -236,7 +237,7 @@ async function billFactTime(
     )
     SELECT floor(extract(epoch FROM greatest(
       ${now}::timestamptz,
-      clock_timestamp(),
+      ${useDbClock ? sql`clock_timestamp()` : sql`${now}::timestamptz`},
       (SELECT max(at) + interval '1 millisecond' FROM facts)
     )) * 1000)::bigint::text AS at_ms
   `);
@@ -249,7 +250,7 @@ export function refundApprovalDecisionTime(
   refund: Refund,
   now: Date,
 ): Promise<Date> {
-  return billFactTime(tx, refund, now);
+  return billFactTime(tx, refund, now, true);
 }
 
 /**
@@ -261,7 +262,9 @@ export function monotonicFactTime(
   bill: Omit<NativeRefundApproval, "amountIdr">,
   now: Date,
 ): Promise<Date> {
-  return billFactTime(tx, { ...bill, amountIdr: 0 }, now);
+  // No database clock here: the caller's clock must stay comparable with the
+  // application clock used elsewhere on the request (approval created_at).
+  return billFactTime(tx, { ...bill, amountIdr: 0 }, now, false);
 }
 
 function nativeOrderUuid(refund: NativeRefundApproval): string {
