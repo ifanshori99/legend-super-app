@@ -455,12 +455,14 @@ async function assertEmployeeInTenant(
  * employee's legal entity is the one on the employee row, else the one of the
  * home outlet; when neither resolves, every legal entity of the tenant counts
  * (the rule that pays less). Runs of every type count: a frozen run never
- * changes, whatever it paid.
+ * changes, whatever it paid. Share locks also cover mutable runs that could
+ * freeze over the new effective date before this amount transaction commits.
  */
 async function latestFrozenPeriodEnd(
   tx: Tx,
   context: ScopedTenantContext,
   employeeId: string,
+  effectiveFrom: BusinessDate,
 ): Promise<BusinessDate | null> {
   const [employee] = await tx
     .select({
@@ -485,23 +487,33 @@ async function latestFrozenPeriodEnd(
   if (!employee) throw notFound();
   const legalEntityId =
     employee.legalEntityId ?? employee.outletLegalEntityId ?? null;
-  const [latest] = await tx
+  const runs = await tx
     .select({
-      periodEnd: sql<
-        string | null
-      >`to_char(max(${payrollRuns.periodEnd}), 'YYYY-MM-DD')`,
+      periodEnd: payrollRuns.periodEnd,
+      status: payrollRuns.status,
     })
     .from(payrollRuns)
     .where(
       and(
         eq(payrollRuns.tenantId, context.tenant.tenantId),
-        inArray(payrollRuns.status, [...FROZEN_PAYROLL_RUN_STATUSES]),
+        gte(payrollRuns.periodEnd, effectiveFrom),
         ...(legalEntityId
           ? [eq(payrollRuns.legalEntityId, legalEntityId)]
           : []),
       ),
-    );
-  return latest?.periodEnd ? businessDateSchema.parse(latest.periodEnd) : null;
+    )
+    .orderBy(desc(payrollRuns.periodEnd), asc(payrollRuns.id))
+    .for("share");
+  // A lock wait can expose updated dates after PostgreSQL has sorted the rows.
+  // Recompute the maximum from the locked values instead of trusting SQL order.
+  const latest = runs.reduce<string | null>((periodEnd, run) => {
+    if (!FROZEN_PAYROLL_RUN_STATUSES.some((status) => status === run.status))
+      return periodEnd;
+    return periodEnd === null || run.periodEnd > periodEnd
+      ? run.periodEnd
+      : periodEnd;
+  }, null);
+  return latest ? businessDateSchema.parse(latest) : null;
 }
 
 /** Amount history of one employee, newest start first. */
@@ -643,6 +655,7 @@ export async function setEmployeePayComponent(
           tx,
           context,
           employeeId,
+          body.effectiveFrom,
         );
         if (frozenUntil && body.effectiveFrom <= frozenUntil)
           throw new PayrollError(

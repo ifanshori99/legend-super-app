@@ -314,6 +314,150 @@ async function seedOvertimeRequest(employeeId: string, input: OvertimeInput) {
   );
 }
 
+const createdLockEntities: string[] = [];
+const createdLockPolicies: string[] = [];
+const createdLockRuns: string[] = [];
+
+type LockScenario = {
+  employeeId: string;
+  componentId: string;
+  runId: string;
+};
+
+async function seedLockScenario(frozen = false): Promise<LockScenario> {
+  const entityId = randomUUID();
+  const policyId = randomUUID();
+  const runId = randomUUID();
+  createdLockEntities.push(entityId);
+  createdLockPolicies.push(policyId);
+  createdLockRuns.push(runId);
+  const employeeId = await seedEmployee();
+  const component = await earning();
+  await asTenant(tenant.id, async (db) => {
+    await db.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Payroll Race', false)",
+      [entityId, tenant.id],
+    );
+    await db.query("UPDATE employees SET legal_entity_id = $2 WHERE id = $1", [
+      employeeId,
+      entityId,
+    ]);
+  });
+  await setAmount(employeeId, component.id, 3_000_000);
+  await asTenant(tenant.id, async (db) => {
+    await db.query(
+      `INSERT INTO payroll_policies
+         (id, tenant_id, legal_entity_id, name, employee_group_code, employee_group,
+          cycle, pay_date_adjustment, jkk_risk_class, bpjs_programmes)
+       VALUES ($1, $2, $3, 'Kebijakan Payroll Race', $4, $5, $6, 'none', 'low', '[]')`,
+      [
+        policyId,
+        tenant.id,
+        entityId,
+        `GE${policyId.slice(0, 8)}`,
+        JSON.stringify({ code: `GE${policyId.slice(0, 8)}` }),
+        JSON.stringify({ kind: "monthly" }),
+      ],
+    );
+    await db.query(
+      `INSERT INTO payroll_runs
+         (id, tenant_id, legal_entity_id, payroll_policy_id, run_type,
+          period_start, period_end, pay_date, created_by)
+       VALUES ($1, $2, $3, $4, 'regular', '2030-06-01', '2030-06-30', '2030-06-30', 'gross-engine-lock-test')`,
+      [runId, tenant.id, entityId, policyId],
+    );
+    await db.query(
+      "UPDATE payroll_runs SET status = 'simulated' WHERE id = $1",
+      [runId],
+    );
+    await db.query(
+      "UPDATE payroll_runs SET status = 'hr_approved', approved_by_hr = $2, approved_by_hr_at = now() WHERE id = $1",
+      [runId, actorId],
+    );
+    await db.query(
+      "UPDATE payroll_runs SET status = 'approved', approved_by_finance = $2, approved_by_finance_at = now() WHERE id = $1",
+      [runId, reviewerId],
+    );
+    if (frozen) await freezeRun(db, runId);
+  });
+  return { employeeId, componentId: component.id, runId };
+}
+
+async function freezeRun(db: PoolClient, runId: string) {
+  await db.query(
+    `UPDATE payroll_runs SET status = 'locked', config_snapshot = '{"v":1}',
+       totals = '{"t":1}', locked_by = $2, locked_at = now() WHERE id = $1`,
+    [runId, reviewerId],
+  );
+}
+
+async function observedBlock(holderPid: number, settled: () => boolean) {
+  const observer = await owner.connect();
+  try {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !settled()) {
+      const result = await observer.query<{ blocked: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_stat_activity a
+           WHERE a.state = 'active' AND a.wait_event_type = 'Lock'
+             AND $1::int = ANY(pg_blocking_pids(a.pid))
+         ) AS blocked`,
+        [holderPid],
+      );
+      if (result.rows[0]!.blocked) return true;
+      await observer.query("SELECT pg_sleep(0.01)");
+    }
+    return false;
+  } finally {
+    observer.release();
+  }
+}
+
+async function mutateDuringRunLock(
+  seed: LockScenario,
+  effectiveFrom: string,
+  lock: (holder: PoolClient) => Promise<unknown>,
+) {
+  const holder = await owner.connect();
+  let transactionOpen = false;
+  let settled = false;
+  let operation:
+    Promise<{ error: { status?: number; code?: string } | null }> | undefined;
+  try {
+    await holder.query("BEGIN");
+    transactionOpen = true;
+    await holder.query("SELECT set_config('app.tenant_id', $1, true)", [
+      tenant.id,
+    ]);
+    const pid = await holder.query<{ pid: number }>(
+      "SELECT pg_backend_pid() AS pid",
+    );
+    await lock(holder);
+    operation = setAmount(
+      seed.employeeId,
+      seed.componentId,
+      9_000_000,
+      effectiveFrom,
+    )
+      .then(
+        () => ({ error: null }),
+        (error: { status?: number; code?: string }) => ({ error }),
+      )
+      .finally(() => {
+        settled = true;
+      });
+    const blocked = await observedBlock(pid.rows[0]!.pid, () => settled);
+    await holder.query("COMMIT");
+    transactionOpen = false;
+    const outcome = await operation;
+    return { blocked, ...outcome };
+  } finally {
+    if (transactionOpen) await holder.query("ROLLBACK");
+    holder.release();
+    await operation;
+  }
+}
+
 const compute = (employeeId: string, overrides: Record<string, unknown> = {}) =>
   service.computeEmployeeGross(ctx, actorId, {
     employeeId,
@@ -343,6 +487,18 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await asTenant(tenant.id, async (db) => {
+    if (createdLockRuns.length > 0) {
+      // Frozen runs are immutable; owner bypass is confined to cleanup.
+      await db.query("SET LOCAL session_replication_role = replica");
+      await db.query(
+        "DELETE FROM payroll_runs WHERE tenant_id = $1 AND id = ANY($2)",
+        [tenant.id, createdLockRuns],
+      );
+      await db.query(
+        "DELETE FROM payroll_policies WHERE tenant_id = $1 AND id = ANY($2)",
+        [tenant.id, createdLockPolicies],
+      );
+    }
     await db.query(
       "DELETE FROM hris_idempotency WHERE tenant_id = $1 AND key LIKE 'gross-engine-%'",
       [tenant.id],
@@ -366,6 +522,10 @@ afterAll(async () => {
     await db.query(
       "DELETE FROM employees WHERE tenant_id = $1 AND id = ANY($2)",
       [tenant.id, createdEmployees],
+    );
+    await db.query(
+      "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = ANY($2)",
+      [tenant.id, createdLockEntities],
     );
     await db.query(
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
@@ -1044,6 +1204,29 @@ describe("computeEmployeeGross: employment dates (538-G2b-P1, founder Q43)", () 
     expect(result.overtimeIdr).toBe(0);
     expect(result.grossIdr).toBe(5_766_666);
     expect(result.netIdr).toBe(5_766_666);
+  });
+});
+
+describe("employee component writes: lock transition race (538-G2b-P2)", () => {
+  it("[538-G2b-P2-LOCK] waits for an overlapping approved run to freeze and refuses rewriting paid inputs", async () => {
+    const seed = await seedLockScenario();
+
+    const outcome = await mutateDuringRunLock(seed, "2030-06-15", (holder) =>
+      freezeRun(holder, seed.runId),
+    );
+
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.error?.status).toBe(409);
+    expect(outcome.error?.code).toBe("PAYROLL_RUN_FROZEN");
+    const rows = await asTenant(tenant.id, (db) =>
+      db.query(
+        "SELECT to_char(effective_from, 'YYYY-MM-DD') AS effective_from, effective_to FROM employee_pay_components WHERE employee_id = $1",
+        [seed.employeeId],
+      ),
+    );
+    expect(rows.rows).toEqual([
+      { effective_from: EFFECTIVE, effective_to: null },
+    ]);
   });
 });
 
