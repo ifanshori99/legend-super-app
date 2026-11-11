@@ -73,6 +73,7 @@ import { reservationPolicyRouter } from "./reservation-policy.routes";
 import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityCustomerRouter } from "./facility-customer.routes";
 import { facilityEntitlementRouter } from "./facility-entitlement.routes";
+import { facilityBreakfastRouter } from "./facility-breakfast.routes.ts";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { wifiGuestRouter } from "./wifi-guest.routes.ts";
@@ -341,6 +342,8 @@ apiRouter.use(reservationPolicyRouter);
 apiRouter.use(reservationPublicRouter);
 // WS-09 guest-facing facility reads, public (legend-zjfi). Before facilityRouter, which requires a session.
 apiRouter.use("/facility", facilityCustomerRouter);
+// WS-09 breakfast order from the ticket, paid before the kitchen (oa0qk). Before facilityRouter.
+apiRouter.use("/facility", facilityBreakfastRouter);
 // WS-09 facility slots (legend-nm4f).
 apiRouter.use("/facility", facilityRouter);
 // WS-09 staff entitlements (legend-fjk5), after facilityRouter.

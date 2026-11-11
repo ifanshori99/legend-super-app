@@ -87,3 +87,26 @@ Pindahkan isi `apps/web/src/features/facility/breakfast.ts` + ubah:
 ### Heavy
 Implementer TIDAK menjalankan tsc/vitest/db:generate kecuali I2 (db:generate, sekali, lewat `heavy`). test-writer boleh satu run gagal-dulu lewat `heavy`.
 Engineer menjalankan gate setelah gabung.
+
+### Pembagian v2 (I3 kena batas giliran; dipecah)
+Sudah ada: `apps/api/src/services/facility-breakfast-money.ts` (lockBreakfastOrder, requestBreakfastRefund, cancelBreakfastOrderTx,
+fireBreakfastOrderTx, breakfastLines). Impor dari sana, jangan duplikasi. Kecuali I3, jangan edit file itu (minta lewat laporan).
+- I3 (lanjut): selesaikan money.ts; `services/facility-breakfast-consumers.ts` (`handleBreakfastPaymentPaid`, `handleBreakfastPaymentClosed`);
+  cabang channel 'facility' di `order-payment-consumers.ts dispatchInTx`; sweep `fireDueBreakfastOrders` di `worker-main.ts` (pola sweepUnpaidQrOrders).
+- I4: `services/facility-breakfast.service.ts` (menu, create + idempotency/fingerprint, pay = ensure link sekali + token sealed seperti
+  qr-order-payment ensurePaymentLink, cancel/fire wrapper buka tx tenant + panggil *Tx dari money.ts, DTO ke `breakfastOrderSchema`);
+  `routes/facility-breakfast.routes.ts` (member chain untuk /tickets/..., staf `facility.booth.operate` untuk /breakfast-orders/:orderId/fire);
+  daftar di `routes/index.ts` sebelum facilityRouter.
+- I5: guard app-level di `services/kds.service.ts routeFiredItemsToKitchen` (order channel 'facility' tanpa linked paid -> HttpError 409
+  BREAKFAST_NOT_PAID); exhaustif channel di `services/kds-support.ts`, `services/pos-order-pricing.ts`, dan cari `OrderChannel`/channel switch
+  lain di apps/api yang perlu 'facility'.
+
+### Pembagian v3 (I4 kena batas tanpa menulis)
+Signature tetap `services/facility-breakfast.service.ts` (I4):
+- `getBreakfastMenuForMember(context, member: { customerProfileId: string }, ticketId: string, now?: Date): Promise<BreakfastMenu>`
+- `createBreakfastOrderForMember(context, member, ticketId, body: CreateBreakfastOrderBody, now?): Promise<BreakfastOrder>`
+- `payBreakfastOrderForMember(context, member, ticketId, orderId, body: { idempotencyKey }, now?): Promise<{ order: BreakfastOrder; paymentToken: string | null }>`
+- `cancelBreakfastOrderForMember(context, member, ticketId, orderId, body: { idempotencyKey }, now?): Promise<{ order: BreakfastOrder; refundIdr: number }>`
+- `fireBreakfastOrderByStaff(context, actorUserId: string, orderId, body: { idempotencyKey }, now?): Promise<BreakfastOrder>`
+Error: lempar HttpError / FacilityError dengan kode brief. Ticket bukan milik member -> 404 NOT_FOUND.
+I6: `routes/facility-breakfast.routes.ts` + registrasi `routes/index.ts` memakai signature di atas (parse body/params dengan schema shared, balas `{ data }`).
