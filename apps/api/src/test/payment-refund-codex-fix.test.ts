@@ -150,6 +150,61 @@ async function signedIn(
   return { client, userId };
 }
 
+// Q63: these high-value scenarios test chain/idempotency behavior. Add the
+// required monetary role only within that scenario, so revocation and
+// quarantine tests keep their original authority boundaries.
+async function withAmountAuthority<T>(
+  actorIds: string[],
+  templateKey: "outlet_manager" | "general_manager",
+  run: () => Promise<T>,
+): Promise<T> {
+  const assignmentIds: string[] = [];
+  try {
+    for (const actorId of actorIds) {
+      const inserted = await owner.query<{ id: string }>(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_at, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, now() - interval '1 hour', now() - interval '1 hour', $2) RETURNING id`,
+        [
+          tenantId,
+          actorId,
+          await roleIdOf(templateKey),
+          templateKey === "general_manager" ? "tenant" : "outlet",
+          templateKey === "general_manager" ? null : outletA,
+        ],
+      );
+      assignmentIds.push(inserted.rows[0]!.id);
+    }
+    return await run();
+  } finally {
+    await owner.query(
+      "DELETE FROM role_assignments WHERE id = ANY($1::uuid[])",
+      [assignmentIds],
+    );
+  }
+}
+
+async function assertAmountGrantPredatesDecision(refundId: string) {
+  const recorded = await owner.query<{
+    level: number;
+    assigned_at: Date;
+    decided_at: Date;
+    template_key: string;
+  }>(
+    `SELECT q.level, a.assigned_at, q.decided_at, r.template_key
+       FROM approval_requests q
+       JOIN role_assignments a ON a.tenant_id = q.tenant_id AND a.user_id = q.decided_by
+       JOIN roles r ON r.tenant_id = a.tenant_id AND r.id = a.role_id
+      WHERE q.tenant_id = $1 AND q.object_type = 'payment_refund' AND q.object_id = $2
+        AND r.template_key IN ('outlet_manager', 'general_manager')`,
+    [tenantId, refundId],
+  );
+  expect(recorded.rows.length).toBeGreaterThan(0);
+  for (const row of recorded.rows)
+    expect(row.assigned_at.getTime(), JSON.stringify(row)).toBeLessThanOrEqual(
+      row.decided_at.getTime(),
+    );
+}
+
 async function setPolicy(
   thresholdIdr: number | null,
   templateKey: string,
@@ -585,9 +640,16 @@ describe("PAY-04 codex F1: a refund needs supervisor authority", () => {
   });
 
   it("PAY-04 a chain with a supervisor approver plus finance resolves approved and pays out", async () => {
-    const refundId = await settleChain(2_000_000, financeBId, supervisorId);
-    expect(callsOf(refundId)).toHaveLength(1);
-    expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+    await withAmountAuthority([supervisorId], "general_manager", async () => {
+      const refundId = await settleChain(2_000_000, financeBId, supervisorId);
+      await assertAmountGrantPredatesDecision(refundId);
+      expect(await refundRow(refundId)).toMatchObject({
+        status: "completed",
+        last_payout_error: null,
+      });
+      expect(callsOf(refundId)).toHaveLength(1);
+      expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+    });
   });
 });
 
@@ -1305,68 +1367,73 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
   });
 
   it("PAY-04 re-open of a chain-approved refund keeps the old chain as history and a second chain (finance + supervisor) pays it out", async () => {
-    const intent = await seedPaid(2_000_000);
-    const refundId = await insertPendingRefund(
-      intent.intentId,
-      2_000_000,
-      "system:reservation",
-    );
-    await openChainAtCreation(refundId);
-    const oldChain = (await refundRow(refundId)).approval_chain_id!;
-    const old1 = (await decisions(refundId)).find((d) => d.level === 1)!;
-    await decide(financeBId, old1.id, "approved");
-    const old2 = (await decisions(refundId)).find((d) => d.level === 2)!;
-    await decide(supervisorId, old2.id, "approved");
-    // Left approved and quarantined before any send (as a legacy row would be).
-    await owner.query(
-      `UPDATE payment_refunds SET status = 'approved', approved_by = $3, decided_at = now(),
+    await withAmountAuthority([supervisorId], "general_manager", async () => {
+      const intent = await seedPaid(2_000_000);
+      const refundId = await insertPendingRefund(
+        intent.intentId,
+        2_000_000,
+        "system:reservation",
+      );
+      await openChainAtCreation(refundId);
+      const oldChain = (await refundRow(refundId)).approval_chain_id!;
+      const old1 = (await decisions(refundId)).find((d) => d.level === 1)!;
+      await decide(financeBId, old1.id, "approved");
+      const old2 = (await decisions(refundId)).find((d) => d.level === 2)!;
+      await decide(supervisorId, old2.id, "approved");
+      // Left approved and quarantined before any send (as a legacy row would be).
+      await owner.query(
+        `UPDATE payment_refunds SET status = 'approved', approved_by = $3, decided_at = now(),
               last_payout_error = 'PAYOUT_QUARANTINED'
        WHERE tenant_id = $1 AND id = $2`,
-      [tenantId, refundId, supervisorId],
-    );
+        [tenantId, refundId, supervisorId],
+      );
 
-    const reopened = await act(ownerB, "reopen", refundId);
-    expect(reopened.status).toBe(200);
-    expect(await refundRow(refundId)).toMatchObject({
-      status: "pending",
-      approval_chain_id: null,
+      const reopened = await act(ownerB, "reopen", refundId);
+      expect(reopened.status).toBe(200);
+      expect(await refundRow(refundId)).toMatchObject({
+        status: "pending",
+        approval_chain_id: null,
+      });
+      // A late delivery of the old chain's event settles nothing now.
+      await handleRefundApprovalResolved(
+        workerContext,
+        await resolvedEventOfChain(oldChain),
+      );
+      expect((await refundRow(refundId)).status).toBe("pending");
+
+      await openChainAtCreation(refundId);
+      const newChain = (await refundRow(refundId)).approval_chain_id;
+      expect(newChain).not.toBeNull();
+      expect(newChain).not.toBe(oldChain);
+      const fresh = await owner.query<{ id: string; level: number }>(
+        "SELECT id, level FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 ORDER BY level",
+        [tenantId, newChain],
+      );
+      await decide(financeCId, fresh.rows[0]!.id, "approved");
+      const level2 = await owner.query<{ id: string }>(
+        "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 2",
+        [tenantId, newChain],
+      );
+      await decide(supervisorId, level2.rows[0]!.id, "approved");
+      await handleRefundApprovalResolved(
+        workerContext,
+        await resolvedEventOfChain(newChain!),
+      );
+      expect((await refundRow(refundId)).status).toBe("approved");
+      await ageRefund(refundId);
+      await sweep();
+
+      expect(callsOf(refundId)).toHaveLength(1);
+      expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+      const oldRows = await owner.query(
+        "SELECT status FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2",
+        [tenantId, oldChain],
+      );
+      expect(oldRows.rows.map((r) => r.status)).toEqual([
+        "approved",
+        "approved",
+      ]);
     });
-    // A late delivery of the old chain's event settles nothing now.
-    await handleRefundApprovalResolved(
-      workerContext,
-      await resolvedEventOfChain(oldChain),
-    );
-    expect((await refundRow(refundId)).status).toBe("pending");
-
-    await openChainAtCreation(refundId);
-    const newChain = (await refundRow(refundId)).approval_chain_id;
-    expect(newChain).not.toBeNull();
-    expect(newChain).not.toBe(oldChain);
-    const fresh = await owner.query<{ id: string; level: number }>(
-      "SELECT id, level FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 ORDER BY level",
-      [tenantId, newChain],
-    );
-    await decide(financeCId, fresh.rows[0]!.id, "approved");
-    const level2 = await owner.query<{ id: string }>(
-      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 2",
-      [tenantId, newChain],
-    );
-    await decide(supervisorId, level2.rows[0]!.id, "approved");
-    await handleRefundApprovalResolved(
-      workerContext,
-      await resolvedEventOfChain(newChain!),
-    );
-    expect((await refundRow(refundId)).status).toBe("approved");
-    await ageRefund(refundId);
-    await sweep();
-
-    expect(callsOf(refundId)).toHaveLength(1);
-    expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
-    const oldRows = await owner.query(
-      "SELECT status FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2",
-      [tenantId, oldChain],
-    );
-    expect(oldRows.rows.map((r) => r.status)).toEqual(["approved", "approved"]);
   });
 
   const chainStatuses = async (chainId: string) =>
@@ -1502,49 +1569,51 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
   });
 
   it("PAY-04 re-open with its own still-pending chain cancels the old level, and a second chain opens and pays out", async () => {
-    const { refundId, chainId: oldChain } =
-      await seedQuarantinedWithPendingChain();
+    await withAmountAuthority([supervisorId], "general_manager", async () => {
+      const { refundId, chainId: oldChain } =
+        await seedQuarantinedWithPendingChain();
 
-    const reopened = await act(ownerB, "reopen", refundId);
-    expect(reopened.status).toBe(200);
-    expect(await chainStatuses(oldChain)).toEqual(["cancelled"]);
-    expect(await refundRow(refundId)).toMatchObject({
-      status: "pending",
-      approval_chain_id: null,
+      const reopened = await act(ownerB, "reopen", refundId);
+      expect(reopened.status).toBe(200);
+      expect(await chainStatuses(oldChain)).toEqual(["cancelled"]);
+      expect(await refundRow(refundId)).toMatchObject({
+        status: "pending",
+        approval_chain_id: null,
+      });
+      // The old chain's cancelled event settles nothing now.
+      await handleRefundApprovalResolved(
+        workerContext,
+        await resolvedEventOfChain(oldChain),
+      );
+      expect((await refundRow(refundId)).status).toBe("pending");
+
+      // A second pending row for the same refund (approval_requests_one_pending_key).
+      await openChainAtCreation(refundId);
+      const newChain = (await refundRow(refundId)).approval_chain_id!;
+      expect(newChain).not.toBeNull();
+      expect(newChain).not.toBe(oldChain);
+      const level1 = await owner.query<{ id: string }>(
+        "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 1",
+        [tenantId, newChain],
+      );
+      await decide(financeBId, level1.rows[0]!.id, "approved");
+      const level2 = await owner.query<{ id: string }>(
+        "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 2",
+        [tenantId, newChain],
+      );
+      await decide(supervisorId, level2.rows[0]!.id, "approved");
+      await handleRefundApprovalResolved(
+        workerContext,
+        await resolvedEventOfChain(newChain),
+      );
+      expect((await refundRow(refundId)).status).toBe("approved");
+      await ageRefund(refundId);
+      await sweep();
+
+      expect(callsOf(refundId)).toHaveLength(1);
+      expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+      expect(await chainStatuses(oldChain)).toEqual(["cancelled"]);
     });
-    // The old chain's cancelled event settles nothing now.
-    await handleRefundApprovalResolved(
-      workerContext,
-      await resolvedEventOfChain(oldChain),
-    );
-    expect((await refundRow(refundId)).status).toBe("pending");
-
-    // A second pending row for the same refund (approval_requests_one_pending_key).
-    await openChainAtCreation(refundId);
-    const newChain = (await refundRow(refundId)).approval_chain_id!;
-    expect(newChain).not.toBeNull();
-    expect(newChain).not.toBe(oldChain);
-    const level1 = await owner.query<{ id: string }>(
-      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 1",
-      [tenantId, newChain],
-    );
-    await decide(financeBId, level1.rows[0]!.id, "approved");
-    const level2 = await owner.query<{ id: string }>(
-      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 2",
-      [tenantId, newChain],
-    );
-    await decide(supervisorId, level2.rows[0]!.id, "approved");
-    await handleRefundApprovalResolved(
-      workerContext,
-      await resolvedEventOfChain(newChain),
-    );
-    expect((await refundRow(refundId)).status).toBe("approved");
-    await ageRefund(refundId);
-    await sweep();
-
-    expect(callsOf(refundId)).toHaveLength(1);
-    expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
-    expect(await chainStatuses(oldChain)).toEqual(["cancelled"]);
   });
 
   for (const action of ["release", "reopen"] as const) {

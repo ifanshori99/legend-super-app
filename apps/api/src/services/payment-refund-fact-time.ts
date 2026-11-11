@@ -25,8 +25,9 @@
 // already holds (orders -> pos_orders, or reservations), the order the POS
 // late-payment refund already uses (pos-order-late-payment.ts). No path locks
 // a payment_intents row and then an orders, pos_orders or reservations row,
-// and the refund paths take the intent row first (lockRefundGraph), so the
-// new locks add no cycle. The e7zj advisory lock (reservation-deposit-credit.ts)
+// and refund paths take their bill authority group and linked POS row before
+// the intent (lockRefundGraph), so they never acquire a POS row after an
+// intent. The e7zj advisory lock (reservation-deposit-credit.ts)
 // stays after the intent row, as before. Sale completion then voids pending
 // QRIS tenders (voidPendingQrisTenders), locking their links after the DP and
 // captured-tender intents, the reverse of the usual link -> intent order; no

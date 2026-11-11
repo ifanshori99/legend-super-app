@@ -884,36 +884,49 @@ describe("PAY-04 approval matrix", () => {
   });
 
   it("PAY-04 a multi-level amount needs a second distinct approver before payout", async () => {
-    // 600.000 is above the Rp500.000 tier: Finance first, then an Owner.
-    const intent = await seedPaid(600_000);
-    const refundId = await requestRefund(intent.intentId, 600_000);
+    // 600.000 is above the Rp500.000 tier. The first signer also holds
+    // outlet-manager authority for Q63's amount ceiling; the matrix still
+    // requires Finance first and a distinct Owner second.
+    const elevated = await owner.query<{ id: string }>(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_at, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', now() - interval '1 hour', $2) RETURNING id`,
+      [tenantId, financeAId, await roleIdOf("outlet_manager"), outletA],
+    );
+    try {
+      const intent = await seedPaid(600_000);
+      const refundId = await requestRefund(intent.intentId, 600_000);
 
-    const level1 = await approve(financeA, refundId);
-    expect(level1.status).toBe(200);
-    expect(level1.body.data.status).toBe("pending");
-    expect(fake.calls).toHaveLength(0);
-    expect(await decisions(refundId)).toMatchObject([
-      { level: 1, status: "approved", decided_by: financeAId },
-      { level: 2, status: "pending" },
-    ]);
+      const level1 = await approve(financeA, refundId);
+      expect(level1.status).toBe(200);
+      expect(level1.body.data.status).toBe("pending");
+      expect(fake.calls).toHaveLength(0);
+      expect(await decisions(refundId)).toMatchObject([
+        { level: 1, status: "approved", decided_by: financeAId },
+        { level: 2, status: "pending" },
+      ]);
 
-    // The same person cannot also give the second approval.
-    const again = await approve(financeA, refundId);
-    expect([403, 409]).toContain(again.status);
-    // The requester cannot either.
-    expect((await approve(requester, refundId)).status).toBe(403);
-    expect(fake.calls).toHaveLength(0);
-    expect((await refundRow(refundId)).status).toBe("pending");
+      // The same person cannot also give the second approval.
+      const again = await approve(financeA, refundId);
+      expect([403, 409]).toContain(again.status);
+      // The requester cannot either.
+      expect((await approve(requester, refundId)).status).toBe(403);
+      expect(fake.calls).toHaveLength(0);
+      expect((await refundRow(refundId)).status).toBe("pending");
 
-    const level2 = await approve(ownerB, refundId);
-    expect(level2.status).toBe(200);
-    expect(level2.body.data).toMatchObject({
-      status: "completed",
-      approvedBy: ownerBId,
-    });
-    expect(fake.calls).toHaveLength(1);
-    expect(fake.executionCount).toBe(1);
-    expect(await intentStatus(intent.intentId)).toBe("refunded");
+      const level2 = await approve(ownerB, refundId);
+      expect(level2.status).toBe(200);
+      expect(level2.body.data).toMatchObject({
+        status: "completed",
+        approvedBy: ownerBId,
+      });
+      expect(fake.calls).toHaveLength(1);
+      expect(fake.executionCount).toBe(1);
+      expect(await intentStatus(intent.intentId)).toBe("refunded");
+    } finally {
+      await owner.query("DELETE FROM role_assignments WHERE id = $1", [
+        elevated.rows[0]!.id,
+      ]);
+    }
   });
 
   it("PAY-04 rejecting at level 1 of a multi-level request ends it without payout", async () => {

@@ -142,6 +142,8 @@ export const paymentIntentSchema = z
   );
 export const paymentRoutingSchema = z.strictObject({
   ...row,
+  // PRD §3.13: null is the tenant-wide default; an outlet row overrides it.
+  outletId: outletIdSchema.nullable(),
   method: paymentMethodSchema,
   provider: ref,
   fallbackProvider: ref.nullable(),
@@ -160,8 +162,11 @@ export const unallocatedFundsSchema = z.strictObject({
   ...row,
   paymentIntentId: id,
   amountIdr: positiveIdr,
+  // PAY-04: why the money is held, and the approval that closed it.
+  reason: z.enum(["overpayment", "double_payment"]),
   resolution: z.enum(["refund", "credit"]).nullable(),
   resolvedBy: id.nullable(),
+  approvalRef: ref.nullable(),
 });
 export const settlementSchema = z.strictObject({
   ...row,
@@ -354,8 +359,10 @@ export const paymentFixtures = [
       ...exampleRow,
       paymentIntentId: exampleId,
       amountIdr: 10000,
+      reason: "overpayment",
       resolution: null,
       resolvedBy: null,
+      approvalRef: null,
     },
   ],
   [

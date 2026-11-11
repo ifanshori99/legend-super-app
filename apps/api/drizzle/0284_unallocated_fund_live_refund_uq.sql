@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "payment_refunds_unallocated_fund_live_uq" ON "payment_refunds" USING btree ("tenant_id","unallocated_fund_id") WHERE "payment_refunds"."unallocated_fund_id" IS NOT NULL AND "payment_refunds"."status" <> 'failed';

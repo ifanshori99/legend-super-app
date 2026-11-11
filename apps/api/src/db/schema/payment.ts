@@ -262,6 +262,17 @@ export const paymentIntents = pgTable(
       table.paymentLinkId,
       table.status,
     ),
+    // Refund authority finds the other intents of a bill by order, split and
+    // reservation (the link side is payment_intents_link_status_idx); 0285.
+    index("payment_intents_order_idx")
+      .on(table.tenantId, table.orderId)
+      .where(sql`${table.orderId} IS NOT NULL`),
+    index("payment_intents_bill_split_idx")
+      .on(table.tenantId, table.billSplitId)
+      .where(sql`${table.billSplitId} IS NOT NULL`),
+    index("payment_intents_reservation_idx")
+      .on(table.tenantId, table.reservationId)
+      .where(sql`${table.reservationId} IS NOT NULL`),
     check("payment_intents_amount_check", sql`${table.amountIdr} > 0`),
     check("payment_intents_fee_check", sql`${table.feeIdr} >= 0`),
     check(

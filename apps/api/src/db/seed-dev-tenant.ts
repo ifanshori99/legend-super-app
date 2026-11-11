@@ -253,9 +253,9 @@ try {
     [tenant.id],
   );
 
-  // Refund approval default (legend-zi9o, PRD §3.6 and D14): same supervisor
-  // level-1 row from Rp0 and same no-refund-row rule as seedTenantRoleTemplates
-  // and migration 0134.
+  // Refund approval default (legend-zi9o, PRD §3.6 and D14, Q63): same level-1
+  // rows from Rp0 (supervisor, outlet manager, general manager, owner) and same
+  // no-refund-row rule as seedTenantRoleTemplates and migration 0286.
   await client.query(
     `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
      SELECT $1::uuid, 'refund', d.threshold_idr, r.id, d.level, true

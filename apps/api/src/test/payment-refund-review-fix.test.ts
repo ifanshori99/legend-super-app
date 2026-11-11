@@ -148,6 +148,61 @@ async function signedIn(
   return { client, userId };
 }
 
+// Q63: these high-value scenarios test chain/idempotency behavior. Add the
+// required monetary role only within that scenario, so revocation and
+// quarantine tests keep their original authority boundaries.
+async function withAmountAuthority<T>(
+  actorIds: string[],
+  templateKey: "outlet_manager" | "general_manager",
+  run: () => Promise<T>,
+): Promise<T> {
+  const assignmentIds: string[] = [];
+  try {
+    for (const actorId of actorIds) {
+      const inserted = await owner.query<{ id: string }>(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_at, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, now() - interval '1 hour', now() - interval '1 hour', $2) RETURNING id`,
+        [
+          tenantId,
+          actorId,
+          await roleIdOf(templateKey),
+          templateKey === "general_manager" ? "tenant" : "outlet",
+          templateKey === "general_manager" ? null : outletA,
+        ],
+      );
+      assignmentIds.push(inserted.rows[0]!.id);
+    }
+    return await run();
+  } finally {
+    await owner.query(
+      "DELETE FROM role_assignments WHERE id = ANY($1::uuid[])",
+      [assignmentIds],
+    );
+  }
+}
+
+async function assertAmountGrantPredatesDecision(refundId: string) {
+  const recorded = await owner.query<{
+    level: number;
+    assigned_at: Date;
+    decided_at: Date;
+    template_key: string;
+  }>(
+    `SELECT q.level, a.assigned_at, q.decided_at, r.template_key
+       FROM approval_requests q
+       JOIN role_assignments a ON a.tenant_id = q.tenant_id AND a.user_id = q.decided_by
+       JOIN roles r ON r.tenant_id = a.tenant_id AND r.id = a.role_id
+      WHERE q.tenant_id = $1 AND q.object_type = 'payment_refund' AND q.object_id = $2
+        AND r.template_key IN ('outlet_manager', 'general_manager')`,
+    [tenantId, refundId],
+  );
+  expect(recorded.rows.length).toBeGreaterThan(0);
+  for (const row of recorded.rows)
+    expect(row.assigned_at.getTime(), JSON.stringify(row)).toBeLessThanOrEqual(
+      row.decided_at.getTime(),
+    );
+}
+
 async function setPolicy(
   thresholdIdr: number | null,
   templateKey: string,
@@ -633,48 +688,60 @@ describe("PAY-04 review A: refunds of sales documents go through the owning modu
 
 describe("PAY-04 review B: approve and reject are idempotent per actor", () => {
   it("PAY-04 repeating the level 1 approval of a two level refund answers the same view and decides once", async () => {
-    const intent = await seedPaid(600_000);
-    const refundId = await requestRefund(intent.intentId, 600_000);
-    const level1Key = key("lvl1");
+    await withAmountAuthority([financeAId], "outlet_manager", async () => {
+      const intent = await seedPaid(600_000);
+      const refundId = await requestRefund(intent.intentId, 600_000);
+      const level1Key = key("lvl1");
 
-    const first = await approve(financeA, refundId, level1Key);
-    expect(first.status).toBe(200);
-    expect(first.body.data.status).toBe("pending");
-    const replay = await approve(financeA, refundId, level1Key);
-    expect(replay.status).toBe(200);
-    expect(replay.body.error?.code).not.toBe("IDEMPOTENCY_KEY_REUSED");
-    expect(replay.body.data).toMatchObject({ id: refundId, status: "pending" });
+      const first = await approve(financeA, refundId, level1Key);
+      expect(first.status).toBe(200);
+      expect(first.body.data.status).toBe("pending");
+      const replay = await approve(financeA, refundId, level1Key);
+      expect(replay.status).toBe(200);
+      expect(replay.body.error?.code).not.toBe("IDEMPOTENCY_KEY_REUSED");
+      expect(replay.body.data).toMatchObject({
+        id: refundId,
+        status: "pending",
+      });
 
-    expect(await decisions(refundId)).toMatchObject([
-      { level: 1, status: "approved", decided_by: financeAId },
-      { level: 2, status: "pending", decided_by: null },
-    ]);
-    expect(fake.calls).toHaveLength(0);
+      expect(await decisions(refundId)).toMatchObject([
+        { level: 1, status: "approved", decided_by: financeAId },
+        { level: 2, status: "pending", decided_by: null },
+      ]);
+      expect(fake.calls).toHaveLength(0);
+    });
   });
 
   it("PAY-04 repeating the level 2 approval answers the completed view without a second payout", async () => {
-    const intent = await seedPaid(600_000);
-    const refundId = await requestRefund(intent.intentId, 600_000);
-    expect((await approve(financeA, refundId)).status).toBe(200);
-    const level2Key = key("lvl2");
+    await withAmountAuthority([financeAId], "outlet_manager", async () => {
+      const intent = await seedPaid(600_000);
+      const refundId = await requestRefund(intent.intentId, 600_000);
+      expect((await approve(financeA, refundId)).status).toBe(200);
+      const level2Key = key("lvl2");
 
-    const first = await approve(ownerB, refundId, level2Key);
-    expect(first.status).toBe(200);
-    expect(first.body.data.status).toBe("completed");
-    const replay = await approve(ownerB, refundId, level2Key);
-    expect(replay.status).toBe(200);
-    expect(replay.body.data).toMatchObject({
-      id: refundId,
-      status: "completed",
-      providerRef: first.body.data.providerRef,
-      approvedBy: ownerBId,
+      const first = await approve(ownerB, refundId, level2Key);
+      expect(first.status).toBe(200);
+      await assertAmountGrantPredatesDecision(refundId);
+      expect(await refundRow(refundId)).toMatchObject({
+        status: "completed",
+        last_payout_error: null,
+      });
+      expect(first.body.data.status).toBe("completed");
+      const replay = await approve(ownerB, refundId, level2Key);
+      expect(replay.status).toBe(200);
+      expect(replay.body.data).toMatchObject({
+        id: refundId,
+        status: "completed",
+        providerRef: first.body.data.providerRef,
+        approvedBy: ownerBId,
+      });
+      expect(fake.calls).toHaveLength(1);
+      expect(fake.executionCount).toBe(1);
+      expect(await decisions(refundId)).toMatchObject([
+        { level: 1, status: "approved", decided_by: financeAId },
+        { level: 2, status: "approved", decided_by: ownerBId },
+      ]);
     });
-    expect(fake.calls).toHaveLength(1);
-    expect(fake.executionCount).toBe(1);
-    expect(await decisions(refundId)).toMatchObject([
-      { level: 1, status: "approved", decided_by: financeAId },
-      { level: 2, status: "approved", decided_by: ownerBId },
-    ]);
   });
 
   it("PAY-04 repeating a rejection with the same key answers the failed view instead of 409", async () => {
@@ -873,120 +940,177 @@ describe("PAY-04 review E: an unallocated fund is refunded against its own evide
 
 describe("PAY-04 review F: every approver of the chain must hold reconcile or supervisor authority", () => {
   it("PAY-04 a chain whose last approver is a supervisor without payment.reconcile is paid once", async () => {
-    const intent = await seedPaid(2_000_000);
-    const refundId = await insertPendingRefund(
-      intent.intentId,
-      2_000_000,
-      "system:reservation",
+    // Keep the original permission boundary: the final signer is only a
+    // supervisor, and the two-level amount stays within Q63's 200k ceiling.
+    const policies = (
+      await owner.query(
+        "SELECT * FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+        [tenantId],
+      )
+    ).rows;
+    await owner.query(
+      "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+      [tenantId],
     );
-    // The chain opens at creation (system requester); Finance decides level 1 and the
-    // Supervisor (no payment.reconcile) level 2, both through the approval inbox.
-    await openChainAtCreation(refundId);
-    expect(await refundRow(refundId)).toMatchObject({ status: "pending" });
-    const chainId = (await refundRow(refundId)).approval_chain_id;
-    expect(chainId).not.toBeNull();
+    await setPolicy(null, "finance", 1);
+    await setPolicy(null, "supervisor", 2);
+    try {
+      const permissions = await owner.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM role_assignments a
+         JOIN roles r ON r.tenant_id = a.tenant_id AND r.id = a.role_id
+         WHERE a.tenant_id = $1 AND a.user_id = $2
+           AND a.valid_from <= now() AND (a.valid_until IS NULL OR a.valid_until > now())
+           AND (a.scope_type = 'tenant' OR (a.scope_type = 'outlet' AND a.scope_id = $3))
+           AND r.permissions @> '["payment.reconcile"]'::jsonb`,
+        [tenantId, supervisorId, outletA],
+      );
+      expect(permissions.rows[0]!.n).toBe(0);
+      const intent = await seedPaid(200_000);
+      const refundId = await insertPendingRefund(
+        intent.intentId,
+        200_000,
+        "system:reservation",
+      );
+      // The chain opens at creation (system requester); Finance decides level 1 and the
+      // Supervisor (no payment.reconcile) level 2, both through the approval inbox.
+      await openChainAtCreation(refundId);
+      expect(await refundRow(refundId)).toMatchObject({ status: "pending" });
+      const chainId = (await refundRow(refundId)).approval_chain_id;
+      expect(chainId).not.toBeNull();
 
-    const level1 = (await decisions(refundId)).find((d) => d.level === 1)!;
-    await decide(financeBId, level1.id, "approved");
-    const level2 = (await decisions(refundId)).find((d) => d.level === 2)!;
-    await decide(supervisorId, level2.id, "approved");
-    expect(await decisions(refundId)).toMatchObject([
-      { level: 1, status: "approved", decided_by: financeBId },
-      { level: 2, status: "approved", decided_by: supervisorId },
-    ]);
+      const level1 = (await decisions(refundId)).find((d) => d.level === 1)!;
+      await decide(financeBId, level1.id, "approved");
+      const level2 = (await decisions(refundId)).find((d) => d.level === 2)!;
+      await decide(supervisorId, level2.id, "approved");
+      expect(await decisions(refundId)).toMatchObject([
+        { level: 1, status: "approved", decided_by: financeBId },
+        { level: 2, status: "approved", decided_by: supervisorId },
+      ]);
 
-    const event = await resolvedEventOfChain(chainId!);
-    // Round 2 (F1): finding F's old rule (every approver must hold payment.reconcile)
-    // is replaced. Each approver needs reconcile OR pos.refund.approve, and at least
-    // one needs pos.refund.approve. The supervisor holds approve, so the chain is
-    // authorized and the refund is paid exactly once. The consumer must not throw,
-    // and a replayed event must not pay twice. (The finance-only failure path is
-    // covered in payment-refund-codex-fix.test.ts, scenario 3.)
-    await handleRefundApprovalResolved(workerContext, event);
-    expect((await refundRow(refundId)).status).not.toBe("failed");
-    // A replayed event leaves it as is.
-    await handleRefundApprovalResolved(workerContext, event);
-    expect((await refundRow(refundId)).status).not.toBe("failed");
-    await ageRefund(refundId);
-    await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
-    expect(fake.calls.filter((c) => c.refundId === refundId)).toHaveLength(1);
-    expect((await refundRow(refundId)).status).toBe("completed");
+      const event = await resolvedEventOfChain(chainId!);
+      // Round 2 (F1): finding F's old rule (every approver must hold payment.reconcile)
+      // is replaced. Each approver needs reconcile OR pos.refund.approve, and at least
+      // one needs pos.refund.approve. The supervisor holds approve, so the chain is
+      // authorized and the refund is paid exactly once. The consumer must not throw,
+      // and a replayed event must not pay twice. (The finance-only failure path is
+      // covered in payment-refund-codex-fix.test.ts, scenario 3.)
+      await handleRefundApprovalResolved(workerContext, event);
+      expect((await refundRow(refundId)).status).not.toBe("failed");
+      // A replayed event leaves it as is.
+      await handleRefundApprovalResolved(workerContext, event);
+      expect((await refundRow(refundId)).status).not.toBe("failed");
+      await ageRefund(refundId);
+      await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
+      expect(await refundRow(refundId)).toMatchObject({
+        status: "completed",
+        last_payout_error: null,
+      });
+      expect(fake.calls.filter((c) => c.refundId === refundId)).toHaveLength(1);
+      expect((await refundRow(refundId)).status).toBe("completed");
+    } finally {
+      await owner.query(
+        "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+        [tenantId],
+      );
+      for (const row of policies)
+        await owner.query(
+          `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            row.id,
+            row.tenant_id,
+            row.action_type,
+            row.threshold_idr,
+            row.approver_role_id,
+            row.levels,
+            row.requires_distinct_actor,
+          ],
+        );
+    }
   });
 
   it("PAY-04 a chain whose approvers hold the permissions only at another outlet fails closed as approver_unauthorized", async () => {
-    // Assumption: the approval inbox itself refuses deciders outside the request's
-    // outlet (404), so that state cannot be reached through it. The consumer must
-    // still re-check authority at the refund's outlet (defence in depth), so the
-    // two decisions are rewritten in the database to approvers who hold
-    // pos.refund.approve / payment.reconcile only at another outlet.
-    const otherOutlet = scope.otherOutletId;
-    const elsewhere = async (label: string, templateKeys: string[]) => {
-      const client = agent(app).set("Host", scope.hostname);
-      const email = await signUp(client, label);
-      const session = await client.get("/api/auth/get-session");
-      const userId = session.body.user.id as string;
-      userIds.push(userId);
-      await verifySessionMfa(email);
-      for (const templateKey of templateKeys)
-        await owner.query(
-          `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+    await withAmountAuthority(
+      [financeBId, supervisorId],
+      "general_manager",
+      async () => {
+        // Assumption: the approval inbox itself refuses deciders outside the request's
+        // outlet (404), so that state cannot be reached through it. The consumer must
+        // still re-check authority at the refund's outlet (defence in depth), so the
+        // two decisions are rewritten in the database to approvers who hold
+        // pos.refund.approve / payment.reconcile only at another outlet.
+        const otherOutlet = scope.otherOutletId;
+        const elsewhere = async (label: string, templateKeys: string[]) => {
+          const client = agent(app).set("Host", scope.hostname);
+          const email = await signUp(client, label);
+          const session = await client.get("/api/auth/get-session");
+          const userId = session.body.user.id as string;
+          userIds.push(userId);
+          await verifySessionMfa(email);
+          for (const templateKey of templateKeys)
+            await owner.query(
+              `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
            VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
-          [tenantId, userId, await roleIdOf(templateKey), otherOutlet],
+              [tenantId, userId, await roleIdOf(templateKey), otherOutlet],
+            );
+          return userId;
+        };
+        // Level 1 policy role is finance, level 2 supervisor; both hold both templates
+        // (so reconcile and approve), but only at the other outlet.
+        const level1Approver = await elsewhere("Review fix other outlet L1", [
+          "finance",
+          "supervisor",
+        ]);
+        const level2Approver = await elsewhere("Review fix other outlet L2", [
+          "supervisor",
+          "finance",
+        ]);
+
+        const intent = await seedPaid(2_000_000);
+        const refundId = await insertPendingRefund(
+          intent.intentId,
+          2_000_000,
+          "system:reservation",
         );
-      return userId;
-    };
-    // Level 1 policy role is finance, level 2 supervisor; both hold both templates
-    // (so reconcile and approve), but only at the other outlet.
-    const level1Approver = await elsewhere("Review fix other outlet L1", [
-      "finance",
-      "supervisor",
-    ]);
-    const level2Approver = await elsewhere("Review fix other outlet L2", [
-      "supervisor",
-      "finance",
-    ]);
+        await openChainAtCreation(refundId);
+        expect(await refundRow(refundId)).toMatchObject({ status: "pending" });
+        const chainId = (await refundRow(refundId)).approval_chain_id;
+        expect(chainId).not.toBeNull();
 
-    const intent = await seedPaid(2_000_000);
-    const refundId = await insertPendingRefund(
-      intent.intentId,
-      2_000_000,
-      "system:reservation",
-    );
-    await openChainAtCreation(refundId);
-    expect(await refundRow(refundId)).toMatchObject({ status: "pending" });
-    const chainId = (await refundRow(refundId)).approval_chain_id;
-    expect(chainId).not.toBeNull();
+        const level1 = (await decisions(refundId)).find((d) => d.level === 1)!;
+        await decide(financeBId, level1.id, "approved");
+        const level2 = (await decisions(refundId)).find((d) => d.level === 2)!;
+        await decide(supervisorId, level2.id, "approved");
+        await owner.query(
+          "UPDATE approval_requests SET decided_by = $2 WHERE id = $1",
+          [level1.id, level1Approver],
+        );
+        await owner.query(
+          "UPDATE approval_requests SET decided_by = $2 WHERE id = $1",
+          [level2.id, level2Approver],
+        );
+        expect(await decisions(refundId)).toMatchObject([
+          { level: 1, status: "approved", decided_by: level1Approver },
+          { level: 2, status: "approved", decided_by: level2Approver },
+        ]);
 
-    const level1 = (await decisions(refundId)).find((d) => d.level === 1)!;
-    await decide(financeBId, level1.id, "approved");
-    const level2 = (await decisions(refundId)).find((d) => d.level === 2)!;
-    await decide(supervisorId, level2.id, "approved");
-    await owner.query(
-      "UPDATE approval_requests SET decided_by = $2 WHERE id = $1",
-      [level1.id, level1Approver],
+        const event = await resolvedEventOfChain(chainId!);
+        await handleRefundApprovalResolved(workerContext, event);
+        expect(fake.calls).toHaveLength(0);
+        expect(await refundRow(refundId)).toMatchObject({
+          status: "failed",
+          failure_reason: "approver_unauthorized",
+        });
+        // A replayed event leaves it failed.
+        await handleRefundApprovalResolved(workerContext, event);
+        expect((await refundRow(refundId)).status).toBe("failed");
+        await ageRefund(refundId);
+        await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
+        expect(fake.calls.filter((c) => c.refundId === refundId)).toHaveLength(
+          0,
+        );
+        expect((await refundRow(refundId)).status).toBe("failed");
+      },
     );
-    await owner.query(
-      "UPDATE approval_requests SET decided_by = $2 WHERE id = $1",
-      [level2.id, level2Approver],
-    );
-    expect(await decisions(refundId)).toMatchObject([
-      { level: 1, status: "approved", decided_by: level1Approver },
-      { level: 2, status: "approved", decided_by: level2Approver },
-    ]);
-
-    const event = await resolvedEventOfChain(chainId!);
-    await handleRefundApprovalResolved(workerContext, event);
-    expect(fake.calls).toHaveLength(0);
-    expect(await refundRow(refundId)).toMatchObject({
-      status: "failed",
-      failure_reason: "approver_unauthorized",
-    });
-    // A replayed event leaves it failed.
-    await handleRefundApprovalResolved(workerContext, event);
-    expect((await refundRow(refundId)).status).toBe("failed");
-    await ageRefund(refundId);
-    await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
-    expect(fake.calls.filter((c) => c.refundId === refundId)).toHaveLength(0);
-    expect((await refundRow(refundId)).status).toBe("failed");
   });
 });

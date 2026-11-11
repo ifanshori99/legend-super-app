@@ -22,12 +22,7 @@ import {
 } from "@starter/shared/payment/admin";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import {
-  outlets,
-  paymentRoutingRules,
-  roleAssignments,
-  user,
-} from "../db/schema";
+import { outlets, paymentRoutingRules, user } from "../db/schema";
 import {
   paymentEdcTerminals,
   paymentCashierDefaults,
@@ -43,7 +38,11 @@ import {
 import { listPlatformGateways } from "./platform-payment-gateway.service";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { appendPaymentEvent, assertPaymentPermission } from "./payment-support";
-import type { Tx } from "./permission-resolver";
+import {
+  loadTenantAccessInTransaction,
+  resolveAccessSnapshot,
+  type Tx,
+} from "./permission-resolver";
 import type { z } from "zod";
 
 async function authorize(
@@ -73,6 +72,25 @@ async function outletName(tx: Tx, ctx: ScopedTenantContext, outletId: string) {
     );
   if (!row) throw new CoreError("NOT_FOUND", "Outlet not found.");
   return row.name;
+}
+/** True when the user holds an active assignment whose role grants
+ * pos.payment.accept at this outlet (outlet scope for it, or tenant scope):
+ * the people a cashier default can be kept for (TEN-03). */
+async function isOutletCashier(
+  tx: Tx,
+  ctx: ScopedTenantContext,
+  userId: string,
+  outletId: string,
+  now: Date,
+) {
+  const data = await loadTenantAccessInTransaction(tx, ctx, userId);
+  return resolveAccessSnapshot({
+    tenant: ctx.tenant,
+    userId,
+    ...data,
+    mfaVerified: false,
+    now,
+  }).allows("pos.payment.accept", { type: "outlet", id: outletId });
 }
 type ConfigEvent =
   | "payment_route.updated"
@@ -436,6 +454,16 @@ export async function createEdcTerminal(
     );
   });
 }
+// A default needs its terminal active and still supporting the method.
+function defaultUsable(
+  terminal: { status: string; supportedMethods: readonly string[] },
+  method: string,
+) {
+  if (terminal.status !== "active") return false;
+  if (method === "edc_card") return terminal.supportedMethods.includes("card");
+  if (method === "edc_qris") return terminal.supportedMethods.includes("qris");
+  return true;
+}
 export async function updateEdcTerminal(
   ctx: ScopedTenantContext,
   actor: string,
@@ -509,6 +537,43 @@ export async function updateEdcTerminal(
           terminalChanges(old),
           terminalChanges(row),
         );
+        // EDC-07: a terminal that is inactive, or no longer supports a
+        // default's method, must not stay a cashier's default.
+        const unsupportedMethods = [
+          ...(!row.supportedMethods.includes("card") ? ["edc_card"] : []),
+          ...(!row.supportedMethods.includes("qris") ? ["edc_qris"] : []),
+        ];
+        if (row.status !== "active" || unsupportedMethods.length > 0) {
+          // Recheck the terminal and method in the DELETE itself: a default
+          // waiting on another transaction may have moved to a usable terminal
+          // or method by the time its row lock is acquired.
+          const cleared = await tx
+            .delete(paymentCashierDefaults)
+            .where(
+              and(
+                eq(paymentCashierDefaults.tenantId, ctx.tenant.tenantId),
+                eq(paymentCashierDefaults.terminalId, row.id),
+                row.status === "active"
+                  ? inArray(
+                      paymentCashierDefaults.defaultMethod,
+                      unsupportedMethods,
+                    )
+                  : undefined,
+              ),
+            )
+            .returning();
+          for (const gone of cleared)
+            await record(
+              tx,
+              ctx,
+              actor,
+              gone.outletId,
+              "cashier_payment_default.updated",
+              gone.id,
+              defaultChanges(gone),
+              { ...defaultChanges(gone), terminalId: null, removed: true },
+            );
+        }
         return terminalView(row, name);
       },
     );
@@ -532,16 +597,33 @@ export async function getEdcCashierDefaults(
           eq(paymentEdcTerminals.outletId, q.outletId),
         ),
       );
-    const cashiers = await tx
+    const rows = await tx
       .select({ row: paymentCashierDefaults, name: user.name })
       .from(paymentCashierDefaults)
-      .innerJoin(user, eq(user.id, paymentCashierDefaults.cashierId))
+      .innerJoin(
+        user,
+        eq(user.id, sql`${paymentCashierDefaults.cashierId}::text`),
+      )
       .where(
         and(
           eq(paymentCashierDefaults.tenantId, ctx.tenant.tenantId),
           eq(paymentCashierDefaults.outletId, q.outletId),
         ),
       );
+    // Only current cashiers of this outlet, and never a dead terminal or
+    // one that no longer supports the default's method.
+    const byId = new Map(terminals.map((t) => [t.id, t]));
+    const now = new Date();
+    const cashiers = [];
+    for (const c of rows) {
+      if (c.row.terminalId) {
+        const terminal = byId.get(c.row.terminalId);
+        if (!terminal || !defaultUsable(terminal, c.row.defaultMethod))
+          continue;
+      }
+      if (await isOutletCashier(tx, ctx, c.row.cashierId, q.outletId, now))
+        cashiers.push(c);
+    }
     return {
       outletId: q.outletId,
       outletName: name,
@@ -560,45 +642,6 @@ export async function updateEdcCashierDefault(
   return withTenant(db, ctx, async (tx) => {
     await authorize(tx, ctx, actor, body.outletId);
     await outletName(tx, ctx, body.outletId);
-    const [cashier] = await tx
-      .select({ name: user.name })
-      .from(user)
-      .innerJoin(roleAssignments, eq(roleAssignments.userId, user.id))
-      .where(
-        and(
-          eq(user.id, params.cashierId),
-          eq(roleAssignments.tenantId, ctx.tenant.tenantId),
-          sql`(${roleAssignments.scopeType} = 'tenant' OR (${roleAssignments.scopeType} = 'outlet' AND ${roleAssignments.scopeId} = ${body.outletId}))`,
-        ),
-      );
-    if (!cashier) throw new CoreError("NOT_FOUND", "Cashier not found.");
-    if (body.defaultMethod !== "qris_doit") {
-      if (!body.terminalId)
-        throw new CoreError("VALIDATION_ERROR", "Terminal required.");
-      const [terminal] = await tx
-        .select()
-        .from(paymentEdcTerminals)
-        .where(
-          and(
-            eq(paymentEdcTerminals.tenantId, ctx.tenant.tenantId),
-            eq(paymentEdcTerminals.outletId, body.outletId),
-            eq(paymentEdcTerminals.id, body.terminalId),
-          ),
-        )
-        .for("update");
-      if (
-        !terminal ||
-        terminal.status !== "active" ||
-        !terminal.supportedMethods.includes(
-          body.defaultMethod === "edc_card" ? "card" : "qris",
-        )
-      )
-        throw new CoreError(
-          "VALIDATION_ERROR",
-          "Terminal unavailable for method.",
-        );
-    } else if (body.terminalId)
-      throw new CoreError("VALIDATION_ERROR", "DOIT does not use a terminal.");
     return idempotentPaymentAdminWrite(
       tx,
       ctx,
@@ -610,6 +653,48 @@ export async function updateEdcCashierDefault(
         await tx.execute(
           sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${ctx.tenant.tenantId}:cashier:${body.outletId}:${params.cashierId}`},0))`,
         );
+        // Replays return the stored response, so the checks run only on a
+        // first execution (a later terminal or roster change must not turn
+        // a saved success into an error).
+        const [cashier] = await tx
+          .select({ name: user.name })
+          .from(user)
+          .where(eq(user.id, params.cashierId));
+        if (
+          !cashier ||
+          !(await isOutletCashier(
+            tx,
+            ctx,
+            params.cashierId,
+            body.outletId,
+            new Date(),
+          ))
+        )
+          throw new CoreError("NOT_FOUND", "Cashier not found.");
+        if (body.defaultMethod !== "qris_doit") {
+          if (!body.terminalId)
+            throw new CoreError("VALIDATION_ERROR", "Terminal required.");
+          const [terminal] = await tx
+            .select()
+            .from(paymentEdcTerminals)
+            .where(
+              and(
+                eq(paymentEdcTerminals.tenantId, ctx.tenant.tenantId),
+                eq(paymentEdcTerminals.outletId, body.outletId),
+                eq(paymentEdcTerminals.id, body.terminalId),
+              ),
+            )
+            .for("update");
+          if (!terminal || !defaultUsable(terminal, body.defaultMethod))
+            throw new CoreError(
+              "VALIDATION_ERROR",
+              "Terminal unavailable for method.",
+            );
+        } else if (body.terminalId)
+          throw new CoreError(
+            "VALIDATION_ERROR",
+            "DOIT does not use a terminal.",
+          );
         const [old] = await tx
           .select()
           .from(paymentCashierDefaults)

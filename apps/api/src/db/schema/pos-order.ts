@@ -278,6 +278,11 @@ export const posOrderTenders = pgTable(
     uniqueIndex("pos_order_tenders_payment_link_key")
       .on(table.tenantId, table.paymentLinkId)
       .where(sql`${table.paymentLinkId} IS NOT NULL`),
+    // Refund authority finds an intent's tender by the intent id (the payment
+    // link side is pos_order_tenders_payment_link_key); migration 0285.
+    index("pos_order_tenders_payment_intent_idx")
+      .on(table.tenantId, table.paymentIntentId)
+      .where(sql`${table.paymentIntentId} IS NOT NULL`),
     // EDC-01/04: one EDC ledger row backs at most one live tender, even when
     // two requests race past the application check.
     uniqueIndex("pos_order_tenders_edc_transaction_key")

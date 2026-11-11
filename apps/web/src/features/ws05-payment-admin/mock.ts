@@ -47,8 +47,6 @@ const ACTOR = {
   name: "Budi Supervisor",
 };
 
-const ONLINE_METHODS = new Set(["qris", "card", "ewallet", "va", "paylater"]);
-
 type MockState = {
   routes: PaymentRoute[];
   outletRoutes: PaymentRoute[];
@@ -57,6 +55,7 @@ type MockState = {
   refunds: RefundView[];
   refundable: RefundablePayment[];
   funds: UnallocatedFundView[];
+  fundRefunds: Map<string, string>;
   cases: ReconciliationCaseView[];
   summary: ReconciliationSummary;
 };
@@ -72,6 +71,7 @@ const seed = (): MockState => ({
   refunds: fixtures.refunds.map((refund) => ({ ...refund })),
   refundable: fixtures.refundablePayments.map((payment) => ({ ...payment })),
   funds: fixtures.unallocatedFunds.map((fund) => ({ ...fund })),
+  fundRefunds: new Map(),
   cases: fixtures.reconciliationCases.map((entry) => ({ ...entry })),
   summary: { ...fixtures.reconciliationSummary },
 });
@@ -336,12 +336,34 @@ registerMock(updateEdcTerminal, ({ endpoint, headers, params, body }) =>
       terminals: state.terminals.map((entry) =>
         entry.id === updated.id ? updated : entry,
       ),
+      // Match the API's deletion of defaults that this terminal no longer
+      // supports. Reactivating it must not resurrect an obsolete default.
+      cashiers: state.cashiers.filter(
+        (cashier) =>
+          cashier.terminalId !== updated.id ||
+          cashierDefaultUsable(cashier, [updated]),
+      ),
     });
     return { data: updated };
   }),
 );
 
 // ---- Cashier defaults ----------------------------------------------------
+
+function cashierDefaultUsable(
+  cashier: EdcCashierDefault,
+  terminals: EdcTerminalView[],
+) {
+  if (cashier.defaultMethod === "qris_doit") return cashier.terminalId === null;
+  const terminal = terminals.find(
+    (entry) =>
+      entry.id === cashier.terminalId && entry.outletId === cashier.outletId,
+  );
+  const method = cashier.defaultMethod === "edc_card" ? "card" : "qris";
+  return (
+    terminal?.status === "active" && terminal.supportedMethods.includes(method)
+  );
+}
 
 registerMock(getEdcCashierDefaults, ({ query, scenario }) => {
   const outlet = findOutlet(query.outletId);
@@ -357,7 +379,11 @@ registerMock(getEdcCashierDefaults, ({ query, scenario }) => {
       cashiers:
         scenario === "empty"
           ? []
-          : cashiers.filter((cashier) => cashier.outletId === outlet.id),
+          : cashiers.filter(
+              (cashier) =>
+                cashier.outletId === outlet.id &&
+                cashierDefaultUsable(cashier, terminals),
+            ),
     }),
   };
 });
@@ -365,7 +391,9 @@ registerMock(getEdcCashierDefaults, ({ query, scenario }) => {
 registerMock(updateEdcCashierDefault, ({ endpoint, headers, params, body }) =>
   replayHeader(headers, endpoint.id, params, body, () => {
     const state = store.get();
-    const cashier = state.cashiers.find(
+    // The staff roster survives a default being cleared, just as the real
+    // API can insert a new default for an existing outlet cashier.
+    const cashier = [...state.cashiers, ...fixtures.cashiers].find(
       (entry) =>
         entry.cashierId === params.cashierId &&
         entry.outletId === body.outletId,
@@ -412,9 +440,11 @@ registerMock(updateEdcCashierDefault, ({ endpoint, headers, params, body }) =>
     };
     store.set({
       ...state,
-      cashiers: state.cashiers.map((entry) =>
-        entry.id === updated.id ? updated : entry,
-      ),
+      cashiers: state.cashiers.some((entry) => entry.id === updated.id)
+        ? state.cashiers.map((entry) =>
+            entry.id === updated.id ? updated : entry,
+          )
+        : [...state.cashiers, updated],
     });
     return { data: updated };
   }),
@@ -533,16 +563,24 @@ function approveRefundOnce(refundId: string, note: string | undefined) {
       "CONFLICT",
       "Refund ini sudah diputuskan sebelumnya.",
     );
-  // A gateway refund settles immediately; a manual transfer/EDC refund stays
-  // `approved` until finance completes it (PRD "Refund").
-  const online = ONLINE_METHODS.has(refund.method);
+  // Fail closed like the API: the server-computed `viewerCanApprove` stands for
+  // payment.reconcile + pos.refund.approve (or an open approval chain level) at
+  // the outlet. Without it nothing is approved.
+  if (!refund.viewerCanApprove)
+    throw new ApiError(
+      403,
+      "PERMISSION_DENIED",
+      "Akun Anda tidak dapat melakukan tindakan ini.",
+    );
+  // Approval never completes a refund: only the provider payout (or finance
+  // for a manual refund) does, so it ends `approved` with no provider ref.
   const updated: RefundView = {
     ...refund,
-    status: online ? "completed" : "approved",
+    status: "approved",
     approvedBy: ACTOR.id,
     approvedByName: ACTOR.name,
     viewerCanApprove: false,
-    providerRef: online ? `RF-${Date.now().toString(36).toUpperCase()}` : null,
+    providerRef: null,
     note: note ?? refund.note,
     decidedAt: now(),
   };
@@ -581,17 +619,62 @@ function resolveFundOnce(fundId: string, body: ResolveUnallocatedFundInput) {
   if (!fund) throw new ApiError(404, "NOT_FOUND", "Dana tidak ditemukan.");
   if (fund.status === "resolved")
     throw new ApiError(409, "CONFLICT", "Dana ini sudah diselesaikan.");
+  // Credit has no approved ledger adapter; never represent it as completed.
+  if (body.resolution === "credit")
+    throw new ApiError(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "Persetujuan kredit belum tersedia.",
+    );
+  const existingRefundId = state.fundRefunds.get(fund.id);
+  const existingRefund = state.refunds.find(
+    (entry) => entry.id === existingRefundId,
+  );
+  if (existingRefund && existingRefund.status !== "failed")
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Pengembalian dana ini sudah menunggu persetujuan.",
+    );
+  // Reserve this fund's excess exactly once. It is separate from a refund of
+  // the bill, so its paid/refundable balances must not be consumed here.
+  const refund: RefundView = {
+    id: newIdempotencyKey(),
+    tenantId: fund.tenantId,
+    outletId: fund.outletId,
+    outletName: fund.outletName,
+    paymentIntentId: fund.paymentIntentId,
+    paymentReference: fund.paymentReference,
+    method: fund.method,
+    paidAmountIdr: fund.paidAmountIdr,
+    amountIdr: fund.amountIdr,
+    reason: "Unallocated funds",
+    providerRef: null,
+    status: "pending",
+    approvedBy: null,
+    approvedByName: null,
+    requestedBy: ACTOR.id,
+    requestedByName: ACTOR.name,
+    viewerCanApprove: false,
+    note: body.note,
+    createdAt: now(),
+    decidedAt: null,
+  };
+  // A refund only opens an approval chain; like the API, the fund stays open
+  // (no resolution, no approval ref) until that chain completes.
   const updated: UnallocatedFundView = {
     ...fund,
-    resolution: body.resolution,
-    resolvedBy: ACTOR.id,
-    resolvedByName: ACTOR.name,
-    resolvedAt: now(),
-    status: "resolved",
-    note: body.note,
+    resolution: null,
+    approvalRef: null,
+    resolvedBy: null,
+    resolvedByName: null,
+    resolvedAt: null,
+    status: "open",
   };
   store.set({
     ...state,
+    refunds: [refund, ...state.refunds],
+    fundRefunds: new Map(state.fundRefunds).set(fund.id, refund.id),
     funds: state.funds.map((entry) =>
       entry.id === updated.id ? updated : entry,
     ),

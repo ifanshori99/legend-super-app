@@ -132,22 +132,32 @@ export const approvalMatrixSchema = z
   });
 
 /**
- * Default refund approval matrix (legend-zi9o), the single source for new
- * tenants (seedTenantRoleTemplates), the dev tenant and migration 0134. PRD
- * §3.6 "Override Supervisor" and D14 name only the supervisor: a refund needs
- * the supervisor's PIN or approval, so every refund opens a one-step chain for
- * the supervisor from Rp0. Higher tiers (for example an outlet manager level
- * from a larger amount) are tenant configuration, not a default. The floor is
- * 0 rather than null: both match an amount of 0 (a null floor is the lowest
+ * Default refund approval matrix (legend-zi9o, widened for Q63), the single
+ * source for new tenants (seedTenantRoleTemplates), the dev tenant and
+ * migrations 0140 and 0286. PRD §3.6 "Override Supervisor" and D14: a refund
+ * needs the supervisor's PIN or approval, so every refund opens a one-step
+ * chain from Rp0. Founder Q63 sets the amount ceiling per role in code
+ * (supervisor Rp200.000, outlet manager Rp1.000.000, general manager
+ * Rp5.000.000, owner no ceiling), and an approver must hold the exact role the
+ * matrix names (APPROVER_ROLE_MISMATCH), so level 1 names every role that can
+ * approve a refund, as the cash shift close default does. The floor is 0
+ * rather than null: both match an amount of 0 (a null floor is the lowest
  * tier), but 0 states "from Rp0" explicitly. Applied only to a tenant with no
- * refund row and a supervisor template role; a tenant that configured refunds
- * is never touched. The row requires a distinct actor.
+ * refund row and the template roles (migration 0286 also widens a tenant that
+ * still has only the old supervisor row); a tenant that configured refunds is
+ * never touched. The rows require a distinct actor.
  */
 export const DEFAULT_REFUND_APPROVAL_POLICIES: readonly {
   readonly thresholdIdr: number;
   readonly level: number;
-  readonly roleTemplateKey: "supervisor";
-}[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "supervisor" }];
+  readonly roleTemplateKey:
+    "supervisor" | "outlet_manager" | "general_manager" | "owner";
+}[] = [
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "supervisor" },
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "outlet_manager" },
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "general_manager" },
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "owner" },
+];
 
 /**
  * Default cash shift close approval matrix (legend-ccpn), the single source for
