@@ -1255,3 +1255,4 @@ Langkah berikut CTO baru:
 - 12:00 G26w0 bz9h 474+tz4dg selesai a73998a9 (286 test, architect xhigh 4 temuan dibetulkan) -> resolve, siap batch48h (migrasi 0250/0251 nomor sementara, renumber). Keputusan CTO: refund POS diblok sampai WFC refund penuh (ketat); order berdiskon tetap ditolak (c8gsw). Kartu legend-7pw8b harga x durasi tunggu W4. Mulai G1mng brief 482 akun #3.
 - 12:02 Founder W5: akses tetap selama tenggang, lama tenggang per outlet (default 3, boleh 0) -> dikirim ke G1ttt dengan 4 test pembatas.
 - 12:03 Founder W17: tetap jual + peringatan + notifikasi owner 30 menit -> G1mng.
+- 12:04 Founder W1: modifier bersama satu tenant, bukan per brand (komentar legend-d0ipm).
