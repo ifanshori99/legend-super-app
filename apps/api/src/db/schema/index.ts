@@ -169,3 +169,6 @@ export * from "./crm-tiers";
 
 // legend-dn4 WhatsApp login reply policy, default off (AUTH-03).
 export * from "./wa-login-reply";
+
+// legend-2qq HPP read model (menu_costs) and its recompute queue.
+export * from "./hpp";

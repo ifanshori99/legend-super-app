@@ -21,6 +21,7 @@ import {
   publicPurchaseOrderRouter,
 } from "./purchasing-send.routes.ts";
 import { createInventorySetupRouter } from "./inventory-setup.routes";
+import { createInventoryHppRouter } from "./inventory-hpp.routes.ts";
 import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { createAccountingFinancePolicyRouter } from "./accounting-finance-policy.routes";
@@ -215,6 +216,8 @@ apiRouter.use("/inventory", createPurchasingSendRouter());
 apiRouter.use("/inventory", createInventoryCountRouter());
 // Recipes / BOM, modifier rules, auto stock deduction, duty meals (WS-06, legend-db6).
 apiRouter.use("/inventory", createRecipeRouter());
+// HPP reports: menu costs, recipe coverage, food cost, menu engineering (legend-2qq).
+apiRouter.use("/inventory", createInventoryHppRouter());
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.
 apiRouter.use("/payments/admin", paymentAdminRouter);
 apiRouter.use("/payments", paymentRouter);
