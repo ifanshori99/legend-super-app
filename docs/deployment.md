@@ -151,6 +151,11 @@ Keep provider-required TLS settings. Do not disable certificate verification. Th
 
 ## Release steps without Docker
 
+Before `db:migrate`, complete the [subscription duplicate release gate](#gerbang-rilis-duplikat-langganan-sebelum-migrasi-0301-legend-gi697)
+when the package includes the live customer/plan index (originally 0301,
+rechained to 0266 on `milestone/m1`). This gate also applies before the Docker
+migrator runs.
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm db:migrate
@@ -915,6 +920,54 @@ What to do when it fails:
 - legend-k1np: either write and test a backfill, or confirm the consumers start
   clean and empty the outbox. Do not enable the relay first. The relay must stay
   off until the check passes.
+
+### Gerbang rilis: duplikat langganan sebelum migrasi 0301 (legend-gi697)
+
+Sebelum menjalankan migrasi index langganan, jalankan preflight berikut pada
+database target memakai login maintenance/migrator yang
+bisa melihat **semua tenant** (superuser atau `BYPASSRLS`). Login aplikasi dengan
+RLS dapat menyembunyikan duplikat dan tidak boleh dipakai untuk bukti gerbang.
+Nama asli migrasi di `ws/fac07-outbox-events` adalah
+`0301_recurring_live_customer_plan_key.sql`; di `milestone/m1` migrasi yang sama
+sudah direchain menjadi `0266_recurring_live_customer_plan_key.sql`. Cocokkan
+nama dalam paket rilis dengan journal target. Preflight ini tidak memasang atau
+mengubah migrasi.
+
+```sh
+PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
+  psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -f scripts/preflight/0301-duplicate-subscriptions.sql
+```
+
+Query hanya membaca data. Hasilnya satu baris per pasangan
+`(tenant_id, plan_id, customer_profile_id)` yang memiliki lebih dari satu
+langganan berstatus `pending_first_payment` atau `active`, persis seperti
+predikat unique partial index 0301. Hasil menyertakan jumlah, ID lokal, dan ID
+langganan provider dalam urutan ID lokal yang sama. Status lain tidak termasuk.
+Simpan hasil sebagai bukti operasional terbatas; jangan tempel ID pelanggan atau
+provider di log publik.
+`row_security=off` membuat query gagal jika RLS akan menyaring baris; opsi ini
+tidak mematikan RLS atau memberikan hak `BYPASSRLS` kepada login biasa.
+
+1. **Ada baris atau query gagal: tahan rilis.** Jangan melewati index atau
+   menghapus baris untuk memaksa migrasi. Hasil nol baris dari login yang benar
+   merupakan syarat gerbang, bukan sekadar exit code `psql` nol.
+2. **Resolusi per pasangan.** Operator yang berwenang memeriksa langganan dan
+   tagihan di DOIT serta catatan lokal, lalu menentukan langganan yang dipertahankan.
+   Batalkan langganan ekstra di gateway terlebih dahulu dan pastikan pembatalan
+   sudah dikonfirmasi agar penagihan berikutnya berhenti. Setelah itu, gunakan
+   alur rekonsiliasi/pembatalan yang disetujui untuk menandai baris lokal ekstra
+   `cancelled`. Pertahankan riwayat dan bukti pembatalan; jangan membatalkan
+   pembayaran atau membuat refund otomatis dari hasil preflight ini. Perbedaan
+   tagihan yang belum jelas harus diselesaikan operator sebelum rilis.
+3. **Cek ulang dan migrasi.** Hentikan sementara permintaan mulai langganan baru
+   selama pemeriksaan akhir sampai migrasi selesai agar tidak muncul duplikat
+   baru di antara query dan pembuatan index. Jalankan ulang query dengan login
+   yang sama; lanjutkan hanya bila hasilnya **nol baris**. Jalankan migrasi
+   sesuai prosedur, pastikan index
+   `payment_recurring_subscriptions_live_customer_plan_key` berhasil dibuat,
+   lalu buka kembali permintaan mulai langganan. Jika migrasi menolak duplikat
+   baru, tetap tahan rilis dan ulangi pemeriksaan.
 
 ### Reset refund pra-switch DOIT (legend-d21p)
 
