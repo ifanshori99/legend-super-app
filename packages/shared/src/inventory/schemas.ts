@@ -1012,6 +1012,8 @@ export const recipeLineSchema = z
     quantity: positiveDecimal4Schema,
     uomId: uomIdSchema,
     wastePctBp: recipeWastePctSchema,
+    /** Stock location this line is drawn from; null = the sale location. */
+    deductionLocationId: stockLocationIdSchema.nullable().optional(),
   })
   .superRefine((line, context) => {
     if (line.componentType === "recipe" && line.componentId === line.recipeId)

@@ -44,6 +44,7 @@ import type { z } from "zod";
 import { db } from "../db/index.ts";
 import {
   inventoryItems,
+  stockLocations,
   uomConversions,
   uoms,
 } from "../db/schema/inventory.ts";
@@ -66,10 +67,13 @@ import {
 import {
   auditSetupChange,
   findIdempotentResource,
+  loadConversionReachability,
+  registerConversionReferenceCheck,
   rememberIdempotentResource,
   setupFingerprint,
 } from "./inventory-setup.service.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
+import { lockItemsUomReachability } from "./tenant-config-locks.ts";
 
 export type CreateRecipeInput = z.infer<typeof createRecipeInputSchema>;
 export type CreateRecipeVersionInput = z.infer<
@@ -111,6 +115,7 @@ const VERSION_AUDIT_FIELDS = [
   "quantity",
   "uomId",
   "wastePctBp",
+  "deductionLocationId",
   "changeNote",
 ] as const;
 const RULES_AUDIT_FIELDS = ["modifierId", "ruleCount"] as const;
@@ -171,6 +176,52 @@ const invalid = (code: string, message: string) =>
 
 const decimalZero = formatDecimal4(0n);
 
+// legend-o1n1: a recipe line (or a modifier rule component) measured in a
+// non-base unit needs the item's conversions to reach the base unit, so the
+// conversion delete must refuse (409) when it would strand such a unit.
+// Registered at module load; inventory-setup.routes imports this module.
+// No alternate check: no table stores a reference to an alternate row, so a
+// "used alternate" check would only ever be a false positive.
+registerConversionReferenceCheck(async (tx, context, subject) => {
+  const reach = await loadConversionReachability(tx, context, subject);
+  if (!reach) return false;
+  const lineUnits = await tx
+    .select({ uomId: recipeLines.uomId })
+    .from(recipeLines)
+    .where(
+      and(
+        eq(recipeLines.tenantId, context.tenant.tenantId),
+        eq(recipeLines.componentType, "item"),
+        eq(recipeLines.componentId, subject.inventoryItemId),
+      ),
+    );
+  const ruleUnits = await tx
+    .select({ uomId: modifierRecipeRules.uomId })
+    .from(modifierRecipeRules)
+    .where(
+      and(
+        eq(modifierRecipeRules.tenantId, context.tenant.tenantId),
+        eq(modifierRecipeRules.componentType, "item"),
+        eq(modifierRecipeRules.componentId, subject.inventoryItemId),
+      ),
+    );
+  // A recipe that produces this item books its output in the yield unit, which
+  // validateRecipeBody requires to convert to the item base unit.
+  const yieldUnits = await tx
+    .select({ uomId: recipes.yieldUomId })
+    .from(recipes)
+    .where(
+      and(
+        eq(recipes.tenantId, context.tenant.tenantId),
+        eq(recipes.outputItemId, subject.inventoryItemId),
+      ),
+    );
+  const used = [...lineUnits, ...ruleUnits, ...yieldUnits].flatMap((row) =>
+    row.uomId === null ? [] : [row.uomId],
+  );
+  return reach.strandedAmong(used).length > 0;
+});
+
 function toRecipe(row: RecipeRow, withCost: boolean): Recipe {
   return recipeSchema.parse({
     id: row.id,
@@ -198,6 +249,7 @@ function toRecipeLine(row: RecipeLineRow) {
     quantity: row.quantity,
     uomId: row.uomId,
     wastePctBp: row.wastePctBp,
+    deductionLocationId: row.deductionLocationId,
   });
 }
 
@@ -247,6 +299,7 @@ function auditLines(lines: readonly z.infer<typeof recipeLineSchema>[]) {
     quantity: line.quantity,
     uomId: line.uomId,
     wastePctBp: line.wastePctBp,
+    deductionLocationId: line.deductionLocationId ?? null,
   }));
 }
 
@@ -258,6 +311,8 @@ function canonicalLines(lines: readonly LineInput[]) {
     formatDecimal4(parseDecimal4(line.quantity)),
     line.uomId,
     line.wastePctBp,
+    // Only when set, so fingerprints stored before legend-89zm stay valid.
+    ...(line.deductionLocationId ? [line.deductionLocationId] : []),
   ]);
 }
 
@@ -279,6 +334,25 @@ async function lockRecipeGraph(tx: Tx, tenantId: string): Promise<void> {
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`recipe:graph:${tenantId}`}, 0))`,
   );
+}
+
+/**
+ * legend-o1n1: locks the unit reachability of every item a recipe body names
+ * (line items and the output item), so a conversion delete cannot slip between
+ * the reachability check and the commit. Taken after the recipe graph lock and
+ * before validateRecipeBody; a conversion delete takes only an item lock.
+ */
+async function lockBodyItems(
+  tx: Tx,
+  tenantId: string,
+  lines: readonly LineInput[],
+  outputItemId: string | null,
+): Promise<void> {
+  const itemIds = lines
+    .filter((line) => line.componentType === "item")
+    .map((line) => line.componentId);
+  if (outputItemId) itemIds.push(outputItemId);
+  await lockItemsUomReachability(tx, tenantId, itemIds);
 }
 
 // ----------------------------------------------------------- validation
@@ -501,6 +575,50 @@ async function assertDepth(
     );
 }
 
+/**
+ * legend-89zm: a line's own stock location must be an active location of an
+ * outlet of the recipe's brand in this tenant (RLS already scopes the tenant).
+ */
+async function validateDeductionLocations(
+  tx: Tx,
+  brandId: string,
+  lines: readonly LineInput[],
+): Promise<void> {
+  const ids = [
+    ...new Set(
+      lines.flatMap((line) =>
+        line.deductionLocationId ? [line.deductionLocationId] : [],
+      ),
+    ),
+  ];
+  if (ids.length === 0) return;
+  const rows = await tx
+    .select({ id: stockLocations.id })
+    .from(stockLocations)
+    .innerJoin(
+      outlets,
+      and(
+        eq(outlets.tenantId, stockLocations.tenantId),
+        eq(outlets.id, stockLocations.outletId),
+      ),
+    )
+    .where(
+      and(
+        inArray(stockLocations.id, ids),
+        eq(stockLocations.isActive, true),
+        eq(outlets.brandId, brandId),
+      ),
+    );
+  const found = new Set(rows.map((row) => row.id));
+  lines.forEach((line, index) => {
+    if (line.deductionLocationId && !found.has(line.deductionLocationId))
+      throw invalid(
+        "RECIPE_LOCATION_INVALID",
+        `lines[${index}].deductionLocationId is not an active stock location of this brand.`,
+      );
+  });
+}
+
 async function validateRecipeBody(
   tx: Tx,
   recipeId: string,
@@ -519,6 +637,7 @@ async function validateRecipeBody(
     path: `lines[${index}]`,
   }));
   await validateComponents(tx, refs, [input.yieldUomId]);
+  await validateDeductionLocations(tx, brandId, input.lines);
   if (input.outputItemId) {
     const [output] = await tx
       .select({
@@ -568,6 +687,7 @@ function lineValues(
     quantity: line.quantity,
     uomId: line.uomId,
     wastePctBp: line.wastePctBp,
+    deductionLocationId: line.deductionLocationId ?? null,
   }));
 }
 
@@ -675,6 +795,12 @@ export async function createRecipe(
       lines: input.lines,
     };
     const id = randomUUID();
+    await lockBodyItems(
+      tx,
+      context.tenant.tenantId,
+      body.lines,
+      body.outputItemId,
+    );
     await validateRecipeBody(tx, id, input.brandId, body);
     await tx.insert(recipes).values({
       id,
@@ -762,6 +888,12 @@ export async function createRecipeVersion(
       yieldUomId: input.yieldUomId ?? before.row.yieldUomId,
       lines: input.lines,
     };
+    await lockBodyItems(
+      tx,
+      context.tenant.tenantId,
+      body.lines,
+      body.outputItemId,
+    );
     await validateRecipeBody(tx, recipeId, before.row.brandId, body);
     if (body.yieldUomId !== before.row.yieldUomId)
       await assertNoBreakingParents(tx, recipeId, body.yieldUomId);
@@ -971,6 +1103,15 @@ export async function putModifierRecipeRules(
           path: `rules[${index}].target`,
         });
     });
+    // legend-o1n1: same item lock as a conversion delete, taken after the graph
+    // lock and before the reachability check in validateComponents.
+    await lockItemsUomReachability(
+      tx,
+      context.tenant.tenantId,
+      refs
+        .filter((ref) => ref.componentType === "item")
+        .map((ref) => ref.componentId),
+    );
     await validateComponents(tx, refs);
     const existing = await tx
       .select({ id: modifierRecipeRules.id })

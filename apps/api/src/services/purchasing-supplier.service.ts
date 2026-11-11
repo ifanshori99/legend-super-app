@@ -42,7 +42,10 @@ import {
 import type { z } from "zod";
 import { db } from "../db/index.ts";
 import { inventoryItems, uoms } from "../db/schema/inventory.ts";
+import { goodsReceiptLines } from "../db/schema/inventory-receiving.ts";
 import {
+  purchaseOrderLines,
+  purchaseRequestLines,
   purchasingIdempotency,
   supplierContacts,
   supplierPrices,
@@ -50,7 +53,11 @@ import {
 } from "../db/schema/purchasing.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { auditSetupChange } from "./inventory-setup.service.ts";
+import {
+  auditSetupChange,
+  loadConversionReachability,
+  registerConversionReferenceCheck,
+} from "./inventory-setup.service.ts";
 import { translatePurchasingError } from "./purchasing-flow.shared.ts";
 import {
   cursorKeys,
@@ -91,6 +98,59 @@ const SUPPLIER_AUDIT_FIELDS = [
   "rating",
 ] as const;
 const CONTACT_AUDIT_FIELDS = ["supplierId", "isPrimary"] as const;
+// legend-o1n1: a supplier price, purchase request / order line or goods
+// receipt line measured in a non-base unit needs the item's conversions to
+// reach the base unit, so the conversion delete refuses (409) when it would
+// strand such a unit. Registered at module load; inventory-setup.routes imports
+// this module. Price history is append-only, so any row counts. No alternate
+// check: no table stores a reference to an alternate row, so it would only be
+// a false positive.
+registerConversionReferenceCheck(async (tx, context, subject) => {
+  const reach = await loadConversionReachability(tx, context, subject);
+  if (!reach) return false;
+  const tenantId = context.tenant.tenantId;
+  const itemId = subject.inventoryItemId;
+  const used = [
+    ...(await tx
+      .select({ uomId: supplierPrices.purchaseUomId })
+      .from(supplierPrices)
+      .where(
+        and(
+          eq(supplierPrices.tenantId, tenantId),
+          eq(supplierPrices.inventoryItemId, itemId),
+        ),
+      )),
+    ...(await tx
+      .select({ uomId: purchaseRequestLines.uomId })
+      .from(purchaseRequestLines)
+      .where(
+        and(
+          eq(purchaseRequestLines.tenantId, tenantId),
+          eq(purchaseRequestLines.inventoryItemId, itemId),
+        ),
+      )),
+    ...(await tx
+      .select({ uomId: purchaseOrderLines.uomId })
+      .from(purchaseOrderLines)
+      .where(
+        and(
+          eq(purchaseOrderLines.tenantId, tenantId),
+          eq(purchaseOrderLines.inventoryItemId, itemId),
+        ),
+      )),
+    ...(await tx
+      .select({ uomId: goodsReceiptLines.uomId })
+      .from(goodsReceiptLines)
+      .where(
+        and(
+          eq(goodsReceiptLines.tenantId, tenantId),
+          eq(goodsReceiptLines.inventoryItemId, itemId),
+        ),
+      )),
+  ].map((row) => row.uomId);
+  return reach.strandedAmong(used).length > 0;
+});
+
 const PRICE_AUDIT_FIELDS = [
   "supplierId",
   "inventoryItemId",

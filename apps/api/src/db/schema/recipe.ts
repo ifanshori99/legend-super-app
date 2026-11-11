@@ -128,9 +128,18 @@ export const recipeLines = pgTable(
     quantity: decimal4Column("quantity").notNull(),
     uomId: uuid("uom_id").notNull(),
     wastePctBp: integer("waste_pct_bp").notNull().default(0),
+    // legend-89zm: stock location this line is drawn from; NULL = the outlet
+    // sale location. A leaf line resolves to
+    // `deduction_location_id ?? sale_location_id`.
+    deductionLocationId: uuid("deduction_location_id"),
   },
   (table) => [
     unique("recipe_lines_tenant_id_id_key").on(table.tenantId, table.id),
+    foreignKey({
+      name: "recipe_lines_deduction_location_fk",
+      columns: [table.tenantId, table.deductionLocationId],
+      foreignColumns: [stockLocations.tenantId, stockLocations.id],
+    }),
     foreignKey({
       name: "recipe_lines_recipe_fk",
       columns: [table.tenantId, table.recipeId],
@@ -453,10 +462,11 @@ export const recipeDeductionLines = pgTable(
     ledgerEntryId: uuid("ledger_entry_id"),
   },
   (table) => [
-    unique("recipe_deduction_lines_tenant_deduction_item_key").on(
+    unique("recipe_deduction_lines_tenant_deduction_item_location_key").on(
       table.tenantId,
       table.deductionId,
       table.inventoryItemId,
+      table.locationId,
     ),
     foreignKey({
       name: "recipe_deduction_lines_deduction_fk",

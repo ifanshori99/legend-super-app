@@ -51,6 +51,7 @@ import {
   lt,
   lte,
   notExists,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -119,6 +120,7 @@ import {
   cursorUuid,
   loadOutletClock,
   lockLocations,
+  outletLocationStates,
   recordOpsAudit,
   requestFingerprint,
   requireOpsPermission,
@@ -201,7 +203,7 @@ type DeductionConfig = {
   saleLocationId: string | null;
 };
 
-async function loadDeductionConfig(
+export async function loadDeductionConfig(
   tx: Tx,
   context: ScopedTenantContext,
   outletId: string,
@@ -266,17 +268,13 @@ function toDeduction(
     postedAt: row.postedAt ? row.postedAt.toISOString() : null,
     reversedAt: row.reversedAt ? row.reversedAt.toISOString() : null,
     reversalReason: row.reversalReason,
-    lines: [...lines]
-      .sort((a, b) => a.inventoryItemId.localeCompare(b.inventoryItemId))
-      .map((line) => ({
-        inventoryItemId: line.inventoryItemId,
-        locationId: line.locationId,
-        quantity: line.quantity,
-        unitCostIdr: withCost ? line.unitCostIdr : null,
-        ledgerEntryId: line.ledgerEntryId
-          ? uuidToUlid(line.ledgerEntryId)
-          : null,
-      })),
+    lines: [...lines].sort(byItemThenLocation).map((line) => ({
+      inventoryItemId: line.inventoryItemId,
+      locationId: line.locationId,
+      quantity: line.quantity,
+      unitCostIdr: withCost ? line.unitCostIdr : null,
+      ledgerEntryId: line.ledgerEntryId ? uuidToUlid(line.ledgerEntryId) : null,
+    })),
   });
 }
 
@@ -324,46 +322,150 @@ async function findByKey(
 
 // ------------------------------------------------------------------ record
 
+/** One planned draw: `quantity` of `itemId` from `locationId` (resolved). */
+type PlannedDraw = { locationId: string; itemId: string; quantity: bigint };
+
 type DeductionPlan =
-  | { ok: true; items: Map<string, bigint>; note: string | null }
+  | { ok: true; draws: PlannedDraw[]; note: string | null }
   | { ok: false; reason: RecipeDeductionSkipReason };
+
+/**
+ * Ledger idempotency key suffix of a deduction line: the item, plus the
+ * location only when the deduction holds the item at more than one location
+ * (so the key of a single-location line never changes).
+ */
+function lineKeySuffix(
+  line: { inventoryItemId: string; locationId: string },
+  lines: readonly { inventoryItemId: string }[],
+): string {
+  const sameItem = lines.filter(
+    (other) => other.inventoryItemId === line.inventoryItemId,
+  ).length;
+  return sameItem > 1
+    ? `${line.inventoryItemId}:${line.locationId}`
+    : line.inventoryItemId;
+}
+
+function byItemThenLocation(
+  a: { inventoryItemId: string; locationId: string },
+  b: { inventoryItemId: string; locationId: string },
+): number {
+  return (
+    a.inventoryItemId.localeCompare(b.inventoryItemId) ||
+    a.locationId.localeCompare(b.locationId)
+  );
+}
 
 /**
  * Explodes all lines through the recipe engine. A menu item without a recipe
  * (retail, service) is left out and its id noted on the deduction `reason`
  * (completeness report); an inactive or broken recipe skips the whole
  * deduction, so stock is never drawn partially by surprise.
+ *
+ * legend-89zm: each draw comes from its recipe line's own location, else the
+ * outlet sale location. With no sale location, any draw that names no location
+ * skips the whole deduction as `no_sale_location` (nothing is half posted);
+ * with no sale location any other failure also reads `no_sale_location`, as
+ * before. A named location that is not a location of this outlet (recipes are
+ * brand-wide, locations belong to one outlet) falls back to the outlet sale
+ * location, noted `location_fallback: <original location ids>` on the plan
+ * note (stored in the deduction `reason`); an inactive own location is a
+ * `recipe_error`.
  */
-async function planDeduction(
+export async function planDeduction(
   tx: Tx,
   context: ScopedTenantContext,
+  outletId: string,
   saleLocationId: string | null,
   lines: readonly DeductionMenuLine[],
+  options: { allowInactiveLocations?: boolean } = {},
 ): Promise<DeductionPlan> {
-  if (saleLocationId === null) return { ok: false, reason: "no_sale_location" };
+  const failed = (reason: RecipeDeductionSkipReason): DeductionPlan => ({
+    ok: false,
+    reason: saleLocationId === null ? "no_sale_location" : reason,
+  });
   const sellable = lines.filter((line) => line.quantity >= 1);
-  if (sellable.length === 0) return { ok: false, reason: "no_recipe" };
+  if (sellable.length === 0) return failed("no_recipe");
   let result: Awaited<ReturnType<typeof explodeMenuLines>>;
   try {
     result = await explodeMenuLines(tx, context, sellable);
   } catch (error) {
     // A recipe/config problem must not fail (and block) the whole delivery.
     if (error instanceof HttpError || error instanceof InventoryError)
-      return { ok: false, reason: "recipe_error" };
+      return failed("recipe_error");
     throw error;
   }
-  if (!result.ok) return { ok: false, reason: result.reason };
-  const items = new Map<string, bigint>();
-  for (const [itemId, quantity] of result.items) {
-    const scaled = parseDecimal4(quantity);
-    if (scaled > 0n) items.set(itemId, scaled);
+  if (!result.ok) return failed(result.reason);
+  const namedLocations = [
+    ...new Set(
+      result.draws.flatMap((draw) =>
+        draw.locationId === null ? [] : [draw.locationId],
+      ),
+    ),
+  ];
+  // A named location of another outlet is not usable here: the draw falls back
+  // to this outlet's sale location (and is recorded as `location_fallback`). An
+  // own location that is inactive is as unusable as before (`recipe_error`).
+  const states = await outletLocationStates(
+    tx,
+    context.tenant.tenantId,
+    outletId,
+    namedLocations,
+  );
+  const fallbackFrom = new Set<string>();
+  for (const locationId of namedLocations) {
+    const active = states.get(locationId);
+    if (active === undefined) fallbackFrom.add(locationId);
+    else if (!active && !options.allowInactiveLocations)
+      return failed("recipe_error");
   }
-  if (items.size === 0) return { ok: false, reason: "no_recipe" };
+  const resolve = (draw: { locationId: string | null }) =>
+    draw.locationId === null || fallbackFrom.has(draw.locationId)
+      ? saleLocationId
+      : draw.locationId;
+  if (
+    !options.allowInactiveLocations &&
+    saleLocationId !== null &&
+    result.draws.some((draw) => resolve(draw) === saleLocationId)
+  ) {
+    // The outlet sale location may have been deactivated since it was set.
+    const [active] = await tx
+      .select({ id: stockLocations.id })
+      .from(stockLocations)
+      .where(
+        and(
+          eq(stockLocations.tenantId, context.tenant.tenantId),
+          eq(stockLocations.id, saleLocationId),
+          eq(stockLocations.isActive, true),
+        ),
+      );
+    if (!active) return failed("no_sale_location");
+  }
+  const merged = new Map<string, PlannedDraw>();
+  for (const draw of result.draws) {
+    const locationId = resolve(draw);
+    if (locationId === null) return failed("no_sale_location");
+    const scaled = parseDecimal4(draw.quantity);
+    if (scaled <= 0n) continue;
+    const key = `${locationId}|${draw.itemId}`;
+    const existing = merged.get(key);
+    if (existing) existing.quantity += scaled;
+    else merged.set(key, { locationId, itemId: draw.itemId, quantity: scaled });
+  }
+  if (merged.size === 0) return failed("no_recipe");
+  const draws = [...merged.values()];
   const note =
-    result.unmappedMenuItemIds.length === 0
-      ? null
-      : `no recipe: ${result.unmappedMenuItemIds.join(",")}`;
-  return { ok: true, items, note };
+    [
+      fallbackFrom.size === 0
+        ? null
+        : `location_fallback: ${[...fallbackFrom].sort().join(",")}`,
+      result.unmappedMenuItemIds.length === 0
+        ? null
+        : `no recipe: ${result.unmappedMenuItemIds.join(",")}`,
+    ]
+      .filter((part): part is string => part !== null)
+      .join("; ") || null;
+  return { ok: true, draws, note };
 }
 
 /**
@@ -384,6 +486,7 @@ export async function recordRecipeDeduction(
   const plan = await planDeduction(
     tx,
     context,
+    input.outletId,
     config.saleLocationId,
     input.lines,
   );
@@ -427,15 +530,19 @@ export async function recordRecipeDeduction(
   if (!plan.ok) return loadDeduction(tx, tenantId, id, true);
 
   await tx.insert(recipeDeductionLines).values(
-    [...plan.items.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([inventoryItemId, quantity]) => ({
+    [...plan.draws]
+      .sort(
+        (a, b) =>
+          a.itemId.localeCompare(b.itemId) ||
+          a.locationId.localeCompare(b.locationId),
+      )
+      .map((draw) => ({
         tenantId,
         outletId: input.outletId,
         deductionId: id,
-        inventoryItemId,
-        locationId: config.saleLocationId!,
-        quantity: formatDecimal4(quantity),
+        inventoryItemId: draw.itemId,
+        locationId: draw.locationId,
+        quantity: formatDecimal4(draw.quantity),
         unitCostIdr: null,
         ledgerEntryId: null,
       })),
@@ -457,11 +564,17 @@ export async function estimateDeductionCostIdr(
   lines: readonly DeductionMenuLine[],
 ): Promise<number> {
   const config = await loadDeductionConfig(tx, context, outletId);
-  if (config.saleLocationId === null) return 0;
-  const plan = await planDeduction(tx, context, config.saleLocationId, lines);
+  const plan = await planDeduction(
+    tx,
+    context,
+    outletId,
+    config.saleLocationId,
+    lines,
+  );
   if (!plan.ok) return 0;
   const balances = await tx
     .select({
+      locationId: stockBalances.locationId,
       inventoryItemId: stockBalances.inventoryItemId,
       avgCostIdr: stockBalances.avgCostIdr,
     })
@@ -469,15 +582,24 @@ export async function estimateDeductionCostIdr(
     .where(
       and(
         eq(stockBalances.tenantId, context.tenant.tenantId),
-        eq(stockBalances.locationId, config.saleLocationId),
-        inArray(stockBalances.inventoryItemId, [...plan.items.keys()]),
+        inArray(stockBalances.locationId, [
+          ...new Set(plan.draws.map((draw) => draw.locationId)),
+        ]),
+        inArray(stockBalances.inventoryItemId, [
+          ...new Set(plan.draws.map((draw) => draw.itemId)),
+        ]),
       ),
     );
+  const avgCost = new Map(
+    balances.map((balance) => [
+      `${balance.locationId}|${balance.inventoryItemId}`,
+      parseDecimal4(balance.avgCostIdr),
+    ]),
+  );
   let scaled = 0n;
-  for (const balance of balances)
+  for (const draw of plan.draws)
     scaled +=
-      (plan.items.get(balance.inventoryItemId) ?? 0n) *
-      parseDecimal4(balance.avgCostIdr);
+      draw.quantity * (avgCost.get(`${draw.locationId}|${draw.itemId}`) ?? 0n);
   return scaledCostToIdr(scaled);
 }
 
@@ -519,7 +641,7 @@ export async function postRecipeDeduction(
           eq(recipeDeductionLines.deductionId, row.id),
         ),
       )
-  ).sort((a, b) => a.inventoryItemId.localeCompare(b.inventoryItemId));
+  ).sort(byItemThenLocation);
   await lockLocations(
     tx,
     tenantId,
@@ -540,7 +662,7 @@ export async function postRecipeDeduction(
       sourceType: isDutyMeal ? "duty_meal" : "order",
       sourceId: isDutyMeal ? row.id : row.sourceId,
       occurredAt: row.occurredAt.toISOString() as never,
-      idempotencyKey: `recipe-deduction:${row.id}:${line.inventoryItemId}`,
+      idempotencyKey: `recipe-deduction:${row.id}:${lineKeySuffix(line, lines)}`,
       actor,
     });
     scaledCost +=
@@ -723,7 +845,7 @@ export async function reverseOrderSaleDeduction(
               eq(recipeDeductionLines.deductionId, row.id),
             ),
           )
-      ).sort((a, b) => a.inventoryItemId.localeCompare(b.inventoryItemId));
+      ).sort(byItemThenLocation);
       await lockLocations(
         tx,
         tenantId,
@@ -735,7 +857,8 @@ export async function reverseOrderSaleDeduction(
         // A swap on the paid order already returned part of this line.
         const remaining =
           parseDecimal4(line.quantity) -
-          (swapReturned.get(line.inventoryItemId) ?? 0n);
+          (swapReturned.get(`${line.inventoryItemId}|${line.locationId}`) ??
+            0n);
         if (remaining <= 0n) continue;
         await recordStockMovementInTransaction(tx, context, {
           outletId: row.outletId,
@@ -747,7 +870,7 @@ export async function reverseOrderSaleDeduction(
           sourceType: "order",
           sourceId: row.sourceId,
           occurredAt: occurredAt.toISOString() as never,
-          idempotencyKey: `recipe-reversal:${row.id}:${line.inventoryItemId}`,
+          idempotencyKey: `recipe-reversal:${row.id}:${lineKeySuffix(line, lines)}`,
           actor: { type: "system" },
         });
       }
@@ -782,6 +905,7 @@ async function swapReturnedQuantities(
   const rows = await tx
     .select({
       inventoryItemId: stockLedger.inventoryItemId,
+      locationId: stockLedger.locationId,
       quantity: stockLedger.quantity,
     })
     .from(stockLedger)
@@ -798,11 +922,10 @@ async function swapReturnedQuantities(
       ),
     );
   const returned = new Map<string, bigint>();
-  for (const row of rows)
-    returned.set(
-      row.inventoryItemId,
-      (returned.get(row.inventoryItemId) ?? 0n) + parseDecimal4(row.quantity),
-    );
+  for (const row of rows) {
+    const key = `${row.inventoryItemId}|${row.locationId}`;
+    returned.set(key, (returned.get(key) ?? 0n) + parseDecimal4(row.quantity));
+  }
   return returned;
 }
 
@@ -1015,9 +1138,16 @@ async function returnSwappedLine(
   const tenantId = context.tenant.tenantId;
   const alreadyReturned = await swapReturnedQuantities(tx, tenantId, sale);
   const config = await loadDeductionConfig(tx, context, input.outletId);
-  const plan = await planDeduction(tx, context, config.saleLocationId, [
-    input.oldLine,
-  ]);
+  const plan = await planDeduction(
+    tx,
+    context,
+    input.outletId,
+    config.saleLocationId,
+    [input.oldLine],
+    // The stock goes back to the location the sale drew it from, even if that
+    // location was deactivated since (a return is not a draw).
+    { allowInactiveLocations: true },
+  );
   if (!plan.ok) return;
   const saleLines = await tx
     .select()
@@ -1028,20 +1158,44 @@ async function returnSwappedLine(
         eq(recipeDeductionLines.deductionId, sale.id),
       ),
     );
-  const byItem = new Map(saleLines.map((line) => [line.inventoryItemId, line]));
-  const items = [...plan.items.entries()].sort(([a], [b]) =>
-    a.localeCompare(b),
+  // The sale line of a planned draw: same item and location; failing that, the
+  // item's only sale line (the sale location may have changed since the sale).
+  const saleLineOf = (draw: PlannedDraw) => {
+    const ofItem = saleLines.filter(
+      (line) => line.inventoryItemId === draw.itemId,
+    );
+    return (
+      ofItem.find((line) => line.locationId === draw.locationId) ??
+      (ofItem.length === 1 ? ofItem[0] : undefined)
+    );
+  };
+  // Two draws can map to one sale line (the fallback above): group them per
+  // sale line, so each line is returned once, from its own `available`, under
+  // its own ledger key.
+  const perLine = new Map<
+    string,
+    { line: (typeof saleLines)[number]; planned: bigint }
+  >();
+  for (const draw of plan.draws) {
+    const line = saleLineOf(draw);
+    if (!line) continue;
+    const entry = perLine.get(line.id);
+    if (entry) entry.planned += draw.quantity;
+    else perLine.set(line.id, { line, planned: draw.quantity });
+  }
+  const perLineSorted = [...perLine.values()].sort((a, b) =>
+    byItemThenLocation(a.line, b.line),
   );
   await lockLocations(
     tx,
     tenantId,
-    items.flatMap(([itemId]) => byItem.get(itemId)?.locationId ?? []),
+    perLineSorted.map(({ line }) => line.locationId),
   );
-  for (const [itemId, planned] of items) {
-    const line = byItem.get(itemId);
-    if (!line) continue;
+  for (const { line, planned } of perLineSorted) {
+    const itemId = line.inventoryItemId;
     const available =
-      parseDecimal4(line.quantity) - (alreadyReturned.get(itemId) ?? 0n);
+      parseDecimal4(line.quantity) -
+      (alreadyReturned.get(`${itemId}|${line.locationId}`) ?? 0n);
     const back = planned < available ? planned : available;
     if (back <= 0n) continue;
     if (sale.status === "posted") {
@@ -1056,7 +1210,7 @@ async function returnSwappedLine(
         sourceType: "order",
         sourceId: sale.sourceId,
         occurredAt: input.occurredAt as never,
-        idempotencyKey: `${SWAP_RETURN_KEY_PREFIX}${sale.id}:${input.issueId}:${itemId}`,
+        idempotencyKey: `${SWAP_RETURN_KEY_PREFIX}${sale.id}:${input.issueId}:${lineKeySuffix(line, saleLines)}`,
         actor: { type: "system" },
       });
     } else if (back === available) {
@@ -1067,6 +1221,7 @@ async function returnSwappedLine(
             eq(recipeDeductionLines.tenantId, tenantId),
             eq(recipeDeductionLines.deductionId, sale.id),
             eq(recipeDeductionLines.inventoryItemId, itemId),
+            eq(recipeDeductionLines.locationId, line.locationId),
           ),
         );
     } else {
@@ -1078,6 +1233,7 @@ async function returnSwappedLine(
             eq(recipeDeductionLines.tenantId, tenantId),
             eq(recipeDeductionLines.deductionId, sale.id),
             eq(recipeDeductionLines.inventoryItemId, itemId),
+            eq(recipeDeductionLines.locationId, line.locationId),
           ),
         );
     }
@@ -1317,11 +1473,13 @@ async function retryParkedSwapReturns(
 // ---------------------------------------------------------------- consumer
 
 /** The sellable lines of a paid order: not voided at the kitchen nor the POS. */
-async function paidOrderLines(
+export async function paidOrderLines(
   tx: Tx,
   context: ScopedTenantContext,
   orderId: string,
   outletId: string,
+  /** Order lines a swap deduction already drew (legend-q55i repost). */
+  excludeLineIds: readonly string[] = [],
 ): Promise<DeductionMenuLine[]> {
   const rows = await tx
     .select({
@@ -1345,6 +1503,9 @@ async function paidOrderLines(
         eq(orderItems.orderId, orderId),
         sql`${orderItems.status} <> 'voided'`,
         isNull(posOrderItems.voidedAt),
+        ...(excludeLineIds.length > 0
+          ? [notInArray(orderItems.id, [...excludeLineIds])]
+          : []),
         // legend-v51rh: a line swapped away was never cooked, even when a
         // completed order keeps it frozen and non-voided.
         notExists(

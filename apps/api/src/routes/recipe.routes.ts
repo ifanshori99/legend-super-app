@@ -20,6 +20,8 @@ import {
   recipeIdSchema,
   recipeQuerySchema,
   recordDutyMealInputSchema,
+  repostSkippedDeductionsInputSchema,
+  skippedDeductionSummaryQuerySchema,
 } from "@starter/shared/inventory";
 import { outletIdSchema, uuidSchema } from "@starter/shared/core";
 import { Router, type Request, type RequestHandler } from "express";
@@ -48,6 +50,10 @@ import {
   putOutletDeductionSettings,
   recordDutyMeal,
 } from "../services/recipe-deduction.service.ts";
+import {
+  getSkippedDeductionSummary,
+  repostSkippedDeductions,
+} from "../services/recipe-deduction-repost.service.ts";
 
 const queryOutlet = (req: Request) => String(req.query.outletId);
 const pathOutlet = (req: Request) => String(req.params.outletId);
@@ -261,6 +267,40 @@ export function createRecipeRouter(): Router {
           query,
         ),
       );
+    },
+  );
+
+  // legend-q55i: re-post the skipped deductions of an outlet and date.
+  router.post(
+    "/outlets/:outletId/recipe-deductions/repost-skipped",
+    jsonBody,
+    requireOutletPermission("inventory.adjustment.approve", pathOutlet),
+    async (req, res) => {
+      const outletId = outletIdSchema.parse(req.params.outletId);
+      const input = repostSkippedDeductionsInputSchema.parse(req.body);
+      res.json({
+        data: await repostSkippedDeductions(
+          getScopedTenantContext(req),
+          getAuth(req).user.id,
+          { outletId, businessDate: input.businessDate },
+        ),
+      });
+    },
+  );
+
+  router.get(
+    "/outlets/:outletId/recipe-deductions/skipped-summary",
+    requireOutletPermission("inventory.adjustment.approve", pathOutlet),
+    async (req, res) => {
+      const outletId = outletIdSchema.parse(req.params.outletId);
+      const query = skippedDeductionSummaryQuerySchema.parse(req.query);
+      res.json({
+        data: await getSkippedDeductionSummary(
+          getScopedTenantContext(req),
+          getAuth(req).user.id,
+          { outletId, businessDate: query.businessDate },
+        ),
+      });
     },
   );
 

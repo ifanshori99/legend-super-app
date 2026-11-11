@@ -51,6 +51,11 @@ export type RecipeBookLine = {
   quantity: Decimal4;
   uomId: string;
   wastePctBp: number;
+  /**
+   * legend-89zm: stock location this line draws from; null/absent = the outlet
+   * sale location (resolved by the caller).
+   */
+  locationId?: string | null;
 };
 
 export type RecipeBookRecipe = {
@@ -83,6 +88,8 @@ export type ModifierEffect =
 
 export type ExplodedComponent = {
   itemId: string;
+  /** Stock location of the line it came from; null = the sale location. */
+  locationId: string | null;
   uomId: string;
   /** Gross quantity (prep loss included) in `uomId`. */
   quantity: Decimal4;
@@ -132,9 +139,14 @@ export function explodeRecipeTree(
       };
     const factor = parseDecimal4(multiplier);
     const sums = new Map<string, bigint>();
-    const add = (itemId: string, uomId: string, quantity: bigint): void => {
+    const add = (
+      itemId: string,
+      uomId: string,
+      quantity: bigint,
+      locationId: string | null = null,
+    ): void => {
       if (quantity <= 0n) return;
-      const key = `${itemId}|${uomId}`;
+      const key = `${itemId}|${uomId}|${locationId ?? ""}`;
       sums.set(key, (sums.get(key) ?? 0n) + quantity);
     };
 
@@ -224,7 +236,7 @@ export function explodeRecipeTree(
         ),
       );
       if (line.componentType === "item") {
-        add(line.componentId, line.uomId, gross);
+        add(line.componentId, line.uomId, gross, line.locationId ?? null);
         return;
       }
       const nested = book.recipes.get(line.componentId);
@@ -239,7 +251,7 @@ export function explodeRecipeTree(
             "recipe_inactive",
             `Recipe ${nested.id} is inactive.`,
           );
-        add(nested.outputItemId, line.uomId, gross);
+        add(nested.outputItemId, line.uomId, gross, line.locationId ?? null);
         return;
       }
       if (line.uomId !== nested.yieldUomId)
@@ -284,8 +296,17 @@ export function explodeRecipeTree(
 
     const components: ExplodedComponent[] = [];
     for (const [key, quantity] of sums) {
-      const [itemId, uomId] = key.split("|") as [string, string];
-      components.push({ itemId, uomId, quantity: formatDecimal4(quantity) });
+      const [itemId, uomId, location] = key.split("|") as [
+        string,
+        string,
+        string,
+      ];
+      components.push({
+        itemId,
+        locationId: location === "" ? null : location,
+        uomId,
+        quantity: formatDecimal4(quantity),
+      });
     }
     return { ok: true, components };
   } catch (error) {
@@ -348,8 +369,36 @@ function sumBaseQuantities(
   uom: UomContext,
   components: readonly ExplodedComponent[],
 ): Map<string, Decimal4> {
-  const result = new Map<string, Decimal4>();
-  const sums = new Map<string, bigint>();
+  const result = new Map<string, bigint>();
+  for (const draw of sumBaseDraws(uom, components))
+    result.set(
+      draw.itemId,
+      (result.get(draw.itemId) ?? 0n) + parseDecimal4(draw.quantity),
+    );
+  return new Map(
+    [...result].map(([itemId, scaled]) => [itemId, formatDecimal4(scaled)]),
+  );
+}
+
+/**
+ * One gross base-unit draw of a stock item from one location (null = the
+ * outlet sale location, resolved by the caller).
+ */
+export type LocationDraw = {
+  locationId: string | null;
+  itemId: string;
+  quantity: Decimal4;
+};
+
+/** Base-unit quantities per (location, item), converted before summing. */
+function sumBaseDraws(
+  uom: UomContext,
+  components: readonly ExplodedComponent[],
+): LocationDraw[] {
+  const sums = new Map<
+    string,
+    { locationId: string | null; itemId: string; scaled: bigint }
+  >();
   for (const component of components) {
     const base = uom.baseUom.get(component.itemId);
     if (!base)
@@ -366,14 +415,22 @@ function sumBaseQuantities(
       ),
       ROUNDING_MODE,
     );
-    sums.set(
-      component.itemId,
-      (sums.get(component.itemId) ?? 0n) + parseDecimal4(converted),
-    );
+    const key = `${component.locationId ?? ""}|${component.itemId}`;
+    const entry = sums.get(key) ?? {
+      locationId: component.locationId,
+      itemId: component.itemId,
+      scaled: 0n,
+    };
+    entry.scaled += parseDecimal4(converted);
+    sums.set(key, entry);
   }
-  for (const [itemId, scaled] of sums)
-    if (scaled > 0n) result.set(itemId, formatDecimal4(scaled));
-  return result;
+  return [...sums.values()]
+    .filter((entry) => entry.scaled > 0n)
+    .map((entry) => ({
+      locationId: entry.locationId,
+      itemId: entry.itemId,
+      quantity: formatDecimal4(entry.scaled),
+    }));
 }
 
 // ----------------------------------------------------------- DB: recipe book
@@ -426,6 +483,7 @@ export async function loadRecipeBook(
         quantity: row.quantity,
         uomId: row.uomId,
         wastePctBp: row.wastePctBp,
+        locationId: row.deductionLocationId,
       });
       linesByRecipe.set(row.recipeId, list);
       if (row.componentType === "recipe" && !seen.has(row.componentId))
@@ -459,6 +517,8 @@ export type ExplodeMenuOutcome =
       ok: true;
       /** Gross base-unit quantity per stock item, all lines merged. */
       items: Map<string, Decimal4>;
+      /** The same quantities split per stock location (legend-89zm). */
+      draws: LocationDraw[];
       /** Menu items skipped because they carry no recipe (retail, service). */
       unmappedMenuItemIds: string[];
     }
@@ -656,9 +716,11 @@ export async function explodeMenuLines(
     components.push(...outcome.components);
   }
   try {
+    const uom = await loadUomContext(tx, components);
     return {
       ok: true,
-      items: await toBaseQuantities(tx, components),
+      items: sumBaseQuantities(uom, components),
+      draws: sumBaseDraws(uom, components),
       unmappedMenuItemIds: unmapped,
     };
   } catch (error) {
@@ -673,6 +735,8 @@ export type ExplodeLineOutcome =
       ok: true;
       /** Gross base-unit quantity per stock item for this line alone. */
       items: Map<string, Decimal4>;
+      /** The same quantities split per stock location (legend-89zm). */
+      draws: LocationDraw[];
     }
   | { ok: false; reason: ExplosionFailureReason; detail: string };
 
@@ -751,7 +815,11 @@ export async function explodeMenuLinesEach(
   const uom = await loadUomContext(tx, [...exploded.values()].flat());
   for (const [index, components] of exploded) {
     try {
-      outcomes[index] = { ok: true, items: sumBaseQuantities(uom, components) };
+      outcomes[index] = {
+        ok: true,
+        items: sumBaseQuantities(uom, components),
+        draws: sumBaseDraws(uom, components),
+      };
     } catch (error) {
       if (!(error instanceof InventoryError)) throw error;
       outcomes[index] = {

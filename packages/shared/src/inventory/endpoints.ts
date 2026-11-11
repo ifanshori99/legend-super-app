@@ -391,6 +391,8 @@ export const recipeLineInputSchema = z.strictObject({
   quantity: positiveDecimal4Schema,
   uomId: uomIdSchema,
   wastePctBp: recipeWastePctSchema,
+  /** Stock location this line is drawn from; null/absent = the sale location. */
+  deductionLocationId: stockLocationIdSchema.nullable().optional(),
 });
 
 export const createRecipeInputSchema = clientInputSchema({

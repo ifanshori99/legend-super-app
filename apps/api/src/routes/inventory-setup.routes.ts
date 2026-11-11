@@ -58,6 +58,10 @@ import {
   updateInventorySettings,
 } from "../services/inventory-settings.service.ts";
 import { createUom, updateUom } from "../services/inventory-uom.service.ts";
+// Side-effect imports: these register the conversion delete reference checks
+// (legend-o1n1) so they exist wherever the setup routes are loaded.
+import "../services/purchasing-supplier.service.ts";
+import "../services/recipe.service.ts";
 
 export function createInventorySetupRouter(): Router {
   const router = Router();

@@ -233,6 +233,45 @@ export const recipeDeductionQuerySchema = cursorPageQuerySchema.extend({
   kind: recipeDeductionKindSchema.optional(),
 });
 
+// ---- Repost of skipped deductions (legend-q55i) ------------------------------
+
+/** Re-post the skipped deductions of one outlet and business date. */
+export const repostSkippedDeductionsInputSchema = z.strictObject({
+  businessDate: businessDateSchema,
+});
+export type RepostSkippedDeductionsInput = z.infer<
+  typeof repostSkippedDeductionsInputSchema
+>;
+
+/** `stillSkipped`: rows tried (or left over) that remain skipped. */
+export const repostSkippedDeductionsResultSchema = z.strictObject({
+  reposted: z.number().int().min(0),
+  stillSkipped: z.number().int().min(0),
+});
+export type RepostSkippedDeductionsResult = z.infer<
+  typeof repostSkippedDeductionsResultSchema
+>;
+
+export const skippedDeductionSummaryQuerySchema = z.strictObject({
+  businessDate: businessDateSchema,
+});
+
+/** Skipped deductions of an outlet and date, counted per skip reason. */
+export const skippedDeductionSummarySchema = z.strictObject({
+  outletId: outletIdSchema,
+  businessDate: businessDateSchema,
+  byReason: z.strictObject({
+    no_recipe: z.number().int().min(0),
+    no_sale_location: z.number().int().min(0),
+    recipe_inactive: z.number().int().min(0),
+    recipe_error: z.number().int().min(0),
+  }),
+  total: z.number().int().min(0),
+});
+export type SkippedDeductionSummary = z.infer<
+  typeof skippedDeductionSummarySchema
+>;
+
 // ---- Outlet deduction settings --------------------------------------------
 
 /** `recipeDeductionMode` null = follow the tenant setting. */
@@ -375,6 +414,22 @@ export const listRecipeDeductions = defineEndpoint({
   response: cursorPageSchema(recipeDeductionSchema),
 });
 
+export const repostSkippedDeductions = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/outlets/:outletId/recipe-deductions/repost-skipped",
+  params: outletIdParams,
+  body: repostSkippedDeductionsInputSchema,
+  response: dataResponseSchema(repostSkippedDeductionsResultSchema),
+});
+
+export const getSkippedDeductionSummary = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/outlets/:outletId/recipe-deductions/skipped-summary",
+  params: outletIdParams,
+  query: skippedDeductionSummaryQuerySchema,
+  response: dataResponseSchema(skippedDeductionSummarySchema),
+});
+
 export const recipeBomEndpoints = [
   deactivateRecipe,
   listModifierRecipeRules,
@@ -383,4 +438,6 @@ export const recipeBomEndpoints = [
   putOutletDeductionSettings,
   recordDutyMeal,
   listRecipeDeductions,
+  repostSkippedDeductions,
+  getSkippedDeductionSummary,
 ] as const;
