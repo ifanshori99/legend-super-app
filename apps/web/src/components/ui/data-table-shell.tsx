@@ -21,7 +21,12 @@ type Props = {
   description?: string;
   state: DataState;
   /** Controlled search; omit to hide the search field. */
-  search?: { value: string; onChange: (value: string) => void; label?: string };
+  search?: {
+    value: string;
+    onChange: (value: string) => void;
+    label?: string;
+    placeholder?: string;
+  };
   actions?: React.ReactNode;
   onRetry?: () => void;
   /** The query's error; a 403 shows an explaining empty state, not a failure. */
@@ -33,6 +38,8 @@ type Props = {
   rowCount?: number;
   /** Skeleton rows while loading; match the usual page size. */
   loadingRows?: number;
+  /** Drop the outer shell frame so the inner card is the only frame. */
+  bare?: boolean;
   className?: string;
   children?: React.ReactNode;
 };
@@ -50,6 +57,7 @@ function DataTableShell({
   page,
   rowCount,
   loadingRows = 5,
+  bare = false,
   className,
   children,
 }: Props) {
@@ -62,7 +70,9 @@ function DataTableShell({
       aria-labelledby={title ? headingId : undefined}
       aria-busy={state === "loading" || undefined}
       className={cn(
-        "flex min-w-0 flex-col rounded-shell border-(length:--border-w) bg-shell p-2 shadow-hairline",
+        "flex min-w-0 flex-col",
+        !bare &&
+          "rounded-shell border-(length:--border-w) bg-shell p-2 shadow-hairline",
         className,
       )}
     >
@@ -92,7 +102,9 @@ function DataTableShell({
                     type="search"
                     value={search.value}
                     onChange={(event) => search.onChange(event.target.value)}
-                    placeholder={t("table.searchPlaceholder")}
+                    placeholder={
+                      search.placeholder ?? t("table.searchPlaceholder")
+                    }
                     aria-label={search.label ?? t("common.search")}
                     className="h-control-sm pl-10"
                   />
