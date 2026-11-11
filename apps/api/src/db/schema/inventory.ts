@@ -45,6 +45,7 @@ import {
   ulidInUuid,
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 import { user } from "./user";
 
 /**
@@ -100,9 +101,11 @@ export const inventoryItems = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
     unique("inventory_items_tenant_id_id_key").on(table.tenantId, table.id),
+    index("inventory_items_sync_txid_idx").on(table.syncTxid, table.id),
     uniqueIndex("inventory_items_tenant_idempotency_key")
       .on(table.tenantId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),

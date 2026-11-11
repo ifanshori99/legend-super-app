@@ -3,6 +3,26 @@
 // (docs/briefs/97p-catalog-downsync.md) and the shared contract
 // (packages/shared/src/edge/catalog-sync.ts), not from the implementation.
 //
+// Updated for beads legend-24318 / legend-0mus6 (docs/briefs/24318-design.md):
+// the time cursor (updated_at + settle window + overlap) is replaced by the
+// `sync_txid` contract. Tests prefixed "24318" are new or changed for it:
+//  - 10 streams (stations and inventory_items first); every record carries
+//    `syncTxid` (digits); cursors are `cat2`, a `cat1` cursor is refused.
+//  - The cloud holds back rows at or above the oldest open transaction (this
+//    replaces the settle window). Tests wait for that boundary with
+//    `settleCloud` (helpers/catalog-cloud.ts) instead of sleeping.
+//  - Edge apply replaces a local row when the incoming `syncTxid` is GREATER
+//    than the stored one OR the incoming `updatedAt` is greater (rule given by
+//    the coordinator); tests that must show "older loses" keep `updatedAt`
+//    equal and lower only the txid. A local
+//    row is made "older" in tests by writing `sync_txid` with
+//    `legend.skip_sync_txid = on` (the edge trigger leaves it alone then).
+//    Assumption: an EQUAL txid may be skipped or applied (not asserted).
+//  - `recipes.updated_by` is nullable on the edge: an unknown user becomes
+//    NULL and is counted in `nulledRefs`; the checkpoint moves.
+//  - pullCatalog has no `overlapMs` any more; the scripted cloud hands out
+//    real `cat2` cursors (helpers/catalog-cloud.ts).
+//
 // Two databases: the main test database is the CLOUD; a second database
 // (helpers/edge-database.ts, restricted login, RLS forced) is the EDGE.
 // Cloud rows live under the fixture tenant on two private outlets (O1 = the
@@ -55,6 +75,7 @@ import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import {
+  decodeCursor,
   encodeCursor,
   outletIdSchema,
   type ScopedTenantContext,
@@ -82,6 +103,7 @@ import {
   verifyEdgeNodeCredential,
 } from "../services/edge-node.service.ts";
 import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
+import { scriptedCatalogCloud, settleCloud } from "./helpers/catalog-cloud.ts";
 import {
   cloneMainOutlet,
   createEdgeDatabase,
@@ -126,6 +148,14 @@ let userId = "";
 
 const id = () => randomUUID();
 const ids = {
+  stn1: id(),
+  stnO2: id(),
+  stnGone: id(),
+  inv1: id(),
+  invOff: id(),
+  itemStn: id(),
+  plTomb: id(),
+  pliTomb: id(),
   cat1: id(),
   cat2: id(),
   item1: id(),
@@ -169,8 +199,10 @@ const created: { table: string; where: string; params: unknown[] }[] = [];
 
 /** Rows seeded for O1, per stream (the join table is keyed by item + group). */
 const MINE: Record<Table, string[]> = {
+  stations: [ids.stn1],
+  inventory_items: [ids.inv1, ids.invOff],
   menu_categories: [ids.cat1, ids.cat2],
-  menu_items: [ids.item1, ids.item2, ids.item3],
+  menu_items: [ids.item1, ids.item2, ids.item3, ids.itemStn],
   item_variants: [ids.var1],
   modifier_groups: [ids.mg1],
   modifiers: [ids.mod1],
@@ -187,6 +219,8 @@ const isMine = (stream: Stream, rec: Rec): boolean =>
 
 /** Stream order, parents first (the order the cloud and the puller use). */
 const ORDER: Stream[] = [
+  "stations",
+  "inventory_items",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -198,6 +232,8 @@ const ORDER: Stream[] = [
 ];
 /** Every table to compare edge vs cloud, parents first. */
 const TABLE_ORDER: Table[] = [
+  "stations",
+  "inventory_items",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -220,6 +256,20 @@ async function seedCloud() {
     `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order, updated_at) VALUES
        ($1,$3,$4,'Katalog A',0,$5), ($2,$3,$4,'Katalog B',1,$6)`,
     [ids.cat1, ids.cat2, tenantId, brandId, at(1), at(2)],
+  );
+  // Stations are outlet scoped: one for O1 (the edge), one for the sibling O2.
+  await q(
+    `INSERT INTO stations (id, tenant_id, outlet_id, name, type, target_seconds, updated_at) VALUES
+       ($1,$3,$4,$6,'coffee_bar',180,$7), ($2,$3,$5,$6,'hot_kitchen',null,$7)`,
+    [
+      ids.stn1,
+      ids.stnO2,
+      tenantId,
+      O1,
+      O2,
+      `Stasiun ${ids.stn1.slice(0, 6)}`,
+      at(1),
+    ],
   );
   for (const [n, itemId] of [
     [3, ids.item1],
@@ -293,6 +343,20 @@ async function seedCloud() {
   );
   MINE.menu_items.push(itemChg);
   await price(ids.pliChg, ids.pl1, itemChg, null, PRICE.pliChg, 17);
+  // An item routed to the O1 station (the station travels first in the pull).
+  await q(
+    `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, station_id, updated_at)
+     VALUES ($1,$2,$3,$4,$5,true,$6,$7)`,
+    [
+      ids.itemStn,
+      tenantId,
+      brandId,
+      ids.cat1,
+      `Menu stasiun ${ids.itemStn.slice(0, 6)}`,
+      ids.stn1,
+      at(3),
+    ],
+  );
 
   uomId = (
     await q(
@@ -302,6 +366,22 @@ async function seedCloud() {
   ).rows[0].id;
   userId = (await q(`SELECT id FROM "user" ORDER BY id LIMIT 1`, [])).rows[0]
     .id;
+  // Inventory items are tenant wide and have no deleted_at: one active, one
+  // switched off (is_active = false), with exact NUMERIC pars.
+  await q(
+    `INSERT INTO inventory_items (id, tenant_id, name, category, type, base_uom_id, is_perishable, is_active, par_min, par_max, updated_at)
+     VALUES ($1,$3,$4,'Bahan','raw_material',$5,true,true,'1.2500','10.0000',$6),
+            ($2,$3,$7,'Bahan','semi_finished',$5,false,false,NULL,NULL,$6)`,
+    [
+      ids.inv1,
+      ids.invOff,
+      tenantId,
+      `Susu ${ids.inv1.slice(0, 6)}`,
+      uomId,
+      at(1),
+      `Sirup ${ids.invOff.slice(0, 6)}`,
+    ],
+  );
   await q(
     `INSERT INTO recipes (id, tenant_id, brand_id, name, output_item_id, yield_quantity, yield_uom_id, is_active, updated_by, updated_at)
      VALUES ($1,$2,$3,$4,NULL,'1.0000',$5,true,$6,$7)`,
@@ -385,6 +465,7 @@ async function copyToEdge(table: string, rowId: string) {
 const CATALOG_TABLES_CHILD_FIRST = [
   "recipe_lines",
   "recipes",
+  "inventory_items",
   "price_list_items",
   "price_lists",
   "menu_item_modifier_groups",
@@ -393,6 +474,7 @@ const CATALOG_TABLES_CHILD_FIRST = [
   "item_variants",
   "menu_items",
   "menu_categories",
+  "stations",
 ];
 
 async function resetEdge() {
@@ -413,10 +495,18 @@ async function resetEdge() {
 }
 
 /** The cloud's page for one stream, through the real service. */
-function cloudPage(
+async function cloudPage(
   stream: Stream,
-  opts: { since?: string; limit?: number; outletId?: string; tenant?: string },
+  opts: {
+    since?: string;
+    limit?: number;
+    outletId?: string;
+    tenant?: string;
+    /** Skip the wait for the commit-safe boundary (hold-back tests only). */
+    noSettle?: boolean;
+  },
 ): Promise<Page> {
+  if (!opts.noSettle) await settleCloud(mainOwner);
   const query = catalogSyncQuerySchema.parse({
     stream,
     limit: opts.limit ?? 100,
@@ -432,7 +522,12 @@ function cloudPage(
 /** Walks every page of a stream the way an edge would. */
 async function walk(
   stream: Stream,
-  opts: { limit?: number; outletId?: string; tenant?: string } = {},
+  opts: {
+    limit?: number;
+    outletId?: string;
+    tenant?: string;
+    noSettle?: boolean;
+  } = {},
 ) {
   const records: Rec[] = [];
   const pages: Page[] = [];
@@ -470,11 +565,34 @@ function edgeApply(stream: Stream, records: Rec[]) {
   });
 }
 
+/**
+ * Writes local drift on the edge with the sync_txid trigger switched off, so a
+ * test can set the stored `sync_txid` itself (as an edge apply does).
+ */
+async function edgeWriteKeepingTxid(statements: [string, unknown[]?][]) {
+  const client = await edge.owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('legend.skip_sync_txid', 'on', true)",
+    );
+    for (const [text, params] of statements) await client.query(text, params);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function edgeApplyAll(data: Record<Stream, Rec[]>) {
   for (const stream of ORDER) await edgeApply(stream, data[stream]);
 }
 
 const WHERE_COLUMN: Record<Table, string> = {
+  stations: "id",
+  inventory_items: "id",
   menu_categories: "id",
   menu_items: "id",
   item_variants: "id",
@@ -573,56 +691,26 @@ const checkpoints = () =>
   );
 
 // A scripted cloud: serves the seeded rows (exactly what the real export
-// returned) in pages of `pageSize` with opaque `<stream>:<n>` cursors.
-function scriptedCloud(data: Record<Stream, Rec[]>, pageSize: number) {
-  const calls: { stream: Stream; since: string | null }[] = [];
-  const seen: Record<string, number> = {};
-  let broken: { stream: Stream; fromCall: number } | null = null;
-  const fetchPage = async (
-    stream: Stream,
-    since: string | null,
-  ): Promise<Page> => {
-    calls.push({ stream, since });
-    seen[stream] = (seen[stream] ?? 0) + 1;
-    if (broken && broken.stream === stream && seen[stream]! >= broken.fromCall)
-      throw new Error("jaringan putus");
-    const all = data[stream];
-    const start = since === null ? 0 : Number(since.split(":")[1]);
-    const records = all.slice(start, start + pageSize);
-    const end = start + records.length;
-    return {
-      stream,
-      records,
-      nextCursor: records.length > 0 ? `${stream}:${end}` : since,
-      hasMore: end < all.length,
-    };
+// returned) in pages of `pageSize` with real-shaped `cat2` cursors.
+const scriptedCloud = (data: Record<Stream, Rec[]>, pageSize: number) =>
+  scriptedCatalogCloud(data, pageSize) as unknown as {
+    calls: { stream: Stream; since: string | null }[];
+    fetchPage: (stream: Stream, since: string | null) => Promise<Page>;
+    cursorAfter: (stream: string, position: number) => string;
+    breakAt: (stream: Stream, fromCall: number) => void;
+    heal: () => void;
   };
-  return {
-    calls,
-    fetchPage,
-    breakAt: (stream: Stream, fromCall: number) => {
-      broken = { stream, fromCall };
-    },
-    heal: () => {
-      broken = null;
-    },
-  };
-}
 
 type Scripted = ReturnType<typeof scriptedCloud>;
 
 /** pullCatalog, wired the way the runtime wires it. Tolerates a rejection. */
-async function pull(
-  cloud: Pick<Scripted, "fetchPage">,
-  overlapMs: number | "default" = 0,
-): Promise<unknown> {
+async function pull(cloud: Pick<Scripted, "fetchPage">): Promise<unknown> {
   try {
     return await pullCatalog({
       database: edge.database,
       context: edgeScope(O1),
       edgeNodeId: node.id,
       fetchPage: cloud.fetchPage,
-      ...(overlapMs === "default" ? {} : { overlapMs }),
     } as never);
   } catch (error) {
     return error;
@@ -630,11 +718,8 @@ async function pull(
 }
 
 /** A pull that must complete (per-stream errors are inside the result). */
-async function pullOk(
-  cloud: Pick<Scripted, "fetchPage">,
-  overlapMs: number | "default" = 0,
-): Promise<PullResult> {
-  const result = await pull(cloud, overlapMs);
+async function pullOk(cloud: Pick<Scripted, "fetchPage">): Promise<PullResult> {
+  const result = await pull(cloud);
   expect(result).not.toBeInstanceOf(Error);
   return result as PullResult;
 }
@@ -806,6 +891,13 @@ afterAll(async () => {
     await mainOwner.query("DELETE FROM menu_items WHERE id = ANY($1::uuid[])", [
       [...mine("menu_items"), ids.itemB, ids.itemBr2],
     ]);
+    await mainOwner.query("DELETE FROM stations WHERE id = ANY($1::uuid[])", [
+      [ids.stn1, ids.stnO2, ids.stnGone],
+    ]);
+    await mainOwner.query(
+      "DELETE FROM inventory_items WHERE id = ANY($1::uuid[])",
+      [[ids.inv1, ids.invOff]],
+    );
     await mainOwner.query(
       "DELETE FROM menu_categories WHERE id = ANY($1::uuid[])",
       [[ids.cat1, ids.cat2, ids.catB, ids.catBr2, ...tieIds]],
@@ -834,7 +926,7 @@ afterAll(async () => {
 
 // ------------------------------------------------------- 1 cloud export
 
-describe("97p cloud export: paging, tombstones, settle window", () => {
+describe("97p cloud export: paging, tombstones, commit-safe boundary", () => {
   it("97p pages through a stream completely, without duplicates or gaps, when many rows share updated_at", async () => {
     const { records, pages } = await walk("menu_categories", { limit: 100 });
     const exported = records.map((r) => String(r.id));
@@ -846,9 +938,44 @@ describe("97p cloud export: paging, tombstones, settle window", () => {
     expect(pages[0]!.records).toHaveLength(100);
     expect(pages[0]!.hasMore).toBe(true);
     expect(pages.at(-1)!.hasMore).toBe(false);
-    // The 105 ties come before every newer row, in a stable order.
-    const firstHundredFive = exported.slice(0, 105);
-    expect([...firstHundredFive].sort()).toEqual([...tieIds].sort());
+    // 24318: the order is (sync_txid, id). The 105 ties were written by ONE
+    // statement, so they share one syncTxid and come out sorted by id.
+    const byId = new Map(records.map((r) => [String(r.id), r]));
+    const tieTxids = new Set(tieIds.map((t) => String(byId.get(t)!.syncTxid)));
+    expect(tieTxids.size).toBe(1);
+    const tiesInOrder = exported.filter((x) => tieIds.includes(x));
+    expect(tiesInOrder).toEqual([...tieIds].sort());
+    // Whole stream: syncTxid never goes down, and ties are broken by id.
+    for (let i = 1; i < records.length; i += 1) {
+      const a = records[i - 1]!;
+      const b = records[i]!;
+      const ta = BigInt(String(a.syncTxid));
+      const tb = BigInt(String(b.syncTxid));
+      expect(tb >= ta).toBe(true);
+      if (ta === tb) expect(String(a.id) < String(b.id)).toBe(true);
+    }
+  });
+
+  it("24318 every record carries syncTxid as digits, equal to the cloud row's sync_txid, and nextCursor is a cat2 cursor", async () => {
+    const { records, pages } = await walk("menu_items", { limit: 2 });
+    for (const rec of records) expect(String(rec.syncTxid)).toMatch(/^\d+$/);
+    const cloudRows = (
+      await mainOwner.query(
+        "SELECT id, sync_txid::text AS t FROM menu_items WHERE id = ANY($1::uuid[])",
+        [MINE.menu_items],
+      )
+    ).rows;
+    for (const row of cloudRows) {
+      const rec = records.find((r) => r.id === row.id)!;
+      expect(rec.syncTxid).toBe(row.t);
+    }
+    for (const page of pages.filter((p) => p.records.length > 0)) {
+      const keys = decodeCursor(page.nextCursor as string);
+      expect(keys[0]).toBe("cat2");
+      expect(String(keys[1])).toMatch(/^\d+$/);
+      // The cursor position is the txid of the last record of the page.
+      expect(String(keys[1])).toBe(String(page.records.at(-1)!.syncTxid));
+    }
   });
 
   it("97p a tiny page size still yields every row exactly once", async () => {
@@ -858,7 +985,7 @@ describe("97p cloud export: paging, tombstones, settle window", () => {
     for (const own of MINE.menu_items) expect(exported).toContain(own);
   });
 
-  it("97p the stream list is the 8 parent-first streams (no recipe_lines, no price_list_items)", () => {
+  it("24318 the stream list is the 10 parent-first streams (stations and inventory_items first; no recipe_lines, no price_list_items)", () => {
     expect([...CATALOG_SYNC_STREAMS]).toEqual(ORDER);
     expect(CATALOG_SYNC_STREAMS).not.toContain("recipe_lines");
     expect(CATALOG_SYNC_STREAMS).not.toContain("price_list_items");
@@ -885,27 +1012,47 @@ describe("97p cloud export: paging, tombstones, settle window", () => {
     expect(found!.deletedAt).not.toBeNull();
   });
 
-  it("97p a row younger than the settle window is held back until it settles", async () => {
+  it("24318 a row written by a transaction that is still open is held back, with every row committed after it, until that transaction ends", async () => {
     const youngId = id();
-    created.push({
-      table: "menu_categories",
-      where: "id = $1",
-      params: [youngId],
-    });
-    await mainOwner.query(
-      `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order, updated_at)
-       VALUES ($1,$2,$3,'Baru saja',0, now())`,
-      [youngId, tenantId, brandId],
+    const laterId = id();
+    created.push(
+      { table: "menu_categories", where: "id = $1", params: [youngId] },
+      { table: "menu_categories", where: "id = $1", params: [laterId] },
     );
-    const held = (await walk("menu_categories")).records.map((r) => r.id);
-    expect(held).not.toContain(youngId);
-
-    await mainOwner.query(
-      `UPDATE menu_categories SET updated_at = now() - interval '1 minute' WHERE id = $1`,
-      [youngId],
+    const writer = await mainOwner.connect();
+    let ended = false;
+    try {
+      await writer.query("BEGIN");
+      await writer.query(
+        `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order)
+         VALUES ($1,$2,$3,'Transaksi terbuka',0)`,
+        [youngId, tenantId, brandId],
+      );
+      // Committed later than the open writer, so its txid is higher.
+      await mainOwner.query(
+        `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order)
+         VALUES ($1,$2,$3,'Commit lebih akhir',0)`,
+        [laterId, tenantId, brandId],
+      );
+      const held = (
+        await walk("menu_categories", { noSettle: true })
+      ).records.map((r) => r.id);
+      expect(held).not.toContain(youngId);
+      expect(held).not.toContain(laterId);
+      await writer.query("COMMIT");
+      ended = true;
+    } finally {
+      if (!ended) await writer.query("ROLLBACK");
+      writer.release();
+    }
+    const settled = (await walk("menu_categories")).records;
+    const settledIds = settled.map((r) => r.id);
+    expect(settledIds).toContain(youngId);
+    expect(settledIds).toContain(laterId);
+    // The older transaction comes out first.
+    expect(settledIds.indexOf(youngId)).toBeLessThan(
+      settledIds.indexOf(laterId),
     );
-    const settled = (await walk("menu_categories")).records.map((r) => r.id);
-    expect(settled).toContain(youngId);
   });
 });
 
@@ -916,6 +1063,21 @@ describe("97p broken cursor", () => {
     await expect(
       cloudPage("menu_items", { since: "bukan-cursor" }),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("24318 an old cat1 (time) cursor is refused with a clear validation error, in every stream shape", async () => {
+    const old = encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()]);
+    for (const stream of ["menu_items", "price_lists", "stations"] as const)
+      await expect(cloudPage(stream, { since: old })).rejects.toMatchObject({
+        code: "VALIDATION_ERROR",
+      });
+  });
+
+  it("24318 a cat2 cursor with a non-numeric txid is refused", async () => {
+    const bad = encodeCursor(["cat2", "bukan-angka", id()]);
+    await expect(cloudPage("menu_items", { since: bad })).rejects.toMatchObject(
+      { code: "VALIDATION_ERROR" },
+    );
   });
 
   it("97p a well-formed cursor of another shape is refused the same way", async () => {
@@ -978,30 +1140,39 @@ describe("97p apply on the edge", () => {
     await expectEdgeEqualsCloud();
   });
 
-  it("97p cloud wins over a different local row (older or equal stamp)", async () => {
+  it("24318 cloud wins over a different local row whose stored sync_txid is older", async () => {
     const data = await exportMine();
     await edgeApplyAll(data);
-    // Older local stamp, different price and name.
-    await edge.owner.query(
-      `UPDATE price_list_items SET price_idr = 111, updated_at = '2025-01-01T00:00:00Z' WHERE id = $1`,
-      [ids.pli1],
-    );
-    await edge.owner.query(
-      `UPDATE menu_categories SET name = 'Lokal', updated_at = '2025-01-01T00:00:00Z' WHERE id = $1`,
-      [ids.cat1],
-    );
-    // Equal stamp, different price.
-    const stamp = (
-      data.price_lists.find((r) => r.id === ids.pl1)!.items as Rec[]
-    ).find((r) => r.id === ids.pli2)!.updatedAt as string;
-    await edge.owner.query(
-      `UPDATE price_list_items SET price_idr = 222, updated_at = $2 WHERE id = $1`,
-      [ids.pli2, stamp],
-    );
+    // Local drift with an OLDER txid: different price, different name.
+    await edgeWriteKeepingTxid([
+      [`UPDATE price_list_items SET price_idr = 111 WHERE id = $1`, [ids.pli1]],
+      [`UPDATE price_lists SET sync_txid = 1 WHERE id = $1`, [ids.pl1]],
+      [
+        `UPDATE menu_categories SET name = 'Lokal', sync_txid = 1 WHERE id = $1`,
+        [ids.cat1],
+      ],
+    ]);
     await edgeApplyAll(data);
     expect(await edgePrice(ids.pli1)).toBe(String(PRICE.pli1));
     expect(await edgePrice(ids.pli2)).toBe(String(PRICE.pli2));
     await expectEdgeEqualsCloud();
+  });
+
+  it("24318 the edge stores the txid the cloud sent, not one of its own", async () => {
+    const data = await exportMine();
+    await edgeApplyAll(data);
+    for (const stream of ORDER) {
+      if (stream === "menu_item_modifier_groups") continue;
+      for (const rec of data[stream]) {
+        const edgeTxid = (
+          await edge.rows(
+            `SELECT sync_txid::text AS t FROM ${stream} WHERE id = $1`,
+            [String(rec.id)],
+          )
+        )[0]?.t;
+        expect(edgeTxid).toBe(String(rec.syncTxid));
+      }
+    }
   });
 
   it("97p a tombstone makes the edge drop or hide its copy", async () => {
@@ -1294,18 +1465,22 @@ describe("97p apply on the edge", () => {
 
   // ---- missing references
 
-  it("97p a recipe whose updated_by user is unknown on the edge is refused with CATALOG_MISSING_REF and nothing of it is stored", async () => {
+  it("24318 a recipe whose updated_by user is unknown on the edge is stored with a NULL updated_by and reported in nulledRefs (the page is not refused)", async () => {
     const data = await exportMine();
     for (const stream of ORDER.filter((s) => s !== "recipes"))
       await edgeApply(stream, data[stream]);
     const bad = { ...data.recipes[0]!, updatedBy: `tak-ada-${id()}` };
-    await expect(edgeApply("recipes", [bad])).rejects.toMatchObject({
-      code: "CATALOG_MISSING_REF",
-    });
-    expect(
-      await edge.rows("SELECT id FROM recipes WHERE id = $1", [ids.rec1]),
-    ).toHaveLength(0);
-    expect(await edgeLineIds()).toEqual([]);
+    const result = await edgeApply("recipes", [bad]);
+    expect(nulledCount(result)).toBeGreaterThan(0);
+    const row = (
+      await edge.rows("SELECT updated_by FROM recipes WHERE id = $1", [
+        ids.rec1,
+      ])
+    )[0];
+    expect(row).toBeDefined();
+    expect(row!.updated_by).toBeNull();
+    // The recipe arrives whole, lines included.
+    expect(await edgeLineIds()).toHaveLength(2);
   });
 
   it("97p a recipe output_item_id unknown on the edge becomes NULL (permanent) and is reported in nulledRefs", async () => {
@@ -1326,8 +1501,34 @@ describe("97p apply on the edge", () => {
     expect(await edgeLineIds()).toHaveLength(2);
   });
 
+  it("24318 a recipe output_item_id and a menu item station_id that DID arrive are kept (stations and inventory_items are synced)", async () => {
+    const data = await exportMine();
+    for (const stream of ORDER.filter((s) => s !== "recipes"))
+      await edgeApply(stream, data[stream]);
+    const result = await edgeApply("recipes", [
+      { ...data.recipes[0]!, outputItemId: ids.inv1 },
+    ]);
+    expect(nulledCount(result)).toBe(0);
+    expect(
+      (
+        await edge.rows("SELECT output_item_id FROM recipes WHERE id = $1", [
+          ids.rec1,
+        ])
+      )[0]!.output_item_id,
+    ).toBe(ids.inv1);
+    expect(
+      (
+        await edge.rows("SELECT station_id FROM menu_items WHERE id = $1", [
+          ids.itemStn,
+        ])
+      )[0]!.station_id,
+    ).toBe(ids.stn1);
+  });
+
   it("97p a station_id unknown on the edge becomes NULL on a menu item instead of failing the page", async () => {
-    // Assumption: stations are not synced, so the edge keeps the column NULL.
+    // A station that is not on the edge (never pulled) cannot be referenced:
+    // the column becomes NULL instead of failing the page. (Stations do travel
+    // now; this id belongs to none of them.)
     const data = await exportMine();
     await edgeApply("menu_categories", data.menu_categories);
     const item: Rec = { ...data.menu_items[0]!, stationId: id() };
@@ -1374,7 +1575,7 @@ describe("97p edge pull: resume and broken connection", () => {
     expect(stored).not.toContain("catalog:recipe_lines");
   });
 
-  it("97p pulling real cloud pages with the default overlap converges and is repeatable", async () => {
+  it("24318 pulling real cloud pages converges, is repeatable and keeps the stored cursors in the cat2 shape", async () => {
     const live = {
       fetchPage: async (stream: Stream, since: string | null) =>
         cloudPage(stream, {
@@ -1385,12 +1586,34 @@ describe("97p edge pull: resume and broken connection", () => {
           records: page.records.filter((r) => isMine(stream, r)),
         })),
     };
-    await pullOk(live, "default");
+    await pullOk(live);
     await expectEdgeEqualsCloud();
-    await pullOk(live, "default");
+    await pullOk(live);
     await expectEdgeEqualsCloud();
     expect(await edgePriceRows()).toHaveLength(MINE.price_list_items.length);
     expect(await edgeLineIds()).toHaveLength(MINE.recipe_lines.length);
+    for (const row of await checkpoints())
+      expect(decodeCursor(String(row.watermark))[0]).toBe("cat2");
+  });
+
+  it("24318 a checkpoint left by the old time cursor (cat1) is treated as none: the next pull starts from the beginning and converges", async () => {
+    const data = await exportMine();
+    const cloud = scriptedCloud(data, 100);
+    await pullOk(cloud);
+    await edge.owner.query(
+      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream LIKE 'catalog:%'",
+      [node.id, encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()])],
+    );
+    const before = cloud.calls.length;
+    const result = await pullOk(cloud);
+    for (const stream of ORDER)
+      expect(result.streams[stream]?.error).toBeFalsy();
+    const firstCallOf = (stream: Stream) =>
+      cloud.calls.slice(before).find((c) => c.stream === stream);
+    for (const stream of ORDER) expect(firstCallOf(stream)?.since).toBeNull();
+    await expectEdgeEqualsCloud();
+    for (const row of await checkpoints())
+      expect(decodeCursor(String(row.watermark))[0]).toBe("cat2");
   });
 
   const edgeLineIds = async () => Object.keys(await edgeLines()).sort();
@@ -1407,7 +1630,7 @@ describe("97p edge pull: resume and broken connection", () => {
     expect(first.streams.menu_items?.error).toBeTruthy();
 
     const [one, two] = data.menu_items;
-    const page1Cursor = "menu_items:2";
+    const page1Cursor = cloud.cursorAfter("menu_items", 2);
     // Page 1 is applied, nothing of page 2 or later.
     expect((await edgeItemRows()).map((r) => String(r.id)).sort()).toEqual(
       [String(one!.id), String(two!.id)].sort(),
@@ -1488,28 +1711,23 @@ describe("97p edge pull: resume and broken connection", () => {
     expect(await checkpointStreams()).toContain("catalog:modifiers");
   });
 
-  it("97p a recipe with an unknown updated_by is transient: that stream's checkpoint does not move, the other streams run, and it is stored once the reference can be resolved", async () => {
+  it("24318 a recipe whose updated_by is unknown on the edge never sticks the stream: it is stored with NULL updated_by, the checkpoint moves and later pulls stay quiet", async () => {
     const data = await exportMine();
-    const good = data.recipes;
-    data.recipes = [{ ...good[0]!, updatedBy: `tak-ada-${id()}` }];
+    data.recipes = [{ ...data.recipes[0]!, updatedBy: `tak-ada-${id()}` }];
     const cloud = scriptedCloud(data, 100);
     const result = await pullOk(cloud);
-    expect(result.streams.recipes?.error).toBeTruthy();
-    const stored = await checkpointStreams();
-    expect(stored).not.toContain("catalog:recipes");
-    for (const stream of ORDER.filter((s) => s !== "recipes"))
-      expect(stored).toContain(`catalog:${stream}`);
-    expect(
-      await edge.rows("SELECT id FROM recipes WHERE id = $1", [ids.rec1]),
-    ).toHaveLength(0);
-    expect(await edgePriceRows()).toHaveLength(MINE.price_list_items.length);
-
-    // The user is known now (the cloud record carries a user the edge has).
-    data.recipes = good;
-    const healed = await pullOk(cloud);
-    expect(healed.streams.recipes?.error).toBeFalsy();
+    expect(result.streams.recipes?.error).toBeFalsy();
     expect(await checkpointStreams()).toContain("catalog:recipes");
-    await expectEdgeEqualsCloud();
+    const row = (
+      await edge.rows("SELECT updated_by FROM recipes WHERE id = $1", [
+        ids.rec1,
+      ])
+    )[0];
+    expect(row?.updated_by).toBeNull();
+    expect(await edgeLineIds()).toHaveLength(2);
+    // Nothing left to retry: the next pull completes the same way.
+    const again = await pullOk(cloud);
+    expect(again.streams.recipes?.error).toBeFalsy();
   });
 
   it("97p a recipe output_item_id unknown on the edge is nulled for good: the checkpoint moves and later pulls do not fail", async () => {
@@ -1703,6 +1921,139 @@ describe("97p money: prices are copied exactly", () => {
     for (const key of ["pli1", "pli2", "pli3", "pliBad"] as const)
       expect(await edgePrice(ids[key])).toBe(String(PRICE[key]));
   });
+
+  it("24318 a lower sync_txid never overwrites a higher one (same updatedAt), and a strictly higher txid does replace the price", async () => {
+    await setCloudPrice(20000, 45);
+    const old = await exportList();
+    await setCloudPrice(25000, 46);
+    const fresh = await exportList();
+    expect(BigInt(String(fresh.syncTxid))).toBeGreaterThan(
+      BigInt(String(old.syncTxid)),
+    );
+    // Apply rule (coordinator, 2026-11-11): replace when incoming syncTxid is
+    // greater OR incoming updatedAt is greater. So the "old" copy carries the
+    // fresh copy's updatedAt: only its txid is lower, and it must lose.
+    const sameStamp = (rec: Rec): Rec => ({
+      ...rec,
+      updatedAt: fresh.updatedAt,
+      items: (rec.items as Rec[]).map((i) => ({
+        ...i,
+        updatedAt: fresh.updatedAt,
+      })),
+    });
+    const lowTxid = sameStamp(old);
+    const parents = await exportMine();
+    for (const stream of ORDER.filter((s) => s !== "price_lists"))
+      await edgeApply(stream, parents[stream]);
+    await edgeApply("price_lists", [fresh]);
+    await edgeApply("price_lists", [lowTxid]);
+    expect(await edgePrice(ids.pliChg)).toBe("25000");
+    // And a strictly higher txid does replace the stored price.
+    const newer: Rec = {
+      ...fresh,
+      syncTxid: String(BigInt(String(fresh.syncTxid)) + 1n),
+      items: (fresh.items as Rec[]).map((i) =>
+        i.id === ids.pliChg ? { ...i, priceIdr: 26000 } : i,
+      ),
+    };
+    await edgeApply("price_lists", [newer]);
+    expect(await edgePrice(ids.pliChg)).toBe("26000");
+  });
+
+  /** A separate price list (gofood) with one priced item, removed again at the end. */
+  const tombstoneFixture = async (price: number) => {
+    // Each test starts from a clean cloud copy of this list.
+    await mainOwner.query(
+      "DELETE FROM price_list_items WHERE price_list_id = $1",
+      [ids.plTomb],
+    );
+    await mainOwner.query("DELETE FROM price_lists WHERE id = $1", [
+      ids.plTomb,
+    ]);
+    created.push(
+      { table: "price_lists", where: "id = $1", params: [ids.plTomb] },
+      {
+        table: "price_list_items",
+        where: "price_list_id = $1",
+        params: [ids.plTomb],
+      },
+    );
+    await mainOwner.query(
+      `INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from)
+       VALUES ($1,$2,$3,'gofood','2026-02-02')`,
+      [ids.plTomb, tenantId, O1],
+    );
+    await mainOwner.query(
+      `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, variant_id, price_idr)
+       VALUES ($1,$2,$3,$4,NULL,$5)`,
+      [ids.pliTomb, tenantId, ids.plTomb, ids.item1, price],
+    );
+  };
+  const exportTombList = async (): Promise<Rec> =>
+    (await walk("price_lists")).records.find((r) => r.id === ids.plTomb)!;
+
+  it("24318 the price of a deleted price list does not leak: the tombstone leaves no price on the edge, and an older live copy never brings it back", async () => {
+    // Assumption (spec silent): a tombstoned list must leave NO price rows on
+    // the edge that a lookup could still read, whatever the tombstone's `items`.
+    await tombstoneFixture(33_333);
+    const live = await exportTombList();
+    expect(live.deletedAt).toBeNull();
+    expect((live.items as Rec[]).map((i) => i.priceIdr)).toEqual([33_333]);
+    const parents = await exportMine();
+    for (const stream of ORDER.filter((s) => s !== "price_lists"))
+      await edgeApply(stream, parents[stream]);
+    await edgeApply("price_lists", [live]);
+    expect(await edgePrice(ids.pliTomb)).toBe("33333");
+
+    // Cloud deletes the list (the item row stays as it is).
+    await mainOwner.query(
+      "UPDATE price_lists SET deleted_at = now(), updated_at = now() WHERE id = $1",
+      [ids.plTomb],
+    );
+    const tomb = await exportTombList();
+    expect(tomb.deletedAt).not.toBeNull();
+    expect(BigInt(String(tomb.syncTxid))).toBeGreaterThan(
+      BigInt(String(live.syncTxid)),
+    );
+    await edgeApply("price_lists", [tomb]);
+    expect(await edgePrice(ids.pliTomb)).toBeUndefined();
+    const header = await edge.rows(
+      "SELECT deleted_at FROM price_lists WHERE id = $1",
+      [ids.plTomb],
+    );
+    expect(header.length === 0 || header[0]!.deleted_at !== null).toBe(true);
+
+    // The old live page arrives late (repeat, reversed order): still no price.
+    await edgeApply("price_lists", [live]);
+    await edgeApply("price_lists", [tomb]);
+    expect(await edgePrice(ids.pliTomb)).toBeUndefined();
+    const again = await edge.rows(
+      "SELECT deleted_at FROM price_lists WHERE id = $1",
+      [ids.plTomb],
+    );
+    expect(again.length === 0 || again[0]!.deleted_at !== null).toBe(true);
+  });
+
+  it("24318 a price removed from a live list in the cloud is not in the record and is gone on the edge after the pull", async () => {
+    await tombstoneFixture(44_444);
+    const parents = await exportMine();
+    for (const stream of ORDER.filter((s) => s !== "price_lists"))
+      await edgeApply(stream, parents[stream]);
+    await edgeApply("price_lists", [await exportTombList()]);
+    expect(await edgePrice(ids.pliTomb)).toBe("44444");
+    await mainOwner.query(
+      `UPDATE price_list_items SET deleted_at = now(), updated_at = now() WHERE id = $1`,
+      [ids.pliTomb],
+    );
+    await mainOwner.query(
+      "UPDATE price_lists SET updated_at = now() WHERE id = $1",
+      [ids.plTomb],
+    );
+    const after = await exportTombList();
+    expect((after.items as Rec[]).map((i) => i.id)).not.toContain(ids.pliTomb);
+    await edgeApply("price_lists", [after]);
+    expect(await edgePrice(ids.pliTomb)).toBeUndefined();
+  });
 });
 
 // -------------------------------------------------- 6 tenant/outlet isolation
@@ -1817,6 +2168,152 @@ describe("97p brand filter: an outlet only gets the catalog of its own brand", (
   });
 });
 
+// ------------------------------------------------ 24318 stations, inventory
+
+describe("24318 stations and inventory_items streams", () => {
+  const rows = async (stream: Stream, outletId = O1) =>
+    (await walk(stream, { outletId })).records;
+
+  it("a station reaches the edge of its own outlet only, with every column", async () => {
+    const mine = (await rows("stations", O1)).find((r) => r.id === ids.stn1);
+    expect(mine).toMatchObject({
+      id: ids.stn1,
+      tenantId,
+      outletId: O1,
+      type: "coffee_bar",
+      printerDeviceId: null,
+      targetSeconds: 180,
+      deletedAt: null,
+    });
+    expect(String(mine!.syncTxid)).toMatch(/^\d+$/);
+    expect((await rows("stations", O1)).map((r) => r.id)).not.toContain(
+      ids.stnO2,
+    );
+    const other = (await rows("stations", O2)).map((r) => r.id);
+    expect(other).toContain(ids.stnO2);
+    expect(other).not.toContain(ids.stn1);
+    for (const rec of await rows("stations", O1)) expect(rec.outletId).toBe(O1);
+  });
+
+  it("a soft-deleted station travels as a tombstone and the edge drops or hides it", async () => {
+    created.push({
+      table: "stations",
+      where: "id = $1",
+      params: [ids.stnGone],
+    });
+    await mainOwner.query(
+      `INSERT INTO stations (id, tenant_id, outlet_id, name, type)
+       VALUES ($1,$2,$3,$4,'pastry')`,
+      [ids.stnGone, tenantId, O1, `Stasiun hilang ${ids.stnGone.slice(0, 6)}`],
+    );
+    const live = (await rows("stations")).find((r) => r.id === ids.stnGone)!;
+    expect(live.deletedAt).toBeNull();
+    await edgeApply("stations", [live]);
+    expect(
+      await edge.rows("SELECT id FROM stations WHERE id = $1", [ids.stnGone]),
+    ).toHaveLength(1);
+    await mainOwner.query(
+      "UPDATE stations SET deleted_at = now(), updated_at = now() WHERE id = $1",
+      [ids.stnGone],
+    );
+    const tomb = (await rows("stations")).find((r) => r.id === ids.stnGone)!;
+    expect(tomb.deletedAt).not.toBeNull();
+    await edgeApply("stations", [tomb]);
+    const left = await edge.rows(
+      "SELECT deleted_at FROM stations WHERE id = $1",
+      [ids.stnGone],
+    );
+    expect(left.length === 0 || left[0]!.deleted_at !== null).toBe(true);
+  });
+
+  it("inventory items are tenant wide: both outlets get them, with exact NUMERIC strings, the off switch and no idempotency key", async () => {
+    for (const outletId of [O1, O2]) {
+      const list = await rows("inventory_items", outletId);
+      const inv = list.find((r) => r.id === ids.inv1)!;
+      expect(inv).toBeDefined();
+      expect(inv).toMatchObject({
+        tenantId,
+        baseUomId: uomId,
+        isPerishable: true,
+        isActive: true,
+        parMin: "1.2500",
+        parMax: "10.0000",
+      });
+      const off = list.find((r) => r.id === ids.invOff)!;
+      expect(off).toMatchObject({
+        isActive: false,
+        parMin: null,
+        parMax: null,
+      });
+      for (const rec of [inv, off]) {
+        expect(rec).not.toHaveProperty("idempotencyKey");
+        expect(rec).not.toHaveProperty("deletedAt");
+        expect(String(rec.syncTxid)).toMatch(/^\d+$/);
+      }
+    }
+  });
+
+  it("a switched-off inventory item stays on the edge with isActive = false (no tombstone)", async () => {
+    const data = await exportMine();
+    await edgeApply("inventory_items", data.inventory_items);
+    const row = (
+      await edge.rows(
+        "SELECT is_active, par_min::text AS par_min FROM inventory_items WHERE id = $1",
+        [ids.invOff],
+      )
+    )[0];
+    expect(row).toMatchObject({ is_active: false, par_min: null });
+    const active = (
+      await edge.rows(
+        "SELECT par_min::text AS par_min, par_max::text AS par_max FROM inventory_items WHERE id = $1",
+        [ids.inv1],
+      )
+    )[0];
+    expect(active).toMatchObject({ par_min: "1.2500", par_max: "10.0000" });
+  });
+
+  it("an inventory item whose unit of measure is not on the edge yet is refused (transient): nothing stored, checkpoint stays, the other streams still run", async () => {
+    const data = await exportMine();
+    const unknownUom = id();
+    await expect(
+      edgeApply(
+        "inventory_items",
+        data.inventory_items.map((r) => ({ ...r, baseUomId: unknownUom })),
+      ),
+    ).rejects.toBeDefined();
+    expect(
+      await edge.rows("SELECT id FROM inventory_items WHERE id = $1", [
+        ids.inv1,
+      ]),
+    ).toHaveLength(0);
+
+    data.inventory_items = data.inventory_items.map((r) => ({
+      ...r,
+      baseUomId: unknownUom,
+    }));
+    const result = await pullOk(scriptedCloud(data, 100));
+    expect(result.streams.inventory_items?.error).toBeTruthy();
+    const stored = (await checkpoints()).map((r) => String(r.stream));
+    expect(stored).not.toContain("catalog:inventory_items");
+    expect(result.streams.menu_items?.error).toBeFalsy();
+    expect(stored).toContain("catalog:menu_items");
+  });
+
+  it("a station and an inventory item arrive through a full pull and equal the cloud", async () => {
+    const result = await pullOk(scriptedCloud(await exportMine(), 100));
+    expect(result.streams.stations?.error).toBeFalsy();
+    expect(result.streams.inventory_items?.error).toBeFalsy();
+    await expectEdgeEqualsCloud();
+    expect(
+      (
+        await edge.rows("SELECT station_id FROM menu_items WHERE id = $1", [
+          ids.itemStn,
+        ])
+      )[0]!.station_id,
+    ).toBe(ids.stn1);
+  });
+});
+
 // ------------------------------------------------------------------ 6 auth
 
 describe("97p HTTP: GET /api/edge-sync/catalog", () => {
@@ -1862,6 +2359,42 @@ describe("97p HTTP: GET /api/edge-sync/catalog", () => {
     // Every price list arrives with its items.
     const mine = (res.body.records as Rec[]).find((r) => r.id === ids.pl1);
     expect(idsOf(mine?.items ?? [])).toEqual([...MINE.price_list_items].sort());
+  });
+
+  it("24318 serves the stations and inventory_items streams to an active edge node", async () => {
+    const stations = await request(app)
+      .get(PATH)
+      .set("Authorization", bearer(node.credential))
+      .query({ stream: "stations", limit: 100 });
+    expect(stations.status).toBe(200);
+    expect(catalogSyncPageSchema.parse(stations.body).stream).toBe("stations");
+    const stationIds = (stations.body.records as Rec[]).map((r) => r.id);
+    expect(stationIds).toContain(ids.stn1);
+    expect(stationIds).not.toContain(ids.stnO2);
+
+    const inventory = await request(app)
+      .get(PATH)
+      .set("Authorization", bearer(node.credential))
+      .query({ stream: "inventory_items", limit: 100 });
+    expect(inventory.status).toBe(200);
+    expect(catalogSyncPageSchema.parse(inventory.body).stream).toBe(
+      "inventory_items",
+    );
+    expect((inventory.body.records as Rec[]).map((r) => r.id)).toContain(
+      ids.inv1,
+    );
+    expect(JSON.stringify(inventory.body)).not.toContain("idempotency");
+  });
+
+  it("24318 refuses an old cat1 cursor over HTTP with a 4xx", async () => {
+    const res = await request(app)
+      .get(PATH)
+      .set("Authorization", bearer(node.credential))
+      .query({
+        stream: "menu_items",
+        since: encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()]),
+      });
+    expect([400, 422]).toContain(res.status);
   });
 
   it("97p refuses an invalid stream or limit with a 4xx", async () => {

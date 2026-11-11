@@ -451,7 +451,11 @@ export const edgePullCheckpoints = pgTable(
     edgeNodeId: uuid("edge_node_id").notNull(),
     stream: varchar("stream", { length: 40 })
       .$type<
-        "device_registry" | "staff_pins" | `catalog:${CatalogSyncStream}`
+        | "device_registry"
+        | "staff_pins"
+        | `catalog:${CatalogSyncStream}`
+        // Pending menu_categories parent links of the catalog pull (legend-24318).
+        | "catalog:menu_categories:parents"
       >()
       .notNull(),
     watermark: text("watermark"),

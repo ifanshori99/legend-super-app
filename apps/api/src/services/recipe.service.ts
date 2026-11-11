@@ -169,6 +169,7 @@ const invalid = (code: string, message: string) =>
 // -------------------------------------------------------------- mapping
 
 const decimalZero = formatDecimal4(0n);
+const NO_KNOWN_AUTHOR_ID = "00000000-0000-0000-0000-000000000000";
 
 function toRecipe(row: RecipeRow, withCost: boolean): Recipe {
   return recipeSchema.parse({
@@ -182,7 +183,11 @@ function toRecipe(row: RecipeRow, withCost: boolean): Recipe {
     version: row.version,
     isActive: row.isActive,
     theoreticalCostIdr: withCost ? row.theoreticalCostIdr : decimalZero,
-    updatedBy: row.updatedBy,
+    // Cloud rows always carry the author. An edge copy keeps null when the
+    // author (an HQ user) is not in the edge's `user` table (bead
+    // legend-24318); the contract wants a user id, so answer the nil UUID
+    // ("no known author") instead of failing the parse.
+    updatedBy: row.updatedBy ?? NO_KNOWN_AUTHOR_ID,
     updatedAt: row.updatedAt.toISOString(),
   });
 }

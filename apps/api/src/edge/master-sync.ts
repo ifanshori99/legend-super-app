@@ -55,6 +55,12 @@
 // Never put the credential or SQL parameters in an error: codes only.
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
+  CATALOG_SYNC_LIMIT_DEFAULT,
+  EDGE_CATALOG_SYNC_PATH,
+  type CatalogSyncStream,
+} from "@starter/shared/edge";
+import type { ScopedTenantContext } from "@starter/shared/core";
+import {
   EDGE_MASTER_SNAPSHOT_PATH,
   edgeMasterSnapshotSchema,
   partitionEdgeMasterMappings,
@@ -75,12 +81,15 @@ import {
 } from "../services/tenant-config-locks.ts";
 import type { EdgeBootstrapConfig, EdgeBootstrapOptions } from "./bootstrap.ts";
 import { cloudGetJson, EdgeCloudHttpError } from "./cloud-http.ts";
+import { pullCatalog, type PullCatalogOptions } from "./catalog-puller.ts";
 import { parseEdgeCredential } from "./credential.ts";
 
 type Claims = NonNullable<ReturnType<typeof parseEdgeCredential>>;
 type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
 
 const MIN_SYNC_INTERVAL_MS = 60_000;
+/** Catalog pulls in one tick while a stream reports a backlog (bounded). */
+const MAX_CATALOG_ROUNDS = 20;
 
 export type EdgeMasterSyncCounts = {
   uoms: number;
@@ -489,17 +498,45 @@ export async function syncEdgeMasters(
   return applyEdgeMasterSnapshot(claims, snapshot);
 }
 
+/** A catalog stream stopped early (legend-24318); code only, never record data. */
+export class EdgeCatalogSyncError extends Error {
+  readonly code: string;
+  readonly stream: string;
+
+  constructor(stream: string, code: string) {
+    super(`Edge catalog sync failed (${stream}: ${code})`);
+    this.name = "EdgeCatalogSyncError";
+    this.code = code;
+    this.stream = stream;
+  }
+}
+
 /**
- * Periodic `syncEdgeMasters`. No immediate run (bootstrap already syncs). The
- * timer is unref'd, a tick is skipped while a run is in flight, and `stop`
- * aborts that run's request and waits for it. `intervalMs` must be finite and
- * >= 60 s (RangeError at start). Errors go to `onError`; the loop keeps going.
+ * Periodic `syncEdgeMasters`, then (when `catalog` is given) `pullCatalog`
+ * (legend-24318): masters first because inventory items need their uoms. A
+ * failure of one does not stop the other; every error goes to `onError`
+ * (a catalog stream error as `EdgeCatalogSyncError`). A catalog backlog is
+ * pulled on in the same tick, up to 20 rounds. No immediate master run
+ * (bootstrap already syncs); with `catalogOnStart` one catalog-only run starts
+ * right away without blocking the caller. The timer is unref'd, a tick is
+ * skipped while a run is in flight, and `stop` aborts that run's request and
+ * waits for it. `intervalMs` must be finite and >= 60 s (RangeError at start).
+ * Errors go to `onError`; the loop keeps going.
  */
 export function startEdgeMasterSyncLoop(input: {
   config: EdgeBootstrapConfig;
   intervalMs: number;
   onError?: (error: unknown) => void;
   options?: EdgeBootstrapOptions;
+  catalog?: {
+    /** The node's own scope: where catalog rows land. */
+    context: ScopedTenantContext;
+    /** This node's `edge_nodes.id` (the checkpoint rows belong to it). */
+    edgeNodeId: string;
+    /** Default `pullCatalog`; tests inject their own. */
+    pull?: typeof pullCatalog;
+  };
+  catalogOnStart?: boolean;
 }): { stop(): Promise<void> } {
   if (
     !Number.isFinite(input.intervalMs) ||
@@ -512,32 +549,72 @@ export function startEdgeMasterSyncLoop(input: {
   let inFlight: Promise<void> | null = null;
   let stopped = false;
 
-  const tick = () => {
-    if (stopped || inFlight) return;
-    const run = syncEdgeMasters(input.config, {
-      ...input.options,
+  const report = (error: unknown) => {
+    // stop() aborts an in-flight fetch: a normal shutdown, not an error.
+    if (stopped) return;
+    try {
+      input.onError?.(error);
+    } catch {
+      // A broken logger must not stop the schedule.
+    }
+  };
+
+  const fetchCatalogPage: PullCatalogOptions["fetchPage"] = (stream, since) =>
+    cloudGetJson({
+      cloudUrl: input.config.cloudUrl,
+      credential: input.config.credential,
+      path: catalogPath(stream, since),
+      fetchImpl: input.options?.fetchImpl,
+      timeoutMs: input.options?.timeoutMs,
       signal: abort.signal,
-    })
-      .then((counts) => {
-        logger.debug({ ...counts }, "Edge master sync applied");
-      })
-      .catch((error: unknown) => {
-        // stop() aborts an in-flight fetch: a normal shutdown, not an error.
-        if (stopped) return;
-        try {
-          input.onError?.(error);
-        } catch {
-          // A broken logger must not stop the schedule.
-        }
-      })
-      .finally(() => {
-        if (inFlight === run) inFlight = null;
+    });
+
+  const runCatalog = async (
+    catalog: NonNullable<typeof input.catalog>,
+  ): Promise<void> => {
+    guardMasterImport();
+    const pull = catalog.pull ?? pullCatalog;
+    for (let round = 0; round < MAX_CATALOG_ROUNDS && !stopped; round += 1) {
+      const result = await pull({
+        context: catalog.context,
+        edgeNodeId: catalog.edgeNodeId,
+        fetchPage: fetchCatalogPage,
       });
+      for (const [stream, outcome] of Object.entries(result.streams))
+        if (outcome?.error)
+          report(new EdgeCatalogSyncError(stream, outcome.error.code));
+      if (!result.backlog) break;
+    }
+  };
+
+  const tick = (withMasters = true) => {
+    if (stopped || inFlight) return;
+    const run = (async () => {
+      if (withMasters)
+        try {
+          const counts = await syncEdgeMasters(input.config, {
+            ...input.options,
+            signal: abort.signal,
+          });
+          logger.debug({ ...counts }, "Edge master sync applied");
+        } catch (error) {
+          report(error);
+        }
+      if (stopped || !input.catalog) return;
+      try {
+        await runCatalog(input.catalog);
+      } catch (error) {
+        report(error);
+      }
+    })().finally(() => {
+      if (inFlight === run) inFlight = null;
+    });
     inFlight = run;
   };
 
-  const timer = setInterval(tick, input.intervalMs);
+  const timer = setInterval(() => tick(), input.intervalMs);
   timer.unref();
+  if (input.catalogOnStart === true && input.catalog) tick(false);
 
   return {
     async stop() {
@@ -547,4 +624,13 @@ export function startEdgeMasterSyncLoop(input: {
       if (inFlight) await inFlight;
     },
   };
+}
+
+function catalogPath(stream: CatalogSyncStream, since: string | null): string {
+  const query = new URLSearchParams({
+    stream,
+    limit: String(CATALOG_SYNC_LIMIT_DEFAULT),
+  });
+  if (since !== null) query.set("since", since);
+  return `${EDGE_CATALOG_SYNC_PATH}?${query.toString()}`;
 }

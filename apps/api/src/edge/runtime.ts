@@ -933,12 +933,17 @@ export async function startEdgeRuntime(
     maxAgeDays: env.EDGE_SELFIE_MAX_AGE_DAYS,
   });
   // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
-  // accounts. No tick at start: a fresh bootstrap (or missing masters) syncs at
-  // boot, a restarted node first refreshes one interval later. A failure is logged by class only and the loop keeps
-  // its schedule.
+  // accounts. No master tick at start: a fresh bootstrap (or missing masters)
+  // syncs at boot, a restarted node first refreshes one interval later.
+  // legend-24318: each tick then pulls the catalog (menu, prices, recipes,
+  // stations, inventory items); one catalog-only run starts at boot without
+  // blocking it. A failure is logged by class only and the loop keeps its
+  // schedule.
   const masterSync = startEdgeMasterSyncLoop({
     config,
     intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
+    catalog: { context: local.context, edgeNodeId: local.scope.edgeNodeId },
+    catalogOnStart: true,
     onError: (error) =>
       logger.warn(safeError(error), "Edge master sync failed"),
   });

@@ -9,24 +9,31 @@
 // writes to the cloud.
 //
 // One stream per table (shared `CATALOG_SYNC_STREAMS`). Keyset paging on
-// (updated_at, id) with an opaque cursor and the settle window for rows whose
-// commit lags their `updated_at`. Soft-deleted rows travel with `deletedAt`
-// (tombstone). Streams that differ from the (updated_at, id) shape:
-// - menu_item_modifier_groups: no `id` column; keyset (updated_at,
+// (sync_txid, key) with an opaque cursor. `sync_txid` is the id of the cloud
+// transaction that last wrote the row (set by a trigger). A row is sent only
+// when `sync_txid < pg_snapshot_xmin(pg_current_snapshot())`: no transaction
+// older than that can still commit, so a row can never appear behind a cursor
+// already handed out (no settle window, no overlap, no rewind). Soft-deleted
+// rows travel with `deletedAt` (tombstone). Streams that differ from the
+// (sync_txid, id) shape:
+// - menu_item_modifier_groups: no `id` column; keyset (sync_txid,
 //   menu_item_id, group_id).
 // - recipes: no `deleted_at` (a recipe is deactivated, never deleted). The
 //   record carries ALL its lines (`lines`), read in the same statement as the
 //   recipe row, so recipe and lines are one snapshot. `recipe_lines` has no
-//   `updated_at`: the cloud bumps `recipes.updated_at` whenever lines change.
+//   `sync_txid`: the cloud touches `recipes` whenever lines change, so the
+//   record carries the recipe's `syncTxid`.
 // - price_lists: the record carries ALL its live items (`items`), read in the
-//   same statement as the list row. The cloud bumps `price_lists.updated_at` on
-//   every item change (menu-pricing.service, menu-import.service).
-// Scope: price_lists are outlet-owned (only the credential's outlet).
-// menu_categories, menu_items and recipes are limited to the brand of the
-// credential's outlet (`outlets.brand_id`); item_variants and
-// menu_item_modifier_groups follow their menu item's brand. modifier_groups and
-// modifiers have no brand column: they are tenant-level. Prices are read as the
-// stored integer rupiah and passed through untouched.
+//   same statement as the list row. The cloud touches `price_lists` on every
+//   item change (menu-pricing.service, menu-import.service, menu.service
+//   deleteItem), so the record carries the list's `syncTxid`.
+// - inventory_items: no `deleted_at` (inactive = `isActive` false).
+// Scope: price_lists and stations are outlet-owned (only the credential's
+// outlet). menu_categories, menu_items and recipes are limited to the brand of
+// the credential's outlet (`outlets.brand_id`); item_variants and
+// menu_item_modifier_groups follow their menu item's brand. modifier_groups,
+// modifiers and inventory_items have no brand column: they are tenant-level.
+// Prices are read as the stored integer rupiah and passed through untouched.
 
 import {
   catalogSyncPageSchema,
@@ -44,7 +51,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
-import { and, asc, eq, lte, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { db as appDb } from "../db/index.ts";
 import {
@@ -55,7 +62,9 @@ import {
   modifierGroups,
   modifiers,
   priceLists,
+  stations,
 } from "../db/schema/menu.ts";
+import { inventoryItems } from "../db/schema/inventory.ts";
 import { recipes } from "../db/schema/recipe.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -66,20 +75,10 @@ import { verifiedEdgeNodeSchema } from "./staff-pin-sync.ts";
 export { catalogSyncQuerySchema };
 export type { CatalogSyncQuery };
 
-/**
- * The puller restarts this far before a stored checkpoint (see
- * `rewindCatalogCursor`). A row's commit can lag its `updated_at` by more than
- * the settle window, so a record may land behind a cursor already handed out.
- * Re-reading the overlap is safe: apply is idempotent.
- */
-export const CATALOG_SYNC_OVERLAP_MS = 10 * 60 * 1000;
-
-/** Rows younger than this are held back (see staff-pin-sync "Settle window"). */
-export const CATALOG_SYNC_SETTLE_MS = 5_000;
-
-const NIL_UUID = "00000000-0000-0000-0000-000000000000";
-const CURSOR_TAG = "cat1";
-const VERSION_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+const CURSOR_TAG = "cat2";
+/** Largest bigint: a cursor txid beyond it cannot be a real `sync_txid`. */
+const TXID_MAX = 9223372036854775807n;
+const TXID_PATTERN = /^\d{1,19}$/;
 const CURSOR_INVALID_MESSAGE = "Cursor sinkronisasi katalog tidak valid.";
 
 /** Streams whose cloud table has no `id`: the key is two uuids. */
@@ -87,9 +86,12 @@ const TWO_KEY_STREAMS: ReadonlySet<CatalogSyncStream> = new Set([
   "menu_item_modifier_groups",
 ]);
 
-type Mark = { readonly version: string; readonly keys: readonly string[] };
+type Mark = { readonly txid: string; readonly keys: readonly string[] };
 
-/** True when `error` is the refusal of a malformed catalog cursor (not a record). */
+/**
+ * True when `error` is the refusal of a malformed catalog cursor (not a
+ * record). An old `cat1` (time-based) cursor is refused the same way.
+ */
 export function isCatalogSyncCursorError(error: unknown): boolean {
   return (
     error instanceof CoreError &&
@@ -113,60 +115,49 @@ function parseCursor(
   } catch {
     throw new CoreError("VALIDATION_ERROR", CURSOR_INVALID_MESSAGE);
   }
-  const [tag, version, ...keys] = parts;
+  const [tag, txid, ...keys] = parts;
   if (
     tag !== CURSOR_TAG ||
-    typeof version !== "string" ||
-    !VERSION_PATTERN.test(version) ||
+    typeof txid !== "string" ||
+    !TXID_PATTERN.test(txid) ||
+    BigInt(txid) > TXID_MAX ||
     keys.length !== keyCount(stream) ||
     !keys.every((key) => uuidSchema.safeParse(key).success)
   )
     throw new CoreError("VALIDATION_ERROR", CURSOR_INVALID_MESSAGE);
-  return { version, keys: keys.map(String) };
+  return { txid, keys: keys.map(String) };
 }
 
 function encodeMark(mark: Mark): string {
-  return encodeCursor([CURSOR_TAG, mark.version, ...mark.keys]);
+  return encodeCursor([CURSOR_TAG, mark.txid, ...mark.keys]);
+}
+
+/** Exact decimal text of a `sync_txid` column: the keyset version. */
+function txidOf(column: AnyPgColumn): SQL<string> {
+  return sql<string>`${column}::text`;
 }
 
 /**
- * The cursor moved back by `ms` (microsecond digits kept, keys reset), for the
- * puller's overlap. A cursor of another stream shape or a malformed one throws
- * the cursor error.
+ * Commit-safe bound: every transaction with an id below the snapshot's xmin is
+ * finished, so no row with a lower `sync_txid` can still appear.
  */
-export function rewindCatalogCursor(
-  stream: CatalogSyncStream,
-  cursor: string,
-  ms: number,
-): string {
-  const mark = parseCursor(stream, cursor);
-  if (mark === null) return cursor;
-  const base = Date.parse(`${mark.version.slice(0, 23)}Z`);
-  const earlier = new Date(base - ms).toISOString().slice(0, 23);
-  return encodeMark({
-    version: `${earlier}${mark.version.slice(23, 26)}Z`,
-    keys: mark.keys.map(() => NIL_UUID),
-  });
+const SAFE_TXID = sql`pg_snapshot_xmin(pg_current_snapshot())::text::bigint`;
+
+/** `sync_txid < safe bound`: only rows that can no longer be overtaken. */
+function committed(syncTxid: AnyPgColumn): SQL {
+  return sql`${syncTxid} < ${SAFE_TXID}`;
 }
 
-/** Exact (microsecond, UTC) text of a timestamp column: the keyset version. */
-function versionOf(column: AnyPgColumn): SQL<string> {
-  return sql<string>`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
-}
-
-/** `(updated_at, keys...) > (since)` (row comparison), or nothing on a first pull. */
+/** `(sync_txid, keys...) > (since)` (row comparison), or nothing on a first pull. */
 function after(
-  updatedAt: AnyPgColumn,
+  syncTxid: AnyPgColumn,
   keys: readonly AnyPgColumn[],
   since: Mark | null,
 ): SQL | undefined {
   if (since === null) return undefined;
-  const columns = sql.join([updatedAt, ...keys], sql`, `);
+  const columns = sql.join([syncTxid, ...keys], sql`, `);
   const values = sql.join(
-    [
-      sql`${since.version}::timestamptz`,
-      ...since.keys.map((key) => sql`${key}::uuid`),
-    ],
+    [sql`${since.txid}::bigint`, ...since.keys.map((key) => sql`${key}::uuid`)],
     sql`, `,
   );
   return sql`(${columns}) > (${values})`;
@@ -184,7 +175,7 @@ const stamps = (row: {
 });
 
 type Found = {
-  readonly version: string;
+  readonly txid: string;
   readonly keys: readonly string[];
   readonly record: unknown;
 };
@@ -195,7 +186,6 @@ type Scan = {
   readonly outletId: string;
   /** `outlets.brand_id` of the credential's outlet. */
   readonly brandId: string;
-  readonly cutoff: Date;
   readonly since: Mark | null;
   /** Fetch one more than the page to learn `hasMore`. */
   readonly take: number;
@@ -205,25 +195,91 @@ const scanners: Record<
   CatalogSyncStream,
   (scan: Scan) => Promise<readonly Found[]>
 > = {
-  async menu_categories({ tx, tenantId, brandId, cutoff, since, take }) {
+  async stations({ tx, tenantId, outletId, since, take }) {
+    const t = stations;
+    const rows = await tx
+      .select({ row: t, txid: txidOf(t.syncTxid) })
+      .from(t)
+      .where(
+        and(
+          eq(t.tenantId, tenantId),
+          eq(t.outletId, outletId),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
+        ),
+      )
+      .orderBy(asc(t.syncTxid), asc(t.id))
+      .limit(take);
+    return rows.map(({ row, txid }) => ({
+      txid,
+      keys: [row.id],
+      record: {
+        syncTxid: txid,
+        id: row.id,
+        tenantId: row.tenantId,
+        outletId: row.outletId,
+        name: row.name,
+        type: row.type,
+        printerDeviceId: row.printerDeviceId,
+        targetSeconds: row.targetSeconds,
+        ...stamps(row),
+      },
+    }));
+  },
+  async inventory_items({ tx, tenantId, since, take }) {
+    const t = inventoryItems;
+    const rows = await tx
+      .select({ row: t, txid: txidOf(t.syncTxid) })
+      .from(t)
+      .where(
+        and(
+          eq(t.tenantId, tenantId),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
+        ),
+      )
+      .orderBy(asc(t.syncTxid), asc(t.id))
+      .limit(take);
+    return rows.map(({ row, txid }) => ({
+      txid,
+      keys: [row.id],
+      record: {
+        syncTxid: txid,
+        id: row.id,
+        tenantId: row.tenantId,
+        name: row.name,
+        category: row.category,
+        type: row.type,
+        baseUomId: row.baseUomId,
+        isPerishable: row.isPerishable,
+        isActive: row.isActive,
+        parMin: row.parMin,
+        parMax: row.parMax,
+        createdAt: iso(row.createdAt),
+        updatedAt: iso(row.updatedAt),
+      },
+    }));
+  },
+  async menu_categories({ tx, tenantId, brandId, since, take }) {
     const t = menuCategories;
     const rows = await tx
-      .select({ row: t, version: versionOf(t.updatedAt) })
+      .select({ row: t, txid: txidOf(t.syncTxid) })
       .from(t)
       .where(
         and(
           eq(t.tenantId, tenantId),
           eq(t.brandId, brandId),
-          lte(t.updatedAt, cutoff),
-          after(t.updatedAt, [t.id], since),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
         ),
       )
-      .orderBy(asc(t.updatedAt), asc(t.id))
+      .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, version }) => ({
-      version,
+    return rows.map(({ row, txid }) => ({
+      txid,
       keys: [row.id],
       record: {
+        syncTxid: txid,
         id: row.id,
         tenantId: row.tenantId,
         brandId: row.brandId,
@@ -234,25 +290,26 @@ const scanners: Record<
       },
     }));
   },
-  async menu_items({ tx, tenantId, brandId, cutoff, since, take }) {
+  async menu_items({ tx, tenantId, brandId, since, take }) {
     const t = menuItems;
     const rows = await tx
-      .select({ row: t, version: versionOf(t.updatedAt) })
+      .select({ row: t, txid: txidOf(t.syncTxid) })
       .from(t)
       .where(
         and(
           eq(t.tenantId, tenantId),
           eq(t.brandId, brandId),
-          lte(t.updatedAt, cutoff),
-          after(t.updatedAt, [t.id], since),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
         ),
       )
-      .orderBy(asc(t.updatedAt), asc(t.id))
+      .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, version }) => ({
-      version,
+    return rows.map(({ row, txid }) => ({
+      txid,
       keys: [row.id],
       record: {
+        syncTxid: txid,
         id: row.id,
         tenantId: row.tenantId,
         brandId: row.brandId,
@@ -274,10 +331,10 @@ const scanners: Record<
       },
     }));
   },
-  async item_variants({ tx, tenantId, brandId, cutoff, since, take }) {
+  async item_variants({ tx, tenantId, brandId, since, take }) {
     const t = itemVariants;
     const rows = await tx
-      .select({ row: t, version: versionOf(t.updatedAt) })
+      .select({ row: t, txid: txidOf(t.syncTxid) })
       .from(t)
       .innerJoin(
         menuItems,
@@ -288,16 +345,17 @@ const scanners: Record<
           eq(t.tenantId, tenantId),
           // Variants follow their item: another brand's item never leaves.
           eq(menuItems.brandId, brandId),
-          lte(t.updatedAt, cutoff),
-          after(t.updatedAt, [t.id], since),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
         ),
       )
-      .orderBy(asc(t.updatedAt), asc(t.id))
+      .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, version }) => ({
-      version,
+    return rows.map(({ row, txid }) => ({
+      txid,
       keys: [row.id],
       record: {
+        syncTxid: txid,
         id: row.id,
         tenantId: row.tenantId,
         menuItemId: row.menuItemId,
@@ -307,24 +365,25 @@ const scanners: Record<
       },
     }));
   },
-  async modifier_groups({ tx, tenantId, cutoff, since, take }) {
+  async modifier_groups({ tx, tenantId, since, take }) {
     const t = modifierGroups;
     const rows = await tx
-      .select({ row: t, version: versionOf(t.updatedAt) })
+      .select({ row: t, txid: txidOf(t.syncTxid) })
       .from(t)
       .where(
         and(
           eq(t.tenantId, tenantId),
-          lte(t.updatedAt, cutoff),
-          after(t.updatedAt, [t.id], since),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
         ),
       )
-      .orderBy(asc(t.updatedAt), asc(t.id))
+      .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, version }) => ({
-      version,
+    return rows.map(({ row, txid }) => ({
+      txid,
       keys: [row.id],
       record: {
+        syncTxid: txid,
         id: row.id,
         tenantId: row.tenantId,
         name: row.name,
@@ -334,24 +393,25 @@ const scanners: Record<
       },
     }));
   },
-  async modifiers({ tx, tenantId, cutoff, since, take }) {
+  async modifiers({ tx, tenantId, since, take }) {
     const t = modifiers;
     const rows = await tx
-      .select({ row: t, version: versionOf(t.updatedAt) })
+      .select({ row: t, txid: txidOf(t.syncTxid) })
       .from(t)
       .where(
         and(
           eq(t.tenantId, tenantId),
-          lte(t.updatedAt, cutoff),
-          after(t.updatedAt, [t.id], since),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
         ),
       )
-      .orderBy(asc(t.updatedAt), asc(t.id))
+      .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, version }) => ({
-      version,
+    return rows.map(({ row, txid }) => ({
+      txid,
       keys: [row.id],
       record: {
+        syncTxid: txid,
         id: row.id,
         tenantId: row.tenantId,
         groupId: row.groupId,
@@ -363,17 +423,10 @@ const scanners: Record<
       },
     }));
   },
-  async menu_item_modifier_groups({
-    tx,
-    tenantId,
-    brandId,
-    cutoff,
-    since,
-    take,
-  }) {
+  async menu_item_modifier_groups({ tx, tenantId, brandId, since, take }) {
     const t = menuItemModifierGroups;
     const rows = await tx
-      .select({ row: t, version: versionOf(t.updatedAt) })
+      .select({ row: t, txid: txidOf(t.syncTxid) })
       .from(t)
       .innerJoin(
         menuItems,
@@ -384,16 +437,17 @@ const scanners: Record<
           eq(t.tenantId, tenantId),
           // Links follow their item: another brand's item never leaves.
           eq(menuItems.brandId, brandId),
-          lte(t.updatedAt, cutoff),
-          after(t.updatedAt, [t.menuItemId, t.groupId], since),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.menuItemId, t.groupId], since),
         ),
       )
-      .orderBy(asc(t.updatedAt), asc(t.menuItemId), asc(t.groupId))
+      .orderBy(asc(t.syncTxid), asc(t.menuItemId), asc(t.groupId))
       .limit(take);
-    return rows.map(({ row, version }) => ({
-      version,
+    return rows.map(({ row, txid }) => ({
+      txid,
       keys: [row.menuItemId, row.groupId],
       record: {
+        syncTxid: txid,
         tenantId: row.tenantId,
         menuItemId: row.menuItemId,
         groupId: row.groupId,
@@ -402,12 +456,12 @@ const scanners: Record<
       },
     }));
   },
-  async price_lists({ tx, tenantId, outletId, cutoff, since, take }) {
+  async price_lists({ tx, tenantId, outletId, since, take }) {
     const t = priceLists;
     const rows = await tx
       .select({
         row: t,
-        version: versionOf(t.updatedAt),
+        txid: txidOf(t.syncTxid),
         // Same statement as the list row: one snapshot, so `items` always
         // matches the list version it travels with. Only live items. Outer
         // columns are qualified by hand (the inner table has the same names).
@@ -433,16 +487,17 @@ const scanners: Record<
         and(
           eq(t.tenantId, tenantId),
           eq(t.outletId, outletId),
-          lte(t.updatedAt, cutoff),
-          after(t.updatedAt, [t.id], since),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
         ),
       )
-      .orderBy(asc(t.updatedAt), asc(t.id))
+      .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, version, items }) => ({
-      version,
+    return rows.map(({ row, txid, items }) => ({
+      txid,
       keys: [row.id],
       record: {
+        syncTxid: txid,
         id: row.id,
         tenantId: row.tenantId,
         outletId: row.outletId,
@@ -453,12 +508,12 @@ const scanners: Record<
       },
     }));
   },
-  async recipes({ tx, tenantId, brandId, cutoff, since, take }) {
+  async recipes({ tx, tenantId, brandId, since, take }) {
     const t = recipes;
     const rows = await tx
       .select({
         row: t,
-        version: versionOf(t.updatedAt),
+        txid: txidOf(t.syncTxid),
         // Same statement as the recipe row: one snapshot, so `lines` always
         // matches the recipe version it travels with. Outer columns are
         // qualified by hand (the inner table has the same column names).
@@ -484,16 +539,17 @@ const scanners: Record<
         and(
           eq(t.tenantId, tenantId),
           eq(t.brandId, brandId),
-          lte(t.updatedAt, cutoff),
-          after(t.updatedAt, [t.id], since),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
         ),
       )
-      .orderBy(asc(t.updatedAt), asc(t.id))
+      .orderBy(asc(t.syncTxid), asc(t.id))
       .limit(take);
-    return rows.map(({ row, version, lines }) => ({
-      version,
+    return rows.map(({ row, txid, lines }) => ({
+      txid,
       keys: [row.id],
       record: {
+        syncTxid: txid,
         id: row.id,
         tenantId: row.tenantId,
         brandId: row.brandId,
@@ -513,14 +569,8 @@ const scanners: Record<
   },
 };
 
-export type ListCatalogRecordsOptions = {
-  readonly now?: Date;
-  /** Override the settle window (tests); never negative. */
-  readonly settleMs?: number;
-};
-
 /**
- * One page of one catalog stream changed after `since`, in (updated_at, key)
+ * One page of one catalog stream changed after `since`, in (sync_txid, key)
  * order. Tenant and outlet come only from the arguments (the verified edge
  * credential); `query` carries the stream, the cursor and the limit only.
  */
@@ -531,16 +581,12 @@ export async function listCatalogRecordsSince(
     readonly outletId: VerifiedEdgeNode["outletId"];
     readonly query: CatalogSyncQuery;
   },
-  options: ListCatalogRecordsOptions = {},
 ): Promise<CatalogSyncPage> {
   const { tenantId, outletId } = verifiedEdgeNodeSchema
     .pick({ tenantId: true, outletId: true })
     .parse({ tenantId: input.tenantId, outletId: input.outletId });
   const { stream, limit } = catalogSyncQuerySchema.parse(input.query);
   const since = parseCursor(stream, input.query.since);
-  const now = options.now ?? new Date();
-  const settleMs = Math.max(0, options.settleMs ?? CATALOG_SYNC_SETTLE_MS);
-  const cutoff = new Date(now.getTime() - settleMs);
   const context = outletContext(
     establishTenantContext({ tenantId, brandId: null, source: "device" }),
     outletId,
@@ -572,7 +618,6 @@ export async function listCatalogRecordsSince(
       tenantId,
       outletId,
       brandId: outletRow.brandId,
-      cutoff,
       since,
       take: limit + 1,
     });
@@ -583,7 +628,7 @@ export async function listCatalogRecordsSince(
   const lastMark =
     last === undefined
       ? null
-      : encodeMark({ version: last.version, keys: last.keys });
+      : encodeMark({ txid: last.txid, keys: last.keys });
   return catalogSyncPageSchema.parse({
     stream,
     records: page.map(({ record }) =>

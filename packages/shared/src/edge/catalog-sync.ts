@@ -22,10 +22,22 @@
 // of the credential) for categories, items and recipes; price lists are only
 // those of its own outlet.
 //
+// Version stamp (bead legend-24318): every record carries `syncTxid`, the id of
+// the cloud transaction that last wrote the row (decimal digits, compare as
+// BigInt). Records of `price_lists` and `recipes` carry the PARENT's stamp (the
+// children travel inside the parent document). The cloud only sends rows whose
+// stamp is below the oldest still-open transaction and pages in
+// `(syncTxid, key)` order. The edge replaces a local row only when the incoming
+// `syncTxid` is strictly greater than the stored one, so an older copy never
+// overwrites a newer one, whatever order pages arrive in.
+//
 // Cursor is opaque to the edge. `nextCursor` is the position of the last
 // record of the page (or the echoed `since` for an empty page, null when the
 // stream has never produced a row): the edge stores it as the checkpoint once
-// the page is applied. `hasMore` says whether another page follows.
+// the page is applied. `hasMore` says whether another page follows. Cursors
+// are tagged `cat2` (`["cat2", "<syncTxid>", ...keys]`); an older tag (`cat1`)
+// or a malformed cursor is rejected and the edge pulls the stream from the
+// start again (applying is idempotent).
 
 import {
   businessDateSchema,
@@ -40,7 +52,14 @@ import {
 
 export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
 
+/**
+ * Pull order. `stations` and `inventory_items` come first so the rows that
+ * items, modifiers and recipes point to (`stationId`, `outputItemId`) already
+ * exist on the edge when those streams are applied.
+ */
 export const CATALOG_SYNC_STREAMS = [
+  "stations",
+  "inventory_items",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -84,11 +103,49 @@ const MENU_CHANNELS = [
 ] as const;
 
 const name = z.string().min(1).max(150);
+
+/** Decimal digits of the cloud `sync_txid` BIGINT; compare with BigInt. */
+export const syncTxidSchema = z.string().regex(/^\d+$/);
 const stamps = {
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
   deletedAt: isoDateTimeSchema.nullable(),
+  syncTxid: syncTxidSchema,
 };
+
+/** Production routing per outlet; scope = the credential's outlet. */
+export const stationSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  outletId: uuidSchema,
+  name,
+  type: z.enum(STATION_TYPES),
+  /** Plain UUID (no `devices` row required on the edge). */
+  printerDeviceId: uuidSchema.nullable(),
+  targetSeconds: z.number().int().nullable(),
+  ...stamps,
+});
+
+/**
+ * Tenant-wide raw material / semi-finished good. No tombstone in the cloud
+ * (switched off with `isActive`, never deleted). `idempotencyKey` is not sent.
+ * `parMin` / `parMax` are the exact NUMERIC(14,4) decimal strings.
+ */
+export const inventoryItemSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  name,
+  category: z.string().min(1).max(50),
+  type: z.enum(["raw_material", "semi_finished"]),
+  baseUomId: uuidSchema,
+  isPerishable: z.boolean(),
+  isActive: z.boolean(),
+  parMin: decimal4Schema.nullable(),
+  parMax: decimal4Schema.nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  syncTxid: syncTxidSchema,
+});
 
 export const menuCategorySyncRecordSchema = z.strictObject({
   id: uuidSchema,
@@ -226,9 +283,12 @@ export const recipeSyncRecordSchema = z.strictObject({
   lines: z.array(recipeLineRecordSchema),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
+  syncTxid: syncTxidSchema,
 });
 
 export const catalogSyncRecordSchemas = {
+  stations: stationSyncRecordSchema,
+  inventory_items: inventoryItemSyncRecordSchema,
   menu_categories: menuCategorySyncRecordSchema,
   modifier_groups: modifierGroupSyncRecordSchema,
   modifiers: modifierSyncRecordSchema,
@@ -239,6 +299,10 @@ export const catalogSyncRecordSchemas = {
   recipes: recipeSyncRecordSchema,
 } as const;
 
+export type StationSyncRecord = z.infer<typeof stationSyncRecordSchema>;
+export type InventoryItemSyncRecord = z.infer<
+  typeof inventoryItemSyncRecordSchema
+>;
 export type MenuCategorySyncRecord = z.infer<
   typeof menuCategorySyncRecordSchema
 >;
@@ -271,6 +335,8 @@ function pageOf<S extends CatalogSyncStream>(stream: S) {
 }
 
 export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
+  pageOf("stations"),
+  pageOf("inventory_items"),
   pageOf("menu_categories"),
   pageOf("modifier_groups"),
   pageOf("modifiers"),

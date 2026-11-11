@@ -1,20 +1,29 @@
-// Edge side of the catalog down-sync (bead legend-97p; PRD v1.7 §3 F8 Master
-// Menu & Harga, §3 F16 Resep & BOM). Pulls `GET /api/edge-sync/catalog` stream
-// by stream (shared `CATALOG_SYNC_STREAMS`, parents before children), applies
-// each page with `applyCatalogRecords` and moves that stream's checkpoint in
-// `edge_pull_checkpoints` (stream key `catalog:<stream>`) in the SAME
-// transaction as the apply:
+// Edge side of the catalog down-sync (bead legend-97p, legend-24318; PRD v1.7
+// §3 F8 Master Menu & Harga, §3 F16 Resep & BOM). Pulls
+// `GET /api/edge-sync/catalog` stream by stream (shared `CATALOG_SYNC_STREAMS`,
+// parents before children), applies each page with `applyCatalogRecords` and
+// moves that stream's checkpoint in `edge_pull_checkpoints` (stream key
+// `catalog:<stream>`) in the SAME transaction as the apply:
 //
 // - A failed page (fetch error, bad shape, apply error) leaves the checkpoint
 //   where the last applied page put it; the next pull resumes from there.
 //   Streams are isolated: the error is caught, recorded in
 //   `streams[stream].error` and the next stream still runs.
+// - The cursor is `cat2` (`["cat2", "<sync_txid>", ...keys]`). The cloud only
+//   sends rows older than every open transaction, so there is no overlap and
+//   no rewind: the pull resumes exactly at the checkpoint. A stored cursor of
+//   another tag (`cat1`) or a corrupt one counts as no checkpoint (the stream
+//   is pulled from the start again; applying is idempotent and never lets an
+//   older record over a newer row).
 // - menu_categories: parent links the apply had to write null (parent not local
-//   yet) are collected in memory; after the stream was read in full ONE repair
-//   pass (one transaction) sets them where the parent now exists.
-// - The pull starts `CATALOG_SYNC_OVERLAP_MS` before the stored checkpoint
-//   (commit lag behind `updated_at`); apply is idempotent and never lets an
-//   older record over a newer row.
+//   yet) are saved in the same transaction as the page, in the checkpoint row
+//   `catalog:menu_categories:parents` (JSON, small), so a restart loses
+//   nothing. After the stream was read ONE repair pass (one transaction) sets
+//   the parents that now exist and keeps the rest for a later pull.
+// - A pull reads at most `maxPages` pages per stream (default 1000). The
+//   checkpoint is saved page by page, so a bigger backlog just continues from
+//   the last page: the stream reports `backlog: true` and the next pull
+//   goes on (no error, no repeated page).
 // - A cursor the cloud refuses on the first request of a stream (HTTP 400 or
 //   the cursor error): one more pull of that stream from the start.
 // - Read only: nothing here writes to the cloud. Errors carry codes, never
@@ -24,20 +33,21 @@ import {
   catalogSyncPageSchema,
   type CatalogSyncStream,
 } from "@starter/shared/edge";
-import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  CoreError,
+  decodeCursor,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { edgeNodes, edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
-import {
-  CATALOG_SYNC_OVERLAP_MS,
-  isCatalogSyncCursorError,
-  rewindCatalogCursor,
-} from "../services/edge-catalog-sync.ts";
+import { isCatalogSyncCursorError } from "../services/edge-catalog-sync.ts";
 import {
   applyCatalogRecords,
   CatalogMissingRefError,
   repairCategoryParents,
+  unresolvedCategoryParents,
   type CatalogApplyResult,
   type DeferredCategoryParent,
 } from "../services/edge-catalog-apply.ts";
@@ -46,6 +56,11 @@ import { EdgeCloudHttpError } from "./cloud-http.ts";
 type Database = typeof db;
 
 const DEFAULT_MAX_PAGES = 1_000;
+/** The only cursor tag this edge understands (see the header). */
+const CATALOG_CURSOR_TAG = "cat2";
+
+/** Pending category parents live in a checkpoint row of their own. */
+const PARENTS_CHECKPOINT = "catalog:menu_categories:parents";
 
 /** Key of a stream's row in `edge_pull_checkpoints` (varchar(40)). */
 export function catalogCheckpointStream(
@@ -69,10 +84,8 @@ export type PullCatalogOptions = {
   ) => Promise<unknown>;
   /** Default: all streams in `CATALOG_SYNC_STREAMS` order. */
   readonly streams?: readonly CatalogSyncStream[];
-  /** Safety stop per stream against a misbehaving cloud; default 1000. */
+  /** Pages read per stream in one pull; more is a backlog for the next pull. Default 1000. */
   readonly maxPages?: number;
-  /** Default `CATALOG_SYNC_OVERLAP_MS`; 0 = resume exactly at the checkpoint. */
-  readonly overlapMs?: number;
   readonly now?: () => Date;
   /** Default: the shared pool. Injected by tests that run a second database. */
   readonly database?: Database;
@@ -94,6 +107,8 @@ export type CatalogStreamPullResult = Omit<
   readonly watermark: string | null;
   /** menu_categories: parent links set by the repair pass. */
   readonly repairedParents: number;
+  /** The cloud had more pages left when `maxPages` was reached. */
+  readonly backlog: boolean;
   /** Set when the stream stopped early; its checkpoint is the last applied page. */
   readonly error?: CatalogStreamError;
 };
@@ -108,6 +123,8 @@ export type PullCatalogResult = {
   readonly nulledRefs: number;
   readonly repairedParents: number;
   readonly pages: number;
+  /** Some stream stopped at `maxPages` with pages left: pull again soon. */
+  readonly backlog: boolean;
 };
 
 function oneOutlet(context: ScopedTenantContext): void {
@@ -121,7 +138,16 @@ function oneOutlet(context: ScopedTenantContext): void {
     );
 }
 
-/** No row yet (first boot) is null. */
+/** A cursor of the current tag; anything else (old `cat1`, corrupt) is not one. */
+function isCurrentCursor(cursor: string): boolean {
+  try {
+    return decodeCursor(cursor)[0] === CATALOG_CURSOR_TAG;
+  } catch {
+    return false;
+  }
+}
+
+/** No row yet (first boot) or a cursor of another tag is null: pull from the start. */
 async function loadCatalogCheckpoint(
   database: Database,
   context: ScopedTenantContext,
@@ -140,16 +166,17 @@ async function loadCatalogCheckpoint(
       )
       .limit(1),
   );
-  return row?.watermark ?? null;
+  const watermark = row?.watermark ?? null;
+  return watermark !== null && isCurrentCursor(watermark) ? watermark : null;
 }
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 /** Upsert inside the apply transaction; the node row must exist. */
-async function saveCatalogCheckpoint(
+async function saveCheckpointRow(
   tx: Tx,
   edgeNodeId: string,
-  stream: CatalogSyncStream,
+  stream: typeof edgePullCheckpoints.$inferInsert.stream,
   watermark: string | null,
   succeededAt: Date,
 ): Promise<void> {
@@ -165,7 +192,7 @@ async function saveCatalogCheckpoint(
       tenantId: node.tenantId,
       outletId: node.outletId,
       edgeNodeId,
-      stream: catalogCheckpointStream(stream),
+      stream,
       watermark,
       lastSuccessAt: succeededAt,
     })
@@ -177,6 +204,73 @@ async function saveCatalogCheckpoint(
       ],
       set: { watermark, lastSuccessAt: succeededAt, updatedAt: new Date() },
     });
+}
+
+function saveCatalogCheckpoint(
+  tx: Tx,
+  edgeNodeId: string,
+  stream: CatalogSyncStream,
+  watermark: string | null,
+  succeededAt: Date,
+): Promise<void> {
+  return saveCheckpointRow(
+    tx,
+    edgeNodeId,
+    catalogCheckpointStream(stream),
+    watermark,
+    succeededAt,
+  );
+}
+
+/** Pending category parents (JSON in the watermark); unreadable = none. */
+async function loadPendingParents(
+  tx: Tx,
+  edgeNodeId: string,
+): Promise<DeferredCategoryParent[]> {
+  const [row] = await tx
+    .select({ watermark: edgePullCheckpoints.watermark })
+    .from(edgePullCheckpoints)
+    .where(
+      and(
+        eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
+        eq(edgePullCheckpoints.stream, PARENTS_CHECKPOINT),
+      ),
+    )
+    .limit(1);
+  if (!row?.watermark) return [];
+  try {
+    const raw: unknown = JSON.parse(row.watermark);
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((entry: unknown) => {
+      if (!Array.isArray(entry)) return [];
+      const [id, parentId, syncTxid] = entry as unknown[];
+      return typeof id === "string" &&
+        typeof parentId === "string" &&
+        typeof syncTxid === "string" &&
+        /^\d+$/.test(syncTxid)
+        ? [{ id, parentId, syncTxid }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function savePendingParents(
+  tx: Tx,
+  edgeNodeId: string,
+  pairs: readonly DeferredCategoryParent[],
+  at: Date,
+): Promise<void> {
+  return saveCheckpointRow(
+    tx,
+    edgeNodeId,
+    PARENTS_CHECKPOINT,
+    pairs.length === 0
+      ? null
+      : JSON.stringify(pairs.map((p) => [p.id, p.parentId, p.syncTxid])),
+    at,
+  );
 }
 
 /** The cloud no longer understands the stored cursor (HTTP 400 / cursor error). */
@@ -195,6 +289,7 @@ type StreamProgress = {
   repairedParents: number;
   pages: number;
   watermark: string | null;
+  backlog: boolean;
 };
 
 async function pullStream(
@@ -206,30 +301,20 @@ async function pullStream(
   const database = options.database ?? db;
   const now = options.now ?? (() => new Date());
   const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
-  const overlapMs = options.overlapMs ?? CATALOG_SYNC_OVERLAP_MS;
   const tenantId = options.context.tenant.tenantId;
 
+  // No overlap: the cloud only sends committed-safe rows, resume exactly here.
   let since: string | null = stored;
-  if (stored !== null && overlapMs > 0) {
-    try {
-      since = rewindCatalogCursor(stream, stored, overlapMs);
-    } catch (error) {
-      // A corrupt stored cursor: start this stream over (idempotent).
-      if (!isCatalogSyncCursorError(error)) throw error;
-      since = null;
-    }
-  }
   let watermark = stored;
   progress.watermark = stored;
-  const deferredParents: DeferredCategoryParent[] = [];
   let first = true;
 
   for (;;) {
-    if (progress.pages >= maxPages)
-      throw new CoreError(
-        "CONFLICT",
-        "Sinkronisasi katalog melebihi batas halaman.",
-      );
+    if (progress.pages >= maxPages) {
+      // The checkpoint is saved page by page: the next pull goes on from it.
+      progress.backlog = true;
+      break;
+    }
     let raw: unknown;
     try {
       raw = await options.fetchPage(stream, since);
@@ -263,6 +348,19 @@ async function pullStream(
         stream,
         records: page.records,
       });
+      // Parent links written null go to the durable list in the same commit.
+      if (stream === "menu_categories" && outcome.deferredParents.length > 0) {
+        const kept = (await loadPendingParents(tx, options.edgeNodeId)).filter(
+          (pair) =>
+            !outcome.deferredParents.some((fresh) => fresh.id === pair.id),
+        );
+        await savePendingParents(
+          tx,
+          options.edgeNodeId,
+          [...kept, ...outcome.deferredParents],
+          succeededAt,
+        );
+      }
       await saveCatalogCheckpoint(
         tx,
         options.edgeNodeId,
@@ -278,7 +376,6 @@ async function pullStream(
     progress.skipped += result.skipped;
     progress.deleted += result.deleted;
     progress.nulledRefs += result.nulledRefs;
-    deferredParents.push(...result.deferredParents);
 
     if (!page.hasMore) break;
     if (page.nextCursor === null || page.nextCursor === since)
@@ -289,12 +386,27 @@ async function pullStream(
     since = page.nextCursor;
   }
 
-  // One repair pass per pull, after every page of the stream was read.
-  if (stream === "menu_categories" && deferredParents.length > 0)
+  // One repair pass per pull, after the stream was read: parents that arrived
+  // since (this pull or an earlier one, also before a restart) are set.
+  if (stream === "menu_categories")
     progress.repairedParents = await withTenant(
       database,
       options.context,
-      (tx) => repairCategoryParents(tx, { tenantId, pairs: deferredParents }),
+      async (tx) => {
+        const pending = await loadPendingParents(tx, options.edgeNodeId);
+        if (pending.length === 0) return 0;
+        const repaired = await repairCategoryParents(tx, {
+          tenantId,
+          pairs: pending,
+        });
+        const remaining = await unresolvedCategoryParents(tx, {
+          tenantId,
+          pairs: pending,
+        });
+        if (remaining.length !== pending.length)
+          await savePendingParents(tx, options.edgeNodeId, remaining, now());
+        return repaired;
+      },
     );
 }
 
@@ -333,6 +445,7 @@ export async function pullCatalog(
     nulledRefs: 0,
     repairedParents: 0,
     pages: 0,
+    backlog: false,
   };
   for (const stream of streams) {
     const progress: StreamProgress = {
@@ -343,6 +456,7 @@ export async function pullCatalog(
       repairedParents: 0,
       pages: 0,
       watermark: null,
+      backlog: false,
     };
     let error: CatalogStreamError | undefined;
     try {
@@ -363,6 +477,7 @@ export async function pullCatalog(
     total.nulledRefs += progress.nulledRefs;
     total.repairedParents += progress.repairedParents;
     total.pages += progress.pages;
+    total.backlog = total.backlog || progress.backlog;
   }
   return { streams: results, ...total };
 }
