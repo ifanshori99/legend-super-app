@@ -11,11 +11,15 @@
 // because audit_logs is append-only: its rows cannot be cleaned up, so each
 // test filters by challenge id (or by action on this run's private tenant).
 
+// Must stay the first import: it sets TRUST_PROXY before ../app reads the env.
+import {
+  FILE_CLIENT_IP,
+  releaseTrustedProxy,
+} from "./helpers/identity-client-ip";
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { signKirimWebhook } from "@starter/shared/adapters";
 import {
   establishScopedTenantContext,
@@ -32,21 +36,34 @@ import {
 } from "../services/identity-login.service";
 import { processInboundWhatsApp } from "../services/identity-wa-inbound.service";
 import { agent, originHeader, signUp } from "./helpers";
+import {
+  createIdentityScope,
+  createIdentityTenant,
+  setIntegrationNumber,
+  uniqueDigits,
+} from "./helpers/identity-isolation";
 
 const SECRET = "test-kirim-webhook-secret";
-const fixtures = cafeLegendPlatformFixtures;
-const TENANT_A = fixtures.tenant.id;
-// A private tenant per run: audit rows cannot be deleted afterwards.
-const TENANT_B = randomUUID();
-const NUMBER_A = "628111000001";
-const NUMBER_B = "628111000071";
-const NUMBER_B_CHANGED = "628111000099";
-const SENDER = "6281234567890";
+// Own tenants, host, numbers and sender per run: this file never shares rows
+// with the other identity files (legend-5opkl). Audit rows cannot be deleted
+// afterwards, so the tenant ids are random.
+const TENANT_A: string = randomUUID();
+const TENANT_B: string = randomUUID();
+const NUMBER_A = `62811${uniqueDigits(7)}`;
+const NUMBER_B = `62811${uniqueDigits(7)}`;
+const NUMBER_B_CHANGED = `62811${uniqueDigits(7)}`;
+// Ends in 890: the masking test pins the three kept digits.
+const SENDER = `62812${uniqueDigits(5)}890`;
+let HOST = "";
 // Data minimisation: only the last three digits of the sender are kept.
 const SENDER_MASK = `•••${SENDER.slice(-3)}`;
-const ISSUED_CODE = "K7Q4M2XD";
-const ISSUED_CODE_FORMATTED = "K7Q4-M2XD";
+// Distinct per file (a code is looked up across tenants, legend-5opkl).
+const ISSUED_CODE = "R2S3T4V5";
+const ISSUED_CODE_FORMATTED = "R2S3-T4V5";
 const CLIENT_IP = "203.0.113.45";
+
+const fileAgent = (target: Parameters<typeof agent>[0]) =>
+  agent(target).set("X-Forwarded-For", FILE_CLIENT_IP);
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -107,26 +124,13 @@ function kirimPayload(input: {
 
 async function postWebhook(body: string) {
   const signature = await signKirimWebhook({ rawBody: body, secret: SECRET });
-  return agent(app)
-    .host(fixtures.domains[0]!.hostname)
+  return fileAgent(app)
+    .host(HOST)
     .post("/api/webhooks/whatsapp")
     .set("Content-Type", "application/json")
     .set("X-Kirim-Signature", signature)
     .set("X-Kirim-Event-Id", "evt-" + randomUUID())
     .send(body);
-}
-
-async function seedWhatsAppIntegration(
-  tenantId: string,
-  receivingNumber: string,
-) {
-  await owner.query(
-    `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
-     VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')
-     ON CONFLICT (tenant_id, provider) WHERE outlet_id IS NULL
-     DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
-    [tenantId, JSON.stringify({ vendor: "kirimdev", receivingNumber })],
-  );
 }
 
 /** Audit rows of one challenge, read through the owner pool, oldest first. */
@@ -200,56 +204,35 @@ async function failAuditWhen(tenantId: string, action: string) {
   };
 }
 
-async function cleanLoginState() {
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
-  await owner.query("DELETE FROM user_identities");
-  await owner.query(
-    'DELETE FROM role_assignments WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)',
-    ["%@wa.invalid"],
-  );
-  await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
-}
+const isolation = createIdentityScope(owner);
+isolation.scope.tenantIds.push(TENANT_A, TENANT_B);
+isolation.scope.receivingNumbers.push(NUMBER_A, NUMBER_B, NUMBER_B_CHANGED);
+isolation.scope.senders.push(SENDER);
+const cleanLoginState = isolation.cleanup;
 
 beforeAll(async () => {
-  await owner.query(
-    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, 'Uji Audit Masuk', 'lengkap', 'active', 'shared',
-             '{"modules":[],"integrationProviders":[]}', $3, 'test')
-     ON CONFLICT (id) DO NOTHING`,
-    [
-      TENANT_B,
-      `uji-audit-${TENANT_B.slice(0, 8)}`,
-      JSON.stringify({
-        maxOutlets: 2,
-        maxActiveEmployees: 5,
-        maxDevices: 2,
-        aiRequestsPerMonth: 0,
-        whatsappCostCapIdr: 0,
-        aiCostCapIdr: 0,
-        emailCostCapIdr: 0,
-      }),
-    ],
-  );
-  await seedWhatsAppIntegration(TENANT_A, NUMBER_A);
-  await seedWhatsAppIntegration(TENANT_B, NUMBER_B);
+  HOST = (
+    await createIdentityTenant(owner, "audit-a", NUMBER_A, { id: TENANT_A })
+  ).hostname;
+  await createIdentityTenant(owner, "audit-b", NUMBER_B, {
+    id: TENANT_B,
+    withDomain: false,
+  });
 });
 
 beforeEach(cleanLoginState);
 
 afterAll(async () => {
+  releaseTrustedProxy();
   await cleanLoginState();
-  await owner.query("DELETE FROM tenant_integrations WHERE tenant_id = $1", [
-    TENANT_B,
-  ]);
-  // Audit rows of tenant B stay: audit_logs is append-only and has no tenant FK.
-  await owner.query("DELETE FROM tenants WHERE id = $1", [TENANT_B]);
+  // Audit rows stay: audit_logs is append-only and has no tenant FK.
+  await isolation.dropTenants([TENANT_A, TENANT_B]);
   await owner.end();
 });
 
 describe("WhatsApp login audit trail (legend-wq3f)", () => {
   it("AUTH-01 records created, completed and claimed for a full login, with no secret in any row", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -495,7 +478,7 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
       { generateCode: () => ISSUED_CODE },
     );
     // The tenant moved to another receiving number after the code was issued.
-    await seedWhatsAppIntegration(TENANT_B, NUMBER_B_CHANGED);
+    await setIntegrationNumber(owner, TENANT_B, NUMBER_B_CHANGED);
     try {
       const outcome = await processInboundWhatsApp({
         eventId: `wamid.${randomUUID()}`,
@@ -505,7 +488,7 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
       });
       expect(outcome.kind).toBe("rejected");
     } finally {
-      await seedWhatsAppIntegration(TENANT_B, NUMBER_B);
+      await setIntegrationNumber(owner, TENANT_B, NUMBER_B);
     }
 
     const events = await auditOfChallenge(issued.challenge.id);
@@ -530,7 +513,8 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
 
   it("AUTH-02 writes no tenant row for a code that matches no challenge", async () => {
     const before = await owner.query(
-      "SELECT count(*)::int AS count FROM audit_logs WHERE event->>'objectType' = 'login_challenge'",
+      "SELECT count(*)::int AS count FROM audit_logs WHERE event->>'objectType' = 'login_challenge' AND tenant_id = ANY($1)",
+      [[TENANT_A, TENANT_B]],
     );
     const outcome = await processInboundWhatsApp({
       eventId: `wamid.${randomUUID()}`,
@@ -540,7 +524,8 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
     });
     expect(outcome.kind).toBe("rejected");
     const after = await owner.query(
-      "SELECT count(*)::int AS count FROM audit_logs WHERE event->>'objectType' = 'login_challenge'",
+      "SELECT count(*)::int AS count FROM audit_logs WHERE event->>'objectType' = 'login_challenge' AND tenant_id = ANY($1)",
+      [[TENANT_A, TENANT_B]],
     );
     expect(after.rows[0].count).toBe(before.rows[0].count);
   });
@@ -683,13 +668,7 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
     });
     // The claim row of the delivery rolled back with it (an account made by
     // resolveWhatsAppAccount lives on its own connection and is reused on retry).
-    expect(
-      (
-        await owner.query(
-          "SELECT count(*)::int AS count FROM wa_inbound_messages",
-        )
-      ).rows[0].count,
-    ).toBe(0);
+    expect(await isolation.count("wa_inbound_messages")).toBe(0);
     expect(await auditActions(issued.challenge.id)).toEqual([
       "login_challenge.created",
     ]);
@@ -700,14 +679,11 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
       "login_challenge.created",
       "login_challenge.completed",
     ]);
-    expect(
-      (await owner.query("SELECT count(*)::int AS count FROM user_identities"))
-        .rows[0].count,
-    ).toBe(1);
+    expect(await isolation.count("user_identities")).toBe(1);
   });
 
   it("AUTH-07 rolls the linking audit row back with a failed link write", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     await signUp(browser);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
