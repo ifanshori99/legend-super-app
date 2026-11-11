@@ -135,3 +135,10 @@ bila lunas setelah fire_at, sweep berikut langsung mengirim. Sweep membatalkan o
 - Sweep: kandidat unpaid hanya yang tiketnya mati atau now >= ends_at (join di query `dueOrderIds`), supaya baris unpaid yang belum boleh
   dibatalkan tidak memenuhi batch 100.
 - Satukan `DEAD_TICKET_STATUSES` (satu sumber, di money.ts; consumers & service impor dari sana).
+
+### Bukti gagal-dulu lewat mutasi (setelah semua hijau)
+Tiap mutasi: terapkan, jalankan 3 file test breakfast, catat test yang MERAH, lalu `git checkout -- <file>` (pohon kerja bersih sesudahnya).
+- M1 guard KDS mati: `assertBreakfastPaid` langsung return; `app.breakfast_order_unpaid` di 0321 selalu return false. Harap merah: BRK-PAY-01.
+- M2 bayar ganda: di consumer, pembayaran untuk order yang sudah paid tidak meminta refund (hapus panggilan refund intent ekstra). Harap merah: BRK-PAY-02 / CONC-02.
+- M3 refund lebih: cancel me-refund paid_idr tanpa mengurangi refunded_idr (dan batal ulang refund lagi). Harap merah: BRK-PAY-03 / CONC-03.
+- M4 tanpa kunci: hapus `.for("update")` pada linked order di lockBreakfastOrder. Catat hasil (konkurensi bisa nondeterministik).
