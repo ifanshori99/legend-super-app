@@ -181,14 +181,22 @@ export type RuleFilter = {
   status: RuleVersionStatus | "all";
 };
 
-/** Client-side search over code and name, plus the version-status filter. */
+/**
+ * Client-side search over code and name, plus the version-status filter.
+ * "all" hides archived (discarded) drafts so a discarded row leaves the list;
+ * they stay reachable through the explicit "archived" filter.
+ */
 export function filterRuleVersions<T extends RuleVersion>(
   versions: readonly T[],
   filter: RuleFilter,
 ): T[] {
   const needle = filter.search.trim().toLocaleLowerCase("id-ID");
   return versions.filter((version) => {
-    if (filter.status !== "all" && version.status !== filter.status) {
+    if (
+      filter.status === "all"
+        ? version.status === "archived"
+        : version.status !== filter.status
+    ) {
       return false;
     }
     if (needle === "") return true;
