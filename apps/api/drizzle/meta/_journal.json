@@ -1639,6 +1639,13 @@
       "when": 1794328000000,
       "tag": "0276_approved_leaves_on",
       "breakpoints": true
+    },
+    {
+      "idx": 277,
+      "version": "7",
+      "when": 1794331000001,
+      "tag": "0277_flag_attendance_for_leave",
+      "breakpoints": true
     }
   ]
 }

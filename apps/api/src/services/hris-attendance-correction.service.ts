@@ -80,6 +80,7 @@ import {
   type Tx,
 } from "./hris-access.ts";
 import { computeWorkTiming } from "./hris-attendance-logic.ts";
+import { findApprovedLeaveOnDate } from "./hris-leave-request.service.ts";
 import { loadOutletTimeZone } from "./hris-scheduling-common.ts";
 import {
   decideApprovalRequest,
@@ -301,6 +302,30 @@ async function correctionDates(
   ]);
   if (logDate !== null) dates.add(logDate);
   return { timeZone, dates: [...dates], logDate };
+}
+
+/**
+ * Bead legend-em8y2: no valid log on a day with approved leave (the day would
+ * be paid as leave and as work). Reads across outlets. Throwing rolls back the
+ * caller's transaction, so no log is written and nothing is marked approved.
+ */
+async function assertNoApprovedLeave(
+  tx: Tx,
+  row: Pick<CorrectionRow, "tenantId" | "employeeId">,
+  businessDate: string,
+): Promise<void> {
+  const leaves = await findApprovedLeaveOnDate(
+    tx,
+    row.tenantId,
+    row.employeeId,
+    businessDate,
+  );
+  if (leaves.length === 0) return;
+  throw new HttpError(
+    409,
+    "ATTENDANCE_CORRECTION_LEAVE_DAY",
+    "Karyawan punya cuti yang disetujui pada tanggal ini; koreksi absensi tidak bisa disetujui. Batalkan cuti hari itu lebih dulu bila karyawan memang masuk kerja.",
+  );
 }
 
 // --------------------------------------------------------------- request
@@ -595,8 +620,15 @@ export async function decideAttendanceCorrection(
       input.action,
     );
     if (input.action === "approve") {
-      const { dates } = await correctionDates(tx, row);
+      const { dates, timeZone, logDate } = await correctionDates(tx, row);
       await assertPayrollOpen(tx, row.tenantId, row.employeeId, dates);
+      // Before decideApprovalRequest: a refused day must not leave an
+      // approved chain behind a pending correction.
+      await assertNoApprovedLeave(
+        tx,
+        row,
+        logDate ?? localDateOf(row.requestedOccurredAt, timeZone),
+      );
     }
     let openId: string | null = null;
     if (row.approvalChainId) {
@@ -655,6 +687,8 @@ async function applyApproved(
   // overnight "out" belongs to the shift that started the day before).
   const businessDate =
     logDate ?? localDateOf(row.requestedOccurredAt, timeZone);
+  // Second safety net; the decision gate refuses first (legend-em8y2).
+  await assertNoApprovedLeave(tx, row, businessDate);
   const shifts = await tx
     .select({
       id: shiftAssignments.id,
