@@ -1779,6 +1779,41 @@
       "when": 1794349000000,
       "tag": "0267_bank_account_hmac_version",
       "breakpoints": true
+    },
+    {
+      "idx": 268,
+      "version": "7",
+      "when": 1794350000000,
+      "tag": "0268_journal_closed_period_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 269,
+      "version": "7",
+      "when": 1794351000000,
+      "tag": "0269_fixed_asset_depreciation_reversals",
+      "breakpoints": true
+    },
+    {
+      "idx": 270,
+      "version": "7",
+      "when": 1794352000000,
+      "tag": "0270_ledger_version_period_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 271,
+      "version": "7",
+      "when": 1794353000000,
+      "tag": "0271_depreciation_active_and_reversal_fn",
+      "breakpoints": true
+    },
+    {
+      "idx": 272,
+      "version": "7",
+      "when": 1794354000000,
+      "tag": "0272_depreciation_journal_manual_reverse_guard",
+      "breakpoints": true
     }
   ]
 }

@@ -62,11 +62,9 @@ import { paymentAdminRouter } from "./payment-admin.routes.ts";
 import { paymentRecurringRouter } from "./payment-recurring.routes.ts";
 import { accountingJournalRouter } from "./accounting-journal.routes";
 import { accountingRouter } from "./accounting.routes";
-import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
 import { createProfitShareRegistryRouter } from "./profit-share-registry.routes";
 import { createProfitShareDistributionRouter } from "./profit-share-distribution.routes";
 import { createProfitShareRecipientReconcileRouter } from "./profit-share-recipient-reconcile.routes";
-import { dbShareholderMembership } from "../services/profit-share-membership";
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 import { reservationRouter } from "./reservation.routes";
@@ -295,11 +293,9 @@ apiRouter.use("/website", websiteAdminRouter);
 apiRouter.use("/public/purchase-orders", publicPurchaseOrderRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
-// Shareholder documents (WS-07, legend-69yq): upload, publish, list, signed URL.
-apiRouter.use(
-  "/accounting",
-  createShareholderDocumentsRouter({ membership: dbShareholderMembership }),
-);
+// Shareholder documents (WS-07, legend-69yq): mounted by createStorageApiRouter
+// (routes/storage-api.routes.ts, legend-68if) ahead of this router, because
+// upload and signed URL need the storage runtime and the real membership.
 // Profit share (WS-07, legend-2ljb): entities, shareholders, share versions
 // (SH-03), distribution runs, adjustments and statements (SH-04).
 apiRouter.use("/accounting", createProfitShareRegistryRouter());

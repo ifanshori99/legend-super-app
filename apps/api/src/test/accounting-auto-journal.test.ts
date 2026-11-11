@@ -311,7 +311,7 @@ async function makeWorld(
 async function closePeriods(world: World, periods: string[]): Promise<void> {
   for (const period of periods)
     await owner.query(
-      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now()
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now(), version = version + 1
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = $4`,
       [world.tenant.id, world.entity, randomUUID(), period],
     );

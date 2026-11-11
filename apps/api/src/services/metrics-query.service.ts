@@ -501,6 +501,8 @@ type LedgerRow = {
   accountId: string;
   date: string;
   outletId: string | null;
+  /** Legal entity of the journal entry (also for lines without an outlet). */
+  legalEntityId: string;
   /** Journal source; a reversal carries the source of the entry it reverses. */
   sourceType: string;
   /** credit − debit, whole rupiah. */
@@ -524,6 +526,7 @@ async function ledgerRows(
       accountId: journalLines.accountId,
       date: journalEntries.entryDate,
       outletId: journalLines.outletId,
+      legalEntityId: journalEntries.legalEntityId,
       sourceType,
       net: sql<string>`(sum(${journalLines.creditIdr}) - sum(${journalLines.debitIdr}))::text`,
     })
@@ -559,12 +562,14 @@ async function ledgerRows(
       journalLines.accountId,
       journalEntries.entryDate,
       journalLines.outletId,
+      journalEntries.legalEntityId,
       sourceType,
     );
   return rows.map((row) => ({
     accountId: row.accountId,
     date: row.date,
     outletId: row.outletId,
+    legalEntityId: row.legalEntityId,
     sourceType: row.sourceType,
     net: BigInt(row.net),
   }));
@@ -580,7 +585,16 @@ const ALL_OUTLETS = "*";
 /** Index key of entity-level lines (outlet null). */
 const ENTITY_LEVEL = "";
 
+/** Split key the ledger answers from journal_entries.legal_entity_id. */
+export const LEGAL_ENTITY_DIMENSION = "legal_entity";
 const outletKeyOf = (outletId: string | null) => outletId ?? ENTITY_LEVEL;
+/**
+ * Index key of one legal entity (all its outlets and entity-level lines). The
+ * prefix cannot collide with an outlet id, so outlet reads skip these keys.
+ */
+const LEGAL_ENTITY_PREFIX = "legal_entity:";
+const legalEntityKeyOf = (legalEntityId: string) =>
+  `${LEGAL_ENTITY_PREFIX}${legalEntityId}`;
 
 /**
  * The range a date falls in: binary search over the current buckets (date
@@ -658,7 +672,11 @@ class LedgerIndex {
     ) => {
       const byOutlet = this.sums.get(component)![bucket]!;
       const amount = sign === 1 ? row.net : -row.net;
-      for (const key of [outletKeyOf(row.outletId), ALL_OUTLETS]) {
+      for (const key of [
+        outletKeyOf(row.outletId),
+        ALL_OUTLETS,
+        legalEntityKeyOf(row.legalEntityId),
+      ]) {
         const sum = byOutlet.get(key);
         if (sum) sum.value += amount;
         else byOutlet.set(key, { value: amount, hasData: true });
@@ -701,7 +719,18 @@ class LedgerIndex {
   /** Outlet keys (entity level included) with data in one bucket. */
   outletKeysAt(component: GlComponent, range: number): string[] {
     const byOutlet = this.sums.get(component)?.[range];
-    return [...(byOutlet?.keys() ?? [])].filter((key) => key !== ALL_OUTLETS);
+    return [...(byOutlet?.keys() ?? [])].filter(
+      (key) => key !== ALL_OUTLETS && !key.startsWith(LEGAL_ENTITY_PREFIX),
+    );
+  }
+
+  /** Legal entity keys with data for a component's buckets. */
+  legalEntityKeys(component: GlComponent, rangeCount: number): Set<string> {
+    const keys = new Set<string>();
+    for (let at = 0; at < rangeCount; at++)
+      for (const key of this.sums.get(component)?.[at]?.keys() ?? [])
+        if (key.startsWith(LEGAL_ENTITY_PREFIX)) keys.add(key);
+    return keys;
   }
 }
 
@@ -1031,6 +1060,14 @@ function planOf(
           return NOT_SUPPORTED;
         if (shape.splitKey === null)
           return { kind: "gl", gl: source.gl, split: null };
+        // The ledger carries the legal entity itself (journal_entries): an
+        // amount or balance splits by it without operational rows. Entity x
+        // outlet is not read; a percent follows the generic split below.
+        if (shape.splitKey === LEGAL_ENTITY_DIMENSION) {
+          if (shape.byOutlet) return NOT_SUPPORTED;
+          if (source.gl.kind !== "ratio")
+            return { kind: "gl", gl: source.gl, split: null };
+        }
         // A percent split is recomputed from split numerator and denominator
         // (DECISIONS 2026-11-10 point 1): both codes split first, then
         // divided per split value; a side without that split answers
@@ -1397,6 +1434,27 @@ export async function evaluateMetrics(
         outletGroups.push({ dim: outletDim(ENTITY_LEVEL), key: ENTITY_LEVEL });
     }
     const groups: Group[] = [];
+    if (shape.splitKey === LEGAL_ENTITY_DIMENSION && !plan.split) {
+      // One group per legal entity with lines of the code, sorted. Every line
+      // (entity-level ones included) belongs to the entity of its journal
+      // entry, so the groups add up to the tenant total (DASH-02).
+      const keys = new Set<string>();
+      for (const component of glComponentsOf(plan.gl))
+        for (const key of index.legalEntityKeys(component, currentCount))
+          keys.add(key);
+      return [...keys].sort().map((key) => ({
+        dims: [
+          {
+            key: LEGAL_ENTITY_DIMENSION,
+            value: key.slice(LEGAL_ENTITY_PREFIX.length),
+          },
+        ],
+        cells: ranges.map((_, at) => ({
+          value: evaluate(plan.gl, index, at, key),
+          final: ruleFinal(at, "closed_period_only"),
+        })),
+      }));
+    }
     for (const outlet of outletGroups) {
       const totals: Cell[] = ranges.map((_, at) => ({
         value: evaluate(plan.gl, index, at, outlet.key),
@@ -1805,6 +1863,7 @@ function assertLedgerDimensions(
     if (
       request.groupBy &&
       request.groupBy !== "outlet" &&
+      request.groupBy !== LEGAL_ENTITY_DIMENSION &&
       !sources.splitOf(definition.code, request.groupBy)
     )
       throw unsupportedDimension(definition.code, request.groupBy);

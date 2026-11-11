@@ -19,6 +19,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  bigint,
   boolean,
   check,
   foreignKey,
@@ -191,6 +192,16 @@ export const legalEntities = pgTable(
     npwpHashVersion: smallint("npwp_hash_version").notNull().default(1),
     isPkp: boolean("is_pkp").notNull().default(false),
     address: text("address"),
+    /**
+     * +1 on every close and reopen of one of the entity's fiscal periods
+     * (trigger `fiscal_periods_ledger_version_bump`, migration 0270). The bump
+     * rewrites this row, so a REPEATABLE READ journal writer whose snapshot
+     * predates a close fails its entity lock with 40001 instead of posting
+     * into the closed month.
+     */
+    ledgerVersion: bigint("ledger_version", { mode: "number" })
+      .notNull()
+      .default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
