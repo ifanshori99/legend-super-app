@@ -24,7 +24,7 @@ import {
 } from "@starter/shared/core";
 import { auditLogs } from "../db/schema/core-audit.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
-import { orderIssues } from "../db/schema/kds-issues.ts";
+import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts";
 import { paymentRefunds } from "../db/schema/index.ts";
 import { paymentAdminIdempotency } from "../db/schema/payment-admin.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
@@ -36,6 +36,7 @@ import {
 import { lineGivenOf, orderGivenOf, orderRoomOf } from "./order-given.ts";
 import { OrderRevenueMismatch } from "./order-revenue.ts";
 import {
+  recoveryChargeSplit,
   recoveryRefundSplit,
   type RecoveryRefundPromo,
 } from "./order-recovery-refund-amount.ts";
@@ -389,6 +390,53 @@ const swapChargePending = () =>
   );
 
 /**
+ * The closed charge row of a dearer swap that never got one (see
+ * `chainChargesOf`). `expired`, not `waived`: the DB wants a closing user for
+ * `waived`, and every reader treats the two alike.
+ */
+async function writeWaivedCharge(
+  tx: Tx,
+  input: { order: typeof orders.$inferSelect; at: Date },
+  charge: { issueId: string; differenceIdr: number },
+): Promise<void> {
+  const { order, at } = input;
+  let split: ReturnType<typeof recoveryChargeSplit>;
+  try {
+    split = recoveryChargeSplit({
+      order,
+      differenceIdr: charge.differenceIdr,
+    });
+  } catch (error) {
+    if (error instanceof OrderRevenueMismatch) return;
+    throw error;
+  }
+  if (split.amountIdr <= 0) return;
+  await tx
+    .insert(orderIssueCharges)
+    .values({
+      tenantId: order.tenantId,
+      outletId: order.outletId,
+      orderIssueId: charge.issueId,
+      orderId: order.id,
+      tableSessionId: null,
+      route: "qr_link",
+      status: "expired",
+      closedAt: at,
+      closeReason: "Tukar ulang sebelum tagihan selisih tercatat",
+      differenceIdr: idr(split.differenceIdr),
+      grossSalesIdr: idr(split.grossSalesIdr),
+      serviceChargeIdr: idr(split.serviceChargeIdr),
+      pbjtIdr: idr(split.pbjtIdr),
+      amountIdr: idr(split.amountIdr),
+      createdAt: at,
+      updatedAt: at,
+    })
+    .onConflictDoNothing({
+      target: [orderIssueCharges.tenantId, orderIssueCharges.orderIssueId],
+    });
+}
+
+/**
  * legend-hhm5m: the extra charges of the dearer swaps of a chain (those that
  * wrote a replacement line; a blocked swap charges nothing). `paid`: the guest
  * paid the extra (`amount_idr`, with service and PBJT), it adds to the paid
@@ -398,13 +446,19 @@ const swapChargePending = () =>
  * without a charge row (blocked, `order_issue.charge_blocked`, or its event
  * never ran) charged nothing, so it reads as waived (architect Q25 #8, CTO 11
  * Nov): the swap is never blocked for good. Anything else (`open`,
- * `routed_pos`): pending.
+ * `routed_pos`): pending. When `writeWaived` is given (the caller holds the
+ * issue lock, then the order lock) the missing row is written closed with
+ * `ON CONFLICT DO NOTHING` (architect Q25 #12): a charge event that arrives
+ * later (corrected amount, event resent) finds the row and opens nothing for
+ * a line that was already swapped again. Not written when the charge split
+ * is not possible (the consumer would block it as well).
  */
 async function chainChargesOf(
   tx: Tx,
   tenantId: ScopedTenantContext["tenant"]["tenantId"],
   chain: readonly RecoveryIssue[],
   lineId: string,
+  writeWaived?: { order: typeof orders.$inferSelect; at: Date },
 ): Promise<{
   paidExtraIdr: number;
   waivedDifferenceIdr: number;
@@ -434,6 +488,11 @@ async function chainChargesOf(
   for (const row of result.rows) {
     // No charge row: nothing was charged (waived).
     const status = row.status === null ? "waived" : String(row.status);
+    if (row.status === null && writeWaived !== undefined)
+      await writeWaivedCharge(tx, writeWaived, {
+        issueId: String(row.issue_id),
+        differenceIdr: Number(String(row.difference ?? "0")),
+      });
     if (status === "paid")
       charges.paidExtraIdr += Number(String(row.amount ?? "0"));
     else if (status === "waived" || status === "expired") {
@@ -601,7 +660,13 @@ async function readPaidValue(
     issues,
     chain.toOriginal,
   );
-  const charges = await chainChargesOf(tx, tenantId, chainIssues, input.lineId);
+  const charges = await chainChargesOf(
+    tx,
+    tenantId,
+    chainIssues,
+    input.lineId,
+    lock ? { order, at: input.at } : undefined,
+  );
   const items = await recoveryOrderItemsOf(tx, tenantId, order.id);
   const line = items.find((item) => item.id === input.lineId);
   const original = items.find((item) => item.id === originalId);
