@@ -59,26 +59,58 @@ import {
 import { FOOD_SAFETY_LIST_LIMIT } from "../outlet.ts";
 import { useMinuteClock } from "../use-minute-clock.ts";
 
-// Hide every shell part when printing; the physical label is 90 × 60 mm on
-// an A4 sheet and always uses the light palette (ThemeScope mode="light").
+// Print only the label: every node that neither is nor contains the sheet is
+// removed from layout (display: none, not just hidden) and the sheet's
+// ancestors lose their padding/height, so the page is exactly the 90 × 60 mm
+// label and no blank trailing page is emitted. The label always uses the
+// light palette (ThemeScope mode="light").
 const LABEL_PRINT_STYLE = `@page { size: A4; margin: 10mm; }
 @media print {
-  body { background: transparent !important; }
-  body * { visibility: hidden; }
-  .label-print-sheet, .label-print-sheet * { visibility: visible; }
+  html, body {
+    height: auto !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    background: transparent !important;
+  }
+  body *:not(.label-print-sheet):not(.label-print-sheet *):not(:has(.label-print-sheet)) {
+    display: none !important;
+  }
+  body *:has(.label-print-sheet):not([role="dialog"]):not([popover]) {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
   .label-print-sheet {
-    position: absolute;
-    inset-block-start: 0;
-    inset-inline-start: 0;
+    box-sizing: border-box;
     width: 90mm;
+    max-width: 90mm;
     height: 60mm;
-    margin: 0;
+    margin: 0 !important;
     padding: 6mm;
+    overflow: hidden;
+    break-inside: avoid;
+    break-after: avoid;
+    page-break-inside: avoid;
+    page-break-after: avoid;
     box-shadow: none !important;
   }
   .label-print-sheet * { box-shadow: none !important; }
-  .print-controls { display: none !important; }
 }`;
+
+const FORM_FIELD_IDS = {
+  item: "prep-label-item",
+  batch: "prep-label-batch",
+  producedAt: "prep-label-produced-at",
+  useBy: "prep-label-use-by",
+} as const;
+const FORM_FIELD_ORDER = ["item", "batch", "producedAt", "useBy"] as const;
 
 function PrepLabelsScreenContent({
   responsibleName,
@@ -193,8 +225,13 @@ function PrepLabelsScreenContent({
     setProducedAt(toDateTimeLocalValue(new Date(), clock.timeZone));
   }
 
-  function submit(event: React.FormEvent) {
-    event.preventDefault();
+  // Pure validation of the current form values; shared by blur and submit so
+  // both show the same message for the same mistake.
+  function validate(): {
+    errors: Record<string, string | undefined>;
+    producedIso: string | null;
+    useByIso: string | null;
+  } {
     const nextErrors: Record<string, string | undefined> = {};
     if (itemId === "")
       nextErrors.item = t("opsFoodSafety.prepLabels.form.errors.item");
@@ -213,10 +250,26 @@ function PrepLabelsScreenContent({
       Date.parse(useByIso) <= Date.parse(producedIso)
     )
       nextErrors.useBy = t("opsFoodSafety.prepLabels.form.errors.useByOrder");
+    return { errors: nextErrors, producedIso, useByIso };
+  }
+
+  function validateOnBlur(field: "producedAt" | "useBy") {
+    const { errors: found } = validate();
+    setErrors((current) => ({ ...current, [field]: found[field] }));
+  }
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const { errors: nextErrors, producedIso, useByIso } = validate();
 
     setErrors(nextErrors);
     setFormError(undefined);
-    if (Object.values(nextErrors).some(Boolean)) return;
+    if (Object.values(nextErrors).some(Boolean)) {
+      const firstField = FORM_FIELD_ORDER.find((field) => nextErrors[field]);
+      if (firstField)
+        document.getElementById(FORM_FIELD_IDS[firstField])?.focus();
+      return;
+    }
     if (
       outlet === null ||
       producedIso === null ||
@@ -326,12 +379,22 @@ function PrepLabelsScreenContent({
       </header>
 
       {pending && (
-        <Card aria-busy="true">
+        <Card role="status" aria-busy="true" className="gap-3">
           <span className="sr-only">
             {t("opsFoodSafety.prepLabels.loading")}
           </span>
-          <Skeleton className="h-20" />
-          <Skeleton className="h-56" />
+          <Skeleton className="h-6 w-40" />
+          {[0, 1, 2].map((row) => (
+            <div
+              key={row}
+              aria-hidden="true"
+              className="grid gap-2 rounded-container border-(length:--border-w) p-3"
+            >
+              <Skeleton className="h-5 w-2/5" />
+              <Skeleton className="h-4 w-4/5" />
+              <Skeleton className="h-4 w-3/5" />
+            </div>
+          ))}
         </Card>
       )}
 
@@ -377,11 +440,11 @@ function PrepLabelsScreenContent({
                 </StatusPill>
               )}
             </div>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {expired.length > 0
-                ? t("opsFoodSafety.prepLabels.expired.hint")
-                : t("opsFoodSafety.prepLabels.expired.noneHint")}
-            </p>
+            {expired.length > 0 && (
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("opsFoodSafety.prepLabels.expired.hint")}
+              </p>
+            )}
             {expired.length > 0 && (
               <ul className="grid gap-2">
                 {expired.map((label) => {
@@ -440,300 +503,147 @@ function PrepLabelsScreenContent({
             )}
           </Card>
 
-          <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-            <div className="grid min-w-0 gap-4">
-              <Card
-                data-slot="prep-label-form"
-                role="region"
-                aria-label={t("opsFoodSafety.prepLabels.form.title")}
-              >
-                <CardHeader>
-                  <CardTitle>
-                    {t("opsFoodSafety.prepLabels.form.title")}
-                  </CardTitle>
-                  <CardDescription>
-                    {t("opsFoodSafety.prepLabels.form.hint")}
-                  </CardDescription>
-                </CardHeader>
-                <form className="grid gap-4" noValidate onSubmit={submit}>
-                  <FormField
-                    label={t("opsFoodSafety.prepLabels.form.item")}
-                    id="prep-label-item"
-                    required
-                    error={errors.item}
-                  >
-                    <Select
-                      value={itemId}
-                      onValueChange={(value) => {
-                        setItemId(value);
-                        setBatchId("");
-                        setUseByTouched(false);
-                        setUseByInput("");
-                        setErrors((current) => ({
-                          ...current,
-                          item: undefined,
-                          batch: undefined,
-                        }));
-                      }}
-                    >
-                      <SelectTrigger id="prep-label-item">
-                        <SelectValue
-                          placeholder={t(
-                            "opsFoodSafety.prepLabels.form.itemPlaceholder",
-                          )}
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {items.map((item) => (
-                          <SelectItem key={item.id} value={item.id}>
-                            {item.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </FormField>
-
-                  <FormField
-                    label={t("opsFoodSafety.prepLabels.form.batch")}
-                    id="prep-label-batch"
-                    required
-                    hint={t("opsFoodSafety.prepLabels.form.batchHint")}
-                    error={errors.batch}
-                  >
-                    <Select
-                      value={batchId}
-                      onValueChange={(value) => {
-                        setBatchId(value);
-                        setErrors((current) => ({
-                          ...current,
-                          batch: undefined,
-                        }));
-                      }}
-                      disabled={itemId === "" || itemBatches.length === 0}
-                    >
-                      <SelectTrigger id="prep-label-batch">
-                        <SelectValue
-                          placeholder={
-                            itemId !== "" && itemBatches.length === 0
-                              ? t("opsFoodSafety.prepLabels.form.batchEmpty")
-                              : t(
-                                  "opsFoodSafety.prepLabels.form.batchPlaceholder",
-                                )
+          <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] lg:items-start">
+            {/* DOM order = phone and Tab order (mockup): list, preview +
+                print, then the create form. From lg up the grid places the
+                list + form on the left and the preview on the right. */}
+            <Card
+              className="lg:col-start-1 lg:row-start-1"
+              data-slot="prep-label-list"
+              role="region"
+              aria-label={t("opsFoodSafety.prepLabels.list.title")}
+            >
+              <CardHeader>
+                <CardTitle>
+                  {t("opsFoodSafety.prepLabels.list.title")}
+                </CardTitle>
+                <CardDescription>
+                  {t("opsFoodSafety.prepLabels.list.hint")}
+                </CardDescription>
+              </CardHeader>
+              {labels.length === 0 ? (
+                <EmptyState
+                  icon={Printer}
+                  title={t("opsFoodSafety.prepLabels.list.emptyTitle")}
+                  description={t("opsFoodSafety.prepLabels.list.emptyHint")}
+                />
+              ) : (
+                <ul className="grid gap-2">
+                  {labels.map((label) => {
+                    const item = itemById.get(label.inventoryItemId);
+                    const batch = batchById.get(label.batchId);
+                    const expiredLabel = isPrepLabelExpired(label, now);
+                    const name =
+                      item?.name ?? t("opsFoodSafety.common.unknownItem");
+                    return (
+                      <li key={label.id} data-slot="prep-label">
+                        <button
+                          type="button"
+                          aria-labelledby={`prep-label-${label.id}-name`}
+                          aria-describedby={`prep-label-${label.id}-status prep-label-${label.id}-detail`}
+                          aria-current={
+                            label.id === (selectedLabelId ?? labels[0]?.id)
+                              ? "true"
+                              : undefined
                           }
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {itemBatches.map((batch) => (
-                          <SelectItem key={batch.id} value={batch.id}>
-                            {batch.batchCode}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </FormField>
-
-                  <FormField
-                    label={t("opsFoodSafety.prepLabels.form.producedAt")}
-                    required
-                    error={errors.producedAt}
-                  >
-                    <Input
-                      type="datetime-local"
-                      value={producedAt}
-                      onChange={(event) => {
-                        setProducedAt(event.target.value);
-                        setUseByTouched(false);
-                      }}
-                    />
-                  </FormField>
-
-                  <FormField
-                    label={t("opsFoodSafety.prepLabels.form.useBy")}
-                    required
-                    hint={
-                      useByTouched
-                        ? t("opsFoodSafety.prepLabels.form.useByHint")
-                        : selectedBatch?.expiresOn
-                          ? t("opsFoodSafety.prepLabels.form.useBySuggested", {
-                              date: formatBusinessDate(selectedBatch.expiresOn),
-                            })
-                          : t("opsFoodSafety.prepLabels.form.useByHint")
-                    }
-                    error={errors.useBy}
-                  >
-                    <Input
-                      type="datetime-local"
-                      value={useBy}
-                      onChange={(event) => {
-                        setUseByInput(event.target.value);
-                        setUseByTouched(true);
-                      }}
-                    />
-                  </FormField>
-
-                  <div className="grid gap-1">
-                    <p className="text-sm font-semibold">
-                      {t("opsFoodSafety.prepLabels.form.responsible")}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {responsible}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {t("opsFoodSafety.prepLabels.form.responsibleHint")}
-                    </p>
-                  </div>
-
-                  {formError && (
-                    <p
-                      role="alert"
-                      className="text-sm leading-5 font-medium text-danger"
-                    >
-                      {formError}
-                    </p>
-                  )}
-
-                  <div className="flex justify-end">
-                    <Button type="submit" loading={createLabel.isPending}>
-                      {t("opsFoodSafety.prepLabels.form.save")}
-                    </Button>
-                  </div>
-                </form>
-              </Card>
-
-              <Card
-                data-slot="prep-label-list"
-                role="region"
-                aria-label={t("opsFoodSafety.prepLabels.list.title")}
-              >
-                <CardHeader>
-                  <CardTitle>
-                    {t("opsFoodSafety.prepLabels.list.title")}
-                  </CardTitle>
-                  <CardDescription>
-                    {t("opsFoodSafety.prepLabels.list.hint")}
-                  </CardDescription>
-                </CardHeader>
-                {labels.length === 0 ? (
-                  <EmptyState
-                    icon={Printer}
-                    title={t("opsFoodSafety.prepLabels.list.emptyTitle")}
-                    description={t("opsFoodSafety.prepLabels.list.emptyHint")}
-                  />
-                ) : (
-                  <ul className="grid gap-2">
-                    {labels.map((label) => {
-                      const item = itemById.get(label.inventoryItemId);
-                      const batch = batchById.get(label.batchId);
-                      const expiredLabel = isPrepLabelExpired(label, now);
-                      const name =
-                        item?.name ?? t("opsFoodSafety.common.unknownItem");
-                      return (
-                        <li key={label.id} data-slot="prep-label">
-                          <button
-                            type="button"
-                            aria-label={t(
-                              "opsFoodSafety.prepLabels.list.select",
-                              { item: name },
+                          onClick={() => setSelectedLabelId(label.id)}
+                          className={cn(
+                            "grid w-full min-w-0 gap-2 rounded-container border-(length:--border-w) bg-background p-3 text-left pressable",
+                            label.id === (selectedLabelId ?? labels[0]?.id)
+                              ? "border-primary border-l-[6px] bg-primary-tint"
+                              : "hover:bg-surface-2",
+                          )}
+                        >
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span
+                              id={`prep-label-${label.id}-name`}
+                              className="font-semibold"
+                            >
+                              {name}
+                            </span>
+                            {expiredLabel && (
+                              <StatusPill status="danger">
+                                {t("opsFoodSafety.prepLabels.list.expired")}
+                              </StatusPill>
                             )}
-                            aria-pressed={
-                              label.id === (selectedLabelId ?? labels[0]?.id)
-                            }
-                            onClick={() => setSelectedLabelId(label.id)}
-                            className={cn(
-                              "grid w-full min-w-0 gap-2 rounded-container border-(length:--border-w) bg-background p-3 text-left pressable",
-                              label.id === (selectedLabelId ?? labels[0]?.id)
-                                ? "border-primary bg-primary-tint"
-                                : "hover:bg-surface-2",
-                            )}
+                            <Badge
+                              id={`prep-label-${label.id}-status`}
+                              tone={label.printedAt ? "success" : "warning"}
+                            >
+                              {label.printedAt
+                                ? t("opsFoodSafety.prepLabels.list.printed", {
+                                    time: formatDateTime(
+                                      label.printedAt,
+                                      clock.timeZone,
+                                    ),
+                                  })
+                                : t("opsFoodSafety.prepLabels.list.notPrinted")}
+                            </Badge>
+                          </span>
+                          <span
+                            id={`prep-label-${label.id}-detail`}
+                            className="grid min-w-0 gap-1 text-sm sm:grid-cols-2"
                           >
-                            <span className="flex flex-wrap items-center gap-2">
-                              <span className="font-semibold">{name}</span>
-                              {expiredLabel && (
-                                <StatusPill status="danger">
-                                  {t("opsFoodSafety.prepLabels.list.expired")}
-                                </StatusPill>
-                              )}
-                              <Badge
-                                tone={label.printedAt ? "success" : "warning"}
+                            <span className="flex min-w-0 flex-wrap gap-1">
+                              <span className="text-muted-foreground">
+                                {t("opsFoodSafety.prepLabels.list.producedAt")}
+                              </span>
+                              <span className="font-semibold tabular">
+                                {formatDateTime(
+                                  label.producedAt,
+                                  clock.timeZone,
+                                )}
+                              </span>
+                            </span>
+                            <span className="flex min-w-0 flex-wrap gap-1">
+                              <span className="text-muted-foreground">
+                                {t("opsFoodSafety.prepLabels.list.useBy")}
+                              </span>
+                              <span
+                                data-slot="prep-label-use-by"
+                                className={cn(
+                                  "font-semibold tabular",
+                                  expiredLabel && "text-danger",
+                                )}
                               >
-                                {label.printedAt
-                                  ? t("opsFoodSafety.prepLabels.list.printed", {
-                                      time: formatDateTime(
-                                        label.printedAt,
-                                        clock.timeZone,
-                                      ),
-                                    })
-                                  : t(
-                                      "opsFoodSafety.prepLabels.list.notPrinted",
-                                    )}
-                              </Badge>
-                            </span>
-                            <span className="grid min-w-0 gap-1 text-sm sm:grid-cols-2">
-                              <span className="flex min-w-0 flex-wrap gap-1">
-                                <span className="text-muted-foreground">
-                                  {t(
-                                    "opsFoodSafety.prepLabels.list.producedAt",
-                                  )}
-                                </span>
-                                <span className="font-semibold tabular">
-                                  {formatDateTime(
-                                    label.producedAt,
-                                    clock.timeZone,
-                                  )}
-                                </span>
-                              </span>
-                              <span className="flex min-w-0 flex-wrap gap-1">
-                                <span className="text-muted-foreground">
-                                  {t("opsFoodSafety.prepLabels.list.useBy")}
-                                </span>
-                                <span
-                                  data-slot="prep-label-use-by"
-                                  className={cn(
-                                    "font-semibold tabular",
-                                    expiredLabel && "text-danger",
-                                  )}
-                                >
-                                  {formatDateTime(label.useBy, clock.timeZone)}
-                                </span>
-                              </span>
-                              <span className="flex min-w-0 flex-wrap gap-1">
-                                <span className="text-muted-foreground">
-                                  {t(
-                                    "opsFoodSafety.prepLabels.list.responsible",
-                                  )}
-                                </span>
-                                <span>
-                                  {personName(label.producedBy) ??
-                                    shortId(label.producedBy)}
-                                </span>
-                              </span>
-                              <span className="flex min-w-0 flex-wrap gap-1">
-                                <span className="text-muted-foreground">
-                                  {t("opsFoodSafety.prepLabels.list.batch")}
-                                </span>
-                                <span
-                                  data-slot="prep-label-batch"
-                                  className="font-mono"
-                                >
-                                  {batch?.batchCode ??
-                                    t("opsFoodSafety.common.unknownBatch")}
-                                </span>
+                                {formatDateTime(label.useBy, clock.timeZone)}
                               </span>
                             </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </Card>
-            </div>
+                            <span className="flex min-w-0 flex-wrap gap-1">
+                              <span className="text-muted-foreground">
+                                {t("opsFoodSafety.prepLabels.list.responsible")}
+                              </span>
+                              <span>
+                                {personName(label.producedBy) ??
+                                  shortId(label.producedBy)}
+                              </span>
+                            </span>
+                            <span className="flex min-w-0 flex-wrap gap-1">
+                              <span className="text-muted-foreground">
+                                {t("opsFoodSafety.prepLabels.list.batch")}
+                              </span>
+                              <span
+                                data-slot="prep-label-batch"
+                                className="font-mono"
+                              >
+                                {batch?.batchCode ??
+                                  t("opsFoodSafety.common.unknownBatch")}
+                              </span>
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Card>
 
             <Card
               data-slot="prep-label-preview"
               role="region"
               aria-label={t("opsFoodSafety.prepLabels.preview.title")}
-              className="h-fit lg:sticky lg:top-4"
+              className="h-fit lg:sticky lg:top-4 lg:col-start-2 lg:row-span-2 lg:row-start-1"
             >
               <CardHeader>
                 <CardTitle>
@@ -849,6 +759,171 @@ function PrepLabelsScreenContent({
                   </p>
                 </>
               )}
+            </Card>
+
+            <Card
+              className="lg:col-start-1 lg:row-start-2"
+              data-slot="prep-label-form"
+              role="region"
+              aria-label={t("opsFoodSafety.prepLabels.form.title")}
+            >
+              <CardHeader>
+                <CardTitle>
+                  {t("opsFoodSafety.prepLabels.form.title")}
+                </CardTitle>
+                <CardDescription>
+                  {t("opsFoodSafety.prepLabels.form.hint")}
+                </CardDescription>
+              </CardHeader>
+              <form className="grid gap-4" noValidate onSubmit={submit}>
+                <FormField
+                  label={t("opsFoodSafety.prepLabels.form.item")}
+                  id="prep-label-item"
+                  required
+                  error={errors.item}
+                >
+                  <Select
+                    value={itemId}
+                    onValueChange={(value) => {
+                      setItemId(value);
+                      setBatchId("");
+                      setUseByTouched(false);
+                      setUseByInput("");
+                      setErrors((current) => ({
+                        ...current,
+                        item: undefined,
+                        batch: undefined,
+                      }));
+                    }}
+                  >
+                    <SelectTrigger id="prep-label-item">
+                      <SelectValue
+                        placeholder={t(
+                          "opsFoodSafety.prepLabels.form.itemPlaceholder",
+                        )}
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {items.map((item) => (
+                        <SelectItem key={item.id} value={item.id}>
+                          {item.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </FormField>
+
+                <FormField
+                  label={t("opsFoodSafety.prepLabels.form.batch")}
+                  id="prep-label-batch"
+                  required
+                  hint={t("opsFoodSafety.prepLabels.form.batchHint")}
+                  error={errors.batch}
+                >
+                  <Select
+                    value={batchId}
+                    onValueChange={(value) => {
+                      setBatchId(value);
+                      setErrors((current) => ({
+                        ...current,
+                        batch: undefined,
+                      }));
+                    }}
+                    disabled={itemId === "" || itemBatches.length === 0}
+                  >
+                    <SelectTrigger id="prep-label-batch">
+                      <SelectValue
+                        placeholder={
+                          itemId !== "" && itemBatches.length === 0
+                            ? t("opsFoodSafety.prepLabels.form.batchEmpty")
+                            : t(
+                                "opsFoodSafety.prepLabels.form.batchPlaceholder",
+                              )
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {itemBatches.map((batch) => (
+                        <SelectItem key={batch.id} value={batch.id}>
+                          {batch.batchCode}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </FormField>
+
+                <FormField
+                  label={t("opsFoodSafety.prepLabels.form.producedAt")}
+                  id="prep-label-produced-at"
+                  required
+                  error={errors.producedAt}
+                >
+                  <Input
+                    type="datetime-local"
+                    name="producedAt"
+                    autoComplete="off"
+                    value={producedAt}
+                    onChange={(event) => {
+                      setProducedAt(event.target.value);
+                      setUseByTouched(false);
+                    }}
+                    onBlur={() => validateOnBlur("producedAt")}
+                  />
+                </FormField>
+
+                <FormField
+                  label={t("opsFoodSafety.prepLabels.form.useBy")}
+                  id="prep-label-use-by"
+                  required
+                  hint={
+                    useByTouched
+                      ? t("opsFoodSafety.prepLabels.form.useByHint")
+                      : selectedBatch?.expiresOn
+                        ? t("opsFoodSafety.prepLabels.form.useBySuggested", {
+                            date: formatBusinessDate(selectedBatch.expiresOn),
+                          })
+                        : t("opsFoodSafety.prepLabels.form.useByHint")
+                  }
+                  error={errors.useBy}
+                >
+                  <Input
+                    type="datetime-local"
+                    name="useBy"
+                    autoComplete="off"
+                    value={useBy}
+                    onChange={(event) => {
+                      setUseByInput(event.target.value);
+                      setUseByTouched(true);
+                    }}
+                    onBlur={() => validateOnBlur("useBy")}
+                  />
+                </FormField>
+
+                <div className="grid gap-1">
+                  <p className="text-sm font-semibold">
+                    {t("opsFoodSafety.prepLabels.form.responsible")}
+                  </p>
+                  <p className="text-sm text-muted-foreground">{responsible}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {t("opsFoodSafety.prepLabels.form.responsibleHint")}
+                  </p>
+                </div>
+
+                {formError && (
+                  <p
+                    role="alert"
+                    className="text-sm leading-5 font-medium text-danger"
+                  >
+                    {formError}
+                  </p>
+                )}
+
+                <div className="flex justify-end">
+                  <Button type="submit" loading={createLabel.isPending}>
+                    {t("opsFoodSafety.prepLabels.form.save")}
+                  </Button>
+                </div>
+              </form>
             </Card>
           </div>
         </>

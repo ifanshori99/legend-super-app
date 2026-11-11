@@ -170,7 +170,6 @@ export const opsEquipmentMessages = {
         "Peralatan mungkin sudah dihapus atau berada di outlet lain.",
       specsTitle: "Spesifikasi",
       updatedAt: "Diperbarui {date}",
-      temperature: "{min} sampai {max} °C",
       temperatureNone: "Suhu tidak dipantau",
       linkedMenus: "Menu terhubung",
       linkedMenusNone: "Belum ada menu terhubung.",
