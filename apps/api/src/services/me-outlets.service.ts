@@ -68,6 +68,24 @@ export function assignedOutletIds(input: {
   return [...ids];
 }
 
+// Fixed collation for the visible outlet list: the database collation (C or
+// ICU) varies per install, so the order is applied here, not in SQL.
+const outletNameCollator = new Intl.Collator("id", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+/** Outlet order of the picker: name (fixed collation), then id. */
+export function compareOutlets(
+  a: { readonly name: string; readonly id: string },
+  b: { readonly name: string; readonly id: string },
+): number {
+  return (
+    outletNameCollator.compare(a.name, b.name) ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+}
+
 /** The caller's assigned, non-closed outlets, sorted by name then id. */
 export async function listMyOutlets(input: {
   readonly tenant: TenantContext;
@@ -97,7 +115,7 @@ export async function listMyOutlets(input: {
           ne(outlets.status, "closed"),
         ),
       )
-      .orderBy(asc(outlets.name), asc(outlets.id)),
+      .orderBy(asc(outlets.id)),
   );
   // One outlet row with bad data (for example a broken time zone) must not
   // fail the whole access view: the caller would lose every permission. Drop
@@ -117,5 +135,5 @@ export async function listMyOutlets(input: {
         "me/access: outlet skipped, invalid stored data",
       );
   }
-  return valid;
+  return valid.sort(compareOutlets);
 }

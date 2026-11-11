@@ -202,7 +202,7 @@ describe("platform payment gateway API", () => {
       updatedBy: userId,
     });
     const history = await owner.query(
-      "SELECT provider, actor_user_id, reason, before, after FROM platform_payment_gateway_changes WHERE provider = 'duitku' ORDER BY created_at DESC LIMIT 1",
+      "SELECT provider, actor_user_id, reason, before, after FROM platform_payment_gateway_changes WHERE provider = 'duitku' AND reason = 'Duitku siap uji' ORDER BY created_at DESC LIMIT 1",
     );
     expect(history.rows[0]).toMatchObject({
       provider: "duitku",

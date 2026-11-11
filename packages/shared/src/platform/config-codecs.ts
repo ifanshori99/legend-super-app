@@ -14,6 +14,10 @@
 // (`decodeConfigBundle`), because some sections reference others
 // (`approval_policies` -> `roles`).
 //
+// Items are the `kind`-discriminated shape of `configSectionItemSchemas`
+// (legend-5cwrq); the codecs still read the old kind-less shape so stored
+// templates and old exports import. Item and reference checks run for both.
+//
 // Registered here: roles, approval_policies, chart_of_accounts. Remaining
 // generic sections stay free-form JSON (identifier scan only) until their
 // owning domain registers a codec: add it to `CONFIG_SECTION_CODECS`.
@@ -22,7 +26,10 @@ import {
   approvalPoliciesConfigCodec,
   rolesConfigCodec,
 } from "../access/index.ts";
-import { chartOfAccountsConfigCodec } from "../accounting/index.ts";
+import {
+  chartOfAccountsConfigCodec,
+  type ChartOfAccountsMappingDraft,
+} from "../accounting/index.ts";
 import type { ConfigBundle, ConfigSection } from "./config.ts";
 
 export const CONFIG_SECTION_CODECS = {
@@ -110,6 +117,9 @@ export type DecodeConfigBundleResult =
       /** Wanted sections present in the bundle that have no codec yet; the
        * importer must handle them another way (typed sections) or report them. */
       withoutCodec: ConfigSection[];
+      /** Posting-role mappings of the `chart_of_accounts` section (account by
+       * code); empty when the bundle carries none. */
+      accountMappings: ChartOfAccountsMappingDraft[];
     }
   | { ok: false; issues: { section: ConfigSection; message: string }[] };
 
@@ -127,6 +137,7 @@ export function decodeConfigBundle(
   );
   const issues: { section: ConfigSection; message: string }[] = [];
   const drafts: DecodedConfigDrafts = {};
+  let accountMappings: ChartOfAccountsMappingDraft[] = [];
   const sections = bundle.sections as Partial<
     Record<ConfigSection, SectionLike>
   >;
@@ -167,14 +178,16 @@ export function decodeConfigBundle(
                 typeof chartOfAccountsConfigCodec.fromTemplate
               >[0],
             );
-    if (result.ok) Object.assign(drafts, { [section]: result.drafts });
-    else for (const message of result.issues) issues.push({ section, message });
+    if (result.ok) {
+      Object.assign(drafts, { [section]: result.drafts });
+      if ("mappings" in result) accountMappings = result.mappings;
+    } else for (const message of result.issues) issues.push({ section, message });
   }
   const withoutCodec = (Object.keys(sections) as ConfigSection[]).filter(
     (section) => wanted.has(section) && !configSectionCodec(section),
   );
   return issues.length === 0
-    ? { ok: true, drafts, withoutCodec }
+    ? { ok: true, drafts, withoutCodec, accountMappings }
     : { ok: false, issues };
 }
 

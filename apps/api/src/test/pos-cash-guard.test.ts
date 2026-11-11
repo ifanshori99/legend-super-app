@@ -1615,9 +1615,11 @@ describe("legend-utqr cash refund and void do not reveal the drawer balance", ()
       expect(shape(b.response.body)).toEqual(shape(a.response.body));
 
       expect(a.events.length).toBeGreaterThan(0);
-      expect(b.events.map((e) => [e.name, e.shape])).toEqual(
-        a.events.map((e) => [e.name, e.shape]),
-      );
+      // Sorted: created_at can step back between transactions, so the event
+      // order is not what this proves, the set of names and shapes is.
+      const nameShapes = (events: typeof a.events) =>
+        events.map((e) => JSON.stringify([e.name, e.shape])).sort();
+      expect(nameShapes(b.events)).toEqual(nameShapes(a.events));
       for (const event of [...a.events, ...b.events])
         expect(event.raw).not.toMatch(/needsApproval|held|Tunai di laci/i);
     },

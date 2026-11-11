@@ -925,7 +925,7 @@ Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,
 - Test: `apps/api/src/test/edge-event-class.test.ts` (R, A, B, C, D). Semua 23 file `edge-*` lulus.
 - Review K: reviewer Opus dan architect, dua kali re-review; temuan nyata dibetulkan.
 - Berikut: legend-kyie (P1, cloud menerapkan event PIN dan override), legend-vw3d (kategori alarm sendiri), legend-tbl4 (index outbox, test tanpa supervisor). Brief second opinion: `docs/briefs/158-second-opinion-edge-event-class.md` (tidak di-commit).
-  \=======
+  \
   \=======
 
 ## legend-4n3r + legend-w6vah: posting jurnal payroll ke buku besar, refund PPh21 perusahaan dipisah (engineer, cabang `ws/payroll-posting`, 2026-11-09)
@@ -3235,3 +3235,10 @@ Langkah berikut CTO baru:
 - Review architect xhigh ronde 3: 2 blocker (void/refund POS masih membiayai; harga baris tidak dicek) dibetulkan dengan test gagal-dulu; 3 temuan Low (bundel tidak membuang pembayaran saat balapan, replay bundel lewat alias) dibetulkan atau diterima.
 - Verifikasi: 8 file test 235 lulus; typecheck api 0 (heap 6144); eslint 0. Suite penuh dan `pnpm check` belum dijalankan.
 - Belum / keputusan founder: refund/void pembayaran SETELAH penjualan WFC (pembayaran dibatalkan, pass tetap aktif) butuh kartu lanjutan; order ber-diskon ditolak sebagai pembatasan hati-hati (keputusan: boleh diskon asal total baris dihitung bersih?); harga reservasi belum dikali durasi; metrik harian revpash dan trigger min-spend di kartu legend-p4q10 dan legend-e24cz; FK outlet pada wfc_seats/wfc_spend_windows dicek di service karena floor_zones/table_sessions tanpa unique (tenant, outlet, id); `menu_item_id` bundel belum FK; day pass tidak bisa refund dicicil; referensi tender EDC yang kembar bisa memberi 409 salah (aman, hanya hati-hati).
+=======
+## 2026-11-11: merge train batch48e (ws/merge-batch48e, basis m1 a5d58300)
+
+- Digabung --no-ff (urut): flake-suite-isolation 399e99b0, dfvpq-access-order 9cef4e2c, 36t01-created-at-tiebreak 8a397e10, hbaml-pin-timestamps d59343c5, 5cwrq-config-codec-kind f20863d7, pos-discount-cap-5000 ae213bc2 (berisi 5cwrq). Satu konflik: docs/DECISIONS.md (kedua bagian dipertahankan). Tanpa migrasi; `db:generate` kosong.
+- Uang: efek merge pada 6 file batas diskon (pos-order.service, core/money, tenant-config-access, access/config-codec, platform/config, pos/schemas) identik dengan niat cabang; reviewer sonnet bersih. Ambang 1..5000 saat tulis, dipotong 5000 saat baca.
+- Gerbang: typecheck 3 paket + root hijau; lint 0 error (1 error `_kind` unused di tests/platform-config-codecs.test.mjs dari 5cwrq dibetulkan, 2 warning react-hooks lama); vitest API 12618 lulus, 1 gagal (menu-print-db "concurrent renders", lulus 3/3 sendiri: flake-suite-isolation belum menghilangkannya di suite penuh); e2e 18 lulus, 1 skip; suite root 2049 tes, 2046 lulus, 3 gagal SUDAH ADA DI m1 (file dan qr-order/guest.ts identik dengan m1): tests/qr-journey-mock.test.mjs ORD-06 x2 ("Data pembayaran tidak valid") dan tests/split-bill-contract.test.mjs getSplitClaim (kontrak POST sejak legend-r77pq, test masih menuntut GET).
+- Biaya sesi (session-usage): total 1087k, utama sonnet 62 req, subagent 28 req.

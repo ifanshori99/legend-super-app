@@ -748,7 +748,7 @@ describe("RSV-02 RSV-03 a DP WS-05 refunded is never treated as held", () => {
     });
     const { rows } = await asOwner(seededTenantId, (client) =>
       client.query<{ amount_idr: string; status: string }>(
-        "SELECT amount_idr::text, status FROM payment_refunds WHERE payment_intent_id = $1 ORDER BY created_at",
+        "SELECT amount_idr::text, status FROM payment_refunds WHERE payment_intent_id = $1 ORDER BY amount_idr",
         [intentId],
       ),
     );

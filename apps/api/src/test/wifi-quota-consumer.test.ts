@@ -173,7 +173,7 @@ async function entriesOf(tenantId: string): Promise<EntryRow[]> {
   return asTenant(tenantId, async (client) => {
     const { rows } = await client.query<EntryRow>(
       `SELECT kind, source_id, amount_idr::text, business_date::text, customer_profile_id
-         FROM wifi_spend_entries WHERE tenant_id = $1 ORDER BY created_at, kind`,
+         FROM wifi_spend_entries WHERE tenant_id = $1 ORDER BY kind, created_at`,
       [tenantId],
     );
     return rows;

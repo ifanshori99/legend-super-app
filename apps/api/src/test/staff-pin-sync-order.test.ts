@@ -162,7 +162,7 @@ async function edgeEventOf(userId: string): Promise<EventEnvelope> {
     `SELECT event FROM domain_event_outbox
       WHERE tenant_id = $1 AND aggregate_type = 'staff_pin' AND event->>'name' = 'staff_pin.set'
         AND event->'payload'->>'userId' = $2
-      ORDER BY created_at DESC LIMIT 1`,
+      ORDER BY sequence DESC, created_at DESC LIMIT 1`,
     [tenantId, userId],
   );
   return rows[0]!.event;

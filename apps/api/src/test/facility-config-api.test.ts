@@ -857,7 +857,7 @@ async function auditEntries(objectId: string) {
             event->'maskedChanges'->'after' AS after
        FROM audit_logs
       WHERE tenant_id = $1 AND event->>'objectId' = $2
-      ORDER BY created_at, id`,
+      ORDER BY event->>'createdAt', id`,
     [tenant.id, objectId],
   );
   return rows;

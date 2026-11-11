@@ -602,7 +602,8 @@ describe("legend-r5brx the paid webhook never captures money a refund reserves",
     // The late-payment refund files the 60000 left, never the full 100000.
     const rows = await refundRows(bill.intentId);
     expect(rows).toHaveLength(2);
-    expect(rows[1]).toMatchObject({
+    // Found by who filed it, not by position: created_at can tie or step back.
+    expect(rows.find((row) => row.requested_by === "system:pos")).toMatchObject({
       amount: "60000",
       requested_by: "system:pos",
     });

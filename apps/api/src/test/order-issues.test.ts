@@ -542,11 +542,16 @@ describe("reportOrderIssue: remake", () => {
     expect(events).toHaveLength(1);
     await deliver(events[0]!);
     const deductions = await deductionsOf(order);
-    expect(deductions.map((d) => [d.kind, d.status])).toEqual([
-      ["sale", "posted"],
+    // Order-insensitive: created_at follows the DB clock, which can step back.
+    expect(
+      deductions.map((d) => [d.kind, d.status]).sort(),
+    ).toEqual([
       ["remake", "posted"],
+      ["sale", "posted"],
     ]);
-    expect(Number(deductions[1]!.cost_idr)).toBe(2 * CUP_COST);
+    expect(
+      Number(deductions.find((d) => d.kind === "remake")!.cost_idr),
+    ).toBe(2 * CUP_COST);
   });
 
   it("ignores a client-sent costIdr (strict contract)", async () => {

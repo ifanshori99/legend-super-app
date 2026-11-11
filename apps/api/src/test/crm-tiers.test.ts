@@ -478,7 +478,8 @@ describe("LOY-05 tier evaluation", () => {
     expect((await tierOf(world.tenantId, member.id)).tier_id).toBeNull();
     const history = await historyOf(world.tenantId, member.id);
     expect(history).toHaveLength(2);
-    expect(history[1]).toMatchObject({
+    // Found by content: created_at follows the DB clock, so row order is not proof.
+    expect(history.find((row) => row.from_tier_id === silver)).toMatchObject({
       from_tier_id: silver,
       to_tier_id: null,
       reason: "evaluation",

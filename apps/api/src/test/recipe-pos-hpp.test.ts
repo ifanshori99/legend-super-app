@@ -572,7 +572,7 @@ async function orderLedger(order: { uuid: string }): Promise<LedgerRow[]> {
     `SELECT id::text AS id, movement_type, source_type, quantity::text AS quantity,
             unit_cost_idr::text AS unit_cost_idr, inventory_item_id
      FROM stock_ledger WHERE tenant_id = $1 AND source_id = $2
-     ORDER BY occurred_at, id`,
+     ORDER BY posting_seq`,
     [tenantA, order.uuid],
   );
   return rows;

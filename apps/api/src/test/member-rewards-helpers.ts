@@ -67,7 +67,7 @@ export async function grantPoints(
 export async function brandOf(tenantId: string): Promise<string> {
   const { rows } = await asTenant(tenantId, (client) =>
     client.query<{ id: string }>(
-      "SELECT id FROM brands WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+      "SELECT id FROM brands WHERE tenant_id = $1 ORDER BY id LIMIT 1",
       [tenantId],
     ),
   );
@@ -352,7 +352,7 @@ export async function eventsOf(
     const { rows } = await client.query<{ payload: Record<string, unknown> }>(
       `SELECT event->'payload' AS payload FROM domain_event_outbox
         WHERE tenant_id = $1 AND event->>'name' = $2 AND event->'payload'->>'customerProfileId' = $3
-        ORDER BY created_at`,
+        ORDER BY aggregate_id, sequence, id`,
       [tenantId, name, profileId],
     );
     return rows;

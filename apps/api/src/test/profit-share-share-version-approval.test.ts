@@ -401,7 +401,7 @@ async function requestsOf(target: Version): Promise<RequestRow[]> {
        FROM approval_requests
       WHERE tenant_id = $1 AND source_module = 'profit_share'
         AND object_type = 'share_allocation_version' AND object_id = $2
-      ORDER BY created_at, level`,
+      ORDER BY min(created_at) OVER (PARTITION BY chain_id), chain_id, level`,
     [tenantA, id],
   );
   return rows;

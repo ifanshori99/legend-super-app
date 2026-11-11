@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { outletIdSchema } from "@starter/shared/core";
+import { outletIdSchema, ulidToUuid } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -507,14 +507,16 @@ describe("FAC-02 no overlapping slot on one unit, cleaning buffer included", () 
     expect(second.ticket.id).not.toBe(first.ticket.id);
     const { rows } = await asOwner(f.tenant, (client) =>
       client.query(
-        "SELECT status FROM access_tickets WHERE unit_id = $1 ORDER BY created_at",
-        [unitId],
+        "SELECT id, status FROM access_tickets WHERE unit_id = $1 AND id = ANY($2::uuid[])",
+        [unitId, [first.ticket.id, second.ticket.id].map(ulidToUuid)],
       ),
     );
-    expect(rows.map((r: { status: string }) => r.status)).toEqual([
-      "cancelled",
-      "pending_payment",
-    ]);
+    // By ticket id, not created_at: that default follows the DB clock.
+    const statusOf = (id: string) =>
+      rows.find((r: { id: string }) => r.id === ulidToUuid(id))?.status;
+    expect(rows).toHaveLength(2);
+    expect(statusOf(first.ticket.id)).toBe("cancelled");
+    expect(statusOf(second.ticket.id)).toBe("pending_payment");
   });
 
   it("[FAC-02] the idempotency key is bound to its request: same request replays, a different one is refused", async () => {

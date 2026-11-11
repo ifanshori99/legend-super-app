@@ -23,6 +23,7 @@
 import {
   basisPointsSchema,
   isoDateTimeSchema,
+  posDiscountThresholdBpSchema,
   roundingModeSchema,
   tenantIdSchema,
   userIdSchema,
@@ -150,7 +151,7 @@ const approvalItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("pos_discount"),
     /** null = the tenant-wide threshold. */
     outletKey: outletKeySchema.nullable(),
-    discountThresholdBp: basisPointsSchema,
+    discountThresholdBp: posDiscountThresholdBpSchema,
   }),
 ]);
 
@@ -467,36 +468,18 @@ function bundleSchemaOf(strictItems: boolean) {
 export const configBundleSchema = bundleSchemaOf(false).superRefine(
   (bundle, ctx) => {
     // Sections whose domain registered a codec (config-codecs.ts) must carry
-    // items its item schema accepts; the rest stay free-form JSON.
-    //
-    // OPEN QUESTION (merge batch48c): the codecs describe items without
-    // `kind`, while the export/import service
-    // (`configSectionItemSchemas`, legend-tenant-config-export) writes items
-    // that carry a `kind` discriminator. Until the CTO picks one shape, a
-    // section whose items carry `kind` is left to the strict item schema of
-    // the server boundary, and the codec checks only cover kind-less items.
-    const hasKind = (section: GenericConfigSection) => {
-      const items = bundle.sections[section]?.items;
-      return (
-        Array.isArray(items) &&
-        items.some(
-          (item) => typeof item === "object" && item !== null && "kind" in item,
-        )
-      );
-    };
-    const itemIssues = GENERIC_CONFIG_SECTIONS.filter(
-      (section) => !hasKind(section),
-    ).flatMap((section) =>
+    // items its item schema accepts (the `kind` shape of
+    // `configSectionItemSchemas`, or the old kind-less shape); the rest stay
+    // free-form JSON.
+    const itemIssues = GENERIC_CONFIG_SECTIONS.flatMap((section) =>
       configSectionItemIssues(section, bundle.sections[section]),
     );
-    // References (role keys, CoA parents) and uniqueness are only checked
-    // once every item is well-formed, so a stored template is importable.
-    const kindShaped = GENERIC_CONFIG_SECTIONS.some(hasKind);
+    // References (role keys, CoA parents, mapping accounts) and uniqueness are
+    // only checked once every item is well-formed, so a stored template is
+    // importable.
     for (const issue of itemIssues.length > 0
       ? itemIssues
-      : kindShaped
-        ? []
-        : configBundleReferenceIssues(bundle))
+      : configBundleReferenceIssues(bundle))
       ctx.addIssue({ code: "custom", ...issue });
   },
 );

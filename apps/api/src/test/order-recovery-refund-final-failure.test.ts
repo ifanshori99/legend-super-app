@@ -356,13 +356,16 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
 
   /** Expires the chain of each refund in turn: 3 failures end in `refile_limit`. */
   async function failUntilLimit(issueId: string) {
+    let lastFailedId = "";
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const pending = (await issueRefunds(issueId)).filter(
         (row) => row.status === "pending",
       );
       expect(pending, `live refund before failure ${attempt}`).toHaveLength(1);
-      await failChain(pending[0]!.id, "approval_expired");
+      lastFailedId = pending[0]!.id;
+      await failChain(lastFailedId, "approval_expired");
     }
+    return lastFailedId;
   }
 
   it.each(FINAL_REASONS)(
@@ -432,7 +435,7 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
   it("FF-4 refile_limit: the third failure is final, one reversal request, hold back on the sale", async () => {
     const { issueId, intentId } = await deliveredRefund();
 
-    await failUntilLimit(issueId);
+    const lastFailedId = await failUntilLimit(issueId);
 
     const refunds = await issueRefunds(issueId);
     expect(refunds).toHaveLength(3);
@@ -443,7 +446,7 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
     const events = await reversalEvents(issueId);
     expect(events, "reversal request in the outbox").toHaveLength(1);
     expect((events[0]!.event.payload as { refundId: string }).refundId).toBe(
-      refunds[2]!.id,
+      lastFailedId,
     );
     expect(await holdOf(intentId)).toEqual({ cap: 0, reserved: 0 });
   });

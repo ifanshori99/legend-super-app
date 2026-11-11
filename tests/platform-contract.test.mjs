@@ -826,6 +826,75 @@ test("TEN-09 every config section has a strict item schema keyed by reference, n
   assert.equal(platform.parseConfigBundle(leaked).ok, false);
 });
 
+test("TEN-09 legend-5cwrq a bundle of kind items is judged by the codec checks, not waved through", () => {
+  const role = {
+    key: "custom.auditor",
+    kind: "custom",
+    templateKey: null,
+    name: "Auditor",
+    permissions: ["floor.table.view"],
+    mfaRequired: false,
+    allowedScopeTypes: ["tenant"],
+  };
+  const approval = {
+    key: "ap.void.1",
+    kind: "approval",
+    actionType: "void",
+    thresholdIdr: null,
+    approverRoleKey: "custom.auditor",
+    levels: 1,
+    requiresDistinctActor: true,
+  };
+  const account = {
+    key: "acct.1100",
+    kind: "account",
+    code: "1100",
+    name: "Kas",
+    type: "asset",
+    reportGroup: "cash_and_equivalents",
+    parentKey: null,
+    isActive: true,
+  };
+  const bundle = (items = {}) => ({
+    formatVersion: 1,
+    exportedAt: fx.now,
+    sections: {
+      roles: { version: 1, items: items.roles ?? [role] },
+      approval_policies: { version: 1, items: items.approvals ?? [approval] },
+      chart_of_accounts: { version: 1, items: items.coa ?? [account] },
+    },
+  });
+  assert.equal(platform.parseConfigBundle(bundle()).ok, true);
+  // Unknown permission code in a kind role: refused with a roles path.
+  const badPermission = platform.parseConfigBundle(
+    bundle({ roles: [{ ...role, permissions: ["no.such.code"] }] }),
+  );
+  assert.equal(badPermission.ok, false);
+  assert.ok(
+    badPermission.schemaIssues.some((m) => m.startsWith("sections.roles.")),
+  );
+  // Approver role key not among the bundle's roles.
+  const ghost = platform.parseConfigBundle(
+    bundle({ approvals: [{ ...approval, approverRoleKey: "ghost" }] }),
+  );
+  assert.equal(ghost.ok, false);
+  assert.match(ghost.schemaIssues.join("\n"), /ghost/);
+  // CoA parent key that names no account.
+  const orphan = platform.parseConfigBundle(
+    bundle({ coa: [{ ...account, key: "acct.1101", parentKey: "acct.9" }] }),
+  );
+  assert.equal(orphan.ok, false);
+  assert.match(orphan.schemaIssues.join("\n"), /acct\.9/);
+  // The schema itself (what the browser preview uses) carries the same
+  // reference check: the hasKind bridge no longer skips it.
+  assert.equal(
+    platform.configBundleSchema.safeParse(
+      bundle({ approvals: [{ ...approval, approverRoleKey: "ghost" }] }),
+    ).success,
+    false,
+  );
+});
+
 test("TEN-09 config readiness, platform-only permission and endpoints", () => {
   assert.equal(
     platform.configReadinessSchema.safeParse({
@@ -1393,4 +1462,45 @@ test("legend-c9kbk owner approval endpoints and the platform request endpoint ex
     data: [pendingRequest()],
     meta: { limit: 25, nextCursor: null },
   });
+});
+
+// Founder decision (2026-11-11): the cashier discount approval threshold is
+// 1..5000 bp; 0 is refused everywhere, as is anything above 50%.
+test("TEN-09 pos_discount threshold in a bundle: 5000 accepted, 0, 5001 and 10000 refused", () => {
+  const bundleWith = (bp) => ({
+    formatVersion: 1,
+    exportedAt: fx.now,
+    sections: {
+      approval_policies: {
+        version: 1,
+        items: [
+          {
+            key: "pos.tenant",
+            kind: "pos_discount",
+            outletKey: null,
+            discountThresholdBp: bp,
+          },
+        ],
+      },
+    },
+  });
+  for (const bp of [1, 5000]) {
+    assert.equal(
+      platform.configBundleSchema.safeParse(bundleWith(bp)).success,
+      true,
+      `${bp} bp accepted by configBundleSchema`,
+    );
+  }
+  for (const bp of [0, 5001, 10000]) {
+    assert.equal(
+      platform.configBundleSchema.safeParse(bundleWith(bp)).success,
+      false,
+      `${bp} bp refused by configBundleSchema`,
+    );
+    assert.equal(
+      platform.parseConfigBundle(bundleWith(bp)).ok,
+      false,
+      `${bp} bp refused by parseConfigBundle`,
+    );
+  }
 });
