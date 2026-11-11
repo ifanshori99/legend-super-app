@@ -36,6 +36,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -431,6 +432,11 @@ export const facilityProducts = pgTable(
      * facility may carry one (the service enforces it); null = ordinary.
      */
     wfcKind: varchar("wfc_kind", { length: 20 }).$type<WfcProductKind>(),
+    /**
+     * Longest seat reservation of this product in minutes (1..1440); the
+     * service requires it for `wfc_kind = 'seat_reservation'` (bz9h round 2).
+     */
+    durationMinutes: smallint("duration_minutes"),
     isActive: boolean("is_active").notNull().default(true),
     createdAt,
     updatedAt,
@@ -459,6 +465,15 @@ export const facilityProducts = pgTable(
     check(
       "facility_products_wfc_kind_check",
       sql`${table.wfcKind} IS NULL OR (${table.wfcKind} IN ('day_pass', 'seat_reservation') AND ${table.type} = 'single')`,
+    ),
+    check(
+      "facility_products_duration_check",
+      sql`${table.durationMinutes} IS NULL OR ${table.durationMinutes} BETWEEN 1 AND 1440`,
+    ),
+    // L3 (bz9h round 3): a seat reservation product always carries a duration.
+    check(
+      "facility_products_seat_duration_check",
+      sql`${table.wfcKind} IS DISTINCT FROM 'seat_reservation' OR ${table.durationMinutes} IS NOT NULL`,
     ),
     check(
       "facility_products_amount_check",

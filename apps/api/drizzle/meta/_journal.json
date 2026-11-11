@@ -1660,6 +1660,13 @@
       "when": 1794361944148,
       "tag": "0250_wfc_products",
       "breakpoints": true
+    },
+    {
+      "idx": 251,
+      "version": "7",
+      "when": 1794367762587,
+      "tag": "0251_wfc_payment_capture_duration",
+      "breakpoints": true
     }
   ]
 }

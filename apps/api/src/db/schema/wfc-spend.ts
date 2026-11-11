@@ -8,6 +8,13 @@
 // `table_session_id` uses the (tenant, id) composite FK; the zone lives in
 // WS-03's `floor_zones` (composite FK as `wfc_seats`). RLS lives in
 // wfc-spend.custom.sql (appended to the migration).
+//
+// Outlet of zone and session: `floor_zones` and `table_sessions` only have
+// unique(tenant_id, id), no unique(tenant_id, outlet_id, id), so the FKs cannot
+// include `outlet_id` without altering the floor schema (out of scope, legend-
+// bz9h round 2 item 5). The monitor service (wfc-min-spend.service.ts) must
+// load the zone and the session by (tenant, outlet, id) before it writes a
+// window, so a window never points at another outlet's zone or session.
 import { sql } from "drizzle-orm";
 import {
   check,

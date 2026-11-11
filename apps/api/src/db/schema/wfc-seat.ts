@@ -21,6 +21,7 @@ import {
   pgTable,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -80,6 +81,9 @@ export const wfcSeats = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
+    // The zone must sit in this outlet: floor_zones has no unique
+    // (tenant_id, outlet_id, id) to reference (the floor schema is not ours to
+    // alter), so `createWfcSeat` checks `zone.outletId === outletId`.
     foreignKey({
       name: "wfc_seats_zone_fk",
       columns: [table.tenantId, table.zoneId],
@@ -117,6 +121,8 @@ export const wfcSeatReservations = pgTable(
     priceIdr: idrColumn("price_idr").notNull(),
     paidIdr: idrColumn("paid_idr").notNull().default(idr(0)),
     refundedIdr: idrColumn("refunded_idr").notNull().default(idr(0)),
+    /** The captured payment that funded this reservation; one capture, one sale. */
+    paymentRef: varchar("payment_ref", { length: 100 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -129,6 +135,9 @@ export const wfcSeatReservations = pgTable(
       table.tenantId,
       table.id,
     ),
+    uniqueIndex("wfc_seat_reservations_payment_ref_key")
+      .on(table.tenantId, table.paymentRef)
+      .where(sql`${table.paymentRef} IS NOT NULL`),
     foreignKey({
       name: "wfc_seat_reservations_seat_fk",
       columns: [table.tenantId, table.outletId, table.seatId],

@@ -172,3 +172,4 @@ export * from "./wa-login-reply";
 export * from "./wfc-seat";
 export * from "./wfc-bundle";
 export * from "./wfc-spend";
+export * from "./wfc-payment-capture";

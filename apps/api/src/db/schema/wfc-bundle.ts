@@ -13,8 +13,9 @@
 //   the entitlement grant of that item, so a refund can tell which items were
 //   already redeemed.
 // All tables are tenant and outlet owned; RLS is installed in
-// wfc-bundle.custom.sql. `customer_profile_id` has no FK, same as
-// `entitlement_ledger` (the profile belongs to WS-08).
+// wfc-bundle.custom.sql. `wfc_bundle_purchases.customer_profile_id` has the
+// composite (tenant, profile) FK to `customer_profiles` (migration 0251), same
+// as `wfc_seat_reservations`.
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -32,6 +33,7 @@ import type {
   WfcBundleStatus,
 } from "@starter/shared/wfc";
 import { idrColumn, outletIdColumn, tenantIdColumn } from "../columns.ts";
+import { customerProfiles } from "./crm-member.ts";
 import {
   facilities,
   facilityProducts,
@@ -51,6 +53,8 @@ export const wfcBundles = pgTable(
     outletId: outletIdColumn(() => outlets.id).notNull(),
     name: varchar("name", { length: 150 }).notNull(),
     priceIdr: idrColumn("price_idr").notNull(),
+    /** POS menu item the bundle is sold as; null = not sellable (like facility_products.menu_item_id). */
+    menuItemId: uuid("menu_item_id"),
     /** Days the entitlements of a purchase stay valid. */
     validityDays: integer("validity_days").notNull().default(1),
     status: varchar("status", { length: 10 })
@@ -155,7 +159,7 @@ export const wfcBundlePurchases = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     outletId: outletIdColumn(() => outlets.id).notNull(),
     bundleId: uuid("bundle_id").notNull(),
-    /** Customer profile (WS-08); no FK, same as `entitlement_ledger`. */
+    /** Customer profile (WS-08); composite FK (tenant, profile), migration 0251. */
     customerProfileId: uuid("customer_profile_id").notNull(),
     /** Snapshot of the bundle price at purchase (M1: read server-side). */
     pricePaidIdr: idrColumn("price_paid_idr").notNull(),
@@ -187,6 +191,11 @@ export const wfcBundlePurchases = pgTable(
       name: "wfc_bundle_purchases_bundle_fk",
       columns: [table.tenantId, table.outletId, table.bundleId],
       foreignColumns: [wfcBundles.tenantId, wfcBundles.outletId, wfcBundles.id],
+    }),
+    foreignKey({
+      name: "wfc_bundle_purchases_customer_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
     }),
     index("wfc_bundle_purchases_customer_idx").on(
       table.tenantId,

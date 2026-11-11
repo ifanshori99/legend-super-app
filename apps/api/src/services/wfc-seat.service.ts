@@ -2,9 +2,13 @@
 // bead legend-bz9h). Routes: routes/wfc.routes.ts.
 //
 // Money rules ("jangan sampai rugi"), each covered by src/test/wfc-seat.test.ts:
-// - M1: the price is read from the product row; no input carries a price. The
-//   only client amount is `paidIdr` (what the provider captured) and it must
-//   equal the stored price exactly, else 409.
+// - M1: the price is read from the product row; no input carries a price or an
+//   amount. A sale names a `paymentRef` that must be a real captured payment of
+//   at least the price, never used by another sale (services/wfc-payment.ts:
+//   POS tenders only, ledger wfc_payment_captures, 409 PAYMENT_NOT_CAPTURED /
+//   PAYMENT_ALREADY_USED). The row stores the
+//   price as paid, never the captured amount, so an overpayment is not
+//   refundable by WFC code.
 // - M2: a refund never exceeds paid - refunded; a fully refunded row answers a
 //   second refund with the unchanged row (no-op), so nothing is paid twice.
 // - M4: the day-pass entitlement is issued only after payment (this function
@@ -16,6 +20,7 @@
 // Writes run inside `withTenant` (RLS scopes rows to the tenant and the
 // caller's outlets), re-check the permission on the row's outlet (TEN-03) and
 // land an audit entry.
+import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import {
   idr,
@@ -69,6 +74,11 @@ import {
   localDate,
   operatingDayEndAfter,
 } from "./facility-entitlement.service.ts";
+import {
+  findLedgerSale,
+  paymentAlreadyUsed,
+  requireCapturedPayment,
+} from "./wfc-payment.ts";
 import {
   assertFacilityPermission,
   auditFacility,
@@ -203,11 +213,33 @@ async function loadDayPassByRef(
     .where(
       and(
         eq(wfcDayPassPurchases.tenantId, context.tenant.tenantId),
-        eq(wfcDayPassPurchases.paymentRef, paymentRef),
+        eq(wfcDayPassPurchases.paymentRef, paymentRef.toLowerCase()),
       ),
     )
     .limit(1);
   const [row] = lock ? await query.for("update") : await query;
+  return row;
+}
+
+/** The day pass funded by the payment `paymentRef` names under any alias or case. */
+async function loadDayPassByLedger(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  paymentRef: string,
+): Promise<DayPassRow | undefined> {
+  const funded = await findLedgerSale(tx, context, { outletId, paymentRef });
+  if (funded?.saleKind !== "day_pass") return undefined;
+  const [row] = await tx
+    .select()
+    .from(wfcDayPassPurchases)
+    .where(
+      and(
+        eq(wfcDayPassPurchases.tenantId, context.tenant.tenantId),
+        eq(wfcDayPassPurchases.id, funded.saleId),
+      ),
+    )
+    .limit(1);
   return row;
 }
 
@@ -256,13 +288,6 @@ async function loadWfcProduct(
     throw new HttpError(409, "PRODUCT_INACTIVE", "Produk tidak dijual lagi.");
   return { product, facility };
 }
-
-const amountMismatch = () =>
-  new HttpError(
-    409,
-    "AMOUNT_MISMATCH",
-    "Jumlah yang dibayar tidak sama dengan harga.",
-  );
 
 const slotStarted = () =>
   new HttpError(
@@ -353,6 +378,7 @@ export async function listWfcSeats(
   context: ScopedTenantContext,
   actorUserId: string,
   input: ListWfcSeatsInput,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so callers share the (context, actor, input, now) shape
   _now = new Date(),
 ): Promise<WfcSeat[]> {
   const actor = userIdSchema.parse(actorUserId);
@@ -400,6 +426,14 @@ export async function setWfcProductKind(
 ): Promise<{ productId: string; wfcKind: WfcProductKind | null }> {
   const actor = userIdSchema.parse(actorUserId);
   const parsed = parseInput(setWfcProductKindSchema, input);
+  const durationMinutes = parsed.durationMinutes ?? null;
+  // A seat reservation needs its longest slot; no other kind carries one.
+  if ((parsed.wfcKind === "seat_reservation") !== (durationMinutes !== null))
+    throw new HttpError(
+      400,
+      "VALIDATION_FAILED",
+      "Durasi wajib diisi untuk produk reservasi kursi, dan hanya untuk itu.",
+    );
   return withTenant(db, context, async (tx) => {
     const product = await loadProductRow(tx, context, parsed.productId);
     const facility = await loadFacility(tx, context, product.facilityId);
@@ -421,7 +455,7 @@ export async function setWfcProductKind(
       );
     await tx
       .update(facilityProducts)
-      .set({ wfcKind: parsed.wfcKind, updatedAt: now })
+      .set({ wfcKind: parsed.wfcKind, durationMinutes, updatedAt: now })
       .where(
         and(
           eq(facilityProducts.tenantId, context.tenant.tenantId),
@@ -502,6 +536,19 @@ export async function reserveWfcSeat(
             "NOT_WFC_PRODUCT",
             "Produk dan kursi berada di outlet berbeda.",
           );
+        // A product without a duration cannot be reserved; a slot is capped by it.
+        if (product.durationMinutes === null)
+          throw new HttpError(
+            409,
+            "PRODUCT_DURATION_MISSING",
+            "Produk reservasi ini belum punya durasi.",
+          );
+        if (minutes > product.durationMinutes)
+          throw new HttpError(
+            409,
+            "DURATION_EXCEEDS_PRODUCT",
+            "Durasi reservasi melebihi durasi produk.",
+          );
         let row: ReservationRow;
         try {
           [row] = await tx.transaction((savepoint) =>
@@ -563,6 +610,7 @@ async function changeReservation(
   action: string,
   change: (
     row: ReservationRow,
+    tx: Tx,
   ) => Promise<Partial<typeof wfcSeatReservations.$inferInsert> | null>,
   permission: typeof OPERATE_PERMISSION = OPERATE_PERMISSION,
 ): Promise<WfcSeatReservation> {
@@ -576,18 +624,26 @@ async function changeReservation(
       permission,
       row.outletId,
     );
-    const patch = await change(row);
+    const patch = await change(row, tx);
     if (patch === null) return toReservation(row);
-    const [updated] = await tx
-      .update(wfcSeatReservations)
-      .set({ ...patch, updatedAt: now })
-      .where(
-        and(
-          eq(wfcSeatReservations.tenantId, context.tenant.tenantId),
-          eq(wfcSeatReservations.id, row.id),
-        ),
-      )
-      .returning();
+    let updated: ReservationRow;
+    try {
+      [updated] = await tx
+        .update(wfcSeatReservations)
+        .set({ ...patch, updatedAt: now })
+        .where(
+          and(
+            eq(wfcSeatReservations.tenantId, context.tenant.tenantId),
+            eq(wfcSeatReservations.id, row.id),
+          ),
+        )
+        .returning();
+    } catch (error) {
+      // The unique (tenant_id, payment_ref) index: one capture, one sale.
+      if (pgErrorCode(error) === PG_UNIQUE_VIOLATION)
+        throw paymentAlreadyUsed();
+      throw error;
+    }
     await auditFacility(tx, context, actor, now, {
       action,
       objectType: "wfc_seat_reservation",
@@ -605,8 +661,10 @@ async function changeReservation(
 }
 
 /**
- * Payment captured: `paidIdr` must equal the stored price exactly (M1, M2),
- * else 409 and nothing changes. A replay of the same confirmation is a no-op.
+ * Payment captured: `paymentRef` must be a real captured payment of at least
+ * the stored price that no other sale used (M1, 409 PAYMENT_NOT_CAPTURED /
+ * PAYMENT_ALREADY_USED). The row records the price as paid, never the captured
+ * amount (M2). A replay of the same confirmation is a no-op.
  */
 export async function confirmWfcReservationPaid(
   context: ScopedTenantContext,
@@ -622,17 +680,40 @@ export async function confirmWfcReservationPaid(
     parsed.reservationId,
     now,
     "wfc_reservation.confirmed",
-    async (row) => {
-      if (row.status === "confirmed" && row.paidIdr === parsed.paidIdr)
-        return null;
+    async (row, tx) => {
+      // Payment references are stored lowercase: every spelling is one payment.
+      const paymentRef = parsed.paymentRef.toLowerCase();
+      if (row.status === "confirmed") {
+        if (row.paymentRef === paymentRef) return null;
+        // Another spelling of the payment that already confirmed this row.
+        const funded = await findLedgerSale(tx, context, {
+          outletId: row.outletId,
+          paymentRef,
+        });
+        if (funded?.saleKind === "seat_reservation" && funded.saleId === row.id)
+          return null;
+      }
       if (row.status !== "pending_payment")
         throw new HttpError(
           409,
           "INVALID_STATE",
           "Reservasi tidak menunggu pembayaran.",
         );
-      if (parsed.paidIdr !== row.priceIdr) throw amountMismatch();
-      return { status: "confirmed", paidIdr: parsed.paidIdr };
+      const product = await loadProductRow(tx, context, row.productId);
+      await requireCapturedPayment(tx, context, {
+        outletId: row.outletId,
+        paymentRef,
+        priceIdr: row.priceIdr,
+        menuItemId: product.menuItemId,
+        saleKind: "seat_reservation",
+        saleId: row.id,
+        customerProfileId: row.customerProfileId,
+      });
+      return {
+        status: "confirmed",
+        paidIdr: row.priceIdr,
+        paymentRef,
+      };
     },
   );
 }
@@ -714,10 +795,12 @@ export async function refundWfcReservation(
 // ---- Day pass ---------------------------------------------------------------
 
 /**
- * Sells one day pass after the payment was captured. `paidIdr` must equal the
- * product price (M1); `paymentRef` makes the sale idempotent. Issues a
- * 1-session `purchase` entitlement that lapses at the end of the outlet's
- * business day (M4).
+ * Sells one day pass after the payment was captured. `paymentRef` must be a
+ * real captured payment of at least the product price that no other sale used
+ * (M1); the row stores the price as paid. The same `paymentRef` for the same
+ * product and customer returns the first sale (also under concurrent calls),
+ * for anything else 409 PAYMENT_ALREADY_USED. Issues a 1-session `purchase`
+ * entitlement that lapses at the end of the outlet's business day (M4).
  */
 export async function purchaseDayPass(
   context: ScopedTenantContext,
@@ -742,27 +825,42 @@ export async function purchaseDayPass(
           found.outletId,
         ),
     );
-    const [existing] = await tx
-      .select()
-      .from(wfcDayPassPurchases)
-      .where(
-        and(
-          eq(wfcDayPassPurchases.tenantId, context.tenant.tenantId),
-          eq(wfcDayPassPurchases.paymentRef, parsed.paymentRef),
-        ),
-      )
-      .limit(1);
-    if (existing) {
-      // Same payment replayed: the first sale answers; anything else is a clash.
+    // Payment references are stored lowercase: every spelling is one payment.
+    const paymentRef = parsed.paymentRef.toLowerCase();
+    const saleId = randomUUID();
+    /** The sale of this payment, if one exists: the same one answers, else a clash. */
+    const replay = async (): Promise<WfcDayPassPurchase | null> => {
+      const existing =
+        (await loadDayPassByRef(tx, context, paymentRef)) ??
+        (await loadDayPassByLedger(tx, context, facility.outletId, paymentRef));
+      if (!existing) return null;
       if (
         existing.productId === product.id &&
-        existing.customerProfileId === parsed.customerProfileId &&
-        existing.paidIdr === parsed.paidIdr
+        existing.customerProfileId === parsed.customerProfileId
       )
         return toDayPass(existing);
-      throw paymentRefReused();
+      throw paymentAlreadyUsed();
+    };
+    const first = await replay();
+    if (first) return first;
+    try {
+      await requireCapturedPayment(tx, context, {
+        outletId: facility.outletId,
+        paymentRef,
+        priceIdr: product.priceIdr,
+        menuItemId: product.menuItemId,
+        saleKind: "day_pass",
+        saleId,
+        customerProfileId: parsed.customerProfileId,
+      });
+    } catch (error) {
+      // A concurrent sale of this payment committed while we waited for it.
+      if (error instanceof HttpError && error.code === "PAYMENT_ALREADY_USED") {
+        const won = await replay();
+        if (won) return won;
+      }
+      throw error;
     }
-    if (parsed.paidIdr !== product.priceIdr) throw amountMismatch();
 
     const timeZone = await outletTimeZone(tx, context, facility.outletId);
     const expiresAt = operatingDayEndAfter(
@@ -777,14 +875,15 @@ export async function purchaseDayPass(
         savepoint
           .insert(wfcDayPassPurchases)
           .values({
+            id: saleId,
             tenantId: context.tenant.tenantId,
             outletId: facility.outletId,
             productId: product.id,
             customerProfileId: parsed.customerProfileId,
-            paymentRef: parsed.paymentRef,
+            paymentRef,
             status: "paid",
             priceIdr: product.priceIdr,
-            paidIdr: parsed.paidIdr,
+            paidIdr: product.priceIdr,
             refundedIdr: idr(0),
             expiresAt,
             createdAt: now,
@@ -794,7 +893,11 @@ export async function purchaseDayPass(
       );
     } catch (error) {
       const code = pgErrorCode(error);
-      if (code === PG_UNIQUE_VIOLATION) throw paymentRefReused();
+      if (code === PG_UNIQUE_VIOLATION) {
+        // The ledger row written above must not outlive a sale that was not
+        // stored: throwing rolls the whole transaction back.
+        throw paymentAlreadyUsed();
+      }
       if (code === PG_FOREIGN_KEY_VIOLATION) throw notFound("Pelanggan");
       throw error;
     }
@@ -826,13 +929,6 @@ export async function purchaseDayPass(
     return toDayPass(row);
   });
 }
-
-const paymentRefReused = () =>
-  new HttpError(
-    409,
-    "PAYMENT_REF_REUSED",
-    "Referensi pembayaran sudah dipakai untuk transaksi lain.",
-  );
 
 /**
  * Refunds a day pass (M2, M4). Needs the config permission. The refund may not

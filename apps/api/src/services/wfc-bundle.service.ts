@@ -1,12 +1,16 @@
 // WFC bundles, e.g. "Pagi Produktif" = shower single + WFC day pass (PRD v1.7
 // §3 F25/F39; bead legend-bz9h). Money rules, each covered by
 // test/wfc-bundle.test.ts:
-// - M1: prices are read from the database; the caller only reports the amount
-//   the payment provider captured (`paidIdr`), which must equal the bundle
-//   price.
+// - M1: prices are read from the database; the caller only names a payment
+//   (`paymentRef`). It must be a captured POS tender of the outlet for an
+//   order line of the bundle's menu item that covers the bundle price and
+//   funds no other sale (`requireCapturedPayment`); the price paid stored is
+//   the bundle price, never the captured amount. Staff cannot type an amount.
+//   A bundle without a menu item cannot be sold (409 BUNDLE_NOT_SELLABLE).
 // - M2: a refund never exceeds what was paid minus the value of what was
 //   already used, and a second refund is a no-op.
-// - M3: the bundle price is > 0 and <= sum(component list price x quantity);
+// - M3: the bundle price is > 0, <= sum(component list price x quantity) and
+//   >= WFC_BUNDLE_MIN_PRICE_BP of that sum, at creation and again at purchase;
 //   the price paid is split over the components with largest remainder, so
 //   the allocations add up to the rupiah.
 // - M4: entitlements are issued after the purchase is recorded as paid (one
@@ -22,6 +26,7 @@
 //
 // Permissions: create and refund need `facility.config.manage`, purchase and
 // list need `facility.booth.operate`, both on the bundle's outlet (TEN-03).
+import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   idr,
@@ -31,6 +36,7 @@ import {
 } from "@starter/shared/core";
 import {
   allocateBundlePrice,
+  bundleMinPriceIdr,
   createWfcBundleSchema,
   isValidBundlePrice,
   purchaseWfcBundleSchema,
@@ -46,6 +52,7 @@ import {
   type WfcBundlePurchase,
 } from "@starter/shared/wfc";
 import { db } from "../db/index.ts";
+import { customerProfiles } from "../db/schema/crm-member.ts";
 import {
   facilityProducts,
   facilitySubscriptionPlans,
@@ -65,6 +72,7 @@ import {
   issueEntitlement,
   lockCustomer,
 } from "./facility-entitlement.service.ts";
+import { findLedgerSale, requireCapturedPayment } from "./wfc-payment.ts";
 import {
   assertFacilityPermission,
   auditFacility,
@@ -103,6 +111,7 @@ function toBundle(row: BundleRow, items: ItemRow[]): WfcBundle {
     outletId: row.outletId,
     name: row.name,
     priceIdr: row.priceIdr,
+    menuItemId: row.menuItemId,
     validityDays: row.validityDays,
     status: row.status,
     items: items.map((item) => ({
@@ -304,7 +313,10 @@ const listTotal = (components: Component[]): number =>
 
 // ---- Create / list ------------------------------------------------------------
 
-/** M3: a bundle price is a discount only (> 0 and <= sum of component list prices). */
+/**
+ * M3: a bundle price is a discount only (> 0 and <= sum of component list
+ * prices) and not below the floor (WFC_BUNDLE_MIN_PRICE_BP of that sum).
+ */
 export async function createWfcBundle(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -380,6 +392,11 @@ export async function createWfcBundle(
             "BUNDLE_PRICE_INVALID",
             "Harga paket harus lebih dari 0 dan tidak boleh melebihi jumlah harga normal item.",
           );
+        if (input.priceIdr < bundleMinPriceIdr(listTotal(components)))
+          throw conflict(
+            "BUNDLE_PRICE_BELOW_FLOOR",
+            "Harga paket di bawah batas minimum dari jumlah harga normal item.",
+          );
         const [bundle] = await tx
           .insert(wfcBundles)
           .values({
@@ -387,6 +404,7 @@ export async function createWfcBundle(
             outletId,
             name: input.name,
             priceIdr: idr(input.priceIdr),
+            menuItemId: input.menuItemId ?? null,
             validityDays: input.validityDays ?? 1,
             status: "active",
             createdAt: now,
@@ -461,10 +479,12 @@ export async function listWfcBundles(
 // ---- Purchase -----------------------------------------------------------------
 
 /**
- * M1/M3/M4: records a paid purchase (`paidIdr` must equal the stored bundle
- * price), splits the price over the items and issues one entitlement per item.
- * A replay of the same `paymentRef` returns the first purchase and issues
- * nothing new; the same ref for another bundle, customer or amount is a 409.
+ * M1/M3/M4: records a paid purchase funded by a captured POS tender (for the
+ * bundle's menu item) that covers the stored bundle price, splits the price over the items and issues
+ * one entitlement per item. A replay of the same `paymentRef` (same bundle and
+ * customer) returns the first purchase and issues nothing new; the same ref
+ * for another bundle or customer, or already used by another sale, is a 409
+ * PAYMENT_ALREADY_USED.
  */
 export async function purchaseWfcBundle(
   context: ScopedTenantContext,
@@ -474,7 +494,9 @@ export async function purchaseWfcBundle(
 ): Promise<WfcBundlePurchase> {
   const actor = userIdSchema.parse(actorUserId);
   // Strict parse at the service boundary: callers cannot bypass the schema.
-  const input = purchaseWfcBundleSchema.parse(rawInput);
+  const parsed = purchaseWfcBundleSchema.parse(rawInput);
+  // Payment references compare case-insensitively: store and match lowercase.
+  const input = { ...parsed, paymentRef: parsed.paymentRef.toLowerCase() };
   return withTenant(db, context, async (tx) => {
     const bundle = await loadBundleRow(tx, context, input.bundleId);
     if (!bundle) throw notFound("Paket");
@@ -487,24 +509,37 @@ export async function purchaseWfcBundle(
     );
 
     const replay = async (): Promise<WfcBundlePurchase | null> => {
+      // The payment may be named by its reference or by its tender id: the
+      // ledger resolves every spelling to the one sale it funded.
+      const ledger = await findLedgerSale(tx, context, {
+        outletId: bundle.outletId,
+        paymentRef: input.paymentRef,
+      });
       const [existing] = await tx
         .select()
         .from(wfcBundlePurchases)
         .where(
           and(
             eq(wfcBundlePurchases.tenantId, context.tenant.tenantId),
-            eq(wfcBundlePurchases.paymentRef, input.paymentRef),
+            ledger?.saleKind === "bundle"
+              ? eq(wfcBundlePurchases.id, ledger.saleId)
+              : eq(wfcBundlePurchases.paymentRef, input.paymentRef),
           ),
         )
         .limit(1);
+      if (!existing && ledger)
+        // The payment funded another kind of sale.
+        throw conflict(
+          "PAYMENT_ALREADY_USED",
+          "Referensi pembayaran sudah dipakai pembelian lain.",
+        );
       if (!existing) return null;
       if (
         existing.bundleId !== input.bundleId ||
-        existing.customerProfileId !== input.customerProfileId ||
-        existing.pricePaidIdr !== input.paidIdr
+        existing.customerProfileId !== input.customerProfileId
       )
         throw conflict(
-          "PAYMENT_REF_REUSED",
+          "PAYMENT_ALREADY_USED",
           "Referensi pembayaran sudah dipakai pembelian lain.",
         );
       return toPurchase(
@@ -518,13 +553,11 @@ export async function purchaseWfcBundle(
 
     if (bundle.status !== "active")
       throw conflict("BUNDLE_INACTIVE", "Paket tidak aktif.");
-    // M1: the amount captured must be exactly the stored price.
-    if (input.paidIdr !== bundle.priceIdr)
+    if (bundle.menuItemId === null)
       throw conflict(
-        "PAID_AMOUNT_MISMATCH",
-        "Jumlah dibayar tidak sama dengan harga paket.",
+        "BUNDLE_NOT_SELLABLE",
+        "Paket belum punya menu di kasir dan belum bisa dijual.",
       );
-
     const items = await loadItems(tx, context, bundle.id);
     const components = await resolveComponents(tx, context, items);
     // The list prices may have been edited since the bundle was created.
@@ -533,6 +566,11 @@ export async function purchaseWfcBundle(
         "BUNDLE_PRICE_INVALID",
         "Harga paket melebihi jumlah harga normal item; paket perlu ditinjau.",
       );
+    if (bundle.priceIdr < bundleMinPriceIdr(listTotal(components)))
+      throw conflict(
+        "BUNDLE_PRICE_BELOW_FLOOR",
+        "Harga paket di bawah batas minimum dari jumlah harga normal item; paket perlu ditinjau.",
+      );
     const parts = allocateBundlePrice(
       bundle.priceIdr,
       components.map(
@@ -540,9 +578,47 @@ export async function purchaseWfcBundle(
       ),
     );
 
+    // A profile that is not in this tenant is a 404 (not the FK's 500).
+    const [profile] = await tx
+      .select({ id: customerProfiles.id })
+      .from(customerProfiles)
+      .where(
+        and(
+          eq(customerProfiles.tenantId, context.tenant.tenantId),
+          eq(customerProfiles.id, input.customerProfileId),
+        ),
+      )
+      .limit(1);
+    if (!profile) throw notFound("Pelanggan");
+
+    // M1: a real POS tender of this outlet for the bundle's menu item that
+    // covers the price and funds no other sale; the capture is recorded with
+    // this sale's id in the same transaction.
+    const purchaseId = randomUUID();
+    try {
+      await requireCapturedPayment(tx, context, {
+        outletId: bundle.outletId,
+        paymentRef: input.paymentRef,
+        priceIdr: bundle.priceIdr,
+        menuItemId: bundle.menuItemId,
+        saleKind: "bundle",
+        saleId: purchaseId,
+        customerProfileId: input.customerProfileId,
+      });
+    } catch (error) {
+      // A concurrent purchase of this payment committed while we waited for
+      // its capture lock: the same bundle and customer replay the first sale.
+      if (error instanceof HttpError && error.code === "PAYMENT_ALREADY_USED") {
+        const won = await replay();
+        if (won) return won;
+      }
+      throw error;
+    }
+
     const [purchase] = await tx
       .insert(wfcBundlePurchases)
       .values({
+        id: purchaseId,
         tenantId: context.tenant.tenantId,
         outletId: bundle.outletId,
         bundleId: bundle.id,
@@ -555,12 +631,14 @@ export async function purchaseWfcBundle(
       })
       .onConflictDoNothing()
       .returning();
-    if (!purchase) {
-      // A concurrent request with the same payment ref won the insert.
-      const raced = await replay();
-      if (raced) return raced;
-      throw new Error("Bundle purchase conflict without a stored purchase");
-    }
+    if (!purchase)
+      // A concurrent request with the same payment ref won the insert. Roll
+      // this transaction back (its capture row names a purchase that was never
+      // stored); a retry then replays the first purchase.
+      throw conflict(
+        "PAYMENT_ALREADY_USED",
+        "Referensi pembayaran sudah dipakai pembelian lain.",
+      );
 
     const allocations = await tx
       .insert(wfcBundlePurchaseAllocations)

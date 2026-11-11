@@ -1,11 +1,13 @@
 // WFC bundles, e.g. "Pagi Produktif" = shower single + WFC day pass (PRD v1.7
 // §3 F25/F39; bead legend-bz9h; money rules M1-M4).
 //
-// - The client never sends a price for a purchase: `purchaseWfcBundleSchema`
-//   carries the amount the payment provider captured (`paidIdr`), and the
-//   service compares it with the price stored on the bundle (M1).
+// - The client never sends a price or an amount for a purchase:
+//   `purchaseWfcBundleSchema` carries only the payment reference. The service
+//   finds the captured POS tender itself (an order line for the bundle's menu
+//   item), checks that it covers the price stored on the bundle and that no
+//   other sale used it (M1).
 // - A bundle price is a discount only: > 0 and <= sum(list price x quantity)
-//   of its components (M3). `allocateBundlePrice` splits the price paid over
+//   of its components, and at least `WFC_BUNDLE_MIN_PRICE_BP` of that sum (M3). `allocateBundlePrice` splits the price paid over
 //   the components pro-rata (largest remainder), so the parts add up to the
 //   rupiah (M3).
 // Every input is strict: an unknown field is rejected, and the tenant comes
@@ -33,6 +35,8 @@ export type WfcBundlePurchaseStatus = z.infer<
 export const WFC_BUNDLE_MAX_ITEMS = 20;
 /** Entitlement sessions of one grant stay within the ledger limit (1..100). */
 export const WFC_BUNDLE_MAX_SESSIONS_PER_ITEM = 100;
+/** Bundle price floor in basis points of the component list total (5000 = 50%). */
+export const WFC_BUNDLE_MIN_PRICE_BP = 5_000;
 
 const positiveIdr = idrSchema.refine((value) => value > 0);
 const nonnegativeIdr = idrSchema.refine((value) => value >= 0);
@@ -59,6 +63,11 @@ export type WfcBundleItemInput = z.infer<typeof wfcBundleItemInputSchema>;
 export const createWfcBundleSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150),
   priceIdr: positiveIdr,
+  /**
+   * POS menu item the bundle is sold as. A bundle without one cannot be
+   * purchased (the payment is proven by a POS tender for this menu item).
+   */
+  menuItemId: uuidSchema.optional(),
   /** Days the issued entitlements stay valid after the purchase. */
   validityDays: z.number().int().min(1).max(366).optional(),
   items: z.array(wfcBundleItemInputSchema).min(1).max(WFC_BUNDLE_MAX_ITEMS),
@@ -75,9 +84,10 @@ export type ListWfcBundlesQuery = z.infer<typeof listWfcBundlesQuerySchema>;
 export const purchaseWfcBundleSchema = clientInputSchema({
   bundleId: uuidSchema,
   customerProfileId: uuidSchema,
-  /** Amount the payment provider captured; must equal the bundle price. */
-  paidIdr: positiveIdr,
-  /** Payment reference, unique per tenant; a replay returns the first purchase. */
+  /**
+   * Reference of a captured payment (payment intent id or provider ref), unique
+   * per tenant; a replay returns the first purchase.
+   */
   paymentRef: z.string().trim().min(1).max(64),
 });
 export type PurchaseWfcBundleInput = z.infer<typeof purchaseWfcBundleSchema>;
@@ -106,6 +116,7 @@ export const wfcBundleSchema = z.strictObject({
   outletId: uuidSchema,
   name: z.string(),
   priceIdr: positiveIdr,
+  menuItemId: uuidSchema.nullable(),
   validityDays: z.number().int().min(1).max(366),
   status: wfcBundleStatusSchema,
   items: z.array(wfcBundleItemSchema),
@@ -152,6 +163,19 @@ export function isValidBundlePrice(
     priceIdr > 0 &&
     priceIdr <= componentListTotalIdr
   );
+}
+
+/**
+ * M3: lowest allowed bundle price for a component list total, rounded up to
+ * the rupiah: ceil(total x WFC_BUNDLE_MIN_PRICE_BP / 10000).
+ */
+export function bundleMinPriceIdr(componentListTotalIdr: number): number {
+  // Not a safe integer: no price can be proven to clear the floor, so none does.
+  if (!Number.isSafeInteger(componentListTotalIdr))
+    return Number.POSITIVE_INFINITY;
+  // BigInt: total x bp can pass 2^53 even when the total itself is safe.
+  const bp = BigInt(WFC_BUNDLE_MIN_PRICE_BP);
+  return Number((BigInt(componentListTotalIdr) * bp + 9_999n) / 10_000n);
 }
 
 /**

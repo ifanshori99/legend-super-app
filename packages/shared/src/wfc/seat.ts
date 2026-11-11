@@ -2,9 +2,8 @@
 // bead legend-bz9h). Every request schema is built with `clientInputSchema`:
 // the tenant comes from the domain or token (TEN-02), an unknown field is
 // rejected, and NO schema carries a price: the price is always read from the
-// product on the server. The only amount a client sends is the amount a payment
-// provider reports (`paidIdr`), and the service refuses anything that is not
-// exactly the stored price.
+// product on the server. A sale carries a `paymentRef` that must match a real
+// captured payment (services/wfc-payment.ts); no client sends an amount.
 
 import {
   z,
@@ -112,6 +111,8 @@ export type ListWfcSeatsInput = z.input<typeof listWfcSeatsQuerySchema>;
 export const setWfcProductKindSchema = clientInputSchema({
   productId: uuidSchema,
   wfcKind: wfcProductKindSchema.nullable(),
+  /** Longest reservation in minutes; required for `seat_reservation`. */
+  durationMinutes: z.number().int().min(1).max(1440).nullable().optional(),
 });
 export type SetWfcProductKindInput = z.input<typeof setWfcProductKindSchema>;
 
@@ -126,12 +127,13 @@ export const reserveWfcSeatSchema = clientInputSchema({
 export type ReserveWfcSeatInput = z.input<typeof reserveWfcSeatSchema>;
 
 /**
- * `paidIdr` is what the provider captured; it must equal the stored price. A
- * zero or short amount parses and is refused by the service with 409.
+ * `paymentRef` names the captured POS tender (its id or reference; letter
+ * case does not matter, the service stores it lowercase); the service checks it
+ * is a real, unused capture of at least the price for the product's menu item.
  */
 export const confirmWfcReservationPaidSchema = clientInputSchema({
   reservationId: uuidSchema,
-  paidIdr: nonnegativeIdr,
+  paymentRef: z.string().trim().min(1).max(100),
 });
 export type ConfirmWfcReservationPaidInput = z.input<
   typeof confirmWfcReservationPaidSchema
@@ -155,7 +157,6 @@ export type RefundWfcReservationInput = z.input<
 export const purchaseDayPassSchema = clientInputSchema({
   productId: uuidSchema,
   customerProfileId: uuidSchema,
-  paidIdr: nonnegativeIdr,
   paymentRef: z.string().trim().min(1).max(40),
 });
 export type PurchaseDayPassInput = z.input<typeof purchaseDayPassSchema>;

@@ -4,10 +4,11 @@
 // schemas. Mount at `/api/facility/wfc`.
 //
 // The tenant comes from the server-minted context, never the request
-// (TEN-02). No route accepts a price: the only amount a client sends is what
-// the payment provider reported (`paidIdr`) or the refund asked for
-// (`refundIdr`), and the services compare both with the stored price. The
-// services re-check the permission on the record's outlet (TEN-03).
+// (TEN-02). No route accepts a price or a paid amount: payment is proven by a
+// `paymentRef` that the services match to a captured payment (PAYMENT_NOT_CAPTURED
+// otherwise). The only amount a client sends is the refund (`refundIdr`), capped
+// by the stored price. The services re-check the permission on the record's
+// outlet (TEN-03).
 //
 // Config (seats, product kind, bundle create) and refunds are gated by
 // `facility.config.manage`; the floor reads and operations by
