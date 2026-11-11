@@ -12,7 +12,9 @@ import {
   assertTrustedScopedContext,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { logger } from "../lib/logger";
 import { pollPendingGatewayIntents } from "../services/payment.service.ts";
+import { promoteDueSubscriptionPeriods } from "../services/payment-recurring.service.ts";
 import { reprocessDuitkuWebhookEvents } from "../services/payment-duitku-webhook.service.ts";
 import {
   purgeRejectedWebhookEvents,
@@ -28,6 +30,7 @@ const lastRunByTenant = new Map<string, number>();
 export type PaymentGatewayPollResult = {
   polled: { checked: number; settled: number };
   webhooks: { checked: number; processed: number };
+  promoted: number;
 };
 
 export async function runPaymentGatewayPollJob(
@@ -49,6 +52,7 @@ export async function runPaymentGatewayPollJob(
   const result: PaymentGatewayPollResult = {
     polled: { checked: 0, settled: 0 },
     webhooks: { checked: 0, processed: 0 },
+    promoted: 0,
   };
   let failed = false;
   try {
@@ -80,6 +84,21 @@ export async function runPaymentGatewayPollJob(
     result.polled = await pollPendingGatewayIntents(context, now);
   } catch {
     failed = true;
+  }
+  try {
+    // Early-paid next periods that have become current. Best effort: access
+    // checks also promote on read, so a failure here must not fail the sweep.
+    result.promoted = (
+      await promoteDueSubscriptionPeriods(context, now)
+    ).promoted;
+  } catch (error) {
+    logger.warn(
+      {
+        job: "payment_gateway_poll",
+        errorName: error instanceof Error ? error.name : "unknown",
+      },
+      "Subscription period promotion failed",
+    );
   }
   try {
     // Retention for bad-signature rows; the count is not needed here.

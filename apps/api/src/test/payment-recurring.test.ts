@@ -54,6 +54,7 @@ import {
   subscriptionHasAccess,
 } from "../services/payment-recurring.service";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
+import { runPaymentGatewayPollJob } from "../worker/payment-gateway-poll.job";
 import {
   clearDoitWebhookSecretCache,
   reprocessStoredWebhookEvents,
@@ -3330,5 +3331,476 @@ describe("REC-25 invoice.paid with a payload status other than paid is ignored b
     );
     expect((await invoiceRows(invoiceId))[0]).toEqual(before);
     expect((await subRow(fx.subId)).status).toBe("pending_first_payment");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-29 (fix after architect, item A): a second early payment keeps the first
+// ---------------------------------------------------------------------------
+// ASSUMPTION: after two consecutive early payments the stored next window is
+// ONE range from the end of the current period to the end of the second paid
+// period; promotion then makes that whole range the current period.
+
+describe("REC-29 paying the period after the next one early does not lose the first early payment", () => {
+  it("REC-29 weekly: current week, next week paid, the week after paid early -> access in all three weeks, nothing lost", async () => {
+    const today = jakartaToday();
+    const curStart = addDays(today, -3);
+    const curEnd = addDays(today, 4);
+    const week2End = addDays(curEnd, 7);
+    const week3End = addDays(week2End, 7);
+    const fx = await seedFixture({
+      status: "active",
+      interval: "week",
+      periodStart: curStart,
+      periodEnd: curEnd,
+    });
+
+    const first = await createInvoice(fx, {
+      periodStart: curEnd,
+      periodEnd: week2End,
+    });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId: first.invoiceId,
+        periodStart: curEnd,
+        periodEnd: week2End,
+      }),
+    );
+    const second = await createInvoice(fx, {
+      periodStart: week2End,
+      periodEnd: week3End,
+    });
+    expect(second.row).toMatchObject({ status: "open", review_reason: null });
+    await deliver(
+      invoiceEvent("invoice.paid", fx, {
+        invoiceId: second.invoiceId,
+        periodStart: week2End,
+        periodEnd: week3End,
+      }),
+    );
+
+    expect((await invoiceRows(first.invoiceId))[0]!.status).toBe("paid");
+    expect((await invoiceRows(second.invoiceId))[0]!.status).toBe("paid");
+    // Current period untouched; the stored next window spans both paid weeks.
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "active",
+      period_start: curStart,
+      period_end: curEnd,
+      next_start: curEnd,
+      next_end: week3End,
+    });
+    const input = await accessInput(fx.subId);
+    expect(subscriptionHasAccess(input, new Date())).toBe(true);
+    expect(subscriptionHasAccess(input, noonJakarta(addDays(curEnd, 1)))).toBe(
+      true,
+    );
+    expect(
+      subscriptionHasAccess(input, noonJakarta(addDays(week2End, 1))),
+    ).toBe(true);
+    expect(subscriptionHasAccess(input, noonJakarta(week3End))).toBe(false);
+
+    // When the first early week starts, the whole paid range becomes current.
+    await promoteDueSubscriptionPeriods(ctxW(), noonJakarta(curEnd));
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "active",
+      period_start: curEnd,
+      period_end: week3End,
+      next_start: null,
+      next_end: null,
+    });
+    const promoted = await accessInput(fx.subId);
+    expect(
+      subscriptionHasAccess(promoted, noonJakarta(addDays(week2End, 1))),
+    ).toBe(true);
+    expect(subscriptionHasAccess(promoted, noonJakarta(week3End))).toBe(false);
+  });
+
+  it("REC-29 an early payment that skips a week is still a PERIOD_MISMATCH and changes no access", async () => {
+    const today = jakartaToday();
+    const curEnd = addDays(today, 4);
+    const fx = await seedFixture({
+      status: "active",
+      interval: "week",
+      periodStart: addDays(today, -3),
+      periodEnd: curEnd,
+      nextPeriodStart: curEnd,
+      nextPeriodEnd: addDays(curEnd, 7),
+    });
+    const skipped = await createInvoice(fx, {
+      periodStart: addDays(curEnd, 14),
+      periodEnd: addDays(curEnd, 21),
+    });
+    expect(skipped.row).toMatchObject({
+      status: "needs_review",
+      review_reason: "PERIOD_MISMATCH",
+    });
+    expect(await subNext(fx.subId)).toMatchObject({
+      next_start: curEnd,
+      next_end: addDays(curEnd, 7),
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-30 / REC-31 (item B): start retries and unresolved intents
+// ---------------------------------------------------------------------------
+// ASSUMPTIONS
+// - REC-30 drives the REAL client loader against a local HTTP stub (no
+//   `clientFor`), because the purpose "stop" for an existing intent lives in the
+//   loader. The stub answers any non-action request with the create-subscription
+//   shape REC-22 uses ({ id, plan_id, status: "pending", first_invoice_url }).
+//   If the real adapter needs other fields in the answer, that is a seam gap in
+//   the stub, not a behavior failure.
+// - The reference sent to DOIT is the local row id and appears in the request
+//   body (REC-22 asserts the same on the client arguments).
+// - The CONFLICT message wording is not pinned.
+
+describe("REC-30 retrying an existing start intent reaches DOIT even when the integration is no longer active", () => {
+  let server: http.Server;
+  let baseUrl = "";
+  let calls: { method: string; path: string; body: string }[] = [];
+  let planForStub = "";
+  let providerIdForStub = "";
+  const sockets = new Set<import("node:net").Socket>();
+  let profile: Awaited<ReturnType<typeof seedProfile>>;
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        calls.push({
+          method: req.method ?? "GET",
+          path: req.url ?? "/",
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            id: providerIdForStub,
+            plan_id: planForStub,
+            status: "pending",
+            first_invoice_url: null,
+          }),
+        );
+      });
+    });
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", () => resolve()),
+    );
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    profile = await seedProfile();
+  });
+
+  afterAll(async () => {
+    await profile?.cleanup();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    calls = [];
+  });
+
+  const lostResponse = {
+    clientFor: async () =>
+      ({
+        createSubscription: async () => {
+          throw new Error("ETIMEDOUT");
+        },
+      }) as never,
+  };
+
+  it("REC-30 the same key after the integration was disabled re-sends the same reference to DOIT and resolves the intent", async () => {
+    const integration = await seedIntegration(
+      tenantW,
+      `whsec-r4-${randomBytes(8).toString("hex")}`,
+      await addOutlet("B1"),
+      baseUrl,
+    );
+    const fx = await seedFixture({ gatewayIntegrationId: integration });
+    const key = `idem-${unique()}`;
+    const input = {
+      planId: fx.planId,
+      customerProfileId: profile.profileId,
+      idempotencyKey: key,
+    };
+    expect(["SERVICE_UNAVAILABLE", "CONFLICT"]).toContain(
+      await codeOf(startSubscription(ctxW(), input, lostResponse)),
+    );
+    const [pending] = await startedRows(fx.planId, fx.subId);
+    expect(pending).toMatchObject({
+      status: "needs_reconcile",
+      provider_subscription_id: null,
+    });
+
+    await setIntegrationStatus(
+      ctxW(),
+      integration,
+      { status: "disabled" },
+      actor,
+    );
+    planForStub = fx.providerPlanId;
+    providerIdForStub = `sub_${unique()}`;
+    const result = await startSubscription(ctxW(), input);
+
+    expect(result.subscription.status).toBe("pending_first_payment");
+    const sent = calls.filter((c) => c.method === "POST");
+    expect(sent, "the retry reaches DOIT").toHaveLength(1);
+    expect(sent[0]!.body).toContain(pending!.id);
+    const rows = await startedRows(fx.planId, fx.subId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: pending!.id,
+      status: "pending_first_payment",
+      provider_subscription_id: providerIdForStub,
+    });
+  });
+
+  it("REC-30 a NEW key on a disabled integration is still refused and DOIT is not called", async () => {
+    const integration = await seedIntegration(
+      tenantW,
+      `whsec-r4-${randomBytes(8).toString("hex")}`,
+      await addOutlet("B1N"),
+      baseUrl,
+    );
+    const fx = await seedFixture({ gatewayIntegrationId: integration });
+    await setIntegrationStatus(
+      ctxW(),
+      integration,
+      { status: "disabled" },
+      actor,
+    );
+    const code = await codeOf(
+      startSubscription(ctxW(), {
+        planId: fx.planId,
+        customerProfileId: profile.profileId,
+        idempotencyKey: `idem-${unique()}`,
+      }),
+    );
+    await startedRows(fx.planId, fx.subId);
+    expect(code).toBe("SERVICE_UNAVAILABLE");
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("REC-31 a new key while an unresolved start exists for the same plan and customer is a CONFLICT", () => {
+  let profile: Awaited<ReturnType<typeof seedProfile>>;
+  let otherProfile: Awaited<ReturnType<typeof seedProfile>>;
+  beforeAll(async () => {
+    profile = await seedProfile();
+    otherProfile = await seedProfile();
+  });
+  afterAll(async () => {
+    await profile?.cleanup();
+    await otherProfile?.cleanup();
+  });
+
+  const created = (fx: Fx, subId = `sub_${unique()}`) => ({
+    id: subId,
+    plan_id: fx.providerPlanId,
+    status: "pending",
+    first_invoice_url: null,
+  });
+  const counting = (fx: Fx) => {
+    const state = { calls: 0 };
+    return {
+      state,
+      deps: {
+        clientFor: async () =>
+          ({
+            createSubscription: async () => {
+              state.calls += 1;
+              return created(fx);
+            },
+          }) as never,
+      },
+    };
+  };
+
+  it("REC-31 after a needs_reconcile start: CONFLICT, still one row, no DOIT call; the original key still resolves it", async () => {
+    const fx = await seedFixture();
+    const first = `idem-${unique()}`;
+    const base = { planId: fx.planId, customerProfileId: profile.profileId };
+    await codeOf(
+      startSubscription(
+        ctxW(),
+        { ...base, idempotencyKey: first },
+        {
+          clientFor: async () =>
+            ({
+              createSubscription: async () => {
+                throw new Error("ETIMEDOUT");
+              },
+            }) as never,
+        },
+      ),
+    );
+    expect((await startedRows(fx.planId, fx.subId))[0]!.status).toBe(
+      "needs_reconcile",
+    );
+
+    const { state, deps } = counting(fx);
+    expect(
+      await codeOf(
+        startSubscription(
+          ctxW(),
+          { ...base, idempotencyKey: `idem-${unique()}` },
+          deps,
+        ),
+      ),
+    ).toBe("CONFLICT");
+    expect(state.calls).toBe(0);
+    expect(await startedRows(fx.planId, fx.subId)).toHaveLength(1);
+
+    const result = await startSubscription(
+      ctxW(),
+      { ...base, idempotencyKey: first },
+      deps,
+    );
+    expect(result.subscription.status).toBe("pending_first_payment");
+    expect(state.calls).toBe(1);
+    expect(await startedRows(fx.planId, fx.subId)).toHaveLength(1);
+  });
+
+  it("REC-31 while a provisioning row exists: CONFLICT, still one row, no DOIT call", async () => {
+    const fx = await seedFixture();
+    const rowId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_recurring_subscriptions (id, tenant_id, outlet_id, plan_id, customer_profile_id, provider_subscription_id, status, gateway_integration_id, start_idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, NULL, 'provisioning', $6, $7)`,
+      [
+        rowId,
+        tenantW,
+        outletW,
+        fx.planId,
+        profile.profileId,
+        integrationA,
+        `idem-${unique()}`,
+      ],
+    );
+    subIds.push(rowId);
+    const { state, deps } = counting(fx);
+    expect(
+      await codeOf(
+        startSubscription(
+          ctxW(),
+          {
+            planId: fx.planId,
+            customerProfileId: profile.profileId,
+            idempotencyKey: `idem-${unique()}`,
+          },
+          deps,
+        ),
+      ),
+    ).toBe("CONFLICT");
+    expect(state.calls).toBe(0);
+    expect(await startedRows(fx.planId, fx.subId)).toEqual([
+      expect.objectContaining({ id: rowId, status: "provisioning" }),
+    ]);
+  });
+
+  it("REC-31 another customer, or another plan, with a new key is not blocked", async () => {
+    const fx = await seedFixture();
+    const otherPlan = await seedFixture();
+    const key = () => `idem-${unique()}`;
+    const blocked = await codeOf(
+      startSubscription(
+        ctxW(),
+        {
+          planId: fx.planId,
+          customerProfileId: profile.profileId,
+          idempotencyKey: key(),
+        },
+        {
+          clientFor: async () =>
+            ({
+              createSubscription: async () => {
+                throw new Error("ETIMEDOUT");
+              },
+            }) as never,
+        },
+      ),
+    );
+    expect(blocked).not.toBeNull();
+    const a = counting(fx);
+    const otherCustomer = await startSubscription(
+      ctxW(),
+      {
+        planId: fx.planId,
+        customerProfileId: otherProfile.profileId,
+        idempotencyKey: key(),
+      },
+      a.deps,
+    );
+    expect(otherCustomer.subscription.status).toBe("pending_first_payment");
+    const b = counting(otherPlan);
+    const samePlanOther = await startSubscription(
+      ctxW(),
+      {
+        planId: otherPlan.planId,
+        customerProfileId: profile.profileId,
+        idempotencyKey: key(),
+      },
+      b.deps,
+    );
+    expect(samePlanOther.subscription.status).toBe("pending_first_payment");
+    await startedRows(fx.planId, fx.subId);
+    await startedRows(otherPlan.planId, otherPlan.subId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-34 (item E): the worker job promotes due next periods
+// ---------------------------------------------------------------------------
+// ASSUMPTION: `runPaymentGatewayPollJob(context, now, { force: true })` is the
+// worker job that runs once per tenant (the entry other suites call). The
+// observable effect asserted is the promoted row; the job's result shape is not
+// pinned. Kept last in the file so earlier promoteDue runs cannot touch the row.
+
+describe("REC-34 the worker job promotes a due next period", () => {
+  it("REC-34 a paid-ahead period whose start is today becomes the current one after one job run", async () => {
+    const today = jakartaToday();
+    const fx = await seedFixture({
+      status: "active",
+      interval: "week",
+      periodStart: addDays(today, -7),
+      periodEnd: today,
+      nextPeriodStart: today,
+      nextPeriodEnd: addDays(today, 7),
+    });
+    await runPaymentGatewayPollJob(ctxW(), new Date(), { force: true });
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "active",
+      period_start: today,
+      period_end: addDays(today, 7),
+      next_start: null,
+      next_end: null,
+    });
+    expect(subscriptionHasAccess(await accessInput(fx.subId), new Date())).toBe(
+      true,
+    );
+  });
+
+  it("REC-34 the job leaves a paused subscription's next period alone", async () => {
+    const today = jakartaToday();
+    const fx = await seedFixture({
+      status: "paused",
+      interval: "week",
+      periodStart: addDays(today, -7),
+      periodEnd: today,
+      nextPeriodStart: today,
+      nextPeriodEnd: addDays(today, 7),
+    });
+    await runPaymentGatewayPollJob(ctxW(), new Date(), { force: true });
+    expect(await subNext(fx.subId)).toMatchObject({
+      status: "paused",
+      period_start: addDays(today, -7),
+      next_start: today,
+    });
   });
 });

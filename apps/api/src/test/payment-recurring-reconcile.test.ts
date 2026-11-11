@@ -624,3 +624,157 @@ describe("REC-28 an event for an unknown subscription is kept and processed when
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// REC-32 (fix after architect, item C): a parked event is never orphaned
+// ---------------------------------------------------------------------------
+// ASSUMPTIONS
+// - "failed once with another error code" is replayed by setting
+//   `last_error_code = 'INTERNAL_ERROR'` on the stored event (the same replay
+//   technique REC-27 uses); the parked-event sweep must not depend on the code.
+// - The paid event was received BEFORE the created one (reordered delivery), so
+//   plain receivedAt order would process the paid event first; the sweep must
+//   put invoice.created first.
+
+function invoicePaid(
+  ids: Pick<Sub, "providerPlanId" | "providerSubId">,
+  invoiceId: string,
+) {
+  const created = invoiceCreated(ids, invoiceId);
+  return {
+    ...created,
+    id: `evt_${randomBytes(8).toString("hex")}`,
+    type: "invoice.paid",
+    data: {
+      invoice: {
+        ...created.data.invoice,
+        status: "paid",
+        paid_at: new Date().toISOString(),
+      },
+    },
+  };
+}
+
+async function subStatus(subId: string): Promise<string> {
+  const { rows } = await owner.query<{ status: string }>(
+    "SELECT status FROM payment_recurring_subscriptions WHERE id = $1",
+    [subId],
+  );
+  return rows[0]!.status;
+}
+
+describe("REC-32 a parked event that later failed with another error code is still reprocessed", () => {
+  it("REC-32 a paid event parked for more than 24 hours and a created event are both processed, created first, once the subscription exists", async () => {
+    const x = await makeIntegration();
+    const ids = newIds();
+    const invoiceId = `inv_${unique()}`;
+    const created = invoiceCreated(ids, invoiceId);
+    const paid = invoicePaid(ids, invoiceId);
+    await deliver(created, x.secret);
+    await deliver(paid, x.secret);
+    for (const event of [created, paid])
+      expect(await eventRow(event.id)).toMatchObject({
+        status: "failed",
+        last_error_code: "UNKNOWN_SUBSCRIPTION",
+      });
+
+    // The paid event failed again with a different error code, and both are
+    // older than the old 24 hour window; the paid one arrived first.
+    await owner.query(
+      `UPDATE gateway_webhook_events SET last_error_code = 'INTERNAL_ERROR', attempts = 1
+        WHERE tenant_id = $1 AND event_id = $2`,
+      [tenantId, paid.id],
+    );
+    await backdate(paid.id, 31 * 60);
+    await backdate(created.id, 30 * 60);
+
+    const sub = await seedSub(x.id, ids);
+    const result = await reprocessParkedRecurringEvents(context(), new Date());
+
+    expect(result.processed).toBeGreaterThanOrEqual(2);
+    expect((await eventRow(created.id))?.status).toBe("processed");
+    expect((await eventRow(paid.id))?.status).toBe("processed");
+    // Created ran before paid: the invoice is a normal paid invoice, not an
+    // unseen-paid one parked for review, and the subscription is active.
+    expect(await invoiceRows(invoiceId)).toEqual([
+      expect.objectContaining({ status: "paid", review_reason: null }),
+    ]);
+    expect(await subStatus(sub.subId)).toBe("active");
+  });
+
+  it("REC-32 a failed event with any other error code and no subscription yet stays failed (retried by the next sweep)", async () => {
+    const x = await makeIntegration();
+    const ids = newIds();
+    const body = invoiceCreated(ids);
+    await deliver(body, x.secret);
+    await owner.query(
+      `UPDATE gateway_webhook_events SET last_error_code = 'INTERNAL_ERROR', attempts = 2
+        WHERE tenant_id = $1 AND event_id = $2`,
+      [tenantId, body.id],
+    );
+    await backdate(body.id, 30 * 60);
+    await reprocessParkedRecurringEvents(context(), new Date());
+    expect((await eventRow(body.id))?.status).toBe("failed");
+    expect(await invoiceRows(body.data.invoice.id)).toHaveLength(0);
+
+    // It is not orphaned: once the subscription appears the next sweep gets it.
+    await seedSub(x.id, ids);
+    await backdate(body.id, 30 * 60);
+    await reprocessParkedRecurringEvents(context(), new Date());
+    expect((await eventRow(body.id))?.status).toBe("processed");
+    expect(await invoiceRows(body.data.invoice.id)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REC-33 (item D): one unreadable integration never breaks verification
+// ---------------------------------------------------------------------------
+// ASSUMPTION: an active integration whose sealed credentials cannot be opened is
+// produced by overwriting `credentials_encrypted` with garbage (the column is
+// text). The premise (it really is unreadable) cannot be asserted without the
+// credential loader; the observable contract is that the event signed by the
+// other integration is accepted with 200 and stored, never a 500.
+
+describe("REC-33 an integration with unreadable credentials does not break a recurring invoice event signed by another", () => {
+  it("REC-33 the event is accepted, the invoice stored and only the readable integration is recorded as verifier", async () => {
+    const good = await makeIntegration();
+    const broken = await makeIntegration();
+    const sub = await seedSub(good.id);
+    await owner.query(
+      // Disabled too: an ACTIVE unreadable integration already breaks the older
+      // payment secret loader (existing behavior, out of scope here).
+      "UPDATE tenant_integrations SET credentials_encrypted = $2, status = 'disabled' WHERE id = $1",
+      [broken.id, "not-a-valid-sealed-blob"],
+    );
+    clearDoitWebhookSecretCache();
+
+    const body = invoiceCreated(sub);
+    const response = await deliver(body, good.secret);
+    expect(response.status).toBe(200);
+    expect(await invoiceRows(body.data.invoice.id)).toEqual([
+      expect.objectContaining({ status: "open", review_reason: null }),
+    ]);
+    const row = await eventRow(body.id);
+    expect(row?.status).toBe("processed");
+    expect(row?.verified_integration_ids).toContain(good.id);
+    expect(row?.verified_integration_ids).not.toContain(broken.id);
+  });
+
+  it("REC-33 a secret that matches nobody is still 401 while one integration is unreadable", async () => {
+    const good = await makeIntegration();
+    const broken = await makeIntegration();
+    const sub = await seedSub(good.id);
+    await owner.query(
+      // Disabled too: an ACTIVE unreadable integration already breaks the older
+      // payment secret loader (existing behavior, out of scope here).
+      "UPDATE tenant_integrations SET credentials_encrypted = $2, status = 'disabled' WHERE id = $1",
+      [broken.id, "not-a-valid-sealed-blob"],
+    );
+    clearDoitWebhookSecretCache();
+    const body = invoiceCreated(sub);
+    expect((await deliver(body, `whsec-unrelated-${unique()}`)).status).toBe(
+      401,
+    );
+    expect(await invoiceRows(body.data.invoice.id)).toHaveLength(0);
+  });
+});

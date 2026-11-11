@@ -395,7 +395,7 @@ export async function startSubscription(
   firstInvoiceUrl: string | null;
 }> {
   const tenantId = context.tenant.tenantId;
-  const { plan, customerFound, existing } = await withTenant(
+  const { plan, customerFound, existing, unresolved } = await withTenant(
     db,
     context,
     async (tx) => {
@@ -431,10 +431,36 @@ export async function startSubscription(
             ),
           ),
         );
+      // Another key for the same plan and customer while a start is still
+      // unresolved at the gateway: the older one may already hold a provider
+      // subscription, so a second one is never created next to it.
+      let unresolved = false;
+      if (!replay && found) {
+        const [other] = await tx
+          .select({ id: paymentRecurringSubscriptions.id })
+          .from(paymentRecurringSubscriptions)
+          .where(
+            and(
+              eq(paymentRecurringSubscriptions.tenantId, tenantId),
+              eq(paymentRecurringSubscriptions.planId, found.id),
+              eq(
+                paymentRecurringSubscriptions.customerProfileId,
+                input.customerProfileId,
+              ),
+              inArray(paymentRecurringSubscriptions.status, [
+                "provisioning",
+                "needs_reconcile",
+              ]),
+            ),
+          )
+          .limit(1);
+        unresolved = other !== undefined;
+      }
       return {
         plan: found ?? null,
         customerFound: customer !== undefined,
         existing: replay ?? null,
+        unresolved,
       };
     },
   );
@@ -454,14 +480,22 @@ export async function startSubscription(
     if (plan.status !== "active")
       throw new CoreError("CONFLICT", "Paket sudah tidak aktif.");
     if (!customerFound) throw notFound("Pelanggan");
+    if (unresolved)
+      throw new CoreError(
+        "CONFLICT",
+        "Ada langganan yang belum terkonfirmasi di gateway. Coba lagi dengan kunci yang sama.",
+      );
   }
 
-  // Before anything is stored: a disabled integration leaves no row behind.
+  // A retry of a stored intent only has to learn and tie the provider
+  // subscription (so it can be stopped), which works for any integration
+  // status; a new intent still needs an active integration. Either way it is
+  // checked before anything is stored: a disabled integration leaves no row.
   const client = await clientLoader(deps)(
     context,
     plan.outletId,
     plan.gatewayIntegrationId,
-    "bill",
+    existing ? "stop" : "bill",
   );
 
   const intent =
@@ -1326,11 +1360,18 @@ async function applyInvoicePaid(
     const covered = subscription.nextPeriodEnd ?? subscription.currentPeriodEnd;
     if (covered !== null && stored.periodEnd <= covered)
       return { outcome: "processed", code: null };
+    // A second early period joins the first one: the waiting window keeps its
+    // start and its end moves to the new period's end, but only when the new
+    // period starts exactly where the covered range ends. Otherwise the stored
+    // window is left as it is (never replaced, never widened by a gap).
+    const continuous = covered === null || stored.periodStart === covered;
     await tx
       .update(paymentRecurringSubscriptions)
       .set({
-        nextPeriodStart: stored.periodStart,
-        nextPeriodEnd: stored.periodEnd,
+        nextPeriodStart: subscription.nextPeriodStart ?? stored.periodStart,
+        nextPeriodEnd: continuous
+          ? stored.periodEnd
+          : subscription.nextPeriodEnd,
         updatedAt: now,
       })
       .where(

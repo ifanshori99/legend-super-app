@@ -420,12 +420,15 @@ async function verifiedIntegrationIdsOf(
   const { data } = await listIntegrations(context);
   for (const row of data) {
     if (row.provider !== PROVIDER || ids.has(row.id)) continue;
-    const loaded = await loadIntegrationCredentialsById(
-      context,
-      PROVIDER,
-      row.id,
-      { forStoredIntent: true },
-    );
+    let loaded: Awaited<ReturnType<typeof loadIntegrationCredentialsById>>;
+    try {
+      loaded = await loadIntegrationCredentialsById(context, PROVIDER, row.id, {
+        forStoredIntent: true,
+      });
+    } catch {
+      // Unreadable keys: this integration is skipped, never a failed webhook.
+      continue;
+    }
     if (!loaded) continue;
     const secret = loaded.credentials.webhookSecret;
     const previous = previousWebhookSecretOf(loaded.credentials, row.id);
@@ -1918,12 +1921,16 @@ export async function reprocessStoredWebhookEvents(
 }
 
 /**
- * Recurring invoice events parked because no local subscription matched yet
- * (`failed` / UNKNOWN_SUBSCRIPTION). They stay parked without a time limit and
- * are processed once the subscription exists: by the worker sweep, or right
- * after a start when `providerSubscriptionId` names the new subscription (the
- * backoff is skipped then). Processed with the binding stored at receipt, like
- * every other invoice event. Per-event failures are skipped.
+ * Recurring invoice events that are still `failed`: parked because no local
+ * subscription matched yet (UNKNOWN_SUBSCRIPTION), or hit by any later error.
+ * No error-code filter, so a later error cannot orphan a parked event. They
+ * stay without a time limit and are processed once the subscription exists:
+ * by the worker sweep (with backoff), or right after a start when
+ * `providerSubscriptionId` names the new subscription (the backoff is skipped
+ * then). `invoice.created` runs before `invoice.paid`, then oldest first.
+ * Processed with the binding stored at receipt, like every other invoice
+ * event. A per-event error leaves the row `failed` (processInvoiceEvent
+ * records it) and is skipped; the next sweep retries.
  */
 export async function reprocessParkedRecurringEvents(
   context: ScopedTenantContext,
@@ -1936,9 +1943,10 @@ export async function reprocessParkedRecurringEvents(
     eq(gatewayWebhookEvents.provider, PROVIDER),
     eq(gatewayWebhookEvents.signatureValid, true),
     eq(gatewayWebhookEvents.status, "failed"),
-    eq(gatewayWebhookEvents.lastErrorCode, "UNKNOWN_SUBSCRIPTION"),
     inArray(gatewayWebhookEvents.eventType, [...DOIT_RECURRING_EVENT_TYPES]),
     isNotNull(gatewayWebhookEvents.payload),
+    // An unreadable body stays unreadable: not retried forever here.
+    sql`coalesce(${gatewayWebhookEvents.lastErrorCode}, '') <> 'MALFORMED'`,
   ];
   if (opts.providerSubscriptionId !== undefined)
     conditions.push(
@@ -1953,7 +1961,12 @@ export async function reprocessParkedRecurringEvents(
       .select()
       .from(gatewayWebhookEvents)
       .where(and(...conditions))
-      .orderBy(asc(gatewayWebhookEvents.receivedAt))
+      // `invoice.created` first so a renewal's invoice exists before its paid
+      // event is applied; then oldest first.
+      .orderBy(
+        sql`case when ${gatewayWebhookEvents.eventType} = 'invoice.created' then 0 else 1 end`,
+        asc(gatewayWebhookEvents.receivedAt),
+      )
       .limit(opts.limit ?? 100),
   );
   let processed = 0;
