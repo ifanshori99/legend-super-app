@@ -259,3 +259,22 @@ Nomor sementara dinomori ulang rapat sesudah 0246, urut merge. `when` naik 10000
 - **0239 diedit di tempat oleh ws/ps-405:** kolom `distribution_lines.recipient_unverified` dan indeksnya ditambah ke 0239; baris lama yang sudah dibayar ditandai `recipient_unverified` dan hanya Owner tenant yang bisa menetapkan penerimanya satu kali (dengan baris audit). Snapshot 0239 sampai 0248 diberi kolom dan indeks yang sama. **Database dev/test yang sudah menerapkan 0239 lama harus di-reset** (migrasi tidak dijalankan ulang); catatan batch48b/48c menyebut m1 belum pernah diterapkan ke database bersama, jadi edit di tempat aman; CTO tetap cek tabel migrasi staging dan produksi untuk 0239 sebelum rilis. Bila 0239 lama sudah jalan di sana, tulis migrasi 0250 (kolom, indeks, guard, flag) alih-alih mengandalkan edit ini (temuan architect batch48d).
 - **Cabang uang (duitku-406, ps-405):** tidak ada konflik di file kode; hanya docs. Perilaku tidak diubah saat merge.
 - **Ditahan, tidak digabung:** ws/pti5r-promo-refund (kartu legend-fwe4l dan second opinion Codex refund), semua cabang WhatsApp (lgfru, s5rgo, 9h2oj, w8dfz.*).
+
+## Tambahan batch48g (penomoran ulang 0255 sampai 0260; belum di m1)
+
+Migrasi 0250 sampai 0254 (batch48f) ada di entri PROGRESS batch48f. Cabang `ws/merge-batch48g` belum digabung ke m1.
+
+| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
+|---|---|---|---|---|
+| 0255 | `0255_drop_payslip_pin_reset_challenges` | 0273 | ws/9h2oj-wa-reset (juga memuat ur82k) | 1794336000000 |
+| 0256 | `0256_approved_leaves_on` | 0276 | ws/5nt2z-leave-partial | 1794337000000 |
+| 0257 | `0257_flag_attendance_for_leave` | 0277 | ws/5nt2z-leave-partial | 1794338000000 |
+| 0258 | `0258_leave_clash_backfill` | 0278 | ws/5nt2z-leave-partial | 1794339000000 |
+| 0259 | `0259_hpp_recompute` | 0278 | ws/2qq-hpp-recompute | 1794340000000 |
+| 0260 | `0260_order_issue_paid_value` | 0235 | ws/rat9r-followups | 1794341000000 |
+
+- 0256, 0257, 0258 tidak punya perubahan skema: snapshot disalin dari 0255 dengan `id`/`prevId` baru dan entri jurnal ditulis manual. `db:generate` kosong.
+- **SQL diubah oleh merge train:** 0259, tujuh FK `menu_costs` dipindah ke dalam `CREATE TABLE` (outlets FORCE RLS; `ADD CONSTRAINT` oleh migrator non-superuser gagal 42501).
+- 0257 dan 0258 berisi INSERT/UPDATE dan terdaftar di `MIGRATION_DATA_STATEMENTS` (`data-import-registry.test.ts`).
+- `hpp_outlet_state` (0259) sengaja hanya RLS tenant; `outlet-rls.test.ts` allowlist menunggu konfirmasi CTO dan architect.
+- **Syarat rilis:** rat9r-followups (0260) membawa ws/pti5r-promo-refund dan membuat 3 tes refund m1 gagal; keputusan CTO sebelum m1 di-push.
