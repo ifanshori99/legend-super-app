@@ -3612,3 +3612,4 @@ Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; s
 - Checkpoint lokal legend-qeott TEN-09 zones: codec/test direkam; test terarah dan review hijau, integrasi registry serta typecheck masih diselesaikan pada cabang yang sama.
 - Checkpoint lokal legend-f7t7z TEN-09 checklists: codec/test direkam; test terarah dan review hijau, integrasi registry serta typecheck masih diselesaikan pada cabang yang sama.
 - Checkpoint lokal legend-1tzvg TEN-09 loyalty_policy: codec/test direkam; test terarah dan review hijau, integrasi registry serta typecheck masih diselesaikan pada cabang yang sama.
+- Checkpoint lokal legend-u74y8 TEN-09 facilities: codec/test direkam; test terarah dan review hijau, integrasi registry serta typecheck masih diselesaikan pada cabang yang sama.
