@@ -8,8 +8,10 @@
 // offers a link that ends in "not found". Hiding is presentation; each page and
 // the API still authorize. Text lives in `auditSettings.hub.items`.
 import {
+  ArrowLeftRight,
   BellRing,
   BookOpen,
+  CaseSensitive,
   CreditCard,
   FolderTree,
   Gift,
@@ -18,7 +20,9 @@ import {
   Lock,
   MapPin,
   Package,
+  Palette,
   Percent,
+  PlugZap,
   QrCode,
   Ruler,
   ScrollText,
@@ -70,6 +74,19 @@ const STOCK_VIEW = ["inventory.stock.view"] as const;
 
 export const HUB_ITEMS: readonly HubItem[] = [
   item("access", "tenant", "/kelola/akses", ShieldCheck, ["access.role.view"]),
+  item("integrations", "tenant", "/kelola/pengaturan/integrasi", PlugZap, [
+    "org.integration.manage",
+  ]),
+  item("theme", "tenant", "/kelola/pengaturan/tema", Palette, [
+    "org.theme.manage",
+  ]),
+  // Super Admin only: the page guard checks the platform permission.
+  item("terms", "tenant", "/kelola/pengaturan/istilah", CaseSensitive, [
+    "platform.tenant.manage",
+  ]),
+  item("config", "tenant", "/kelola/pengaturan/konfigurasi", ArrowLeftRight, [
+    "org.config.export",
+  ]),
   item("security", "tenant", "/kelola/keamanan", Lock),
   item("notifications", "tenant", "/kelola/notifikasi", BellRing),
   item("tax", "tenant", "/kelola/pajak", Percent, ["org.tax_config.manage"]),

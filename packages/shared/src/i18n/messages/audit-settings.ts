@@ -151,8 +151,8 @@ export const auditSettingsMessages = {
     subtitle:
       "Semua konfigurasi tenant, brand, dan outlet dalam satu tempat. Buka kartu untuk mengubahnya.",
     empty: {
-      title: "Belum ada layar pengaturan",
-      hint: "Layar konfigurasi akan muncul di sini setelah tersedia untuk akun Anda.",
+      title: "Belum ada pengaturan yang tersedia",
+      hint: "Akun Anda belum memiliki izin untuk mengelola pengaturan tenant. Hubungi administrator untuk meminta akses.",
     },
     groups: {
       tenant: "Tenant",
@@ -163,6 +163,22 @@ export const auditSettingsMessages = {
       outletHint: "Diatur per outlet.",
     },
     items: {
+      integrations: {
+        name: "Integrasi",
+        hint: "Kelola layanan yang terhubung dan kredensial tenant.",
+      },
+      theme: {
+        name: "Tema",
+        hint: "Atur warna, logo, dan font untuk tampilan tenant.",
+      },
+      terms: {
+        name: "Kamus istilah",
+        hint: "Kelola istilah yang digunakan dalam antarmuka tenant.",
+      },
+      config: {
+        name: "Konfigurasi",
+        hint: "Ekspor dan impor konfigurasi tenant.",
+      },
       access: {
         name: "Akses & peran",
         hint: "Peran, penugasan, dan matriks persetujuan.",
