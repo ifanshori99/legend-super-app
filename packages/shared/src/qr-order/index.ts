@@ -15,3 +15,4 @@ export * from "./fixtures.ts";
 export * from "./zone-waiters.ts";
 export * from "./realtime.ts";
 export * from "./open-bill.ts";
+export * from "./config-codec.ts";
