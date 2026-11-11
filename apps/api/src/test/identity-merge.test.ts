@@ -18,8 +18,15 @@
 //   - When U (the signed-in account) is the absorbed one, its sessions are
 //     deleted, so the bound browser's poll claims one session for the survivor.
 //   - identity_merges is append-only (trigger), so cleanup disables user
-//     triggers on that table for the owner connection only.
+//     triggers on that table. The switch is catalog-wide (every connection
+//     sees it), so helpers/identity-isolation.ts serializes it with an advisory
+//     lock and the delete itself is scoped to this file's accounts.
 
+// Must stay the first import: it sets TRUST_PROXY before ../app reads the env.
+import {
+  FILE_CLIENT_IP,
+  releaseTrustedProxy,
+} from "./helpers/identity-client-ip";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -33,6 +40,10 @@ import {
   mergedReplyText,
 } from "../services/identity-merge.service";
 import { agent, originHeader, signUp } from "./helpers";
+import {
+  createIdentityScope,
+  uniqueDigits,
+} from "./helpers/identity-isolation";
 import {
   asTenant,
   createWorld,
@@ -51,8 +62,14 @@ const fixtures = cafeLegendPlatformFixtures;
 const HOST = fixtures.domains[0]!.hostname;
 const TENANT_A = fixtures.tenant.id;
 const NUMBER_A = "628111000001";
-const SENDER = "6281234567890";
-const OTHER_NUMBER = "6281999000111";
+// Unique per file so identity rows never collide with the other identity files
+// (legend-5opkl). This file stays on the seeded tenant: it needs its roles and
+// member programme, so it owns NUMBER_A and the rows below, not the whole tables.
+const SENDER = `62812${uniqueDigits(8)}`;
+const OTHER_NUMBER = `62819${uniqueDigits(8)}`;
+
+const fileAgent = (target: Parameters<typeof agent>[0]) =>
+  agent(target).set("X-Forwarded-For", FILE_CLIENT_IP);
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -62,13 +79,17 @@ const app = createApp({
   whatsappWebhookSecrets: [SECRET],
   loginChallengeRateLimit: { issuePerIp: 1_000, issuePerBinding: 1_000 },
 });
-const trackedUserIds: string[] = [];
+const isolation = createIdentityScope(owner);
+isolation.scope.tenantIds.push(TENANT_A);
+isolation.scope.receivingNumbers.push(NUMBER_A);
+isolation.scope.senders.push(SENDER, OTHER_NUMBER);
+const trackedUserIds = isolation.scope.userIds;
 const trackedProfiles: { tenantId: string; id: string }[] = [];
 
 type Client = ReturnType<typeof agent>;
 
 function browser(): Client {
-  return agent(app).host(HOST);
+  return fileAgent(app).host(HOST);
 }
 
 function kirimPayload(eventId: string, text: string, from: string) {
@@ -95,7 +116,7 @@ function kirimPayload(eventId: string, text: string, from: string) {
 
 async function postWebhook(body: string) {
   const signature = await signKirimWebhook({ rawBody: body, secret: SECRET });
-  return agent(app)
+  return fileAgent(app)
     .host(HOST)
     .post("/api/webhooks/whatsapp")
     .set("Content-Type", "application/json")
@@ -176,12 +197,16 @@ async function userRow(userId: string) {
   return rows[0]!;
 }
 
+const ownHashes = () =>
+  Promise.all([SENDER, OTHER_NUMBER].map((number) => whatsAppDigest(number)));
+
 async function whatsappIdentities() {
   const { rows } = await owner.query<{
     user_id: string;
     verified_at: Date | null;
   }>(
-    "SELECT user_id, verified_at FROM user_identities WHERE type = 'whatsapp'",
+    "SELECT user_id, verified_at FROM user_identities WHERE type = 'whatsapp' AND value_hash = ANY($1)",
+    [await ownHashes()],
   );
   return rows;
 }
@@ -193,40 +218,17 @@ async function merges() {
     trigger: string;
     identity_ids: string[];
     profile_moves: unknown;
-  }>("SELECT * FROM identity_merges");
+  }>(
+    "SELECT * FROM identity_merges WHERE survivor_user_id = ANY($1) OR absorbed_user_id = ANY($1)",
+    [await isolation.ownedUserIds()],
+  );
   return rows;
 }
 
 async function resetState() {
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
-  // identity_merges is append-only; the owner connection may switch the guard
-  // off only for this cleanup, then it is switched back on.
-  await owner.query("ALTER TABLE identity_merges DISABLE TRIGGER USER");
-  try {
-    await owner.query("DELETE FROM identity_merges");
-  } finally {
-    await owner.query("ALTER TABLE identity_merges ENABLE TRIGGER USER");
-  }
-  await owner.query("DELETE FROM user_identities");
-  const placeholders = await owner.query<{ id: string }>(
-    `SELECT id FROM "user" WHERE email LIKE '%@wa.invalid'`,
-  );
-  const ids = [
-    ...new Set([...trackedUserIds, ...placeholders.rows.map((r) => r.id)]),
-  ];
-  if (ids.length > 0) {
-    await owner.query(
-      "DELETE FROM role_assignments WHERE user_id = ANY($1::text[]) OR assigned_by = ANY($1::text[])",
-      [ids],
-    );
-    await owner.query(
-      "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
-      [ids],
-    );
-    await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [ids]);
-  }
-  trackedUserIds.length = 0;
+  // Only this file's rows: its tenant's challenges, its number's inbound rows,
+  // the accounts of its senders and the users it tracked.
+  await isolation.cleanup();
   // Member profiles cannot be deleted (ledger FK, closed-not-deleted rule), so
   // the ones this file seeded are closed and lose the number hash: a later
   // test may prove the same number without meeting a leftover unique key.
@@ -400,6 +402,7 @@ beforeAll(async () => {
 beforeEach(resetState);
 
 afterAll(async () => {
+  releaseTrustedProxy();
   await resetState();
   await owner.end();
 });
@@ -564,7 +567,8 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
     expect(await merges()).toHaveLength(0);
     expect((await userRow(v.userId)).banned).not.toBe(true);
     const held = await owner.query(
-      "SELECT user_id FROM user_identities WHERE type = 'whatsapp' ORDER BY user_id",
+      "SELECT user_id FROM user_identities WHERE type = 'whatsapp' AND value_hash = ANY($1) ORDER BY user_id",
+      [await ownHashes()],
     );
     expect(held.rows.map((r) => r.user_id).sort()).toEqual(
       [u.userId, v.userId].sort(),
@@ -724,7 +728,10 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
         user_id: string;
         type: string;
         is_primary: boolean;
-      }>("SELECT id, user_id, type, is_primary FROM user_identities");
+      }>(
+        "SELECT id, user_id, type, is_primary FROM user_identities WHERE user_id = ANY($1)",
+        [await isolation.ownedUserIds()],
+      );
       expect(identities.rows.every((row) => row.user_id === v.userId)).toBe(
         true,
       );

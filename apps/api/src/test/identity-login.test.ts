@@ -6,10 +6,14 @@
 // a real HMAC signature, and `GET /api/auth/get-session` proving the claimed
 // session is an ordinary Better Auth session.
 
+// Must stay the first import: it sets TRUST_PROXY before ../app reads the env.
+import {
+  FILE_CLIENT_IP,
+  releaseTrustedProxy,
+} from "./helpers/identity-client-ip";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { signKirimWebhook } from "@starter/shared/adapters";
 import {
   LOGIN_CODE_ALPHABET,
@@ -25,15 +29,27 @@ import {
 import { processInboundWhatsApp } from "../services/identity-wa-inbound.service";
 import { whatsAppDigest } from "../lib/identity-digest.ts";
 import { agent, originHeader, signUp } from "./helpers";
+import {
+  createIdentityScope,
+  createIdentityTenant,
+  uniqueDigits,
+} from "./helpers/identity-isolation";
 
 const SECRET = "test-kirim-webhook-secret";
-const fixtures = cafeLegendPlatformFixtures;
-const TENANT_A = fixtures.tenant.id;
-const TENANT_B = "b0a10000-0000-4000-8000-0000000000b1";
-const NUMBER_A = "628111000001";
-const NUMBER_B = "628111000002";
-const SENDER = "6281234567890";
-const ISSUED_CODE = "K7Q4M2XD";
+// Own tenants, host, numbers and sender: this file never shares rows with the
+// other identity files (legend-5opkl).
+const TENANT_A: string = randomUUID();
+const TENANT_B: string = randomUUID();
+const NUMBER_A = `62811${uniqueDigits(7)}`;
+const NUMBER_B = `62811${uniqueDigits(7)}`;
+const SENDER = `62812${uniqueDigits(8)}`;
+let HOST = "";
+// Distinct per file: a code is looked up across tenants, so two files issuing the
+// same fixed code at once would make it ambiguous (legend-5opkl).
+const ISSUED_CODE = "H8J9KMNP";
+
+const fileAgent = (target: Parameters<typeof agent>[0]) =>
+  agent(target).set("X-Forwarded-For", FILE_CLIENT_IP);
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -86,8 +102,8 @@ function kirimPayload(input: {
 /** Signs the exact bytes, the way KirimDev does, and posts them. */
 async function postWebhook(body: string, secret = SECRET) {
   const signature = await signKirimWebhook({ rawBody: body, secret });
-  return agent(app)
-    .host(fixtures.domains[0]!.hostname)
+  return fileAgent(app)
+    .host(HOST)
     .post("/api/webhooks/whatsapp")
     .set("Content-Type", "application/json")
     .set("X-Kirim-Signature", signature)
@@ -109,78 +125,36 @@ function loginMessage(input: {
   });
 }
 
-async function seedWhatsAppIntegration(
-  tenantId: string,
-  receivingNumber: string,
-) {
-  await owner.query(
-    `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
-     VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')
-     ON CONFLICT (tenant_id, provider) WHERE outlet_id IS NULL
-     DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
-    [tenantId, JSON.stringify({ vendor: "kirimdev", receivingNumber })],
-  );
-}
+const isolation = createIdentityScope(owner);
+isolation.scope.tenantIds.push(TENANT_A, TENANT_B);
+isolation.scope.receivingNumbers.push(NUMBER_A, NUMBER_B);
+isolation.scope.senders.push(SENDER, "6281299999999");
 
 beforeAll(async () => {
-  await owner.query(
-    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, 'uji-identitas', 'Uji Identitas', 'lengkap', 'active', 'shared',
-             '{"modules":[],"integrationProviders":[]}', $2, 'test')
-     ON CONFLICT (id) DO NOTHING`,
-    [
-      TENANT_B,
-      JSON.stringify({
-        maxOutlets: 2,
-        maxActiveEmployees: 5,
-        maxDevices: 2,
-        aiRequestsPerMonth: 0,
-        whatsappCostCapIdr: 0,
-        aiCostCapIdr: 0,
-        emailCostCapIdr: 0,
-      }),
-    ],
-  );
-  await seedWhatsAppIntegration(TENANT_A, NUMBER_A);
-  await seedWhatsAppIntegration(TENANT_B, NUMBER_B);
+  const tenant = await createIdentityTenant(owner, "login", NUMBER_A, {
+    id: TENANT_A,
+  });
+  HOST = tenant.hostname;
+  await createIdentityTenant(owner, "login-b", NUMBER_B, {
+    id: TENANT_B,
+    withDomain: false,
+  });
 });
 
-beforeEach(async () => {
-  // Each test owns the whole login state: the AUTH-04 windows are time based,
-  // so a leftover row would make the next test flaky.
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
-  await owner.query("DELETE FROM user_identities");
-  await owner.query(
-    `DELETE FROM role_assignments
-      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
-         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
-    ["%@wa.invalid"],
-  );
-  await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
-});
+// Each test owns this file's login state: the AUTH-04 windows are time based,
+// so a leftover row would make the next test flaky. Only this file's rows go.
+beforeEach(isolation.cleanup);
 
 afterAll(async () => {
-  await owner.query("DELETE FROM wa_inbound_messages");
-  await owner.query("DELETE FROM login_challenges");
-  await owner.query("DELETE FROM user_identities");
-  await owner.query(
-    `DELETE FROM role_assignments
-      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
-         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
-    ["%@wa.invalid"],
-  );
-  await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
-  await owner.query("DELETE FROM tenant_integrations WHERE tenant_id = $1", [
-    TENANT_B,
-  ]);
-  await owner.query("DELETE FROM tenants WHERE id = $1", [TENANT_B]);
+  releaseTrustedProxy();
+  await isolation.cleanup();
+  await isolation.dropTenants([TENANT_A, TENANT_B]);
   await owner.end();
 });
 
 describe("WhatsApp reverse-OTP login", () => {
   it("AUTH-01 issues a 40-bit code valid five minutes, bound to the asking browser", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -207,14 +181,14 @@ describe("WhatsApp reverse-OTP login", () => {
     expect(String(issued.headers["set-cookie"])).toContain(".login_binding=");
 
     // Another browser that learns the challenge id gets nothing (AUTH-01).
-    const other = agent(app).host(fixtures.domains[0]!.hostname);
+    const other = fileAgent(app).host(HOST);
     const peek = await other.get(`/api/auth/login-challenges/${challenge.id}`);
     expect(peek.status).toBe(403);
     expect(peek.body.error.code).toBe("CHALLENGE_BROWSER_MISMATCH");
   });
 
   it("AUTH-01 completes once and only the bound browser collects the session", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -278,12 +252,12 @@ describe("WhatsApp reverse-OTP login", () => {
     expect(replay.body.error.code).toBe("CHALLENGE_NOT_PENDING");
 
     // And a different browser never could, even holding the challenge id.
-    const thief = agent(app).host(fixtures.domains[0]!.hostname);
+    const thief = fileAgent(app).host(HOST);
     expect((await thief.get(path)).status).toBe(403);
   });
 
   it("AUTH-07 links a verified number to the current account without issuing a new session", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     await signUp(browser);
     const before = await browser.get("/api/auth/get-session");
     const issued = await browser
@@ -308,7 +282,8 @@ describe("WhatsApp reverse-OTP login", () => {
     expect(after.body.user.id).toBe(before.body.user.id);
     expect(after.body.session.id).toBe(before.body.session.id);
     const identity = await owner.query(
-      "SELECT user_id FROM user_identities WHERE type = 'whatsapp'",
+      "SELECT user_id FROM user_identities WHERE type = 'whatsapp' AND value_hash = $1",
+      [await whatsAppDigest(SENDER)],
     );
     expect(identity.rows).toEqual([{ user_id: before.body.user.id }]);
     const audit = await owner.query(
@@ -324,7 +299,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-07 verifies an existing unverified WhatsApp identity on the same account", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     await signUp(browser);
     const current = await browser.get("/api/auth/get-session");
     await owner.query(
@@ -351,7 +326,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-07 rejects a number already linked to another account", async () => {
-    const first = agent(app).host(fixtures.domains[0]!.hostname);
+    const first = fileAgent(app).host(HOST);
     await signUp(first);
     const issued = await first
       .post("/api/auth/login-challenges/whatsapp")
@@ -369,10 +344,10 @@ describe("WhatsApp reverse-OTP login", () => {
     await owner.query(
       `INSERT INTO user_identities (user_id, type, value_hash, verified_at)
        SELECT user_id, 'email', $1, now() FROM user_identities
-       WHERE type = 'whatsapp' LIMIT 1`,
-      [randomBytes(32).toString("hex")],
+       WHERE type = 'whatsapp' AND value_hash = $2 LIMIT 1`,
+      [randomBytes(32).toString("hex"), await whatsAppDigest(SENDER)],
     );
-    const second = agent(app).host(fixtures.domains[0]!.hostname);
+    const second = fileAgent(app).host(HOST);
     await signUp(second);
     const other = await second
       .post("/api/auth/login-challenges/whatsapp")
@@ -386,7 +361,8 @@ describe("WhatsApp reverse-OTP login", () => {
     );
     expect(rejected.body.data.completed).toBe(0);
     const rows = await owner.query(
-      "SELECT count(*)::int AS count FROM user_identities WHERE type = 'whatsapp'",
+      "SELECT count(*)::int AS count FROM user_identities WHERE type = 'whatsapp' AND value_hash = $1",
+      [await whatsAppDigest(SENDER)],
     );
     expect(rows.rows[0].count).toBe(1);
     const conflict = await second.get(
@@ -397,7 +373,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-07 refuses linking after the initiating session is revoked", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     await signUp(browser);
     const current = await browser.get("/api/auth/get-session");
     const issued = await browser
@@ -414,10 +390,7 @@ describe("WhatsApp reverse-OTP login", () => {
       }),
     );
     expect(rejected.body.data.completed).toBe(0);
-    expect(
-      (await owner.query("SELECT count(*)::int AS count FROM user_identities"))
-        .rows[0].count,
-    ).toBe(0);
+    expect(await isolation.count("user_identities")).toBe(0);
   });
 
   it("AUTH-02 reports a provider id replayed with different content and keeps going", async () => {
@@ -444,7 +417,7 @@ describe("WhatsApp reverse-OTP login", () => {
     });
 
     // A later message of the same delivery is still processed.
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -491,7 +464,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-02 rolls back a failed link claim and retries the same delivery once", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     await signUp(browser);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
@@ -510,23 +483,11 @@ describe("WhatsApp reverse-OTP login", () => {
         },
       }),
     ).rejects.toThrow("injected failure");
-    expect(
-      (
-        await owner.query(
-          "SELECT count(*)::int AS count FROM wa_inbound_messages",
-        )
-      ).rows[0].count,
-    ).toBe(0);
-    expect(
-      (await owner.query("SELECT count(*)::int AS count FROM user_identities"))
-        .rows[0].count,
-    ).toBe(0);
+    expect(await isolation.count("wa_inbound_messages")).toBe(0);
+    expect(await isolation.count("user_identities")).toBe(0);
     expect((await processInboundWhatsApp(message)).kind).toBe("login");
     expect((await processInboundWhatsApp(message)).duplicate).toBe(true);
-    expect(
-      (await owner.query("SELECT count(*)::int AS count FROM user_identities"))
-        .rows[0].count,
-    ).toBe(1);
+    expect(await isolation.count("user_identities")).toBe(1);
   });
 
   it("AUTH-04 serializes concurrent messages from one sender at the ten-attempt limit", async () => {
@@ -549,14 +510,15 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-01 stores only keyed digests, never the code or the raw number", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
       .send({});
     const { code } = issued.body.data;
     const row = await owner.query(
-      "SELECT code_hash, browser_binding_hash, ip_hash, user_agent FROM login_challenges",
+      "SELECT code_hash, browser_binding_hash, ip_hash, user_agent FROM login_challenges WHERE tenant_id = ANY($1)",
+      [[TENANT_A, TENANT_B]],
     );
     const stored = JSON.stringify(row.rows);
     expect(row.rows).toHaveLength(1);
@@ -592,16 +554,12 @@ describe("WhatsApp reverse-OTP login", () => {
     });
     expect(polled.view.challenge.status).toBe("expired");
     expect(polled.session).toBeNull();
-    const sessions = await owner.query(
-      'SELECT count(*)::int AS count FROM session WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)',
-      ["%@wa.invalid"],
-    );
-    expect(sessions.rows[0].count).toBe(0);
+    expect(await isolation.count("session")).toBe(0);
   });
 
   it("AUTH-04 stops a device or IP at five challenges per fifteen minutes", async () => {
     // One browser (one binding cookie, one client IP) gets five, not six.
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const issued = await browser
         .post("/api/auth/login-challenges/whatsapp")
@@ -674,8 +632,8 @@ describe("WhatsApp reverse-OTP login", () => {
       text: "MASUK LEGEND AAAAAA00",
     });
     const post = () =>
-      agent(app)
-        .host(fixtures.domains[0]!.hostname)
+      fileAgent(app)
+        .host(HOST)
         .post("/api/webhooks/whatsapp")
         .set("Content-Type", "application/json")
         .set("X-Kirim-Event-Id", "evt-" + randomUUID());
@@ -713,14 +671,11 @@ describe("WhatsApp reverse-OTP login", () => {
       .send(body);
     expect(stale.status).toBe(401);
     // Nothing was processed by any of the refused deliveries.
-    const rows = await owner.query(
-      "SELECT count(*)::int AS count FROM wa_inbound_messages",
-    );
-    expect(rows.rows[0].count).toBe(0);
+    expect(await isolation.count("wa_inbound_messages")).toBe(0);
   });
 
   it("AUTH-02 processes a repeated message id once", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -749,11 +704,13 @@ describe("WhatsApp reverse-OTP login", () => {
       conflicts: 0,
     });
     const completions = await owner.query(
-      "SELECT count(*)::int AS count FROM login_challenges WHERE status = 'completed'",
+      "SELECT count(*)::int AS count FROM login_challenges WHERE status = 'completed' AND tenant_id = ANY($1)",
+      [[TENANT_A, TENANT_B]],
     );
     expect(completions.rows[0].count).toBe(1);
     const claims = await owner.query(
-      "SELECT count(*)::int AS count FROM login_challenges WHERE session_issued_at IS NOT NULL",
+      "SELECT count(*)::int AS count FROM login_challenges WHERE session_issued_at IS NOT NULL AND tenant_id = ANY($1)",
+      [[TENANT_A, TENANT_B]],
     );
     expect(claims.rows[0].count).toBe(0);
   });
@@ -781,10 +738,7 @@ describe("WhatsApp reverse-OTP login", () => {
     expect(stillPending.view.challenge.status).toBe("pending");
     expect(stillPending.session).toBeNull();
     // No account was created for a rejected message.
-    const identities = await owner.query(
-      "SELECT count(*)::int AS count FROM user_identities",
-    );
-    expect(identities.rows[0].count).toBe(0);
+    expect(await isolation.count("user_identities")).toBe(0);
 
     // And the other direction: tenant B's challenge is not completed by a
     // message on tenant A's number either.
@@ -828,13 +782,13 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-01 cancels a challenge from the asking browser only", async () => {
-    const browser = agent(app).host(fixtures.domains[0]!.hostname);
+    const browser = fileAgent(app).host(HOST);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
       .send({});
     const path = `/api/auth/login-challenges/${issued.body.data.challenge.id}`;
-    const other = agent(app).host(fixtures.domains[0]!.hostname);
+    const other = fileAgent(app).host(HOST);
     const denied = await other.post(`${path}/cancel`).set(originHeader).send();
     expect(denied.status).toBe(403);
     expect(denied.body.error.code).toBe("CHALLENGE_BROWSER_MISMATCH");
@@ -865,7 +819,8 @@ describe("WhatsApp reverse-OTP login", () => {
     expect(outcome.kind).toBe("unknown");
     // Not counted against the AUTH-04 hourly quota.
     const row = await owner.query<{ kind: string }>(
-      "SELECT kind FROM wa_inbound_messages",
+      "SELECT kind FROM wa_inbound_messages WHERE receiving_number = ANY($1)",
+      [[NUMBER_A, NUMBER_B]],
     );
     expect(row.rows).toEqual([{ kind: "unknown" }]);
   });
