@@ -1230,6 +1230,94 @@ describe("employee component writes: lock transition race (538-G2b-P2)", () => {
   });
 });
 
+describe("employee component writes: changed run order (538-G2b-P2)", () => {
+  it("[538-G2b-P2-ORDER] uses the latest frozen date after waiting for a run whose dates changed", async () => {
+    const seed = await seedLockScenario();
+    const otherRunId = randomUUID();
+    createdLockRuns.push(otherRunId);
+    await asTenant(tenant.id, async (db) => {
+      await db.query(
+        `UPDATE payroll_runs SET period_start = '2031-06-01',
+           period_end = '2031-06-30', pay_date = '2031-06-30' WHERE id = $1`,
+        [seed.runId],
+      );
+      await db.query(
+        `INSERT INTO payroll_runs
+           (id, tenant_id, legal_entity_id, payroll_policy_id, run_type,
+            period_start, period_end, pay_date, created_by)
+         SELECT $1, tenant_id, legal_entity_id, payroll_policy_id, 'regular',
+           '2030-06-01', '2030-06-30', '2030-06-30', 'gross-engine-lock-test'
+         FROM payroll_runs WHERE id = $2 AND tenant_id = $3`,
+        [otherRunId, seed.runId, tenant.id],
+      );
+      await db.query(
+        "UPDATE payroll_runs SET status = 'simulated' WHERE id = $1",
+        [otherRunId],
+      );
+      await db.query(
+        "UPDATE payroll_runs SET status = 'hr_approved', approved_by_hr = $2, approved_by_hr_at = now() WHERE id = $1",
+        [otherRunId, actorId],
+      );
+      await db.query(
+        "UPDATE payroll_runs SET status = 'approved', approved_by_finance = $2, approved_by_finance_at = now() WHERE id = $1",
+        [otherRunId, reviewerId],
+      );
+      await freezeRun(db, otherRunId);
+    });
+
+    const outcome = await mutateDuringRunLock(
+      seed,
+      "2030-06-15",
+      async (holder) => {
+        await holder.query(
+          `UPDATE payroll_runs SET period_start = '2029-06-01',
+           period_end = '2029-06-30', pay_date = '2029-06-30' WHERE id = $1`,
+          [seed.runId],
+        );
+        await freezeRun(holder, seed.runId);
+      },
+    );
+
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.error?.status).toBe(409);
+    expect(outcome.error?.code).toBe("PAYROLL_RUN_FROZEN");
+    const rows = await asTenant(tenant.id, (db) =>
+      db.query(
+        "SELECT to_char(effective_from, 'YYYY-MM-DD') AS effective_from, effective_to FROM employee_pay_components WHERE employee_id = $1",
+        [seed.employeeId],
+      ),
+    );
+    expect(rows.rows).toEqual([
+      { effective_from: EFFECTIVE, effective_to: null },
+    ]);
+  });
+});
+
+describe("employee component writes: latest frozen run (538-G2b-low, 8xf32)", () => {
+  it("[538-G2b-LOW-LOCK] shares the latest frozen run even when the new amount starts after it", async () => {
+    const seed = await seedLockScenario(true);
+
+    const outcome = await mutateDuringRunLock(seed, "2030-07-01", (holder) =>
+      holder.query("SELECT id FROM payroll_runs WHERE id = $1 FOR UPDATE", [
+        seed.runId,
+      ]),
+    );
+
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.error).toBeNull();
+    const rows = await asTenant(tenant.id, (db) =>
+      db.query(
+        "SELECT to_char(effective_from, 'YYYY-MM-DD') AS effective_from FROM employee_pay_components WHERE employee_id = $1 ORDER BY effective_from",
+        [seed.employeeId],
+      ),
+    );
+    expect(rows.rows).toEqual([
+      { effective_from: EFFECTIVE },
+      { effective_from: "2030-07-01" },
+    ]);
+  });
+});
+
 describe("computeEmployeeGross: sealed result", () => {
   it("[SEAL] seals the calculation bound to the payslip row and keeps it unreadable in the clear", async () => {
     const employeeId = await seedEmployee();

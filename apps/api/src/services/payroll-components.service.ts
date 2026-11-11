@@ -496,7 +496,10 @@ async function latestFrozenPeriodEnd(
     .where(
       and(
         eq(payrollRuns.tenantId, context.tenant.tenantId),
-        gte(payrollRuns.periodEnd, effectiveFrom),
+        or(
+          gte(payrollRuns.periodEnd, effectiveFrom),
+          inArray(payrollRuns.status, [...FROZEN_PAYROLL_RUN_STATUSES]),
+        ),
         ...(legalEntityId
           ? [eq(payrollRuns.legalEntityId, legalEntityId)]
           : []),
