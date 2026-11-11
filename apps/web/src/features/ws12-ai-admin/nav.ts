@@ -1,0 +1,17 @@
+import { Bot } from "lucide-react";
+import type { AreaNavEntry } from "@/lib/areas/nav";
+
+// Management area: AI and MCP admin (service switches, clients, quota). The
+// page guard re-checks the permissions; the API authorizes every request.
+const nav: AreaNavEntry[] = [
+  {
+    area: "kelola",
+    labelKey: "aiAdmin.nav",
+    to: "/kelola/pengaturan/mcp-ai",
+    icon: Bot,
+    order: 94,
+    anyPermission: ["ai.governance.manage", "mcp.client.manage"],
+  },
+];
+
+export default nav;
