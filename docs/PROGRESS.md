@@ -11,6 +11,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Verifikasi architect atas 783f6ad9 menemukan sisa: refund POS kedua masih bisa bayar lebih (baris 10 HIGH), audit deposit berutang salah (baris 11), charge terlambat untuk tukar lama (baris 12). Ditutup di c32d8337 (test, 3/3 gagal-dulu), 1a6ed0b8, 99a54bf7; 170/170 lulus di 10 file. Architect: baris 1-8, 10-12 tertutup, tidak ada jalur bayar lebih. Charge terlambat ditulis `expired` (DB mewajibkan user penutup untuk `waived`).
 - Sisa LOW: baris charge tertutup selalu `route: qr_link` walau tagihan kasir; baris itu juga tertulis saat voucher staf berhenti di approval. Baris 9 (dry-run promo di preview mengunci baris promo tanpa lock issue/order) belum dipastikan; recompute promo tidak mengunci `orders`, jadi tidak ada deadlock.
 - Kartu eajpb, 5g9sn, pqm3t, hhm5m: in_progress + komentar siap review CTO. Worktree q25-* dihapus.
+- Area 36 file di 99a54bf7: 582/585, gagal hanya 3 lama (legend-wdqco). Biaya sesi agent (session-usage): 36.338k token-ekuivalen, 65 subagent (Opus 676 req, Sonnet 824, Haiku 41), compact 4.
 - Berikut: second-opinion Codex area ini (brief 460 belum diterima), migrasi 0235 perlu nomor ulang saat merge (bentrok milestone/m1).
 
 ## legend-rat9r voucher selisih tukar + refund item <= nilai dibayar tamu (engineer Opus, cabang `ws/rat9r-voucher-cap` dari ws/pti5r-promo-refund 326bfbfa + merge k0ub4, 2026-11-11)
