@@ -767,8 +767,12 @@ describe("[F25] day D is an excluded holiday of the leave", () => {
     expect(await balance(staff)).toMatchObject({ used: "4.0000" });
     const before = (await leavesOf(staff))[0]!;
 
+    // legend-x0avw (F4): an excluded holiday is not a leave day, so the log is
+    // not flagged and there is no leave to cancel on it: the decision is refused
+    // and nothing changes.
     const response = await review(log.id, { action: "cancel_leave" });
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe("ATTENDANCE_LEAVE_DECISION_NOT_ALLOWED");
 
     const rows = await leavesOf(staff);
     expect(rows).toHaveLength(1);

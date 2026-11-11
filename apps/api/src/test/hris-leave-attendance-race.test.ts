@@ -879,10 +879,19 @@ describe("[x0avw-F1] manual correction shares the lock", () => {
       (a) => insertApprovedLeave(a, s, day, s.staffUserId),
       () => decideCorrection(s, correctionId),
     );
-    expect(response.status, JSON.stringify(response.body)).toBe(409);
-    expect(response.body.error?.code, JSON.stringify(response.body)).toBe(
-      LEAVE_DAY_CODE,
-    );
+    // Once the approval commits the correction loses: either the decision is
+    // refused 409 (leave seen before the decision) or it settles as rejected
+    // (leave seen when the correction is applied). Both pay nothing.
+    if (response.status === 409) {
+      expect(response.body.error?.code, JSON.stringify(response.body)).toBe(
+        LEAVE_DAY_CODE,
+      );
+    } else {
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data?.status, JSON.stringify(response.body)).toBe(
+        "rejected",
+      );
+    }
     expect(await approvedLeaveCount(s)).toBe(1);
     expect(
       (await logsOf(s)).filter((log) => log.method === "manual_correction"),

@@ -626,7 +626,10 @@ function backfillStatement(): string {
  * swapping the UPDATE target for a temporary updatable view, so rows that
  * parallel test files own are not touched.
  */
-async function runBackfill(employeeIds: string[]): Promise<void> {
+async function runBackfill(
+  employeeIds: string[],
+  options: { closedPeriodOffsets?: number[] } = {},
+): Promise<void> {
   const sql = backfillStatement();
   const client = await owner.connect();
   try {
@@ -635,6 +638,30 @@ async function runBackfill(employeeIds: string[]): Promise<void> {
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
       [tenant.id],
     );
+    // A locked payroll run per offset day, visible only inside this
+    // transaction (removed again before the commit, so no other test sees it).
+    const runIds: string[] = [];
+    for (const offset of options.closedPeriodOffsets ?? []) {
+      const runId = randomUUID();
+      runIds.push(runId);
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO payroll_runs
+           (id, tenant_id, legal_entity_id, payroll_policy_id, run_type, period_start, period_end,
+            pay_date, status, config_snapshot, totals, approved_by_hr, approved_by_hr_at,
+            approved_by_finance, approved_by_finance_at, locked_by, locked_at, created_by)
+         VALUES ($1, $2, $3, $4, 'regular', $5, $5, $5, 'locked', '{"v":1}', '{"t":1}',
+                 'hr-user', now(), 'finance-user', now(), 'lock-user', now(), 'lcb-test')`,
+        [
+          runId,
+          tenant.id,
+          cafeLegendPlatformFixtures.legalEntity.id,
+          randomUUID(),
+          dateAt(offset),
+        ],
+      );
+      await client.query("SET LOCAL session_replication_role = origin");
+    }
     const list = employeeIds.map((id) => `'${id}'::uuid`).join(", ");
     await client.query(
       `CREATE TEMP VIEW attendance_logs_scope AS
@@ -646,6 +673,12 @@ async function runBackfill(employeeIds: string[]): Promise<void> {
     );
     await client.query(scoped);
     await client.query("DROP VIEW pg_temp.attendance_logs_scope");
+    if (runIds.length > 0) {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query("DELETE FROM payroll_runs WHERE id = ANY($1::uuid[])", [
+        runIds,
+      ]);
+    }
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -776,6 +809,100 @@ describe("[F2] 0278 backfill flags old leave + attendance clashes", () => {
 
     expect(await dbLog(onHoliday)).toEqual(holidayBefore);
     expect((await dbLog(onLeaveDay)).validity).toBe("flagged");
+  });
+});
+
+describe("[P2-2] 0278 backfill leaves closed payroll periods alone", () => {
+  it("[P2-2] a log on a day inside a locked payroll run is not reopened; a log on an open day is flagged", async () => {
+    const s = await newScenario("p22");
+    await s.seedLeave({
+      status: "approved",
+      startOffsetDays: -1,
+      endOffsetDays: 1,
+      days: 3,
+    });
+    const closedAccepted = await seedLog(s, {
+      validity: "valid",
+      reviewStatus: "accepted",
+      offsetDays: 0,
+    });
+    const closedValid = await seedLog(s, { validity: "valid", offsetDays: -1 });
+    const openAccepted = await seedLog(s, {
+      validity: "valid",
+      reviewStatus: "accepted",
+      offsetDays: 1,
+    });
+    const closedBefore = [
+      await dbLog(closedAccepted),
+      await dbLog(closedValid),
+    ];
+
+    await runBackfill([s.employeeId], { closedPeriodOffsets: [0, -1] });
+
+    expect([await dbLog(closedAccepted), await dbLog(closedValid)]).toEqual(
+      closedBefore,
+    );
+    const open = await dbLog(openAccepted);
+    expect(open.validity).toBe("flagged");
+    expect(open.review_status).toBe("pending");
+    expect(countReason(open, "leave_approved")).toBe(1);
+  });
+});
+
+describe("[P2-2] app.flag_attendance_for_leave in a closed payroll period", () => {
+  it("[P2-2] does not reopen an accepted log in a locked run, still flags a valid log there", async () => {
+    const s = await newScenario("p22f");
+    await s.seedLeave({
+      status: "approved",
+      startOffsetDays: 0,
+      endOffsetDays: 1,
+      days: 2,
+    });
+    const accepted = await seedLog(s, {
+      validity: "valid",
+      reviewStatus: "accepted",
+      offsetDays: 0,
+    });
+    const valid = await seedLog(s, { validity: "valid", offsetDays: 1 });
+    const acceptedBefore = await dbLog(accepted);
+
+    // Both days sit in a locked run that exists only inside this transaction,
+    // which is rolled back after the reads.
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.id],
+      );
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO payroll_runs
+           (id, tenant_id, legal_entity_id, payroll_policy_id, run_type, period_start, period_end,
+            pay_date, status, config_snapshot, totals, approved_by_hr, approved_by_hr_at,
+            approved_by_finance, approved_by_finance_at, locked_by, locked_at, created_by)
+         VALUES ($1, $2, $3, $4, 'regular', $5, $6, $6, 'locked', '{"v":1}', '{"t":1}',
+                 'hr-user', now(), 'finance-user', now(), 'lock-user', now(), 'lcb-test')`,
+        [
+          randomUUID(),
+          tenant.id,
+          cafeLegendPlatformFixtures.legalEntity.id,
+          randomUUID(),
+          dateAt(0),
+          dateAt(1),
+        ],
+      );
+      await client.query("SET LOCAL session_replication_role = origin");
+      const flagged = await client.query<{ log_id: string }>(
+        "SELECT log_id FROM app.flag_attendance_for_leave($1::uuid, $2::uuid, $3::date, $4::date)",
+        [tenant.id, s.employeeId, dateAt(0), dateAt(1)],
+      );
+      expect(flagged.rows.map((row) => row.log_id)).toEqual([valid]);
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    expect(await dbLog(accepted)).toEqual(acceptedBefore);
   });
 });
 

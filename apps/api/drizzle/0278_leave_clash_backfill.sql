@@ -10,7 +10,11 @@
 -- flagged, review_status none, pending or accepted (an old acceptance is
 -- reopened, reviewed_by and reviewed_at cleared), business date inside an
 -- approved leave of the same employee and not one of its excluded holiday
--- dates; leave_approved is added once. A rejected log is never touched. Running
+-- dates; leave_approved is added once. A rejected log is never touched. A log
+-- whose business date falls in a closed payroll run (locked, paid, reversed or
+-- lock stamp set; the employee's legal entity only when it has one, as
+-- isPayrollClosed does) is never touched by the backfill, and
+-- app.flag_attendance_for_leave never reopens an accepted log there. Running
 -- it again changes nothing.
 CREATE OR REPLACE FUNCTION app.approved_leaves_on(
   p_tenant uuid, p_employee uuid, p_date date
@@ -90,6 +94,25 @@ BEGIN
          AND al.review_status = 'pending'
          AND al.flag_reasons @> '["leave_approved"]'::jsonb
        )
+       AND NOT (
+         al.review_status = 'accepted'
+         AND EXISTS (
+           SELECT 1
+             FROM public.payroll_runs pr
+            WHERE pr.tenant_id = al.tenant_id
+              AND (pr.status IN ('locked', 'paid', 'reversed') OR pr.locked_at IS NOT NULL)
+              AND pr.period_start <= al.business_date
+              AND pr.period_end >= al.business_date
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM public.employees pe
+                 WHERE pe.tenant_id = al.tenant_id
+                   AND pe.id = al.employee_id
+                   AND pe.legal_entity_id IS NOT NULL
+                   AND pe.legal_entity_id <> pr.legal_entity_id
+              )
+         )
+       )
     RETURNING al.id, al.outlet_id;
   PERFORM set_config('app.outlet_ids', previous_scope, true);
 END $$;
@@ -102,10 +125,16 @@ GRANT EXECUTE ON FUNCTION app.flag_attendance_for_leave(uuid, uuid, date, date) 
 -- table owner without a tenant context (see 0234, 0139): the backfill would
 -- raise "tenant context is required". FORCE is lifted for this migration only
 -- (drizzle applies pending migrations in one transaction, so no other session
--- sees the lifted state) and restored by the two ALTERs that follow the backfill UPDATE.
+-- sees the lifted state) and restored by the ALTERs that follow the backfill
+-- UPDATE. payroll_runs and employees are lifted too: the closed-period check
+-- of the backfill reads them.
 ALTER TABLE public.attendance_logs NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.leave_requests NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.payroll_runs NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.employees NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 UPDATE public.attendance_logs al
    SET validity = 'flagged',
@@ -124,6 +153,22 @@ UPDATE public.attendance_logs al
      AND al.review_status = 'pending'
      AND al.flag_reasons @> '["leave_approved"]'::jsonb
    )
+   AND NOT EXISTS (
+     SELECT 1
+       FROM public.payroll_runs pr
+      WHERE pr.tenant_id = al.tenant_id
+        AND (pr.status IN ('locked', 'paid', 'reversed') OR pr.locked_at IS NOT NULL)
+        AND pr.period_start <= al.business_date
+        AND pr.period_end >= al.business_date
+        AND NOT EXISTS (
+          SELECT 1
+      FROM public.employees pe
+     WHERE pe.tenant_id = al.tenant_id
+       AND pe.id = al.employee_id
+       AND pe.legal_entity_id IS NOT NULL
+       AND pe.legal_entity_id <> pr.legal_entity_id
+        )
+   )
    AND EXISTS (
      SELECT 1
        FROM public.leave_requests lr
@@ -138,3 +183,7 @@ UPDATE public.attendance_logs al
 ALTER TABLE public.attendance_logs FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.leave_requests FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.payroll_runs FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.employees FORCE ROW LEVEL SECURITY;

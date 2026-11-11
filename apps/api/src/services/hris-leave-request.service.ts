@@ -388,7 +388,8 @@ async function appendLeaveChanged(
   context: ScopedTenantContext,
   row: LeaveRequestRow,
   change: {
-    readonly changeReason: "range_split" | "range_cancelled";
+    readonly changeReason:
+      "range_split" | "range_cancelled" | "requester_cancelled";
     readonly splitFromLeaveRequestId: string | null;
     readonly actorUserId: string;
   },
@@ -759,6 +760,10 @@ export async function createLeaveRequest(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:leave:${tenantId}:${own.id}`}, 0))`,
     );
+    // Lock order on every leave path: hris:leave, employee leave-attendance,
+    // then the balance row. Taken here before the balance lock, so it cannot
+    // deadlock with applyOutcome and the cancel paths (employee lock first).
+    await lockEmployeeLeaveAttendance(tx, tenantId, own.id);
 
     const [replayed] = await tx
       .select()
@@ -984,8 +989,7 @@ export async function createLeaveRequest(
         .returning()) as [LeaveRequestRow];
     } else {
       // Below every tier of the matrix: approved on filing, days used at once.
-      // legend-x0avw F1: serialise with clock-ins before approving.
-      await lockEmployeeLeaveAttendance(tx, tenantId, inserted.employeeId);
+      // The employee lock is already held (taken right after hris:leave).
       if (type.policy.tracksBalance)
         await adjustBalance(
           tx,
@@ -1114,6 +1118,8 @@ async function cancelLeaveRequest(
     if (!row) throw notFound("Pengajuan cuti");
     if (row.status === "cancelled") return;
     transitionLeaveRequest(row.status as LeaveRequestStatus, "cancel");
+    // Employee lock before any balance write (same order as applyOutcome).
+    await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
     const scaledDays = parseDecimal4(row.days);
     if (row.status === "pending") {
       if (row.approvalChainId) {
@@ -1168,6 +1174,20 @@ async function cancelLeaveRequest(
       updated,
       "hris.leave_request.cancelled",
     );
+    // A pending request was never published as approved: only an approved
+    // one that goes away tells the consumers (leave.changed).
+    if (row.status === "approved")
+      await appendLeaveChanged(
+        tx,
+        scoped,
+        updated,
+        {
+          changeReason: "requester_cancelled",
+          splitFromLeaveRequestId: null,
+          actorUserId,
+        },
+        now,
+      );
   });
 }
 
@@ -1240,6 +1260,8 @@ export async function cancelApprovedLeaveOnDateByHr(
 ): Promise<string[]> {
   const tenantId = context.tenant.tenantId;
   const day = input.businessDate;
+  // Employee lock before any leave row or balance lock (idempotent per tx).
+  await lockEmployeeLeaveAttendance(tx, tenantId, input.employeeId);
   const leaves = await findApprovedLeaveOnDate(
     tx,
     tenantId,

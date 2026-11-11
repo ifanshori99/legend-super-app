@@ -937,3 +937,150 @@ describe("[F6] attendance.logged contract keeps validity so consumers can exclud
     );
   });
 });
+
+// ---- 452 review fixes (architect xhigh, docs/briefs/452-review-fixes.md) ------
+
+describe("[452] leave.changed requester_cancelled", () => {
+  it("[452] the contract accepts a cancelled row with changeReason requester_cancelled", () => {
+    expect(leaveChanged).toBeDefined();
+    expect(
+      leaveChanged?.payloadSchema.safeParse({
+        leaveRequestId: randomUUID(),
+        employeeId: randomUUID(),
+        outletId: randomUUID(),
+        startDate: "2031-06-10",
+        endDate: "2031-06-12",
+        days: "3.0000",
+        excludedHolidayDates: [],
+        status: "cancelled",
+        changeReason: "requester_cancelled",
+        splitFromLeaveRequestId: null,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("[452] the requester cancelling an approved, not yet started leave publishes one leave.changed", async () => {
+    const staff = await newStaff("q1");
+    const leaveId = await seedApprovedLeave(staff, 3, 4, 2);
+
+    const response = await post(
+      staff.client,
+      `/api/hris/leave/requests/${leaveId}/decision`,
+      { action: "cancel", idempotencyKey: key() },
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    const rows = await changedEvents(staff);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.destination).toBe("cloud-sync");
+    expect(eventLeaveId(rows[0]!)).toBe(leaveId);
+    expect(rows[0]!.event.payload).toMatchObject({
+      status: "cancelled",
+      changeReason: "requester_cancelled",
+      splitFromLeaveRequestId: null,
+      startDate: dateAt(3),
+      endDate: dateAt(4),
+    });
+    expect(Number(rows[0]!.event.payload.days)).toBe(2);
+    if (leaveChanged) leaveChanged.payloadSchema.parse(rows[0]!.event.payload);
+
+    const replay = await post(
+      staff.client,
+      `/api/hris/leave/requests/${leaveId}/decision`,
+      { action: "cancel", idempotencyKey: key() },
+    );
+    expect([200, 409], JSON.stringify(replay.body)).toContain(replay.status);
+    expect(await changedEvents(staff), "no second event").toHaveLength(1);
+  });
+});
+
+describe("[452] lock order: hris:leave, employee leave-attendance lock, balance row", () => {
+  const employeeLockName = (employeeId: string) =>
+    `hris:leave-attendance:${tenant.id}:${employeeId.toLowerCase()}`;
+
+  async function employeeLockWaiters(employeeId: string): Promise<number> {
+    const { rows } = await owner.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_locks
+        WHERE locktype = 'advisory' AND NOT granted
+          AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
+      [employeeLockName(employeeId)],
+    );
+    return rows[0]!.n;
+  }
+
+  it("[452] filing a leave takes the employee lock before the balance row lock (no balance lock held while queued on the employee lock)", async () => {
+    const staff = await newStaff("k1");
+    const a = await owner.connect();
+    let finished = false;
+    let committed = false;
+    let filing: Promise<{ status: number; body: unknown }> | null = null;
+    try {
+      await a.query("BEGIN");
+      await a.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.id],
+      );
+      await a.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        employeeLockName(staff.employeeId),
+      ]);
+
+      filing = post(staff.client, "/api/hris/leave/requests", {
+        leaveTypeId,
+        startDate: dateAt(20),
+        endDate: dateAt(26),
+        reason: "Cuti uji urutan kunci",
+        attachmentUploadRef: null,
+        idempotencyKey: key(),
+      }).then((response) => {
+        finished = true;
+        return response as unknown as { status: number; body: unknown };
+      });
+      filing.catch(() => undefined);
+
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        if (finished)
+          throw new Error(
+            "filing finished while the employee lock was held elsewhere: createLeaveRequest does not take lockEmployeeLeaveAttendance unconditionally",
+          );
+        if ((await employeeLockWaiters(staff.employeeId)) > 0) break;
+        if (Date.now() > deadline)
+          throw new Error("filing never queued on the employee lock");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      // Queued on the employee lock: the balance row must still be free, else
+      // applyOutcome (employee lock, then balance) could deadlock with it.
+      const probe = await owner.connect();
+      try {
+        await probe.query("BEGIN");
+        await probe.query(
+          "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+          [tenant.id],
+        );
+        await probe.query("SET LOCAL lock_timeout = '2s'");
+        const locked = await probe.query(
+          `SELECT 1 FROM leave_balances
+            WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3 AND period_year = $4
+              FOR UPDATE NOWAIT`,
+          [tenant.id, staff.employeeId, leaveTypeId, staff.year],
+        );
+        expect(locked.rowCount, "balance row free while queued").toBe(1);
+      } finally {
+        await probe.query("ROLLBACK").catch(() => undefined);
+        probe.release();
+      }
+
+      await a.query("COMMIT");
+      committed = true;
+      // Answer is not the point (this tenant may have no approval matrix:
+      // 409 APPROVAL_POLICY_MISSING); it must just finish, not deadlock.
+      const response = await filing;
+      expect(response.status, JSON.stringify(response.body)).toBeLessThan(500);
+    } finally {
+      if (!committed) await a.query("ROLLBACK").catch(() => undefined);
+      a.release();
+      if (filing) await filing.catch(() => undefined);
+    }
+  });
+});

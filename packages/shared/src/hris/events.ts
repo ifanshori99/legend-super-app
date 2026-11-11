@@ -129,7 +129,9 @@ export const leaveApproved = defineDomainEvent({
  * one event per leave row that changed. `range_split`: the row was narrowed
  * (head, or the rest when the first or last day went) or is the new tail row
  * (`splitFromLeaveRequestId` names the row it was split from). `range_cancelled`:
- * the whole leave was cancelled (`status` cancelled). Carries the row's state
+ * the whole leave was cancelled by HR (`status` cancelled). `requester_cancelled`:
+ * the requester (or HR through the leave screen) cancelled an approved leave
+ * before it started (`status` cancelled). Carries the row's state
  * after the change; `leave.approved` stays the event of the approval itself.
  */
 export const leaveChanged = defineDomainEvent({
@@ -143,7 +145,11 @@ export const leaveChanged = defineDomainEvent({
     days: decimal4Schema,
     excludedHolidayDates: z.array(businessDateSchema).max(400),
     status: z.enum(["approved", "cancelled"]),
-    changeReason: z.enum(["range_split", "range_cancelled"]),
+    changeReason: z.enum([
+      "range_split",
+      "range_cancelled",
+      "requester_cancelled",
+    ]),
     splitFromLeaveRequestId: leaveRequestIdSchema.nullable(),
   }),
 });

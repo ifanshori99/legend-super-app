@@ -820,6 +820,10 @@ export async function settleAttendanceCorrection(
     let status: AttendanceCorrectionStatus = "rejected";
     let cause: string | undefined;
     if (outcome === "approved") {
+      // legend-x0avw: take the employee lock before the leave check, so a
+      // correction that loses the race to a leave approval sees that leave and
+      // ends rejected instead of failing later in applyApproved.
+      await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
       const { dates, timeZone, logDate } = await correctionDates(tx, row);
       if (await isPayrollClosed(tx, row.tenantId, row.employeeId, dates)) {
         // Approved, but the period closed while the chain was open: no log.

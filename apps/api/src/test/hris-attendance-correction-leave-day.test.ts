@@ -719,4 +719,75 @@ describe("hris.attendance.correction on a day with approved leave", () => {
     }
     expect(await manualLogs(s)).toHaveLength(0);
   });
+  it("[x0avw] a correction that loses the race to a leave approval ends rejected (leave_approved), not stuck pending", async () => {
+    const s = await newScenario("race");
+    const day = dayStr(20);
+    // The gate and the chain decision see no leave; the leave is approved by a
+    // concurrent transaction that holds the employee's shared lock.
+    const correction = await requestCorrection(s, day);
+    const a = await owner.connect();
+    let committed = false;
+    let b: Promise<JsonBody> | null = null;
+    try {
+      await a.query("BEGIN");
+      await a.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.id],
+      );
+      await a.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `hris:leave-attendance:${tenant.id}:${s.employeeId.toLowerCase()}`,
+      ]);
+      await a.query(
+        `INSERT INTO leave_requests
+           (id, tenant_id, outlet_id, employee_id, leave_type_id, period_year,
+            start_date, end_date, days, excluded_holiday_dates, status,
+            requested_by, requested_at, decided_by, decided_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, '1', '{}'::date[], 'approved', $8,
+                 clock_timestamp(), $9, now())`,
+        [
+          randomUUID(),
+          tenant.id,
+          outletA,
+          s.employeeId,
+          leaveTypeId,
+          Number(day.slice(0, 4)),
+          day,
+          s.staff.userId,
+          hr.userId,
+        ],
+      );
+      await a.query(
+        `UPDATE leave_balances SET used_days = used_days + 1
+          WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3 AND period_year = $4`,
+        [tenant.id, s.employeeId, leaveTypeId, Number(day.slice(0, 4))],
+      );
+
+      b = approve(correction.id) as Promise<JsonBody>;
+      b.catch(() => undefined);
+      // Wait until the approval queues on the lock.
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        const { rows } = await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+            WHERE locktype = 'advisory' AND NOT granted
+              AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
+          [`hris:leave-attendance:${tenant.id}:${s.employeeId.toLowerCase()}`],
+        );
+        if (rows[0]!.n > 0) break;
+        if (Date.now() > deadline)
+          throw new Error("the approval never queued on the employee lock");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await a.query("COMMIT");
+      committed = true;
+      const response = await b;
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+    } finally {
+      if (!committed) await a.query("ROLLBACK").catch(() => undefined);
+      a.release();
+      if (b) await b.catch(() => undefined);
+    }
+    expect(await correctionStatus(s, correction.id)).toBe("rejected");
+    expect(await manualLogsOn(s, day)).toHaveLength(0);
+  });
 });

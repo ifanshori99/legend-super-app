@@ -5,7 +5,6 @@
 // the log `selfie_unlinked` and drops its photo_key so the review stays usable.
 import { and, eq, sql } from "drizzle-orm";
 import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
-import type { AttendanceStoredFlagReason } from "@starter/shared/hris";
 import { attendanceLogs } from "../db/schema/hris-attendance.ts";
 import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { employees } from "../db/schema/hris.ts";
@@ -50,8 +49,6 @@ export async function linkEdgeSelfie(
       id: attendanceLogs.id,
       outletId: attendanceLogs.outletId,
       employeeId: attendanceLogs.employeeId,
-      flagReasons: attendanceLogs.flagReasons,
-      reviewStatus: attendanceLogs.reviewStatus,
     })
     .from(attendanceLogs)
     .where(
@@ -92,16 +89,17 @@ export async function linkEdgeSelfie(
     return "linked";
   } catch {
     // The savepoint is rolled back; keep the log, drop the dead reference.
-    const flags = new Set<AttendanceStoredFlagReason>(
-      log.flagReasons as AttendanceStoredFlagReason[],
-    );
-    flags.add("selfie_unlinked");
+    // Atomic append in SQL: a read-modify-write here would overwrite a flag
+    // (leave_approved) another transaction added since the read above.
     await tx
       .update(attendanceLogs)
       .set({
         photoKey: null,
-        flagReasons: [...flags],
-        ...(log.reviewStatus === "none" ? { reviewStatus: "pending" } : {}),
+        flagReasons: sql`CASE
+          WHEN ${attendanceLogs.flagReasons} @> '["selfie_unlinked"]'::jsonb THEN ${attendanceLogs.flagReasons}
+          ELSE ${attendanceLogs.flagReasons} || '["selfie_unlinked"]'::jsonb
+        END`,
+        reviewStatus: sql`CASE WHEN ${attendanceLogs.reviewStatus} = 'none' THEN 'pending' ELSE ${attendanceLogs.reviewStatus} END`,
       })
       .where(
         and(
