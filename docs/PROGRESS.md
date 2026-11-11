@@ -3,7 +3,7 @@
 - Cabang `ws/ws05-pay-admin`, worktree `.worktrees/ws05-pay-admin`, basis `9806b8cd`, bead `legend-xoxim`; scope brief 523/526 dan founder Q63.
 - Rencana di `docs/briefs/526-ws05-execution.md`: dua Explore, satu penulis test API, tiga implementer Codex dengan file terpisah. Root memegang satu token heavy; tidak ada suite penuh. Test gagal-dulu sebelum kode produksi, lalu regresi terarah, tsc API/web, eslint/prettier.
 - Bukti konfigurasi: `LEGEND_TEST_FILES="src/test/payment-admin-ws05-lnit.test.ts" heavy pnpm test` merah 3/13 karena default B/current QRIS terhapus; setelah DELETE atomik hijau 13/13. Eslint dan prettier dua berkas lulus. Log lokal `/tmp/legend526-config-{red,green}.log`.
-- Bukti mock: tujuh regresi merah sesuai sebab; perbaikan selesai dan GREEN sedang dijalankan. Batas refund tahap pertama: 11/15 gagal sesuai sebab, empat tepat batas/owner lulus sebelum perubahan.
+- Bukti mock: `LEGEND_TEST_FILES="src/test/payment-admin-mock-523.test.ts" heavy pnpm test` merah 7/7 sesuai sebab, lalu hijau 7/7 setelah perbaikan. Eslint/prettier mock dan test hijau; tsc web sedang jalan. Batas refund tahap pertama: 11/15 gagal sesuai sebab, empat tepat batas/owner lulus sebelum perubahan.
 - Akar race terkonfirmasi: cleanup default memakai ID hasil SELECT lama; akan diganti DELETE dengan terminal/metode terkini. Jalur approval refund langsung, inbox dan validasi sebelum payout sedang dipetakan untuk batas nominal kumulatif per pesanan.
 - Review architect Claude dijadwalkan CTO setelah 00:45, di luar sesi ini. Deadline 00:40: commit dan push tanpa force, WIP bila belum selesai.
 
