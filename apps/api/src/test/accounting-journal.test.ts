@@ -292,7 +292,8 @@ async function setClosed(entity: string, period: string, closed: boolean) {
       `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period, status, closed_by, closed_at)
        VALUES ($1, $2, $3, 'closed', $4, now())
        ON CONFLICT (tenant_id, legal_entity_id, period)
-       DO UPDATE SET status = 'closed', closed_by = $4, closed_at = now()`,
+       DO UPDATE SET status = 'closed', closed_by = $4, closed_at = now(),
+         version = fiscal_periods.version + (CASE WHEN fiscal_periods.status = 'closed' THEN 0 ELSE 1 END)`,
       [tenantId, entity, period, actor],
     );
   else

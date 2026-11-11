@@ -523,6 +523,8 @@ export const periodReopenRequests = pgTable(
     decidedBy: text("decided_by"),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
     decisionNote: varchar("decision_note", { length: 500 }),
+    /** Set only by `app.reopen_fiscal_period`: one approval = one reopen. */
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

@@ -545,7 +545,7 @@ beforeAll(async () => {
       ["1100", 0, 50_000],
     ]);
     await client.query(
-      `UPDATE fiscal_periods SET status = 'closed', closed_by = 'closer', closed_at = now(), version = 2
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = 'closer', closed_at = now(), version = version + 1
        WHERE id = $1`,
       [feb],
     );

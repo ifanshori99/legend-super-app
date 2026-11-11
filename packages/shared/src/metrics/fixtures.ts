@@ -60,6 +60,7 @@ const definitionInputs = [
       "employee",
       "day_of_week",
       "promo",
+      "legal_entity",
     ],
     grain: "day",
     officiality: "live",
@@ -171,7 +172,7 @@ const definitionInputs = [
     },
     unit: "percent",
     aggregation: "ratio",
-    dimensions: ["outlet", "menu_category", "menu_item"],
+    dimensions: ["outlet", "menu_category", "menu_item", "legal_entity"],
     grain: "day",
     officiality: "closed_period_only",
     sourceReport: {
@@ -388,7 +389,7 @@ const definitionInputs = [
     },
     unit: "idr",
     aggregation: "sum",
-    dimensions: ["outlet"],
+    dimensions: ["outlet", "legal_entity"],
     grain: "month",
     officiality: "closed_period_only",
     sourceReport: {
@@ -466,7 +467,7 @@ const definitionInputs = [
     },
     unit: "idr",
     aggregation: "sum",
-    dimensions: ["outlet", "menu_item", "menu_category"],
+    dimensions: ["outlet", "menu_item", "menu_category", "legal_entity"],
     grain: "day",
     officiality: "live",
     sourceReport: {

@@ -822,7 +822,7 @@ describe("§3.19 a waste log across two business dates keeps its rupiah (IT-68)"
     const log = await straddlingWasteLog(world);
     // 2026-09 holds the date that is allocated the rupiah: close it.
     await owner.query(
-      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now()
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now(), version = version + 1
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-09'`,
       [tenantId, world.entity, randomUUID()],
     );
@@ -1089,7 +1089,7 @@ describe("§3.19 a posting that cannot happen is blocked, not lost (ACC-02)", ()
     const { event } = await sellOrder(world, orderId, item, "-2.0000");
     const closer = randomUUID();
     await owner.query(
-      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now()
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now(), version = version + 1
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-10'`,
       [tenantId, world.entity, closer],
     );
@@ -1212,7 +1212,7 @@ describe("§3.19 the accounting module gate (TEN-05)", () => {
     const freshOrder = createUlid();
     const closer = randomUUID();
     await owner.query(
-      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now()
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now(), version = version + 1
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-10'`,
       [tenantId, world.entity, closer],
     );

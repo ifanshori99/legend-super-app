@@ -3414,3 +3414,17 @@ Cabang `ws/5nt2z-leave-partial`. Sudah: (1) kunci advisory per karyawan `hris:le
 
 - Selesai: legend-baxdx (nomor rekening bank dan kode pemulihan MFA membaca dua versi blind-index, menulis versi aktif; migrasi 0302 `bank_accounts.account_number_hmac_version`; default 1 tidak mengubah digest; rebuild baris bank ke v2 belum ada), legend-5zb6g (`restoreTenant` emit `tenant.status_changed` satu transaksi dengan audit), legend-6qu47 (sweep kuota sudah per langganan sejak 488; sisa jalur `markOverdueSubscriptionsPastDue` dipecah per langganan, baris gagal dilewati dan diulang sweep berikut).
 - Bukti: fail-first di kode 4609b448 (11 test gagal: baxdx 6, 5zb6g 4, 6qu47 1), di kode baru 24/24 hijau; 31 berkas test terkait 556/556 hijau; tsc api 0 error, eslint + prettier bersih. Reviewer sonnet: tanpa temuan (uang 6qu47: tak ada tagihan ganda atau terlewat).
+
+## WS-07 ledger integrity (cabang ws/ledger-integrity, 11 Nov 2026)
+- legend-brq1: migrasi 0310 (trigger tolak jurnal ke bulan fiskal closed atau sebelum bulan closed, lock FOR SHARE legal entity) + dimensi `legal_entity` di metrik ledger. legend-v616 ditutup (duplikat).
+- legend-i5kc: migrasi 0311 + snapshot 0256: depresiasi mundur lewat tabel `fixed_asset_depreciation_reversals` (append-only) + kolom `generation`; jurnal koreksi per jurnal asal; bulan closed ditolak 409 PERIOD_CLOSED.
+- legend-68if: router shareholder-documents dipasang di storage-api.routes.ts dengan storage runtime dan scanner; FK dan validasi profitEntityId sudah ada.
+- legend-uyk2: TIDAK dikerjakan: modul supplier invoice dan AR belum ada, butuh keputusan (WS-06 atau modul baru).
+- Review architect xhigh (K) dua kali: 1 Medium (lock trigger) dan 1 High (daftar run) dibetulkan; bead baru untuk reversal manual jurnal aset dan membership versi terkini.
+- Gerbang: 6 file test terarah 56 lulus; typecheck api dan shared hijau; `db:generate` kosong; eslint+prettier hijau.
+
+## WS-E ledger guards (cabang ws/ledger-guards, 11 Nov 2026)
+
+- Selesai: 7 temuan 497, legend-lt0v4 (akses pemegang saham = versi berlaku hari ini; fiscal_periods hanya transisi sah + version+1, tanpa DELETE), legend-k048r (pembalikan manual jurnal depresiasi ditolak: service + trigger). Migrasi 0312-0314 (nomor sementara).
+- Bukti: 19 berkas test (408 lulus), tsc api + shared, eslint, prettier, db:generate kosong. Review architect xhigh: 1 temuan menengah + 3 kecil, semua dibetulkan.
+- Langkah berikut: second-opinion Codex, renumber migrasi saat merge train, kartu legend-xyy3w (dukungan legal_entity rasio).

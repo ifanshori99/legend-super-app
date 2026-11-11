@@ -30,7 +30,18 @@
 // contract has no such rule it fails closed with POSTING_RULE_MISSING.
 
 import type { TenantId } from "@starter/shared/core";
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  sql,
+} from "drizzle-orm";
 import {
   AccountingError,
   buildJournalLinesFromRule,
@@ -64,9 +75,11 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { db } from "../db";
+import { journalEntries } from "../db/schema/accounting.ts";
 import {
   assetCategories,
   depreciationRuns,
+  fixedAssetDepreciationReversals,
   fixedAssetDepreciations,
   fixedAssetRevaluations,
   fixedAssets,
@@ -79,6 +92,7 @@ import {
   postJournalFromRuleInTransaction,
   postJournalInTransaction,
 } from "./accounting-journal.service.ts";
+import { assertPeriodOpenForPosting } from "./accounting-period.service.ts";
 import {
   advisoryLock,
   assertOutletReach,
@@ -387,10 +401,25 @@ async function postedPeriodsByAsset(
       period: fixedAssetDepreciations.period,
     })
     .from(fixedAssetDepreciations)
+    .leftJoin(
+      fixedAssetDepreciationReversals,
+      and(
+        eq(
+          fixedAssetDepreciationReversals.tenantId,
+          fixedAssetDepreciations.tenantId,
+        ),
+        eq(
+          fixedAssetDepreciationReversals.depreciationId,
+          fixedAssetDepreciations.id,
+        ),
+      ),
+    )
     .where(
       and(
         eq(fixedAssetDepreciations.tenantId, tenantId),
         inArray(fixedAssetDepreciations.fixedAssetId, [...assetIds]),
+        // A row taken back by a backdated event no longer counts as posted.
+        isNull(fixedAssetDepreciationReversals.id),
       ),
     );
   for (const row of rows) {
@@ -418,6 +447,8 @@ async function postDepreciationJournal(
     postedBy: UserId | null;
     idempotencyKey: string;
     description: string;
+    /** Correcting journal: every line's debit and credit swapped. */
+    mirrored?: boolean;
   },
   now: Date,
 ): Promise<string> {
@@ -432,7 +463,7 @@ async function postDepreciationJournal(
   const outlets = [...input.perOutlet.keys()].sort((a, b) =>
     (a ?? "").localeCompare(b ?? ""),
   );
-  const lines: JournalLineInput[] = outlets.flatMap((outletId) =>
+  const built: JournalLineInput[] = outlets.flatMap((outletId) =>
     buildJournalLinesFromRule(
       rule,
       { amountIdr: input.perOutlet.get(outletId) ?? 0 },
@@ -440,6 +471,13 @@ async function postDepreciationJournal(
       { outletId: outletId as OutletId | null },
     ),
   );
+  const lines = input.mirrored
+    ? built.map((line) => ({
+        ...line,
+        debitIdr: line.creditIdr,
+        creditIdr: line.debitIdr,
+      }))
+    : built;
   const entry = await postJournalInTransaction(
     tx,
     context,
@@ -469,12 +507,34 @@ async function applyDepreciation(
   journalEntryId: string,
 ): Promise<FixedAssetRow> {
   const amount = rows.reduce((sum, row) => sum + row.amountIdr, 0);
+  // A month taken back by a backdated event is posted again as the next
+  // generation (the trigger refuses it while an earlier one is still active).
+  const earlier = await tx
+    .select({
+      period: fixedAssetDepreciations.period,
+      generation:
+        sql<number>`max(${fixedAssetDepreciations.generation})`.mapWith(Number),
+    })
+    .from(fixedAssetDepreciations)
+    .where(
+      and(
+        eq(fixedAssetDepreciations.tenantId, tenantId),
+        eq(fixedAssetDepreciations.fixedAssetId, asset.id),
+        inArray(
+          fixedAssetDepreciations.period,
+          rows.map((row) => row.period),
+        ),
+      ),
+    )
+    .groupBy(fixedAssetDepreciations.period);
+  const latest = new Map(earlier.map((row) => [row.period, row.generation]));
   await tx.insert(fixedAssetDepreciations).values(
     rows.map((row) => ({
       tenantId,
       fixedAssetId: asset.id,
       period: row.period,
       amountIdr: row.amountIdr,
+      generation: (latest.get(row.period) ?? 0) + 1,
       runId,
       journalEntryId,
     })),
@@ -496,6 +556,170 @@ async function applyDepreciation(
   return updated;
 }
 
+type ReversedDepreciation = {
+  period: string;
+  entryDate: BusinessDate;
+  outletId: string | null;
+};
+
+/**
+ * Backdated event (bead legend-i5kc): a disposal/revaluation dated before
+ * months that already carry depreciation would keep the expense of months the
+ * asset went (or was measured) before. The ledger is append-only (ACC-01, 0058:
+ * no UPDATE/DELETE on `fixed_asset_depreciations`), so this asset's active rows
+ * after `uptoPeriod` are taken back by writing, per journal they sit in, ONE
+ * correcting journal for this asset only (debit/credit mirrored, dated like
+ * the original journal, so other assets of a shared run journal and the P&L of
+ * other months stay untouched) plus a `fixed_asset_depreciation_reversals` row
+ * per taken-back month. `catchUpAsset` then re-spreads the schedule: a month
+ * that applies again is posted as the next generation. The accumulated
+ * depreciation drops by exactly the rows taken back (the caller holds the
+ * asset row lock).
+ * Fails closed before writing anything: PERIOD_CLOSED when any correcting
+ * journal would land in (or before) a closed month, CONFLICT when a later
+ * revaluation already changed the schedule basis (cannot be unwound here).
+ * The reversal rows go through `app.record_depreciation_reversal` (validates
+ * the correcting journal, stamps `reversed_at`). Returns the taken back months
+ * with the date/outlet of the journal each sat in, so a caller can post them
+ * again.
+ */
+async function reverseLaterDepreciation(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  asset: FixedAssetRow,
+  uptoPeriod: string,
+  eventDate: BusinessDate,
+  actorId: UserId | null,
+  now: Date,
+): Promise<{ asset: FixedAssetRow; reversed: ReversedDepreciation[] }> {
+  const tenantId = context.tenant.tenantId;
+  const later = await tx
+    .select({
+      id: fixedAssetDepreciations.id,
+      period: fixedAssetDepreciations.period,
+      amountIdr: fixedAssetDepreciations.amountIdr,
+      journalEntryId: fixedAssetDepreciations.journalEntryId,
+    })
+    .from(fixedAssetDepreciations)
+    .leftJoin(
+      fixedAssetDepreciationReversals,
+      and(
+        eq(
+          fixedAssetDepreciationReversals.tenantId,
+          fixedAssetDepreciations.tenantId,
+        ),
+        eq(
+          fixedAssetDepreciationReversals.depreciationId,
+          fixedAssetDepreciations.id,
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(fixedAssetDepreciations.tenantId, tenantId),
+        eq(fixedAssetDepreciations.fixedAssetId, asset.id),
+        gt(fixedAssetDepreciations.period, uptoPeriod),
+        isNull(fixedAssetDepreciationReversals.id),
+      ),
+    )
+    .orderBy(asc(fixedAssetDepreciations.id));
+  const [laterRevaluation] = await tx
+    .select({ id: fixedAssetRevaluations.id })
+    .from(fixedAssetRevaluations)
+    .where(
+      and(
+        eq(fixedAssetRevaluations.tenantId, tenantId),
+        eq(fixedAssetRevaluations.fixedAssetId, asset.id),
+        gt(fixedAssetRevaluations.revaluedOn, eventDate),
+      ),
+    )
+    .limit(1);
+  if (laterRevaluation)
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      `The asset was revalued after ${eventDate}; date the disposal/revaluation after that revaluation.`,
+    );
+  if (later.length === 0) return { asset, reversed: [] };
+  const journals = await tx
+    .select({
+      id: journalEntries.id,
+      entryDate: journalEntries.entryDate,
+      outletId: journalEntries.outletId,
+    })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        inArray(journalEntries.id, [
+          ...new Set(later.map((row) => row.journalEntryId)),
+        ]),
+      ),
+    )
+    .orderBy(asc(journalEntries.entryDate), asc(journalEntries.id));
+  // ACC-02: check every month first so a refusal writes nothing at all.
+  for (const journal of journals)
+    await assertPeriodOpenForPosting(tx, context, {
+      legalEntityId: asset.legalEntityId,
+      entryDate: journal.entryDate,
+    });
+  let removedIdr = 0;
+  const reversed: ReversedDepreciation[] = [];
+  for (const journal of journals) {
+    const rows = later.filter((row) => row.journalEntryId === journal.id);
+    const amountIdr = rows.reduce((sum, row) => sum + row.amountIdr, 0);
+    const correctionId = await postDepreciationJournal(
+      tx,
+      context,
+      {
+        legalEntityId: asset.legalEntityId,
+        entryOutletId: journal.outletId,
+        entryDate: journal.entryDate,
+        sourceId: asset.id,
+        perOutlet: new Map([[asset.outletId, amountIdr]]),
+        postedBy: actorId,
+        // Every row is taken back once, so its smallest id is unique per correction.
+        idempotencyKey: `fa-dep-corr:${asset.id}:${rows[0]!.id}`,
+        description: `Koreksi penyusutan aset tetap: peristiwa bertanggal mundur (${uptoPeriod})`,
+        mirrored: true,
+      },
+      now,
+    );
+    for (const row of rows) {
+      await tx.execute(sql`
+        select app.record_depreciation_reversal(
+          ${tenantId}::uuid,
+          ${row.id}::uuid,
+          ${correctionId}::uuid,
+          ${`Peristiwa bertanggal mundur (${uptoPeriod})`}::text,
+          ${actorId}::text
+        )
+      `);
+      reversed.push({
+        period: row.period,
+        entryDate: journal.entryDate,
+        outletId: journal.outletId,
+      });
+    }
+    removedIdr += amountIdr;
+  }
+  const accumulated = asset.accumulatedDepreciationIdr - removedIdr;
+  const base = asset.costIdr - asset.residualValueIdr;
+  const [updated] = await tx
+    .update(fixedAssets)
+    .set({
+      accumulatedDepreciationIdr: accumulated as Idr,
+      status: accumulated >= base ? "fully_depreciated" : "active",
+      updatedAt: new Date(),
+    })
+    .where(
+      and(eq(fixedAssets.tenantId, tenantId), eq(fixedAssets.id, asset.id)),
+    )
+    .returning();
+  if (!updated) throw new Error("Fixed asset vanished under its lock.");
+  return { asset: updated, reversed };
+}
+
 /**
  * Catches one locked asset up through `uptoPeriod` (disposal / revaluation
  * month), posting a depreciation journal dated `entryDate` when anything is
@@ -510,30 +734,28 @@ async function catchUpAsset(
   actorId: UserId | null,
   idempotencyKey: string,
   now: Date,
-): Promise<FixedAssetRow> {
+): Promise<{ asset: FixedAssetRow; reversed: ReversedDepreciation[] }> {
   const tenantId = context.tenant.tenantId;
+  const taken = await reverseLaterDepreciation(
+    tx,
+    context,
+    asset,
+    uptoPeriod,
+    entryDate,
+    actorId,
+    now,
+  );
+  asset = taken.asset;
+  const reversed = taken.reversed;
   const posted = await postedPeriodsByAsset(tx, tenantId, [asset.id]);
   const postedPeriods = posted.get(asset.id) ?? new Set<string>();
-  // A disposal/revaluation dated before a month that already carries
-  // depreciation would keep the expense of months the asset went (or was
-  // measured) before, and compute the gain/loss on a carrying amount it no
-  // longer had. Nothing can be un-posted, so fail closed instead (ACC-01:
-  // the ledger is append-only; PRD §3.19 is silent on back-dated disposals —
-  // decision in the bead report).
-  const lastPosted = [...postedPeriods].sort().at(-1);
-  if (lastPosted !== undefined && lastPosted > uptoPeriod)
-    throw new HttpError(
-      409,
-      "CONFLICT",
-      `Depreciation has already been posted through ${lastPosted}; date the disposal/revaluation in that month or later.`,
-    );
-  if (asset.status !== "active") return asset;
+  if (asset.status !== "active") return { asset, reversed };
   const pending = pendingDepreciation(
     toFixedAsset(asset),
     postedPeriods,
     uptoPeriod,
   );
-  if (pending.length === 0) return asset;
+  if (pending.length === 0) return { asset, reversed };
   const amount = pending.reduce((sum, row) => sum + row.amountIdr, 0);
   const journalEntryId = await postDepreciationJournal(
     tx,
@@ -550,7 +772,239 @@ async function catchUpAsset(
     },
     now,
   );
-  return applyDepreciation(tx, tenantId, asset, pending, null, journalEntryId);
+  return {
+    asset: await applyDepreciation(
+      tx,
+      tenantId,
+      asset,
+      pending,
+      null,
+      journalEntryId,
+    ),
+    reversed,
+  };
+}
+
+/** Last month the entity's depreciation ran, or "" when it never ran. */
+async function lastDepreciationRunPeriod(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<string> {
+  const [lastRun] = await tx
+    .select({ period: depreciationRuns.period })
+    .from(depreciationRuns)
+    .where(
+      and(
+        eq(depreciationRuns.tenantId, tenantId),
+        eq(depreciationRuns.legalEntityId, legalEntityId),
+      ),
+    )
+    .orderBy(desc(depreciationRuns.period))
+    .limit(1);
+  return lastRun?.period ?? "";
+}
+
+type RepostGroup = {
+  entryDate: BusinessDate;
+  outletId: string | null;
+  rows: DepreciationScheduleRow[];
+};
+
+/**
+ * Where each month of `pending` goes back: into the journal date/outlet it was
+ * taken from, or (a month without an origin, e.g. one that was zero) into the
+ * month-end journal with no outlet, as a normal run posts it.
+ */
+function groupRepostRows(
+  pending: readonly DepreciationScheduleRow[],
+  origins: ReadonlyMap<
+    string,
+    { entryDate: BusinessDate; outletId: string | null }
+  >,
+): Map<string, RepostGroup> {
+  const groups = new Map<string, RepostGroup>();
+  for (const row of pending) {
+    const origin = origins.get(row.period) ?? {
+      entryDate: periodBounds(row.period).end,
+      outletId: null,
+    };
+    const key = `${origin.entryDate}:${origin.outletId ?? "none"}`;
+    const group = groups.get(key) ?? {
+      entryDate: origin.entryDate,
+      outletId: origin.outletId,
+      rows: [],
+    };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+  return groups;
+}
+
+/**
+ * ACC-02: refuses a revaluation (409 PERIOD_CLOSED) when ANY date it will
+ * write sits in a closed month, before the first write: the revaluation
+ * journal date, the journals of the months taken back, and every month the new
+ * schedule posts again up to the horizon (also months that were zero). The new
+ * schedule is derived from the state the catch-up and take-back will leave.
+ *
+ * Defense-in-depth: closed periods are always a leading run, so the
+ * later-period rule and the posting trigger already refuse these writes first
+ * (the transaction is atomic); this check only gives the same 409 earlier.
+ */
+async function assertRevaluationPeriodsOpen(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  asset: FixedAssetRow,
+  input: { revaluedOn: BusinessDate; newCarryingAmountIdr: number },
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const uptoPeriod = periodOf(input.revaluedOn);
+  const later = await tx
+    .select({
+      period: fixedAssetDepreciations.period,
+      entryDate: journalEntries.entryDate,
+      outletId: journalEntries.outletId,
+    })
+    .from(fixedAssetDepreciations)
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, fixedAssetDepreciations.tenantId),
+        eq(journalEntries.id, fixedAssetDepreciations.journalEntryId),
+      ),
+    )
+    .leftJoin(
+      fixedAssetDepreciationReversals,
+      and(
+        eq(
+          fixedAssetDepreciationReversals.tenantId,
+          fixedAssetDepreciations.tenantId,
+        ),
+        eq(
+          fixedAssetDepreciationReversals.depreciationId,
+          fixedAssetDepreciations.id,
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(fixedAssetDepreciations.tenantId, tenantId),
+        eq(fixedAssetDepreciations.fixedAssetId, asset.id),
+        gt(fixedAssetDepreciations.period, uptoPeriod),
+        isNull(fixedAssetDepreciationReversals.id),
+      ),
+    );
+  const dates = new Set<BusinessDate>([input.revaluedOn]);
+  for (const row of later) dates.add(row.entryDate);
+  const horizon = [
+    await lastDepreciationRunPeriod(tx, tenantId, asset.legalEntityId),
+    ...later.map((row) => row.period),
+  ].reduce((max, period) => (period > max ? period : max), "");
+  if (horizon > uptoPeriod) {
+    // Accumulated once the take-back and catch-up up to the event are done.
+    const current = toFixedAsset(asset);
+    const accumulated = straightLineSchedule(current)
+      .filter((row) => row.period <= uptoPeriod)
+      .reduce((sum, row) => sum + row.amountIdr, 0);
+    try {
+      const plan = revaluationPlan(
+        { ...current, accumulatedDepreciationIdr: accumulated as Idr },
+        input.revaluedOn,
+        input.newCarryingAmountIdr,
+      );
+      const pending = pendingDepreciation(
+        {
+          costIdr: input.newCarryingAmountIdr as Idr,
+          residualValueIdr: asset.residualValueIdr,
+          usefulLifeMonths: plan.remainingMonths,
+          depreciationStartPeriod: plan.newStartPeriod,
+        },
+        new Set(),
+        horizon,
+      );
+      const groups = groupRepostRows(
+        pending,
+        new Map(later.map((row) => [row.period, row])),
+      );
+      for (const group of groups.values()) dates.add(group.entryDate);
+    } catch (error) {
+      // An invalid revaluation (no life left, same amount, ...) refuses with
+      // its own error later in the command; only the dates are skipped here.
+      if (!(error instanceof HttpError)) throw error;
+    }
+  }
+  for (const entryDate of [...dates].sort())
+    await assertPeriodOpenForPosting(tx, context, {
+      legalEntityId: asset.legalEntityId,
+      entryDate,
+    });
+}
+
+/**
+ * Posts again, in the same transaction as a backdated revaluation, every
+ * positive month of the new schedule up to the horizon: the last month the
+ * entity's depreciation already ran (or the last month taken back, if later).
+ * That includes months that were zero under the old schedule and so left
+ * nothing to take back. All dates were already checked open by
+ * `assertRevaluationPeriodsOpen` before the first write.
+ */
+async function repostReversedDepreciation(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  asset: FixedAssetRow,
+  reversed: readonly ReversedDepreciation[],
+  actorId: UserId | null,
+  idempotencyPrefix: string,
+  now: Date,
+): Promise<FixedAssetRow> {
+  const tenantId = context.tenant.tenantId;
+  const posted = await postedPeriodsByAsset(tx, tenantId, [asset.id]);
+  const postedPeriods = posted.get(asset.id) ?? new Set<string>();
+  const horizon = [
+    await lastDepreciationRunPeriod(tx, tenantId, asset.legalEntityId),
+    ...reversed.map((row) => row.period),
+  ].reduce((max, period) => (period > max ? period : max), "");
+  if (horizon === "") return asset;
+  const pending = pendingDepreciation(
+    toFixedAsset(asset),
+    postedPeriods,
+    horizon,
+  );
+  const groups = groupRepostRows(
+    pending,
+    new Map(reversed.map((row) => [row.period, row])),
+  );
+  for (const [key, group] of [...groups].sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    const amount = group.rows.reduce((sum, row) => sum + row.amountIdr, 0);
+    const journalEntryId = await postDepreciationJournal(
+      tx,
+      context,
+      {
+        legalEntityId: asset.legalEntityId,
+        entryOutletId: group.outletId,
+        entryDate: group.entryDate,
+        sourceId: asset.id,
+        perOutlet: new Map([[asset.outletId, amount]]),
+        postedBy: actorId,
+        idempotencyKey: `${idempotencyPrefix}:${key}`,
+        description:
+          "Penyusutan aset tetap: diposting ulang setelah revaluasi bertanggal mundur",
+      },
+      now,
+    );
+    asset = await applyDepreciation(
+      tx,
+      tenantId,
+      asset,
+      group.rows,
+      null,
+      journalEntryId,
+    );
+  }
+  return asset;
 }
 
 function assertNotFuture(date: string, today: string, what: string): void {
@@ -667,8 +1121,10 @@ export async function listDepreciationRuns(
     const lines =
       runs.length === 0
         ? []
-        : await tx
-            .select()
+        : // A run is a historical record: rows taken back by a backdated event
+          // stay, so each run's lines still add up to its posted amount.
+          await tx
+            .select(getTableColumns(fixedAssetDepreciations))
             .from(fixedAssetDepreciations)
             .where(
               and(
@@ -833,7 +1289,7 @@ export async function disposeFixedAsset(
           throw new AccountingError("ASSET_ALREADY_DISPOSED");
         if (input.disposedOn < asset.acquiredOn)
           throw invalid("An asset cannot be disposed before it was acquired.");
-        asset = await catchUpAsset(
+        ({ asset } = await catchUpAsset(
           tx,
           context,
           asset,
@@ -842,7 +1298,7 @@ export async function disposeFixedAsset(
           actorId,
           `fa-dep-disp:${asset.id}`,
           now,
-        );
+        ));
         const before = toFixedAsset(asset);
         const resultIdr = disposalResultIdr(before, input.proceedsIdr);
         const entry = await postJournalFromRuleInTransaction(
@@ -938,8 +1394,10 @@ export async function revalueFixedAsset(
           throw new AccountingError("ASSET_ALREADY_DISPOSED");
         if (input.revaluedOn < asset.acquiredOn)
           throw invalid("An asset cannot be revalued before it was acquired.");
+        // ACC-02: every date this event writes is checked before the first write.
+        await assertRevaluationPeriodsOpen(tx, context, asset, input);
         const revaluationId = newId();
-        asset = await catchUpAsset(
+        const caughtUp = await catchUpAsset(
           tx,
           context,
           asset,
@@ -949,6 +1407,7 @@ export async function revalueFixedAsset(
           `fa-dep-reval:${revaluationId}`,
           now,
         );
+        asset = caughtUp.asset;
         const before = toFixedAsset(asset);
         const plan = revaluationPlan(
           before,
@@ -984,7 +1443,7 @@ export async function revalueFixedAsset(
           reason: input.reason,
           createdBy: actorId,
         });
-        const [row] = await tx
+        const [revalued] = await tx
           .update(fixedAssets)
           .set({
             costIdr: input.newCarryingAmountIdr as Idr,
@@ -1001,7 +1460,18 @@ export async function revalueFixedAsset(
             ),
           )
           .returning();
-        if (!row) throw new Error("Fixed asset vanished under its lock.");
+        if (!revalued) throw new Error("Fixed asset vanished under its lock.");
+        // Months taken back by a backdated revaluation are posted again on the
+        // new basis in this same transaction (a closed month already refused).
+        const row = await repostReversedDepreciation(
+          tx,
+          context,
+          revalued,
+          caughtUp.reversed,
+          actorId,
+          `fa-dep-repost:${revaluationId}`,
+          now,
+        );
         await auditApFa(tx, context, {
           actorId,
           action: "accounting.fixed_asset.revalued",

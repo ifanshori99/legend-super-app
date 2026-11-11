@@ -96,6 +96,7 @@ export const CORE_METRIC_DIMENSIONS = [
   "unit",
   "product",
   "promo",
+  "legal_entity",
 ] as const;
 export const metricDimensionKeySchema = z
   .string()

@@ -34,6 +34,8 @@ import { createHrisPayslipRouter } from "./hris-payslip.routes";
 import { createHrisRouter } from "./hris.routes";
 import { createMenuImportRouter } from "./menu-import.routes";
 import { createMenuRouter } from "./menu.routes";
+import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
+import { dbShareholderMembership } from "../services/profit-share-membership";
 
 /**
  * First path segments of /api/hris owned by `hrisRouter` and `hrisLeaveRouter`
@@ -143,6 +145,19 @@ export function createStorageApiRouter(options: {
     /^\/tax-reports\/[^/]+\/(export|download)$/.test(req.path)
       ? taxFiles(req, res, next)
       : next(),
+  );
+
+  // Shareholder documents (legend-68if): upload and signed URL need the storage
+  // and the scanner (503 without), and the membership is the real one (approved
+  // share allocation). The router guards only its own resource path, so other
+  // /accounting requests pass straight on.
+  router.use(
+    "/accounting",
+    createShareholderDocumentsRouter({
+      storage: runtime?.storage ?? null,
+      scanner: runtime?.scanner ?? null,
+      membership: dbShareholderMembership,
+    }),
   );
 
   // HRIS employees, contracts, documents, leave, overtime and holidays mint

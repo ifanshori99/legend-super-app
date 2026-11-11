@@ -164,6 +164,15 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "defines app.flag_attendance_for_leave: when a leave is approved, UPDATEs the employee's countable or flagged `in` attendance logs inside the leave dates to validity flagged, review pending, reason leave_approved (reopening an HR-accepted log); never inserts or deletes rows, idempotent, tenant-tied SECURITY DEFINER function, runs only when called",
   "0258_leave_clash_backfill.sql":
     "redefines the two leave functions and runs one backfill UPDATE of attendance_logs that flags old logs clashing with an already approved leave (pending review, reason leave_approved); skips logs in closed payroll runs, never inserts or deletes rows, idempotent, FORCE RLS on the touched tables lifted and restored in the same migration",
+  // legend-lt0v4 (497 ledger guards)
+  "0270_ledger_version_period_guards.sql":
+    "trigger function body only: bumps legal_entities.ledger_version when a fiscal period changes status; no existing row is edited by the migration, no import",
+  "0271_depreciation_active_and_reversal_fn.sql":
+    "sets fixed_asset_depreciations.reversed_at from the existing reversal row's created_at (FORCE RLS lifted for that one statement and restored); edits no other column, never inserts or deletes; the reversal function body also inserts a reversal row and stamps reversed_at at runtime",
+  "0273_fiscal_period_transition_fn.sql":
+    "sets period_reopen_requests.consumed_at = decided_at on every already approved request (every old approval reopened its period at once, so it is spent; FORCE RLS lifted for that one statement and restored); edits no other column, never inserts or deletes; the close and reopen function bodies UPDATE fiscal_periods status and version and stamp consumed_at at runtime",
+  "0274_depreciation_correction_claim.sql":
+    "backfills fixed_asset_correction_claims from the existing depreciation reversals (claimed amount and reversed flag per journal); inserts only into the table it creates (FORCE RLS lifted and restored on the three tables it reads), edits no existing row; function bodies also write claims and reversals at runtime",
 };
 
 // Entrypoints that open a database pool but import no data.
