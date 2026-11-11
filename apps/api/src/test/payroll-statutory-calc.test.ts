@@ -342,7 +342,9 @@ describe("the employee's BPJS deduction never exceeds the wage (cap)", () => {
       300_000,
     );
     // No programme is charged more than its uncapped share (B above).
-    expect(programme(line, "bpjs_kes").employeeIdr).toBeLessThanOrEqual(120_000);
+    expect(programme(line, "bpjs_kes").employeeIdr).toBeLessThanOrEqual(
+      120_000,
+    );
     expect(programme(line, "jht").employeeIdr).toBeLessThanOrEqual(300_000);
     expect(programme(line, "jp").employeeIdr).toBeLessThanOrEqual(100_000);
     expect(line.employerBpjsIdr).toBe(1_235_000);
@@ -370,7 +372,9 @@ describe("the employee's BPJS deduction never exceeds the wage (cap)", () => {
   });
 
   it("never deducts more than the payable wage across a sweep of wages", async () => {
-    for (const payable of [0, 1, 99_999, 319_999, 320_000, 320_001, 8_000_000]) {
+    for (const payable of [
+      0, 1, 99_999, 319_999, 320_000, 320_001, 8_000_000,
+    ]) {
       const e = employee("A", { payableWageIdr: idr(payable) });
       const line = lineOf(await calc(draftRun(), TABLES_V1, [e]), "A");
       expect(line.employeeBpjsDeductionIdr).toBeLessThanOrEqual(payable);
@@ -386,6 +390,12 @@ describe("the employee's BPJS deduction never exceeds the wage (cap)", () => {
     await expect(
       (async () => calc(draftRun(), TABLES_V1, [bad]))(),
     ).rejects.toThrow();
+  });
+
+  it("rejects a duplicate employeeId instead of charging the employee twice", async () => {
+    await expect(
+      (async () => calc(draftRun(), TABLES_V1, [EMP_A, EMP_B, EMP_A]))(),
+    ).rejects.toThrow(/Duplicate employeeId.*A/);
   });
 });
 
@@ -427,7 +437,8 @@ describe("THR by tenure: pro rata, never above the THR wage", () => {
       thrWageIdr: idr(1_000_001),
     });
     expect(thr.tenureMonths).toBe(7);
-    expect(thr.amountIdr).toBe(583_334);
+    // 1_000_001 * 7 / 12 = 583_333.58: floor, never the rounded-up 583_334.
+    expect(thr.amountIdr).toBe(583_333);
   });
 
   it("stays at or below the THR wage for every tenure and never shrinks with tenure", async () => {
@@ -455,9 +466,7 @@ describe("THR by tenure: pro rata, never above the THR wage", () => {
   it("fails closed when a THR run has no published THR table", async () => {
     const withoutThr = TABLES_V1.filter((t) => t.type !== "thr");
     expect(
-      await failureCode(() =>
-        calc(draftRun(), withoutThr, [EMP_A], THR_AS_OF),
-      ),
+      await failureCode(() => calc(draftRun(), withoutThr, [EMP_A], THR_AS_OF)),
     ).toBe("PAYROLL_STATUTORY_TABLE_NOT_FOUND");
   });
 });
@@ -465,13 +474,17 @@ describe("THR by tenure: pro rata, never above the THR wage", () => {
 describe("table versions: resolved by pay date before lock, never a guessed rate", () => {
   it("fails closed when a programme has no published version on the pay date", async () => {
     const noJp = TABLES_V1.filter((t) => t.type !== "jp");
-    expect(
-      await failureCode(() => calc(draftRun(), noJp, [EMP_A])),
-    ).toBe("PAYROLL_STATUTORY_TABLE_NOT_FOUND");
+    expect(await failureCode(() => calc(draftRun(), noJp, [EMP_A]))).toBe(
+      "PAYROLL_STATUTORY_TABLE_NOT_FOUND",
+    );
     // Published only after the pay date: not in force yet.
-    const late = version("jp", { ...JP.parameters }, {
-      effectiveFrom: "2026-12-01",
-    });
+    const late = version(
+      "jp",
+      { ...JP.parameters },
+      {
+        effectiveFrom: "2026-12-01",
+      },
+    );
     expect(
       await failureCode(() => calc(draftRun(), [...noJp, late], [EMP_A])),
     ).toBe("PAYROLL_STATUTORY_TABLE_NOT_FOUND");
@@ -492,13 +505,19 @@ describe("table versions: resolved by pay date before lock, never a guessed rate
 
   it("reports the versions used, one per table type the run needs", async () => {
     const result = await calc(draftRun(), TABLES_V1, [EMP_A]);
-    expect(typesOf(result.statutoryVersions)).toEqual(["bpjs_kes", "jht", "jp"]);
-    expect(result.statutoryVersions.find((v) => v.type === "bpjs_kes")).toEqual({
-      type: "bpjs_kes",
-      versionId: KES_V1.id,
-      version: 1,
-      effectiveFrom: "2026-01-01",
-    });
+    expect(typesOf(result.statutoryVersions)).toEqual([
+      "bpjs_kes",
+      "jht",
+      "jp",
+    ]);
+    expect(result.statutoryVersions.find((v) => v.type === "bpjs_kes")).toEqual(
+      {
+        type: "bpjs_kes",
+        versionId: KES_V1.id,
+        version: 1,
+        effectiveFrom: "2026-01-01",
+      },
+    );
     expect(result.statutoryParametersHash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
@@ -728,12 +747,7 @@ describe("snapshot at lock: the rates never change after lock", () => {
       joinDate: date("2026-06-15"),
     });
     const locked = lineOf(
-      await calc(
-        lockedWith(snapshot),
-        [...TABLES_V1, thrV2],
-        [e],
-        THR_AS_OF,
-      ),
+      await calc(lockedWith(snapshot), [...TABLES_V1, thrV2], [e], THR_AS_OF),
       "T",
     );
     expect(locked.thr?.amountIdr).toBe(4_000_000);
