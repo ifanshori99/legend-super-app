@@ -4,13 +4,23 @@
 //   1. `enqueueHppRecompute`: called in the SAME transaction that writes
 //      `stock_balances.avg_cost_idr`, only when the average actually changed.
 //   2. `runHppRecompute`: the worker job claims queued (outlet, item) rows
-//      (DELETE ... RETURNING over FOR UPDATE SKIP LOCKED, in a short
-//      transaction so no queue lock is held during the recompute), finds the
-//      recipes that use those items, then only the menu items / variants /
-//      modifiers on those recipes, and rewrites just their `menu_costs` rows in
-//      a second transaction. A failed recompute re-enqueues the claimed items;
-//      a change that lands while the job runs re-inserts its row. Outlets with
-//      no `menu_costs` row at all get a full first fill on the next tick.
+//      with a lease (`lease_until`, `attempts`; UPDATE over FOR UPDATE SKIP
+//      LOCKED in a short transaction, so no queue lock is held during the
+//      recompute), finds the recipes that use those items, then only the menu
+//      items / variants / modifiers on those recipes, and rewrites just their
+//      `menu_costs` rows. Compute, write and ack (DELETE of exactly the claimed
+//      `enqueued_at`) share ONE transaction: a worker that dies or fails loses
+//      nothing (the lease expires, a later tick retries), and a change that
+//      lands while the job runs stays queued. A row claimed more than
+//      HPP_MAX_ATTEMPTS times is poison: its outlet is marked stale (full
+//      rebuild) and the row leaves the queue, so it cannot loop.
+//   3. Per outlet, `hpp_outlet_state` is the write lock, the backfill marker
+//      and the invalidation flag. Every write of `menu_costs` (incremental or
+//      full) first takes that row lock, THEN reads costs, prices and recipes, so
+//      an older result never overwrites a newer one. Every outlet that was never
+//      rebuilt or is stale (`markHppStale`, hpp-invalidate.ts) gets a full
+//      rebuild in each tick, whatever the queue holds; an incremental batch
+//      skips such an outlet (the rebuild covers it).
 //
 // Rule "jangan sampai rugi": a cost is never understated. A recipe with an
 // inactive or broken tree, no sale location, or any ingredient without a
@@ -33,6 +43,7 @@ import { InventoryError } from "@starter/shared/inventory";
 import { outletIdSchema } from "../db/columns.ts";
 import { db } from "../db/index.ts";
 import { hppRecomputeQueue } from "../db/schema/hpp.ts";
+import { logger } from "../lib/logger.ts";
 import { stockBalances } from "../db/schema/inventory.ts";
 import {
   itemVariants,
@@ -57,6 +68,7 @@ import {
   scaledCostToIdr,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import { markHppStale } from "./hpp-invalidate.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import {
   explodeMenuLinesEach,
@@ -71,14 +83,20 @@ export const HPP_RECOMPUTE_BATCH_SIZE = 200;
 /** Upper bound of batches per call, so one job tick cannot run forever. */
 const MAX_BATCHES_PER_RUN = 500;
 const UPSERT_CHUNK = 200;
+/** A claimed row is leased this long; a dead worker's row is retried after. */
+const LEASE_INTERVAL_SQL = sql`interval '5 minutes'`;
+/** Claims after which a queue row counts as poison (outlet rebuilt instead). */
+export const HPP_MAX_ATTEMPTS = 5;
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
 // ------------------------------------------------------------------ enqueue
 
 /**
  * Queues the items whose average cost changed at one outlet. Same transaction
- * as the stock balance write. Re-queueing an item only refreshes its
- * `enqueued_at`.
+ * as the stock balance write. Re-queueing an item refreshes its `enqueued_at`
+ * and releases its lease, so a change that lands while a worker holds the row
+ * is processed again (the worker's ack only deletes the `enqueued_at` it
+ * claimed).
  */
 export async function enqueueHppRecompute(
   tx: Tx,
@@ -109,7 +127,8 @@ export async function enqueueHppRecompute(
           hppRecomputeQueue.outletId,
           hppRecomputeQueue.itemId,
         ],
-        set: { enqueuedAt: sql`now()` },
+        // clock_timestamp(): never equal to the value a worker claimed.
+        set: { enqueuedAt: sql`clock_timestamp()`, leaseUntil: null },
       });
   }
 }
@@ -117,7 +136,7 @@ export async function enqueueHppRecompute(
 // -------------------------------------------------------------------- drain
 
 export type HppRecomputeResult = {
-  /** Queue rows claimed and removed. */
+  /** Queue rows claimed (acked or handed to a full rebuild). */
   items: number;
   /** `menu_costs` rows written. */
   rows: number;
@@ -125,12 +144,14 @@ export type HppRecomputeResult = {
 
 /**
  * Drains the queue of the context's tenant: claims up to `batchSize` rows per
- * short transaction (DELETE ... RETURNING over SKIP LOCKED, so two workers
- * never take the same row and no queue lock outlives the claim), recomputes
- * them in a second transaction, and repeats until the queue is empty, so a
- * large queue finishes in one call. A failed recompute rolls back and
- * re-enqueues its claimed rows for the next tick. Afterwards every outlet
- * without a single `menu_costs` row is rebuilt in full (first fill).
+ * short transaction (leased, SKIP LOCKED, so two workers never take the same
+ * row and no queue lock outlives the claim), computes, writes and acks each
+ * batch in a second transaction, and repeats until nothing is claimable, so a
+ * large queue finishes in one call. A failed batch rolls back; its rows stay
+ * queued under their lease and a later tick retries them (nothing is
+ * re-enqueued, nothing is swallowed: the error is logged and rethrown after the
+ * rebuilds below ran). Afterwards every outlet that was never rebuilt or is
+ * stale is rebuilt in full.
  */
 export async function runHppRecompute(
   context: ScopedTenantContext,
@@ -140,17 +161,36 @@ export async function runHppRecompute(
   const batchSize = options.batchSize ?? HPP_RECOMPUTE_BATCH_SIZE;
   const now = options.now ?? new Date();
   const total: HppRecomputeResult = { items: 0, rows: 0 };
-  for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch++) {
-    const done = await processBatch(context, batchSize, now);
-    total.items += done.items;
-    total.rows += done.rows;
-    if (done.items < batchSize) break;
+  let failure: { error: unknown } | null = null;
+  try {
+    for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch++) {
+      const done = await processBatch(context, batchSize, now);
+      total.items += done.items;
+      total.rows += done.rows;
+      if (done.items < batchSize) break;
+    }
+  } catch (error) {
+    failure = { error };
   }
-  total.rows += await fillEmptyOutlets(context, now);
+  // Runs even after a failed batch: a persistent batch failure must not starve
+  // the backfill and the invalidation rebuilds.
+  try {
+    total.rows += await rebuildStaleOutlets(context, now);
+  } catch (error) {
+    failure ??= { error };
+  }
+  if (failure) throw failure.error;
   return total;
 }
 
-type ClaimedRow = { outletId: string; itemId: string };
+type ClaimedRow = {
+  outletId: string;
+  itemId: string;
+  /** Exact `enqueued_at` as text (microseconds), compared by the ack. */
+  enqueuedAt: string;
+  /** Claim count including this one. */
+  attempts: number;
+};
 
 async function processBatch(
   context: ScopedTenantContext,
@@ -163,8 +203,28 @@ async function processBatch(
   );
   if (claimed.length === 0) return { items: 0, rows: 0 };
 
+  const poison = claimed.filter((row) => row.attempts > HPP_MAX_ATTEMPTS);
+  const live = claimed.filter((row) => row.attempts <= HPP_MAX_ATTEMPTS);
+  if (poison.length > 0) {
+    // Looping on it forever would hide a real problem and burn the worker:
+    // log loudly, hand the outlet to a full rebuild, drop the row.
+    const poisonOutlets = [
+      ...new Set(poison.map((row) => row.outletId)),
+    ].sort();
+    logger.error(
+      { tenantId, outletIds: poisonOutlets, rows: poison.length },
+      "hpp recompute queue rows failed too often; outlets marked stale for a full rebuild",
+    );
+    await withTenant(db, context, async (tx) => {
+      for (const outletId of poisonOutlets)
+        await markHppStale(tx, { tenantId, outletId });
+      await ackRows(tx, tenantId, poison);
+    });
+  }
+  if (live.length === 0) return { items: claimed.length, rows: 0 };
+
   const byOutlet = new Map<string, string[]>();
-  for (const row of claimed) {
+  for (const row of live) {
     const list = byOutlet.get(row.outletId) ?? [];
     list.push(row.itemId);
     byOutlet.set(row.outletId, list);
@@ -172,8 +232,16 @@ async function processBatch(
   try {
     const rows = await withTenant(db, context, async (tx) => {
       let written = 0;
-      for (const [outletId, itemIds] of byOutlet) {
-        const recipeIds = await affectedRecipeIds(tx, tenantId, itemIds);
+      // Sorted: two transactions locking several outlets never deadlock.
+      for (const outletId of [...byOutlet.keys()].sort()) {
+        const state = await lockOutletState(tx, tenantId, outletId);
+        // Never rebuilt or stale: the full rebuild of the tick covers it.
+        if (state === null || state.stale || state.neverRebuilt) continue;
+        const recipeIds = await affectedRecipeIds(
+          tx,
+          tenantId,
+          byOutlet.get(outletId)!,
+        );
         if (recipeIds.size > 0)
           written += await recomputeMenuCosts(
             tx,
@@ -183,20 +251,21 @@ async function processBatch(
             now,
           );
       }
+      await ackRows(tx, tenantId, live);
       return written;
     });
     return { items: claimed.length, rows };
   } catch (error) {
-    // The recompute rolled back and the claim already committed: put the rows
-    // back so the next tick retries them.
-    await withTenant(db, context, async (tx) => {
-      for (const outletId of [...byOutlet.keys()].sort())
-        await enqueueHppRecompute(tx, {
-          tenantId,
-          outletId,
-          itemIds: byOutlet.get(outletId)!,
-        });
-    }).catch(() => undefined);
+    // Rolled back with the ack: the rows stay queued under their lease and
+    // `attempts` already counted the try.
+    logger.error(
+      {
+        tenantId,
+        rows: live.length,
+        errorName: error instanceof Error ? error.name : "unknown",
+      },
+      "hpp recompute batch failed; rows stay queued until their lease expires",
+    );
     throw error;
   }
 }
@@ -207,11 +276,14 @@ async function claimBatch(
   batchSize: number,
 ): Promise<ClaimedRow[]> {
   const result = await tx.execute(sql`
-    DELETE FROM hpp_recompute_queue AS queue
-    USING (
+    UPDATE hpp_recompute_queue AS queue
+    SET lease_until = clock_timestamp() + ${LEASE_INTERVAL_SQL},
+        attempts = queue.attempts + 1
+    FROM (
       SELECT tenant_id, outlet_id, item_id
       FROM hpp_recompute_queue
       WHERE tenant_id = ${tenantId}::uuid
+        AND (lease_until IS NULL OR lease_until < clock_timestamp())
       ORDER BY enqueued_at
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED
@@ -219,44 +291,123 @@ async function claimBatch(
     WHERE queue.tenant_id = claim.tenant_id
       AND queue.outlet_id = claim.outlet_id
       AND queue.item_id = claim.item_id
-    RETURNING queue.outlet_id::text AS outlet_id, queue.item_id::text AS item_id
+    RETURNING queue.outlet_id::text AS outlet_id, queue.item_id::text AS item_id,
+      queue.enqueued_at::text AS enqueued_at, queue.attempts AS attempts
   `);
-  return (result.rows as { outlet_id: string; item_id: string }[]).map(
-    (row) => ({ outletId: row.outlet_id, itemId: row.item_id }),
-  );
+  return (
+    result.rows as {
+      outlet_id: string;
+      item_id: string;
+      enqueued_at: string;
+      attempts: number;
+    }[]
+  ).map((row) => ({
+    outletId: row.outlet_id,
+    itemId: row.item_id,
+    enqueuedAt: row.enqueued_at,
+    attempts: Number(row.attempts),
+  }));
 }
 
 /**
- * Full rebuild of every outlet of the tenant that has no `menu_costs` row yet
- * but whose brand has menu items (nothing else would ever fill it: the queue
- * only carries changes). Each outlet in its own transaction.
+ * Removes claimed rows, but only the exact version that was claimed: a row
+ * queued again meanwhile has a newer `enqueued_at` and stays.
  */
-async function fillEmptyOutlets(
+async function ackRows(
+  tx: Tx,
+  tenantId: TenantId,
+  rows: readonly ClaimedRow[],
+): Promise<void> {
+  for (let start = 0; start < rows.length; start += UPSERT_CHUNK) {
+    const values = rows
+      .slice(start, start + UPSERT_CHUNK)
+      .map(
+        (row) =>
+          sql`(${row.outletId}::uuid, ${row.itemId}::uuid, ${row.enqueuedAt}::timestamptz)`,
+      );
+    await tx.execute(sql`
+      DELETE FROM hpp_recompute_queue AS queue
+      USING (VALUES ${sql.join(values, sql`, `)}) AS claimed(outlet_id, item_id, enqueued_at)
+      WHERE queue.tenant_id = ${tenantId}::uuid
+        AND queue.outlet_id = claimed.outlet_id
+        AND queue.item_id = claimed.item_id
+        AND queue.enqueued_at = claimed.enqueued_at
+    `);
+  }
+}
+
+type OutletState = { stale: boolean; neverRebuilt: boolean };
+
+/**
+ * Takes the `hpp_outlet_state` row lock of one outlet (creating the row when
+ * missing) and returns its state; `null` = no such outlet. Call it BEFORE
+ * reading any input of `menu_costs`: whoever holds the lock sees the newest
+ * committed data, and a writer that waited sees the result of the one before.
+ */
+async function lockOutletState(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: string,
+): Promise<OutletState | null> {
+  await tx.execute(sql`
+    INSERT INTO hpp_outlet_state (tenant_id, outlet_id)
+    SELECT o.tenant_id, o.id FROM outlets o
+    WHERE o.tenant_id = ${tenantId}::uuid AND o.id = ${outletId}::uuid
+    ON CONFLICT (tenant_id, outlet_id) DO NOTHING
+  `);
+  const result = await tx.execute(sql`
+    SELECT stale_at IS NOT NULL AS stale, rebuilt_at IS NULL AS never_rebuilt
+    FROM hpp_outlet_state
+    WHERE tenant_id = ${tenantId}::uuid AND outlet_id = ${outletId}::uuid
+    FOR UPDATE
+  `);
+  const row = (result.rows as { stale: boolean; never_rebuilt: boolean }[])[0];
+  return row ? { stale: row.stale, neverRebuilt: row.never_rebuilt } : null;
+}
+
+/**
+ * Full rebuild of every outlet of the tenant that was never rebuilt (no state
+ * row, or a row only created by a lock) or is stale. The queue content does not
+ * matter. Each outlet in its own transaction; one failing outlet does not stop
+ * the others, the first error is rethrown at the end.
+ */
+async function rebuildStaleOutlets(
   context: ScopedTenantContext,
   now: Date,
 ): Promise<number> {
   const tenantId = context.tenant.tenantId;
-  const empty = await withTenant(db, context, async (tx) => {
+  const pending = await withTenant(db, context, async (tx) => {
     const result = await tx.execute(sql`
       SELECT o.id::text AS id
       FROM outlets o
+      LEFT JOIN hpp_outlet_state s
+        ON s.tenant_id = o.tenant_id AND s.outlet_id = o.id
       WHERE o.tenant_id = ${tenantId}::uuid
-        AND EXISTS (
-          SELECT 1 FROM menu_items m
-          WHERE m.tenant_id = o.tenant_id AND m.brand_id = o.brand_id
-            AND m.deleted_at IS NULL
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM menu_costs c
-          WHERE c.tenant_id = o.tenant_id AND c.outlet_id = o.id
-        )
+        AND (s.outlet_id IS NULL OR s.rebuilt_at IS NULL OR s.stale_at IS NOT NULL)
       ORDER BY o.id
     `);
     return (result.rows as { id: string }[]).map((row) => row.id);
   });
   let rows = 0;
-  for (const outletId of empty)
-    rows += await rebuildMenuCostsForOutlet(context, outletId, now);
+  let failure: { error: unknown } | null = null;
+  for (const outletId of pending) {
+    try {
+      rows += await withTenant(db, context, (tx) =>
+        rebuildLocked(tx, context, outletId, now, true),
+      );
+    } catch (error) {
+      logger.error(
+        {
+          tenantId,
+          outletId,
+          errorName: error instanceof Error ? error.name : "unknown",
+        },
+        "hpp full rebuild of outlet failed; it stays stale for the next tick",
+      );
+      failure ??= { error };
+    }
+  }
+  if (failure) throw failure.error;
   return rows;
 }
 
@@ -357,9 +508,9 @@ async function affectedRecipeIds(
 // ------------------------------------------------------------------ rebuild
 
 /**
- * Full recompute of one outlet's `menu_costs` (first fill, and when a recipe
- * or a menu link changes). Rows of targets that no longer exist are removed.
- * Runs in its own transaction.
+ * Full recompute of one outlet's `menu_costs` (first fill, invalidation, and
+ * when a recipe or a menu link changes). Rows of targets that no longer exist
+ * are removed. Runs in its own transaction.
  */
 export async function rebuildMenuCostsForOutlet(
   context: ScopedTenantContext,
@@ -377,7 +528,33 @@ export async function rebuildMenuCostsForOutletInTransaction(
   outletId: string,
   now: Date = new Date(),
 ): Promise<number> {
-  return recomputeMenuCosts(tx, context, outletId, null, now);
+  return rebuildLocked(tx, context, outletId, now, false);
+}
+
+/**
+ * Atomic full rebuild: lock the outlet state row first, then recompute
+ * everything, upsert, delete stale rows, and only then mark the outlet rebuilt
+ * and clean (still under the lock, so a mark that commits later re-marks it).
+ * `onlyIfNeeded`: skip when another worker already rebuilt it meanwhile.
+ */
+async function rebuildLocked(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  now: Date,
+  onlyIfNeeded: boolean,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  const state = await lockOutletState(tx, tenantId, outletId);
+  if (state === null) return 0;
+  if (onlyIfNeeded && !state.stale && !state.neverRebuilt) return 0;
+  const rows = await recomputeMenuCosts(tx, context, outletId, null, now);
+  await tx.execute(sql`
+    UPDATE hpp_outlet_state
+    SET rebuilt_at = clock_timestamp(), stale_at = NULL
+    WHERE tenant_id = ${tenantId}::uuid AND outlet_id = ${outletId}::uuid
+  `);
+  return rows;
 }
 
 // ------------------------------------------------------------------ compute

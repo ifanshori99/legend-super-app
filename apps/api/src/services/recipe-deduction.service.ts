@@ -128,6 +128,7 @@ import {
 } from "./inventory-ops.shared.ts";
 import { recordAudit } from "./core-audit.ts";
 import { isTrainingOrder } from "./device-training.ts";
+import { markHppStale } from "./hpp-invalidate.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 import { explodeMenuLines } from "./recipe-bom.service.ts";
 
@@ -1839,6 +1840,8 @@ export async function putOutletDeductionSettings(
           updatedAt: now,
         },
       });
+    // The sale location decides which stock costs feed menu_costs.
+    await markHppStale(tx, { tenantId, outletId });
     const after = await toOutletSettings(tx, context, outletId);
     await recordOpsAudit(tx, context, {
       actorUserId,

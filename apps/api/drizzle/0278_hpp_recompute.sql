@@ -3,11 +3,24 @@
 -- meta/0278_snapshot.json with `pnpm db:generate` once dependencies exist and
 -- check that the generated SQL matches this file. Number 0278 is temporary; the
 -- merge train renumbers it. RLS: the same statements as hpp.custom.sql.
+CREATE TABLE "hpp_outlet_state" (
+	"tenant_id" uuid NOT NULL,
+	"outlet_id" uuid NOT NULL,
+	"stale_at" timestamp with time zone,
+	"rebuilt_at" timestamp with time zone,
+	CONSTRAINT "hpp_outlet_state_pkey" PRIMARY KEY("tenant_id","outlet_id"),
+	CONSTRAINT "hpp_outlet_state_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hpp_outlet_state_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "hpp_outlet_state_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
+);
+--> statement-breakpoint
 CREATE TABLE "hpp_recompute_queue" (
 	"tenant_id" uuid NOT NULL,
 	"outlet_id" uuid NOT NULL,
 	"item_id" uuid NOT NULL,
 	"enqueued_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"lease_until" timestamp with time zone,
+	"attempts" integer DEFAULT 0 NOT NULL,
 	CONSTRAINT "hpp_recompute_queue_pkey" PRIMARY KEY("tenant_id","outlet_id","item_id"),
 	CONSTRAINT "hpp_recompute_queue_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "hpp_recompute_queue_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
@@ -45,7 +58,7 @@ ALTER TABLE "menu_costs" ADD CONSTRAINT "menu_costs_recipe_fk" FOREIGN KEY ("ten
 CREATE INDEX "hpp_recompute_queue_enqueued_idx" ON "hpp_recompute_queue" USING btree ("tenant_id","enqueued_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "menu_costs_target_key" ON "menu_costs" USING btree ("tenant_id","outlet_id","menu_item_id",coalesce("variant_id", '00000000-0000-0000-0000-000000000000'::uuid),coalesce("modifier_id", '00000000-0000-0000-0000-000000000000'::uuid));--> statement-breakpoint
 CREATE INDEX "menu_costs_recipe_idx" ON "menu_costs" USING btree ("tenant_id","outlet_id","recipe_id");--> statement-breakpoint
--- TEN-01/TEN-03: both tables are tenant + outlet owned (outlet_id NOT NULL).
+-- TEN-01/TEN-03: all three tables are tenant + outlet owned (outlet_id NOT NULL).
 SELECT app.enforce_tenant_rls('public.menu_costs'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.menu_costs'::regclass);
@@ -53,3 +66,7 @@ SELECT app.enforce_outlet_rls('public.menu_costs'::regclass);
 SELECT app.enforce_tenant_rls('public.hpp_recompute_queue'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.hpp_recompute_queue'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.hpp_outlet_state'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.hpp_outlet_state'::regclass);

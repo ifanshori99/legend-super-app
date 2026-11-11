@@ -25,6 +25,8 @@ import {
   formatDecimal4,
   idr,
   parseDecimal4,
+  ulidToUuid,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -67,6 +69,9 @@ export type RecipeCoverageQuery = z.infer<typeof recipeCoverageQuerySchema>;
 const COST_PERMISSION = "recipe.cost.view" as const;
 /** Stands in for NULL variant / modifier ids in sort keys and cursors. */
 const NO_ID = "00000000-0000-0000-0000-000000000000";
+
+const isUuid = (value: string): boolean =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 const isoOf = (value: Date | string): string => new Date(value).toISOString();
 
@@ -151,15 +156,26 @@ export async function listMenuCosts(
 
 // -------------------------------------------------------- recipe coverage
 
+type CoverageReach = {
+  brandIds: string[];
+  /**
+   * The outlets coverage is measured against: per brand, the outlets of THAT
+   * brand the caller may view costs of (tenant or brand grant = every outlet of
+   * the brand, outlet grant = just those outlets).
+   */
+  outlets: { brandId: string; outletId: string }[];
+};
+
 /**
  * Brands the caller reaches with `recipe.cost.view` (tenant, the brand, or any
- * outlet of the brand, TEN-03). Same rule as the recipe list.
+ * outlet of the brand, TEN-03) and the outlets of each that count toward its
+ * coverage. Same brand rule as the recipe list.
  */
-async function reachableBrandIds(
+async function reachableCoverage(
   tx: Tx,
   context: ScopedTenantContext,
   actorUserId: string,
-): Promise<string[]> {
+): Promise<CoverageReach> {
   const snapshot = await accessSnapshotInTransaction(
     tx,
     context,
@@ -172,21 +188,28 @@ async function reachableBrandIds(
     .from(outlets)
     .where(eq(outlets.tenantId, context.tenant.tenantId));
   const tenantWide = snapshot.allows(COST_PERMISSION, { type: "tenant" });
-  return brandRows
-    .map((brand) => brand.id)
-    .filter(
-      (brandId) =>
-        tenantWide ||
-        snapshot.allows(COST_PERMISSION, { type: "brand", id: brandId }) ||
-        outletRows.some(
-          (outlet) =>
-            outlet.brandId === brandId &&
+  const brandIds: string[] = [];
+  const reached: CoverageReach["outlets"] = [];
+  for (const { id: brandId } of brandRows) {
+    const wholeBrand =
+      tenantWide ||
+      snapshot.allows(COST_PERMISSION, { type: "brand", id: brandId });
+    const own = outletRows
+      .filter(
+        (outlet) =>
+          outlet.brandId === brandId &&
+          (wholeBrand ||
             snapshot.allows(COST_PERMISSION, {
               type: "outlet",
               id: outlet.id,
-            }),
-        ),
-    );
+            })),
+      )
+      .map((outlet) => ({ brandId, outletId: outlet.id }));
+    if (!wholeBrand && own.length === 0) continue;
+    brandIds.push(brandId);
+    reached.push(...own);
+  }
+  return { brandIds, outlets: reached };
 }
 
 type CoverageDbRow = {
@@ -208,9 +231,10 @@ function toCoverageRow(
   let status: RecipeCoverageRow["status"] = "no_recipe";
   let cost: string | null = null;
   if (row.recipe_id !== null) {
-    // Complete only when the recipe is active and EVERY outlet in scope has a
-    // complete cost row; an outlet without a row (not computed yet) makes it
-    // incomplete, so a menu is never claimed complete on a partial rollout.
+    // Complete only when the recipe is active and EVERY outlet the caller may
+    // see of the item's own brand has a complete cost row; an outlet without a
+    // row (not computed yet) makes it incomplete, so a menu is never claimed
+    // complete on a partial rollout. No such outlet at all is never complete.
     const complete =
       row.recipe_active === true &&
       Number(row.outlet_rows) > 0 &&
@@ -242,13 +266,22 @@ export async function listRecipeCoverage(
   query: RecipeCoverageQuery,
 ): Promise<CursorPage<RecipeCoverageRow>> {
   return withTenant(db, context, async (tx) => {
-    const reachable = await reachableBrandIds(tx, context, actorUserId);
+    const reach = await reachableCoverage(tx, context, actorUserId);
+    const reachable = reach.brandIds;
     if (
       reachable.length === 0 ||
       (query.brandId && !reachable.includes(query.brandId))
     )
       throw new AccessError("PERMISSION_DENIED");
     const scope = query.brandId ? [query.brandId] : reachable;
+    const neededJson = JSON.stringify(
+      reach.outlets
+        .filter((outlet) => scope.includes(outlet.brandId))
+        .map((outlet) => ({
+          brandId: outlet.brandId,
+          outletId: outlet.outletId,
+        })),
+    );
     const tenantId = context.tenant.tenantId;
     const brandList = sql.join(
       scope.map((brandId) => sql`${brandId}::uuid`),
@@ -264,14 +297,15 @@ export async function listRecipeCoverage(
     const result = await tx.execute<CoverageDbRow>(sql`
       WITH catalogue AS (
         SELECT mi.id AS menu_item_id, NULL::uuid AS variant_id,
-               NULL::uuid AS modifier_id, mi.recipe_id, mi.updated_at
+               NULL::uuid AS modifier_id, mi.recipe_id, mi.updated_at,
+               mi.brand_id
           FROM menu_items mi
          WHERE mi.tenant_id = ${tenantId}::uuid
            AND mi.deleted_at IS NULL
            AND mi.brand_id IN (${brandList})
         UNION ALL
         SELECT mi.id, v.id, NULL::uuid, coalesce(v.recipe_id, mi.recipe_id),
-               v.updated_at
+               v.updated_at, mi.brand_id
           FROM item_variants v
           JOIN menu_items mi
             ON mi.tenant_id = v.tenant_id AND mi.id = v.menu_item_id
@@ -280,7 +314,8 @@ export async function listRecipeCoverage(
            AND mi.deleted_at IS NULL
            AND mi.brand_id IN (${brandList})
         UNION ALL
-        SELECT mi.id, NULL::uuid, m.id, m.recipe_id, m.updated_at
+        SELECT mi.id, NULL::uuid, m.id, m.recipe_id, m.updated_at,
+               mi.brand_id
           FROM modifiers m
           JOIN modifier_groups mg
             ON mg.tenant_id = m.tenant_id AND mg.id = m.group_id
@@ -295,10 +330,10 @@ export async function listRecipeCoverage(
            AND mi.deleted_at IS NULL
            AND mi.brand_id IN (${brandList})
       ),
-      scope_outlets AS (
-        SELECT id FROM outlets
-         WHERE tenant_id = ${tenantId}::uuid
-           AND brand_id IN (${brandList})
+      needed AS (
+        SELECT (e->>'brandId')::uuid AS brand_id,
+               (e->>'outletId')::uuid AS outlet_id
+          FROM jsonb_array_elements(${neededJson}::jsonb) e
       ),
       cost AS (
         SELECT mc.menu_item_id, mc.variant_id, mc.modifier_id,
@@ -309,7 +344,10 @@ export async function listRecipeCoverage(
                max(mc.theoretical_cost_idr) AS cost_idr,
                max(mc.computed_at) AS computed_at
           FROM menu_costs mc
-          JOIN scope_outlets so ON so.id = mc.outlet_id
+          JOIN menu_items cmi
+            ON cmi.tenant_id = mc.tenant_id AND cmi.id = mc.menu_item_id
+          JOIN needed n
+            ON n.outlet_id = mc.outlet_id AND n.brand_id = cmi.brand_id
          WHERE mc.tenant_id = ${tenantId}::uuid
          GROUP BY mc.menu_item_id, mc.variant_id, mc.modifier_id
       ),
@@ -320,7 +358,8 @@ export async function listRecipeCoverage(
                c.menu_item_id, c.variant_id, c.modifier_id, c.recipe_id,
                r.is_active AS recipe_active,
                coalesce(k.complete_rows, 0) AS complete_rows,
-               (SELECT count(*) FROM scope_outlets) AS outlet_rows,
+               (SELECT count(*) FROM needed n WHERE n.brand_id = c.brand_id)
+                 AS outlet_rows,
                k.cost_idr::text AS cost_idr,
                greatest(c.updated_at, k.computed_at) AS updated_at
           FROM catalogue c
@@ -411,6 +450,13 @@ async function outletClock(tx: Tx, tenantId: string, outletId: string) {
  * of the ledger consumed beyond (or below) the theoretical cost, net of order
  * returns, joins the adjustment: that is also where lines without a cost
  * snapshot land, so an unknown cost is never silently dropped from the actual.
+ *
+ * Only orders whose sale deduction is posted (or reversed) feed the sale-ledger
+ * residual. A pending, unposted or missing deduction leaves no ledger rows, so
+ * such an order keeps its theoretical cost in the actual (residual 0) and is
+ * counted in `pendingOrderCount` / `pendingTheoreticalIdr`. A surplus larger
+ * than the whole cost is capped in `composeFoodCost` (see there); the reported
+ * `adjustmentIdr` is the capped value.
  */
 export async function listFoodCostComparisons(
   context: ScopedTenantContext,
@@ -432,13 +478,79 @@ export async function listFoodCostComparisons(
     const start = businessDayRange(query.fromDate, clock).start;
     const end = businessDayRange(query.toDate, clock).end;
 
-    const theoreticalResult = await tx.execute<{ total: string | null }>(sql`
-      SELECT COALESCE(SUM(oi.cost_snapshot_idr), 0)::text AS total
+    // Per counted order: its theoretical cost (cost snapshots of its lines).
+    const orderResult = await tx.execute<{ id: string; total: string }>(sql`
+      SELECT o.id::text AS id,
+             COALESCE(SUM(oi.cost_snapshot_idr)
+               FILTER (WHERE oi.cost_snapshot_idr IS NOT NULL), 0)::text AS total
       ${countedLines(tenantId, query.outletId, query.fromDate, query.toDate)}
-         AND oi.cost_snapshot_idr IS NOT NULL`);
-    const theoreticalIdr = Number(theoreticalResult.rows[0]?.total ?? 0);
+       GROUP BY o.id`);
+    // The sale deduction of those orders: the order id is a ULID in
+    // `recipe_deductions.source_id` and the same value as a uuid in
+    // `orders.id` / `stock_ledger.source_id`; match on either spelling.
+    const orderIds = orderResult.rows.map((order) => order.id);
+    const sourceForms = orderIds.flatMap((id) => [id, uuidToUlid(id)]);
+    const deductionResult = await tx.execute<{
+      source_id: string;
+      status: string;
+      skip_reason: string | null;
+    }>(sql`
+      SELECT source_id, status, skip_reason
+        FROM recipe_deductions
+       WHERE tenant_id = ${tenantId}::uuid
+         AND outlet_id = ${query.outletId}::uuid
+         AND kind = 'sale'
+         AND source_type = 'order'
+         AND source_id IN (
+           SELECT value FROM jsonb_array_elements_text(
+             ${JSON.stringify(sourceForms)}::jsonb))`);
+    const deductionOf = new Map<
+      string,
+      { status: string; skip: string | null }
+    >();
+    for (const row of deductionResult.rows) {
+      let key: string;
+      try {
+        key = isUuid(row.source_id)
+          ? row.source_id.toLowerCase()
+          : ulidToUuid(row.source_id);
+      } catch {
+        continue; // not an order id: cannot belong to a counted order
+      }
+      const known = deductionOf.get(key);
+      // A posted (or reversed) deduction wins over any other row of the order.
+      if (!known || row.status === "posted" || row.status === "reversed")
+        deductionOf.set(key, { status: row.status, skip: row.skip_reason });
+    }
+    // Orders whose stock draw is confirmed reconcile against the sale ledger.
+    // Everything else keeps its theoretical cost as the actual (an unknown draw
+    // is never Rp0); only pending / unposted ones are reported as pending, an
+    // order skipped for `no_recipe` has nothing to draw.
+    let theoreticalIdr = 0;
+    let matchedTheoreticalIdr = 0;
+    let pendingTheoreticalIdr = 0;
+    let pendingOrderCount = 0;
+    const matchedIds: string[] = [];
+    for (const order of orderResult.rows) {
+      const cost = Number(order.total);
+      theoreticalIdr += cost;
+      const deduction = deductionOf.get(order.id.toLowerCase());
+      if (deduction?.status === "posted" || deduction?.status === "reversed") {
+        matchedTheoreticalIdr += cost;
+        matchedIds.push(order.id);
+      } else if (
+        deduction?.status === "skipped" &&
+        deduction.skip === "no_recipe"
+      ) {
+        continue;
+      } else {
+        pendingOrderCount += 1;
+        pendingTheoreticalIdr += cost;
+      }
+    }
 
     // Exact sums at Decimal4 x Decimal4 scale (integers), rounded once below.
+    // The sale bucket only counts ledger rows of the matched orders.
     const ledgerResult = await tx.execute<{ bucket: string; scaled: string }>(
       sql`
       SELECT CASE WHEN movement_type IN ('sale', 'return') THEN 'sale'
@@ -451,8 +563,14 @@ export async function listFoodCostComparisons(
          AND occurred_at >= ${start.toISOString()}::timestamptz
          AND occurred_at < ${end.toISOString()}::timestamptz
          AND (
-           movement_type IN ('waste', 'adjustment', 'duty_meal', 'sale')
-           OR (movement_type = 'return' AND source_type = 'order')
+           movement_type IN ('waste', 'adjustment', 'duty_meal')
+           OR (
+             (movement_type = 'sale'
+               OR (movement_type = 'return' AND source_type = 'order'))
+             AND source_id IN (
+               SELECT value::uuid FROM jsonb_array_elements_text(
+                 ${JSON.stringify(matchedIds)}::jsonb))
+           )
          )
        GROUP BY 1`,
     );
@@ -463,14 +581,14 @@ export async function listFoodCostComparisons(
     const wasteIdr = scaledCostToIdr(scaledOf("waste"));
     const offRecipeUsageIdr = scaledCostToIdr(scaledOf("duty_meal"));
     const saleLedgerIdr = scaledCostToIdr(scaledOf("sale"));
-    const adjustmentIdr =
+    const rawAdjustmentIdr =
       scaledCostToIdr(scaledOf("adjustment")) +
-      (saleLedgerIdr - theoreticalIdr);
+      (saleLedgerIdr - matchedTheoreticalIdr);
 
     const composed = composeFoodCost({
       theoreticalIdr,
       wasteIdr,
-      adjustmentIdr,
+      adjustmentIdr: rawAdjustmentIdr,
       offRecipeUsageIdr,
     });
     const row = foodCostComparisonSchema.parse({
@@ -483,8 +601,10 @@ export async function listFoodCostComparisons(
       varianceIdr: idr(composed.varianceIdr),
       varianceBp: composed.varianceBp,
       wasteIdr: idr(wasteIdr),
-      adjustmentIdr: idr(adjustmentIdr),
+      adjustmentIdr: idr(composed.adjustmentIdr),
       offRecipeUsageIdr: idr(offRecipeUsageIdr),
+      pendingOrderCount,
+      pendingTheoreticalIdr: idr(pendingTheoreticalIdr),
     });
     return { data: [row], meta: { limit: query.limit, nextCursor: null } };
   });

@@ -24,36 +24,40 @@ export type FoodCostParts = {
 
 export type FoodCostComposition = {
   actualCostIdr: number;
+  /** The adjustment actually used; below `parts.adjustmentIdr` when capped. */
+  adjustmentIdr: number;
   varianceIdr: number;
   varianceBp: number;
 };
 
 /**
  * Actual cost = theoretical + waste + adjustment + off-recipe usage, never
- * below zero (a surplus larger than the whole theoretical cost would otherwise
- * read as a negative cost). When clamped, the variance becomes
- * `actual - theoretical` so `theoretical + variance = actual` still holds.
+ * below zero, and variance = waste + adjustment + off-recipe always holds. A
+ * surplus (negative adjustment) larger than theoretical + waste + off-recipe
+ * would read as a negative cost, so the surplus is capped:
+ * `adjustment = -(theoretical + waste + offRecipe)`, which gives actual 0 and
+ * variance = -theoretical. The returned `adjustmentIdr` is that effective
+ * value and the report must show it, not the raw one. Waste and off-recipe
+ * are losses (>= 0), so only the adjustment can be capped.
  * `varianceBp` is variance / theoretical, half up; 0 when theoretical is 0
  * (there is nothing to divide by, and 0 is not a claim of a margin).
  */
 export function composeFoodCost(parts: FoodCostParts): FoodCostComposition {
   const theoretical = BigInt(parts.theoreticalIdr);
-  const rawVariance =
-    BigInt(parts.wasteIdr) +
-    BigInt(parts.adjustmentIdr) +
-    BigInt(parts.offRecipeUsageIdr);
-  let actual = theoretical + rawVariance;
-  let variance = rawVariance;
-  if (actual < 0n) {
-    actual = 0n;
-    variance = actual - theoretical;
-  }
+  const waste = BigInt(parts.wasteIdr);
+  const offRecipe = BigInt(parts.offRecipeUsageIdr);
+  let adjustment = BigInt(parts.adjustmentIdr);
+  const floor = -(theoretical + waste + offRecipe);
+  if (adjustment < floor) adjustment = floor;
+  const variance = waste + adjustment + offRecipe;
+  const actual = theoretical + variance;
   const varianceBp =
     theoretical === 0n
       ? 0n
       : divideRounded(variance * 10_000n, theoretical, ROUNDING_MODE);
   return {
     actualCostIdr: Number(actual),
+    adjustmentIdr: Number(adjustment),
     varianceIdr: Number(variance),
     varianceBp: Number(varianceBp),
   };

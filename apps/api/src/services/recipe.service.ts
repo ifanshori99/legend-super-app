@@ -56,7 +56,7 @@ import {
 } from "../db/schema/recipe.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { rebuildMenuCostsForOutletInTransaction } from "./hpp-recompute.service.ts";
+import { markHppStale } from "./hpp-invalidate.ts";
 import {
   cursorKeys,
   ROUNDING_MODE,
@@ -780,7 +780,10 @@ export async function createRecipeVersion(
     await tx
       .insert(recipeLines)
       .values(lineValues(context.tenant.tenantId, recipeId, body.lines));
-    await refreshBrandMenuCosts(tx, context, before.row.brandId);
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      brandId: before.row.brandId,
+    });
     await rememberIdempotentResource(
       tx,
       context,
@@ -808,32 +811,6 @@ export async function createRecipeVersion(
     });
     return detail;
   });
-}
-
-/**
- * A recipe edit or deactivation moves the theoretical cost of every menu item,
- * variant and modifier that reaches it (directly or through nested recipes).
- * The queue only carries ingredient price changes, so the brand's outlets get a
- * full `menu_costs` rebuild in the edit's own transaction: a cost is never left
- * at its old, lower value after an ingredient is added.
- */
-async function refreshBrandMenuCosts(
-  tx: Tx,
-  context: ScopedTenantContext,
-  brandId: string,
-): Promise<void> {
-  const brandOutlets = await tx
-    .select({ id: outlets.id })
-    .from(outlets)
-    .where(
-      and(
-        eq(outlets.tenantId, context.tenant.tenantId),
-        eq(outlets.brandId, brandId),
-      ),
-    )
-    .orderBy(asc(outlets.id));
-  for (const outlet of brandOutlets)
-    await rebuildMenuCostsForOutletInTransaction(tx, context, outlet.id);
 }
 
 /**
@@ -904,7 +881,10 @@ export async function deactivateRecipe(
       .update(recipes)
       .set({ isActive: false, updatedBy: actorUserId, updatedAt: new Date() })
       .where(eq(recipes.id, recipeId));
-    await refreshBrandMenuCosts(tx, context, before.row.brandId);
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      brandId: before.row.brandId,
+    });
     const { detail } = await loadDetail(tx, recipeId, access);
     await auditSetupChange(tx, context, actorUserId, {
       action: "recipe.deactivated",
@@ -1020,6 +1000,7 @@ export async function putModifierRecipeRules(
           .returning()
       : [];
     rows.sort((a, b) => a.sortOrder - b.sortOrder);
+    await markHppStale(tx, { tenantId: context.tenant.tenantId });
     await auditSetupChange(tx, context, actorUserId, {
       action: "modifier_recipe_rules.replaced",
       objectType: "modifier",

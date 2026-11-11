@@ -56,7 +56,6 @@ import { agent, signUp } from "./helpers.ts";
 const tenantA = randomUUID();
 const legalEntityA = randomUUID();
 const slugA = `hrf${randomUUID().slice(0, 8)}`;
-const hostA = `tenant-${slugA}.legend.test`;
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -152,7 +151,7 @@ let gramId: string;
 let cupId: string;
 let costRoleId: string;
 
-type Brand = { id: string; categoryId: string };
+type Brand = { id: string; categoryId: string; host: string };
 
 async function newBrand(label: string): Promise<Brand> {
   const id = randomUUID();
@@ -165,7 +164,16 @@ async function newBrand(label: string): Promise<Brand> {
     "INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order) VALUES ($1, $2, $3, 'HPP Uji', 0)",
     [categoryId, tenantA, id],
   );
-  return { id, categoryId };
+  // One brand-pinned host per brand (tenant_domains.brand_id is NOT NULL). The
+  // permission resolver filters the org index to the host's brand, so a caller
+  // granted on an outlet must call on the host of the brand owning that outlet.
+  const host = `h-${label}-${slugA}.legend.test`;
+  await q(
+    `INSERT INTO tenant_domains (id, tenant_id, brand_id, hostname, kind, tls_status, verified_at)
+     VALUES ($1, $2, $3, $4, 'platform_subdomain', 'active', now())`,
+    [randomUUID(), tenantA, id, host],
+  );
+  return { id, categoryId, host };
 }
 
 async function createOwnTenant() {
@@ -389,7 +397,7 @@ type DeductionState =
 /** The sale deduction the recipe engine keeps for an order. */
 async function seedDeduction(
   outlet: Outlet,
-  order: { uuid: string },
+  order: { ulid: string },
   state: DeductionState,
 ) {
   await q(
@@ -401,9 +409,9 @@ async function seedDeduction(
       tenantA,
       outlet.id,
       state.status,
-      order.uuid,
+      order.ulid,
       today,
-      `order:${order.uuid}`,
+      `order:${order.ulid}`,
       state.status === "posted" ? state.costIdr : null,
       state.status === "skipped" ? state.skipReason : null,
       state.status === "posted" ? new Date() : null,
@@ -415,12 +423,12 @@ async function seedDeduction(
 
 type Session = { client: ReturnType<typeof agent>; userId: string };
 
-async function signedIn(name: string): Promise<Session> {
+async function signedIn(name: string, brand: Brand): Promise<Session> {
   const client = agent(app);
   await signUp(client, name);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
-  client.set("Host", hostA);
+  client.set("Host", brand.host);
   return { client, userId };
 }
 
@@ -486,7 +494,10 @@ type FoodBody = {
 
 // --------------------------------------------------------------------- world
 
-let finance: Session; // recipe.cost.view, tenant scope
+let finance: Session; // recipe.cost.view, tenant scope, brandFood host
+let financeP: Session; // same, brand P host
+let financeR: Session; // same, brand R host
+let financeS: Session; // same, brand S host
 let beansItem: string;
 
 // Finding 4 uses brandFood. Finding 6 uses brands P/Q (grants) and R/S
@@ -499,7 +510,6 @@ let brandS: Brand;
 let outletP1: Outlet; // costs built
 let outletP2: Outlet; // never built, no stock
 let outletR1: Outlet; // costs built
-let outletS1: Outlet; // never built, no stock
 let menuP: string;
 let menuR: string;
 let menuS: string;
@@ -534,11 +544,6 @@ beforeAll(async () => {
   beansItem = await insertItem("Biji Kopi");
 
   brandFood = await newBrand("f");
-  await q(
-    `INSERT INTO tenant_domains (id, tenant_id, brand_id, hostname, kind, tls_status, verified_at)
-     VALUES ($1, $2, $3, $4, 'platform_subdomain', 'active', now())`,
-    [randomUUID(), tenantA, brandFood.id, hostA],
-  );
   brandP = await newBrand("p");
   brandR = await newBrand("r");
   brandS = await newBrand("s");
@@ -561,19 +566,27 @@ beforeAll(async () => {
   menuR = await insertMenuItem(brandR, "Latte R", recipeR);
   await setPrice(outletR1, menuR, 25_000);
   await rebuild(outletR1);
-  outletS1 = await newOutlet(brandS);
+  await newOutlet(brandS); // never built, no stock
   const recipeS = await insertRecipe(brandS, "Latte S", [
     { id: beansItem, qty: "18.0000" },
   ]);
   menuS = await insertMenuItem(brandS, "Latte S", recipeS);
 
-  finance = await signedIn("Keuangan HPP Fix");
+  // Tenant-wide users: one per brand host (each host is pinned to one brand).
+  finance = await signedIn("Keuangan HPP Fix", brandFood);
   await assign(finance.userId, { type: "tenant" });
-  userP1 = await signedIn("Outlet P1");
+  financeP = await signedIn("Keuangan HPP P", brandP);
+  await assign(financeP.userId, { type: "tenant" });
+  financeR = await signedIn("Keuangan HPP R", brandR);
+  await assign(financeR.userId, { type: "tenant" });
+  financeS = await signedIn("Keuangan HPP S", brandS);
+  await assign(financeS.userId, { type: "tenant" });
+  // Outlet-granted users call on the host of the brand owning their outlet.
+  userP1 = await signedIn("Outlet P1", brandP);
   await assign(userP1.userId, { type: "outlet", id: outletP1.id });
-  userP2 = await signedIn("Outlet P2");
+  userP2 = await signedIn("Outlet P2", brandP);
   await assign(userP2.userId, { type: "outlet", id: outletP2.id });
-  userR1 = await signedIn("Outlet R1");
+  userR1 = await signedIn("Outlet R1", brandR);
   await assign(userR1.userId, { type: "outlet", id: outletR1.id });
 });
 
@@ -626,7 +639,7 @@ describe("HPP-REPORT-FIX-4 food-cost with pending or unknown stock deductions", 
       { menuItemId: menu, quantity: 1, lineTotalIdr: 25_000, costIdr: 5_800 },
     ]);
     await seedDeduction(outlet, posted, { status: "posted", costIdr: 6_000 });
-    await move(outlet, beansItem, "sale", "-60.0000", posted.uuid);
+    await move(outlet, beansItem, "sale", "-60.0000", posted.ulid);
     // Pending: theoretical Rp4.000, no ledger rows at all.
     const pending = await seedOrder(outlet, [
       { menuItemId: menu, quantity: 1, lineTotalIdr: 20_000, costIdr: 4_000 },
@@ -668,7 +681,7 @@ describe("HPP-REPORT-FIX-4 food-cost with pending or unknown stock deductions", 
       { menuItemId: menu, quantity: 2, lineTotalIdr: 50_000, costIdr: 11_600 },
     ]);
     await seedDeduction(outlet, order, { status: "posted", costIdr: 11_600 });
-    await move(outlet, beansItem, "sale", "-116.0000", order.uuid);
+    await move(outlet, beansItem, "sale", "-116.0000", order.ulid);
 
     const row = await foodCost(outlet);
     expect(row).toMatchObject({
@@ -722,11 +735,16 @@ describe("HPP-REPORT-FIX-6 recipe-coverage denominator per brand and caller", ()
     session: Session,
     brand: Brand,
     menuItemId: string,
-  ): Promise<string | "absent"> {
+    // Assumption: a caller with no reach into the asked brand may be answered
+    // with 403 instead of an empty/incomplete list; only the cross-brand cases
+    // (6f) accept that, the rest require 200.
+    allowForbidden = false,
+  ): Promise<string | "absent" | "forbidden"> {
     const result = await readAll<CoverageBody>(
       session,
       `/api/inventory/recipe-coverage?brandId=${brand.id}`,
     );
+    if (allowForbidden && result.status === 403) return "forbidden";
     expect(result.status).toBe(200);
     const row = result.rows.find(
       (candidate) =>
@@ -745,36 +763,52 @@ describe("HPP-REPORT-FIX-6 recipe-coverage denominator per brand and caller", ()
   });
 
   it("HPP-REPORT-FIX-6c a tenant-wide user still needs every outlet of the brand: the item stays incomplete while one outlet has no cost", async () => {
-    expect(await statusOf(finance, brandP, menuP)).toBe("incomplete");
+    expect(await statusOf(financeP, brandP, menuP)).toBe("incomplete");
   });
 
   it("HPP-REPORT-FIX-6d outlets of another brand never count: a brand whose own outlets are all complete is complete tenant-wide", async () => {
     // Brand S (other brand) has an outlet without costs; brand P too.
-    expect(await statusOf(finance, brandR, menuR)).toBe("complete");
+    expect(await statusOf(financeR, brandR, menuR)).toBe("complete");
   });
 
   it("HPP-REPORT-FIX-6e a brand whose own outlet has no cost row stays incomplete", async () => {
-    expect(await statusOf(finance, brandS, menuS)).toBe("incomplete");
+    expect(await statusOf(financeS, brandS, menuS)).toBe("incomplete");
   });
 
   it("HPP-REPORT-FIX-6f a user without any outlet of the item's brand never sees it complete", async () => {
-    // R1's user reaches no brand S outlet: listed as incomplete or not listed.
-    expect(await statusOf(userR1, brandS, menuS)).not.toBe("complete");
+    // R1's user reaches no brand S outlet: incomplete, not listed, or refused.
+    expect(await statusOf(userR1, brandS, menuS, true)).not.toBe("complete");
     // And a user of brand P reaches no brand R outlet.
-    expect(await statusOf(userP1, brandR, menuR)).not.toBe("complete");
+    expect(await statusOf(userP1, brandR, menuR, true)).not.toBe("complete");
   });
 
   it("HPP-REPORT-FIX-6g the unfiltered list gives each row the status of its own brand", async () => {
-    const all = await readAll<CoverageBody>(
-      finance,
-      "/api/inventory/recipe-coverage",
-    );
-    expect(all.status).toBe(200);
-    const statusFor = (id: string) =>
-      all.rows.find((row) => row.menuItemId === id && row.variantId === null)
-        ?.status;
-    expect(statusFor(menuP)).toBe("incomplete");
-    expect(statusFor(menuR)).toBe("complete");
-    expect(statusFor(menuS)).toBe("incomplete");
+    // Each brand host lists at least its own brand. A row of another brand, if
+    // the list ever includes one, must still carry that brand's own status.
+    const expected = [
+      { menu: menuP, status: "incomplete" },
+      { menu: menuR, status: "complete" },
+      { menu: menuS, status: "incomplete" },
+    ];
+    const callers = [
+      { session: financeP, own: menuP },
+      { session: financeR, own: menuR },
+      { session: financeS, own: menuS },
+    ];
+    for (const { session, own } of callers) {
+      const all = await readAll<CoverageBody>(
+        session,
+        "/api/inventory/recipe-coverage",
+      );
+      expect(all.status).toBe(200);
+      const statusFor = (id: string) =>
+        all.rows.find((row) => row.menuItemId === id && row.variantId === null)
+          ?.status;
+      for (const { menu, status } of expected) {
+        if (menu === own) expect(statusFor(menu)).toBe(status);
+        else if (statusFor(menu) !== undefined)
+          expect(statusFor(menu)).toBe(status);
+      }
+    }
   });
 });

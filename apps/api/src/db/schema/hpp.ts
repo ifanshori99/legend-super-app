@@ -10,9 +10,16 @@
 //   cost is `recipe_complete = false` and its cost and margin are NULL, never 0.
 //   Rebuilt incrementally from `hpp_recompute_queue` (hpp-recompute.service.ts).
 // - `hpp_recompute_queue`: inventory items whose average cost changed at an
-//   outlet. One row per item (a second change only refreshes enqueued_at), so a
-//   burst of receipts costs one recompute. Written in the same transaction as
-//   the `stock_balances` write; drained by the worker job.
+//   outlet. One row per item (a second change only refreshes enqueued_at and
+//   releases the lease), so a burst of receipts costs one recompute. Written in
+//   the same transaction as the `stock_balances` write; drained by the worker
+//   job with a lease (`lease_until`, `attempts`): a row is only deleted by the
+//   transaction that computed it, so a dead worker loses nothing.
+// - `hpp_outlet_state`: one row per outlet. Its row lock serialises every write
+//   of `menu_costs` of that outlet (an older result can never overwrite a newer
+//   one), `rebuilt_at` marks the outlet as backfilled (no row = never), and
+//   `stale_at` is set in the same transaction as any change of a cost input
+//   (hpp-invalidate.ts) so the next job tick rebuilds the outlet in full.
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -120,6 +127,10 @@ export const hppRecomputeQueue = pgTable(
     enqueuedAt: timestamp("enqueued_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    /** Set while a worker holds the row; NULL or past = claimable. */
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    /** Claims so far; a row claimed more than 5 times is poison. */
+    attempts: integer("attempts").default(0).notNull(),
   },
   (table) => [
     primaryKey({
@@ -140,5 +151,28 @@ export const hppRecomputeQueue = pgTable(
       table.tenantId,
       table.enqueuedAt,
     ),
+  ],
+);
+
+export const hppOutletState = pgTable(
+  "hpp_outlet_state",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    /** A cost input changed after the last rebuild; NULL = up to date. */
+    staleAt: timestamp("stale_at", { withTimezone: true }),
+    /** Last full rebuild; NULL = never backfilled (treated as stale). */
+    rebuiltAt: timestamp("rebuilt_at", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({
+      name: "hpp_outlet_state_pkey",
+      columns: [table.tenantId, table.outletId],
+    }),
+    foreignKey({
+      name: "hpp_outlet_state_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
   ],
 );

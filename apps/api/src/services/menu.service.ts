@@ -73,6 +73,7 @@ import {
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { markHppStale } from "./hpp-invalidate";
 import {
   MENU_ITEM_PERMISSION,
   MENU_PRICE_MANAGE_PERMISSION,
@@ -1197,6 +1198,7 @@ export async function createItem(
         updatedAt: now,
       })
       .returning();
+    await markHppStale(tx, { tenantId: context.tenant.tenantId, brandId });
     await seedAvailability(tx, context, row.id, brandId, now);
     await appendMenuEvent(tx, context, menuItemUpdatedEvent, {
       aggregateId: row.id,
@@ -1329,6 +1331,11 @@ export async function updateItem(
         ),
       )
       .returning();
+    if (input.recipeId !== undefined)
+      await markHppStale(tx, {
+        tenantId: context.tenant.tenantId,
+        brandId: existing.brandId,
+      });
     await appendMenuEvent(tx, context, menuItemUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -1411,6 +1418,10 @@ export async function deleteItem(
           isNull(itemVariants.deletedAt),
         ),
       );
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      brandId: existing.brandId,
+    });
     await appendMenuEvent(tx, context, menuItemUpdatedEvent, {
       aggregateId: itemId,
       actorUserId,
@@ -1608,6 +1619,10 @@ export async function setItemModifierGroups(
           set: { deletedAt: null, sortOrder: index, updatedAt: now },
         });
     }
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      brandId: item.brandId,
+    });
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: itemId,
       actorUserId,
@@ -1693,6 +1708,10 @@ export async function createVariant(
         updatedAt: now,
       })
       .returning();
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      brandId: item.brandId,
+    });
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -1757,6 +1776,11 @@ export async function updateVariant(
         ),
       )
       .returning();
+    if (input.recipeId !== undefined)
+      await markHppStale(tx, {
+        tenantId: context.tenant.tenantId,
+        brandId: item.brandId,
+      });
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -1811,6 +1835,10 @@ export async function deleteVariant(
           eq(itemVariants.id, variantId),
         ),
       );
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      brandId: item.brandId,
+    });
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: variantId,
       actorUserId,
@@ -2035,6 +2063,7 @@ export async function deleteModifierGroup(
           isNull(modifiers.deletedAt),
         ),
       );
+    await markHppStale(tx, { tenantId: context.tenant.tenantId });
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: groupId,
       actorUserId,
@@ -2134,6 +2163,7 @@ export async function createModifier(
         updatedAt: now,
       })
       .returning();
+    await markHppStale(tx, { tenantId: context.tenant.tenantId });
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -2217,6 +2247,8 @@ export async function updateModifier(
         ),
       )
       .returning();
+    if (input.recipeId !== undefined || input.priceIdr !== undefined)
+      await markHppStale(tx, { tenantId: context.tenant.tenantId });
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -2252,6 +2284,7 @@ export async function deleteModifier(
           eq(modifiers.id, modifierId),
         ),
       );
+    await markHppStale(tx, { tenantId: context.tenant.tenantId });
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: modifierId,
       actorUserId,

@@ -51,6 +51,7 @@ import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
+import { markHppStale } from "./hpp-invalidate";
 import { restoreExpiredSoldOut } from "./menu-availability";
 import { outletBusinessDayClock } from "./outlet-clock";
 import {
@@ -336,6 +337,7 @@ export async function createPriceList(
         updatedAt: now,
       })
       .returning();
+    await markHppStale(tx, { tenantId: context.tenant.tenantId, outletId });
     await appendMenuEvent(tx, context, priceListUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -422,6 +424,10 @@ export async function updatePriceList(
         ),
       )
       .returning();
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      outletId: row.outletId,
+    });
     await appendMenuEvent(tx, context, priceListUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -482,6 +488,10 @@ export async function deletePriceList(
           eq(priceLists.id, priceListId),
         ),
       );
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      outletId: existing.outletId,
+    });
     await appendMenuEvent(tx, context, priceListUpdatedEvent, {
       aggregateId: priceListId,
       actorUserId,
@@ -717,6 +727,10 @@ export async function setPriceListItems(
           eq(priceLists.id, priceListId),
         ),
       );
+    await markHppStale(tx, {
+      tenantId: context.tenant.tenantId,
+      outletId: list.outletId,
+    });
     await appendMenuEvent(tx, context, priceListUpdatedEvent, {
       aggregateId: priceListId,
       actorUserId,

@@ -1361,6 +1361,11 @@ export const foodCostComparisonSchema = z
     wasteIdr: nonnegativeIdrSchema,
     adjustmentIdr: idrSchema,
     offRecipeUsageIdr: nonnegativeIdrSchema,
+    // Orders whose stock deduction is not posted yet: their theoretical cost
+    // stands in for the actual cost (never Rp0). Optional so older clients and
+    // fixtures stay valid; the API always fills them.
+    pendingOrderCount: z.number().int().nonnegative().optional(),
+    pendingTheoreticalIdr: nonnegativeIdrSchema.optional(),
   })
   .refine((row) => row.fromDate <= row.toDate, {
     path: ["toDate"],

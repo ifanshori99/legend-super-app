@@ -425,6 +425,25 @@ async function seedOrder(
   return { ulid, uuid };
 }
 
+/**
+ * The posted sale deduction of an order (as the recipe engine leaves it, with
+ * the ULID as source id). Food cost only reconciles orders against the sale
+ * ledger when their deduction is posted; the others count as pending.
+ */
+async function seedPostedDeduction(
+  outlet: Outlet,
+  order: { ulid: string },
+  costIdr: number,
+) {
+  await q(
+    `INSERT INTO recipe_deductions
+       (tenant_id, outlet_id, kind, status, mode, source_type, source_id, business_date,
+        idempotency_key, cost_idr, occurred_at, posted_at)
+     VALUES ($1, $2, 'sale', 'posted', 'real_time', 'order', $3, $4, $5, $6, now(), now())`,
+    [tenantA, outlet.id, order.ulid, today, `order:${order.ulid}`, costIdr],
+  );
+}
+
 // ------------------------------------------------------------- users & http
 
 type Session = { client: ReturnType<typeof agent>; userId: string };
@@ -896,7 +915,7 @@ describe("HPP-REPORT food-cost (listFoodCostComparisons)", () => {
         costIdr: 11_600,
       },
     ]);
-    await seedOrder(outlet, [
+    const order2 = await seedOrder(outlet, [
       {
         menuItemId: plainMenu,
         quantity: 1,
@@ -904,8 +923,11 @@ describe("HPP-REPORT food-cost (listFoodCostComparisons)", () => {
         costIdr: 5_800,
       },
     ]);
+    await seedPostedDeduction(outlet, order1, 11_600);
+    await seedPostedDeduction(outlet, order2, 5_800);
     // ... drawn from stock as 174 g at Rp100 (the sale ledger agrees).
-    await move(outlet, item, "sale", "-174.0000", order1.ulid);
+    await move(outlet, item, "sale", "-116.0000", order1.ulid);
+    await move(outlet, item, "sale", "-58.0000", order2.ulid);
     // Waste 10 g + 2,5 g = Rp1.250; duty meal 20 g = Rp2.000.
     await move(outlet, item, "waste", "-10.0000");
     await move(outlet, item, "waste", "-2.5000");
@@ -993,6 +1015,7 @@ describe("HPP-REPORT food-cost (listFoodCostComparisons)", () => {
         costIdr: 5_800,
       },
     ]);
+    await seedPostedDeduction(outlet, sold, 5_800);
     await move(outlet, item, "sale", "-58.0000", sold.ulid);
     // The voided order drew 58 g, then the void returned them.
     const voided = await seedOrder(
@@ -1032,6 +1055,7 @@ describe("HPP-REPORT food-cost (listFoodCostComparisons)", () => {
         costIdr: 1_000,
       },
     ]);
+    await seedPostedDeduction(outlet, sold, 1_000);
     await move(outlet, item, "sale", "-10.0000", sold.ulid);
     // 100 g surplus = Rp10.000 less loss than a perfect count.
     await move(outlet, item, "adjustment", "100.0000");

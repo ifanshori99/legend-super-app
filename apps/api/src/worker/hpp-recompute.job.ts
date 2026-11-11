@@ -1,8 +1,12 @@
 // HPP recompute job (bead legend-2qq; PRD v1.7 §17 "HPP Menu": menu cost
 // follows an ingredient price change within 5 minutes). Drains the tenant's
 // `hpp_recompute_queue` from the worker relay tick; the interval is far below
-// the 5 minute SLA. Failures never block the relay: the claimed rows roll back
-// with the failed batch and stay queued for the next run.
+// the 5 minute SLA. Failures never block the relay: a failed batch rolls back
+// with its ack, its rows stay queued under a 5 minute lease and a later run
+// retries them (poison rows hand their outlet to a full rebuild). Every run
+// also rebuilds the outlets that were never backfilled or are marked stale
+// (`markHppStale`). The error of a failed run is logged by the service and
+// rethrown here.
 
 import {
   assertTrustedScopedContext,
