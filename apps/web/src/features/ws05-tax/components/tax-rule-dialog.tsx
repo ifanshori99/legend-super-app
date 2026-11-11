@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
+import { focusFirstInvalid } from "@/lib/focus-first-invalid";
 import { taxMutationError } from "../errors";
 import {
   useAllPublishedTaxRules,
@@ -200,6 +201,7 @@ export function TaxRuleDialog({
     rule ? [...rule.appliesTo.itemIds] : [],
   );
   const [errors, setErrors] = React.useState<Errors>({});
+  const formRef = React.useRef<HTMLFormElement>(null);
   // d5pz: confirm before switching off the only food_beverage rule.
   const [confirmingOff, setConfirmingOff] = React.useState(false);
   const [zeroNote, setZeroNote] = React.useState(false);
@@ -278,7 +280,10 @@ export function TaxRuleDialog({
     const rateBp = parseRatePercent(rate);
     const found = validate(rateBp);
     setErrors(found);
-    if (Object.keys(found).length > 0 || rateBp === null) return;
+    if (Object.keys(found).length > 0 || rateBp === null) {
+      focusFirstInvalid(formRef.current);
+      return;
+    }
     if (losesLastFoodBeverageRule) {
       setConfirmingOff(true);
       return;
@@ -384,13 +389,26 @@ export function TaxRuleDialog({
   return (
     <>
       <Dialog open={!confirmingOff} onOpenChange={(open) => !open && onClose()}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent
+          className="sm:max-w-2xl"
+          onOpenAutoFocus={(event) => {
+            // Focus the dialog itself so the first field is not opened with
+            // its text fully selected.
+            event.preventDefault();
+            (event.target as HTMLElement).focus({ preventScroll: true });
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
 
-          <form className="grid gap-4" onSubmit={submit} noValidate>
+          <form
+            ref={formRef}
+            className="grid gap-4"
+            onSubmit={submit}
+            noValidate
+          >
             {presetInactive && (
               <p
                 role="note"
@@ -554,6 +572,11 @@ export function TaxRuleDialog({
                         )
                       }
                       disabled={pending}
+                      aria-invalid={
+                        errors.itemClasses && itemClass === ITEM_CLASSES[0]
+                          ? true
+                          : undefined
+                      }
                     />
                     <span>{t(ITEM_CLASS_KEYS[itemClass])}</span>
                   </label>

@@ -225,7 +225,11 @@ export function TaxRulesPage({
       // One primary action: the empty state carries its own button instead.
       action={
         !canCreate ? undefined : (
-          <Button type="button" onClick={() => setEditor({ mode: "create" })}>
+          <Button
+            type="button"
+            className="w-full max-sm:min-h-11 sm:w-auto"
+            onClick={() => setEditor({ mode: "create" })}
+          >
             <Plus aria-hidden="true" />
             {t("tax.rules.add")}
           </Button>
@@ -400,31 +404,41 @@ export function TaxRulesPage({
                     {rule.name}
                   </span>
                   <span className="text-sm text-muted-foreground">
-                    {t("tax.rules.scopeLine", {
-                      version: rule.version,
-                      scope: scopeLabel(rule),
-                    })}
+                    {t("tax.rules.versionLine", { version: rule.version })}
                   </span>
                 </div>
                 <VersionStatusBadge version={rule} />
               </div>
-              <p className="text-sm">
-                <span className="font-semibold tabular">
-                  {formatBasisPoints(rule.rateBp)}
-                </span>
-                <span className="text-muted-foreground">
-                  {" · "}
-                  {t(TAX_TYPE_KEYS[rule.taxType])}
-                </span>
-              </p>
-              <p className="text-sm text-muted-foreground">
-                <AppliesToSummary appliesTo={rule.appliesTo} />
-              </p>
-              <p className="text-sm text-muted-foreground">
-                {t("tax.rules.effectiveFrom", {
-                  date: formatBusinessDate(rule.effectiveFrom),
-                })}
-              </p>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+                <dt className="text-muted-foreground">
+                  {t("tax.rules.mobileScope")}
+                </dt>
+                <dd className="min-w-0">
+                  {scopeLabel(rule)}
+                  <span className="text-muted-foreground">
+                    {" · "}
+                    <AppliesToSummary appliesTo={rule.appliesTo} />
+                  </span>
+                </dd>
+                <dt className="text-muted-foreground">
+                  {t("tax.rules.mobileRate")}
+                </dt>
+                <dd className="min-w-0">
+                  <span className="font-semibold tabular">
+                    {formatBasisPoints(rule.rateBp)}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {" · "}
+                    {t(TAX_TYPE_KEYS[rule.taxType])}
+                  </span>
+                </dd>
+                <dt className="text-muted-foreground">
+                  {t("tax.rules.mobileEffective")}
+                </dt>
+                <dd className="min-w-0 tabular">
+                  {formatBusinessDate(rule.effectiveFrom)}
+                </dd>
+              </dl>
               <EffectiveBadge version={rule} versions={all} today={today} />
               <RuleActions
                 rule={rule}

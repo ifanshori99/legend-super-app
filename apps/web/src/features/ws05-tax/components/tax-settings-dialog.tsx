@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
+import { focusFirstInvalid } from "@/lib/focus-first-invalid";
 import { taxMutationError } from "../errors";
 import { useCreateTaxSettings, useUpdateTaxSettings } from "../hooks";
 import { PACKAGE_ALLOCATION_KEYS, ROUNDING_KEYS } from "../labels";
@@ -103,6 +104,7 @@ export function TaxSettingsDialog({
   const [effectiveFrom, setEffectiveFrom] = React.useState(
     draft ? draft.effectiveFrom : suggestEffectiveFrom(versions, today),
   );
+  const formRef = React.useRef<HTMLFormElement>(null);
   const [errors, setErrors] = React.useState<{
     increment?: string;
     effectiveFrom?: string;
@@ -123,7 +125,10 @@ export function TaxSettingsDialog({
     if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom))
       next.effectiveFrom = t("tax.errors.required");
     setErrors(next);
-    if (Object.keys(next).length > 0) return;
+    if (Object.keys(next).length > 0) {
+      focusFirstInvalid(formRef.current);
+      return;
+    }
 
     const fields = {
       calculationOrder: "discount_service_tax" as const,
@@ -180,7 +185,7 @@ export function TaxSettingsDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form className="grid gap-4" onSubmit={submit} noValidate>
+        <form ref={formRef} className="grid gap-4" onSubmit={submit} noValidate>
           <div className="flex items-start justify-between gap-4 py-2">
             <div className="grid gap-0.5">
               <Label htmlFor="settings-prices-include">

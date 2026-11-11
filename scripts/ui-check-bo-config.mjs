@@ -231,7 +231,12 @@ const STATES = [
       await dialog.getByLabel("Kode aturan").fill("PBJT-KOSONG");
       await dialog.getByLabel("Nama aturan").fill("Tanpa tarif");
       await dialog.getByRole("button", { name: "Simpan draf" }).click();
-      await visible(dialog.getByText("Masukkan tarif pajak."));
+      const rateError = dialog.getByText("Masukkan tarif pajak.");
+      await visible(rateError);
+      await rateError.scrollIntoViewIfNeeded();
+      await rateError.evaluate((node) =>
+        node.scrollIntoView({ block: "center" }),
+      );
     },
   },
   {
@@ -566,7 +571,7 @@ const STATES = [
     },
   },
   {
-    // Unbalanced journal: "Selisih Rp ..." and "Simpan draf" disabled.
+    // Unbalanced journal: "Selisih Rp ..." and the balance banner.
     card: "5ac3",
     name: "validation",
     path: "/kelola/akuntansi/jurnal-manual/baru",
