@@ -79,7 +79,7 @@ REVOKE UPDATE ON public.kitchen_station_feed FROM legend_app;
 -- 4. Breakfast pay-before-kitchen (bead oa0qk, owner Q43; migration 0321).
 --    Backstop for every path (retry, edge sync, captain, resend, worker): a
 --    kitchen ticket or item for a breakfast order is refused unless its
---    `facility_linked_orders` row is paid (paid_at set, status paid / fired).
+--    `facility_linked_orders` row is paid (paid_at set, status fired).
 --    The service checks first (HttpError 409 BREAKFAST_NOT_PAID); the triggers
 --    raise 23514 with constraint `kitchen_tickets_breakfast_paid`. The lookups
 --    run in SECURITY DEFINER helpers owned by the migrator (BYPASSRLS,
@@ -101,7 +101,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
          AND NOT EXISTS (
            SELECT 1 FROM public.facility_linked_orders f
            WHERE f.tenant_id = p_tenant AND f.order_id = p_order
-             AND f.paid_at IS NOT NULL AND f.status IN ('paid', 'fired')
+             AND f.paid_at IS NOT NULL AND f.status = 'fired'
          );
 $$;
 --> statement-breakpoint
@@ -162,5 +162,5 @@ END $$;
 REVOKE ALL ON FUNCTION app.kitchen_ticket_items_breakfast_paid() FROM PUBLIC;
 --> statement-breakpoint
 CREATE TRIGGER "kitchen_ticket_items_breakfast_paid_trg"
-  BEFORE INSERT OR UPDATE ON "kitchen_ticket_items"
+  BEFORE INSERT OR UPDATE OF order_id, order_item_id, ticket_id ON "kitchen_ticket_items"
   FOR EACH ROW EXECUTE FUNCTION app.kitchen_ticket_items_breakfast_paid();

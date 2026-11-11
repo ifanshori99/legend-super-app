@@ -278,12 +278,9 @@ async function assertBreakfastPaid(
     )
     .limit(1);
   if (order?.channel !== "facility" && !linked) return;
-  if (
-    linked &&
-    linked.paidAt !== null &&
-    (linked.status === "paid" || linked.status === "fired")
-  )
-    return;
+  // Only `fired` (paid_at set) passes: the fire path flips paid -> fired
+  // before it routes, so a merely `paid` row must not reach the kitchen.
+  if (linked && linked.paidAt !== null && linked.status === "fired") return;
   throw new HttpError(
     409,
     "BREAKFAST_NOT_PAID",

@@ -65,7 +65,7 @@ ALTER TABLE "orders" ADD CONSTRAINT "orders_channel_check"
 --    tenant / outlet scope that hides the order cannot make the check pass.
 --    The helper treats an order as breakfast when orders.channel = 'facility'
 --    OR a facility_linked_orders row exists, and as unpaid unless that row has
---    paid_at set and status paid / fired. Guards kitchen_tickets (insert or
+--    paid_at set and status fired. Guards kitchen_tickets (insert or
 --    re-pointing order_id) and kitchen_ticket_items (insert or update).
 CREATE FUNCTION app.breakfast_order_unpaid(p_tenant uuid, p_order uuid) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
@@ -82,7 +82,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
          AND NOT EXISTS (
            SELECT 1 FROM public.facility_linked_orders f
            WHERE f.tenant_id = p_tenant AND f.order_id = p_order
-             AND f.paid_at IS NOT NULL AND f.status IN ('paid', 'fired')
+             AND f.paid_at IS NOT NULL AND f.status = 'fired'
          );
 $$;
 --> statement-breakpoint
@@ -143,5 +143,5 @@ END $$;
 REVOKE ALL ON FUNCTION app.kitchen_ticket_items_breakfast_paid() FROM PUBLIC;
 --> statement-breakpoint
 CREATE TRIGGER "kitchen_ticket_items_breakfast_paid_trg"
-  BEFORE INSERT OR UPDATE ON "kitchen_ticket_items"
+  BEFORE INSERT OR UPDATE OF order_id, order_item_id, ticket_id ON "kitchen_ticket_items"
   FOR EACH ROW EXECUTE FUNCTION app.kitchen_ticket_items_breakfast_paid();
