@@ -1,13 +1,18 @@
 // The "Baris jurnal" block shared by the manual form and the recurring dialog.
 // It loads the accounts and the outlets (ACC-03 per-line attribution) and owns
-// the loading, error and empty states, so both forms behave the same.
+// the account loading, error and empty states, so both forms behave the same.
+// Outlets never block: without them every line stays entity-level.
 import type { ReactNode } from "react";
 import { useT } from "@/components/i18n";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAccounts, useOutlets } from "../hooks";
 import { postableAccounts, type DraftEvaluation } from "../lib";
-import { JournalLinesEditor, type EditorLine } from "./lines-editor";
+import {
+  JournalLinesEditor,
+  type EditorLine,
+  type OutletsState,
+} from "./lines-editor";
 
 export function JournalLinesSection({
   legalEntityId,
@@ -28,9 +33,21 @@ export function JournalLinesSection({
   const accountsQuery = useAccounts(legalEntityId);
   const outletsQuery = useOutlets();
   const accounts = postableAccounts(accountsQuery.data ?? []);
+  // Only active outlets of this legal entity, plus any outlet a row already
+  // uses (a saved journal may point at one that has since closed).
+  const outlets = (outletsQuery.data ?? []).filter(
+    (outlet) =>
+      (outlet.legalEntityId === legalEntityId && outlet.status === "active") ||
+      rows.some((row) => row.outletId === outlet.id),
+  );
+  const outletsState: OutletsState = outletsQuery.isPending
+    ? "loading"
+    : outletsQuery.isError
+      ? "error"
+      : "ready";
 
   let body: ReactNode;
-  if (accountsQuery.isPending || outletsQuery.isPending) {
+  if (accountsQuery.isPending) {
     body = (
       <div className="grid gap-2" aria-busy="true">
         <Skeleton className="h-20 w-full" />
@@ -40,15 +57,14 @@ export function JournalLinesSection({
         </p>
       </div>
     );
-  } else if (accountsQuery.isError || outletsQuery.isError) {
+  } else if (accountsQuery.isError) {
     body = (
       <ErrorState
         title={t("accounting.manual.form.linesErrorTitle")}
         description={t("accounting.manual.form.linesErrorHint")}
-        error={accountsQuery.error ?? outletsQuery.error}
+        error={accountsQuery.error}
         onRetry={() => {
-          if (accountsQuery.isError) void accountsQuery.refetch();
-          if (outletsQuery.isError) void outletsQuery.refetch();
+          void accountsQuery.refetch();
         }}
       />
     );
@@ -63,7 +79,11 @@ export function JournalLinesSection({
     body = (
       <JournalLinesEditor
         accounts={accounts}
-        outlets={outletsQuery.data}
+        outlets={outlets}
+        outletsState={outletsState}
+        onRetryOutlets={() => {
+          void outletsQuery.refetch();
+        }}
         rows={rows}
         onChange={onChange}
         evaluation={evaluation}

@@ -220,12 +220,15 @@ export const accountingMessages = {
       outletColumn: "Outlet (opsional)",
       outlet: "Outlet baris {line}",
       outletEntity: "Entitas · tanpa outlet",
+      outletUnavailable: "Outlet tidak tersedia",
+      outletsLoading: "Memuat outlet…",
+      outletsErrorHint:
+        "Outlet belum bisa dimuat. Baris tetap bisa disimpan tanpa outlet.",
       outletHint:
         "Pilih outlet pada tiap baris untuk laporan per outlet. Tanpa outlet, baris dicatat pada tingkat badan usaha.",
-      linesLoading: "Memuat akun dan outlet…",
+      linesLoading: "Memuat akun…",
       linesErrorTitle: "Data jurnal belum bisa dimuat",
-      linesErrorHint:
-        "Periksa koneksi, lalu coba lagi untuk memuat akun dan outlet.",
+      linesErrorHint: "Periksa koneksi, lalu coba lagi untuk memuat akun.",
       linesEmptyTitle: "Belum ada akun untuk jurnal",
       linesEmptyHint:
         "Tambahkan akun untuk badan usaha ini sebelum membuat jurnal.",

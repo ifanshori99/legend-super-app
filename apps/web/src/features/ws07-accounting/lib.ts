@@ -283,6 +283,8 @@ export type LineDraft = {
   accountId: string | null;
   /** "" or absent = entity-level line (outletId null, ACC-03). */
   outletId?: string | null;
+  /** Carried through from a saved journal; the form has no field for it. */
+  costCenter?: string | null;
   /** Raw field text; the user may type "1.520.000". */
   debit: string;
   credit: string;
@@ -348,7 +350,7 @@ export function evaluateManualDraft(
       debitIdr: debit as JournalLineInput["debitIdr"],
       creditIdr: credit as JournalLineInput["creditIdr"],
       outletId: draft.outletId ? (draft.outletId as OutletId) : null,
-      costCenter: null,
+      costCenter: draft.costCenter ? draft.costCenter : null,
     });
   });
   const differenceIdr = debitIdr - creditIdr;

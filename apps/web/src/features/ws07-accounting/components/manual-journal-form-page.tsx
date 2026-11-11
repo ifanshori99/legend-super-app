@@ -43,6 +43,7 @@ function rowsFromJournal(journal: ManualJournal | undefined): EditorLine[] {
     key: newIdempotencyKey(),
     accountId: line.accountId,
     outletId: line.outletId ?? "",
+    costCenter: line.costCenter,
     debit: line.debitIdr > 0 ? String(line.debitIdr) : "",
     credit: line.creditIdr > 0 ? String(line.creditIdr) : "",
   }));

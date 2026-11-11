@@ -28,6 +28,8 @@ export type EditorLine = {
   accountId: string;
   /** "" = entity-level line (no outlet); otherwise an outlet id (ACC-03). */
   outletId: string;
+  /** Kept from a saved journal so editing never drops it; no input field. */
+  costCenter: string | null;
   /** Raw text so the user may type "1.520.000". */
   debit: string;
   credit: string;
@@ -37,12 +39,14 @@ export type EditorLine = {
 const ENTITY_LEVEL = "__entity__";
 
 export type OutletOption = { id: string; name: string };
+export type OutletsState = "ready" | "loading" | "error";
 
 export function blankEditorLine(): EditorLine {
   return {
     key: newIdempotencyKey(),
     accountId: "",
     outletId: "",
+    costCenter: null,
     debit: "",
     credit: "",
   };
@@ -51,6 +55,8 @@ export function blankEditorLine(): EditorLine {
 export function JournalLinesEditor({
   accounts,
   outlets,
+  outletsState,
+  onRetryOutlets,
   rows,
   onChange,
   evaluation,
@@ -58,6 +64,9 @@ export function JournalLinesEditor({
 }: {
   accounts: readonly Account[];
   outlets: readonly OutletOption[];
+  /** Outlets never block the editor: not ready = entity-level lines only. */
+  outletsState: OutletsState;
+  onRetryOutlets: () => void;
   rows: readonly EditorLine[];
   onChange: (rows: EditorLine[]) => void;
   evaluation: DraftEvaluation;
@@ -153,7 +162,7 @@ export function JournalLinesEditor({
                     outletId: value === ENTITY_LEVEL ? "" : value,
                   })
                 }
-                disabled={disabled}
+                disabled={disabled || outletsState === "loading"}
               >
                 <SelectTrigger
                   id={`${baseId}-line-${index}-outlet`}
@@ -170,6 +179,16 @@ export function JournalLinesEditor({
                       {outlet.name}
                     </SelectItem>
                   ))}
+                  {row.outletId !== "" &&
+                    !outlets.some((outlet) => outlet.id === row.outletId) && (
+                      // A saved outlet that is not in the list (other entity,
+                      // closed, or the list is still unavailable).
+                      <SelectItem value={row.outletId}>
+                        {outletsState === "loading"
+                          ? t("accounting.manual.form.outletsLoading")
+                          : t("accounting.manual.form.outletUnavailable")}
+                      </SelectItem>
+                    )}
                 </SelectContent>
               </Select>
             </div>
@@ -250,9 +269,28 @@ export function JournalLinesEditor({
           {t("accounting.manual.form.addLine")}
         </Button>
       </div>
-      <p className="text-sm leading-5 text-muted-foreground">
-        {t("accounting.manual.form.outletHint")}
-      </p>
+      {outletsState === "error" ? (
+        <p
+          role="status"
+          className="flex flex-wrap items-center gap-x-2 text-sm leading-5 text-muted-foreground"
+        >
+          {t("accounting.manual.form.outletsErrorHint")}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onRetryOutlets}
+          >
+            {t("common.retry")}
+          </Button>
+        </p>
+      ) : (
+        <p className="text-sm leading-5 text-muted-foreground">
+          {outletsState === "loading"
+            ? t("accounting.manual.form.outletsLoading")
+            : t("accounting.manual.form.outletHint")}
+        </p>
+      )}
       <p className="text-sm leading-5 text-muted-foreground">
         {t("accounting.manual.form.amountHint")}
       </p>
