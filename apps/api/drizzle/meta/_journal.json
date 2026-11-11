@@ -1681,6 +1681,13 @@
       "when": 1794334000000,
       "tag": "0253_wa_login_auto_account",
       "breakpoints": true
+    },
+    {
+      "idx": 254,
+      "version": "7",
+      "when": 1794335000000,
+      "tag": "0254_menu_recommendations",
+      "breakpoints": true
     }
   ]
 }

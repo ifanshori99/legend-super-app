@@ -145,6 +145,8 @@ export * from "./petty-purchases";
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
+// AI-01 menu recommendation rules.
+export * from "./menu-recommendation";
 // legend-k2l
 export * from "./identity-merge";
 // WS-12 per-tenant AI provider config (legend-dwrr).

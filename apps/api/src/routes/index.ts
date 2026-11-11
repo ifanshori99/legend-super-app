@@ -53,6 +53,7 @@ import { publicSiteRouter } from "./public-site.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
 import { openBillRouter } from "./open-bill.routes";
 import { salesTargetsRouter } from "./sales-targets.routes";
+import { menuRecommendationRouter } from "./menu-recommendation.routes.ts";
 import { tableLinksRouter } from "./table-links.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
@@ -190,6 +191,9 @@ apiRouter.use("/approvals", approvalRouter);
 // every other menu route is live.
 // Menu CSV/XLSX import + printable menu (WS-03, legend-dmi): mounted by
 // createStorageApiRouter with the storage runtime (legend-0w2wy).
+// AI-01 menu recommendations and per-outlet rules (legend-ptd): per-route
+// guards; the menu router before it passes unmatched /menu paths through.
+apiRouter.use("/menu", menuRecommendationRouter);
 // Inventory & warehouse (WS-06, bead legend-98t).
 apiRouter.use("/inventory", inventoryRouter);
 // Inventory setup writes + settings (WS-06, legend-gjmk).
