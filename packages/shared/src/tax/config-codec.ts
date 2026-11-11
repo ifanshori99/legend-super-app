@@ -12,7 +12,7 @@ import {
   settingsFields,
   taxRuleFields,
 } from "./schemas.ts";
-import type { TaxRule } from "./schemas.ts";
+import type { TaxRule, TaxSettings } from "./schemas.ts";
 
 const itemKeySchema = z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,99}$/);
 const scopeFields = {
@@ -68,6 +68,8 @@ function compareKeys(a: { key: string }, b: { key: string }): number {
 export type TaxRulesConfigExportContext = {
   /** The source tenant's business date, supplied by the caller's clock. */
   asOf: BusinessDate;
+  /** All source settings; [] explicitly confirms there are none to omit. */
+  settings: readonly TaxSettings[];
 };
 
 function toTemplate(
@@ -77,13 +79,22 @@ function toTemplate(
   if (!ctx?.asOf)
     throw new Error("tax_rules toTemplate requires an asOf business date");
   const asOf = businessDateSchema.parse(ctx.asOf);
+  if (!Array.isArray(ctx.settings))
+    throw new Error("tax_rules toTemplate requires explicit settings rows");
+  // A rule-only export cannot reproduce a source's rounding/default policy.
+  // Refuse unsupported published settings instead of importing different
+  // money behavior through target defaults. Existing bundles still decode.
+  if (ctx.settings.some((settings) => settings.status === "published"))
+    throw new Error("tax_rules published settings export is unsupported");
   if (new Set(rows.map((row) => row.tenantId)).size > 1)
     throw new Error("tax_rules toTemplate requires one tenant");
 
   const latestByCode = new Map<string, TaxRule>();
   const seenVersions = new Set<string>();
   for (const row of rows) {
-    if (row.outletId !== null || row.status !== "published") continue;
+    if (row.status !== "published") continue;
+    if (row.outletId !== null)
+      throw new Error("tax_rules published outlet rules export is unsupported");
     // The server importer chooses the target's current date. Exporting a
     // scheduled rate or tombstone would activate it early there, so refuse
     // the export instead of flattening away its schedule.

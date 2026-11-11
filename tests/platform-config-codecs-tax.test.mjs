@@ -12,7 +12,7 @@ const codec = () => {
 };
 
 const exportRules = (rows, asOf = "2026-11-02") =>
-  codec().toTemplate(rows, { asOf });
+  codec().toTemplate(rows, { asOf, settings: [] });
 
 test("legend-j568k: export selects effective published tenant-wide tax rules without identifiers", () => {
   const rows = [
@@ -32,12 +32,6 @@ test("legend-j568k: export selects effective published tenant-wide tax rules wit
       publishedAt: null,
       publishedBy: null,
       rateBp: 9999,
-    },
-    {
-      ...source,
-      id: crypto.randomUUID(),
-      code: "OUTLET",
-      outletId: fixtures.privateRoomBill.outletId,
     },
     {
       ...source,
@@ -292,4 +286,66 @@ test("538-P1: export follows engine effective-date precedence before version tie
     for (const amount of ["totalIdr", "taxIdr", "serviceChargeIdr", "baseIdr"])
       assert.equal(after[amount], before[amount], amount);
   }
+});
+
+test("538-P2: export requires explicit settings input rather than losing rounding policy", () => {
+  assert.throws(
+    () => codec().toTemplate([source], { asOf: "2026-11-02" }),
+    /settings/i,
+  );
+  const tenantSettings = fixtures.settings[0];
+  assert.ok(tenantSettings);
+  for (const fields of [
+    { taxRoundingMode: "floor" },
+    { billRounding: { incrementIdr: 1000, mode: "ceil" } },
+  ]) {
+    assert.throws(
+      () =>
+        codec().toTemplate([source], {
+          asOf: "2026-11-02",
+          settings: [{ ...tenantSettings, ...fields }],
+        }),
+      /settings.*unsupported|unsupported.*settings/i,
+    );
+  }
+  assert.equal(exportRules([source]).length, 1);
+  // Unpublished settings cannot affect the source's monetary behavior.
+  assert.equal(
+    codec().toTemplate([source], {
+      asOf: "2026-11-02",
+      settings: [
+        {
+          ...tenantSettings,
+          status: "draft",
+          publishedAt: null,
+          publishedBy: null,
+        },
+      ],
+    }).length,
+    1,
+  );
+});
+
+test("538-P2: published outlet rules are explicitly refused rather than silently dropped", () => {
+  const outletRule = {
+    ...source,
+    id: crypto.randomUUID(),
+    code: "OUTLET",
+    outletId: fixtures.privateRoomBill.outletId,
+    rateBp: 1500,
+  };
+  assert.throws(
+    () => exportRules([source, outletRule]),
+    /outlet.*unsupported|unsupported.*outlet/i,
+  );
+  assert.throws(
+    () => exportRules([outletRule]),
+    /outlet.*unsupported|unsupported.*outlet/i,
+  );
+  assert.equal(
+    exportRules([
+      { ...outletRule, status: "draft", publishedAt: null, publishedBy: null },
+    ]).length,
+    0,
+  );
 });
