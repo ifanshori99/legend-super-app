@@ -395,9 +395,10 @@ const swapChargePending = () =>
  * value. `waived`/`expired`: never paid, so the line that swap wrote is worth
  * its difference less (only the swap that wrote `lineId`: a later swap's
  * difference is already measured against that lower list value). A swap
- * whose charge was blocked (`order_issue.charge_blocked`, no charge row ever
- * comes) charges nothing, so it reads as waived (architect Q25 #8). Anything
- * else (`open`, `routed_pos`, no charge row yet): pending.
+ * without a charge row (blocked, `order_issue.charge_blocked`, or its event
+ * never ran) charged nothing, so it reads as waived (architect Q25 #8, CTO 11
+ * Nov): the swap is never blocked for good. Anything else (`open`,
+ * `routed_pos`): pending.
  */
 async function chainChargesOf(
   tx: Tx,
@@ -414,13 +415,7 @@ async function chainChargesOf(
   const result = await tx.execute(sql`
     SELECT i.id::text AS issue_id, c.status,
            c.amount_idr::text AS amount,
-           coalesce(c.difference_idr, i.price_difference_idr)::text AS difference,
-           (c.id IS NULL AND EXISTS (
-              SELECT 1 FROM audit_logs a
-               WHERE a.tenant_id = i.tenant_id
-                 AND a.created_at >= coalesce(i.resolved_at, i.created_at) - interval '1 day'
-                 AND a.event->>'action' = 'order_issue.charge_blocked'
-                 AND a.event->>'objectId' = i.id::text)) AS blocked
+           coalesce(c.difference_idr, i.price_difference_idr)::text AS difference
       FROM order_issues i
       LEFT JOIN order_issue_charges c
         ON c.tenant_id = i.tenant_id AND c.order_issue_id = i.id
@@ -437,12 +432,8 @@ async function chainChargesOf(
   const writer = chain.find((row) => row.replacementOrderItemId === lineId);
   const charges = { ...none };
   for (const row of result.rows) {
-    const status =
-      row.blocked === true
-        ? "waived"
-        : row.status === null
-          ? null
-          : String(row.status);
+    // No charge row: nothing was charged (waived).
+    const status = row.status === null ? "waived" : String(row.status);
     if (status === "paid")
       charges.paidExtraIdr += Number(String(row.amount ?? "0"));
     else if (status === "waived" || status === "expired") {

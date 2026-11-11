@@ -844,12 +844,13 @@ export async function refundPosOrder(
           payout = Math.min(input.amountIdr, owedIdr);
           // Running balance (the latest audit row holds it; do not sum rows):
           // what is due beyond what the tenders can still pay (architect Q25
-          // #5: measured against the tenders, not the voucher-cut room, so a
+          // #5: measured against the tenders, not the voucher-cut room: the
+          // voucher and the payout together are what the tenders cover, so a
           // value already given as a voucher is not owed on the deposit).
           if (Number(order.depositAppliedIdr) > 0)
             depositOwedIdr = Math.max(
               0,
-              dueIdr - Math.min(dueIdr, Math.max(0, paid - refunded)),
+              dueBill - Math.min(dueBill, Math.max(0, paid - refunded)),
             );
         }
         if (goodsReturnOnly) payout = 0;
