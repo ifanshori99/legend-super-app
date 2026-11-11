@@ -14,6 +14,7 @@ import {
 // Runs tests against a disposable PostgreSQL server that exists only for this
 // run. The development database is never touched.
 //   pnpm test      → API integration tests (vitest) + root node:test suites
+//   pnpm test:coverage → the same, with the business-logic coverage gate
 //   pnpm test:e2e  → production builds of both apps + Playwright
 const mode = process.argv[2];
 if (!["unit", "e2e"].includes(mode))
@@ -21,6 +22,13 @@ if (!["unit", "e2e"].includes(mode))
 const databaseName = process.env.LEGEND_TEST_DB_NAME || "starter_test";
 if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseName))
   throw new Error("LEGEND_TEST_DB_NAME must be a lowercase PostgreSQL name.");
+
+// Business-logic coverage gate (legend-dd0g): pnpm test:coverage, or
+// LEGEND_COVERAGE=1 pnpm test (CI sets it on the pnpm check step so the suite
+// runs once). Thresholds live in apps/api/vitest.config.ts.
+const coverage =
+  mode === "unit" &&
+  (process.argv.includes("--coverage") || process.env.LEGEND_COVERAGE === "1");
 
 // Fixed local origins for test servers, distinct from development.
 export const TEST_API_URL = "http://localhost:4101";
@@ -154,7 +162,14 @@ try {
       await runTestStep(
         "vitest",
         pnpmCommand(),
-        ["--filter", "@starter/api", "run", "test", ...(apiFiles ?? [])],
+        [
+          "--filter",
+          "@starter/api",
+          "run",
+          "test",
+          ...(coverage ? ["--coverage"] : []),
+          ...(apiFiles ?? []),
+        ],
         testEnv,
       );
     }

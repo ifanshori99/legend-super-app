@@ -37,7 +37,11 @@ jobs:
           retention-days: 7
       - name: Block high dependency advisories
         run: pnpm audit --audit-level high
+      # LEGEND_COVERAGE makes the one test run also enforce the business-logic
+      # coverage thresholds in apps/api/vitest.config.ts (legend-dd0g).
       - run: pnpm check
+        env:
+          LEGEND_COVERAGE: "1"
       - run: pnpm format:check
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium

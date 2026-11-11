@@ -33,6 +33,7 @@
     "role:set": "pnpm --filter @starter/api run role:set",
     "doctor": "node scripts/doctor.mjs",
     "test": "node scripts/test.mjs unit",
+    "test:coverage": "node scripts/test.mjs unit --coverage",
     "test:e2e": "node scripts/test.mjs e2e",
     "test:e2e:mock": "playwright test --config=playwright.mock.config.ts",
     "test:e2e:mock:shard": "node scripts/e2e-mock-shard.mjs",
