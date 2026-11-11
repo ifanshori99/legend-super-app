@@ -53,6 +53,31 @@
 //   delete) and inserting the baseline row. A digest with fromLinkSeq >
 //   throughLinkSeq is refused (4xx / clean error, no run row); fromLinkSeq equal to
 //   throughLinkSeq is a valid empty window.
+// - Round 2 (docs/briefs/470-edge-upsync-codex-fixes.md, decisions in the card
+//   brief):
+//   * Epoch: the digest carries edgeInstanceId (edge_nodes.instance_id of the
+//     node row). The cloud's active epoch is sync_cursors.peer_instance_id of the
+//     edge_to_cloud row. A digest whose edgeInstanceId differs from it (or while it
+//     is NULL) is status 'stale': no totals comparison, cloud_totals {} and
+//     diffs []. Order: stale, then behind, then totals. The harness sets
+//     edge_nodes.instance_id in newWorld and adopts it as peer_instance_id (NULL ->
+//     id, the same trigger-legal step as the J1 adoption below) in digestOf, i.e.
+//     what the cloud link does on hello. digestOf(world, false) skips that.
+//   * Runs store from_link_seq (NOT NULL default 0) and edge_instance_id (uuid) next
+//     to through_link_seq for every status incl. stale; the run DTO and the list
+//     expose fromLinkSeq, throughLinkSeq, edgeInstanceId. edge_totals of a stale run
+//     is not asserted.
+//   * Identity: totals entries carry idHash (decimal, sum of
+//     eventIdentityHash(event id) mod 2^64). The cloud sums the same hash over the
+//     inbound rows' envelope ids, compares count, amount AND idHash, and a diff
+//     entry is {eventName, edgeCount, cloudCount, edgeAmountIdr, cloudAmountIdr,
+//     edgeIdHash, cloudIdHash}. A lost event plus an extra event of the same
+//     rupiah keeps count and amount equal: only idHash tells -> mismatch. The test
+//     edits the edge outbox the cloud receives (a different event id of equal
+//     amount in place of one event).
+//   * Bounds: digest amountIdr is digits only and <= 9223372036854775807 (4xx
+//     above, from the route and a clean error from the service); idHash is digits
+//     only and < 2^64.
 // - KNOWN LIMITATION (not tested, follow-up in the legend-b3k area): a standby
 //   re-send that the cloud skips as already_received counts on the edge ledger but
 //   not on the cloud, so a standby promotion can still show a false mismatch.
@@ -92,7 +117,10 @@ import {
   listEdgeReconciliationRuns,
   reconcileEdgeTransactions,
 } from "../services/edge-reconciliation.service.ts";
-import { buildEdgeTxnDigest } from "../services/edge-txn-ledger.service.ts";
+import {
+  buildEdgeTxnDigest,
+  eventIdentityHash,
+} from "../services/edge-txn-ledger.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -107,7 +135,11 @@ type World = {
   node: AuthenticatedEdgeNode;
   outletId: string;
   tenant: IsolatedTenant;
+  instanceId: string;
 };
+
+const TWO_64 = 18446744073709551616n;
+const MAX_BIGINT = 9223372036854775807n;
 
 const actor = randomUUID();
 let app: Express;
@@ -158,6 +190,45 @@ async function asOwnerTenant<T>(
   }
 }
 
+/** Run an owner-side statement; falls back to replica role when a guard trigger refuses it. */
+async function ownerWrite(
+  tenantId: string,
+  sql: string,
+  params: unknown[],
+  expectedRows?: number,
+) {
+  const apply = (replica: boolean) =>
+    asOwnerTenant(tenantId, async (client) => {
+      if (replica)
+        await client.query("SET LOCAL session_replication_role = replica");
+      const result = await client.query(sql, params);
+      if (expectedRows !== undefined && result.rowCount !== expectedRows)
+        throw new Error(`expected ${expectedRows} row(s) from: ${sql}`);
+    });
+  await apply(false).catch(() => apply(true));
+}
+
+/** The edge's own instance id lives on its node row. */
+const setInstanceId = (world: World, instanceId: string) =>
+  ownerWrite(
+    world.tenant.tenantId,
+    "UPDATE edge_nodes SET instance_id = $3 WHERE tenant_id = $1 AND id = $2",
+    [world.tenant.tenantId, world.node.scope.edgeNodeId, instanceId],
+    1,
+  ).then(() => {
+    world.instanceId = instanceId;
+  });
+
+/** What the cloud link does on hello: adopt the edge instance as the active epoch (NULL -> id only). */
+const bindEpoch = (world: World) =>
+  ownerWrite(
+    world.tenant.tenantId,
+    `UPDATE sync_cursors SET peer_instance_id = $3
+      WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud'
+        AND peer_instance_id IS NULL`,
+    [world.tenant.tenantId, world.node.scope.edgeNodeId, world.instanceId],
+  );
+
 /** A fresh outlet with its own primary edge node, so each test starts at zero. */
 async function newWorld(tenant: IsolatedTenant): Promise<World> {
   const outletId = randomUUID();
@@ -180,7 +251,9 @@ async function newWorld(tenant: IsolatedTenant): Promise<World> {
   );
   const node = await authenticateEdgeCredential(registered.credential);
   if (!node) throw new Error("Edge node did not authenticate");
-  return { node, outletId, tenant };
+  const world: World = { node, outletId, tenant, instanceId: randomUUID() };
+  await setInstanceId(world, world.instanceId);
+  return world;
 }
 
 const operator = (world: World) =>
@@ -259,6 +332,8 @@ async function readEdgeOutbox(world: World): Promise<EdgeOutbox> {
     context: world.node.context,
     node: world.node.scope,
     outboundDirection: "edge_to_cloud",
+    // The shared test DB's cursor may already be bound to this epoch.
+    edgeInstanceId: world.instanceId,
   });
   const head = await edgeStore.outboundHead();
   if (head > last) {
@@ -316,10 +391,14 @@ async function cloudReceive(
   );
 }
 
-const digestOf = (world: World): Promise<Digest> =>
-  withTenant(db, world.node.context, (tx) =>
+/** The edge digest; by default the cloud has adopted the edge instance as its epoch (see header). */
+async function digestOf(world: World, bind = true): Promise<Digest> {
+  const digest = await withTenant(db, world.node.context, (tx) =>
     buildEdgeTxnDigest(tx, world.node.scope),
   );
+  if (bind) await bindEpoch(world);
+  return digest;
+}
 
 /** Emulate "the ledger migration landed after K events were sent": no ledger rows, a baseline row. */
 async function wipeLedgerAndSetBaseline(world: World, fromLinkSeq: number) {
@@ -378,7 +457,9 @@ function typicalDay(world: World): EventEnvelope[] {
 async function runRows(world: World) {
   const { rows } = await asOwnerTenant(world.tenant.tenantId, (client) =>
     client.query(
-      `SELECT id, status, through_link_seq::text AS through_link_seq, edge_totals, cloud_totals, diffs, checked_at
+      `SELECT id, status, through_link_seq::text AS through_link_seq,
+              from_link_seq::text AS from_link_seq, edge_instance_id::text AS edge_instance_id,
+              edge_totals, cloud_totals, diffs, checked_at
          FROM edge_reconciliation_runs
         WHERE tenant_id = $1 AND edge_node_id = $2 ORDER BY checked_at, id`,
       [world.tenant.tenantId, world.node.scope.edgeNodeId],
@@ -388,6 +469,8 @@ async function runRows(world: World) {
     id: string;
     status: string;
     through_link_seq: string;
+    from_link_seq: string;
+    edge_instance_id: string | null;
     edge_totals: unknown;
     cloud_totals: unknown;
     diffs: unknown;
@@ -400,6 +483,7 @@ const MONEY_TABLES = [
   "edge_inbound_events",
   "edge_received_events",
   "edge_txn_ledger",
+  "edge_txn_ledger_events",
   "edge_outbound_queue",
   "edge_sync_conflicts",
   "sync_cursors",
@@ -454,9 +538,13 @@ function expectOnlyRunsChanged(
 function tamper(
   digest: Digest,
   name: string,
-  change: { count?: number; amount?: bigint },
+  change: { count?: number; amount?: bigint; idHash?: bigint },
 ): Digest {
-  const current = digest.totals[name] ?? { count: 0, amountIdr: "0" };
+  const current = digest.totals[name] ?? {
+    count: 0,
+    amountIdr: "0",
+    idHash: "0",
+  };
   return {
     ...digest,
     totals: {
@@ -465,6 +553,11 @@ function tamper(
         count: current.count + (change.count ?? 0),
         amountIdr: (
           BigInt(current.amountIdr) + (change.amount ?? 0n)
+        ).toString(),
+        // Unless asked, the identity sum is the one the edge really has.
+        idHash: (
+          (BigInt(current.idHash) + (change.idHash ?? 0n)) %
+          TWO_64
         ).toString(),
       },
     },
@@ -588,6 +681,8 @@ describe("legend-kai reconcile: ok", () => {
     expect(rows[0]).toMatchObject({
       status: "ok",
       through_link_seq: String(digest.throughLinkSeq),
+      from_link_seq: "0",
+      edge_instance_id: world.instanceId,
       edge_totals: digest.totals,
       cloud_totals: digest.totals,
     });
@@ -613,10 +708,11 @@ describe("legend-kai reconcile: ok", () => {
     const events = typicalDay(world);
     await edgeSend(world, events.slice(0, 6));
     await cloudReceive(world);
-    const early = await digestOf(world);
+    const early = await digestOf(world, false);
     // The edge keeps selling and the cloud keeps receiving after the digest.
     await edgeSend(world, events.slice(6));
     await cloudReceive(world);
+    await bindEpoch(world);
     const run = await reconcile(world, early);
     expect(run.status).toBe("ok");
   });
@@ -663,6 +759,8 @@ describe("legend-kai reconcile: mismatch is reported, never fixed", () => {
         cloudCount: paid.count,
         edgeAmountIdr: (BigInt(paid.amountIdr) + 75000n).toString(),
         cloudAmountIdr: paid.amountIdr,
+        edgeIdHash: paid.idHash,
+        cloudIdHash: paid.idHash,
       },
     ]);
     // Report only: not a single cloud or edge row changed besides the run.
@@ -690,6 +788,8 @@ describe("legend-kai reconcile: mismatch is reported, never fixed", () => {
         cloudCount: refunded.count,
         edgeAmountIdr: "0",
         cloudAmountIdr: refunded.amountIdr,
+        edgeIdHash: refunded.idHash,
+        cloudIdHash: refunded.idHash,
       },
     ]);
   });
@@ -733,6 +833,8 @@ describe("legend-kai reconcile: mismatch is reported, never fixed", () => {
         cloudCount: 0,
         edgeAmountIdr: "500",
         cloudAmountIdr: "0",
+        edgeIdHash: "0",
+        cloudIdHash: "0",
       },
     ]);
   });
@@ -746,15 +848,52 @@ describe("legend-kai reconcile: mismatch is reported, never fixed", () => {
     ]);
     await cloudReceive(world);
     const digest = await digestOf(world);
-    expect(digest.totals["order.paid"]).toEqual({
+    // The two sums (18e15) exceed 2^53; each event (9e15) is itself a safe integer.
+    expect(digest.totals["order.paid"]).toMatchObject({
       count: 2,
       amountIdr: "18000000000000000",
     });
+    expect(digest.totals["order.paid"]!.idHash).toMatch(/^\d+$/);
     expect((await reconcile(world, digest)).status).toBe("ok");
     expect(
       (await reconcile(world, tamper(digest, "order.paid", { amount: 1n })))
         .status,
     ).toBe("mismatch");
+  });
+
+  it("a cloud sum above the bigint range is still recorded as a mismatch (no 500, no lost run)", async () => {
+    const world = await newWorld(tenantA);
+    const big = "9000000000000000000"; // under 2^63-1 on its own
+    const sent = envelope(world, "order.paid", { totalIdr: big });
+    await edgeSend(world, [sent]);
+    await cloudReceive(world);
+    // The cloud also holds a second 9e18 event the edge ledger never counted:
+    // its sum (1.8e19) is past 2^63-1.
+    const extra = envelope(world, "order.paid", { totalIdr: big });
+    const cloudStore = createDbLinkStore({
+      database: db,
+      context: world.node.context,
+      node: world.node.scope,
+      outboundDirection: "cloud_to_edge",
+      edgeInstanceId: world.instanceId,
+    });
+    await cloudStore.applyInbound({
+      fromSeq: 1,
+      toSeq: 2,
+      events: [{ linkSeq: 2, event: extra }],
+    });
+    const digest = await digestOf(world);
+
+    const run = await reconcile(world, { ...digest, throughLinkSeq: 2 });
+
+    expect(run.status).toBe("mismatch");
+    expect(run.cloudTotals["order.paid"]).toMatchObject({
+      count: 2,
+      amountIdr: "18000000000000000000",
+    });
+    expect((await runRows(world)).map((row) => row.status)).toEqual([
+      "mismatch",
+    ]);
   });
 });
 
@@ -775,7 +914,7 @@ describe("legend-kai reconcile: behind is not a mismatch", () => {
     expect((await runRows(world)).map((row) => row.status)).toEqual(["behind"]);
     expectOnlyRunsChanged(before, await snapshot(world.tenant.tenantId), 1);
 
-    await cloudReceive(world);
+    await cloudReceive(world, undefined, world.instanceId);
     const caughtUp = await reconcile(world, digest);
     expect(caughtUp.status).toBe("ok");
   });
@@ -881,6 +1020,8 @@ describe("legend-kai reconcile: non-zero peer_seq_offset", () => {
         received_in_seq: 3,
         peer_seq_offset: 3,
       });
+      // The rebuilt edge database is a new instance: its node row says so.
+      await setInstanceId(world, J2);
     };
     return { world, cursor, rebase };
   }
@@ -933,6 +1074,30 @@ describe("legend-kai reconcile: non-zero peer_seq_offset", () => {
     );
     expect(run.status).toBe("mismatch");
   });
+
+  it("after the rebase a digest of the previous edge instance is stale, the new instance's digest is ok", async () => {
+    const { world, rebase } = await rebuiltWorld();
+    await edgeSend(world, typicalDay(world).slice(0, 4));
+    // Built by the old instance, before the edge database was rebuilt.
+    const oldInstance = world.instanceId;
+    const oldDigest = await digestOf(world, false);
+    expect(oldDigest.edgeInstanceId).toBe(oldInstance);
+    const outbox = await readEdgeOutbox(world);
+    await rebase();
+    await cloudReceiveOutbox(world, outbox, undefined, J2);
+
+    // Same numbers, wrong epoch: applying the new instance's offset to the old
+    // instance's digest would be a false answer either way.
+    const stale = await reconcile(world, oldDigest);
+    expect(stale.status).toBe("stale");
+    const fresh = await digestOf(world);
+    expect(fresh.edgeInstanceId).toBe(J2);
+    expect(fresh.totals).toEqual(oldDigest.totals);
+    expect((await reconcile(world, fresh)).status).toBe("ok");
+    const rows = await runRows(world);
+    expect(rows.map((row) => row.status)).toEqual(["stale", "ok"]);
+    expect(rows.map((row) => row.edge_instance_id)).toEqual([oldInstance, J2]);
+  });
 });
 
 describe("legend-kai reconcile: ledger added mid-life (baseline)", () => {
@@ -967,6 +1132,12 @@ describe("legend-kai reconcile: ledger added mid-life (baseline)", () => {
     const [row] = await runRows(world);
     expect(row!.diffs).toEqual([]);
     expect(row!.cloud_totals).toEqual(digest.totals);
+    // The run remembers the window it judged: from, through and the epoch.
+    expect(row).toMatchObject({
+      from_link_seq: String(SENT_BEFORE),
+      through_link_seq: String(events.length),
+      edge_instance_id: world.instanceId,
+    });
   });
 
   it("the same scenario with baseline 0 is a mismatch (the baseline is what makes it ok)", async () => {
@@ -1037,7 +1208,7 @@ describe("legend-kai reconcile: hostile totals keys", () => {
   const HOSTILE = ["toString", "__proto__", "constructor", "hasOwnProperty"];
   /** JSON text with the key as an own property (an object literal would not keep __proto__). */
   const rawBody = (digest: Digest, key: string) =>
-    `{"edgeNodeId":"${digest.edgeNodeId}","fromLinkSeq":${digest.fromLinkSeq},"throughLinkSeq":${digest.throughLinkSeq},"totals":{${JSON.stringify(key)}:{"count":1,"amountIdr":"1"}}}`;
+    `{"edgeNodeId":"${digest.edgeNodeId}","edgeInstanceId":"${digest.edgeInstanceId}","fromLinkSeq":${digest.fromLinkSeq},"throughLinkSeq":${digest.throughLinkSeq},"totals":{${JSON.stringify(key)}:{"count":1,"amountIdr":"1","idHash":"1"}}}`;
   const digestWithKey = (digest: Digest, key: string): Digest =>
     ({
       ...digest,
@@ -1185,11 +1356,40 @@ describe("legend-kai reconciliation route", () => {
     const { world, digest } = await readyWorld();
     const response = await post(managerA, tenantA, path(world), digest);
     expect([200, 201]).toContain(response.status);
-    expect(response.body.data).toMatchObject({ status: "ok" });
+    const window = {
+      fromLinkSeq: digest.fromLinkSeq,
+      throughLinkSeq: digest.throughLinkSeq,
+      edgeInstanceId: digest.edgeInstanceId,
+    };
+    expect(response.body.data).toMatchObject({ status: "ok", ...window });
     const listed = await get(managerA, tenantA, `${path(world)}?limit=5`);
     expect(listed.status).toBe(200);
     expect(rowsOf(listed.body.data)).toHaveLength(1);
-    expect(rowsOf(listed.body.data)[0]).toMatchObject({ status: "ok" });
+    expect(rowsOf(listed.body.data)[0]).toMatchObject({
+      status: "ok",
+      ...window,
+    });
+  });
+
+  it("a digest of another edge instance is reported as stale (a check, not an error)", async () => {
+    const { world, digest } = await readyWorld();
+    const foreign = randomUUID();
+    const response = await post(managerA, tenantA, path(world), {
+      ...digest,
+      edgeInstanceId: foreign,
+    });
+    expect([200, 201]).toContain(response.status);
+    expect(response.body.data).toMatchObject({
+      status: "stale",
+      edgeInstanceId: foreign,
+      fromLinkSeq: digest.fromLinkSeq,
+      throughLinkSeq: digest.throughLinkSeq,
+    });
+    const listed = await get(managerA, tenantA, path(world));
+    expect(rowsOf(listed.body.data)[0]).toMatchObject({
+      status: "stale",
+      edgeInstanceId: foreign,
+    });
   });
 
   it("a mismatch is reported to the operator as a successful check", async () => {
@@ -1283,6 +1483,50 @@ describe("legend-kai reconciliation route", () => {
       { ...digest, totals: { "order.paid": { count: 1 } } },
       { ...digest, edgeNodeId: "not-a-uuid" },
       { ...digest, edgeNodeId: randomUUID() }, // not the node in the path
+      // Epoch and identity fields are required and strict.
+      { ...digest, edgeInstanceId: undefined },
+      { ...digest, edgeInstanceId: "not-a-uuid" },
+      { ...digest, edgeInstanceId: null },
+      { ...digest, totals: { "order.paid": { count: 1, amountIdr: "1" } } },
+      {
+        ...digest,
+        totals: { "order.paid": { count: 1, amountIdr: "1", idHash: "x1" } },
+      },
+      {
+        ...digest,
+        totals: { "order.paid": { count: 1, amountIdr: "1", idHash: "-1" } },
+      },
+      {
+        ...digest,
+        totals: {
+          "order.paid": {
+            count: 1,
+            amountIdr: "1",
+            idHash: TWO_64.toString(), // one above the 64-bit range
+          },
+        },
+      },
+      // Rupiah above the bigint range (30 digits was accepted before).
+      {
+        ...digest,
+        totals: {
+          "order.paid": {
+            count: 1,
+            amountIdr: (MAX_BIGINT + 1n).toString(),
+            idHash: "1",
+          },
+        },
+      },
+      {
+        ...digest,
+        totals: {
+          "order.paid": {
+            count: 1,
+            amountIdr: "1".repeat(30),
+            idHash: "1",
+          },
+        },
+      },
     ];
     for (const body of bad) {
       const response = await post(managerA, tenantA, path(world), body);
@@ -1300,5 +1544,222 @@ describe("legend-kai reconciliation route", () => {
       digest,
     );
     expect([400, 404, 422]).toContain(response.status);
+  });
+});
+
+describe("legend-kai reconcile: stale epoch (digest of another edge instance)", () => {
+  async function ready() {
+    const world = await newWorld(tenantA);
+    await edgeSend(world, typicalDay(world));
+    await cloudReceive(world);
+    return { world, digest: await digestOf(world) };
+  }
+
+  it("a digest whose edge instance is not the active epoch is stale: no comparison, run keeps the window and epoch", async () => {
+    const { world, digest } = await ready();
+    const foreign = randomUUID();
+    const before = await snapshot(world.tenant.tenantId);
+
+    const run = await reconcile(world, { ...digest, edgeInstanceId: foreign });
+
+    expect(run.status).toBe("stale");
+    const rows = await runRows(world);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "stale",
+      from_link_seq: String(digest.fromLinkSeq),
+      through_link_seq: String(digest.throughLinkSeq),
+      edge_instance_id: foreign,
+      cloud_totals: {},
+      diffs: [],
+    });
+    expectOnlyRunsChanged(before, await snapshot(world.tenant.tenantId), 1);
+    // The right instance with the same numbers is ok: the epoch alone decided.
+    expect((await reconcile(world, digest)).status).toBe("ok");
+  });
+
+  it("stale is judged first: a digest of another instance is not mismatch and not behind", async () => {
+    const world = await newWorld(tenantA);
+    const events = typicalDay(world);
+    await edgeSend(world, events);
+    await cloudReceive(world, 4); // the cloud is behind the watermark...
+    const digest = await digestOf(world);
+    const foreign = randomUUID();
+
+    // ...which would be "behind" for the right instance, "mismatch" for tampered numbers.
+    expect((await reconcile(world, digest)).status).toBe("behind");
+    expect(
+      (await reconcile(world, { ...digest, edgeInstanceId: foreign })).status,
+    ).toBe("stale");
+    await cloudReceive(world, undefined, world.instanceId);
+    expect(
+      (
+        await reconcile(
+          world,
+          tamper({ ...digest, edgeInstanceId: foreign }, "order.paid", {
+            count: 3,
+            amount: 99n,
+          }),
+        )
+      ).status,
+    ).toBe("stale");
+    const stale = (await runRows(world)).filter((r) => r.status === "stale");
+    expect(stale).toHaveLength(2);
+    for (const row of stale) {
+      expect(row.cloud_totals).toEqual({});
+      expect(row.diffs).toEqual([]);
+    }
+  });
+
+  it("while the cloud has not adopted any edge instance (peer_instance_id NULL) every digest is stale", async () => {
+    const world = await newWorld(tenantA);
+    await edgeSend(world, typicalDay(world));
+    await cloudReceive(world);
+    const digest = await digestOf(world, false);
+    expect((await reconcile(world, digest)).status).toBe("stale");
+    await bindEpoch(world);
+    expect((await reconcile(world, digest)).status).toBe("ok");
+  });
+});
+
+describe("legend-kai reconcile: event identity, not only count and rupiah", () => {
+  async function sendThree() {
+    const world = await newWorld(tenantA);
+    const sent = [1, 2, 3].map(() =>
+      envelope(world, "order.paid", { totalIdr: 5000 }),
+    );
+    await edgeSend(world, sent);
+    return { world, sent };
+  }
+
+  it("one event lost and another of the same rupiah in its place keeps count and sum equal, yet is a mismatch", async () => {
+    const { world, sent } = await sendThree();
+    const outbox = await readEdgeOutbox(world);
+    clock += 1_000;
+    const stranger: EventEnvelope = {
+      ...sent[2]!,
+      id: createUlid(clock),
+      idempotencyKey: `order.paid:rekon-stranger-${clock}`,
+    };
+    // The cloud received e1, e2 and a different event instead of e3.
+    const received = outbox.map((entry) =>
+      entry.linkSeq === 3 ? { ...entry, event: stranger } : entry,
+    );
+    await cloudReceiveOutbox(world, received, undefined);
+    const digest = await digestOf(world);
+    expect(digest.totals["order.paid"]).toMatchObject({
+      count: 3,
+      amountIdr: "15000",
+    });
+    const before = await snapshot(world.tenant.tenantId);
+
+    const run = await reconcile(world, digest);
+
+    expect(run.status).toBe("mismatch");
+    const cloudHash =
+      (eventIdentityHash(sent[0]!.id) +
+        eventIdentityHash(sent[1]!.id) +
+        eventIdentityHash(stranger.id)) %
+      TWO_64;
+    const edgeHash =
+      (eventIdentityHash(sent[0]!.id) +
+        eventIdentityHash(sent[1]!.id) +
+        eventIdentityHash(sent[2]!.id)) %
+      TWO_64;
+    expect(digest.totals["order.paid"]!.idHash).toBe(edgeHash.toString());
+    expect((await runRows(world))[0]!.diffs).toEqual([
+      {
+        eventName: "order.paid",
+        edgeCount: 3,
+        cloudCount: 3,
+        edgeAmountIdr: "15000",
+        cloudAmountIdr: "15000",
+        edgeIdHash: edgeHash.toString(),
+        cloudIdHash: cloudHash.toString(),
+      },
+    ]);
+    expectOnlyRunsChanged(before, await snapshot(world.tenant.tenantId), 1);
+  });
+
+  it("an idHash that differs by one with equal count and rupiah is a mismatch with both hashes in the diff", async () => {
+    const { world } = await sendThree();
+    await cloudReceive(world);
+    const digest = await digestOf(world);
+    const paid = digest.totals["order.paid"]!;
+    const run = await reconcile(
+      world,
+      tamper(digest, "order.paid", { idHash: 1n }),
+    );
+    expect(run.status).toBe("mismatch");
+    expect((await runRows(world))[0]!.diffs).toEqual([
+      {
+        eventName: "order.paid",
+        edgeCount: 3,
+        cloudCount: 3,
+        edgeAmountIdr: "15000",
+        cloudAmountIdr: "15000",
+        edgeIdHash: ((BigInt(paid.idHash) + 1n) % TWO_64).toString(),
+        cloudIdHash: paid.idHash,
+      },
+    ]);
+  });
+});
+
+describe("legend-kai reconcile: bigint bounds", () => {
+  // Money above 2^53 travels as a canonical digit string in the event payload.
+  const NEAR_MAX_STRING = "9223372036854774784"; // 2^63 - 1024
+
+  async function maxWorld() {
+    const world = await newWorld(tenantA);
+    await edgeSend(world, [
+      envelope(world, "order.paid", { totalIdr: NEAR_MAX_STRING }),
+      envelope(world, "order.paid", { totalIdr: 1023 }),
+    ]);
+    await cloudReceive(world);
+    return { world, digest: await digestOf(world) };
+  }
+
+  it("a total of exactly 9223372036854775807 rupiah reconciles ok, exact on both sides", async () => {
+    const { world, digest } = await maxWorld();
+    expect(digest.totals["order.paid"]!.amountIdr).toBe(MAX_BIGINT.toString());
+    const run = await reconcile(world, digest);
+    expect(run.status).toBe("ok");
+    expect(
+      (await runRows(world))[0]!.cloud_totals as Record<string, unknown>,
+    ).toEqual(digest.totals);
+  });
+
+  it("one rupiah above the range is refused by the service and the route, nothing written", async () => {
+    const { world, digest } = await maxWorld();
+    const over = {
+      ...digest,
+      totals: {
+        "order.paid": {
+          ...digest.totals["order.paid"]!,
+          amountIdr: (MAX_BIGINT + 1n).toString(),
+        },
+      },
+    };
+    const before = await snapshot(world.tenant.tenantId);
+    const error = await reconcile(world, over).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).not.toBeNull();
+    expect(error).not.toBeInstanceOf(TypeError);
+    const { code, status } = error as { code?: unknown; status?: unknown };
+    expect(
+      typeof code === "string" || (typeof status === "number" && status < 500),
+    ).toBe(true);
+    const response = await managerA.client
+      .post(
+        `/api/edge-nodes/${encodeURIComponent(world.node.scope.edgeNodeId)}/reconciliation`,
+      )
+      .set({ Host: tenantA.hostname })
+      .set(originHeader)
+      .send(over);
+    expect([400, 422]).toContain(response.status);
+    expect(await runRows(world)).toEqual([]);
+    expectOnlyRunsChanged(before, await snapshot(world.tenant.tenantId), 0);
   });
 });

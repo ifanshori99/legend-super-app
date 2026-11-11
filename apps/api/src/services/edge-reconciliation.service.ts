@@ -7,6 +7,10 @@
 //   link_seq <= watermark) joined to the parked envelope in
 //   edge_deferred_events; the amount uses the SAME `transactionAmountIdr` as
 //   the edge, with BigInt only.
+// - `stale`: the digest's edge instance id differs from the cloud's active
+//   epoch (sync_cursors.peer_instance_id), e.g. the edge was rebuilt. The
+//   ledger of another instance is not comparable: no totals are compared, so a
+//   rebuilt edge is never reported as ok or as a false mismatch. Checked first.
 // - `behind`: the cloud cursor (received_in_seq) is below the watermark, so
 //   events are still in flight. That is not a mismatch and is never reported
 //   as one. Only a cursor at or past the watermark is compared.
@@ -43,12 +47,15 @@ import { eventEnvelopeSchema } from "@starter/shared/events";
 import type * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  eventIdentityHash,
   isReconciledEvent,
   transactionAmountIdr,
 } from "./edge-txn-ledger.service.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+const UINT64_MODULUS = 18446744073709551616n;
 
 const notFound = () => new CoreError("NOT_FOUND", "Edge node tidak ditemukan.");
 
@@ -87,12 +94,23 @@ async function cloudTotals(
   const result = await tx.execute(
     sql`SELECT d.envelope AS envelope FROM edge_inbound_events i JOIN edge_deferred_events d ON d.tenant_id = i.tenant_id AND d.event_id = i.event_id WHERE i.edge_node_id = ${edgeNodeId}::uuid AND i.direction = 'edge_to_cloud' AND i.kind = 'transaction_event' AND i.link_seq > ${offset + fromLinkSeq} AND i.link_seq <= ${throughLinkSeq + offset}`,
   );
-  const counts = new Map<string, { count: number; amount: bigint }>();
+  const counts = new Map<
+    string,
+    { count: number; amount: bigint; idHash: bigint }
+  >();
   for (const row of result.rows) {
     const event = eventEnvelopeSchema.parse(row.envelope);
     if (!isReconciledEvent(event.name)) continue;
-    const entry = counts.get(event.name) ?? { count: 0, amount: 0n };
+    const entry = counts.get(event.name) ?? {
+      count: 0,
+      amount: 0n,
+      idHash: 0n,
+    };
     entry.count += 1;
+    // Same identity hash as the edge ledger, summed modulo 2^64: a lost event
+    // plus a duplicate of another keeps count and amount but not this sum.
+    entry.idHash =
+      (entry.idHash + eventIdentityHash(event.id)) % UINT64_MODULUS;
     // Fails closed: a malformed money payload stops the run instead of
     // being counted as zero.
     entry.amount += transactionAmountIdr(event);
@@ -102,7 +120,11 @@ async function cloudTotals(
   for (const name of EDGE_RECONCILED_EVENT_NAMES) {
     const entry = counts.get(name);
     if (entry)
-      totals[name] = { count: entry.count, amountIdr: entry.amount.toString() };
+      totals[name] = {
+        count: entry.count,
+        amountIdr: entry.amount.toString(),
+        idHash: entry.idHash.toString(),
+      };
   }
   return totals;
 }
@@ -111,14 +133,18 @@ function compareTotals(
   edge: EdgeTxnTotals,
   cloud: EdgeTxnTotals,
 ): EdgeReconciliationDiff[] {
-  const zero = { count: 0, amountIdr: "0" };
+  const zero = { count: 0, amountIdr: "0", idHash: "0" };
   const diffs: EdgeReconciliationDiff[] = [];
   for (const eventName of EDGE_RECONCILED_EVENT_NAMES) {
     const e = Object.hasOwn(edge, eventName) ? (edge[eventName] ?? zero) : zero;
     const c = Object.hasOwn(cloud, eventName)
       ? (cloud[eventName] ?? zero)
       : zero;
-    if (e.count === c.count && BigInt(e.amountIdr) === BigInt(c.amountIdr))
+    if (
+      e.count === c.count &&
+      BigInt(e.amountIdr) === BigInt(c.amountIdr) &&
+      BigInt(e.idHash) === BigInt(c.idHash)
+    )
       continue;
     diffs.push({
       eventName,
@@ -126,6 +152,8 @@ function compareTotals(
       cloudCount: c.count,
       edgeAmountIdr: BigInt(e.amountIdr).toString(),
       cloudAmountIdr: BigInt(c.amountIdr).toString(),
+      edgeIdHash: BigInt(e.idHash).toString(),
+      cloudIdHash: BigInt(c.idHash).toString(),
     });
   }
   return diffs;
@@ -137,7 +165,10 @@ function toRun(row: Record<string, unknown>): EdgeReconciliationRun {
     tenantId: tenantIdSchema.parse(String(row.tenant_id)),
     outletId: String(row.outlet_id),
     edgeNodeId: String(row.edge_node_id),
+    fromLinkSeq: Number(row.from_link_seq),
     throughLinkSeq: Number(row.through_link_seq),
+    edgeInstanceId:
+      row.edge_instance_id === null ? null : String(row.edge_instance_id),
     status: row.status,
     edgeTotals: row.edge_totals,
     cloudTotals: row.cloud_totals,
@@ -149,7 +180,7 @@ function toRun(row: Record<string, unknown>): EdgeReconciliationRun {
 }
 
 const RUN_COLUMNS = sql.raw(
-  "id, tenant_id, outlet_id, edge_node_id, through_link_seq, status, edge_totals, cloud_totals, diffs, checked_at, checked_by",
+  "id, tenant_id, outlet_id, edge_node_id, from_link_seq, through_link_seq, edge_instance_id, status, edge_totals, cloud_totals, diffs, checked_at, checked_by",
 );
 
 /**
@@ -197,30 +228,41 @@ export async function reconcileEdgeTransactions(
   return withTenant(database, context, async (tx) => {
     const outletId = await nodeOutletId(tx, context, input.edgeNodeId);
     const cursor = await tx.execute(
-      sql`SELECT received_in_seq, peer_seq_offset FROM sync_cursors WHERE edge_node_id = ${input.edgeNodeId}::uuid AND direction = 'edge_to_cloud'`,
+      sql`SELECT received_in_seq, peer_seq_offset, peer_instance_id::text AS peer_instance_id FROM sync_cursors WHERE edge_node_id = ${input.edgeNodeId}::uuid AND direction = 'edge_to_cloud'`,
     );
     const offset = Number(cursor.rows[0]?.peer_seq_offset ?? 0);
     // received_in_seq is stored in the cloud's numbering; the digest is in the
     // edge's numbering.
     const received = Number(cursor.rows[0]?.received_in_seq ?? 0) - offset;
-    const cloud = await cloudTotals(
-      tx,
-      input.edgeNodeId,
-      digest.fromLinkSeq,
-      digest.throughLinkSeq,
-      offset,
-    );
+    // The cloud's active epoch is the edge instance id it last adopted; a NULL
+    // epoch or a different instance is stale (fail closed, never compared).
+    const peerInstanceId = cursor.rows[0]?.peer_instance_id;
+    const stale =
+      typeof peerInstanceId !== "string" ||
+      peerInstanceId.toLowerCase() !== digest.edgeInstanceId.toLowerCase();
     let status: EdgeReconciliationStatus;
+    let cloud: EdgeTxnTotals = {};
     let diffs: EdgeReconciliationDiff[] = [];
-    if (received < digest.throughLinkSeq) {
-      status = "behind";
+    if (stale) {
+      status = "stale";
     } else {
-      diffs = compareTotals(digest.totals, cloud);
-      status = diffs.length === 0 ? "ok" : "mismatch";
+      cloud = await cloudTotals(
+        tx,
+        input.edgeNodeId,
+        digest.fromLinkSeq,
+        digest.throughLinkSeq,
+        offset,
+      );
+      if (received < digest.throughLinkSeq) {
+        status = "behind";
+      } else {
+        diffs = compareTotals(digest.totals, cloud);
+        status = diffs.length === 0 ? "ok" : "mismatch";
+      }
     }
     const id = ulidToUuid(createUlid());
     const inserted = await tx.execute(
-      sql`INSERT INTO edge_reconciliation_runs (id, tenant_id, outlet_id, edge_node_id, through_link_seq, status, edge_totals, cloud_totals, diffs, checked_by) VALUES (${id}::uuid, ${context.tenant.tenantId}::uuid, ${outletId}::uuid, ${input.edgeNodeId}::uuid, ${digest.throughLinkSeq}, ${status}, ${JSON.stringify(digest.totals)}::jsonb, ${JSON.stringify(cloud)}::jsonb, ${JSON.stringify(diffs)}::jsonb, ${input.checkedBy ?? null}) RETURNING ${RUN_COLUMNS}`,
+      sql`INSERT INTO edge_reconciliation_runs (id, tenant_id, outlet_id, edge_node_id, from_link_seq, through_link_seq, edge_instance_id, status, edge_totals, cloud_totals, diffs, checked_by) VALUES (${id}::uuid, ${context.tenant.tenantId}::uuid, ${outletId}::uuid, ${input.edgeNodeId}::uuid, ${digest.fromLinkSeq}, ${digest.throughLinkSeq}, ${digest.edgeInstanceId}::uuid, ${status}, ${JSON.stringify(digest.totals)}::jsonb, ${JSON.stringify(cloud)}::jsonb, ${JSON.stringify(diffs)}::jsonb, ${input.checkedBy ?? null}) RETURNING ${RUN_COLUMNS}`,
     );
     return toRun(inserted.rows[0] as Record<string, unknown>);
   });

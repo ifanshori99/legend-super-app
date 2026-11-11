@@ -18,13 +18,14 @@ import {
   bigint,
   check,
   foreignKey,
+  numeric,
   pgTable,
   primaryKey,
   timestamp,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { outletIdColumn, tenantIdColumn } from "../columns.ts";
+import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { edgeNodes } from "./edge-node.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
@@ -41,6 +42,14 @@ export const edgeTxnLedger = pgTable(
       .default(sql`0`),
     /** Sum of `transactionAmountIdr` over those events, integer rupiah. */
     amountIdr: bigint("amount_idr", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    /**
+     * Sum modulo 2^64 of `eventIdentityHash(event id)` over those events: the
+     * identity digest that catches a lost event paired with a duplicate when
+     * count and amount still agree. Always 0..2^64-1.
+     */
+    idHashSum: numeric("id_hash_sum", { precision: 20, scale: 0 })
       .notNull()
       .default(sql`0`),
     /** Link sequence of the latest event counted in this row. */
@@ -60,6 +69,38 @@ export const edgeTxnLedger = pgTable(
     }),
     check("edge_txn_ledger_event_count_check", sql`${table.eventCount} >= 0`),
     check("edge_txn_ledger_amount_idr_check", sql`${table.amountIdr} >= 0`),
+    check(
+      "edge_txn_ledger_id_hash_sum_check",
+      sql`${table.idHashSum} >= 0 AND ${table.idHashSum} < 18446744073709551616`,
+    ),
+  ],
+);
+
+// Event ids already counted in the ledger (bead legend-4vwaj). The queue row of
+// an acknowledged event is pruned, so a second enqueue of the same event id
+// would pass the queue's own duplicate check and be counted again. The ledger
+// inserts here first (ON CONFLICT DO NOTHING) and only counts a new id.
+// Known limit: events sent before the baseline are not in this table.
+export const edgeTxnLedgerEvents = pgTable(
+  "edge_txn_ledger_events",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.tenantId, table.edgeNodeId, table.eventId],
+    }),
+    foreignKey({
+      name: "edge_txn_ledger_events_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
   ],
 );
 

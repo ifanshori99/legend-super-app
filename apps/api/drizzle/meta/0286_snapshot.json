@@ -1,5 +1,5 @@
 {
-  "id": "de955aa5-35b1-4ce2-833d-83c0195cbc78",
+  "id": "2b3383ee-317e-47c7-9b08-feef17e31198",
   "prevId": "be9016c9-c23f-42b2-8474-7cb2f81ab909",
   "version": "7",
   "dialect": "postgresql",
@@ -41428,11 +41428,24 @@
           "primaryKey": false,
           "notNull": true
         },
+        "from_link_seq": {
+          "name": "from_link_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "through_link_seq": {
           "name": "through_link_seq",
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "edge_instance_id": {
+          "name": "edge_instance_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "status": {
           "name": "status",
@@ -41560,7 +41573,7 @@
       "checkConstraints": {
         "edge_reconciliation_runs_status_check": {
           "name": "edge_reconciliation_runs_status_check",
-          "value": "\"edge_reconciliation_runs\".\"status\" IN ('ok', 'mismatch', 'behind')"
+          "value": "\"edge_reconciliation_runs\".\"status\" IN ('ok', 'mismatch', 'behind', 'stale')"
         }
       },
       "isRLSEnabled": false
@@ -41603,6 +41616,13 @@
         "amount_idr": {
           "name": "amount_idr",
           "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        },
+        "id_hash_sum": {
+          "name": "id_hash_sum",
+          "type": "numeric(20, 0)",
           "primaryKey": false,
           "notNull": true,
           "default": "0"
@@ -41687,6 +41707,10 @@
         "edge_txn_ledger_amount_idr_check": {
           "name": "edge_txn_ledger_amount_idr_check",
           "value": "\"edge_txn_ledger\".\"amount_idr\" >= 0"
+        },
+        "edge_txn_ledger_id_hash_sum_check": {
+          "name": "edge_txn_ledger_id_hash_sum_check",
+          "value": "\"edge_txn_ledger\".\"id_hash_sum\" >= 0 AND \"edge_txn_ledger\".\"id_hash_sum\" < 18446744073709551616"
         }
       },
       "isRLSEnabled": false
@@ -41784,6 +41808,103 @@
           "value": "\"edge_txn_ledger_baselines\".\"from_link_seq\" >= 0"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.edge_txn_ledger_events": {
+      "name": "edge_txn_ledger_events",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "edge_txn_ledger_events_tenant_id_tenants_id_fk": {
+          "name": "edge_txn_ledger_events_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_txn_ledger_events",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_txn_ledger_events_outlet_id_outlets_id_fk": {
+          "name": "edge_txn_ledger_events_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_txn_ledger_events",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_txn_ledger_events_edge_node_fk": {
+          "name": "edge_txn_ledger_events_edge_node_fk",
+          "tableFrom": "edge_txn_ledger_events",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_txn_ledger_events_tenant_id_edge_node_id_event_id_pk": {
+          "name": "edge_txn_ledger_events_tenant_id_edge_node_id_event_id_pk",
+          "columns": [
+            "tenant_id",
+            "edge_node_id",
+            "event_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.edge_inbound_events": {

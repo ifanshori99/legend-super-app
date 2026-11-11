@@ -25,12 +25,12 @@ import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { edgeNodes } from "./edge-node.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
-export type EdgeReconciliationStatus = "ok" | "mismatch" | "behind";
+export type EdgeReconciliationStatus = "ok" | "mismatch" | "behind" | "stale";
 
 /** Per event name totals; the amount is a decimal string (bigint rupiah). */
 export type EdgeReconciliationTotals = Record<
   string,
-  { count: number; amountIdr: string }
+  { count: number; amountIdr: string; idHash: string }
 >;
 
 export type EdgeReconciliationDiff = {
@@ -39,6 +39,9 @@ export type EdgeReconciliationDiff = {
   cloudCount: number;
   edgeAmountIdr: string;
   cloudAmountIdr: string;
+  /** Decimal strings, 0..2^64-1 (sum of event identity hashes). */
+  edgeIdHash: string;
+  cloudIdHash: string;
 };
 
 export const edgeReconciliationRuns = pgTable(
@@ -48,8 +51,13 @@ export const edgeReconciliationRuns = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     outletId: outletIdColumn(() => outlets.id).notNull(),
     edgeNodeId: uuid("edge_node_id").notNull(),
-    /** Watermark: both sides were compared up to this link sequence. */
+    /** Watermark window: link sequences (from, through] were compared. */
+    fromLinkSeq: bigint("from_link_seq", { mode: "number" })
+      .notNull()
+      .default(0),
     throughLinkSeq: bigint("through_link_seq", { mode: "number" }).notNull(),
+    /** Edge instance (edge_nodes.instance_id) the digest came from. */
+    edgeInstanceId: uuid("edge_instance_id"),
     status: varchar("status", { length: 10 })
       .$type<EdgeReconciliationStatus>()
       .notNull(),
@@ -75,7 +83,7 @@ export const edgeReconciliationRuns = pgTable(
     }),
     check(
       "edge_reconciliation_runs_status_check",
-      sql`${table.status} IN ('ok', 'mismatch', 'behind')`,
+      sql`${table.status} IN ('ok', 'mismatch', 'behind', 'stale')`,
     ),
     index("edge_reconciliation_runs_node_idx").on(
       table.tenantId,

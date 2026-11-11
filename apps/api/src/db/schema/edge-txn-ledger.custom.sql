@@ -7,3 +7,8 @@ SELECT app.enforce_outlet_rls('public.edge_txn_ledger'::regclass);
 SELECT app.enforce_tenant_rls('public.edge_txn_ledger_baselines'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.edge_txn_ledger_baselines'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.edge_txn_ledger_events'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.edge_txn_ledger_events'::regclass);
+--> statement-breakpoint

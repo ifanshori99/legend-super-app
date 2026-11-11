@@ -27,6 +27,12 @@
 //   refunded/voided/paid) is not business-meaningful; only the gap-free
 //   per-aggregate sequence and the rupiah amounts matter here.
 // - Persisted edge_totals / cloud_totals have the shape of digest.totals.
+// - Round 2: the digest carries edgeInstanceId (edge_nodes.instance_id; the harness
+//   gives the node row an instance id) and each totals entry an idHash (decimal sum
+//   of eventIdentityHash(event id) modulo 2^64, computed here from the events). The
+//   cloud's active epoch is sync_cursors.peer_instance_id; what the real link does
+//   on hello is emulated by adopting the edge instance (NULL -> id) after the link
+//   replay, before the reconciliation. A digest of any other instance is 'stale'.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -82,12 +88,14 @@ const LIFECYCLE = [
   "order.voided",
   "order.paid",
 ] as const;
+const TWO_64 = 18446744073709551616n;
 const BIG = 9_000_000_000_000_000; // two of these exceed 2^53 when summed
 
 let tenant: IsolatedTenant;
 let outletId: string;
 let node: AuthenticatedEdgeNode;
 let events: EventEnvelope[] = [];
+const instanceId = randomUUID();
 let expectedTotals: Record<string, { count: number; amountIdr: string }> = {};
 
 const contextOf = (): ScopedTenantContext =>
@@ -177,6 +185,36 @@ async function one<T>(query: string, params: unknown[]): Promise<T> {
   }
 }
 
+/** Owner-side write in the tenant context; falls back to replica role if a guard trigger refuses it. */
+async function ownerWrite(
+  sql: string,
+  params: unknown[],
+  expectedRows?: number,
+) {
+  const apply = async (replica: boolean) => {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.tenantId],
+      );
+      if (replica)
+        await client.query("SET LOCAL session_replication_role = replica");
+      const result = await client.query(sql, params);
+      if (expectedRows !== undefined && result.rowCount !== expectedRows)
+        throw new Error(`expected ${expectedRows} row(s) from: ${sql}`);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+  await apply(false).catch(() => apply(true));
+}
+
 /** Never a duplicate, at any point of the replay. */
 async function expectNoDuplicates() {
   const [row] = await one<
@@ -226,6 +264,11 @@ beforeAll(async () => {
   const authenticated = await authenticateEdgeCredential(registered.credential);
   if (!authenticated) throw new Error("Edge node did not authenticate");
   node = authenticated;
+  await ownerWrite(
+    "UPDATE edge_nodes SET instance_id = $2 WHERE id = $1",
+    [node.scope.edgeNodeId, instanceId],
+    1,
+  );
   buildOutage();
 });
 
@@ -394,7 +437,7 @@ describe("legend-kai 4h outage replay", () => {
   }, 120_000);
 
   it("ledger reconciliation: edge digest equals the cloud totals to the rupiah (depends on the ledger)", async () => {
-    const { buildEdgeTxnDigest } =
+    const { buildEdgeTxnDigest, eventIdentityHash } =
       await import("../services/edge-txn-ledger.service.ts");
     const { reconcileEdgeTransactions } =
       await import("../services/edge-reconciliation.service.ts");
@@ -413,13 +456,36 @@ describe("legend-kai 4h outage replay", () => {
       2n ** 53n,
     );
 
+    // The cloud's active epoch: what the link adopts on hello (NULL -> instance id).
+    await ownerWrite(
+      `UPDATE sync_cursors SET peer_instance_id = $2
+        WHERE edge_node_id = $1 AND direction = 'edge_to_cloud' AND peer_instance_id IS NULL`,
+      [node.scope.edgeNodeId, instanceId],
+    );
+
+    // Identity sums computed here from the generated events (independent of the service).
+    const idHashes = new Map<string, bigint>();
+    for (const event of events)
+      idHashes.set(
+        event.name,
+        ((idHashes.get(event.name) ?? 0n) + eventIdentityHash(event.id)) %
+          TWO_64,
+      );
+    const expectedWithIdentity = Object.fromEntries(
+      Object.entries(expectedTotals).map(([name, total]) => [
+        name,
+        { ...total, idHash: idHashes.get(name)!.toString() },
+      ]),
+    );
+
     const digest = await withTenant(db, node.context, (tx) =>
       buildEdgeTxnDigest(tx, node.scope),
     );
     expect(digest.edgeNodeId).toBe(node.scope.edgeNodeId);
+    expect(digest.edgeInstanceId).toBe(instanceId);
     expect(digest.fromLinkSeq).toBe(0);
     expect(digest.throughLinkSeq).toBe(events.length);
-    expect(digest.totals).toEqual(expectedTotals);
+    expect(digest.totals).toEqual(expectedWithIdentity);
 
     const run = await reconcileEdgeTransactions(db, contextOf(), {
       edgeNodeId: node.scope.edgeNodeId,
@@ -433,27 +499,36 @@ describe("legend-kai 4h outage replay", () => {
         edge_totals: unknown;
         cloud_totals: unknown;
         diffs: unknown;
+        from_link_seq: string;
+        through_link_seq: string;
+        edge_instance_id: string;
       }>
     >(
-      `SELECT status, edge_totals, cloud_totals, diffs FROM edge_reconciliation_runs
-        WHERE tenant_id = $1 AND edge_node_id = $2`,
+      `SELECT status, edge_totals, cloud_totals, diffs, from_link_seq::text AS from_link_seq,
+              through_link_seq::text AS through_link_seq, edge_instance_id::text AS edge_instance_id
+         FROM edge_reconciliation_runs
+        WHERE tenant_id = $1 AND edge_node_id = $2 ORDER BY checked_at, id`,
       [tenant.tenantId, node.scope.edgeNodeId],
     );
     expect(row!.status).toBe("ok");
-    expect(row!.edge_totals).toEqual(expectedTotals);
+    expect(row!.edge_totals).toEqual(expectedWithIdentity);
     expect(row!.cloud_totals).toEqual(row!.edge_totals);
     expect(row!.diffs).toEqual([]);
+    expect(row).toMatchObject({
+      from_link_seq: "0",
+      through_link_seq: String(events.length),
+      edge_instance_id: instanceId,
+    });
 
-    // Not vacuous: one rupiah of drift on the edge side is caught.
+    // Not vacuous: one rupiah of drift on the edge side is caught...
+    const paid = digest.totals["order.paid"]!;
     const drifted = {
       ...digest,
       totals: {
         ...digest.totals,
         "order.paid": {
-          count: digest.totals["order.paid"]!.count,
-          amountIdr: (
-            BigInt(digest.totals["order.paid"]!.amountIdr) + 1n
-          ).toString(),
+          ...paid,
+          amountIdr: (BigInt(paid.amountIdr) + 1n).toString(),
         },
       },
     };
@@ -462,5 +537,28 @@ describe("legend-kai 4h outage replay", () => {
       digest: drifted,
     } as Parameters<typeof reconcileEdgeTransactions>[2]);
     expect(drift.status).toBe("mismatch");
+
+    // ...so is a different set of events with the same count and rupiah (identity)...
+    const swapped = await reconcileEdgeTransactions(db, contextOf(), {
+      edgeNodeId: node.scope.edgeNodeId,
+      digest: {
+        ...digest,
+        totals: {
+          ...digest.totals,
+          "order.paid": {
+            ...paid,
+            idHash: ((BigInt(paid.idHash) + 1n) % TWO_64).toString(),
+          },
+        },
+      },
+    } as Parameters<typeof reconcileEdgeTransactions>[2]);
+    expect(swapped.status).toBe("mismatch");
+
+    // ...and a digest of another edge instance is stale, never compared.
+    const foreign = await reconcileEdgeTransactions(db, contextOf(), {
+      edgeNodeId: node.scope.edgeNodeId,
+      digest: { ...digest, edgeInstanceId: randomUUID() },
+    } as Parameters<typeof reconcileEdgeTransactions>[2]);
+    expect(foreign.status).toBe("stale");
   }, 60_000);
 });
