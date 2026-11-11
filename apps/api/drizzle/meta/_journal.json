@@ -1856,6 +1856,13 @@
       "when": 1794360000000,
       "tag": "0278_collective_leave_rededuction",
       "breakpoints": true
+    },
+    {
+      "idx": 279,
+      "version": "7",
+      "when": 1794420000000,
+      "tag": "0350_payroll_run_approvers_not_creator",
+      "breakpoints": true
     }
   ]
 }
