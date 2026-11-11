@@ -198,7 +198,7 @@ async function resetToDefaults() {
   );
 }
 
-/** A tenant-configured tiered matrix: supervisor from Rp0, plus the outlet manager from Rp500.000. */
+/** A configured tier inside Q63 caps: supervisor from Rp0, manager from Rp100.000. */
 async function useTieredMatrix() {
   await owner.query(
     "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
@@ -208,8 +208,8 @@ async function useTieredMatrix() {
   const managerRole = await roleIdOf("outlet_manager");
   for (const [threshold, level, role] of [
     [0, 1, supervisorRole],
-    [500_000, 1, supervisorRole],
-    [500_000, 2, managerRole],
+    [100_000, 1, supervisorRole],
+    [100_000, 2, managerRole],
   ] as const)
     await owner.query(
       `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
@@ -606,11 +606,11 @@ describe("PAY-04 refund below Rp500.000 goes to the supervisor inbox", () => {
   });
 });
 
-describe("PAY-04 the default matrix needs only the supervisor, whatever the amount", () => {
+describe("PAY-04 the default matrix needs the supervisor within the Q63 ceiling", () => {
   beforeEach(resetToDefaults);
 
-  it("PAY-04 a Rp600.000 refund on the default matrix has a single supervisor step", async () => {
-    const { refundId } = await requestRefund(600_000);
+  it("PAY-04 a Rp200.000 refund on the default matrix has a single supervisor step", async () => {
+    const { refundId } = await requestRefund(200_000);
     const chainId = await chainOf(refundId);
     const requests = await requestsOf(refundId);
     expect(requests).toMatchObject([{ level: 1, status: "pending" }]);
@@ -750,7 +750,7 @@ describe("PAY-04 a configured tier above the default still needs both steps", ()
   beforeEach(useTieredMatrix);
 
   it("PAY-04 supervisor decides level 1, the outlet manager level 2; one level is not enough", async () => {
-    const { refundId } = await requestRefund(600_000);
+    const { refundId } = await requestRefund(150_000);
     const chainId = await chainOf(refundId);
 
     const first = await requestsOf(refundId);
@@ -792,8 +792,8 @@ describe("PAY-04 a configured tier above the default still needs both steps", ()
     });
   });
 
-  it("PAY-04 a refund of exactly Rp499.999 needs only the supervisor", async () => {
-    const { refundId } = await requestRefund(499_999);
+  it("PAY-04 a refund of exactly Rp99.999 needs only the supervisor", async () => {
+    const { refundId } = await requestRefund(99_999);
     expect(await requestsOf(refundId)).toMatchObject([
       { level: 1, status: "pending" },
     ]);
@@ -803,8 +803,8 @@ describe("PAY-04 a configured tier above the default still needs both steps", ()
     ).toHaveLength(0);
   });
 
-  it("PAY-04 a refund of exactly Rp500.000 also needs the outlet manager", async () => {
-    const { refundId } = await requestRefund(500_000);
+  it("PAY-04 a refund of exactly Rp100.000 also needs the outlet manager", async () => {
+    const { refundId } = await requestRefund(100_000);
     const requestId = await pendingRequestId(refundId);
     await decide(supervisor1Id, requestId, "approved");
     expect((await requestsOf(refundId))[1]).toMatchObject({

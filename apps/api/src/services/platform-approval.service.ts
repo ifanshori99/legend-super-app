@@ -94,6 +94,7 @@ import {
   approvalPolicies,
   approvalRequests,
   domainEventOutbox,
+  paymentRefunds,
 } from "../db/schema";
 import type { ApprovalStepSnapshot } from "../db/schema/platform-approval";
 import { withTenant } from "../db/tenant";
@@ -107,6 +108,11 @@ import {
   type Tx,
 } from "./permission-resolver";
 import { PROFIT_SHARE_APPROVAL_SOURCE_MODULE } from "./profit-share-approval";
+import {
+  lockRefundApprovalScope,
+  refundApprovalLimitRefused,
+  refundApprovalWithinLimit,
+} from "./payment-refund-approval-limits.ts";
 import {
   lockAndCheckSoleOwnerSelfApproval,
   soleOwnerSelfApprovalPreview,
@@ -1174,10 +1180,38 @@ export async function decideApprovalRequest(
 
   return withTenant(db, context, async (tx) => {
     const [found] = await tx
-      .select({ chainId: approvalRequests.chainId })
+      .select()
       .from(approvalRequests)
       .where(eq(approvalRequests.id, requestId));
     if (!found) throw notFound();
+    // Payment limits serialize by bill before the chain lock, matching the
+    // payment service's group -> intent -> refund -> chain lock order.
+    let paymentRefund: typeof paymentRefunds.$inferSelect | null = null;
+    if (
+      input.decision === "approved" &&
+      found.sourceModule === "payment" &&
+      found.actionType === "refund" &&
+      found.objectType === "payment_refund"
+    ) {
+      const [refund] = await tx
+        .select()
+        .from(paymentRefunds)
+        .where(
+          and(
+            eq(paymentRefunds.tenantId, tenant.tenantId),
+            eq(paymentRefunds.approvalChainId, found.chainId),
+            sql`lower(${paymentRefunds.id}::text) = lower(${found.objectId})`,
+          ),
+        );
+      if (refund) {
+        paymentRefund = refund;
+        await lockRefundApprovalScope(
+          tx,
+          tenant.tenantId,
+          refund.paymentIntentId,
+        );
+      }
+    }
     await lockChain(tx, found.chainId);
     const rows = await chainRows(tx, found.chainId);
     const row = rows.find((candidate) => candidate.id === requestId);
@@ -1275,6 +1309,20 @@ export async function decideApprovalRequest(
     });
     if (!caller.snapshot.allows("approval.request.decide", target))
       throw new AccessError("PERMISSION_DENIED");
+    // Replays above keep their stored decision. A new approval must satisfy
+    // the current scoped amount ceiling as well as the configured matrix.
+    if (
+      paymentRefund !== null &&
+      caller.snapshot.allows("pos.refund.approve", target) &&
+      !(await refundApprovalWithinLimit(
+        tx,
+        context,
+        approverId,
+        paymentRefund,
+        now,
+      ))
+    )
+      throw refundApprovalLimitRefused();
 
     const [updated] = await tx
       .update(approvalRequests)

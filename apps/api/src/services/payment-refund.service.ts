@@ -11,8 +11,9 @@
 // - only a returned `failed` result is a definitive decline (`failed`,
 //   `provider_declined`), which releases the reserved amount.
 // The provider is never called inside a database transaction. Lock order is
-// payment intent -> unallocated fund -> refund everywhere; the payout claim
-// transaction locks only the refund, or that same chain for a fund refund (a
+// bill authority group -> POS order (if linked) -> payment intent ->
+// unallocated fund -> refund; the payout claim transaction locks only the
+// refund, or that same chain for a fund refund (a
 // short lease, then the provider call). Every send first re-validates the
 // approval; one that no longer holds is quarantined, never sent.
 
@@ -54,6 +55,12 @@ import {
 } from "./operations-events.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import {
+  lockRefundApprovalScope,
+  refundApprovalDecisionTime,
+  refundApprovalLimitRefused,
+  refundApprovalWithinLimit,
+} from "./payment-refund-approval-limits.ts";
 import {
   authorize,
   conflict,
@@ -179,7 +186,7 @@ type DecideOptions = { readonly mfaVerified: boolean };
 
 // ------------------------------------------------------------------ locks
 
-/** Locks intent -> fund (if any) -> refund, in that order, and re-reads the refund. */
+/** Locks authority group -> POS order -> intent -> fund -> refund, then re-reads. */
 async function lockRefundGraph(
   tx: Tx,
   tenantId: Refund["tenantId"],
@@ -195,6 +202,9 @@ async function lockRefundGraph(
       ),
     );
   if (!probe) throw missing();
+  // The ceiling is cumulative across intents of one bill. Lock the shared
+  // document before individual intent/fund/refund rows and approval chains.
+  await lockRefundApprovalScope(tx, tenantId, probe.paymentIntentId);
   const [intent] = await tx
     .select()
     .from(paymentIntents)
@@ -447,6 +457,17 @@ async function applyApproval(
   if (approvedBy.toLowerCase() === refund.requestedBy.toLowerCase())
     throw new AccessError("APPROVER_IS_REQUESTER");
   await assertNotPosRefundParty(tx, refund, approvedBy);
+  if (
+    refund.approvalChainId === null &&
+    !(await refundApprovalWithinLimit(tx, context, approvedBy, refund, now))
+  )
+    return failRefund(tx, context, refund, {
+      reason: "approver_unauthorized",
+      action: "payment.refund_failed",
+      actorId: approvedBy,
+      note: "approval_limit_exceeded",
+      now,
+    });
   // A user-filed refund of a sale is never paid from here: the owning module
   // refunds it (order.refunded). Legacy pending rows fail closed. System
   // requesters and unallocated funds (never journalled) are exempt.
@@ -465,7 +486,16 @@ async function applyApproval(
   // legend-riqu: decide under the intent row lock (lockRefundGraph holds it;
   // the sale side takes the same lock) at the fact time it gives, never the
   // app clock read before commit.
-  const at = await lockIntentsForFact(tx, refund.tenantId, [intent.id], now);
+  const intentAt = await lockIntentsForFact(
+    tx,
+    refund.tenantId,
+    [intent.id],
+    now,
+  );
+  // The intent fact clock still protects captured money. The bill clock also
+  // orders approvals on separate intents so historical authority checks never
+  // mistake a later owner refund for exposure before an earlier supervisor.
+  const at = await refundApprovalDecisionTime(tx, refund, intentAt);
   // This refund is itself reserved (pending), so reserved must still fit the
   // cap; the cap excludes money a captured POS tender still holds.
   let posSaleInUse = 0n;
@@ -1162,6 +1192,23 @@ async function settleLocked(
           note: null,
           now,
         });
+      if (
+        supervisor &&
+        !(await refundApprovalWithinLimit(
+          tx,
+          context,
+          row.decidedBy,
+          refund,
+          now,
+        ))
+      )
+        return failRefund(tx, context, refund, {
+          reason: "approver_unauthorized",
+          action: "payment.refund_failed",
+          actorId: row.decidedBy,
+          note: "approval_limit_exceeded",
+          now,
+        });
     }
     if (!supervisorApproved)
       return failRefund(tx, context, refund, {
@@ -1336,6 +1383,19 @@ async function decideRefund(
               throw conflict("Refund is no longer pending.");
             return { kind: "done" };
           }
+          if (
+            decision === "approved" &&
+            (await holdsPermission(
+              tx,
+              context,
+              actor,
+              SUPERVISOR_PERMISSION,
+              refund.outletId,
+              now,
+            )) &&
+            !(await refundApprovalWithinLimit(tx, context, actor, refund, now))
+          )
+            throw refundApprovalLimitRefused();
 
           let chainId = refund.approvalChainId;
           const systemRequester = !isUserId(refund.requestedBy);
@@ -1548,6 +1608,7 @@ function errorCodeOf(error: unknown): string {
 /** Why an `approved` refund's approval no longer allows a payout. */
 type ApprovalDefect =
   | "approver_unauthorized"
+  | "approval_limit_exceeded"
   | "supervisor_required"
   | "chain_unbound"
   | "chain_not_approved";
@@ -1584,6 +1645,20 @@ async function approvalDefectOf(
       return "supervisor_required";
     if (!(await holds(approver, "payment.reconcile", decidedAt)))
       return "approver_unauthorized";
+    if (
+      !(await refundApprovalWithinLimit(
+        tx,
+        context,
+        approver,
+        refund,
+        decidedAt,
+        {
+          historical: true,
+          approvedBefore: decidedAt,
+        },
+      ))
+    )
+      return "approval_limit_exceeded";
     return null;
   }
   const rows = await chainRowsOf(tx, refund.tenantId, refund.approvalChainId);
@@ -1607,6 +1682,18 @@ async function approvalDefectOf(
     if (supervisor) supervisorApproved = true;
     else if (!(await holds(row.decidedBy, "payment.reconcile", decidedAt)))
       return "approver_unauthorized";
+    if (
+      supervisor &&
+      !(await refundApprovalWithinLimit(
+        tx,
+        context,
+        row.decidedBy,
+        refund,
+        decidedAt,
+        { historical: true, approvedBefore: refund.decidedAt ?? now },
+      ))
+    )
+      return "approval_limit_exceeded";
   }
   return supervisorApproved ? null : "supervisor_required";
 }
