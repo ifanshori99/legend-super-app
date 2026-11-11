@@ -3389,3 +3389,27 @@ Cabang `ws/5nt2z-leave-partial`. Sudah: (1) kunci advisory per karyawan `hris:le
 - Architect xhigh 2x: F1 (swap langsung tanpa refund gagal lolos cap) dibetulkan 376d33a4; cek ulang: regresi replay baris sama + goods ledger terhadap room dibetulkan dc7c4270.
 - Bukti gagal-dulu: di b36d5d3c 7 gagal; di 631344cf 10 gagal (swap langsung, unit cap); di 29926efc 2 gagal (replay baris sama, goods vs room). 11 file terarah 193/193 lulus. tsc, eslint, prettier bersih; db:generate kosong.
 - Untuk CTO: (F2) voucher selisih dihitung dari harga daftar, jadi di order promo voucher + refund bisa melebihi nilai kopi setelah promo (contoh test: voucher 20.000 + 3.885 vs kopi 8.085). (Temuan 2) order yang sudah selesai mencatat baris pengganti Rp0 -> refund-nya nothing_left dan goods kopi tidak tercatat di ledger, sehingga refund item lain berikutnya bisa ikut membayar porsi promo itu. Keduanya di luar diff, perlu keputusan.
+
+## 2026-11-11: merge train batch48g (ws/merge-batch48g, basis m1 89540326) — BELUM DI-PUSH KE m1
+
+Status: cabang `ws/merge-batch48g` sudah di origin, m1 TIDAK diubah. Menunggu keputusan CTO soal `ws/rat9r-followups` (lihat "Ditahan untuk keputusan").
+
+- Urutan merge (`--no-ff`): ongp7-identity-test-isolation 07525cf5, vqvuj-baa-wa-confirm 097a0aee, 9h2oj-wa-reset dc7ec186 (+ 9h2oj-tests a3bdda7f, + ur82k-lupa-pin-ui 666a1074), 5nt2z-leave-partial 3a3750ed, 2qq-hpp-recompute 1258dec7, rat9r-followups 065bc81c. Tidak digabung: dheu/463, kai, 6c6, bz9h, 6pha, 97p, 24318.
+- Peta migrasi (jurnal idx 250..260 untuk 48f+48g; `when` unik naik; `db:generate` kosong; `migration-renumber check --from-idx 240` bersih):
+
+| Akhir | Tag | Nomor lama | Cabang | `when` |
+|---|---|---|---|---|
+| 0255 | `0255_drop_payslip_pin_reset_challenges` | 0273 | 9h2oj-wa-reset | 1794336000000 |
+| 0256 | `0256_approved_leaves_on` | 0276 | 5nt2z-leave-partial | 1794337000000 |
+| 0257 | `0257_flag_attendance_for_leave` | 0277 | 5nt2z-leave-partial | 1794338000000 |
+| 0258 | `0258_leave_clash_backfill` | 0278 | 5nt2z-leave-partial | 1794339000000 |
+| 0259 | `0259_hpp_recompute` | 0278 | 2qq-hpp-recompute | 1794340000000 |
+| 0260 | `0260_order_issue_paid_value` | 0235 | rat9r-followups | 1794341000000 |
+
+- 0256-0258 SQL-saja: snapshot disalin dari 0255 dengan `id`/`prevId` baru, jurnal ditulis manual (`migration-renumber` menolak SQL-saja).
+- SQL diubah merge train: 0259, tujuh FK `menu_costs` dipindah ke dalam `CREATE TABLE` (outlets FORCE RLS, `ADD CONSTRAINT` oleh migrator non-superuser gagal 42501; pola 0244/0246).
+- Test/registri diubah merge train: registri impor 0257 + 0258 (`data-import-registry.test.ts`); `payslip-pin-pepper-ttl` membuang kasus OTP yang dihapus 9h2oj; fixture override refund POS (`pos-refund-voucher-cap`, `order-recovery-q25-given`) memakai `pinOverrideFixtureFingerprint` (legend-fjwxo); `outlet-rls` allowlist `public.hpp_outlet_state` (RLS tenant saja memang disengaja 2qq, perlu konfirmasi CTO + architect); `hris-contract` mengenal `leave.changed` (x0avw) dan `changeReason` (enum) bukan teks alasan cuti; 17 error lint dari 9h2oj/ur82k dibetulkan; string UI `wa-reset/*` dipindah ke katalog (text-contract).
+- Gate (HEAD sebelum fix text-contract): typecheck 4 paket hijau; `pnpm lint` hijau; `db:generate` kosong; e2e 18 lulus 1 skip (termasuk `legend-kmndq.mock.spec.ts`); API vitest 13200 lulus, 7 gagal (lihat di bawah); tes root dijalankan langsung: 2043 dari 2049 lulus, 4 gagal karena butuh DB terisolasi dari `pnpm test` (bukan kode), 2 sudah dibetulkan (hris-contract, text-contract). Tes root yang butuh DB terisolasi BELUM terverifikasi karena `pnpm test` berhenti di kegagalan API.
+- Kegagalan API: 3 deterministik dari rat9r (`order-recovery-refund` T3 dan T4, `order-recovery-rereport` RR-2): gagal di ujung rat9r sendiri, lulus di m1 89540326 (37/37 dan 9/9), servis `order-recovery-refund.ts` sama dengan ujung rat9r. 4 lain flake beban penuh dan lulus sendirian (`order-recovery-refund-promo-final-failure` T2 22/22, `support-session-readonly` 16/16 dengan 3 timeout 20 s saat beban).
+- Ditahan untuk keputusan CTO: (1) rat9r membawa `ws/pti5r-promo-refund` (ancestor rat9r, bukan di m1; 48f menahannya untuk kartu legend-fwe4l dan second opinion Codex refund). Perilaku refile/replay berubah dan tes m1 94q2l/wumm8 menolaknya. Masuk atau tidak. (2) Architect MAJOR-1: fungsi flag cuti di `0258_leave_clash_backfill.sql:66-127` dan tidak ada penjaga payroll-tertutup di `hris-leave-request.service.ts` (~1240-1420) pada persetujuan cuti (warisan 5nt2z, bukan bug merge). (3) Kontrak OTP mati setelah 9h2oj perlu kartu lanjutan.
+- Biaya sesi (48f+48g sampai 13:20 WIB): total 5665k unit (utama sonnet 4481k, subagent opus 717k, sonnet 420k, haiku 46k); subagent tercatat 8 di sesi ini (architect xhigh 1, dilanjutkan sekali; implementer 1). `parallel-report`: rata-rata 3.73 subagent berjalan per agent (26 sesi).
