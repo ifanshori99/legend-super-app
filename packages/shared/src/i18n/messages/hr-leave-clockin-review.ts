@@ -72,6 +72,9 @@ export const leaveClockinReviewMessages = {
     back: "Kembali ke antrean",
     summaryTitle: "Ringkasan",
     employee: "Nama karyawan",
+    caseKind: "Jenis kasus",
+    unknownEmployee: "Karyawan tidak dikenal",
+    unknownValue: "Tidak tersedia",
     leaveType: "Jenis cuti",
     leavePeriod: "Periode cuti (disetujui)",
     leavePeriodRange: "{start} sampai {end}",
@@ -96,6 +99,8 @@ export const leaveClockinReviewMessages = {
       "Pembatalan selalu satu hari penuh, bukan setengah hari.",
     noCancelRight:
       "Anda tidak memiliki hak untuk membatalkan cuti. Minta HR yang berwenang meninjau keputusan ini.",
+    noKeepRight:
+      "Anda tidak memiliki hak untuk mempertahankan cuti. Minta HR yang berwenang meninjau keputusan ini.",
   },
   confirmKeep: {
     title: "Tetap cuti untuk tanggal ini?",
