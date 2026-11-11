@@ -52,7 +52,7 @@ test("legend-1mi5 the settings hub opens the outlet screen with the 04:00 defaul
 
   // The hub card only renders when the route exists and the visitor holds
   // org.structure.manage (mock role "all" by default).
-  const card = page.getByRole("link", { name: /Diatur per outlet/ });
+  const card = page.getByRole("link", { name: /Nama, alamat, dan jam tutup buku outlet/ });
   await expect(card).toBeVisible({ timeout: 20_000 });
   await card.click();
 

@@ -34,6 +34,6 @@ export const openBillPolicyMessages = {
   retry: "Coba lagi",
   hub: {
     name: "Open bill",
-    hint: "Batas tagihan dan pengingat meja bayar belakangan",
+    hint: "Batas tagihan dan pengingat meja bayar belakangan.",
   },
 } as const;

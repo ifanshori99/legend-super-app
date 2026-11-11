@@ -160,7 +160,7 @@ export const auditSettingsMessages = {
       brand: "Brand",
       brandHint: "Berlaku untuk semua outlet satu brand.",
       outlet: "Outlet",
-      outletHint: "Diatur per outlet.",
+      outletHint: "Nama, alamat, dan jam tutup buku outlet.",
     },
     items: {
       integrations: {
@@ -192,7 +192,7 @@ export const auditSettingsMessages = {
         hint: "Aturan, penerima, dan saluran pesan.",
       },
       tax: {
-        name: "Pajak & service charge",
+        name: "Pajak & layanan",
         hint: "Aturan pajak berversi dan opsi tampil harga.",
       },
       payments: {
