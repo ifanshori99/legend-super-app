@@ -59,11 +59,12 @@ const heading = (page, name) => page.getByRole("heading", { name });
 const dialogOf = (page) => page.getByRole("dialog");
 
 // ---- Tax (woc1, d5pz) ------------------------------------------------------
-const draftRow = (page) =>
-  page.getByRole("row").filter({ hasText: "draf revisi" });
+// Below md the rule table is hidden and each rule is a card (<li>), so match
+// the visible row of either layout.
+const ruleRows = (page) => page.locator("tr:visible, li:visible");
+const draftRow = (page) => ruleRows(page).filter({ hasText: "draf revisi" });
 const liveRow = (page) =>
-  page
-    .getByRole("row")
+  ruleRows(page)
     .filter({ hasText: "PBJT-FNB" })
     .filter({ hasText: "Berlaku sekarang" });
 
@@ -98,11 +99,12 @@ async function ensureSettingsDraft(page) {
   await visible(discard.first());
 }
 
+// The toast is also echoed in a live region: two matches, take the first.
 const discardSuccess = (page) =>
   visible(
-    page.getByText(
-      "Draf berhasil dibuang. Versi yang diterbitkan tetap berlaku.",
-    ),
+    page
+      .getByText("Draf berhasil dibuang. Versi yang diterbitkan tetap berlaku.")
+      .first(),
   );
 
 // ---- Journal (5ac3) --------------------------------------------------------
@@ -470,6 +472,9 @@ const STATES = [
     path: `/kelola/menu/${ESPRESSO_ID}?mock=normal`,
     prepare: async (page) => {
       await visible(heading(page, "Routing stasiun"));
+      // "Simpan item" stays disabled until the form differs from the item.
+      const name = page.getByLabel("Nama item");
+      await name.fill(`${await name.inputValue()} 2`);
       await page.getByRole("button", { name: "Simpan item" }).click();
       await visible(page.getByText("Perubahan item tersimpan.").first());
     },
