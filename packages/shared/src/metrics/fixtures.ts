@@ -200,7 +200,7 @@ const definitionInputs = [
     },
     unit: "percent",
     aggregation: "ratio",
-    dimensions: ["outlet", "employee", "legal_entity"],
+    dimensions: ["outlet", "employee"],
     grain: "day",
     officiality: "closed_period_only",
     sourceReport: {
@@ -228,7 +228,7 @@ const definitionInputs = [
     },
     unit: "percent",
     aggregation: "ratio",
-    dimensions: ["outlet", "legal_entity"],
+    dimensions: ["outlet"],
     grain: "month",
     officiality: "closed_period_only",
     sourceReport: {

@@ -422,11 +422,20 @@ export const fixedAssetDepreciations = pgTable(
     generation: integer("generation").notNull().default(1),
     runId: uuid("run_id"),
     journalEntryId: uuid("journal_entry_id").notNull(),
+    /**
+     * Set once the row is taken back (only by
+     * `app.record_depreciation_reversal`, migration 0313); null = active.
+     */
+    reversedAt: timestamp("reversed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => [
+    // One active row per asset and month: the last word on concurrent runs.
+    uniqueIndex("fixed_asset_depreciations_active_key")
+      .on(table.tenantId, table.fixedAssetId, table.period)
+      .where(sql`${table.reversedAt} IS NULL`),
     unique("fixed_asset_depreciations_asset_period_generation_key").on(
       table.tenantId,
       table.fixedAssetId,
@@ -472,7 +481,9 @@ export const fixedAssetDepreciations = pgTable(
  * Append-only: a depreciation row taken back by a backdated disposal or
  * revaluation (bead legend-i5kc). `journal_entry_id` is the correcting journal
  * (debit/credit mirrored, dated in the original month); one journal may take
- * back several rows of one asset.
+ * back several rows of one asset. legend_app cannot INSERT here: rows come only
+ * from `app.record_depreciation_reversal` (migration 0313), which validates the
+ * journal and stamps `fixed_asset_depreciations.reversed_at`.
  */
 export const fixedAssetDepreciationReversals = pgTable(
   "fixed_asset_depreciation_reversals",

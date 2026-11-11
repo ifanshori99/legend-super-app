@@ -1702,6 +1702,27 @@
       "when": 1794337000000,
       "tag": "0311_fixed_asset_depreciation_reversals",
       "breakpoints": true
+    },
+    {
+      "idx": 257,
+      "version": "7",
+      "when": 1794338000000,
+      "tag": "0312_ledger_version_period_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 258,
+      "version": "7",
+      "when": 1794339000000,
+      "tag": "0313_depreciation_active_and_reversal_fn",
+      "breakpoints": true
+    },
+    {
+      "idx": 259,
+      "version": "7",
+      "when": 1794340000000,
+      "tag": "0314_depreciation_journal_manual_reverse_guard",
+      "breakpoints": true
     }
   ]
 }

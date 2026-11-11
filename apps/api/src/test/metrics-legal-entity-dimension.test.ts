@@ -31,7 +31,11 @@ import {
   accountIdSchema,
   type JournalLineInput,
 } from "@starter/shared/accounting";
-import { metricQueryResponseSchema } from "@starter/shared/metrics";
+import { dashboardMetricDefinitions } from "@starter/shared/dashboard";
+import {
+  cafeLegendMetricDefinitions,
+  metricQueryResponseSchema,
+} from "@starter/shared/metrics";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
@@ -248,26 +252,39 @@ describe("legend-brq1 metrics legal_entity dimension (DASH-02)", () => {
       expect(value).toBe(0);
   });
 
-  it("DASH-02 a percent metric without a split source (gross_margin_pct) is dimension_not_supported by legal entity, never a mixed-entity ratio", async () => {
-    // gross_margin_pct has no splitFrom (numerator/denominator pair) in the GL
-    // source map, so a per-entity percent is not computed. The documented
-    // answer is 200 with availability "unavailable" / dimension_not_supported
-    // and only null points; it must never return the tenant ratio as if it
-    // belonged to one entity.
+  it("DASH-02 a ratio metric (gross_margin_pct) does not advertise legal_entity and refuses the split with METRIC_DIMENSION_NOT_SUPPORTED", async () => {
+    // Finding 7 (legend-lt0v4 batch): gross_margin_pct has no split source, so
+    // it must not list `legal_entity` in its dimensions. A per-entity request
+    // is a plain 400 METRIC_DIMENSION_NOT_SUPPORTED, same as any dimension a
+    // metric does not declare; it never returns the tenant ratio as if it
+    // belonged to one entity. (Replaces the earlier "200 + availability
+    // dimension_not_supported" answer, which came from advertising a
+    // dimension that was not supported.)
     const response = await query({
       metricCodes: ["gross_margin_pct"],
       groupBy: "legal_entity",
     });
-    expect(response.status).toBe(200);
-    const parsed = metricQueryResponseSchema.parse(response.body);
-    expect(parsed.data.availability).toEqual([
-      expect.objectContaining({
-        metricCode: "gross_margin_pct",
-        status: "unavailable",
-        reason: "dimension_not_supported",
-      }),
-    ]);
-    for (const series of parsed.data.series)
-      for (const point of series.points) expect(point.value).toBeNull();
+    expect(response.status).toBe(400);
+    expect(response.body.error?.code).toBe("METRIC_DIMENSION_NOT_SUPPORTED");
+  });
+
+  it("DASH-02 no ratio metric advertises legal_entity without a split source (gross_margin_pct, labor_cost_pct, prime_cost_pct)", () => {
+    // gross_margin_pct lives in the dashboard catalog; labor_cost_pct and
+    // prime_cost_pct in the metric definitions (metrics fixtures). All three
+    // are ratios with no split source.
+    const dimensionsOf = (code: string) =>
+      [...dashboardMetricDefinitions, ...cafeLegendMetricDefinitions]
+        .filter((metric) => metric.code === code)
+        .map((metric) => [...metric.dimensions]);
+    for (const code of [
+      "gross_margin_pct",
+      "labor_cost_pct",
+      "prime_cost_pct",
+    ]) {
+      const found = dimensionsOf(code);
+      expect(found.length, `${code} is defined`).toBeGreaterThan(0);
+      for (const dimensions of found)
+        expect(dimensions, code).not.toContain("legal_entity");
+    }
   });
 });

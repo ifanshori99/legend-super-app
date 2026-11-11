@@ -281,7 +281,7 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
     inputs: ["gross_profit", "net_sales"],
     unit: "percent",
     aggregation: "ratio",
-    dimensions: ["outlet", "menu_category", "legal_entity"],
+    dimensions: ["outlet", "menu_category"],
     grain: "month",
     officiality: "closed_period_only",
     reportCode: "finance.gross_margin",

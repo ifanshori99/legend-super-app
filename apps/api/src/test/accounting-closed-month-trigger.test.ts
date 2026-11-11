@@ -406,7 +406,7 @@ describe("legend-brq1 closed fiscal month is sealed by a database trigger", () =
     // service never allows, but a reopened January behind a closed February is
     // the same state and the trigger must hold for it.
     await owner.query(
-      `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now()
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now(), version = version + 1
         WHERE id = $1`,
       [fx.feb, closer],
     );
@@ -464,7 +464,7 @@ describe("legend-brq1 closed fiscal month is sealed by a database trigger", () =
       expect(waiting).toBe(true);
 
       await closing.query(
-        `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now()
+        `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now(), version = version + 1
           WHERE id = $1`,
         [fx.jan, closer],
       );
@@ -521,7 +521,7 @@ describe("legend-brq1 closed fiscal month is sealed by a database trigger", () =
       await inserting.query("COMMIT");
       await lock;
       await closing.query(
-        `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now()
+        `UPDATE fiscal_periods SET status = 'closed', closed_by = $2, closed_at = now(), version = version + 1
           WHERE id = $1`,
         [fx.jan, closer],
       );

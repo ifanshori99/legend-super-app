@@ -83,12 +83,15 @@ import {
   type CursorPage,
   type OutletId,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import { db } from "../db";
 import {
   accountMappings,
   chartOfAccounts,
+  fixedAssetDepreciationReversals,
+  fixedAssetDepreciations,
   journalEntries,
   journalLines,
 } from "../db/schema";
@@ -889,6 +892,46 @@ export async function reverseJournal(
 }
 
 /**
+ * A journal a depreciation row or a depreciation reversal points at is owned
+ * by the fixed-asset service: reversing it by hand would book the value twice
+ * (bead legend-k048r).
+ */
+async function assertNotDepreciationJournal(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  entryId: string,
+): Promise<void> {
+  const [depreciation] = await tx
+    .select({ id: fixedAssetDepreciations.id })
+    .from(fixedAssetDepreciations)
+    .where(
+      and(
+        eq(fixedAssetDepreciations.tenantId, tenantId),
+        eq(fixedAssetDepreciations.journalEntryId, entryId),
+      ),
+    )
+    .limit(1);
+  const [depreciationReversal] = depreciation
+    ? []
+    : await tx
+        .select({ id: fixedAssetDepreciationReversals.id })
+        .from(fixedAssetDepreciationReversals)
+        .where(
+          and(
+            eq(fixedAssetDepreciationReversals.tenantId, tenantId),
+            eq(fixedAssetDepreciationReversals.journalEntryId, entryId),
+          ),
+        )
+        .limit(1);
+  if (depreciation || depreciationReversal)
+    throw new HttpError(
+      409,
+      "DEPRECIATION_JOURNAL_LOCKED",
+      "This journal belongs to fixed-asset depreciation; correct it through the fixed asset.",
+    );
+}
+
+/**
  * Reversal inside the caller's tenant transaction. Idempotent on
  * `idempotencyKey`; fails closed on a closed period, a double reversal or a
  * reversal of a reversal.
@@ -947,6 +990,7 @@ export async function reverseJournalInTransaction(
       ),
     )
     .limit(1);
+  await assertNotDepreciationJournal(tx, context.tenant.tenantId, entryId);
   assertReversible(row, reversal?.id ?? null);
   const reversalLines = buildReversalLines(
     {

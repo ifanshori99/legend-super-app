@@ -197,7 +197,8 @@ async function closePeriod(entity: string, period: string): Promise<void> {
     `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period, status, closed_by, closed_at)
      VALUES ($1, $2, $3, 'closed', $4, now())
      ON CONFLICT (tenant_id, legal_entity_id, period)
-     DO UPDATE SET status = 'closed', closed_by = $4, closed_at = now()`,
+     DO UPDATE SET status = 'closed', closed_by = $4, closed_at = now(),
+         version = fiscal_periods.version + (CASE WHEN fiscal_periods.status = 'closed' THEN 0 ELSE 1 END)`,
     [tenantId, entity, period, actor],
   );
 }
@@ -640,8 +641,11 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
       actor,
       NOW,
     );
+    // Design finding 3: the service re-posts the taken-back months in the same
+    // call, so March is already depreciated again on the new base
+    // (10,000,000 / 10 months = 1,000,000) when the revaluation returns.
     expect(revalued.costIdr).toBe(10_000_000);
-    expect(revalued.accumulatedDepreciationIdr).toBe(0);
+    expect(revalued.accumulatedDepreciationIdr).toBe(1_000_000);
     const { rows: reversals } = await owner.query(
       `SELECT 1 FROM journal_entries
         WHERE tenant_id = $1 AND legal_entity_id = $2
@@ -649,9 +653,17 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
       [tenantId, entity],
     );
     expect(reversals).toHaveLength(1);
+    // Exactly one active March row (the re-posted one) at 1,000,000.
+    const { rows: activeMarch } = await owner.query<{ amount_idr: string }>(
+      `SELECT amount_idr FROM fixed_asset_depreciations
+        WHERE tenant_id = $1 AND fixed_asset_id = $2 AND period = '2026-03'
+          AND reversed_at IS NULL`,
+      [tenantId, machine.id],
+    );
+    expect(activeMarch.map((r) => Number(r.amount_idr))).toEqual([1_000_000]);
 
-    // March depreciates again on the new base (10,000,000 over 10 months):
-    // carrying 9,000,000, sold at it.
+    // March is already depreciated on the new base, so the disposal must not
+    // add it a second time: carrying 9,000,000, sold at it, no double book value.
     const sold = await disposeFixedAsset(
       tenantScope(),
       machine.id,

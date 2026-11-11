@@ -127,7 +127,8 @@ async function closePeriod(entity: string, period: string): Promise<void> {
     `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period, status, closed_by, closed_at)
      VALUES ($1, $2, $3, 'closed', $4, now())
      ON CONFLICT (tenant_id, legal_entity_id, period)
-     DO UPDATE SET status = 'closed', closed_by = $4, closed_at = now()`,
+     DO UPDATE SET status = 'closed', closed_by = $4, closed_at = now(),
+         version = fiscal_periods.version + (CASE WHEN fiscal_periods.status = 'closed' THEN 0 ELSE 1 END)`,
     [tenantId, entity, period, actor],
   );
 }
@@ -466,7 +467,7 @@ describe("legend-i5kc backdated disposal / revaluation", () => {
     expect(Object.values(net).reduce((sum, value) => sum + value, 0)).toBe(0);
   });
 
-  it("ACC-01 §3.19 a revaluation dated before posted runs reverses the later months and re-spreads the new base without doubling value", async () => {
+  it("ACC-01 §3.19 a revaluation dated before posted runs reverses the later months and re-posts them on the new base in the same call without doubling value", async () => {
     const entity = await createEntity("Backdated revaluation");
     await setupLedger(entity);
     const machine = await asset(entity);
@@ -480,31 +481,39 @@ describe("legend-i5kc backdated disposal / revaluation", () => {
     // method: accumulated restarts at 0, cost = new carrying amount).
     const revalued = await revalue(machine.id, "2026-02-25", 12_000_000);
     expect(revalued.costIdr).toBe(12_000_000);
-    expect(revalued.accumulatedDepreciationIdr).toBe(0);
-    expect(revalued.bookValueIdr).toBe(12_000_000);
     expect(revalued.usefulLifeMonths).toBe(10);
     expect(revalued.depreciationStartPeriod).toBe("2026-03");
 
-    // March's old-basis charge is gone: no row for it, journal reversed once.
+    // Design finding 3: March's old-basis charge is taken back (journal
+    // reversed once) AND March is posted again on the new base in the SAME
+    // revaluation call. Active rows: Jan, Feb, new March (1,200,000).
     expect(
-      (await depreciationRows(machine.id)).map((row) => row.period),
-    ).toEqual(["2026-01", "2026-02"]);
+      (await depreciationRows(machine.id)).map((row) => [
+        row.period,
+        row.amount,
+      ]),
+    ).toEqual([
+      ["2026-01", 1_000_000],
+      ["2026-02", 1_000_000],
+      ["2026-03", 1_200_000],
+    ]);
     const reversed = await reversals(entity);
     expect(reversed).toHaveLength(1);
     expect(reversed[0]!.reversalOf).toBe(marchJournal);
     expect(await entriesCancelOut([marchJournal, reversed[0]!.id])).toBe(true);
+    expect(revalued.accumulatedDepreciationIdr).toBe(1_200_000);
+    expect(revalued.bookValueIdr).toBe(10_800_000);
 
-    // Ledger agrees with the register: Jan+Feb expense only, accumulated
-    // account back to 0 (2,000,000 credited, 2,000,000 eliminated), all balanced.
+    // Ledger agrees with the register: Jan+Feb+new March expense, accumulated
+    // account holds only the new March charge, all balanced.
     expect(await unbalancedEntries(entity)).toEqual([]);
     const net = await netByCode(entity);
-    expect(net["6101"]).toBe(2_000_000);
-    expect(net["1502"]).toBe(revalued.accumulatedDepreciationIdr);
+    expect(net["6101"]).toBe(3_200_000);
+    expect(net["1502"]).toBe(-revalued.accumulatedDepreciationIdr);
 
-    // The new schedule starts in March at 1,200,000/month: an April run catches
-    // up March + April on the new base, not on top of the old March charge.
+    // The April run posts April alone on the new base, not March again.
     const april = await run(entity, "2026-04");
-    expect(april.amountIdr).toBe(2_400_000);
+    expect(april.amountIdr).toBe(1_200_000);
     const { asset: fetched } = await getFixedAsset(tenantScope(), machine.id);
     expect(fetched.accumulatedDepreciationIdr).toBe(2_400_000);
     expect(fetched.bookValueIdr).toBe(9_600_000);
