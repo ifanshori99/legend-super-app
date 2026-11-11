@@ -140,7 +140,10 @@ test.describe("notification center (F15)", () => {
     page,
   }) => {
     await page.goto(`${NOTIFICATION_CENTER}?mock=empty`);
-    await openPreferences(page);
+    await waitForHydration(page);
+    await page.getByRole("tab", { name: /Preferensi/ }).click();
+    // legend-rp3fk: with nothing stored, the tab shows an empty state whose
+    // description carries the tenant-defaults hint.
     await expect(
       page.getByText(
         "Default tenant dipakai sampai Anda menyimpan pilihan sendiri.",

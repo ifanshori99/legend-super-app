@@ -104,6 +104,16 @@ registerMock(contract.getNotificationPreferences, ({ scenario }) => {
 });
 
 registerMock(contract.updateNotificationPreferences, ({ body }) => {
+  // Security email cannot be switched off (legend-307w3).
+  for (const category of contract.MANDATORY_EMAIL_CATEGORIES) {
+    if (body.categories[category]?.email === false)
+      throw new ApiError(
+        422,
+        "VALIDATION_ERROR",
+        "Email untuk kategori keamanan wajib aktif.",
+        [{ field: `categories.${category}.email`, message: "Wajib aktif." }],
+      );
+  }
   const state = store.get();
   const preference: contract.NotificationPreference = {
     ...state.preference,

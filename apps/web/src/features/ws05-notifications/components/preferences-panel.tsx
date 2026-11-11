@@ -1,8 +1,10 @@
+import { Bell, CircleAlert, CircleCheck, Lock } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import { useT } from "@/components/i18n";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Card, CardShell } from "@/components/ui/card";
-import { ErrorState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,10 +17,10 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { useToast } from "@/components/ui/toast";
 import type { MessageKey } from "@starter/shared/i18n";
 import {
   effectiveChannelPreference,
+  isEmailMandatory,
   type ChannelPreference,
   type NotificationCategory,
   type NotificationPreference,
@@ -55,13 +57,28 @@ const COMMON_TIME_ZONES = [
 
 const DEFAULT_QUIET_START = "22:00";
 const DEFAULT_QUIET_END = "07:00";
+const QUIET_START_ID = "notification-quiet-hours-start";
+const QUIET_END_ID = "notification-quiet-hours-end";
+
+type TimeError = { field: "start" | "end"; message: string };
 
 type ChannelMap = Record<string, ChannelPreference>;
+
+/** Security email is always on: never carry email=false for such a category. */
+function withMandatoryEmail(
+  category: NotificationCategory,
+  channel: ChannelPreference,
+): ChannelPreference {
+  return isEmailMandatory(category) ? { ...channel, email: true } : channel;
+}
 
 function initialChannels(preference: NotificationPreference): ChannelMap {
   const channels: ChannelMap = {};
   for (const category of STAFF_NOTIFICATION_CATEGORIES)
-    channels[category] = effectiveChannelPreference(preference, category);
+    channels[category] = withMandatoryEmail(
+      category,
+      effectiveChannelPreference(preference, category),
+    );
   return channels;
 }
 
@@ -72,7 +89,10 @@ function buildBody(
 ): NotificationPreferenceInput {
   const categories: NotificationPreferenceInput["categories"] = {};
   for (const category of STAFF_NOTIFICATION_CATEGORIES)
-    categories[category as NotificationCategory] = channels[category];
+    categories[category as NotificationCategory] = withMandatoryEmail(
+      category,
+      channels[category],
+    );
   return { categories, quietHours, timeZone };
 }
 
@@ -126,7 +146,6 @@ function PreferencesForm({
   const whatsappAllowed =
     whatsappCategories === null ? null : whatsappCategories.length > 0;
   const t = useT();
-  const toast = useToast();
   const save = useSaveNotificationPreferences();
   const [channels, setChannels] = useState<ChannelMap>(() =>
     initialChannels(preference),
@@ -141,7 +160,9 @@ function PreferencesForm({
     preference.quietHours?.end ?? DEFAULT_QUIET_END,
   );
   const [timeZone, setTimeZone] = useState(preference.timeZone);
-  const [timeError, setTimeError] = useState<string | null>(null);
+  const [timeError, setTimeError] = useState<TimeError | null>(null);
+  const [started, setStarted] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const zoneOptions = useMemo(
     () =>
@@ -174,26 +195,58 @@ function PreferencesForm({
     channel: keyof ChannelPreference,
     value: boolean,
   ) => {
+    if (channel === "email" && isEmailMandatory(category)) return;
+    setSaved(false);
     setChannels((current) => ({
       ...current,
       [category]: { ...current[category], [channel]: value },
     }));
   };
 
+  /**
+   * Quiet hours need both times, and they cannot match. `only` limits the
+   * emptiness check to the field just left (blur); submit checks both.
+   * Returns the id of the field to focus, or null when valid.
+   */
+  const validateTimes = (
+    start: string,
+    end: string,
+    only?: "start" | "end",
+  ): string | null => {
+    if (!quietEnabled) {
+      setTimeError(null);
+      return null;
+    }
+    const required = t("notification.preferences.quietHoursRequired");
+    if (!start && only !== "end") {
+      setTimeError({ field: "start", message: required });
+      return QUIET_START_ID;
+    }
+    if (!end && only !== "start") {
+      setTimeError({ field: "end", message: required });
+      return QUIET_END_ID;
+    }
+    if (start && end && start === end) {
+      setTimeError({
+        field: "end",
+        message: t("notification.preferences.quietHoursSameTime"),
+      });
+      return QUIET_END_ID;
+    }
+    setTimeError(null);
+    return null;
+  };
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (quietEnabled && quietStart === quietEnd) {
-      setTimeError(t("notification.preferences.quietHoursSameTime"));
+    const invalidId = validateTimes(quietStart, quietEnd);
+    if (invalidId) {
+      document.getElementById(invalidId)?.focus();
       return;
     }
     setTimeError(null);
-    save.mutate(body, {
-      onSuccess: () =>
-        toast({
-          title: t("notification.preferences.saved"),
-          tone: "success",
-        }),
-    });
+    setSaved(false);
+    save.mutate(body, { onSuccess: () => setSaved(true) });
   };
 
   const discard = () => {
@@ -203,10 +256,58 @@ function PreferencesForm({
     setQuietEnd(preference.quietHours?.end ?? DEFAULT_QUIET_END);
     setTimeZone(preference.timeZone);
     setTimeError(null);
+    setSaved(false);
   };
+
+  if (untouched && !started)
+    return (
+      <CardShell>
+        <Card>
+          <EmptyState
+            icon={Bell}
+            title={t("notification.preferences.emptyTitle")}
+            description={t("notification.preferences.untouchedHint")}
+            action={
+              <Button type="button" onClick={() => setStarted(true)}>
+                {t("notification.preferences.emptyAction")}
+              </Button>
+            }
+          />
+        </Card>
+      </CardShell>
+    );
 
   return (
     <form onSubmit={submit} className="grid gap-5">
+      {save.isError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-lg border-l-4 border-danger bg-danger-subtle px-4 py-3 text-sm leading-5"
+        >
+          <CircleAlert
+            aria-hidden="true"
+            className="mt-0.5 size-4 shrink-0 text-danger"
+          />
+          <p>
+            <strong className="font-semibold">
+              {t("notification.preferences.saveError")}
+            </strong>{" "}
+            {t("notification.preferences.saveErrorHint")}
+          </p>
+        </div>
+      )}
+      {saved && !dirty && !save.isError && (
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-lg border-l-4 border-success bg-success-subtle px-4 py-3 text-sm leading-5 font-semibold"
+        >
+          <CircleCheck
+            aria-hidden="true"
+            className="size-4 shrink-0 text-success"
+          />
+          {t("notification.preferences.saved")}
+        </div>
+      )}
       <section aria-labelledby="notification-channel-matrix">
         <CardShell>
           <Card>
@@ -221,11 +322,6 @@ function PreferencesForm({
                 ? t("notification.preferences.whatsappPolicyOff")
                 : t("notification.preferences.whatsappPolicyUnknown")}
             </p>
-            {untouched && (
-              <p className="mt-1 text-sm leading-5 text-muted-foreground">
-                {t("notification.preferences.untouchedHint")}
-              </p>
-            )}
 
             <div className="mt-4">
               <div
@@ -245,24 +341,40 @@ function PreferencesForm({
                     key={category}
                     className="grid gap-2 border-b py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_repeat(3,6rem)] sm:items-center sm:gap-3"
                   >
-                    <span className="text-sm leading-5 font-medium">
-                      {t(categoryLabelKey(category))}
-                    </span>
-                    <div className="grid grid-cols-3 gap-2 sm:contents">
+                    <div className="min-w-0">
+                      <span className="text-sm leading-5 font-medium">
+                        {t(categoryLabelKey(category))}
+                      </span>
+                      {isEmailMandatory(category) && (
+                        <p
+                          id={`notification-${category}-email-locked-hint`}
+                          className="mt-0.5 text-xs leading-4 text-muted-foreground"
+                        >
+                          {t("notification.preferences.emailLockedHint")}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 sm:contents">
                       {CHANNELS.map(({ key, labelKey }) => {
                         const id = `notification-${category}-${key}`;
+                        const locked =
+                          key === "email" && isEmailMandatory(category);
                         const disabled =
-                          key === "whatsapp" &&
-                          whatsappCategories !== null &&
-                          !whatsappCategories.includes(category);
+                          locked ||
+                          (key === "whatsapp" &&
+                            whatsappCategories !== null &&
+                            !whatsappCategories.includes(category));
                         return (
                           <div
                             key={key}
-                            className="flex min-h-11 flex-col items-start gap-1 rounded-md px-1 py-1 sm:min-h-0 sm:flex-row sm:items-center sm:justify-center sm:gap-2 sm:p-0"
+                            className={cn(
+                              "flex min-h-11 items-center gap-2 rounded-md sm:min-h-0 sm:justify-center sm:p-0",
+                              locked && "sm:flex-col sm:gap-0.5",
+                            )}
                           >
                             <Label
                               htmlFor={id}
-                              className="font-normal text-muted-foreground sm:sr-only"
+                              className="text-xs font-semibold text-foreground sm:sr-only"
                             >
                               {t(labelKey)}
                               <span className="sr-only">
@@ -272,12 +384,26 @@ function PreferencesForm({
                             </Label>
                             <Switch
                               id={id}
-                              checked={channels[category][key]}
+                              checked={locked ? true : channels[category][key]}
                               disabled={disabled}
+                              aria-describedby={
+                                locked
+                                  ? `notification-${category}-email-locked-hint`
+                                  : undefined
+                              }
                               onCheckedChange={(checked) =>
                                 setChannel(category, key, checked)
                               }
                             />
+                            {locked && (
+                              <span
+                                data-testid={`notification-${category}-email-locked`}
+                                className="inline-flex items-center gap-1 text-xs leading-4 font-semibold text-muted-foreground"
+                              >
+                                <Lock aria-hidden="true" className="size-3" />
+                                {t("notification.preferences.emailLocked")}
+                              </span>
+                            )}
                           </div>
                         );
                       })}
@@ -309,6 +435,7 @@ function PreferencesForm({
                   onCheckedChange={(checked) => {
                     setQuietEnabled(checked);
                     setTimeError(null);
+                    setSaved(false);
                   }}
                 />
                 <Label
@@ -324,7 +451,11 @@ function PreferencesForm({
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <FormField
                   label={t("notification.preferences.quietHoursStart")}
+                  id={QUIET_START_ID}
                   required
+                  error={
+                    timeError?.field === "start" ? timeError.message : undefined
+                  }
                 >
                   <Input
                     type="time"
@@ -332,13 +463,18 @@ function PreferencesForm({
                     onChange={(event) => {
                       setQuietStart(event.target.value);
                       setTimeError(null);
+                      setSaved(false);
                     }}
+                    onBlur={() => validateTimes(quietStart, quietEnd, "start")}
                   />
                 </FormField>
                 <FormField
                   label={t("notification.preferences.quietHoursEnd")}
+                  id={QUIET_END_ID}
                   required
-                  error={timeError ?? undefined}
+                  error={
+                    timeError?.field === "end" ? timeError.message : undefined
+                  }
                 >
                   <Input
                     type="time"
@@ -346,14 +482,22 @@ function PreferencesForm({
                     onChange={(event) => {
                       setQuietEnd(event.target.value);
                       setTimeError(null);
+                      setSaved(false);
                     }}
+                    onBlur={() => validateTimes(quietStart, quietEnd, "end")}
                   />
                 </FormField>
                 <FormField
                   label={t("notification.preferences.timeZone")}
                   required
                 >
-                  <Select value={timeZone} onValueChange={setTimeZone}>
+                  <Select
+                    value={timeZone}
+                    onValueChange={(zone) => {
+                      setTimeZone(zone);
+                      setSaved(false);
+                    }}
+                  >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -372,23 +516,18 @@ function PreferencesForm({
         </CardShell>
       </section>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" loading={save.isPending} disabled={!dirty}>
-          {t("notification.preferences.save")}
-        </Button>
+      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           onClick={discard}
           disabled={!dirty || save.isPending}
         >
           {t("notification.preferences.discard")}
         </Button>
-        {save.isError && (
-          <p role="alert" className="text-sm leading-5 font-medium text-danger">
-            {t("notification.preferences.saveError")}
-          </p>
-        )}
+        <Button type="submit" loading={save.isPending} disabled={!dirty}>
+          {t("notification.preferences.save")}
+        </Button>
       </div>
     </form>
   );
