@@ -304,3 +304,74 @@ describe("24318 the master-sync loop pulls the catalog", () => {
     expect(spy.mock.calls.length).toBe(total);
   });
 });
+
+// legend-dciax: a new edge against an older cloud that does not send
+// `syncTxid` must refuse cleanly (clear message through onError), not fail on a
+// parse. master-sync forwards only the error code (CATALOG_CLOUD_OUTDATED); the stream's
+// checkpoint is not stored; the loop keeps ticking.
+describe("dciax the loop refuses a cloud that does not send syncTxid", () => {
+  const stationWithoutTxid = () => ({
+    id: randomUUID(),
+    tenantId,
+    outletId,
+    name: "Bar tanpa txid",
+    type: "coffee_bar",
+    printerDeviceId: null,
+    targetSeconds: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    deletedAt: null,
+  });
+  const oldCloud: Answer = (url) => {
+    const stream = url.searchParams.get("stream") ?? "";
+    return stream === "stations"
+      ? json({
+          stream,
+          records: [stationWithoutTxid()],
+          nextCursor: null,
+          hasMore: false,
+        })
+      : json(emptyPage(stream));
+  };
+
+  it("reports the CATALOG_CLOUD_OUTDATED code (not a ZodError), stores no checkpoint, and keeps ticking", async () => {
+    // Earlier tests of this file pulled empty pages for the same edge node and
+    // so left a stations checkpoint row behind: start from none.
+    await owner.query(
+      "DELETE FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = 'catalog:stations'",
+      [edgeNodeId],
+    );
+    const spy = spyCloud({ masters: mastersFail, catalog: oldCloud });
+    startLoop();
+    await tick();
+    // master-sync forwards only the error CODE to onError, not the message.
+    await vi.waitFor(() =>
+      expect(
+        onError.mock.calls.some(([e]) =>
+          /CATALOG_CLOUD_OUTDATED/.test(
+            e instanceof Error ? e.message : String(e),
+          ),
+        ),
+        `onError saw: ${reported()}`,
+      ).toBe(true),
+    );
+    const texts = onError.mock.calls
+      .map(([e]) =>
+        e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+      )
+      .filter((t) => /CATALOG_CLOUD_OUTDATED/.test(t));
+    for (const text of texts)
+      expect(text).not.toMatch(/ZodError|invalid_type|Invalid input/);
+    const stored = await owner.query(
+      "SELECT 1 FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = 'catalog:stations'",
+      [edgeNodeId],
+    );
+    expect(stored.rowCount).toBe(0);
+
+    const before = callsTo(spy, CATALOG_PATH).length;
+    await tick();
+    await vi.waitFor(() =>
+      expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThan(before),
+    );
+  });
+});

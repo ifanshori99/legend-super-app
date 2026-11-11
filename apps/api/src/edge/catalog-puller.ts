@@ -45,7 +45,7 @@ import {
   decodeCursor,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { edgeNodes, edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -190,13 +190,63 @@ async function loadCatalogCheckpoint(
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
-/** Upsert inside the apply transaction; the node row must exist. */
+/** A well-formed `cat2` cursor: its sync txid and keys; anything else is null. */
+function parseCatalogMark(
+  cursor: string | null,
+): { txid: bigint; keys: string[] } | null {
+  if (cursor === null) return null;
+  try {
+    const [tag, txid, ...keys] = decodeCursor(cursor);
+    if (
+      tag !== CATALOG_CURSOR_TAG ||
+      typeof txid !== "string" ||
+      !/^\d{1,19}$/.test(txid) ||
+      !keys.every((key) => typeof key === "string")
+    )
+      return null;
+    return {
+      txid: BigInt(txid),
+      keys: keys.map((key) => String(key).toLowerCase()),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `next` would move a stored `cat2` cursor BACK: `(txid, keys)` of
+ * `next` is below the stored one (or `next` is no cursor at all). Equal is not
+ * older. A stored cursor that is not a well-formed `cat2` never blocks.
+ */
+function isOlderCatalogCursor(next: string | null, stored: string | null) {
+  const current = parseCatalogMark(stored);
+  if (current === null) return false;
+  const mark = parseCatalogMark(next);
+  if (mark === null) return true;
+  if (mark.txid !== current.txid) return mark.txid < current.txid;
+  const length = Math.min(mark.keys.length, current.keys.length);
+  for (let i = 0; i < length; i += 1) {
+    if (mark.keys[i] !== current.keys[i]) return mark.keys[i] < current.keys[i];
+  }
+  return false;
+}
+
+/**
+ * Upsert inside the apply transaction; the node row must exist. `monotonic`
+ * (catalog cursors only) keeps a stored cursor that is already ahead: a late
+ * pull then only touches `last_success_at`. The write is also guarded in SQL
+ * (`setWhere`) by the value it was decided against. `rewindFrom` is the cursor
+ * the cloud refused: while the stored value still equals it, the restart's
+ * first page may lower the checkpoint (a legitimate rewind).
+ */
 async function saveCheckpointRow(
   tx: Tx,
   edgeNodeId: string,
   stream: typeof edgePullCheckpoints.$inferInsert.stream,
   watermark: string | null,
   succeededAt: Date,
+  monotonic = false,
+  rewindFrom: string | null = null,
 ): Promise<void> {
   const [node] = await tx
     .select({ tenantId: edgeNodes.tenantId, outletId: edgeNodes.outletId })
@@ -204,6 +254,23 @@ async function saveCheckpointRow(
     .where(eq(edgeNodes.id, edgeNodeId))
     .limit(1);
   if (!node) throw new Error("Edge node not found for checkpoint");
+  let stored: string | null = null;
+  if (monotonic) {
+    const [row] = await tx
+      .select({ watermark: edgePullCheckpoints.watermark })
+      .from(edgePullCheckpoints)
+      .where(
+        and(
+          eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
+          eq(edgePullCheckpoints.stream, stream),
+        ),
+      )
+      .limit(1);
+    stored = row?.watermark ?? null;
+  }
+  const rewinding = rewindFrom !== null && stored === rewindFrom;
+  const stale =
+    monotonic && !rewinding && isOlderCatalogCursor(watermark, stored);
   await tx
     .insert(edgePullCheckpoints)
     .values({
@@ -220,7 +287,14 @@ async function saveCheckpointRow(
         edgePullCheckpoints.edgeNodeId,
         edgePullCheckpoints.stream,
       ],
-      set: { watermark, lastSuccessAt: succeededAt, updatedAt: new Date() },
+      set: stale
+        ? { lastSuccessAt: succeededAt, updatedAt: new Date() }
+        : { watermark, lastSuccessAt: succeededAt, updatedAt: new Date() },
+      ...(monotonic
+        ? {
+            setWhere: sql`${edgePullCheckpoints.watermark} is not distinct from ${stored}::text`,
+          }
+        : {}),
     });
 }
 
@@ -230,6 +304,7 @@ function saveCatalogCheckpoint(
   stream: CatalogSyncStream,
   watermark: string | null,
   succeededAt: Date,
+  rewindFrom: string | null = null,
 ): Promise<void> {
   return saveCheckpointRow(
     tx,
@@ -237,6 +312,8 @@ function saveCatalogCheckpoint(
     catalogCheckpointStream(stream),
     watermark,
     succeededAt,
+    true,
+    rewindFrom,
   );
 }
 
@@ -299,6 +376,21 @@ function isRejectedCursor(error: unknown): boolean {
   );
 }
 
+/** True when a record of the raw page has no `syncTxid` (shape is checked later). */
+function isPageWithoutSyncTxid(raw: unknown): boolean {
+  if (typeof raw !== "object" || raw === null) return false;
+  const records = (raw as { records?: unknown }).records;
+  return (
+    Array.isArray(records) &&
+    records.some(
+      (record: unknown) =>
+        typeof record === "object" &&
+        record !== null &&
+        !("syncTxid" in record),
+    )
+  );
+}
+
 type StreamProgress = {
   applied: number;
   skipped: number;
@@ -326,6 +418,9 @@ async function pullStream(
   let watermark = stored;
   progress.watermark = stored;
   let first = true;
+  // Set when the cloud refused the stored cursor and this pull restarted: the
+  // first commit of the restart may lower the checkpoint (see saveCheckpointRow).
+  let rejectedCursor: string | null = null;
 
   for (;;) {
     if (progress.pages >= maxPages) {
@@ -339,6 +434,7 @@ async function pullStream(
     } catch (error) {
       if (first && since !== null && isRejectedCursor(error)) {
         // Applying is idempotent: start this stream over once.
+        rejectedCursor = since;
         since = null;
         watermark = null;
         first = false;
@@ -347,6 +443,9 @@ async function pullStream(
       throw error;
     }
     first = false;
+    // A cloud on the older release sends records without `syncTxid`: refuse
+    // that with a clear reason instead of "unknown shape".
+    if (isPageWithoutSyncTxid(raw)) throw new CatalogCloudOutdatedError();
     // safeParse: no parser detail travels in the error.
     const parsed = catalogSyncPageSchema.safeParse(raw);
     if (!parsed.success) throw new Error("Catalog page has an unknown shape");
@@ -369,6 +468,7 @@ async function pullStream(
       // The checkpoint is read again under the lock: a concurrent pull that
       // already applied newer rows moved it, and zeroing their stamps now would
       // let this (older) page win over them.
+      let rewindFrom: string | null = null;
       if (since === null) {
         const [row] = await tx
           .select({ watermark: edgePullCheckpoints.watermark })
@@ -381,7 +481,15 @@ async function pullStream(
           )
           .limit(1);
         const current = row?.watermark ?? null;
-        if (current === null || !isCurrentCursor(current))
+        // A rewind only while the checkpoint is still the refused cursor: a
+        // concurrent pull that already moved it must not be undone.
+        if (rejectedCursor !== null && current === rejectedCursor)
+          rewindFrom = rejectedCursor;
+        if (
+          rewindFrom !== null ||
+          current === null ||
+          !isCurrentCursor(current)
+        )
           await resetCatalogSyncTxid(tx, tenantId, stream);
       }
       const outcome = await applyCatalogRecords(tx, {
@@ -408,10 +516,12 @@ async function pullStream(
         stream,
         checkpoint,
         succeededAt,
+        rewindFrom,
       );
       return outcome;
     });
     // The page is committed: only now does the stream's progress move.
+    rejectedCursor = null;
     progress.watermark = checkpoint;
     progress.applied += result.applied;
     progress.skipped += result.skipped;
@@ -461,11 +571,24 @@ class CatalogParentFailedError extends Error {
   }
 }
 
+/** The cloud answered without `syncTxid`: it still runs the pre-cat2 release. */
+class CatalogCloudOutdatedError extends Error {
+  readonly code = "CATALOG_CLOUD_OUTDATED";
+
+  constructor() {
+    super(
+      "Cloud belum mendukung syncTxid katalog: deploy cloud dulu, baru edge.",
+    );
+    this.name = "CatalogCloudOutdatedError";
+  }
+}
+
 /** Code and message that are safe to report: no record data, no SQL detail. */
 function describeError(error: unknown): CatalogStreamError {
   if (
     error instanceof CatalogMissingRefError ||
     error instanceof CatalogParentFailedError ||
+    error instanceof CatalogCloudOutdatedError ||
     error instanceof CoreError ||
     error instanceof EdgeCloudHttpError
   )

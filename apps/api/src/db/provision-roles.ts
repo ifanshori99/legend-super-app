@@ -226,7 +226,23 @@ export async function currentDatabase(client: ClientBase) {
   return name;
 }
 
-async function upsertLogin(client: ClientBase, login: Login, label: string) {
+// An idle open transaction pins pg_snapshot_xmin and stops edge catalog and PIN
+// sync for every outlet (legend-9h0kg), so the runtime logins get a timeout.
+const IDLE_TX_SETTING = "idle_in_transaction_session_timeout";
+const IDLE_TX_TIMEOUT = "5min";
+
+async function setIdleTxTimeout(client: ClientBase, user: string) {
+  await client.query(
+    `ALTER ROLE "${user}" SET ${IDLE_TX_SETTING} = '${IDLE_TX_TIMEOUT}'`,
+  );
+}
+
+async function upsertLogin(
+  client: ClientBase,
+  login: Login,
+  label: string,
+  idleTxTimeout = false,
+) {
   const existing = await client.query(
     "SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin FROM pg_roles WHERE rolname = $1",
     [login.user],
@@ -236,6 +252,10 @@ async function upsertLogin(client: ClientBase, login: Login, label: string) {
     await client.query(
       `CREATE ROLE "${login.user}" LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT VALID UNTIL 'infinity' CONNECTION LIMIT -1 PASSWORD ${verifier}`,
     );
+    if (idleTxTimeout) {
+      await setIdleTxTimeout(client, login.user);
+      await assertNoSettings(client, login.user, label, "required");
+    }
     return "created";
   }
   const r = existing.rows[0];
@@ -261,26 +281,57 @@ async function upsertLogin(client: ClientBase, login: Login, label: string) {
   await client.query(
     `ALTER ROLE "${login.user}" IN DATABASE "${await currentDatabase(client)}" RESET ALL`,
   );
-  await assertNoSettings(client, login.user, label);
+  // RESET ALL above removes this too, so set it again after the reset.
+  if (idleTxTimeout) await setIdleTxTimeout(client, login.user);
+  await assertNoSettings(
+    client,
+    login.user,
+    label,
+    idleTxTimeout ? "required" : "none",
+  );
   return "updated";
 }
 
 // A non-superuser admin silently keeps superuser-only settings (for example
-// session_replication_role) after RESET ALL, so prove none are left.
+// session_replication_role) after RESET ALL, so prove none are left. The idle
+// transaction timeout is the one setting provisioning itself sets, and only on
+// the application and queue logins (`idleTxTimeout`): there it must be exactly
+// IDLE_TX_TIMEOUT (`"required"` also demands it is present). On any other
+// login, including the maintenance login, every setting counts as left over.
 async function assertNoSettings(
   client: ClientBase,
   user: string,
   label: string,
+  idleTxTimeout: "none" | "allowed" | "required" = "none",
 ) {
-  const left = await client.query(
-    `SELECT count(*)::int AS count FROM pg_db_role_setting s
+  const { rows } = await client.query<{ config: string }>(
+    `SELECT c AS config
+     FROM pg_db_role_setting s, unnest(s.setconfig) AS c
      WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = $1)
        AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))`,
     [user],
   );
-  if (left.rows[0].count)
+  let timeoutSeen = false;
+  let left = 0;
+  for (const { config } of rows) {
+    const at = config.indexOf("=");
+    const name = at < 0 ? config : config.slice(0, at);
+    const value = at < 0 ? "" : config.slice(at + 1);
+    if (
+      idleTxTimeout !== "none" &&
+      name === IDLE_TX_SETTING &&
+      value === IDLE_TX_TIMEOUT
+    )
+      timeoutSeen = true;
+    else left += 1;
+  }
+  if (left)
     throw new ProvisionError(
       `The ${label} role has role-level settings this login cannot reset; a superuser must run ALTER ROLE ... RESET ALL.`,
+    );
+  if (idleTxTimeout === "required" && !timeoutSeen)
+    throw new ProvisionError(
+      `The ${label} role does not have ${IDLE_TX_SETTING} = '${IDLE_TX_TIMEOUT}' after provisioning; re-run provision-roles.sh.`,
     );
 }
 
@@ -890,7 +941,7 @@ async function provisionApp(client: ClientBase, login: Login) {
   // Before PostgreSQL 15 every role could create in `public`. Revoking is a
   // no-op on newer servers and is verified below either way.
   await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
-  const outcome = await upsertLogin(client, login, "application");
+  const outcome = await upsertLogin(client, login, "application", true);
   await grantGroup(client, APP_GROUP, login.user);
   await auditApp(client, login.user);
   return outcome;
@@ -1060,7 +1111,7 @@ async function assertRegistry(client: ClientBase) {
 
 async function provisionWorker(client: ClientBase, login: Login) {
   await assertRegistry(client);
-  const outcome = await upsertLogin(client, login, "queue");
+  const outcome = await upsertLogin(client, login, "queue", true);
   const owner = await queueSchemaOwner(client);
   if (owner && owner !== login.user)
     throw new ProvisionError(
@@ -1175,7 +1226,12 @@ async function assertLogin(client: ClientBase, user: string, label: string) {
     throw new ProvisionError(
       `The ${label} login ${user} cannot log in, does not inherit its group, or has a connection limit or expiry; re-run provision-roles.sh.`,
     );
-  await assertNoSettings(client, user, label);
+  await assertNoSettings(
+    client,
+    user,
+    label,
+    label === "maintenance" ? "none" : "allowed",
+  );
 }
 
 /**
