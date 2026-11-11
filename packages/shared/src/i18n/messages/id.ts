@@ -479,6 +479,24 @@ export const id = {
     edgeNodeRoleStandby: "Standby",
     heartbeatLast: "Heartbeat {time}",
     heartbeatNever: "Belum ada heartbeat",
+    refresh: "Perbarui status",
+    refreshed:
+      "Status berhasil diperbarui. Tidak ada peringatan rotasi nomor struk pada node ini.",
+    receiptRun: {
+      title: "Rotasi nomor struk berulang",
+      description:
+        "Node edge melaporkan rotasi nomor struk berulang. Hubungi administrator teknis untuk memeriksa pemulihan node.",
+      node: "Node edge",
+      recordedAt: "Peringatan tercatat",
+      recordedAtUnknown: "Waktu tidak tercatat",
+      guideTitle: "Petunjuk untuk administrator teknis",
+      stepIdentify:
+        "Identifikasi node yang tercantum dan periksa penyebab pemulihan atau duplikasi node sebelum melakukan perubahan.",
+      stepResetBefore: "Ikuti prosedur pemulihan untuk mereset",
+      stepResetAfter: "pada node yang tepat.",
+      stepVerify:
+        "Perbarui status dan periksa kembali peringatan setelah pemulihan.",
+    },
     deviceLabel: "Perangkat ini",
     deviceMissing: "Belum dikenali",
     banner: {

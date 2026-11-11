@@ -2,11 +2,12 @@
 // synchronisation backlog, the print queue drawer and printer/KDS alerts
 // (PRD v1.7 §3 F5, §4 Alur F, EDG-05). Components here are the shared kit;
 // POS and KDS mount the same banner, watermark and drawer.
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { HardDrive, Printer, Wifi, WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { ThemeScope } from "@/components/theme-scope";
 import { Badge, StatusPill } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -17,6 +18,7 @@ import { DeviceAlerts } from "./device-alerts.tsx";
 import { useEdgeStatus, useSetTrainingMode } from "../hooks.ts";
 import { formatClock, EDGE_ROLE_LABEL } from "../logic.ts";
 import { PrintQueueButton } from "./print-queue-drawer.tsx";
+import { ReceiptRunAlert } from "./receipt-run-alert.tsx";
 import { WaiterOrderNotice } from "./waiter-order-notice.tsx";
 
 function StatusRow({
@@ -72,14 +74,54 @@ export function KoneksiScreen({
   const heartbeat = formatClock(data?.edgeNode?.lastHeartbeatAt ?? null);
   const lastSynced = formatClock(data?.lastSyncedAt ?? null);
 
+  const runAlert = data?.deviceRegistry?.receiptRunAlert === true;
+  // Confirms a manual refresh that found no receipt-run alert (legend-s7szu).
+  const [refreshed, setRefreshed] = useState(false);
+  const refresh = () => {
+    setRefreshed(false);
+    void status.refetch().then((result) => {
+      if (
+        result.isSuccess &&
+        result.data.data.deviceRegistry?.receiptRunAlert !== true
+      )
+        setRefreshed(true);
+    });
+  };
+
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
-      <header className="grid gap-1">
-        <h1 className="type-display">{t("edge.pageTitle")}</h1>
-        <p className="text-sm leading-5 text-muted-foreground">
-          {t("edge.pageHint")}
-        </p>
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="grid gap-1">
+          <h1 className="type-display">{t("edge.pageTitle")}</h1>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("edge.pageHint")}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          className="w-full sm:w-auto"
+          loading={status.isFetching}
+          onClick={refresh}
+        >
+          {t("edge.refresh")}
+        </Button>
       </header>
+
+      {refreshed && !runAlert && !status.isFetching && (
+        <p
+          role="status"
+          className="rounded-container border-(length:--border-w) border-success bg-success-subtle p-4 text-sm leading-5 font-semibold text-foreground"
+        >
+          {t("edge.refreshed")}
+        </p>
+      )}
+
+      {data && data.edgeNode !== null && runAlert && (
+        <ReceiptRunAlert
+          edgeNodeId={data.edgeNode.id}
+          alertAt={data.deviceRegistry?.receiptRunAlertAt ?? null}
+        />
+      )}
 
       {status.isError && (
         <Card>

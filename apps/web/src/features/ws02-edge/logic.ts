@@ -152,6 +152,27 @@ export function formatClock(iso: string | null): string | null {
   }).format(date);
 }
 
+/** "11 November 2026, 09.42 WIB": the alert time, read in Jakarta time. */
+export function formatAlertTime(iso: string | null): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const zone = { timeZone: "Asia/Jakarta" } as const;
+  const day = new Intl.DateTimeFormat("id-ID", {
+    ...zone,
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(date);
+  const time = new Intl.DateTimeFormat("id-ID", {
+    ...zone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return `${day}, ${time} WIB`;
+}
+
 /**
  * Customer and public screens get the guest wording ("Silakan pesan melalui
  * waiter"), not the staff connectivity banner (PRD §4 Alur F step 2).
