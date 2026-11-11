@@ -84,7 +84,7 @@ const SETTLED_INTENT_STATUSES: readonly string[] = [
 ];
 
 /** A ticket in one of these statuses will never use its breakfast. */
-const DEAD_TICKET_STATUSES: readonly string[] = [
+export const DEAD_TICKET_STATUSES: readonly string[] = [
   "cancelled",
   "refunded",
   "no_show",
@@ -444,13 +444,48 @@ async function dueOrderIds(
           lte(facilityLinkedOrders.fireAt, now),
         ),
       )
+      // Least recently touched first: a row that keeps failing is bumped
+      // (`markSweepFailure`) and drops behind the rest instead of pinning the
+      // head of every batch.
       .orderBy(
+        asc(facilityLinkedOrders.updatedAt),
         asc(facilityLinkedOrders.fireAt),
         asc(facilityLinkedOrders.orderId),
       )
       .limit(limit),
   );
   return rows.map((row) => row.orderId);
+}
+
+/**
+ * Moves a failed row behind the untouched ones (the failed transaction rolled
+ * back, so this runs in its own). Best effort: a failure here is only logged.
+ */
+async function markSweepFailure(
+  context: ScopedTenantContext,
+  orderId: string,
+  status: "paid" | "awaiting_payment",
+  now: Date,
+): Promise<void> {
+  try {
+    await withTenant(db, context, (tx) =>
+      tx
+        .update(facilityLinkedOrders)
+        .set({ updatedAt: now })
+        .where(
+          and(
+            eq(facilityLinkedOrders.tenantId, context.tenant.tenantId),
+            eq(facilityLinkedOrders.orderId, orderId),
+            eq(facilityLinkedOrders.status, status),
+          ),
+        ),
+    );
+  } catch (error) {
+    logger.error(
+      { orderId, err: error instanceof Error ? error.message : "unknown" },
+      "Breakfast sweep: could not bump a failed order",
+    );
+  }
 }
 
 /**
@@ -486,6 +521,7 @@ export async function fireDueBreakfastOrders(
         { orderId, err: error instanceof Error ? error.message : "unknown" },
         "Breakfast sweep: order failed; retried on the next tick",
       );
+      await markSweepFailure(context, orderId, expected, now);
       return false;
     }
   };

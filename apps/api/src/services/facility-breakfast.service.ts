@@ -63,6 +63,7 @@ import {
   type BreakfastLinkedRow,
   type BreakfastOrderRow,
 } from "./facility-breakfast-money.ts";
+import { DEAD_TICKET_STATUSES } from "./facility-breakfast-consumers.ts";
 import { reserveMenuItemDailyLimit } from "./menu-availability.ts";
 import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
 import { operationsFingerprint } from "./operations-idempotency.ts";
@@ -601,7 +602,7 @@ async function lockOwnOrder(
   const locked = await lockBreakfastOrder(tx, context, orderId);
   if (!locked || locked.linked.accessTicketId !== ticket.id)
     throw notFound("Pesanan");
-  return locked;
+  return { ...locked, ticket };
 }
 
 export async function payBreakfastOrderForMember(
@@ -614,7 +615,7 @@ export async function payBreakfastOrderForMember(
 ): Promise<BreakfastPayment> {
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
-    const { order, linked } = await lockOwnOrder(
+    const { order, linked, ticket } = await lockOwnOrder(
       tx,
       context,
       member,
@@ -627,6 +628,13 @@ export async function payBreakfastOrderForMember(
     // Paid or fired: nothing left to pay, no token.
     if (linked.status !== "awaiting_payment")
       return breakfastPaymentSchema.parse({ order: dto, paymentToken: null });
+    // No new code or link for a dead ticket or an ended session: a payment
+    // made then would only be refunded.
+    if (
+      DEAD_TICKET_STATUSES.includes(ticket.status) ||
+      now.getTime() >= ticket.endsAt.getTime()
+    )
+      throw new FacilityError("BREAKFAST_UNAVAILABLE");
     if (order.status !== "awaiting_payment")
       throw new CoreError("CONFLICT", "Pesanan ini tidak menunggu pembayaran.");
     const aad = linkSealAad(tenantId, order.id);
