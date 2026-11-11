@@ -58,7 +58,7 @@ import {
 import { loadTenantAccess } from "../services/permission-resolver.ts";
 import { loadSurfaceAccessFacts } from "../services/surface-access.service.ts";
 import * as attendanceService from "../services/hris-attendance.service.ts";
-import { deviceIdOf } from "./device-id.ts";
+import { currentDeviceIdOf } from "./device-id.ts";
 import {
   noHrisFileSigner,
   type HrisFileSigner,
@@ -227,13 +227,14 @@ export function createHrisAttendanceRouter(
       const body = outletClockAttendanceEndpoint.body.parse(req.body);
       const tenant = getTenantContext(req);
       res.setHeader("Cache-Control", "private, no-store");
+      // A token sent but no longer current (revoked, rotated out, other
+      // tenant) is 401 here; no token stays null for the service's 403.
+      const deviceId = await currentDeviceIdOf(req);
       let result: attendanceService.OutletClockResult;
       try {
         result = await attendanceService.outletClockAttendance(
           establishScopedTenantContext(tenant, { kind: "tenant" }),
-          // Only a token that names this tenant counts (deviceIdOf); the
-          // service checks the registry.
-          deviceIdOf(req) === null
+          deviceId === null
             ? null
             : verifyDeviceToken(req.get(DEVICE_TOKEN_HEADER) ?? ""),
           req.get(PIN_PROOF_HEADER) ?? "",
