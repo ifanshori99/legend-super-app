@@ -24,6 +24,15 @@ CREATE TABLE "facility_linked_orders" (
 	CONSTRAINT "facility_linked_orders_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "facility_linked_orders_order_key" UNIQUE("tenant_id","order_id"),
 	CONSTRAINT "facility_linked_orders_idempotency_key" UNIQUE("tenant_id","access_ticket_id","idempotency_key"),
+	-- Foreign keys inline (docs/plan/contracts.md "Migrations: foreign keys
+	-- into FORCE RLS tables", pattern 1): an ALTER TABLE ... ADD FOREIGN KEY
+	-- validates under the FORCE RLS parent policy and aborts a plain-owner
+	-- migrator without app.tenant_id.
+	CONSTRAINT "facility_linked_orders_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "facility_linked_orders_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "facility_linked_orders_facility_fk" FOREIGN KEY ("tenant_id","outlet_id","facility_id") REFERENCES "public"."facilities"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "facility_linked_orders_ticket_fk" FOREIGN KEY ("tenant_id","access_ticket_id") REFERENCES "public"."access_tickets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "facility_linked_orders_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "facility_linked_orders_status_check" CHECK ("facility_linked_orders"."status" IN ('awaiting_payment', 'paid', 'fired', 'cancelled')),
 	CONSTRAINT "facility_linked_orders_amounts_check" CHECK ("facility_linked_orders"."subtotal_idr" >= 0 AND "facility_linked_orders"."total_idr" >= 0 AND "facility_linked_orders"."paid_idr" >= 0 AND "facility_linked_orders"."refunded_idr" >= 0),
 	CONSTRAINT "facility_linked_orders_fire_offset_check" CHECK ("facility_linked_orders"."fire_offset_minutes" BETWEEN 0 AND 240),
@@ -33,11 +42,6 @@ CREATE TABLE "facility_linked_orders" (
 	CONSTRAINT "facility_linked_orders_refund_check" CHECK ("facility_linked_orders"."refunded_idr" <= "facility_linked_orders"."paid_idr")
 );
 --> statement-breakpoint
-ALTER TABLE "facility_linked_orders" ADD CONSTRAINT "facility_linked_orders_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "facility_linked_orders" ADD CONSTRAINT "facility_linked_orders_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "facility_linked_orders" ADD CONSTRAINT "facility_linked_orders_facility_fk" FOREIGN KEY ("tenant_id","outlet_id","facility_id") REFERENCES "public"."facilities"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "facility_linked_orders" ADD CONSTRAINT "facility_linked_orders_ticket_fk" FOREIGN KEY ("tenant_id","access_ticket_id") REFERENCES "public"."access_tickets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "facility_linked_orders" ADD CONSTRAINT "facility_linked_orders_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "facility_linked_orders_ticket_live_key" ON "facility_linked_orders" USING btree ("tenant_id","access_ticket_id") WHERE "facility_linked_orders"."status" <> 'cancelled';--> statement-breakpoint
 CREATE INDEX "facility_linked_orders_fire_due_idx" ON "facility_linked_orders" USING btree ("tenant_id","fire_at") WHERE "facility_linked_orders"."status" = 'paid';
 --> statement-breakpoint
