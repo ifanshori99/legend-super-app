@@ -59,9 +59,8 @@ import {
   cafeLegendPlatformFixtures,
   orgEndpoints,
 } from "@starter/shared/platform";
-import type { AnyEndpoint } from "@starter/shared/api";
 import { ApiError } from "../../lib/api/errors.ts";
-import { registerMock, type MockHandler } from "../../lib/mock/registry.ts";
+import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { compareAccountCodes, entryBalance } from "./lib.ts";
@@ -91,26 +90,6 @@ const state = createMockStore<AccountingMockState>(() => ({
   periodIds: new Map(),
   created: new Map(),
 }));
-
-/**
- * Registers a handler and maps the contract's own errors the way the API does:
- * `AccountingError` carries `code` and `status`, but the mock runtime only
- * knows `ApiError`/`CoreError`, so a refusal would surface as INTERNAL_ERROR.
- */
-function register<E extends AnyEndpoint>(
-  endpoint: E,
-  handler: MockHandler<E>,
-): void {
-  registerMock(endpoint, (context) => {
-    try {
-      return handler(context);
-    } catch (error) {
-      if (error instanceof AccountingError)
-        throw new ApiError(error.status, error.code, error.message);
-      throw error;
-    }
-  });
-}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -250,13 +229,13 @@ function findRecurring(recurringJournalId: string): RecurringJournal {
 
 // Reference data stays available under ?mock=empty: the screen's own list
 // (accounts, journals, templates) is what the empty state is about.
-register(orgEndpoints.listLegalEntities, () => ({
+registerMock(orgEndpoints.listLegalEntities, () => ({
   data: [cafeLegendPlatformFixtures.legalEntity],
 }));
 
 // legend-5kop: `?mock=empty` must reach the outlet settings screen's empty
 // state, so the scenario goes through to paginateFixture like every other list.
-register(orgEndpoints.listOutlets, ({ query, scenario }) =>
+registerMock(orgEndpoints.listOutlets, ({ query, scenario }) =>
   paginateFixture(
     cafeLegendPlatformFixtures.outlets,
     { cursor: query.cursor, limit: query.limit },
@@ -265,7 +244,7 @@ register(orgEndpoints.listOutlets, ({ query, scenario }) =>
   ),
 );
 
-register(listAccounts, ({ params, scenario }) => {
+registerMock(listAccounts, ({ params, scenario }) => {
   if (scenario === "empty") return { data: [] };
   const rows = state
     .get()
@@ -276,7 +255,7 @@ register(listAccounts, ({ params, scenario }) => {
   return { data: rows };
 });
 
-register(createAccount, ({ params, body }) => {
+registerMock(createAccount, ({ params, body }) => {
   const current = state.get();
   const siblings = current.accounts.filter(
     (account) => account.legalEntityId === params.legalEntityId,
@@ -307,7 +286,7 @@ register(createAccount, ({ params, body }) => {
   return { data: account };
 });
 
-register(updateAccount, ({ params, body }) => {
+registerMock(updateAccount, ({ params, body }) => {
   const current = state.get();
   const index = current.accounts.findIndex(
     (account) => account.id === params.accountId,
@@ -347,14 +326,14 @@ register(updateAccount, ({ params, body }) => {
 
 // ---- Posted journals ------------------------------------------------------
 
-register(listFiscalPeriods, ({ params }) => {
+registerMock(listFiscalPeriods, ({ params }) => {
   const rows = fixtures.fiscalPeriods.filter(
     (row) => row.legalEntityId === params.legalEntityId,
   );
   return { data: rows };
 });
 
-register(listJournals, ({ query, scenario }) => {
+registerMock(listJournals, ({ query, scenario }) => {
   const rows = state
     .get()
     .journals.filter((entry) => entry.legalEntityId === query.legalEntityId)
@@ -386,7 +365,7 @@ register(listJournals, ({ query, scenario }) => {
   );
 });
 
-register(getJournal, ({ params, scenario }) => {
+registerMock(getJournal, ({ params, scenario }) => {
   if (scenario === "empty") throw notFound("Jurnal tidak ditemukan.");
   const entry = state
     .get()
@@ -395,7 +374,7 @@ register(getJournal, ({ params, scenario }) => {
   return { data: { entry, reversedBy: reversedByOf(entry.id) } };
 });
 
-register(reverseJournal, ({ params, body }) => {
+registerMock(reverseJournal, ({ params, body }) => {
   const current = state.get();
   const replayKey = `reversal:${params.journalEntryId}:${body.idempotencyKey}`;
   const replayed = current.created.get(replayKey);
@@ -426,7 +405,7 @@ register(reverseJournal, ({ params, body }) => {
 
 // ---- Manual journals ------------------------------------------------------
 
-register(listManualJournals, ({ query, scenario }) => {
+registerMock(listManualJournals, ({ query, scenario }) => {
   const rows = state
     .get()
     .manualJournals.filter((row) => row.legalEntityId === query.legalEntityId)
@@ -443,12 +422,12 @@ register(listManualJournals, ({ query, scenario }) => {
   );
 });
 
-register(getManualJournal, ({ params, scenario }) => {
+registerMock(getManualJournal, ({ params, scenario }) => {
   if (scenario === "empty") throw notFound("Jurnal manual tidak ditemukan.");
   return { data: findManual(params.manualJournalId) };
 });
 
-register(createManualJournal, ({ body }) => {
+registerMock(createManualJournal, ({ body }) => {
   const current = state.get();
   const replayKey = `manual:${body.idempotencyKey}`;
   const replayed = current.created.get(replayKey);
@@ -477,7 +456,7 @@ register(createManualJournal, ({ body }) => {
   return { data: journal };
 });
 
-register(updateManualJournal, ({ params, body }) => {
+registerMock(updateManualJournal, ({ params, body }) => {
   const current = state.get();
   const index = current.manualJournals.findIndex(
     (row) => row.id === params.manualJournalId,
@@ -581,12 +560,12 @@ function manualCommandHandler(
   };
 }
 
-register(submitManualJournal, manualCommandHandler("submit"));
-register(withdrawManualJournal, manualCommandHandler("withdraw"));
-register(approveManualJournal, manualCommandHandler("approve"));
-register(cancelManualJournal, manualCommandHandler("cancel"));
+registerMock(submitManualJournal, manualCommandHandler("submit"));
+registerMock(withdrawManualJournal, manualCommandHandler("withdraw"));
+registerMock(approveManualJournal, manualCommandHandler("approve"));
+registerMock(cancelManualJournal, manualCommandHandler("cancel"));
 
-register(rejectManualJournal, ({ params, body }) => {
+registerMock(rejectManualJournal, ({ params, body }) => {
   // Reject carries the reason instead of an idempotency key; rejecting twice
   // cannot double-post (the transition only leaves pending_approval once).
   const journal = applyManualAction({
@@ -599,7 +578,7 @@ register(rejectManualJournal, ({ params, body }) => {
 
 // ---- Recurring journals ---------------------------------------------------
 
-register(listRecurringJournals, ({ query, scenario }) => {
+registerMock(listRecurringJournals, ({ query, scenario }) => {
   if (scenario === "empty") return { data: [] };
   const rows = state
     .get()
@@ -609,7 +588,7 @@ register(listRecurringJournals, ({ query, scenario }) => {
   return { data: rows };
 });
 
-register(createRecurringJournal, ({ body }) => {
+registerMock(createRecurringJournal, ({ body }) => {
   const current = state.get();
   const replayKey = `recurring:${body.idempotencyKey}`;
   const replayed = current.created.get(replayKey);
@@ -636,7 +615,7 @@ register(createRecurringJournal, ({ body }) => {
   return { data: template };
 });
 
-register(transitionRecurringJournalEndpoint, ({ params, body }) => {
+registerMock(transitionRecurringJournalEndpoint, ({ params, body }) => {
   const current = state.get();
   const index = current.recurringJournals.findIndex(
     (row) => row.id === params.recurringJournalId,

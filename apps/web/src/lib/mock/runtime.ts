@@ -4,6 +4,7 @@ import {
   type CoreErrorCode,
 } from "@starter/shared/core";
 import { zodIssuesToDetails } from "@starter/shared/api";
+import { AccountingError } from "@starter/shared/accounting";
 import type { z } from "zod";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "../api/errors.ts";
 import {
@@ -53,10 +54,26 @@ function validate(schema: z.ZodType, value: unknown, where: string) {
   return result.data;
 }
 
+// Recognize domain errors centrally so every registered handler, including
+// async handlers, has the same client-visible refusal as the real API.
+// Only explicit domain classes may expose their code and safe message.
+const domainErrorMappers: ReadonlyArray<
+  (error: unknown) => ApiError | undefined
+> = [
+  (error) =>
+    error instanceof AccountingError
+      ? new ApiError(error.status, error.code, error.message)
+      : undefined,
+];
+
 function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) return error;
   if (error instanceof CoreError)
     return new ApiError(error.status, error.code, error.message);
+  for (const mapDomainError of domainErrorMappers) {
+    const mapped = mapDomainError(error);
+    if (mapped) return mapped;
+  }
   console.error("[mock] handler threw", error);
   return new ApiError(
     coreErrorHttpStatus.INTERNAL_ERROR,
