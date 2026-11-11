@@ -11,7 +11,8 @@
 // Finding 2: a flood of random well-formed bearers must not create unbounded
 // shared-store keys. Once the per-IP bucket has answered 429 no credential key
 // exists for the request, and credential-bearing requests are capped per IP per
-// window by the option `perIpCredentials` (default: the guest per-IP limit).
+// window by the option `perIpCredentials` (off by default: guest:ip already
+// bounds the keys).
 
 import { randomBytes, randomUUID } from "node:crypto";
 import express from "express";
@@ -172,8 +173,8 @@ describe("guest and public limiters do not share buckets (legend-bpvf)", () => {
     calls.length = 0;
     await guestPoll(app, "203.0.113.103", randomBearer()).expect(200);
     const guestBuckets = new Set(calls.map((call) => call.bucket));
+    // guest:cred-ip is optional (perIpCredentials) and off by default.
     expect([...guestBuckets].sort()).toEqual([
-      "guest:cred-ip",
       "guest:ip",
       "guest:session",
       "guest:tenant",
@@ -320,18 +321,44 @@ describe("guest credential floods create bounded shared keys (legend-bpvf)", () 
     expect((await guestPoll(later, ip, randomBearer())).status).toBe(200);
   });
 
-  it("legend-bpvf defaults perIpCredentials to the guest per-IP limit", async () => {
+  it("legend-bpvf leaves guest:cred-ip off unless perIpCredentials is set", async () => {
     const rec = recordingStore();
     const app = mixedApp(
       rec.store,
       { perIp: 1000, perTenant: 1000 },
       { perIp: 7, perTenant: 1000 },
     );
-    await guestPoll(app, "203.0.113.130", randomBearer()).expect(200);
-    const credCalls = rec.calls.filter((c) => c.bucket === "guest:cred-ip");
-    expect(credCalls).toHaveLength(1);
-    expect(credCalls[0]!.limit).toBe(7);
-    expect(credCalls[0]!.key).toContain("203.0.113.130");
+    for (let i = 0; i < 3; i += 1)
+      await guestPoll(app, "203.0.113.130", randomBearer()).expect(200);
+    // No store call for the optional bucket, yet keys stay bounded by guest:ip.
+    expect(rec.calls.filter((c) => c.bucket === "guest:cred-ip")).toHaveLength(
+      0,
+    );
+    expect(rec.keysOf("guest:cred-ip").size).toBe(0);
+    expect(rec.sessionKeys().size).toBe(3);
+    const guestIp = rec.calls.filter((c) => c.bucket === "guest:ip");
+    expect(guestIp[0]!.limit).toBe(7);
+  });
+
+  it("legend-bpvf a table retrying after its session 429 still spends the venue's guest:ip budget (accepted, documented)", async () => {
+    const rec = recordingStore();
+    const app = mixedApp(
+      rec.store,
+      { perIp: 1000, perTenant: 1000 },
+      { perIp: 6, perTenant: 1000, perSession: 2 },
+    );
+    const ip = "203.0.113.150";
+    const table = randomBearer();
+    expect((await guestPoll(app, ip, table)).status).toBe(200);
+    expect((await guestPoll(app, ip, table)).status).toBe(200);
+    // The session bucket refuses from here on, but IP and tenant are checked
+    // first (so random bearers create no key): every refused retry is charged.
+    expect((await guestPoll(app, ip, table)).status).toBe(429);
+    expect((await guestPoll(app, ip, table)).status).toBe(429);
+    expect((await guestPoll(app, ip, table)).status).toBe(429);
+    expect((await guestPoll(app, ip, table)).status).toBe(429);
+    // guest:ip (6) is now spent: another table on the same address is refused too.
+    expect((await guestPoll(app, ip, randomBearer())).status).toBe(429);
   });
 
   it("legend-bpvf charges credential-free requests nothing in the credential buckets", async () => {

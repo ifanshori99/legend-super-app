@@ -316,8 +316,9 @@ export type GuestSessionRateLimitOptions = Partial<
   perSession?: number;
   /**
    * Credential-bearing requests allowed per client IP in one window. Bounds the
-   * session keys one IP can create in the shared store; default: the guest
-   * per-IP limit.
+   * session keys one IP can create in the shared store. Off by default (no
+   * extra store call): `guest:ip` already bounds those keys at the guest per-IP
+   * limit. Set it to bound them tighter.
    */
   perIpCredentials?: number;
 };
@@ -336,7 +337,7 @@ export function guestSessionRateLimit(
   const perIpLimit =
     options.perIp ??
     env.PUBLIC_RATE_LIMIT_PER_MINUTE * GUEST_SESSION_NAT_FACTOR;
-  const perIpCredentialsLimit = options.perIpCredentials ?? perIpLimit;
+  const perIpCredentialsLimit = options.perIpCredentials;
   const internalIps = new Set(
     options.internalIps ?? env.PUBLIC_RATE_LIMIT_INTERNAL_IPS,
   );
@@ -371,12 +372,16 @@ export function guestSessionRateLimit(
       req.get("authorization") ?? "",
     )?.[1];
     if (credential) {
-      // Credential-bearing requests are capped per IP per window, charged
-      // before the session bucket, so one IP creates at most that many session
-      // keys per window. Same visitor-IP rule as publicRateLimit.
+      // Optional (perIpCredentials): credential-bearing requests capped per IP
+      // per window, charged before the session bucket, so one IP creates at
+      // most that many session keys per window. Same visitor-IP rule as
+      // publicRateLimit.
       const visitor = req.ssrVisitorIp;
       const ip = visitor ?? clientIp(req);
-      if (visitor || !internalIps.has(ip)) {
+      if (
+        perIpCredentialsLimit !== undefined &&
+        (visitor || !internalIps.has(ip))
+      ) {
         const credIp = await store.take(
           "guest:cred-ip",
           clientIpKey(ip),
