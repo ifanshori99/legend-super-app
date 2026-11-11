@@ -226,12 +226,15 @@ test("538-G1: selecting dependent sections alone requires target context rather 
   assert.deepEqual(Object.keys(accepted.drafts), ["checklists"]);
 });
 
-test("538-G1: facilities resolve bundled or target tax keys and reject unknown explicit tax references", () => {
+test("538-G1b P2: facilities accept tenant-wide or same-outlet taxes and reject unknown or foreign-outlet tax references", () => {
   const taxCodec = platform.CONFIG_SECTION_CODECS.tax_rules;
   const facilityCodec = platform.CONFIG_SECTION_CODECS.facilities;
   assert.ok(taxCodec);
   assert.ok(facilityCodec);
-  const taxItems = taxCodec.toTemplate([taxFixture.taxRules[1]]);
+  const taxItems = taxCodec.toTemplate([taxFixture.taxRules[1]], {
+    asOf: "2026-11-12",
+    settings: [],
+  });
   const facilities = facilityCodec
     .toTemplate(
       {
@@ -252,12 +255,15 @@ test("538-G1: facilities resolve bundled or target tax keys and reject unknown e
   );
   const target = decode(
     { facilities },
-    { ...outletContext, existingTaxRuleKeys: new Set([taxItems[0].key]) },
+    {
+      ...outletContext,
+      existingTaxRuleOutletKeyByKey: new Map([[taxItems[0].key, null]]),
+    },
   );
   assert.equal(target.ok, true, JSON.stringify(target.issues));
   for (const options of [
     outletContext,
-    { ...outletContext, existingTaxRuleKeys: new Set() },
+    { ...outletContext, existingTaxRuleOutletKeyByKey: new Map() },
   ])
     refused(decode({ facilities }, options), "facilities", /taxRuleKey|tax/i);
   const parsed = platform.parseConfigBundle(bundle({ facilities }));
@@ -267,12 +273,51 @@ test("538-G1: facilities resolve bundled or target tax keys and reject unknown e
     "facilities",
     /taxRuleKey|tax/i,
   );
+  for (const taxOutletKey of [null, "cafe", "other"]) {
+    const bundledScope = decode(
+      {
+        facilities,
+        tax_rules: taxItems.map((item) => ({
+          ...item,
+          outletKey: taxOutletKey,
+        })),
+      },
+      outletContext,
+    );
+    const targetScope = decode(
+      { facilities },
+      {
+        ...outletContext,
+        existingTaxRuleOutletKeyByKey: new Map([
+          [taxItems[0].key, taxOutletKey],
+        ]),
+      },
+    );
+    for (const result of [bundledScope, targetScope]) {
+      if (taxOutletKey === "other") {
+        refused(result, "facilities", /taxRuleKey|tax|outlet/i);
+      } else {
+        assert.equal(result.ok, true, JSON.stringify(result.issues));
+        const importedProduct = result.drafts.facilities.find(
+          (item) => item.kind === "product",
+        );
+        assert.equal(importedProduct.taxRuleKey, taxItems[0].key);
+        assert.equal(
+          importedProduct.priceIdr,
+          facilityFixture.products[0].priceIdr,
+        );
+      }
+    }
+  }
 });
 
 test("538-G1: legacy outlet-scoped tax rules and settings validate supplied target outlets and otherwise defer", () => {
   const codec = platform.CONFIG_SECTION_CODECS.tax_rules;
   assert.ok(codec);
-  const [rule] = codec.toTemplate([taxFixture.taxRules[0]]);
+  const [rule] = codec.toTemplate([taxFixture.taxRules[0]], {
+    asOf: "2026-11-12",
+    settings: [],
+  });
   rule.outletKey = "cafe";
   delete rule.effectiveFrom;
   const settings = {

@@ -136,7 +136,7 @@ test("legend-u74y8: facilities refuse unknown explicit tax refs and unsafe money
     original.map((item) => (item.key === product.key ? next : item));
   const tax = value.fromTemplate(
     withProduct({ ...product, taxRuleKey: "tax.missing" }),
-    { taxRuleKeys: new Set() },
+    { taxRuleOutletKeyByKey: new Map() },
   );
   assert.equal(tax.ok, false);
   assert.match(tax.issues.join("\n"), /taxRuleKey/);
@@ -190,7 +190,10 @@ test("legend-u74y8: facilities enforce target outlet and preserve explicit known
   assert.match(missingOutlet.issues.join("\n"), /outletKey/);
   const imported = value.fromTemplate(withTax, {
     outletKeys: new Set([fixture.outlet.code.toLowerCase()]),
-    taxRuleKeys: new Set(["tax.default", "tax.vat"]),
+    taxRuleOutletKeyByKey: new Map([
+      ["tax.default", null],
+      ["tax.vat", null],
+    ]),
   });
   assert.equal(imported.ok, true, JSON.stringify(imported.issues));
   assert.equal(
@@ -221,4 +224,39 @@ test("legend-u74y8: facilities import normalizes live unit state while preservin
       status === "maintenance" ? "maintenance" : "available",
     );
   }
+});
+
+test("legend-u74y8 P2: facility products accept tenant-wide or own-outlet taxes and reject another outlet's tax", () => {
+  const value = codec();
+  const original = items();
+  const product = original.find((item) => item.kind === "product");
+  const facility = original.find((item) => item.key === product.facilityKey);
+  const withOutletTax = original.map((item) =>
+    item.key === product.key ? { ...item, taxRuleKey: "tax.outlet" } : item,
+  );
+  for (const taxOutletKey of [null, facility.outletKey]) {
+    const accepted = value.fromTemplate(withOutletTax, {
+      taxRuleOutletKeyByKey: new Map([
+        ["tax.default", null],
+        ["tax.outlet", taxOutletKey],
+      ]),
+    });
+    assert.equal(accepted.ok, true, JSON.stringify(accepted.issues));
+    assert.equal(
+      accepted.drafts.find((item) => item.key === product.key).priceIdr,
+      product.priceIdr,
+    );
+  }
+  const denied = value.fromTemplate(withOutletTax, {
+    taxRuleOutletKeyByKey: new Map([
+      ["tax.default", null],
+      ["tax.outlet", "other-outlet"],
+    ]),
+  });
+  assert.equal(
+    denied.ok,
+    false,
+    "known tax from another outlet must not change this outlet's charges",
+  );
+  assert.match(denied.issues.join("\n"), /taxRuleKey.*outlet/);
 });

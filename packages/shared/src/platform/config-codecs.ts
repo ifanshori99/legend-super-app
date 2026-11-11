@@ -127,8 +127,8 @@ export type DecodeConfigBundleOptions = {
   existingOutletKeys?: ReadonlySet<string>;
   /** Target zones for importing dependent sections without a zones section. */
   existingZoneOutletKeyByKey?: ReadonlyMap<string, string>;
-  /** Target tax rule keys for a facilities-only import. */
-  existingTaxRuleKeys?: ReadonlySet<string>;
+  /** Target tax rule owners; null denotes a tenant-wide rule. */
+  existingTaxRuleOutletKeyByKey?: ReadonlyMap<string, string | null>;
   /** Target menu keys referenced by loyalty reward/mission configuration. */
   existingMenuItemKeys?: ReadonlySet<string>;
   /** Target point valuation, locked once the tenant has a ledger entry. */
@@ -180,13 +180,17 @@ export function decodeConfigBundle(
     }[])
       zoneOutletKeyByKey.set(item.key, item.outletKey);
   const zoneKeys = new Set(zoneOutletKeyByKey.keys());
-  const taxRuleKeys = new Set(options.existingTaxRuleKeys ?? []);
+  const taxRuleOutletKeyByKey = new Map(
+    options.existingTaxRuleOutletKeyByKey ?? [],
+  );
   if (wanted.has("tax_rules"))
     for (const item of (sections.tax_rules?.items ?? []) as {
       key: string;
       kind: string;
+      outletKey: string | null;
     }[])
-      if (item.kind === "rule") taxRuleKeys.add(item.key);
+      if (item.kind === "rule")
+        taxRuleOutletKeyByKey.set(item.key, item.outletKey);
 
   for (const section of DECODE_ORDER) {
     const value = sections[section];
@@ -260,7 +264,7 @@ export function decodeConfigBundle(
         case "facilities":
           return facilitiesConfigCodec.fromTemplate(value.items, {
             outletKeys: options.existingOutletKeys,
-            taxRuleKeys,
+            taxRuleOutletKeyByKey,
           });
       }
     })();
@@ -324,14 +328,16 @@ export function configBundleReferenceIssues(
           item.outletKey ?? "external",
         );
   }
-  const existingTaxRuleKeys = bundle.sections.tax_rules
+  const existingTaxRuleOutletKeyByKey = bundle.sections.tax_rules
     ? undefined
-    : new Set(
+    : new Map<string, string | null>(
         (
           (bundle.sections.facilities?.items ?? []) as {
             taxRuleKey?: string | null;
           }[]
-        ).flatMap((item) => (item.taxRuleKey ? [item.taxRuleKey] : [])),
+        ).flatMap((item): [string, null][] =>
+          item.taxRuleKey ? [[item.taxRuleKey, null]] : [],
+        ),
       );
   const existingMenuItemKeys = new Set(
     (
@@ -347,7 +353,7 @@ export function configBundleReferenceIssues(
   const decoded = decodeConfigBundle(bundle, {
     existingRoleKeys,
     existingZoneOutletKeyByKey,
-    existingTaxRuleKeys,
+    existingTaxRuleOutletKeyByKey,
     existingMenuItemKeys,
   });
   return decoded.ok

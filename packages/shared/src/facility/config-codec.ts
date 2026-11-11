@@ -133,7 +133,8 @@ export type FacilitiesExportContext = {
 };
 export type FacilitiesImportContext = {
   outletKeys?: ReadonlySet<string>;
-  taxRuleKeys?: ReadonlySet<string>;
+  /** Tax item key to its outlet key; null means a tenant-wide rule. */
+  taxRuleOutletKeyByKey?: ReadonlyMap<string, string | null>;
 };
 export type FacilitiesFromTemplate =
   | { ok: true; drafts: FacilitiesConfigDraft[] }
@@ -214,10 +215,21 @@ function fromTemplate(
       if (
         item.kind === "product" &&
         item.taxRuleKey !== null &&
-        ctx.taxRuleKeys &&
-        !ctx.taxRuleKeys.has(item.taxRuleKey)
-      )
-        issue(`taxRuleKey ${item.taxRuleKey} does not exist`);
+        ctx.taxRuleOutletKeyByKey
+      ) {
+        if (!ctx.taxRuleOutletKeyByKey.has(item.taxRuleKey))
+          issue(`taxRuleKey ${item.taxRuleKey} does not exist`);
+        else {
+          const taxOutletKey = ctx.taxRuleOutletKeyByKey.get(item.taxRuleKey);
+          const facility = byKey.get(item.facilityKey);
+          if (
+            taxOutletKey !== null &&
+            facility?.kind === "facility" &&
+            taxOutletKey !== facility.outletKey
+          )
+            issue(`taxRuleKey ${item.taxRuleKey} belongs to another outlet`);
+        }
+      }
     }
     const natural =
       item.kind === "facility"
