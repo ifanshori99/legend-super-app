@@ -232,6 +232,7 @@ export function createDeviceRecordsFetcher(
   // Fail fast on a bad URL when the fetcher is built, as before.
   cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
+  let cloudRejectsRefusals = false;
 
   const pathFor = (
     since: string | null,
@@ -280,10 +281,11 @@ export function createDeviceRecordsFetcher(
       );
       throw new EdgeCloudHttpError("INVALID_RECEIPT_RUN_REPORT");
     }
+    const pendingRefusals = cloudRejectsRefusals ? undefined : refusals;
     try {
       return await cloudGetJson({
         ...options,
-        path: pathFor(since, true, receiptRuns, refusals, true),
+        path: pathFor(since, true, receiptRuns, pendingRefusals, true),
         signal,
       });
     } catch (error) {
@@ -310,7 +312,7 @@ export function createDeviceRecordsFetcher(
       try {
         return await cloudGetJson({
           ...options,
-          path: pathFor(since, true, receiptRuns, refusals),
+          path: pathFor(since, true, receiptRuns, pendingRefusals),
           signal,
         });
       } catch (second) {
@@ -323,16 +325,20 @@ export function createDeviceRecordsFetcher(
       // legend-hfq3z: a request that carried `receiptRefused` first retries
       // without it but keeps `receiptRuns` (a yd0h8 cloud); only a second 400
       // continues into the staged chain below.
-      if (refusals !== undefined && refusals.size > 0) {
+      if (pendingRefusals !== undefined && pendingRefusals.size > 0) {
         logger.warn(
           "cloud refused the receipt run refusal report; retrying the page without it",
         );
         try {
-          return await cloudGetJson({
+          const result = await cloudGetJson({
             ...options,
             path: pathFor(since, true, receiptRuns),
             signal,
           });
+          // Only confirm incompatibility when dropping this one parameter
+          // succeeds; another failing opt-in must not suppress future reports.
+          cloudRejectsRefusals = true;
+          return result;
         } catch (second) {
           if (
             !(second instanceof EdgeCloudHttpError) ||
