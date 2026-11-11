@@ -63,7 +63,6 @@ class CountingRenderer implements MenuPdfRenderer {
   }
 }
 
-const testStartedAt = new Date();
 let staff: Staff;
 const isolatedTenants: IsolatedTenant[] = [];
 const renderer = new CountingRenderer();
@@ -74,6 +73,9 @@ const deps = {
 };
 
 beforeAll(async () => {
+  // Earlier files (menu-import-storage-wire) render a PDF for outlet A and
+  // leave the render row and its stored object behind; start from none.
+  await clearPrintArtifacts();
   staff = await staffWithRole(app, { template: "owner", tenantId });
   // Service calls below use a fixed past clock; the grant must already be valid.
   await owner.query(
@@ -130,6 +132,48 @@ afterAll(async () => {
   for (const t of isolatedTenants) await dropIsolatedTenant(t);
   await cleanupSeededTenant("category_id = $2", [ids.category]);
 });
+/** Delete the printable-menu render rows of the tenant and the PDF objects they
+ *  point at. The object ids are read BEFORE the rows go and the objects are
+ *  deleted AFTER them (the render row references the object). Never by time or
+ *  by "all documents": the DB clock steps back and other files own documents. */
+async function deleteRenderRowsAndObjects(client: {
+  query: (text: string, values?: unknown[]) => Promise<{ rows: unknown[] }>;
+}) {
+  const { rows } = (await client.query(
+    "SELECT object_id FROM printable_menu_renders WHERE tenant_id = $1 AND object_id IS NOT NULL",
+    [tenantId],
+  )) as { rows: { object_id: string }[] };
+  await client.query(
+    "DELETE FROM printable_menu_renders WHERE tenant_id = $1",
+    [tenantId],
+  );
+  await client.query(
+    "DELETE FROM core_storage_objects WHERE tenant_id = $1 AND id = ANY($2)",
+    [tenantId, rows.map((row) => row.object_id)],
+  );
+}
+
+/** Drop the render rows and stored PDFs left by earlier files. Files run
+ *  serially on one DB, so a leftover row would make the "first read" skip
+ *  rendering and a leftover object would break the one-PDF count. */
+async function clearPrintArtifacts() {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    await deleteRenderRowsAndObjects(client);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Remove what this file wrote into the shared seeded tenant so the other
  *  menu suites (latest price list wins, guest menu lists) are not disturbed. */
 async function cleanupSeededTenant(itemFilter: string, params: unknown[]) {
@@ -151,8 +195,8 @@ async function cleanupSeededTenant(itemFilter: string, params: unknown[]) {
       p,
     );
     await client.query(
-      "DELETE FROM price_lists pl WHERE pl.tenant_id = $1 AND NOT EXISTS (SELECT 1 FROM price_list_items i WHERE i.price_list_id = pl.id) AND pl.created_at >= $2",
-      [tenantId, testStartedAt],
+      "DELETE FROM price_lists WHERE tenant_id = $1 AND id = $2",
+      [tenantId, ids.list],
     );
     await client.query(
       `DELETE FROM menu_items WHERE tenant_id = $1 AND (${itemFilter})`,
@@ -161,18 +205,11 @@ async function cleanupSeededTenant(itemFilter: string, params: unknown[]) {
     await client.query("DELETE FROM menu_import_jobs WHERE tenant_id = $1", [
       tenantId,
     ]);
+    // The render rows and the PDFs they point at.
+    await deleteRenderRowsAndObjects(client);
     await client.query(
-      "DELETE FROM printable_menu_renders WHERE tenant_id = $1",
-      [tenantId],
-    );
-    // The PDFs this file stored (purpose `document`, created during the run).
-    await client.query(
-      "DELETE FROM core_storage_objects WHERE tenant_id = $1 AND purpose = 'document' AND created_at >= $2",
-      [tenantId, testStartedAt],
-    );
-    await client.query(
-      "DELETE FROM menu_categories c WHERE c.tenant_id = $1 AND c.created_at >= $2 AND NOT EXISTS (SELECT 1 FROM menu_items m WHERE m.category_id = c.id)",
-      [tenantId, testStartedAt],
+      "DELETE FROM menu_categories WHERE tenant_id = $1 AND id = $2",
+      [tenantId, ids.category],
     );
     await client.query("COMMIT");
   } catch (error) {

@@ -45,8 +45,41 @@ const owner = new Pool({
 });
 const unique = () => randomBytes(4).toString("hex");
 
+/** Published PBJT/PPN rules inserted by makeWorld. They sit in the shared seeded
+ *  tenant with no region, so left behind they match every later bill there
+ *  (tax-api's ORD-03 preview). Removed by id in afterAll. */
+const createdRuleIds: string[] = [];
+
 afterAll(async () => {
-  await owner.end();
+  try {
+    if (createdRuleIds.length > 0) {
+      const client = await owner.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+          [tenantId],
+        );
+        // tax_snapshots reference the rules (tax_snapshots_rule_fk): rows first.
+        await client.query(
+          "DELETE FROM tax_snapshots WHERE tenant_id = $1 AND tax_rule_id = ANY($2)",
+          [tenantId, createdRuleIds],
+        );
+        await client.query(
+          "DELETE FROM tax_rules WHERE tenant_id = $1 AND id = ANY($2)",
+          [tenantId, createdRuleIds],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+  } finally {
+    await owner.end();
+  }
 });
 
 const scopedContext = (): ScopedTenantContext =>
@@ -119,6 +152,7 @@ async function makeWorld(): Promise<World> {
   const periodId = (period: string) =>
     periods.rows.find((row) => row.period === period)!.id;
   const ruleId = randomUUID();
+  createdRuleIds.push(ruleId);
   const publisher = randomUUID();
   await owner.query(
     `INSERT INTO "user" (id, name, email) VALUES ($1, 'Tax line source', $2)`,
@@ -135,6 +169,7 @@ async function makeWorld(): Promise<World> {
     [ruleId, tenantId, `PBJT-LS-${unique()}`.toUpperCase(), publisher],
   );
   const ppnRuleId = randomUUID();
+  createdRuleIds.push(ppnRuleId);
   await owner.query(
     `INSERT INTO tax_rules
        (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
