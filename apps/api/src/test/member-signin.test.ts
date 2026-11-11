@@ -233,6 +233,14 @@ async function whatsAppLogin(client: Client) {
     ),
   );
   expect(delivered.body.data.completed).toBe(1);
+  // The route always requires the person to confirm the masked number
+  // (legend-lnbtp): no session is issued before the bound browser confirms.
+  const confirmed = await client
+    .post(`/api/auth/login-challenges/${issued.body.data.challenge.id}/confirm`)
+    .set(originHeader)
+    .send();
+  expect(confirmed.status).toBeGreaterThanOrEqual(200);
+  expect(confirmed.status).toBeLessThan(300);
   const polled = await client.get(
     `/api/auth/login-challenges/${issued.body.data.challenge.id}`,
   );
@@ -653,6 +661,13 @@ describe("AUTH-01 banned user", () => {
         `MASUK LEGEND ${issued.body.data.codeFormatted}`,
       ),
     );
+    // Confirm too, so the ban (not the missing confirmation) is what refuses.
+    await client
+      .post(
+        `/api/auth/login-challenges/${issued.body.data.challenge.id}/confirm`,
+      )
+      .set(originHeader)
+      .send();
     const polled = await client.get(
       `/api/auth/login-challenges/${issued.body.data.challenge.id}`,
     );

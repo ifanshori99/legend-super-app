@@ -1674,6 +1674,13 @@
       "when": 1794333000000,
       "tag": "0252_wa_retention_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 253,
+      "version": "7",
+      "when": 1794334000000,
+      "tag": "0253_wa_login_auto_account",
+      "breakpoints": true
     }
   ]
 }

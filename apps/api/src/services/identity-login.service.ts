@@ -54,7 +54,13 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { env } from "../config/env";
 import { db } from "../db";
-import { loginChallenges, tenants, tenantIntegrations } from "../db/schema";
+import {
+  loginChallenges,
+  tenants,
+  tenantIntegrations,
+  user,
+  userIdentities,
+} from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { clientIpDigest, loginCodeDigest } from "../lib/identity-digest";
 import { logger } from "../lib/logger";
@@ -152,7 +158,9 @@ function toChallenge(row: ChallengeRow): LoginChallenge {
     // Card w8dfz.1: a completed challenge cancelled at the confirm step keeps
     // its matched user for the audit trail but shows no completion.
     completedAt:
-      row.status === "cancelled" ? null : (row.completedAt?.toISOString() ?? null),
+      row.status === "cancelled"
+        ? null
+        : (row.completedAt?.toISOString() ?? null),
     matchedUserId: row.status === "cancelled" ? null : row.matchedUserId,
     createdAt: row.createdAt.toISOString(),
   });
@@ -593,7 +601,9 @@ export async function pollWhatsAppChallenge(
     return {
       view: loginChallengeViewSchema.parse({
         ...pendingView(toChallenge(row)),
-        ...(row.senderMasked === null ? {} : { senderMasked: row.senderMasked }),
+        ...(row.senderMasked === null
+          ? {}
+          : { senderMasked: row.senderMasked }),
         awaitingConfirmation: true,
       }),
       session: null,
@@ -699,6 +709,60 @@ export async function pollWhatsAppChallenge(
   };
 }
 
+/**
+ * Card lnbtp: "Bukan saya" removes the account this challenge created for a
+ * new sender, but only when nothing ever used it. Any doubt (a session, another
+ * live challenge, a second identity, a role, a member profile, a failed delete)
+ * leaves the account alone. Never called for an account that already existed:
+ * `autoCreatedUserId` is only recorded when the challenge created it.
+ */
+async function removeUnusedAutoAccount(
+  tx: Transaction,
+  challenge: { id: string; autoCreatedUserId: string | null },
+): Promise<boolean> {
+  const userId = challenge.autoCreatedUserId;
+  if (userId === null) return false;
+  // Lock the user row before the in-use check, so a concurrent inbound that
+  // resolved this account (created=false) cannot complete against it after
+  // the check. A missing row means someone already removed it.
+  const locked = await tx.execute(
+    sql`SELECT 1 FROM "user" WHERE id = ${userId} FOR UPDATE`,
+  );
+  if (locked.rows.length === 0) return false;
+  const checked = await tx.execute(sql`
+    SELECT (
+      EXISTS (SELECT 1 FROM "session" WHERE user_id = ${userId})
+      OR EXISTS (SELECT 1 FROM "account" WHERE user_id = ${userId})
+      OR EXISTS (
+        SELECT 1 FROM login_challenges
+         WHERE matched_user_id = ${userId}
+           AND id <> ${challenge.id}::uuid
+           AND status <> 'cancelled')
+      OR EXISTS (SELECT 1 FROM role_assignments WHERE user_id = ${userId} OR assigned_by = ${userId})
+      OR EXISTS (SELECT 1 FROM app.member_profiles_of_user(${userId}))
+      OR (SELECT count(*) FROM user_identities WHERE user_id = ${userId}) <> 1
+      OR NOT EXISTS (
+        SELECT 1 FROM user_identities WHERE user_id = ${userId} AND type = 'whatsapp')
+    ) AS in_use
+  `);
+  if (checked.rows[0]?.in_use !== false) return false;
+  try {
+    // Savepoint: a refused delete (a foreign key we did not foresee) must not
+    // abort the cancel itself.
+    await tx.transaction(async (sp) => {
+      await sp.delete(userIdentities).where(eq(userIdentities.userId, userId));
+      await sp.delete(user).where(eq(user.id, userId));
+    });
+    return true;
+  } catch (error) {
+    logger.warn(
+      { err: error, challengeId: challenge.id },
+      "login cancel: auto-created account kept",
+    );
+    return false;
+  }
+}
+
 /** "Bukan saya": the bound browser cancels its own pending challenge. */
 export async function cancelWhatsAppChallenge(
   challengeId: string,
@@ -745,7 +809,8 @@ export async function cancelWhatsAppChallenge(
       .from(loginChallenges)
       .where(eq(loginChallenges.id, row.id))
       .limit(1);
-    if (current?.sessionIssuedAt) throw new IdentityError("CHALLENGE_NOT_PENDING");
+    if (current?.sessionIssuedAt)
+      throw new IdentityError("CHALLENGE_NOT_PENDING");
   };
   if (cancelContext === null) {
     const flipped = await markCancelled(db);
@@ -754,6 +819,10 @@ export async function cancelWhatsAppChallenge(
   }
   const flippedCount = await withTenant(db, cancelContext, async (tx) => {
     const flipped = await markCancelled(tx);
+    // Only the request that really flipped the row may tidy; a lost race
+    // (session already issued) never reaches the delete.
+    const autoAccountRemoved =
+      flipped.length === 1 && (await removeUnusedAutoAccount(tx, row));
     if (flipped.length === 1)
       await recordLoginAudit(tx, cancelContext, {
         action: "login_challenge.cancelled",
@@ -761,7 +830,11 @@ export async function cancelWhatsAppChallenge(
         details: {
           channel: "whatsapp_inbound",
           status: cancelled.status,
-          cause: "browser_cancelled",
+          // LoginAuditDetails keeps only `cause`; a boolean field would be
+          // redacted, so the removal is recorded in the cause.
+          cause: autoAccountRemoved
+            ? "browser_cancelled_auto_account_removed"
+            : "browser_cancelled",
           linking: row.linkUserId !== null,
         },
         now: new Date(),

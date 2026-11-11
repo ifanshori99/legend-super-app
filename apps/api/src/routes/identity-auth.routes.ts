@@ -100,7 +100,9 @@ loginChallengeRouter.post(
         link: signedIn
           ? { userId: signedIn.user.id, sessionId: signedIn.session.id }
           : null,
-        requireConfirm: body.requireConfirm === true,
+        // Always required (legend-lnbtp): the client value is ignored so a
+        // caller cannot skip the masked-number confirmation.
+        requireConfirm: true,
         ip: req.ip ?? null,
         userAgent: req.get("user-agent") ?? null,
       },
