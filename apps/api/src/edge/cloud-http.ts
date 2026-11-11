@@ -22,6 +22,7 @@ const DEVICE_RECORDS_PATH = "/api/edge-sync/device-records";
 const STAFF_PIN_RECORDS_PATH = "/api/edge-sync/staff-pin-records";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIMIT = 100;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 // Node's fetch honours `cache`, but the Node typings omit it from RequestInit.
 type EdgeRequestInit = RequestInit & { cache: "no-store" };
@@ -39,7 +40,7 @@ export function cloudHttpBaseUrl(linkUrl: string): string {
   throw new Error("EDGE_CLOUD_URL must be a ws:// or wss:// URL");
 }
 
-/** code: HTTP_<status>, TIMEOUT, NETWORK, ABORTED or BAD_JSON. */
+/** Status and local validation codes only; never response or request contents. */
 export class EdgeCloudHttpError extends Error {
   readonly code: string;
 
@@ -59,6 +60,41 @@ export type CloudGetOptions = {
 
 type CloudGetResult =
   { status: 304 } | { status: 200; body: unknown; headers: Headers };
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  // Reject an advertised oversized response before reading it, but also count
+  // the actual bytes: Content-Length can be absent, compressed, or incorrect.
+  const contentLength = response.headers.get("Content-Length");
+  if (
+    contentLength !== null &&
+    /^\d+$/.test(contentLength) &&
+    Number(contentLength) > MAX_RESPONSE_BYTES
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new EdgeCloudHttpError("RESPONSE_TOO_LARGE");
+  }
+  const reader = response.body?.getReader();
+  if (reader === undefined) throw new EdgeCloudHttpError("BAD_JSON");
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new EdgeCloudHttpError("RESPONSE_TOO_LARGE");
+      }
+      chunks.push(chunk.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return JSON.parse(
+    new TextDecoder().decode(Buffer.concat(chunks, bytes)),
+  ) as unknown;
+}
 
 async function cloudGet(
   options: CloudGetOptions & {
@@ -107,10 +143,11 @@ async function cloudGet(
     try {
       return {
         status: 200,
-        body: (await response.json()) as unknown,
+        body: await readBoundedJson(response),
         headers: response.headers,
       };
     } catch (error) {
+      if (error instanceof EdgeCloudHttpError) throw error;
       if (request.signal.aborted) throw error;
       throw new EdgeCloudHttpError("BAD_JSON");
     }
