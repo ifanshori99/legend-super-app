@@ -62,11 +62,13 @@ export function TaxSettingsPage() {
   const [publishError, setPublishError] = React.useState<string>();
 
   const today = businessDateToday();
+  // Archived = discarded drafts (only drafts can be archived); they never took
+  // effect, so the history leaves them out, like the mockup after "Buang draf".
   const rows = React.useMemo(
     () =>
-      [...(settingsQuery.data?.data ?? [])].sort(
-        (a, b) => b.version - a.version,
-      ),
+      (settingsQuery.data?.data ?? [])
+        .filter((row) => row.status !== "archived")
+        .sort((a, b) => b.version - a.version),
     [settingsQuery.data],
   );
   const current = effectiveSettings(rows, today);

@@ -245,6 +245,8 @@ test.describe("legend-woc1 tax rules", () => {
     await expect(page.getByRole("button", { name: /Buang draf/ })).toHaveCount(
       0,
     );
+    // The discarded draft leaves the history (mockup), no "Arsip" version.
+    await expect(page.getByText(/^Arsip/)).toHaveCount(0);
   });
 
   test("empty and error states explain what to do next", async ({ page }) => {

@@ -374,7 +374,12 @@ const STATES = [
         .getByRole("button", { name: "Tetap nonaktifkan" })
         .click();
       await visible(
-        page.getByText("Draf aturan pajak dibuat.", { exact: true }),
+        page
+          .getByText(
+            "Penonaktifan disimpan sebagai draf. Terbitkan agar berlaku.",
+            { exact: true },
+          )
+          .first(),
       );
     },
   },
@@ -451,26 +456,29 @@ const STATES = [
   },
   {
     card: "0frf",
+    // Mockup empty state: an outlet without its own stations. (?mock=empty
+    // has no items at all, which is the item not-found page.)
     name: "empty",
-    path: `/kelola/menu/${ESPRESSO_ID}?mock=empty`,
+    path: `/kelola/menu/${ESPRESSO_ID}?mock=normal`,
     prepare: async (page) => {
-      await visible(heading(page, "Routing stasiun"));
-      await page
-        .getByText("Memuat pengaturan stasiun…")
-        .waitFor({ state: "hidden", timeout: COLD });
-      await page.waitForLoadState("networkidle").catch(() => {});
+      await stationReady(page);
+      await page.getByRole("combobox", { name: "Outlet", exact: true }).click();
+      await page.getByRole("option").nth(1).click(); // outlet without stations
+      await visible(
+        page.getByText(
+          "Belum ada stasiun khusus di outlet ini. Item tetap mengikuti tipe stasiun.",
+        ),
+      );
     },
   },
   {
     card: "0frf",
+    // ?mock=error fails the item itself: the whole editor shows its error
+    // state with "Coba lagi" (mockup replaces the content the same way).
     name: "error",
     path: `/kelola/menu/${ESPRESSO_ID}?mock=error`,
     prepare: async (page) => {
-      await visible(heading(page, "Routing stasiun"));
-      await page
-        .getByText("Memuat pengaturan stasiun…")
-        .waitFor({ state: "hidden", timeout: COLD });
-      await page.waitForLoadState("networkidle").catch(() => {});
+      await visible(page.getByRole("button", { name: "Coba lagi" }).first());
     },
   },
   {
