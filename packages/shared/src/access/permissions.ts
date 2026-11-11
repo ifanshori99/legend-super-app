@@ -188,6 +188,9 @@ const entries = [
   ["crm.loyalty.review", []],
   ["crm.loyalty.fulfil", []],
   ["crm.customer.pii.read", ["customer_pii"]],
+  // legend-7wzy: staff clears a customer's WhatsApp link on this tenant's
+  // profile. A destructive action, so it is not implied by the read permission.
+  ["crm.customer.identity.unlink", ["customer_pii"]],
   ["crm.feedback.manage", []],
   ["promo.manage", []],
   ["campaign.manage", ["customer_pii"]],

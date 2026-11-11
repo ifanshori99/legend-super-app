@@ -472,6 +472,7 @@ const accessBaseMessages = {
       customer: {
         view: "Lihat profil pelanggan",
         pii: { read: "Lihat data pribadi pelanggan" },
+        identity: { unlink: "Putuskan tautan WhatsApp pelanggan" },
       },
       loyalty: {
         manage: "Kelola program loyalitas CRM",

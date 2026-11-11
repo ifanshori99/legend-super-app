@@ -147,6 +147,8 @@ const templates: readonly RoleTemplate[] = [
       "delivery.channel.manage",
       "website.content.manage",
       "crm.consent.record",
+      // legend-7wzy: Owner gets it from the catalog; no other template does.
+      "crm.customer.identity.unlink",
       "ai.governance.manage",
       "mcp.client.manage",
       "ai.ask",
