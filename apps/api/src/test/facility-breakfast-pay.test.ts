@@ -132,7 +132,9 @@ async function orderItemUlids(orderId: string): Promise<string[]> {
  * Breakfast refunds come from the facility, never from the QR channel: the
  * requester is 'system:facility' and the reason text does not mention "QR".
  */
-function expectFacilityRefunds(refunds: { requestedBy: string; reason: string }[]) {
+function expectFacilityRefunds(
+  refunds: { requestedBy: string; reason: string }[],
+) {
   expect(refunds.length).toBeGreaterThan(0);
   for (const refund of refunds) {
     expect(refund.requestedBy).toBe("system:facility");
@@ -850,7 +852,10 @@ async function markFiredAt(orderId: string, offset: string) {
 /** Raw kitchen ticket insert as the owner; resolves to the ticket id or the pg error. */
 async function rawTicket(
   orderId: string,
-): Promise<{ id: string; error: null } | { id: null; error: { code?: string; constraint?: string } }> {
+): Promise<
+  | { id: string; error: null }
+  | { id: null; error: { code?: string; constraint?: string } }
+> {
   const id = randomUUID();
   try {
     await asOwnerTenant(world.tenant.tenantId, (client) =>
@@ -956,7 +961,9 @@ describe("BRK-PAY-07 a breakfast is never sent to the kitchen at or after the ti
 
     // Pressing it again never refunds a second time and never feeds the kitchen.
     const again = await staffFire(world, order.id);
-    expect(again.status, JSON.stringify(again.body)).toBeGreaterThanOrEqual(400);
+    expect(again.status, JSON.stringify(again.body)).toBeGreaterThanOrEqual(
+      400,
+    );
     await expectFullFacilityRefundOnce(intentId, order.totalIdr);
     expect(await kitchenTicketCount(world, order.id)).toBe(0);
     expect(await orderPaidEvents(order.id)).toHaveLength(0);
@@ -996,7 +1003,11 @@ describe("BRK-PAY-07 a breakfast is never sent to the kitchen at or after the ti
 
     // Control: fired one second before ends_at passes both inserts.
     const ok = await newTicket();
-    const { order: okOrder } = await placePaidOrder(world, ok.member, ok.ticketId);
+    const { order: okOrder } = await placePaidOrder(
+      world,
+      ok.member,
+      ok.ticketId,
+    );
     await markFiredAt(okOrder.id, "-1 second");
     const okTicket = await rawTicket(okOrder.id);
     expect(okTicket.error).toBeNull();
