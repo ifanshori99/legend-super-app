@@ -156,10 +156,7 @@ const STATES = [
     name: "re-review",
     run: async (page) => {
       await openQueue(page);
-      await expectText(
-        page,
-        "Perlu ditinjau ulang: ada cuti baru disetujui",
-      );
+      await expectText(page, "Perlu ditinjau ulang: ada cuti baru disetujui");
     },
   },
   {
@@ -219,10 +216,7 @@ const STATES = [
         ([match, value]) => {
           window.__legendMock.failNext(match, value);
         },
-        [
-          DECISION_PATH,
-          { status: 409, code: "ATTENDANCE_LEAVE_NOT_APPROVED" },
-        ],
+        [DECISION_PATH, { status: 409, code: "ATTENDANCE_LEAVE_NOT_APPROVED" }],
       );
       await keepButton(page).click();
       await dialogButton(page, "Tetap cuti").click();
