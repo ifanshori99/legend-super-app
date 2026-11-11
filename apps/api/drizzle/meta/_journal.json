@@ -1870,6 +1870,20 @@
       "when": 1794362000000,
       "tag": "0356_journal_entry_order_id",
       "breakpoints": true
+    },
+    {
+      "idx": 357,
+      "version": "7",
+      "when": 1794363000000,
+      "tag": "0357_supplier_npwp",
+      "breakpoints": true
+    },
+    {
+      "idx": 358,
+      "version": "7",
+      "when": 1794364000000,
+      "tag": "0358_supplier_invoices",
+      "breakpoints": true
     }
   ]
 }

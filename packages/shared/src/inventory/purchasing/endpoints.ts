@@ -72,6 +72,7 @@ import {
   supplierPerformanceSchema,
   supplierRatingSchema,
   supplierSchema,
+  supplierNpwpSchema,
   supplierPhoneSchema,
 } from "./schemas.ts";
 
@@ -150,6 +151,7 @@ export const pettyPurchasePolicyQuerySchema = z.strictObject({
 export const createSupplierInputSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150),
   legalName: z.string().trim().min(1).max(200).nullable().optional(),
+  npwp: supplierNpwpSchema.nullable().optional(),
   contactName: z.string().trim().min(1).max(150).nullable().optional(),
   phone: supplierPhoneSchema.nullable().optional(),
   email: z.email().max(254).nullable().optional(),
@@ -163,6 +165,7 @@ export const createSupplierInputSchema = clientInputSchema({
 export const updateSupplierInputSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150).optional(),
   legalName: z.string().trim().min(1).max(200).nullable().optional(),
+  npwp: supplierNpwpSchema.nullable().optional(),
   contactName: z.string().trim().min(1).max(150).nullable().optional(),
   phone: supplierPhoneSchema.nullable().optional(),
   email: z.email().max(254).nullable().optional(),

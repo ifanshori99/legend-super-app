@@ -46,3 +46,9 @@ SELECT app.enforce_tenant_rls('public.purchasing_idempotency'::regclass);
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.supplier_prices FROM legend_app;
 --> statement-breakpoint
 GRANT UPDATE (is_active) ON TABLE public.supplier_prices TO legend_app;
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.supplier_invoices'::regclass);
+--> statement-breakpoint
+-- Tax records are append-only: the tax reports reconcile against them, so the
+-- application login may insert and read, never change or remove a row.
+REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.supplier_invoices FROM legend_app;

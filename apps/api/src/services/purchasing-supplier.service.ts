@@ -171,6 +171,7 @@ function toSupplier(row: SupplierRow): Supplier {
     tenantId: row.tenantId,
     name: row.name,
     legalName: row.legalName,
+    npwp: row.npwp,
     contactName: row.contactName,
     phone: row.phone,
     email: row.email,
@@ -420,6 +421,7 @@ export async function createSupplier(
     fingerprint: requestFingerprint(operation, actorUserId, {
       name: fields.name,
       legalName: fields.legalName ?? null,
+      npwp: fields.npwp ?? null,
       contactName: fields.contactName ?? null,
       phone: fields.phone ?? null,
       email: fields.email ?? null,
@@ -443,6 +445,7 @@ export async function createSupplier(
             tenantId: context.tenant.tenantId,
             name: fields.name,
             legalName: fields.legalName ?? null,
+            npwp: fields.npwp ?? null,
             contactName: fields.contactName ?? null,
             phone: fields.phone ?? null,
             email: fields.email ?? null,

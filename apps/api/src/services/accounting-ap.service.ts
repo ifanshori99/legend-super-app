@@ -27,6 +27,10 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { legalEntityIdSchema, type OpenItem } from "@starter/shared/accounting";
+import { and, eq } from "drizzle-orm";
+import { journalEntries } from "../db/schema/accounting.ts";
+import { suppliers, supplierInvoices } from "../db/schema/purchasing.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import type { TenantTransaction } from "./accounting-ap-fa-shared.ts";
 import {
@@ -36,6 +40,7 @@ import {
 } from "./accounting-open-items.service.ts";
 
 const positiveIdr = idrSchema.refine((v) => v > 0, "Amount must be > 0");
+const nonnegativeIdr = idrSchema.refine((v) => v >= 0, "Amount must be >= 0");
 
 export const recordSupplierInvoicePayableInputSchema = z.strictObject({
   supplierInvoiceId: uuidSchema,
@@ -49,6 +54,15 @@ export const recordSupplierInvoicePayableInputSchema = z.strictObject({
   dueOn: businessDateSchema,
   /** `payableIdr` of supplier_invoice.recorded (total − PPh 23 withheld). */
   payableIdr: positiveIdr,
+  /**
+   * Tax parts of the invoice (legend-v4v7c): DPP = goods + price variance +
+   * services, PPN input and PPh 23 withheld, as the journal booked them. Give
+   * all three or none; with them the structured `supplier_invoices` row is
+   * written and `payableIdr` must equal DPP + PPN - PPh 23.
+   */
+  dppIdr: nonnegativeIdr.optional(),
+  ppnIdr: nonnegativeIdr.optional(),
+  pph23Idr: nonnegativeIdr.optional(),
   journalEntryId: uuidSchema.nullable(),
   idempotencyKey: idempotencyKeySchema,
 });
@@ -61,7 +75,51 @@ export async function recordSupplierInvoicePayableInTransaction(
   actorId: UserId | null,
 ): Promise<OpenItem> {
   const input = recordSupplierInvoicePayableInputSchema.parse(rawInput);
-  return recordOpenItemInTransaction(
+  const { dppIdr, ppnIdr, pph23Idr } = input;
+  const taxParts = [dppIdr, ppnIdr, pph23Idr];
+  if (taxParts.some((part) => part !== undefined)) {
+    if (dppIdr === undefined || ppnIdr === undefined || pph23Idr === undefined)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "DPP, PPN and PPh 23 must be given together.",
+      );
+    if (dppIdr + ppnIdr - pph23Idr !== input.payableIdr)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "The payable must equal DPP plus PPN minus PPh 23.",
+      );
+  }
+  if (dppIdr !== undefined) {
+    // The tax record points at the invoice journal the tax reports reconcile
+    // against: it must exist for this tenant and legal entity and be a
+    // supplier invoice journal.
+    if (input.journalEntryId === null)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "A supplier invoice with tax parts needs its journal entry.",
+      );
+    const [journal] = await tx
+      .select({ sourceType: journalEntries.sourceType })
+      .from(journalEntries)
+      .where(
+        and(
+          eq(journalEntries.tenantId, context.tenant.tenantId),
+          eq(journalEntries.legalEntityId, input.legalEntityId),
+          eq(journalEntries.id, input.journalEntryId),
+        ),
+      )
+      .limit(1);
+    if (journal?.sourceType !== "supplier_invoice")
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "The journal entry must be a supplier invoice journal of this legal entity.",
+      );
+  }
+  const item = await recordOpenItemInTransaction(
     tx,
     context,
     {
@@ -81,6 +139,70 @@ export async function recordSupplierInvoicePayableInTransaction(
     },
     actorId,
   );
+  if (dppIdr !== undefined && ppnIdr !== undefined && pph23Idr !== undefined) {
+    const [supplier] = await tx
+      .select({ npwp: suppliers.npwp })
+      .from(suppliers)
+      .where(
+        and(
+          eq(suppliers.tenantId, context.tenant.tenantId),
+          eq(suppliers.id, input.supplierId),
+        ),
+      );
+    if (!supplier)
+      throw new HttpError(422, "VALIDATION_ERROR", "Supplier not found.");
+    // A replay of the same command finds its row by id and keeps it, but only
+    // when every amount is the same; a second invoice with the same supplier
+    // and number hits the unique key and fails.
+    const values = {
+      id: input.supplierInvoiceId,
+      tenantId: context.tenant.tenantId,
+      legalEntityId: input.legalEntityId,
+      supplierId: input.supplierId,
+      invoiceNumber: input.invoiceNumber,
+      invoiceDate: input.invoiceDate,
+      dppIdr,
+      ppnIdr,
+      pph23Idr,
+      payableIdr: input.payableIdr,
+      journalEntryId: input.journalEntryId,
+      npwpSnapshot: supplier.npwp,
+    };
+    const [written] = await tx
+      .insert(supplierInvoices)
+      .values(values)
+      .onConflictDoNothing({ target: supplierInvoices.id })
+      .returning({ id: supplierInvoices.id });
+    if (!written) {
+      const [stored] = await tx
+        .select()
+        .from(supplierInvoices)
+        .where(
+          and(
+            eq(supplierInvoices.tenantId, context.tenant.tenantId),
+            eq(supplierInvoices.id, input.supplierInvoiceId),
+          ),
+        );
+      if (
+        !stored ||
+        stored.legalEntityId !== values.legalEntityId ||
+        stored.supplierId !== values.supplierId ||
+        stored.invoiceNumber !== values.invoiceNumber ||
+        stored.invoiceDate !== values.invoiceDate ||
+        stored.dppIdr !== dppIdr ||
+        stored.ppnIdr !== ppnIdr ||
+        stored.pph23Idr !== pph23Idr ||
+        stored.payableIdr !== values.payableIdr ||
+        stored.journalEntryId !== values.journalEntryId
+      )
+        throw new HttpError(
+          409,
+          "CONFLICT",
+          "This supplier invoice was already recorded with other amounts or journal entry.",
+        );
+    }
+  }
+  return item;
 }
 
 export const paySupplierInvoiceInputSchema = z.strictObject({

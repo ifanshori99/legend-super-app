@@ -18,7 +18,7 @@
 // accounts, so the PBJT account holds PBJT only, except for sales posted before
 // the split (all tax in PBJT; their non-PBJT tax is taken out here). An outlet
 // whose tax nets to zero or less is left out.
-// PPh 21 / PPh 23 / PPN have no wired source yet and refuse to generate.
+// PPh 23 and PPN: accounting-tax-source-vat-wht.ts. PPh 21 has no wired source yet and refuses to generate.
 
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -39,6 +39,8 @@ import {
 } from "../db/schema";
 import { TAX_LINE_WARNING_PREFIX } from "./accounting-coretax-xml";
 import type { TenantTransaction } from "./accounting-shared";
+import { pph23Lines, ppnLines } from "./accounting-tax-source-vat-wht";
+import { pph21Lines } from "./accounting-tax-source-pph21";
 
 export type TaxLineSourceArgs = {
   tenantId: string;
@@ -687,8 +689,11 @@ async function pbjtLines(
 
 export const defaultTaxLineSource: TaxLineSource = async (tx, args) => {
   if (args.type === "pbjt") return pbjtLines(tx, args);
+  if (args.type === "pph23") return pph23Lines(tx, args);
+  if (args.type === "ppn") return ppnLines(tx, args);
+  if (args.type === "pph21") return pph21Lines(tx, args);
   throw new AccountingError(
     "TAX_REPORT_SOURCE_UNAVAILABLE",
-    `Sumber data ${args.type.toUpperCase()} belum tersedia.`,
+    `Sumber data ${String(args.type).toUpperCase()} belum tersedia.`,
   );
 };
