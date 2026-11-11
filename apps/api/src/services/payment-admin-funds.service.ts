@@ -121,6 +121,8 @@ async function view(tx: Tx, context: ScopedTenantContext, id: string) {
     outletId: r.outlet_id,
     paymentIntentId: r.payment_intent_id,
     amountIdr: Number(r.amount_idr),
+    reason: r.reason,
+    approvalRef: r.approval_ref,
     resolution: r.resolution,
     resolvedBy: r.resolved_by,
     paymentReference: r.reference,
