@@ -168,7 +168,7 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0317_fiscal_period_transition_fn.sql":
     "sets period_reopen_requests.consumed_at = decided_at on every already approved request (every old approval reopened its period at once, so it is spent; FORCE RLS lifted for that one statement and restored); edits no other column, never inserts or deletes; the close and reopen function bodies UPDATE fiscal_periods status and version and stamp consumed_at at runtime",
   "0318_depreciation_correction_claim.sql":
-    "backfills fixed_asset_correction_claims from the existing depreciation reversals (claimed amount and reversed flag per journal); inserts into the table it creates, edits no existing row; function bodies also write claims and reversals at runtime",
+    "backfills fixed_asset_correction_claims from the existing depreciation reversals (claimed amount and reversed flag per journal); inserts only into the table it creates (FORCE RLS lifted and restored on the three tables it reads), edits no existing row; function bodies also write claims and reversals at runtime",
 };
 
 // Entrypoints that open a database pool but import no data.

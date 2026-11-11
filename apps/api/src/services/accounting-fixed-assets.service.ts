@@ -847,6 +847,10 @@ function groupRepostRows(
  * journal date, the journals of the months taken back, and every month the new
  * schedule posts again up to the horizon (also months that were zero). The new
  * schedule is derived from the state the catch-up and take-back will leave.
+ *
+ * Defense-in-depth: closed periods are always a leading run, so the
+ * later-period rule and the posting trigger already refuse these writes first
+ * (the transaction is atomic); this check only gives the same 409 earlier.
  */
 async function assertRevaluationPeriodsOpen(
   tx: TenantTransaction,

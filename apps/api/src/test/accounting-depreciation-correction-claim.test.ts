@@ -551,13 +551,16 @@ describe("item 3: linking a correction and reversing it exclude each other", () 
       },
     );
 
-    expect(
-      [link, reverse].filter((outcome) => outcome.ok).length,
-      "the correction was linked to a row AND reversed",
-    ).toBeLessThanOrEqual(1);
+    // The first transaction holds the claim row: it must win, the second must
+    // lose with a serialization failure or an integrity refusal.
+    expect(link.ok, "the first transaction must succeed").toBe(true);
+    expect(reverse.ok, "the second transaction must fail").toBe(false);
+    expect(["40001", "23514"]).toContain(
+      reverse.ok ? undefined : reverse.error.code,
+    );
     const linked = (await takenBackThrough(correction)).rows;
     const reversed = await reversalJournals(correction);
-    expect(linked + reversed).toBeLessThanOrEqual(1);
+    expect(linked + reversed).toBe(1);
     // A reversed_at flag without a link, or a link without the flag, is drift.
     expect(await reversedAtCount([april])).toBe(linked);
   });
@@ -578,13 +581,14 @@ describe("item 3: linking a correction and reversing it exclude each other", () 
       { asApp: true, run: (client) => reverseRow(client, april, correction) },
     );
 
-    expect(
-      [reverse, link].filter((outcome) => outcome.ok).length,
-      "the correction was reversed AND linked to a row",
-    ).toBeLessThanOrEqual(1);
+    // The first transaction holds the claim row: it must win, the second must
+    // lose with a serialization failure or an integrity refusal.
+    expect(reverse.ok, "the first transaction must succeed").toBe(true);
+    expect(link.ok, "the second transaction must fail").toBe(false);
+    expect(["40001", "23514"]).toContain(link.ok ? undefined : link.error.code);
     const linked = (await takenBackThrough(correction)).rows;
     const reversed = await reversalJournals(correction);
-    expect(linked + reversed).toBeLessThanOrEqual(1);
+    expect(linked + reversed).toBe(1);
     expect(await reversedAtCount([april])).toBe(linked);
   });
 });

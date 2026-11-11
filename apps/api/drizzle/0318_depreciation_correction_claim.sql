@@ -30,9 +30,17 @@ CREATE TABLE "fixed_asset_correction_claims" (
 	CONSTRAINT "fixed_asset_correction_claims_journal_fk" FOREIGN KEY ("tenant_id","journal_entry_id") REFERENCES "public"."journal_entries"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
--- Backfill before RLS is enforced (the migrator has no tenant context): what
--- the existing reversal rows took back per journal, and the journals that
--- already have a reversal journal.
+-- Backfill: what the existing reversal rows took back per journal, and the
+-- journals that already have a reversal journal. The migrator may be a plain
+-- table owner: FORCE ROW LEVEL SECURITY would apply the tenant policy to it and,
+-- with no app.tenant_id set, raise 42501 (same as 0313/0317). Lift FORCE on the
+-- three tables read here and restore it right after the insert.
+ALTER TABLE public.fixed_asset_depreciation_reversals NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.fixed_asset_depreciations NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.journal_entries NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 INSERT INTO public.fixed_asset_correction_claims (tenant_id, journal_entry_id, claimed_idr, reversed)
 SELECT r.tenant_id, r.journal_entry_id, COALESCE(sum(d.amount_idr), 0),
        EXISTS (
@@ -42,6 +50,12 @@ SELECT r.tenant_id, r.journal_entry_id, COALESCE(sum(d.amount_idr), 0),
   FROM public.fixed_asset_depreciation_reversals r
   JOIN public.fixed_asset_depreciations d ON d.tenant_id = r.tenant_id AND d.id = r.depreciation_id
   GROUP BY r.tenant_id, r.journal_entry_id;
+--> statement-breakpoint
+ALTER TABLE public.journal_entries FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.fixed_asset_depreciations FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.fixed_asset_depreciation_reversals FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.fixed_asset_correction_claims'::regclass);
 --> statement-breakpoint

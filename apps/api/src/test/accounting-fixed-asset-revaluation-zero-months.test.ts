@@ -394,12 +394,14 @@ describe("backdated revaluation also posts the months that were zero under the o
     expect(await unbalancedEntries(entity)).toEqual([]);
   });
 
-  it("ACC-02 a closed month that had no old row but would be written by the new schedule refuses the revaluation 409 PERIOD_CLOSED and writes nothing", async () => {
+  it("ACC-02 a closed month inside the new schedule (no old row there) refuses the revaluation 409 PERIOD_CLOSED, writes nothing and keeps the old schedule", async () => {
     const { entity, machine } = await assetRunThroughOctober(
       "Reval zero months closed new month",
     );
     // July had no depreciation under the old schedule, so no old journal sits
-    // there; the new schedule would still post 1,200,000 into it.
+    // there; the new schedule would still post 1,200,000 into it. This proves
+    // the outcome (409, no partial write, old schedule intact), not which
+    // guard fires: the later-period rule and the DB trigger refuse it too.
     await closePeriod(entity, "2026-07");
     const untouched = await footprint(entity, machine.id);
 
