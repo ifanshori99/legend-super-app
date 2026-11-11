@@ -3582,3 +3582,12 @@ Percobaan pertama `pnpm test` mati karena container Postgres uji hilang di tenga
 Perbaikan test setelah merge (tiap fix menunggu rumah di cabang asal): hris-pii (default v1), data-import-registry (entri 0276), edge-registry-pull (retry tick), worker-notification-adapters, notification contract (tenant_invitation wajib), review-queue flag filter (supervisor biasa hanya lihat bawahan; manajer uji diberi hr.employee.manage outlet), label akses `platform.event_gap.manage` dan `payment.recurring.manage`, Cache-Control via decidePublicCache, role-provisioning idle_in_transaction_session_timeout, hub pengaturan owner tanpa kartu `terms` (Super Admin).
 Biaya sesi (session-usage): total biaya* 12316k, subagent 13, compact 3. parallel-report 30 sesi: rata-rata subagent per agent 3.9.
 Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; second-opinion Codex area ledger/hris/fac07 sebelum gerbang rilis.
+
+## 2026-11-12: 538-G2 payroll HRIS (cabang ws/payroll-engine, worktree .worktrees/payroll-engine)
+
+Sudah: 5 kartu K uang dengan test gagal-dulu lalu lulus (commit 2e6e72fd 7ui6v migrasi 0350 + snapshot; 5c726165 8di9d gross engine + 8xf32 guard periode terkunci; a6ffc093 pf9u7 service charge; a0978de6 sko14 BPJS/THR berversi). Gerbang thread hijau: 7 berkas test terarah 112 lulus, tsc apps/api, eslint dan prettier berkas berubah, `db:generate` "No schema changes".
+Aturan uang yang dibuktikan test: gross di-prorata per hari (floor, tidak pernah > nominal), potongan dipotong sampai net >= 0, potongan BPJS karyawan <= upah, THR <= thrWageIdr, SUM(alokasi service charge) == pool, pool hanya ke run regular entitas dan periode yang cocok, backdate effectiveFrom ke periode terkunci ditolak 409, approver tidak boleh pembuat run.
+Review reviewer (Sonnet): tidak ada cacat berat; tiga celah sedang dibetulkan (prorata, izin + kecocokan run service charge, duplikat employeeId).
+Terbuka untuk CTO/founder: batas jam lembur per hari, status run approved untuk distribusi service charge, alur rapel, cek data `payroll_runs` produksi sebelum migrasi 0350.
+Subagent: total 23, puncak 4 bersamaan; token heavy dipegang satu subagent bergantian. Biaya sesi (session-usage): total biaya* 5171k, compact 0. parallel-report 36 sesi rata-rata subagent per agent 3.7.
+Langkah berikut: review architect (K) dan merge train; push ke origin/ws/payroll-engine bila CTO setuju.
