@@ -162,6 +162,8 @@ export const aiAdminMessages = {
       "Semua token pengguna untuk klien **{client}** akan dicabut. Jumlahnya belum bisa dimuat.",
     users:
       "**{users} pengguna** yang memakai klien ini harus menyetujui akses lagi untuk terhubung.",
+    usersUnknown:
+      "Jumlah pengguna belum bisa dimuat. Semua pengguna klien ini harus menyetujui akses lagi untuk terhubung.",
     allSessions:
       "Semua sesi aplikasi ini berakhir, bukan hanya satu pengguna. Riwayat audit tetap tersedia.",
     reasonLabel: "Alasan pencabutan",

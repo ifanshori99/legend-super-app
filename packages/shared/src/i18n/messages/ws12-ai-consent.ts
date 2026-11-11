@@ -35,7 +35,7 @@ export const aiConsentMessages = {
   signedOutTitle: "Masuk dulu untuk melanjutkan",
   signedOutHint:
     "Anda perlu masuk ke Legend sebelum menyetujui akses. Setelah masuk, Anda kembali ke halaman ini.",
-  signIn: "Masuk",
+  signIn: "Masuk untuk melanjutkan",
   authorizeFailed:
     "Akses belum dapat disetujui. Tidak ada yang berubah; coba lagi.",
   badRedirect:

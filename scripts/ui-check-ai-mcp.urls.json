@@ -1,1 +1,27 @@
-[]
+[
+  { "name": "tanya-ai", "path": "/kelola/tanya-ai" },
+  { "name": "tanya-ai-owner", "path": "/owner/tanya-ai" },
+  { "name": "tanya-ai-loading", "path": "/kelola/tanya-ai?mock=slow" },
+  { "name": "tanya-ai-empty", "path": "/kelola/tanya-ai?mock=empty" },
+  { "name": "tanya-ai-error", "path": "/kelola/tanya-ai?mock=error" },
+  { "name": "tanya-ai-tidak-tersedia", "path": "/kelola/tanya-ai?state=unavailable" },
+  { "name": "tanya-ai-kuota", "path": "/kelola/tanya-ai?state=quota" },
+  { "name": "panduan", "path": "/kelola/tanya-ai/panduan" },
+  { "name": "panduan-error", "path": "/kelola/tanya-ai/panduan?mock=error" },
+  { "name": "aksi-menunggu", "path": "/kelola/tanya-ai/aksi/a1010000-0000-4000-8000-000000000001" },
+  { "name": "aksi-dieksekusi", "path": "/kelola/tanya-ai/aksi/a1010000-0000-4000-8000-000000000004" },
+  { "name": "aksi-ditolak", "path": "/kelola/tanya-ai/aksi/a1010000-0000-4000-8000-000000000005" },
+  { "name": "aksi-tidak-ditemukan", "path": "/kelola/tanya-ai/aksi/a1010000-0000-4000-8000-000000000099" },
+  { "name": "persetujuan-ai", "path": "/kelola/persetujuan/a9c00000-0000-4000-8000-000000000003" },
+  { "name": "consent", "path": "/mcp/consent?client_id=asisten-pembelian&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&state=abc" },
+  { "name": "consent-error", "path": "/mcp/consent?client_id=tidak-dikenal&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&state=abc" },
+  { "name": "consent-tanpa-param", "path": "/mcp/consent" },
+  { "name": "consent-loading", "path": "/mcp/consent?client_id=asisten-pembelian&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&state=abc&mock=slow" },
+  { "name": "admin", "path": "/kelola/pengaturan/mcp-ai" },
+  { "name": "admin-cabut", "path": "/kelola/pengaturan/mcp-ai?state=revoke" },
+  { "name": "admin-error", "path": "/kelola/pengaturan/mcp-ai?mock=error" },
+  { "name": "admin-loading", "path": "/kelola/pengaturan/mcp-ai?mock=slow" },
+  { "name": "pemakaian", "path": "/kelola/pengaturan/mcp-ai/pemakaian?month=2026-11" },
+  { "name": "pemakaian-berhenti", "path": "/kelola/pengaturan/mcp-ai/pemakaian?month=2026-09" },
+  { "name": "pemakaian-kosong", "path": "/kelola/pengaturan/mcp-ai/pemakaian?month=2026-08" }
+]

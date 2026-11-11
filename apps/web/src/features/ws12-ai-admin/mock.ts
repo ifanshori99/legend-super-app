@@ -30,14 +30,14 @@ import {
   type McpClient,
 } from "@starter/shared/ai";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import { idr } from "@starter/shared/core";
+import { idr, userIdSchema } from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 
 /** The tenant admin the mock records as the actor (mock mode only). */
-const ACTOR = cafeLegendAccessFixtures.users.tenantAdmin.id;
+const ACTOR = userIdSchema.parse(cafeLegendAccessFixtures.users.tenantAdmin.id);
 
 /** Same cap as the usage mock, so the budget reads 82% of Rp 5.000.000. */
 const CAP_IDR = 5_000_000;

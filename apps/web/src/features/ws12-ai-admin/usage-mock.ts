@@ -17,6 +17,7 @@ import {
   getAiTenantUsage,
   listAiToolCalls,
   listMcpTokens,
+  mcpTokenIdSchema,
   mcpTokenSummarySchema,
   revokeMcpToken,
   type AiBlockedReason,
@@ -25,7 +26,7 @@ import {
   type McpTokenSummary,
 } from "@starter/shared/ai";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import { idr } from "@starter/shared/core";
+import { idr, userIdSchema } from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
@@ -201,10 +202,10 @@ function seedTokens(): McpTokenSummary[] {
   const second = fixtures.mcpTokens[0]!;
   const financeUser = cafeLegendAccessFixtures.users.finance;
   summaries.push({
-    id: "a1070000-0000-4000-8000-000000000099",
+    id: mcpTokenIdSchema.parse("a1070000-0000-4000-8000-000000000099"),
     tenantId: second.tenantId,
     clientId: second.clientId,
-    userId: financeUser.id,
+    userId: userIdSchema.parse(financeUser.id),
     tokenPrefix: "mcp_k9L8m7N6",
     scopes: ["mcp:sales:read"],
     expiresAt: iso(2 * HOUR),

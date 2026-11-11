@@ -27,7 +27,7 @@ export function useTenantUsage(month: string) {
 /** Every token of the tenant, active or not, so the list can show its state. */
 export function useTenantTokens() {
   return useInfiniteQuery(
-    tenantTokensQuery({ scope: "tenant", includeInactive: true, limit: 50 }),
+    tenantTokensQuery({ scope: "tenant", includeInactive: "true", limit: 50 }),
   );
 }
 

@@ -34,16 +34,28 @@ export function RevokeClientDialog({
   impact: RevokeImpact | null;
   onClose: () => void;
 }) {
+  // Lives here, not in the body, so Esc and outside clicks cannot close the
+  // dialog while the revoke is in flight: the admin must see the confirmation.
+  const revoke = useRevokeClient();
+  const close = () => {
+    revoke.reset();
+    onClose();
+  };
   return (
     <Dialog
       open={client !== null}
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open && !revoke.isPending) close();
       }}
     >
       <DialogContent>
         {client !== null && (
-          <RevokeBody client={client} impact={impact} onClose={onClose} />
+          <RevokeBody
+            client={client}
+            impact={impact}
+            revoke={revoke}
+            onClose={close}
+          />
         )}
       </DialogContent>
     </Dialog>
@@ -53,19 +65,22 @@ export function RevokeClientDialog({
 function RevokeBody({
   client,
   impact,
+  revoke,
   onClose,
 }: {
   client: McpClient;
   impact: RevokeImpact | null;
+  revoke: ReturnType<typeof useRevokeClient>;
   onClose: () => void;
 }) {
   const t = useT();
-  const revoke = useRevokeClient();
   const [reason, setReason] = React.useState("");
   const [touched, setTouched] = React.useState(false);
-  // The counts shown when the dialog opened stay on screen after success, even
-  // though the token list refreshes underneath.
-  const [shownImpact] = React.useState(impact);
+  // The first known counts stay on screen after success, even though the token
+  // list refreshes underneath. Counts that arrive late are locked once.
+  const [lockedImpact, setLockedImpact] = React.useState(impact);
+  if (lockedImpact === null && impact !== null) setLockedImpact(impact);
+  const shownImpact = lockedImpact ?? impact;
   const name = plain(client.name);
 
   const reasonError =
@@ -125,14 +140,18 @@ function RevokeBody({
                 }
               />
             </p>
-            {(shownImpact === null || shownImpact.users > 0) && (
-              <p>
-                <RichText
-                  text={t("aiAdmin.revoke.users", {
-                    users: shownImpact?.users ?? 0,
-                  })}
-                />
-              </p>
+            {shownImpact === null ? (
+              <p>{t("aiAdmin.revoke.usersUnknown")}</p>
+            ) : (
+              shownImpact.users > 0 && (
+                <p>
+                  <RichText
+                    text={t("aiAdmin.revoke.users", {
+                      users: shownImpact.users,
+                    })}
+                  />
+                </p>
+              )
             )}
             <p>{t("aiAdmin.revoke.allSessions")}</p>
           </div>

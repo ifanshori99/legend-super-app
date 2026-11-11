@@ -4,7 +4,7 @@
 // sourced, labelled "Dibantu AI", type in progressively, and can be stopped.
 import * as React from "react";
 import { History, Trash2 } from "lucide-react";
-import type { AiMessage } from "@starter/shared/ai";
+import type { AiConversationId, AiMessage } from "@starter/shared/ai";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -119,8 +119,8 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
     revealing ? revealKey : null,
   );
 
-  const block = chatBlock(usage.data);
-  const quota = featureQuota(usage.data);
+  const block = chatBlock(usage.data?.data);
+  const quota = featureQuota(usage.data?.data);
   const bannerKind: BannerKind | null = failure
     ? failure.kind
     : !online
@@ -152,7 +152,9 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
         body: {
           feature: CHAT_FEATURE,
           question: trimmed,
-          ...(conversationId ? { conversationId } : {}),
+          ...(conversationId
+            ? { conversationId: conversationId as AiConversationId }
+            : {}),
         },
         signal: abort.signal,
       },

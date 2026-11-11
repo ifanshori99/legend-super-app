@@ -40,6 +40,28 @@ export function parseConsentQuery(search: string): ConsentQuery | null {
   return picked as ConsentQuery;
 }
 
+/** sessionStorage key holding the raw consent search while the person signs in. */
+export const CONSENT_RESUME_KEY = "legend.mcpConsent.resume";
+
+/**
+ * True when the page was opened as the return from sign-in: `resume=1` and no
+ * `client_id` (the OAuth query itself waits in sessionStorage).
+ */
+export function isResumeSearch(search: string): boolean {
+  const params = new URLSearchParams(
+    search.startsWith("?") ? search.slice(1) : search,
+  );
+  return params.get("resume") === "1" && !params.has("client_id");
+}
+
+/**
+ * The short return path handed to sign-in. The real consent URL is longer than
+ * the 300 characters the sign-in return rule allows.
+ */
+export function buildResumeReturnPath(): string {
+  return "/mcp/consent?resume=1";
+}
+
 // A redirect_uri may be a custom scheme (native MCP clients), but never a
 // scheme that runs code in this page.
 const SCRIPT_SCHEMES = new Set(["javascript:", "data:", "vbscript:"]);

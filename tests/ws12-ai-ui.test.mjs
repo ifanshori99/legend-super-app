@@ -17,8 +17,11 @@ import { ApiError } from "../apps/web/src/lib/api/errors.ts";
 import { classifyAskError } from "../apps/web/src/features/ws12-ai-chat/logic.ts";
 import { actionStatusView } from "../apps/web/src/features/ws12-ai-action/logic.ts";
 import {
+  CONSENT_RESUME_KEY,
   buildAuthorizeBody,
   buildDenyRedirect,
+  buildResumeReturnPath,
+  isResumeSearch,
   parseConsentQuery,
 } from "../apps/web/src/features/ws12-ai-consent/logic.ts";
 import {
@@ -84,11 +87,17 @@ describe("classifyAskError (P1)", () => {
 
   test("any 503 is unavailable", () => {
     assert.equal(classifyAskError(err(503, "UNKNOWN")), "unavailable");
-    assert.equal(classifyAskError(err(503, "SERVICE_UNAVAILABLE")), "unavailable");
+    assert.equal(
+      classifyAskError(err(503, "SERVICE_UNAVAILABLE")),
+      "unavailable",
+    );
   });
 
   test("non-ApiError (network failure) is unavailable", () => {
-    assert.equal(classifyAskError(new TypeError("Failed to fetch")), "unavailable");
+    assert.equal(
+      classifyAskError(new TypeError("Failed to fetch")),
+      "unavailable",
+    );
     assert.equal(classifyAskError(new Error("boom")), "unavailable");
     assert.equal(classifyAskError("offline"), "unavailable");
     assert.equal(classifyAskError(null), "unavailable");
@@ -161,7 +170,9 @@ describe("parseConsentQuery (P4)", () => {
 
   test("keeps only present keys", () => {
     assert.deepEqual(
-      parseConsentQuery("?client_id=abc&redirect_uri=https%3A%2F%2Fa.test%2Fcb"),
+      parseConsentQuery(
+        "?client_id=abc&redirect_uri=https%3A%2F%2Fa.test%2Fcb",
+      ),
       { client_id: "abc", redirect_uri: "https://a.test/cb" },
     );
   });
@@ -186,7 +197,10 @@ describe("parseConsentQuery (P4)", () => {
   });
 
   test("null when client_id or redirect_uri is missing", () => {
-    assert.equal(parseConsentQuery("?redirect_uri=https%3A%2F%2Fa.test%2Fcb"), null);
+    assert.equal(
+      parseConsentQuery("?redirect_uri=https%3A%2F%2Fa.test%2Fcb"),
+      null,
+    );
     assert.equal(parseConsentQuery("?client_id=abc"), null);
     assert.equal(parseConsentQuery("?state=xyz&scope=ai.ask"), null);
   });
@@ -202,6 +216,43 @@ describe("parseConsentQuery (P4)", () => {
   test("null for an empty search string", () => {
     assert.equal(parseConsentQuery(""), null);
     assert.equal(parseConsentQuery("?"), null);
+  });
+});
+
+describe("parseConsentQuery keeps OAuth values exactly (P4)", () => {
+  const base = "?client_id=a&redirect_uri=https%3A%2F%2Fx.test%2Fcb";
+  for (const state of ["12345678901234567890", "1e5", "null", "%22x%22"]) {
+    test(`state=${state} is not re-serialised`, () => {
+      const q = parseConsentQuery(`${base}&state=${state}`);
+      assert.equal(q.state, decodeURIComponent(state));
+    });
+  }
+});
+
+describe("consent resume helpers (P4)", () => {
+  test("storage key and return path are fixed", () => {
+    assert.equal(CONSENT_RESUME_KEY, "legend.mcpConsent.resume");
+    assert.equal(buildResumeReturnPath(), "/mcp/consent?resume=1");
+  });
+
+  test("return path fits the 300 character sign-in rule", () => {
+    assert.ok(buildResumeReturnPath().length <= 300);
+  });
+
+  test("isResumeSearch is true for resume=1 without client_id", () => {
+    assert.equal(isResumeSearch("?resume=1"), true);
+    assert.equal(isResumeSearch("resume=1"), true);
+  });
+
+  test("isResumeSearch is false for other searches", () => {
+    assert.equal(isResumeSearch(""), false);
+    assert.equal(isResumeSearch("?resume=0"), false);
+    assert.equal(isResumeSearch("?resume=true"), false);
+    assert.equal(
+      isResumeSearch("?resume=1&client_id=a&redirect_uri=https%3A%2F%2Fx.test"),
+      false,
+    );
+    assert.equal(isResumeSearch("?client_id=a"), false);
   });
 });
 
@@ -345,7 +396,10 @@ describe("mcpTokenState (P5)", () => {
       "active",
     );
     assert.equal(
-      mcpTokenState({ expiresAt: "2027-01-01T00:00:00.000Z", revokedAt: null }, now),
+      mcpTokenState(
+        { expiresAt: "2027-01-01T00:00:00.000Z", revokedAt: null },
+        now,
+      ),
       "active",
     );
   });
