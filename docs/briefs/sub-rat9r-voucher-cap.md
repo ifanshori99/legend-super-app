@@ -102,3 +102,21 @@ Rumus tetap `credit = min(-difference, max(0, P - voucher rantai - refund hidup 
    ekspektasi salah menurut desain, laporkan, jangan ubah diam-diam.
 6. Di luar cakupan (catat saja): refund kasir POS (`refundPosOrder`) mengabaikan
    voucher.
+
+## Update test lama setelah implementasi (WIP e34b8a69, tsc bersih)
+
+Run 5 file: 37 lulus, 10 gagal; semua karena aturan Q25 menggantikan angka lama.
+
+1. `order-recovery-refund-swap-cap.test.ts` (fwe4l), 9 test promo: kopi dibayar
+   8.085 (`KOPI_REFUND`), selisih daftar 20.000, jadi voucher = 8.085 dan refund
+   pengganti = 0 (tidak ada baris refund, `nothing_left`; ledger tetap +7.000
+   lewat jalur k0ub4). Ganti ekspektasi `SWAP_CAP`/`KOPI_PRICE - AIR_PRICE` di test
+   promo ke aturan baru; invarian jadi `voucher + refund <= 8.085`. Rantai
+   kopi -> teh -> air: voucher pertama 8.085, kedua 0 (tidak dimint). Test tanpa
+   promo (5.775) tetap. Header file: catat bahwa Q25 mengganti angka fwe4l.
+   Bila sebuah test kehilangan makna (cap fwe4l tidak lagi tercapai di promo),
+   pertahankan cakupan cap fwe4l dengan skenario yang voucher-nya tidak
+   menghabiskan nilai dibayar, bila fixture memungkinkan; bila tidak, laporkan.
+2. `order-recovery-swap-voucher-paid-cap.test.ts` rat9r 3 "contoh founder": setelah
+   refund 0 (`nothing_left`) lapor ulang ditolak 409 CONFLICT. Itu benar (tidak
+   ada uang tersisa). Ubah test: harapkan 409 dan tidak ada refund baru.
