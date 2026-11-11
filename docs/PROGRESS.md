@@ -1298,3 +1298,14 @@ Antre:
 Akun: Claude #1 limit s/d 14:40; #2 hindari s/d 13 Nov 06:00; #3 7d 90% (dipakai, Q28 laju penuh). Codex #2/#4/#5 ada, #3 5h 93%.
 Disk 28,2 GB (< 30). Jangan hapus volume Docker.
 - 11 Nov 17:25 CTO: G1ve0 (ledger 503) tertidur saat gate final 15:42, perubahan belum di-commit di .worktrees/ledger-guards-fixes (detached df7bb5ce). Dibangunkan: cek hasil gate, commit, push HEAD:ws/ledger-guards, architect xhigh, lapor. Gerbang UI Q44-Q54 lolos 17:20 (11 kartu). Slot Claude tidak diisi: #1 5h 69% (reset 19:40) dengan 3 thread jalan, #2 7d 92%, #3 7d 96%. Codex tidak ada area menunggu second-opinion. Cron sekali 19:43 untuk isi slot setelah reset.
+
+## 12 Nov 00:50 — serah terima CTO (S30:P9mkl:G74r1 -> CTO baru)
+- Batch48h selesai: milestone/m1 7917440a (12 cabang, migrasi 0260-0278).
+- Malam 11 Nov: Codex engineer pengganti (founder Q64) menyelesaikan 5 cabang; review architect xhigh berjalan di thread G82h6 (brief 531, satu ronde, 5 architect paralel).
+- Batch48i (maks 7, setelah 531 bersih/fix): ws01-identity 38aa8604, hris-manager-backfill 2245f6ba, edge-catalog-fresh e38a3fdc, breakfast-pay c7a57878, ws05-pay-admin a4dae5fb, pos-refund-ceilings 6c4a4e04, test-infra-flakes e796420a. Batch48j: edge-promo-streams d47d35f9 (migrasi 0333-0334).
+- Gerbang UI founder lolos: Q58 ubah atasan, Q60 bayar sarapan, Q61 banner katalog.
+- Keputusan founder: Q62 boot offline tanpa bukti usia = jual jalan + peringatan + alarm owner, promo/voucher mati; Q63 batas refund Supervisor <=200rb, manajer outlet <=1jt, GM <=5jt, di atasnya owner, kumulatif semua jalur; Q66 voucher/promo berkuota hanya online; Q67 refund di kasir offline ditolak sampai pusat.
+- Kartu baru: weuo2 (antrean refund sistem gagal), ecr16 (rekonsiliasi refund edge lama), qrfv8 selesai di cabang, xu9he/3mgje selesai di cabang.
+- Aturan hemat baru (TEAM.md "Hemat waktu dan token", cto.md "Hemat konteks CTO"). Analisis: RETRO.md "Retro 22:43".
+- Biaya sesi CTO lama: 9,8M token s/d 23:00.
+- Langkah berikut: tunggu laporan G82h6 -> fix temuan (engineer Sonnet, satu putaran) -> merge train batch48i -> Codex SO WS-01/WS-05 gabungan sebelum rilis. Brief 529 (uji rtk + graphify) dimulai 00:52 bila #1 5h <70%.
