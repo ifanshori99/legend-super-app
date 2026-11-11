@@ -3351,3 +3351,11 @@ Langkah berikut CTO baru:
 - B3: kuota dan anggaran di edge disimpan sebagai max(cloud, hitungan lokal) sehingga constraint uses_total <= quota_total tidak macet.
 - B4: skrip rollback 0333-0334 `apps/api/scripts/rollback-0333-0334-edge-promo-streams.sql`. Stream voucher hanya-aktif belum dikerjakan (dicatat di runbook).
 - Bukti: gagal-dulu 12 test, sesudah fix 8 berkas test terarah lulus, tsc API exit 0, eslint dan prettier berkas berubah hijau.
+
+## 533c P2: status incomplete promo lintas retry (ws/edge-promo-streams, tingkat K, uang)
+
+- Temuan second-opinion Codex: retry tanpa halaman (offline atau HTTP error) memanggil `completePromoCatalogStream` dan membuka lagi gate promo di memori walau checkpoint tersimpan (epoch `PROMO_INVALIDATED_AT`) menandai sync multi-halaman sebelumnya belum selesai. Snapshot promo setengah jadi (sebagian halaman) bisa dipakai menjual.
+- Fix: `loadCatalogCheckpoint` mengembalikan `{ cursor, unfinished }`; catch tanpa halaman hanya membuka gate bila checkpoint tersimpan terbukti lengkap. Checkpoint tidak terbaca = tertutup (fail closed). Hanya sync yang sampai akhir (tanpa backlog) membuka lagi. Pembacaan checkpoint dipindah sebelum throw `blockedBy` agar stream voucher yang diblokir tetap benar.
+- Kontrol brief 533 B2 tetap lulus: kegagalan fetch murni dengan checkpoint lengkap membiarkan promo tanpa kuota hidup sampai 24 jam.
+- Test gagal-dulu (2 gagal, 4 kontrol dan restart lulus): `edge-promo-stream-offline.test.ts` blok 533c P2. Diskon yang dihitung lewat gate tidak pernah lebih dari promo yang berlaku (0 selama sync belum selesai, Rp20.000 sesudah selesai). Catatan: setelah sync parsial, mesin promo tanpa gate pun mengembalikan 0 (status pending di memori), jadi precondition memakai baris database.
+- Batas yang diketahui (reviewer, rendah): dua pull bersamaan pada stream yang sama di satu proses masih bisa membuka gate di atas snapshot parsial bila pembacaan checkpoint tidak di bawah kunci stream; halaman pertama yang ditolak menutup promo sampai sync penuh berikutnya (sudah begitu sebelum fix, hanya memori yang kini ikut). Tidak ada test untuk kegagalan `loadCatalogCheckpoint` di puller.

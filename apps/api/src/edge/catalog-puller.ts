@@ -188,16 +188,23 @@ function isCurrentCursor(cursor: string): boolean {
   }
 }
 
-/** No row yet (first boot) or a cursor of another tag is null: pull from the start. */
+/**
+ * No row yet (first boot) or a cursor of another tag gives a null cursor: pull
+ * from the start. `unfinished` is true when the row was closed by an earlier
+ * promo sync that did not reach its end (epoch success time).
+ */
 async function loadCatalogCheckpoint(
   database: Database,
   context: ScopedTenantContext,
   edgeNodeId: string,
   stream: CatalogSyncStream,
-): Promise<string | null> {
+): Promise<{ cursor: string | null; unfinished: boolean }> {
   const [row] = await withTenant(database, context, (tx) =>
     tx
-      .select({ watermark: edgePullCheckpoints.watermark })
+      .select({
+        watermark: edgePullCheckpoints.watermark,
+        lastSuccessAt: edgePullCheckpoints.lastSuccessAt,
+      })
       .from(edgePullCheckpoints)
       .where(
         and(
@@ -208,7 +215,13 @@ async function loadCatalogCheckpoint(
       .limit(1),
   );
   const watermark = row?.watermark ?? null;
-  return watermark !== null && isCurrentCursor(watermark) ? watermark : null;
+  return {
+    cursor: watermark !== null && isCurrentCursor(watermark) ? watermark : null,
+    unfinished:
+      isPromoStream(stream) &&
+      row !== undefined &&
+      row.lastSuccessAt.getTime() === PROMO_INVALIDATED_AT.getTime(),
+  };
 }
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -714,6 +727,9 @@ export async function pullCatalog(
     let error: CatalogStreamError | undefined;
     // True once the cloud answered with a page (before it is validated).
     let pageReceived = false;
+    // Proven complete only once the stored checkpoint was read and does not
+    // mark an unfinished promo sync; unknown counts as unfinished (fail closed).
+    let storedComplete = !isPromoStream(stream);
     const blockedBy = (PARENT_STREAMS[stream] ?? []).find((parent) =>
       failed.has(parent),
     );
@@ -724,14 +740,15 @@ export async function pullCatalog(
       // the 24 h limit. A page that arrives and is then rejected closes the
       // checkpoint (catch below); a page with more to come closes it in the
       // same commit as the page (see pullStream).
-      if (blockedBy !== undefined)
-        throw new CatalogParentFailedError(blockedBy);
       const stored = await loadCatalogCheckpoint(
         database,
         options.context,
         options.edgeNodeId,
         stream,
       );
+      storedComplete = !stored.unfinished;
+      if (blockedBy !== undefined)
+        throw new CatalogParentFailedError(blockedBy);
       await pullStream(
         {
           ...options,
@@ -742,7 +759,7 @@ export async function pullCatalog(
           },
         },
         stream,
-        stored,
+        stored.cursor,
         progress,
       );
       if (!progress.backlog)
@@ -755,11 +772,14 @@ export async function pullCatalog(
       if (!pageReceived) {
         // Transport failure with no page: the stream is as it was, so the
         // in-memory pending mark must not close it (capped promos are refused
-        // by the promo engine at an edge regardless).
-        completePromoCatalogStream(
-          catalogCheckpointStream(stream),
-          promoGeneration,
-        );
+        // by the promo engine at an edge regardless). Only when the stored
+        // checkpoint is proven complete: an earlier unfinished promo sync (or
+        // an unreadable checkpoint) keeps the mark until a sync reaches its end.
+        if (storedComplete)
+          completePromoCatalogStream(
+            catalogCheckpointStream(stream),
+            promoGeneration,
+          );
       } else if (isPromoStream(stream)) {
         // A page arrived and was rejected or failed to apply: close the
         // checkpoint durably (kept cursor, epoch success time) and keep the

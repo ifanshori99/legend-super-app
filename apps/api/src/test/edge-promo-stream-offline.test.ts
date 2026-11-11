@@ -49,7 +49,11 @@ import {
   it,
 } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import { encodeCursor, outletIdSchema } from "@starter/shared/core";
+import {
+  decodeCursor,
+  encodeCursor,
+  outletIdSchema,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -544,5 +548,239 @@ describe("533 B3 quota and budget lowered in the cloud below local use", () => {
       quota_total: 200,
     });
     expect(await engineDiscount(quotaItem)).toBe(DISCOUNT);
+  });
+});
+
+// brief 533c P2 (money, tier K): the money risk is the promo gate opening on an
+// UNFINISHED multi-page promo snapshot (some pages applied, others not: e.g. a
+// promo being replaced, old one not yet ended, new one already active). A
+// retry that gets NO page at all (cloud unreachable) must not "complete" the
+// stream: the gate stays closed, no order gets a discount from the unfinished
+// snapshot, and the discount never exceeds the promo in force (Rp20,000, A),
+// until a full sync reaches the end.
+//
+// Assumptions (the brief is silent), each easy to change:
+//  - The records are built from a real cloud page (shape) and edited. Promo A
+//    (Rp20,000 on the quoted item) is in force from the first sync. The second
+//    sync has two pages with harmless unrelated changes: new promos C and D on
+//    other items. The pull is truncated after page 1 (maxPages 1), so A alone
+//    still gives Rp20,000 in the unguarded engine, but the sync is unfinished.
+//    (Not about stacking: the test does not depend on A and B combining.)
+//  - "Re-read fails" = the gate's own database handle throws on every call
+//    while it is broken (the quote path reads the edge database directly).
+//  - While the sync is unfinished, the guarded discount must be 0 (closed),
+//    and at no moment above Rp20,000.
+describe("533c P2 a partial promo sync is never completed by a retry that gets no page", () => {
+  const PROMO = 20_000;
+  const LINE = 100_000;
+  const promoA = randomUUID();
+  const promoC = randomUUID();
+  const promoD = randomUUID();
+
+  async function cloudHistory(): Promise<Rec[]> {
+    const source = ((await page("promotions")).records as Rec[]).find(
+      (record) => record.id === openId,
+    )!;
+    const base = BigInt(String(source.syncTxid));
+    const record = (
+      id: string,
+      name: string,
+      item: string,
+      group: string,
+      txid: bigint,
+    ): Rec => ({
+      ...source,
+      id,
+      name,
+      status: "active",
+      stackGroup: group,
+      conditions: [
+        { kind: "item_quantity", menuItemIds: [item], minQuantity: 1 },
+      ],
+      benefit: { kind: "nominal_off", amountIdr: PROMO },
+      syncTxid: String(txid),
+    });
+    return [
+      record(promoA, "Promo A", openItem, "grp_a", base + 10n),
+      record(promoC, "Promo C", randomUUID(), "grp_c", base + 20n),
+      record(promoD, "Promo D", randomUUID(), "grp_d", base + 21n),
+    ];
+  }
+
+  /** Serves the records newer than the cursor, `size` per page. */
+  const serve =
+    (records: Rec[], size: number) =>
+    async (stream: string, since: string | null) => {
+      // The promo gate needs a fresh checkpoint on BOTH streams, so every full
+      // sync pulls promotions and vouchers; vouchers come from the real cloud.
+      if (stream === "vouchers") return page("vouchers", since ?? undefined);
+      const floor = since ? BigInt(String(decodeCursor(since)[1])) : -1n;
+      const rest = records.filter(
+        (record) => BigInt(String(record.syncTxid)) > floor,
+      );
+      const chunk = rest.slice(0, size);
+      const last = chunk[chunk.length - 1];
+      return {
+        protocolVersion: CATALOG_PROTOCOL_VERSION,
+        stream,
+        records: chunk,
+        nextCursor: last
+          ? encodeCursor(["cat2", String(last.syncTxid), String(last.id)])
+          : since,
+        hasMore: rest.length > chunk.length,
+      };
+    };
+
+  const quoteTotal = (port: typeof orderPromoPort) =>
+    withTenant(edge.database, scope("device"), async (tx) =>
+      Number(
+        (
+          await port.quote(tx, scope("device"), {
+            outletId: outletIdSchema.parse(outletId),
+            channel: "dine_in",
+            lines: [
+              {
+                menuItemId: openItem as never,
+                quantity: 1,
+                unitPriceIdr: LINE as never,
+                lineTotalIdr: LINE as never,
+              },
+            ],
+            customer: null,
+            voucherCode: null,
+            at: new Date(),
+          })
+        ).totalDiscountIdr,
+      ),
+    );
+  const orderDiscount = () => quoteTotal(guarded);
+  /** Promotions the edge database holds as active, among A, C and D. */
+  const appliedPromos = async () => {
+    const rows = await edge.owner.query<{ id: string }>(
+      "SELECT id FROM promotions WHERE status = 'active' AND id = ANY($1::uuid[])",
+      [[promoA, promoC, promoD]],
+    );
+    return rows.rows.map((row) => row.id).sort();
+  };
+  const sortedIds = (...ids: string[]) => [...ids].sort();
+  const streamError = (result: Awaited<ReturnType<typeof pull>>) =>
+    result.streams["promotions" as keyof typeof result.streams]?.error;
+
+  /** Gate whose own database reads can be made to fail. */
+  let readsBroken = false;
+  async function openFlakyGate() {
+    setPromoGateEdgeModeForTests(() => true);
+    gate?.stop();
+    const flaky = new Proxy(edge.database, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (readsBroken && typeof value === "function") {
+          return () => {
+            throw new Error("Edge database read failed");
+          };
+        }
+        return value;
+      },
+    });
+    gate = startPromoGate({
+      context: scope("device"),
+      edgeNodeId: nodeId,
+      database: flaky as typeof db,
+      clock: { now: () => new Date(), elapsedTimeUnproven: () => false },
+    });
+    await gate.refresh();
+  }
+
+  /** A is in force and fresh; then a two-page sync (C, D) stops after page 1. */
+  async function startWithUnfinishedSync(open: () => Promise<void>) {
+    const cloud = await cloudHistory();
+    expect(
+      streamError(await pull(serve(cloud.slice(0, 1), 10))),
+    ).toBeUndefined();
+    await open();
+    expect(await orderDiscount()).toBe(PROMO);
+    const partial = await pull(serve(cloud, 1), ["promotions"], 1);
+    expect(partial.backlog).toBe(true);
+    // Precondition: the unfinished sync is really stored (A and C applied, D
+    // missing; an unguarded quote is not usable here, the engine itself is
+    // closed while the stream is pending), so the guarded gate must be closed.
+    expect(await appliedPromos()).toEqual(sortedIds(promoA, promoC));
+    expect(await orderDiscount()).toBe(0);
+    return cloud;
+  }
+
+  afterEach(() => {
+    readsBroken = false;
+  });
+
+  it("after a partial sync, retries with no page keep the gate closed (cached, refreshed and repeated); a full sync reopens it with only the promo in force", async () => {
+    const cloud = await startWithUnfinishedSync(openGate);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(streamError(await offlinePull())).toBeDefined();
+      // No refresh yet: the cached state must already be closed.
+      expect(await orderDiscount()).toBe(0);
+      await gate!.refresh();
+      expect(await orderDiscount()).toBe(0);
+    }
+    expect(await appliedPromos()).toEqual(sortedIds(promoA, promoC));
+    const done = await pull(serve(cloud, 1));
+    expect(streamError(done)).toBeUndefined();
+    expect(done.backlog).toBeFalsy();
+    await gate!.refresh();
+    expect(await orderDiscount()).toBe(PROMO);
+    expect(await appliedPromos()).toEqual(sortedIds(promoA, promoC, promoD));
+  });
+
+  it("when the gate cannot re-read the checkpoint after the failed retry it stays closed, and reopens only after a full sync", async () => {
+    const cloud = await startWithUnfinishedSync(openFlakyGate);
+    expect(streamError(await offlinePull())).toBeDefined();
+    readsBroken = true;
+    await gate!.refresh().catch(() => undefined);
+    expect(await orderDiscount()).toBe(0);
+    readsBroken = false;
+    expect(await orderDiscount()).toBe(0);
+    await gate!.refresh();
+    expect(await orderDiscount()).toBe(0);
+    expect(streamError(await pull(serve(cloud, 1)))).toBeUndefined();
+    await gate!.refresh();
+    expect(await orderDiscount()).toBe(PROMO);
+  });
+
+  it("a gate restarted after the failed retry (new process) still sees the unfinished sync and stays closed", async () => {
+    const cloud = await startWithUnfinishedSync(openGate);
+    expect(streamError(await offlinePull())).toBeDefined();
+    await openGate();
+    expect(await orderDiscount()).toBe(0);
+    expect(streamError(await pull(serve(cloud, 1)))).toBeUndefined();
+    await gate!.refresh();
+    expect(await orderDiscount()).toBe(PROMO);
+  });
+
+  it("control (533 B2): a pure fetch failure with a complete stored checkpoint keeps the promo alive", async () => {
+    const cloud = await cloudHistory();
+    expect(
+      streamError(await pull(serve(cloud.slice(0, 1), 10))),
+    ).toBeUndefined();
+    await openGate();
+    expect(await orderDiscount()).toBe(PROMO);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(streamError(await offlinePull())).toBeDefined();
+      expect(await orderDiscount()).toBe(PROMO);
+      await gate!.refresh();
+      expect(await orderDiscount()).toBe(PROMO);
+    }
+    await openGate();
+    expect(await orderDiscount()).toBe(PROMO);
+  });
+
+  it("control: once a full sync reached the end, a later fetch failure no longer closes the gate", async () => {
+    const cloud = await startWithUnfinishedSync(openGate);
+    expect(streamError(await offlinePull())).toBeDefined();
+    expect(streamError(await pull(serve(cloud, 1)))).toBeUndefined();
+    await gate!.refresh();
+    expect(await orderDiscount()).toBe(PROMO);
+    expect(streamError(await offlinePull())).toBeDefined();
+    await gate!.refresh();
+    expect(await orderDiscount()).toBe(PROMO);
   });
 });
