@@ -5,7 +5,12 @@
 // solid paper (`qr-paper`). Max two blur regions per screen: one on top, one
 // at the bottom. On desktop (lg) the frame header is the top glass, so the
 // page nav turns into a plain page title.
-import { useLayoutEffect, useState, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import { Minus, Plus } from "lucide-react";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
@@ -131,13 +136,12 @@ export function useQrToastInset() {
 export function QrFooter({
   children,
   className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
+  ...rest
+}: ComponentProps<"div">) {
   const insetRef = useQrToastInset();
   return (
     <div
+      {...rest}
       ref={insetRef}
       className={cn(
         "qr-glass sticky bottom-3 z-30 -mx-1 grid gap-3 rounded-qr-float p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]",

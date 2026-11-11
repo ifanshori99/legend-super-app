@@ -1,5 +1,7 @@
 // Mock mode handlers for the QR order journey (VITE_API_MOCK=true). All logic
 // lives in mock-engine.ts; this file only binds it to the contract endpoints.
+// POST .../splits/:splitId/claim answers with the claim status in a 200 (the
+// shared contract), never a 409/410.
 // Cookie `legend-mock-guest=1` makes the point claim ask the guest to sign in;
 // `legend-mock-va=down` turns Virtual Account off in the payment options.
 // The engine snapshots itself (guest state + the shared floor state) into
@@ -23,6 +25,7 @@ import {
   getPointClaim,
   getQrMenu,
   getReviewEligibility,
+  getSplitClaim,
   getSessionBill,
   getTableSession,
   listSessionOrderIssues,
@@ -181,6 +184,9 @@ handle(createGuestPayment, ({ params, body }) => ({
 }));
 handle(getGuestPayment, ({ params }) => ({
   data: store().getPayment(params.sessionId, params.paymentId),
+}));
+handle(getSplitClaim, ({ params, body }) => ({
+  data: store().splitClaim(params.sessionId, params.splitId, body),
 }));
 handle(getPointClaim, ({ params }) => ({
   data: store().pointClaim(params.sessionId, isGuest()),

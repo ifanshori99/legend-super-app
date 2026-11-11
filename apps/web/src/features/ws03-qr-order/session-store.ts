@@ -17,6 +17,12 @@ import {
   payerSecretFor,
   readPayerSecret,
 } from "./lib/payer-secret.ts";
+import {
+  clearSplitClaim,
+  readSplitClaim,
+  writeSplitClaim,
+  type StoredSplitClaim,
+} from "./lib/split-claim-token.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const listeners = new Set<() => void>();
@@ -161,4 +167,52 @@ export function storedPayerSecret(
     }
   }
   return memoryPayerSecrets.get(memoryKey(sessionId, splitId)) ?? null;
+}
+
+// Fallback when storage is blocked: the token lives for this page only.
+const memorySplitClaims = new Map<string, StoredSplitClaim>();
+
+/** The kept claim token of a split part, or null (none yet, other tab). */
+export function storedSplitClaim(
+  sessionId: string,
+  splitId: string,
+): StoredSplitClaim | null {
+  const store = storage();
+  if (store) {
+    try {
+      const kept = readSplitClaim(store, sessionId, splitId);
+      if (kept !== null) return kept;
+    } catch {
+      // Blocked: fall through to the in-memory token.
+    }
+  }
+  return memorySplitClaims.get(memoryKey(sessionId, splitId)) ?? null;
+}
+
+/** Keeps the claim token handed out once, so a return from /masuk still has it. */
+export function keepSplitClaim(
+  sessionId: string,
+  splitId: string,
+  claim: StoredSplitClaim,
+) {
+  memorySplitClaims.set(memoryKey(sessionId, splitId), claim);
+  const store = storage();
+  if (!store) return;
+  try {
+    writeSplitClaim(store, sessionId, splitId, claim);
+  } catch {
+    // Storage full or blocked: the in-memory copy still serves this page.
+  }
+}
+
+/** Drops a kept token that is past its 24 h deadline. */
+export function dropSplitClaim(sessionId: string, splitId: string) {
+  memorySplitClaims.delete(memoryKey(sessionId, splitId));
+  const store = storage();
+  if (!store) return;
+  try {
+    clearSplitClaim(store, sessionId, splitId);
+  } catch {
+    // Blocked: nothing to clean.
+  }
 }

@@ -5,7 +5,13 @@
 // failed loads.
 import type { ReactNode } from "react";
 import { cn } from "cn";
-import { CircleAlert, Clock, Info, TriangleAlert } from "lucide-react";
+import {
+  CircleAlert,
+  CircleCheck,
+  Clock,
+  Info,
+  TriangleAlert,
+} from "lucide-react";
 
 const TONES = {
   info: {
@@ -17,6 +23,11 @@ const TONES = {
     icon: TriangleAlert,
     box: "border-l-[3px] border-warning bg-warning-subtle",
     iconClass: "text-warning",
+  },
+  success: {
+    icon: CircleCheck,
+    box: "border-l-[3px] border-success bg-success-subtle",
+    iconClass: "text-success",
   },
   danger: {
     icon: CircleAlert,
