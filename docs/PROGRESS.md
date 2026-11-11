@@ -3574,3 +3574,11 @@ Cabang `ws/hris-leave-guard`, kartu 0c5yg, qmte, j06v, 5nv1 tetap terbuka (ditut
 - Checkpoint commit: cuyu `2508e699` selesai. Langkah ini merekam 3het (runtime, wrapper fitur, regression); gate di atas tetap berlaku karena tidak ada perubahan kode sesudahnya.
 
 - Checkpoint commit: 3het `e8d9a538` selesai. Langkah ini merekam 7305j (dua fixture test API terisolasi); gate paralel 10/10 dan seluruh gate paket hijau. Ketiga kartu siap dipush bersama ke `origin/ws/infra-qa`, tanpa force, tanpa job latar tersisa.
+
+## 2026-11-11: batch48h merge train (milestone/m1 6ae8cf22 -> b70ed904)
+
+Sudah: 12 cabang digabung ke m1 (ledger-guards ee26db8d, hris-leave-guard, approvals-rbac, sec-small, fac07, public-ratelimit, 3jem1 16 commit, ui-bo-config, ui-mixed-q36, infra-qa, WS-06, edge-catalog-followups). Migrasi diberi nomor ulang 0260-0278 (journal 265 entri OK, `db:generate` tanpa perubahan). Tambalan FORCE RLS commit sendiri (0260, 0263, 0264, 0266). Gerbang hijau: contract test 846, tsc x4, lint, `pnpm test` penuh 14287 lulus + node:test dibetulkan lalu lulus. Dipush ke milestone/m1.
+Percobaan pertama `pnpm test` mati karena container Postgres uji hilang di tengah jalan (ECONNREFUSED massal, bukan kode); diulang dari awal, bersih.
+Perbaikan test setelah merge (tiap fix menunggu rumah di cabang asal): hris-pii (default v1), data-import-registry (entri 0276), edge-registry-pull (retry tick), worker-notification-adapters, notification contract (tenant_invitation wajib), review-queue flag filter (supervisor biasa hanya lihat bawahan; manajer uji diberi hr.employee.manage outlet), label akses `platform.event_gap.manage` dan `payment.recurring.manage`, Cache-Control via decidePublicCache, role-provisioning idle_in_transaction_session_timeout, hub pengaturan owner tanpa kartu `terms` (Super Admin).
+Biaya sesi (session-usage): total biaya* 12316k, subagent 13, compact 3. parallel-report 30 sesi: rata-rata subagent per agent 3.9.
+Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; second-opinion Codex area ledger/hris/fac07 sebelum gerbang rilis.
