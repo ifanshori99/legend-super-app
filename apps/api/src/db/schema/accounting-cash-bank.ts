@@ -135,6 +135,10 @@ export const bankAccounts = pgTable(
       sql`${t.accountNumberHmac} ~ ${sql.raw(HMAC_FORMAT)}`,
     ),
     check(
+      "bank_accounts_account_number_hmac_version_check",
+      sql`${t.accountNumberHmacVersion} IN (1, 2)`,
+    ),
+    check(
       "bank_accounts_key_version_check",
       sql`${t.accountNumberKeyVersion} >= 1`,
     ),

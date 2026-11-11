@@ -36399,6 +36399,10 @@
         "bank_accounts_text_check": {
           "name": "bank_accounts_text_check",
           "value": "char_length(btrim(\"bank_accounts\".\"bank\")) >= 2 AND char_length(btrim(\"bank_accounts\".\"account_name\")) >= 1"
+        },
+        "bank_accounts_account_number_hmac_version_check": {
+          "name": "bank_accounts_account_number_hmac_version_check",
+          "value": "\"bank_accounts\".\"account_number_hmac_version\" IN (1, 2)"
         }
       },
       "isRLSEnabled": false
