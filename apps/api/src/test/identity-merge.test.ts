@@ -142,6 +142,13 @@ async function whatsAppOnlyAccount(from = SENDER) {
   const issued = await issueChallenge(client);
   const delivered = await sendCode(issued.codeFormatted, from);
   expect(delivered.body.data.completed).toBe(1);
+  // Sign-in by WhatsApp needs the person to confirm before a session exists.
+  const confirmed = await client
+    .post(`/api/auth/login-challenges/${issued.challenge.id}/confirm`)
+    .set(originHeader)
+    .send();
+  expect(confirmed.status).toBeGreaterThanOrEqual(200);
+  expect(confirmed.status).toBeLessThan(300);
   const polled = await client.get(
     `/api/auth/login-challenges/${issued.challenge.id}`,
   );

@@ -274,6 +274,11 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
       }),
     );
     expect(delivered.body.data.completed).toBe(1);
+    const confirmed = await browser
+      .post(`/api/auth/login-challenges/${challenge.id}/confirm`)
+      .set(originHeader)
+      .send();
+    expect(confirmed.status).toBeLessThan(300);
     const claimed = await browser.get(
       `/api/auth/login-challenges/${challenge.id}`,
     );
@@ -285,6 +290,7 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
     expect(events.map((event) => event.action).sort()).toEqual([
       "login_challenge.claimed",
       "login_challenge.completed",
+      "login_challenge.confirmed",
       "login_challenge.created",
     ]);
     for (const event of events) {

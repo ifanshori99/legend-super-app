@@ -488,13 +488,21 @@ export async function processInboundWhatsApp(
         brandId: challenge.brandId,
         receivingNumber: message.receivingNumber,
         userId: account.userId,
+        // Card lnbtp: remembered so "Bukan saya" can tidy an account that
+        // exists only because of this challenge.
+        autoCreatedUserId: account.created ? account.userId : null,
         senderMasked: maskSenderForAudit(message.sender),
         senderConfirmMask: maskSenderForConfirm(message.sender),
         now,
       });
       const kind: InboundKind =
         completed === "completed" ? "login" : "rejected";
-      if (completed !== "unrouted")
+      // Card lnbtp: while the person still has to confirm the masked number,
+      // no "Login berhasil" goes out (it could be "Bukan saya"). Errors still do.
+      if (
+        completed !== "unrouted" &&
+        !(completed === "completed" && challenge.confirmRequired)
+      )
         pendingReply = {
           tenantId: challenge.tenantId,
           brandId: challenge.brandId,
@@ -627,6 +635,7 @@ type ChallengeMatch =
       expectedSenderHash: string | null;
       linkUserId: string | null;
       linkSessionId: string | null;
+      confirmRequired: boolean;
     }
   | { kind: "none" };
 
@@ -653,6 +662,7 @@ async function pendingChallengeFor(
       linkSessionId: loginChallenges.linkSessionId,
       purpose: loginChallenges.purpose,
       expectedSenderHash: loginChallenges.expectedSenderHash,
+      confirmRequired: loginChallenges.confirmRequired,
     })
     .from(loginChallenges)
     .where(
@@ -707,6 +717,7 @@ async function pendingChallengeFor(
     expectedSenderHash: row.expectedSenderHash,
     linkUserId: row.linkUserId,
     linkSessionId: row.linkSessionId,
+    confirmRequired: row.confirmRequired,
   };
 }
 
@@ -730,6 +741,8 @@ async function completeChallenge(
     brandId: string | null;
     receivingNumber: string;
     userId: string;
+    /** Card lnbtp: set only when this challenge created the account. */
+    autoCreatedUserId: string | null;
     senderMasked: string | null;
     /** Card w8dfz.1: stored for the confirm step; never the whole number. */
     senderConfirmMask: string | null;
@@ -767,11 +780,19 @@ async function completeChallenge(
       );
       if (!channel || channel.routingNumber !== input.receivingNumber)
         return "unrouted";
+      // Card lnbtp: a concurrent "Bukan saya" may delete the auto-created
+      // account (it takes FOR UPDATE on this row). Share-lock the user so it
+      // cannot vanish before this commit; no row means it already did.
+      const lockedUser = await tx.execute(
+        sql`SELECT 1 FROM "user" WHERE id = ${input.userId} FOR KEY SHARE`,
+      );
+      if (lockedUser.rows.length === 0) return "refused";
       const updated = await tx
         .update(loginChallenges)
         .set({
           status: "completed",
           matchedUserId: input.userId,
+          autoCreatedUserId: input.autoCreatedUserId,
           completedAt: input.now,
           senderMasked: input.senderConfirmMask,
         })

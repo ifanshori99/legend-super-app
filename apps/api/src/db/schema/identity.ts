@@ -161,6 +161,12 @@ export const loginChallenges = pgTable(
     senderMasked: text("sender_masked"),
     confirmRequired: boolean("confirm_required").notNull().default(false),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    /**
+     * Card lnbtp: the account this challenge created for a new sender. "Bukan
+     * saya" removes it when it was never used; an account that already existed
+     * is never recorded here.
+     */
+    autoCreatedUserId: text("auto_created_user_id"),
     /** Keyed client-IP digest for the AUTH-04 per-IP limit. */
     ipHash: varchar("ip_hash", { length: 64 }),
     userAgent: varchar("user_agent", { length: 255 }),

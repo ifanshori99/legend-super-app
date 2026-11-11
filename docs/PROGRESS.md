@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-lnbtp konfirmasi login WA wajib + "Bukan saya" merapikan akun otomatis (engineer, cabang `ws/lnbtp-wa-confirm-required` dari `ws/kmndq-wa-login-confirm` f6fc4d01, 2026-11-11)
+
+- Sudah: route `POST /api/auth/login-challenges/whatsapp` selalu `requireConfirm: true` (nilai klien false/absen diabaikan, schema tetap menerima boolean opsional). Balasan WA "Login berhasil" tidak lagi dikirim saat challenge menunggu konfirmasi (balasan error tetap). Kolom baru `login_challenges.auto_created_user_id` (migrasi sementara `0279_wa_login_auto_account`, idx 244, tanpa snapshot: merge train) diisi bila akun dibuat oleh challenge itu; "Bukan saya" (cancel yang benar-benar membalik status) menghapus akun itu bila belum pernah dipakai (tanpa sesi, account, role, profil member, challenge lain non-cancelled dengan matched_user_id sama, satu identitas WA saja); ragu = akun ditinggal. Akun yang sudah ada tidak pernah disentuh.
+- Review architect (K): T1 (sedang) balapan cancel A vs inbound B dari nomor sama bisa menunjuk user terhapus -> `FOR UPDATE` di `removeUnusedAutoAccount`, `FOR KEY SHARE` di `completeChallenge`, test balapan. T2 (rendah) cek profil buta lintas tenant (RLS) -> `app.member_profiles_of_user`. Keduanya dibetulkan.
+- Keputusan: baris challenge yang di-cancel tetap menyimpan `matched_user_id` akun yang dihapus (jejak audit, tanpa FK); test invariant hanya menghitung baris non-cancelled.
+- Test lama yang memakai jalur HTTP sign-in WA (identity-merge, identity-login, identity-login-audit, member-signin, identity-wa-masked-login) ditambah langkah confirm; asersi tidak dilemahkan. Catatan: menjalankan file test grup ini bersama dalam satu vitest gagal juga di baseline f6fc4d01 (48 gagal, kontaminasi antar file); bukti sah = tiap file sendiri.
+- Bukti: tiap file solo lulus (confirm-required 10, masked-login 9, login-audit 13, identity-login 20, member-signin 24, identity-merge 34, wa-proof 32, wa-login-reply 21, rate-limit 12); typecheck api dan web 0; `db:generate` membuat 0245 karena snapshot 0274/0275/0279 belum ada (hasil dibuang; urusan merge train).
+
 ## legend-kmndq UI login WhatsApp pelanggan: kartu konfirmasi nomor tersamar (ui-engineer, cabang `ws/kmndq-wa-login-confirm` dari `ws/w8dfz1-wa-masked` b5956fdb, 2026-11-11)
 
 - Sudah: klien membuat tantangan dengan `requireConfirm: true`; saat poll mengembalikan `awaitingConfirmation` tampil kartu "Pesan diterima dari +62 812-****-7890. Masuk sebagai nomor ini?" dengan "Ya, masuk" (confirm) dan "Bukan saya" (cancel). Kondisi: menunggu, perlu konfirmasi, berhasil, dibatalkan, kedaluwarsa, gagal jaringan.

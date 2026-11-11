@@ -242,6 +242,17 @@ describe("WhatsApp reverse-OTP login", () => {
       conflicts: 0,
     });
 
+    // The message alone issues no session: the bound browser must confirm.
+    const awaiting = await browser.get(path);
+    expect(awaiting.status).toBe(200);
+    expect(awaiting.body.data.session).toBeNull();
+    const confirmed = await browser
+      .post(`${path}/confirm`)
+      .set(originHeader)
+      .send();
+    expect(confirmed.status).toBeGreaterThanOrEqual(200);
+    expect(confirmed.status).toBeLessThan(300);
+
     const claimed = await browser.get(path);
     expect(claimed.status).toBe(200);
     expect(claimed.body.data.challenge.status).toBe("completed");

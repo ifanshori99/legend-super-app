@@ -6,9 +6,9 @@
 // (docs/PRD.md section C, AUTH-01), not from the implementation.
 //
 // Design under test:
-// - Create body accepts optional `requireConfirm: boolean` (default false =
-//   old behaviour: the poll after the message issues the session).
-// - requireConfirm=true: once the message lands, the poll shows
+// - Create body accepts optional `requireConfirm: boolean`, but the server
+//   ignores it: confirmation is always required (legend-lnbtp).
+// - Once the message lands, the poll shows
 //   `senderMasked` and `awaitingConfirmation: true`, with NO session and NO
 //   session cookie. POST /:id/confirm (bound browser only) makes the next
 //   poll issue the session. POST /:id/cancel ("Bukan saya") works while
@@ -235,7 +235,10 @@ describe("WhatsApp login: confirm the masked number or Bukan saya", () => {
     const { browser, path } = await awaitingChallenge();
     const other = agent(app).host(host);
 
-    const confirm = await other.post(`${path}/confirm`).set(originHeader).send();
+    const confirm = await other
+      .post(`${path}/confirm`)
+      .set(originHeader)
+      .send();
     expect(confirm.status).toBe(403);
     expect(confirm.body.error.code).toBe("CHALLENGE_BROWSER_MISMATCH");
     const peek = await other.get(path);
@@ -313,27 +316,27 @@ describe("WhatsApp login: confirm the masked number or Bukan saya", () => {
     expect(done.body.data.session).toBeTruthy();
   });
 
-  it("AUTH-01 without requireConfirm the old flow still issues the session at the poll", async () => {
+  it("AUTH-01 without requireConfirm the server still requires confirmation and issues no session", async () => {
     const { browser, codeFormatted, path } = await newChallenge();
     await sendLoginMessage(codeFormatted);
 
     const polled = await browser.get(path);
     expect(polled.status).toBe(200);
-    expect(polled.body.data.challenge.status).toBe("completed");
-    expect(polled.body.data.session).toBeTruthy();
-    expect(viewField(polled.body.data, "awaitingConfirmation")).not.toBe(true);
+    expect(viewField(polled.body.data, "awaitingConfirmation")).toBe(true);
+    expectMaskedNumberOnly(polled.body.data);
+    expectNoSession(polled);
     const me = await browser.get("/api/auth/get-session");
-    expect(me.body.user.id).toBe(polled.body.data.session.userId);
+    expect(me.body?.user ?? null).toBeNull();
   });
 
-  it("AUTH-01 requireConfirm: false behaves like the default", async () => {
+  it("AUTH-01 requireConfirm: false cannot turn confirmation off", async () => {
     const { browser, codeFormatted, path } = await newChallenge({
       requireConfirm: false,
     });
     await sendLoginMessage(codeFormatted);
     const polled = await browser.get(path);
-    expect(polled.body.data.session).toBeTruthy();
-    expect(viewField(polled.body.data, "awaitingConfirmation")).not.toBe(true);
+    expect(viewField(polled.body.data, "awaitingConfirmation")).toBe(true);
+    expectNoSession(polled);
   });
 
   it("AUTH-01 rejects a non-boolean requireConfirm", async () => {

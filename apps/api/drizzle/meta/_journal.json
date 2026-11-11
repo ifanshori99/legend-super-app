@@ -1611,6 +1611,13 @@
       "when": 1794437723173,
       "tag": "0274_wa_login_confirm",
       "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "7",
+      "when": 1794524123173,
+      "tag": "0279_wa_login_auto_account",
+      "breakpoints": true
     }
   ]
 }
