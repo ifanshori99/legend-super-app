@@ -1195,3 +1195,4 @@ Langkah berikut CTO baru:
 - 08:27 G3nba mockup tinjauan HR cuti ab253ad5 (10 keadaan x 1280/390, ws/design-hr-leave-clockin) -> resolve; page review founder dibuat subagent. Celah API di README sudah ditutup cabang 5nt2z kecuali payroll baca absensi (em8y2 wajib sebelum payroll).
 - 08:28 Page review mockup HR cuti terbit (W8).
 - 08:31 Founder W17 Q28: laju penuh lalu berhenti saat kuota habis (dicatat di memory coordinator). Slot Claude 8/8 (3 thread menunggu job: G8le3 test penuh, G9e2v e2e, G03i4 kunci heavy).
+- 08:36 Codex G1i5i HPP: 5 P1 + 2 P2 (race worker, backfill terlewat, ganti resep tanpa recompute, biaya aktual Rp0 saat stok pending, kerja hilang saat retry gagal, coverage lintas brand, invariant varians) -> kartu legend-husxd + i8ou8, brief 451; reopen G7pyd saat slot kosong. Resolve G1i5i. 2qq ditahan dari merge sampai husxd.
