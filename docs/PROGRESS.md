@@ -1197,3 +1197,4 @@ Langkah berikut CTO baru:
 - 08:31 Founder W17 Q28: laju penuh lalu berhenti saat kuota habis (dicatat di memory coordinator). Slot Claude 8/8 (3 thread menunggu job: G8le3 test penuh, G9e2v e2e, G03i4 kunci heavy).
 - 08:36 Codex G1i5i HPP: 5 P1 + 2 P2 (race worker, backfill terlewat, ganti resep tanpa recompute, biaya aktual Rp0 saat stok pending, kerja hilang saat retry gagal, coverage lintas brand, invariant varians) -> kartu legend-husxd + i8ou8, brief 451; reopen G7pyd saat slot kosong. Resolve G1i5i. 2qq ditahan dari merge sampai husxd.
 - 08:40 G7uoy: heavy check_tsc_heap (<6144 ditolak exit 76, override HEAVY_ALLOW_LOW_HEAP=1), heavy-fail 80 baris, test-heavy 182/0; engineer.md wajib lint paket. Resolve. Backlog retro: guard exit 73 tidak pernah menolak.
+- 08:46 Codex G7v62 cuti: 2 P1 (race clock-in vs approval, benturan lama tak ditandai migrasi) + 3 P2 -> legend-x0avw brief 452 -> G2xsg. Resolve G7v62. 9y6ri/5nt2z ditahan dari merge sampai x0avw.
