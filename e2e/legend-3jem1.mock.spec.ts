@@ -407,7 +407,9 @@ for (const width of WIDTHS) {
     ]) {
       await expect(page.getByText(label, { exact: true })).toBeVisible();
     }
-    await expect(page.getByText(FIXTURE_DATE).first()).toBeVisible();
+    // Several elements carry the date (some hidden, e.g. a "Sampai ..." note);
+    // only a match the user can see counts.
+    await expect(seen(page.getByText(FIXTURE_DATE)).first()).toBeVisible();
     await expect(page.getByText("Belum absen keluar")).toBeVisible();
     await expect(
       page.getByText("Saldo cuti dan gaji belum berubah sampai HR memutuskan."),

@@ -18,7 +18,7 @@
 // States 1-10 (design/mockups/hr-leave-clockin-review/README.md, plus the two
 // result screens): queue, detail, confirm-keep, confirm-cancel, result-keep,
 // result-cancel, no-cancel-right, manual-correction, re-review, empty. Extra
-// states: loading, error, confirm-failed.
+// states: loading, offline, error, confirm-failed.
 //
 // Mock switches and clock are the ones e2e/legend-3jem1.mock.spec.ts uses:
 //   ?mock=empty | error | slow           standard lib/mock/control.ts scenarios
@@ -47,7 +47,7 @@ const VIEWPORTS = [
   { label: "390", width: 390, height: 844 },
   { label: "1280", width: 1280, height: 800 },
 ];
-const COLD_TIMEOUT = 45_000; // Vite compiles a route on its first request.
+const WAIT_TIMEOUT = 10_000; // Hard cap for every wait; a state that needs more has failed.
 const FIXTURE_CLOCK = new Date("2026-10-26T10:00:00.000Z"); // 17:00 WIB
 const QUEUE_PATH = "/kelola/absensi/tinjauan-cuti";
 const CASE_COUNT = 4;
@@ -176,12 +176,28 @@ const STATES = [
       await openQueue(page, "?mock=slow", {
         expectCases: false,
         hydrate: false,
+        title: false,
       });
-      await page
-        .getByLabel("Memuat tinjauan absensi")
-        .or(page.getByText("Memuat tinjauan absensi"))
-        .first()
-        .waitFor({ state: "attached", timeout: COLD_TIMEOUT });
+      // DataTableShell loading state: the region is busy and says "Memuat…".
+      const region = page.getByRole("region", { name: "Perlu ditinjau" });
+      await region.waitFor({ state: "attached", timeout: WAIT_TIMEOUT });
+      await page.waitForFunction(
+        () =>
+          Array.from(document.querySelectorAll("[aria-busy='true']")).some(
+            (el) => el.textContent?.includes("Memuat…"),
+          ),
+        undefined,
+        { timeout: WAIT_TIMEOUT },
+      );
+    },
+  },
+  {
+    // The connection drops after the queue loaded (navigator.onLine).
+    name: "offline",
+    run: async (page) => {
+      await openQueue(page);
+      await page.context().setOffline(true);
+      await expectText(page, "Anda sedang offline");
     },
   },
   {
@@ -191,7 +207,7 @@ const STATES = [
       await expectText(page, "Tinjauan absensi tidak dapat dimuat");
       await page
         .getByRole("button", { name: "Coba lagi" })
-        .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+        .waitFor({ state: "visible", timeout: WAIT_TIMEOUT });
     },
   },
   {
@@ -213,7 +229,7 @@ const STATES = [
       await page
         .getByRole("dialog")
         .getByText(/Tidak ada cuti disetujui pada hari itu\./)
-        .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+        .waitFor({ state: "visible", timeout: WAIT_TIMEOUT });
     },
   },
 ];
@@ -236,24 +252,41 @@ function dialogButton(page, name) {
   return page.getByRole("dialog").getByRole("button", { name, exact: true });
 }
 
+/** Only matches a user can see (the hidden table/card twin is ignored). */
+function seen(locator) {
+  return locator.filter({ visible: true });
+}
+
 async function expectText(page, text) {
-  await page
-    .getByText(text)
+  await seen(page.getByText(text))
     .first()
-    .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+    .waitFor({ state: "visible", timeout: WAIT_TIMEOUT });
 }
 async function expectDialog(page, heading) {
   await page
     .getByRole("dialog")
     .getByRole("heading", { name: heading })
-    .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+    .waitFor({ state: "visible", timeout: WAIT_TIMEOUT });
 }
 
 async function waitForHydration(page) {
   await page.waitForFunction(
     () => document.documentElement.dataset.hydrated === "true",
     undefined,
-    { timeout: COLD_TIMEOUT },
+    { timeout: WAIT_TIMEOUT },
+  );
+  // Every control in the main area carries React props (same as the e2e spec).
+  await page.waitForFunction(
+    () => {
+      const root = document.querySelector("#main-content") ?? document.body;
+      return Array.from(
+        root.querySelectorAll("input, button, textarea, select, a[href]"),
+      ).every((el) =>
+        Object.keys(el).some((key) => key.startsWith("__reactProps$")),
+      );
+    },
+    undefined,
+    { timeout: WAIT_TIMEOUT },
   );
 }
 
@@ -261,18 +294,21 @@ async function waitForHydration(page) {
 async function openQueue(
   page,
   query = "",
-  { expectCases = true, hydrate = true } = {},
+  { expectCases = true, hydrate = true, title = true } = {},
 ) {
   await page.goto(`${page.__baseUrl}${QUEUE_PATH}${query}`, {
     waitUntil: "domcontentloaded",
   });
-  await page
-    .getByRole("heading", { level: 1, name: "Tinjauan absensi" })
-    .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+  // The shell owns the page's h1 (the menu label); the screen title is an h2.
+  if (title)
+    await page
+      .getByRole("heading", { level: 2, name: /Tinjauan/ })
+      .first()
+      .waitFor({ state: "visible", timeout: WAIT_TIMEOUT });
   if (expectCases) {
     await reviewLinks(page).first().waitFor({
       state: "visible",
-      timeout: COLD_TIMEOUT,
+      timeout: WAIT_TIMEOUT,
     });
     if ((await reviewLinks(page).count()) !== CASE_COUNT)
       throw new Error(`queue does not show ${CASE_COUNT} cases`);
@@ -300,7 +336,7 @@ async function openDetail(page, kind, viewport, query = "") {
   await reviewLinks(page).nth(index).click();
   await page
     .getByRole("heading", { name: "Tinjau absensi saat cuti" })
-    .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+    .waitFor({ state: "visible", timeout: WAIT_TIMEOUT });
   await waitForHydration(page);
 }
 
@@ -379,6 +415,8 @@ async function main() {
         const page = await context.newPage();
         page.__baseUrl = baseUrl;
         try {
+          page.setDefaultTimeout(WAIT_TIMEOUT);
+          page.setDefaultNavigationTimeout(WAIT_TIMEOUT);
           await page.addInitScript(() =>
             localStorage.setItem("legend-theme", "light"),
           );
@@ -434,4 +472,7 @@ async function main() {
   process.exit(failures.length === 0 ? 0 : 1);
 }
 
-await main();
+await main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
