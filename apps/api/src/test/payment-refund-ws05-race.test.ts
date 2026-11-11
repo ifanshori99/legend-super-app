@@ -20,8 +20,9 @@
 // - Approval-time race: two PENDING refunds of Rp60.000 on a Rp100.000 payment
 //   are seeded directly (together they exceed the payment, like legacy or
 //   inconsistent data). When both are approved in parallel the system may pay
-//   one and fail the other, or fail both (cap_exceeded). The tests only assert
-//   the money bound, not which of the two wins; each answer is 200 or 409.
+//   one and fail the other. Exactly one approval answers 200 and one 409 (order
+//   free), exactly one refund completes and the provider pays exactly Rp60.000;
+//   which of the two wins is not asserted.
 // - A provider "timeout" is either a throw before the provider recorded the
 //   refund (script "throw") or a throw AFTER it recorded it (response lost).
 //   Whether a retry re-sends with the same key or only looks the refund up is
@@ -376,16 +377,15 @@ describe("legend-7tc4 C1: parallel refunds never exceed the amount paid", () => 
       approve(financeB, second),
     ]);
 
-    for (const r of responses) expect([200, 409]).toContain(r.status);
+    // Exactly one approval wins and one is refused (order is free).
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
     // The money bound holds in the database and at the provider.
     expect(await decidedTotal(intentId)).toBeLessThanOrEqual(PAID);
-    expect(providerPaidTotal(fake)).toBeLessThanOrEqual(PAID);
-    expect(fake.executionCount).toBeLessThanOrEqual(1);
-    // At most one of the two over-reserved refunds can have been completed.
+    expect(fake.executionCount).toBe(1);
+    expect(providerPaidTotal(fake)).toBe(60_000);
+    // Exactly one of the two over-reserved refunds is completed.
     const statuses = [await refundStatus(first), await refundStatus(second)];
-    expect(
-      statuses.filter((s) => s === "completed").length,
-    ).toBeLessThanOrEqual(1);
+    expect(statuses.filter((s) => s === "completed")).toHaveLength(1);
   });
 
   it("PAY-04 the same over-reserved pair with a slow provider (payouts overlap) still pays at most the payment", async () => {
@@ -400,10 +400,12 @@ describe("legend-7tc4 C1: parallel refunds never exceed the amount paid", () => 
       approve(financeB, second),
     ]);
 
-    for (const r of responses) expect([200, 409]).toContain(r.status);
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
     expect(await decidedTotal(intentId)).toBeLessThanOrEqual(PAID);
-    expect(providerPaidTotal(fake)).toBeLessThanOrEqual(PAID);
-    expect(fake.executionCount).toBeLessThanOrEqual(1);
+    expect(fake.executionCount).toBe(1);
+    expect(providerPaidTotal(fake)).toBe(60_000);
+    const statuses = [await refundStatus(first), await refundStatus(second)];
+    expect(statuses.filter((s) => s === "completed")).toHaveLength(1);
   });
 
   it("PAY-04 the same refund approved by two approvers at once is paid once", async () => {
@@ -419,6 +421,8 @@ describe("legend-7tc4 C1: parallel refunds never exceed the amount paid", () => 
     for (const r of responses) expect([200, 409]).toContain(r.status);
     expect(responses.map((r) => r.status)).toContain(200);
     expect(fake.executionCount).toBe(1);
+    // The provider is called once, not just deduped on its side.
+    expect(fake.calls).toHaveLength(1);
     expect(fake.executionsFor(`refund:${refundId}`)).toBe(1);
     expect(providerPaidTotal(fake)).toBe(100_000);
     expect(await decidedTotal(intentId)).toBe(100_000);
@@ -438,6 +442,7 @@ describe("legend-7tc4 C2: a gateway timeout and retry never pay a refund twice",
     // Unknown outcome: not completed, and the amount stays reserved.
     expect(first.body.data.status).toBe("approved");
     expect(fake.executionsFor(idempotencyKey)).toBe(1);
+    expect(fake.calls).toHaveLength(1);
     expect(await liveTotal(intentId)).toBe(60_000);
 
     const second = await retry(financeB, refundId);
@@ -449,6 +454,8 @@ describe("legend-7tc4 C2: a gateway timeout and retry never pay a refund twice",
     for (const call of fake.statusCalls)
       expect(call.idempotencyKey).toBe(idempotencyKey);
     expect(fake.executionCount).toBe(1);
+    // A retry only looks the refund up; it never sends it to the provider again.
+    expect(fake.calls).toHaveLength(1);
     expect(fake.executionsFor(idempotencyKey)).toBe(1);
     expect(providerPaidTotal(fake)).toBe(60_000);
     // The refund ends completed with the provider's own reference.
@@ -480,6 +487,7 @@ describe("legend-7tc4 C2: a gateway timeout and retry never pay a refund twice",
 
     for (const r of retries) expect([200, 409]).toContain(r.status);
     expect(fake.executionCount).toBe(1);
+    expect(fake.calls).toHaveLength(1); // only the first approval sent it
     expect(providerPaidTotal(fake)).toBe(60_000);
     expect(new Set(fake.calls.map((c) => c.idempotencyKey))).toEqual(
       new Set([`refund:${refundId}`]),
@@ -506,10 +514,12 @@ describe("legend-7tc4 C2: a gateway timeout and retry never pay a refund twice",
 
     for (const call of fake.calls)
       expect(call.idempotencyKey).toBe(idempotencyKey);
-    // At most one real payout, whatever the retry policy does.
-    expect(fake.executionCount).toBeLessThanOrEqual(1);
-    expect(fake.executionsFor(idempotencyKey)).toBeLessThanOrEqual(1);
-    expect(providerPaidTotal(fake)).toBeLessThanOrEqual(60_000);
+    // The only send was the first attempt (it timed out); retries never
+    // re-send, so the provider executed nothing and paid nothing.
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.executionCount).toBe(0);
+    expect(fake.executionsFor(idempotencyKey)).toBe(0);
+    expect(providerPaidTotal(fake)).toBe(0);
     // Unknown or unfinished: the Rp60.000 stays held, so no one can refund it again.
     expect(await refundStatus(refundId)).not.toBe("failed");
     expect(await liveTotal(intentId)).toBe(60_000);
@@ -534,6 +544,7 @@ describe("legend-7tc4 C2: a gateway timeout and retry never pay a refund twice",
     expect(first.status).toBe(200);
     expect([200, 409]).toContain(replay.status);
     expect(fake.executionCount).toBe(1);
+    expect(fake.calls).toHaveLength(1); // the replay did not send again
     expect(providerPaidTotal(fake)).toBe(60_000);
     expect(await decidedTotal(intentId)).toBe(60_000);
     expect(new Set(fake.calls.map((c) => c.idempotencyKey))).toEqual(
