@@ -13,6 +13,7 @@
 import {
   encodeReceiptRunReport,
   encodeReceiptRunRefusals,
+  receiptRunReportQuerySchema,
   type ReceiptRunRefusalReport,
   type ReceiptRunReport,
 } from "@starter/shared/edge";
@@ -266,6 +267,19 @@ export function createDeviceRecordsFetcher(
   };
 
   return async (since, signal, receiptRuns, refusals) => {
+    if (
+      receiptRuns !== undefined &&
+      !receiptRunReportQuerySchema.safeParse(
+        encodeReceiptRunReport(receiptRuns),
+      ).success
+    ) {
+      // A malformed local report must not masquerade as an old cloud and
+      // silently disable its restored-database check. Do not log its contents.
+      logger.error(
+        "edge receipt run report is invalid; refusing the cloud pull",
+      );
+      throw new EdgeCloudHttpError("INVALID_RECEIPT_RUN_REPORT");
+    }
     try {
       return await cloudGetJson({
         ...options,
