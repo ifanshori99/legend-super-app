@@ -1,9 +1,10 @@
 // TEN-09 (legend-j568k): portable tax configuration. Published tenant-wide
-// rules export as the latest version of each code; importing produces drafts,
+// rules export as the version in force on a supplied business date; importing produces drafts,
 // so publication still goes through the domain's ordinary validation.
 // Legacy API bundles include settings in this section and omit effectiveFrom.
 // Dates absent from those bundles stay absent for the importer to resolve.
 import { businessDateSchema, z } from "../core/index.ts";
+import type { BusinessDate } from "../core/index.ts";
 import {
   itemTaxClassSchema,
   regionCodeSchema,
@@ -64,7 +65,18 @@ function compareKeys(a: { key: string }, b: { key: string }): number {
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
 
-function toTemplate(rows: readonly TaxRule[]): TaxRuleConfigItem[] {
+export type TaxRulesConfigExportContext = {
+  /** The source tenant's business date, supplied by the caller's clock. */
+  asOf: BusinessDate;
+};
+
+function toTemplate(
+  rows: readonly TaxRule[],
+  ctx: TaxRulesConfigExportContext,
+): TaxRuleConfigItem[] {
+  if (!ctx?.asOf)
+    throw new Error("tax_rules toTemplate requires an asOf business date");
+  const asOf = businessDateSchema.parse(ctx.asOf);
   if (new Set(rows.map((row) => row.tenantId)).size > 1)
     throw new Error("tax_rules toTemplate requires one tenant");
 
@@ -72,12 +84,26 @@ function toTemplate(rows: readonly TaxRule[]): TaxRuleConfigItem[] {
   const seenVersions = new Set<string>();
   for (const row of rows) {
     if (row.outletId !== null || row.status !== "published") continue;
+    // The server importer chooses the target's current date. Exporting a
+    // scheduled rate or tombstone would activate it early there, so refuse
+    // the export instead of flattening away its schedule.
+    if (row.effectiveFrom > asOf)
+      throw new Error(
+        `Tax rule ${row.code}: future published versions are not portable`,
+      );
     const versionKey = `${row.code}:${row.version}`;
     if (seenVersions.has(versionKey))
       throw new Error(`Tax rule ${row.code}: duplicate published version`);
     seenVersions.add(versionKey);
     const previous = latestByCode.get(row.code);
-    if (!previous || row.version > previous.version)
+    // Same ordering as effectiveRuleVersions/later in calculate.ts. Keep
+    // the selected tombstone too, so import cannot resurrect its code.
+    if (
+      !previous ||
+      row.effectiveFrom > previous.effectiveFrom ||
+      (row.effectiveFrom === previous.effectiveFrom &&
+        row.version > previous.version)
+    )
       latestByCode.set(row.code, row);
   }
 

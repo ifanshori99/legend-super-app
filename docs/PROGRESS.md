@@ -3616,3 +3616,8 @@ Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; s
 - Kuota pembacaan ulang menjelang handoff: Codex #5 5h 54%, 7d 45% (awal 9%/38%); biaya nominal tidak tersedia dari pencatat sesi Codex. Checkpoint per kartu: j568k c830478a; ure5h 9cf20967; qeott 2909727a; f7t7z edb9177d; 1tzvg 54976036; u74y8 4fb3f546. Belum push/merge; Beads tidak dimutasi oleh Codex sesuai aturan tim.
 - Gate akhir selesai: heavy pnpm --filter @starter/shared typecheck exit 0; heavy pnpm db:generate exit 0 dengan "No schema changes, nothing to migrate". Log /tmp/ten09-tsc.log dan /tmp/ten09-dbgen.log; tidak ada perubahan drizzle/skema. Kuota akhir Codex #5: 5h 58% (resets Nov 12 10:56) · 7d 46% (resets Nov 17 20:46).
 - Seluruh 6 codec beserta registry/decode, barrel exports, skema bundle, fixture zona, dan 10 test referensi lintas section siap commit integrasi. Review fix selesai tanpa temuan tersisa. Tidak ada job latar tersisa; token heavy dilepas. pnpm check penuh/build/e2e tidak dijalankan sesuai brief shared-only (gate penuh milik merge train). CTO melanjutkan status 6 kartu ke review; Codex tidak memutasi Beads sesuai TEAM.md. Tidak push, merge, deploy, atau migrasi.
+
+
+## 2026-11-12: 538-G1b architect fixes (ws/ten09-codecs)
+
+- P1 gagal-dulu: tests/platform-config-codecs-tax.test.mjs menolak asOf hilang/invalid dan versi published masa depan (naik/turun/tombstone), serta menguji prioritas effectiveFrom sebelum version. RED gabungan /tmp/ten09b-red.log: 65 lulus/10 gagal untuk seluruh temuan. Setelah fix P1, test pajak terarah melalui LEGEND_TEST_FILES + heavy pnpm test lulus 7/7; /tmp/ten09b-p1-green.log. Export snapshot mewajibkan tanggal bisnis eksplisit; future published ditolak, tombstone berlaku dipertahankan.
