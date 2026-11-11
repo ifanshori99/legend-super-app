@@ -33,7 +33,7 @@ import {
   livePromoApplicationOf,
   orderPromoPartialRefundPort,
 } from "./order-promo-refund.ts";
-import { orderGivenOf } from "./order-given.ts";
+import { lineGivenOf, orderGivenOf, orderRoomOf } from "./order-given.ts";
 import { OrderRevenueMismatch } from "./order-revenue.ts";
 import {
   recoveryRefundSplit,
@@ -125,6 +125,9 @@ export type RecoverySwapChain = ReturnType<typeof recoverySwapChain>;
  * cumulative rounding) and (legend-hhm5m 5) the components their
  * `order.refunded` already reversed (`reversed`, pay-first; an open bill has
  * none), so a refund never reverses more of a component than the order holds.
+ * `reversed` counts every live `order.refunded` of the order but this issue's
+ * own (architect Q25 #6): POS refunds too; an issue's only while it still has
+ * a live refund.
  */
 export async function recoveryReleasedOf(
   tx: Tx,
@@ -152,16 +155,17 @@ export async function recoveryReleasedOf(
        AND e.aggregate_type = 'order'
        AND e.event->>'name' = 'order.refunded'
        AND e.event->'payload'->>'orderId' = ${orderId}
-       AND e.event->'payload'->>'refundId' IN (
-         SELECT r.order_issue_id::text
-           FROM payment_refunds r
-           JOIN order_issues i
-             ON i.tenant_id = r.tenant_id AND i.id = r.order_issue_id
-          WHERE r.tenant_id = ${tenantId}
+       AND e.event->'payload'->>'refundId' <> ${issueId}
+       AND e.event->'payload'->>'refundId' NOT IN (
+         SELECT i.id::text
+           FROM order_issues i
+          WHERE i.tenant_id = ${tenantId}
             AND i.order_id = ${orderUuid}::uuid
-            AND r.order_issue_id <> ${issueId}::uuid
-          GROUP BY r.order_issue_id
-         HAVING coalesce(bool_or(r.status <> 'failed'), false))
+            AND NOT EXISTS (
+              SELECT 1 FROM payment_refunds r
+               WHERE r.tenant_id = i.tenant_id
+                 AND r.order_issue_id = i.id
+                 AND r.status <> 'failed'))
   `);
   const reversedRow = reversedResult.rows[0];
   const reversedPart = (key: string) =>
@@ -307,21 +311,30 @@ export async function recoveryKeptLines(
 
 /**
  * legend-rat9r: what the item of `issue` has already given back, other than
- * through `issue` itself: the face value of every apology voucher of its
- * chain (issues whose item maps to the same original) plus, per issue, the
- * largest refund while that issue still has a live refund (same rule as
- * `recoveryReleasedOf`). `paidValueIdr` is the smallest paid value stored on
- * the chain plus the extra charges of its dearer swaps the guest really paid
+ * through `issue` itself, read from the one source of every payout path
+ * (`orderGivenOf`, architect Q25): the vouchers and live refunds of the
+ * issues of its chain (issues whose item maps to the same original) and its
+ * part of the POS refunds that named it. `orderRoomIdr`: what the order as a
+ * whole still leaves (paid less every voucher and refund, this issue's own
+ * left out). `paidValueIdr` is the smallest paid value stored on the chain
+ * plus the extra charges of its dearer swaps the guest really paid
  * (legend-hhm5m: an unpaid extra never counts); null when no swap of the chain
  * stored one (no swap, or a swap from before migration 0235).
  */
 export async function recoveryChainOf(
   tx: Tx,
   tenantId: ScopedTenantContext["tenant"]["tenantId"],
-  issue: { id: string; orderItemId: string },
+  issue: { id: string; orderItemId: string; orderId: string },
   issues: readonly RecoveryIssue[],
   toOriginal: (itemId: string) => string,
-): Promise<{ paidValueIdr: number | null; givenIdr: number }> {
+): Promise<{
+  paidValueIdr: number | null;
+  givenIdr: number;
+  orderRoomIdr: number;
+}> {
+  const orderGiven = await orderGivenOf(tx, tenantId, issue.orderId);
+  const givenIdr = lineGivenOf(orderGiven, issue.orderItemId, issue.id);
+  const orderRoomIdr = orderRoomOf(orderGiven, issue.id);
   const original = toOriginal(issue.orderItemId);
   const chain = issues.filter(
     (row) => row.id !== issue.id && toOriginal(row.orderItemId) === original,
@@ -329,51 +342,22 @@ export async function recoveryChainOf(
   const paid = chain.flatMap((row) =>
     row.paidValueIdr === null ? [] : [Number(row.paidValueIdr)],
   );
-  if (chain.length === 0) return { paidValueIdr: null, givenIdr: 0 };
-  const ids = () =>
-    sql.join(
-      chain.map((row) => sql`${row.id}::uuid`),
-      sql`, `,
-    );
-  const voucherIds = chain.flatMap((row) =>
-    row.voucherId === null ? [] : [row.voucherId],
-  );
-  const given = await tx.execute(sql`
-    SELECT
-      (SELECT coalesce(sum(v.value_idr), 0)
-         FROM apology_vouchers a
-         JOIN vouchers v ON v.tenant_id = a.tenant_id AND v.id = a.voucher_id
-        WHERE a.tenant_id = ${tenantId}
-          AND a.id IN (${
-            voucherIds.length === 0
-              ? sql`NULL::uuid`
-              : sql.join(
-                  voucherIds.map((id) => sql`${id}::uuid`),
-                  sql`, `,
-                )
-          }))::text AS vouchers,
-      (SELECT coalesce(sum(m.amt), 0)
-         FROM (SELECT max(r.amount_idr) AS amt
-                 FROM payment_refunds r
-                WHERE r.tenant_id = ${tenantId}
-                  AND r.order_issue_id IN (${ids()})
-                GROUP BY r.order_issue_id
-               HAVING coalesce(bool_or(r.status <> 'failed'), false)) m)::text AS refunds,
-      (SELECT coalesce(sum(c.amount_idr), 0)
-         FROM order_issue_charges c
-        WHERE c.tenant_id = ${tenantId}
-          AND c.order_issue_id IN (${ids()})
-          AND c.status = 'paid')::text AS extra
+  if (paid.length === 0) return { paidValueIdr: null, givenIdr, orderRoomIdr };
+  const extra = await tx.execute(sql`
+    SELECT coalesce(sum(c.amount_idr), 0)::text AS extra
+      FROM order_issue_charges c
+     WHERE c.tenant_id = ${tenantId}
+       AND c.order_issue_id IN (${sql.join(
+         chain.map((row) => sql`${row.id}::uuid`),
+         sql`, `,
+       )})
+       AND c.status = 'paid'
   `);
-  const row = given.rows[0];
   return {
     paidValueIdr:
-      paid.length === 0
-        ? null
-        : Math.min(...paid) + Number(String(row?.extra ?? "0")),
-    givenIdr:
-      Number(String(row?.vouchers ?? "0")) +
-      Number(String(row?.refunds ?? "0")),
+      Math.min(...paid) + Number(String(extra.rows[0]?.extra ?? "0")),
+    givenIdr,
+    orderRoomIdr,
   };
 }
 
@@ -410,7 +394,9 @@ const swapChargePending = () =>
  * paid the extra (`amount_idr`, with service and PBJT), it adds to the paid
  * value. `waived`/`expired`: never paid, so the line that swap wrote is worth
  * its difference less (only the swap that wrote `lineId`: a later swap's
- * difference is already measured against that lower list value). Anything
+ * difference is already measured against that lower list value). A swap
+ * whose charge was blocked (`order_issue.charge_blocked`, no charge row ever
+ * comes) charges nothing, so it reads as waived (architect Q25 #8). Anything
  * else (`open`, `routed_pos`, no charge row yet): pending.
  */
 async function chainChargesOf(
@@ -427,7 +413,14 @@ async function chainChargesOf(
   if (chain.length === 0) return none;
   const result = await tx.execute(sql`
     SELECT i.id::text AS issue_id, c.status,
-           c.amount_idr::text AS amount, c.difference_idr::text AS difference
+           c.amount_idr::text AS amount,
+           coalesce(c.difference_idr, i.price_difference_idr)::text AS difference,
+           (c.id IS NULL AND EXISTS (
+              SELECT 1 FROM audit_logs a
+               WHERE a.tenant_id = i.tenant_id
+                 AND a.created_at >= coalesce(i.resolved_at, i.created_at) - interval '1 day'
+                 AND a.event->>'action' = 'order_issue.charge_blocked'
+                 AND a.event->>'objectId' = i.id::text)) AS blocked
       FROM order_issues i
       LEFT JOIN order_issue_charges c
         ON c.tenant_id = i.tenant_id AND c.order_issue_id = i.id
@@ -444,7 +437,12 @@ async function chainChargesOf(
   const writer = chain.find((row) => row.replacementOrderItemId === lineId);
   const charges = { ...none };
   for (const row of result.rows) {
-    const status = row.status === null ? null : String(row.status);
+    const status =
+      row.blocked === true
+        ? "waived"
+        : row.status === null
+          ? null
+          : String(row.status);
     if (status === "paid")
       charges.paidExtraIdr += Number(String(row.amount ?? "0"));
     else if (status === "waived" || status === "expired") {
@@ -564,7 +562,11 @@ export type SwapPaidValue = {
   paidValueIdr: number;
   /** Vouchers and live refunds of the chain (other than the issue itself). */
   givenIdr: number;
-  /** List value of the line a swap difference is measured against. */
+  /** What the order as a whole still leaves (`orderGivenOf`). */
+  orderRoomIdr: number;
+  /** List total of the line: a dearer swap is measured against it. */
+  lineTotalIdr: number;
+  /** List value a cheaper swap's credit is measured against (waived extra out). */
   listBaseIdr: number;
 };
 
@@ -604,7 +606,7 @@ async function readPaidValue(
   const given = await recoveryChainOf(
     tx,
     tenantId,
-    issue,
+    { ...issue, orderId: order.id },
     issues,
     chain.toOriginal,
   );
@@ -634,36 +636,19 @@ async function readPaidValue(
       baseIdr,
       paidValueIdr: baseIdr + charges.paidExtraIdr,
       givenIdr: given.givenIdr,
+      orderRoomIdr: given.orderRoomIdr,
+      lineTotalIdr: line.lineTotalIdr,
       listBaseIdr: line.lineTotalIdr - charges.waivedDifferenceIdr,
       chargePending: charges.pending,
     },
   };
 }
 
-/**
- * legend-5g9sn: what the order as a whole still leaves (vouchers, POS and
- * recovery refunds of the order against what the guest paid for it). Read
- * without a lock (`orderGivenOf`).
- */
-async function orderRoomOf(
-  tx: Tx,
-  tenantId: ScopedTenantContext["tenant"]["tenantId"],
-  orderId: string,
-): Promise<number> {
-  const given = await orderGivenOf(tx, tenantId, orderId);
-  return Math.max(0, given.paidIdr - given.givenIdr);
-}
-
 /** The item room of a read, clamped to the room of the order. */
-async function roomOfRead(
-  tx: Tx,
-  context: ScopedTenantContext,
-  read: PaidValueRead,
-  orderId: string,
-): Promise<number> {
+function roomOfRead(read: SwapPaidValue): number {
   return Math.min(
     Math.max(0, read.paidValueIdr - read.givenIdr),
-    await orderRoomOf(tx, context.tenant.tenantId, orderId),
+    read.orderRoomIdr,
   );
 }
 
@@ -682,13 +667,13 @@ export async function voucherRoomOf(
   /** False for a read-only preview (the guest's options): no row lock. */
   lock = true,
 ): Promise<number> {
-  const { read, orderId } = await readPaidValue(
+  const { read } = await readPaidValue(
     tx,
     context,
     { ...input, at: input.at ?? new Date() },
     lock,
   );
-  return roomOfRead(tx, context, read, orderId);
+  return roomOfRead(read);
 }
 
 /**
@@ -708,20 +693,38 @@ export async function swapPaidValueOf(
 ): Promise<SwapPaidValue> {
   const { read } = await readPaidValue(tx, context, input, lock);
   if (read.chargePending) throw swapChargePending();
+  return swapPaidValue(read);
+}
+
+function swapPaidValue(read: PaidValueRead): SwapPaidValue {
   return {
     baseIdr: read.baseIdr,
     paidValueIdr: read.paidValueIdr,
     givenIdr: read.givenIdr,
+    orderRoomIdr: read.orderRoomIdr,
+    lineTotalIdr: read.lineTotalIdr,
     listBaseIdr: read.listBaseIdr,
   };
 }
 
-/** The credit of a swap whose list difference is `differenceIdr` (< 0). */
+/**
+ * The difference of a swap to a replacement worth `replacementIdr` (unit price
+ * x quantity): above the line's list total it is charged (architect Q25 #7: a
+ * waived extra is not charged again for the same price); below the list value
+ * less a waived extra (`listBaseIdr`) it is credited (< 0); in between, 0.
+ */
+export function swapDifferenceOf(paid: SwapPaidValue, replacementIdr: number) {
+  const dearer = replacementIdr - paid.lineTotalIdr;
+  return dearer > 0 ? dearer : Math.min(0, replacementIdr - paid.listBaseIdr);
+}
+
+/**
+ * The credit of a swap whose list difference is `differenceIdr` (< 0): at
+ * most what the item's paid value still leaves and what the order still
+ * leaves (architect Q25 #2).
+ */
 export function swapCreditOf(paid: SwapPaidValue, differenceIdr: number) {
-  return Math.min(
-    -differenceIdr,
-    Math.max(0, paid.paidValueIdr - paid.givenIdr),
-  );
+  return Math.min(-differenceIdr, roomOfRead(paid));
 }
 
 /**
@@ -743,17 +746,10 @@ export async function recoveryPreviewOf(
       return { swap: null, voucherRoomIdr: null };
     throw error;
   }
-  const { read, orderId } = found;
+  const { read } = found;
   return {
-    swap: read.chargePending
-      ? null
-      : {
-          baseIdr: read.baseIdr,
-          paidValueIdr: read.paidValueIdr,
-          givenIdr: read.givenIdr,
-          listBaseIdr: read.listBaseIdr,
-        },
-    voucherRoomIdr: await roomOfRead(tx, context, read, orderId),
+    swap: read.chargePending ? null : swapPaidValue(read),
+    voucherRoomIdr: roomOfRead(read),
   };
 }
 

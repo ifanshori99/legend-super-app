@@ -1,10 +1,12 @@
 // legend-5g9sn (founder rule Q25, 11 Nov 2026): what an order has already given
-// back to the guest, at order level, read without any lock. Vouchers + POS
-// refunds + live recovery refunds never exceed what the guest paid for the
-// order. The POS refund (`refundPosOrder`) reads it under its order lock; the
-// recovery voucher room clamps to it (order lock taken by the caller). No issue
-// lock is taken here: the voucher side locks issue then order, so locking an
-// issue from the POS side (order first) would deadlock.
+// back to the guest, per order and per original line, read without any lock.
+// Vouchers + POS refunds + live recovery refunds never exceed what the guest
+// paid for the order, nor for one item. This is the ONE source every payout
+// path reads (architect Q25 review): the POS refund (`refundPosOrder`, under
+// its order lock), the recovery voucher room and swap credit, and the
+// recovery refund consumer (order lock taken by the caller). No issue lock is
+// taken here: the voucher side locks issue then order, so locking an issue
+// from the POS side (order first) would deadlock.
 //
 // - Vouchers: every apology voucher of an issue of the order, reached through
 //   `order_issues.voucher_id` or `apology_vouchers.order_issue_id`, each once.
@@ -15,14 +17,19 @@
 //   the deposit applied, plus the dearer-swap charges the guest paid.
 // - Per line (Q25 is per item): the vouchers and live recovery refunds of the
 //   issues of each ORIGINAL line, a replacement line mapped back to the line it
-//   replaced through the swap chain (`originalOf`).
+//   replaced through the swap chain (`originalOf`), plus its part of the POS
+//   refunds that named items (each row split over its items by value, the
+//   last item taking the rest). A POS refund naming no item counts for the
+//   order only.
 
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   ulidToUuid,
   uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { posOrderRefunds } from "../db/schema/pos-order.ts";
+import { orderItems } from "../db/schema/qr-order.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 export type OrderGiven = {
@@ -33,11 +40,52 @@ export type OrderGiven = {
   recoveryRefundsIdr: number;
   /** vouchers + POS refunds + recovery refunds. */
   givenIdr: number;
-  /** Original line id -> vouchers + live recovery refunds of its issues. */
+  /**
+   * Original line id -> vouchers + live recovery refunds of its issues + its
+   * part of the POS refunds that named items.
+   */
   lineGivenIdr: Map<string, number>;
+  /** Original line id -> vouchers + live recovery refunds of its issues only. */
+  lineRecoveryGivenIdr: Map<string, number>;
+  /** Per issue: its original line and its vouchers + live recovery refund. */
+  issueGiven: Map<string, { lineId: string; givenIdr: number }>;
   /** Maps a line (a replacement too) to the original line of its swap chain. */
   toOriginal: (lineId: string) => string;
 };
+
+/**
+ * What the original line of `lineId` already gave back, other than through
+ * `exceptIssueId` (the issue being settled: a replayed consumer must not count
+ * its own refund).
+ */
+export function lineGivenOf(
+  given: Pick<OrderGiven, "lineGivenIdr" | "issueGiven" | "toOriginal">,
+  lineId: string,
+  exceptIssueId?: string,
+): number {
+  const line = given.toOriginal(lineId);
+  const own =
+    exceptIssueId === undefined
+      ? undefined
+      : given.issueGiven.get(exceptIssueId);
+  return Math.max(
+    0,
+    (given.lineGivenIdr.get(line) ?? 0) -
+      (own !== undefined && own.lineId === line ? own.givenIdr : 0),
+  );
+}
+
+/** What the order still leaves for `exceptIssueId` (never below Rp0). */
+export function orderRoomOf(
+  given: Pick<OrderGiven, "paidIdr" | "givenIdr" | "issueGiven">,
+  exceptIssueId?: string,
+): number {
+  const own =
+    exceptIssueId === undefined
+      ? 0
+      : (given.issueGiven.get(exceptIssueId)?.givenIdr ?? 0);
+  return Math.max(0, given.paidIdr - (given.givenIdr - own));
+}
 
 export async function orderGivenOf(
   tx: Tx,
@@ -89,7 +137,8 @@ export async function orderGivenOf(
        END)::text AS paid
   `);
   const perIssue = await tx.execute(sql`
-    SELECT i.order_item_id::text AS item,
+    SELECT i.id::text AS id,
+           i.order_item_id::text AS item,
            i.replacement_order_item_id::text AS replacement,
            (SELECT coalesce(sum(v.value_idr), 0)
               FROM apology_vouchers a
@@ -122,14 +171,67 @@ export async function orderGivenOf(
     return id;
   };
   const lineGivenIdr = new Map<string, number>();
+  const lineRecoveryGivenIdr = new Map<string, number>();
+  const issueGiven = new Map<string, { lineId: string; givenIdr: number }>();
+  const add = (map: Map<string, number>, line: string, amount: number) =>
+    map.set(line, (map.get(line) ?? 0) + amount);
   for (const issue of perIssue.rows) {
     const line = toOriginal(uuidToUlid(String(issue.item)));
-    lineGivenIdr.set(
-      line,
-      (lineGivenIdr.get(line) ?? 0) +
-        read(issue.vouchers) +
-        read(issue.refunds),
+    const amount = read(issue.vouchers) + read(issue.refunds);
+    issueGiven.set(String(issue.id), { lineId: line, givenIdr: amount });
+    add(lineGivenIdr, line, amount);
+    add(lineRecoveryGivenIdr, line, amount);
+  }
+  // The POS refunds that named items, split over them by value.
+  const posRefunds = await tx
+    .select({
+      amountIdr: posOrderRefunds.amountIdr,
+      items: posOrderRefunds.items,
+    })
+    .from(posOrderRefunds)
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, tenantId),
+        eq(posOrderRefunds.orderId, orderId),
+      ),
     );
+  if (posRefunds.some((row) => row.items.length > 0)) {
+    const lines = await tx
+      .select({
+        id: orderItems.id,
+        quantity: orderItems.quantity,
+        lineTotalIdr: orderItems.lineTotalIdr,
+      })
+      .from(orderItems)
+      .where(
+        and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)),
+      );
+    const byId = new Map(lines.map((item) => [item.id as string, item]));
+    const valueOf = (itemId: string, quantity: number) => {
+      const item = byId.get(itemId);
+      return item && item.quantity > 0
+        ? (Number(item.lineTotalIdr) * quantity) / item.quantity
+        : 0;
+    };
+    for (const row of posRefunds) {
+      if (row.items.length === 0) continue;
+      const weights = row.items.map((entry) =>
+        valueOf(entry.itemId, entry.quantity),
+      );
+      const total = weights.reduce((sum, weight) => sum + weight, 0);
+      const amount = Number(row.amountIdr);
+      let left = amount;
+      row.items.forEach((entry, index) => {
+        const share =
+          index === row.items.length - 1
+            ? left
+            : total > 0
+              ? Math.floor((amount * weights[index]!) / total)
+              : 0;
+        left -= share;
+        add(lineGivenIdr, toOriginal(entry.itemId), share);
+      });
+    }
   }
   const vouchersIdr = read(row?.vouchers);
   const posRefundsIdr = read(row?.pos_refunds);
@@ -141,6 +243,8 @@ export async function orderGivenOf(
     recoveryRefundsIdr,
     givenIdr: vouchersIdr + posRefundsIdr + recoveryRefundsIdr,
     lineGivenIdr,
+    lineRecoveryGivenIdr,
+    issueGiven,
     toOriginal,
   };
 }

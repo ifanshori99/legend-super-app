@@ -588,45 +588,18 @@ type LineItem = Pick<
 /**
  * legend-5g9sn (Q25 per item): what the lines named by a POS refund still
  * hold. Per original line (a replacement maps back through the swap chain):
- * its share of the bill (line total x total / subtotal, floor) less the
- * vouchers and live recovery refunds of its issues and its part of the earlier
- * POS refunds that named items (each row split over its items by value, the
- * last item taking the rest). Rows without items are covered by the order room.
+ * its share of the bill (line total x total / subtotal, floor) less what it
+ * already gave back (`orderGivenOf`: the vouchers and live recovery refunds of
+ * its issues and its part of the earlier POS refunds that named items). Rows
+ * without items are covered by the order room.
  */
 export function lineRoomIdr(
   order: { totalIdr: number; subtotalIdr: number },
   items: readonly LineItem[],
-  refunds: readonly Pick<RefundRow, "amountIdr" | "items">[],
   given: Pick<OrderGiven, "lineGivenIdr" | "toOriginal">,
   requested: readonly { itemId: string }[],
 ): number {
   const byId = new Map(items.map((item) => [item.id as string, item]));
-  const valueOf = (itemId: string, quantity: number) => {
-    const item = byId.get(itemId);
-    return item && item.quantity > 0
-      ? (Number(item.lineTotalIdr) * quantity) / item.quantity
-      : 0;
-  };
-  const priorPos = new Map<string, number>();
-  for (const row of refunds) {
-    if (row.items.length === 0) continue;
-    const weights = row.items.map((entry) =>
-      valueOf(entry.itemId, entry.quantity),
-    );
-    const total = weights.reduce((sum, weight) => sum + weight, 0);
-    let left = Number(row.amountIdr);
-    row.items.forEach((entry, index) => {
-      const share =
-        index === row.items.length - 1
-          ? left
-          : total > 0
-            ? Math.floor((row.amountIdr * weights[index]!) / total)
-            : 0;
-      left -= share;
-      const line = given.toOriginal(entry.itemId);
-      priorPos.set(line, (priorPos.get(line) ?? 0) + share);
-    });
-  }
   const lines = new Set(
     requested.map((entry) => given.toOriginal(entry.itemId)),
   );
@@ -640,10 +613,7 @@ export function lineRoomIdr(
               BigInt(order.subtotalIdr),
           )
         : 0;
-    room += Math.max(
-      0,
-      paid - (given.lineGivenIdr.get(line) ?? 0) - (priorPos.get(line) ?? 0),
-    );
+    room += Math.max(0, paid - (given.lineGivenIdr.get(line) ?? 0));
   }
   return room;
 }
@@ -839,8 +809,20 @@ export async function refundPosOrder(
           // refund and a promo order cannot be refunded by amount alone, so a
           // payout below what is due would lock the rest for good. Asking
           // less is refused before anything is written; asking more is
-          // capped to what is due (unchanged).
-          const owedIdr = Math.min(dueBill, roomIdr);
+          // capped to what is due (unchanged). Q25 per item (architect Q25
+          // #4): what the named lines already gave back through recovery
+          // (vouchers, live recovery refunds) is not owed again; their
+          // earlier POS refunds are already out of `dueBill` (`refunded`).
+          const namedGivenIdr = [
+            ...new Set(
+              requested.map((entry) => given.toOriginal(entry.itemId)),
+            ),
+          ].reduce(
+            (sum, line) => sum + (given.lineRecoveryGivenIdr.get(line) ?? 0),
+            0,
+          );
+          const dueIdr = Math.max(0, dueBill - namedGivenIdr);
+          const owedIdr = Math.min(dueIdr, roomIdr);
           // legend-186 (s7rx B): owed, but only from the deposit (the tenders
           // are used up): the item still comes back as a Rp0 return and the
           // rest stays on the deposit side.
@@ -861,9 +843,14 @@ export async function refundPosOrder(
             );
           payout = Math.min(input.amountIdr, owedIdr);
           // Running balance (the latest audit row holds it; do not sum rows):
-          // what is due beyond what the tenders can still pay.
+          // what is due beyond what the tenders can still pay (architect Q25
+          // #5: measured against the tenders, not the voucher-cut room, so a
+          // value already given as a voucher is not owed on the deposit).
           if (Number(order.depositAppliedIdr) > 0)
-            depositOwedIdr = Math.max(0, dueBill - owedIdr);
+            depositOwedIdr = Math.max(
+              0,
+              dueIdr - Math.min(dueIdr, Math.max(0, paid - refunded)),
+            );
         }
         if (goodsReturnOnly) payout = 0;
         else if (payout <= 0)
@@ -884,7 +871,7 @@ export async function refundPosOrder(
         if (requested.length > 0)
           payout = Math.min(
             payout,
-            lineRoomIdr(order, allItems, refunds, given, requested),
+            lineRoomIdr(order, allItems, given, requested),
           );
         if (payout <= 0)
           throw new HttpError(

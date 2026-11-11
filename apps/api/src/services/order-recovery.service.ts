@@ -81,6 +81,7 @@ import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
 import {
   recoveryPreviewOf,
   swapCreditOf,
+  swapDifferenceOf,
   swapPaidValueOf,
   voucherRoomOf,
 } from "./order-recovery-paid-value.ts";
@@ -872,11 +873,16 @@ export async function listSessionOrderIssues(
                       .filter(
                         (item) =>
                           item.menuItemId !== row.menuItemId &&
-                          item.unitPriceIdr * row.quantity <= swap.listBaseIdr,
+                          swapDifferenceOf(
+                            swap,
+                            item.unitPriceIdr * row.quantity,
+                          ) <= 0,
                       )
                       .map((item) => {
-                        const difference =
-                          item.unitPriceIdr * row.quantity - swap.listBaseIdr;
+                        const difference = swapDifferenceOf(
+                          swap,
+                          item.unitPriceIdr * row.quantity,
+                        );
                         return {
                           menuItemId: item.menuItemId,
                           name: item.name,
@@ -1204,8 +1210,9 @@ async function swapSettlement(
     throw unprocessable("Menu pengganti tidak tersedia di outlet ini.");
   // legend-rat9r, legend-hhm5m: every swap reads the paid value of the
   // original item of its chain (stored on the issue, the cap of every later
-  // voucher and refund of the item). The difference is measured against the
-  // whole old line (modifiers included) less an extra the guest never paid;
+  // voucher and refund of the item). A dearer swap is measured against the
+  // whole old line (modifiers included); a cheaper one against it less an
+  // extra the guest never paid (`swapDifferenceOf`, architect Q25 #7);
   // negative is credited. 422 while an earlier extra charge is not settled.
   const paid = await swapPaidValueOf(tx, context, {
     orderId: found.order.id,
@@ -1213,8 +1220,10 @@ async function swapSettlement(
     lineId: found.line.id,
     at: now,
   });
-  const difference =
-    replacement.unitPriceIdr * found.line.quantity - paid.listBaseIdr;
+  const difference = swapDifferenceOf(
+    paid,
+    replacement.unitPriceIdr * found.line.quantity,
+  );
   let approval: {
     approvedBy: string | null;
     approvalRequestId: string;
@@ -1246,8 +1255,9 @@ async function swapSettlement(
   const paidValueIdr = paid.baseIdr;
   // legend-rat9r (founder W4 Q25): the credit is the list difference at most
   // what the guest paid for the item (with the extras really paid), less what
-  // its chain already gave back (vouchers, live refunds). A credit of 0 mints
-  // no voucher and needs no approval.
+  // its chain already gave back (vouchers, live refunds, POS refunds of it),
+  // and at most what the order still leaves (architect Q25 #2). A credit of 0
+  // mints no voucher and needs no approval.
   const creditIdr = difference < 0 ? swapCreditOf(paid, difference) : null;
   if (creditIdr !== null && creditIdr > 0) {
     const creditReason =

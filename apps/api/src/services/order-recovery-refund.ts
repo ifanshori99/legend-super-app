@@ -48,11 +48,13 @@
 //   paid its own normal amount, never the earlier failed line's amount, and a
 //   rejected refund of the original does not turn the replacement into
 //   `nothing_left`.
-// - Paid value (legend-rat9r, founder W4 Q25): a cheaper swap stores what the
-//   guest paid for the item (`order_issues.paid_value_idr`). Every refund of
-//   that item's chain (first filing or replay) is capped at that value less
-//   the chain's vouchers and live refunds (`voucherCapIdr`), on top of the
-//   swap cap. A promo order cut to Rp0 this way books its goods money on the
+// - Paid value (legend-rat9r, founder W4 Q25): a swap stores what the guest
+//   paid for the item (`order_issues.paid_value_idr`); without one the
+//   refund's own amount (wanted, or the replay's) stands for it. Every refund
+//   (first filing or replay) is capped at that value less what the item
+//   already gave back, and at what the order still leaves (`voucherCapIdr`,
+//   `orderGivenOf`: vouchers, live recovery refunds, POS refunds; architect
+//   Q25 #1), on top of the swap cap. A promo order cut to Rp0 this way books its goods money on the
 //   promo ledger once, as a Rp0 replacement does (legend-k0ub4).
 // - Promo ledger (legend-hhm5m 3): after a recompute the line's full goods
 //   money is booked before any cap or room cut, with the refund row or the
@@ -516,40 +518,40 @@ export async function deliverOrderRecoveryRefundEvent(
         priorLinesIdr,
         releasedIdr,
       }).wantedIdr;
-    // legend-rat9r (founder W4 Q25): the swap voucher and every refund of the
-    // item (original or replacement, first filing or replay) stay within what
-    // the guest paid for it, read at the cheaper swap (`paidValueIdr`). The
-    // room is that value less the vouchers and live refunds of its chain.
+    // legend-rat9r (founder W4 Q25), architect Q25 #1: the swap voucher and
+    // every refund of the item (original or replacement, first filing or
+    // replay) stay within what the guest paid for it: the value stored at a
+    // swap (`paidValueIdr`), else what this refund would pay uncapped (the
+    // line's wanted amount or the replay's). The room is that value less what
+    // the item already gave back (vouchers, live refunds, POS refunds naming
+    // it), and never more than the order still leaves.
     const given = await recoveryChainOf(
       tx,
       tenantId,
-      issue,
+      { id: issue.id, orderItemId: issue.orderItemId, orderId: order.id },
       issues,
       toOriginal,
     );
-    if (given.paidValueIdr !== null)
-      voucherCapIdr = Math.max(0, given.paidValueIdr - given.givenIdr);
+    const uncappedIdr =
+      replay === null
+        ? recoveryRefundSplit({
+            order,
+            lineTotalIdr: line.lineTotalIdr,
+            priorLinesIdr,
+            releasedIdr,
+            ...(promo === undefined ? {} : { promo }),
+          }).wantedIdr
+        : replay.amountIdr;
+    voucherCapIdr = Math.min(
+      Math.max(0, (given.paidValueIdr ?? uncappedIdr) - given.givenIdr),
+      given.orderRoomIdr,
+    );
     capIdr =
       swapCapIdr === undefined
         ? voucherCapIdr
-        : voucherCapIdr === undefined
-          ? swapCapIdr
-          : Math.min(swapCapIdr, voucherCapIdr);
-    if (capIdr !== undefined) {
-      const uncappedIdr =
-        replay === null
-          ? recoveryRefundSplit({
-              order,
-              lineTotalIdr: line.lineTotalIdr,
-              priorLinesIdr,
-              releasedIdr,
-              ...(promo === undefined ? {} : { promo }),
-            }).wantedIdr
-          : replay.amountIdr;
-      swapCapCuts = swapCapIdr !== undefined && swapCapIdr < uncappedIdr;
-      voucherCapCuts =
-        voucherCapIdr !== undefined && voucherCapIdr < uncappedIdr;
-    }
+        : Math.min(swapCapIdr, voucherCapIdr);
+    swapCapCuts = swapCapIdr !== undefined && swapCapIdr < uncappedIdr;
+    voucherCapCuts = voucherCapIdr < uncappedIdr;
     split =
       replay === null
         ? recoveryRefundSplit({
@@ -558,12 +560,12 @@ export async function deliverOrderRecoveryRefundEvent(
             priorLinesIdr,
             releasedIdr,
             ...(promo === undefined ? {} : { promo }),
-            ...(capIdr === undefined ? {} : { capIdr }),
+            capIdr,
           })
         : recoveryRefundReplaySplit({
             order,
             wantedIdr: replay.amountIdr,
-            ...(capIdr === undefined ? {} : { capIdr }),
+            capIdr,
             grossSalesIdr: replay.grossSalesIdr,
             discountIdr: replay.discountIdr,
             serviceChargeIdr: replay.serviceChargeIdr,
