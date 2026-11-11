@@ -129,7 +129,9 @@ test.describe("legend-5ac3 outlet on journal lines", () => {
       "true",
     );
     await expect(
-      page.getByText("Jurnal membutuhkan minimal dua baris."),
+      page
+        .getByRole("alert")
+        .getByText("Jurnal membutuhkan minimal dua baris."),
     ).toBeVisible();
   });
 

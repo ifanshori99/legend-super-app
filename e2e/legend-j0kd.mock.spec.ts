@@ -85,10 +85,9 @@ test.describe("legend-j0kd settings hub", () => {
   }) => {
     test.slow();
     await openAs(page, "finance");
-    // Keamanan akun and Notifikasi need no permission, so the hub is never
-    // empty for anyone who can open the back office; the mockup's empty state
-    // ("Belum ada pengaturan yang tersedia") only shows when no card at all
-    // remains, which these two always prevent.
+    // Keamanan akun and Notifikasi need no permission, so the page is never
+    // empty; the primary "Pengaturan" group shows the mockup's empty line
+    // ("Belum ada pengaturan yang tersedia") instead of its four rows.
     await expect(card(page, "Keamanan akun")).toBeVisible();
     for (const name of [
       "Integrasi",
@@ -99,7 +98,7 @@ test.describe("legend-j0kd settings hub", () => {
       await expect(card(page, name)).toHaveCount(0);
     await expect(
       page.getByText("Belum ada pengaturan yang tersedia"),
-    ).toHaveCount(0);
+    ).toBeVisible();
   });
 
   test("the hub shows the mockup heading and keeps other settings reachable", async ({
