@@ -201,3 +201,148 @@ describe("HPP-MATH composeFoodCost", () => {
     expect(bp(1, 20_000)).toBe(1); // exactly 0,5 rounds up
   });
 });
+
+// Finding 7 (design hpp-fix-design.md): composeFoodCost must keep BOTH
+// invariants at once: actual >= 0 AND variance = waste + adjustment +
+// off-recipe. When theoretical + waste + adjustment + off-recipe would drop
+// below zero, the surplus (negative adjustment) is capped so that actual = 0
+// and variance = -theoretical, and the capped adjustment is returned as
+// `adjustmentIdr` so the report can show the identity exactly.
+describe("HPP-MATH composeFoodCost surplus cap (finding 7)", () => {
+  const composeFull = (input: {
+    theoreticalIdr: number;
+    wasteIdr: number;
+    adjustmentIdr: number;
+    offRecipeUsageIdr: number;
+  }) =>
+    composeFood(input) as unknown as {
+      actualCostIdr: number;
+      varianceIdr: number;
+      varianceBp: number;
+      adjustmentIdr: number;
+    };
+
+  function composeFood(input: {
+    theoreticalIdr: number;
+    wasteIdr: number;
+    adjustmentIdr: number;
+    offRecipeUsageIdr: number;
+  }) {
+    return composeFoodCost({
+      theoreticalIdr: idr(input.theoreticalIdr),
+      wasteIdr: idr(input.wasteIdr),
+      adjustmentIdr: idr(input.adjustmentIdr),
+      offRecipeUsageIdr: idr(input.offRecipeUsageIdr),
+    });
+  }
+
+  it("HPP-MATH-food-cap a large surplus keeps actual >= 0 and variance = waste + adjustment + off-recipe", () => {
+    const result = composeFull({
+      theoreticalIdr: 1_000,
+      wasteIdr: 200,
+      adjustmentIdr: -10_000,
+      offRecipeUsageIdr: 300,
+    });
+    // Capped: -(1.000 + 200 + 300) = -1.500, so actual lands exactly on 0.
+    expect(result.adjustmentIdr).toBe(-1_500);
+    expect(result.actualCostIdr).toBe(0);
+    expect(result.varianceIdr).toBe(-1_000);
+    expect(result.varianceIdr).toBe(200 + result.adjustmentIdr + 300);
+    expect(result.actualCostIdr).toBe(1_000 + result.varianceIdr);
+    expect(result.varianceBp).toBe(-10_000);
+  });
+
+  it("HPP-MATH-food-cap a surplus with no waste or off-recipe is capped at minus the theoretical cost", () => {
+    const result = composeFull({
+      theoreticalIdr: 1_000,
+      wasteIdr: 0,
+      adjustmentIdr: -10_000,
+      offRecipeUsageIdr: 0,
+    });
+    expect(result.adjustmentIdr).toBe(-1_000);
+    expect(result.actualCostIdr).toBe(0);
+    expect(result.varianceIdr).toBe(-1_000);
+  });
+
+  it("HPP-MATH-food-cap a surplus that lands exactly on zero is not capped", () => {
+    const result = composeFull({
+      theoreticalIdr: 1_000,
+      wasteIdr: 0,
+      adjustmentIdr: -1_000,
+      offRecipeUsageIdr: 0,
+    });
+    expect(result.adjustmentIdr).toBe(-1_000);
+    expect(result.actualCostIdr).toBe(0);
+    expect(result.varianceIdr).toBe(-1_000);
+  });
+
+  it("HPP-MATH-food-cap a surplus that keeps actual positive is returned unchanged", () => {
+    const result = composeFull({
+      theoreticalIdr: 10_000,
+      wasteIdr: 0,
+      adjustmentIdr: -500,
+      offRecipeUsageIdr: 0,
+    });
+    expect(result.adjustmentIdr).toBe(-500);
+    expect(result.actualCostIdr).toBe(9_500);
+    expect(result.varianceIdr).toBe(-500);
+  });
+
+  it("HPP-MATH-food-cap a positive adjustment is returned unchanged", () => {
+    const result = composeFull({
+      theoreticalIdr: 17_400,
+      wasteIdr: 1_250,
+      adjustmentIdr: 300,
+      offRecipeUsageIdr: 2_000,
+    });
+    expect(result.adjustmentIdr).toBe(300);
+    expect(result.varianceIdr).toBe(1_250 + 300 + 2_000);
+  });
+
+  it("HPP-MATH-food-cap with zero theoretical cost a lone surplus is capped to 0 and the identity holds", () => {
+    const result = composeFull({
+      theoreticalIdr: 0,
+      wasteIdr: 0,
+      adjustmentIdr: -300,
+      offRecipeUsageIdr: 0,
+    });
+    expect(result.adjustmentIdr).toBe(0);
+    expect(result.actualCostIdr).toBe(0);
+    expect(result.varianceIdr).toBe(0);
+    expect(result.varianceBp).toBe(0);
+  });
+
+  it("HPP-MATH-food-cap the variance identity holds for every combination in a small grid", () => {
+    for (const theoreticalIdr of [0, 1_000, 5_000])
+      for (const wasteIdr of [0, 400])
+        for (const adjustmentIdr of [-20_000, -3_000, -1, 0, 700])
+          for (const offRecipeUsageIdr of [0, 250]) {
+            const result = composeFull({
+              theoreticalIdr,
+              wasteIdr,
+              adjustmentIdr,
+              offRecipeUsageIdr,
+            });
+            const label = JSON.stringify({
+              theoreticalIdr,
+              wasteIdr,
+              adjustmentIdr,
+              offRecipeUsageIdr,
+            });
+            expect(result.actualCostIdr, label).toBeGreaterThanOrEqual(0);
+            expect(result.varianceIdr, label).toBe(
+              wasteIdr + result.adjustmentIdr + offRecipeUsageIdr,
+            );
+            expect(result.actualCostIdr, label).toBe(
+              theoreticalIdr + result.varianceIdr,
+            );
+            // A cap only ever shrinks a surplus, never turns it into a loss.
+            expect(result.adjustmentIdr, label).toBeGreaterThanOrEqual(
+              Math.min(adjustmentIdr, 0),
+            );
+            expect(result.adjustmentIdr, label).toBeLessThanOrEqual(
+              Math.max(adjustmentIdr, 0),
+            );
+          }
+  });
+});
