@@ -12,6 +12,12 @@
 // - Deactivating a terminal clears (or hides) the cashier defaults that point
 //   at it; the tests accept either as long as no cashier shows that terminal
 //   and no row still points at it.
+// - Same for a terminal that stops supporting a method: a default whose
+//   method the terminal no longer supports (edc_card needs "card") is cleared
+//   or hidden; a default whose method is still supported (edc_qris) stays.
+// - Replaying a default update with the same Idempotency-Key and the same body
+//   returns the stored answer (same status, same body), even when the
+//   terminal went inactive in between; it is not a new 4xx.
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -64,7 +70,7 @@ async function assign(
       role.rows[0]!.id,
       scope.type,
       scope.type === "outlet" ? scope.id : null,
-      window.from ?? "-1 minute",
+      window.from ?? "-1 hour",
       ...(window.until === undefined ? [] : [window.until]),
     ],
   );
@@ -99,11 +105,12 @@ const putDefault = (
   outletId: string,
   terminalId: string | null,
   defaultMethod = "edc_card",
+  idempotencyKey = `lnit-${randomUUID()}`,
 ) =>
   client
     .put(`/api/payments/admin/edc/cashier-defaults/${cashierId}`)
     .set(originHeader)
-    .set("Idempotency-Key", `lnit-${randomUUID()}`)
+    .set("Idempotency-Key", idempotencyKey)
     .send({ outletId, terminalId, defaultMethod });
 
 type DefaultsView = {
@@ -185,6 +192,65 @@ describe("WS-05 lnit B1: a deactivated terminal leaves no cashier default", () =
     ).toBe(kept);
   });
 
+  it("EDC-07 removing card from a terminal's supported methods clears the edc_card defaults on it but keeps edc_qris ones", async () => {
+    const cardCashier = await newUser("Lnit cashier b1 card");
+    await assign(cardCashier.userId, "cashier", {
+      type: "outlet",
+      id: outletA,
+    });
+    const qrisCashier = await newUser("Lnit cashier b1 qris");
+    await assign(qrisCashier.userId, "cashier", {
+      type: "outlet",
+      id: outletA,
+    });
+    const terminal = await createTerminal("bjb"); // supports card and qris
+
+    expect(
+      (await putDefault(manager, cardCashier.userId, outletA, terminal)).status,
+    ).toBe(200);
+    expect(
+      (
+        await putDefault(
+          manager,
+          qrisCashier.userId,
+          outletA,
+          terminal,
+          "edc_qris",
+        )
+      ).status,
+    ).toBe(200);
+
+    const narrowed = await manager
+      .patch(`/api/payments/admin/edc/terminals/${terminal}`)
+      .set(originHeader)
+      .set("Idempotency-Key", `lnit-${randomUUID()}`)
+      .send({ supportedMethods: ["qris"] });
+    expect(narrowed.status).toBe(200);
+    expect(narrowed.body.data.supportedMethods).toEqual(["qris"]);
+    expect(narrowed.body.data.status).toBe("active");
+
+    // The card default can no longer point at this terminal: not stored, not shown.
+    expect(
+      (await rowsFor(cardCashier.userId)).every(
+        (row) => row.terminal_id !== terminal,
+      ),
+    ).toBe(true);
+    const view = await readDefaults();
+    expect(
+      view.cashiers.find((c) => c.cashierId === cardCashier.userId)
+        ?.terminalId ?? null,
+    ).not.toBe(terminal);
+    // The terminal still takes QRIS, so that cashier keeps it.
+    expect(
+      view.cashiers.find((c) => c.cashierId === qrisCashier.userId)?.terminalId,
+    ).toBe(terminal);
+    expect(
+      (await rowsFor(qrisCashier.userId)).some(
+        (row) => row.terminal_id === terminal,
+      ),
+    ).toBe(true);
+  });
+
   it("EDC-07 a cashier default cannot be pointed at an inactive terminal", async () => {
     const cashier = await newUser("Lnit cashier b1 inactive");
     await assign(cashier.userId, "cashier", { type: "outlet", id: outletA });
@@ -203,6 +269,49 @@ describe("WS-05 lnit B1: a deactivated terminal leaves no cashier default", () =
       terminal,
     );
     expect(REFUSED).toContain(response.status);
+    expect(
+      (await rowsFor(cashier.userId)).every(
+        (row) => row.terminal_id !== terminal,
+      ),
+    ).toBe(true);
+  });
+
+  it("EDC-07 replaying a default update with the same key after the terminal went inactive returns the stored answer, not an error", async () => {
+    const cashier = await newUser("Lnit cashier b1 replay");
+    await assign(cashier.userId, "cashier", { type: "outlet", id: outletA });
+    const terminal = await createTerminal("bni");
+    const idempotencyKey = `lnit-replay-${randomUUID()}`;
+
+    const first = await putDefault(
+      manager,
+      cashier.userId,
+      outletA,
+      terminal,
+      "edc_card",
+      idempotencyKey,
+    );
+    expect(first.status).toBe(200);
+    expect(first.body.data.terminalId).toBe(terminal);
+
+    const off = await manager
+      .patch(`/api/payments/admin/edc/terminals/${terminal}`)
+      .set(originHeader)
+      .set("Idempotency-Key", `lnit-${randomUUID()}`)
+      .send({ status: "inactive" });
+    expect(off.status).toBe(200);
+
+    const replay = await putDefault(
+      manager,
+      cashier.userId,
+      outletA,
+      terminal,
+      "edc_card",
+      idempotencyKey,
+    );
+    // Same key, same body: the saved answer comes back (not 422/404/409).
+    expect(replay.status).toBe(200);
+    expect(replay.body.data).toEqual(first.body.data);
+    // The replay is not a new write: nothing points at the dead terminal.
     expect(
       (await rowsFor(cashier.userId)).every(
         (row) => row.terminal_id !== terminal,

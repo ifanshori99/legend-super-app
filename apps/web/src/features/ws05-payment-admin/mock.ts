@@ -594,14 +594,16 @@ function resolveFundOnce(fundId: string, body: ResolveUnallocatedFundInput) {
       "SERVICE_UNAVAILABLE",
       "Persetujuan kredit belum tersedia.",
     );
+  // A refund only opens an approval chain; like the API, the fund stays open
+  // (no resolution, no approval ref) until that chain completes.
   const updated: UnallocatedFundView = {
     ...fund,
-    resolution: body.resolution,
-    resolvedBy: ACTOR.id,
-    resolvedByName: ACTOR.name,
-    resolvedAt: now(),
-    status: "resolved",
-    note: body.note,
+    resolution: null,
+    approvalRef: null,
+    resolvedBy: null,
+    resolvedByName: null,
+    resolvedAt: null,
+    status: "open",
   };
   store.set({
     ...state,
