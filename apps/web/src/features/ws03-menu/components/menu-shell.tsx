@@ -74,7 +74,7 @@ export function MenuTabs({ active }: { active: MenuSection }) {
                 : undefined
             }
             aria-current={current ? "page" : undefined}
-            className={tabsTriggerClass}
+            className={cn(tabsTriggerClass, "max-md:min-h-11")}
           >
             {t(tab.labelKey)}
           </Link>

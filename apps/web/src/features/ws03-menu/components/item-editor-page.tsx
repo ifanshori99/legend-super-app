@@ -3,7 +3,7 @@
 // variant and modifier sections. Saves through the typed endpoints.
 import * as React from "react";
 import { Link, Navigate, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, CircleAlert } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { z } from "zod";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -408,13 +408,13 @@ function ItemEditor({
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
-          <TabsTrigger value="content">
+          <TabsTrigger value="content" className="max-md:min-h-11">
             {t("menu.editor.sections.content")}
           </TabsTrigger>
-          <TabsTrigger value="variants">
+          <TabsTrigger value="variants" className="max-md:min-h-11">
             {t("menu.editor.sections.variants")}
           </TabsTrigger>
-          <TabsTrigger value="modifiers">
+          <TabsTrigger value="modifiers" className="max-md:min-h-11">
             {t("menu.editor.sections.modifiers")}
           </TabsTrigger>
         </TabsList>
@@ -629,30 +629,20 @@ function ItemEditor({
                     <ImageField
                       value={values.image}
                       onChange={(image) => update({ image })}
+                      // Q23: "Tampil di menu" needs the photo, so the reason is
+                      // stated where the manager can fix it. A legacy active
+                      // row keeps the note as a warning: it is readable and
+                      // editable, but it cannot be published again until it
+                      // has a photo.
+                      requiredNote={
+                        photoRequired
+                          ? {
+                              text: `${t("menu.editor.photoRequired")}. ${t("menu.editor.photoRequiredHint")}`,
+                              blocking: publishBlocked,
+                            }
+                          : undefined
+                      }
                     />
-                    {/* Q23: "Tampil di menu" needs the photo, so the reason is
-                      stated where the manager can fix it. A legacy active row
-                      keeps the note as a warning: it is readable and editable,
-                      but it cannot be published again until it has a photo. */}
-                    {photoRequired && (
-                      <p
-                        role={publishBlocked ? "alert" : undefined}
-                        className={
-                          publishBlocked
-                            ? "flex items-start gap-1.5 text-sm leading-5 font-medium text-danger"
-                            : "flex items-start gap-1.5 text-sm leading-5 text-warning"
-                        }
-                      >
-                        <CircleAlert
-                          className="mt-0.5 size-4 shrink-0"
-                          aria-hidden="true"
-                        />
-                        <span>
-                          {t("menu.editor.photoRequired")}.{" "}
-                          {t("menu.editor.photoRequiredHint")}
-                        </span>
-                      </p>
-                    )}
                   </div>
                   <div className="flex items-start justify-between gap-3 border-t pt-4">
                     <div className="min-w-0">
@@ -772,13 +762,13 @@ function ReadOnlyItemDetail({
 
       <Tabs defaultValue="content">
         <TabsList>
-          <TabsTrigger value="content">
+          <TabsTrigger value="content" className="max-md:min-h-11">
             {t("menu.editor.sections.content")}
           </TabsTrigger>
-          <TabsTrigger value="variants">
+          <TabsTrigger value="variants" className="max-md:min-h-11">
             {t("menu.editor.sections.variants")}
           </TabsTrigger>
-          <TabsTrigger value="modifiers">
+          <TabsTrigger value="modifiers" className="max-md:min-h-11">
             {t("menu.editor.sections.modifiers")}
           </TabsTrigger>
         </TabsList>

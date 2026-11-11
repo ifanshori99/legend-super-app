@@ -2599,7 +2599,7 @@ export const id = {
         "Isi konten item, lalu simpan untuk menambah varian dan modifier.",
       save: "Simpan item",
       createdToast: "Item tersimpan.",
-      updatedToast: "Perubahan item tersimpan.",
+      updatedToast: "Pengaturan item berhasil disimpan.",
       sections: {
         content: "Konten",
         variants: "Varian",

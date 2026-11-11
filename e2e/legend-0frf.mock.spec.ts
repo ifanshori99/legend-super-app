@@ -49,7 +49,7 @@ test.describe("legend-0frf station routing on the item editor", () => {
 
     await page.getByRole("button", { name: "Simpan item" }).click();
     await expect(
-      page.getByText("Perubahan item tersimpan.").first(),
+      page.getByText("Pengaturan item berhasil disimpan.").first(),
     ).toBeVisible();
   });
 

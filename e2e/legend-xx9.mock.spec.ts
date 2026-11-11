@@ -36,7 +36,7 @@ test.describe("legend-xx9 · menu back office", () => {
     await page.getByLabel("Deskripsi").fill("Espresso ganda, biji lokal.");
     await page.getByRole("button", { name: "Simpan item" }).click();
     await expect(
-      page.getByText("Perubahan item tersimpan.").first(),
+      page.getByText("Pengaturan item berhasil disimpan.").first(),
     ).toBeVisible();
 
     await page.getByRole("tab", { name: "Varian" }).click();
