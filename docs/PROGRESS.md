@@ -3268,3 +3268,8 @@ Langkah berikut CTO baru:
 - Review: architect xhigh sekali di akhir, 3 temuan (parkir tanpa bukti, cabut tenggang tidak atomik, lubang needs_reconcile): dibetulkan, test `payment-recurring-488-final.test.ts` 22 hijau.
 - Keputusan penyimpangan: konsumen status tenant hanya acknowledge (tidak mencabut sesi); pencabutan sesi tetap di jalur platform-org. Perlu konfirmasi CTO.
 - Biaya (session-usage sesi engineer ad94a4, sampai 06:31 UTC): total 16096k, utama sonnet 201 req, subagent 922 req (opus 205, sonnet 705, haiku 11); 52 subagent; rata-rata subagent berjalan per agent 1,75 (parallel-report).
+
+### FAC-07 kartu lanjutan (2026-11-11, cabang ws/fac07-outbox-events)
+
+- Selesai: legend-baxdx (nomor rekening bank dan kode pemulihan MFA membaca dua versi blind-index, menulis versi aktif; migrasi 0302 `bank_accounts.account_number_hmac_version`; default 1 tidak mengubah digest; rebuild baris bank ke v2 belum ada), legend-5zb6g (`restoreTenant` emit `tenant.status_changed` satu transaksi dengan audit), legend-6qu47 (sweep kuota sudah per langganan sejak 488; sisa jalur `markOverdueSubscriptionsPastDue` dipecah per langganan, baris gagal dilewati dan diulang sweep berikut).
+- Bukti: fail-first di kode 4609b448 (11 test gagal: baxdx 6, 5zb6g 4, 6qu47 1), di kode baru 24/24 hijau; 31 berkas test terkait 556/556 hijau; tsc api 0 error, eslint + prettier bersih. Reviewer sonnet: tanpa temuan (uang 6qu47: tak ada tagihan ganda atau terlewat).
