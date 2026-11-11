@@ -25,7 +25,7 @@ if (!["unit", "e2e"].includes(mode))
 // runs once). Thresholds live in apps/api/vitest.config.ts.
 const coverage =
   mode === "unit" &&
-  (process.argv.includes("--coverage") || Boolean(process.env.LEGEND_COVERAGE));
+  (process.argv.includes("--coverage") || process.env.LEGEND_COVERAGE === "1");
 
 // Fixed local origins for test servers, distinct from development.
 export const TEST_API_URL = "http://localhost:4101";

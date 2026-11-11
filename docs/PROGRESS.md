@@ -1781,3 +1781,11 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Statistik gelombang (sesi 0ca3521e, 11:01 sampai 13:31 UTC): biaya total 5966k (utama sonnet 4272k, subagent opus 982k, sonnet 656k, haiku 55k), 13 subagent, 1 compact. `parallel-report` tidak bisa dijalankan: folder sesi worktree tidak ada.
 - Batas memori: container Postgres tes dibatasi 512 MiB, puncak terukur 447 MiB di run 3; Colima 3 GiB (bebas sekitar 1 GiB saat suite jalan). Tidak ada crash di run 2 dan 3.
 - Langkah berikut: founder gate sebelum merge ke main; kartu untuk flake `member-signin` dan `menu-print-db` di full run.
+
+## 2026-11-12: gate cakupan logika bisnis dan dokumen AUTH-02 (legend-dd0g, legend-mrez; cabang `ws/dd0g-coverage-gate`)
+- Sudah (mrez): PRD AUTH-02, `docs/plan/criteria-matrix.md`, dan `docs/plan/providers.md` memakai `X-Kirim-Signature` (`t=`,`v1=`, HMAC-SHA256 atas `t.rawbody`, 300 detik, rotasi, dedupe `X-Kirim-Event-Id`). Tes forgery, replay, rotasi tetap gerbang rilis.
+- Sudah (dd0g): `@vitest/coverage-v8` di `apps/api`; blok coverage v8 di `apps/api/vitest.config.ts` (scope `apps/api/src/services` dan `packages/shared/src`); `pnpm test:coverage` atau `LEGEND_COVERAGE=1 pnpm test`; CI memberi `LEGEND_COVERAGE=1` pada langkah `pnpm check` (satu kali run tes); `docs/deployment.md` dan `scripts/ci/pending.mjs` diperbarui.
+- Angka cakupan (run penuh 12 Nov 2026, 733 berkas): statements 87.4%, branches 77.22%, functions 91.51%, lines 89.75%. Ambang awal sedikit di bawahnya: lines 85, statements 84, functions 88, branches 72, supaya gate tidak merah di m1. Terendah: `shared/api`, `shared/text`, `shared/adapters` 63%, `shared/pos` dan `shared/dashboard` 72%.
+- Bukti gagal-dulu: dua berkas tes saja dengan `--coverage` lulus 29 tes tetapi exit 1 (lines 19.97% di bawah 85%).
+- Temuan di luar scope: `ai-gateway.test.ts` (AIG-01 kuota harian) gagal antara 00:00 dan batas hari bisnis karena tes mengisi tanggal Jakarta sedangkan service memakai `businessDateOf`; `http.test.ts` dan `menu-print-db.test.ts` hanya gagal di run penuh (beban), lulus sendiri.
+- Langkah berikut: naikkan ambang bertahap menuju 80% di branches; kartu untuk tes AIG-01 yang bergantung jam.
