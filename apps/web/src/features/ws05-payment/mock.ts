@@ -38,16 +38,24 @@ import { idr } from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import {
+  findExternalPaymentLink,
+  type MockExternalLink,
+} from "@/lib/mock/payment-link-bridge";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** QRIS codes live about 10 minutes (PRD §3.13 "QRIS Dinamis"). */
 const CODE_LIFETIME_MS = 10 * 60 * 1000;
+/** A feature's own link (breakfast) counts as paid this long after its code is made. */
+const DEMO_PAY_AFTER_MS = 6_000;
 
 type LinkState = {
   view: PaymentLinkView;
   intents: Map<string, CustomerPaymentIntent>;
   /** idempotency key → intent id, so a retried create returns the first one */
   idempotency: Map<string, string>;
+  /** Runs once when a feature-owned link is paid (see lib/mock/payment-link-bridge). */
+  onPaid?: () => void;
 };
 
 const now = () => Date.now();
@@ -102,8 +110,47 @@ const seed = () => {
 };
 const links = createMockStore<Map<string, LinkState>>(seed);
 
+/** Builds the page's link for a bill a feature mock registered (breakfast). */
+function linkFromExternal(external: MockExternalLink): LinkState {
+  const base = paymentLinkViewSchema.parse(paymentLinkViewFixture);
+  const view = paymentLinkViewSchema.parse({
+    ...base,
+    token: external.token,
+    bill: {
+      reference: external.reference,
+      tableLabel: null,
+      pax: null,
+      totals: {
+        subtotalIdr: external.subtotalIdr,
+        discountIdr: 0,
+        serviceChargeIdr: 0,
+        taxIdr: external.taxIdr,
+        roundingIdr: 0,
+        totalIdr: external.subtotalIdr + external.taxIdr,
+        paidIdr: 0,
+        outstandingIdr: external.subtotalIdr + external.taxIdr,
+      },
+    },
+    returnPath: external.returnPath,
+    serverTime: new Date(now()).toISOString(),
+  });
+  return {
+    view,
+    intents: new Map(),
+    idempotency: new Map(),
+    onPaid: external.onPaid,
+  };
+}
+
 function requireLink(token: string): LinkState {
-  const link = links.get().get(token);
+  let link = links.get().get(token);
+  if (!link) {
+    const external = findExternalPaymentLink(token);
+    if (external) {
+      link = linkFromExternal(external);
+      links.get().set(token, link);
+    }
+  }
   if (!link)
     throw new ApiError(
       404,
@@ -258,9 +305,48 @@ registerMock(createPaymentIntent, ({ params, body }) => {
   return { data: intent };
 });
 
+/**
+ * Demo stand-in for the provider callback on a feature-owned link: the code
+ * counts as paid a few seconds after it was made, the bill turns settled, and
+ * the feature hears it exactly once. Fixture links are never paid this way.
+ */
+function settleExternalLink(
+  link: LinkState,
+  intent: CustomerPaymentIntent,
+): CustomerPaymentIntent {
+  const madeAt = Date.parse(intent.expiresAt) - CODE_LIFETIME_MS;
+  if (
+    !link.onPaid ||
+    intent.status !== "pending" ||
+    now() - madeAt < DEMO_PAY_AFTER_MS
+  )
+    return intent;
+  const paid: CustomerPaymentIntent = {
+    ...intent,
+    status: "paid",
+    paidAt: new Date(now()).toISOString(),
+  };
+  const totals = link.view.bill.totals;
+  link.intents.set(paid.id, paid);
+  link.view = {
+    ...link.view,
+    activeIntent: paid,
+    bill: {
+      ...link.view.bill,
+      totals: { ...totals, paidIdr: totals.totalIdr, outstandingIdr: idr(0) },
+    },
+  };
+  const onPaid = link.onPaid;
+  link.onPaid = undefined;
+  onPaid();
+  return paid;
+}
+
 registerMock(getPaymentIntent, ({ params }) => {
   const link = requireLink(params.token);
-  return { data: requireIntent(link, params.intentId) };
+  return {
+    data: settleExternalLink(link, requireIntent(link, params.intentId)),
+  };
 });
 
 registerMock(refreshPaymentIntent, ({ params }) => {

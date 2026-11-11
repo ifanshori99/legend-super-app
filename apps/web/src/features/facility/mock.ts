@@ -55,6 +55,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 // Shared registrations other features also import (one mock per endpoint).
 import "../../lib/mock/handlers/login-challenge.ts";
 import "../../lib/mock/handlers/subscription-plans.ts";
+import { registerExternalPaymentLink } from "../../lib/mock/payment-link-bridge.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { readFacilityAdminConfig } from "../facility-admin/mock.ts";
@@ -808,6 +809,8 @@ registerMock(updateFacilitySubscription, ({ params, body }) => {
 // ticket holds at most one live order.
 
 const BREAKFAST_FIRE_OFFSET_MINUTES = 5;
+/** PB1 10%, added on top of the menu price (founder Q59, same as the API). */
+const BREAKFAST_PB1_RATE = 0.1;
 
 const breakfastMenuItems: BreakfastMenuItem[] = [
   breakfastMenuItemSchema.parse({
@@ -831,6 +834,11 @@ const breakfastReplies = createMockStore<
 >(() => new Map());
 /** Order id -> payment link token: created once, reused on every pay call. */
 const breakfastTokens = createMockStore<Map<string, string>>(() => new Map());
+
+/** PB1 of a menu subtotal, whole rupiah, half up. */
+function breakfastPb1Idr(subtotalIdr: number): number {
+  return Math.round(subtotalIdr * BREAKFAST_PB1_RATE);
+}
 
 function myTicket(ticketId: string): AccessTicket {
   const ticket = tickets.get().find((item) => item.id === ticketId);
@@ -976,7 +984,7 @@ registerMock(createBreakfastOrder, ({ params, body }) => {
     lines,
     delivery,
     subtotalIdr,
-    totalIdr: subtotalIdr,
+    totalIdr: subtotalIdr + breakfastPb1Idr(subtotalIdr),
     fireOffsetMinutes: BREAKFAST_FIRE_OFFSET_MINUTES,
     fireAt,
     paidAt: null,
@@ -1001,6 +1009,16 @@ registerMock(payBreakfastOrder, ({ params }) => {
   const tokens = breakfastTokens.get();
   const paymentToken = tokens.get(order.id) ?? `pl_mock_${nextUlid()}`;
   tokens.set(order.id, paymentToken);
+  // The payment page serves this token with the order's own bill; paying it
+  // there settles the order, as the verified payment event does in the API.
+  registerExternalPaymentLink({
+    token: paymentToken,
+    reference: `Sarapan ${order.id.slice(-8)}`,
+    subtotalIdr: order.subtotalIdr,
+    taxIdr: order.totalIdr - order.subtotalIdr,
+    returnPath: `/member/fasilitas/${order.ticketId}`,
+    onPaid: () => settleBreakfastPaymentInMock(order.ticketId),
+  });
   return { data: { order, paymentToken } };
 });
 

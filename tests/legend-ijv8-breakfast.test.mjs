@@ -94,7 +94,11 @@ describe("breakfast from the ticket mock (legend-ijv8)", () => {
     assert.equal(placed.subtotalIdr, dish.priceIdr * 2);
     assert.equal(placed.delivery.mode, "pickup");
     assert.equal(placed.status, "awaiting_payment");
-    assert.equal(placed.totalIdr, placed.subtotalIdr);
+    // PB1 10% exclusive on top of the menu price (founder Q59).
+    assert.equal(
+      placed.totalIdr,
+      placed.subtotalIdr + Math.round(placed.subtotalIdr * 0.1),
+    );
     assert.equal(placed.paidAt, null);
     assert.equal(placed.firedAt, null);
     // A reload shows the order instead of the empty form.

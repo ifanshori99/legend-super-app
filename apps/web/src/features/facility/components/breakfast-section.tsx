@@ -275,12 +275,12 @@ function BreakfastHeld({
             <dt className="font-semibold">
               {awaitingPayment
                 ? t("facilityBreakfast.total")
-                : t("facilityBreakfast.subtotal")}
+                : order.paidAt
+                  ? t("facilityBreakfast.totalPaid")
+                  : t("facilityBreakfast.totalOrder")}
             </dt>
             <dd className="font-semibold tabular">
-              {formatRupiah(
-                awaitingPayment ? order.totalIdr : order.subtotalIdr,
-              )}
+              {formatRupiah(order.totalIdr)}
             </dd>
           </div>
         </dl>

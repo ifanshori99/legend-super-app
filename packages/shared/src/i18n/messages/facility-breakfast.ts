@@ -36,6 +36,8 @@ export const facilityBreakfastMessages = {
   awaitingBody:
     "Selesaikan pembayaran agar pesanan bisa dikirim ke dapur. Pesanan yang belum lunas tidak dikirim.",
   total: "Total bayar",
+  totalPaid: "Total dibayar (termasuk pajak)",
+  totalOrder: "Total pesanan (termasuk pajak)",
   pay: "Bayar sarapan",
   cancelledNote:
     "Pesanan sarapan sebelumnya dibatalkan. Kamu bisa memesan lagi.",

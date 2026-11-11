@@ -40,3 +40,20 @@ Perintah berat (tsc, vitest, playwright, db:generate) wajib lewat `heavy`. Janga
 - Layar HP 390x844: (1) bagian sarapan di tiket dengan tombol "Bayar sarapan" (status menunggu bayar), (2) halaman `/bayar/$token` sarapan, (3) bila mudah: status lunas sesudah bayar. Tambah 1280 bila murah.
 - Dev server maks 2 di seluruh Mac; cek `ps` dulu, matikan server sendiri setelah selesai. Playwright lewat `heavy`.
 - Simpan skrip di `design/screens/review-q60/shots.mjs`, PNG di folder yang sama, plus `README.md` pendek: layar apa, cara buat ulang.
+
+## E. PB1 sarapan (founder Q59, test-writer 2). File baru: `apps/api/src/test/facility-breakfast-tax.test.ts` (helper boleh ditambah di `facility-breakfast-helpers.ts` hanya fungsi baru di akhir file)
+
+Fakta: `createBreakfastOrderForMember` sudah memakai mesin pajak POS (`computePosBill` + `loadPosTaxConfig`, `facility-breakfast.service.ts:452`), menyimpan `taxIdr` dan `taxResult`; fire memanggil `recordTaxSnapshots`; jurnal `order.paid` membaca kolom `orders` (`accounting-auto-journal-amounts.ts:862-889`). Outlet harga-termasuk-pajak ditolak fail-closed (`QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED`), sama dengan POS dan QR. Tugas: buktikan dengan test, laporkan celah nyata.
+
+1. Eksklusif (world bawaan: PBJT 10%): total order = harga + PB1 sesuai config; intent dibayar = total itu; klien tidak bisa mengubah.
+2. Fire: baris `tax_snapshots` (atau nama tabel sebenarnya) ada untuk order; jurnal `order.paid` memuat baris pajak keluaran = `taxIdr` dan pendapatan = total - pajak. Cari test jurnal QR yang sudah ada sebagai contoh assert.
+3. Outlet dengan `prices_include_tax`/aturan inklusif: buat order sarapan ditolak, tidak ada intent/uang ditarik.
+4. Refund: batal setelah bayar → refund = dibayar (termasuk PB1), tidak lebih. Refund sebagian penjualan sarapan yang sudah fired lewat jalur WS-05 (cari bagaimana test QR melakukannya): jurnal refund membalik PB1 proporsional dan total refund tidak melebihi bayar. Bila jalur ini tidak ada untuk facility, laporkan sebagai celah dengan bukti.
+- Bukti gagal-dulu: setelah hijau, mutasi sementara (mis. `taxIdr: idr(0)` di insert, atau buang `recordTaxSnapshots`) harus membuat test merah; kembalikan mutasinya, laporkan.
+- Jalankan: `LEGEND_TEST_FILES="src/test/facility-breakfast-tax.test.ts" heavy pnpm test` dari root worktree.
+
+## F. Mock bayar sarapan (implementer web). File: `apps/web/src/features/facility/mock.ts`, `apps/web/src/features/ws05-payment/mock.ts` (dan fixture terkait bila perlu), tanpa ubah kode non-mock
+
+- Masalah (dari screenshot): token `pl_mock_*` dari mock pay sarapan tidak terdaftar di store payment-link mock, jadi `/bayar/$token` "Tautan pembayaran tidak ditemukan"; status lunas tak tercapai karena `settleBreakfastPaymentInMock` tidak pernah dipanggil.
+- Perbaikan: saat mock pay sarapan membuat token, daftarkan payment link mock dengan tagihan sarapan (baris menu, PB1, total sama dengan order). Saat link itu dibayar di halaman mock `/bayar`, panggil `settleBreakfastPaymentInMock` sehingga tiket menampilkan status lunas.
+- Bukti: `node --test tests/legend-ijv8-breakfast.test.mjs` hijau, typecheck web lewat `heavy`, lalu jalankan ulang `design/screens/review-q60/shots.mjs` (dev server sendiri, port 3262, matikan setelahnya) dan ganti PNG 02 dengan halaman bayar sarapan asli, tambah `04-tiket-lunas-{390,1280}.png`. Hapus PNG 03 bila tak relevan. Perbarui README folder.
