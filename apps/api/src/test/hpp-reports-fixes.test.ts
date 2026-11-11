@@ -812,3 +812,142 @@ describe("HPP-REPORT-FIX-6 recipe-coverage denominator per brand and caller", ()
     }
   });
 });
+
+// ===========================================================================
+
+/**
+ * Remake/comp deduction the recipe engine keeps for an order issue. Seed shape
+ * (assumption, taken from the brief): kind 'remake', source_type 'order_issue',
+ * source_id = the same order ULID as the sale deduction, its own idempotency key.
+ */
+async function seedRemakeDeduction(
+  outlet: Outlet,
+  order: { ulid: string },
+  state: { status: "pending" } | { status: "posted"; costIdr: number },
+) {
+  await q(
+    `INSERT INTO recipe_deductions
+       (tenant_id, outlet_id, kind, status, mode, source_type, source_id, business_date,
+        idempotency_key, cost_idr, skip_reason, occurred_at, posted_at)
+     VALUES ($1, $2, 'remake', $3, 'real_time', 'order_issue', $4, $5, $6, $7, NULL, now(), $8)`,
+    [
+      tenantA,
+      outlet.id,
+      state.status,
+      order.ulid,
+      today,
+      `order_issue:${order.ulid}:remake`,
+      state.status === "posted" ? state.costIdr : null,
+      state.status === "posted" ? new Date() : null,
+    ],
+  );
+}
+
+describe("HPP-REPORT-FIX-7 food-cost unknown line costs and pending remake deductions", () => {
+  type Body = FoodBody & { pendingUnknownLineCount?: number };
+
+  async function foodCost(outlet: Outlet): Promise<Body> {
+    const response = await finance.client.get(foodCostPath(outlet.id));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data).toHaveLength(1);
+    return response.body.data[0] as Body;
+  }
+
+  it("HPP-REPORT-FIX-7a a pending order whose lines have no cost snapshot reports how many lines are unknown", async () => {
+    const outlet = await stockedOutlet(brandFood);
+    const menu = await insertMenuItem(brandFood, "Umum", null);
+    // Matched order: costed, reconciles; its lines never count as unknown.
+    const posted = await seedOrder(outlet, [
+      { menuItemId: menu, quantity: 1, lineTotalIdr: 25_000, costIdr: 5_800 },
+    ]);
+    await seedDeduction(outlet, posted, { status: "posted", costIdr: 5_800 });
+    await move(outlet, beansItem, "sale", "-58.0000", posted.ulid);
+    // Pending order: two lines, neither has a cost snapshot.
+    const pending = await seedOrder(outlet, [
+      { menuItemId: menu, quantity: 1, lineTotalIdr: 20_000, costIdr: null },
+      { menuItemId: menu, quantity: 2, lineTotalIdr: 30_000, costIdr: null },
+    ]);
+    await seedDeduction(outlet, pending, { status: "pending" });
+
+    const row = await foodCost(outlet);
+    expect(row.pendingOrderCount).toBe(1);
+    // The Rp0 estimate for the pending order is not the real cost: the
+    // response must say so instead of presenting the figure as complete.
+    expect(row.pendingUnknownLineCount).toBe(2);
+    // Matched order unaffected.
+    expect(row.theoreticalCostIdr).toBe(5_800);
+    expect(row.adjustmentIdr).toBe(0);
+  });
+
+  it("HPP-REPORT-FIX-7b a skipped order with an uncosted line is flagged unknown too", async () => {
+    const outlet = await stockedOutlet(brandFood);
+    const menu = await insertMenuItem(brandFood, "Umum", null);
+    const skipped = await seedOrder(outlet, [
+      { menuItemId: menu, quantity: 1, lineTotalIdr: 10_000, costIdr: null },
+    ]);
+    await seedDeduction(outlet, skipped, {
+      status: "skipped",
+      skipReason: "no_sale_location",
+    });
+
+    const row = await foodCost(outlet);
+    expect(row.pendingUnknownLineCount).toBeGreaterThan(0);
+  });
+
+  it("HPP-REPORT-FIX-7c orders whose lines all have a cost snapshot report zero unknown lines", async () => {
+    const outlet = await stockedOutlet(brandFood);
+    const menu = await insertMenuItem(brandFood, "Umum", null);
+    const pending = await seedOrder(outlet, [
+      { menuItemId: menu, quantity: 1, lineTotalIdr: 25_000, costIdr: 5_800 },
+    ]);
+    await seedDeduction(outlet, pending, { status: "pending" });
+
+    const row = await foodCost(outlet);
+    expect(row.pendingOrderCount).toBe(1);
+    // Assumption: the field is always present (0 when nothing is unknown).
+    expect(row.pendingUnknownLineCount).toBe(0);
+  });
+
+  it("HPP-REPORT-FIX-7d sale posted but remake pending: the order counts as pending, actual stays at least theoretical, residual not negative", async () => {
+    const outlet = await stockedOutlet(brandFood);
+    const menu = await insertMenuItem(brandFood, "Umum", null);
+    const order = await seedOrder(outlet, [
+      { menuItemId: menu, quantity: 1, lineTotalIdr: 25_000, costIdr: 5_800 },
+    ]);
+    // The ledger drew only 50 g = Rp5.000 so far (< theoretical Rp5.800); the
+    // remake draw is still missing. Treated as matched this would show a
+    // -Rp800 residual and an actual below theoretical.
+    await seedDeduction(outlet, order, { status: "posted", costIdr: 5_000 });
+    await move(outlet, beansItem, "sale", "-50.0000", order.ulid);
+    await seedRemakeDeduction(outlet, order, { status: "pending" });
+
+    const row = await foodCost(outlet);
+    expect(row.pendingOrderCount).toBe(1);
+    expect(row.pendingTheoreticalIdr).toBe(5_800);
+    expect(row.theoreticalCostIdr).toBe(5_800);
+    expect(row.actualCostIdr).toBeGreaterThanOrEqual(row.theoreticalCostIdr);
+    expect(row.adjustmentIdr).toBeGreaterThanOrEqual(0);
+    expect(row.varianceIdr).toBeGreaterThanOrEqual(0);
+  });
+
+  it("HPP-REPORT-FIX-7e sale posted and remake posted: the order stays matched and reconciles against the ledger", async () => {
+    const outlet = await stockedOutlet(brandFood);
+    const menu = await insertMenuItem(brandFood, "Umum", null);
+    const order = await seedOrder(outlet, [
+      { menuItemId: menu, quantity: 1, lineTotalIdr: 25_000, costIdr: 5_800 },
+    ]);
+    await seedDeduction(outlet, order, { status: "posted", costIdr: 5_800 });
+    await move(outlet, beansItem, "sale", "-58.0000", order.ulid);
+    await seedRemakeDeduction(outlet, order, { status: "posted", costIdr: 0 });
+
+    const row = await foodCost(outlet);
+    expect(row).toMatchObject({
+      theoreticalCostIdr: 5_800,
+      actualCostIdr: 5_800,
+      adjustmentIdr: 0,
+      varianceIdr: 0,
+      pendingOrderCount: 0,
+      pendingTheoreticalIdr: 0,
+    });
+  });
+});

@@ -55,7 +55,7 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { recordStockMovement } from "../services/inventory.service.ts";
-import { updateVariant } from "../services/menu.service.ts";
+import { updateItem, updateVariant } from "../services/menu.service.ts";
 import { createOutlet } from "../services/org.service.ts";
 import {
   enqueueHppRecompute,
@@ -1107,5 +1107,275 @@ describe("HPP-RECOMPUTE-FIX-5 leased claim: a queued change is never lost", () =
       cost: "7600.0000",
     });
     expect(await queueOf(outlet)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// Review round 2 (bead legend-2qq): A1 ack deadlock, A2 attempts reset,
+// A3 outlet-scoped actor marks the whole brand stale, B3 future price lists.
+//
+// Assumptions where the design is silent:
+// - A1: the stock transaction is simulated by a second owner connection that
+//   row-locks the queue rows (ordered by item_id, as a stock upsert does) and
+//   re-queues them without committing. The worker's ack must SKIP rows it
+//   cannot lock (they were re-queued, so they must survive); it must never
+//   wait for them. "Waiting" is detected with a bounded race, not a sleep.
+// - A2: "treated as poison" is observed on `hpp_outlet_state`: a poison row
+//   makes the outlet stale/rebuilt (design: stale_at set or rebuilt_at moved).
+// - A3: the actor keeps the tenant-scope role assignment of `editorUserId`
+//   (permission check) while the call runs with an outlets-scoped context
+//   (outlet RLS: app.outlet_ids limited to ONE of the brand's outlets).
+// - B3: the price list effective date is a calendar date; "tomorrow" and the
+//   moved clock are taken in the outlet time zone (Asia/Jakarta, no DST) and
+//   the clock is set to noon of that day so UTC and local date agree.
+// ===========================================================================
+
+/** Calendar date (YYYY-MM-DD) in Asia/Jakarta, `days` after today. */
+function jakartaDate(days: number): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+  }).format(new Date(Date.now() + days * 86_400_000));
+}
+
+type OutletState = { stale_at: string | null; rebuilt_at: string | null };
+
+async function outletState(outlet: Outlet): Promise<OutletState | undefined> {
+  const rows = await q<OutletState>(
+    `SELECT stale_at::text, rebuilt_at::text FROM hpp_outlet_state
+      WHERE tenant_id = $1 AND outlet_id = $2`,
+    [tenantA, outlet.id],
+  );
+  return rows[0];
+}
+
+/**
+ * Second connection standing in for a stock transaction: row-locks the queue
+ * rows of the items (sorted) and re-queues them, uncommitted.
+ */
+async function holdRequeue(outlet: Outlet, itemIds: string[]) {
+  const client = await owner.connect();
+  let open = true;
+  await client.query("BEGIN");
+  await client.query(
+    "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+    [tenantA],
+  );
+  await client.query(
+    `SELECT item_id FROM hpp_recompute_queue
+      WHERE tenant_id = $1 AND outlet_id = $2 AND item_id::text = ANY($3::text[])
+      ORDER BY item_id FOR UPDATE`,
+    [tenantA, outlet.id, itemIds],
+  );
+  await client.query(
+    `UPDATE hpp_recompute_queue
+        SET enqueued_at = clock_timestamp(), lease_until = NULL, attempts = 0
+      WHERE tenant_id = $1 AND outlet_id = $2 AND item_id::text = ANY($3::text[])`,
+    [tenantA, outlet.id, itemIds],
+  );
+  return {
+    async commit() {
+      if (!open) return;
+      open = false;
+      await client.query("COMMIT");
+    },
+    async finish() {
+      if (open) {
+        open = false;
+        await client.query("ROLLBACK").catch(() => undefined);
+      }
+      client.release();
+    },
+  };
+}
+
+describe("HPP-RECOMPUTE-FIX-A1 the worker ack never waits on queue rows a stock transaction holds", () => {
+  it("HPP-RECOMPUTE-FIX-A1-ack-skips-locked ack of 2 items while a stock transaction holds and re-queues both: no wait, no deadlock, re-queued items survive", async () => {
+    const outlet = await newOutlet();
+    const kit = await buildKit(outlet);
+    await baseline(outlet);
+    await receive(outlet, kit.beans, "1000.0000", "300.0000"); // beans avg 200
+    await receive(outlet, kit.milk, "10000.0000", "40.0000"); // milk avg 30
+    const both = [kit.beans, kit.milk].sort();
+    expect(await queueOf(outlet)).toEqual(both);
+
+    const lock = await holdOutletLock(outlet);
+    let stock: Awaited<ReturnType<typeof holdRequeue>> | undefined;
+    let running: Promise<unknown> = Promise.resolve();
+    let outcome: unknown = "not started";
+    try {
+      running = tick();
+      // The worker has claimed both rows and computes (waits on the outlet lock).
+      const claimed = await waitFor(async () => {
+        const rows = await q<{ n: number }>(
+          `SELECT count(*)::int AS n FROM hpp_recompute_queue
+            WHERE tenant_id = $1 AND outlet_id = $2 AND lease_until IS NOT NULL`,
+          [tenantA, outlet.id],
+        );
+        return rows[0]!.n === 2;
+      });
+      expect(claimed, "the worker claimed both rows").toBe(true);
+
+      // A stock transaction re-queues the same 2 items and is still open.
+      stock = await holdRequeue(outlet, both);
+      await lock.commit(); // the worker now computes, writes and acks
+
+      outcome = await Promise.race([
+        running.then(
+          () => "done",
+          (error: unknown) => error,
+        ),
+        new Promise((resolve) => setTimeout(() => resolve("waiting"), 10_000)),
+      ]);
+    } finally {
+      await stock?.commit().catch(() => undefined);
+      await stock?.finish();
+      await lock.finish();
+      await running.catch(() => undefined);
+    }
+
+    expect(
+      outcome,
+      "the ack waited for rows locked by a stock transaction instead of skipping them",
+    ).not.toBe("waiting");
+    if (outcome instanceof Error)
+      expect(outcome.message).not.toMatch(/deadlock/i);
+
+    // The re-queued items were not deleted by the older worker's ack.
+    expect(await queueOf(outlet)).toEqual(both);
+    for (const itemId of both)
+      expect((await queueRow(outlet, itemId)).lease_until).toBeNull();
+
+    await tick();
+    expect(await queueOf(outlet)).toEqual([]);
+    // 18 x 200 + 200 x 30 = 9.600
+    expect(await costOf(outlet, kit.menuItem)).toMatchObject({
+      recipe_complete: true,
+      cost: "9600.0000",
+    });
+  });
+});
+
+describe("HPP-RECOMPUTE-FIX-A2 re-queueing during a lease resets the attempt count", () => {
+  it("HPP-RECOMPUTE-FIX-A2-attempts-reset an item re-queued 6 times while leased is processed normally, not as a poison row", async () => {
+    const outlet = await newOutlet();
+    const kit = await buildKit(outlet);
+    await baseline(outlet);
+    const before = await outletState(outlet);
+    expect(before?.rebuilt_at, "baseline rebuilt the outlet").toBeTruthy();
+    await receive(outlet, kit.beans, "1000.0000", "300.0000"); // avg 200
+
+    for (let round = 1; round <= 6; round += 1) {
+      // A worker claims the row (lease set, attempt counted) ...
+      await q(
+        `UPDATE hpp_recompute_queue SET lease_until = now() + interval '10 minutes', attempts = attempts + 1
+          WHERE tenant_id = $1 AND outlet_id = $2 AND item_id = $3`,
+        [tenantA, outlet.id, kit.beans],
+      );
+      // ... and a newer change arrives: the item starts over.
+      await enqueue(outlet, [kit.beans]);
+      const row = await queueRow(outlet, kit.beans);
+      expect(row.attempts, `attempts after re-queue ${round}`).toBe(0);
+      expect(row.lease_until).toBeNull();
+    }
+
+    await tick();
+
+    // Normal incremental processing: the cost is current, the queue is empty,
+    // and the outlet was NOT fully rebuilt/marked stale as a poison reaction.
+    expect(await costOf(outlet, kit.menuItem)).toMatchObject({
+      recipe_complete: true,
+      cost: "7600.0000",
+    });
+    expect(await queueOf(outlet)).toEqual([]);
+    const after = await outletState(outlet);
+    expect(after?.stale_at).toBeNull();
+    expect(after?.rebuilt_at).toBe(before!.rebuilt_at);
+  });
+});
+
+describe("HPP-RECOMPUTE-FIX-A3 an outlet-scoped actor still marks every outlet of the brand stale", () => {
+  it("HPP-RECOMPUTE-FIX-A3-scoped-actor updateItem recipeId by an actor limited to one outlet re-costs BOTH outlets of the brand after one tick", async () => {
+    const first = await newOutlet();
+    const second = await newOutlet();
+    const kit = await buildKit(first);
+    await receive(second, kit.beans, "1000.0000", "100.0000");
+    await receive(second, kit.milk, "10000.0000", "20.0000");
+    const smaller = await beansOnlyRecipe(kit);
+    await rebuildMenuCostsForOutlet(
+      tenantContext(),
+      outletIdSchema.parse(first.id),
+    );
+    await rebuildMenuCostsForOutlet(
+      tenantContext(),
+      outletIdSchema.parse(second.id),
+    );
+    await clearQueue(first);
+    await clearQueue(second);
+    expect((await costOf(first, kit.menuItem)).cost).toBe("5800.0000");
+    expect((await costOf(second, kit.menuItem)).cost).toBe("5800.0000");
+
+    const limited = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenantA),
+        brandId: null,
+        source: "domain",
+      }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(first.id)] },
+    );
+    // The edit itself must succeed under outlet RLS.
+    await updateItem(limited, editorUserId, kit.menuItem, {
+      recipeId: smaller,
+    });
+    await tick();
+
+    for (const outlet of [first, second])
+      expect(await costOf(outlet, kit.menuItem)).toMatchObject({
+        recipe_id: smaller,
+        recipe_complete: true,
+        cost: "1800.0000",
+      });
+  });
+});
+
+describe("HPP-RECOMPUTE-FIX-B3 a price list that starts tomorrow takes effect when the clock gets there", () => {
+  it("HPP-RECOMPUTE-FIX-B3-future-price-list price and margin follow a dine_in price list with effective_from tomorrow once one tick runs with the clock moved, with no other write", async () => {
+    const outlet = await newOutlet();
+    const kit = await buildKit(outlet);
+    await setPrice(outlet, kit.menuItem, 25_000); // effective since 2026-01-01
+    const futureList = randomUUID();
+    await q(
+      `INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from)
+       VALUES ($1, $2, $3, 'dine_in', $4)`,
+      [futureList, tenantA, outlet.id, jakartaDate(1)],
+    );
+    await q(
+      `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+       VALUES ($1, $2, $3, $4, 29000)`,
+      [randomUUID(), tenantA, futureList, kit.menuItem],
+    );
+
+    await rebuildMenuCostsForOutlet(
+      tenantContext(),
+      outletIdSchema.parse(outlet.id),
+    );
+    await clearQueue(outlet);
+    // Today the old price still holds (the future list is not effective yet).
+    expect(await costOf(outlet, kit.menuItem)).toMatchObject({
+      price: "25000",
+      gross_margin_bp: 7_680,
+    });
+    await tick();
+    expect((await costOf(outlet, kit.menuItem)).price).toBe("25000");
+
+    // The clock reaches the effective date; nothing is written meanwhile.
+    const tomorrowNoon = new Date(`${jakartaDate(1)}T12:00:00+07:00`);
+    await runHppRecomputeJob(tenantContext(), tomorrowNoon, { force: true });
+
+    // (29.000 - 5.800) x 10.000 / 29.000 = 8.000 bp
+    expect(await costOf(outlet, kit.menuItem)).toMatchObject({
+      price: "29000",
+      cost: "5800.0000",
+      gross_margin_bp: 8_000,
+    });
   });
 });
