@@ -193,14 +193,21 @@ export async function lockRefundApprovalScope(
       `);
 }
 
-/** A bill's approval facts follow commit order, even across separate intents. */
-export async function refundApprovalDecisionTime(
+/**
+ * legend-ykk88: the fact time of a money fact of one bill, read AFTER the bill
+ * lock. Never earlier than the caller's clock, the database clock now, or one
+ * millisecond past the latest fact already committed on the bill (refund
+ * decisions and completions, approved chain decisions, native POS refunds and
+ * cloud voids), so facts follow commit order whatever clock was read before
+ * waiting for the lock. Truncated to the millisecond a JS Date keeps.
+ */
+async function billFactTime(
   tx: Tx,
-  refund: Refund,
+  refund: RefundApprovalSubject,
   now: Date,
 ): Promise<Date> {
   const { rows } = await tx.execute<{ at_ms: string }>(sql`
-    WITH ${relatedIntents(refund.tenantId, refund.paymentIntentId)}, facts AS (
+    WITH ${refundScope(refund)}, facts AS (
       SELECT r.decided_at AS at FROM payment_refunds r
        WHERE r.tenant_id = ${refund.tenantId}
          AND r.payment_intent_id IN (SELECT intent_id FROM related)
@@ -222,6 +229,10 @@ export async function refundApprovalDecisionTime(
       SELECT n.refunded_at FROM pos_order_refunds n
        WHERE n.tenant_id = ${refund.tenantId}
          AND n.order_id IN (SELECT ref FROM intent_keys WHERE kind = 'order')
+      UNION ALL
+      SELECT v.voided_at FROM pos_order_voids v
+       WHERE v.tenant_id = ${refund.tenantId}
+         AND v.order_id IN (SELECT ref FROM intent_keys WHERE kind = 'order')
     )
     SELECT floor(extract(epoch FROM greatest(
       ${now}::timestamptz,
@@ -230,6 +241,27 @@ export async function refundApprovalDecisionTime(
     )) * 1000)::bigint::text AS at_ms
   `);
   return new Date(Number(rows[0]!.at_ms));
+}
+
+/** A bill's approval facts follow commit order, even across separate intents. */
+export function refundApprovalDecisionTime(
+  tx: Tx,
+  refund: Refund,
+  now: Date,
+): Promise<Date> {
+  return billFactTime(tx, refund, now);
+}
+
+/**
+ * legend-ykk88: fact time of a native POS refund or void of `orderId`, to be
+ * taken after the order lock so it is monotonic against every fact of the bill.
+ */
+export function monotonicFactTime(
+  tx: Tx,
+  bill: Omit<NativeRefundApproval, "amountIdr">,
+  now: Date,
+): Promise<Date> {
+  return billFactTime(tx, { ...bill, amountIdr: 0 }, now);
 }
 
 function nativeOrderUuid(refund: NativeRefundApproval): string {
