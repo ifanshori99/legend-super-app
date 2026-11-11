@@ -9,6 +9,7 @@
 // treated as a confirmed rupiah amount except the Wi-Fi spend step, which the
 // owner fixed. `facilityFixtureSchema` proves the whole set parses.
 
+import { fixtureTimeAfter } from "../core/fixture-clock.ts";
 import { z, encodeCursor } from "../core/index.ts";
 import { cafeLegendFixtures } from "../core/index.ts";
 import {
@@ -558,7 +559,7 @@ export const cafeLegendEntitlementLedger = [
     sourceType: "tier_benefit",
     sourceRef: ruleTier,
     accessTicketId: null,
-    expiresAt: "2026-11-30T17:00:00.000Z",
+    expiresAt: fixtureTimeAfter({ days: 29, hours: 17 }),
     occurredAt: "2026-10-31T00:00:00.000Z",
     actorUserId: null,
     reason: "Benefit tier Gold bulan November",
@@ -588,7 +589,7 @@ export const cafeLegendEntitlementLedger = [
     sourceType: "subscription",
     sourceRef: subscriptionC1,
     accessTicketId: null,
-    expiresAt: "2026-11-30T17:00:00.000Z",
+    expiresAt: fixtureTimeAfter({ days: 29, hours: 17 }),
     occurredAt: "2026-11-01T00:00:00.000Z",
     actorUserId: null,
     reason: "Kuota langganan November",
@@ -618,7 +619,7 @@ export const cafeLegendEntitlementLedger = [
     sourceType: "min_spend",
     sourceRef: dinnerOrderId,
     accessTicketId: null,
-    expiresAt: "2026-11-01T03:00:00.000Z",
+    expiresAt: fixtureTimeAfter({ hours: 3 }),
     occurredAt: "2026-10-31T23:00:00.000Z",
     actorUserId: null,
     reason: "Belanja F&B Rp 120.000 pada hari yang sama",
@@ -797,7 +798,7 @@ export const cafeLegendAccessTicketCredentials = [
     qrToken: "LEG-SHOWER-01JBQ7Z8K3M4N5P6Q7R8S9T0VW-A1",
     pin: "482913",
     validFrom: "2026-11-01T22:50:00.000Z",
-    validUntil: "2026-11-01T23:20:00.000Z",
+    validUntil: fixtureTimeAfter({ hours: 23, minutes: 20 }),
   }),
 ];
 
@@ -809,7 +810,7 @@ export const cafeLegendLockCredentials = [
     lockDeviceId: lockP1,
     providerRef: "LOCK-P1-0001",
     validFrom: "2026-11-01T22:50:00.000Z",
-    validUntil: "2026-11-01T23:20:00.000Z",
+    validUntil: fixtureTimeAfter({ hours: 23, minutes: 20 }),
     pushedAt: "2026-11-01T22:44:00.000Z",
     revokedAt: null,
     status: "pushed",
@@ -821,7 +822,7 @@ export const cafeLegendLockCredentials = [
     lockDeviceId: lockP2,
     providerRef: "LOCK-P2-0001",
     validFrom: "2026-11-01T22:50:00.000Z",
-    validUntil: "2026-11-01T23:20:00.000Z",
+    validUntil: fixtureTimeAfter({ hours: 23, minutes: 20 }),
     pushedAt: "2026-11-01T22:45:00.000Z",
     revokedAt: null,
     status: "active",
@@ -1168,7 +1169,7 @@ export const cafeLegendAccessTicketView = accessTicketViewSchema.parse({
   ticket: cafeLegendAccessTickets[0],
   credentialWindow: {
     validFrom: "2026-11-01T22:50:00.000Z",
-    validUntil: "2026-11-01T23:20:00.000Z",
+    validUntil: fixtureTimeAfter({ hours: 23, minutes: 20 }),
   },
   session: {
     startedAt: null,
@@ -1269,7 +1270,7 @@ export const facilityEventSamples: Record<string, Record<string, unknown>> = {
     sourceType: "tier_benefit",
     sourceRef: ruleTier,
     sessions: 2,
-    expiresAt: "2026-11-30T17:00:00.000Z",
+    expiresAt: fixtureTimeAfter({ days: 29, hours: 17 }),
   },
   "facility_entitlement.expired": {
     entitlementLedgerId: ledgerTierGrant,

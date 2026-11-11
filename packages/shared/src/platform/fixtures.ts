@@ -7,6 +7,7 @@
 // Ids reuse the core, accounting and access fixtures so cross-domain mocks
 // join up.
 
+import { fixtureTimeAfter } from "../core/fixture-clock.ts";
 import { cafeLegendFixtures } from "../core/index.ts";
 import { cafeLegendAccessFixtures } from "../access/fixtures.ts";
 import { cafeLegendTextFixtures } from "../text/fixtures.ts";
@@ -362,7 +363,7 @@ const supportGrants = [
     accessMode: "read_only",
     durationMinutes: 60,
     startedAt: "2026-11-01T04:30:00.000Z",
-    expiresAt: "2026-11-01T05:30:00.000Z",
+    expiresAt: fixtureTimeAfter({ minutes: 30 }, NOW),
     mfaVerifiedAt: "2026-11-01T04:29:40.000Z",
     tenantAdminNotifiedAt: "2026-11-01T04:30:01.000Z",
     endedAt: null,

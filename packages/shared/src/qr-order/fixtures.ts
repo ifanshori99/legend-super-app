@@ -9,6 +9,7 @@
 // consistent across contracts. Sample data, not the owner's confirmed floor
 // plan or prices.
 
+import { fixtureTimeAfter } from "../core/fixture-clock.ts";
 import { cafeLegendFixtures, idr, z } from "../core/index.ts";
 import type { RoundingMode } from "../core/index.ts";
 import { cafeLegendMenuFixtures } from "../menu/index.ts";
@@ -779,7 +780,7 @@ const apologyVoucher: ApologyVoucher = apologyVoucherSchema.parse({
   issuedBy: staffUserId,
   approvalRequestId: null,
   issuedAt: "2026-11-01T05:02:00.000Z",
-  expiresAt: "2026-12-02T05:02:00.000Z",
+  expiresAt: fixtureTimeAfter({ days: 31, hours: 5, minutes: 2 }),
   redeemedAt: null,
   redemptionOrderId: null,
 });

@@ -7,6 +7,7 @@
 // proves the masking rules the API must apply (HR-03). Document/selfie URLs are
 // example signed links, never storage keys.
 
+import { fixtureTimeAfter } from "../core/fixture-clock.ts";
 import { cafeLegendFixtures, z } from "../core/index.ts";
 import { maskPiiValue } from "./pii.ts";
 import {
@@ -988,7 +989,7 @@ const attendanceQr = attendanceQrTokenSchema.parse({
   outletId: outletA,
   token: "QR-BDG01-20261101T0930",
   issuedAt: "2026-11-01T02:30:00.000Z",
-  expiresAt: "2026-11-01T02:30:30.000Z",
+  expiresAt: fixtureTimeAfter({ minutes: 30, seconds: 30 }, now),
   rotationSeconds: 30,
 });
 
@@ -1833,7 +1834,7 @@ const announcements = [
     requiresReceipt: false,
     publishedBy: userId(1019),
     publishedAt: "2026-10-24T02:00:00.000Z",
-    expiresAt: "2026-11-10T10:00:00.000Z",
+    expiresAt: fixtureTimeAfter({ days: 9, hours: 8 }, now),
   }),
   announcementSchema.parse({
     id: id(9103),
@@ -1844,7 +1845,7 @@ const announcements = [
     requiresReceipt: true,
     publishedBy: userId(1024),
     publishedAt: "2026-10-30T02:00:00.000Z",
-    expiresAt: "2026-11-15T10:00:00.000Z",
+    expiresAt: fixtureTimeAfter({ days: 14, hours: 8 }, now),
   }),
 ];
 

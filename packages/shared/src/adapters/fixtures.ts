@@ -1,3 +1,4 @@
+import { fixtureTimeAfter } from "../core/fixture-clock.ts";
 import { cafeLegendFixtures } from "../core/index.ts";
 import {
   paymentRequestSchema,
@@ -65,7 +66,7 @@ export const adapterFixtures = {
     lockId: "room-01",
     credential: "123456",
     validFrom: "2026-11-01T10:00:00Z",
-    validUntil: "2026-11-01T11:00:00Z",
+    validUntil: fixtureTimeAfter({ hours: 11 }).replace(".000Z", "Z"),
   },
   storage: {
     ...scope,
