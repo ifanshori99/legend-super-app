@@ -23,6 +23,7 @@ import {
   getPosOverride,
 } from "@starter/shared/access/override";
 import { ApiError } from "@/lib/api/errors";
+import { devicePinOverride } from "@/features/ws01-device-pin/mock";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { callPosKasirEngine } from "./mock-engine";
@@ -222,6 +223,8 @@ registerMock(closePosDay, ({ body }) =>
 );
 
 registerMock(createPosOverride, ({ body }) => {
+  const devicePin = devicePinOverride(body);
+  if (devicePin) return devicePin;
   if (body.approval.method !== "supervisor_pin")
     throw new ApiError(
       409,

@@ -54,7 +54,7 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
         displayName: result.user.displayName,
       };
       rememberStaff(entry);
-      setActiveStaff(entry);
+      setActiveStaff({ ...entry, outletId: result.outletId });
       setPicked(null);
       toast({
         title: t("devicePin.switch.success", { name: entry.displayName }),
@@ -231,6 +231,7 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
         objectType="order"
         objectId={DEMO_OBJECT_ID}
         requesterId={active?.userId ?? null}
+        outletId={active?.outletId}
         defaultValueIdr={350_000}
         onApproved={(result) => {
           setOverrideDone(result);

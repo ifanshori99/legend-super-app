@@ -136,15 +136,20 @@ async function statusOf(id: string): Promise<string> {
   return rows[0]!.status;
 }
 
-async function resolvedEvents(chainId: string) {
+/**
+ * approval.resolved rows for one destination. The service appends one row per
+ * destination (cloud-sync for the source module, notification for alerts), so
+ * "exactly once" is counted per destination.
+ */
+async function resolvedEvents(chainId: string, destination = "cloud-sync") {
   const { rows } = await owner.query<{
     payload: Record<string, unknown>;
   }>(
     `SELECT event->'payload' AS payload
      FROM domain_event_outbox
      WHERE tenant_id = $1 AND aggregate_type = 'approval' AND aggregate_id = $2
-       AND event->>'name' = 'approval.resolved'`,
-    [tenantId, chainId],
+       AND event->>'name' = 'approval.resolved' AND destination = $3`,
+    [tenantId, chainId, destination],
   );
   return rows;
 }
@@ -299,9 +304,11 @@ describe("legend-6hr8 POST /api/approvals/:requestId/cancel", () => {
     // The sweep then expires it and announces the outcome exactly once.
     await expireDueApprovalRequests(tenantWide);
     expect(await statusOf(id)).toBe("expired");
-    const events = await resolvedEvents(id);
-    expect(events).toHaveLength(1);
-    expect(events[0]!.payload.outcome).toBe("expired");
+    for (const destination of ["cloud-sync", "notification"]) {
+      const events = await resolvedEvents(id, destination);
+      expect(events, destination).toHaveLength(1);
+      expect(events[0]!.payload.outcome).toBe("expired");
+    }
   });
 
   it("legend-6hr8 an outlet-scoped requester whose membership no longer covers the request outlet gets 404 and it stays pending", async () => {

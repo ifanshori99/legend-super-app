@@ -325,7 +325,7 @@ describe("authorize: deny by default, scope, time-bound (TEN-03)", () => {
         now: fx.now,
         permission: "kds.ticket.process",
       }).length,
-      5,
+      4, // every Bandung station (legend-7art: aligned to the menu fixtures)
     );
   });
 

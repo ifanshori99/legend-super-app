@@ -7,8 +7,8 @@
 // Phone approvals stay pending until decided from the console / e2e:
 //   window.__legendDevicePinMock.decide("approved" | "rejected" | "expired")
 import {
-  createPosOverride,
   posOverrideViewSchema,
+  type CreatePosOverrideInput,
 } from "@starter/shared/access/override";
 import { createUlid } from "@starter/shared/core";
 import {
@@ -127,14 +127,15 @@ registerMock(createApprovalRequest, ({ body }) => {
 
 // Supervisor override with the PIN typed on this device (legend-5vlw): the
 // approver's PIN rides in the body, like the real POST /api/pos-overrides.
-registerMock(createPosOverride, ({ body }) => {
+// The mock registry allows one handler per endpoint and ws04-pos-kasir/mock.ts
+// owns it; that handler calls this first and falls back to its own engine
+// when the approver is not one of the device PIN users (undefined here).
+export function devicePinOverride(body: CreatePosOverrideInput) {
+  if (body.approval.method !== "supervisor_pin") return undefined;
+  const approverUserId = body.approval.approverUserId;
+  if (!Object.values(PINS).some((user) => user.id === approverUserId))
+    return undefined;
   const now = new Date();
-  if (body.approval.method !== "supervisor_pin")
-    throw new ApiError(
-      400,
-      "VALIDATION_ERROR",
-      "Persetujuan ponsel memakai kotak approval.",
-    );
   const approver = checkPin(body.approval, now, body.approval.approverUserId);
   if (approver.id === cashier.id)
     throw new ApiError(
@@ -162,7 +163,7 @@ registerMock(createPosOverride, ({ body }) => {
       resolvedAt: now.toISOString(),
     }),
   };
-});
+}
 
 /**
  * Read by ws01-approvals/mock.ts, which merges these requests into the inbox
