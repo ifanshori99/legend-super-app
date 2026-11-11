@@ -25,7 +25,6 @@ import { db } from "../db";
 import { outlets, taxReportExports, taxReports } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
-import { uniqueViolation } from "./accounting-shared";
 import { recordAudit } from "./core-audit";
 import { getPbjtMonthlyRecap } from "./tax.service";
 
@@ -60,13 +59,15 @@ export async function exportPbjtMonthlyRecap(
       .where(
         and(
           eq(taxReportExports.tenantId, tenantId),
+          eq(taxReportExports.outletId, input.outletId),
           eq(taxReportExports.idempotencyKey, input.idempotencyKey),
         ),
       )
       .limit(1);
 
   const replay = (row: ExportRow) => {
-    if (row.outletId !== input.outletId || row.period !== input.period)
+    // The key is unique per (tenant, outlet), so a row here is this outlet's own.
+    if (row.period !== input.period)
       throw new HttpError(
         409,
         "IDEMPOTENCY_KEY_REUSED",
@@ -175,18 +176,50 @@ export async function exportPbjtMonthlyRecap(
       return row;
     });
   } catch (error) {
-    // No row owns the file, so do not leave an orphan behind.
+    // The failure may be an uncertain commit (the row is stored but the
+    // client saw an error), so look at the stored state before touching the
+    // file: a row without its file is worse than a file without a row.
+    let owner: ExportRow | undefined;
+    try {
+      [owner] = await withTenant(db, context, findByKey);
+    } catch {
+      // Cannot tell whether our row exists: keep the file, surface the original.
+      throw error;
+    }
+    // Our own row was committed: replay it and keep its file.
+    if (owner?.id === exportId) return replay(owner);
+    // No row of ours, but a transport error without a server code means the
+    // commit outcome is unknown and the re-query may have raced it: keep the
+    // file and surface the original error. A row under another id proves ours
+    // never committed (the key is unique), so that case is safe to clean up.
+    if (!owner && !isSureRollback(error)) throw error;
+    // No row of ours owns the file, so do not leave an orphan behind.
     await Promise.allSettled([
       runtime.storage.delete(context, { ...lookup, visibility: "private" }),
     ]);
-    // A racing request with the same key won: replay its row.
-    if (uniqueViolation(error)) {
-      const [winner] = await withTenant(db, context, findByKey);
-      if (winner) return replay(winner);
-    }
+    // A racing request with the same key won: replay its row (own file).
+    if (owner) return replay(owner);
     throw error;
   }
   return signedResult(runtime, context, saved, now);
+}
+
+/**
+ * True only when the failure certainly rolled the transaction back: an
+ * HttpError thrown by our code, or a database error carrying a server `code`
+ * (a pg error code string, raised before COMMIT; drivers may wrap it in
+ * `cause`). A plain connection error has no code and may have hit after COMMIT.
+ */
+function isSureRollback(error: unknown): boolean {
+  if (error instanceof HttpError) return true;
+  const hasCode = (value: unknown) =>
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { code?: unknown }).code === "string";
+  return (
+    hasCode(error) ||
+    hasCode((error as { cause?: unknown } | null | undefined)?.cause)
+  );
 }
 
 async function signedResult(

@@ -18,7 +18,7 @@
 //   that raises for one idempotency key.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   outletIdSchema,
   type BusinessDate,
@@ -74,6 +74,16 @@ const P_EMPTY = "2051-06";
 const P_REPLAY = "2051-07";
 const P_PERM = "2051-08";
 const P_BAD = "2051-09";
+// Bead 472 periods (year 2053: no other test file writes tax data there).
+const P_KEY = "2053-01";
+const P_KEY_OTHER = "2053-02";
+const P_LOST = "2053-03";
+const P_DOWN = "2053-04";
+const P_RLS = "2053-05";
+const P_UNIQ = "2053-06";
+const P_PLAIN = "2053-07";
+const P_CODED = "2053-08";
+const P_RACE = "2053-09";
 
 function tenantContext(tenantId: TenantId) {
   return establishScopedTenantContext(
@@ -366,12 +376,21 @@ const recapOf = (period: string) =>
     } as never,
   );
 
+/** Read through `unknown`: the field is new (item 4) and absent from the type until built. */
+const totalTransactionsOf = (recap: unknown) =>
+  (recap as { totalTransactionCount?: unknown }).totalTransactionCount;
+
 async function errorOf(run: Promise<unknown>) {
   try {
     await run;
     return null;
   } catch (error) {
-    return error as { status?: number; code?: string; name?: string };
+    return error as {
+      status?: number;
+      code?: string;
+      name?: string;
+      message?: string;
+    };
   }
 }
 
@@ -461,7 +480,7 @@ afterAll(async () => {
     // this cleanup delete them. Order is still exports, reports, entities.
     await client.query("SET LOCAL session_replication_role = replica");
     await client.query(
-      "DELETE FROM tax_report_exports WHERE tenant_id = $1 AND period LIKE '2051-%'",
+      "DELETE FROM tax_report_exports WHERE tenant_id = $1 AND (period LIKE '2051-%' OR period LIKE '2053-%')",
       [seeded.id],
     );
     await client.query(
@@ -516,6 +535,12 @@ describe("in4m pbjtRecapToCsv (pure, shared)", () => {
       regionCode: null,
       generatedAt: "2051-02-01T00:00:00.000Z",
       rows: full,
+      // Distinct transactions: a bill in two rule groups is one transaction, so
+      // the total is deliberately NOT the sum of the rows (largest group here).
+      totalTransactionCount: full.reduce(
+        (m, r) => Math.max(m, r.transactionCount),
+        0,
+      ),
       totalTaxBaseIdr: full.reduce((s, r) => s + r.taxBaseIdr, 0),
       totalTaxIdr: full.reduce((s, r) => s + r.taxIdr, 0),
     } as unknown as PbjtMonthlyRecap;
@@ -544,9 +569,12 @@ describe("in4m pbjtRecapToCsv (pure, shared)", () => {
     const total = lines.at(-1)!;
     expect(total).toHaveLength(7);
     expect(total[0]).not.toBe("");
-    expect(total[2]).toBe(
-      String(input.rows.reduce((s, r) => s + r.transactionCount, 0)),
+    // Item 4: the transactions cell is the recap's distinct count, not a row sum.
+    const distinct = totalTransactionsOf(input);
+    expect(distinct).toBeLessThan(
+      input.rows.reduce((s, r) => s + r.transactionCount, 0),
     );
+    expect(total[2]).toBe(String(distinct));
     expect(total[3]).toBe(
       String(input.rows.reduce((s, r) => s + r.grossSalesIdr, 0)),
     );
@@ -561,6 +589,7 @@ describe("in4m pbjtRecapToCsv (pure, shared)", () => {
     const lines = parseCsv(pbjtRecapToCsv(recap([])));
     expect(lines).toHaveLength(2);
     expect(lines[0]).toEqual(HEADER);
+    expect(lines[1]![2]).toBe("0");
     expect(lines[1]![4]).toBe("0");
     expect(lines[1]![6]).toBe("0");
   });
@@ -971,5 +1000,401 @@ describe("in4m tax_report_exports table guard", () => {
       trunc: false,
       ins: true,
     });
+  });
+});
+
+// ---- Bead 472 ----------------------------------------------------------------
+
+type AppScope = { outlets: string };
+
+/** A legend_app transaction (RLS applies) that is always rolled back. */
+async function asApp<T>(
+  scope: AppScope,
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL ROLE legend_app");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', $2, true)",
+      [seeded.id, scope.outlets],
+    );
+    return await run(client);
+  } finally {
+    await client.query("ROLLBACK").catch(() => undefined);
+    client.release();
+  }
+}
+
+const INSUFFICIENT_PRIVILEGE = "42501";
+
+const rowsForKey = (key: string) =>
+  asTenantOwner(
+    seeded.id,
+    async (client) =>
+      (
+        await client.query<{ id: string }>(
+          "SELECT id FROM tax_report_exports WHERE tenant_id = $1 AND idempotency_key = $2",
+          [seeded.id, key],
+        )
+      ).rows,
+  );
+
+describe("472 item 1: outlet isolation and per-outlet idempotency keys", () => {
+  it("hides an outlet's export rows from sessions scoped to other outlets and refuses their inserts", async () => {
+    const { runtime } = makeRuntime();
+    const made = await exportIt(
+      runtime,
+      tenantContext(seeded.id),
+      admin,
+      bodyFor(P_RLS),
+    );
+    const entity = await outletEntity(outletB.id);
+    const insertRow = (client: PoolClient) =>
+      client.query(
+        `INSERT INTO tax_report_exports
+           (id, tenant_id, outlet_id, legal_entity_id, type, period, format,
+            amount_idr, row_count, file_key, file_name, idempotency_key, generated_by)
+         VALUES ($1, $2, $3, $4, 'pbjt', $5, 'csv', 0, 0, 'k/x.csv', 'x.csv', $6, $7)`,
+        [
+          randomUUID(),
+          seeded.id,
+          outletB.id,
+          entity,
+          P_RLS,
+          `rls-${randomUUID()}`,
+          admin,
+        ],
+      );
+    const visibleTo = (outlets: string) =>
+      asApp(
+        { outlets },
+        async (client) =>
+          (
+            await client.query(
+              "SELECT id FROM tax_report_exports WHERE id = $1",
+              [made.exportId],
+            )
+          ).rowCount,
+      );
+
+    // Scoped to outlet A only: outlet B's export is invisible.
+    expect(await visibleTo(JSON.stringify([outletA.id]))).toBe(0);
+    // Its own outlet and a tenant-wide session see it.
+    expect(await visibleTo(JSON.stringify([outletB.id]))).toBe(1);
+    expect(await visibleTo("*")).toBe(1);
+
+    // Writing a row for outlet B from an outlet-A session is refused by RLS.
+    const refused = await asApp(
+      { outlets: JSON.stringify([outletA.id]) },
+      async (client) => {
+        try {
+          await insertRow(client);
+          return "inserted";
+        } catch (error) {
+          return (error as { code?: string }).code;
+        }
+      },
+    );
+    expect(refused).toBe(INSUFFICIENT_PRIVILEGE);
+    // Control: the same insert from outlet B's own scope is allowed.
+    const allowed = await asApp(
+      { outlets: JSON.stringify([outletB.id]) },
+      async (client) => {
+        try {
+          await insertRow(client);
+          return "inserted";
+        } catch (error) {
+          return (error as { code?: string }).code;
+        }
+      },
+    );
+    expect(allowed).toBe("inserted");
+  });
+
+  it("the same idempotency key on another outlet is a new export, not a replay or a conflict", async () => {
+    const key = `shared-${randomUUID()}`;
+    const { storage, runtime } = makeRuntime();
+    const forB = await exportIt(
+      runtime,
+      outletContext(seeded.id, outletB.id),
+      managerB,
+      { outletId: outletB.id, period: P_KEY, idempotencyKey: key },
+    );
+    const forA = await exportIt(
+      runtime,
+      outletContext(seeded.id, outletA.id),
+      managerA,
+      { outletId: outletA.id, period: P_KEY, idempotencyKey: key },
+    );
+
+    // Nothing of outlet B leaks into outlet A's answer.
+    expect(forA.outletId).toBe(outletA.id);
+    expect(forA.exportId).not.toBe(forB.exportId);
+    expect(forA.fileKey).not.toBe(forB.fileKey);
+    expect(forA.fileName).toBe(pbjtExportFileName(P_KEY, outletA.id));
+    expect(storage.files.size).toBe(2);
+    expect(storage.files.has(forB.fileKey)).toBe(true);
+    expect(storage.files.has(forA.fileKey)).toBe(true);
+    const rowsA = await exportRows(P_KEY, outletA.id);
+    const rowsB = await exportRows(P_KEY, outletB.id);
+    expect(rowsA.map((row) => row.id)).toEqual([forA.exportId]);
+    expect(rowsB.map((row) => row.id)).toEqual([forB.exportId]);
+    expect(rowsA[0]!.idempotency_key).toBe(key);
+    expect(rowsB[0]!.idempotency_key).toBe(key);
+
+    // Replay inside each outlet's own scope still returns that outlet's export.
+    const replayA = await exportIt(
+      runtime,
+      outletContext(seeded.id, outletA.id),
+      managerA,
+      { outletId: outletA.id, period: P_KEY, idempotencyKey: key },
+    );
+    const replayB = await exportIt(
+      runtime,
+      outletContext(seeded.id, outletB.id),
+      managerB,
+      { outletId: outletB.id, period: P_KEY, idempotencyKey: key },
+    );
+    expect(replayA.exportId).toBe(forA.exportId);
+    expect(replayB.exportId).toBe(forB.exportId);
+    expect(storage.puts).toHaveLength(2);
+  });
+
+  it("the same key on the same outlet with another period is still a 409", async () => {
+    const key = `reuse-${randomUUID()}`;
+    const { storage, runtime } = makeRuntime();
+    await exportIt(runtime, tenantContext(seeded.id), admin, {
+      outletId: outletB.id,
+      period: P_KEY_OTHER,
+      idempotencyKey: key,
+    });
+    const error = await errorOf(
+      exportIt(runtime, tenantContext(seeded.id), admin, {
+        outletId: outletB.id,
+        period: P_KEY,
+        idempotencyKey: key,
+      }),
+    );
+    expect(error).not.toBeNull();
+    expect(error!.status).toBe(409);
+    expect(storage.puts).toHaveLength(1);
+    expect(await rowsForKey(key)).toHaveLength(1);
+  });
+});
+
+describe("472 item 2: a commit that succeeded but reported an error", () => {
+  /**
+   * Wraps `db.transaction`: the real transaction always runs to completion; the
+   * first one after which a row with `key` exists reports a lost connection
+   * (the COMMIT happened, the caller never hears). With mode "down" every later
+   * transaction (the service's re-check) fails too.
+   */
+  function loseCommit(key: string, mode: "recover" | "down") {
+    const original = db.transaction.bind(db) as unknown as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    let lost = false;
+    return vi.spyOn(db, "transaction").mockImplementation(((
+      ...args: unknown[]
+    ) => {
+      if (lost && mode === "down")
+        return Promise.reject(new Error("database unreachable"));
+      return original(...args).then(async (value) => {
+        if (!lost && (await rowsForKey(key)).length > 0) {
+          lost = true;
+          throw new Error("connection lost after COMMIT");
+        }
+        return value;
+      });
+    }) as unknown as typeof db.transaction);
+  }
+
+  it("returns the committed export, keeps its file, and a retry replays it", async () => {
+    const key = `lost-${randomUUID()}`;
+    const body = { outletId: outletB.id, period: P_LOST, idempotencyKey: key };
+    const { storage, runtime } = makeRuntime();
+    const spy = loseCommit(key, "recover");
+    let result: Awaited<ReturnType<typeof exportIt>>;
+    try {
+      result = await exportIt(runtime, tenantContext(seeded.id), admin, body);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const rows = await exportRows(P_LOST);
+    expect(rows).toHaveLength(1);
+    expect(result.exportId).toBe(rows[0]!.id);
+    expect(pbjtExportResultSchema.safeParse(result).success).toBe(true);
+    // The row points at a file that still exists.
+    expect(storage.files.has(rows[0]!.file_key)).toBe(true);
+    expect(storage.files.size).toBe(1);
+    expect(await auditCount(result.exportId)).toBe(1);
+
+    const retry = await exportIt(
+      runtime,
+      tenantContext(seeded.id),
+      admin,
+      body,
+    );
+    expect(retry.exportId).toBe(result.exportId);
+    expect(storage.puts).toHaveLength(1);
+    expect(storage.files.size).toBe(1);
+    expect(await exportRows(P_LOST)).toHaveLength(1);
+  });
+
+  it("leaves the file in place when the database cannot confirm the row, and a retry replays it", async () => {
+    const key = `down-${randomUUID()}`;
+    const body = { outletId: outletB.id, period: P_DOWN, idempotencyKey: key };
+    const { storage, runtime } = makeRuntime();
+    const spy = loseCommit(key, "down");
+    let error: Awaited<ReturnType<typeof errorOf>>;
+    try {
+      error = await errorOf(
+        exportIt(runtime, tenantContext(seeded.id), admin, body),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The original error is reported, but an orphan file is safer than a row
+    // whose file was deleted: the row committed, so its file must remain.
+    expect(error).not.toBeNull();
+    expect(error!.message).toContain("connection lost after COMMIT");
+    const rows = await exportRows(P_DOWN);
+    expect(rows).toHaveLength(1);
+    expect(storage.files.has(rows[0]!.file_key)).toBe(true);
+    expect(storage.files.size).toBe(1);
+
+    const retry = await exportIt(
+      runtime,
+      tenantContext(seeded.id),
+      admin,
+      body,
+    );
+    expect(retry.exportId).toBe(rows[0]!.id);
+    expect(storage.puts).toHaveLength(1);
+    expect(storage.files.has(retry.fileKey)).toBe(true);
+  });
+
+  /**
+   * Wraps `db.transaction`: the first transaction that starts after the file
+   * was uploaded (the insert) rejects with `failure` before running, so no row
+   * is written. Later transactions (a re-check) run for real and see no row.
+   */
+  function failInsertAfterUpload(storage: RecordingStorage, failure: Error) {
+    const original = db.transaction.bind(db) as unknown as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    let failed = false;
+    return vi.spyOn(db, "transaction").mockImplementation(((
+      ...args: unknown[]
+    ) => {
+      if (!failed && storage.puts.length > 0) {
+        failed = true;
+        return Promise.reject(failure);
+      }
+      return original(...args);
+    }) as unknown as typeof db.transaction);
+  }
+
+  it("keeps the file and rethrows the original error for a transport error without a pg code, even when no row exists", async () => {
+    // Assumption: a plain error (no pg `code`) means the outcome is unknown, so
+    // an orphan file is safer than deleting a file a committed row may use.
+    const body = bodyFor(P_PLAIN);
+    const { storage, runtime } = makeRuntime();
+    const spy = failInsertAfterUpload(
+      storage,
+      new Error("socket hang up during insert"),
+    );
+    let error: Awaited<ReturnType<typeof errorOf>>;
+    try {
+      error = await errorOf(
+        exportIt(runtime, tenantContext(seeded.id), admin, body),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(error).not.toBeNull();
+    expect(error!.message).toContain("socket hang up during insert");
+    expect(storage.puts).toHaveLength(1);
+    expect(storage.files.size).toBe(1);
+    expect(storage.files.has(storage.puts[0]!.key)).toBe(true);
+    expect(await exportRows(P_PLAIN)).toHaveLength(0);
+  });
+
+  it("deletes the stored file when the insert fails with a pg-coded error and no row exists", async () => {
+    const body = bodyFor(P_CODED);
+    const { storage, runtime } = makeRuntime();
+    const spy = failInsertAfterUpload(
+      storage,
+      Object.assign(new Error("check constraint violated"), { code: "23514" }),
+    );
+    let error: Awaited<ReturnType<typeof errorOf>>;
+    try {
+      error = await errorOf(
+        exportIt(runtime, tenantContext(seeded.id), admin, body),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(error).not.toBeNull();
+    expect(storage.puts).toHaveLength(1); // the file was uploaded first
+    expect(storage.files.size).toBe(0); // and removed again
+    expect(await exportRows(P_CODED)).toHaveLength(0);
+  });
+});
+
+describe("export concurrency with one idempotency key", () => {
+  it("two simultaneous exports resolve to one export, one row and one surviving file", async () => {
+    const body = bodyFor(P_RACE);
+    const { storage, runtime } = makeRuntime();
+    const [first, second] = await Promise.all([
+      exportIt(runtime, tenantContext(seeded.id), admin, body),
+      exportIt(runtime, tenantContext(seeded.id), admin, body),
+    ]);
+
+    expect(second.exportId).toBe(first.exportId);
+    expect(second.fileKey).toBe(first.fileKey);
+    expect(pbjtExportResultSchema.safeParse(first).success).toBe(true);
+    expect(pbjtExportResultSchema.safeParse(second).success).toBe(true);
+
+    const rows = await exportRows(P_RACE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).toBe(first.exportId);
+    expect(rows[0]!.file_key).toBe(first.fileKey);
+    // The loser's file (if it uploaded one) is removed; only the winner's stays.
+    expect([...storage.files.keys()]).toEqual([first.fileKey]);
+    expect(await auditCount(first.exportId)).toBe(1);
+  });
+});
+
+describe("472 item 4: transactions are counted once across rule groups", () => {
+  it("recap and CSV total row count each bill once although it sits in two rule groups", async () => {
+    await seedBills(P_UNIQ, 2);
+    const recap = await recapOf(P_UNIQ);
+
+    // Each fixture bill has food (PBJT-FNB) and facility (PBJT-FASILITAS) lines:
+    // two rule groups, both holding the same 2 bills.
+    expect(recap.rows.length).toBeGreaterThanOrEqual(2);
+    for (const row of recap.rows) expect(row.transactionCount).toBe(2);
+    const rowSum = recap.rows.reduce((s, r) => s + r.transactionCount, 0);
+    expect(rowSum).toBe(2 * recap.rows.length);
+    expect(totalTransactionsOf(recap)).toBe(2);
+
+    const { storage, runtime } = makeRuntime();
+    await exportIt(runtime, tenantContext(seeded.id), admin, bodyFor(P_UNIQ));
+    const lines = parseCsv([...storage.files.values()][0]!);
+    const total = lines.at(-1)!;
+    expect(total[2]).toBe("2");
+    expect(total[2]).not.toBe(String(rowSum));
+    lines.slice(1, -1).forEach((line) => expect(line[2]).toBe("2"));
+  });
+
+  it("an empty period has a distinct transaction count of 0", async () => {
+    expect(totalTransactionsOf(await recapOf(P_EMPTY))).toBe(0);
   });
 });

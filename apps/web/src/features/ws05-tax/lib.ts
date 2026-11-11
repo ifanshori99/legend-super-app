@@ -276,15 +276,23 @@ export type PbjtTotals = {
   serviceChargeIdr: number;
 };
 
-/** Column sums the recap totals do not already carry (gross sales, service). */
+/**
+ * Column sums the recap totals do not already carry (gross sales, service).
+ * The transaction total is the recap's distinct-sale count, never a sum of
+ * rows (a sale taxed under two rule codes sits in two rows).
+ */
 export function pbjtRowTotals(recap: PbjtMonthlyRecap): PbjtTotals {
   return recap.rows.reduce(
     (totals, row) => ({
-      transactionCount: totals.transactionCount + row.transactionCount,
+      transactionCount: totals.transactionCount,
       grossSalesIdr: totals.grossSalesIdr + row.grossSalesIdr,
       serviceChargeIdr: totals.serviceChargeIdr + row.serviceChargeIdr,
     }),
-    { transactionCount: 0, grossSalesIdr: 0, serviceChargeIdr: 0 },
+    {
+      transactionCount: recap.totalTransactionCount,
+      grossSalesIdr: 0,
+      serviceChargeIdr: 0,
+    },
   );
 }
 

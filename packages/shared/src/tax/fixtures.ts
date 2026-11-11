@@ -226,6 +226,8 @@ const pbjtRecap = pbjtMonthlyRecapSchema.parse({
       taxIdr: 2_184_000,
     },
   ],
+  // Distinct sales: some bills carry both an F&B and a facility line.
+  totalTransactionCount: 5_120,
   totalTaxBaseIdr: 419_960_000,
   totalTaxIdr: 41_996_000,
 });

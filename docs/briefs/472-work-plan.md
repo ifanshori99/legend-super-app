@@ -1,0 +1,21 @@
+# 472 work plan (engineer 6pha) — shared context. Source brief: docs/briefs/472-payroll-codex-fixes.md. Branch ws/6pha-payroll-tax-bundle.
+
+Decisions already made (do not re-open):
+- Item 1: tax_report_exports gets `app.enforce_outlet_rls` right after `app.enforce_tenant_rls` (pattern drizzle/0041_promo_outlets_rls.sql; needs outlet_id NOT NULL — present). Idempotency uniqueness becomes (tenant_id, outlet_id, idempotency_key) (was tenant_id, idempotency_key) in migration 0288 + drizzle schema (accounting-tax.ts). Service lookup by key is scoped to the request outlet; a key used before only for ANOTHER outlet is simply a new key in this outlet's scope (no 409, nothing leaked). Same outlet + same key + different period/body -> still 409 IDEMPOTENCY_KEY_REUSED (own scope, no leak).
+- Item 2 (service tax-pbjt-export.service.ts catch ~166-180): after a failed insert/commit, re-query the row by (tenant, outlet, idempotency key) in a fresh withTenant. Row found -> return its replay (fresh signed URL), do NOT delete file. Re-query succeeds and row absent -> delete the file then rethrow. Re-query itself throws/uncertain -> leave the file (orphan is safer than a row without file) and rethrow original.
+- Item 4: recap gets `totalTransactionCount` (int >= 0) = count(DISTINCT (sourceType, sourceId)) over the same where as the group query, no group by (tax.service.ts getPbjtMonthlyRecap ~1553-1590). Field required in PbjtMonthlyRecap schema (packages/shared/src/tax/schemas.ts ~375-388). pbjtRecapToCsv total row `transactions` = recap.totalTransactionCount; web ws05-tax/lib.ts pbjtRowTotals/toPbjtCsv and pbjt-report-page.tsx use the recap field instead of summing rows. Update every consumer/fixture/mock of the recap (grep PbjtMonthlyRecap, transactionCount).
+- Item 3 (apps/web/src/features/ws10-payroll-run/mock.ts currentActor ~278-284, cookie `legend-mock-role`): add third mock identity. Roles: `hr`(default/SSR) -> userIds.hrApprover, `finance`/`owner` -> userIds.financeApprover, NEW `payroll-admin` -> userIds.runCreator with permission payroll.run only (creates/simulates runs). createdBy at creation = currentActor() already. Flow must work: payroll-admin creates+simulates -> hr approve_hr -> finance/owner approve_final -> finance lock, three different people.
+- Item 5: meta/0288_snapshot.json (id new uuid, prevId = id of meta/0249_snapshot.json = be9016c9-c23f-42b2-8474-7cb2f81ab909). Way: after schema+SQL final, run `pnpm db:generate` ONLY in a scratch copy/branch state to obtain the snapshot content, then keep just the snapshot as 0288_snapshot.json (journal + SQL stay the hand-written 0288); rerun `pnpm db:generate` to prove "no schema changes" (then `git status` must show no new generated files). Also `node scripts/migration-renumber.mjs check` should pass.
+- Item 6: _journal.json 0288 `when` = 1794331000288 (unique, > others). Report the value.
+- Item 7: DB CHECK approved_by_* <> created_by is legend-7ui6v: do NOT do it here.
+
+File ownership (disjoint):
+- impl-db: apps/api/drizzle/0288_tax_report_exports.sql, apps/api/drizzle/meta/_journal.json, apps/api/drizzle/meta/0288_snapshot.json, apps/api/src/db/schema/accounting-tax.ts
+- impl-svc: apps/api/src/services/tax-pbjt-export.service.ts
+- impl-recap: packages/shared/src/tax/schemas.ts, pbjt-export-csv.ts, apps/api/src/services/tax.service.ts, apps/web ws05-tax (lib.ts, pbjt-report-page.tsx, mocks/fixtures of the recap)
+- impl-mock: apps/web/src/features/ws10-payroll-run/mock.ts
+- test-api (tests 1,2,4): apps/api/src/test/tax-pbjt-export.test.ts (extend)
+- test-web (item 3): new apps/web vitest file next to the mock (check apps/web vitest config), e.g. apps/web/src/features/ws10-payroll-run/mock.test.ts
+
+Test exemplars: outlet-scoped legend_app role test -> apps/api/src/test/payroll-core-db.test.ts:304-320 (`asApp`: SET LOCAL ROLE legend_app + app.tenant_id/app.outlet_ids) and :623-650. Uncertain commit: wrap/spy `db.transaction` (apps/api/src/db) so the original runs to completion (COMMIT done) and then the wrapper throws; retry/replay must return same exportId and the file must still exist in RecordingStorage.
+Heavy token: only the engineer runs tsc/vitest/e2e. Subagents: no heavy runs.

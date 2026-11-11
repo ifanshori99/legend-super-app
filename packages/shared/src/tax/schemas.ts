@@ -375,6 +375,9 @@ export const pbjtMonthlyRecapSchema = z
     regionCode: regionCodeSchema.nullable(),
     generatedAt: isoDateTimeSchema,
     rows: z.array(pbjtRecapRowSchema),
+    // Distinct sales across all rows: one sale taxed under two rule codes
+    // counts once here, so this is not the sum of the rows' counts.
+    totalTransactionCount: z.number().int().nonnegative(),
     totalTaxBaseIdr: idrSchema,
     totalTaxIdr: idrSchema,
   })

@@ -29,11 +29,9 @@ function csvCell(value: string | number): string {
 
 /** RFC 4180 CSV: header, one row per recap row, then a total row (CRLF). */
 export function pbjtRecapToCsv(recap: PbjtMonthlyRecap): string {
-  let transactionCount = 0;
   let grossSalesIdr = 0;
   let serviceChargeIdr = 0;
   for (const row of recap.rows) {
-    transactionCount += row.transactionCount;
     grossSalesIdr += row.grossSalesIdr;
     serviceChargeIdr += row.serviceChargeIdr;
   }
@@ -51,7 +49,7 @@ export function pbjtRecapToCsv(recap: PbjtMonthlyRecap): string {
     [
       "total",
       "",
-      transactionCount,
+      recap.totalTransactionCount,
       grossSalesIdr,
       recap.totalTaxBaseIdr,
       serviceChargeIdr,

@@ -1,8 +1,9 @@
 -- PBJT recap CSV export history (brief in4m-pbjt-export). Provisional number
 -- 0288; the merge train renumbers. Append-only: each export is a new row, the
--- same idempotency key replays the same row. tax_reports is only referenced
--- (nullable link), never changed. The foreign keys are inline in CREATE TABLE,
--- so they need no validation scan and no NO FORCE on the parents.
+-- same idempotency key replays the same row within one outlet (the key is
+-- unique per tenant and outlet; outlet RLS scopes reads). tax_reports is only
+-- referenced (nullable link), never changed. The foreign keys are inline in
+-- CREATE TABLE, so they need no validation scan and no NO FORCE on the parents.
 CREATE TABLE "tax_report_exports" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -20,7 +21,7 @@ CREATE TABLE "tax_report_exports" (
 	"generated_by" text NOT NULL,
 	"generated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "tax_report_exports_tenant_id_key" UNIQUE("tenant_id","id"),
-	CONSTRAINT "tax_report_exports_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
+	CONSTRAINT "tax_report_exports_idempotency_key" UNIQUE("tenant_id","outlet_id","idempotency_key"),
 	CONSTRAINT "tax_report_exports_type_check" CHECK ("tax_report_exports"."type" = 'pbjt'),
 	CONSTRAINT "tax_report_exports_period_check" CHECK ("tax_report_exports"."period" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
 	CONSTRAINT "tax_report_exports_format_check" CHECK ("tax_report_exports"."format" = 'csv'),
@@ -35,6 +36,8 @@ CREATE TABLE "tax_report_exports" (
 --> statement-breakpoint
 CREATE INDEX "tax_report_exports_outlet_period_idx" ON "tax_report_exports" USING btree ("tenant_id","outlet_id","period");--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.tax_report_exports'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.tax_report_exports'::regclass);
 --> statement-breakpoint
 -- Append-only history: no UPDATE, DELETE or TRUNCATE for the app role.
 REVOKE UPDATE, DELETE, TRUNCATE ON public.tax_report_exports FROM legend_app;

@@ -234,6 +234,7 @@ export const taxReportExports = pgTable(
     unique("tax_report_exports_tenant_id_key").on(t.tenantId, t.id),
     unique("tax_report_exports_idempotency_key").on(
       t.tenantId,
+      t.outletId,
       t.idempotencyKey,
     ),
     foreignKey({

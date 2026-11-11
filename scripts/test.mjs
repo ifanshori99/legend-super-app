@@ -141,6 +141,19 @@ try {
       ],
       testEnv,
     );
+    // Web unit tests (mock handlers, no browser). With LEGEND_TEST_FILES set they
+    // run only when it names a file under apps/web/, passed relative to that package.
+    const requested = process.env.LEGEND_TEST_FILES?.split(" ").filter(Boolean);
+    const webFiles = requested
+      ?.filter((file) => file.startsWith("apps/web/"))
+      .map((file) => file.slice("apps/web/".length));
+    if (!requested || webFiles?.length) {
+      await run(
+        pnpmCommand(),
+        ["--filter", "@starter/web", "run", "test", ...(webFiles ?? [])],
+        testEnv,
+      );
+    }
     const files = readdirSync(resolve(root, "tests"))
       .filter(
         (file) => !process.env.LEGEND_TEST_FILES && file.endsWith(".test.mjs"),

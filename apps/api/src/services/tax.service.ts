@@ -1564,6 +1564,15 @@ export async function getPbjtMonthlyRecap(
     });
     await requireOutlet(tx, context, outletId);
     const { from, toExclusive } = periodBounds(query.period);
+    const pbjtScope = and(
+      eq(taxSnapshots.tenantId, context.tenant.tenantId),
+      eq(taxSnapshots.outletId, outletId),
+      // PBJT recap only: a PPN or "other" snapshot must never land in the
+      // regional tax report (pre-review finding tax.service.ts:1318/1338).
+      eq(taxSnapshots.taxType, "pbjt"),
+      sql`${taxSnapshots.businessDate} >= ${from}`,
+      sql`${taxSnapshots.businessDate} < ${toExclusive}`,
+    );
     const rows = await tx
       .select({
         taxRuleCode: taxSnapshots.taxRuleCode,
@@ -1575,19 +1584,17 @@ export async function getPbjtMonthlyRecap(
         taxIdr: sql<string>`sum(${taxSnapshots.taxIdr})`,
       })
       .from(taxSnapshots)
-      .where(
-        and(
-          eq(taxSnapshots.tenantId, context.tenant.tenantId),
-          eq(taxSnapshots.outletId, outletId),
-          // PBJT recap only: a PPN or "other" snapshot must never land in the
-          // regional tax report (pre-review finding tax.service.ts:1318/1338).
-          eq(taxSnapshots.taxType, "pbjt"),
-          sql`${taxSnapshots.businessDate} >= ${from}`,
-          sql`${taxSnapshots.businessDate} < ${toExclusive}`,
-        ),
-      )
+      .where(pbjtScope)
       .groupBy(taxSnapshots.taxRuleCode, taxSnapshots.rateBp)
       .orderBy(asc(taxSnapshots.taxRuleCode), asc(taxSnapshots.rateBp));
+    // Distinct sales over the whole scope (no group by): a sale taxed under two
+    // rule codes appears in two rows but is one transaction.
+    const [totalRow] = await tx
+      .select({
+        totalTransactionCount: sql<number>`count(DISTINCT (${taxSnapshots.sourceType}, ${taxSnapshots.sourceId}))::int`,
+      })
+      .from(taxSnapshots)
+      .where(pbjtScope);
     const regions = await tx
       .selectDistinct({ regionCode: taxRules.regionCode })
       .from(taxSnapshots)
@@ -1628,6 +1635,7 @@ export async function getPbjtMonthlyRecap(
       regionCode: regionCodes.length === 1 ? regionCodes[0] : null,
       generatedAt: now.toISOString(),
       rows: recapRows,
+      totalTransactionCount: Number(totalRow?.totalTransactionCount ?? 0),
       totalTaxBaseIdr: idr(sum(recapRows.map((row) => row.taxBaseIdr))),
       totalTaxIdr: idr(sum(recapRows.map((row) => row.taxIdr))),
     });

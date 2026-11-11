@@ -10,8 +10,13 @@
 //
 // The mock's signed-in actor comes from the same `legend-mock-role` cookie the
 // area guards read: `finance` and `owner` act as the fixture finance approver,
-// every other role acts as the fixture HR approver. The Playwright spec uses
-// that to prove the second approval fails for the first approver. Fixture runs
+// `payroll-admin` acts as the run creator (it holds payroll.run, so it can
+// create and simulate; the mock's approve_hr gate is also payroll.run, so it
+// could HR-approve a run someone else created; the creator-cannot-approve
+// separation comes from the shared reducer, not from the permission), every
+// other role acts as the fixture HR approver. The route guards read the cookie
+// as `none`, so the full flow works only through the mock handlers. The
+// Playwright spec uses that to prove the second approval fails for the first approver. Fixture runs
 // are created by a third user (`userIds.runCreator`), so neither actor is the
 // creator; a run the mock creates itself carries the acting user as creator.
 //
@@ -274,9 +279,25 @@ function mockRoleCookie(): string | undefined {
   return row?.slice(MOCK_ROLE_COOKIE.length + 1);
 }
 
+/**
+ * Mock-only identity: the payroll administrator who creates and simulates runs
+ * (cookie `legend-mock-role=payroll-admin`). It holds `payroll.run`, which is
+ * also the approve_hr gate here, so it could HR-approve a run someone else
+ * created; the creator-cannot-approve separation comes from the shared
+ * reducer. It is not a role template, so the route guards read the cookie as
+ * `none`; the full flow works only through the mock handlers.
+ */
+const PAYROLL_ADMIN_ROLE = "payroll-admin";
+const PAYROLL_ADMIN_PERMISSIONS: readonly PermissionCode[] = [
+  PAYROLL_RUN_PERMISSION,
+];
+
+const isPayrollAdmin = () => mockRoleCookie() === PAYROLL_ADMIN_ROLE;
+
 /** `legend-mock-role` → the fixture payroll actor (see the file header). */
 function currentActor() {
   if (typeof document === "undefined") return userIds.hrApprover;
+  if (isPayrollAdmin()) return userIds.runCreator;
   const role = parseMockRole(mockRoleCookie());
   return role === "finance" || role === "owner"
     ? userIds.financeApprover
@@ -294,6 +315,9 @@ function requirePermission(
   if (typeof document === "undefined") {
     if (options.ssrRead) return;
   } else if (
+    anyOf.some(
+      (code) => isPayrollAdmin() && PAYROLL_ADMIN_PERMISSIONS.includes(code),
+    ) ||
     holdsAny(accessForMockRole(parseMockRole(mockRoleCookie())), anyOf)
   ) {
     return;

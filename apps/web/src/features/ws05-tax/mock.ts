@@ -400,6 +400,8 @@ registerMock(getPbjtMonthlyRecap, ({ query, scenario }) => {
       period: query.period,
       generatedAt,
       rows,
+      totalTransactionCount:
+        rows.length === 0 ? 0 : source.totalTransactionCount,
       totalTaxBaseIdr: rows.reduce((sum, row) => sum + row.taxBaseIdr, 0),
       totalTaxIdr: rows.reduce((sum, row) => sum + row.taxIdr, 0),
     }),
