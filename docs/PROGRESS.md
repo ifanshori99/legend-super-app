@@ -3278,3 +3278,11 @@ Langkah berikut CTO baru:
 - Gerbang: typecheck shared, web, api, root hijau; lint 0 error setelah perbaikan 8 error dari merge (body tak terpakai di identity-auth.routes, `any` di 2 test, `_omit`); vitest API penuh 12791 lulus; test root 2077/2078 lalu perbaikan komentar docs/ di e2e/legend-kmndq.mock.spec.ts (aturan legend-nt8q), 11/11 file terkait lulus; e2e 18 lulus 1 skip. 8 gagal saat 4 file identitas jalan bersamaan (kartu legend-ongp7), lulus semua per file (10, 9, 20, 32).
 - Review architect xhigh (K): tanpa BLOCKER; 1 MAJOR (lint, dibetulkan), komentar nomor lama dibetulkan. MINOR tersisa: balasan 204 untuk confirm yang kalah balapan lawan cancel (identity-login.service ~909; tidak ada sesi terbit).
 - Catatan lnbtp: requireConfirm kini wajib di route; UI kmndq ikut di batch yang sama.
+
+## WS-07 ledger integrity (cabang ws/ledger-integrity, 11 Nov 2026)
+- legend-brq1: migrasi 0310 (trigger tolak jurnal ke bulan fiskal closed atau sebelum bulan closed, lock FOR SHARE legal entity) + dimensi `legal_entity` di metrik ledger. legend-v616 ditutup (duplikat).
+- legend-i5kc: migrasi 0311 + snapshot 0256: depresiasi mundur lewat tabel `fixed_asset_depreciation_reversals` (append-only) + kolom `generation`; jurnal koreksi per jurnal asal; bulan closed ditolak 409 PERIOD_CLOSED.
+- legend-68if: router shareholder-documents dipasang di storage-api.routes.ts dengan storage runtime dan scanner; FK dan validasi profitEntityId sudah ada.
+- legend-uyk2: TIDAK dikerjakan: modul supplier invoice dan AR belum ada, butuh keputusan (WS-06 atau modul baru).
+- Review architect xhigh (K) dua kali: 1 Medium (lock trigger) dan 1 High (daftar run) dibetulkan; bead baru untuk reversal manual jurnal aset dan membership versi terkini.
+- Gerbang: 6 file test terarah 56 lulus; typecheck api dan shared hijau; `db:generate` kosong; eslint+prettier hijau.
