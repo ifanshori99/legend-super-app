@@ -3324,3 +3324,25 @@ Cabang `ws/5nt2z-leave-partial`. Sudah: (1) kunci advisory per karyawan `hris:le
 - Coverage: penyebut = outlet milik merek baris menu itu yang terjangkau pemanggil, per baris.
 - Gagal-dulu: 29 test merah di 80321fdc (`55b13af7`), lalu 8 test merah di 87f662f6 (`8f253723`). Akhir: typecheck API 0, eslint berkas berubah 0, 58 berkas HPP/inventori/resep/menu/org/pos-order lulus; 3 flake paralel (menu-print-db, menu-availability, menu-import-db) lulus saat dijalankan sendiri.
 - Tersisa: snapshot drizzle 0278 belum ada (`pnpm db:generate` setelah nomor final); `pnpm check`/e2e penuh tidak dijalankan.
+
+## 2026-11-11: merge train batch48g (ws/merge-batch48g-b, basis m1 89540326)
+
+- Urutan merge (`--no-ff`): ongp7-identity-test-isolation 07525cf5, vqvuj-baa-wa-confirm 097a0aee, 9h2oj-wa-reset dc7ec186 (+ 9h2oj-tests a3bdda7f, + ur82k-lupa-pin-ui 666a1074), 5nt2z-leave-partial 3a3750ed, 2qq-hpp-recompute 1258dec7.
+- Ditahan atas keputusan CTO (kartu legend-bxdhv): ws/rat9r-followups 065bc81c bersama ws/pti5r-promo-refund (ancestor rat9r, bukan di m1) dan migrasi 0260 `order_issue_paid_value`. Alasan: rat9r membuat tes refund m1 gagal (`order-recovery-refund` T3/T4, `order-recovery-rereport` RR-2; lulus di m1 89540326, gagal di ujung rat9r sendiri). Cabang percobaan pertama `ws/merge-batch48g` (dengan rat9r, 24f05e91) tidak dipakai. Tidak digabung dari brief: dheu/463, kai, 6c6, bz9h, 6pha, 97p, 24318.
+- Peta migrasi (jurnal idx 250..259; `when` unik naik; `db:generate` kosong; `migration-renumber check --from-idx 240` bersih):
+
+| Akhir | Tag | Nomor lama | Cabang | `when` |
+|---|---|---|---|---|
+| 0255 | `0255_drop_payslip_pin_reset_challenges` | 0273 | 9h2oj-wa-reset | 1794336000000 |
+| 0256 | `0256_approved_leaves_on` | 0276 | 5nt2z-leave-partial | 1794337000000 |
+| 0257 | `0257_flag_attendance_for_leave` | 0277 | 5nt2z-leave-partial | 1794338000000 |
+| 0258 | `0258_leave_clash_backfill` | 0278 | 5nt2z-leave-partial | 1794339000000 |
+| 0259 | `0259_hpp_recompute` | 0278 | 2qq-hpp-recompute | 1794340000000 |
+
+- 0256-0258 SQL-saja: snapshot disalin dari 0255 dengan `id`/`prevId` baru, jurnal ditulis manual (`migration-renumber` menolak SQL-saja).
+- SQL diubah merge train: 0259, tujuh FK `menu_costs` dipindah ke dalam `CREATE TABLE` (outlets FORCE RLS; `ADD CONSTRAINT` oleh migrator non-superuser gagal 42501; pola 0244/0246).
+- Test/registri diubah merge train: registri impor 0257 + 0258; `payslip-pin-pepper-ttl` membuang kasus OTP yang dihapus 9h2oj; `hris-contract` mengenal `leave.changed` dan `changeReason` (enum) bukan teks alasan cuti; `outlet-rls` allowlist `public.hpp_outlet_state`; 17 error lint dari 9h2oj/ur82k; 88 string UI `wa-reset/*` dipindah ke katalog (`packages/shared/src/i18n/messages/ws10-payslip-wa-reset.ts`); file nyasar `docs/PROGRESS.md-e` dihapus.
+- `hpp_outlet_state` (RLS tenant saja, sengaja): architect high 11 Nov: AMAN. Tidak ada jalur user yang membaca tabel (hanya worker `hpp-recompute.service.ts` di konteks tepercaya); `markHppStale` oleh aktor outlet menandai outlet lain stale adalah disengaja dan hanya menambah rebuild. Syarat: jalur baca outlet baru wajib review baru.
+- Gate di HEAD 7a61ca07: typecheck 4 paket hijau; `pnpm lint` hijau; `db:generate` kosong; `pnpm test` penuh exit 0 (API 13028 lulus, 40 skip, 3 todo, 778 file; root 2078/2078); e2e 18 lulus 1 skip (termasuk `legend-kmndq.mock.spec.ts`). Tes uang (refund, HPP) hijau. Tidak ada kegagalan warisan.
+- Architect xhigh (kombinasi migrasi, konflik file uang): `pos-order-corrections.ts` auto-merge dan payout tetap dibatasi room; MAJOR-1 (fungsi flag cuti 0258 dan tanpa penjaga payroll-tertutup di persetujuan cuti, warisan 5nt2z) jadi kartu legend-0c5yg (P1); kontrak OTP mati setelah 9h2oj jadi kartu legend-pyc4t.
+- Biaya sesi (48f + 48g): total 6332k unit (utama sonnet 4975k, subagent opus 800k, sonnet 511k, haiku 46k); 9 subagent tercatat (architect xhigh 1 dilanjutkan sekali, architect high 1, implementer 1). `parallel-report`: rata-rata 3.86 subagent berjalan per agent (29 sesi).
