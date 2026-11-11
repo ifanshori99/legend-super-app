@@ -147,7 +147,15 @@ async function newSimulatedRun(
        (id, tenant_id, legal_entity_id, payroll_policy_id, run_type,
         period_start, period_end, pay_date, created_by)
      VALUES ($1, $2, $3, $4, 'regular', $5, $6, $6, $7)`,
-    [id, tenantId, ctx.entityId, ctx.policyId, period.start, period.end, CREATOR],
+    [
+      id,
+      tenantId,
+      ctx.entityId,
+      ctx.policyId,
+      period.start,
+      period.end,
+      CREATOR,
+    ],
   );
   await client.query(
     `UPDATE payroll_runs SET status = 'simulated' WHERE id = $1`,
@@ -187,8 +195,14 @@ describe("payroll_runs: approvers differ from the creator (legend-7ui6v)", () =>
 
   it("[7ui6v] refuses a creator who is both approvers, and accepts three distinct people", async () => {
     const result = await withRollback(async (client, ctx) => ({
-      allThree: await insertRun(client, ctx, { hr: "hr-user", finance: "finance-user" }),
-      creatorBoth: await insertRun(client, ctx, { hr: CREATOR, finance: CREATOR }),
+      allThree: await insertRun(client, ctx, {
+        hr: "hr-user",
+        finance: "finance-user",
+      }),
+      creatorBoth: await insertRun(client, ctx, {
+        hr: CREATOR,
+        finance: CREATOR,
+      }),
       // Only one of the two equals the creator: still refused.
       financeIsCreator: await insertRun(client, ctx, {
         hr: "hr-user",
@@ -200,7 +214,10 @@ describe("payroll_runs: approvers differ from the creator (legend-7ui6v)", () =>
       }),
     }));
     expect(result.allThree).toEqual({ ok: true });
-    expect(result.creatorBoth).toMatchObject({ ok: false, code: CHECK_VIOLATION });
+    expect(result.creatorBoth).toMatchObject({
+      ok: false,
+      code: CHECK_VIOLATION,
+    });
     expect(result.financeIsCreator).toMatchObject({
       ok: false,
       code: CHECK_VIOLATION,
@@ -230,7 +247,10 @@ describe("payroll_runs: approvers differ from the creator (legend-7ui6v)", () =>
       );
       return { asCreator, asOther };
     });
-    expect(result.asCreator).toMatchObject({ ok: false, code: CHECK_VIOLATION });
+    expect(result.asCreator).toMatchObject({
+      ok: false,
+      code: CHECK_VIOLATION,
+    });
     expect(result.asOther).toEqual({ ok: true });
   });
 
@@ -259,7 +279,10 @@ describe("payroll_runs: approvers differ from the creator (legend-7ui6v)", () =>
       );
       return { asCreator, asOther };
     });
-    expect(result.asCreator).toMatchObject({ ok: false, code: CHECK_VIOLATION });
+    expect(result.asCreator).toMatchObject({
+      ok: false,
+      code: CHECK_VIOLATION,
+    });
     expect(result.asOther).toEqual({ ok: true });
   });
 
