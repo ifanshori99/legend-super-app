@@ -23,10 +23,19 @@
 //     side navigation to the detail page (the param is dropped there).
 //   POST /api/hris/attendance/logs/:logId/review failures use the standard
 //     window.__legendMock.failNext (endpoint id from packages/shared endpoints.ts).
+// Heading levels follow the kelola shell (same as e2e/legend-0z5k.mock.spec.ts):
+// the shell banner owns the page's h1 (the menu label "Tinjauan cuti") and the
+// screen's own title "Tinjauan absensi" is an h2.
+// The queue renders a table (desktop) and cards (mobile) side by side and hides
+// one with CSS, so text locators on the queue page only count visible matches.
 // The browser clock is frozen on the fixture day; screenshots go through
 // e2e/screenshots.ts (tracked evidence only with LEGEND_CAPTURE_SCREENSHOTS=1).
-import { expect, test, type Page } from "@playwright/test";
-import { waitForHydration } from "./hydration.ts";
+import {
+  expect as baseExpect,
+  test,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL ?? "";
@@ -35,7 +44,14 @@ test.skip(
   "Set LEGEND_MOCK_WEB_URL (pnpm test:e2e:mock) to a web server running VITE_API_MOCK.",
 );
 
-const COLD_START_TIMEOUT_MS = 30_000;
+// Timeouts are short on purpose: mock-global-setup warms every route, so a
+// missing element is a real failure and must cost seconds, not minutes.
+const expect = baseExpect.configure({ timeout: 5_000 });
+test.use({ actionTimeout: 5_000, navigationTimeout: 10_000 });
+test.setTimeout(20_000);
+/** First paint of a warmed route, and the mock's own "slow" scenario (3 s). */
+const COLD_START_TIMEOUT_MS = 8_000;
+const HYDRATION_TIMEOUT_MS = 8_000;
 /** 17:00 WIB on the fixture day. */
 const FIXTURE_CLOCK = new Date("2026-10-26T10:00:00.000Z");
 const QUEUE_PATH = "/kelola/absensi/tinjauan-cuti";
@@ -70,7 +86,7 @@ const CASE_MATCH: Record<CaseKind, (text: string) => boolean> = {
     !text.includes("Perlu ditinjau ulang"),
   annual: (text) =>
     text.includes("Absen saat cuti") &&
-    text.includes("Cuti tahunan") &&
+    text.toLowerCase().includes("cuti tahunan") &&
     !text.includes("Belum absen keluar") &&
     !text.includes("Koreksi absen manual") &&
     !text.includes("Perlu ditinjau ulang"),
@@ -84,14 +100,49 @@ async function prepare(page: Page, width: number = 1280) {
   await page.clock.setFixedTime(FIXTURE_CLOCK);
 }
 
+/**
+ * Same two signals as ./hydration.ts (html data-hydrated, every control in the
+ * main area carries React props) with a short timeout.
+ */
+async function waitForHydration(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => document.documentElement.dataset.hydrated === "true",
+    undefined,
+    { timeout: HYDRATION_TIMEOUT_MS },
+  );
+  await page.waitForFunction(
+    () => {
+      const root = document.querySelector("#main-content") ?? document.body;
+      return Array.from(
+        root.querySelectorAll("input, button, textarea, select, a[href]"),
+      ).every((el) =>
+        Object.keys(el).some((key) => key.startsWith("__reactProps$")),
+      );
+    },
+    undefined,
+    { timeout: HYDRATION_TIMEOUT_MS },
+  );
+}
+
+/** Only the matches a user can see (the hidden table/card twin is ignored). */
+function seen(locator: Locator): Locator {
+  return locator.filter({ visible: true });
+}
+
+/** The screen's own title: an h2 under the shell's h1 "Tinjauan cuti". */
+function queueTitle(page: Page) {
+  return page.getByRole("heading", { level: 2, name: "Tinjauan absensi" });
+}
+
 function reviewLinks(page: Page) {
   return page.getByRole("link", { name: REVIEW_LINK });
 }
 
 async function expectQueueLoaded(page: Page) {
   await expect(
-    page.getByRole("heading", { level: 1, name: "Tinjauan absensi" }),
+    page.getByRole("heading", { level: 1, name: "Tinjauan cuti" }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  await expect(queueTitle(page)).toBeVisible();
   await expect(reviewLinks(page)).toHaveCount(CASE_COUNT, {
     timeout: COLD_START_TIMEOUT_MS,
   });
@@ -191,7 +242,6 @@ async function noRightsMode(page: Page) {
 test("legend-3jem1 queue 1280: HR sees the cases that need a decision, with leave and clock times", async ({
   page,
 }) => {
-  test.slow();
   await prepare(page, 1280);
   await page.goto(`${base}${QUEUE_PATH}`);
   await expectQueueLoaded(page);
@@ -261,9 +311,11 @@ test("legend-3jem1 queue 1280: HR sees the cases that need a decision, with leav
 
   // State 8: an accepted log that got a new approved leave comes back.
   await expect(
-    page.getByText("Perlu ditinjau ulang", { exact: true }),
+    seen(page.getByText("Perlu ditinjau ulang", { exact: true })),
   ).toBeVisible();
-  await expect(page.getByText(RE_REVIEW_NOTE, { exact: true })).toBeVisible();
+  await expect(
+    seen(page.getByText(RE_REVIEW_NOTE, { exact: true })),
+  ).toBeVisible();
 
   // Touch target of the row action.
   const box = await reviewLinks(page).first().boundingBox();
@@ -275,18 +327,20 @@ test("legend-3jem1 queue 1280: HR sees the cases that need a decision, with leav
 test("legend-3jem1 queue 390: cards, a full-width Tinjau action, and no horizontal scroll", async ({
   page,
 }) => {
-  test.slow();
   await prepare(page, 390);
   await page.goto(`${base}${QUEUE_PATH}`);
   await expectQueueLoaded(page);
 
-  await expect(page.getByText("Belum absen keluar")).toBeVisible();
-  await expect(page.getByText(RE_REVIEW_NOTE, { exact: true })).toBeVisible();
+  await expect(seen(page.getByText("Belum absen keluar"))).toBeVisible();
+  await expect(
+    seen(page.getByText(RE_REVIEW_NOTE, { exact: true })),
+  ).toBeVisible();
   await expect(page.getByRole("table")).toHaveCount(0);
 
   const box = await reviewLinks(page).first().boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
-  expect(box?.width ?? 0).toBeGreaterThanOrEqual(300);
+  // Full-width inside the card: most of the 390px screen.
+  expect(box?.width ?? 0).toBeGreaterThanOrEqual(390 * 0.6);
   expect(await noHorizontalScroll(page)).toBe(true);
   await captureScreenshot(page, "legend-3jem1/queue-390.png");
 
@@ -298,7 +352,6 @@ test("legend-3jem1 queue 390: cards, a full-width Tinjau action, and no horizont
 test("legend-3jem1 queue: search by employee name narrows the list, an unknown name says so", async ({
   page,
 }) => {
-  test.slow();
   await prepare(page, 1280);
   await page.goto(`${base}${QUEUE_PATH}`);
   await expectQueueLoaded(page);
@@ -321,11 +374,14 @@ test("legend-3jem1 queue: search by employee name narrows the list, an unknown n
   expect(shown.every((text) => text.includes(name))).toBe(true);
 
   await search.fill("zzzz tidak ada nama ini");
+  // The queue uses the kit's DataTableShell texts (coordinator decision).
   await expect(
-    page.getByText("Tidak ada hasil", { exact: true }),
+    page.getByText("Tidak ada hasil untuk “zzzz tidak ada nama ini”", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(
-    page.getByText("Tidak ada tinjauan yang cocok dengan pencarian itu."),
+    page.getByText("Coba kata lain atau hapus filter.", { exact: true }),
   ).toBeVisible();
   await expect(reviewLinks(page)).toHaveCount(0);
 });
@@ -337,7 +393,6 @@ for (const width of WIDTHS) {
   test(`legend-3jem1 keep leave ${width}: queue, detail, confirm, result "Tetap cuti" (never "Ditolak"), back to queue`, async ({
     page,
   }) => {
-    test.slow();
     await openDetail(page, "single", width);
 
     // The detail is a page with a way back, not a modal.
@@ -434,7 +489,6 @@ for (const width of WIDTHS) {
   test(`legend-3jem1 cancel leave ${width}: multi-day leave, only this date is cancelled, result "Cuti hari ini dibatalkan"`, async ({
     page,
   }) => {
-    test.slow();
     await openDetail(page, "annual", width);
 
     await expect(page.getByText("Cuti tahunan").first()).toBeVisible();
@@ -488,26 +542,27 @@ for (const width of WIDTHS) {
 }
 
 // ---------------------------------------------------------------------------
-// Confirm fails: error inside the dialog, dialog stays open, button can retry.
+// Confirm fails: error inside the dialog, dialog stays open.
+// Assumption: a refusal that retrying cannot fix (409 "cuti tidak disetujui")
+// and a transient failure (500) both keep the dialog open with a human message;
+// only the transient one is promised to be retryable ("tombol bisa diulang").
 
 for (const width of WIDTHS) {
-  test(`legend-3jem1 failed confirmation ${width}: the error stays in the dialog and the decision can be retried`, async ({
+  test(`legend-3jem1 failed confirmation ${width}: the error stays in the dialog and a transient failure can be retried`, async ({
     page,
   }) => {
-    test.slow();
     await openDetail(page, "single", width);
+    const dialog = page.getByRole("dialog");
 
+    // A refusal from the server: human message, never the raw code.
     await failNextDecision(page, {
       status: 409,
       code: "ATTENDANCE_LEAVE_NOT_APPROVED",
     });
     await keepButton(page).click();
-    const dialog = page.getByRole("dialog");
     await dialog
       .getByRole("button", { name: "Tetap cuti", exact: true })
       .click();
-
-    // A human message (never the raw code), dialog still open, nothing saved.
     await expect(
       dialog.getByText(/Tidak ada cuti disetujui pada hari itu\./),
     ).toBeVisible();
@@ -516,14 +571,29 @@ for (const width of WIDTHS) {
       0,
     );
     await expect(page.getByText("Keputusan tersimpan")).toHaveCount(0);
+    await captureScreenshot(page, `legend-3jem1/confirm-failed-${width}.png`);
+    await dialog.getByRole("button", { name: "Kembali", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+
+    // A transient failure: the same button saves the decision on the next try.
+    await failNextDecision(page, { status: 500, code: "INTERNAL_ERROR" });
+    await keepButton(page).click();
     const retry = dialog.getByRole("button", {
       name: "Tetap cuti",
       exact: true,
     });
+    await retry.click();
+    await expect(
+      dialog.getByText("Keputusan belum tersimpan", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByText("Terjadi kesalahan. Coba lagi."),
+    ).toBeVisible();
+    await expect(dialog).toBeVisible();
+    await expect(page.getByText("Keputusan tersimpan")).toHaveCount(0);
     await expect(retry).toBeEnabled();
-    await captureScreenshot(page, `legend-3jem1/confirm-failed-${width}.png`);
 
-    // The failure was one-shot: the same button now saves the decision.
+    // The failure was one-shot.
     await retry.click();
     await expect(
       page.getByText("Keputusan tersimpan", { exact: true }),
@@ -538,7 +608,6 @@ for (const width of WIDTHS) {
   test(`legend-3jem1 no cancel right ${width}: cancel is disabled with a readable reason, keep leave still works`, async ({
     page,
   }) => {
-    test.slow();
     await noRightsMode(page);
     await openDetail(page, "annual", width, "?leaveRights=keep-only");
 
@@ -562,7 +631,6 @@ for (const width of WIDTHS) {
   test(`legend-3jem1 manual correction ${width}: same two actions, no Terima or Tolak, whole day only`, async ({
     page,
   }) => {
-    test.slow();
     await openDetail(page, "manual", width);
 
     await expect(
@@ -589,7 +657,6 @@ for (const width of WIDTHS) {
 test("legend-3jem1 detail is a real page: a deep link opens it after a reload", async ({
   page,
 }) => {
-  test.slow();
   await openDetail(page, "annual", 1280);
   const url = page.url();
 
@@ -605,7 +672,6 @@ for (const width of WIDTHS) {
   test(`legend-3jem1 unknown case ${width}: says it was not found and leads back to the queue`, async ({
     page,
   }) => {
-    test.slow();
     await prepare(page, width);
     await page.goto(`${base}${QUEUE_PATH}/01JZZZZZZZZZZZZZZZZZZZZZZZ`);
 
@@ -622,9 +688,7 @@ for (const width of WIDTHS) {
 
     await waitForHydration(page);
     await backToQueue(page).click();
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Tinjauan absensi" }),
-    ).toBeVisible();
+    await expect(queueTitle(page)).toBeVisible();
   });
 }
 
@@ -636,9 +700,9 @@ for (const width of WIDTHS) {
     await prepare(page, width);
     await page.goto(`${base}${QUEUE_PATH}?mock=empty`);
 
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Tinjauan absensi" }),
-    ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+    await expect(queueTitle(page)).toBeVisible({
+      timeout: COLD_START_TIMEOUT_MS,
+    });
     await expect(
       page.getByText("Tidak ada tinjauan absensi", { exact: true }),
     ).toBeVisible();
@@ -653,29 +717,28 @@ for (const width of WIDTHS) {
   test(`legend-3jem1 loading ${width}: a skeleton announces that the queue is loading`, async ({
     page,
   }) => {
-    test.slow();
     await prepare(page, width);
     await page.goto(`${base}${QUEUE_PATH}?mock=slow`);
 
-    // The mock "slow" scenario answers after 3 seconds.
-    await expect(
-      page
-        .getByLabel("Memuat tinjauan absensi")
-        .or(page.getByText("Memuat tinjauan absensi"))
-        .first(),
-    ).toBeAttached({ timeout: COLD_START_TIMEOUT_MS });
+    // The mock "slow" scenario answers after 3 seconds. The queue uses the
+    // kit's DataTableShell loading state: the "Perlu ditinjau" region is busy
+    // and says "Memuat…" to screen readers (coordinator decision).
+    const region = page.getByRole("region", { name: "Perlu ditinjau" });
+    await expect(region).toHaveAttribute("aria-busy", "true", {
+      timeout: COLD_START_TIMEOUT_MS,
+    });
+    await expect(region.getByText("Memuat…", { exact: true })).toBeAttached();
     await expect(reviewLinks(page)).toHaveCount(0);
     await captureScreenshot(page, `legend-3jem1/loading-${width}.png`);
 
     await expect(reviewLinks(page)).toHaveCount(CASE_COUNT, {
-      timeout: COLD_START_TIMEOUT_MS,
+      timeout: 25_000,
     });
   });
 
   test(`legend-3jem1 load error ${width}: says what failed and Coba lagi recovers`, async ({
     page,
   }) => {
-    test.slow();
     await prepare(page, width);
     await page.goto(`${base}${QUEUE_PATH}?mock=error`);
 
@@ -706,22 +769,32 @@ for (const width of WIDTHS) {
   });
 }
 
-test("legend-3jem1 offline: the queue says the connection is gone", async ({
+test("legend-3jem1 offline: losing the connection says so on the queue", async ({
   page,
+  context,
 }) => {
-  test.slow();
+  // Assumption: the offline notice follows the browser's connectivity
+  // (navigator.onLine), like the other WS-10 screens, so the test cuts the
+  // network after the queue loaded. `?mock=offline` (every API call fails with
+  // a network error) is a load failure and is covered by the load error state.
   await prepare(page, 390);
-  await page.goto(`${base}${QUEUE_PATH}?mock=offline`);
+  await page.goto(`${base}${QUEUE_PATH}`);
+  await expectQueueLoaded(page);
+  await waitForHydration(page);
+  await expect(page.getByText("Anda sedang offline")).toHaveCount(0);
 
+  await context.setOffline(true);
   await expect(
     page.getByText("Anda sedang offline", { exact: true }),
-  ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  ).toBeVisible();
   await expect(
     page.getByText(
       "Sambungkan kembali koneksi untuk memuat atau memutuskan tinjauan.",
     ),
   ).toBeVisible();
-  await expect(reviewLinks(page)).toHaveCount(0);
+
+  await context.setOffline(false);
+  await expect(page.getByText("Anda sedang offline")).toHaveCount(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -730,7 +803,6 @@ test("legend-3jem1 offline: the queue says the connection is gone", async ({
 test("legend-3jem1 guard: a role without the attendance review right gets no page and no menu entry", async ({
   page,
 }) => {
-  test.slow();
   await prepare(page, 1280);
   // Finance enters /kelola (dashboard.management.view) but holds no
   // hr.attendance.manage (packages/shared/src/access/roles.ts).

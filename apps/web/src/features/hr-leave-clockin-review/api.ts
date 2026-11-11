@@ -15,6 +15,7 @@ import type {
 } from "@starter/shared/hris";
 import {
   decideAttendanceReview,
+  getEmployee,
   listAttendanceLogs,
   listAttendanceReviewQueue,
   listEmployees,
@@ -25,9 +26,10 @@ import type { CursorPage, OutletId } from "@starter/shared/core";
 import { callEndpoint } from "@/lib/api/endpoint";
 import {
   buildLeaveClockinCase,
-  businessDateOfLog,
+  candidateBusinessDates,
   compareLeaveClockinCases,
   isLeaveClockinItem,
+  resolveBusinessDate,
 } from "./enrich.ts";
 import type { LeaveClockinAction, LeaveClockinCase } from "./types.ts";
 
@@ -74,19 +76,46 @@ export async function fetchLeaveReviewItems(
   return items.filter(isLeaveClockinItem);
 }
 
-async function fetchEmployees(signal?: AbortSignal): Promise<Employee[]> {
-  return readPages((cursor) =>
-    callEndpoint(
-      listEmployees,
-      {
-        query: {
-          limit: LEAVE_CLOCKIN_PAGE_LIMIT,
-          ...(cursor === undefined ? {} : { cursor }),
+/**
+ * Employees by directory lookup, never silently capped: the outlet's employees
+ * are read first (the endpoint filters by outlet), then every employee the
+ * cases need that the list did not return (another home outlet, past the page
+ * cap) is read one by one. Null only when nothing could be read at all.
+ */
+async function fetchEmployees(
+  outletId: OutletId,
+  employeeIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<Employee[] | null> {
+  const listed = await settled(
+    readPages((cursor) =>
+      callEndpoint(
+        listEmployees,
+        {
+          query: {
+            outletId,
+            limit: LEAVE_CLOCKIN_PAGE_LIMIT,
+            ...(cursor === undefined ? {} : { cursor }),
+          },
         },
-      },
-      { signal },
+        { signal },
+      ),
     ),
   );
+  const found = new Set<string>((listed ?? []).map((employee) => employee.id));
+  const missing = employeeIds.filter((id) => !found.has(id));
+  const extra = await Promise.all(
+    missing.map((employeeId) =>
+      settled(
+        callEndpoint(getEmployee, { params: { employeeId } }, { signal }),
+      ),
+    ),
+  );
+  const rows = [
+    ...(listed ?? []),
+    ...extra.flatMap((response) => (response === null ? [] : [response.data])),
+  ];
+  return listed === null && rows.length === 0 ? null : rows;
 }
 
 async function fetchLeaveTypes(signal?: AbortSignal): Promise<LeaveType[]> {
@@ -104,8 +133,9 @@ async function fetchLeaveTypes(signal?: AbortSignal): Promise<LeaveType[]> {
   );
 }
 
-async function fetchApprovedLeaves(
+async function fetchLeavesOfStatus(
   item: AttendanceReviewItem,
+  status: "approved" | "cancelled",
   signal?: AbortSignal,
 ): Promise<LeaveRequest[]> {
   return readPages((cursor) =>
@@ -114,7 +144,7 @@ async function fetchApprovedLeaves(
       {
         query: {
           employeeId: item.log.employeeId,
-          status: "approved",
+          status,
           limit: LEAVE_CLOCKIN_PAGE_LIMIT,
           ...(cursor === undefined ? {} : { cursor }),
         },
@@ -161,6 +191,8 @@ async function settled<T>(promise: Promise<T>): Promise<T | null> {
 /**
  * Builds the case view models of some queue items: lookups run in parallel,
  * once per employee / business date, and the result is sorted for the queue.
+ * A log with a shift can belong to the day before its calendar date (night
+ * shift), so both days are read and the one listing the log decides.
  */
 export async function loadLeaveClockinCases(
   items: readonly AttendanceReviewItem[],
@@ -169,26 +201,40 @@ export async function loadLeaveClockinCases(
   signal?: AbortSignal,
 ): Promise<LeaveClockinCase[]> {
   if (items.length === 0) return [];
-  const [employees, leaveTypes] = await Promise.all([
-    settled(fetchEmployees(signal)),
-    settled(fetchLeaveTypes(signal)),
-  ]);
-  const leavesByEmployee = new Map<string, LeaveRequest[] | null>();
-  const logsByDate = new Map<string, AttendanceLog[] | null>();
   const firstItemOf = new Map<string, AttendanceReviewItem>();
   for (const item of items)
     if (!firstItemOf.has(item.log.employeeId))
       firstItemOf.set(item.log.employeeId, item);
-  const dateOf = (item: AttendanceReviewItem) =>
-    businessDateOfLog(item.log.occurredAt, timeZone);
+  const [employees, leaveTypes] = await Promise.all([
+    fetchEmployees(outletId, [...firstItemOf.keys()], signal),
+    settled(fetchLeaveTypes(signal)),
+  ]);
+  const leavesByEmployee = new Map<string, LeaveRequest[] | null>();
+  const cancelledByEmployee = new Map<string, LeaveRequest[] | null>();
+  const logsByDate = new Map<string, AttendanceLog[] | null>();
+  const dates = new Set(
+    items.flatMap((item) => candidateBusinessDates(item.log, timeZone)),
+  );
   await Promise.all([
-    ...[...firstItemOf].map(async ([employeeId, item]) => {
+    ...[...firstItemOf].map(async ([employeeId, first]) => {
       leavesByEmployee.set(
         employeeId,
-        await settled(fetchApprovedLeaves(item, signal)),
+        await settled(fetchLeavesOfStatus(first, "approved", signal)),
       );
+      // Only a cancelled decision needs the (no longer approved) leave back.
+      if (
+        items.some(
+          (item) =>
+            item.log.employeeId === employeeId &&
+            item.reviewStatus === "accepted",
+        )
+      )
+        cancelledByEmployee.set(
+          employeeId,
+          await settled(fetchLeavesOfStatus(first, "cancelled", signal)),
+        );
     }),
-    ...[...new Set(items.map(dateOf))].map(async (businessDate) => {
+    ...[...dates].map(async (businessDate) => {
       logsByDate.set(
         businessDate,
         await settled(fetchOutletDayLogs(outletId, businessDate, signal)),
@@ -196,14 +242,19 @@ export async function loadLeaveClockinCases(
     }),
   ]);
   return items
-    .map((item) =>
-      buildLeaveClockinCase(item, timeZone, {
+    .map((item) => {
+      const businessDate = resolveBusinessDate(item.log, timeZone, (date) =>
+        logsByDate.get(date),
+      );
+      return buildLeaveClockinCase(item, timeZone, {
         employees,
         leaveTypes,
         leaves: leavesByEmployee.get(item.log.employeeId) ?? null,
-        dayLogs: logsByDate.get(dateOf(item)) ?? null,
-      }),
-    )
+        cancelledLeaves: cancelledByEmployee.get(item.log.employeeId) ?? null,
+        dayLogs: logsByDate.get(businessDate) ?? null,
+        businessDate,
+      });
+    })
     .sort(compareLeaveClockinCases);
 }
 

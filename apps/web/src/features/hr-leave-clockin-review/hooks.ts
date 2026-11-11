@@ -167,7 +167,6 @@ export function useLeaveClockinPermissions(): LeaveClockinPermissions {
 
 /** Contract 409 codes that have their own human message. */
 const SPECIFIC_ERROR_CODES = [
-  "ATTENDANCE_LEAVE_MULTI_DAY",
   "ATTENDANCE_LEAVE_DECISION_NOT_ALLOWED",
   "ATTENDANCE_LEAVE_NOT_APPROVED",
   "ATTENDANCE_LEAVE_NOT_REACHABLE",
