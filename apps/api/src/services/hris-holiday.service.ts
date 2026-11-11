@@ -47,7 +47,10 @@ import { hrisIdempotency } from "../db/schema/hris.ts";
 import { holidays } from "../db/schema/hris-leave.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { hrisRequestFingerprint } from "../lib/hris-pii.ts";
+import {
+  hrisFingerprintMatches,
+  hrisRequestFingerprint,
+} from "../lib/hris-pii.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
@@ -131,7 +134,11 @@ export async function idempotentHrisWrite<T>(
   if (existing) {
     if (
       existing.operation !== operation ||
-      existing.fingerprint !== fingerprint
+      !hrisFingerprintMatches(
+        context.tenant.tenantId,
+        { operation, request },
+        existing.fingerprint,
+      )
     )
       throw new CoreError(
         "IDEMPOTENCY_KEY_REUSED",

@@ -37,17 +37,20 @@ import {
   type PushProvider,
 } from "@starter/shared/adapters";
 import type { EventEnvelope } from "@starter/shared/events";
+import { INVITATION_LINK_TTL_MINUTES } from "@starter/shared/identity";
 import { facilityIncidentRaisedEvent } from "@starter/shared/facility";
 import {
   approvalRequestedEvent,
   approvalResolvedEvent,
 } from "@starter/shared/identity";
 import {
+  allowsUnverifiedEmail,
   defaultNotificationPolicy,
   notificationPolicySchema,
   notificationPreferenceSchema,
   type NotificationCategory,
   type NotificationPolicy,
+  subscriptionInvoiceCreatedEvent,
   type NotificationPreference,
   type Reachability,
 } from "@starter/shared/notification";
@@ -67,13 +70,16 @@ import {
   pushSubscriptions,
   whatsappReservations,
 } from "../db/schema/notification.ts";
+import { customerProfiles } from "../db/schema/crm-member.ts";
 import { facilityIncidents } from "../db/schema/facility.ts";
 import { employees } from "../db/schema/hris.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
-import { outlets } from "../db/schema/platform-org.ts";
+import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
+import { isReservedAddress } from "../services/identity-email-login.service.ts";
+import { issueInvitationLink } from "../services/identity-invitation.service.ts";
 import type { NotificationRecipientResolver } from "../services/notification-consumer.ts";
 import type { NotificationRecipient } from "../services/notification-core.ts";
 import type { deliverNotificationAttempt } from "../services/notification-delivery.ts";
@@ -230,6 +236,13 @@ function reachabilityOf(
     hasPushSubscription:
       state.active && channels.push && state.hasPushSubscription,
     hasVerifiedEmail: state.active && channels.email && state.emailVerified,
+    // Counts only for a category that `allowsUnverifiedEmail` (the first-admin
+    // invitation); a `.invalid` placeholder is never a mailbox.
+    hasUnverifiedEmail:
+      state.active &&
+      channels.email &&
+      !state.emailVerified &&
+      !isReservedAddress(state.email),
     whatsappOptIn: false,
   };
 }
@@ -756,6 +769,43 @@ async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+const INVOICE_AMOUNT = new Intl.NumberFormat("id-ID");
+
+/** A recurring-billing invoice was created: the subscribing customer hears
+ * about it. The recipient is re-read from the customer profile row (never the
+ * payload); a missing, merged or user-less profile pages nobody. The hosted pay
+ * link goes in the body because a notification link must be an in-app path. */
+async function subscriptionInvoiceCreatedRule(input: RuleInput): Promise<Rule> {
+  const payload = subscriptionInvoiceCreatedEvent.payloadSchema.parse(
+    input.event.payload,
+  );
+  const [profile] = await input.tx
+    .select({
+      userId: customerProfiles.userId,
+      mergedIntoProfileId: customerProfiles.mergedIntoProfileId,
+    })
+    .from(customerProfiles)
+    .where(
+      and(
+        eq(customerProfiles.tenantId, input.tenantId),
+        eq(customerProfiles.id, payload.customerProfileId),
+      ),
+    );
+  const userIds =
+    profile?.userId && profile.mergedIntoProfileId === null
+      ? [profile.userId]
+      : [];
+  return {
+    userIds,
+    content: {
+      category: "subscription_billing",
+      title: "Tagihan langganan baru",
+      body: `Tagihan langganan ${payload.planName} untuk periode ${payload.periodStart} sampai ${payload.periodEnd} sebesar Rp${INVOICE_AMOUNT.format(payload.amountIdr)} sudah terbit. Bayar di ${payload.hostedUrl}`,
+      link: null,
+    },
+  };
+}
+
 const OWNER_CHANGE_TIME = new Intl.DateTimeFormat("id-ID", {
   timeZone: "Asia/Jakarta",
   dateStyle: "long",
@@ -907,8 +957,54 @@ async function shiftCancelledRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+/** legend-fy5y: invites the first admin of a new tenant. The recipient is the
+ * payload's `firstAdminUserId` ONLY when an open tenant-wide tenant_admin
+ * assignment still exists for it in this tenant (re-read, never trusted).
+ * The body carries no link: the one-time link is minted at send time. */
+async function tenantCreatedInvitationRule(input: RuleInput): Promise<Rule> {
+  const payload = PLATFORM_EVENT_PAYLOADS["tenant.created"].parse(
+    input.event.payload,
+  );
+  const [tenant] = await input.tx
+    .select({ name: tenants.name })
+    .from(tenants)
+    .where(eq(tenants.id, input.tenantId));
+  const holders = await input.tx
+    .select({ id: roleAssignments.id })
+    .from(roleAssignments)
+    .innerJoin(
+      roles,
+      and(
+        eq(roles.tenantId, roleAssignments.tenantId),
+        eq(roles.id, roleAssignments.roleId),
+      ),
+    )
+    .where(
+      and(
+        eq(roleAssignments.tenantId, input.tenantId),
+        eq(roleAssignments.userId, payload.firstAdminUserId),
+        eq(roles.templateKey, "tenant_admin"),
+        eq(roleAssignments.scopeType, "tenant"),
+        isNull(roleAssignments.validUntil),
+      ),
+    )
+    .limit(1);
+  const name = tenant?.name.trim() || payload.slug;
+  return {
+    userIds: holders.length > 0 ? [payload.firstAdminUserId] : [],
+    content: {
+      category: "tenant_invitation",
+      title: `Undangan admin ${name}`,
+      body: `Kamu ditunjuk sebagai admin ${name}. Buka tautan di bawah untuk memverifikasi email kamu. Tautan berlaku ${INVITATION_LINK_TTL_MINUTES} menit dan hanya bisa dipakai sekali. Jika bukan kamu yang diundang, abaikan email ini.`,
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
+    case "tenant.created":
+      return tenantCreatedInvitationRule(input);
     case "approval.requested":
       return approvalRequestedRule(input);
     case "approval.resolved":
@@ -938,6 +1034,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return refundEscalatedRule(input);
     case "tenant_owner.changed":
       return tenantOwnerChangedRule(input);
+    case "subscription.invoice_created":
+      return subscriptionInvoiceCreatedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }
@@ -1016,7 +1114,12 @@ export function createDeliveryRecipientLookup(
         preference: userState.preference,
         reachability,
         defaultTimeZone: userState.preference?.timeZone ?? DEFAULT_TIME_ZONE,
-        email: reachability.hasVerifiedEmail ? userState.email : null,
+        email:
+          reachability.hasVerifiedEmail ||
+          (allowsUnverifiedEmail(notification.category) &&
+            reachability.hasUnverifiedEmail)
+            ? userState.email
+            : null,
         pushEndpoint: null,
         whatsappNumber: null,
       };
@@ -1268,6 +1371,16 @@ export function createWorkerNotificationHandlers(
       resolve: createDeliveryRecipientLookup(database, channels),
       email,
       push: disabledProvider("push") satisfies PushProvider,
+      // legend-fy5y: the link origin is always WEB_URL, never a request origin.
+      // A missing WEB_URL returns null: delivery fails closed, no link is sent.
+      invitationLink: async (context, notification) => {
+        const webUrl = present(env, "WEB_URL");
+        if (webUrl === undefined) return null;
+        return issueInvitationLink(context, {
+          userId: notification.userId,
+          origin: new URL(webUrl).origin,
+        });
+      },
       // Left undefined while WhatsApp is disabled: worker-main only polls
       // WhatsApp attempts when this provider is present.
     },

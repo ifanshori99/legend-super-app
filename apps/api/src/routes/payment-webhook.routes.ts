@@ -143,6 +143,8 @@ export function createPaymentWebhookRouter(options?: {
       });
       // A stored `failed` row (e.g. paid without an amount, reference not
       // known yet) answers 500 so DOIT retries; the row stays for the worker.
+      // `parked` (invoice event for a subscription not known yet) is stored
+      // durably and answers 200: the sweep processes it once it exists.
       if (result.status === "failed")
         throw new HttpError(
           500,

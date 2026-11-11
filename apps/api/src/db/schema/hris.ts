@@ -210,6 +210,9 @@ export const employees = pgTable(
     emergencyContactPhoneEncrypted: bytea("emergency_contact_phone_encrypted"),
     /** Key version every sealed column of this row was written with. */
     piiKeyVersion: smallint("pii_key_version").notNull().default(1),
+    /** Blind-index key version of every `*_hmac` column of this row
+     * (lib/blind-index.ts, legend-n039). Rows before 0265 are version 1. */
+    blindIndexVersion: smallint("blind_index_version").notNull().default(1),
 
     createdBy: text("created_by").$type<UserId>(),
     createdAt,

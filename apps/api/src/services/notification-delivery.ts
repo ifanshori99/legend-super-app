@@ -52,6 +52,16 @@ type Dependencies = {
   email: EmailProvider;
   push: PushProvider;
   whatsapp?: WhatsAppTemplateProvider;
+  /**
+   * legend-fy5y: mints the one-time first-admin invitation link at SEND time,
+   * so it is never stored in `notifications.body`. Used only for the
+   * `tenant_invitation` email. Missing, or null (not eligible, throttled):
+   * no provider call and the attempt is recorded dead (fail closed).
+   */
+  invitationLink?: (
+    context: ScopedTenantContext,
+    notification: Notification,
+  ) => Promise<string | null>;
 };
 const whatsappTemplateRequestSchema = z.strictObject({
   tenantId: tenantIdSchema,
@@ -165,6 +175,7 @@ export async function deliverNotificationAttempt(
         ...recipient.reachability,
         hasPushSubscription: false,
         hasVerifiedEmail: false,
+        hasUnverifiedEmail: false,
       };
       const parts = new Intl.DateTimeFormat("en-CA", {
         timeZone: "UTC",
@@ -248,46 +259,67 @@ export async function deliverNotificationAttempt(
   // certainly not sent. A thrown error may hide a send, so it keeps the slot.
   let rejected = false;
   let providerRef: string | null = null;
+  // The invitation link could not be minted: nothing was sent and a retry
+  // cannot help, so the attempt ends dead.
+  let undeliverable = false;
   try {
     const base = {
       tenantId: claim.notification.tenantId,
       outletId: claim.notification.outletId,
       reference: claim.reference,
     };
+    let emailBody: string | null = claim.notification.body;
+    if (
+      claim.channel === "email" &&
+      claim.notification.category === "tenant_invitation"
+    ) {
+      const link = deps.invitationLink
+        ? await deps.invitationLink(context, claim.notification)
+        : null;
+      emailBody =
+        link === null ? null : `${claim.notification.body}\n\n${link}`;
+    }
     const result =
-      claim.channel === "whatsapp"
-        ? await deps.whatsapp!.send(
-            context,
-            whatsappTemplateRequestSchema.parse({
-              ...base,
-              recipient: claim.recipient.whatsappNumber,
-              templateName: claim.recipient.whatsappTemplate?.name,
-              variables: claim.recipient.whatsappTemplate?.variables,
-            }),
-          )
-        : claim.channel === "email"
-          ? await deps.email.send(
+      emailBody === null
+        ? null
+        : claim.channel === "whatsapp"
+          ? await deps.whatsapp!.send(
               context,
-              emailRequestSchema.parse({
+              whatsappTemplateRequestSchema.parse({
                 ...base,
-                to: claim.recipient.email,
-                subject: claim.notification.title,
-                body: claim.notification.body,
+                recipient: claim.recipient.whatsappNumber,
+                templateName: claim.recipient.whatsappTemplate?.name,
+                variables: claim.recipient.whatsappTemplate?.variables,
               }),
             )
-          : await deps.push.send(
-              context,
-              pushRequestSchema.parse({
-                ...base,
-                endpoint: claim.recipient.pushEndpoint,
-                title: claim.notification.title,
-                body: claim.notification.body,
-              }),
-            );
-    const parsed = operationResultSchema.parse(result);
-    accepted = parsed.accepted;
-    rejected = !parsed.accepted;
-    providerRef = parsed.reference;
+          : claim.channel === "email"
+            ? await deps.email.send(
+                context,
+                emailRequestSchema.parse({
+                  ...base,
+                  to: claim.recipient.email,
+                  subject: claim.notification.title,
+                  body: emailBody,
+                }),
+              )
+            : await deps.push.send(
+                context,
+                pushRequestSchema.parse({
+                  ...base,
+                  endpoint: claim.recipient.pushEndpoint,
+                  title: claim.notification.title,
+                  body: claim.notification.body,
+                }),
+              );
+    if (result === null) {
+      rejected = true;
+      undeliverable = true;
+    } else {
+      const parsed = operationResultSchema.parse(result);
+      accepted = parsed.accepted;
+      rejected = !parsed.accepted;
+      providerRef = parsed.reference;
+    }
   } catch (error) {
     /* Adapter failures are persisted as machine codes only. The log carries
      * the channel and the provider's HTTP status (or the error class), never
@@ -306,9 +338,10 @@ export async function deliverNotificationAttempt(
   }
   return withTenant(database, context, async (tx) => {
     assertOutlet(context, claim.notification.outletId);
-    const retryAt = accepted
-      ? null
-      : nextRetryAt(claim.policy, claim.attempts, now);
+    const retryAt =
+      accepted || undeliverable
+        ? null
+        : nextRetryAt(claim.policy, claim.attempts, now);
     const status = accepted ? "sent" : retryAt ? "failed" : "dead";
     const updated = await tx.execute(
       sql`UPDATE delivery_attempts SET status = ${status}, cost_idr = ${accepted && claim.channel === "whatsapp" ? claim.policy.whatsapp.costPerMessageIdr : 0}, provider_ref = ${providerRef}, error_code = ${accepted ? null : "DELIVERY_FAILED"}, next_attempt_at = ${retryAt}, updated_at = ${now} WHERE tenant_id = ${context.tenant.tenantId}::uuid AND id = ${id}::uuid AND status = 'sending' AND attempts = ${claim.attempts} RETURNING id`,

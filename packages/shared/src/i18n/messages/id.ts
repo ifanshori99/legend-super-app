@@ -1323,6 +1323,7 @@ export const id = {
       operational_anomaly: "Anomali operasional",
       payment_failover: "Gateway pembayaran",
       kitchen_alert: "Peringatan dapur",
+      tenant_invitation: "Undangan admin",
     },
     inbox: {
       heading: "Kotak masuk",

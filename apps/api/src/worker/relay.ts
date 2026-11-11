@@ -19,6 +19,13 @@ export function createRelayRuntime<Context>(options: {
   relay: (context: Context) => Promise<unknown>;
   /** Liveness hook (legend-z649): called as the sweep makes progress. */
   onProgress?: () => void;
+  /**
+   * Control-plane stream sweep (488 item 4), run once per loop iteration before
+   * the tenant loop. It is independent of the tenant registry: the sentinel is
+   * never listed or resolved as a tenant, so per-tenant sweeps never see it.
+   * Cloud workers only; an edge worker omits it.
+   */
+  controlPlaneRelay?: () => Promise<unknown>;
 }) {
   let active: Promise<void> | undefined;
   let repeat = false;
@@ -32,6 +39,14 @@ export function createRelayRuntime<Context>(options: {
     active = (async () => {
       do {
         repeat = false;
+        if (options.controlPlaneRelay) {
+          try {
+            await options.controlPlaneRelay();
+          } catch {
+            console.error("Control-plane outbox relay failed");
+          }
+          options.onProgress?.();
+        }
         const tenantIds = await options.listActiveTenantIds();
         options.onProgress?.();
         for (const tenantId of tenantIds) {

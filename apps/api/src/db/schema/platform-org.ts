@@ -25,6 +25,7 @@ import {
   index,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -186,6 +187,8 @@ export const legalEntities = pgTable(
     npwpLast4: varchar("npwp_last4", { length: 4 }),
     /** HMAC blind index over the normalized NPWP: uniqueness without plaintext. */
     npwpHash: varchar("npwp_hash", { length: 64 }),
+    /** Blind-index key version of `npwp_hash` (lib/blind-index.ts, legend-n039). */
+    npwpHashVersion: smallint("npwp_hash_version").notNull().default(1),
     isPkp: boolean("is_pkp").notNull().default(false),
     address: text("address"),
     createdAt: timestamp("created_at", { withTimezone: true })

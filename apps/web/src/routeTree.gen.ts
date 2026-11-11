@@ -23,6 +23,7 @@ import { Route as DesignSystemRouteImport } from './routes/design-system'
 import { Route as ManifestDotwebmanifestRouteImport } from './routes/manifest[.]webmanifest'
 import { Route as RobotsDottxtRouteImport } from './routes/robots[.]txt'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
+import { Route as UndanganRouteImport } from './routes/undangan'
 import { Route as VerifikasiRouteImport } from './routes/verifikasi'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
@@ -409,6 +410,11 @@ const RobotsDottxtRoute = RobotsDottxtRouteImport.update({
 const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
   id: '/sitemap.xml',
   path: '/sitemap.xml',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UndanganRoute = UndanganRouteImport.update({
+  id: '/undangan',
+  path: '/undangan',
   getParentRoute: () => rootRouteImport,
 } as any)
 const VerifikasiRoute = VerifikasiRouteImport.update({
@@ -2275,6 +2281,7 @@ export interface FileRoutesByFullPath {
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/undangan': typeof UndanganRoute
   '/verifikasi': typeof VerifikasiRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
@@ -2608,6 +2615,7 @@ export interface FileRoutesByTo {
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/undangan': typeof UndanganRoute
   '/verifikasi': typeof VerifikasiRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
@@ -2948,6 +2956,7 @@ export interface FileRoutesById {
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/undangan': typeof UndanganRoute
   '/verifikasi': typeof VerifikasiRoute
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
@@ -3284,6 +3293,7 @@ export interface FileRouteTypes {
     | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
+    | '/undangan'
     | '/verifikasi'
     | '/sign-in'
     | '/sign-up'
@@ -3617,6 +3627,7 @@ export interface FileRouteTypes {
     | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
+    | '/undangan'
     | '/verifikasi'
     | '/sign-in'
     | '/sign-up'
@@ -3956,6 +3967,7 @@ export interface FileRouteTypes {
     | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
+    | '/undangan'
     | '/verifikasi'
     | '/_auth/sign-in'
     | '/_auth/sign-up'
@@ -4300,6 +4312,7 @@ export interface RootRouteChildren {
   ManifestDotwebmanifestRoute: typeof ManifestDotwebmanifestRoute
   RobotsDottxtRoute: typeof RobotsDottxtRoute
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
+  UndanganRoute: typeof UndanganRoute
   VerifikasiRoute: typeof VerifikasiRoute
 }
 
@@ -4401,6 +4414,13 @@ declare module '@tanstack/react-router' {
       path: '/sitemap.xml'
       fullPath: '/sitemap.xml'
       preLoaderRoute: typeof SitemapDotxmlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/undangan': {
+      id: '/undangan'
+      path: '/undangan'
+      fullPath: '/undangan'
+      preLoaderRoute: typeof UndanganRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/verifikasi': {
@@ -7538,6 +7558,7 @@ const rootRouteChildren: RootRouteChildren = {
   ManifestDotwebmanifestRoute: ManifestDotwebmanifestRoute,
   RobotsDottxtRoute: RobotsDottxtRoute,
   SitemapDotxmlRoute: SitemapDotxmlRoute,
+  UndanganRoute: UndanganRoute,
   VerifikasiRoute: VerifikasiRoute,
 }
 export const routeTree = rootRouteImport

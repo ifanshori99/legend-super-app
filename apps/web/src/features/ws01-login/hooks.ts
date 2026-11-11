@@ -2,6 +2,7 @@
 // directly (docs/frontend.md "Custom hooks"). A completed sign-in invalidates
 // the cached identity view, so the shell and the link-WhatsApp prompt refresh.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { InvitationAcceptBody } from "@starter/shared/identity";
 import * as api from "./api";
 import { currentAuthQuery, loginChallengeQuery, loginKeys } from "./queries";
 
@@ -54,6 +55,13 @@ export function useCompleteMagicLink() {
     mutationFn: (token: string) => api.useMagicLink(token),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: loginKeys.currentAuth() }),
+  });
+}
+
+export function useAcceptInvitation() {
+  return useMutation({
+    mutationFn: (body: InvitationAcceptBody | null) =>
+      body ? api.acceptInvitation(body) : Promise.reject(new Error("invalid")),
   });
 }
 

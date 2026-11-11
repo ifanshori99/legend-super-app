@@ -7,6 +7,7 @@ import {
   CookingPot,
   CreditCard,
   FileText,
+  MailCheck,
   PackageX,
   Printer,
   RefreshCwOff,
@@ -53,6 +54,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   operational_anomaly: TriangleAlert,
   payment_failover: TriangleAlert,
   kitchen_alert: ChefHat,
+  tenant_invitation: MailCheck,
 };
 
 export function categoryLabelKey(category: NotificationCategory): MessageKey {

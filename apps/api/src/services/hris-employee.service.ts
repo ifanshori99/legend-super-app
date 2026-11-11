@@ -17,13 +17,14 @@
 //   quota (`tenants.limits.maxActiveEmployees`).
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   CoreError,
   encodeCursor,
   idempotencyKeySchema,
   outletRefSchema,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   employeeSchema,
@@ -42,11 +43,14 @@ import { db } from "../db/index.ts";
 import { employees, hrisIdempotency } from "../db/schema/hris.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { BLIND_INDEX_ACTIVE_VERSION } from "../lib/blind-index.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
   HRIS_EMPLOYEE_PII_FIELDS,
   HRIS_PII_KEY_VERSION,
   hrisBlindIndex,
+  hrisBlindIndexCandidates,
+  hrisFingerprintMatches,
   hrisPiiHasBlindIndex,
   hrisRequestFingerprint,
   maskHrisPii,
@@ -122,12 +126,7 @@ const UNIQUE_FIELD: Record<
   employees_tenant_user_key: "userId",
 };
 
-function duplicateError(error: unknown): HttpError | null {
-  const violation = uniqueViolation(error);
-  if (!violation) return null;
-  const field = violation.constraint
-    ? UNIQUE_FIELD[violation.constraint]
-    : undefined;
+function conflictError(field: string | undefined): HttpError {
   // Name the field, never the value.
   return new HttpError(
     409,
@@ -136,6 +135,60 @@ function duplicateError(error: unknown): HttpError | null {
       ? `${field} sudah terdaftar untuk karyawan lain di tenant ini.`
       : "Data karyawan bentrok dengan data lain.",
   );
+}
+
+function duplicateError(error: unknown): HttpError | null {
+  const violation = uniqueViolation(error);
+  if (!violation) return null;
+  return conflictError(
+    violation.constraint ? UNIQUE_FIELD[violation.constraint] : undefined,
+  );
+}
+
+/** Fields whose blind index carries a unique index (bank account is lookup only). */
+const UNIQUE_PII_FIELDS = ["nik", "npwp", "bpjsKesNo", "bpjsTkNo"] as const;
+
+/**
+ * Unique indexes are (tenant, digest): a version 1 row and a version 2 row of
+ * the same value would not collide (legend-n039). Writers therefore take the
+ * tenant's blind-index lock, then look for the value under every supported
+ * version on another row; a hit is the same 409 as the unique violation. The
+ * unique index stays the backstop for same-version races. The rebuild job
+ * takes the same lock (worker/blind-index-rebuild.job.ts).
+ */
+export async function assertNoBlindIndexDuplicate(
+  tx: Tx,
+  tenantId: TenantId,
+  ownRowId: string | null,
+  normalized: Partial<Record<HrisEmployeePiiField, string>>,
+): Promise<void> {
+  const fields = UNIQUE_PII_FIELDS.filter(
+    (field) => normalized[field] !== undefined,
+  );
+  if (fields.length === 0) return;
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`blind-index:${tenantId}`}, 0))`,
+  );
+  for (const field of fields) {
+    const column = employees[PII_COLUMNS[field].hmac];
+    const digests = hrisBlindIndexCandidates(
+      field,
+      tenantId,
+      normalized[field]!,
+    ).map((candidate) => candidate.digest);
+    const [hit] = await tx
+      .select({ id: employees.id })
+      .from(employees)
+      .where(
+        and(
+          eq(employees.tenantId, tenantId),
+          inArray(column, digests),
+          ...(ownRowId === null ? [] : [ne(employees.id, ownRowId)]),
+        ),
+      )
+      .limit(1);
+    if (hit) throw conflictError(field);
+  }
 }
 
 function foreignKeyViolation(error: unknown, depth = 0): boolean {
@@ -242,28 +295,63 @@ function maskedPiiFor(
   return { pii: pii as EmployeePii, opened };
 }
 
-/** Sealed column values for the fields present in `input` (normalized). */
+/**
+ * Sealed column values for the fields present in `input` (normalized), plus
+ * the blind indexes under the active version. `blindIndexVersion` is one value
+ * for the whole row, so when an existing row is still on another version every
+ * other indexed value is re-indexed too (opened under the row's PII key).
+ * `normalized` lists the indexed values that were written, for the
+ * cross-version duplicate check.
+ */
 function sealedColumns(
   row: Pick<EmployeeRow, "tenantId" | "id">,
   input: UpdateEmployeePiiInput,
-): { values: Partial<EmployeeRow>; fields: HrisEmployeePiiField[] } {
+  existing?: EmployeeRow,
+): {
+  values: Partial<EmployeeRow>;
+  fields: HrisEmployeePiiField[];
+  normalized: Partial<Record<HrisEmployeePiiField, string>>;
+} {
   const values: Record<string, unknown> = {};
   const fields: HrisEmployeePiiField[] = [];
+  const normalized: Partial<Record<HrisEmployeePiiField, string>> = {};
   for (const field of HRIS_EMPLOYEE_PII_FIELDS) {
     const raw = input[field];
     if (raw === undefined) continue;
-    const normalized = normalizeHrisPii(field, raw);
+    const value = normalizeHrisPii(field, raw);
     const columns = PII_COLUMNS[field];
     values[columns.sealed] = sealHrisPii(
-      normalized,
+      value,
       binding(row, field),
       HRIS_PII_KEY_VERSION,
     );
-    if (columns.hmac !== null && hrisPiiHasBlindIndex(field))
-      values[columns.hmac] = hrisBlindIndex(field, row.tenantId, normalized);
+    if (columns.hmac !== null && hrisPiiHasBlindIndex(field)) {
+      values[columns.hmac] = hrisBlindIndex(field, row.tenantId, value);
+      normalized[field] = value;
+    }
     fields.push(field);
   }
-  return { values: values as Partial<EmployeeRow>, fields };
+  if (Object.keys(normalized).length > 0) {
+    if (existing && existing.blindIndexVersion !== BLIND_INDEX_ACTIVE_VERSION) {
+      for (const field of HRIS_EMPLOYEE_PII_FIELDS) {
+        const columns = PII_COLUMNS[field];
+        if (
+          normalized[field] !== undefined ||
+          input[field] !== undefined ||
+          columns.hmac === null ||
+          !hrisPiiHasBlindIndex(field)
+        )
+          continue;
+        const plaintext = openField(existing, field);
+        if (plaintext === null) continue;
+        const value = normalizeHrisPii(field, plaintext);
+        values[columns.hmac] = hrisBlindIndex(field, row.tenantId, value);
+        normalized[field] = value;
+      }
+    }
+    values.blindIndexVersion = BLIND_INDEX_ACTIVE_VERSION;
+  }
+  return { values: values as Partial<EmployeeRow>, fields, normalized };
 }
 
 /** Rows whose home outlet the caller reaches for any HR read code. */
@@ -444,10 +532,14 @@ export async function idempotentHrisWrite<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const parsedKey = idempotencyKeySchema.parse(key);
-  const fingerprint = hrisRequestFingerprint(context.tenant.tenantId, {
+  const fingerprintInput = {
     operation,
     request: withoutGuessFields(operation, request),
-  });
+  };
+  const fingerprint = hrisRequestFingerprint(
+    context.tenant.tenantId,
+    fingerprintInput,
+  );
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:idem:${context.tenant.tenantId}:${parsedKey}`}, 0))`,
   );
@@ -464,7 +556,11 @@ export async function idempotentHrisWrite<T>(
   if (existing) {
     if (
       existing.operation !== operation ||
-      existing.fingerprint !== fingerprint
+      !hrisFingerprintMatches(
+        context.tenant.tenantId,
+        fingerprintInput,
+        existing.fingerprint,
+      )
     )
       throw new CoreError(
         "IDEMPOTENCY_KEY_REUSED",
@@ -521,7 +617,13 @@ export async function updateEmployeePii(
             "CONFLICT",
             "Data pribadi karyawan ini menunggu rotasi kunci.",
           );
-        const sealed = sealedColumns(row, values);
+        const sealed = sealedColumns(row, values, row);
+        await assertNoBlindIndexDuplicate(
+          tx,
+          context.tenant.tenantId,
+          row.id,
+          sealed.normalized,
+        );
         let updated: EmployeeRow | undefined;
         try {
           [updated] = await tx
@@ -714,6 +816,12 @@ export async function createEmployee(
       { tenantId: context.tenant.tenantId, id },
       piiInput,
     );
+    await assertNoBlindIndexDuplicate(
+      tx,
+      context.tenant.tenantId,
+      null,
+      sealed.normalized,
+    );
     let row: EmployeeRow | undefined;
     try {
       [row] = await tx
@@ -735,6 +843,7 @@ export async function createEmployee(
           ptkpStatus: candidate.ptkpStatus,
           status: candidate.status,
           ...sealed.values,
+          blindIndexVersion: BLIND_INDEX_ACTIVE_VERSION,
           piiKeyVersion: HRIS_PII_KEY_VERSION,
           createdBy: access.actorUserId,
           createdAt: now,

@@ -6,6 +6,7 @@
 // are written here: they come from @starter/shared/identity.
 import { callEndpoint } from "@/lib/api/endpoint.ts";
 import {
+  acceptTenantInvitation,
   cancelLoginChallenge,
   completeMagicLink,
   confirmLoginChallenge,
@@ -14,6 +15,7 @@ import {
   requestMagicLink,
   requestWhatsAppLoginChallenge,
   startGoogleLogin,
+  type InvitationAcceptBody,
 } from "@starter/shared/identity";
 
 /** POST /api/auth/login-challenges/whatsapp — code + deep link, shown once. */
@@ -60,6 +62,12 @@ export async function requestMagicLinkEmail(email: string, returnTo?: string) {
 /** GET /api/auth/magic-link?token=… — the clicked email link; sets the session. */
 export async function useMagicLink(token: string) {
   const response = await callEndpoint(completeMagicLink, { query: { token } });
+  return response.data;
+}
+
+/** POST /api/auth/login-challenges/invitation — marks the invited admin's email verified. */
+export async function acceptInvitation(body: InvitationAcceptBody) {
+  const response = await callEndpoint(acceptTenantInvitation, { body });
   return response.data;
 }
 

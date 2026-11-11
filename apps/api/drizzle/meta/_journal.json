@@ -1744,6 +1744,41 @@
       "when": 1794344000000,
       "tag": "0262_catalog_sync_txid",
       "breakpoints": true
+    },
+    {
+      "idx": 263,
+      "version": "7",
+      "when": 1794345000000,
+      "tag": "0263_payment_recurring_billing",
+      "breakpoints": true
+    },
+    {
+      "idx": 264,
+      "version": "7",
+      "when": 1794346000000,
+      "tag": "0264_recurring_reconcile_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 265,
+      "version": "7",
+      "when": 1794347000000,
+      "tag": "0265_blind_index_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 266,
+      "version": "7",
+      "when": 1794348000000,
+      "tag": "0266_recurring_live_customer_plan_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 267,
+      "version": "7",
+      "when": 1794349000000,
+      "tag": "0267_bank_account_hmac_version",
+      "breakpoints": true
     }
   ]
 }

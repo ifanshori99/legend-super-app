@@ -23,8 +23,14 @@ import {
   type MaskedPiiValue,
 } from "@starter/shared/hris";
 import { env } from "../config/env.ts";
+import { timingSafeEqual } from "node:crypto";
 import {
-  blindIndex,
+  BLIND_INDEX_ACTIVE_VERSION,
+  blindIndexAt,
+  blindIndexCandidates,
+  type BlindIndexVersion,
+} from "./blind-index.ts";
+import {
   openSecret,
   openSecretWithKey,
   sealSecret,
@@ -51,10 +57,11 @@ const SUPPORTED_KEY_VERSIONS: ReadonlySet<number> = new Set([
   ...EXTRA_KEYS.keys(),
 ]);
 
-// The blind index (`hrisBlindIndex`, `hrisRequestFingerprint`) is NOT rotated:
-// it stays an HMAC under the version 1 data key, so equality lookups and the
-// unique indexes on `*_hmac` stay valid across rotations. Only the sealed
-// ciphertext columns move between key versions.
+// The blind index (`hrisBlindIndex`, `hrisRequestFingerprint`) is versioned on
+// its own (lib/blind-index.ts, legend-n039), independent of this PII ring: it
+// does not change when a PII key version is added or retired, so equality
+// lookups and the unique indexes on `*_hmac` survive PII rotations. Rows record
+// their digest version (`employees.blind_index_version`).
 
 /**
  * Key-ring lookup for sibling sealers (lib/payroll-sealed.ts, legend-snhxw):
@@ -216,15 +223,35 @@ export function openHrisPii(
     : openSecret(envelope, aad);
 }
 
-/** Tenant-separated HMAC blind index of a normalized value. */
+function blindIndexPurpose(field: HrisSealedField, tenantId: string): string {
+  return `hris:${field}:${tenantId.toLowerCase()}`;
+}
+
+/** Tenant-separated HMAC blind index of a normalized value (active version by default). */
 export function hrisBlindIndex(
   field: HrisSealedField,
   tenantId: string,
   normalized: string,
+  version: BlindIndexVersion = BLIND_INDEX_ACTIVE_VERSION,
 ): string {
   if (!hrisPiiHasBlindIndex(field))
     throw new TypeError(`${field} has no blind index`);
-  return blindIndex(normalized, `hris:${field}:${tenantId.toLowerCase()}`);
+  return blindIndexAt(version, normalized, blindIndexPurpose(field, tenantId));
+}
+
+/** The blind index under every supported version, for cross-version lookups. */
+export function hrisBlindIndexCandidates(
+  field: HrisSealedField,
+  tenantId: string,
+  normalized: string,
+): { version: BlindIndexVersion; digest: string }[] {
+  if (!hrisPiiHasBlindIndex(field))
+    throw new TypeError(`${field} has no blind index`);
+  return blindIndexCandidates(normalized, blindIndexPurpose(field, tenantId));
+}
+
+function fingerprintPurpose(tenantId: string): string {
+  return `hris:idempotency:${tenantId.toLowerCase()}`;
 }
 
 /** HMAC of an arbitrary request, for idempotency fingerprints that may contain PII. */
@@ -232,10 +259,34 @@ export function hrisRequestFingerprint(
   tenantId: string,
   request: unknown,
 ): string {
-  return blindIndex(
+  return blindIndexAt(
+    BLIND_INDEX_ACTIVE_VERSION,
     JSON.stringify(request),
-    `hris:idempotency:${tenantId.toLowerCase()}`,
+    fingerprintPurpose(tenantId),
   );
+}
+
+/**
+ * True when `stored` is the fingerprint of `request` under ANY supported blind
+ * index version: a request retried across a version cutover still replays.
+ * Constant-time compare.
+ */
+export function hrisFingerprintMatches(
+  tenantId: string,
+  request: unknown,
+  stored: string,
+): boolean {
+  const storedBytes = Buffer.from(stored, "utf8");
+  return blindIndexCandidates(
+    JSON.stringify(request),
+    fingerprintPurpose(tenantId),
+  ).reduce((matched, { digest }) => {
+    const candidate = Buffer.from(digest, "utf8");
+    const equal =
+      candidate.length === storedBytes.length &&
+      timingSafeEqual(candidate, storedBytes);
+    return matched || equal;
+  }, false);
 }
 
 /** The only form of a value that reaches a client (contract MaskedPiiValue). */
