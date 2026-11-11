@@ -44,9 +44,7 @@ import {
   setStaffPinSchema,
   staffPinParamsSchema,
 } from "@starter/shared/identity";
-import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
-import { verifyDeviceToken } from "../lib/device-token";
 import { HttpError } from "../lib/http-error";
 import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
 import { getAuth, requireAuth } from "../middleware/auth";
@@ -65,28 +63,30 @@ import {
   getOwnPosOverrideApproval,
   getPosOverride,
 } from "../services/staff-override.service";
-import { currentDeviceIdOf } from "./device-id.ts";
+import { currentDeviceIdOf, registeredDeviceIdOf } from "./device-id.ts";
 
 function idempotencyKeyOf(req: Request): string | null {
   const raw = req.get("Idempotency-Key");
   return raw === undefined ? null : idempotencyKeySchema.parse(raw);
 }
 
-/** The signed device id, only when the token names the resolved tenant. */
-function deviceIdOf(req: Request): string {
-  const tenant = getTenantContext(req);
-  const raw = req.get(DEVICE_TOKEN_HEADER);
-  const payload = raw ? verifyDeviceToken(raw) : null;
-  if (
-    tenant.source !== "device" ||
-    payload === null ||
-    payload.tenantId.toLowerCase() !== tenant.tenantId.toLowerCase()
-  )
+/**
+ * The signed device id, only when the token names the resolved tenant and the
+ * registry still accepts it (not revoked, not rotated out).
+ */
+async function deviceIdOf(req: Request): Promise<string> {
+  if (getTenantContext(req).source !== "device")
     throw new CoreError(
       "UNAUTHORIZED",
       "Hanya perangkat outlet terdaftar yang dapat memakai PIN.",
     );
-  return payload.deviceId;
+  const deviceId = await registeredDeviceIdOf(req);
+  if (deviceId === null)
+    throw new CoreError(
+      "UNAUTHORIZED",
+      "Token perangkat ini tidak berlaku lagi. Daftarkan ulang perangkat.",
+    );
+  return deviceId;
 }
 
 export const staffPinRouter = Router();
@@ -96,7 +96,7 @@ staffPinRouter.post(
   requireTenantContext,
   jsonBody,
   async (req, res) => {
-    const deviceId = deviceIdOf(req);
+    const deviceId = await deviceIdOf(req);
     const input = verifyStaffPinForUserSchema.parse(req.body);
     res.setHeader("Cache-Control", "private, no-store");
     try {

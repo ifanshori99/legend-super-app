@@ -1372,6 +1372,7 @@ export const id = {
       discard: "Batalkan perubahan",
       saved: "Preferensi notifikasi tersimpan",
       saveError: "Preferensi belum tersimpan. Periksa koneksi, lalu coba lagi.",
+      emailMandatory: "Wajib aktif",
       errorTitle: "Preferensi tidak dapat dimuat",
       errorHint: "Periksa koneksi, lalu coba lagi.",
     },

@@ -27,6 +27,7 @@ import {
   notificationRead,
   notificationPreferenceUpdated,
   notificationCategorySchema,
+  isEmailMandatory,
 } from "@starter/shared/notification";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type * as schema from "../db/schema/index.ts";
@@ -80,6 +81,31 @@ function asNotification(row: Record<string, unknown>) {
     dedupeKey: row.dedupe_key,
   });
 }
+/**
+ * Presentation only: a mandatory-email category (security) always reports
+ * email on, even if an older stored row says false. The DB row and delivery
+ * are untouched; a missing category stays missing.
+ */
+function withMandatoryEmail(categories: unknown): unknown {
+  if (typeof categories !== "object" || categories === null) return categories;
+  const out: Record<string, unknown> = {
+    ...(categories as Record<string, unknown>),
+  };
+  for (const [category, channels] of Object.entries(out)) {
+    const parsed = notificationCategorySchema.safeParse(category);
+    if (
+      parsed.success &&
+      isEmailMandatory(parsed.data) &&
+      typeof channels === "object" &&
+      channels !== null &&
+      (channels as Record<string, unknown>).email === false
+    ) {
+      out[category] = { ...(channels as Record<string, unknown>), email: true };
+    }
+  }
+  return out;
+}
+
 /** JSONB stores object keys in its own order, so compare with sorted keys. */
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -263,7 +289,7 @@ export function createNotificationService(
                   ? {
                       tenantId: row.tenant_id,
                       userId: row.user_id,
-                      categories: row.categories,
+                      categories: withMandatoryEmail(row.categories),
                       quietHours: row.quiet_hours,
                       timeZone: row.time_zone,
                       updatedAt: isoTimestamp(row.updated_at),
@@ -281,6 +307,24 @@ export function createNotificationService(
           }
           case "updatePreferences": {
             const body = updateNotificationPreferences.body.parse(input.body);
+            // Email for a mandatory category (security) cannot be switched
+            // off by the user (legend-307w3); reject before any write.
+            for (const [category, channels] of Object.entries(
+              body.categories,
+            )) {
+              const parsed = notificationCategorySchema.safeParse(category);
+              if (
+                channels?.email === false &&
+                parsed.success &&
+                isEmailMandatory(parsed.data)
+              ) {
+                throw new HttpError(
+                  422,
+                  "VALIDATION_ERROR",
+                  `Email untuk kategori ${category} wajib aktif dan tidak bisa dimatikan.`,
+                );
+              }
+            }
             // Lock any existing row so the diff in the event matches what this
             // transaction replaces.
             const before = await tx.execute(
@@ -341,6 +385,7 @@ export function createNotificationService(
                 tenantId: context.tenant.tenantId,
                 userId,
                 ...body,
+                categories: withMandatoryEmail(body.categories),
                 updatedAt: isoTimestamp(result.rows[0].updated_at),
               }),
             };
