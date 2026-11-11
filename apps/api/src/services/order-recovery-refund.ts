@@ -54,6 +54,10 @@
 //   the chain's vouchers and live refunds (`voucherCapIdr`), on top of the
 //   swap cap. A promo order cut to Rp0 this way books its goods money on the
 //   promo ledger once, as a Rp0 replacement does (legend-k0ub4).
+// - Promo ledger (legend-hhm5m 3): after a recompute the line's full goods
+//   money is booked before any cap or room cut, with the refund row or the
+//   `nothing_left` mark, so a room another refund held cannot leave it unpaid
+//   for a later refund to take.
 // Events of another tenant or outlet, and every other event, are ignored.
 
 import { and, eq, gte, isNull, ne, sql } from "drizzle-orm";
@@ -86,6 +90,7 @@ import {
 } from "./order-promo-refund.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
+  capPartsToRemaining,
   recoveryRefundGoodsIdr,
   recoveryRefundReplaySplit,
   recoveryRefundSplit,
@@ -565,6 +570,20 @@ export async function deliverOrderRecoveryRefundEvent(
             pbjtIdr: replay.pbjtIdr,
             releasedIdr,
           });
+    // legend-hhm5m 5: the journal reverses what `order.refunded` says, so a
+    // pay-first refund (first filing or replay) never reverses more of a
+    // component than the order still holds after the live refunds of the
+    // other issues: a replay must not reuse a rounding slot a later filing
+    // took over after the final failure.
+    if (payFirst) {
+      const whole = orderRevenueSplit(order);
+      split = capPartsToRemaining(split, {
+        grossSalesIdr: whole.grossSalesIdr - released.reversed.grossSalesIdr,
+        serviceChargeIdr:
+          whole.serviceChargeIdr - released.reversed.serviceChargeIdr,
+        pbjtIdr: whole.pbjtIdr - released.reversed.pbjtIdr,
+      });
+    }
   } catch (error) {
     // Order amounts that fail their tax-mode identity: a retry cannot fix them.
     if (error instanceof OrderRevenueMismatch) {
@@ -586,25 +605,34 @@ export async function deliverOrderRecoveryRefundEvent(
       },
       "Refund item gagal dipotong sisa yang bisa dikembalikan",
     );
+  // legend-hhm5m 3: a recompute that adjusted the promo took the original out
+  // of it, so its full goods money (before any cap or room cut) goes on the
+  // promo ledger, in the same transaction as the refund row or the
+  // `nothing_left` mark. A cut (another refund holds the room, a swap or
+  // voucher cap) must not leave that share for a later refund of another item
+  // to pay once the room opens again. A replay records nothing.
+  const promoGoodsIdr =
+    promo === undefined || replay !== null
+      ? 0
+      : recoveryRefundGoodsIdr({
+          order,
+          lineTotalIdr: originalLineTotalIdr,
+          priorLinesIdr,
+          promo,
+        });
   // A promo order with nothing due (a returned free item) ends here too: the
   // promo recompute above stays, the item really failed.
   if (split.amountIdr <= 0) {
     // legend-k0ub4: a replacement of a completed order carries Rp0 (its value
     // stays on the original line), so the cap is 0 and nothing is refunded;
     // legend-rat9r: so does an item whose swap voucher already holds its whole
-    // paid value (voucher cap 0). The
-    // recompute above still took the original out of the promo, so its goods
-    // money (before the cap) goes on the promo ledger, once per issue: a later
-    // refund of another item must not pay this share. The `nothing_left` audit
-    // row of this issue is the once-only mark (the event is replayed).
-    if (promo !== undefined && replay === null && capIdr === 0) {
-      // Before the room cut: the ledger must hold the original's full share.
-      const goodsIdr = recoveryRefundGoodsIdr({
-        order,
-        lineTotalIdr: originalLineTotalIdr,
-        priorLinesIdr,
-        promo,
-      });
+    // paid value (voucher cap 0); legend-hhm5m 3: and an item cut to Rp0 by
+    // the room another refund holds. The recompute above still took the
+    // original out of the promo, so its goods money goes on the promo ledger,
+    // once per issue. The `nothing_left` audit row of this issue is the
+    // once-only mark (the event is replayed).
+    if (promo !== undefined && replay === null) {
+      const goodsIdr = promoGoodsIdr;
       const [done] = await tx
         .select({ id: auditLogs.id })
         .from(auditLogs)
@@ -717,10 +745,11 @@ export async function deliverOrderRecoveryRefundEvent(
         amountIdr: split.amountIdr,
         at,
       });
-      // The goods part of the refund goes on the promo ledger, on its
-      // item-price basis (`goodsIdr`: tax included for inclusive prices).
-      // Only after a recompute that adjusted the promo (never a released
-      // application, which the recompute refuses).
+      // The goods part of the line goes on the promo ledger, on its
+      // item-price basis (tax included for inclusive prices), in full before
+      // any cap or room cut (legend-hhm5m 3, `promoGoodsIdr`). Only after a
+      // recompute that adjusted the promo (never a released application,
+      // which the recompute refuses).
       // A replay records nothing: the ledger already holds this line's payout.
       const promoRecordedIdr =
         promo === undefined
@@ -729,7 +758,7 @@ export async function deliverOrderRecoveryRefundEvent(
               await orderPromoPartialRefundPort.recordPartialRefundPayout(
                 tx,
                 context,
-                { orderId: order.id, payoutIdr: split.goodsIdr, at },
+                { orderId: order.id, payoutIdr: promoGoodsIdr, at },
               )
             ).recordedIdr;
       await audit(

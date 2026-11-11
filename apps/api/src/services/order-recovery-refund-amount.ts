@@ -38,6 +38,10 @@
 // to the room the same way (`recoveryRefundReplaySplit`). When the chain holds
 // a swap to a cheaper line (legend-fwe4l) the replay is first cut to that
 // line's value (`capIdr`): the guest already got the difference as a voucher.
+//
+// Remaining components (legend-hhm5m 5, `capPartsToRemaining`): a pay-first
+// refund's service, PBJT and gross are clamped to what the order still holds
+// after the live `order.refunded` of its other issues.
 
 import {
   orderRevenueSplit,
@@ -384,6 +388,58 @@ export function recoveryRefundReplaySplit(input: {
     serviceChargeIdr: Number(parts.service),
     pbjtIdr: Number(parts.pbjt),
     goodsIdr: 0,
+  };
+}
+
+/** What the order's components still hold after the live `order.refunded`. */
+export type RecoveryRemainingParts = {
+  grossSalesIdr: number;
+  serviceChargeIdr: number;
+  pbjtIdr: number;
+};
+
+/**
+ * legend-hhm5m 5: a pay-first refund never reverses more of a component than
+ * the order still holds after the live refunds of its other issues. The
+ * cumulative split gives each filing a rounding slot; a final failure frees
+ * its slot for the next filing, and its replay then repeats the old split, so
+ * two refunds can hold one slot (PBJT reversed 317 of 316). Service and PBJT
+ * are clamped to what remains; the gross takes the rest
+ * (`gross = amount + discount - service - pbjt`); a gross above what remains
+ * cuts the amount (reported as shortfall). `goodsIdr` is left as it is (the
+ * promo ledger books the line before any cut).
+ */
+export function capPartsToRemaining(
+  split: RecoveryRefundSplit,
+  remaining: RecoveryRemainingParts,
+): RecoveryRefundSplit {
+  if (split.amountIdr <= 0) return split;
+  const service = Math.min(
+    split.serviceChargeIdr,
+    Math.max(0, remaining.serviceChargeIdr),
+  );
+  const pbjt = Math.min(split.pbjtIdr, Math.max(0, remaining.pbjtIdr));
+  let amount = split.amountIdr;
+  let gross = amount + split.discountIdr - service - pbjt;
+  const grossRoom = Math.max(0, remaining.grossSalesIdr);
+  if (gross > grossRoom) {
+    amount -= gross - grossRoom;
+    gross = grossRoom;
+  }
+  if (amount <= 0)
+    return {
+      ...ZERO,
+      wantedIdr: split.wantedIdr,
+      shortfallIdr: split.wantedIdr,
+      goodsIdr: split.goodsIdr,
+    };
+  return {
+    ...split,
+    amountIdr: amount,
+    shortfallIdr: split.wantedIdr - amount,
+    grossSalesIdr: gross,
+    serviceChargeIdr: service,
+    pbjtIdr: pbjt,
   };
 }
 
