@@ -18,24 +18,42 @@
 // (legend-5cwrq); the codecs still read the old kind-less shape so stored
 // templates and old exports import. Item and reference checks run for both.
 //
-// Registered here: roles, approval_policies, chart_of_accounts. Remaining
-// generic sections stay free-form JSON (identifier scan only) until their
-// owning domain registers a codec: add it to `CONFIG_SECTION_CODECS`.
+// Registered here: roles, approval_policies, chart_of_accounts, zones,
+// tax_rules, service_charge_rules, checklists, facilities, wifi_policies.
+// loyalty_policy and payroll_settings (money, loose item schema) stay
+// free-form JSON (identifier scan only) until their owning domain registers a
+// codec: add it to `CONFIG_SECTION_CODECS`.
 
 import {
   approvalPoliciesConfigCodec,
   rolesConfigCodec,
+  type ConfigDecodeResult,
 } from "../access/index.ts";
 import {
   chartOfAccountsConfigCodec,
   type ChartOfAccountsMappingDraft,
 } from "../accounting/index.ts";
 import type { ConfigBundle, ConfigSection } from "./config.ts";
+import {
+  checklistsConfigCodec,
+  facilitiesConfigCodec,
+  serviceChargeRulesConfigCodec,
+  taxRulesConfigCodec,
+  wifiPoliciesConfigCodec,
+  zonesConfigCodec,
+  type ConfigSectionRefs,
+} from "./config-section-codecs.ts";
 
 export const CONFIG_SECTION_CODECS = {
   roles: rolesConfigCodec,
   approval_policies: approvalPoliciesConfigCodec,
   chart_of_accounts: chartOfAccountsConfigCodec,
+  zones: zonesConfigCodec,
+  tax_rules: taxRulesConfigCodec,
+  service_charge_rules: serviceChargeRulesConfigCodec,
+  checklists: checklistsConfigCodec,
+  facilities: facilitiesConfigCodec,
+  wifi_policies: wifiPoliciesConfigCodec,
 } as const;
 
 export type CodecSection = keyof typeof CONFIG_SECTION_CODECS;
@@ -88,6 +106,12 @@ const DECODE_ORDER: readonly CodecSection[] = [
   "roles",
   "approval_policies",
   "chart_of_accounts",
+  "zones",
+  "tax_rules",
+  "service_charge_rules",
+  "checklists",
+  "facilities",
+  "wifi_policies",
 ];
 
 type DraftsOf<C extends { fromTemplate: (...args: never[]) => unknown }> =
@@ -101,6 +125,12 @@ export type DecodedConfigDrafts = {
   roles?: DraftsOf<typeof rolesConfigCodec>;
   approval_policies?: DraftsOf<typeof approvalPoliciesConfigCodec>;
   chart_of_accounts?: DraftsOf<typeof chartOfAccountsConfigCodec>;
+  zones?: DraftsOf<typeof zonesConfigCodec>;
+  tax_rules?: DraftsOf<typeof taxRulesConfigCodec>;
+  service_charge_rules?: DraftsOf<typeof serviceChargeRulesConfigCodec>;
+  checklists?: DraftsOf<typeof checklistsConfigCodec>;
+  facilities?: DraftsOf<typeof facilitiesConfigCodec>;
+  wifi_policies?: DraftsOf<typeof wifiPoliciesConfigCodec>;
 };
 
 export type DecodeConfigBundleOptions = {
@@ -147,6 +177,29 @@ export function decodeConfigBundle(
     for (const item of (sections.roles?.items ?? []) as { key: string }[])
       roleKeys.add(item.key);
 
+  // Keys of the bundle's own sections, for references between sections. A set
+  // exists only when the bundle carries that section (else the target tenant
+  // may hold the row, and the importer checks it).
+  const keysOf = (
+    section: ConfigSection,
+    pick: (item: { key: string; kind?: string }) => boolean = () => true,
+  ) => {
+    const value = sections[section];
+    return value
+      ? new Set(
+          (value.items as { key: string; kind?: string }[])
+            .filter(pick)
+            .map((item) => item.key),
+        )
+      : undefined;
+  };
+  const refs: ConfigSectionRefs = {
+    zoneKeys: keysOf("zones"),
+    roleKeys: sections.roles ? roleKeys : undefined,
+    taxRuleKeys: keysOf("tax_rules", (item) => item.kind === "rule"),
+    facilityKeys: keysOf("facilities", (item) => item.kind === "facility"),
+  };
+
   for (const section of DECODE_ORDER) {
     const value = sections[section];
     if (!wanted.has(section) || !value) continue;
@@ -159,29 +212,42 @@ export function decodeConfigBundle(
         });
       continue;
     }
-    const result =
-      section === "approval_policies"
+    const items = value.items;
+    const accounts =
+      section === "chart_of_accounts"
+        ? chartOfAccountsConfigCodec.fromTemplate(
+            items as Parameters<
+              typeof chartOfAccountsConfigCodec.fromTemplate
+            >[0],
+          )
+        : undefined;
+    const result: ConfigDecodeResult<unknown> =
+      accounts ??
+      (section === "approval_policies"
         ? approvalPoliciesConfigCodec.fromTemplate(
-            value.items as Parameters<
+            items as Parameters<
               typeof approvalPoliciesConfigCodec.fromTemplate
             >[0],
             { roleKeys },
           )
         : section === "roles"
           ? rolesConfigCodec.fromTemplate(
-              value.items as Parameters<
-                typeof rolesConfigCodec.fromTemplate
-              >[0],
+              items as Parameters<typeof rolesConfigCodec.fromTemplate>[0],
             )
-          : chartOfAccountsConfigCodec.fromTemplate(
-              value.items as Parameters<
-                typeof chartOfAccountsConfigCodec.fromTemplate
-              >[0],
-            );
+          : // The other codecs share one signature: (items, refs).
+            (
+              CONFIG_SECTION_CODECS[section] as {
+                fromTemplate: (
+                  items: never,
+                  ctx: ConfigSectionRefs,
+                ) => ConfigDecodeResult<unknown>;
+              }
+            ).fromTemplate(items as never, refs));
     if (result.ok) {
       Object.assign(drafts, { [section]: result.drafts });
-      if ("mappings" in result) accountMappings = result.mappings;
-    } else for (const message of result.issues) issues.push({ section, message });
+      if (accounts?.ok) accountMappings = accounts.mappings;
+    } else
+      for (const message of result.issues) issues.push({ section, message });
   }
   const withoutCodec = (Object.keys(sections) as ConfigSection[]).filter(
     (section) => wanted.has(section) && !configSectionCodec(section),

@@ -374,18 +374,19 @@ test("TEN-09 · an exported bundle parses back and previews as unchanged against
 
 test("TEN-09 · the preview diff reports added, changed and removed rows per section", () => {
   const incoming = structuredClone(fx.configBundle);
+  const [indoor, , wfc] = fx.configBundle.sections.zones.items;
   incoming.sections.zones.items = [
-    { key: "indoor", name: "Indoor", tableCount: 14 }, // changed
-    { key: "wfc", name: "Zona WFC", tableCount: 10 }, // same
-    { key: "rooftop", name: "Rooftop", tableCount: 6 }, // added
+    { ...indoor, name: "Indoor Lantai 2" }, // changed
+    wfc, // same
+    { ...wfc, key: "rooftop", name: "Rooftop", sortOrder: 3 }, // added
     // "outdoor" is gone: removed
   ];
   incoming.sections.theme.corners = "bulat"; // theme: one setting changed
   delete incoming.sections.modules; // not in the file: not previewed
-  incoming.sections.tax_rules = {
+  incoming.sections.loyalty_policy = {
     version: 1,
-    items: [{ key: "pb1", rate: 10 }],
-  }; // section the tenant has not got yet
+    items: [{ key: "points", earnPerIdr: 10000 }],
+  }; // section the tenant has not got yet (free-form items, no codec)
 
   const parsed = configLib.parseBundleText(bundleText(incoming));
   assert.equal(parsed.ok, true, JSON.stringify(parsed));
@@ -402,18 +403,18 @@ test("TEN-09 · the preview diff reports added, changed and removed rows per sec
   assert.equal(bySection.zones.unchanged, 1);
   assert.equal(bySection.theme.status, "changed");
   assert.deepEqual(bySection.theme.changed, ["corners"]);
-  assert.equal(bySection.tax_rules.status, "added");
+  assert.equal(bySection.loyalty_policy.status, "added");
   assert.equal(bySection.text_overrides.status, "unchanged");
 
   // Unchanged sections are not applied; a section the user switches off is skipped.
   assert.deepEqual(configLib.selectedSections(diffs, new Set()).sort(), [
-    "tax_rules",
+    "loyalty_policy",
     "theme",
     "zones",
   ]);
   assert.deepEqual(
     configLib.selectedSections(diffs, new Set(["zones"])).sort(),
-    ["tax_rules", "theme"],
+    ["loyalty_policy", "theme"],
   );
 });
 
@@ -428,8 +429,13 @@ test("TEN-09 · a bundle with source-tenant ids, secrets or bad JSON never reach
   );
 
   const leaky = structuredClone(fx.configBundle);
-  leaky.sections.zones.items[0].tenantId = fx.tenant.id;
-  leaky.sections.zones.items[1].note = `milik ${fx.tenant.id}`;
+  leaky.sections.loyalty_policy = {
+    version: 1,
+    items: [
+      { key: "a", tenantId: fx.tenant.id },
+      { key: "b", note: `milik ${fx.tenant.id}` },
+    ],
+  };
   const result = configLib.parseBundleText(bundleText(leaky));
   assert.equal(result.ok, false);
   assert.equal(result.reason, "identifiers");
@@ -439,7 +445,10 @@ test("TEN-09 · a bundle with source-tenant ids, secrets or bad JSON never reach
   assert.ok(result.identifierIssues.some((issue) => issue.reason === "uuid"));
 
   const secret = structuredClone(fx.configBundle);
-  secret.sections.zones.items[0].credentials = { apiKey: SECRET_A };
+  secret.sections.loyalty_policy = {
+    version: 1,
+    items: [{ key: "a", credentials: { apiKey: SECRET_A } }],
+  };
   assert.equal(configLib.parseBundleText(bundleText(secret)).ok, false);
 });
 
