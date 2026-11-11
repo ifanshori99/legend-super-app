@@ -231,5 +231,13 @@ test("a mock-mode web build refuses to start outside development", () => {
 
 test("every web page defaults to Cache-Control private, no-store", () => {
   const start = readFileSync(resolve(root, "apps/web/src/start.ts"), "utf8");
-  assert.match(start, /"Cache-Control": "private, no-store"/);
+  const cache = readFileSync(
+    resolve(root, "apps/web/src/lib/public-cache.server.ts"),
+    "utf8",
+  );
+  // start.ts applies decidePublicCache() to every page without its own
+  // Cache-Control; the decision falls back to private, no-store.
+  assert.match(start, /headers\.set\("Cache-Control", decision\.cacheControl\)/);
+  assert.match(cache, /const NO_STORE = "private, no-store"/);
+  assert.match(cache, /if \(!cacheable\) return \{ cacheControl: NO_STORE/);
 });

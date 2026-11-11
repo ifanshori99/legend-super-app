@@ -333,6 +333,7 @@ const accessBaseMessages = {
       health: { view: "Lihat kesehatan platform" },
       support_access: { request: "Minta akses dukungan ke tenant" },
       config_template: { manage: "Kelola template konfigurasi tenant" },
+      event_gap: { manage: "Periksa dan lewati celah urutan event" },
     },
     org: {
       structure: { manage: "Kelola struktur organisasi" },
@@ -419,6 +420,7 @@ const accessBaseMessages = {
       transaction: { view: "Lihat transaksi pembayaran" },
       reconcile: "Rekonsiliasi pembayaran",
       edc: { manage: "Kelola mesin EDC" },
+      recurring: { manage: "Kelola tagihan berulang" },
     },
     inventory: {
       stock: {

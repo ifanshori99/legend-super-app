@@ -336,13 +336,21 @@ describe("SETTINGS-HUB-01 settings hub", () => {
     assert.ok(paths(["audit.log.view"]).includes("/audit"));
   });
 
-  test("SETTINGS-HUB-01: the owner template reaches /audit and every hub card", () => {
+  test("SETTINGS-HUB-01: the owner template reaches /audit and every hub card except Super Admin ones", () => {
     const owner = roleTemplate("owner").permissions;
     assert.ok(owner.includes("audit.log.view"));
+    // Cards guarded by a platform permission (e.g. terms) are Super Admin only.
+    const superAdminOnly = HUB_ITEMS.filter((entry) =>
+      entry.anyPermission?.some((code) => code.startsWith("platform.")),
+    );
+    assert.deepEqual(
+      superAdminOnly.map((entry) => entry.key),
+      ["terms"],
+    );
     assert.equal(
       groupAvailable(HUB_ITEMS, () => true, owner).flatMap((g) => g.items)
         .length,
-      HUB_ITEMS.length,
+      HUB_ITEMS.length - superAdminOnly.length,
     );
     assert.ok(!roleTemplate("cashier").permissions.includes("audit.log.view"));
   });

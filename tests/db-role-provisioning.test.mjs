@@ -766,14 +766,18 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
       assert.equal(normalised.status, 0, normalised.stderr);
       const role = (
         await admin.query(
-          "SELECT rolinherit, rolvaliduntil = 'infinity'::timestamptz AS forever, rolconnlimit, (SELECT count(*)::int FROM pg_db_role_setting WHERE setrole = r.oid) AS settings FROM pg_roles r WHERE rolname = $1",
+          "SELECT rolinherit, rolvaliduntil = 'infinity'::timestamptz AS forever, rolconnlimit, (SELECT coalesce(array_agg(c ORDER BY c), '{}') FROM pg_db_role_setting s, unnest(s.setconfig) AS c WHERE s.setrole = r.oid) AS settings FROM pg_roles r WHERE rolname = $1",
           [roles[0]],
         )
       ).rows[0];
       assert.equal(role.rolinherit, true);
       assert.equal(role.forever, true);
       assert.equal(role.rolconnlimit, -1);
-      assert.equal(role.settings, 0);
+      // Only the idle-transaction timeout provisioning sets itself survives;
+      // the drifted search_path and row_security are gone (legend-9h0kg).
+      assert.deepEqual(role.settings, [
+        "idle_in_transaction_session_timeout=5min",
+      ]);
       const missing = job({ WORKER_DATABASE_URL: "" });
       assert.equal(missing.status, 1);
       assert.match(missing.stderr, /WORKER_DATABASE_URL is required/);
