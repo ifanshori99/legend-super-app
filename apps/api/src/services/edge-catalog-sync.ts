@@ -36,6 +36,7 @@
 // Prices are read as the stored integer rupiah and passed through untouched.
 
 import {
+  CATALOG_PROTOCOL_VERSION,
   catalogSyncPageSchema,
   catalogSyncQuerySchema,
   catalogSyncRecordSchemas,
@@ -611,7 +612,9 @@ export async function listCatalogRecordsSince(
   const { tenantId, outletId } = verifiedEdgeNodeSchema
     .pick({ tenantId: true, outletId: true })
     .parse({ tenantId: input.tenantId, outletId: input.outletId });
-  const { stream, limit } = catalogSyncQuerySchema.parse(input.query);
+  const { stream, limit, protocolVersion } = catalogSyncQuerySchema.parse(
+    input.query,
+  );
   const since = parseCursor(stream, input.query.since);
   const context = outletContext(
     establishTenantContext({ tenantId, brandId: null, source: "device" }),
@@ -656,6 +659,11 @@ export async function listCatalogRecordsSince(
       ? null
       : encodeMark({ txid: last.txid, keys: last.keys });
   return catalogSyncPageSchema.parse({
+    // Only an edge that asked: an older edge's strict page schema would
+    // refuse the field and stop syncing.
+    ...(protocolVersion === undefined
+      ? {}
+      : { protocolVersion: CATALOG_PROTOCOL_VERSION }),
     stream,
     records: page.map(({ record }) =>
       catalogSyncRecordSchemas[stream].parse(record),

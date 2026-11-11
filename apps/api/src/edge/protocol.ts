@@ -28,6 +28,23 @@ export const linkCursorSchema = z
 
 const text = z.string().min(1).max(255);
 
+/**
+ * Critical catalog streams stale for over 30 minutes while the edge reaches
+ * the cloud (legend-10nex). `staleSince` is the last successful pull (the
+ * first failure when there never was one): stable for the whole episode, so
+ * the cloud derives one notification per edge, stream and episode from it.
+ */
+export const catalogStaleSchema = z
+  .array(
+    z.strictObject({
+      stream: text,
+      staleSince: isoDateTimeSchema,
+      reason: text,
+    }),
+  )
+  .max(16);
+export type CatalogStale = z.infer<typeof catalogStaleSchema>;
+
 export const linkFrameSchema = z.discriminatedUnion("type", [
   /** First frame of each side: where this side's inbound stream resumes. */
   z.strictObject({
@@ -48,6 +65,13 @@ export const linkFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("heartbeat"),
     version: text,
     occurredAt: isoDateTimeSchema,
+    /**
+     * Optional and omitted when empty: an older edge never sends it. Release
+     * order: cloud first, then edge (the frame is strict, an older cloud
+     * refuses the field; the edge holds it back while its catalog pull says
+     * the cloud is outdated).
+     */
+    catalogStale: catalogStaleSchema.optional(),
   }),
 ]);
 export type LinkFrame = z.infer<typeof linkFrameSchema>;

@@ -33,7 +33,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { catalogSyncQuerySchema } from "@starter/shared/edge";
+import {
+  CATALOG_PROTOCOL_VERSION,
+  catalogSyncQuerySchema,
+} from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { db } from "../db/index.ts";
@@ -52,6 +55,7 @@ import {
 
 type Rec = Record<string, unknown>;
 type Page = {
+  protocolVersion: number;
   stream: string;
   records: Rec[];
   nextCursor: string | null;
@@ -189,7 +193,13 @@ function restoredCloud(opts: {
     since: string | null,
   ): Promise<Page> => {
     if (stream !== STREAM)
-      return { stream, records: [], nextCursor: since, hasMore: false };
+      return {
+        protocolVersion: CATALOG_PROTOCOL_VERSION,
+        stream,
+        records: [],
+        nextCursor: since,
+        hasMore: false,
+      };
     asked.push(since);
     if (since === opts.oldCursor) {
       rejections += 1;
@@ -197,13 +207,20 @@ function restoredCloud(opts: {
     }
     if (since === null)
       return {
+        protocolVersion: CATALOG_PROTOCOL_VERSION,
         stream,
         records: opts.after,
         nextCursor: opts.newCursor,
         hasMore: false,
       };
     if (since === opts.newCursor)
-      return { stream, records: [], nextCursor: since, hasMore: false };
+      return {
+        protocolVersion: CATALOG_PROTOCOL_VERSION,
+        stream,
+        records: [],
+        nextCursor: since,
+        hasMore: false,
+      };
     throw new Error(`unexpected cursor ${since}`);
   };
   return { fetchPage, asked, rejections: () => rejections };
@@ -281,12 +298,14 @@ async function seedHighCheckpoint(rowId: string) {
     fetchPage: async (stream, since) =>
       stream === STREAM
         ? ({
+            protocolVersion: CATALOG_PROTOCOL_VERSION,
             stream,
             records: [category(rowId, "Nama lama", 500)],
             nextCursor: oldCursor,
             hasMore: false,
           } satisfies Page)
         : ({
+            protocolVersion: CATALOG_PROTOCOL_VERSION,
             stream,
             records: [],
             nextCursor: since,

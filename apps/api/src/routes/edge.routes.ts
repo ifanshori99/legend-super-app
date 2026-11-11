@@ -24,7 +24,9 @@ import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { env } from "../config/env.ts";
 import { checkDatabase } from "../db/index.ts";
+import { catalogFreshnessToDto } from "../edge/catalog-freshness.ts";
 import {
+  getCatalogFreshness,
   getDeviceRegistrySyncState,
   getEdgeRuntimeState,
 } from "../edge/runtime.ts";
@@ -132,13 +134,20 @@ const sessionReader: RequestHandler = async (req, _res, next) => {
 const statusHandler: RequestHandler = async (req, res) => {
   const { identity, link } = edgeIdentity();
   res.setHeader("Cache-Control", "private, no-store");
+  const status = await getEdgeStatus({
+    context: identity.context,
+    scope: identity.scope,
+    cloudLink: link.cloudLink,
+    deviceId: statusDevices.get(req) ?? null,
+  });
+  // legend-10nex: price/product-status freshness for the cashier warning.
+  // Omitted before boot; selling is never blocked by it.
+  const tracker = getCatalogFreshness();
+  const catalogFreshness = tracker
+    ? catalogFreshnessToDto(tracker.snapshot())
+    : undefined;
   res.json({
-    data: await getEdgeStatus({
-      context: identity.context,
-      scope: identity.scope,
-      cloudLink: link.cloudLink,
-      deviceId: statusDevices.get(req) ?? null,
-    }),
+    data: catalogFreshness ? { ...status, catalogFreshness } : status,
   });
 };
 
@@ -161,6 +170,11 @@ edgeRouter.get("/health", async (_req, res) => {
     cloudLink: runtime.link.cloudLink,
     database,
     deviceRegistry: { stale: getDeviceRegistrySyncState()?.stale ?? true },
+    // Informational: stale prices/product status never change the HTTP code.
+    catalogFreshness: (() => {
+      const tracker = getCatalogFreshness();
+      return tracker ? catalogFreshnessToDto(tracker.snapshot()) : null;
+    })(),
     // Informational: a full selfie disk never changes status or HTTP code.
     selfie: getEdgeSelfieHealth(),
     // Informational too: the selfie volume check (legend-svy91), cached 30 s.

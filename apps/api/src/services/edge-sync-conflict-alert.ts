@@ -7,6 +7,7 @@
 // service-request pattern: notification consumer + pg_notify at commit). No
 // domain-outbox event is appended because the shared event catalog has no
 // entry for it.
+import { createHash } from "node:crypto";
 import {
   and,
   eq,
@@ -23,6 +24,7 @@ import {
   createUlid,
   toIsoDateTime,
   ulidToUuid,
+  uuidToUlid,
   type OutletId,
   type ScopedTenantContext,
   type TenantId,
@@ -62,11 +64,15 @@ export type NewEdgeSyncConflict = {
   reason: string;
 };
 
-/** Active (not banned) supervisors of the outlet; owners when there is none. */
+/**
+ * Active (not banned) supervisors of the outlet; owners when there is none,
+ * or always with `alsoOwners`.
+ */
 async function supervisorIds(
   tx: EdgeTx,
   tenantId: TenantId,
   outletId: OutletId,
+  alsoOwners = false,
 ): Promise<string[]> {
   const [outlet] = await tx
     .select({ brandId: outlets.brandId })
@@ -122,15 +128,17 @@ async function supervisorIds(
     inArray(roles.templateKey, SUPERVISOR_TEMPLATE_KEYS),
     "outlet",
   );
-  return supervisors.length > 0
-    ? supervisors
-    : holders(eq(roles.templateKey, "owner"), "tenant");
+  if (supervisors.length > 0 && !alsoOwners) return supervisors;
+  const owners = await holders(eq(roles.templateKey, "owner"), "tenant");
+  return [...new Set([...supervisors, ...owners])];
 }
 
 export type SupervisorAlert = {
   tenantId: TenantId;
   /** Notification category; defaults to `edge_sync_conflict`. */
   category?: NotificationCategory;
+  /** Owners get it even when the outlet has supervisors. */
+  alsoOwners?: boolean;
   outletId: OutletId;
   /** ULID; the notification consumer dedupes on it. */
   id: string;
@@ -153,7 +161,12 @@ export async function notifyOutletSupervisors(
   alert: SupervisorAlert,
   now: Date,
 ): Promise<void> {
-  const userIds = await supervisorIds(tx, alert.tenantId, alert.outletId);
+  const userIds = await supervisorIds(
+    tx,
+    alert.tenantId,
+    alert.outletId,
+    alert.alsoOwners === true,
+  );
   if (userIds.length === 0) return;
   const [policyRow] = await tx
     .select()
@@ -254,6 +267,72 @@ export async function notifyEdgeSyncConflictRecorded(
       },
       title: "Konflik sinkronisasi edge",
       body: "Ada data dari server lokal yang ditolak cloud. Tinjau dan ulangi atau abaikan di pengaturan perangkat.",
+    },
+    now,
+  );
+}
+
+export type EdgeCatalogStale = {
+  tenantId: TenantId;
+  outletId: OutletId;
+  edgeNodeId: string;
+  stream: string;
+  /** Start of the stale episode as the edge reported it (ISO). */
+  staleSince: string;
+  reason: string;
+};
+
+/**
+ * Stable alert id for one edge, stream and stale episode: the same heartbeat
+ * repeated every few seconds maps to the same ULID, and the notification
+ * consumer ignores an event id it has seen. A new episode (a later success
+ * moves `staleSince`) notifies again.
+ */
+export function edgeCatalogStaleAlertId(stale: EdgeCatalogStale): string {
+  const hex = createHash("sha256")
+    .update(
+      `edge_catalog.stale\0${stale.edgeNodeId}\0${stale.stream}\0${stale.staleSince}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+}
+
+/**
+ * Notify the outlet's supervisors AND owners that an edge's critical catalog
+ * stream (prices, product status) has been stale for over 30 minutes while
+ * the edge reaches the cloud (legend-10nex). Called from the cloud when a
+ * heartbeat carries `catalogStale`; idempotent per edge, stream and episode
+ * (see `edgeCatalogStaleAlertId`). Carries stream and reason code only.
+ */
+export async function notifyEdgeCatalogStale(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  stale: EdgeCatalogStale,
+  now: Date = new Date(),
+): Promise<void> {
+  const id = edgeCatalogStaleAlertId(stale);
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId: stale.tenantId,
+      outletId: stale.outletId,
+      alsoOwners: true,
+      id,
+      eventName: "edge_catalog.stale",
+      aggregateType: "edge_catalog",
+      aggregateId: id,
+      payload: {
+        edgeNodeId: stale.edgeNodeId,
+        stream: stale.stream,
+        staleSince: stale.staleSince,
+        reason: stale.reason,
+      },
+      title: "Katalog edge belum diperbarui",
+      body: "Harga atau status produk di server lokal belum diperbarui lebih dari 30 menit padahal internet tersambung. Penjualan tetap jalan; periksa sinkronisasi.",
     },
     now,
   );

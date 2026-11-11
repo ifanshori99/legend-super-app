@@ -55,6 +55,7 @@
 // Never put the credential or SQL parameters in an error: codes only.
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
+  CATALOG_PROTOCOL_VERSION,
   CATALOG_SYNC_LIMIT_DEFAULT,
   EDGE_CATALOG_SYNC_PATH,
   type CatalogSyncStream,
@@ -72,6 +73,11 @@ import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  CRITICAL_CATALOG_STREAMS,
+  isOfflineFailureCode,
+  type CatalogFreshnessTracker,
+} from "./catalog-freshness.ts";
 import { logger } from "../lib/logger.ts";
 import { edgeBootstrapSignatureMatches } from "../services/edge-bootstrap.service.ts";
 import { edgeNodeContext } from "../services/edge-node.service.ts";
@@ -539,6 +545,11 @@ export function startEdgeMasterSyncLoop(input: {
     edgeNodeId?: string;
     /** Default `pullCatalog`; tests inject their own. */
     pull?: typeof pullCatalog;
+    /**
+     * legend-10nex: records, per critical stream, when the last pull
+     * succeeded or why it failed. Without it the failures are only reported.
+     */
+    freshness?: CatalogFreshnessTracker;
   };
   catalogOnStart?: boolean;
 }): { stop(): Promise<void> } {
@@ -573,7 +584,7 @@ export function startEdgeMasterSyncLoop(input: {
       signal: abort.signal,
     });
 
-  const runCatalog = async (): Promise<void> => {
+  const pullCatalogRounds = async (): Promise<void> => {
     const claims = parseEdgeCredential(input.config.credential);
     if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
     guardMasterImport();
@@ -581,16 +592,60 @@ export function startEdgeMasterSyncLoop(input: {
     const context = catalog?.context ?? edgeNodeContext(claims);
     const edgeNodeId = catalog?.edgeNodeId ?? claims.edgeNodeId;
     const pull = catalog?.pull ?? pullCatalog;
+    const freshness = catalog?.freshness;
     for (let round = 0; round < MAX_CATALOG_ROUNDS && !stopped; round += 1) {
       const result = await pull({
         context,
         edgeNodeId,
         fetchPage: fetchCatalogPage,
       });
-      for (const [stream, outcome] of Object.entries(result.streams))
-        if (outcome?.error)
-          report(new EdgeCatalogSyncError(stream, outcome.error.code));
+      const entries = Object.entries(result.streams);
+      // A stream skipped after its parent failed (CATALOG_PARENT_FAILED) is
+      // unreachable only when every root failure of the round was.
+      const roots = entries.filter(
+        ([, outcome]) =>
+          outcome?.error && outcome.error.code !== "CATALOG_PARENT_FAILED",
+      );
+      const cascadeOffline =
+        roots.length > 0 &&
+        roots.every(([, outcome]) =>
+          isOfflineFailureCode(outcome?.error?.code ?? ""),
+        );
+      for (const [stream, outcome] of entries) {
+        if (!outcome) continue;
+        if (outcome.error) {
+          const code = outcome.error.code;
+          if (!stopped)
+            freshness?.recordFailure(stream, {
+              reason: code,
+              cloudReachable: !(code === "CATALOG_PARENT_FAILED"
+                ? cascadeOffline
+                : isOfflineFailureCode(code)),
+            });
+          report(new EdgeCatalogSyncError(stream, code));
+        } else if (!stopped) freshness?.recordSuccess(stream);
+      }
       if (!result.backlog) break;
+    }
+  };
+
+  const runCatalog = async (): Promise<void> => {
+    try {
+      await pullCatalogRounds();
+    } catch (error) {
+      // Before or around the pull (credential, import guard, bad context):
+      // every critical stream failed this run. The cloud is not implicated.
+      // `stop()` aborting the request is a shutdown, not a failure.
+      if (!stopped)
+        for (const stream of CRITICAL_CATALOG_STREAMS)
+          input.catalog?.freshness?.recordFailure(stream, {
+            reason:
+              error instanceof EdgeMasterSyncError
+                ? error.code
+                : "CATALOG_PULL_FAILED",
+            cloudReachable: true,
+          });
+      throw error;
     }
   };
 
@@ -637,6 +692,9 @@ function catalogPath(stream: CatalogSyncStream, since: string | null): string {
   const query = new URLSearchParams({
     stream,
     limit: String(CATALOG_SYNC_LIMIT_DEFAULT),
+    // Tells the cloud this edge reads the page version. A cloud that predates
+    // it rejects the unknown parameter (HTTP 400): see catalog-puller.ts.
+    protocolVersion: String(CATALOG_PROTOCOL_VERSION),
   });
   if (since !== null) query.set("since", since);
   return `${EDGE_CATALOG_SYNC_PATH}?${query.toString()}`;

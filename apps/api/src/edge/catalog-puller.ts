@@ -36,6 +36,8 @@
 // - Read only: nothing here writes to the cloud. Errors carry codes, never
 //   record data.
 import {
+  CATALOG_PROTOCOL_MIN_VERSION,
+  CATALOG_PROTOCOL_VERSION,
   CATALOG_SYNC_STREAMS,
   catalogSyncPageSchema,
   type CatalogSyncStream,
@@ -391,6 +393,24 @@ function isPageWithoutSyncTxid(raw: unknown): boolean {
   );
 }
 
+/**
+ * Refuses a page whose explicit `protocolVersion` is missing or older than the
+ * minimum (cloud too old: CATALOG_CLOUD_OUTDATED), or newer than this edge
+ * understands (edge too old: CATALOG_EDGE_OUTDATED). A non-object is left to
+ * the shape check.
+ */
+function assertProtocolVersion(raw: unknown): void {
+  if (typeof raw !== "object" || raw === null) return;
+  const version = (raw as { protocolVersion?: unknown }).protocolVersion;
+  if (
+    typeof version !== "number" ||
+    !Number.isFinite(version) ||
+    version < CATALOG_PROTOCOL_MIN_VERSION
+  )
+    throw new CatalogCloudOutdatedError();
+  if (version > CATALOG_PROTOCOL_VERSION) throw new CatalogEdgeOutdatedError();
+}
+
 type StreamProgress = {
   applied: number;
   skipped: number;
@@ -440,11 +460,24 @@ async function pullStream(
         first = false;
         continue;
       }
+      // No cursor to blame and the cloud still answers 400: the request has
+      // only valid parameters except `protocolVersion`, which a cloud older
+      // than the version field rejects (strict query).
+      if (
+        since === null &&
+        error instanceof EdgeCloudHttpError &&
+        error.code === "HTTP_400"
+      )
+        throw new CatalogCloudOutdatedError();
       throw error;
     }
     first = false;
-    // A cloud on the older release sends records without `syncTxid`: refuse
-    // that with a clear reason instead of "unknown shape".
+    // Protocol version first, before the page is parsed and before any
+    // checkpoint moves: an empty page of an old cloud must not pass either.
+    assertProtocolVersion(raw);
+    // A cloud that labels its page with a version but still sends records
+    // without `syncTxid` (legend-dciax): refuse with a clear reason instead of
+    // "unknown shape". Still reachable, so it stays.
     if (isPageWithoutSyncTxid(raw)) throw new CatalogCloudOutdatedError();
     // safeParse: no parser detail travels in the error.
     const parsed = catalogSyncPageSchema.safeParse(raw);
@@ -571,7 +604,7 @@ class CatalogParentFailedError extends Error {
   }
 }
 
-/** The cloud answered without `syncTxid`: it still runs the pre-cat2 release. */
+/** The cloud sent no protocol version or an older one: it still runs an old release. */
 class CatalogCloudOutdatedError extends Error {
   readonly code = "CATALOG_CLOUD_OUTDATED";
 
@@ -583,12 +616,23 @@ class CatalogCloudOutdatedError extends Error {
   }
 }
 
+/** The cloud speaks a newer catalog protocol than this edge understands. */
+class CatalogEdgeOutdatedError extends Error {
+  readonly code = "CATALOG_EDGE_OUTDATED";
+
+  constructor() {
+    super("Edge belum mendukung versi protokol katalog cloud: perbarui edge.");
+    this.name = "CatalogEdgeOutdatedError";
+  }
+}
+
 /** Code and message that are safe to report: no record data, no SQL detail. */
 function describeError(error: unknown): CatalogStreamError {
   if (
     error instanceof CatalogMissingRefError ||
     error instanceof CatalogParentFailedError ||
     error instanceof CatalogCloudOutdatedError ||
+    error instanceof CatalogEdgeOutdatedError ||
     error instanceof CoreError ||
     error instanceof EdgeCloudHttpError
   )

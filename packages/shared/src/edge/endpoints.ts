@@ -40,6 +40,32 @@ export const cloudLinkSchema = z.enum(["connected", "disconnected"]);
 export type CloudLink = z.infer<typeof cloudLinkSchema>;
 
 /**
+ * Freshness of the critical catalog streams on this edge (legend-10nex).
+ * Sales are never blocked while stale: the cashier only sees `cashierWarning`.
+ */
+export const catalogFreshnessSchema = z.strictObject({
+  /** A critical stream failed since its last success. */
+  stale: z.boolean(),
+  /** Stale over 30 minutes while the cloud answers (owner notified). */
+  ownerAlarm: z.boolean(),
+  /** Cashier text, e.g. "katalog belum diperbarui sejak 08:15"; null when fresh. */
+  cashierWarning: z.string().nullable(),
+  /** Always false: a stale catalog never blocks selling. */
+  salesBlocked: z.literal(false),
+  streams: z.record(
+    z.string(),
+    z.strictObject({
+      lastSuccessAt: isoDateTimeSchema.nullable(),
+      /** Since the last success; null when it never succeeded. */
+      ageMs: z.number().int().nonnegative().nullable(),
+      /** Why the latest attempt failed (error code); null when fine. */
+      failureReason: z.string().nullable(),
+    }),
+  ),
+});
+export type CatalogFreshness = z.infer<typeof catalogFreshnessSchema>;
+
+/**
  * What staff devices need to show offline status (Alur F step 1): the cloud
  * link, the edge node heartbeat, the outbox backlog (PRD §5 Sinkronisasi) and
  * this device's training mode (PRD §3 F5 Mode Latihan). `deviceRegistry` is
@@ -73,6 +99,8 @@ export const edgeStatusSchema = z.strictObject({
     // Optional: an edge image older than legend-2lp.7 does not send it; the
     // edge API always does.
     .optional(),
+  // Optional for the same reason as `deviceRegistry` (legend-10nex).
+  catalogFreshness: catalogFreshnessSchema.optional(),
   thisDevice: deviceSchema.nullable(),
 });
 export type EdgeStatus = z.infer<typeof edgeStatusSchema>;

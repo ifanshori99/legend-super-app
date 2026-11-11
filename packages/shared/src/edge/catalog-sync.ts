@@ -74,9 +74,26 @@ export type CatalogSyncStream = z.infer<typeof catalogSyncStreamSchema>;
 
 export const CATALOG_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
 
+/**
+ * Catalog sync protocol version the cloud stamps on every page, empty pages
+ * included, when the request says the edge understands it (`protocolVersion`
+ * query parameter). Raise it when the page contract changes in a way an older
+ * edge or cloud must not apply.
+ *
+ * Release order: cloud first, then edge. An older edge (strict page schema,
+ * no parameter) gets pages without the field, as before. A newer edge asks for
+ * the version; an older cloud rejects the unknown parameter (HTTP 400), which
+ * the edge reports as CATALOG_CLOUD_OUTDATED.
+ */
+export const CATALOG_PROTOCOL_VERSION = 2;
+/** Oldest cloud version the edge still accepts (first one with `syncTxid`). */
+export const CATALOG_PROTOCOL_MIN_VERSION = 2;
+
 export const catalogSyncQuerySchema = z.strictObject({
   stream: catalogSyncStreamSchema,
   since: cursorSchema.optional(),
+  /** Highest page protocol the edge understands; absent on an older edge. */
+  protocolVersion: z.coerce.number().int().min(1).optional(),
   limit: z.coerce
     .number()
     .int()
@@ -326,6 +343,11 @@ export type CatalogSyncRecordOf<S extends CatalogSyncStream> = z.infer<
 
 function pageOf<S extends CatalogSyncStream>(stream: S) {
   return z.strictObject({
+    /**
+     * Explicit protocol version, sent only to an edge that asked for it. The
+     * edge checks it before parsing the page and refuses a page without it.
+     */
+    protocolVersion: z.number().int().min(1).optional(),
     stream: z.literal(stream),
     records: z.array(catalogSyncRecordSchemas[stream]),
     /** Position after the last record; the checkpoint once the page is applied. */

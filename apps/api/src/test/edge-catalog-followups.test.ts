@@ -36,7 +36,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { catalogSyncQuerySchema } from "@starter/shared/edge";
+import {
+  CATALOG_PROTOCOL_VERSION,
+  catalogSyncQuerySchema,
+} from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { db } from "../db/index.ts";
@@ -58,6 +61,7 @@ import {
 
 type Rec = Record<string, unknown>;
 type Page = {
+  protocolVersion: number;
   stream: string;
   records: Rec[];
   nextCursor: string | null;
@@ -316,10 +320,17 @@ describe("thhg9 a late checkpoint never lowers the cursor (it only rises)", () =
         since: string | null,
       ): Promise<Page> => {
         if (stream !== STREAM)
-          return { stream, records: [], nextCursor: since, hasMore: false };
+          return {
+            protocolVersion: CATALOG_PROTOCOL_VERSION,
+            stream,
+            records: [],
+            nextCursor: since,
+            hasMore: false,
+          };
         const answer = answers[n]!;
         n += 1;
         return {
+          protocolVersion: CATALOG_PROTOCOL_VERSION,
           stream,
           records: [answer.rec],
           nextCursor: answer.cursor,

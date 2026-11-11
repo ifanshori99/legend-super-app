@@ -37,7 +37,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { CATALOG_SYNC_STREAMS } from "@starter/shared/edge";
+import {
+  CATALOG_PROTOCOL_VERSION,
+  CATALOG_SYNC_STREAMS,
+} from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { startEdgeMasterSyncLoop } from "../edge/master-sync.ts";
@@ -95,6 +98,7 @@ const urlOf = (input: unknown) =>
         : (input as Request).url,
   );
 const emptyPage = (stream: string) => ({
+  protocolVersion: CATALOG_PROTOCOL_VERSION,
   stream,
   records: [],
   nextCursor: null,
@@ -326,6 +330,7 @@ describe("dciax the loop refuses a cloud that does not send syncTxid", () => {
     const stream = url.searchParams.get("stream") ?? "";
     return stream === "stations"
       ? json({
+          protocolVersion: CATALOG_PROTOCOL_VERSION,
           stream,
           records: [stationWithoutTxid()],
           nextCursor: null,

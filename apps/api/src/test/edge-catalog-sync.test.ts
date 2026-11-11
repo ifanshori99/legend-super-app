@@ -99,6 +99,7 @@ import {
 import {
   CATALOG_SYNC_STREAMS,
   catalogSyncPageSchema,
+  CATALOG_PROTOCOL_VERSION,
   catalogSyncQuerySchema,
 } from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
@@ -522,6 +523,8 @@ async function cloudPage(
   const query = catalogSyncQuerySchema.parse({
     stream,
     limit: opts.limit ?? 100,
+    // The edge asks for the page version (an older edge would not).
+    protocolVersion: CATALOG_PROTOCOL_VERSION,
     ...(opts.since === undefined ? {} : { since: opts.since }),
   });
   return listCatalogRecordsSince(db, {

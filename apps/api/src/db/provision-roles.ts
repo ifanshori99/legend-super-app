@@ -296,13 +296,13 @@ async function upsertLogin(
 // session_replication_role) after RESET ALL, so prove none are left. The idle
 // transaction timeout is the one setting provisioning itself sets, and only on
 // the application and queue logins (`idleTxTimeout`): there it must be exactly
-// IDLE_TX_TIMEOUT (`"required"` also demands it is present). On any other
+// IDLE_TX_TIMEOUT and present (`"required"`; the audit uses it too). On any other
 // login, including the maintenance login, every setting counts as left over.
 async function assertNoSettings(
   client: ClientBase,
   user: string,
   label: string,
-  idleTxTimeout: "none" | "allowed" | "required" = "none",
+  idleTxTimeout: "none" | "required" = "none",
 ) {
   const { rows } = await client.query<{ config: string }>(
     `SELECT c AS config
@@ -1230,7 +1230,7 @@ async function assertLogin(client: ClientBase, user: string, label: string) {
     client,
     user,
     label,
-    label === "maintenance" ? "none" : "allowed",
+    label === "maintenance" ? "none" : "required",
   );
 }
 

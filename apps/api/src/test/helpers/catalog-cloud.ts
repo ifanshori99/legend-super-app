@@ -5,6 +5,7 @@
 // that is still open (`pg_snapshot_xmin(pg_current_snapshot())`). A test that
 // writes cloud rows and exports them straight away must therefore first wait
 // until that boundary has passed its own writes: `settleCloud`.
+import { CATALOG_PROTOCOL_VERSION } from "@starter/shared/edge";
 import { expect, vi } from "vitest";
 import type { Pool } from "pg";
 import { decodeCursor, encodeCursor } from "@starter/shared/core";
@@ -34,6 +35,7 @@ export const catCursor = (txid: number | bigint | string, ...keys: string[]) =>
 
 type Rec = Record<string, unknown>;
 export type ScriptedPage = {
+  protocolVersion: number;
   stream: string;
   records: Rec[];
   nextCursor: string | null;
@@ -69,6 +71,7 @@ export function scriptedCatalogCloud(
     const records = all.slice(start, start + pageSize);
     const end = start + records.length;
     return {
+      protocolVersion: CATALOG_PROTOCOL_VERSION,
       stream,
       records,
       nextCursor: records.length > 0 ? catCursor(end, stream) : since,
