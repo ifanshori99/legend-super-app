@@ -128,6 +128,10 @@ const LEAVE_BALANCE_AUDIT_SAFE_FIELDS = [
 ] as const;
 
 /** RLS scope of exactly one outlet: approval rows are outlet-owned (TEN-03). */
+function conflict(code: string, message: string): HttpError {
+  return new HttpError(409, code, message);
+}
+
 function outletScoped(
   context: ScopedTenantContext,
   outletId: string,
@@ -1098,43 +1102,56 @@ async function cancelLeaveRequest(
 
 // ------------------------------------------- HR decision on a clock-in day
 
+/** One approved leave that covers a date, as `app.approved_leaves_on` returns it. */
+export interface ApprovedLeaveOnDate {
+  readonly leaveRequestId: string;
+  readonly outletId: string;
+  readonly startDate: string;
+  readonly endDate: string;
+  readonly days: string;
+}
+
 /**
  * Approved leave of one employee whose range holds `businessDate` (bead
- * legend-9y6ri). `lock` takes the request rows FOR UPDATE, so a concurrent HR
- * decision on the same leave waits and then sees the new status.
+ * legend-9y6ri). Reads through `app.approved_leaves_on` (SECURITY DEFINER,
+ * tenant-bound, no outlet limit): `leave_requests` RLS is per home outlet of
+ * the employee, so a clock-in or an HR decision at another outlet would not
+ * see the leave through the table and would miss the clash.
  */
 export async function findApprovedLeaveOnDate(
   tx: Tx,
   tenantId: TenantId,
   employeeId: string,
   businessDate: string,
-  lock = false,
-): Promise<LeaveRequestRow[]> {
-  const query = tx
-    .select()
-    .from(leaveRequests)
-    .where(
-      and(
-        eq(leaveRequests.tenantId, tenantId),
-        eq(leaveRequests.employeeId, employeeId),
-        eq(leaveRequests.status, "approved"),
-        sql`${leaveRequests.startDate} <= ${businessDate}`,
-        sql`${leaveRequests.endDate} >= ${businessDate}`,
-      ),
-    )
-    .orderBy(leaveRequests.startDate, leaveRequests.id);
-  return lock ? query.for("update") : query;
+): Promise<ApprovedLeaveOnDate[]> {
+  const result = await tx.execute(
+    sql`SELECT leave_request_id, outlet_id, start_date::text AS start_date, end_date::text AS end_date, days::text AS days FROM app.approved_leaves_on(${tenantId}::uuid, ${employeeId}::uuid, ${businessDate}::date) ORDER BY start_date, leave_request_id`,
+  );
+  return result.rows.map((row) => ({
+    leaveRequestId: String(row.leave_request_id),
+    outletId: String(row.outlet_id),
+    startDate: String(row.start_date),
+    endDate: String(row.end_date),
+    days: String(row.days),
+  }));
 }
 
 /**
  * HR cancels the approved leave that covers a day the employee clocked in
  * (attendance review `cancel_leave`). Runs in the caller's transaction, so the
  * balance refund, the status change and the audit commit together with the
- * attendance log update. Unlike the requester's cancel, a leave that already
- * started may be cancelled: that is the point of the decision. Idempotent: only
- * rows still `approved` (locked) are touched, so the used days go back once.
- * Needs `hr.leave.approve` at the outlet of each leave. Returns the cancelled
- * request ids (empty when no approved leave covers the day any more).
+ * attendance log update; any 409/403 here rolls all of it back. Unlike the
+ * requester's cancel, a leave that already started may be cancelled: that is
+ * the point of the decision.
+ *
+ * Only a one-day leave (start = end = business date) is cancelled: the
+ * refund is the whole `days`, so a range would refund days the employee did
+ * not work (partial cancel is a founder decision, not built). Idempotent:
+ * only rows still `approved` (locked) are touched, so used days go back once.
+ * Needs `hr.leave.approve` at the outlet of each leave. A leave the caller's
+ * RLS cannot lock, or any approved leave still covering the day after the
+ * cancel, is a 409 (never a valid log with the leave still paid).
+ * Returns the cancelled request ids (empty when none covers the day any more).
  */
 export async function cancelApprovedLeaveOnDateByHr(
   tx: Tx,
@@ -1143,22 +1160,41 @@ export async function cancelApprovedLeaveOnDateByHr(
   input: { readonly employeeId: string; readonly businessDate: string },
   now: Date,
 ): Promise<string[]> {
-  const rows = await findApprovedLeaveOnDate(
+  const tenantId = context.tenant.tenantId;
+  const leaves = await findApprovedLeaveOnDate(
     tx,
-    context.tenant.tenantId,
+    tenantId,
     input.employeeId,
     input.businessDate,
-    true,
   );
+  if (
+    leaves.some(
+      (leave) =>
+        leave.startDate !== input.businessDate ||
+        leave.endDate !== input.businessDate,
+    )
+  )
+    throw conflict(
+      "ATTENDANCE_LEAVE_MULTI_DAY",
+      "Cuti mencakup lebih dari satu hari. Batal cuti hanya untuk cuti satu hari; pilih tetap cuti.",
+    );
   const cancelled: string[] = [];
-  for (const row of rows) {
+  for (const leave of leaves) {
     if (
       !access.snapshot.allows("hr.leave.approve", {
         type: "outlet",
-        id: row.outletId,
+        id: leave.outletId,
       })
     )
       throw forbidden();
+    const row = await findRequest(tx, tenantId, leave.leaveRequestId, true);
+    if (!row)
+      throw conflict(
+        "ATTENDANCE_LEAVE_NOT_REACHABLE",
+        "Cuti tidak dapat dibatalkan dari akses saat ini. Pilih tetap cuti.",
+      );
+    // Decided meanwhile by someone else: nothing to refund here.
+    if (row.status !== "approved") continue;
     await moveBalance(
       tx,
       context,
@@ -1188,6 +1224,19 @@ export async function cancelApprovedLeaveOnDateByHr(
     );
     cancelled.push(updated.id);
   }
+  // Nothing may still cover the day (another outlet's leave, or a row that
+  // was hidden): else the day would be paid as leave and as work.
+  const remaining = await findApprovedLeaveOnDate(
+    tx,
+    tenantId,
+    input.employeeId,
+    input.businessDate,
+  );
+  if (remaining.length > 0)
+    throw conflict(
+      "ATTENDANCE_LEAVE_STILL_APPROVED",
+      "Masih ada cuti disetujui pada hari itu. Pilih tetap cuti.",
+    );
   return cancelled;
 }
 

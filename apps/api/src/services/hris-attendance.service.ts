@@ -26,10 +26,8 @@ import {
   desc,
   eq,
   gt,
-  gte,
   inArray,
   lt,
-  lte,
   or,
   sql,
   type SQL,
@@ -89,7 +87,6 @@ import { storagePurposePolicy } from "@starter/shared/storage";
 import { db } from "../db/index.ts";
 import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { employees } from "../db/schema/hris.ts";
-import { leaveRequests } from "../db/schema/hris-leave.ts";
 import {
   attendanceDevices,
   attendanceLogs,
@@ -762,32 +759,6 @@ async function storeAttendanceLog(
       if (decision.validity === "valid") decision.validity = "flagged";
     }
   }
-  // legend-9y6ri (founder W8 Q21): an employee with APPROVED leave covering the
-  // outlet-local business day may still clock in. The log is flagged for HR
-  // review (never "valid" until HR decides keep or cancel the leave), so the
-  // day is not paid twice. The leave itself and its balance stay untouched.
-  if (input.type === "in" && decision.validity !== "rejected") {
-    const businessDay = localDateOf(effectiveAt, outlet.timezone);
-    const [leave] = await tx
-      .select({ id: leaveRequests.id })
-      .from(leaveRequests)
-      .where(
-        and(
-          eq(leaveRequests.tenantId, tenantId),
-          eq(leaveRequests.employeeId, input.employeeId),
-          eq(leaveRequests.status, "approved"),
-          lte(leaveRequests.startDate, businessDay),
-          gte(leaveRequests.endDate, businessDay),
-        ),
-      )
-      .limit(1);
-    if (leave) {
-      if (!decision.reasons.includes("leave_approved"))
-        decision.reasons.push("leave_approved");
-      if (decision.validity === "valid") decision.validity = "flagged";
-    }
-  }
-
   const shift = await resolveEmployeeShift(
     tx,
     tenantId,
@@ -796,6 +767,26 @@ async function storeAttendanceLog(
     outlet.timezone,
     input.edge === undefined ? undefined : outletId,
   );
+  // legend-9y6ri (founder W8 Q21): an employee with APPROVED leave covering the
+  // business day may still clock in. The log is flagged for HR review (never
+  // "valid" until HR decides keep or cancel the leave), so the day is not paid
+  // twice. The leave itself and its balance stay untouched. The day is the
+  // shift's business date, the same date the review action reads back from
+  // `row.businessDate`. Leave rows are outlet-owned (home outlet of the
+  // employee), so the lookup goes through app.approved_leaves_on: it ignores
+  // the caller's outlet scope but stays inside the tenant.
+  if (input.type === "in" && decision.validity !== "rejected") {
+    const businessDay =
+      shift?.businessDate ?? localDateOf(effectiveAt, outlet.timezone);
+    const leaves = await tx.execute<{ leave_request_id: string }>(
+      sql`SELECT leave_request_id FROM app.approved_leaves_on(${tenantId}::uuid, ${input.employeeId}::uuid, ${businessDay}::date) LIMIT 1`,
+    );
+    if (leaves.rows.length > 0) {
+      if (!decision.reasons.includes("leave_approved"))
+        decision.reasons.push("leave_approved");
+      if (decision.validity === "valid") decision.validity = "flagged";
+    }
+  }
   const counted =
     shift !== null &&
     decision.validity !== "rejected" &&

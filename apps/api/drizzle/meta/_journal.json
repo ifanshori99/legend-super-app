@@ -1632,6 +1632,13 @@
       "when": 1794327000000,
       "tag": "0246_payslip_pins",
       "breakpoints": true
+    },
+    {
+      "idx": 276,
+      "version": "7",
+      "when": 1794328000000,
+      "tag": "0276_approved_leaves_on",
+      "breakpoints": true
     }
   ]
 }

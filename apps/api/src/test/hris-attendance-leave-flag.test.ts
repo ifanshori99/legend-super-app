@@ -738,12 +738,13 @@ describe("[F25] HR decides a leave-flagged clock-in", () => {
 
   it("[F25] cancel_leave is idempotent: same key replays, a new key never refunds twice", async () => {
     const s = await newScenario("f3");
-    // Two approved days so a double refund would show as used = -1 or 0 instead of 1.
+    // One approved day (cancel_leave only works on a single-day leave) plus an
+    // unrelated one: a double refund would show as used = 0 instead of 1.
     const leaveId = await s.seedLeave({
       status: "approved",
       startOffsetDays: 0,
-      endOffsetDays: 1,
-      days: 2,
+      endOffsetDays: 0,
+      days: 1,
     });
     // A second, unrelated approved day that must stay used.
     await s.seedLeave({
@@ -753,7 +754,7 @@ describe("[F25] HR decides a leave-flagged clock-in", () => {
       days: 1,
     });
     const log = await clockIn(s);
-    expect(await balance(s)).toMatchObject({ used: "3.0000" });
+    expect(await balance(s)).toMatchObject({ used: "2.0000" });
 
     const decisionKey = key();
     const first = await review(log.id, {

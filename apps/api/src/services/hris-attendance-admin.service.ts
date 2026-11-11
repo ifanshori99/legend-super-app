@@ -609,7 +609,12 @@ export async function decideAttendanceReview(
     // Deciding a leave clash is HR's call: attendance management, and for
     // cancel_leave also the leave approval right at the leave's outlet.
     if (body.action === "keep_leave" || body.action === "cancel_leave") {
-      if (!access.permissionsAt(row.outletId).includes("hr.attendance.manage"))
+      if (
+        !access.snapshot.allows("hr.attendance.manage", {
+          type: "outlet",
+          id: row.outletId,
+        })
+      )
         throw forbidden();
       if (
         body.action === "cancel_leave" &&
@@ -629,6 +634,7 @@ export async function decideAttendanceReview(
     // Leave-flagged log (founder W8 Q21): HR picks which side is paid.
     let validity: LogRow["validity"];
     let reviewStatus: LogRow["reviewStatus"];
+    let cancelledLeaveIds: string[] = [];
     if (body.action === "keep_leave" || body.action === "cancel_leave") {
       if (
         row.validity !== "flagged" ||
@@ -647,7 +653,6 @@ export async function decideAttendanceReview(
           context.tenant.tenantId,
           row.employeeId,
           row.businessDate,
-          true,
         );
         if (leaves.length === 0)
           throw conflict(
@@ -659,7 +664,7 @@ export async function decideAttendanceReview(
         reviewStatus = "rejected";
       } else {
         // Refund, status change and its audit row share this transaction.
-        await cancelApprovedLeaveOnDateByHr(
+        cancelledLeaveIds = await cancelApprovedLeaveOnDateByHr(
           tx,
           context,
           access,
@@ -724,11 +729,15 @@ export async function decideAttendanceReview(
           action: `attendance_log.review_${body.action}`,
           objectType: LOG_OBJECT_TYPE,
           objectId: row.id,
-          after: { fields: ["validity", "reviewStatus"], status: validity },
+          after: {
+            fields: ["validity", "reviewStatus"],
+            status: validity,
+            ...(cancelledLeaveIds.length > 0 ? { cancelledLeaveIds } : {}),
+          },
         }),
         reason: body.note ?? null,
       },
-      HRIS_AUDIT_SAFE_FIELDS,
+      [...HRIS_AUDIT_SAFE_FIELDS, "cancelledLeaveIds"],
     );
     return {
       data: await toReviewItem(tx, context, access, updated, signPhoto, now),
