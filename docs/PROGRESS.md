@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-kmndq UI login WhatsApp pelanggan: kartu konfirmasi nomor tersamar (ui-engineer, cabang `ws/kmndq-wa-login-confirm` dari `ws/w8dfz1-wa-masked` b5956fdb, 2026-11-11)
+
+- Sudah: klien membuat tantangan dengan `requireConfirm: true`; saat poll mengembalikan `awaitingConfirmation` tampil kartu "Pesan diterima dari +62 812-****-7890. Masuk sebagai nomor ini?" dengan "Ya, masuk" (confirm) dan "Bukan saya" (cancel). Kondisi: menunggu, perlu konfirmasi, berhasil, dibatalkan, kedaluwarsa, gagal jaringan.
+- Keputusan: API asli mengirim `status: "completed"` + `session: null` + `awaitingConfirmation` saat menunggu konfirmasi, jadi `loginChallengeOutcome` memeriksa awaiting sebelum cabang completed; mock disamakan dengan API (confirm idempoten, ditolak sebelum pesan masuk, cancel menerima completed-awaiting).
+- Copy batal: "Masuk dibatalkan" + "Minta kode baru, lalu kirim pesannya dari nomor WhatsApp-mu sendiri." (nada "kamu", bukan "Anda").
+- Bukti: `tests/legend-kmndq-wa-confirm.test.mjs`, `e2e/legend-kmndq.mock.spec.ts` (12), axe `scripts/ui-check-kmndq/` (13), screenshot `docs/qa/kmndq/`.
+- Temuan di luar scope: `/masuk` melebar 361px di 320px sejak sebelum alur WA (kartu legend-rxida).
+- Berikut: gerbang UI founder, lalu legend-lnbtp.
+
 ## legend-3sy9b versi porsi saham lewat matriks approval (engineer, cabang `ws/3sy9b-share-alloc-approval` dari `ws/8s992-profit-rules` 54b76963, 2026-11-10)
 
 - Sudah: submit versi porsi saham membuka chain `shareholder_version` (source `profit_share`, object `share_allocation_version`, objectId = kolom baru `share_allocation_versions.id`). Decide approve saat chain terbuka 409 `APPROVAL_PENDING`; tanpa chain (versi lama) cek ulang matriks lalu buka chain dan 409. Reject menutup chain dulu; chain yang sudah approved tidak bisa di-reject (`INVALID_TRANSITION`); chain yang sudah berakhir rejected/expired dicatat sesuai hasilnya. Consumer `approval.resolved` menyelesaikan versi (approved oleh approver terakhir, rejected, atau cancelled saat chain expired/cancelled; tanggal berlaku mundur ditolak dengan catatan `approval refused: <kode>`). Kebijakan tidak ada: 409 `APPROVAL_POLICY_MISSING` (fail closed).
