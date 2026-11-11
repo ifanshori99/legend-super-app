@@ -52,6 +52,8 @@ import {
   sessionParamsSchema,
   setStaffPinSchema,
   staffPinParamsSchema,
+  unlinkWhatsAppIdentityBodySchema,
+  unlinkWhatsAppIdentityParamsSchema,
   verifyStaffPinSchema,
 } from "./inputs.ts";
 import {
@@ -65,6 +67,7 @@ import {
   // legend-k2l
   magicLinkVerifiedSchema,
   magicLinkVerifyBodySchema,
+  mfaChallengeSchema,
   mfaEnrollmentSchema,
   mfaFactorSchema,
   mfaRecoveryCodesSchema,
@@ -181,10 +184,33 @@ export const verifyMfaFactor = defineEndpoint({
   response: dataResponseSchema(mfaVerificationResultSchema),
 });
 
+/** Issues passkey authentication options; the challenge is single use and bound to this session. */
+export const requestMfaChallenge = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/mfa/factors/:factorId/challenge",
+  params: mfaFactorParamsSchema,
+  response: dataResponseSchema(mfaChallengeSchema),
+});
+
 export const deleteMfaFactor = defineEndpoint({
   method: "DELETE",
   path: "/api/auth/mfa/factors/:factorId",
   params: mfaFactorParamsSchema,
+});
+
+/**
+ * Staff unlink a customer's WhatsApp number (legend-7wzy). Needs
+ * `crm.customer.identity.unlink` on the outlet in the path, a fresh MFA and a
+ * `reason` in the body; 404 when the identity is not a customer's of the
+ * caller's tenant. It clears only this tenant's customer profile link (the
+ * global login identity stays); one `identity.unlinked` audit row in the same
+ * transaction, never carrying the number.
+ */
+export const unlinkWhatsAppIdentity = defineEndpoint({
+  method: "DELETE",
+  path: "/api/outlets/:outletId/customers/:userId/identities/:identityId",
+  params: unlinkWhatsAppIdentityParamsSchema,
+  body: unlinkWhatsAppIdentityBodySchema,
 });
 
 /** Remaining recovery codes; never the codes themselves. */

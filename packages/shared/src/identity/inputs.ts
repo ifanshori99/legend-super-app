@@ -23,6 +23,7 @@ import {
   loginChallengeIdSchema,
   mfaFactorIdSchema,
   sessionIdSchema,
+  userIdentityIdSchema,
 } from "./ids.ts";
 import {
   approvalRequestStatusSchema,
@@ -86,11 +87,93 @@ export const mfaFactorParamsSchema = z.strictObject({
   factorId: mfaFactorIdSchema,
 });
 
-export const mfaVerifySchema = clientInputSchema({
-  factorId: mfaFactorIdSchema,
-  /** Six-digit TOTP code (or the passkey assertion handle from the client). */
-  code: z.string().regex(/^\d{6}$/, "Expected a 6-digit code"),
+/**
+ * Path of the audited WhatsApp unlink (legend-7wzy). The outlet is the one the
+ * acting staff works in (authorization), the customer is the account that
+ * holds the identity; the tenant always comes from the Host (TEN-02).
+ */
+export const unlinkWhatsAppIdentityParamsSchema = z.strictObject({
+  outletId: outletIdSchema,
+  userId: userIdSchema,
+  identityId: userIdentityIdSchema,
 });
+
+/**
+ * Body of the audited WhatsApp unlink (legend-7wzy): why the staff member
+ * clears the link. Stored on the audit row.
+ */
+export const unlinkWhatsAppIdentityBodySchema = z.strictObject({
+  reason: z.string().trim().min(1).max(500),
+});
+export type UnlinkWhatsAppIdentityBody = z.infer<
+  typeof unlinkWhatsAppIdentityBodySchema
+>;
+
+const base64UrlSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]+$/, "Expected base64url")
+  .max(16384);
+const credentialIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]+$/, "Expected base64url")
+  .max(1024);
+
+/**
+ * WebAuthn JSON responses (W3C WebAuthn L3 `toJSON()` shapes, the same fields
+ * @simplewebauthn/server reads). The envelope is strict; `response` stays loose
+ * because newer browsers add fields (publicKey, publicKeyAlgorithm, ...) the
+ * server does not read.
+ */
+const passkeyEnvelope = {
+  id: credentialIdSchema,
+  rawId: credentialIdSchema,
+  type: z.literal("public-key"),
+  authenticatorAttachment: z.string().max(32).nullish(),
+  clientExtensionResults: z.record(z.string(), z.unknown()),
+};
+
+/** Passkey sign-in proof (`navigator.credentials.get()` result as JSON). */
+export const passkeyAssertionSchema = z.strictObject({
+  ...passkeyEnvelope,
+  response: z.looseObject({
+    clientDataJSON: base64UrlSchema,
+    authenticatorData: base64UrlSchema,
+    signature: base64UrlSchema,
+    userHandle: base64UrlSchema.nullish(),
+  }),
+});
+export type PasskeyAssertion = z.infer<typeof passkeyAssertionSchema>;
+
+/** Passkey creation result (`navigator.credentials.create()` as JSON). */
+export const passkeyAttestationSchema = z.strictObject({
+  ...passkeyEnvelope,
+  response: z.looseObject({
+    clientDataJSON: base64UrlSchema,
+    attestationObject: base64UrlSchema,
+    transports: z.array(z.string().max(32)).max(10).optional(),
+  }),
+});
+export type PasskeyAttestation = z.infer<typeof passkeyAttestationSchema>;
+
+/**
+ * One of: a six-digit TOTP code, a passkey assertion (verifies the session),
+ * or a passkey attestation (finishes passkey enrollment). Exactly one; each
+ * shape is strict, so mixing them or adding a tenant key fails.
+ */
+export const mfaVerifySchema = z.union([
+  clientInputSchema({
+    factorId: mfaFactorIdSchema,
+    code: z.string().regex(/^\d{6}$/, "Expected a 6-digit code"),
+  }),
+  clientInputSchema({
+    factorId: mfaFactorIdSchema,
+    assertion: passkeyAssertionSchema,
+  }),
+  clientInputSchema({
+    factorId: mfaFactorIdSchema,
+    attestation: passkeyAttestationSchema,
+  }),
+]);
 export type MfaVerifyInput = z.infer<typeof mfaVerifySchema>;
 
 /** Recovery code as typed by a person: `XXXXX-XXXXX`, dash optional, any case. */

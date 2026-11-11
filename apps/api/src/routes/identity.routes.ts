@@ -33,6 +33,11 @@ import {
   verifyMfaFactor,
 } from "../services/identity-mfa.service";
 import {
+  finishPasskeyEnrollment,
+  issuePasskeyChallenge,
+  verifyPasskeyAssertion,
+} from "../services/identity-passkey.service";
+import {
   extendCurrentSession,
   listOwnSessions,
   loadSessionRow,
@@ -43,6 +48,12 @@ import {
 const MFA_ISSUER = "Legend";
 
 export const identityAuthRouter = Router();
+
+/** When this session last verified a second factor, or null (AUTH-05 step-up). */
+async function sessionMfaVerifiedAt(sessionId: string): Promise<Date | null> {
+  const row = await loadSessionRow(sessionId);
+  return row?.mfaVerifiedAt ?? null;
+}
 
 /** True once this session verified a second factor (AUTH-05 step-up). */
 async function sessionMfaVerified(sessionId: string): Promise<boolean> {
@@ -67,7 +78,8 @@ identityAuthRouter.post(
       accountName: auth.user.email,
       type: input.type,
       issuer: MFA_ISSUER,
-      sessionMfaVerified: await sessionMfaVerified(auth.session.id),
+      sessionMfaVerifiedAt: await sessionMfaVerifiedAt(auth.session.id),
+      sessionId: auth.session.id,
     });
     res.status(201).json({ data: enrollment });
   },
@@ -81,13 +93,40 @@ identityAuthRouter.post(
   async (req, res) => {
     const input = mfaVerifySchema.parse(req.body);
     const auth = getAuth(req);
-    const result = await verifyMfaFactor({
+    const base = {
       userId: auth.user.id,
       sessionId: auth.session.id,
       factorId: input.factorId,
-      code: input.code,
-    });
+    };
+    // Exactly one of code | assertion | attestation (the schema guarantees it).
+    const result =
+      "assertion" in input
+        ? await verifyPasskeyAssertion({ ...base, assertion: input.assertion })
+        : "attestation" in input
+          ? await finishPasskeyEnrollment({
+              ...base,
+              attestation: input.attestation,
+            })
+          : await verifyMfaFactor({ ...base, code: input.code });
     res.json({ data: result });
+  },
+);
+
+// Passkey sign-in step 1: authentication options with a single-use challenge
+// bound to this session. Step 2 is POST /mfa/verify with { factorId, assertion }.
+identityAuthRouter.post(
+  "/mfa/factors/:factorId/challenge",
+  requireAuth,
+  requireTrustedOrigin,
+  async (req, res) => {
+    const { factorId } = mfaFactorParamsSchema.parse(req.params);
+    const auth = getAuth(req);
+    const challenge = await issuePasskeyChallenge({
+      userId: auth.user.id,
+      sessionId: auth.session.id,
+      factorId,
+    });
+    res.json({ data: challenge });
   },
 );
 

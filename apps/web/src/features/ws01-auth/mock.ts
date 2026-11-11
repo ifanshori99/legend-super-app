@@ -259,7 +259,7 @@ registerMock(enrollMfaFactor, ({ body }) => {
 });
 
 registerMock(verifyMfaFactor, ({ body }) => {
-  if (body.code === "000000")
+  if ("code" in body && body.code === "000000")
     throw new ApiError(
       400,
       "VALIDATION_ERROR",

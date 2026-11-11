@@ -383,6 +383,14 @@ export const passkeyEnrollmentSchema = z.strictObject({
 });
 export type PasskeyEnrollment = z.infer<typeof passkeyEnrollmentSchema>;
 
+/** Authentication options for an enrolled passkey (one challenge per session). */
+export const mfaChallengeSchema = z.strictObject({
+  factorId: mfaFactorIdSchema,
+  /** WebAuthn PublicKeyCredentialRequestOptions, JSON-safe. */
+  publicKeyOptions: z.json(),
+});
+export type MfaChallenge = z.infer<typeof mfaChallengeSchema>;
+
 export const mfaEnrollmentSchema = z.discriminatedUnion("type", [
   totpEnrollmentSchema,
   passkeyEnrollmentSchema,
