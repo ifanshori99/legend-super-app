@@ -20,9 +20,10 @@
 // - "Finished" challenge = `completed`, `expired` or `cancelled` (design: selesai,
 //   kedaluwarsa, atau batal). A `pending` challenge is always kept, however old.
 // - A message younger than 90 days may point at a challenge older than 30 days
-//   (`wa_inbound_messages.challenge_id` FK). The job must not crash: the message
-//   stays and the run still returns counts. Whether the challenge is removed or
-//   kept is left open and not asserted.
+//   (`wa_inbound_messages.challenge_id` FK). The challenge is still deleted at
+//   30 days: the job sets the message's `challenge_id` to NULL first (the message
+//   stays, so provider-message-id dedup keeps working) and the run never fails on
+//   the FK.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -116,6 +117,14 @@ async function existing(table: string, ids: string[]): Promise<number> {
     [ids],
   );
   return result.rows[0].count;
+}
+
+async function linkedChallenge(messageId: string): Promise<string | null> {
+  const result = await owner.query(
+    "SELECT challenge_id FROM public.wa_inbound_messages WHERE id = $1",
+    [messageId],
+  );
+  return result.rows[0].challenge_id;
 }
 
 const messagesLeft = (ids: string[]) => existing("wa_inbound_messages", ids);
@@ -252,8 +261,16 @@ describe("w8dfz.2 WhatsApp inbound retention", () => {
     const tenantB = await newTenant();
     const aMessages = await seedMessages(tenantA, 2, MESSAGE_PAST);
     const bMessages = await seedMessages(tenantB, 2, MESSAGE_PAST);
-    const aChallenge = await seedChallenge(tenantA, "completed", CHALLENGE_PAST);
-    const bChallenge = await seedChallenge(tenantB, "completed", CHALLENGE_PAST);
+    const aChallenge = await seedChallenge(
+      tenantA,
+      "completed",
+      CHALLENGE_PAST,
+    );
+    const bChallenge = await seedChallenge(
+      tenantB,
+      "completed",
+      CHALLENGE_PAST,
+    );
 
     const result = await runWaInboundRetention({ tenantId: tenantA });
 
@@ -264,7 +281,7 @@ describe("w8dfz.2 WhatsApp inbound retention", () => {
     expect(await challengesLeft([bChallenge])).toBe(1);
   });
 
-  it("w8dfz.2 a recent message that points at an old finished challenge does not break the run", async () => {
+  it("w8dfz.2 a recent message that points at an old finished challenge: the challenge goes, the message stays with a NULL link", async () => {
     const tenant = await newTenant();
     const challenge = await seedChallenge(tenant, "completed", CHALLENGE_PAST);
     const fresh = await seedMessages(tenant, 1, MESSAGE_INSIDE, challenge);
@@ -272,8 +289,76 @@ describe("w8dfz.2 WhatsApp inbound retention", () => {
 
     const result = await runWaInboundRetention({ tenantId: tenant });
 
-    expect(result.messages).toBe(1);
+    expect(result).toEqual({ messages: 1, challenges: 1 });
     expect(await messagesLeft(old)).toBe(0);
     expect(await messagesLeft(fresh)).toBe(1);
+    expect(await challengesLeft([challenge])).toBe(0);
+    expect(await linkedChallenge(fresh[0])).toBeNull();
+  });
+
+  it("w8dfz.2 a pending challenge still pointed at by a recent message is not touched while live", async () => {
+    const tenant = await newTenant();
+    const live = await seedChallenge(tenant, "pending", "1 day", "1 hour");
+    const fresh = await seedMessages(tenant, 1, MESSAGE_INSIDE, live);
+
+    const result = await runWaInboundRetention({ tenantId: tenant });
+
+    expect(result.challenges).toBe(0);
+    expect(await challengesLeft([live])).toBe(1);
+    expect(await linkedChallenge(fresh[0])).toBe(live);
+  });
+
+  it("w8dfz.2 a tenant-scoped run leaves tenant B's message link and challenge untouched", async () => {
+    const tenantA = await newTenant();
+    const tenantB = await newTenant();
+    const aChallenge = await seedChallenge(
+      tenantA,
+      "completed",
+      CHALLENGE_PAST,
+    );
+    const bChallenge = await seedChallenge(
+      tenantB,
+      "completed",
+      CHALLENGE_PAST,
+    );
+    const aFresh = await seedMessages(tenantA, 1, MESSAGE_INSIDE, aChallenge);
+    const bFresh = await seedMessages(tenantB, 1, MESSAGE_INSIDE, bChallenge);
+
+    const result = await runWaInboundRetention({ tenantId: tenantA });
+
+    expect(result).toEqual({ messages: 0, challenges: 1 });
+    expect(await challengesLeft([aChallenge])).toBe(0);
+    expect(await linkedChallenge(aFresh[0])).toBeNull();
+    expect(await challengesLeft([bChallenge])).toBe(1);
+    expect(await linkedChallenge(bFresh[0])).toBe(bChallenge);
+  });
+
+  it("w8dfz.2 unlinks several messages across batches and a second run is a no-op", async () => {
+    const tenant = await newTenant();
+    const challenges = [
+      await seedChallenge(tenant, "completed", CHALLENGE_PAST),
+      await seedChallenge(tenant, "expired", CHALLENGE_PAST),
+      await seedChallenge(tenant, "cancelled", CHALLENGE_PAST),
+    ];
+    const fresh = [
+      ...(await seedMessages(tenant, 2, MESSAGE_INSIDE, challenges[0])),
+      ...(await seedMessages(tenant, 1, MESSAGE_INSIDE, challenges[1])),
+      ...(await seedMessages(tenant, 1, MESSAGE_INSIDE, challenges[2])),
+    ];
+
+    const first = await runWaInboundRetention({
+      tenantId: tenant,
+      batchSize: 2,
+    });
+    const second = await runWaInboundRetention({
+      tenantId: tenant,
+      batchSize: 2,
+    });
+
+    expect(first).toEqual({ messages: 0, challenges: 3 });
+    expect(second).toEqual({ messages: 0, challenges: 0 });
+    expect(await challengesLeft(challenges)).toBe(0);
+    expect(await messagesLeft(fresh)).toBe(4);
+    for (const id of fresh) expect(await linkedChallenge(id)).toBeNull();
   });
 });

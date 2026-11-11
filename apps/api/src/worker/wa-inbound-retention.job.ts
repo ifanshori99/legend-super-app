@@ -12,11 +12,14 @@
 // WhatsApp audit rows are NOT purged here: audit-retention.job.ts already
 // removes every `audit_2y` row at 2 years, so a second purge would duplicate it.
 //
-// Rows go in batches (one DELETE per batch, looping until a short batch), so a
-// large backlog never holds one long lock. `wa_inbound_messages.challenge_id`
-// has a plain FK to `login_challenges`: messages are deleted first, and a
-// challenge that a younger message still points at is kept for the next run, so
-// the run never fails on that FK. Idempotent: a second run finds nothing.
+// Rows go in batches (looping until a short batch), so a large backlog never
+// holds one long lock. `wa_inbound_messages.challenge_id` has a plain FK to
+// `login_challenges` (the only FK that points at it). Messages are deleted first;
+// then, per batch and in one transaction, the batch's challenges are locked, the
+// remaining messages that still point at them (younger than 90 days) get
+// `challenge_id = NULL`, and the challenges are deleted. So a challenge never
+// outlives 30 days, the message stays (provider-message-id dedup is kept), and
+// the run never fails on the FK. Idempotent: a second run finds nothing.
 
 import { sql } from "drizzle-orm";
 import { db } from "../db";
@@ -73,31 +76,41 @@ export async function runWaInboundRetention(
     return Number(result.rows[0]?.deleted ?? 0);
   });
 
-  const challenges = await deleteInBatches(batchSize, async () => {
-    const result = await db.execute(sql`
-      WITH deleted AS (
-        DELETE FROM login_challenges
-        WHERE id IN (
-          SELECT c.id FROM login_challenges c
-          WHERE (
-              (c.status IN ('completed', 'expired', 'cancelled')
-                AND c.created_at < now() - make_interval(days => ${WA_INBOUND_CHALLENGE_RETENTION_DAYS}))
-              OR (c.status = 'pending'
-                AND c.expires_at < now() - make_interval(days => ${WA_INBOUND_CHALLENGE_RETENTION_DAYS}))
-            )
-            AND (${tenantId}::uuid IS NULL OR c.tenant_id = ${tenantId}::uuid)
-            AND NOT EXISTS (
-              SELECT 1 FROM wa_inbound_messages m WHERE m.challenge_id = c.id
-            )
-          ORDER BY c.created_at
-          LIMIT ${batchSize}
-          FOR UPDATE OF c SKIP LOCKED
+  // One transaction per batch: lock the doomed challenges, detach the messages
+  // that still point at them (the messages stay, so provider-message-id dedup
+  // keeps working), then delete the challenges. Separate statements, so the FK
+  // check sees the UPDATE.
+  const challenges = await deleteInBatches(batchSize, () =>
+    db.transaction(async (tx) => {
+      const picked = await tx.execute(sql`
+        SELECT c.id FROM login_challenges c
+        WHERE (
+            (c.status IN ('completed', 'expired', 'cancelled')
+              AND c.created_at < now() - make_interval(days => ${WA_INBOUND_CHALLENGE_RETENTION_DAYS}))
+            OR (c.status = 'pending'
+              AND c.expires_at < now() - make_interval(days => ${WA_INBOUND_CHALLENGE_RETENTION_DAYS}))
+          )
+          AND (${tenantId}::uuid IS NULL OR c.tenant_id = ${tenantId}::uuid)
+        ORDER BY c.created_at
+        LIMIT ${batchSize}
+        FOR UPDATE OF c SKIP LOCKED`);
+      const ids = picked.rows.map((row) => String(row.id));
+      if (ids.length === 0) return 0;
+      const idList = sql.join(
+        ids.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      );
+      await tx.execute(sql`
+        UPDATE wa_inbound_messages SET challenge_id = NULL
+        WHERE challenge_id IN (${idList})`);
+      const deleted = await tx.execute(sql`
+        WITH deleted AS (
+          DELETE FROM login_challenges WHERE id IN (${idList}) RETURNING 1
         )
-        RETURNING 1
-      )
-      SELECT count(*)::int AS deleted FROM deleted`);
-    return Number(result.rows[0]?.deleted ?? 0);
-  });
+        SELECT count(*)::int AS deleted FROM deleted`);
+      return Number(deleted.rows[0]?.deleted ?? 0);
+    }),
+  );
 
   return { messages, challenges };
 }
@@ -130,9 +143,14 @@ export async function registerWaInboundRetentionJob(options: {
     policy: "exclusive",
     expireInSeconds: WA_INBOUND_RETENTION_EXPIRE_SECONDS,
   });
-  await boss.schedule(WA_INBOUND_RETENTION_QUEUE, WA_INBOUND_RETENTION_CRON, null, {
-    tz: WA_INBOUND_RETENTION_TZ,
-  });
+  await boss.schedule(
+    WA_INBOUND_RETENTION_QUEUE,
+    WA_INBOUND_RETENTION_CRON,
+    null,
+    {
+      tz: WA_INBOUND_RETENTION_TZ,
+    },
+  );
   await boss.work(WA_INBOUND_RETENTION_QUEUE, async () => {
     try {
       const result = await runWaInboundRetention();
