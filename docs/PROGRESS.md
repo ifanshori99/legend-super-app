@@ -1216,3 +1216,12 @@ Langkah berikut CTO baru:
 - 09:49 G1zia vqvuj 097a0aee (baa 8/8) -> batch48f; resolve.
 - 09:50 Mulai bundel platform (463: dheu, ca4l, 8en8) akun #1. Bundel payroll-pajak (464: 6pha, 2upj, in4m) menunggu slot.
 - 09:58 G1ttt 6c6 WIP 3d818ebc (374 lulus, 8 PAY-03 interferensi + afterAll FK). CTO pilih (a): perbaiki fixture, db:generate, lint, architect putaran 2. Kontrak DOIT recurring = asumsi, verifikasi sandbox via legend-saov.
+
+## Serah terima CTO 11 Nov 10:00 (sesi lama compact 2x)
+- Thread jalan (Claude 8/8): G4eyx 24318+d0ipm+456 sync_txid (kartu persetujuan menunggu founder), G2mm1 merge batch48f (kartu persetujuan menunggu founder; vqvuj mungkin masih antre), G26w0 WFC bz9h lanjutan, G1ttt 6c6 DOIT recurring (opsi a: fixture afterAll, db:generate 0285, lint, architect xhigh r2), G06d9 kai up-sync, G1bpq bundel 463, G0muc gate cakupan dd0g/mrez, G2i7n refund (461 Codex fixes, hhm5m).
+- Selesai, siap batch48g: 2qq 1258dec7, 9y6ri+5nt2z 3a3750ed (tabrakan migrasi 0278, renumber), ptd daeb986f bila tidak di 48f, lnbtp/ongp7/vqvuj bila tidak di 48f. Tahan: 9h2oj+ur82k (gerbang W12), 97p+24318 (tunggu G4eyx), refund (tunggu G2i7n), 6c6, WFC.
+- Antre: brief 464-6pha (6pha, 2upj, in4m) mulai di akun #1 saat slot kosong, migrasi 0288. Nomor dipakai: 0284 24318, 0285 6c6, 0286 kai, 0287 463.
+- Second-opinion Codex belum: WFC, DOIT recurring, platform 463, payroll 464, kai (mulai saat cabang area selesai; akun Codex #3/#4/#5, bukan #2).
+- Founder menunggu jawab: W12 (layar lupa PIN), W8 (mockup tinjauan cuti HR), W18 (harga WFC). Kontrak DOIT recurring = asumsi sampai sandbox DOIT (legend-saov) ada: beri tahu founder, rekomendasi tunggu sandbox sebelum rilis.
+- Akun: Claude #1 default (7d 36%), #3 5h hampir habis reset 10:09, #2 hindari s/d 13 Nov 05:59.
+- Cron yang harus dibuat ulang: retro 3 jam `43 1,4,7,10,13,16,19,22 * * *` (retro-brief.md), push `git push origin --all` tanpa --force (lapor founder hanya bila gagal).
