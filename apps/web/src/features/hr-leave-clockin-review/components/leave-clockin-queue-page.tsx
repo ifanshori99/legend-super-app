@@ -6,7 +6,6 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import {
   CalendarOff,
-  Clock,
   PencilLine,
   RefreshCw,
   WifiOff,
@@ -95,7 +94,7 @@ function LeaveClockinQueueContent() {
     <div className="grid min-w-0 gap-5">
       <div className="grid min-w-0 gap-1">
         <h2 className="type-title">{t("leaveClockinReview.queue.title")}</h2>
-        <p className="text-sm leading-5 text-muted-foreground">
+        <p className="text-muted-foreground">
           {t("leaveClockinReview.queue.description")}
         </p>
       </div>
@@ -117,11 +116,17 @@ function LeaveClockinQueueContent() {
       <DataTableShell
         title={t("leaveClockinReview.queue.sectionTitle")}
         state={state}
-        search={{
-          value: search,
-          onChange: setSearch,
-          label: t("leaveClockinReview.queue.searchLabel"),
-        }}
+        bare
+        search={
+          failed
+            ? undefined
+            : {
+                value: search,
+                onChange: setSearch,
+                label: t("leaveClockinReview.queue.searchLabel"),
+                placeholder: t("leaveClockinReview.queue.searchPlaceholder"),
+              }
+        }
         empty={{
           title: t("leaveClockinReview.empty.title"),
           description: t("leaveClockinReview.empty.description"),
@@ -143,7 +148,7 @@ function LeaveClockinQueueContent() {
               <QueueTable cases={filtered} unknownEmployee={unknownEmployee} />
             </div>
             <ul
-              className="grid gap-3 p-card md:hidden"
+              className="grid divide-y md:hidden"
               aria-label={t("leaveClockinReview.queue.tableLabel")}
             >
               {filtered.map((item) => (
@@ -242,13 +247,13 @@ function QueueTable({
                 <div className="grid justify-items-start gap-1.5">
                   <KindPill kind={item.kind} />
                   {item.kind === "re_review" && (
-                    <span className="max-w-56 text-xs leading-4 text-warning">
+                    <span className="max-w-56 text-sm leading-5 text-warning">
                       {t("leaveClockinReview.reReview.note")}
                     </span>
                   )}
                 </div>
               </TableCell>
-              <TableCell className="min-w-40 font-medium">{employee}</TableCell>
+              <TableCell className="font-medium">{employee}</TableCell>
               <TableCell className="tabular whitespace-nowrap">
                 {formatBusinessDate(item.businessDate)}
               </TableCell>
@@ -256,10 +261,10 @@ function QueueTable({
               <TableCell className="tabular whitespace-nowrap">
                 {formatClockMinutes(item.clockInAt, item.timeZone)}
               </TableCell>
-              <TableCell className="whitespace-nowrap">
+              <TableCell>
                 <ClockOut item={item} />
               </TableCell>
-              <TableCell>
+              <TableCell className="w-px pr-card whitespace-nowrap">
                 <ReviewLink item={item} employee={employee} />
               </TableCell>
             </TableRow>
@@ -280,54 +285,38 @@ function QueueCard({
   const t = useT();
   const employee = item.employeeName ?? unknownEmployee;
   return (
-    <article className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
+    <article className="grid gap-3 p-card">
       <div className="grid justify-items-start gap-1.5">
         <KindPill kind={item.kind} />
         {item.kind === "re_review" && (
-          <p className="text-sm leading-5 text-warning">
+          <p className="text-warning">
             {t("leaveClockinReview.reReview.note")}
           </p>
         )}
       </div>
       <div className="grid gap-1">
         <h3 className="text-base leading-6 font-semibold">{employee}</h3>
-        <p className="tabular text-sm leading-5">
-          {formatBusinessDate(item.businessDate)}
-        </p>
+        <p className="tabular">{formatBusinessDate(item.businessDate)}</p>
         {item.leave?.typeName && (
-          <p className="text-sm leading-5 text-muted-foreground">
-            {item.leave.typeName}
-          </p>
+          <p className="text-muted-foreground">{item.leave.typeName}</p>
         )}
       </div>
-      <dl className="grid grid-cols-2 gap-3 border-t pt-3 text-sm">
-        <div className="flex items-start gap-2">
-          <Clock
-            className="mt-0.5 size-icon text-muted-foreground"
-            aria-hidden="true"
-          />
-          <div className="grid gap-0.5">
-            <dt className="text-xs text-muted-foreground">
-              {t("leaveClockinReview.queue.clockInLabel")}
-            </dt>
-            <dd className="tabular font-semibold">
-              {formatClockMinutes(item.clockInAt, item.timeZone)}
-            </dd>
-          </div>
+      <dl className="grid grid-cols-2 gap-3 border-t pt-3">
+        <div className="grid gap-0.5">
+          <dt className="text-sm text-muted-foreground">
+            {t("leaveClockinReview.queue.clockInLabel")}
+          </dt>
+          <dd className="tabular font-semibold">
+            {formatClockMinutes(item.clockInAt, item.timeZone)}
+          </dd>
         </div>
-        <div className="flex items-start gap-2">
-          <Clock
-            className="mt-0.5 size-icon text-muted-foreground"
-            aria-hidden="true"
-          />
-          <div className="grid gap-0.5">
-            <dt className="text-xs text-muted-foreground">
-              {t("leaveClockinReview.queue.clockOutLabel")}
-            </dt>
-            <dd className="font-semibold">
-              <ClockOut item={item} />
-            </dd>
-          </div>
+        <div className="grid gap-0.5">
+          <dt className="text-sm text-muted-foreground">
+            {t("leaveClockinReview.queue.clockOutLabel")}
+          </dt>
+          <dd className="font-semibold">
+            <ClockOut item={item} />
+          </dd>
         </div>
       </dl>
       <ReviewLink item={item} employee={employee} className="min-h-11 w-full" />
