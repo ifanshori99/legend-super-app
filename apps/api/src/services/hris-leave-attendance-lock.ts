@@ -1,8 +1,6 @@
 import { sql } from "drizzle-orm";
 
-import type { Database } from "../db/index.ts";
-
-type Executor = Pick<Database, "execute">;
+import type { Tx } from "./hris-access.ts";
 
 /**
  * legend-x0avw (Codex P1): one advisory lock per tenant and employee that every
@@ -17,7 +15,7 @@ type Executor = Pick<Database, "execute">;
  * lock so the order stays acyclic.
  */
 export async function lockEmployeeLeaveAttendance(
-  tx: Executor,
+  tx: Tx,
   tenantId: string,
   employeeId: string,
 ): Promise<void> {
