@@ -744,6 +744,35 @@ export async function refundsOf(
   }));
 }
 
+export type RefundDetail = RefundRow & { requestedBy: string; reason: string };
+
+/** Same refunds as `refundsOf`, with who asked (`requested_by`) and the reason text. */
+export async function refundDetailsOf(
+  world: BreakfastWorld,
+  intentId: string,
+): Promise<RefundDetail[]> {
+  const { rows } = await floorOwner.query<{
+    id: string;
+    status: string;
+    amount: string;
+    requested_by: string;
+    reason: string;
+  }>(
+    `SELECT DISTINCT r.id, r.status, r.amount_idr::text AS amount, r.requested_by, r.reason
+       FROM payment_refunds r
+       LEFT JOIN payment_unallocated_funds f ON f.id = r.unallocated_fund_id
+      WHERE r.tenant_id = $1 AND (r.payment_intent_id = $2 OR f.payment_intent_id = $2)`,
+    [world.tenant.tenantId, intentId],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    status: row.status,
+    amount: Number(row.amount),
+    requestedBy: row.requested_by,
+    reason: row.reason,
+  }));
+}
+
 export const refundedSum = (rows: RefundRow[]) =>
   rows.reduce((sum, row) => sum + row.amount, 0);
 

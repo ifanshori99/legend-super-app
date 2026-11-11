@@ -20,6 +20,9 @@
 //   order; the other is refunded in full. The tests assert the invariant (one
 //   payer, the other fully refunded, nothing else) in both delivery orders.
 // - A different member cannot see or change someone else's order: 403 or 404.
+// - BRK-PAY-07 (brief sub-oa0qk-endsat.md): a breakfast fired at or after the
+//   access ticket's ends_at is cancelled with a full refund requested by
+//   'system:facility' (reason text without "QR"); the DB trigger agrees.
 // - Raw inserts into kitchen_tickets for an unpaid facility order fail with
 //   SQLSTATE 23514 and constraint kitchen_tickets_breakfast_paid.
 
@@ -52,6 +55,7 @@ import {
   payLink,
   placeOrder,
   placePaidOrder,
+  refundDetailsOf,
   refundedSum,
   refundsOf,
   owner,
@@ -122,6 +126,18 @@ async function orderItemUlids(orderId: string): Promise<string[]> {
     );
     return rows.map((row) => uuidToUlid(row.id));
   });
+}
+
+/**
+ * Breakfast refunds come from the facility, never from the QR channel: the
+ * requester is 'system:facility' and the reason text does not mention "QR".
+ */
+function expectFacilityRefunds(refunds: { requestedBy: string; reason: string }[]) {
+  expect(refunds.length).toBeGreaterThan(0);
+  for (const refund of refunds) {
+    expect(refund.requestedBy).toBe("system:facility");
+    expect(refund.reason).not.toMatch(/qr/i);
+  }
 }
 
 async function newTicket(options: { endsInMinutes?: number } = {}) {
@@ -435,6 +451,7 @@ describe("BRK-PAY-02 double payment never marks paid twice", () => {
       expect(refundedSum(extraRefunds)).toBe(order.totalIdr);
       // Guest paid 2x, the outlet keeps exactly one total.
       expect(2 * order.totalIdr - refundedSum(extraRefunds)).toBe(linked.paid);
+      expectFacilityRefunds(await refundDetailsOf(world, extra));
       expect(await kitchenTicketCount(world, order.id)).toBe(0);
 
       // Redelivering both events changes nothing.
@@ -465,6 +482,7 @@ describe("BRK-PAY-02 double payment never marks paid twice", () => {
     expect(linked.status).toBe("fired");
     expect(linked.paidIntentId).not.toBe(late.id);
     expect(refundedSum(await refundsOf(world, late.id))).toBe(order.totalIdr);
+    expectFacilityRefunds(await refundDetailsOf(world, late.id));
     expect(await kitchenTicketCount(world, order.id)).toBe(1);
   });
 
@@ -484,6 +502,7 @@ describe("BRK-PAY-02 double payment never marks paid twice", () => {
     expect(linked.status).toBe("cancelled");
     expect(linked.paidIntentId).toBeNull();
     expect(refundedSum(await refundsOf(world, intent.id))).toBe(order.totalIdr);
+    expectFacilityRefunds(await refundDetailsOf(world, intent.id));
     expect(await kitchenTicketCount(world, order.id)).toBe(0);
   });
 });
@@ -523,6 +542,7 @@ describe("BRK-PAY-03 cancel refunds at most what was paid", () => {
     const refunds = await refundsOf(world, intentId);
     expect(refundedSum(refunds)).toBeLessThanOrEqual(paid);
     expect(refundedSum(refunds)).toBe(first.body.data.refundIdr);
+    expectFacilityRefunds(await refundDetailsOf(world, intentId));
     const linked = await linkedOf(world, order.id);
     expect(linked.status).toBe("cancelled");
     expect(linked.refunded).toBeLessThanOrEqual(linked.paid);
@@ -786,5 +806,201 @@ describe("BRK-PAY-06 firing books the sale exactly once", () => {
 
     expect(await orderPaidEvents(unpaidOrder.id)).toHaveLength(0);
     expect(await orderPaidEvents(paidThenCancelled.id)).toHaveLength(0);
+  });
+});
+
+// ---- BRK-PAY-07: nothing is sent to the kitchen at or after ends_at -----------
+// Decision (brief sub-oa0qk-endsat.md): a breakfast fired on or after the access
+// ticket's ends_at is refused in the API and in the database trigger, even if the
+// worker was down. The order is cancelled and refunded in full, as for late money.
+
+/** The session already ended a minute ago (the cleaning window keeps its order). */
+async function endSession(ticketId: string) {
+  await updateTicket(
+    ticketId,
+    `ends_at = now() - interval '1 minute', cleaning_ends_at = now() + interval '9 minutes'`,
+  );
+}
+
+/** Refund requests for the order's paid intent, with requester and reason. */
+async function expectFullFacilityRefundOnce(intentId: string, paid: number) {
+  const refunds = await refundDetailsOf(world, intentId);
+  expect(refunds).toHaveLength(1);
+  expect(refundedSum(refunds)).toBe(paid);
+  expectFacilityRefunds(refunds);
+}
+
+/**
+ * Marks the linked row 'fired' with fired_at = ends_at + offset (SQL interval),
+ * as the owner. Paid fields stay as the payment left them.
+ */
+async function markFiredAt(orderId: string, offset: string) {
+  await asOwnerTenant(world.tenant.tenantId, (client) =>
+    client.query(
+      `UPDATE facility_linked_orders f
+          SET status = 'fired', fired_at = a.ends_at + $3::interval
+         FROM access_tickets a
+        WHERE f.tenant_id = $1 AND f.order_id = $2::uuid
+          AND a.tenant_id = f.tenant_id AND a.id = f.access_ticket_id`,
+      [world.tenant.tenantId, ulidToUuid(orderId), offset],
+    ),
+  );
+}
+
+/** Raw kitchen ticket insert as the owner; resolves to the ticket id or the pg error. */
+async function rawTicket(
+  orderId: string,
+): Promise<{ id: string; error: null } | { id: null; error: { code?: string; constraint?: string } }> {
+  const id = randomUUID();
+  try {
+    await asOwnerTenant(world.tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, status, priority, fired_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'new', 0, now())`,
+        [
+          id,
+          world.tenant.tenantId,
+          world.tenant.outletId,
+          ulidToUuid(orderId),
+          world.ids.station,
+          randomUUID(),
+        ],
+      ),
+    );
+    return { id, error: null };
+  } catch (error) {
+    return {
+      id: null,
+      error: error as { code?: string; constraint?: string },
+    };
+  }
+}
+
+/** Raw kitchen_ticket_items insert (one line copied from the order); the pg error or null. */
+async function rawTicketItem(orderId: string, ticketId: string) {
+  try {
+    await asOwnerTenant(world.tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO kitchen_ticket_items
+           (id, tenant_id, outlet_id, ticket_id, order_id, order_item_id, menu_item_id, variant_id, name, quantity, status, fired_at)
+         SELECT $1, i.tenant_id, i.outlet_id, $2, i.order_id, i.id, i.menu_item_id, NULL, i.name, i.quantity, 'queued', now()
+           FROM order_items i
+          WHERE i.tenant_id = $3 AND i.order_id = $4::uuid
+          LIMIT 1`,
+        [randomUUID(), ticketId, world.tenant.tenantId, ulidToUuid(orderId)],
+      ),
+    );
+    return null;
+  } catch (error) {
+    return error as { code?: string; constraint?: string };
+  }
+}
+
+describe("BRK-PAY-07 a breakfast is never sent to the kitchen at or after the ticket's ends_at", () => {
+  it("BRK-PAY-07 the sweep after ends_at (worker was down) cancels a paid order and requests one full refund from the facility", async () => {
+    const { member, ticketId } = await newTicket({ endsInMinutes: 60 });
+    const { order, intentId } = await placePaidOrder(world, member, ticketId);
+    await setFireAt(world, order.id, new Date(Date.now() - 5 * MINUTE));
+
+    // The worker only wakes up 90 minutes later: past the ticket's ends_at (60 min).
+    await runSweep(world, new Date(Date.now() + 90 * MINUTE));
+
+    expect(await kitchenTicketCount(world, order.id)).toBe(0);
+    const linked = await linkedOf(world, order.id);
+    expect(linked.status).toBe("cancelled");
+    expect(linked.cancelledAt).not.toBeNull();
+    expect(linked.firedAt).toBeNull();
+    expect(linked.paid).toBe(order.totalIdr);
+    await expectFullFacilityRefundOnce(intentId, order.totalIdr);
+    expect(
+      (await orderItemFireStatuses(world, order.id)).every(
+        (status) => status !== "fired",
+      ),
+    ).toBe(true);
+
+    // Running the sweep again: no second refund, no sale booked.
+    await runSweep(world, new Date(Date.now() + 95 * MINUTE));
+    expect((await linkedOf(world, order.id)).status).toBe("cancelled");
+    await expectFullFacilityRefundOnce(intentId, order.totalIdr);
+    expect(await kitchenTicketCount(world, order.id)).toBe(0);
+    expect(await orderPaidEvents(order.id)).toHaveLength(0);
+  });
+
+  it("BRK-PAY-07 control: a sweep before ends_at still fires the paid order (and requests no refund)", async () => {
+    const { member, ticketId } = await newTicket({ endsInMinutes: 60 });
+    const { order, intentId } = await placePaidOrder(world, member, ticketId);
+    await setFireAt(world, order.id, new Date(Date.now() - MINUTE));
+
+    await runSweep(world, new Date(Date.now() + 30 * MINUTE));
+
+    expect((await linkedOf(world, order.id)).status).toBe("fired");
+    expect(await kitchenTicketCount(world, order.id)).toBe(1);
+    expect(await refundsOf(world, intentId)).toHaveLength(0);
+  });
+
+  it("BRK-PAY-07 staff 'Kirim sekarang' after ends_at gets 422 BREAKFAST_UNAVAILABLE, yet the cancel and full refund are kept", async () => {
+    const { member, ticketId } = await newTicket({ endsInMinutes: 60 });
+    const { order, intentId } = await placePaidOrder(world, member, ticketId);
+    await endSession(ticketId);
+
+    const fired = await staffFire(world, order.id);
+    expect(fired.status, JSON.stringify(fired.body)).toBe(422);
+    expect(fired.body.error.code).toBe("BREAKFAST_UNAVAILABLE");
+
+    // The error does not roll back the cancel and the refund request.
+    expect(await kitchenTicketCount(world, order.id)).toBe(0);
+    const linked = await linkedOf(world, order.id);
+    expect(linked.status).toBe("cancelled");
+    expect(linked.firedAt).toBeNull();
+    await expectFullFacilityRefundOnce(intentId, order.totalIdr);
+
+    // Pressing it again never refunds a second time and never feeds the kitchen.
+    const again = await staffFire(world, order.id);
+    expect(again.status, JSON.stringify(again.body)).toBeGreaterThanOrEqual(400);
+    await expectFullFacilityRefundOnce(intentId, order.totalIdr);
+    expect(await kitchenTicketCount(world, order.id)).toBe(0);
+    expect(await orderPaidEvents(order.id)).toHaveLength(0);
+  });
+
+  it("BRK-PAY-07 the database trigger refuses kitchen rows for an order fired at or after ends_at, and lets one fired before it through", async () => {
+    // Refused: fired exactly at ends_at (the boundary counts as ended) and later.
+    for (const offset of ["0 seconds", "5 minutes"]) {
+      const { member, ticketId } = await newTicket();
+      const { order } = await placePaidOrder(world, member, ticketId);
+      await markFiredAt(order.id, offset);
+
+      const attempt = await rawTicket(order.id);
+      expect(attempt.error, `offset ${offset}`).toMatchObject({
+        code: "23514",
+        constraint: "kitchen_tickets_breakfast_paid",
+      });
+      expect(await kitchenTicketCount(world, order.id)).toBe(0);
+    }
+
+    // The items table has the same guard: a ticket made while the order was
+    // still inside the window cannot take lines once fired_at is past ends_at.
+    const late = await newTicket();
+    const { order: lateOrder } = await placePaidOrder(
+      world,
+      late.member,
+      late.ticketId,
+    );
+    await markFiredAt(lateOrder.id, "-1 minute");
+    const ticket = await rawTicket(lateOrder.id);
+    expect(ticket.error).toBeNull();
+    await markFiredAt(lateOrder.id, "1 minute");
+    expect(await rawTicketItem(lateOrder.id, ticket.id!)).toMatchObject({
+      code: "23514",
+      constraint: "kitchen_tickets_breakfast_paid",
+    });
+
+    // Control: fired one second before ends_at passes both inserts.
+    const ok = await newTicket();
+    const { order: okOrder } = await placePaidOrder(world, ok.member, ok.ticketId);
+    await markFiredAt(okOrder.id, "-1 second");
+    const okTicket = await rawTicket(okOrder.id);
+    expect(okTicket.error).toBeNull();
+    expect(await rawTicketItem(okOrder.id, okTicket.id!)).toBeNull();
+    expect(await kitchenTicketCount(world, okOrder.id)).toBe(1);
   });
 });
