@@ -26,6 +26,7 @@
     "db:reset-preswitch-refunds": "pnpm --filter @starter/api run db:reset-preswitch-refunds",
     "db:studio": "pnpm --filter @starter/api run db:studio",
     "db:backfill-defaults": "pnpm --filter @starter/api run db:backfill-defaults",
+    "db:rotate-data-key": "pnpm --filter @starter/api run db:rotate-data-key",
     "db:up": "node scripts/database.mjs up",
     "db:down": "node scripts/database.mjs down",
     "db:status": "node scripts/database.mjs status",

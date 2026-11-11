@@ -133,6 +133,28 @@ describe("PAY-06 secret key ring: seal and open", () => {
     );
   });
 
+  // Brief 466 item 1 (two-stage rotation guard): a process whose ring does not
+  // know the envelope version must say why, so an operator who activated a key
+  // before rolling it out to every process sees the cause. The message names the
+  // version and the key ring, and never carries key material.
+  it("PAY-06 a ring that only knows version 1 opens a version 2 envelope with a message that names the version and the key ring, without key material", () => {
+    const sealed = ringV2.seal(PLAINTEXT, AAD);
+    expect(sealedVersion(sealed)).toBe(2);
+    const message = messageOf(() => ringV1.open(sealed, AAD));
+    expect(message).toContain("Unknown sealed value version 2");
+    expect(message).toContain("key ring");
+    for (const material of [
+      key2,
+      key3,
+      baseKey.toString("base64"),
+      baseKey.toString("hex"),
+      sealed,
+      PLAINTEXT,
+    ]) {
+      expect(message).not.toContain(material);
+    }
+  });
+
   it("PAY-06 a tampered ciphertext does not open", () => {
     const sealed = ringV2.seal(PLAINTEXT, AAD);
     const bytes = Buffer.from(sealed, "base64");

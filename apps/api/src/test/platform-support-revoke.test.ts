@@ -61,6 +61,7 @@ const REASON = "Memperbaiki pengaturan peran tenant atas permintaan pemilik.";
 
 const platformAdminIds: string[] = [];
 const tenantUserIds: string[] = [];
+const customRoleIds: string[] = [];
 
 type Client = ReturnType<typeof agent>;
 type TenantUser = { client: Client; userId: string; email: string };
@@ -95,6 +96,38 @@ async function newTenantUser(
   );
   expect(rowCount).toBe(1);
   if (options.verifyMfa !== false) await verifySessionMfa(email);
+  return { client, userId, email };
+}
+
+/**
+ * A non-owner holding a custom tenant-scope role with the approve permission
+ * (same pattern as newCustomApprover in support-access-approval.test.ts).
+ */
+async function newCustomApprover(): Promise<TenantUser> {
+  const client = agent(app);
+  const email = await signUp(client, "Pemegang izin kustom");
+  const userId = (await client.get("/api/auth/get-session")).body.user
+    .id as string;
+  tenantUserIds.push(userId);
+  const roleId = randomUUID();
+  customRoleIds.push(roleId);
+  await db.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, $4, false, $3::jsonb, '["tenant"]'::jsonb)`,
+    [
+      roleId,
+      tenantId,
+      JSON.stringify(["org.support_access.approve"]),
+      `Penyetuju pencabutan ${roleId}`,
+    ],
+  );
+  await db.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $2)`,
+    [tenantId, userId, roleId],
+  );
+  await verifySessionMfa(email);
   return { client, userId, email };
 }
 
@@ -216,6 +249,9 @@ afterAll(async () => {
     "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
     [tenantId, tenantUserIds],
   );
+  await db.query("DELETE FROM roles WHERE id = ANY($1::uuid[])", [
+    customRoleIds,
+  ]);
   await db.query("DELETE FROM tenants WHERE id = $1", [otherTenantId]);
   await db.end();
 });
@@ -390,6 +426,45 @@ describe("TEN-04 revoke is refused or hidden when it must be", () => {
     const response = await postRevoke(finance.client, grant.id);
     expect(response.status).toBe(403);
     await expectStillActive(grant.id);
+  });
+
+  // Assumption: revoke is owner-only like approve/reject, so a non-owner with
+  // a custom role holding org.support_access.approve gets 403 OWNER_REQUIRED
+  // (same answer as approve by a non-owner in support-access-approval.test.ts).
+  it("TEN-04 a non-owner with the approve permission in a custom role gets 403 OWNER_REQUIRED and the grant stays active", async () => {
+    const custom = await newCustomApprover();
+    const admin = await newSuperAdmin();
+    const grant = await openGrant(tenantId, admin.userId);
+    const eventsBefore = await outboxRows(tenantId, grant.id);
+
+    const response = await postRevoke(custom.client, grant.id);
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe("OWNER_REQUIRED");
+
+    const row = await grantRow(grant.id);
+    expect(row.ended_at).toBeNull();
+    expect(row.ended_by).toBeNull();
+    expect(
+      await auditRows(tenantId, "support_access.ended", grant.id),
+    ).toHaveLength(0);
+    expect(await outboxRows(tenantId, grant.id)).toHaveLength(
+      eventsBefore.length,
+    );
+    // The Super Admin's access is untouched.
+    await expect(
+      assertSupportAccess({
+        tenantId,
+        actorUserId: admin.userId,
+        dataClass: "personal",
+        intent: "read",
+      }),
+    ).resolves.toMatchObject({ id: grant.id });
+
+    // The real owner can still revoke the same grant.
+    const owner = await newTenantUser("owner");
+    const ok = await postRevoke(owner.client, grant.id);
+    expect(ok.status).toBe(200);
+    expect(ok.body.data.endedBy).toBe(owner.userId);
   });
 
   it("TEN-04 an owner session without a verified second factor gets 403 and the grant stays active", async () => {

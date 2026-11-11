@@ -37,6 +37,10 @@ import { findTenantContext } from "./tenant";
  *      covers any more is deleted (legend-w1due): the session dies with its
  *      grant instead of lingering until its own expiry. endSupportAccess
  *      does the same eagerly when a grant is ended early.
+ *   9. GET /api/auth/get-session is allowlisted (rule 6), so this guard does
+ *      not read the session there; the Better Auth hooks.after in lib/auth.ts
+ *      answers null for an impersonated session no live grant covers (and
+ *      tries to end it), so a leftover row never reads as the tenant user.
  *
  * Errors are thrown as PlatformError so the error handler shapes the reply.
  */

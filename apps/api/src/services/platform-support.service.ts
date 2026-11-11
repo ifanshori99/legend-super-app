@@ -1249,6 +1249,23 @@ async function endGrantEarly(
   const tenantId = context.tenant.tenantId;
   const { now } = input;
   const grant = await withTenant(db, context, async (tx) => {
+    // Revoke is owner-only like approve/reject: defence in depth behind the
+    // route's permission, checked before any mutation. The Super Admin's own
+    // end path is not an owner action and skips it.
+    if (input.cause === "revoked_by_tenant_admin") {
+      const ownerAssignments = await activeOwnerAssignments(
+        tx,
+        tenantId,
+        input.actorUserId,
+        now,
+      );
+      if (ownerAssignments.length === 0)
+        throw new HttpError(
+          403,
+          "OWNER_REQUIRED",
+          "Hanya Owner tenant yang dapat mencabut akses dukungan.",
+        );
+    }
     const [current] = await tx
       .select()
       .from(supportAccessGrants)

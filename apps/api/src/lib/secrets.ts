@@ -89,7 +89,10 @@ function openWith(
     throw new Error("Sealed value is truncated");
   const version = envelope[0];
   const key = version === undefined ? undefined : keyFor(version);
-  if (!key) throw new Error("Unknown sealed value version");
+  if (!key)
+    throw new Error(
+      `Unknown sealed value version ${version} (not in this process's key ring; roll DATA_ENCRYPTION_KEYS out to every process before activating it)`,
+    );
   if (key.length !== 32) throw new TypeError("Sealing key must be 32 bytes");
   const nonce = envelope.subarray(1, 1 + NONCE_BYTES);
   const tag = envelope.subarray(1 + NONCE_BYTES, 1 + NONCE_BYTES + TAG_BYTES);

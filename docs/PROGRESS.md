@@ -3238,3 +3238,12 @@ Langkah berikut CTO baru:
 - 8en8: `POST /api/org/support-access/:grantId/revoke` (guard sama dengan approve/reject, MFA, bukan sesi impersonasi), cause `revoked_by_tenant_admin`, idempoten, sesi impersonasi ikut berakhir; `cause` dibuka di allowlist audit.
 - Bukti: gagal-dulu di basis m1 (14 gagal + secrets-key-ring gagal impor); 161 test terarah lulus setelah; typecheck API 0; eslint + prettier hijau; db:generate kosong.
 - Catatan merge: nomor 0287 sementara (idx = tag), `when` 1794331000000 harus tetap lebih besar dari migrasi yang masuk lebih dulu saat dinomori ulang. Kunci versi 1 tidak bisa dipensiunkan selama ada baris HRIS/payroll versi 1 (docs/deployment.md).
+
+### 2026-11-11: perbaikan temuan Codex atas 463 (brief 466, semua butir nyata)
+
+- Butir 1: rotasi kunci dua rollout (kunci baru dibagikan ke SEMUA proses dulu, versi aktif dinaikkan di rollout kedua); pesan galat versi tak dikenal menyebut key ring, tanpa materi kunci. `docs/deployment.md` ditulis ulang.
+- Butir 2: `endGrantEarly` untuk `revoked_by_tenant_admin` mensyaratkan Owner aktif (`activeOwnerAssignments`), selain itu 403 `OWNER_REQUIRED`; peran kustom dengan izin approve tidak lagi bisa mencabut.
+- Butir 3: `/get-session` dengan sesi impersonasi tanpa grant aktif menjawab null (hook after Better Auth, tanpa baca ganda untuk sesi biasa) dan mencoba membersihkan sesi; kegagalan cleanup hanya di-log, jawaban tetap fail-closed.
+- Butir 4: `pnpm db:rotate-data-key [--tenant <id>] [--force] [--dry-run]` (`src/db/rotate-data-key.ts`): per tenant integrasi + kunci AI, galat satu tenant dicatat dan tenant lain lanjut, laporan JSON tanpa nilai rahasia (galat driver/domain dibersihkan), `remaining` + `remainingComplete`, exit 1 bila ada tenant gagal atau sisa.
+- Butir 5: koreksi dokumen HRIS/payroll: tulis baru versi 1 tetap di kunci 1 (`sealSecretBaseKey`); kunci 1 tidak bisa dipensiunkan selama ada baris versi 1; inventaris pemakai `sealSecret` ditambah. Pemakai tanpa kolom versi (MFA, identitas, NPWP, rekening, token sesi) tidak direseal: kartu lanjutan legend-tetyr.
+- Bukti: gagal-dulu tiap butir (butir 2: 200 vs 403; butir 3: 2 gagal; butir 1/4: 5 gagal; perbaikan architect: 6 gagal); 175 test terarah lulus di 13 berkas; typecheck API 0; eslint + prettier hijau; tanpa perubahan skema. Review architect xhigh: tanpa blocker, 3 temuan kecil dibetulkan (remaining try/catch, teks galat tetap, nama HttpError/PlatformError di galat bungkus drizzle).

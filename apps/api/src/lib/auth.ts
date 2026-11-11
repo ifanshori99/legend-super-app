@@ -22,6 +22,8 @@ import * as schema from "../db/schema";
 import type { SessionAuthMethod } from "../db/schema/session";
 import {
   assertImpersonationAllowed,
+  endImpersonationSessionsWithoutGrant,
+  findImpersonationGrants,
   IMPERSONATION_SESSION_MAX_SECONDS,
   ImpersonationRefused,
   impersonationSessionEnd,
@@ -298,6 +300,54 @@ export const auth = betterAuth({
       } catch (error) {
         refuse(error);
       }
+    }),
+    // The grant is the source of truth for a support session (TEN-04): a
+    // session row that outlived its grant (cleanup failed, or the grant simply
+    // lapsed) must not answer GET /api/auth/get-session as the tenant user.
+    // The session is already loaded here, so a normal session costs nothing
+    // extra. Only the HTTP route: server-side auth.api.getSession calls (the
+    // impersonation guard reads the session that way) keep the raw answer.
+    after: createAuthMiddleware(async (ctx) => {
+      if (ctx.path !== "/get-session" || !ctx.request) return;
+      const returned = ctx.context.returned as
+        | {
+            session?: { id?: string; impersonatedBy?: string | null };
+            user?: { id?: string };
+          }
+        | null
+        | undefined;
+      const impersonatedBy = returned?.session?.impersonatedBy;
+      const targetUserId = returned?.user?.id;
+      if (!impersonatedBy || !targetUserId) return;
+      let covered = false;
+      try {
+        covered =
+          (await isPlatformAdmin(impersonatedBy)) &&
+          (
+            await findImpersonationGrants({
+              adminUserId: impersonatedBy,
+              targetUserId,
+              now: new Date(),
+            })
+          ).length > 0;
+      } catch (error) {
+        // Fail closed: when the grant cannot be read, no session is shown.
+        authLog.error({ err: error }, "failed to read support grant");
+      }
+      if (covered) return;
+      const sessionId = returned?.session?.id;
+      // A failed cleanup must not change the answer: the session reads as
+      // absent and the next request tries again.
+      await endImpersonationSessionsWithoutGrant({
+        adminUserId: impersonatedBy,
+        ...(sessionId ? { sessionId } : {}),
+      }).catch((error: unknown) =>
+        authLog.error(
+          { err: error, sessionId },
+          "failed to end a support session without grant",
+        ),
+      );
+      return ctx.json(null);
     }),
   },
   databaseHooks: {
