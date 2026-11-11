@@ -193,6 +193,10 @@ test.describe("legend-woc1 tax rules", () => {
     test.slow();
     await open(page, "/kelola/pajak/opsi");
     await expect(page.getByText("Opsi yang berlaku")).toBeVisible();
+    // Wait for the version rows before deciding whether a draft exists.
+    await expect(
+      page.getByRole("button", { name: /^(Versi baru|Buang draf)$/ }).first(),
+    ).toBeVisible();
 
     if (
       (await page.getByRole("button", { name: /Buang draf/ }).count()) === 0

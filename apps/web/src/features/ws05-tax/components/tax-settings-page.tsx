@@ -291,6 +291,7 @@ export function TaxSettingsPage() {
                     <TableCell numeric>
                       {row.status === "draft" && (
                         <DraftActions
+                          context={`${t("tax.tabs.settings")} ${t("tax.versionLabel", { version: row.version })}`}
                           onEdit={() => setEditing(row)}
                           onPublish={() => {
                             setPublishError(undefined);
@@ -343,6 +344,7 @@ export function TaxSettingsPage() {
                 </p>
                 {row.status === "draft" && (
                   <DraftActions
+                    context={`${t("tax.tabs.settings")} ${t("tax.versionLabel", { version: row.version })}`}
                     onEdit={() => setEditing(row)}
                     onPublish={() => {
                       setPublishError(undefined);

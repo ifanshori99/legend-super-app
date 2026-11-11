@@ -1,26 +1,36 @@
 // Row actions of a draft version: Ubah, Terbitkan, Buang draf. Text buttons
 // (mockup tax-woc1) whose names are the same on every row; the row gives the
 // context. "Buang draf" is destructive-coloured. Table rows and phone cards
-// share this, with 44px targets on phones.
+// share this, with 44px targets on phones. Screen readers also hear which
+// version a button acts on through aria-describedby; the name stays short.
+import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/i18n";
 
 export function DraftActions({
+  context,
   onEdit,
   onPublish,
   onDiscard,
 }: {
+  /** Which version these actions act on, e.g. "PBJT-01 v2". */
+  context: string;
   onEdit: () => void;
   onPublish: () => void;
   onDiscard: () => void;
 }) {
   const t = useT();
+  const contextId = React.useId();
   return (
     <div className="flex flex-wrap items-center gap-1 md:justify-end">
+      <span id={contextId} className="sr-only">
+        {context}
+      </span>
       <Button
         type="button"
         variant="outline"
         size="sm"
+        aria-describedby={contextId}
         className="max-md:min-h-11"
         onClick={onEdit}
       >
@@ -30,6 +40,7 @@ export function DraftActions({
         type="button"
         variant="outline"
         size="sm"
+        aria-describedby={contextId}
         className="max-md:min-h-11"
         onClick={onPublish}
       >
@@ -39,6 +50,7 @@ export function DraftActions({
         type="button"
         variant="outline"
         size="sm"
+        aria-describedby={contextId}
         className="text-danger max-md:min-h-11"
         onClick={onDiscard}
       >

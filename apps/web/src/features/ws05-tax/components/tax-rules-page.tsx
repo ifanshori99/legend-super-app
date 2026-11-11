@@ -80,6 +80,7 @@ function RuleActions({
   if (rule.status === "draft") {
     return (
       <DraftActions
+        context={`${rule.code} ${t("tax.versionLabel", { version: rule.version })}`}
         onEdit={onEdit}
         onPublish={onPublish}
         onDiscard={onDiscard}
@@ -210,8 +211,10 @@ export function TaxRulesPage({
     setDiscarding(rule);
   };
 
-  const isEmpty =
-    !rulesQuery.isPending && !rulesQuery.isError && all.length === 0;
+  // Create only once the existing rules are known (overlap and last F&B
+  // checks read them); the empty state carries its own button.
+  const canCreate =
+    !rulesQuery.isPending && !rulesQuery.isError && all.length > 0;
 
   return (
     <TaxPage
@@ -221,7 +224,7 @@ export function TaxRulesPage({
       canReport={canReport}
       // One primary action: the empty state carries its own button instead.
       action={
-        isEmpty ? undefined : (
+        !canCreate ? undefined : (
           <Button type="button" onClick={() => setEditor({ mode: "create" })}>
             <Plus aria-hidden="true" />
             {t("tax.rules.add")}
