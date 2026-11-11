@@ -8,6 +8,7 @@
 // which also asks the device registry on every request (second-opinion 495).
 
 import type { Request } from "express";
+import { CoreError } from "@starter/shared/core";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { getTenantContext } from "../middleware/tenant.ts";
@@ -38,4 +39,21 @@ export async function registeredDeviceIdOf(
   const deviceId = deviceIdOf(req);
   if (deviceId === null) return null;
   return (await deviceTenantCredential(req)) === null ? null : deviceId;
+}
+
+/**
+ * The device a POS request acts on (PIN throttle, shift and order audit): null
+ * without a device token; 401 when one is sent but the registry no longer
+ * accepts it (revoked, rotated out, another tenant), checked on every request
+ * so an old-generation token cannot be replayed (second-opinion 495).
+ */
+export async function currentDeviceIdOf(req: Request): Promise<string | null> {
+  if (req.get(DEVICE_TOKEN_HEADER) === undefined) return null;
+  const deviceId = await registeredDeviceIdOf(req);
+  if (deviceId === null)
+    throw new CoreError(
+      "UNAUTHORIZED",
+      "Token perangkat ini tidak berlaku lagi. Daftarkan ulang perangkat.",
+    );
+  return deviceId;
 }

@@ -53,6 +53,15 @@ const phoneOverrides = createMockStore(
 type Settlement = "pending" | "rejected" | "cancelled" | "expired";
 let settleAs: Settlement | null = null;
 let cancelFails = false;
+// dropNextCreate (H2): the next phone create is stored but its answer is lost
+// (a network error); the same body sent again replays that request, as the
+// server does for a repeated Idempotency-Key.
+let dropNextCreate = false;
+// failCreate (H2): every phone create is refused with this status (the server
+// answered, nothing was stored).
+let failCreateStatus: number | null = null;
+let replay: { signature: string; response: { data: PosOverrideView } } | null =
+  null;
 
 function isPhoneOverrideRequest(requestId: string): boolean {
   for (const view of phoneOverrides.get().values())
@@ -224,6 +233,14 @@ export function devicePinOverride(body: CreatePosOverrideInput) {
  * answers like the real API: a pending override linked by approvalRequestId.
  */
 function devicePinPhoneOverride(body: CreatePosOverrideInput) {
+  if (failCreateStatus !== null)
+    throw new ApiError(failCreateStatus, "FORBIDDEN", "Ditolak (mock).");
+  const signature = JSON.stringify(body);
+  if (replay !== null && replay.signature === signature) {
+    const { response } = replay;
+    replay = null;
+    return response;
+  }
   const now = new Date();
   const request = approvalRequestSchema.parse({
     id: crypto.randomUUID(),
@@ -274,7 +291,13 @@ function devicePinPhoneOverride(body: CreatePosOverrideInput) {
     resolvedAt: null,
   });
   phoneOverrides.get().set(view.id, view);
-  return { data: view };
+  const response = { data: view };
+  if (dropNextCreate) {
+    dropNextCreate = false;
+    replay = { signature, response };
+    throw new ApiError(503, "UNAVAILABLE", "Jaringan terputus (mock).");
+  }
+  return response;
 }
 
 /**
@@ -347,6 +370,8 @@ declare global {
       unlock: () => void;
       settleOverride: (status: Settlement | null) => void;
       failCancel: (on: boolean) => void;
+      dropNextCreate: (on: boolean) => void;
+      failCreate: (status: number | null) => void;
       requestStatuses: () => string[];
     };
   }
@@ -387,6 +412,12 @@ if (typeof window !== "undefined") {
     },
     failCancel(on) {
       cancelFails = on;
+    },
+    dropNextCreate(on) {
+      dropNextCreate = on;
+    },
+    failCreate(status) {
+      failCreateStatus = status;
     },
     requestStatuses: () => [...requests.get().values()].map((r) => r.status),
   };

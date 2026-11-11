@@ -29,7 +29,7 @@ import {
 } from "../services/open-bill-control.service";
 import { PinDeviceThrottledError } from "../services/staff-pin-proof.service";
 import { resolveOutletContext } from "./floor-access";
-import { deviceIdOf } from "./device-id.ts";
+import { currentDeviceIdOf } from "./device-id.ts";
 
 const outletParams = z.strictObject({ outletId: outletIdSchema });
 const sessionParams = z.strictObject({ sessionId: tableSessionIdSchema });
@@ -125,7 +125,7 @@ openBillRouter.post(
           sessionId,
           input,
           getAuth(req).user.id,
-          { deviceId: deviceIdOf(req) },
+          { deviceId: await currentDeviceIdOf(req) },
         ),
       });
     } catch (error) {

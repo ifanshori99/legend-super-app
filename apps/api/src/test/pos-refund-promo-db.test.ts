@@ -42,6 +42,7 @@ import type { PosReceipt } from "@starter/shared/pos";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import type { PromoPartialRefundPort } from "../services/crm-promo-refund.ts";
 import {
   setDeviceOutletResolver,
@@ -492,6 +493,11 @@ beforeAll(async () => {
   setPosOrderPromoPort(orderPromoPort);
   tenant = await createIsolatedTenant(`pfp-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId: ids.device,
+  });
   setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
     tenantId === tenant.tenantId && deviceId === ids.device
       ? tenant.outletId

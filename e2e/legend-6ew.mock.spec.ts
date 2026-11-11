@@ -324,6 +324,8 @@ type DevicePinMockHooks = {
   decide: (v: string) => void;
   settleOverride: (v: string | null) => void;
   failCancel: (on: boolean) => void;
+  dropNextCreate: (on: boolean) => void;
+  failCreate: (status: number | null) => void;
 };
 async function mockHook<K extends keyof DevicePinMockHooks>(
   page: Page,
@@ -341,7 +343,7 @@ async function mockHook<K extends keyof DevicePinMockHooks>(
   );
 }
 
-async function openPhoneWait(page: Page) {
+async function fillPhoneForm(page: Page) {
   await page.goto(SWITCH, NAV);
   await switchTo(page, "Nina Marlina", "246810");
   await page.getByRole("button", { name: "Ajukan override" }).click();
@@ -350,11 +352,26 @@ async function openPhoneWait(page: Page) {
   await page.getByRole("option", { name: "Stok habis" }).click();
   await modal.getByLabel("Catatan alasan").fill("Bahan habis di dapur");
   await modal.getByRole("radio", { name: "Persetujuan dari ponsel" }).click();
+  return modal;
+}
+
+async function openPhoneWait(page: Page) {
+  const modal = await fillPhoneForm(page);
   await modal
     .getByRole("button", { name: "Kirim ke ponsel supervisor" })
     .click();
   await expect(page.getByTestId("override-pending")).toBeVisible();
   return modal;
+}
+
+async function requestStatuses(page: Page) {
+  return page.evaluate(() =>
+    (
+      window as unknown as {
+        __legendDevicePinMock: { requestStatuses: () => string[] };
+      }
+    ).__legendDevicePinMock.requestStatuses(),
+  );
 }
 
 test("AUTH-06 · request approved but override not settled: no approval yet", async ({
@@ -450,4 +467,122 @@ test("AUTH-06 · kitchen shell switch-user page, empty roster and offline hint",
     page.getByText("Pilih dulu nama staf atau supervisor", { exact: false }),
   ).toBeVisible();
   await shot(page, "offline-390-light");
+});
+
+// legend-495 H2: no orphan pending request when the dialog is closed while the
+// request is being created, or after the send failed on the network.
+for (const closer of ["Escape", "Batal"] as const) {
+  test(`AUTH-06 · ${closer} while the request is being sent waits, then cancels it`, async ({
+    page,
+  }) => {
+    const modal = await fillPhoneForm(page);
+    await slowMock(page, 1_200);
+    await modal
+      .getByRole("button", { name: "Kirim ke ponsel supervisor" })
+      .click();
+    if (closer === "Escape") await page.keyboard.press("Escape");
+    else
+      await modal.getByRole("button", { name: "Batal", exact: true }).click();
+    // Held: the dialog stays while the create is in flight.
+    await expect(modal).toBeVisible();
+    await expect(modal).toHaveCount(0, { timeout: 15_000 });
+    expect(await requestStatuses(page)).toEqual(["cancelled"]);
+  });
+}
+
+test("AUTH-06 · closing after a network error on send reads the request again and cancels it", async ({
+  page,
+}) => {
+  const modal = await fillPhoneForm(page);
+  await mockHook(page, "dropNextCreate", true);
+  await modal
+    .getByRole("button", { name: "Kirim ke ponsel supervisor" })
+    .click();
+  await expect(modal.getByRole("alert")).toContainText("belum");
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0, { timeout: 15_000 });
+  // One request only (the same intent was read again), and it is withdrawn.
+  expect(await requestStatuses(page)).toEqual(["cancelled"]);
+});
+
+test("AUTH-06 · approved at level 1 but not settled: says it waits for settlement, cancel is refused with a reason", async ({
+  page,
+}) => {
+  const modal = await openPhoneWait(page);
+  await mockHook(page, "settleOverride", "pending");
+  await mockHook(page, "decide", "approved");
+  await expect(
+    modal.getByText("menunggu penyelesaian", { exact: false }),
+  ).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("override-pending")).toBeVisible();
+  await expect(
+    modal.getByText("menunggu penyelesaian", { exact: false }),
+  ).toBeVisible();
+});
+
+// legend-495 H2: a 4xx answer means nothing was created, so close just closes.
+test("AUTH-06 · closing after a 403 on send closes the dialog (nothing was created)", async ({
+  page,
+}) => {
+  const modal = await fillPhoneForm(page);
+  await mockHook(page, "failCreate", 403);
+  await modal
+    .getByRole("button", { name: "Kirim ke ponsel supervisor" })
+    .click();
+  await expect(modal.getByRole("alert")).toContainText("belum");
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0, { timeout: 15_000 });
+  expect(await requestStatuses(page)).toEqual([]);
+});
+
+// legend-495 H2: offline, the close is held and says so.
+test("AUTH-06 · close held after a failed re-send says it will cancel once online", async ({
+  page,
+}) => {
+  const modal = await fillPhoneForm(page);
+  await mockHook(page, "failCreate", 503);
+  await modal
+    .getByRole("button", { name: "Kirim ke ponsel supervisor" })
+    .click();
+  await expect(modal.getByRole("alert")).toContainText("belum");
+  await page.keyboard.press("Escape");
+  await expect(modal.getByTestId("override-close-held")).toBeVisible();
+  await expect(modal).toBeVisible();
+  // Back online: closing again re-reads the request, cancels it and closes.
+  await mockHook(page, "failCreate", null);
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0, { timeout: 15_000 });
+});
+
+// legend-495 H2 (money safety): after a network error on send the request may
+// exist, so the form is locked; the only ways on are retry (same input, same
+// request) or close (re-read and withdraw). No second intent can be opened.
+test("AUTH-06 · after a network error on send the fields are locked and retry reuses the same request", async ({
+  page,
+}) => {
+  const modal = await fillPhoneForm(page);
+  await mockHook(page, "dropNextCreate", true);
+  await modal
+    .getByRole("button", { name: "Kirim ke ponsel supervisor" })
+    .click();
+  await expect(modal.getByTestId("override-fields-locked")).toBeVisible();
+  await expect(
+    modal.getByRole("combobox", { name: "Kode alasan" }),
+  ).toBeDisabled();
+  await expect(modal.getByLabel("Catatan alasan")).toBeDisabled();
+  await expect(
+    modal.getByRole("radio", { name: "Persetujuan dari ponsel" }),
+  ).toBeDisabled();
+  await expect(
+    modal.getByRole("radio", { name: "PIN supervisor" }),
+  ).toBeDisabled();
+  // Retry: the same request comes back; still exactly one, still pending.
+  await modal
+    .getByRole("button", { name: "Kirim ke ponsel supervisor" })
+    .click();
+  await expect(page.getByTestId("override-pending")).toBeVisible();
+  expect(await requestStatuses(page)).toEqual(["pending"]);
 });

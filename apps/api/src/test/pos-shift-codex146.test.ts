@@ -59,6 +59,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import {
   setDeviceOutletResolver,
   setStaffPin,
@@ -141,6 +142,11 @@ async function newCashier(label = "Kasir"): Promise<Cashier> {
   const base = await member(roleIds.cashier, label);
   const deviceId = randomUUID();
   registeredDevices.set(`${tenant.tenantId}:${deviceId}`, tenant.outletId);
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId,
+  });
   return { ...base, deviceId };
 }
 

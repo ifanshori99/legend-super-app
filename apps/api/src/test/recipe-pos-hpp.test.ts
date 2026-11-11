@@ -67,6 +67,7 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { deliverInventoryGlEvent } from "../services/inventory-gl-consumer.ts";
 import { recordStockMovement } from "../services/inventory.service.ts";
@@ -952,6 +953,11 @@ describe("HPP through the real POS complete path (a)", () => {
       [tenantA, userId, cashierRole],
     );
     cashier = { client, userId };
+    await registerTestDevice(owner, {
+      tenantId: tenantA,
+      outletId: outletA,
+      deviceId,
+    });
     await openPosShift(
       tenantContext(),
       { userId: userIdSchema.parse(userId), deviceId },

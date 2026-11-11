@@ -65,6 +65,7 @@ import { signDeviceToken } from "../lib/device-token.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -494,6 +495,11 @@ beforeAll(async () => {
         ? tenant.outletId
         : (extraDevices.get(deviceId) ?? null),
   );
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId: ids.device,
+  });
   const roles: [string, string, string[]][] = [
     [
       ids.cashierRole,
@@ -1104,6 +1110,11 @@ async function addOutlet(): Promise<Till> {
        VALUES ($1, $2, $3, $4, $5)`,
       [randomUUID(), tenant.tenantId, listId, ids.kopi, KOPI_IDR],
     );
+  });
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId,
+    deviceId,
   });
   extraDevices.set(deviceId, outletId);
   return { outletId, deviceId };

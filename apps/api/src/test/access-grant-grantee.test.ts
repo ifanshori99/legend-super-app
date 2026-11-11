@@ -123,7 +123,7 @@ async function insertEmployee(
   }
 }
 
-function grant(userId: string) {
+function grant(userId: string, actorUserId: string = grantorId) {
   return grantRoleAssignment(
     scopedContext(tenant.tenantId),
     grantRoleSchema.parse({
@@ -132,7 +132,7 @@ function grant(userId: string) {
       scope: TENANT_SCOPE,
     }),
     {
-      actorUserId: grantorId,
+      actorUserId,
       reauthenticatedAt: new Date(),
       mfaVerified: true,
     },
@@ -251,5 +251,13 @@ describe("legend-495 G2 the grantee already belongs to the tenant", () => {
       const assignment = await grant(userId);
       expect(assignment.userId).toBe(userId);
     }
+  });
+
+  it("answers 403, not 422, when the grantor has no authority and the grantee is not a member", async () => {
+    const powerless = await signedIn("G2 Powerless Grantor");
+    const stranger = await signedIn("G2 Probe Target");
+    await expect(grant(stranger, powerless)).rejects.toMatchObject({
+      status: 403,
+    });
   });
 });

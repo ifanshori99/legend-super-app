@@ -40,6 +40,7 @@ import {
 import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
@@ -250,6 +251,11 @@ beforeAll(async () => {
   setPosReceiptPort(memoryReceiptPort());
   tenant = await createIsolatedTenant(`pos-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId: ids.device,
+  });
   setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
     tenantId === tenant.tenantId && deviceId === ids.device
       ? tenant.outletId

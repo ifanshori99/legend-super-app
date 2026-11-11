@@ -19,7 +19,7 @@
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { tenantIdSchema } from "@starter/shared/core";
+import { createUlid, tenantIdSchema } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
@@ -328,5 +328,64 @@ describe("G1 an old device token is refused after rotation", () => {
       acting,
     );
     expect(read.status, JSON.stringify(read.body)).toBe(401);
+  });
+});
+
+// H1: the POS routes that read the device without an acting-staff header
+// (shift open, order transitions) must ask the registry too, not only the
+// signature. No token stays null (the route works without a device).
+describe("H1 an old device token is refused on routes without X-Acting-Staff", () => {
+  const outletBase = () => `/api/outlets/${tenant.outletId}/pos`;
+
+  function openShift(deviceTokenValue: string | null) {
+    let request = sessionOwner.client
+      .post(`${outletBase()}/shifts`)
+      .set(headers)
+      .set(originHeader);
+    if (deviceTokenValue)
+      request = request.set(DEVICE_TOKEN_HEADER, deviceTokenValue);
+    return request.send({
+      openingFloatIdr: 100000,
+      idempotencyKey: `rot-shift-${randomUUID()}`,
+    });
+  }
+
+  function submitOrder(deviceTokenValue: string) {
+    return sessionOwner.client
+      .post(`${outletBase()}/orders/${createUlid()}/submit`)
+      .set(headers)
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, deviceTokenValue)
+      .send({
+        expectedStatus: "draft",
+        idempotencyKey: `rot-submit-${randomUUID()}`,
+      });
+  }
+
+  it("H1 POST /api/outlets/:outletId/pos/shifts: the old token is 401, the new one opens the shift", async () => {
+    const device = await registeredDevice();
+    const fresh = await rotate(device.id);
+
+    const replay = await openShift(device.oldToken);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(401);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM pos_shifts WHERE device_id = $1",
+      [device.id],
+    );
+    expect(rows).toHaveLength(0);
+
+    const current = await openShift(fresh);
+    expect(current.status, JSON.stringify(current.body)).toBe(201);
+  });
+
+  it("H1 POST /api/outlets/:outletId/pos/orders/:orderId/submit: the old token is 401, the new one reaches the order", async () => {
+    const device = await registeredDevice();
+    const fresh = await rotate(device.id);
+
+    const replay = await submitOrder(device.oldToken);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(401);
+
+    const current = await submitOrder(fresh);
+    expect(current.status, JSON.stringify(current.body)).not.toBe(401);
   });
 });

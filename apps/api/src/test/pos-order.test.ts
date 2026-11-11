@@ -331,6 +331,26 @@ beforeAll(async () => {
        VALUES ($1, $2, $3, false, NULL, $4, false, '["tenant"]')`,
       [id, tenant.tenantId, name, JSON.stringify(permissions)],
     );
+  // The till's signed token is only current while the device registry knows it.
+  const deviceClient = await owner.connect();
+  try {
+    await deviceClient.query("BEGIN");
+    await deviceClient.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenant.tenantId],
+    );
+    await deviceClient.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+       VALUES ($1, $2, $3, 'pos', 'Kasir Uji', now() - interval '1 minute')`,
+      [ids.device, tenant.tenantId, tenant.outletId],
+    );
+    await deviceClient.query("COMMIT");
+  } catch (error) {
+    await deviceClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    deviceClient.release();
+  }
   cashier = await member(ids.cashierRole, "POS Kasir");
   supervisor = await member(ids.supervisorRole, "POS Supervisor");
   viewer = await member(ids.viewerRole, "POS Tamu");

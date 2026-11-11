@@ -152,6 +152,31 @@ export function closeAction(state: {
   return state.waiting && state.outcome === "pending" ? "cancel" : "close";
 }
 
+/**
+ * Closing the form while a phone request may exist (legend-495 H2): hold the
+ * close while the create is in flight (cancel it once it answers); after a
+ * network error the request may exist, so read it again with the same
+ * Idempotency-Key and cancel it before closing; otherwise just close.
+ */
+export function formCloseAction(state: {
+  sending: boolean;
+  uncertain: boolean;
+}): "hold" | "recover" | "close" {
+  if (state.sending) return "hold";
+  return state.uncertain ? "recover" : "close";
+}
+
+/**
+ * The request reads approved but the override is not settled yet (an approval
+ * chain with levels left): cancel is refused, so the wait must say why it stays.
+ */
+export function awaitingSettlement(state: {
+  raw: ApprovalOutcome;
+  outcome: ApprovalOutcome;
+}): boolean {
+  return state.raw === "approved" && state.outcome === "pending";
+}
+
 /** The fields that make up one override intent (what the server fingerprints). */
 export type OverrideIntentFields = {
   outletId: string | undefined;

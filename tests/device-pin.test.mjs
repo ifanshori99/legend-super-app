@@ -260,3 +260,43 @@ test("AUTH-06 · closing a pending wait is a cancel, not a plain close", () => {
     "close",
   );
 });
+
+// legend-495 H2: closing while the phone request is being created, or after a
+// network error (it may exist on the server), must not leave an orphan.
+test("AUTH-06 · closing the form during or after a send is held or recovered", () => {
+  assert.equal(
+    logic.formCloseAction({ sending: true, uncertain: false }),
+    "hold",
+  );
+  assert.equal(
+    logic.formCloseAction({ sending: true, uncertain: true }),
+    "hold",
+  );
+  assert.equal(
+    logic.formCloseAction({ sending: false, uncertain: true }),
+    "recover",
+  );
+  assert.equal(
+    logic.formCloseAction({ sending: false, uncertain: false }),
+    "close",
+  );
+});
+
+test("AUTH-06 · approved request not yet settled is a wait for settlement", () => {
+  assert.equal(
+    logic.awaitingSettlement({ raw: "approved", outcome: "pending" }),
+    true,
+  );
+  assert.equal(
+    logic.awaitingSettlement({ raw: "pending", outcome: "pending" }),
+    false,
+  );
+  assert.equal(
+    logic.awaitingSettlement({ raw: "approved", outcome: "approved" }),
+    false,
+  );
+  assert.equal(
+    logic.awaitingSettlement({ raw: "approved", outcome: "rejected" }),
+    false,
+  );
+});

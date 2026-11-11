@@ -60,6 +60,7 @@ import {
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { signDeviceToken } from "../lib/device-token.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
+import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -409,6 +410,11 @@ beforeAll(async () => {
       ? tenant.outletId
       : null,
   );
+  await registerTestDevice(owner, {
+    tenantId: tenant.tenantId,
+    outletId: tenant.outletId,
+    deviceId: ids.device,
+  });
   const roles: [string, string, string[]][] = [
     [
       ids.cashierRole,

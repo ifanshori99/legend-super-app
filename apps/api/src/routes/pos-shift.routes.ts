@@ -47,7 +47,7 @@ import {
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as day from "../services/pos-day.service.ts";
 import * as shifts from "../services/pos-shift.service.ts";
-import { deviceIdOf } from "./device-id.ts";
+import { currentDeviceIdOf } from "./device-id.ts";
 
 export const posShiftRouter = Router({ mergeParams: true });
 
@@ -112,10 +112,10 @@ const readDay = canAny(
 );
 const closeDay = can("pos.day.close");
 
-function caller(req: Request): shifts.ShiftCaller {
+async function caller(req: Request): Promise<shifts.ShiftCaller> {
   return {
     userId: userIdSchema.parse(actorOf(req)),
-    deviceId: deviceIdOf(req),
+    deviceId: await currentDeviceIdOf(req),
   };
 }
 
@@ -126,7 +126,7 @@ posShiftRouter.post("/shifts", operate, jsonBody, async (req, res) => {
   const body = openPosShift.body.parse(req.body);
   const shift = await shifts.openPosShift(
     getScopedTenantContext(req),
-    caller(req),
+    await caller(req),
     outletId,
     body,
   );
@@ -142,7 +142,7 @@ posShiftRouter.get("/shifts", readShift, async (req, res) => {
   res.json(
     await shifts.listPosShifts(
       getScopedTenantContext(req),
-      caller(req),
+      await caller(req),
       outletId,
       query,
     ),
@@ -154,7 +154,7 @@ posShiftRouter.get("/shifts/:shiftId", readShift, async (req, res) => {
   res.json({
     data: await shifts.getPosShiftReport(
       getScopedTenantContext(req),
-      caller(req),
+      await caller(req),
       outletId,
       shiftId,
     ),
@@ -173,7 +173,7 @@ posShiftRouter.post(
     res.status(201).json({
       data: await shifts.submitPosShiftCount(
         getScopedTenantContext(req),
-        caller(req),
+        await caller(req),
         outletId,
         shiftId,
         body,
@@ -187,7 +187,7 @@ posShiftRouter.get("/shifts/:shiftId/counts", readShift, async (req, res) => {
   res.json({
     data: await shifts.listPosShiftCounts(
       getScopedTenantContext(req),
-      caller(req),
+      await caller(req),
       outletId,
       shiftId,
     ),
@@ -204,7 +204,7 @@ posShiftRouter.post(
     res.json({
       data: await shifts.closePosShift(
         getScopedTenantContext(req),
-        caller(req),
+        await caller(req),
         outletId,
         shiftId,
         body,
@@ -223,7 +223,7 @@ posShiftRouter.post(
     res.json({
       data: await shifts.forceClosePosShift(
         getScopedTenantContext(req),
-        caller(req),
+        await caller(req),
         outletId,
         shiftId,
         body,
@@ -246,7 +246,7 @@ posShiftRouter.post(
     res.status(201).json({
       data: await shifts.recordCashMovement(
         getScopedTenantContext(req),
-        caller(req),
+        await caller(req),
         outletId,
         shiftId,
         body,
@@ -264,7 +264,7 @@ posShiftRouter.get(
     res.json(
       await shifts.listCashMovements(
         getScopedTenantContext(req),
-        caller(req),
+        await caller(req),
         outletId,
         shiftId,
         query,
