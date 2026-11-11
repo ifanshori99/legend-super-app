@@ -146,8 +146,9 @@ export async function resolveUnverifiedRecipientService(
   return withTenant(db, context, async (tx) => {
     await assertTenantOwner(tx, tenantId, actorUserId);
     if (input.recipientUserId !== null) {
-      // Recipient must be a tenant member (any valid role assignment) or the
-      // login of this line's shareholder. One code for "no such user" and
+      // Recipient must be a tenant Owner (valid tenant-scope 'owner' role
+      // assignment) or the login of this line's shareholder. A non-Owner
+      // member is not a valid recipient. One code for "no such user" and
       // "user of another tenant" so account existence does not leak.
       const recipientUserId = input.recipientUserId;
       const now = new Date();
@@ -162,11 +163,20 @@ export async function resolveUnverifiedRecipientService(
         .select({ id: roleAssignments.id })
         .from(roleAssignments)
         .innerJoin(user, eq(user.id, roleAssignments.userId))
+        .innerJoin(
+          roles,
+          and(
+            eq(roles.tenantId, roleAssignments.tenantId),
+            eq(roles.id, roleAssignments.roleId),
+          ),
+        )
         .where(
           and(
             notBanned,
             eq(roleAssignments.tenantId, tenantId),
             eq(roleAssignments.userId, recipientUserId),
+            eq(roles.templateKey, "owner"),
+            eq(roleAssignments.scopeType, "tenant"),
             lte(roleAssignments.validFrom, now),
             or(
               isNull(roleAssignments.validUntil),
@@ -175,7 +185,7 @@ export async function resolveUnverifiedRecipientService(
           ),
         )
         .limit(1)
-        .for("share", { of: roleAssignments });
+        .for("share", { of: [roleAssignments, user] });
       if (!member) {
         const [line] = await tx
           .select({ shareholderId: distributionLines.shareholderId })
@@ -202,12 +212,12 @@ export async function resolveUnverifiedRecipientService(
             ),
           )
           .limit(1)
-          .for("share", { of: shareholders });
+          .for("share", { of: [shareholders, user] });
         if (!holder)
           throw new HttpError(
             422,
             "RECIPIENT_NOT_FOUND",
-            "Akun penerima harus anggota tenant ini atau login pemegang saham baris ini.",
+            "Akun penerima harus Owner tenant ini atau login pemegang saham baris ini.",
           );
       }
     }

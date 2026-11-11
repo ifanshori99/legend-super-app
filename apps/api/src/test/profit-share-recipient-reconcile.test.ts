@@ -122,6 +122,14 @@ async function shareholderUser(name: string) {
   return person;
 }
 
+// A shareholder login that is also an Owner of the tenant: the only kind of
+// recipient (besides the line's own shareholder login) a resolve accepts.
+async function ownerHolder(name: string) {
+  const person = await shareholderUser(name);
+  await assignTemplate(person.userId, "owner");
+  return person;
+}
+
 const post = (who: Person, path: string, body: unknown) =>
   who.client
     .post(path)
@@ -491,7 +499,7 @@ describe("2 reconciliation list is Owner only", () => {
 
 describe("3 only an Owner resolves, once, to a real login", () => {
   it("Owner resolves to A: A reads, B stays 404, the line leaves the list, audited; again is 404", async () => {
-    const alice = await shareholderUser("Alice Penerima Asli");
+    const alice = await ownerHolder("Alice Penerima Asli");
     const bob = await shareholderUser("Bob Bukan Penerima");
     const line = await legacyLine(bob, true);
 
@@ -601,7 +609,7 @@ describe("3 only an Owner resolves, once, to a real login", () => {
 
 describe("3b the lines guard stays closed except for the one resolve edit", () => {
   it("rejects other edits of a frozen unverified line, even together with the resolve", async () => {
-    const alice = await shareholderUser("Alice Guard");
+    const alice = await ownerHolder("Alice Guard");
     const bob = await shareholderUser("Bob Guard");
     const line = await legacyLine(bob, true);
 
@@ -634,7 +642,7 @@ describe("3b the lines guard stays closed except for the one resolve edit", () =
   });
 
   it("rejects setting recipient_user_id on a line with recipient_unverified = false", async () => {
-    const alice = await shareholderUser("Alice Tertutup");
+    const alice = await ownerHolder("Alice Tertutup");
     const bob = await shareholderUser("Bob Tertutup");
     // Never flagged (a line created after 0239 is never flagged).
     const plain = await legacyLine(bob, false);
@@ -778,7 +786,7 @@ describe("4 migration 0239 backfill flags, and never assigns, a recipient", () =
 
 describe("4b old PAID line of a shareholder WITHOUT a login is flagged and the Owner can resolve it", () => {
   it("backfill flags it, the Owner lists it and resolves it to A; A reads the statement; a second resolve is 404", async () => {
-    const alice = await shareholderUser("Alice Pemegang Tanpa Login");
+    const alice = await ownerHolder("Alice Pemegang Tanpa Login");
     // Shareholder never had a login: paid line, recipient NULL, no link added.
     const world = await makeWorld(null);
     const line = await paidRun(world);
@@ -824,20 +832,24 @@ describe("4b old PAID line of a shareholder WITHOUT a login is flagged and the O
 
 // ---- 5 resolve target must belong to the tenant (legend-16iyk) -----------------
 //
-// Bug under test: resolve accepted ANY existing user as recipient. Decision: the
-// recipient must be a member of the tenant (active role assignment) or the
-// shareholder's own current login; otherwise the Owner's resolve is refused and
-// the line stays unverified.
+// Bug under test: resolve accepted ANY existing user as recipient. Founder
+// decision (11 Nov): a non-null recipient is valid only if it is (a) a user with
+// the Owner role (roles.template_key = 'owner', tenant-scope role assignment,
+// valid now) in that tenant, or (b) the login of the shareholder of that very
+// line (shareholders.user_id), not banned. Any other tenant member (cashier,
+// manager, custom role, ...) is refused; the line stays unverified.
 //
 // Assumptions (the brief does not pin these down):
 // - Ids are UUIDs: userIdSchema in @starter/shared is a uuid schema (the
 //   backend checklist's "ULID" applies only where a validator asks for ULID).
-// - "Member of the tenant" = a user holding a role assignment in that tenant.
-//   A user with only an assignment in another tenant, or none at all, is not.
+// - Non-Owner members are the template roles "cashier" and "outlet_manager"
+//   (seeded for the tenant), assigned at tenant scope.
+// - A user with only an assignment in another tenant, or none at all, is not
+//   eligible.
 // - Refusal of an ineligible recipient is 422 with error code
 //   RECIPIENT_NOT_FOUND (architect review). 404 stays reserved for "line not
 //   found". The line must stay unverified with recipient NULL.
-// - An eligible member holds an assignment with valid_from <= now and
+// - An eligible Owner holds an assignment with valid_from <= now and
 //   (valid_until IS NULL or valid_until > now), and is not banned (banned is
 //   not true, or ban_expires <= now).
 
@@ -886,7 +898,7 @@ const stillUnverified = {
   recipient_unverified: true,
 };
 
-describe("5 resolve recipient must be a tenant member or the shareholder's own login", () => {
+describe("5 resolve recipient must be an Owner of the tenant or the shareholder's own login", () => {
   it("(a) a user who is a member of ANOTHER tenant only is refused; line stays unverified", async () => {
     const bob = await shareholderUser("Bob Lintas Tenant");
     const outsider = await foreignTenantMember("Orang Tenant Lain");
@@ -921,12 +933,39 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
     );
   });
 
-  it("(c1) a member of the tenant who is not the shareholder's login is accepted", async () => {
-    const bob = await shareholderUser("Bob Anggota Lain");
+  it("(c1a) a cashier of the same tenant (not the shareholder's login) is refused", async () => {
+    const bob = await shareholderUser("Bob Kasir Tenant");
+    const cashier = await signedIn("Kasir Tenant Sama");
+    await assignTemplate(cashier.userId, "cashier");
     const line = await legacyLine(bob, true);
-    // manageOnly holds a custom role assignment in the tenant: a member.
+    const refused = await post(tenantOwner, resolvePath(line.lineId), {
+      recipientUserId: cashier.userId,
+      note: NOTE,
+    });
+    expectRefused(refused);
+    expect(await lineRow(line.lineId)).toEqual(stillUnverified);
+  });
+
+  it("(c1b) a manager of the same tenant (not the shareholder's login) is refused", async () => {
+    const bob = await shareholderUser("Bob Manajer Tenant");
+    const manager = await signedIn("Manajer Tenant Sama");
+    await assignTemplate(manager.userId, "outlet_manager");
+    const line = await legacyLine(bob, true);
+    const refused = await post(tenantOwner, resolvePath(line.lineId), {
+      recipientUserId: manager.userId,
+      note: NOTE,
+    });
+    expectRefused(refused);
+    expect(await lineRow(line.lineId)).toEqual(stillUnverified);
+  });
+
+  it("(c1c) another Owner of the tenant (not the acting Owner, not the shareholder's login) is accepted", async () => {
+    const bob = await shareholderUser("Bob Owner Lain");
+    const otherOwner = await signedIn("Owner Kedua");
+    await assignTemplate(otherOwner.userId, "owner");
+    const line = await legacyLine(bob, true);
     const resolved = await post(tenantOwner, resolvePath(line.lineId), {
-      recipientUserId: manageOnly.userId,
+      recipientUserId: otherOwner.userId,
       note: NOTE,
     });
     expect(
@@ -935,7 +974,7 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
     ).toBeGreaterThanOrEqual(200);
     expect(resolved.status).toBeLessThan(300);
     expect(await lineRow(line.lineId)).toEqual({
-      recipient_user_id: manageOnly.userId,
+      recipient_user_id: otherOwner.userId,
       recipient_unverified: false,
     });
   });
@@ -958,33 +997,24 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
     });
   });
 
+  // An Owner assignment (template role "owner") with a custom validity window.
   async function assignmentWindow(
     userId: string,
     validFrom: string,
     validUntil: string | null,
   ) {
-    const roleId = randomUUID();
-    await pg.query(
-      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
-       VALUES ($1, $2, $3, false, $4, $5)`,
-      [
-        roleId,
-        tenantA,
-        `Jendela ${roleId.slice(0, 8)}`,
-        JSON.stringify(["profit_share.registry.manage"]),
-        JSON.stringify(["tenant"]),
-      ],
-    );
-    await pg.query(
+    const inserted = await pg.query(
       `INSERT INTO role_assignments
          (tenant_id, user_id, role_id, scope_type, valid_from, valid_until, assigned_by)
-       VALUES ($1, $2, $3, 'tenant', now() + $4::interval,
-               CASE WHEN $5::text IS NULL THEN NULL ELSE now() + $5::interval END, $2)`,
-      [tenantA, userId, roleId, validFrom, validUntil],
+       SELECT $1, $2, id, 'tenant', now() + $3::interval,
+              CASE WHEN $4::text IS NULL THEN NULL ELSE now() + $4::interval END, $2
+         FROM roles WHERE tenant_id = $1 AND template_key = 'owner'`,
+      [tenantA, userId, validFrom, validUntil],
     );
+    expect(inserted.rowCount).toBe(1);
   }
 
-  it("(d) a member whose role assignment already expired is refused", async () => {
+  it("(d) an Owner whose role assignment already expired is refused", async () => {
     const bob = await shareholderUser("Bob Peran Kadaluarsa");
     const expired = await signedIn("Anggota Kadaluarsa");
     await assignmentWindow(expired.userId, "-2 hours", "-1 hour");
@@ -997,7 +1027,7 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
     expect(await lineRow(line.lineId)).toEqual(stillUnverified);
   });
 
-  it("(e) a member whose role assignment starts in the future is refused", async () => {
+  it("(e) an Owner whose role assignment starts in the future is refused", async () => {
     const bob = await shareholderUser("Bob Peran Mendatang");
     const future = await signedIn("Anggota Mendatang");
     await assignmentWindow(future.userId, "1 hour", null);
@@ -1040,6 +1070,82 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
     expect(await lineRow(line.lineId)).toEqual(stillUnverified);
   });
 
+  it("(m) a custom-role member with profit_share.registry.manage but not Owner is refused", async () => {
+    const bob = await shareholderUser("Bob Peran Kustom");
+    const custom = await signedIn("Anggota Peran Kustom");
+    await customRole(custom.userId, ["profit_share.registry.manage"]);
+    const line = await legacyLine(bob, true);
+    const refused = await post(tenantOwner, resolvePath(line.lineId), {
+      recipientUserId: custom.userId,
+      note: NOTE,
+    });
+    expectRefused(refused);
+    expect(await lineRow(line.lineId)).toEqual(stillUnverified);
+  });
+
+  it("(n) an Owner of ANOTHER tenant (template role owner there) is refused", async () => {
+    const bob = await shareholderUser("Bob Owner Tenant Lain");
+    const foreignOwner = await signedIn("Owner Tenant Lain");
+    const otherTenant = randomUUID();
+    await pg.query(
+      `INSERT INTO tenants
+         (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       VALUES ($1, $2, 'Tenant lain (owner asing)', 'lengkap', 'active', 'shared',
+               '{"modules":[],"integrationProviders":[]}', '{"maxOutlets":1,"maxActiveEmployees":1,"maxDevices":1,"aiRequestsPerMonth":0,"whatsappCostCapIdr":0,"aiCostCapIdr":0,"emailCostCapIdr":0}', $3)`,
+      [otherTenant, `recon-owner-${otherTenant}`, randomUUID()],
+    );
+    const roleId = randomUUID();
+    await pg.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, allowed_scope_types)
+       VALUES ($1, $2, 'Owner', true, 'owner', $3, $4)`,
+      [
+        roleId,
+        otherTenant,
+        JSON.stringify(["profit_share.registry.manage"]),
+        JSON.stringify(["tenant"]),
+      ],
+    );
+    await pg.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $2)`,
+      [otherTenant, foreignOwner.userId, roleId],
+    );
+    const line = await legacyLine(bob, true);
+    const refused = await post(tenantOwner, resolvePath(line.lineId), {
+      recipientUserId: foreignOwner.userId,
+      note: NOTE,
+    });
+    expectRefused(refused);
+    expect(await lineRow(line.lineId)).toEqual(stillUnverified);
+  });
+
+  it("(o) an Owner role assigned only at outlet scope (same tenant) is refused", async () => {
+    const bob = await shareholderUser("Bob Owner Outlet");
+    const outletOwner = await signedIn("Owner Lingkup Outlet");
+    const outlet = await pg.query<{ id: string }>(
+      "SELECT id FROM outlets WHERE tenant_id = $1 LIMIT 1",
+      [tenantA],
+    );
+    expect(outlet.rowCount).toBeGreaterThan(0);
+    // Same Owner template role, but the assignment is bound to one outlet, not the tenant.
+    const assigned = await pg.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       SELECT $1, $2, id, 'outlet', $3, now() - interval '1 minute', $2 FROM roles
+        WHERE tenant_id = $1 AND template_key = 'owner'`,
+      [tenantA, outletOwner.userId, outlet.rows[0]!.id],
+    );
+    expect(assigned.rowCount).toBe(1);
+    const line = await legacyLine(bob, true);
+    const refused = await post(tenantOwner, resolvePath(line.lineId), {
+      recipientUserId: outletOwner.userId,
+      note: NOTE,
+    });
+    expectRefused(refused);
+    expect(await lineRow(line.lineId)).toEqual(stillUnverified);
+  });
+
   it("(h) a missing line answers 404 even when the recipient is not a member", async () => {
     const stranger = await signedIn("Orang Asing Baris Hilang");
     const missing = await post(tenantOwner, resolvePath(randomUUID()), {
@@ -1051,7 +1157,7 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
 
   async function bannedMember(name: string, expiresSql: string | null) {
     const person = await signedIn(name);
-    await customRole(person.userId, ["profit_share.registry.manage"]);
+    await assignTemplate(person.userId, "owner");
     await pg.query(
       `UPDATE "user"
           SET banned = true,
@@ -1062,7 +1168,7 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
     return person;
   }
 
-  it("(i) a banned member with a valid role assignment is refused (permanent ban)", async () => {
+  it("(i) a banned Owner with a valid role assignment is refused (permanent ban)", async () => {
     const bob = await shareholderUser("Bob Ban Permanen");
     const banned = await bannedMember("Anggota Ban Permanen", null);
     const line = await legacyLine(bob, true);
@@ -1074,7 +1180,7 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
     expect(await lineRow(line.lineId)).toEqual(stillUnverified);
   });
 
-  it("(j) a banned member whose ban ends in the future is refused", async () => {
+  it("(j) a banned Owner whose ban ends in the future is refused", async () => {
     const bob = await shareholderUser("Bob Ban Sementara");
     const banned = await bannedMember("Anggota Ban Sementara", "1 day");
     const line = await legacyLine(bob, true);
@@ -1086,7 +1192,7 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
     expect(await lineRow(line.lineId)).toEqual(stillUnverified);
   });
 
-  it("(k) a member whose ban already ended is accepted", async () => {
+  it("(k) an Owner whose ban already ended is accepted", async () => {
     const bob = await shareholderUser("Bob Ban Selesai");
     const past = await bannedMember("Anggota Ban Selesai", "-1 hour");
     const line = await legacyLine(bob, true);
@@ -1103,5 +1209,20 @@ describe("5 resolve recipient must be a tenant member or the shareholder's own l
       recipient_user_id: past.userId,
       recipient_unverified: false,
     });
+  });
+
+  it("(l) the shareholder's own login is refused while banned", async () => {
+    const holderLogin = await signedIn("Login Pemegang Ban");
+    await pg.query(
+      `UPDATE "user" SET banned = true, ban_expires = NULL WHERE id = $1`,
+      [holderLogin.userId],
+    );
+    const line = await legacyLine(holderLogin, true);
+    const refused = await post(tenantOwner, resolvePath(line.lineId), {
+      recipientUserId: holderLogin.userId,
+      note: NOTE,
+    });
+    expectRefused(refused);
+    expect(await lineRow(line.lineId)).toEqual(stillUnverified);
   });
 });

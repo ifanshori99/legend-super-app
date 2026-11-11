@@ -3220,3 +3220,8 @@ Langkah berikut CTO baru:
 - `resolveUnverifiedRecipientService`: penerima non-null harus punya role assignment valid di tenant (scope apa pun) atau menjadi `shareholders.user_id` milik pemegang saham baris itu, dan tidak ber-ban. Selain itu 422 `RECIPIENT_NOT_FOUND` (kode sama untuk akun tak ada dan akun tenant lain, tanpa bocor keberadaan akun). Cek di tx yang sama, `FOR SHARE` pada baris role assignment dan shareholder. `null` tetap boleh.
 - Test gagal-dulu: kasus (a) user tenant lain dan (b) tanpa keanggotaan gagal sebelum perbaikan (200). Sekarang 26/26 lulus, tsc api 0, prettier bersih.
 - Review architect (tingkat K): lolos dengan syarat; M1 (test lebih tegas, kadaluarsa, shareholder lain, UUID acak), L1 (ban), L2 (lock) dikerjakan. Butuh keputusan founder: anggota tenant berperan apa pun (mis. kasir) boleh jadi penerima dan lalu membaca laporan bagi hasil baris itu.
+
+### legend-16iyk keputusan founder W14 Q26: penerima hanya Owner atau login pemegang saham, 11 Nov 2026
+- `resolveUnverifiedRecipientService` jalur (a) kini hanya Owner tenant (`roles.templateKey='owner'`, `scopeType='tenant'`, valid sekarang, tidak ber-ban). Kasir, manajer, dan peran custom ditolak 422 `RECIPIENT_NOT_FOUND`. Jalur (b) (`shareholders.user_id` baris itu) tidak berubah. `FOR SHARE` kini juga mengunci baris `user`.
+- Test gagal-dulu: kasir dan manajer tenant sama dapat 200 sebelum perubahan (2 gagal dari 29). Sesudah: 32/32 lulus, tsc api 0, prettier bersih. Kasus baru: custom role dengan izin manage, Owner tenant lain, Owner scope outlet, Owner lain lulus, login pemegang saham ber-ban ditolak.
+- Review architect xhigh: approve; 3 celah test dan #4 (lock user) dikerjakan.
