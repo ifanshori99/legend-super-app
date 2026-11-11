@@ -400,11 +400,14 @@ const workedLogCondition = () =>
  * log on that business date that is valid (not rejected on review) or flagged
  * and accepted. Flagged and still pending/unreviewed does not count: the day
  * is deducted and reversed once the log is accepted (reconcile below).
+ * `employeeId` narrows the read to one employee (the fresh re-read under that
+ * employee's lock).
  */
 async function datesWorkedOrUnderReview(
   tx: Tx,
   tenantId: SettingsRow["tenantId"],
   range: { from: string; today: string },
+  employeeId?: string,
 ): Promise<Set<string>> {
   const logs = await tx
     .selectDistinct({
@@ -415,6 +418,9 @@ async function datesWorkedOrUnderReview(
     .where(
       and(
         eq(attendanceLogs.tenantId, tenantId),
+        employeeId === undefined
+          ? undefined
+          : eq(attendanceLogs.employeeId, employeeId),
         eq(attendanceLogs.type, "in"),
         gte(attendanceLogs.businessDate, range.from),
         lt(attendanceLogs.businessDate, range.today),
@@ -944,7 +950,11 @@ export async function applyCollectiveLeaveDeductions(
     // everywhere: employee lock, log/leave row, balance, ledger: the employee
     // lock is taken before the first reversal of each employee.
     let reversed = 0;
-    const locked = new Set<string>();
+    // Per employee, read right after its lock: a log rejected between the
+    // unlocked read above and the lock (decideAttendanceReview holds the lock)
+    // must not give its day back. A fresh statement in the same READ COMMITTED
+    // transaction sees that committed rejection.
+    const workedUnderLock = new Map<string, Set<string>>();
     const reconcile = [...deductedRows].sort(
       (a, b) =>
         a.employeeId.localeCompare(b.employeeId) ||
@@ -957,10 +967,18 @@ export async function applyCollectiveLeaveDeductions(
         carried.has(`${row.employeeId}|${row.leaveTypeId}`)
       )
         continue;
-      if (!locked.has(row.employeeId)) {
-        locked.add(row.employeeId);
+      let fresh = workedUnderLock.get(row.employeeId);
+      if (!fresh) {
         await lockEmployeeLeaveAttendance(tx, tenantId, row.employeeId);
+        fresh = await datesWorkedOrUnderReview(
+          tx,
+          tenantId,
+          { from, today },
+          row.employeeId,
+        );
+        workedUnderLock.set(row.employeeId, fresh);
       }
+      if (!fresh.has(`${row.employeeId}|${row.period}`)) continue;
       if (
         await reverseDeductedDay(tx, context, now, today, row, (after, id) =>
           audit(tx, context, actor, now, {

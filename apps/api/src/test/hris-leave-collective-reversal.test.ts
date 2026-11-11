@@ -1139,3 +1139,103 @@ describe("F3: the review refuses a log that changed employee between the read an
     });
   });
 });
+
+// ---- fix F4 (tier K, money): the daily job read "worked" before the employee
+// lock; a log rejected in between must not be given back as a reversal.
+
+const F4 = { rejected: "2049-05-12", accepted: "2049-05-13" } as const;
+
+describe("F4: the daily run re-reads the log under the employee lock", () => {
+  const lockName = (employeeId: string) =>
+    `hris:leave-attendance:${tenantId}:${employeeId.toLowerCase()}`;
+  const waitersOn = async (employeeId: string): Promise<number> => {
+    const { rows } = await owner.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_locks
+        WHERE locktype = 'advisory' AND NOT granted
+          AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
+      [lockName(employeeId)],
+    );
+    return rows[0]!.n;
+  };
+
+  /**
+   * Deducted day D (log flagged/pending at deduction), then the log becomes
+   * qualifying (valid). Tx A takes the employee lock and, when `rejectIt`,
+   * rejects the log without committing. The daily run (B) reads the log as
+   * qualifying, then queues on the employee lock; A commits; B finishes.
+   */
+  async function raceJobAgainstReview(date: string, rejectIt: boolean) {
+    await sql(
+      `INSERT INTO holidays (tenant_id, outlet_id, date, name, type)
+       VALUES ($1, $2, $3, $4, 'collective')
+       ON CONFLICT DO NOTHING`,
+      [tenantId, outletA, date, `CBREV collective ${date}`],
+    );
+    const e = await employee();
+    const logId = await writeLog(e.id, date, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    expect(await ledger(e.id, date)).toEqual([DEDUCTED]);
+    const used = await usedOf(e.id);
+    // Qualifying at the job's read time (route outside the review hook).
+    await sql(
+      `UPDATE attendance_logs SET validity = 'valid', review_status = 'none',
+              reviewed_by = NULL, reviewed_at = NULL WHERE id = $1`,
+      [logId],
+    );
+
+    const a = await owner.connect();
+    let finished = false;
+    let b: Promise<unknown> = Promise.resolve();
+    try {
+      await a.query("BEGIN");
+      await a.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      await a.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        lockName(e.id),
+      ]);
+      if (rejectIt)
+        await a.query(
+          `UPDATE attendance_logs SET validity = 'rejected', review_status = 'rejected',
+                  reviewed_by = 'reviewer', reviewed_at = now() WHERE id = $1`,
+          [logId],
+        );
+      b = run().finally(() => {
+        finished = true;
+      });
+      b.catch(() => undefined);
+      const deadline = Date.now() + 15_000;
+      while (!finished && (await waitersOn(e.id)) === 0) {
+        if (Date.now() > deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(finished, "the run must wait for the employee lock").toBe(false);
+      expect(await waitersOn(e.id)).toBeGreaterThan(0);
+    } finally {
+      await a.query("COMMIT").catch(() => undefined);
+      a.release();
+    }
+    await b;
+    return { e, used };
+  }
+
+  it("log rejected while the run waits for the lock: no reversal, used unchanged", async () => {
+    const { e, used } = await raceJobAgainstReview(F4.rejected, true);
+    expect(await ledger(e.id, F4.rejected)).toEqual([DEDUCTED]);
+    expect(await usedOf(e.id)).toBe(used);
+    await expectBalanceConsistent(e.id);
+  });
+
+  it("control: log still accepted after the wait: reversed once", async () => {
+    const { e, used } = await raceJobAgainstReview(F4.accepted, false);
+    expect(await ledger(e.id, F4.accepted)).toEqual([DEDUCTED, REVERSED]);
+    expect(await usedOf(e.id)).toBe(used - 1);
+    await run();
+    expect(await ledger(e.id, F4.accepted)).toEqual([DEDUCTED, REVERSED]);
+    await expectBalanceConsistent(e.id);
+  });
+});
