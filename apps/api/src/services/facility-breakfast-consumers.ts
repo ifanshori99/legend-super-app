@@ -452,7 +452,10 @@ async function dueOrderIds(
           status === "awaiting_payment"
             ? or(
                 isNull(accessTickets.id),
-                inArray(accessTickets.status, [...DEAD_TICKET_STATUSES]),
+                inArray(
+                  accessTickets.status,
+                  DEAD_TICKET_STATUSES as (typeof accessTickets.$inferSelect.status)[],
+                ),
                 lte(accessTickets.endsAt, now),
               )
             : undefined,
