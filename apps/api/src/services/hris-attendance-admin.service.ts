@@ -402,23 +402,25 @@ async function toReviewItem(
     )
     .orderBy(desc(attendanceLogs.occurredAt), desc(attendanceLogs.id))
     .limit(1);
-  const snapshot = row.leaveSnapshot;
-  // Same rule as the cancel_leave decision: both rights at the clock-in
-  // outlet, and the leave approval right also at the leave's own outlet.
+  // The leave snapshot is only shown to a caller who holds hr.leave.approve
+  // (the only hr.leave.* right) at the leave's own outlet; everyone else gets
+  // leave null and no cancel right, so no leave type or id leaks.
+  const snapshot =
+    row.leaveSnapshot !== null &&
+    access.snapshot.allows("hr.leave.approve", {
+      type: "outlet",
+      id: row.leaveSnapshot.leaveOutletId,
+    })
+      ? row.leaveSnapshot
+      : null;
+  // Cancelling needs attendance management at the clock-in outlet plus the
+  // leave approval right at the leave's outlet (already proven by `snapshot`).
   const canCancelLeave =
     snapshot !== null &&
     row.reviewStatus === "pending" &&
     access.snapshot.allows("hr.attendance.manage", {
       type: "outlet",
       id: row.outletId,
-    }) &&
-    access.snapshot.allows("hr.leave.approve", {
-      type: "outlet",
-      id: row.outletId,
-    }) &&
-    access.snapshot.allows("hr.leave.approve", {
-      type: "outlet",
-      id: snapshot.leaveOutletId,
     });
   // legend-whiwv: an edge event can name any selfie id. Never sign an object
   // that is linked to another log, or unlinked at another outlet than this
@@ -840,14 +842,9 @@ export async function decideAttendanceReview(
         })
       )
         throw forbidden();
-      if (
-        body.action === "cancel_leave" &&
-        !access.snapshot.allows("hr.leave.approve", {
-          type: "outlet",
-          id: row.outletId,
-        })
-      )
-        throw forbidden();
+      // cancel_leave: the leave approval right is checked per leave, at the
+      // leave's own outlet, inside cancelApprovedLeaveOnDateByHr (403 rolls
+      // the whole decision back). Same rule `canCancelLeave` shows the UI.
     }
     const holds = reviewAlreadyHolds(row, body.action);
     if (holds)
