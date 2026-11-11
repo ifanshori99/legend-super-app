@@ -20,11 +20,16 @@
 //    hits (the override is applied elsewhere, in sales-gate.ts).
 //  - `salesGate.staleStreams` lists the offending stream names, and
 //    `salesGate.staleSince` is the oldest lastSuccess (or trackingStartedAt).
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CRITICAL_CATALOG_STREAMS,
+  catalogFreshnessToDto,
   createCatalogFreshness,
 } from "./catalog-freshness.ts";
+import {
+  installSalesGateProvider,
+  setSalesGateEdgeModeForTests,
+} from "./sales-gate.ts";
 import { createTrustedClock } from "./trusted-clock.ts";
 
 const MIN = 60_000;
@@ -362,5 +367,51 @@ describe("legend-10nex a last success in the future cannot hide a stale catalog"
     const snap = freshness.snapshot();
     expect(snap.streams[STREAM_A]?.ageMs).toBeGreaterThanOrEqual(0);
     expect(snap.streams[STREAM_B]?.ageMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// F6 (architect): /api/edge/status is readable by any outlet staff, so the
+// override in its DTO must not reveal who granted it or why. Assumption: the DTO
+// reads the live sales-gate state; the end time stays so the cashier sees
+// "diizinkan sampai HH:MM".
+describe("legend-10nex the status DTO hides who granted the override and why", () => {
+  afterEach(() => {
+    installSalesGateProvider(null);
+    setSalesGateEdgeModeForTests(null);
+  });
+
+  it("carries the end time but neither grantedBy nor reason", () => {
+    const untilAt = new Date(T0.getTime() + 4 * HOUR);
+    const grantedBy = "user-owner-rahasia-123";
+    const reason = "Alasan pribadi owner";
+    setSalesGateEdgeModeForTests(() => true);
+    installSalesGateProvider(() => ({
+      blocked: false,
+      stale24h: true,
+      reason: "CATALOG_STALE_24H",
+      staleSince: T0,
+      staleStreams: [STREAM_A],
+      override: {
+        id: "ovr-1",
+        grantedBy,
+        grantedAt: T0,
+        untilAt,
+        reason,
+      },
+    }));
+    const { freshness } = setup();
+    const dto = catalogFreshnessToDto(freshness.snapshot());
+    const text = JSON.stringify(dto);
+    expect(text).not.toContain(grantedBy);
+    expect(text).not.toContain(reason);
+    const override = (
+      dto as unknown as {
+        salesGate: { override: Record<string, unknown> | null };
+      }
+    ).salesGate.override;
+    expect(override).not.toBeNull();
+    expect(override).not.toHaveProperty("grantedBy");
+    expect(override).not.toHaveProperty("reason");
+    expect(override?.untilAt).toBe(untilAt.toISOString());
   });
 });

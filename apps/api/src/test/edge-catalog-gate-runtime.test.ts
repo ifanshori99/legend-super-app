@@ -448,7 +448,8 @@ describe("legend-10nex a grant made while a sync close is in flight is not dropp
     const fresh: CatalogGateOverride = {
       id: randomUUID(),
       grantedBy: randomUUID(),
-      grantedAt: new Date(T0.getTime() + MIN),
+      // Not after the trusted now (T0): the gate ignores a grant dated in its future.
+      grantedAt: T0,
       untilAt: new Date(T0.getTime() + 8 * HOUR),
       reason: "Baru",
     };
@@ -482,5 +483,154 @@ describe("legend-10nex a grant made while a sync close is in flight is not dropp
     // The close was asked for the override that was observed.
     expect(JSON.stringify(close.mock.calls[0])).toContain(old.id);
     expect(getSalesGateState().override?.id).toBe(fresh.id);
+  });
+});
+
+// F1 (architect): the gate provider re-checks a cached override against the
+// trusted clock. A grant dated after the trusted now, or one that runs more
+// than 24 hours past it, can only come from a skewed clock or a planted row.
+describe("legend-10nex the gate ignores overrides that cannot be real", () => {
+  const stale = async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const stubbed = overrideStub();
+    const gate = await start(rig, clock, { overrides: stubbed.stub, seed: T0 });
+    clock.tick(DAY + HOUR); // over 24 hours without a sync
+    expect(getSalesGateState().blocked).toBe(true);
+    return { gate, clock, stubbed };
+  };
+  const make = (grantedAt: Date, untilAt: Date): CatalogGateOverride => ({
+    id: randomUUID(),
+    grantedBy: randomUUID(),
+    grantedAt,
+    untilAt,
+    reason: "Uji",
+  });
+
+  it("an override granted in the future of the trusted now does not unblock sales", async () => {
+    const { gate, clock } = await stale();
+    const now = clock.wall().getTime();
+    gate.applyOverrideChange(
+      make(new Date(now + 2 * HOUR), new Date(now + 6 * HOUR)),
+    );
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      override: null,
+    });
+  });
+
+  it("an override that ends more than 24 hours after the trusted now does not unblock sales", async () => {
+    const { gate, clock } = await stale();
+    const now = clock.wall().getTime();
+    gate.applyOverrideChange(
+      make(new Date(now - HOUR), new Date(now + 25 * HOUR)),
+    );
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      override: null,
+    });
+  });
+
+  it("control: a valid override unblocks", async () => {
+    const { gate, clock } = await stale();
+    const now = clock.wall().getTime();
+    gate.applyOverrideChange(
+      make(new Date(now - MIN), new Date(now + 4 * HOUR)),
+    );
+    expect(getSalesGateState().blocked).toBe(false);
+  });
+
+  it("the same checks apply to an override loaded at boot", async () => {
+    const rig = await newEdge();
+    const clock = clocks(new Date(T0.getTime() + DAY + HOUR));
+    const now = clock.wall().getTime();
+    const planted = overrideStub(
+      make(new Date(now + HOUR), new Date(now + 5 * HOUR)),
+    );
+    await start(rig, clock, { overrides: planted.stub, seed: T0 });
+    expect(getSalesGateState().blocked).toBe(true);
+  });
+});
+
+// F3 (architect): a clock set back across a restart holds sales with reason
+// CLOCK_REGRESSED (not the 24-hour reason), unless a valid override exists.
+describe("legend-10nex a regressed device clock holds sales", () => {
+  const storeHighWater = async (rig: Rig, at: Date) =>
+    saveCatalogGateState(rig.context, rig.scope, {
+      trackingStartedAt: T0,
+      clockHighWaterAt: at,
+    });
+
+  it("blocks with CLOCK_REGRESSED, and clears once the wall clock is correct again", async () => {
+    const rig = await newEdge();
+    await storeHighWater(rig, new Date(T0.getTime() + DAY));
+    const clock = clocks(T0); // the device date is one day behind what was stored
+    // Everything was synced "just now" in trusted time.
+    await start(rig, clock, { seed: new Date(T0.getTime() + DAY) });
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      reason: "CLOCK_REGRESSED",
+    });
+
+    clock.setWall(new Date(T0.getTime() + DAY + HOUR)); // date corrected
+    const state = getSalesGateState();
+    expect(state.blocked).toBe(false);
+    expect(state.reason).toBeNull();
+  });
+
+  it("a valid owner override lets sales through while the clock is regressed", async () => {
+    const rig = await newEdge();
+    await storeHighWater(rig, new Date(T0.getTime() + DAY));
+    const clock = clocks(T0);
+    const trustedNow = T0.getTime() + DAY;
+    const stubbed = overrideStub({
+      id: randomUUID(),
+      grantedBy: randomUUID(),
+      grantedAt: new Date(trustedNow - MIN),
+      untilAt: new Date(trustedNow + 4 * HOUR),
+      reason: "Jam perangkat salah",
+    });
+    await start(rig, clock, {
+      overrides: stubbed.stub,
+      seed: new Date(trustedNow),
+    });
+    const state = getSalesGateState();
+    expect(state.blocked).toBe(false);
+    expect(state.override).not.toBeNull();
+  });
+
+  it("tolerates a wall clock less than 5 minutes behind the stored high water", async () => {
+    const rig = await newEdge();
+    await storeHighWater(rig, new Date(T0.getTime() + 4 * MIN));
+    await start(rig, clocks(T0), { seed: new Date(T0.getTime() + 4 * MIN) });
+    expect(getSalesGateState()).toMatchObject({ blocked: false, reason: null });
+  });
+});
+
+// F4 (architect): a grant committed after the boot load but before the listener
+// is registered must not be lost; the startup reload picks it up.
+// Assumption: `refreshOverride()` is that reload (the runtime calls it after
+// registering the listener); the call order inside runtime.ts itself needs the
+// whole boot and is not unit tested here.
+describe("legend-10nex a grant made during startup is visible after the reload", () => {
+  it("shows an override committed after the boot load once refreshOverride runs", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const stubbed = overrideStub(null); // nothing at boot
+    const gate = await start(rig, clock, { overrides: stubbed.stub, seed: T0 });
+    clock.tick(DAY + HOUR);
+    expect(getSalesGateState().blocked).toBe(true);
+
+    const now = clock.wall().getTime();
+    stubbed.set({
+      id: randomUUID(),
+      grantedBy: randomUUID(),
+      grantedAt: new Date(now - MIN),
+      untilAt: new Date(now + 4 * HOUR),
+      reason: "Saat startup",
+    }); // committed, the listener was not registered yet
+    await gate.refreshOverride();
+    expect(getSalesGateState()).toMatchObject({ blocked: false });
+    expect(getSalesGateState().override?.reason).toBe("Saat startup");
   });
 });

@@ -147,3 +147,41 @@ describe("legend-10nex edge process", () => {
     expect(getSalesGateState().reason).toBe("GATE_UNAVAILABLE");
   });
 });
+
+// F5 (architect): only the 24-hour rule may say "24 jam"; the other holds must
+// not blame the catalog age.
+describe("legend-10nex hold messages match their reason", () => {
+  const message = (reason: SalesGateState["reason"]) => {
+    setSalesGateEdgeModeForTests(() => true);
+    installSalesGateProvider(() => ({
+      ...stale,
+      stale24h: reason === "CATALOG_STALE_24H",
+      reason,
+      staleStreams: [],
+    }));
+    const error = thrown(() => assertCatalogSalesAllowed());
+    expect(error).toBeInstanceOf(CoreError);
+    return (error as CoreError).message;
+  };
+
+  it("keeps the 24-hour text for CATALOG_STALE_24H", () => {
+    expect(message("CATALOG_STALE_24H")).toBe(BLOCKED_MESSAGE);
+  });
+
+  it.each(["GATE_UNAVAILABLE", "CLOCK_REGRESSED"] as const)(
+    "%s does not say the catalog is over 24 hours old",
+    (reason) => {
+      const text = message(reason as SalesGateState["reason"]);
+      expect(text.length).toBeGreaterThan(10);
+      expect(text).not.toMatch(/24 jam/i);
+      expect(text).not.toBe(BLOCKED_MESSAGE);
+    },
+  );
+
+  it("no provider installed (GATE_UNAVAILABLE) uses the same non-24h text", () => {
+    setSalesGateEdgeModeForTests(() => true);
+    installSalesGateProvider(null);
+    const error = thrown(() => assertCatalogSalesAllowed());
+    expect((error as CoreError).message).not.toMatch(/24 jam/i);
+  });
+});

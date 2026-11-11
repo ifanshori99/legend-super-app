@@ -40,7 +40,9 @@ import { seededOutletA, seededTenantId } from "./floor-test-helpers.ts";
 import {
   closeCatalogOverrides,
   grantCatalogOverride,
+  isCatalogOverrideClockReady,
   loadActiveCatalogOverride,
+  setCatalogOverrideClock,
   setCatalogOverrideListener,
 } from "../edge/catalog-override.ts";
 
@@ -127,6 +129,9 @@ const grant = (
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  // The runtime installs the trusted clock at boot; a grant is refused (503
+  // EDGE_CLOCK_NOT_READY) before. Every test passes its own `now` explicitly.
+  setCatalogOverrideClock(() => T0);
   await owner.query(
     `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, 'Owner Override', $2, true)`,
     [ownerUserId, `ovr-${randomBytes(4).toString("hex")}@example.test`],
@@ -138,6 +143,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  setCatalogOverrideClock(null);
   try {
     await owner.query(
       "DELETE FROM edge_catalog_sale_overrides WHERE edge_node_id = ANY($1::uuid[])",
@@ -472,4 +478,109 @@ describe("legend-10nex two concurrent grants leave exactly one active row", () =
       ).not.toBeNull();
     },
   );
+});
+
+describe("legend-10nex the trusted clock gates the override service", () => {
+  afterEach(() => {
+    setCatalogOverrideClock(() => T0); // back to the suite's installed clock
+  });
+
+  it("is not ready until the runtime installs the trusted clock", () => {
+    setCatalogOverrideClock(null);
+    expect(isCatalogOverrideClockReady()).toBe(false);
+    setCatalogOverrideClock(() => new Date());
+    expect(isCatalogOverrideClockReady()).toBe(true);
+    setCatalogOverrideClock(null);
+    expect(isCatalogOverrideClockReady()).toBe(false);
+  });
+});
+
+describe("legend-10nex rows that cannot be real are ignored (planted or clock-skewed)", () => {
+  async function plant(
+    node: string,
+    row: { grantedAt: Date; untilAt: Date; reason: string },
+  ) {
+    const { context, outletId } = depsOf(node) as unknown as {
+      context: { tenant: { tenantId: string } };
+      outletId: string;
+    };
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [context.tenant.tenantId],
+      );
+      await client.query(
+        `INSERT INTO edge_catalog_sale_overrides
+           (id, tenant_id, outlet_id, edge_node_id, granted_by, granted_at, until_at, reason)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          randomUUID(),
+          context.tenant.tenantId,
+          outletId,
+          node,
+          ownerUserId,
+          row.grantedAt,
+          row.untilAt,
+          row.reason,
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const load = (node: string, now: Date) =>
+    loadActiveCatalogOverride(depsOf(node), { edgeNodeId: node, now });
+
+  it("control: a normal row is returned", async () => {
+    const node = await newNode();
+    await plant(node, {
+      grantedAt: new Date(T0.getTime() - MIN),
+      untilAt: new Date(T0.getTime() + 4 * HOUR_MS),
+      reason: "Normal",
+    });
+    expect((await load(node, T0))?.reason).toBe("Normal");
+  });
+
+  it("a row granted in the future of the trusted now is ignored", async () => {
+    const node = await newNode();
+    await plant(node, {
+      grantedAt: new Date(T0.getTime() + HOUR_MS),
+      untilAt: new Date(T0.getTime() + 3 * HOUR_MS),
+      reason: "Dari masa depan",
+    });
+    expect(await load(node, T0)).toBeNull();
+    // Once the trusted clock really reaches the grant time it is a real row.
+    expect(
+      (await load(node, new Date(T0.getTime() + 2 * HOUR_MS)))?.reason,
+    ).toBe("Dari masa depan");
+  });
+
+  it("a window longer than 24 hours cannot even be stored (database check)", async () => {
+    // So "ends more than 24 hours after the trusted now" can only be reached
+    // through a future grantedAt, which the previous test covers.
+    const node = await newNode();
+    await expect(
+      plant(node, {
+        grantedAt: new Date(T0.getTime() - HOUR_MS),
+        untilAt: new Date(T0.getTime() + 25 * HOUR_MS),
+        reason: "Terlalu panjang",
+      }),
+    ).rejects.toThrow(/window_check/);
+  });
+
+  it("a row ending exactly 24 hours after the trusted now is still accepted", async () => {
+    const node = await newNode();
+    await plant(node, {
+      grantedAt: T0,
+      untilAt: new Date(T0.getTime() + 24 * HOUR_MS),
+      reason: "Tepat 24 jam",
+    });
+    expect((await load(node, T0))?.reason).toBe("Tepat 24 jam");
+  });
 });

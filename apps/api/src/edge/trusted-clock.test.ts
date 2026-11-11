@@ -131,3 +131,51 @@ describe("legend-10nex high water", () => {
     );
   });
 });
+
+// F3 (architect): a persisted high water well ahead of the wall clock means the
+// device date was set back across a restart. The clock reports `regressed`.
+// Assumption: `regressed` is a boolean property or a no-argument method (both
+// are read); it is true when persistedHighWater is more than 5 minutes ahead of
+// the wall clock, and clears once the wall clock is no longer behind it.
+describe("legend-10nex clock regression is reported", () => {
+  const regressedOf = (clock: unknown): boolean => {
+    const value = (clock as { regressed: boolean | (() => boolean) }).regressed;
+    return typeof value === "function" ? value() : value;
+  };
+
+  it("is false on a normal first boot and when the stored high water is behind the wall", () => {
+    expect(regressedOf(rig(null).clock)).toBe(false);
+    expect(regressedOf(rig(new Date(T0.getTime() - 2 * HOUR)).clock)).toBe(
+      false,
+    );
+  });
+
+  it("is true when the high water is one day ahead of the wall clock", () => {
+    const { clock } = rig(new Date(T0.getTime() + 24 * HOUR));
+    expect(regressedOf(clock)).toBe(true);
+    // Time itself still never goes back.
+    expect(clock.now().getTime()).toBeGreaterThanOrEqual(
+      T0.getTime() + 24 * HOUR,
+    );
+  });
+
+  it("tolerates a wall clock less than 5 minutes behind the high water", () => {
+    expect(regressedOf(rig(new Date(T0.getTime() + 4 * 60_000)).clock)).toBe(
+      false,
+    );
+  });
+
+  it("flags a wall clock more than 5 minutes behind the high water", () => {
+    expect(regressedOf(rig(new Date(T0.getTime() + 6 * 60_000)).clock)).toBe(
+      true,
+    );
+  });
+
+  it("clears after the wall clock catches up with the trusted time", () => {
+    const { clock, setWall, tick } = rig(new Date(T0.getTime() + 24 * HOUR));
+    tick(HOUR);
+    expect(regressedOf(clock)).toBe(true);
+    setWall(new Date(clock.now().getTime() + 1000)); // date corrected
+    expect(regressedOf(clock)).toBe(false);
+  });
+});

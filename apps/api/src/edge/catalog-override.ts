@@ -9,7 +9,7 @@
 // by the database clock, so a wall clock set backwards cannot extend an
 // override. The sales-gate provider keeps a cached copy and is told about each
 // change through `setCatalogOverrideListener`.
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte } from "drizzle-orm";
 import { z } from "zod";
 import {
   createUlid,
@@ -22,6 +22,7 @@ import {
   type EdgeCatalogOverrideClosedReason,
 } from "../db/schema/edge-catalog-sale-overrides.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "../services/core-audit.ts";
 
 type Database = typeof db;
@@ -75,10 +76,20 @@ export const CATALOG_OVERRIDE_AUDIT_SAFE_FIELDS = [
 ] as const;
 
 let clock: () => Date = () => new Date();
+let clockReady = false;
 
-/** edge/runtime.ts installs the trusted clock; null restores the wall clock. */
+/**
+ * edge/runtime.ts installs the trusted clock; null restores the wall clock and
+ * marks the clock not ready (no grant is accepted on an untrusted clock).
+ */
 export function setCatalogOverrideClock(next: (() => Date) | null): void {
   clock = next ?? (() => new Date());
+  clockReady = next !== null;
+}
+
+/** True only while the trusted clock is installed (between runtime start and stop). */
+export function isCatalogOverrideClockReady(): boolean {
+  return clockReady;
 }
 
 /** Now by the edge's trusted clock (wall clock until the runtime installs it). */
@@ -86,18 +97,19 @@ export function catalogOverrideNow(): Date {
   return clock();
 }
 
-let listener: ((change: CatalogOverrideChange) => void) | null = null;
+let listener: ((change: CatalogOverrideChange) => void | Promise<void>) | null =
+  null;
 
 /** Installed by edge/runtime.ts; called after a grant or close has committed. */
 export function setCatalogOverrideListener(
-  next: ((change: CatalogOverrideChange) => void) | null,
+  next: ((change: CatalogOverrideChange) => void | Promise<void>) | null,
 ): void {
   listener = next;
 }
 
-function notify(change: CatalogOverrideChange): void {
+async function notify(change: CatalogOverrideChange): Promise<void> {
   try {
-    listener?.(change);
+    await listener?.(change);
   } catch {
     // The change is committed; a broken cache listener must not fail the caller.
   }
@@ -138,6 +150,14 @@ export async function grantCatalogOverride(
     now: Date;
   },
 ): Promise<CatalogOverride> {
+  // An override must never outlive 24 h: without the trusted clock the expiry
+  // cannot be trusted, so refuse the grant.
+  if (!clockReady)
+    throw new HttpError(
+      503,
+      "EDGE_CLOCK_NOT_READY",
+      "Jam edge belum siap. Coba lagi sebentar.",
+    );
   const { minutes, reason } = catalogOverrideInputSchema.parse({
     minutes: input.minutes,
     reason: input.reason,
@@ -227,7 +247,9 @@ export async function grantCatalogOverride(
     granted = await grantOnce();
   }
 
-  notify({ kind: "granted", override: granted });
+  // Awaited so the gate cache and the clock high water are saved before the
+  // owner sees success.
+  await notify({ kind: "granted", override: granted });
   return granted;
 }
 
@@ -247,6 +269,15 @@ export async function loadActiveCatalogOverride(
         and(
           activeWhere(input.edgeNodeId),
           gt(edgeCatalogSaleOverrides.untilAt, input.now),
+          // Never in the future of the trusted clock, never more than 24 h out:
+          // such a row is ignored (it stays as evidence).
+          lte(edgeCatalogSaleOverrides.grantedAt, input.now),
+          lte(
+            edgeCatalogSaleOverrides.untilAt,
+            new Date(
+              input.now.getTime() + CATALOG_OVERRIDE_MAX_MINUTES * 60_000,
+            ),
+          ),
         ),
       )
       .orderBy(desc(edgeCatalogSaleOverrides.grantedAt))
@@ -283,6 +314,6 @@ export async function closeCatalogOverrides(
       )
       .returning({ id: edgeCatalogSaleOverrides.id }),
   );
-  if (closed.length > 0) notify({ kind: "closed", reason: input.reason });
+  if (closed.length > 0) await notify({ kind: "closed", reason: input.reason });
   return closed.length;
 }

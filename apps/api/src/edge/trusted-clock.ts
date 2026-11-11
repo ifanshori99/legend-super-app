@@ -10,9 +10,18 @@
 // accepted: it can only block earlier, and an owner override still works.
 export type TrustedClock = {
   now(): Date;
+  /**
+   * True when, at boot, the wall clock was more than 5 minutes behind the
+   * persisted high water, until the wall clock catches up to it. Once false it
+   * stays false.
+   */
+  regressed(): boolean;
   /** Highest trusted time returned so far; persist this. */
   highWater(): Date;
 };
+
+/** A wall clock this far behind the persisted high water at boot is a regression. */
+export const CLOCK_REGRESSION_TOLERANCE_MS = 5 * 60_000;
 
 export function createTrustedClock(
   options: {
@@ -25,12 +34,15 @@ export function createTrustedClock(
   const wall = options.wall ?? (() => new Date());
   const mono = options.mono ?? (() => performance.now());
   const persisted = options.persistedHighWater?.getTime();
-  const anchorWall = Math.max(
-    wall().getTime(),
-    persisted !== undefined && Number.isFinite(persisted)
-      ? persisted
-      : -Infinity,
-  );
+  const bootWall = wall().getTime();
+  const persistedMs =
+    persisted !== undefined && Number.isFinite(persisted) ? persisted : null;
+  const anchorWall = Math.max(bootWall, persistedMs ?? -Infinity);
+  let regressedUntil =
+    persistedMs !== null &&
+    bootWall < persistedMs - CLOCK_REGRESSION_TOLERANCE_MS
+      ? persistedMs
+      : null;
   const anchorMono = mono();
   let high = anchorWall;
 
@@ -46,6 +58,11 @@ export function createTrustedClock(
 
   return {
     now: () => new Date(read()),
+    regressed: () => {
+      if (regressedUntil === null) return false;
+      if (wall().getTime() >= regressedUntil) regressedUntil = null;
+      return regressedUntil !== null;
+    },
     highWater: () => new Date(read()),
   };
 }

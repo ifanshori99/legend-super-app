@@ -175,23 +175,28 @@ export function CatalogSalesNotice() {
   ) : null;
 
   if (gate?.blocked) {
-    const unavailable = gate.reason === "GATE_UNAVAILABLE";
+    const clockRegressed = gate.reason === "CLOCK_REGRESSED";
+    const unavailable = gate.reason === "GATE_UNAVAILABLE" || clockRegressed;
     const since = formatHourMinute(gate.staleSince);
     return (
       <Notice
         tone="danger"
         title={
-          unavailable
-            ? CATALOG_COPY.unavailableTitle
-            : CATALOG_COPY.blockedTitle
+          clockRegressed
+            ? CATALOG_COPY.clockRegressedTitle
+            : unavailable
+              ? CATALOG_COPY.unavailableTitle
+              : CATALOG_COPY.blockedTitle
         }
         className="mb-4"
         data-catalog-sales="blocked"
       >
         <p>
-          {unavailable
-            ? CATALOG_COPY.unavailableHint
-            : CATALOG_COPY.blockedHint}
+          {clockRegressed
+            ? CATALOG_COPY.clockRegressedHint
+            : unavailable
+              ? CATALOG_COPY.unavailableHint
+              : CATALOG_COPY.blockedHint}
           {since && !unavailable ? ` ${CATALOG_COPY.sinceLine(since)}` : ""}
         </p>
         {canGrant && <OverrideAction />}
@@ -210,7 +215,6 @@ export function CatalogSalesNotice() {
           className="mb-4"
           data-catalog-sales="override"
         >
-          <p>{gate.override.reason}</p>
           <p>{CATALOG_COPY.overrideHint}</p>
         </Notice>
       </>

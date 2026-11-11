@@ -16,6 +16,11 @@
 //    other than OWNER (outlet manager, supervisor, cashier) answers 403;
 //    no session answers 401.
 //  - The response is `{ data: {...} | null }`.
+//  - Second factor (F2, same rule as pos-receipt-writeoff): no verification is
+//    403 MFA_REQUIRED, one older than 5 minutes 401 REAUTH_REQUIRED; nothing is
+//    written in both cases. Error code is read from `error.code` or `code`.
+//  - F1: before the trusted clock is installed (setCatalogOverrideClock(null))
+//    a grant answers 503 EDGE_CLOCK_NOT_READY and writes nothing.
 //  - The process is made the edge node of a cloned outlet through
 //    setEdgeRuntimeStateForTests (as device-edge.test.ts does).
 //  - Rows are told apart by `granted_by` (the test user), so no edge node id
@@ -32,6 +37,7 @@ import {
   getEdgeRuntimeState,
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
+import { setCatalogOverrideClock } from "../edge/catalog-override.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import {
   agent,
@@ -63,6 +69,8 @@ async function staffWithRole(
   input: {
     template: "owner" | "outlet_manager" | "supervisor" | "cashier";
     label: string;
+    /** Mark the session's second factor as verified (default true). */
+    mfa?: boolean;
   },
 ): Promise<Staff> {
   const email = await signUp(agent(createApp()), input.label);
@@ -73,7 +81,7 @@ async function staffWithRole(
     .set(originHeader)
     .send({ email, password: "Test-password-123!" });
   expect(signIn.status).toBe(200);
-  await verifySessionMfa(email);
+  if (input.mfa !== false) await verifySessionMfa(email);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   const { rows } = await pool.query<{ id: string }>(
@@ -163,6 +171,8 @@ beforeAll(async () => {
     randomUUID() as never,
     { outletId, role: "standby", label: "Mini PC uji override rute" } as never,
   );
+  // The runtime installs the trusted clock at boot; a grant is refused before.
+  setCatalogOverrideClock(() => new Date());
   setEdgeRuntimeStateForTests({
     edgeMode: true,
     identity: {
@@ -187,6 +197,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  setCatalogOverrideClock(null);
   setEdgeRuntimeStateForTests(cloudState);
   const ids = [ownerStaff, ...Object.values(others)].map((s) => s.userId);
   await pool.query(
@@ -330,5 +341,71 @@ describe("legend-10nex a second grant replaces the first", () => {
     expect(JSON.stringify(current.body)).toContain("Kedua");
     expect(JSON.stringify(current.body)).not.toContain("Pertama");
     expect(body(current)).toBeTruthy();
+  });
+});
+
+const errorCode = (body: { error?: { code?: string }; code?: string }) =>
+  body.error?.code ?? body.code;
+
+describe("legend-10nex granting needs a recent second factor", () => {
+  it("an owner without a verified second factor is refused (403 MFA_REQUIRED) and nothing is written", async () => {
+    const noMfa = await staffWithRole(app, {
+      template: "owner",
+      label: "Owner Tanpa MFA",
+      mfa: false,
+    });
+    const res = await post(noMfa, { minutes: 60, reason: REASON });
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(errorCode(res.body)).toBe("MFA_REQUIRED");
+    expect(await rowsOf(noMfa.userId)).toHaveLength(0);
+    expect(await auditCount(noMfa.userId)).toBe(0);
+    await pool.query(
+      "DELETE FROM edge_catalog_sale_overrides WHERE granted_by = $1",
+      [noMfa.userId],
+    );
+  });
+
+  it("a second factor verified 10 minutes ago is refused (401 REAUTH_REQUIRED); verifying again lets the same call through", async () => {
+    const stale = await staffWithRole(app, {
+      template: "owner",
+      label: "Owner MFA Basi",
+    });
+    await pool.query(
+      `UPDATE "session" SET mfa_verified_at = $2 WHERE revoked_at IS NULL AND user_id = $1`,
+      [stale.userId, new Date(Date.now() - 10 * 60_000)],
+    );
+    const refused = await post(stale, { minutes: 60, reason: REASON });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(401);
+    expect(errorCode(refused.body)).toBe("REAUTH_REQUIRED");
+    expect(await rowsOf(stale.userId)).toHaveLength(0);
+
+    await pool.query(
+      `UPDATE "session" SET mfa_verified_at = $2 WHERE revoked_at IS NULL AND user_id = $1`,
+      [stale.userId, new Date()],
+    );
+    const ok = await post(stale, { minutes: 60, reason: REASON });
+    expect([200, 201], JSON.stringify(ok.body)).toContain(ok.status);
+    expect(await rowsOf(stale.userId)).toHaveLength(1);
+    await pool.query(
+      "DELETE FROM edge_catalog_sale_overrides WHERE granted_by = $1",
+      [stale.userId],
+    );
+  });
+});
+
+describe("legend-10nex granting waits for the trusted clock", () => {
+  it("answers 503 EDGE_CLOCK_NOT_READY before the clock is installed and writes nothing", async () => {
+    const before = (await rowsOf(ownerStaff.userId)).length;
+    setCatalogOverrideClock(null);
+    try {
+      const res = await post(ownerStaff, { minutes: 60, reason: REASON });
+      expect(res.status, JSON.stringify(res.body)).toBe(503);
+      expect(errorCode(res.body)).toBe("EDGE_CLOCK_NOT_READY");
+      expect(await rowsOf(ownerStaff.userId)).toHaveLength(before);
+    } finally {
+      setCatalogOverrideClock(() => new Date());
+    }
+    const again = await post(ownerStaff, { minutes: 60, reason: REASON });
+    expect([200, 201], JSON.stringify(again.body)).toContain(again.status);
   });
 });

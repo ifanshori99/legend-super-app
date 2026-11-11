@@ -1040,6 +1040,14 @@ export async function startEdgeRuntime(
       seedCatalogFreshness(tracker, local.context, local.scope.edgeNodeId),
     onError: (error) =>
       logger.warn(safeError(error), "Edge catalog sales gate step failed"),
+    onClockRegressed: ({ wallNow, highWater }) =>
+      logger.warn(
+        {
+          wallNow: wallNow.toISOString(),
+          highWater: highWater.toISOString(),
+        },
+        "Edge wall clock is behind the saved high water; sales are held (CLOCK_REGRESSED) until it catches up or an owner allows them",
+      ),
   });
   const freshness = catalogGate.freshness;
   catalogFreshness = freshness;
@@ -1050,6 +1058,9 @@ export async function startEdgeRuntime(
       change.kind === "granted" ? change.override : null,
     ),
   );
+  // A grant committed between the gate's boot load and the listener above
+  // would be missed: load the active override once more.
+  await catalogGate.refreshOverride();
   const masterSync = startEdgeMasterSyncLoop({
     config,
     intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,

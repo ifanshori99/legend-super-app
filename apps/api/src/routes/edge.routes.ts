@@ -18,11 +18,15 @@
 //                           STATUS_READ_PERMISSIONS on this outlet.
 //   GET|POST /api/edge/catalog-override  owner only (legend-10nex): read or
 //                         grant the time-boxed override of the 24 h stale
-//                         catalog sales block. Works offline.
+//                         catalog sales block. Works offline. The grant also
+//                         needs a recent second factor.
 import { Router, type Request, type RequestHandler } from "express";
 import { z } from "zod";
 import type { PermissionCode } from "@starter/shared/access";
-import { AccessError } from "@starter/shared/access";
+import {
+  AccessError,
+  ROLE_GRANT_REAUTH_MAX_AGE_MS,
+} from "@starter/shared/access";
 import { CoreError } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
@@ -56,6 +60,7 @@ import {
   resolveAccessSnapshot,
 } from "../services/permission-resolver.ts";
 import { findActiveDeviceForToken } from "../services/device-registry-check.ts";
+import { loadSessionRow } from "../services/identity-session.service.ts";
 import { getEdgeStatus } from "../services/edge-status.service.ts";
 
 /** Operational staff of the outlet may see its offline status (§4 Alur F). */
@@ -172,6 +177,29 @@ const ownerReader: RequestHandler = async (req, _res, next) => {
   next();
 };
 
+/**
+ * A grant lets sales run on an old catalog, so the session's second factor must
+ * be recent (same rule as the receipt write-off route, pos-receipt-writeoff
+ * .routes.ts, and the role-grant path): no verification is MFA_REQUIRED (403),
+ * a stale or future one is REAUTH_REQUIRED (401), and a revoked or expired
+ * session never counts. It reads the local session row, so it works offline.
+ */
+const recentSecondFactor: RequestHandler = async (req, _res, next) => {
+  const session = await loadSessionRow(getAuth(req).session.id);
+  const now = Date.now();
+  if (
+    session &&
+    (session.revokedAt !== null || session.expiresAt.getTime() <= now)
+  )
+    throw new AccessError("REAUTH_REQUIRED");
+  const verifiedAt = session?.mfaVerifiedAt ?? null;
+  if (verifiedAt === null) throw new AccessError("MFA_REQUIRED");
+  const age = now - verifiedAt.getTime();
+  if (!(age >= 0 && age <= ROLE_GRANT_REAUTH_MAX_AGE_MS))
+    throw new AccessError("REAUTH_REQUIRED");
+  next();
+};
+
 const statusHandler: RequestHandler = async (req, res) => {
   const { identity, link } = edgeIdentity();
   res.setHeader("Cache-Control", "private, no-store");
@@ -280,6 +308,7 @@ edgeRouter.post(
   requireTrustedOrigin,
   rejectActingStaff,
   ownerReader,
+  recentSecondFactor,
   jsonBody,
   async (req, res) => {
     const body = catalogOverrideInputSchema.parse(req.body);
@@ -289,6 +318,15 @@ edgeRouter.post(
       edgeNodeId,
       userId: z.string().min(1).parse(getAuth(req).user.id),
       now: catalogOverrideNow(),
+    }).catch((error: unknown) => {
+      // The trusted clock is not ready: no grant can be timed yet.
+      if ((error as { code?: unknown } | null)?.code === "EDGE_CLOCK_NOT_READY")
+        throw new HttpError(
+          503,
+          "EDGE_CLOCK_NOT_READY",
+          "Jam perangkat belum siap. Coba lagi sebentar lagi.",
+        );
+      throw error;
     });
     res.setHeader("Cache-Control", "private, no-store");
     res.status(201).json({ data: overrideToDto(override) });

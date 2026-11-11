@@ -7,6 +7,7 @@
 //
 //   cloud process     never gated.
 //   edge, no provider fail closed: blocked with reason GATE_UNAVAILABLE.
+//   edge, wall clock booted far behind the saved high water: CLOCK_REGRESSED.
 import { CoreError } from "@starter/shared/core";
 import { env } from "../config/env.ts";
 
@@ -17,7 +18,7 @@ export type SalesGateState = {
   blocked: boolean;
   /** The 24 h rule hit (even when overridden). */
   stale24h: boolean;
-  reason: "CATALOG_STALE_24H" | "GATE_UNAVAILABLE" | null;
+  reason: "CATALOG_STALE_24H" | "GATE_UNAVAILABLE" | "CLOCK_REGRESSED" | null;
   /** Oldest last success (or tracking start) among the offending streams. */
   staleSince: Date | null;
   staleStreams: string[];
@@ -77,9 +78,13 @@ export function getSalesGateState(): SalesGateState {
 
 /** Throws CATALOG_STALE_BLOCKED when sales are held. Call before any write. */
 export function assertCatalogSalesAllowed(): void {
-  if (getSalesGateState().blocked)
-    throw new CoreError(
-      "CATALOG_STALE_BLOCKED",
-      "Penjualan ditahan: katalog belum tersinkron lebih dari 24 jam. Minta owner untuk mengizinkan.",
-    );
+  const state = getSalesGateState();
+  if (!state.blocked) return;
+  const message =
+    state.reason === "GATE_UNAVAILABLE"
+      ? "Penjualan ditahan: pemeriksaan katalog belum siap. Coba lagi sebentar; bila berlanjut, hubungi tim teknis."
+      : state.reason === "CLOCK_REGRESSED"
+        ? "Penjualan ditahan: jam perangkat mundur dari waktu terakhir yang tercatat. Perbaiki jam perangkat atau minta owner untuk mengizinkan."
+        : "Penjualan ditahan: katalog belum tersinkron lebih dari 24 jam. Minta owner untuk mengizinkan.";
+  throw new CoreError("CATALOG_STALE_BLOCKED", message);
 }

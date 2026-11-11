@@ -371,10 +371,8 @@ export function catalogFreshnessToDto(
       staleStreams: snapshot.salesGate.staleStreams,
       override: gate.override
         ? {
-            grantedBy: gate.override.grantedBy,
             grantedAt: gate.override.grantedAt.toISOString(),
             untilAt: gate.override.untilAt.toISOString(),
-            reason: gate.override.reason,
           }
         : null,
     },

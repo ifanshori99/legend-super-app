@@ -14,7 +14,11 @@ import { edgeCatalogGateState } from "../db/schema/edge-catalog-gate-state.ts";
 import { withTenant } from "../db/tenant.ts";
 import { createCatalogFreshness } from "./catalog-freshness.ts";
 import type { CatalogFreshnessTracker } from "./catalog-freshness.ts";
-import { installSalesGateProvider, type SalesGateState } from "./sales-gate.ts";
+import {
+  CATALOG_SALES_BLOCK_AFTER_MS,
+  installSalesGateProvider,
+  type SalesGateState,
+} from "./sales-gate.ts";
 import { createTrustedClock, type TrustedClock } from "./trusted-clock.ts";
 
 /** High water is written at most this often (and on an override grant). */
@@ -93,9 +97,9 @@ export type CatalogGateHandle = {
   clock: TrustedClock;
   /**
    * Sync cache update after a committed grant (override) or close (null), so
-   * the very next sale sees it. Also persists the high water.
+   * the very next sale sees it. Also persists the high water (awaited).
    */
-  applyOverrideChange(next: CatalogGateOverride | null): void;
+  applyOverrideChange(next: CatalogGateOverride | null): Promise<void>;
   /** Reload the override cache (after a grant or close). Persists high water. */
   refreshOverride(): Promise<void>;
   /** One housekeeping pass (also what the interval runs): persist + close. */
@@ -120,6 +124,8 @@ export async function startCatalogGate(options: {
   /** Boot: restore each stream's last success before the gate opens. */
   seed?: (freshness: CatalogFreshnessTracker) => Promise<void>;
   onError?: (error: unknown) => void;
+  /** Boot: the wall clock was behind the saved high water (audit/log line). */
+  onClockRegressed?: (info: { wallNow: Date; highWater: Date }) => void;
   persistMs?: number;
   database?: typeof db;
   /** Tests: wall and monotonic sources. */
@@ -160,6 +166,16 @@ export async function startCatalogGate(options: {
     mono: options.mono,
     persistedHighWater: persisted?.clockHighWaterAt ?? null,
   });
+  if (clock.regressed()) {
+    try {
+      options.onClockRegressed?.({
+        wallNow: (options.wall ?? (() => new Date()))(),
+        highWater: persisted?.clockHighWaterAt ?? clock.now(),
+      });
+    } catch (error) {
+      onError(error);
+    }
+  }
   const trackingStartedAt = persisted?.trackingStartedAt ?? clock.now();
   const freshness = createCatalogFreshness({
     clock,
@@ -200,13 +216,24 @@ export async function startCatalogGate(options: {
   installSalesGateProvider((): SalesGateState => {
     const snap = freshness.snapshot();
     const at = clock.now().getTime();
+    // An override that is in the future or runs past 24 h is ignored.
     const active =
-      override && override.untilAt.getTime() > at ? override : null;
+      override &&
+      override.grantedAt.getTime() <= at &&
+      override.untilAt.getTime() > at &&
+      override.untilAt.getTime() <= at + CATALOG_SALES_BLOCK_AFTER_MS
+        ? override
+        : null;
     const stale24h = snap.salesGate.stale24h;
+    const regressed = clock.regressed();
     return {
-      blocked: stale24h && !active,
+      blocked: (stale24h || regressed) && !active,
       stale24h,
-      reason: stale24h ? "CATALOG_STALE_24H" : null,
+      reason: regressed
+        ? "CLOCK_REGRESSED"
+        : stale24h
+          ? "CATALOG_STALE_24H"
+          : null,
       staleSince: snap.salesGate.staleSince,
       staleStreams: snap.salesGate.staleStreams,
       override: active,
@@ -241,9 +268,9 @@ export async function startCatalogGate(options: {
   return {
     freshness,
     clock,
-    applyOverrideChange(next) {
+    async applyOverrideChange(next) {
       override = next;
-      void persist();
+      await persist();
     },
     refreshOverride,
     tick,

@@ -19,15 +19,10 @@ export const OVERRIDE_REASON_MAX = 500;
 export type SalesGateView = {
   blocked: boolean;
   stale24h: boolean;
-  reason: "CATALOG_STALE_24H" | "GATE_UNAVAILABLE" | null;
+  reason: "CATALOG_STALE_24H" | "CLOCK_REGRESSED" | "GATE_UNAVAILABLE" | null;
   staleSince: string | null;
   staleStreams: string[];
-  override: {
-    grantedBy: string;
-    grantedAt: string;
-    untilAt: string;
-    reason: string;
-  } | null;
+  override: { grantedAt: string; untilAt: string } | null;
 };
 
 /** The edge answers `salesGate` next to the existing freshness fields. */
@@ -73,10 +68,12 @@ export const CATALOG_COPY = {
   unavailableTitle: "Penjualan ditahan: pemeriksaan katalog belum siap",
   unavailableHint:
     "Perangkat belum bisa memastikan katalog masih baru. Minta owner untuk mengizinkan penjualan.",
+  clockRegressedTitle:
+    "Jam perangkat mundur: penjualan ditahan, minta owner mengizinkan",
+  clockRegressedHint:
+    "Perangkat tidak bisa memastikan katalog masih baru. Minta owner untuk mengizinkan penjualan.",
   sinceLine: (time: string) => `Terakhir tersinkron sejak ${time}.`,
-  // The status carries the owner's user id, not a name: show the role.
-  overrideTitle: (until: string) =>
-    `Penjualan diizinkan oleh owner sampai ${until}`,
+  overrideTitle: (until: string) => `Penjualan diizinkan owner sampai ${until}`,
   overrideHint:
     "Katalog masih belum tersinkron. Penjualan kembali ditahan setelah izin habis, kecuali sinkron berhasil.",
   action: "Izinkan penjualan (owner)",
