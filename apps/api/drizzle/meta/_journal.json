@@ -1695,6 +1695,13 @@
       "when": 1794336000000,
       "tag": "0310_journal_closed_period_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 256,
+      "version": "7",
+      "when": 1794337000000,
+      "tag": "0311_fixed_asset_depreciation_reversals",
+      "breakpoints": true
     }
   ]
 }

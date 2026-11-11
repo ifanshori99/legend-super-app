@@ -404,9 +404,12 @@ export const depreciationRuns = pgTable(
 );
 
 /**
- * Depreciation ledger: one row per asset and schedule period (idempotent per
- * asset+period). `run_id` is null for the month a disposal or revaluation
- * caught up before the monthly run.
+ * Depreciation ledger: one active row per asset and schedule period
+ * (idempotent per asset+period). `run_id` is null for the month a disposal or
+ * revaluation caught up before the monthly run. Append-only: a row taken back
+ * by a backdated event has a row in `fixed_asset_depreciation_reversals`, and
+ * the month is then depreciated again as the next `generation` (trigger
+ * `fixed_asset_depreciations_generation`, migration 0311).
  */
 export const fixedAssetDepreciations = pgTable(
   "fixed_asset_depreciations",
@@ -416,6 +419,7 @@ export const fixedAssetDepreciations = pgTable(
     fixedAssetId: uuid("fixed_asset_id").notNull(),
     period: varchar("period", { length: 7 }).notNull(),
     amountIdr: idrColumn("amount_idr").notNull(),
+    generation: integer("generation").notNull().default(1),
     runId: uuid("run_id"),
     journalEntryId: uuid("journal_entry_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -423,10 +427,15 @@ export const fixedAssetDepreciations = pgTable(
       .defaultNow(),
   },
   (table) => [
-    unique("fixed_asset_depreciations_asset_period_key").on(
+    unique("fixed_asset_depreciations_asset_period_generation_key").on(
       table.tenantId,
       table.fixedAssetId,
       table.period,
+      table.generation,
+    ),
+    unique("fixed_asset_depreciations_tenant_id_key").on(
+      table.tenantId,
+      table.id,
     ),
     foreignKey({
       name: "fixed_asset_depreciations_asset_fk",
@@ -451,7 +460,59 @@ export const fixedAssetDepreciations = pgTable(
       "fixed_asset_depreciations_period_check",
       sql`${table.period} ~ ${sql.raw(PERIOD_FORMAT)}`,
     ),
+    check(
+      "fixed_asset_depreciations_generation_check",
+      sql`${table.generation} >= 1`,
+    ),
     index("fixed_asset_depreciations_run_idx").on(table.tenantId, table.runId),
+  ],
+);
+
+/**
+ * Append-only: a depreciation row taken back by a backdated disposal or
+ * revaluation (bead legend-i5kc). `journal_entry_id` is the correcting journal
+ * (debit/credit mirrored, dated in the original month); one journal may take
+ * back several rows of one asset.
+ */
+export const fixedAssetDepreciationReversals = pgTable(
+  "fixed_asset_depreciation_reversals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    depreciationId: uuid("depreciation_id").notNull(),
+    journalEntryId: uuid("journal_entry_id").notNull(),
+    reason: varchar("reason", { length: 200 }).notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("fixed_asset_depreciation_reversals_depreciation_key").on(
+      table.tenantId,
+      table.depreciationId,
+    ),
+    foreignKey({
+      name: "fixed_asset_depreciation_reversals_depreciation_fk",
+      columns: [table.tenantId, table.depreciationId],
+      foreignColumns: [
+        fixedAssetDepreciations.tenantId,
+        fixedAssetDepreciations.id,
+      ],
+    }),
+    foreignKey({
+      name: "fixed_asset_depreciation_reversals_journal_fk",
+      columns: [table.tenantId, table.journalEntryId],
+      foreignColumns: [journalEntries.tenantId, journalEntries.id],
+    }),
+    check(
+      "fixed_asset_depreciation_reversals_reason_check",
+      sql`length(btrim(${table.reason})) > 0`,
+    ),
+    index("fixed_asset_depreciation_reversals_journal_idx").on(
+      table.tenantId,
+      table.journalEntryId,
+    ),
   ],
 );
 

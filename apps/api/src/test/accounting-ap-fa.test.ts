@@ -448,7 +448,7 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
            FROM fixed_asset_depreciations WHERE run_id = $1`,
         [first.id],
       ),
-    ).rejects.toThrow(/fixed_asset_depreciations_asset_period_key/);
+    ).rejects.toThrow(/DEPRECIATION_ALREADY_POSTED/);
   });
 
   it("ACC-02 a run into a closed month is refused; the next open run catches the month up", async () => {
@@ -618,7 +618,7 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
     expect(march.journalEntryId).toBeNull();
   });
 
-  it("ACC-01 §3.19 a disposal/revaluation dated before an already-posted run is refused (no phantom depreciation)", async () => {
+  it("ACC-01 §3.19 a disposal/revaluation dated before an already-posted run reverses the later months instead of keeping phantom depreciation (legend-i5kc)", async () => {
     const entity = await createEntity("FA backdated");
     await setupLedger(entity);
     const machine = await asset(entity);
@@ -626,51 +626,32 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
     await run(entity, "2026-02");
     await run(entity, "2026-03");
 
-    // The ledger already charges January–March: a February disposal would
-    // keep March's expense and compute the gain on a stale carrying amount.
-    await expect(
-      disposeFixedAsset(
-        tenantScope(),
-        machine.id,
-        {
-          disposedOn: "2026-02-20",
-          proceedsIdr: 10_000_000,
-          reason: "Dijual mundur",
-          idempotencyKey: key("disp"),
-        },
-        actor,
-        NOW,
-      ),
-    ).rejects.toMatchObject({ status: 409, code: "CONFLICT" });
-    await expect(
-      revalueFixedAsset(
-        tenantScope(),
-        machine.id,
-        {
-          revaluedOn: "2026-02-25",
-          newCarryingAmountIdr: 10_000_000,
-          reason: "Penilaian mundur",
-          idempotencyKey: key("reval"),
-        },
-        actor,
-        NOW,
-      ),
-    ).rejects.toMatchObject({ status: 409, code: "CONFLICT" });
-
-    // Nothing moved: same cost, same accumulated, still active, no journal.
-    const after = await getFixedAsset(tenantScope(), machine.id);
-    expect(after.asset.costIdr).toBe(12_000_000);
-    expect(after.asset.accumulatedDepreciationIdr).toBe(3_000_000);
-    expect(after.asset.status).toBe("active");
-    const { rows } = await owner.query(
+    // March's charge is reversed: February carrying amount (10,000,000) is
+    // revalued to itself, so the schedule restarts in March on that base.
+    const revalued = await revalueFixedAsset(
+      tenantScope(),
+      machine.id,
+      {
+        revaluedOn: "2026-02-25",
+        newCarryingAmountIdr: 10_000_000,
+        reason: "Penilaian mundur",
+        idempotencyKey: key("reval"),
+      },
+      actor,
+      NOW,
+    );
+    expect(revalued.costIdr).toBe(10_000_000);
+    expect(revalued.accumulatedDepreciationIdr).toBe(0);
+    const { rows: reversals } = await owner.query(
       `SELECT 1 FROM journal_entries
         WHERE tenant_id = $1 AND legal_entity_id = $2
-          AND source_type IN ('asset_disposal', 'asset_revaluation')`,
+          AND source_type = 'depreciation' AND description LIKE 'Koreksi penyusutan%'`,
       [tenantId, entity],
     );
-    expect(rows).toEqual([]);
+    expect(reversals).toHaveLength(1);
 
-    // The last posted month is still accepted (carrying 9,000,000, sold at it).
+    // March depreciates again on the new base (10,000,000 over 10 months):
+    // carrying 9,000,000, sold at it.
     const sold = await disposeFixedAsset(
       tenantScope(),
       machine.id,
@@ -684,7 +665,8 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
       NOW,
     );
     expect(sold.status).toBe("disposed");
-    expect(sold.accumulatedDepreciationIdr).toBe(3_000_000);
+    expect(sold.accumulatedDepreciationIdr).toBe(1_000_000);
+    expect(sold.bookValueIdr).toBe(9_000_000);
   });
 
   it.runIf(hasRevaluationRule)(
