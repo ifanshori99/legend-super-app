@@ -1259,3 +1259,5 @@ Langkah berikut CTO baru:
 - 12:04 Founder W11: payroll tetap wajib 2 orang (sesuai 397bb1c5, tidak ada perubahan).
 - 12:05 Founder W4: durasi sesuai produk + bundel min 50% (sudah a73998a9). legend-7pw8b ditutup (tidak perlu kali durasi).
 - 12:15 G1ttt 480 + W5 selesai 7298123f (553/553, 19/35 gagal-dulu, architect xhigh 2x) -> resolve, siap batch48h (migrasi 0290 sementara). Kartu: 9f1p3 P1 FAC-07 graceDays wajib, lch2o reconcile intent >24j, ycb85 tagih ganda mismatch, x0ofi audit tenggang. Retro 3 jam (tertunda) dimulai akun #3 (7d 84%).
+- 12:19 G8x04 WS-01 230bfd2e (5 kartu, 146+190+19 test, architect xhigh) -> follow-up: inactive tak bisa dipilih, kode alasan resmi, jalur cancel POS tanpa MFA (milik sendiri), fallback outletId. Codex second-opinion RBAC setelah ini (akun Codex #2).
+- 12:20 G2455 3jem1 UI selesai 970c9406 (e2e 24/24, axe 28/28, ui-auditor 2 putaran) -> resolve; cabang memuat batch48g, merge SETELAH 48g. Page review UI founder disiapkan subagent. Retro 15 -> 2 aturan TEAM.md (gate lint per cabang, larang array zsh / batalkan prompt >15 mnt).
