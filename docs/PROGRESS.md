@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## UI campuran Q36: wwyyk, wpqs, rp3fk, ijv8, wjz1 (ui-engineer, cabang `ws/ui-mixed-q36` dari `origin/milestone/m1`, 2026-11-11)
+
+- Sudah: klaim bagian split di ponsel (bilah bawah, token di sessionStorage 24 jam, mock claim + settle diperbaiki); pemilih badan usaha payroll untuk kebijakan dan THR pertama (kosong/gagal/validasi, tanpa ubah hitungan); email security terkunci di preferensi notifikasi (payload selalu email=true, mock 422, validasi jam tenang); sarapan dari tiket (menu, meja/ambil, `breakfastFireAt`, mock 409/422/idempotensi, pengingat 5 menit in-app); label prep (cetak 1 halaman, garis kiri baris terpilih, "−22 °C hingga −16 °C").
+- Bukti: typecheck web+api, eslint, unit 5 berkas, e2e mock 60 lulus/1 skip, screenshot 1280/390 + axe serious/critical 0 + overflow 320 di `design/screens/ui-mixed-q36/` (`shots.mjs`, env `ONLY=`).
+- Keputusan: format suhu ikut mockup ("hingga", bukan "s.d."); validasi tenureAfterPay dibatalkan (aturan payroll baru, di luar scope); kontrak sarapan masih tipe web (TODO shared/API).
+- Terbuka: pembayaran sarapan tiket belum diatur PRD (tanya founder); route redeem token klaim (legend-111j); API belum menolak email security=false; e2e r1bu:440 gagal juga di base (bukan dari cabang ini).
+- Berikut: review founder atas screenshot, lalu merge train.
+
 ## legend-ilzrj WS-10 FE layar PIN slip gaji + sisa percobaan di API (ui-engineer, cabang `ws/payslip-pin-ui` dari `ws/hris-pii-pin` 8305fdc3 + merge `design/payslip-pin`, 2026-11-11)
 
 - Sudah: BE 403 `PAYSLIP_PIN_INVALID` membawa `error.remainingAttempts`, 423 membawa `error.lockedUntil` (field opsional di envelope error, bukan `details` yang berbentuk array); architect approve. Web: buat PIN, PIN tersimpan, buka slip (kartu periode, nominal tersembunyi), PIN salah + sisa, terkunci (`pin-locked.tsx`, menit berjalan), lupa PIN (teks HR/atasan tanpa nomor) + kode WhatsApp (503 belum tersedia, 429 dibatasi, kode hangus setelah 5 salah tanpa mengunci PIN), ubah PIN, daftar slip kosong/memuat/error, dialog reset HR dengan alasan. Logika murni `pin-state.ts` + `tests/payslip-pin-ui.test.mjs` (35). Mock: `?mock=pin-not-set|pin-locked|otp-ok|otp-rate-limited`.
