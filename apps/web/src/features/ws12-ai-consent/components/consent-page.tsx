@@ -2,8 +2,8 @@
 // Outside every area: the user arrives from an external MCP client through
 // GET /oauth/authorize. "Setujui akses" posts to the API and follows
 // `redirectTo`; "Tolak" goes to the client's redirect_uri without an API call.
-import { useState } from "react";
-import { Link, useRouteContext, useRouterState } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { Link, useRouteContext } from "@tanstack/react-router";
 import {
   ArrowLeft,
   CircleCheck,
@@ -25,7 +25,10 @@ import { ApiError } from "@/lib/api/errors";
 import { signInPath } from "@/features/ws01-login/flow";
 import { useApproveMcpAccess, useMcpPreview } from "../hooks";
 import {
+  CONSENT_RESUME_KEY,
   buildDenyRedirect,
+  buildResumeReturnPath,
+  isResumeSearch,
   isSafeNavigationUrl,
   parseConsentQuery,
   type ConsentQuery,
@@ -35,16 +38,70 @@ type RedirectMode = "approve" | "deny";
 
 export function McpConsentPage() {
   const t = useT();
-  const searchStr = useRouterState({ select: (s) => s.location.searchStr });
   const session = useRouteContext({ strict: false, select: (c) => c.session });
-  const query = parseConsentQuery(searchStr);
+  // The OAuth values come from the raw address bar, never from the router's
+  // search: the router re-serialises JSON-like values (a long `state` number
+  // or `1e5` would change). `null` until the browser has read it.
+  const [search, setSearch] = useState<string | null>(null);
+  const query = search === null ? null : parseConsentQuery(search);
   const preview = useMcpPreview(query);
   const approve = useApproveMcpAccess();
+  const { reset: resetApprove } = approve;
   const [redirecting, setRedirecting] = useState<RedirectMode | null>(null);
   const [badRedirect, setBadRedirect] = useState(false);
 
-  const returnTo = `/mcp/consent${searchStr}`;
   const accountName = session?.user.name;
+
+  useEffect(() => {
+    const raw = window.location.search;
+    // Back from sign-in: the OAuth query waits in sessionStorage. A signed-out
+    // visitor keeps it there for the next sign-in.
+    if (!session || !isResumeSearch(raw)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the address bar cannot be read during SSR; reading it after mount keeps hydration identical.
+      setSearch(raw);
+      return;
+    }
+    let stored: string | null = null;
+    try {
+      stored = window.sessionStorage.getItem(CONSENT_RESUME_KEY);
+      window.sessionStorage.removeItem(CONSENT_RESUME_KEY);
+    } catch {
+      stored = null;
+    }
+    if (stored !== null && parseConsentQuery(stored) !== null) {
+      window.history.replaceState(null, "", `/mcp/consent${stored}`);
+      setSearch(stored);
+    } else {
+      setSearch("");
+    }
+  }, [session]);
+
+  // Back button after leaving for the client app: the page may come back from
+  // the bfcache still showing "Menyambungkan...".
+  useEffect(() => {
+    function onPageShow(event: PageTransitionEvent) {
+      if (!event.persisted) return;
+      setRedirecting(null);
+      setBadRedirect(false);
+      resetApprove();
+    }
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, [resetApprove]);
+
+  function onSignIn() {
+    const raw = window.location.search;
+    let returnTo = buildResumeReturnPath();
+    // Already the resume address: the stored query is kept as it is.
+    if (!isResumeSearch(raw)) {
+      try {
+        window.sessionStorage.setItem(CONSENT_RESUME_KEY, raw);
+      } catch {
+        returnTo = `/mcp/consent${raw}`;
+      }
+    }
+    window.location.assign(signInPath(returnTo));
+  }
 
   function go(href: string, mode: RedirectMode) {
     // A server or client address that would run script here is never followed.
@@ -66,7 +123,11 @@ export function McpConsentPage() {
   }
 
   function onDeny(q: ConsentQuery) {
-    const href = buildDenyRedirect(q);
+    // Only the address the server checked for this client is followed.
+    const href =
+      preview.data?.data.redirectUri === q.redirect_uri
+        ? buildDenyRedirect(q)
+        : null;
     if (href === null) {
       setBadRedirect(true);
       return;
@@ -76,7 +137,9 @@ export function McpConsentPage() {
 
   const previewError = preview.error;
   const signedOut =
-    previewError instanceof ApiError && previewError.status === 401;
+    !session ||
+    (previewError instanceof ApiError && previewError.status === 401) ||
+    (approve.error instanceof ApiError && approve.error.status === 401);
 
   return (
     <div className="min-h-svh bg-background text-foreground">
@@ -110,14 +173,6 @@ export function McpConsentPage() {
 
         {redirecting ? (
           <Redirecting mode={redirecting} />
-        ) : query === null ? (
-          <Card>
-            <EmptyState
-              icon={TriangleAlert}
-              title={t("aiConsent.missingTitle")}
-              description={t("aiConsent.missingHint")}
-            />
-          </Card>
         ) : signedOut ? (
           <Card>
             <EmptyState
@@ -125,10 +180,20 @@ export function McpConsentPage() {
               title={t("aiConsent.signedOutTitle")}
               description={t("aiConsent.signedOutHint")}
               action={
-                <Button asChild className="min-h-11">
-                  <a href={signInPath(returnTo)}>{t("aiConsent.signIn")}</a>
+                <Button className="min-h-11" onClick={onSignIn}>
+                  {t("aiConsent.signIn")}
                 </Button>
               }
+            />
+          </Card>
+        ) : search === null ? (
+          <ConsentSkeleton label={t("aiConsent.loading")} />
+        ) : query === null ? (
+          <Card>
+            <EmptyState
+              icon={TriangleAlert}
+              title={t("aiConsent.missingTitle")}
+              description={t("aiConsent.missingHint")}
             />
           </Card>
         ) : (

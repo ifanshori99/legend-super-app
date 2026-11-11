@@ -53,14 +53,21 @@ export function ClientsCard() {
 
   // Mock mode only: ?state=revoke opens the revoke dialog (design review).
   React.useEffect(() => {
-    if (!API_MOCK || autoOpened.current || list === undefined) return;
+    if (
+      !API_MOCK ||
+      autoOpened.current ||
+      list === undefined ||
+      tokens.data === undefined
+    )
+      return;
     if (new URLSearchParams(window.location.search).get("state") !== "revoke")
       return;
     autoOpened.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mock-only design-review hook: the query string is browser-only and the clients load asynchronously, so opening once after both are ready is the point.
     setRevokeTarget(
       list.find((client) => client.status === "approved") ?? null,
     );
-  }, [list]);
+  }, [list, tokens.data]);
 
   const now = new Date();
   const tokenList = tokens.data;
