@@ -41,6 +41,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ulidToUuid } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -645,6 +646,56 @@ async function expectFreshLeaveFlag(s: Scenario, log: Log) {
 // ---- F1: a reviewed (accepted) log is flagged again by a new approved leave ----
 
 describe("[F25] F1: leave approved on a day whose log HR already accepted", () => {
+  it("[538-G4b P3] reopening a decided leave log clears stale decision metadata and keeps the new leave paid once", async () => {
+    const s = await newScenario("reopen-metadata");
+    const log = await clock(s, "in");
+    const first = await requestLeave(s, 0);
+    await approveLeave(s, first.id);
+    const cancelled = await review(log.id, { action: "cancel_leave" });
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(cancelled.body.data.decisionAction).toBe("cancel_leave");
+    expect(cancelled.body.data.leave.leaveRequestId).toBe(first.id);
+    expect(cancelled.body.data.caseKind).not.toBeNull();
+
+    const stored = () =>
+      asTenant((db) =>
+        db.query<{
+          decision_action: string | null;
+          leave_snapshot: unknown;
+          case_kind: string | null;
+        }>(
+          `SELECT decision_action, leave_snapshot, case_kind FROM attendance_logs
+          WHERE tenant_id = $1 AND id = $2`,
+          [tenant.id, ulidToUuid(log.id)],
+        ),
+      );
+    expect((await stored()).rows[0]).toMatchObject({
+      decision_action: "cancel_leave",
+      leave_snapshot: expect.any(Object),
+      case_kind: expect.any(String),
+    });
+
+    const second = await requestLeave(s, 0);
+    await approveLeave(s, second.id);
+
+    expect((await stored()).rows[0]).toEqual({
+      decision_action: null,
+      leave_snapshot: null,
+      case_kind: null,
+    });
+    await expectFreshLeaveFlag(s, log);
+    expect(await leaveStatus(s, first.id)).toBe("cancelled");
+    expect(await leaveStatus(s, second.id)).toBe("approved");
+    expect(await balance(s)).toEqual({
+      entitled: "12.0000",
+      used: second.days,
+      pending: "0.0000",
+    });
+    expect(
+      (await logsOf(s)).filter((item) => item.validity === "valid"),
+    ).toEqual([]);
+  });
+
   it("[F25] F1 cancel_leave makes the log valid; a new leave approved that day flags it again (pending, no reviewer), once", async () => {
     const s = await newScenario("f1a");
     const log = await clock(s, "in");
