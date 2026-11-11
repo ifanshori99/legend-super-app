@@ -347,7 +347,10 @@ describe("legend-t4y7 GET /api/me/access", () => {
     );
     expect(names).toContain(bandungFixture.name);
     expect(names).toContain(bandung2Fixture.name);
-    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    // Literal order: "Cafe Legend Bandung" sorts before "... Bandung 2 (contoh)".
+    expect(names.indexOf("Cafe Legend Bandung")).toBeLessThan(
+      names.indexOf("Cafe Legend Bandung 2 (contoh)"),
+    );
   });
 
   it("legend-ebt9f a station-only assignment gives that station's outlet", async () => {
