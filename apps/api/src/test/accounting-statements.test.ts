@@ -71,6 +71,13 @@ import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
 import {
+  getBalanceSheet as getBalanceSheetService,
+  getCashFlow as getCashFlowService,
+  getEquityChanges as getEquityChangesService,
+  getProfitAndLoss as getProfitAndLossService,
+  getTrialBalance as getTrialBalanceService,
+} from "../services/accounting-statements.service";
+import {
   approvePeriodReopen,
   closeFiscalPeriod,
   requestPeriodReopen,
@@ -105,6 +112,15 @@ const scopedContext = (): ScopedTenantContext =>
   establishScopedTenantContext(
     establishTenantContext({ tenantId, brandId: null, source: "session" }),
     { kind: "tenant" },
+  );
+
+const outletScopedContext = (...outlets: string[]): ScopedTenantContext =>
+  establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    {
+      kind: "outlets",
+      outletIds: outlets.map((id) => outletIdSchema.parse(id)),
+    },
   );
 
 // ---- Users -----------------------------------------------------------------
@@ -923,6 +939,57 @@ describe("legend-yc96u tenant isolation and permission", () => {
         expect(JSON.stringify(response.body)).not.toContain("1101");
       }
     }
+  });
+});
+
+describe("legend-yc96u TEN-03 outlet scope", () => {
+  const entity = () => live.entity;
+
+  it("entity-wide statements are refused (403) for an outlet-scoped caller", async () => {
+    const context = outletScopedContext(outletA);
+    const legalEntityId = entity();
+    const range = { legalEntityId, from: "2025-01-01", to: "2025-02-28" };
+    const calls = [
+      () =>
+        getTrialBalanceService(context, { legalEntityId, asOf: "2025-02-28" }),
+      () =>
+        getBalanceSheetService(context, { legalEntityId, asOf: "2025-02-28" }),
+      () => getCashFlowService(context, range),
+      () => getEquityChangesService(context, range),
+      () => getProfitAndLossService(context, range),
+    ];
+    for (const call of calls)
+      await expect(call()).rejects.toMatchObject({
+        code: "OUTLET_OUT_OF_SCOPE",
+      });
+  });
+
+  it("profit and loss by outlet needs that outlet in scope", async () => {
+    const legalEntityId = entity();
+    const range = { legalEntityId, from: "2025-01-01", to: "2025-02-28" };
+    const home = await getProfitAndLossService(outletScopedContext(outletA), {
+      ...range,
+      outletId: outletA,
+    });
+    expect(home.outletId).toBe(outletA);
+    await expect(
+      getProfitAndLossService(outletScopedContext(outletA), {
+        ...range,
+        outletId: outletB,
+      }),
+    ).rejects.toMatchObject({ code: "OUTLET_OUT_OF_SCOPE" });
+  });
+
+  it("a tenant-scope caller still reads every statement", async () => {
+    const context = scopedContext();
+    const legalEntityId = entity();
+    const range = { legalEntityId, from: "2025-01-01", to: "2025-02-28" };
+    await getTrialBalanceService(context, {
+      legalEntityId,
+      asOf: "2025-02-28",
+    });
+    await getCashFlowService(context, range);
+    await getProfitAndLossService(context, { ...range, outletId: outletB });
   });
 });
 

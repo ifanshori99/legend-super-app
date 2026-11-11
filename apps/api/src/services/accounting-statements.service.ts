@@ -28,6 +28,8 @@ import {
 } from "@starter/shared/accounting";
 import {
   assertTrustedScopedContext,
+  CoreError,
+  outletIdsForQuery,
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -146,15 +148,37 @@ function statement<T>(
   });
 }
 
+/**
+ * TEN-03: a statement without an outlet filter covers the whole legal entity
+ * (entity-level lines included), so it needs tenant scope. An outlet-scoped
+ * caller may only read a profit and loss filtered to one of its outlets.
+ */
+function assertStatementScope(
+  context: ScopedTenantContext,
+  outletId?: string | undefined,
+): void {
+  assertTrustedScopedContext(context);
+  if (outletId !== undefined) {
+    outletIdsForQuery(context.outletScope, [outletId]);
+    return;
+  }
+  if (context.outletScope.kind !== "tenant")
+    throw new CoreError(
+      "OUTLET_OUT_OF_SCOPE",
+      "Laporan keuangan tingkat badan usaha memerlukan akses seluruh tenant.",
+    );
+}
+
 function assertRange(from: string, to: string): void {
   if (from > to)
     throw new HttpError(400, "VALIDATION_ERROR", "from must not be after to.");
 }
 
-export function getTrialBalance(
+export async function getTrialBalance(
   context: ScopedTenantContext,
   input: { legalEntityId: string; asOf: string },
 ): Promise<TrialBalance> {
+  assertStatementScope(context);
   return statement(context, input.legalEntityId, input.asOf, (ledger) =>
     buildTrialBalance(
       ledger.accounts,
@@ -166,10 +190,11 @@ export function getTrialBalance(
   );
 }
 
-export function getBalanceSheet(
+export async function getBalanceSheet(
   context: ScopedTenantContext,
   input: { legalEntityId: string; asOf: string },
 ): Promise<BalanceSheet> {
+  assertStatementScope(context);
   return statement(context, input.legalEntityId, input.asOf, (ledger) =>
     buildBalanceSheet(ledger.accounts, ledger.lines, {
       legalEntityId: input.legalEntityId,
@@ -179,7 +204,7 @@ export function getBalanceSheet(
   );
 }
 
-export function getProfitAndLoss(
+export async function getProfitAndLoss(
   context: ScopedTenantContext,
   input: {
     legalEntityId: string;
@@ -188,6 +213,7 @@ export function getProfitAndLoss(
     outletId?: string | undefined;
   },
 ): Promise<ProfitAndLoss> {
+  assertStatementScope(context, input.outletId);
   assertRange(input.from, input.to);
   const { outletId } = input;
   return statement(
@@ -208,25 +234,44 @@ export function getProfitAndLoss(
   );
 }
 
-export function getCashFlow(
+export async function getCashFlow(
   context: ScopedTenantContext,
   input: { legalEntityId: string; from: string; to: string },
 ): Promise<CashFlowStatement> {
+  assertStatementScope(context);
   assertRange(input.from, input.to);
-  return statement(context, input.legalEntityId, input.to, (ledger) =>
-    buildCashFlow(ledger.accounts, ledger.lines, {
+  return statement(context, input.legalEntityId, input.to, (ledger) => {
+    const cashFlow = buildCashFlow(ledger.accounts, ledger.lines, {
       legalEntityId: input.legalEntityId,
       from: input.from,
       to: input.to,
       periods: ledger.periods,
-    }),
-  );
+    });
+    // Closing cash must equal the cash balance at `to`; a cash movement whose
+    // counter-account is missing or inactive would otherwise be dropped silently.
+    const balanceSheet = buildBalanceSheet(ledger.accounts, ledger.lines, {
+      legalEntityId: input.legalEntityId,
+      asOf: input.to,
+      periods: ledger.periods,
+    });
+    const cashBalance =
+      balanceSheet.sections.find((s) => s.group === "cash_and_equivalents")
+        ?.totalIdr ?? 0;
+    if (cashFlow.closingCashIdr !== cashBalance)
+      throw new HttpError(
+        500,
+        "INTERNAL_ERROR",
+        "Cash flow does not reconcile to the cash balance.",
+      );
+    return cashFlow;
+  });
 }
 
-export function getEquityChanges(
+export async function getEquityChanges(
   context: ScopedTenantContext,
   input: { legalEntityId: string; from: string; to: string },
 ): Promise<EquityChanges> {
+  assertStatementScope(context);
   assertRange(input.from, input.to);
   return statement(context, input.legalEntityId, input.to, (ledger) =>
     buildEquityChanges(ledger.accounts, ledger.lines, {
