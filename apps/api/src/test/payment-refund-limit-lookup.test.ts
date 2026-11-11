@@ -797,9 +797,7 @@ describe("PAY-04 Q63 migration hygiene for the index migration", () => {
     const journal = JSON.parse(
       readFileSync(`${dir}meta/_journal.json`, "utf8"),
     ) as { entries: { idx: number; when: number; tag: string }[] };
-    const mine = journal.entries.filter((entry) =>
-      /^028[56]_/.test(entry.tag),
-    );
+    const mine = journal.entries.filter((entry) => /^028[56]_/.test(entry.tag));
     expect(mine.length).toBeGreaterThan(0);
     for (const entry of mine)
       expect(entry.when, entry.tag).toBeGreaterThan(1_794_415_777_888);
