@@ -13,20 +13,21 @@
 //        streams: Record<stream, { lastSuccessAt: Date | null, ageMs: number | null,
 //                                  failureReason: string | null }>,
 //        stale: boolean,              // a critical stream failed since its last success
-//        ownerAlarm: boolean,         // stale > 30 min AND cloud reachable
+//        ownerAlarm: boolean,         // reachable-cloud failure lasting 5 min (no age condition)
 //        cashierWarning: string | null,   // "katalog belum diperbarui sejak HH:MM"
-//        salesBlocked: false,         // founder decision: never blocks, no setting
-//     }
+//        salesBlocked: boolean,       // founder Q57: true once a critical stream is >24 h
+//     }                               // without a successful sync (see catalog-freshness-block.test.ts)
 //
 // Assumptions (the brief is silent), each easy to change:
 //  - "online but sync failing" = recordFailure with cloudReachable true;
 //    "offline" = cloudReachable false (cloud not reachable at all).
-//  - Founder decision (coordinator): a stale catalog ALWAYS keeps selling, with
-//    a cashier warning and an owner notification after 30 minutes. Sales are
-//    never blocked and there is no per-tenant setting, so the API has no
-//    sellPolicy option; `salesBlocked` is a constant false.
-//  - Age counts from lastSuccessAt of the oldest critical stream; the alarm
-//    needs age strictly greater than 30 minutes.
+//  - Founder Q57 (replaces the earlier "never blocks" decision): a stale
+//    catalog keeps selling with a cashier warning and an owner alarm as soon as
+//    a reachable-cloud failure lasts 5 minutes (no 30-minute age condition any
+//    more); only after MORE than 24 hours without a successful sync of a
+//    critical stream are sales held (`salesBlocked`, covered in
+//    catalog-freshness-block.test.ts). There is no per-tenant setting.
+//  - Age counts from lastSuccessAt of the oldest critical stream.
 //  - The cashier warning shows whenever a critical stream failed since its last
 //    success (offline included, the prices on screen are old either way). Only
 //    the OWNER ALARM is suppressed offline.
@@ -44,9 +45,9 @@ const T0 = new Date("2026-11-11T03:05:00.000Z"); // 10:05 in Asia/Jakarta
 const [STREAM_A, STREAM_B] = CRITICAL_CATALOG_STREAMS as readonly string[];
 const NON_CRITICAL = "stations";
 
-// The age rules below are tested with `failurePersistMs: 0` (a reachable
-// failure alarms at once when the age is over 30 minutes). The persistence
-// rule (legend-10nex round 2, finding 1) has its own tests that use the default.
+// Most tests below use `failurePersistMs: 0` (a reachable failure alarms at
+// once). The persistence rule (a failure must last 5 minutes) has its own tests
+// that use the default.
 function setup(options: { defaultPersistence?: boolean } = {}) {
   let clock = T0.getTime();
   const onOwnerAlarm = vi.fn();
@@ -105,8 +106,10 @@ describe("legend-10nex prolonged sync failure while online", () => {
     expect(snap.streams[STREAM_B!]?.failureReason).toBeNull();
   });
 
-  it("shows the cashier warning with the last success time, no owner alarm yet at 30 minutes or less", () => {
-    const { freshness, advance, onOwnerAlarm } = setup();
+  it("shows the cashier warning with the last success time, no owner alarm on the first failed tick", () => {
+    const { freshness, advance, onOwnerAlarm } = setup({
+      defaultPersistence: true,
+    });
     freshness.recordSuccess(STREAM_A!);
     freshness.recordSuccess(STREAM_B!);
     advance(30 * MIN);
@@ -121,7 +124,7 @@ describe("legend-10nex prolonged sync failure while online", () => {
     expect(onOwnerAlarm).not.toHaveBeenCalled();
   });
 
-  it("raises the owner alarm once stale for more than 30 minutes, with stream and reason", () => {
+  it("raises the owner alarm once the failure persists, with stream and reason", () => {
     const { freshness, advance, onOwnerAlarm } = setup();
     freshness.recordSuccess(STREAM_A!);
     freshness.recordSuccess(STREAM_B!);
@@ -144,7 +147,7 @@ describe("legend-10nex prolonged sync failure while online", () => {
     expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
   });
 
-  it("a stream that never succeeded and keeps failing online is also stale and alarms after 30 minutes", () => {
+  it("a stream that never succeeded and keeps failing online is also stale and alarms", () => {
     const { freshness, advance } = setup();
     freshness.recordFailure(STREAM_A!, {
       reason: "HTTP 500",
@@ -253,8 +256,8 @@ describe("legend-10nex recovery", () => {
   });
 });
 
-describe("legend-10nex stale catalog never blocks sales", () => {
-  it("keeps selling while stale offline (warning only)", () => {
+describe("legend-10nex a stale catalog keeps selling until 24 hours (founder Q57)", () => {
+  it("keeps selling while stale offline for 3 hours (warning only)", () => {
     const { freshness, advance } = setup();
     freshness.recordSuccess(STREAM_A!);
     freshness.recordSuccess(STREAM_B!);
@@ -284,6 +287,17 @@ describe("legend-10nex stale catalog never blocks sales", () => {
     expect(snap.cashierWarning).not.toBeNull();
   });
 
+  it("holds sales once a critical stream is over 24 hours old, offline or online", () => {
+    const { freshness, advance } = setup();
+    for (const name of CRITICAL_CATALOG_STREAMS) freshness.recordSuccess(name);
+    advance(24 * 60 * MIN + 1);
+    freshness.recordFailure(STREAM_A!, {
+      reason: "fetch failed",
+      cloudReachable: false,
+    });
+    expect(freshness.snapshot().salesBlocked).toBe(true);
+  });
+
   it("has no sell policy setting", () => {
     const { freshness } = setup();
     expect(freshness.snapshot()).not.toHaveProperty("sellPolicy");
@@ -303,7 +317,7 @@ describe("legend-10nex variant and modifier prices are critical", () => {
   });
 
   it.each(["item_variants", "modifiers"])(
-    "%s stale over 30 minutes alarms the owner; its failure shows in the snapshot",
+    "%s failing for a while alarms the owner; its failure shows in the snapshot",
     (stream) => {
       const { freshness, advance, onOwnerAlarm } = setup();
       for (const name of CRITICAL_CATALOG_STREAMS)
@@ -374,8 +388,10 @@ describe("legend-10nex restart keeps the last success from the checkpoint", () =
     expect(onOwnerAlarm).not.toHaveBeenCalled();
   });
 
-  it("a fresh checkpoint gives no alarm for a first failure", () => {
-    const { freshness, advance, onOwnerAlarm } = setup();
+  it("a fresh checkpoint gives no alarm for a first failed tick", () => {
+    const { freshness, advance, onOwnerAlarm } = setup({
+      defaultPersistence: true,
+    });
     freshness.seedLastSuccess(STREAM_A!, T0);
     advance(10 * MIN);
     freshness.recordFailure(STREAM_A!, {
@@ -386,14 +402,16 @@ describe("legend-10nex restart keeps the last success from the checkpoint", () =
     expect(onOwnerAlarm).not.toHaveBeenCalled();
   });
 
-  it("a new edge (no checkpoint) counts from its first failure: no false alarm", () => {
-    const { freshness, advance, onOwnerAlarm } = setup();
+  it("a new edge (no checkpoint) alarms only after its failure lasted 5 minutes", () => {
+    const { freshness, advance, onOwnerAlarm } = setup({
+      defaultPersistence: true,
+    });
     // Nothing seeded: first boot of the node.
     freshness.recordFailure(STREAM_A!, {
       reason: "HTTP 500",
       cloudReachable: true,
     });
-    advance(10 * MIN);
+    advance(4 * MIN);
     freshness.recordFailure(STREAM_A!, {
       reason: "HTTP 500",
       cloudReachable: true,
@@ -402,7 +420,7 @@ describe("legend-10nex restart keeps the last success from the checkpoint", () =
     expect(snap.ownerAlarm).toBe(false);
     expect(snap.streams[STREAM_A!]?.lastSuccessAt).toBeNull();
     expect(onOwnerAlarm).not.toHaveBeenCalled();
-    advance(21 * MIN);
+    advance(MIN);
     freshness.recordFailure(STREAM_A!, {
       reason: "HTTP 500",
       cloudReachable: true,

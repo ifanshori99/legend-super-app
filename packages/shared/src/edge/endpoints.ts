@@ -41,17 +41,41 @@ export type CloudLink = z.infer<typeof cloudLinkSchema>;
 
 /**
  * Freshness of the critical catalog streams on this edge (legend-10nex).
- * Sales are never blocked while stale: the cashier only sees `cashierWarning`.
+ * Founder Q57: a critical stream without a successful sync for over 24 hours
+ * holds sales (`salesGate.blocked`) until an owner allows them for a limited
+ * time. The cashier warning stays whatever the gate says.
  */
 export const catalogFreshnessSchema = z.strictObject({
   /** A critical stream failed since its last success. */
   stale: z.boolean(),
-  /** Stale over 30 minutes while the cloud answers (owner notified). */
+  /** A stale stream fails with a reachable cloud (owner notified). */
   ownerAlarm: z.boolean(),
   /** Cashier text, e.g. "katalog belum diperbarui sejak 08:15"; null when fresh. */
   cashierWarning: z.string().nullable(),
-  /** Always false: a stale catalog never blocks selling. */
-  salesBlocked: z.literal(false),
+  /** Same as `salesGate.blocked`. */
+  salesBlocked: z.boolean(),
+  /** Optional: an edge image older than the 24 h sales gate does not send it. */
+  salesGate: z
+    .strictObject({
+      /** Sales are held now (24 h rule hit and no active owner override). */
+      blocked: z.boolean(),
+      /** The 24 h rule hit, even when an owner override allows selling. */
+      stale24h: z.boolean(),
+      reason: z.enum(["CATALOG_STALE_24H", "GATE_UNAVAILABLE"]).nullable(),
+      /** Oldest last success (or tracking start) among the offending streams. */
+      staleSince: isoDateTimeSchema.nullable(),
+      staleStreams: z.array(z.string()),
+      /** Active owner override, if any. */
+      override: z
+        .strictObject({
+          grantedBy: z.string(),
+          grantedAt: isoDateTimeSchema,
+          untilAt: isoDateTimeSchema,
+          reason: z.string(),
+        })
+        .nullable(),
+    })
+    .optional(),
   streams: z.record(
     z.string(),
     z.strictObject({

@@ -302,9 +302,9 @@ export function edgeCatalogStaleAlertId(stale: EdgeCatalogStale): string {
 
 /**
  * Notify the outlet's supervisors AND owners that an edge's critical catalog
- * stream (prices, product status) has been stale for over 30 minutes while
- * the edge reaches the cloud (legend-10nex). Called from the cloud when a
- * heartbeat carries `catalogStale`; idempotent per edge, stream and episode
+ * stream (prices, product status) has failed to sync for a few minutes while
+ * the edge reaches the cloud, with no extra age condition (legend-10nex).
+ * Called from the cloud when a heartbeat carries `catalogStale`; idempotent per edge, stream and episode
  * (see `edgeCatalogStaleAlertId`). Carries stream and reason code only.
  */
 export async function notifyEdgeCatalogStale(
@@ -332,7 +332,7 @@ export async function notifyEdgeCatalogStale(
         reason: stale.reason,
       },
       title: "Katalog edge belum diperbarui",
-      body: "Harga atau status produk di server lokal belum diperbarui lebih dari 30 menit padahal internet tersambung. Penjualan tetap jalan; periksa sinkronisasi.",
+      body: "Harga atau status produk di server lokal gagal diperbarui padahal internet tersambung. Jika belum tersinkron lebih dari 24 jam, penjualan ditahan sampai owner mengizinkan; periksa sinkronisasi.",
     },
     now,
   );

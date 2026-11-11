@@ -28,6 +28,7 @@
 //   duplicate.
 // - `Idempotency-Key` (optional header) is stored through `posIdempotent`
 //   with the operation name and the order as target.
+import { assertCatalogSalesAllowed } from "../edge/sales-gate.ts";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   assertOutletInScope,
@@ -217,6 +218,8 @@ export async function createManualDeliveryOrder(
   input: CreateManualDeliveryOrderInput,
   now = new Date(),
 ): Promise<DeliveryChannelOrder> {
+  // legend-10nex: a manual order is a new sale priced from the synced catalogue.
+  assertCatalogSalesAllowed();
   assertOutletInScope(context.outletScope, outletId);
   const request = input;
   // KDS-05: refresh the pause rows before the transaction, never inside it.

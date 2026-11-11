@@ -11,22 +11,28 @@
 //   cashier warning   "katalog belum diperbarui sejak HH:MM" while stale.
 //   owner alarm       a stale stream whose latest failure came from a
 //                     reachable cloud (sync failing, not offline) and whose
-//                     age (since its last success; since its first failure
-//                     when it never succeeded) is strictly more than
-//                     `staleAlarmAfterMs` (default 30 minutes), and whose
 //                     failures with a reachable cloud have lasted at least
 //                     `failurePersistMs` (default 5 minutes, so one failed
 //                     tick after a restart or a wake from sleep does not
-//                     alarm). A purely offline edge never alarms.
+//                     alarm). `staleAlarmAfterMs` (default 0, no extra age
+//                     condition) can still add one. A purely offline edge
+//                     never alarms (it cannot reach the owner; the heartbeat
+//                     carries the alarm after reconnect).
 //   delivery          `onOwnerAlarm` fires once per stale episode (local log
 //                     only). The owner is told through the link heartbeat:
 //                     the link client sends `alarmStreams` of every snapshot
 //                     while they last (`catalogStaleForHeartbeat`), the cloud
 //                     notifies and dedupes. Release order: cloud first, then
 //                     edge (an older cloud refuses the heartbeat field).
-//   sale policy       none: selling is never blocked while stale (founder
-//                     decision, `salesBlocked` is always false); the cashier
-//                     warning and the owner alarm are the whole reaction.
+//   sale policy       founder Q57: `stale24h` (and so `salesBlocked`) when
+//                     ANY critical stream has had no success for more than
+//                     `blockAfterMs` (24 h; exactly 24 h is not blocked),
+//                     whether or not a failure was recorded (a dead loop or
+//                     a restart that lost the failure state still blocks).
+//                     A stream that never succeeded ages from
+//                     `trackingStartedAt`. The owner override is applied in
+//                     sales-gate.ts, not here; the cashier warning stays.
+//                     Ages use the injected (trusted) clock.
 //
 // State is in memory, but `seedLastSuccess` restores each stream's last
 // success from the pull checkpoint at boot (`edge_pull_checkpoints`), so a
@@ -34,6 +40,11 @@
 // stream starts without a success, and a failure counts from its first one.
 import type { CatalogFreshness } from "@starter/shared/edge";
 import type { CatalogStale } from "./protocol.ts";
+import {
+  CATALOG_SALES_BLOCK_AFTER_MS,
+  getSalesGateState,
+  type SalesGateState,
+} from "./sales-gate.ts";
 
 /** Streams whose staleness changes what the cashier sells or charges. */
 export const CRITICAL_CATALOG_STREAMS = [
@@ -44,7 +55,8 @@ export const CRITICAL_CATALOG_STREAMS = [
 ] as const;
 export type CriticalCatalogStream = (typeof CRITICAL_CATALOG_STREAMS)[number];
 
-export const CATALOG_STALE_ALARM_AFTER_MS = 30 * 60_000;
+/** No extra age condition: a persisted reachable-cloud failure alarms. */
+export const CATALOG_STALE_ALARM_AFTER_MS = 0;
 /**
  * A reachable-cloud failure must last this long before it can alarm: one
  * failed tick after a restart or a wake from sleep, with an old last success
@@ -87,8 +99,15 @@ export type CatalogFreshnessSnapshot = {
   stale: boolean;
   ownerAlarm: boolean;
   cashierWarning: string | null;
-  /** Always false: a stale catalog never blocks selling. */
-  salesBlocked: false;
+  /** Same as `salesGate.stale24h`; the owner override is applied later. */
+  salesBlocked: boolean;
+  salesGate: {
+    /** A critical stream is older than `blockAfterMs` (override ignored). */
+    stale24h: boolean;
+    /** Oldest last success (or tracking start) among the offending streams. */
+    staleSince: Date | null;
+    staleStreams: string[];
+  };
   /** Streams behind `ownerAlarm`; sent to the cloud with the heartbeat. */
   alarmStreams: CatalogStaleStream[];
 };
@@ -126,7 +145,13 @@ function isCritical(stream: string): boolean {
 
 export function createCatalogFreshness(
   options: {
+    /** Trusted clock (edge/trusted-clock.ts); wins over `now`. */
+    clock?: { now(): Date };
     now?: () => Date;
+    /** First boot of the freshness tracking (default: now). */
+    trackingStartedAt?: Date;
+    /** Age above which sales are held (default 24 h). */
+    blockAfterMs?: number;
     timeZone?: string;
     staleAlarmAfterMs?: number;
     /** How long reachable-cloud failures must last to alarm (default 5 min). */
@@ -140,7 +165,12 @@ export function createCatalogFreshness(
     }) => void | Promise<void>;
   } = {},
 ): CatalogFreshnessTracker {
-  const now = options.now ?? (() => new Date());
+  const trustedClock = options.clock;
+  const now = trustedClock
+    ? () => trustedClock.now()
+    : (options.now ?? (() => new Date()));
+  const blockAfterMs = options.blockAfterMs ?? CATALOG_SALES_BLOCK_AFTER_MS;
+  const trackingStartedAt = options.trackingStartedAt ?? now();
   const timeZone = options.timeZone ?? "Asia/Jakarta";
   const alarmAfterMs =
     options.staleAlarmAfterMs ?? CATALOG_STALE_ALARM_AFTER_MS;
@@ -152,6 +182,13 @@ export function createCatalogFreshness(
     ]),
   );
   let episodeAlarmed = false;
+
+  // A success stamp from a wall clock ahead of the trusted one (the puller
+  // stamps with `new Date()`) must not hide a stale catalog: never in the future.
+  const clampToNow = (at: Date | undefined): Date => {
+    const current = now();
+    return at && at.getTime() < current.getTime() ? at : current;
+  };
 
   const clock = new Intl.DateTimeFormat("en-GB", {
     timeZone,
@@ -165,7 +202,13 @@ export function createCatalogFreshness(
     const streams: Record<string, CatalogStreamFreshness> = {};
     const staleStates: StreamState[] = [];
     const alarmStreams: CatalogStaleStream[] = [];
+    const blockedStreams: { stream: string; since: Date }[] = [];
     for (const [stream, state] of states) {
+      // Age basis of the sales rule: last success, or tracking start when
+      // the stream never succeeded. Independent of any recorded failure.
+      const basis = state.lastSuccessAt ?? trackingStartedAt;
+      if (at - basis.getTime() > blockAfterMs)
+        blockedStreams.push({ stream, since: basis });
       streams[stream] = {
         lastSuccessAt: state.lastSuccessAt,
         ageMs: state.lastSuccessAt
@@ -190,6 +233,11 @@ export function createCatalogFreshness(
         });
     }
     const stale = staleStates.length > 0;
+    const stale24h = blockedStreams.length > 0;
+    const blockedSince =
+      blockedStreams
+        .map((entry) => entry.since)
+        .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
     // Oldest success among the stale streams; none when one never synced.
     const neverSynced = staleStates.some((state) => !state.lastSuccessAt);
     const oldest = staleStates
@@ -205,7 +253,12 @@ export function createCatalogFreshness(
         : neverSynced || !oldest
           ? "katalog belum pernah diperbarui sejak edge menyala"
           : `katalog belum diperbarui sejak ${clock.format(oldest)}`,
-      salesBlocked: false,
+      salesBlocked: stale24h,
+      salesGate: {
+        stale24h,
+        staleSince: blockedSince,
+        staleStreams: blockedStreams.map((entry) => entry.stream),
+      },
       alarmStreams,
     };
   };
@@ -237,7 +290,7 @@ export function createCatalogFreshness(
     recordSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;
-      state.lastSuccessAt = at ?? now();
+      state.lastSuccessAt = clampToNow(at);
       state.failure = null;
       evaluate();
     },
@@ -257,9 +310,13 @@ export function createCatalogFreshness(
     seedLastSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;
-      if (state.lastSuccessAt && state.lastSuccessAt.getTime() >= at.getTime())
+      const seeded = clampToNow(at);
+      if (
+        state.lastSuccessAt &&
+        state.lastSuccessAt.getTime() >= seeded.getTime()
+      )
         return;
-      state.lastSuccessAt = at;
+      state.lastSuccessAt = seeded;
       evaluate();
     },
     snapshot,
@@ -292,15 +349,35 @@ export function catalogStaleForHeartbeat(
   }));
 }
 
-/** JSON form for `/api/edge/status` and `/api/edge/health`. */
+/**
+ * JSON form for `/api/edge/status` and `/api/edge/health`. `gate` is the
+ * sales gate state with the owner override applied (default: the installed
+ * provider); the age facts come from the snapshot.
+ */
 export function catalogFreshnessToDto(
   snapshot: CatalogFreshnessSnapshot,
+  gate: SalesGateState = getSalesGateState(),
 ): CatalogFreshness {
   return {
     stale: snapshot.stale,
     ownerAlarm: snapshot.ownerAlarm,
     cashierWarning: snapshot.cashierWarning,
-    salesBlocked: false,
+    salesBlocked: gate.blocked,
+    salesGate: {
+      blocked: gate.blocked,
+      stale24h: snapshot.salesGate.stale24h,
+      reason: gate.reason,
+      staleSince: snapshot.salesGate.staleSince?.toISOString() ?? null,
+      staleStreams: snapshot.salesGate.staleStreams,
+      override: gate.override
+        ? {
+            grantedBy: gate.override.grantedBy,
+            grantedAt: gate.override.grantedAt.toISOString(),
+            untilAt: gate.override.untilAt.toISOString(),
+            reason: gate.override.reason,
+          }
+        : null,
+    },
     streams: Object.fromEntries(
       Object.entries(snapshot.streams).map(([stream, entry]) => [
         stream,

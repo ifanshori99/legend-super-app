@@ -1667,6 +1667,13 @@
       "when": 1794364499670,
       "tag": "0284_catalog_sync_txid",
       "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "7",
+      "when": 1794403618109,
+      "tag": "0326_edge_catalog_sales_gate",
+      "breakpoints": true
     }
   ]
 }

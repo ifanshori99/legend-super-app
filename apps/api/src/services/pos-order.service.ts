@@ -61,6 +61,7 @@ import {
 } from "@starter/shared/pos";
 import { resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
+import { assertCatalogSalesAllowed } from "../edge/sales-gate.ts";
 import { devices, tableSessions } from "../db/schema/index.ts";
 import {
   orderEvents,
@@ -559,6 +560,9 @@ export async function createPosOrder(
         request,
       },
       async () => {
+        // legend-10nex: a replay returned before this callback; a new key
+        // under a held catalog is refused before any write.
+        assertCatalogSalesAllowed();
         const tenantId = context.tenant.tenantId;
         const outlet = await loadOutlet(tx, context, outletId);
         if (tableSessionId !== null) {

@@ -94,13 +94,19 @@ import {
   saveEdgePeppers,
 } from "./staff-pin-pepper-store.ts";
 import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
+import { startCatalogGate } from "./catalog-gate.ts";
+import {
+  closeCatalogOverrides,
+  loadActiveCatalogOverride,
+  setCatalogOverrideClock,
+  setCatalogOverrideListener,
+} from "./catalog-override.ts";
 import {
   seedCatalogFreshness,
   startEdgeMasterSyncLoop,
 } from "./master-sync.ts";
 import {
   catalogStaleForHeartbeat,
-  createCatalogFreshness,
   type CatalogFreshnessTracker,
 } from "./catalog-freshness.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -994,30 +1000,56 @@ export async function startEdgeRuntime(
   // stations, inventory items); one catalog-only run starts at boot without
   // blocking it. A failure is logged by class only and the loop keeps its
   // schedule.
-  // legend-10nex: prices and product status stale for 30 minutes while the
-  // cloud answers (a purely offline edge never alarms). Selling is never
-  // blocked; the cashier only sees the warning on /api/edge/status. The owner
-  // is notified by the cloud: the link heartbeat carries the stale streams
-  // (`catalogStale`), a local notification would never reach the cloud.
-  const freshness = createCatalogFreshness({
+  // legend-10nex: prices and product status. While a critical stream failed
+  // since its last success the cashier sees the warning on /api/edge/status;
+  // a reachable-cloud failure that lasts alarms the owner through the cloud
+  // (the link heartbeat carries the stale streams as `catalogStale`, a local
+  // notification would never reach the cloud). Founder Q57: no successful
+  // sync of a critical stream for over 24 hours holds sales until an owner
+  // allows them (edge/sales-gate.ts). Ages use a trusted clock that a wall
+  // clock set backwards cannot shrink, persisted across restarts.
+  const catalogGate = await startCatalogGate({
+    context: local.context,
+    scope: {
+      tenantId: local.scope.tenantId,
+      outletId: local.scope.outletId,
+      edgeNodeId: local.scope.edgeNodeId,
+    },
+    overrides: {
+      load: (now) =>
+        loadActiveCatalogOverride(
+          { context: local.context, outletId: local.scope.outletId },
+          { edgeNodeId: local.scope.edgeNodeId, now },
+        ),
+      close: async (now, reason, onlyId) => {
+        await closeCatalogOverrides(
+          { context: local.context, outletId: local.scope.outletId },
+          { edgeNodeId: local.scope.edgeNodeId, now, reason, onlyId },
+        );
+      },
+    },
     onOwnerAlarm: (alarm) =>
       logger.warn(
         { streams: alarm.streams.map((entry) => entry.stream) },
         "Edge catalog is stale while the cloud is reachable",
       ),
+    // A restart must not hide a stale catalog: start from the checkpoint's
+    // last success (none on a new edge). A read failure leaves the tracker
+    // unseeded; unseeded streams age from the persisted tracking start.
+    seed: (tracker) =>
+      seedCatalogFreshness(tracker, local.context, local.scope.edgeNodeId),
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge catalog sales gate step failed"),
   });
+  const freshness = catalogGate.freshness;
   catalogFreshness = freshness;
-  // A restart must not hide a stale catalog: start from the checkpoint's last
-  // success (none on a new edge). A read failure leaves the tracker unseeded.
-  try {
-    await seedCatalogFreshness(
-      freshness,
-      local.context,
-      local.scope.edgeNodeId,
-    );
-  } catch (error) {
-    logger.warn(safeError(error), "Edge catalog freshness seed failed");
-  }
+  // The owner grants an override on the edge API: the provider must see it now.
+  setCatalogOverrideClock(() => catalogGate.clock.now());
+  setCatalogOverrideListener((change) =>
+    catalogGate.applyOverrideChange(
+      change.kind === "granted" ? change.override : null,
+    ),
+  );
   const masterSync = startEdgeMasterSyncLoop({
     config,
     intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
@@ -1079,6 +1111,9 @@ export async function startEdgeRuntime(
         stopWakeups(),
         client.stop(),
       ]);
+      setCatalogOverrideListener(null);
+      setCatalogOverrideClock(null);
+      await catalogGate.stop();
       if (registryPuller === puller) registryPuller = null;
       if (catalogFreshness === freshness) catalogFreshness = null;
       state = { ...state, link: disconnected };

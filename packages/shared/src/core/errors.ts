@@ -34,6 +34,8 @@ export const coreErrorHttpStatus = {
   IDEMPOTENCY_KEY_REUSED: 409,
   /** Optimistic concurrency: the record changed since the client read it. */
   PRECONDITION_FAILED: 412,
+  /** Edge sales held: critical catalog streams unsynced for over 24h and no owner override. */
+  CATALOG_STALE_BLOCKED: 423,
   RATE_LIMITED: 429,
   /** A dependency (gateway, WhatsApp, edge link) is unavailable. */
   SERVICE_UNAVAILABLE: 503,
