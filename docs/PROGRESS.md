@@ -6,8 +6,10 @@ Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke 
 
 - Sudah: kontrak sarapan pindah ke `@starter/shared/facility` (pay/cancel/fire + kode BREAKFAST_*; channel order `facility`); API menu/pesan/bayar (link `/bayar/$token`)/batal/kirim-staf; consumer `payment.paid` channel facility; sweep worker kirim saat fire_at; tabel `facility_linked_orders` + trigger DB (SECURITY DEFINER) yang menolak tiket KDS untuk sarapan belum lunas (migrasi 0321); refund cap menghitung sarapan terkirim sebagai penjualan.
 - Keputusan: order belum lunas tetap bisa dibayar sampai sesi tiket berakhir (ends_at), lalu dibatalkan sweep; bayar setelah batal/terkirim = refund penuh (request, approve tetap WS-05); batal setelah terkirim 409; POS tidak bisa membuat order channel facility.
-- Terbuka: jurnal/pajak penjualan sarapan (order.paid) belum ditulis; menu sarapan = semua menu outlet (tanpa flag sarapan); UI tombol bayar baru (perlu review UI).
-- Berikut: bukti gagal-dulu lewat mutasi, temuan architect, push.
+- Lanjutan (keputusan CTO + founder Q59): kirim ke dapur pada/setelah ends_at tiket ditolak di API (`fireBreakfastOrderTx`, staf dapat 422 BREAKFAST_UNAVAILABLE setelah batal+refund penuh tersimpan) dan trigger (migrasi 0322, `fired_at < ends_at`); refund sarapan diajukan `system:facility` dengan teks sarapan, kunci `facility-breakfast-refund:` dicadangkan untuk sistem; `refunded_idr` naik saat request (diterima CTO); PB1 sarapan lewat mesin pajak outlet yang sama (eksklusif; outlet inklusif ditolak seperti POS/QR), jurnal order.paid memuat PB1, refund sebagian membalik PB1 proporsional (BRK-TAX-01..05).
+- Bukti: 4 file test sarapan hijau (pay 39, concurrency 10, refund-cap 6, tax 7); gagal-dulu BRK-PAY-07 3 merah di commit sebelum guard; BRK-PAY-08 merah sebelum prefix; mutasi `taxIdr: idr(0)` membuat 6/7 BRK-TAX merah; architect xhigh: tidak ada temuan uang pemblokir.
+- Terbuka: menu sarapan = semua menu outlet; review UI layar `design/screens/review-q60/`; label total di kartu tiket membungkus 2 baris di 390; outlet harga-termasuk-pajak belum didukung untuk semua kanal.
+- Berikut: review UI founder, merge train.
 
 ## UI campuran Q36: wwyyk, wpqs, rp3fk, ijv8, wjz1 (ui-engineer, cabang `ws/ui-mixed-q36` dari `origin/milestone/m1`, 2026-11-11)
 
