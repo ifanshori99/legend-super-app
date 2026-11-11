@@ -25,8 +25,10 @@
 //    business date yesterday puts a clock-in made now on yesterday (same
 //    technique as hris-attendance-leave-flag-outlet.test.ts).
 //  - "Review already decided" = HR accepted a flagged log (outside geofence,
-//    policy action "flag"); "rejected log" = HR rejected a valid log. Neither
-//    may be touched when the leave is approved later.
+//    policy action "flag"); "rejected log" = HR rejected a valid log. An
+//    accepted log is reopened (pending, reviewer cleared) when the leave is
+//    approved later, so the day is not paid twice; a rejected log is never
+//    touched.
 //  - A log that is already flagged and pending for another reason keeps that
 //    reason and gains "leave_approved" (the brief says valid OR flagged).
 //  - Replaying the approval decision with the same key answers 200; a second
@@ -511,6 +513,8 @@ interface QueueItem {
   source: string;
   flagReasons: string[];
   reviewStatus: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
 }
 
 async function queueOf(outletId: string, extra = ""): Promise<QueueItem[]> {
@@ -731,7 +735,7 @@ describe("[F25] logs the approval must not touch", () => {
     expect(await leaveStatus(s, leave.id)).toBe("approved");
   });
 
-  it("[F25] a log whose review HR already decided (accepted) is not reopened", async () => {
+  it("[F25] a log HR already accepted is reopened (pending, reviewer cleared) when the leave is approved", async () => {
     const s = await newScenario("t2", "flag");
     const log = await clock(s, "in", FAR);
     expect(log.validity).toBe("flagged");
@@ -742,8 +746,10 @@ describe("[F25] logs the approval must not touch", () => {
     const leave = await requestLeave(s, 0, 0);
     await approve(s, leave.id);
 
-    await expectNotFlaggedByLeave(s, log, "valid");
-    expect(await queueOf(s.outletId, "&reviewStatus=pending")).toEqual([]);
+    await expectLeaveFlagged(s, log);
+    const [entry] = await queueEntries(log.outletId, log.id);
+    expect(entry?.reviewedBy).toBeNull();
+    expect(entry?.reviewedAt).toBeNull();
   });
 
   it("[F25] out, break_start and break_end logs are not flagged; only the in log is", async () => {

@@ -41,8 +41,14 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { handleHrisApprovalResolved } from "../services/hris-approval-consumers.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
 const app = createApp();
@@ -853,6 +859,36 @@ const decideInbox = (s: Scenario, approvalId: string) =>
     reason: "Disetujui lewat inbox",
   });
 
+/**
+ * The inbox decision only appends approval.resolved to the outbox; the worker
+ * delivers it to the HRIS consumer, which settles the correction. Tests have no
+ * worker, so deliver the real event of the correction's chain the same way.
+ */
+async function deliverResolved(correctionId: string): Promise<void> {
+  const { rows } = await owner.query<{ event: unknown }>(
+    `SELECT o.event FROM domain_event_outbox o
+       JOIN attendance_corrections c
+         ON o.event->'payload'->>'chainId' = c.approval_chain_id::text
+      WHERE o.tenant_id = $1 AND c.id = $2
+        AND o.destination = 'cloud-sync'
+        AND o.event->>'name' = 'approval.resolved'`,
+    [tenant.id, correctionId],
+  );
+  expect(rows).toHaveLength(1);
+  const workerContext = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenant.id,
+      brandId: null,
+      source: "job",
+    } as Parameters<typeof establishTenantContext>[0]),
+    { kind: "tenant" },
+  );
+  await handleHrisApprovalResolved(
+    workerContext,
+    eventEnvelopeSchema.parse(rows[0]?.event),
+  );
+}
+
 describe("[F25] F3: a correction decided through the approval inbox on a leave day", () => {
   it("[F25] F3 control: on a day without leave the inbox approval applies the correction (one valid manual log)", async () => {
     const s = await newScenario("f3a");
@@ -860,6 +896,7 @@ describe("[F25] F3: a correction decided through the approval inbox on a leave d
 
     const response = await decideInbox(s, await pendingInboxRequest(s));
     expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await deliverResolved(correction.id);
 
     expect(await correctionStatus(s, correction.id)).toBe("approved");
     const logs = await manualLogs(s);
@@ -880,6 +917,7 @@ describe("[F25] F3: a correction decided through the approval inbox on a leave d
     expect([200, 409], JSON.stringify(response.body)).toContain(
       response.status,
     );
+    await deliverResolved(correction.id);
 
     expect(await correctionStatus(s, correction.id)).toBe("rejected");
     expect(await manualLogs(s)).toEqual([]);
@@ -895,6 +933,7 @@ describe("[F25] F3: a correction decided through the approval inbox on a leave d
     await approveLeave(s, leave.id);
 
     await decideInbox(s, inboxId);
+    await deliverResolved(correction.id);
     expect(await correctionStatus(s, correction.id)).toBe("rejected");
 
     const { rows } = await owner.query<{ hit: boolean }>(

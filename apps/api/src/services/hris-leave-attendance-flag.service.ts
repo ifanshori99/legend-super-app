@@ -26,8 +26,10 @@ export interface FlaggedAttendanceLog {
 /**
  * Flags the employee's `in` logs inside the approved leave range (by business
  * date, any outlet) as flagged and pending with reason `leave_approved`. Only
- * a valid or flagged log whose review is not decided is touched: a rejected
- * log and a log HR already accepted stay as they are. A log that already holds
+ * a valid or flagged log that is not rejected is touched. A log HR already
+ * accepted is reopened (pending, reviewer and review time cleared): the
+ * earlier acceptance does not cover a leave approved later, and keeping it
+ * would pay the day twice. A rejected log stays as it is. A log that already holds
  * the reason is skipped, so a second call changes nothing. Runs in the
  * caller's transaction (the leave approval), so a failure rolls both back.
  *

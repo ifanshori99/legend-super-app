@@ -603,7 +603,11 @@ export async function decideAttendanceReview(
     // Nobody reviews their own attendance, whatever their reach.
     if (access.own !== null && lower(access.own.id) === lower(row.employeeId))
       throw forbidden();
-    if (row.method === "manual_correction")
+    // A manual correction is decided through its approval chain, so only the
+    // leave decisions (on a leave-flagged log) may review it.
+    const isLeaveDecision =
+      body.action === "keep_leave" || body.action === "cancel_leave";
+    if (row.method === "manual_correction" && !isLeaveDecision)
       throw conflict(
         "ATTENDANCE_REVIEW_NOT_ALLOWED",
         "Koreksi manual sudah diputuskan lewat persetujuan dan tidak direview.",
@@ -659,7 +663,10 @@ export async function decideAttendanceReview(
         (row.validity === "flagged" && row.reviewStatus === "pending");
       if (
         !undecided ||
-        !(hasLeaveFlag(row) || (isInLog && leaves.length > 0))
+        !(
+          hasLeaveFlag(row) ||
+          (isInLog && row.method !== "manual_correction" && leaves.length > 0)
+        )
       )
         throw conflict(
           "ATTENDANCE_LEAVE_DECISION_NOT_ALLOWED",

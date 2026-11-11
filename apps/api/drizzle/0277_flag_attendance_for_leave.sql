@@ -6,10 +6,14 @@
 -- miss logs made elsewhere. This function flags only: `in` logs of one
 -- employee whose business date is inside [p_start, p_end] (inclusive, the same
 -- rule as the leave overlap checks), still countable (valid) or waiting for
--- review (flagged), and with no review decided (review_status none or
--- pending). A rejected log, or a log HR already accepted or rejected, is never
--- touched. Result: validity flagged, review_status pending, reason
--- leave_approved appended once. Calling it again changes nothing (idempotent).
+-- review (flagged), and not rejected (review_status none, pending or
+-- accepted). A log HR accepted is REOPENED: an earlier acceptance (for example
+-- keep after cancel_leave) does not cover a leave approved later, and leaving
+-- it would pay the day twice (leave and work). Reopening clears reviewed_by
+-- and reviewed_at (check attendance_logs_review_check: a pending review has no
+-- reviewer). A rejected log is never touched. Result: validity flagged,
+-- review_status pending, reason leave_approved appended once. Calling it again
+-- changes nothing (idempotent).
 -- Pattern of app.approved_leaves_on (0276): tied to the tenant (nothing happens
 -- unless the caller's own app.tenant_id is p_tenant), SECURITY DEFINER, pinned
 -- search_path, the caller's app.outlet_ids restored before returning, EXECUTE
@@ -33,6 +37,8 @@ BEGIN
     UPDATE public.attendance_logs al
        SET validity = 'flagged',
            review_status = 'pending',
+           reviewed_by = NULL,
+           reviewed_at = NULL,
            flag_reasons = CASE
              WHEN al.flag_reasons @> '["leave_approved"]'::jsonb THEN al.flag_reasons
              ELSE al.flag_reasons || '["leave_approved"]'::jsonb
@@ -43,7 +49,7 @@ BEGIN
        AND al.business_date >= p_start
        AND al.business_date <= p_end
        AND al.validity IN ('valid', 'flagged')
-       AND al.review_status IN ('none', 'pending')
+       AND al.review_status IN ('none', 'pending', 'accepted')
        AND NOT (
          al.validity = 'flagged'
          AND al.review_status = 'pending'

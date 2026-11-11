@@ -817,10 +817,25 @@ export async function settleAttendanceCorrection(
     let status: AttendanceCorrectionStatus = "rejected";
     let cause: string | undefined;
     if (outcome === "approved") {
-      const { dates } = await correctionDates(tx, row);
+      const { dates, timeZone, logDate } = await correctionDates(tx, row);
       if (await isPayrollClosed(tx, row.tenantId, row.employeeId, dates)) {
         // Approved, but the period closed while the chain was open: no log.
         cause = "payroll_locked";
+      } else if (
+        (
+          await findApprovedLeaveOnDate(
+            tx,
+            row.tenantId,
+            row.employeeId,
+            logDate ?? localDateOf(row.requestedOccurredAt, timeZone),
+          )
+        ).length > 0
+      ) {
+        // Approved through the general inbox (skips the decision gate) or a
+        // leave was approved after the gate: the day is paid as leave, so no
+        // log. Ending rejected beats applyApproved throwing 409 and leaving
+        // the chain approved behind a pending correction.
+        cause = "leave_approved";
       } else {
         const approved = await applyApproved(
           tx,
