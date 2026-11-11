@@ -55,6 +55,7 @@ import {
 import {
   attendanceLogged,
   leaveApproved,
+  leaveChanged,
   shiftCancelled,
   shiftPublished,
 } from "./events.ts";
@@ -1979,6 +1980,34 @@ const leaveEvent = leaveApproved.envelopeSchema.parse({
   },
 });
 
+const leaveChangedEvent = leaveChanged.envelopeSchema.parse({
+  id: ulid(204),
+  tenantId: tenant.id,
+  outletId: outletA,
+  name: "leave.changed",
+  version: 1,
+  aggregateType: "leave",
+  aggregateId: id(8252),
+  sequence: 2,
+  occurredAt: "2026-10-12T02:00:00.000Z",
+  actor: { type: "user", id: userId(1024) },
+  deviceId: null,
+  idempotencyKey: "leave.changed:8252:2",
+  payloadSchemaRef: "leave.changed.v1",
+  payload: {
+    leaveRequestId: id(8252),
+    employeeId: id(1005),
+    outletId: outletA,
+    startDate: "2026-10-12",
+    endDate: "2026-10-12",
+    days: "1.0000",
+    excludedHolidayDates: [],
+    status: "approved",
+    changeReason: "range_split",
+    splitFromLeaveRequestId: null,
+  },
+});
+
 // ---- Whole-fixture schema ------------------------------------------------
 
 export const employeePiiFixtureSchema = z.strictObject({
@@ -2064,6 +2093,7 @@ export const cafeLegendHrisFixtures = {
     shiftPublished: shiftEvent,
     shiftCancelled: shiftCancelledEvent,
     leaveApproved: leaveEvent,
+    leaveChanged: leaveChangedEvent,
   },
   userIds: {
     outletManager: userId(1001),

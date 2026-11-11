@@ -44,6 +44,7 @@ import {
   createLeaveRequest as createLeaveRequestEndpoint,
   decideLeaveRequest as decideLeaveRequestEndpoint,
   leaveApproved,
+  leaveChanged,
   leavePolicySchema,
   leaveRequestSchema,
   listLeaveRequests as listLeaveRequestsEndpoint,
@@ -85,6 +86,8 @@ import {
   noHrisFileSigner,
   type HrisFileSigner,
 } from "./hris-contract.service.ts";
+import { lockEmployeeLeaveAttendance } from "./hris-leave-attendance-lock.ts";
+import { flagAttendanceForApprovedLeave } from "./hris-leave-attendance-flag.service.ts";
 import {
   countLeaveDays,
   expireBalanceCarryOver,
@@ -128,6 +131,10 @@ const LEAVE_BALANCE_AUDIT_SAFE_FIELDS = [
 ] as const;
 
 /** RLS scope of exactly one outlet: approval rows are outlet-owned (TEN-03). */
+function conflict(code: string, message: string): HttpError {
+  return new HttpError(409, code, message);
+}
+
 function outletScoped(
   context: ScopedTenantContext,
   outletId: string,
@@ -357,6 +364,72 @@ async function appendLeaveApproved(
         days: row.days,
         decidedBy,
         decidedAt: row.decidedAt.toISOString(),
+      },
+    });
+    await appendOutbox(tx, context, {
+      id: createUlid(now.getTime()),
+      event,
+      destination,
+      direction: null,
+      peerId: null,
+    });
+  }
+}
+
+/**
+ * Appends `leave.changed` (legend-x0avw F5) for one leave row HR just narrowed,
+ * split off or cancelled, in the caller's transaction (all events commit or
+ * none, with the leave UPDATE/INSERT). Same sequencing as `leave.approved`:
+ * per aggregate and destination; the caller holds the request row lock (or just
+ * inserted the row). No reason or attachment in the payload (personal data).
+ */
+async function appendLeaveChanged(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: LeaveRequestRow,
+  change: {
+    readonly changeReason:
+      "range_split" | "range_cancelled" | "requester_cancelled";
+    readonly splitFromLeaveRequestId: string | null;
+    readonly actorUserId: string;
+  },
+  now: Date,
+): Promise<void> {
+  if (row.status !== "approved" && row.status !== "cancelled")
+    throw new Error("leave.changed needs an approved or cancelled request");
+  const actorId = userIdSchema.parse(change.actorUserId);
+  for (const destination of LEAVE_EVENT_DESTINATIONS) {
+    const sequence = await nextLeaveEventSequence(
+      tx,
+      row.tenantId,
+      destination,
+      row.id,
+    );
+    const event = leaveChanged.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId: row.tenantId,
+      outletId: row.outletId,
+      name: leaveChanged.name,
+      version: leaveChanged.version,
+      aggregateType: leaveChanged.entry.aggregateType,
+      aggregateId: row.id,
+      sequence,
+      occurredAt: now.toISOString(),
+      actor: { type: "user", id: actorId },
+      deviceId: null,
+      idempotencyKey: `${leaveChanged.name}:${row.id}:${sequence}`,
+      payloadSchemaRef: leaveChanged.payloadSchemaRef,
+      payload: {
+        leaveRequestId: row.id,
+        employeeId: row.employeeId,
+        outletId: row.outletId,
+        startDate: row.startDate,
+        endDate: row.endDate,
+        days: row.days,
+        excludedHolidayDates: row.excludedHolidayDates,
+        status: row.status,
+        changeReason: change.changeReason,
+        splitFromLeaveRequestId: change.splitFromLeaveRequestId,
       },
     });
     await appendOutbox(tx, context, {
@@ -687,6 +760,10 @@ export async function createLeaveRequest(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:leave:${tenantId}:${own.id}`}, 0))`,
     );
+    // Lock order on every leave path: hris:leave, employee leave-attendance,
+    // then the balance row. Taken here before the balance lock, so it cannot
+    // deadlock with applyOutcome and the cancel paths (employee lock first).
+    await lockEmployeeLeaveAttendance(tx, tenantId, own.id);
 
     const [replayed] = await tx
       .select()
@@ -912,6 +989,7 @@ export async function createLeaveRequest(
         .returning()) as [LeaveRequestRow];
     } else {
       // Below every tier of the matrix: approved on filing, days used at once.
+      // The employee lock is already held (taken right after hris:leave).
       if (type.policy.tracksBalance)
         await adjustBalance(
           tx,
@@ -930,6 +1008,7 @@ export async function createLeaveRequest(
         .where(eq(leaveRequests.id, inserted.id))
         .returning()) as [LeaveRequestRow];
       await appendLeaveApproved(tx, scoped, row, now);
+      await flagAttendanceForApprovedLeave(tx, scoped, row);
     }
     await auditLeave(
       tx,
@@ -1035,6 +1114,9 @@ async function cancelLeaveRequest(
 ): Promise<void> {
   const scoped = outletScoped(context, gateRow.outletId);
   await withTenant(db, scoped, async (tx) => {
+    // Employee lock first, then the leave row, then balances: the same order as
+    // cancelApprovedLeaveOnDateByHr (HR cancel), so the two cannot deadlock.
+    await lockEmployeeLeaveAttendance(tx, gateRow.tenantId, gateRow.employeeId);
     const row = await findRequest(tx, scoped.tenant.tenantId, gateRow.id, true);
     if (!row) throw notFound("Pengajuan cuti");
     if (row.status === "cancelled") return;
@@ -1093,7 +1175,298 @@ async function cancelLeaveRequest(
       updated,
       "hris.leave_request.cancelled",
     );
+    // A pending request was never published as approved: only an approved
+    // one that goes away tells the consumers (leave.changed).
+    if (row.status === "approved")
+      await appendLeaveChanged(
+        tx,
+        scoped,
+        updated,
+        {
+          changeReason: "requester_cancelled",
+          splitFromLeaveRequestId: null,
+          actorUserId,
+        },
+        now,
+      );
   });
+}
+
+// ------------------------------------------- HR decision on a clock-in day
+
+/** One approved leave that covers a date, as `app.approved_leaves_on` returns it. */
+export interface ApprovedLeaveOnDate {
+  readonly leaveRequestId: string;
+  readonly outletId: string;
+  readonly startDate: string;
+  readonly endDate: string;
+  readonly days: string;
+}
+
+/**
+ * Approved leave of one employee whose range holds `businessDate` (bead
+ * legend-9y6ri). Reads through `app.approved_leaves_on` (SECURITY DEFINER,
+ * tenant-bound, no outlet limit): `leave_requests` RLS is per home outlet of
+ * the employee, so a clock-in or an HR decision at another outlet would not
+ * see the leave through the table and would miss the clash.
+ */
+export async function findApprovedLeaveOnDate(
+  tx: Tx,
+  tenantId: TenantId,
+  employeeId: string,
+  businessDate: string,
+): Promise<ApprovedLeaveOnDate[]> {
+  const result = await tx.execute(
+    sql`SELECT leave_request_id, outlet_id, start_date::text AS start_date, end_date::text AS end_date, days::text AS days FROM app.approved_leaves_on(${tenantId}::uuid, ${employeeId}::uuid, ${businessDate}::date) ORDER BY start_date, leave_request_id`,
+  );
+  return result.rows.map((row) => ({
+    leaveRequestId: String(row.leave_request_id),
+    outletId: String(row.outlet_id),
+    startDate: String(row.start_date),
+    endDate: String(row.end_date),
+    days: String(row.days),
+  }));
+}
+
+/**
+ * HR cancels the approved leave that covers a day the employee clocked in
+ * (attendance review `cancel_leave`). Runs in the caller's transaction, so the
+ * balance refund, the status change and the audit commit together with the
+ * attendance log update; any 409/403 here rolls all of it back. Unlike the
+ * requester's cancel, a leave that already started may be cancelled: that is
+ * the point of the decision.
+ *
+ * Only the day of the clock-in is cancelled (founder W8 Q27, bead
+ * legend-5nt2z): the leave range is split around `businessDate`. The original
+ * row keeps its id and shrinks to the head (or to the tail when the day is the
+ * first one); a middle day adds one new approved row (new id) for the tail. A
+ * range left without paid days is `cancelled`, as a one-day leave always was.
+ * The refund is exactly the paid day removed (original days minus the days of
+ * the pieces left, must be one whole day, else 409), moved once. A day listed
+ * in `excludedHolidayDates` was never paid as leave: nothing is split or
+ * refunded. Idempotent: only rows still `approved` (locked) are touched, so a
+ * replay finds no leave on the day and refunds nothing.
+ * Needs `hr.leave.approve` at the outlet of each leave. A leave the caller's
+ * RLS cannot lock, or any approved leave still paying the day after the
+ * cancel, is a 409 (never a valid log with the leave still paid).
+ * Returns the ids of the leave rows changed (split, narrowed or cancelled;
+ * the new tail row included; empty when none covers the day any more).
+ */
+export async function cancelApprovedLeaveOnDateByHr(
+  tx: Tx,
+  context: ScopedTenantContext,
+  access: HrisAccess,
+  input: { readonly employeeId: string; readonly businessDate: string },
+  now: Date,
+): Promise<string[]> {
+  const tenantId = context.tenant.tenantId;
+  const day = input.businessDate;
+  // Employee lock before any leave row or balance lock (idempotent per tx).
+  await lockEmployeeLeaveAttendance(tx, tenantId, input.employeeId);
+  const leaves = await findApprovedLeaveOnDate(
+    tx,
+    tenantId,
+    input.employeeId,
+    day,
+  );
+  const changed: string[] = [];
+  // Leaves that cover the day but never paid it (holiday excluded at filing).
+  const unpaid = new Set<string>();
+  for (const leave of leaves) {
+    if (
+      !access.snapshot.allows("hr.leave.approve", {
+        type: "outlet",
+        id: leave.outletId,
+      })
+    )
+      throw forbidden();
+    const row = await findRequest(tx, tenantId, leave.leaveRequestId, true);
+    if (!row)
+      throw conflict(
+        "ATTENDANCE_LEAVE_NOT_REACHABLE",
+        "Cuti tidak dapat dibatalkan dari akses saat ini. Pilih tetap cuti.",
+      );
+    // Decided meanwhile by someone else: nothing to refund here.
+    if (row.status !== "approved") continue;
+    // Re-check on the locked row: the range may have changed since the read.
+    if (row.startDate > day || row.endDate < day) continue;
+    if (row.excludedHolidayDates.includes(day)) {
+      unpaid.add(row.id);
+      continue;
+    }
+    const pieces = [
+      leavePiece(row, row.startDate, addDays(day, -1)),
+      leavePiece(row, addDays(day, 1), row.endDate),
+    ].filter((piece) => piece.range && piece.days > 0n);
+    const refund =
+      parseDecimal4(row.days) - pieces.reduce((sum, p) => sum + p.days, 0n);
+    // The day is one paid day. Anything else means `days` and the range
+    // disagree: refund nothing rather than guess (never pay or refund extra).
+    if (refund !== 10000n)
+      throw conflict(
+        "ATTENDANCE_LEAVE_DAYS_MISMATCH",
+        "Jumlah hari cuti tidak cocok dengan rentangnya. Pilih tetap cuti.",
+      );
+    await moveBalance(
+      tx,
+      context,
+      access.actorUserId,
+      row,
+      { pending: 0n, used: -refund },
+      now,
+    );
+    const [first, second] = pieces;
+    const [updated] = await tx
+      .update(leaveRequests)
+      .set(
+        first
+          ? {
+              startDate: first.range!.start,
+              endDate: first.range!.end,
+              days: formatDecimal4(first.days),
+              excludedHolidayDates: first.excluded,
+              updatedAt: now,
+            }
+          : { status: "cancelled", updatedAt: now },
+      )
+      .where(
+        and(
+          eq(leaveRequests.tenantId, row.tenantId),
+          eq(leaveRequests.id, row.id),
+        ),
+      )
+      .returning();
+    if (!updated) throw new Error("Leave request update returned no row");
+    changed.push(updated.id);
+    await appendLeaveChanged(
+      tx,
+      context,
+      updated,
+      {
+        changeReason: first ? "range_split" : "range_cancelled",
+        splitFromLeaveRequestId: null,
+        actorUserId: access.actorUserId,
+      },
+      now,
+    );
+    let tail: LeaveRequestRow | null = null;
+    if (second) {
+      const [inserted] = await tx
+        .insert(leaveRequests)
+        .values({
+          tenantId: row.tenantId,
+          outletId: row.outletId,
+          employeeId: row.employeeId,
+          leaveTypeId: row.leaveTypeId,
+          periodYear: row.periodYear,
+          startDate: second.range!.start,
+          endDate: second.range!.end,
+          days: formatDecimal4(second.days),
+          excludedHolidayDates: second.excluded,
+          reason: row.reason,
+          attachmentKey: null,
+          status: "approved",
+          approvalChainId: null,
+          requestedBy: row.requestedBy,
+          requestedAt: row.requestedAt,
+          decidedBy: row.decidedBy,
+          decidedAt: row.decidedAt,
+          createIdempotencyKey: null,
+          updatedAt: now,
+        })
+        .returning();
+      if (!inserted) throw new Error("Leave request insert returned no row");
+      tail = inserted;
+      changed.push(inserted.id);
+      await appendLeaveChanged(
+        tx,
+        context,
+        inserted,
+        {
+          changeReason: "range_split",
+          splitFromLeaveRequestId: updated.id,
+          actorUserId: access.actorUserId,
+        },
+        now,
+      );
+    }
+    await recordAudit(
+      tx,
+      context,
+      hrisAuditEntry(context, access.actorUserId, now, {
+        outletId: row.outletId,
+        action: first
+          ? "hris.leave_request.split_by_attendance_review"
+          : "hris.leave_request.cancelled_by_attendance_review",
+        objectType: HRIS_LEAVE_OBJECT_TYPE,
+        objectId: row.id,
+        after: {
+          status: updated.status,
+          changedFields: [
+            `day=${day}`,
+            `before=${row.startDate}..${row.endDate}`,
+            `after=${updated.startDate}..${updated.endDate}`,
+            ...(tail ? [`tail=${tail.id}`] : []),
+          ].join(","),
+        },
+      }),
+      HRIS_AUDIT_SAFE_FIELDS,
+    );
+    if (tail)
+      await auditLeave(
+        tx,
+        context,
+        access.actorUserId,
+        now,
+        tail,
+        "hris.leave_request.created_by_attendance_review_split",
+      );
+  }
+  // Nothing may still pay the day (another outlet's leave, or a row that was
+  // hidden): else the day would be paid as leave and as work. A leave that
+  // never paid it (excluded holiday) is not a clash.
+  const remaining = await findApprovedLeaveOnDate(
+    tx,
+    tenantId,
+    input.employeeId,
+    day,
+  );
+  if (remaining.some((leave) => !unpaid.has(leave.leaveRequestId)))
+    throw conflict(
+      "ATTENDANCE_LEAVE_STILL_APPROVED",
+      "Masih ada cuti disetujui pada hari itu. Pilih tetap cuti.",
+    );
+  return changed;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** ISO date `delta` calendar days away (dates are plain calendar days, UTC math). */
+function addDays(date: string, delta: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + delta * DAY_MS)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * The part of an approved leave inside `start..end`: its range (null when
+ * empty), the holiday dates it keeps and its paid days (calendar days minus
+ * those holidays), scaled by 4 decimals.
+ */
+function leavePiece(row: LeaveRequestRow, start: string, end: string) {
+  if (start > end) return { range: null, excluded: [] as string[], days: 0n };
+  const excluded = row.excludedHolidayDates.filter(
+    (date) => date >= start && date <= end,
+  );
+  const calendar =
+    (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) /
+      DAY_MS +
+    1;
+  return {
+    range: { start, end },
+    excluded,
+    days: BigInt(calendar - excluded.length) * 10000n,
+  };
 }
 
 // --------------------------------------------------------------- settle
@@ -1106,6 +1479,9 @@ async function applyOutcome(
   outcome: "approved" | "rejected" | "expired" | "cancelled",
   now: Date,
 ): Promise<LeaveRequestStatus> {
+  // legend-x0avw F1: before any leave or balance write, serialise with
+  // clock-ins and corrections of this employee (lock first, always).
+  await lockEmployeeLeaveAttendance(tx, row.tenantId, row.employeeId);
   const scaledDays = parseDecimal4(row.days);
   if (outcome === "approved") {
     const [final] = await tx
@@ -1139,6 +1515,7 @@ async function applyOutcome(
       .returning();
     if (!approved) throw new Error("Leave request update returned no row");
     await appendLeaveApproved(tx, context, approved, now);
+    await flagAttendanceForApprovedLeave(tx, context, approved);
     return "approved";
   }
   // A human rejection keeps the chain's last decision. A matrix expiry or a
