@@ -930,14 +930,14 @@ describe("PIN reset by WhatsApp: saving the new PIN (POST reset-wa/:id/pin)", ()
   it.each([
     [
       "removed",
-      (userId: string, _otherUserId: string) => ({
+      (userId: string) => ({
         text: `DELETE FROM user_identities WHERE user_id = $1 AND type = 'whatsapp'`,
         values: [userId],
       }),
     ],
     [
       "re-linked",
-      (userId: string, _otherUserId: string) => ({
+      (userId: string) => ({
         text: `UPDATE user_identities SET linked_at = now() WHERE user_id = $1 AND type = 'whatsapp'`,
         values: [userId],
       }),

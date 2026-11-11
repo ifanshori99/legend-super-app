@@ -122,6 +122,7 @@ function WaResetWaiting({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- state follows the polled challenge status
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
@@ -174,10 +175,7 @@ function WaResetWaiting({
           translate="no"
         >
           RESET PIN{" "}
-          <code
-            translate="no"
-            className="font-[inherit] whitespace-nowrap"
-          >
+          <code translate="no" className="font-[inherit] whitespace-nowrap">
             {code}
           </code>
         </p>
@@ -212,7 +210,11 @@ function WaResetWaiting({
         </div>
       ) : (
         <div className="grid gap-3">
-          <Button asChild size="lg" className="h-auto min-h-control w-full whitespace-normal">
+          <Button
+            asChild
+            size="lg"
+            className="h-auto min-h-control w-full whitespace-normal"
+          >
             <a href={waLink} target="_blank" rel="noopener noreferrer">
               <MessageCircle aria-hidden="true" />
               Buka WhatsApp
@@ -270,7 +272,8 @@ function WaResetWaiting({
               Kirim pesan di atas ke nomor WhatsApp layanan
               {number ? (
                 <>
-                  : <strong
+                  :{" "}
+                  <strong
                     translate="no"
                     className="whitespace-nowrap text-foreground"
                   >
@@ -317,9 +320,11 @@ function WaResetWaiting({
             aria-live="polite"
             className="text-base leading-6 empty:-mt-3 md:text-sm md:leading-5 text-muted-foreground"
           >
-            {copied === "code" && "Pesan disalin. Tempel dan kirim lewat WhatsApp."}
+            {copied === "code" &&
+              "Pesan disalin. Tempel dan kirim lewat WhatsApp."}
             {copied === "number" && "Nomor tujuan disalin."}
-            {copyFailed && "Tidak bisa menyalin. Salin teks di atas secara manual."}
+            {copyFailed &&
+              "Tidak bisa menyalin. Salin teks di atas secara manual."}
           </p>
         </div>
       )}
