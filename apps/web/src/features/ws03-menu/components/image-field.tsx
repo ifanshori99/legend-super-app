@@ -135,6 +135,7 @@ export function ImageField({
       <input
         ref={inputRef}
         type="file"
+        aria-label={t("menu.editor.fields.photo")}
         accept={ACCEPTED.join(",")}
         className="sr-only"
         tabIndex={-1}
