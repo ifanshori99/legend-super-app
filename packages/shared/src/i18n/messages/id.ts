@@ -2636,7 +2636,6 @@ export const id = {
           "Opsional. Pilih stasiun tertentu untuk menggantikan pemilihan berdasarkan tipe di outlet ini.",
         outlet: "Outlet",
         override: "Stasiun khusus",
-        optional: "(opsional)",
         useType: "Gunakan tipe stasiun",
         overrideScopeHint: "Pilihan ini hanya berlaku di outlet yang dipilih.",
         overrideEmpty:

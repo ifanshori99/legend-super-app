@@ -189,14 +189,7 @@ export function StationRoutingSection({
             </FormField>
 
             <FormField
-              label={
-                <>
-                  {t("menu.editor.station.override")}{" "}
-                  <span className="font-normal text-muted-foreground">
-                    {t("menu.editor.station.optional")}
-                  </span>
-                </>
-              }
+              label={t("menu.editor.station.override")}
               hint={
                 stations.length === 0 && !unavailable
                   ? t("menu.editor.station.overrideEmpty")
