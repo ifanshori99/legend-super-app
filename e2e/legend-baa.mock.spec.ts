@@ -11,6 +11,15 @@ import { captureScreenshot } from "./screenshots.ts";
 // Run: pnpm test:e2e:mock e2e/legend-baa.mock.spec.ts
 
 const CODE = /^[0-9A-Z]{4}-[0-9A-Z]{4}$/;
+// Mandatory confirm card (legend-kmndq): the session exists only after the
+// guest taps "Ya, masuk" on the masked sender.
+const CARD_TEXT = /Pesan diterima dari .+\. Masuk sebagai nomor ini\?/;
+
+/** The mock lets the message land on the second poll (2 s apart). */
+async function confirmSignIn(page: Page) {
+  await expect(page.getByText(CARD_TEXT)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Ya, masuk" }).click();
+}
 
 /**
  * The first hit on a cold Vite dev server paints the server HTML before React
@@ -85,7 +94,11 @@ test("AUTH-01: a code is bound to this browser and signs it in once", async ({
     page.getByRole("img", { name: /QR untuk membuka WhatsApp/ }),
   ).toBeVisible();
 
-  // The mock completes the challenge on the second poll, like the webhook.
+  // The mock completes the challenge on the second poll, like the webhook, but
+  // the guest must confirm the sender before the session is claimed.
+  await expect(page.getByText(CARD_TEXT)).toBeVisible({ timeout: 20_000 });
+  expect(new URL(page.url()).pathname).toBe("/masuk");
+  await page.getByRole("button", { name: "Ya, masuk" }).click();
   await expect(page).toHaveURL(/\/member$/, { timeout: 20_000 });
 });
 
@@ -195,6 +208,7 @@ test("AUTH-07: points wait for a verified number, so Google asks to link WhatsAp
   ).toBeVisible();
   await page.getByRole("button", { name: "Hubungkan WhatsApp" }).click();
   await expect(page.getByText(CODE)).toBeVisible();
+  await confirmSignIn(page);
   // Exact: the points paragraph above also contains "nomor WhatsApp terhubung".
   await expect(
     page.getByText("Nomor WhatsApp terhubung", { exact: true }),
@@ -239,6 +253,7 @@ test("AUTH-01: a backslash or tab return path cannot leave the app (open redirec
     await waitForHydration(page);
     await page.getByRole("button", { name: "Masuk dengan WhatsApp" }).click();
     await expect(page.getByText(CODE)).toBeVisible();
+    await confirmSignIn(page);
     await expect(
       page.getByRole("link", { name: "Ke halaman member" }),
     ).toHaveAttribute("href", "/member", { timeout: 20_000 });
