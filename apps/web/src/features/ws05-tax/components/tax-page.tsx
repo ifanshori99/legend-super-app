@@ -26,14 +26,14 @@ type TaxTab = {
 const TABS: readonly TaxTab[] = [
   { key: "rules", labelKey: "tax.tabs.rules", to: "/kelola/pajak" },
   {
-    key: "service-charge",
-    labelKey: "tax.tabs.serviceCharge",
-    to: "/kelola/pajak/service-charge",
-  },
-  {
     key: "settings",
     labelKey: "tax.tabs.settings",
     to: "/kelola/pajak/opsi",
+  },
+  {
+    key: "service-charge",
+    labelKey: "tax.tabs.serviceCharge",
+    to: "/kelola/pajak/service-charge",
   },
   {
     key: "report",
@@ -49,6 +49,7 @@ export function TaxPage({
   active,
   title,
   description,
+  action,
   canConfigure,
   canReport,
   children,
@@ -58,6 +59,8 @@ export function TaxPage({
    *  screen (config tabs), pass it when the section differs (PBJT recap). */
   title?: string;
   description: string;
+  /** The page's one primary action, shown at the right of the header. */
+  action?: ReactNode;
   canConfigure: boolean;
   canReport: boolean;
   children: ReactNode;
@@ -70,14 +73,17 @@ export function TaxPage({
     // The management topbar already renders the area h1 (DESIGN.md v3 §5);
     // the section title stays an h2 so each screen keeps one landmark.
     <div className="grid min-w-0 gap-5">
-      <header className="grid gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          {title && <h2 className="type-title">{title}</h2>}
-          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="grid min-w-0 gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {title && <h2 className="type-title">{title}</h2>}
+            {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+          </div>
+          <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
+            {description}
+          </p>
         </div>
-        <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-          {description}
-        </p>
+        {action}
       </header>
       {tabs.length > 1 && (
         <nav
@@ -102,7 +108,7 @@ export function TaxPage({
                     : undefined
                 }
                 aria-current={current ? "page" : undefined}
-                className={tabsTriggerClass}
+                className={cn(tabsTriggerClass, "max-md:min-h-11")}
               >
                 {t(tab.labelKey)}
               </Link>

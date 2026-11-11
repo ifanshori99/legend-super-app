@@ -12,6 +12,8 @@
 
 import { Router } from "express";
 import {
+  archiveTaxRule as archiveTaxRuleEndpoint,
+  archiveTaxSettings as archiveTaxSettingsEndpoint,
   createServiceChargeRuleInputSchema,
   createTaxRuleInputSchema,
   createTaxSettingsInputSchema,
@@ -26,6 +28,7 @@ import {
   publishTaxSettings as publishTaxSettingsEndpoint,
   updateServiceChargeRule as updateServiceChargeRuleEndpoint,
   updateTaxRule as updateTaxRuleEndpoint,
+  updateTaxSettings as updateTaxSettingsEndpoint,
 } from "@starter/shared/tax";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
@@ -106,6 +109,23 @@ taxRouter.post(
         getAuth(req).user.id,
         taxRuleId,
         idempotencyKey,
+      ),
+    });
+  },
+);
+
+taxRouter.post(
+  "/rules/:taxRuleId/archive",
+  config,
+  jsonBody,
+  async (req, res) => {
+    const { taxRuleId } = archiveTaxRuleEndpoint.params.parse(req.params);
+    archiveTaxRuleEndpoint.body.parse(req.body);
+    res.json({
+      data: await tax.archiveTaxRule(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        taxRuleId,
       ),
     });
   },
@@ -202,6 +222,45 @@ taxRouter.post("/settings", config, jsonBody, async (req, res) => {
     .location(`/api/tax/settings/${settings.id}`)
     .json({ data: settings });
 });
+
+taxRouter.patch(
+  "/settings/:taxSettingsId",
+  config,
+  jsonBody,
+  async (req, res) => {
+    const { taxSettingsId } = updateTaxSettingsEndpoint.params.parse(
+      req.params,
+    );
+    const input = updateTaxSettingsEndpoint.body.parse(req.body);
+    res.json({
+      data: await tax.updateTaxSettings(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        taxSettingsId,
+        input,
+      ),
+    });
+  },
+);
+
+taxRouter.post(
+  "/settings/:taxSettingsId/archive",
+  config,
+  jsonBody,
+  async (req, res) => {
+    const { taxSettingsId } = archiveTaxSettingsEndpoint.params.parse(
+      req.params,
+    );
+    archiveTaxSettingsEndpoint.body.parse(req.body);
+    res.json({
+      data: await tax.archiveTaxSettings(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        taxSettingsId,
+      ),
+    });
+  },
+);
 
 taxRouter.post(
   "/settings/:taxSettingsId/publish",

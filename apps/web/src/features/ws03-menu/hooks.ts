@@ -1,7 +1,13 @@
 // The only way components touch menu data: queries keep their endpoint keys,
 // mutations invalidate every endpoint whose rows a write can change.
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
+import type { OutletId } from "@starter/shared/core";
 import {
   getItem,
   getItemModifierGroups,
@@ -16,6 +22,7 @@ import {
   listStations,
   listVariants,
 } from "@starter/shared/menu";
+import type { orgEndpoints } from "@starter/shared/platform";
 import * as api from "./api";
 import {
   allCategoriesQuery,
@@ -29,6 +36,7 @@ import {
   itemsQuery,
   modifierGroupsQuery,
   modifiersQuery,
+  outletsQuery,
   priceListItemsQuery,
   priceListsQuery,
   stationsQuery,
@@ -120,6 +128,20 @@ export function useCategories(query: QueryOf<typeof listCategories>) {
 
 export function useStations(query: QueryOf<typeof listStations>) {
   return useQuery(stationsQuery(query));
+}
+
+/** Stations of several outlets, one query per outlet (same order as `outletIds`). */
+export function useOutletStations(outletIds: readonly OutletId[]) {
+  return useQueries({
+    queries: outletIds.map((outletId) =>
+      stationsQuery({ outletId, limit: 100 }),
+    ),
+  });
+}
+
+/** Outlets of the tenant, for the optional per-outlet station override. */
+export function useOutlets(query: QueryOf<typeof orgEndpoints.listOutlets>) {
+  return useQuery(outletsQuery(query));
 }
 
 export function useVariants(itemId: string | undefined) {

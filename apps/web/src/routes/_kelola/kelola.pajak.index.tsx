@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
-import { TaxPage } from "@/features/ws05-tax/components/tax-page";
 import { TaxRulesPage } from "@/features/ws05-tax/components/tax-rules-page";
 import { taxConfigGuard, taxSectionAccess } from "@/features/ws05-tax/guard";
 import { taxRulesDefaultQuery } from "@/features/ws05-tax/queries";
@@ -23,14 +22,5 @@ function TaxRulesRoute() {
   const t = useT();
   const { access } = Route.useRouteContext();
   const { canReport } = taxSectionAccess(access);
-  return (
-    <TaxPage
-      active="rules"
-      description={t("tax.subtitle")}
-      canConfigure
-      canReport={canReport}
-    >
-      <TaxRulesPage />
-    </TaxPage>
-  );
+  return <TaxRulesPage description={t("tax.subtitle")} canReport={canReport} />;
 }

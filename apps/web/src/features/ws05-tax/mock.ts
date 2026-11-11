@@ -11,6 +11,9 @@
 import { userIdSchema } from "@starter/shared/core";
 import {
   TaxError,
+  archiveRuleVersion,
+  archiveTaxRule,
+  archiveTaxSettings,
   cafeLegendTaxFixtures,
   createServiceChargeRule,
   createTaxRule,
@@ -29,6 +32,7 @@ import {
   taxSettingsSchema,
   updateServiceChargeRule,
   updateTaxRule,
+  updateTaxSettings,
   type ServiceChargeRule,
   type TaxRule,
   type TaxSettings,
@@ -213,6 +217,25 @@ registerMock(publishTaxRule, ({ params, body }) =>
   ),
 );
 
+registerMock(archiveTaxRule, ({ params }) => {
+  const state = store.get();
+  const found = state.taxRules.find((rule) => rule.id === params.taxRuleId);
+  if (!found) notFound("Aturan pajak");
+  let archived: TaxRule;
+  try {
+    archived = archiveRuleVersion(found);
+  } catch (error) {
+    return toApiError(error);
+  }
+  store.set({
+    ...state,
+    taxRules: state.taxRules.map((rule) =>
+      rule.id === archived.id ? archived : rule,
+    ),
+  });
+  return { data: archived };
+});
+
 // ---- Service-charge rules --------------------------------------------------
 
 registerMock(listServiceChargeRules, ({ query, scenario }) => {
@@ -354,6 +377,45 @@ registerMock(createTaxSettings, ({ body }) => {
   });
   store.set({ ...state, settings: [...state.settings, row] });
   return { data: row };
+});
+
+registerMock(updateTaxSettings, ({ params, body }) => {
+  const state = store.get();
+  const found = state.settings.find((row) => row.id === params.taxSettingsId);
+  if (!found) notFound("Opsi perhitungan");
+  if (found.status !== "draft")
+    throw new ApiError(
+      409,
+      "TAX_RULE_IMMUTABLE",
+      "Opsi perhitungan yang sudah terbit tidak dapat diubah; buat versi baru.",
+    );
+  const updated = taxSettingsSchema.parse({ ...found, ...body });
+  store.set({
+    ...state,
+    settings: state.settings.map((row) =>
+      row.id === updated.id ? updated : row,
+    ),
+  });
+  return { data: updated };
+});
+
+registerMock(archiveTaxSettings, ({ params }) => {
+  const state = store.get();
+  const found = state.settings.find((row) => row.id === params.taxSettingsId);
+  if (!found) notFound("Opsi perhitungan");
+  let archived: TaxSettings;
+  try {
+    archived = archiveRuleVersion(found);
+  } catch (error) {
+    return toApiError(error);
+  }
+  store.set({
+    ...state,
+    settings: state.settings.map((row) =>
+      row.id === archived.id ? archived : row,
+    ),
+  });
+  return { data: archived };
 });
 
 registerMock(publishTaxSettings, ({ params, body }) =>

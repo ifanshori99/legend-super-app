@@ -7,7 +7,6 @@
 
 export const tenantSettingsMessages = {
   title: "Pengaturan tenant",
-  nav: { title: "Integrasi & tema" },
   tabs: {
     integrations: "Integrasi",
     theme: "Tema",

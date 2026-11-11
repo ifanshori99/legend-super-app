@@ -25,6 +25,7 @@ import {
 import {
   DEFAULT_BUSINESS_DAY_CUTOFF,
   businessDateOf,
+  type OutletId,
 } from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
 
@@ -280,6 +281,10 @@ export function linesTotal(lines: readonly { debitIdr: number }[]): number {
 
 export type LineDraft = {
   accountId: string | null;
+  /** "" or absent = entity-level line (outletId null, ACC-03). */
+  outletId?: string | null;
+  /** Carried through from a saved journal; the form has no field for it. */
+  costCenter?: string | null;
   /** Raw field text; the user may type "1.520.000". */
   debit: string;
   credit: string;
@@ -306,6 +311,21 @@ export function parseRupiahInput(value: string): number | null {
   if (!/^\d+$/.test(digits)) return null;
   const amount = Number(digits);
   return Number.isSafeInteger(amount) ? amount : null;
+}
+
+/**
+ * Groups a rupiah field with id-ID thousands dots while the user types:
+ * "1520000" becomes "1.520.000". Text that is not only digits, dots and spaces
+ * (a comma, a minus, letters) is returned as typed, so the amount error still
+ * shows instead of a decimal silently turning into a larger whole number.
+ * `parseRupiahInput` reads the grouped text back unchanged.
+ */
+export function formatRupiahInput(value: string): string {
+  if (!/^[\d.\s]*$/.test(value)) return value;
+  const digits = value.replace(/\D/g, "");
+  if (digits === "") return "";
+  const trimmed = digits.replace(/^0+(?=\d)/, "");
+  return trimmed.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 }
 
 /**
@@ -344,8 +364,8 @@ export function evaluateManualDraft(
       accountId: draft.accountId as AccountId,
       debitIdr: debit as JournalLineInput["debitIdr"],
       creditIdr: credit as JournalLineInput["creditIdr"],
-      outletId: null,
-      costCenter: null,
+      outletId: draft.outletId ? (draft.outletId as OutletId) : null,
+      costCenter: draft.costCenter ? draft.costCenter : null,
     });
   });
   const differenceIdr = debitIdr - creditIdr;

@@ -435,6 +435,7 @@ registerMock(createItem, ({ body }) => {
     description: body.description,
     type: body.type,
     stationId: body.stationId ?? null,
+    stationType: body.stationType ?? null,
     course: body.course ?? null,
     recipeId: body.recipeId ?? null,
     taxRuleId: body.taxRuleId ?? null,

@@ -181,14 +181,22 @@ export type RuleFilter = {
   status: RuleVersionStatus | "all";
 };
 
-/** Client-side search over code and name, plus the version-status filter. */
+/**
+ * Client-side search over code and name, plus the version-status filter.
+ * "all" hides archived (discarded) drafts so a discarded row leaves the list;
+ * they stay reachable through the explicit "archived" filter.
+ */
 export function filterRuleVersions<T extends RuleVersion>(
   versions: readonly T[],
   filter: RuleFilter,
 ): T[] {
   const needle = filter.search.trim().toLocaleLowerCase("id-ID");
   return versions.filter((version) => {
-    if (filter.status !== "all" && version.status !== filter.status) {
+    if (
+      filter.status === "all"
+        ? version.status === "archived"
+        : version.status !== filter.status
+    ) {
       return false;
     }
     if (needle === "") return true;
@@ -210,6 +218,147 @@ export function appliesToCounts(appliesTo: TaxAppliesTo): AppliesToCounts {
     categoryCount: appliesTo.categoryIds.length,
     itemCount: appliesTo.itemIds.length,
   };
+}
+
+/** A rule version with the fields the food-and-beverage check reads. */
+export type FoodBeverageRuleVersion = RuleVersion & {
+  appliesTo: Pick<TaxAppliesTo, "itemClasses" | "categoryIds" | "itemIds">;
+  channels: readonly string[];
+  regionCode: string | null;
+};
+
+/** The fields that decide whether a rule covers all food and beverage. */
+export type FoodBeverageCoverage = Pick<
+  FoodBeverageRuleVersion,
+  "isActive" | "appliesTo" | "channels" | "regionCode"
+>;
+
+/** Active, covers food_beverage, and no channel/region/item/category limit. */
+export function coversAllFoodBeverage(version: FoodBeverageCoverage): boolean {
+  return (
+    version.isActive &&
+    version.appliesTo.itemClasses.includes("food_beverage") &&
+    version.channels.length === 0 &&
+    version.regionCode === null &&
+    version.appliesTo.categoryIds.length === 0 &&
+    version.appliesTo.itemIds.length === 0
+  );
+}
+
+/**
+ * True when `chain` (a rule code at tenant level or at one outlet) is in force
+ * on `date`, covers food_beverage, and nothing else replaces it. Switching it
+ * off, or taking food_beverage out of it, makes every POS and QR food line fail
+ * with TAX_RULE_NOT_FOUND, so the editor warns first and points to a 0% rate
+ * for tax-exempt items (legend-d5pz).
+ *
+ * `date` is the day the change takes effect: the later of today and the
+ * draft's effective date. A replacement must be another code that is in force
+ * on that date, active, covers food_beverage with no channel, region, item or
+ * category limit, and is not itself switched off or narrowed by an outlet
+ * version of its code. A tenant-wide chain has only tenant-wide replacements; an
+ * outlet chain also accepts tenant-wide ones. When in doubt it answers true.
+ */
+export function isOnlyActiveFoodBeverageRule<T extends FoodBeverageRuleVersion>(
+  versions: readonly T[],
+  chain: { code: string; outletId: string | null },
+  date: string,
+): boolean {
+  return lastFoodBeverageCover(versions, chain, date) !== undefined;
+}
+
+/**
+ * The chain's version in force when it is the last rule covering
+ * food_beverage (see `isOnlyActiveFoodBeverageRule`), else undefined.
+ */
+function lastFoodBeverageCover<T extends FoodBeverageRuleVersion>(
+  versions: readonly T[],
+  chain: { code: string; outletId: string | null },
+  date: string,
+): T | undefined {
+  const inForce = versions.filter((version) =>
+    isEffectiveVersion(version, versions, date),
+  );
+  const own = inForce.find(
+    (version) =>
+      version.code === chain.code && version.outletId === chain.outletId,
+  );
+  if (
+    !own ||
+    !own.isActive ||
+    !own.appliesTo.itemClasses.includes("food_beverage")
+  )
+    // Nothing in force to lose: no version yet, or already off.
+    return undefined;
+  for (const version of inForce) {
+    if (version.code === chain.code) continue;
+    if (version.outletId !== null && version.outletId !== chain.outletId)
+      continue;
+    if (!coversAllFoodBeverage(version)) continue;
+    if (version.outletId === null) {
+      // An outlet version of the same code replaces the tenant-wide one there;
+      // if it is off or narrower, the tenant-wide rule is no safety net.
+      const overridden = inForce.some(
+        (other) =>
+          other.code === version.code &&
+          other.outletId !== null &&
+          (chain.outletId === null || other.outletId === chain.outletId) &&
+          !coversAllFoodBeverage(other),
+      );
+      if (overridden) continue;
+    }
+    return undefined;
+  }
+  return own;
+}
+
+/** How an edit takes the last food-and-beverage cover away. */
+export type FoodBeverageLoss = "inactive" | "class" | "narrowed";
+
+/**
+ * Whether saving this rule version would leave food and beverage without a
+ * full-cover rule, and how (legend-d5pz). `null` = safe.
+ *
+ * - switched off ("inactive"), food_beverage removed ("class"), or a channel,
+ *   region, category or item limit added to a rule that had none ("narrowed")
+ *   all break lines that matched before;
+ * - judged against `publishedRules` (every published version, all pages) on
+ *   `date`; when that read is missing, warn whenever the chain exists: the
+ *   caller says so with `mustExist` (editing or versioning a rule), or the
+ *   typed code is found in the loaded `rules`. When unsure, warn.
+ */
+export function foodBeverageCoverLoss<
+  T extends FoodBeverageRuleVersion,
+>(input: {
+  publishedRules: readonly T[] | undefined;
+  /** The list the screen loaded (may be one page), for the fallback only. */
+  loadedRules: readonly T[];
+  chain: { code: string; outletId: string | null };
+  date: string;
+  mustExist: boolean;
+  next: FoodBeverageCoverage;
+}): FoodBeverageLoss | null {
+  const { next, chain } = input;
+  const change: FoodBeverageLoss | null = !next.isActive
+    ? "inactive"
+    : !next.appliesTo.itemClasses.includes("food_beverage")
+      ? "class"
+      : !coversAllFoodBeverage(next)
+        ? "narrowed"
+        : null;
+  if (change === null) return null;
+  if (input.publishedRules === undefined) {
+    const known = input.loadedRules.some(
+      (version) =>
+        version.code === chain.code && version.outletId === chain.outletId,
+    );
+    return input.mustExist || known ? change : null;
+  }
+  const own = lastFoodBeverageCover(input.publishedRules, chain, input.date);
+  if (!own) return null;
+  // Limiting a rule that was already limited loses nothing new.
+  if (change === "narrowed" && !coversAllFoodBeverage(own)) return null;
+  return change;
 }
 
 /** Tax error code → catalog key; every code has a fix hint in the catalog. */

@@ -27,8 +27,9 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
+import { focusFirstInvalid } from "@/lib/focus-first-invalid";
 import { taxMutationError } from "../errors";
-import { useCreateTaxSettings } from "../hooks";
+import { useCreateTaxSettings, useUpdateTaxSettings } from "../hooks";
 import { PACKAGE_ALLOCATION_KEYS, ROUNDING_KEYS } from "../labels";
 import { suggestEffectiveFrom } from "../lib";
 
@@ -58,11 +59,14 @@ function defaultsFrom(settings: TaxSettings | undefined) {
 }
 
 export function TaxSettingsDialog({
+  draft,
   base,
   versions,
   today,
   onClose,
 }: {
+  /** Set to edit this draft in place; omitted = start a new version. */
+  draft?: TaxSettings;
   /** Effective (or latest) settings the new version starts from. */
   base: TaxSettings | undefined;
   versions: readonly Pick<TaxSettings, "status" | "effectiveFrom">[];
@@ -72,6 +76,8 @@ export function TaxSettingsDialog({
   const t = useT();
   const toast = useToast();
   const createSettings = useCreateTaxSettings();
+  const updateSettings = useUpdateTaxSettings();
+  const pending = createSettings.isPending || updateSettings.isPending;
   const defaults = defaultsFrom(base);
 
   const [pricesIncludeTax, setPricesIncludeTax] = React.useState(
@@ -96,8 +102,9 @@ export function TaxSettingsDialog({
   const [packageAllocation, setPackageAllocation] =
     React.useState<PackageAllocationMethod>(defaults.packageAllocation);
   const [effectiveFrom, setEffectiveFrom] = React.useState(
-    suggestEffectiveFrom(versions, today),
+    draft ? draft.effectiveFrom : suggestEffectiveFrom(versions, today),
   );
+  const formRef = React.useRef<HTMLFormElement>(null);
   const [errors, setErrors] = React.useState<{
     increment?: string;
     effectiveFrom?: string;
@@ -118,28 +125,48 @@ export function TaxSettingsDialog({
     if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom))
       next.effectiveFrom = t("tax.errors.required");
     setErrors(next);
-    if (Object.keys(next).length > 0) return;
+    if (Object.keys(next).length > 0) {
+      focusFirstInvalid(formRef.current);
+      return;
+    }
 
+    const fields = {
+      calculationOrder: "discount_service_tax" as const,
+      pricesIncludeTax,
+      serviceRoundingMode,
+      taxRoundingMode,
+      inclusiveBaseRoundingMode,
+      billRounding: billRoundingEnabled
+        ? { incrementIdr, mode: billRoundingMode }
+        : null,
+      packageAllocation,
+      effectiveFrom,
+    };
+    const onError = (error: unknown) =>
+      setErrors({ form: taxMutationError(error, t) });
+
+    if (draft) {
+      updateSettings.mutate(
+        { params: { taxSettingsId: draft.id }, body: fields },
+        {
+          onSuccess: () => {
+            toast({ title: t("tax.settings.updatedToast"), tone: "success" });
+            onClose();
+          },
+          onError,
+        },
+      );
+      return;
+    }
     createSettings.mutate(
-      {
-        outletId: null,
-        calculationOrder: "discount_service_tax",
-        pricesIncludeTax,
-        serviceRoundingMode,
-        taxRoundingMode,
-        inclusiveBaseRoundingMode,
-        billRounding: billRoundingEnabled
-          ? { incrementIdr, mode: billRoundingMode }
-          : null,
-        packageAllocation,
-        effectiveFrom,
-      },
+      // A new version continues the tenant-wide chain.
+      { outletId: null, ...fields },
       {
         onSuccess: () => {
           toast({ title: t("tax.settings.createdToast"), tone: "success" });
           onClose();
         },
-        onError: (error) => setErrors({ form: taxMutationError(error, t) }),
+        onError,
       },
     );
   }
@@ -148,11 +175,17 @@ export function TaxSettingsDialog({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{t("tax.settings.newVersion")}</DialogTitle>
-          <DialogDescription>{t("tax.settings.description")}</DialogDescription>
+          <DialogTitle>
+            {draft ? t("tax.settings.editTitle") : t("tax.settings.newVersion")}
+          </DialogTitle>
+          <DialogDescription>
+            {draft
+              ? t("tax.settings.editDescription")
+              : t("tax.settings.description")}
+          </DialogDescription>
         </DialogHeader>
 
-        <form className="grid gap-4" onSubmit={submit} noValidate>
+        <form ref={formRef} className="grid gap-4" onSubmit={submit} noValidate>
           <div className="flex items-start justify-between gap-4 py-2">
             <div className="grid gap-0.5">
               <Label htmlFor="settings-prices-include">
@@ -338,11 +371,11 @@ export function TaxSettingsDialog({
               type="button"
               variant="outline"
               onClick={onClose}
-              disabled={createSettings.isPending}
+              disabled={pending}
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" loading={createSettings.isPending}>
+            <Button type="submit" loading={pending}>
               {t("tax.form.saveDraft")}
             </Button>
           </DialogFooter>

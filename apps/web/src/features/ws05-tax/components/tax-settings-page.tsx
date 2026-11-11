@@ -3,7 +3,7 @@
 // charge by default (owner decision 2026-11-01); visible prices are inclusive
 // only when this setting says so.
 import * as React from "react";
-import { Plus, Send } from "lucide-react";
+import { Plus } from "lucide-react";
 import type { TaxSettings } from "@starter/shared/tax";
 import { formatNumber } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -29,13 +29,19 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { taxMutationError } from "../errors";
-import { usePublishTaxSettings, useTaxSettings } from "../hooks";
+import {
+  useArchiveTaxSettings,
+  usePublishTaxSettings,
+  useTaxSettings,
+} from "../hooks";
 import { PACKAGE_ALLOCATION_KEYS, ROUNDING_KEYS } from "../labels";
 import {
   businessDateToday,
   effectiveSettings,
   formatBusinessDate,
 } from "../lib";
+import { DiscardDraftDialog } from "./discard-draft-dialog";
+import { DraftActions } from "./draft-actions";
 import { PublishDialog } from "./publish-dialog";
 import { TaxSettingsDialog } from "./tax-settings-dialog";
 import { VersionStatusBadge } from "./version-badges";
@@ -46,17 +52,23 @@ export function TaxSettingsPage() {
   const toast = useToast();
   const settingsQuery = useTaxSettings();
   const publishSettings = usePublishTaxSettings();
+  const archiveSettings = useArchiveTaxSettings();
 
   const [creating, setCreating] = React.useState(false);
+  const [editing, setEditing] = React.useState<TaxSettings | null>(null);
+  const [discarding, setDiscarding] = React.useState<TaxSettings | null>(null);
+  const [discardError, setDiscardError] = React.useState<string>();
   const [publishing, setPublishing] = React.useState<TaxSettings | null>(null);
   const [publishError, setPublishError] = React.useState<string>();
 
   const today = businessDateToday();
+  // Archived = discarded drafts (only drafts can be archived); they never took
+  // effect, so the history leaves them out, like the mockup after "Buang draf".
   const rows = React.useMemo(
     () =>
-      [...(settingsQuery.data?.data ?? [])].sort(
-        (a, b) => b.version - a.version,
-      ),
+      (settingsQuery.data?.data ?? [])
+        .filter((row) => row.status !== "archived")
+        .sort((a, b) => b.version - a.version),
     [settingsQuery.data],
   );
   const current = effectiveSettings(rows, today);
@@ -87,6 +99,26 @@ export function TaxSettingsPage() {
       },
     );
   }
+
+  function confirmDiscard() {
+    if (!discarding) return;
+    archiveSettings.mutate(
+      { params: { taxSettingsId: discarding.id } },
+      {
+        onSuccess: () => {
+          toast({ title: t("tax.discard.success"), tone: "success" });
+          setDiscarding(null);
+          setDiscardError(undefined);
+        },
+        onError: (error) => setDiscardError(taxMutationError(error, t)),
+      },
+    );
+  }
+
+  const openDiscard = (row: TaxSettings) => {
+    setDiscardError(undefined);
+    setDiscarding(row);
+  };
 
   return (
     <>
@@ -260,18 +292,15 @@ export function TaxSettingsPage() {
                     </TableCell>
                     <TableCell numeric>
                       {row.status === "draft" && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={`${t("tax.rules.publish")} v${row.version}`}
-                          onClick={() => {
+                        <DraftActions
+                          context={`${t("tax.tabs.settings")} ${t("tax.versionLabel", { version: row.version })}`}
+                          onEdit={() => setEditing(row)}
+                          onPublish={() => {
                             setPublishError(undefined);
                             setPublishing(row);
                           }}
-                        >
-                          <Send aria-hidden="true" />
-                        </Button>
+                          onDiscard={() => openDiscard(row)}
+                        />
                       )}
                     </TableCell>
                   </TableRow>
@@ -316,18 +345,15 @@ export function TaxSettingsPage() {
                   {t(PACKAGE_ALLOCATION_KEYS[row.packageAllocation])}
                 </p>
                 {row.status === "draft" && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
+                  <DraftActions
+                    context={`${t("tax.tabs.settings")} ${t("tax.versionLabel", { version: row.version })}`}
+                    onEdit={() => setEditing(row)}
+                    onPublish={() => {
                       setPublishError(undefined);
                       setPublishing(row);
                     }}
-                  >
-                    <Send aria-hidden="true" />
-                    {t("tax.rules.publish")}
-                  </Button>
+                    onDiscard={() => openDiscard(row)}
+                  />
                 )}
               </li>
             );
@@ -341,6 +367,34 @@ export function TaxSettingsPage() {
           versions={rows}
           today={today}
           onClose={() => setCreating(false)}
+        />
+      )}
+
+      {editing && (
+        <TaxSettingsDialog
+          draft={editing}
+          base={editing}
+          versions={rows}
+          today={today}
+          onClose={() => setEditing(null)}
+        />
+      )}
+
+      {discarding && (
+        <DiscardDraftDialog
+          title={t("tax.discard.settingsTitle")}
+          version={discarding.version}
+          name={t("tax.settings.discardName")}
+          meta={t("tax.discard.meta", {
+            date: formatBusinessDate(discarding.effectiveFrom),
+          })}
+          error={discardError}
+          pending={archiveSettings.isPending}
+          onCancel={() => {
+            setDiscarding(null);
+            setDiscardError(undefined);
+          }}
+          onConfirm={confirmDiscard}
         />
       )}
 

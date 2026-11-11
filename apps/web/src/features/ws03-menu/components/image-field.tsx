@@ -2,7 +2,7 @@
 // most 1200px and re-encodes to JPEG before upload, so a phone photo stays
 // under the contract's 600 KB body limit; the API answers mediaId + URL.
 import * as React from "react";
-import { Trash2 } from "lucide-react";
+import { CircleAlert, Trash2 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { MediaPlate } from "@/components/ui/media-plate";
@@ -52,14 +52,27 @@ async function resizeImage(file: File): Promise<Resized> {
 export function ImageField({
   value,
   onChange,
+  requiredNote,
 }: {
   value: MenuImageValue | null;
   onChange: (value: MenuImageValue | null) => void;
+  /**
+   * Why the photo is needed. `blocking` makes it a field error (danger text,
+   * aria-invalid on the file input); otherwise it is a warning.
+   */
+  requiredNote?: { text: string; blocking: boolean };
 }) {
   const t = useT();
   const upload = useUploadMenuImage();
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [error, setError] = React.useState<string | undefined>();
+  const fieldId = React.useId();
+  const errorId = `${fieldId}-error`;
+  const noteTextId = `${fieldId}-note`;
+  const invalid = Boolean(requiredNote?.blocking);
+  const describedBy =
+    [requiredNote && noteTextId, error && errorId].filter(Boolean).join(" ") ||
+    undefined;
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
@@ -135,6 +148,9 @@ export function ImageField({
       <input
         ref={inputRef}
         type="file"
+        aria-label={t("menu.editor.fields.photo")}
+        aria-invalid={invalid || undefined}
+        aria-describedby={describedBy}
         accept={ACCEPTED.join(",")}
         className="sr-only"
         tabIndex={-1}
@@ -144,8 +160,26 @@ export function ImageField({
         }}
       />
       {error && (
-        <p className="text-sm leading-5 font-medium text-danger" role="alert">
+        <p
+          id={errorId}
+          className="text-sm leading-5 font-medium text-danger"
+          role="alert"
+        >
           {error}
+        </p>
+      )}
+      {requiredNote && (
+        <p
+          id={noteTextId}
+          role={invalid ? "alert" : undefined}
+          className={
+            invalid
+              ? "flex items-start gap-1.5 text-sm leading-5 font-medium text-danger"
+              : "flex items-start gap-1.5 text-sm leading-5 text-warning"
+          }
+        >
+          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>{requiredNote.text}</span>
         </p>
       )}
     </div>

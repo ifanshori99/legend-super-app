@@ -47,11 +47,13 @@ test("F11 D13: config screens list versioned rules, service charge and calc opti
   // v3 (legend-vvth): the management topbar owns the page h1; the page body
   // shows the section title as an h2 (DESIGN.md v3 §5).
   await expect(
-    page.getByRole("heading", { name: "Pajak & service charge", level: 1 }),
+    page.getByRole("heading", { name: "Pajak & layanan", level: 1 }),
   ).toBeVisible();
   await expect(page.getByText("PBJT-FNB").first()).toBeVisible();
   await expect(page.getByText("10%").first()).toBeVisible();
   await expect(page.getByText("Berlaku sekarang").first()).toBeVisible();
+  // The status badge reads "Diterbitkan · v1" (status and version in one chip).
+  await expect(page.getByText(/^Diterbitkan · v\d+$/).first()).toBeVisible();
 
   // Service charge is a zone/order-type rule (PRD §3.14 "Service Charge").
   // The table and the phone list render the same row (one is hidden by CSS).
@@ -82,7 +84,7 @@ test("R21: publish a new tax rule version and start its next version", async ({
   await page.goto(`${MOCK_URL}/kelola/pajak`);
   await waitForHydration(page);
 
-  await page.getByRole("button", { name: "Aturan baru" }).first().click();
+  await page.getByRole("button", { name: "Buat aturan" }).first().click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Kode aturan").fill("PBJT-E2E");
   await dialog.getByLabel("Nama aturan").fill("PBJT uji e2e");
@@ -92,11 +94,18 @@ test("R21: publish a new tax rule version and start its next version", async ({
     page.getByText("Draf aturan pajak dibuat.", { exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Terbitkan PBJT-E2E" }).click();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "PBJT-E2E" })
+    .getByRole("button", { name: "Terbitkan", exact: true })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Terbitkan PBJT-E2E versi 1?" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Terbitkan", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Terbitkan", exact: true })
+    .click();
   await expect(
     page.getByText("Aturan pajak diterbitkan.", { exact: true }),
   ).toBeVisible();

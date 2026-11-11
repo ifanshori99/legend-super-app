@@ -38,6 +38,8 @@ const listQuery = cursorPageQuerySchema.extend({
   code: ruleCodeSchema.optional(),
 });
 const publishBody = clientInputSchema({ idempotencyKey: idempotencyKeySchema });
+/** Archiving a draft carries no fields; it is naturally idempotent. */
+const archiveBody = clientInputSchema({});
 
 // ---- Tax rules --------------------------------------------------------------
 
@@ -111,6 +113,18 @@ export const publishTaxRule = defineEndpoint({
   body: publishBody,
   response: dataResponseSchema(taxRuleSchema),
 });
+/**
+ * Discards a draft (draft -> archived, `archiveRuleVersion`). A published or
+ * already archived version is refused (TAX_RULE_IMMUTABLE /
+ * TAX_INVALID_TRANSITION): published history is never rewritten (R21).
+ */
+export const archiveTaxRule = defineEndpoint({
+  method: "POST",
+  path: "/api/tax/rules/:taxRuleId/archive",
+  params: z.strictObject({ taxRuleId: taxRuleIdSchema }),
+  body: archiveBody,
+  response: dataResponseSchema(taxRuleSchema),
+});
 
 // ---- Service-charge rules ---------------------------------------------------
 
@@ -159,6 +173,11 @@ export const createTaxSettingsInputSchema = clientInputSchema({
   ...settingsFields,
   effectiveFrom: businessDateSchema,
 });
+/** Draft edits only (TAX_RULE_IMMUTABLE otherwise). */
+export const updateTaxSettingsInputSchema = clientInputSchema({
+  ...settingsFields,
+  effectiveFrom: businessDateSchema,
+}).partial();
 export const listTaxSettings = defineEndpoint({
   method: "GET",
   path: "/api/tax/settings",
@@ -169,6 +188,21 @@ export const createTaxSettings = defineEndpoint({
   method: "POST",
   path: "/api/tax/settings",
   body: createTaxSettingsInputSchema,
+  response: dataResponseSchema(taxSettingsSchema),
+});
+export const updateTaxSettings = defineEndpoint({
+  method: "PATCH",
+  path: "/api/tax/settings/:taxSettingsId",
+  params: z.strictObject({ taxSettingsId: taxSettingsIdSchema }),
+  body: updateTaxSettingsInputSchema,
+  response: dataResponseSchema(taxSettingsSchema),
+});
+/** Discards a settings draft (draft -> archived only). */
+export const archiveTaxSettings = defineEndpoint({
+  method: "POST",
+  path: "/api/tax/settings/:taxSettingsId/archive",
+  params: z.strictObject({ taxSettingsId: taxSettingsIdSchema }),
+  body: archiveBody,
   response: dataResponseSchema(taxSettingsSchema),
 });
 export const publishTaxSettings = defineEndpoint({
@@ -203,12 +237,15 @@ export const taxEndpoints = [
   createTaxRule,
   updateTaxRule,
   publishTaxRule,
+  archiveTaxRule,
   listServiceChargeRules,
   createServiceChargeRule,
   updateServiceChargeRule,
   publishServiceChargeRule,
   listTaxSettings,
   createTaxSettings,
+  updateTaxSettings,
+  archiveTaxSettings,
   publishTaxSettings,
   previewTaxCalculation,
   getPbjtMonthlyRecap,

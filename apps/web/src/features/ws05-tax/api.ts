@@ -4,6 +4,8 @@
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import { getFloorBoard } from "@starter/shared/qr-order";
 import {
+  archiveTaxRule as archiveTaxRuleEndpoint,
+  archiveTaxSettings as archiveTaxSettingsEndpoint,
   createServiceChargeRule as createServiceChargeRuleEndpoint,
   createTaxRule as createTaxRuleEndpoint,
   createTaxSettings as createTaxSettingsEndpoint,
@@ -17,6 +19,7 @@ import {
   publishTaxSettings as publishTaxSettingsEndpoint,
   updateServiceChargeRule as updateServiceChargeRuleEndpoint,
   updateTaxRule as updateTaxRuleEndpoint,
+  updateTaxSettings as updateTaxSettingsEndpoint,
 } from "@starter/shared/tax";
 import { callEndpoint } from "@/lib/api/endpoint";
 
@@ -35,6 +38,7 @@ export type ServiceChargeRulePatch = Body<
   typeof updateServiceChargeRuleEndpoint
 >;
 export type TaxSettingsInput = Body<typeof createTaxSettingsEndpoint>;
+export type TaxSettingsPatch = Body<typeof updateTaxSettingsEndpoint>;
 export type TaxListQuery = Query<typeof listTaxRulesEndpoint>;
 export type PbjtRecapQuery = Query<typeof getPbjtMonthlyRecapEndpoint>;
 
@@ -57,6 +61,10 @@ export const publishTaxRule = (
   params: Params<typeof publishTaxRuleEndpoint>,
   body: Body<typeof publishTaxRuleEndpoint>,
 ) => callEndpoint(publishTaxRuleEndpoint, { params, body });
+
+/** Discards a draft rule (draft -> archived; the API refuses a published one). */
+export const archiveTaxRule = (params: Params<typeof archiveTaxRuleEndpoint>) =>
+  callEndpoint(archiveTaxRuleEndpoint, { params, body: {} });
 
 export const fetchServiceChargeRules = (query: TaxListQuery) =>
   callEndpoint(listServiceChargeRulesEndpoint, { query });
@@ -82,6 +90,16 @@ export const fetchTaxSettings = (
 
 export const createTaxSettings = (body: TaxSettingsInput) =>
   callEndpoint(createTaxSettingsEndpoint, { body });
+
+export const updateTaxSettings = (
+  params: Params<typeof updateTaxSettingsEndpoint>,
+  body: TaxSettingsPatch,
+) => callEndpoint(updateTaxSettingsEndpoint, { params, body });
+
+/** Discards a settings draft (draft -> archived only). */
+export const archiveTaxSettings = (
+  params: Params<typeof archiveTaxSettingsEndpoint>,
+) => callEndpoint(archiveTaxSettingsEndpoint, { params, body: {} });
 
 export const publishTaxSettings = (
   params: Params<typeof publishTaxSettingsEndpoint>,

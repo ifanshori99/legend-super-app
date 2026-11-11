@@ -217,20 +217,45 @@ export const accountingMessages = {
       removeLine: "Hapus baris {line}",
       account: "Akun baris {line}",
       accountPlaceholder: "Pilih akun",
+      outletColumn: "Outlet (opsional)",
+      outlet: "Outlet baris {line}",
+      outletEntity: "Entitas · tanpa outlet",
+      outletUnavailable: "Outlet tidak tersedia",
+      outletsLoading: "Memuat outlet…",
+      outletsErrorHint:
+        "Outlet belum bisa dimuat. Baris tetap bisa disimpan tanpa outlet.",
+      outletHint:
+        "Pilih outlet pada tiap baris untuk laporan per outlet. Tanpa outlet, baris dicatat pada tingkat badan usaha.",
+      linesLoading: "Memuat akun dan outlet…",
+      linesErrorTitle: "Data jurnal belum bisa dimuat",
+      linesErrorHint:
+        "Periksa koneksi, lalu coba lagi untuk memuat akun dan outlet.",
+      linesEmptyTitle: "Belum ada akun untuk jurnal",
+      linesEmptyHint:
+        "Tambahkan akun untuk badan usaha ini sebelum membuat jurnal.",
       debit: "Debit baris {line}",
       credit: "Kredit baris {line}",
       amountHint: "Isi debit atau kredit, tidak keduanya. Rupiah bulat.",
       saveDraft: "Simpan draf",
       saveChanges: "Simpan perubahan",
       linesRequired: "Jurnal membutuhkan minimal dua baris.",
-      accountRequired: "Pilih akun untuk setiap baris yang berisi nominal.",
+      accountRequired: "Pilih akun.",
       amountInvalid: "Nominal harus angka rupiah bulat tanpa tanda minus.",
       lineSide: "Isi debit atau kredit, tidak keduanya.",
       periodOpen: "Periode {period} masih terbuka.",
       periodClosed:
         "Periode {period} sudah ditutup. Pilih tanggal di periode yang masih terbuka.",
+      periodClosedSave:
+        "Jurnal belum bisa disimpan: periode tanggal ini sudah ditutup. Ubah tanggal ke periode yang masih terbuka.",
       balance: "Debit {debit} · Kredit {credit}",
       difference: "Selisih {amount}",
+      unbalancedTitle: "Jurnal belum seimbang",
+      amountIssueHint:
+        "Ada baris dengan jumlah tidak valid. Perbaiki dulu sebelum menyeimbangkan.",
+      debitHigher:
+        "Debit lebih besar {amount}. Sesuaikan jumlah debit atau kredit sebelum mengajukan.",
+      creditHigher:
+        "Kredit lebih besar {amount}. Sesuaikan jumlah debit atau kredit sebelum mengajukan.",
       balanced: "Seimbang",
       unbalanced: "Belum seimbang",
     },

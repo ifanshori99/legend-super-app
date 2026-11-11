@@ -3,6 +3,7 @@
 // are immutable, so changing a rate always means a new version with its own
 // effective date — the dialog pre-fills that date after the latest version.
 import * as React from "react";
+import { TriangleAlert } from "lucide-react";
 import type {
   ItemTaxClass,
   TaxChannel,
@@ -32,8 +33,16 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
+import { focusFirstInvalid } from "@/lib/focus-first-invalid";
 import { taxMutationError } from "../errors";
-import { useCreateTaxRule, useUpdateTaxRule } from "../hooks";
+import {
+  useAllPublishedTaxRules,
+  useCreateTaxRule,
+  useTaxMenuCategories,
+  useTaxMenuItems,
+  useTaxOutlets,
+  useUpdateTaxRule,
+} from "../hooks";
 import {
   CHANNEL_KEYS,
   ITEM_CLASSES,
@@ -42,10 +51,12 @@ import {
   TAX_TYPE_KEYS,
 } from "../labels";
 import {
+  foodBeverageCoverLoss,
   parseRatePercent,
   suggestEffectiveFrom,
-  type RuleVersion,
+  type FoodBeverageRuleVersion,
 } from "../lib";
+import { TargetPicker } from "./target-picker";
 
 export type TaxRuleEditorMode = "create" | "edit" | "new-version";
 
@@ -61,6 +72,9 @@ type Errors = {
   itemClasses?: string;
   form?: string;
 };
+
+/** Select value for a tenant-wide rule (a Select item cannot be empty). */
+const ALL_OUTLETS = "all";
 
 function toggleValue<T>(values: readonly T[], value: T, checked: boolean): T[] {
   if (checked) return values.includes(value) ? [...values] : [...values, value];
@@ -114,7 +128,7 @@ export function TaxRuleDialog({
   mode: TaxRuleEditorMode;
   /** Source version for edit / new-version; absent when creating. */
   rule?: TaxRule;
-  versions: readonly RuleVersion[];
+  versions: readonly FoodBeverageRuleVersion[];
   /** Outlet business date (server value), for defaults and hints. */
   today: string;
   /**
@@ -130,6 +144,10 @@ export function TaxRuleDialog({
   const toast = useToast();
   const createRule = useCreateTaxRule();
   const updateRule = useUpdateTaxRule();
+  const outletsQuery = useTaxOutlets();
+  const categoriesQuery = useTaxMenuCategories();
+  const itemsQuery = useTaxMenuItems();
+  const allPublishedQuery = useAllPublishedTaxRules();
 
   const chain = React.useMemo(
     () =>
@@ -173,25 +191,81 @@ export function TaxRuleDialog({
             laterDate(today, presetInactive.effectiveDate)
           : suggestEffectiveFrom(chain, today),
   );
+  const [outletId, setOutletId] = React.useState<string>(
+    rule?.outletId ?? ALL_OUTLETS,
+  );
+  const [categoryIds, setCategoryIds] = React.useState<string[]>(
+    rule ? [...rule.appliesTo.categoryIds] : [],
+  );
+  const [itemIds, setItemIds] = React.useState<string[]>(
+    rule ? [...rule.appliesTo.itemIds] : [],
+  );
   const [errors, setErrors] = React.useState<Errors>({});
+  const formRef = React.useRef<HTMLFormElement>(null);
+  // d5pz: confirm before switching off the only food_beverage rule.
+  const [confirmingOff, setConfirmingOff] = React.useState(false);
+  const [zeroNote, setZeroNote] = React.useState(false);
 
-  // Category/item targets are not editable yet (follow-up bead); keep the ones
-  // the version already carries instead of silently dropping them.
-  const preservedCategories = rule?.appliesTo.categoryIds ?? [];
-  const preservedItems = rule?.appliesTo.itemIds ?? [];
+  const scopeOutletId = outletId === ALL_OUTLETS ? null : outletId;
+  const outlets = outletsQuery.data?.data ?? [];
+  const outletName = (id: string) =>
+    outlets.find((outlet) => outlet.id === id)?.name ??
+    t("tax.conflicts.outletUnknown");
+  const categoryOptions = (categoriesQuery.data?.data ?? []).map((row) => ({
+    id: row.id,
+    name: row.name,
+  }));
+  const itemOptions = (itemsQuery.data?.data ?? []).map((row) => ({
+    id: row.id,
+    name: row.name,
+  }));
 
   const pending = createRule.isPending || updateRule.isPending;
 
   function errorMessage(error: unknown): string {
-    return taxMutationError(error, t);
+    const message = taxMutationError(error, t);
+    // The confirm step has its own wording for a failed write.
+    return confirmingOff && message === t("tax.errors.saveFailed")
+      ? t(
+          lastRuleChange === "inactive"
+            ? "tax.deactivate.error"
+            : "tax.deactivate.removeError",
+        )
+      : message;
   }
+
+  // d5pz: the change takes effect on the later of today and the draft's date.
+  // Judged against every published rule (all pages), not the loaded list; if
+  // that read is not available, warn whenever an existing rule is changed.
+  const changeDate = laterDate(
+    today,
+    /^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom) ? effectiveFrom : today,
+  );
+  const lastRuleChange = foodBeverageCoverLoss({
+    publishedRules: allPublishedQuery.data?.data,
+    loadedRules: versions,
+    chain: { code: (rule?.code ?? code).trim(), outletId: scopeOutletId },
+    date: changeDate,
+    mustExist: mode !== "create",
+    next: {
+      isActive,
+      appliesTo: { itemClasses, categoryIds, itemIds },
+      channels,
+      regionCode: region === "" ? null : region,
+    },
+  });
+  const losesLastFoodBeverageRule = lastRuleChange !== null;
 
   function validate(rateBp: number | null): Errors {
     const next: Errors = {};
     if (mode === "create" && !CODE_PATTERN.test(code.trim()))
       next.code = t("tax.errors.code");
     if (name.trim() === "") next.name = t("tax.errors.required");
-    if (rateBp === null) next.rate = t("tax.errors.rate");
+    if (rateBp === null)
+      next.rate =
+        rate.trim() === ""
+          ? t("tax.errors.rateRequired")
+          : t("tax.errors.rate");
     if (region !== "" && !REGION_PATTERN.test(region))
       next.region = t("tax.errors.region");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom))
@@ -206,8 +280,42 @@ export function TaxRuleDialog({
     const rateBp = parseRatePercent(rate);
     const found = validate(rateBp);
     setErrors(found);
-    if (Object.keys(found).length > 0 || rateBp === null) return;
+    if (Object.keys(found).length > 0 || rateBp === null) {
+      focusFirstInvalid(formRef.current);
+      return;
+    }
+    if (losesLastFoodBeverageRule) {
+      setConfirmingOff(true);
+      return;
+    }
+    save(rateBp);
+  }
 
+  function setRateToZero() {
+    setConfirmingOff(false);
+    setIsActive(true);
+    setRate("0");
+    setErrors({});
+    setZeroNote(true);
+  }
+
+  /** Undo the part of the edit that would drop or limit food and beverage. */
+  function keepFoodBeverage() {
+    setConfirmingOff(false);
+    if (lastRuleChange === "narrowed") {
+      setChannels([]);
+      setRegion("");
+      setCategoryIds([]);
+      setItemIds([]);
+    } else {
+      setItemClasses((current) =>
+        toggleValue<ItemTaxClass>(current, "food_beverage", true),
+      );
+    }
+    setErrors({});
+  }
+
+  function save(rateBp: number) {
     const fields = {
       name: name.trim(),
       taxType,
@@ -216,8 +324,8 @@ export function TaxRuleDialog({
       channels,
       appliesTo: {
         itemClasses,
-        categoryIds: preservedCategories,
-        itemIds: preservedItems,
+        categoryIds,
+        itemIds,
       },
       priceIncludesTax,
       includeServiceInBase,
@@ -228,11 +336,13 @@ export function TaxRuleDialog({
     const onSuccess = (saved: { data: TaxRule }) => {
       toast({
         title: t(
-          presetInactive
-            ? "tax.conflicts.draftCreated"
-            : mode === "edit"
-              ? "tax.rules.updatedToast"
-              : "tax.rules.createdToast",
+          confirmingOff && lastRuleChange === "inactive"
+            ? "tax.deactivate.saved"
+            : presetInactive
+              ? "tax.conflicts.draftCreated"
+              : mode === "edit"
+                ? "tax.rules.updatedToast"
+                : "tax.rules.createdToast",
         ),
         tone: "success",
       });
@@ -252,7 +362,8 @@ export function TaxRuleDialog({
     createRule.mutate(
       {
         // A new version continues its chain, so it keeps the outlet scope.
-        outletId: mode === "new-version" && rule ? rule.outletId : null,
+        outletId:
+          mode === "new-version" && rule ? rule.outletId : scopeOutletId,
         code: code.trim(),
         ...fields,
       },
@@ -262,236 +373,454 @@ export function TaxRuleDialog({
 
   const title =
     mode === "edit"
-      ? t("tax.rules.editDraft")
+      ? t("tax.rules.editTitle")
       : mode === "new-version"
         ? t("tax.rules.newVersionTitle", { code: rule?.code ?? "" })
-        : t("tax.rules.add");
+        : t("tax.rules.createTitle");
+  const description =
+    mode === "create"
+      ? t("tax.rules.createDescription")
+      : t("tax.rules.editDescription", {
+          code: rule?.code ?? "",
+          version:
+            mode === "edit" ? (rule?.version ?? 1) : (rule?.version ?? 0) + 1,
+        });
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{t("tax.form.description")}</DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open={!confirmingOff} onOpenChange={(open) => !open && onClose()}>
+        <DialogContent
+          className="sm:max-w-2xl"
+          onOpenAutoFocus={(event) => {
+            // Focus the dialog itself so the first field is not opened with
+            // its text fully selected.
+            event.preventDefault();
+            (event.target as HTMLElement).focus({ preventScroll: true });
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>{description}</DialogDescription>
+          </DialogHeader>
 
-        <form className="grid gap-4" onSubmit={submit} noValidate>
-          {presetInactive && (
-            <p
-              role="note"
-              className="rounded-container border-(length:--border-w) bg-warning-subtle p-card text-sm leading-5"
-            >
-              {t("tax.conflicts.presetNote", {
-                code: presetInactive.otherCode,
-              })}
-            </p>
-          )}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormField
-              label={t("tax.form.code")}
-              required
-              error={errors.code}
-              hint={mode === "create" ? t("tax.form.codeHint") : undefined}
-            >
-              <Input
-                value={code}
-                onChange={(event) => setCode(event.target.value.toUpperCase())}
-                disabled={mode !== "create" || pending}
-                autoCapitalize="characters"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </FormField>
-            <FormField label={t("tax.form.name")} required error={errors.name}>
-              <Input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                disabled={pending}
-                maxLength={150}
-              />
-            </FormField>
-            <FormField label={t("tax.form.taxType")} required>
-              <Select
-                value={taxType}
-                onValueChange={(value) => setTaxType(value as TaxType)}
-                disabled={pending}
+          <form
+            ref={formRef}
+            className="grid gap-4"
+            onSubmit={submit}
+            noValidate
+          >
+            {presetInactive && (
+              <p
+                role="note"
+                className="rounded-container border-(length:--border-w) bg-warning-subtle p-card text-sm leading-5"
               >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(TAX_TYPE_KEYS) as TaxType[]).map((type) => (
-                    <SelectItem key={type} value={type}>
-                      {t(TAX_TYPE_KEYS[type])}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </FormField>
-            <FormField
-              label={t("tax.form.rate")}
-              required
-              error={errors.rate}
-              hint={t("tax.form.rateHint")}
-            >
-              <Input
-                inputMode="decimal"
-                value={rate}
-                onChange={(event) => setRate(event.target.value)}
-                disabled={pending}
-                placeholder="10"
-                autoComplete="off"
-              />
-            </FormField>
-            <FormField
-              label={t("tax.form.region")}
-              error={errors.region}
-              hint={t("tax.form.regionHint")}
-            >
-              <Input
-                value={region}
-                onChange={(event) =>
-                  setRegion(event.target.value.toUpperCase().replace(/\s/g, ""))
-                }
-                disabled={pending}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </FormField>
-            <FormField
-              label={t("tax.form.effectiveFrom")}
-              required
-              error={errors.effectiveFrom}
-            >
-              <Input
-                type="date"
-                value={effectiveFrom}
-                onChange={(event) => setEffectiveFrom(event.target.value)}
-                disabled={pending}
-              />
-            </FormField>
-          </div>
-
-          <fieldset className="grid gap-2">
-            <legend className="text-sm font-semibold">
-              {t("tax.form.appliesTo")}
-            </legend>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("tax.form.appliesToHint")}
-            </p>
-            <div className="flex flex-wrap gap-x-6 gap-y-1">
-              {ITEM_CLASSES.map((itemClass) => (
-                <label
-                  key={itemClass}
-                  className="flex min-h-control-sm items-center gap-2"
+                {t("tax.conflicts.presetNote", {
+                  code: presetInactive.otherCode,
+                })}
+              </p>
+            )}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                label={t("tax.form.name")}
+                required
+                error={errors.name}
+              >
+                <Input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  disabled={pending}
+                  maxLength={150}
+                />
+              </FormField>
+              {mode === "create" && (
+                <FormField
+                  label={t("tax.form.code")}
+                  required
+                  error={errors.code}
+                  hint={mode === "create" ? t("tax.form.codeHint") : undefined}
                 >
-                  <Checkbox
-                    checked={itemClasses.includes(itemClass)}
-                    onCheckedChange={(checked) =>
-                      setItemClasses((current) =>
-                        toggleValue(current, itemClass, checked === true),
-                      )
+                  <Input
+                    value={code}
+                    onChange={(event) =>
+                      setCode(event.target.value.toUpperCase())
                     }
                     disabled={pending}
+                    autoCapitalize="characters"
+                    autoComplete="off"
+                    spellCheck={false}
                   />
-                  <span>{t(ITEM_CLASS_KEYS[itemClass])}</span>
-                </label>
-              ))}
+                </FormField>
+              )}
+              <FormField
+                label={t("tax.form.rate")}
+                required
+                error={errors.rate}
+                hint={t("tax.form.rateHint")}
+              >
+                <Input
+                  inputMode="decimal"
+                  value={rate}
+                  onChange={(event) => setRate(event.target.value)}
+                  disabled={pending}
+                  placeholder="10"
+                  autoComplete="off"
+                />
+              </FormField>
+              <FormField
+                label={t("tax.form.outlet")}
+                required
+                hint={
+                  mode === "create"
+                    ? t("tax.form.outletHint")
+                    : t("tax.form.outletLocked")
+                }
+              >
+                <Select
+                  value={outletId}
+                  onValueChange={setOutletId}
+                  disabled={pending || mode !== "create"}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_OUTLETS}>
+                      {t("tax.form.allOutlets")}
+                    </SelectItem>
+                    {outlets.map((outlet) => (
+                      <SelectItem key={outlet.id} value={outlet.id}>
+                        {outlet.name}
+                      </SelectItem>
+                    ))}
+                    {/* The rule's own outlet, when the outlet list is missing it. */}
+                    {outletId !== ALL_OUTLETS &&
+                      !outlets.some((outlet) => outlet.id === outletId) && (
+                        <SelectItem value={outletId}>
+                          {outletName(outletId)}
+                        </SelectItem>
+                      )}
+                  </SelectContent>
+                </Select>
+              </FormField>
+              <FormField
+                label={t("tax.form.effectiveFrom")}
+                required
+                error={errors.effectiveFrom}
+              >
+                <Input
+                  type="date"
+                  value={effectiveFrom}
+                  onChange={(event) => setEffectiveFrom(event.target.value)}
+                  disabled={pending}
+                />
+              </FormField>
+              <FormField label={t("tax.form.taxType")} required>
+                <Select
+                  value={taxType}
+                  onValueChange={(value) => setTaxType(value as TaxType)}
+                  disabled={pending}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(TAX_TYPE_KEYS) as TaxType[]).map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {t(TAX_TYPE_KEYS[type])}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+              <FormField
+                label={t("tax.form.region")}
+                error={errors.region}
+                hint={t("tax.form.regionHint")}
+              >
+                <Input
+                  value={region}
+                  onChange={(event) =>
+                    setRegion(
+                      event.target.value.toUpperCase().replace(/\s/g, ""),
+                    )
+                  }
+                  disabled={pending}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </FormField>
             </div>
-            {errors.itemClasses && (
+
+            <fieldset className="grid gap-2">
+              <legend className="text-sm font-semibold">
+                {t("tax.form.appliesTo")}
+              </legend>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("tax.form.appliesToHint")}
+              </p>
+              <div className="flex flex-wrap gap-x-6 gap-y-1">
+                {ITEM_CLASSES.map((itemClass) => (
+                  <label
+                    key={itemClass}
+                    className="flex min-h-control-sm items-center gap-2"
+                  >
+                    <Checkbox
+                      checked={itemClasses.includes(itemClass)}
+                      onCheckedChange={(checked) =>
+                        setItemClasses((current) =>
+                          toggleValue(current, itemClass, checked === true),
+                        )
+                      }
+                      disabled={pending}
+                      aria-invalid={
+                        errors.itemClasses && itemClass === ITEM_CLASSES[0]
+                          ? true
+                          : undefined
+                      }
+                    />
+                    <span>{t(ITEM_CLASS_KEYS[itemClass])}</span>
+                  </label>
+                ))}
+              </div>
+              {errors.itemClasses && (
+                <p
+                  className="text-sm leading-5 font-medium text-danger"
+                  role="alert"
+                >
+                  {errors.itemClasses}
+                </p>
+              )}
+            </fieldset>
+
+            <TargetPicker
+              label={t("tax.form.categories")}
+              hint={t("tax.form.categoriesHint")}
+              options={categoryOptions}
+              value={categoryIds}
+              onChange={setCategoryIds}
+              loading={categoriesQuery.isPending}
+              unavailable={categoriesQuery.isError}
+              disabled={pending}
+            />
+            <TargetPicker
+              label={t("tax.form.items")}
+              hint={t("tax.form.itemsHint")}
+              options={itemOptions}
+              value={itemIds}
+              onChange={setItemIds}
+              loading={itemsQuery.isPending}
+              unavailable={itemsQuery.isError}
+              disabled={pending}
+            />
+
+            <fieldset className="grid gap-2">
+              <legend className="text-sm font-semibold">
+                {t("tax.form.channels")}
+              </legend>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("tax.form.channelsHint")}
+              </p>
+              <div className="grid gap-x-6 gap-y-1 sm:grid-cols-3">
+                {TAX_CHANNELS.map((channel) => (
+                  <label
+                    key={channel}
+                    className="flex min-h-control-sm items-center gap-2"
+                  >
+                    <Checkbox
+                      checked={channels.includes(channel)}
+                      onCheckedChange={(checked) =>
+                        setChannels((current) =>
+                          toggleValue(current, channel, checked === true),
+                        )
+                      }
+                      disabled={pending}
+                    />
+                    <span>{t(CHANNEL_KEYS[channel])}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            <div className="grid gap-1 divide-y divide-border">
+              <SwitchRow
+                id="tax-price-includes"
+                label={t("tax.form.priceIncludesTax")}
+                hint={t("tax.form.priceIncludesTaxHint")}
+                checked={priceIncludesTax}
+                onCheckedChange={setPriceIncludesTax}
+              />
+              <SwitchRow
+                id="tax-service-in-base"
+                label={t("tax.form.includeServiceInBase")}
+                hint={t("tax.form.includeServiceInBaseHint")}
+                checked={includeServiceInBase}
+                onCheckedChange={setIncludeServiceInBase}
+              />
+              <SwitchRow
+                id="tax-rule-active"
+                label={t("tax.form.isActive")}
+                hint={t("tax.form.isActiveHint")}
+                checked={isActive}
+                onCheckedChange={setIsActive}
+              />
+            </div>
+
+            {zeroNote && (
+              <p
+                role="note"
+                className="rounded-container border-(length:--border-w) bg-info-subtle p-card text-sm leading-5"
+              >
+                {t("tax.deactivate.zeroNote")}
+              </p>
+            )}
+
+            {errors.form && !confirmingOff && (
               <p
                 className="text-sm leading-5 font-medium text-danger"
                 role="alert"
               >
-                {errors.itemClasses}
+                {errors.form}
               </p>
             )}
-            {(preservedCategories.length > 0 || preservedItems.length > 0) && (
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("tax.form.preservedTargets", {
-                  categories: preservedCategories.length,
-                  items: preservedItems.length,
-                })}
-              </p>
-            )}
-          </fieldset>
 
-          <fieldset className="grid gap-2">
-            <legend className="text-sm font-semibold">
-              {t("tax.form.channels")}
-            </legend>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("tax.form.channelsHint")}
-            </p>
-            <div className="grid gap-x-6 gap-y-1 sm:grid-cols-3">
-              {TAX_CHANNELS.map((channel) => (
-                <label
-                  key={channel}
-                  className="flex min-h-control-sm items-center gap-2"
-                >
-                  <Checkbox
-                    checked={channels.includes(channel)}
-                    onCheckedChange={(checked) =>
-                      setChannels((current) =>
-                        toggleValue(current, channel, checked === true),
-                      )
-                    }
-                    disabled={pending}
-                  />
-                  <span>{t(CHANNEL_KEYS[channel])}</span>
-                </label>
-              ))}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onClose}
+                disabled={pending}
+              >
+                {t("common.cancel")}
+              </Button>
+              <Button type="submit" loading={pending}>
+                {mode === "edit" ? t("common.save") : t("tax.form.saveDraft")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={confirmingOff}
+        onOpenChange={(open) => {
+          if (!open && !pending) setConfirmingOff(false);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t(
+                lastRuleChange === "inactive"
+                  ? "tax.deactivate.title"
+                  : lastRuleChange === "narrowed"
+                    ? "tax.deactivate.narrowTitle"
+                    : "tax.deactivate.removeTitle",
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              {t("tax.deactivate.body", {
+                name: name.trim() || (rule?.name ?? ""),
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="rounded-container border-(length:--border-w) bg-warning-subtle p-card">
+              <p className="flex items-center gap-2 text-sm font-semibold">
+                <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
+                {t("tax.deactivate.impactTitle")}
+              </p>
+              <p className="text-sm leading-5">
+                {t(
+                  lastRuleChange === "narrowed"
+                    ? "tax.deactivate.narrowImpactBody"
+                    : "tax.deactivate.impactBody",
+                )}
+              </p>
             </div>
-          </fieldset>
-
-          <div className="grid gap-1 divide-y divide-border">
-            <SwitchRow
-              id="tax-price-includes"
-              label={t("tax.form.priceIncludesTax")}
-              hint={t("tax.form.priceIncludesTaxHint")}
-              checked={priceIncludesTax}
-              onCheckedChange={setPriceIncludesTax}
-            />
-            <SwitchRow
-              id="tax-service-in-base"
-              label={t("tax.form.includeServiceInBase")}
-              hint={t("tax.form.includeServiceInBaseHint")}
-              checked={includeServiceInBase}
-              onCheckedChange={setIncludeServiceInBase}
-            />
-            <SwitchRow
-              id="tax-rule-active"
-              label={t("tax.form.isActive")}
-              hint={t("tax.form.isActiveHint")}
-              checked={isActive}
-              onCheckedChange={setIsActive}
-            />
+            {lastRuleChange === "inactive" && (
+              <div className="rounded-container border-(length:--border-w) p-card">
+                <p className="text-sm font-semibold">
+                  {t("tax.deactivate.recommendTitle")}
+                </p>
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("tax.deactivate.recommendBody")}
+                </p>
+              </div>
+            )}
+            {lastRuleChange === "inactive" && (
+              <div
+                role="note"
+                className="rounded-container border-(length:--border-w) bg-info-subtle p-card"
+              >
+                <p className="text-sm font-semibold">
+                  {t("tax.deactivate.draftTitle")}
+                </p>
+                <p className="text-sm leading-5">
+                  {t("tax.deactivate.draftBody")}
+                </p>
+              </div>
+            )}
+            {errors.form && (
+              <p
+                className="rounded-container border-l-4 border-danger bg-danger-subtle p-3 text-sm leading-5 text-danger"
+                role="alert"
+              >
+                {errors.form}
+              </p>
+            )}
           </div>
-
-          {errors.form && (
-            <p
-              className="text-sm leading-5 font-medium text-danger"
-              role="alert"
-            >
-              {errors.form}
-            </p>
-          )}
-
           <DialogFooter>
             <Button
               type="button"
               variant="outline"
-              onClick={onClose}
+              onClick={() => {
+                setErrors({});
+                setConfirmingOff(false);
+              }}
               disabled={pending}
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" loading={pending}>
-              {mode === "edit" ? t("common.save") : t("tax.form.saveDraft")}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={
+                lastRuleChange === "inactive" ? setRateToZero : keepFoodBeverage
+              }
+              disabled={pending}
+            >
+              {t(
+                lastRuleChange === "inactive"
+                  ? "tax.deactivate.setZero"
+                  : lastRuleChange === "narrowed"
+                    ? "tax.deactivate.narrowKeep"
+                    : "tax.deactivate.removeKeep",
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              loading={pending}
+              onClick={() => {
+                const rateBp = parseRatePercent(rate);
+                if (rateBp !== null) save(rateBp);
+              }}
+            >
+              {pending
+                ? t(
+                    lastRuleChange === "inactive"
+                      ? "tax.deactivate.pending"
+                      : "tax.deactivate.removePending",
+                  )
+                : t(
+                    lastRuleChange === "inactive"
+                      ? "tax.deactivate.confirm"
+                      : "tax.deactivate.removeConfirm",
+                  )}
             </Button>
           </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

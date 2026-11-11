@@ -68,7 +68,7 @@ const taxRules = [
     tenantId: tenant.id,
     outletId: null,
     code: "PBJT-FASILITAS",
-    name: "Pajak layanan fasilitas (sementara, menunggu A20)",
+    name: "Pajak layanan fasilitas",
     taxType: "pbjt",
     rateBp: 1000,
     regionCode: BANDUNG_REGION,

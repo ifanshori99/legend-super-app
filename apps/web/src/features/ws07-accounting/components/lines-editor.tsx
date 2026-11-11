@@ -7,6 +7,7 @@ import { CircleAlert, CircleCheck, Plus, Trash2 } from "lucide-react";
 import type { Account } from "@starter/shared/accounting";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
+import { focusFirstInvalid } from "@/lib/focus-first-invalid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { accountLabel, type DraftEvaluation } from "../lib";
+import { accountLabel, formatRupiahInput, type DraftEvaluation } from "../lib";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export type EditorLine = {
@@ -26,32 +27,135 @@ export type EditorLine = {
   key: string;
   /** "" = not chosen yet (Radix shows the placeholder). */
   accountId: string;
+  /** "" = entity-level line (no outlet); otherwise an outlet id (ACC-03). */
+  outletId: string;
+  /** Kept from a saved journal so editing never drops it; no input field. */
+  costCenter: string | null;
   /** Raw text so the user may type "1.520.000". */
   debit: string;
   credit: string;
 };
 
+/** Radix Select forbids an empty item value, so "no outlet" gets a sentinel. */
+const ENTITY_LEVEL = "__entity__";
+
+export type OutletOption = { id: string; name: string };
+/**
+ * After a failed save attempt: focus the first invalid field in `root`; when
+ * only the balance banner explains the failure, focus that instead.
+ */
+export function focusJournalProblem(root: HTMLElement | null): void {
+  if (!root) return;
+  if (root.querySelector('[aria-invalid="true"]')) {
+    focusFirstInvalid(root);
+    return;
+  }
+  requestAnimationFrame(() => {
+    const banner = root.querySelector<HTMLElement>("[data-journal-problem]");
+    if (!banner) return;
+    banner.focus({ preventScroll: true });
+    banner.scrollIntoView({ block: "center" });
+  });
+}
+
+export type OutletsState = "ready" | "loading" | "error";
+
+/**
+ * Amount field that groups thousands as the user types ("1520000" shows as
+ * "1.520.000"). The text stays a string; `parseRupiahInput` reads it back, so
+ * the integer rupiah sent to the API is unchanged. The caret stays after the
+ * same digit when the dots move.
+ */
+function RupiahInput({
+  value,
+  onValueChange,
+  ...props
+}: Omit<React.ComponentProps<typeof Input>, "value" | "onChange"> & {
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
+  const ref = React.useRef<HTMLInputElement>(null);
+  const caret = React.useRef<number | null>(null);
+  React.useLayoutEffect(() => {
+    if (caret.current !== null && ref.current) {
+      ref.current.setSelectionRange(caret.current, caret.current);
+    }
+    caret.current = null;
+  });
+  return (
+    <Input
+      {...props}
+      ref={ref}
+      value={value}
+      onChange={(event) => {
+        const raw = event.target.value;
+        const formatted = formatRupiahInput(raw);
+        const before = raw.slice(0, event.target.selectionStart ?? raw.length);
+        const digitsBefore = before.replace(/\D/g, "").length;
+        // Put the caret after the same number of digits in the grouped text.
+        let position = 0;
+        let seen = 0;
+        while (position < formatted.length && seen < digitsBefore) {
+          if (/\d/.test(formatted.charAt(position))) seen += 1;
+          position += 1;
+        }
+        if (formatted === raw) {
+          // Same text means no re-render and no layout effect: place the
+          // caret now and leave nothing behind for a later render.
+          caret.current = null;
+          event.target.setSelectionRange(position, position);
+          return;
+        }
+        caret.current = position;
+        onValueChange(formatted);
+      }}
+    />
+  );
+}
+
 export function blankEditorLine(): EditorLine {
-  return { key: newIdempotencyKey(), accountId: "", debit: "", credit: "" };
+  return {
+    key: newIdempotencyKey(),
+    accountId: "",
+    outletId: "",
+    costCenter: null,
+    debit: "",
+    credit: "",
+  };
 }
 
 export function JournalLinesEditor({
   accounts,
+  outlets,
+  outletsState,
+  onRetryOutlets,
   rows,
   onChange,
   evaluation,
+  submitted = false,
   disabled = false,
 }: {
   accounts: readonly Account[];
+  outlets: readonly OutletOption[];
+  /** Outlets never block the editor: not ready = entity-level lines only. */
+  outletsState: OutletsState;
+  onRetryOutlets: () => void;
   rows: readonly EditorLine[];
   onChange: (rows: EditorLine[]) => void;
   evaluation: DraftEvaluation;
+  /** A save was attempted: an incomplete journal now shows its error banner. */
+  submitted?: boolean;
   disabled?: boolean;
 }) {
   const t = useT();
   // Field ids come from useId + row position, not the random row key, so the
   // server render and hydration agree on every id/htmlFor pair.
   const baseId = React.useId();
+  // Rows with an unreadable amount (or both sides) are left out of the totals,
+  // so a difference computed from them would mislead.
+  const hasAmountIssue = Object.values(evaluation.lineIssues).some(
+    (issue) => issue === "amount" || issue === "side",
+  );
 
   const update = (index: number, patch: Partial<EditorLine>) => {
     onChange(
@@ -78,9 +182,10 @@ export function JournalLinesEditor({
     <div className="grid min-w-0 gap-2">
       <div
         aria-hidden="true"
-        className="hidden gap-2 px-3 text-xs font-semibold tracking-wide text-muted-foreground uppercase sm:grid sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem]"
+        className="hidden gap-2 px-3 text-xs font-semibold tracking-wide text-muted-foreground uppercase sm:grid sm:grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem]"
       >
         <span>{t("accounting.journal.columns.account")}</span>
+        <span>{t("accounting.manual.form.outletColumn")}</span>
         <span>{t("accounting.journal.columns.debit")}</span>
         <span>{t("accounting.journal.columns.credit")}</span>
         <span className="sr-only">{t("common.delete")}</span>
@@ -91,7 +196,7 @@ export function JournalLinesEditor({
         return (
           <div
             key={row.key}
-            className="grid min-w-0 gap-2 rounded-lg border-(length:--border-w) border-border p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem] sm:items-start"
+            className="grid min-w-0 gap-2 rounded-lg border-(length:--border-w) border-border p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem] sm:items-start"
           >
             <div className="grid gap-1">
               <Label
@@ -125,17 +230,59 @@ export function JournalLinesEditor({
             </div>
             <div className="grid gap-1">
               <Label
+                htmlFor={`${baseId}-line-${index}-outlet`}
+                className="sm:sr-only"
+              >
+                {t("accounting.manual.form.outlet", { line })}
+              </Label>
+              <Select
+                value={row.outletId === "" ? ENTITY_LEVEL : row.outletId}
+                onValueChange={(value) =>
+                  update(index, {
+                    outletId: value === ENTITY_LEVEL ? "" : value,
+                  })
+                }
+                disabled={disabled || outletsState === "loading"}
+              >
+                <SelectTrigger
+                  id={`${baseId}-line-${index}-outlet`}
+                  className="h-control-sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ENTITY_LEVEL}>
+                    {t("accounting.manual.form.outletEntity")}
+                  </SelectItem>
+                  {outlets.map((outlet) => (
+                    <SelectItem key={outlet.id} value={outlet.id}>
+                      {outlet.name}
+                    </SelectItem>
+                  ))}
+                  {row.outletId !== "" &&
+                    !outlets.some((outlet) => outlet.id === row.outletId) && (
+                      // A saved outlet that is not in the list (other entity,
+                      // closed, or the list is still unavailable).
+                      <SelectItem value={row.outletId}>
+                        {outletsState === "loading"
+                          ? t("accounting.manual.form.outletsLoading")
+                          : t("accounting.manual.form.outletUnavailable")}
+                      </SelectItem>
+                    )}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1">
+              <Label
                 htmlFor={`${baseId}-line-${index}-debit`}
                 className="sm:sr-only"
               >
                 {t("accounting.manual.form.debit", { line })}
               </Label>
-              <Input
+              <RupiahInput
                 id={`${baseId}-line-${index}-debit`}
                 value={row.debit}
-                onChange={(event) =>
-                  update(index, { debit: event.target.value })
-                }
+                onValueChange={(debit) => update(index, { debit })}
                 inputMode="numeric"
                 autoComplete="off"
                 placeholder="0"
@@ -151,12 +298,10 @@ export function JournalLinesEditor({
               >
                 {t("accounting.manual.form.credit", { line })}
               </Label>
-              <Input
+              <RupiahInput
                 id={`${baseId}-line-${index}-credit`}
                 value={row.credit}
-                onChange={(event) =>
-                  update(index, { credit: event.target.value })
-                }
+                onValueChange={(credit) => update(index, { credit })}
                 inputMode="numeric"
                 autoComplete="off"
                 placeholder="0"
@@ -180,7 +325,7 @@ export function JournalLinesEditor({
               </Button>
             </div>
             {issue && (
-              <p className="flex items-center gap-1 text-sm leading-5 text-danger sm:col-span-3">
+              <p className="flex items-center gap-1 text-sm leading-5 text-danger sm:col-span-4">
                 <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
                 {issue}
               </p>
@@ -200,9 +345,59 @@ export function JournalLinesEditor({
           {t("accounting.manual.form.addLine")}
         </Button>
       </div>
+      {outletsState === "error" ? (
+        <p
+          role="status"
+          className="flex flex-wrap items-center gap-x-2 text-sm leading-5 text-muted-foreground"
+        >
+          {t("accounting.manual.form.outletsErrorHint")}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onRetryOutlets}
+          >
+            {t("common.retry")}
+          </Button>
+        </p>
+      ) : (
+        <p className="text-sm leading-5 text-muted-foreground">
+          {outletsState === "loading"
+            ? t("accounting.manual.form.outletsLoading")
+            : t("accounting.manual.form.outletHint")}
+        </p>
+      )}
       <p className="text-sm leading-5 text-muted-foreground">
         {t("accounting.manual.form.amountHint")}
       </p>
+      {!evaluation.balanced &&
+        ((evaluation.filled >= 2 && evaluation.differenceIdr !== 0) ||
+          (submitted && evaluation.filled < 2)) && (
+          <div
+            role="alert"
+            tabIndex={-1}
+            data-journal-problem=""
+            className="grid gap-1 rounded-lg border-(length:--border-w) border-danger p-3 text-sm leading-5 text-danger"
+          >
+            <strong>{t("accounting.manual.form.unbalancedTitle")}</strong>
+            <span>
+              {evaluation.filled < 2
+                ? t("accounting.manual.form.linesRequired")
+                : hasAmountIssue
+                  ? t("accounting.manual.form.amountIssueHint")
+                  : t(
+                      evaluation.differenceIdr > 0
+                        ? "accounting.manual.form.debitHigher"
+                        : "accounting.manual.form.creditHigher",
+                      {
+                        amount: formatRupiah(
+                          Math.abs(evaluation.differenceIdr),
+                        ),
+                      },
+                    )}
+            </span>
+          </div>
+        )}
       <div
         aria-live="polite"
         className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 rounded-lg border-(length:--border-w) border-border bg-muted p-card"
@@ -226,10 +421,10 @@ export function JournalLinesEditor({
         ) : (
           <p className="flex items-center gap-2 text-sm font-medium text-danger">
             <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
-            {evaluation.differenceIdr !== 0
-              ? t("accounting.manual.form.difference", {
+            {evaluation.differenceIdr !== 0 && !hasAmountIssue
+              ? `${t("accounting.manual.form.difference", {
                   amount: formatRupiah(Math.abs(evaluation.differenceIdr)),
-                })
+                })} · ${t("accounting.manual.form.unbalanced")}`
               : t("form.invalid")}
           </p>
         )}

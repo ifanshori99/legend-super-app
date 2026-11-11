@@ -3,7 +3,7 @@
 export const auditSettingsMessages = {
   nav: {
     audit: "Log audit",
-    settings: "Pengaturan",
+    settings: "Pengaturan tenant",
   },
   audit: {
     title: "Log audit",
@@ -147,12 +147,28 @@ export const auditSettingsMessages = {
     },
   },
   hub: {
-    title: "Pengaturan",
-    subtitle:
-      "Semua konfigurasi tenant, brand, dan outlet dalam satu tempat. Buka kartu untuk mengubahnya.",
+    title: "Pengaturan tenant",
+    subtitle: "Kelola integrasi, tampilan, istilah, dan konfigurasi tenant.",
+    primary: {
+      title: "Pengaturan",
+      hint: "Pilih pengaturan yang ingin Anda kelola. Hanya halaman sesuai izin Anda yang ditampilkan.",
+      none: "Belum ada pengaturan yang tersedia. Hubungi administrator.",
+    },
+    more: {
+      title: "Pengaturan lainnya",
+      hint: "Konfigurasi bisnis, brand, dan outlet di bagian lain Legend.",
+    },
+    loading: {
+      label: "Memuat pengaturan",
+      text: "Memuat pengaturan…",
+    },
+    error: {
+      title: "Pengaturan belum bisa dimuat",
+      hint: "Periksa koneksi Anda, lalu coba lagi.",
+    },
     empty: {
-      title: "Belum ada layar pengaturan",
-      hint: "Layar konfigurasi akan muncul di sini setelah tersedia untuk akun Anda.",
+      title: "Belum ada pengaturan yang tersedia",
+      hint: "Akun Anda belum memiliki izin untuk mengelola pengaturan tenant. Hubungi administrator untuk meminta akses.",
     },
     groups: {
       tenant: "Tenant",
@@ -160,9 +176,25 @@ export const auditSettingsMessages = {
       brand: "Brand",
       brandHint: "Berlaku untuk semua outlet satu brand.",
       outlet: "Outlet",
-      outletHint: "Diatur per outlet.",
+      outletHint: "Nama, alamat, dan jam tutup buku outlet.",
     },
     items: {
+      integrations: {
+        name: "Integrasi",
+        hint: "Kelola layanan yang terhubung dan kredensial tenant.",
+      },
+      theme: {
+        name: "Tema",
+        hint: "Atur warna, logo, dan font untuk tampilan tenant.",
+      },
+      terms: {
+        name: "Kamus istilah",
+        hint: "Kelola istilah yang digunakan dalam antarmuka tenant.",
+      },
+      config: {
+        name: "Konfigurasi",
+        hint: "Ekspor dan impor konfigurasi tenant.",
+      },
       access: {
         name: "Akses & peran",
         hint: "Peran, penugasan, dan matriks persetujuan.",
@@ -176,7 +208,7 @@ export const auditSettingsMessages = {
         hint: "Aturan, penerima, dan saluran pesan.",
       },
       tax: {
-        name: "Pajak & service charge",
+        name: "Pajak & layanan",
         hint: "Aturan pajak berversi dan opsi tampil harga.",
       },
       payments: {

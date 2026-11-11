@@ -22,6 +22,7 @@ import {
   listStations,
   listVariants,
 } from "@starter/shared/menu";
+import { orgEndpoints } from "@starter/shared/platform";
 import type {
   AnyEndpoint,
   EndpointInput,
@@ -84,6 +85,9 @@ export const categoriesQuery = (query: Query<typeof listCategories>) =>
 
 export const stationsQuery = (query: Query<typeof listStations>) =>
   endpointQueryOptions(listStations, { query });
+
+export const outletsQuery = (query: Query<typeof orgEndpoints.listOutlets>) =>
+  endpointQueryOptions(orgEndpoints.listOutlets, { query });
 
 export const variantsQuery = (
   params: Params<typeof listVariants>,

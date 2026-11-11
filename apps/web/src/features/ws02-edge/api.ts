@@ -55,4 +55,5 @@ export function setDeviceTrainingModeCall(
 export type EdgeMockControl = {
   setCloudLink: (link: CloudLink) => void;
   setPendingEvents: (count: number) => void;
+  setReceiptRunAlert: (on: boolean) => void;
 };

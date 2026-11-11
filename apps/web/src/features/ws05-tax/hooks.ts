@@ -14,7 +14,10 @@ import {
   defaultRecapQuery,
   floorZonesQuery,
   serviceChargeRulesDefaultQuery,
+  taxMenuCategoriesQuery,
+  taxMenuItemsQuery,
   taxOutletsQuery,
+  taxPublishedRulesAllQuery,
   taxRuleConflictsDefaultQuery,
   taxRulesDefaultQuery,
   taxSettingsDefaultQuery,
@@ -54,6 +57,19 @@ export function useTaxRuleConflicts() {
 
 export function useTaxOutlets() {
   return useQuery(taxOutletsQuery());
+}
+
+/** All published rule versions, for the last-food-and-beverage-rule check. */
+export function useAllPublishedTaxRules() {
+  return useQuery(taxPublishedRulesAllQuery());
+}
+
+export function useTaxMenuCategories() {
+  return useQuery(taxMenuCategoriesQuery());
+}
+
+export function useTaxMenuItems() {
+  return useQuery(taxMenuItemsQuery());
 }
 
 export function useServiceChargeRules() {
@@ -112,6 +128,14 @@ export function usePublishTaxRule() {
   );
 }
 
+export function useArchiveTaxRule() {
+  return useTaxMutation(
+    (variables: { params: Parameters<typeof api.archiveTaxRule>[0] }) =>
+      api.archiveTaxRule(variables.params),
+    [listTaxRules, listTaxRuleConflicts],
+  );
+}
+
 export function useCreateServiceChargeRule() {
   return useTaxMutation(api.createServiceChargeRule, [listServiceChargeRules]);
 }
@@ -141,6 +165,24 @@ export function usePublishServiceChargeRule() {
 
 export function useCreateTaxSettings() {
   return useTaxMutation(api.createTaxSettings, [listTaxSettings]);
+}
+
+export function useUpdateTaxSettings() {
+  return useTaxMutation(
+    (variables: {
+      params: Parameters<typeof api.updateTaxSettings>[0];
+      body: Parameters<typeof api.updateTaxSettings>[1];
+    }) => api.updateTaxSettings(variables.params, variables.body),
+    [listTaxSettings],
+  );
+}
+
+export function useArchiveTaxSettings() {
+  return useTaxMutation(
+    (variables: { params: Parameters<typeof api.archiveTaxSettings>[0] }) =>
+      api.archiveTaxSettings(variables.params),
+    [listTaxSettings],
+  );
 }
 
 export function usePublishTaxSettings() {

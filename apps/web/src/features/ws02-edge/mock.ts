@@ -107,6 +107,9 @@ const status = createMockStore(() => {
       override === "cloud_down" ? 42 : override === "syncing" ? 7 : 0,
     lastSyncedAt: override === null ? nowIso(-20_000) : nowIso(-4 * 60_000),
     thisDeviceId: edgeFixtureIds.posId as string | null,
+    // legend-s7szu: a restored or cloned edge database (receipt run alert).
+    receiptRunAlert: false,
+    receiptRunAlertAt: null as string | null,
   };
 });
 
@@ -144,6 +147,7 @@ declare global {
     __legendEdgeMock?: {
       setCloudLink: (link: CloudLink) => void;
       setPendingEvents: (count: number) => void;
+      setReceiptRunAlert: (on: boolean) => void;
     };
   }
 }
@@ -174,6 +178,12 @@ registerMock(getEdgeStatus, ({ scenario }) => {
       }),
       pendingEventCount: current.pendingEventCount,
       lastSyncedAt: current.lastSyncedAt,
+      deviceRegistry: {
+        lastPulledAt: nowIso(-30_000),
+        stale: false,
+        receiptRunAlert: current.receiptRunAlert,
+        receiptRunAlertAt: current.receiptRunAlertAt,
+      },
       thisDevice:
         devicesNow.find((device) => device.id === current.thisDeviceId) ?? null,
     }),
@@ -316,5 +326,12 @@ if (browser)
     },
     setPendingEvents: (count) => {
       status.set({ ...status.get(), pendingEventCount: Math.max(0, count) });
+    },
+    setReceiptRunAlert: (on) => {
+      status.set({
+        ...status.get(),
+        receiptRunAlert: on,
+        receiptRunAlertAt: on ? nowIso(-60_000) : null,
+      });
     },
   };
