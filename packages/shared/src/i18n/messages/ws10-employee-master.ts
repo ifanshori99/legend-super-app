@@ -59,6 +59,9 @@ export const employeeMasterMessages = {
     emptyHint: "Data karyawan muncul di sini setelah HR menambahkan profil.",
     emptyFilterTitle: "Tidak ada karyawan yang cocok",
     emptyFilterHint: "Ubah kata pencarian atau filter status dan outlet.",
+    noManager: "Belum ada atasan",
+    noManagerSummary:
+      "{count} karyawan aktif belum punya atasan langsung, jadi belum terlihat oleh supervisor atau manajer outlet.",
   },
   profile: {
     sectionTitle: "Profil karyawan",

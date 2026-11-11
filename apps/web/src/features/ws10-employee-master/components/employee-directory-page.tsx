@@ -7,6 +7,7 @@
 // every page is fetched (`allPagesQuery`) and the filters run locally.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
+import { TriangleAlert } from "lucide-react";
 import type { Employee, EmployeeStatus } from "@starter/shared/hris";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -137,6 +138,11 @@ export function EmployeeDirectoryPage({
     [employees, search, status, outletId],
   );
   const pagination = listPage(filtered, page, PAGE_SIZE);
+  // An active employee without a direct manager is invisible to supervisors
+  // and outlet managers (limited to direct reports), so HR must see them.
+  const lacksManager = (employee: Employee) =>
+    employee.status === "active" && employee.managerId === null;
+  const withoutManager = employees.filter(lacksManager).length;
 
   const pending =
     employeesQuery.isPending ||
@@ -195,6 +201,21 @@ export function EmployeeDirectoryPage({
         </p>
         {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
       </div>
+
+      {withoutManager > 0 && (
+        <p
+          role="status"
+          className="inline-flex max-w-3xl items-start gap-2 rounded-container bg-warning-subtle px-3 py-2 text-sm leading-5 text-warning"
+        >
+          <TriangleAlert
+            className="mt-0.5 size-4 shrink-0"
+            aria-hidden="true"
+          />
+          {t("employeeMaster.directory.noManagerSummary", {
+            count: withoutManager,
+          })}
+        </p>
+      )}
 
       {/* Owner Q30 (DESIGN.md §4): related metrics share one strip. */}
       <StatStrip label={t("employeeMaster.directory.metrics.label")}>
@@ -348,6 +369,12 @@ export function EmployeeDirectoryPage({
                 </Link>
                 <EmployeeStatusPill status={employee.status} />
               </div>
+              {lacksManager(employee) && (
+                <Badge tone="warning" className="w-fit">
+                  <TriangleAlert aria-hidden="true" />
+                  {t("employeeMaster.directory.noManager")}
+                </Badge>
+              )}
               <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-sm">
                 <dt className="text-muted-foreground">
                   {t("employeeMaster.directory.columns.employeeNo")}
@@ -409,6 +436,12 @@ export function EmployeeDirectoryPage({
                     >
                       {employee.fullName}
                     </Link>
+                    {lacksManager(employee) && (
+                      <Badge tone="warning" className="ml-2">
+                        <TriangleAlert aria-hidden="true" />
+                        {t("employeeMaster.directory.noManager")}
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
                     {positionOf(employee)}

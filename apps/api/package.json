@@ -12,6 +12,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/migrate.ts",
     "db:reset-preswitch-refunds": "tsx src/db/reset-preswitch-refund-payouts.ts",
+    "db:backfill-employee-managers": "tsx src/db/backfill-employee-managers.ts",
     "db:studio": "drizzle-kit studio",
     "db:backfill-defaults": "tsx src/db/backfill-tenant-defaults.ts",
     "role:set": "tsx src/set-role.ts",
