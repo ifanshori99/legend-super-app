@@ -394,6 +394,9 @@ export async function deliverOrderRecoveryRefundEvent(
   let replay: RecoveryRefundReplaySource | null = null;
   let swapCapIdr: number | undefined;
   let swapCapCuts = false;
+  // legend-k0ub4: line total of the original the reported replacement stands
+  // for (promo order, recompute path only).
+  let originalLineTotalIdr = 0;
   try {
     // Order amounts that fail their tax-mode identity are refused before the
     // promo port changes anything.
@@ -469,6 +472,7 @@ export async function deliverOrderRecoveryRefundEvent(
           quantity: orderItems.quantity,
           unitPriceIdr: orderItems.unitPriceIdr,
           modifiersTotalIdr: orderItems.modifiersTotalIdr,
+          lineTotalIdr: orderItems.lineTotalIdr,
           status: orderItems.status,
         })
         .from(orderItems)
@@ -587,6 +591,9 @@ export async function deliverOrderRecoveryRefundEvent(
           }
           throw error;
         }
+        const originalId = toOriginal(issue.orderItemId);
+        originalLineTotalIdr =
+          items.find((item) => item.id === originalId)?.lineTotalIdr ?? 0;
         if (recomputed.adjusted)
           promo = {
             refundedSubtotalIdr: recomputed.refundedSubtotalIdr,
@@ -667,6 +674,52 @@ export async function deliverOrderRecoveryRefundEvent(
   // A promo order with nothing due (a returned free item) ends here too: the
   // promo recompute above stays, the item really failed.
   if (split.amountIdr <= 0) {
+    // legend-k0ub4: a replacement of a completed order carries Rp0 (its value
+    // stays on the original line), so the cap is 0 and nothing is refunded. The
+    // recompute above still took the original out of the promo, so its goods
+    // money (before the cap) goes on the promo ledger, once per issue: a later
+    // refund of another item must not pay this share. The `nothing_left` audit
+    // row of this issue is the once-only mark (the event is replayed).
+    if (promo !== undefined && replay === null && swapCapIdr === 0) {
+      const goodsIdr = recoveryRefundSplit({
+        order,
+        lineTotalIdr: originalLineTotalIdr,
+        priorLinesIdr,
+        releasedIdr,
+        promo,
+      }).goodsIdr;
+      const [done] = await tx
+        .select({ id: auditLogs.id })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.tenantId, tenantId),
+            gte(auditLogs.createdAt, auditSince),
+            sql`${auditLogs.event}->>'objectId' = ${issue.id}`,
+            sql`${auditLogs.event}->>'action' = ${AUDIT_BLOCKED}`,
+            sql`${auditLogs.event}->'maskedChanges'->'after'->>'blockedReason' = 'nothing_left'`,
+          ),
+        )
+        .limit(1);
+      if (!done) {
+        if (goodsIdr > 0)
+          await orderPromoPartialRefundPort.recordPartialRefundPayout(
+            tx,
+            context,
+            { orderId: order.id, payoutIdr: goodsIdr, at },
+          );
+        await audit(
+          AUDIT_BLOCKED,
+          {
+            id: issue.id,
+            orderId: order.id,
+            blockedReason: "nothing_left",
+          },
+          "Refund item gagal tidak dibuka",
+        );
+      }
+      return;
+    }
     await blocked("nothing_left");
     return;
   }
