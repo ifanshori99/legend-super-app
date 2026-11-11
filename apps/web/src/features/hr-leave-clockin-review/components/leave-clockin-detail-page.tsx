@@ -221,6 +221,7 @@ function DetailSkeleton({ label }: { label: string }) {
       aria-label={label}
       className="grid gap-4"
     >
+      <span className="sr-only">{label}</span>
       <div className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
         <Skeleton className="h-6 w-40" />
         {Array.from({ length: 6 }, (_, index) => (
@@ -266,14 +267,6 @@ function DecisionPanel({
         leaveCase.employeeName ??
         t("leaveClockinReview.detail.unknownEmployee"),
     },
-    ...(leaveCase.kind === "manual_correction"
-      ? [
-          {
-            label: t("leaveClockinReview.detail.caseKind"),
-            value: t("leaveClockinReview.kind.manualCorrection"),
-          },
-        ]
-      : []),
     {
       label: t("leaveClockinReview.detail.leaveType"),
       value: leave?.typeName ?? unknown,
@@ -370,7 +363,8 @@ function DecisionPanel({
         <div className="grid items-start gap-3 sm:grid-cols-2">
           <div className="grid gap-2">
             <Button
-              className="min-h-11 w-full aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+              variant={canKeep ? "default" : "outline"}
+              className="min-h-11 w-full whitespace-normal aria-disabled:cursor-not-allowed aria-disabled:border-dashed aria-disabled:bg-surface-2 aria-disabled:text-muted-foreground aria-disabled:opacity-100 aria-disabled:shadow-none"
               aria-disabled={canKeep ? undefined : "true"}
               aria-describedby={canKeep ? undefined : KEEP_REASON_ID}
               onClick={() => {

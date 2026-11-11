@@ -4,7 +4,7 @@
 // reason in view: a transient failure keeps the confirm button ready to retry,
 // a refusal that retrying cannot fix swaps it for "Kembali ke antrean".
 import * as React from "react";
-import { CircleAlert, LoaderCircle, Undo2 } from "lucide-react";
+import { CircleAlert, LoaderCircle, Undo2, WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -73,9 +73,9 @@ export function DecisionDialog({
           confirm: t("leaveClockinReview.confirmKeep.confirm"),
           confirming: t("leaveClockinReview.confirmKeep.confirming"),
         };
-  const failure = offline
-    ? t("leaveClockinReview.confirmFailed.offline")
-    : errorMessage;
+  // Offline before any attempt is a warning, not a failed save.
+  const failure = errorMessage;
+  const offlineOnly = offline && !errorMessage;
 
   return (
     <Dialog
@@ -96,6 +96,16 @@ export function DecisionDialog({
           <DialogTitle>{copy.title}</DialogTitle>
           <DialogDescription>{copy.description}</DialogDescription>
         </DialogHeader>
+
+        {offlineOnly && (
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-container bg-warning-subtle p-3 leading-6 text-warning"
+          >
+            <WifiOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <p>{t("leaveClockinReview.confirmFailed.offline")}</p>
+          </div>
+        )}
 
         {failure && (
           <div

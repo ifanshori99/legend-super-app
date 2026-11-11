@@ -269,7 +269,7 @@ test("legend-3jem1 queue 1280: HR sees the cases that need a decision, with leav
     "Tanggal",
     "Cuti",
     "Jam masuk",
-    "Jam pulang",
+    "Jam keluar",
     "Aksi",
   ]) {
     await expect(

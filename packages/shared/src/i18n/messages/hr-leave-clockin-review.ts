@@ -17,13 +17,13 @@ export const leaveClockinReviewMessages = {
     columnDate: "Tanggal",
     columnLeave: "Cuti",
     columnClockIn: "Jam masuk",
-    columnClockOut: "Jam pulang",
+    columnClockOut: "Jam keluar",
     columnAction: "Aksi",
     review: "Tinjau",
     reviewFor: "Tinjau absensi {employee} tanggal {date}",
     clockOutMissing: "Belum absen keluar",
     clockInLabel: "Masuk",
-    clockOutLabel: "Keluar",
+    clockOutLabel: "Jam keluar",
   },
   status: {
     leaveClockIn: "Absen saat cuti",
@@ -31,10 +31,6 @@ export const leaveClockinReviewMessages = {
     reReview: "Perlu ditinjau ulang",
     keptLeave: "Tetap cuti",
     cancelledLeave: "Cuti hari ini dibatalkan",
-  },
-  kind: {
-    leaveClockIn: "Absen saat cuti",
-    manualCorrection: "Koreksi absen manual",
   },
   reReview: {
     note: "Perlu ditinjau ulang: ada cuti baru disetujui",
@@ -70,7 +66,6 @@ export const leaveClockinReviewMessages = {
     back: "Kembali ke antrean",
     summaryTitle: "Ringkasan",
     employee: "Nama karyawan",
-    caseKind: "Jenis kasus",
     unknownEmployee: "Karyawan tidak dikenal",
     unknownValue: "Tidak tersedia",
     leaveType: "Jenis cuti",
@@ -146,16 +141,16 @@ export const leaveClockinReviewMessages = {
     ATTENDANCE_LEAVE_NOT_APPROVED:
       "Tidak ada cuti disetujui pada hari itu. Keadaan sudah berubah. Kembali ke antrean untuk melihat keadaan terbaru.",
     ATTENDANCE_LEAVE_NOT_REACHABLE:
-      "Cuti tidak dapat dibatalkan dari akses Anda saat ini. Pilih tetap cuti atau minta HR yang berwenang.",
+      "Cuti ini tidak dapat dibatalkan dengan akses Anda. Pilih Kembali untuk memilih tetap cuti, atau minta HR yang berwenang membatalkannya.",
     ATTENDANCE_LEAVE_DAYS_MISMATCH:
-      "Jumlah hari cuti tidak cocok dengan rentangnya. Pilih tetap cuti dan laporkan ke tim teknis.",
+      "Jumlah hari cuti tidak cocok dengan rentangnya, jadi cuti tidak dapat dibatalkan sebagian. Pilih Kembali untuk memilih tetap cuti.",
     ATTENDANCE_LEAVE_STILL_APPROVED:
-      "Masih ada cuti disetujui pada hari itu sehingga pembatalan belum selesai. Pilih tetap cuti.",
+      "Masih ada cuti lain yang disetujui pada hari itu, jadi pembatalan tidak disimpan. Pilih Kembali untuk memilih tetap cuti, atau kembali ke antrean.",
     ATTENDANCE_LEAVE_DECISION_REQUIRED:
-      "Ada cuti disetujui pada hari itu. Pilih tetap cuti atau batalkan cuti hari ini.",
+      "Keadaan sudah berubah: absensi ini perlu keputusan cuti. Kembali ke antrean untuk melihat keadaan terbaru.",
     ATTENDANCE_REVIEW_NOT_ALLOWED:
       "Koreksi manual sudah diputuskan lewat persetujuan dan hanya bisa ditinjau dengan keputusan cuti.",
     ATTENDANCE_CORRECTION_LEAVE_DAY:
-      "Karyawan punya cuti disetujui pada tanggal ini. Batalkan cuti hari itu lebih dulu bila karyawan memang masuk kerja.",
+      "Karyawan punya cuti disetujui pada tanggal ini, jadi koreksi tidak disimpan. Pilih Kembali untuk memilih keputusan lain, atau kembali ke antrean.",
   },
 } as const;
