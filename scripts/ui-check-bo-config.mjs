@@ -462,8 +462,13 @@ const STATES = [
     path: `/kelola/menu/${ESPRESSO_ID}?mock=normal`,
     prepare: async (page) => {
       await stationReady(page);
-      await page.getByRole("combobox", { name: "Outlet", exact: true }).click();
-      await page.getByRole("option").nth(1).click(); // outlet without stations
+      await page.getByRole("combobox", { name: /^Outlet/ }).click();
+      // Fixture stations all belong to the default outlet (Bandung).
+      await page
+        .getByRole("option")
+        .filter({ hasNotText: "Cafe Legend Bandung" })
+        .first()
+        .click();
       await visible(
         page.getByText(
           "Belum ada stasiun khusus di outlet ini. Item tetap mengikuti tipe stasiun.",

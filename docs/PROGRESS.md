@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## UI backoffice konfigurasi Q29-Q35: woc1+d5pz, j0kd, 0frf, 5ac3, s7szu (ui-engineer, cabang `ws/ui-bo-config` dari `origin/milestone/m1`, 2026-11-11)
+
+- Sudah: halaman Pajak & layanan (target kategori/item, versi per outlet, "Buang draf" untuk draf aturan dan draf Opsi perhitungan, ubah draf opsi, peringatan d5pz sebelum menonaktifkan satu-satunya aturan food_beverage), hub Pengaturan (4 tile integrasi/tema/istilah/konfigurasi dengan izin masing-masing), tipe stasiun per menu + override stasiun outlet, outlet opsional per baris jurnal manual dan berulang, peringatan rotasi run struk berulang di /operasional/koneksi.
+- API baru (tanpa migrasi, tanpa logika uang): POST `/api/tax/rules/:id/archive`, POST `/api/tax/settings/:id/archive`, PATCH `/api/tax/settings/:id` (draf saja; terbit ditolak 409 lewat `archiveRuleVersion`). Test `apps/api/src/test/tax-archive-draft.test.ts`.
+- Review: reviewer 5ac3+j0kd, reviewer 0frf+s7szu, architect pajak (aman), reviewer perbaikan pajak, reviewer akhir seluruh cabang (tanpa cacat kebenaran; 3 temuan kecil dibetulkan d14a2890). ui-auditor 2 putaran; T1-T7 dan H1-H2 dibetulkan.
+- Keputusan: d5pz "Tetap nonaktifkan" = draf versi nonaktif (model berversi tetap), toast "Penonaktifan disimpan sebagai draf. Terbitkan agar berlaku."; satu tombol utama "Buat aturan" di header.
+- Menunggu CTO: s7szu memakai layar POS koneksi (mockup menunjukkan "Status edge" backoffice dengan tabel node, butuh API cloud baru); alur 5ac3 "Ajukan untuk persetujuan" belum ada; hub j0kd memakai hub Pengaturan yang ada (mockup 4 baris "Pengaturan tenant").
+- Biaya sesi f05bdb0a (15:02-16:20): ~11.0M unit biaya*, 36+ subagent (Claude saja; sonnet 530 req, haiku 66, opus 16), puncak 8, rata 1,35 subagent berjalan.
+
 ## legend-ilzrj WS-10 FE layar PIN slip gaji + sisa percobaan di API (ui-engineer, cabang `ws/payslip-pin-ui` dari `ws/hris-pii-pin` 8305fdc3 + merge `design/payslip-pin`, 2026-11-11)
 
 - Sudah: BE 403 `PAYSLIP_PIN_INVALID` membawa `error.remainingAttempts`, 423 membawa `error.lockedUntil` (field opsional di envelope error, bukan `details` yang berbentuk array); architect approve. Web: buat PIN, PIN tersimpan, buka slip (kartu periode, nominal tersembunyi), PIN salah + sisa, terkunci (`pin-locked.tsx`, menit berjalan), lupa PIN (teks HR/atasan tanpa nomor) + kode WhatsApp (503 belum tersedia, 429 dibatasi, kode hangus setelah 5 salah tanpa mengunci PIN), ubah PIN, daftar slip kosong/memuat/error, dialog reset HR dengan alasan. Logika murni `pin-state.ts` + `tests/payslip-pin-ui.test.mjs` (35). Mock: `?mock=pin-not-set|pin-locked|otp-ok|otp-rate-limited`.
