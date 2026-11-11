@@ -2,7 +2,9 @@
 // digests were written under another key version to the active version
 // (BLIND_INDEX_ACTIVE_VERSION, lib/blind-index.ts): `employees` (all `*_hmac`
 // columns, row version `blind_index_version`) and `legal_entities`
-// (`npwp_hash`, row version `npwp_hash_version`). On demand only, no cron: an
+// (`npwp_hash`, row version `npwp_hash_version`) and `bank_accounts`
+// (`account_number_hmac`, row version `account_number_hmac_version`, legend-v0kta).
+// On demand only, no cron: an
 // operator queues `blind-index-rebuild` with `{ targetVersion }` after a
 // deploy, or after setting BLIND_INDEX_ACTIVE_VERSION=1 to roll back (rows move
 // in both directions: the WHERE is `version <> active`).
@@ -14,7 +16,10 @@
 // with a digest written by something else, so the version column alone proves
 // nothing. The result reports the rewrites; a verify run with 0 rewrites, 0
 // conflicts and 0 failed or incomplete tenants is the proof that a version is
-// no longer needed.
+// no longer needed. Version 1 must not be removed from code on that proof
+// alone: MFA recovery codes have no version column and are matched against both
+// digests, so removing v1 also needs 0 recovery-code sets created before the v2
+// cutover (`created_at < cutover`), or those sets must be regenerated first.
 //
 // Verify cannot inspect a row another transaction has locked (SKIP LOCKED). It
 // counts those rows as `skipped` (rows of the tenant minus rows it saw) and the
@@ -32,7 +37,9 @@
 //
 // Unique indexes are (tenant, digest), so a version 1 row and a version 2 row
 // of the same value do not collide. The job therefore takes the tenant's
-// blind-index lock (the one writers take) per batch and checks the new digest
+// blind-index lock (the one writers take) per batch (bank accounts: the
+// `acc-cashbank:<tenant>:<legal entity>` lock of the bank-account writer, taken
+// per row BEFORE the row lock, the writer's order) and checks the new digest
 // against every other row before it rewrites a row. A clash leaves the row at
 // its old version and is counted as a conflict (tenant id, row id and column
 // name are logged, never a value); that tenant is reported incomplete. A
@@ -53,6 +60,7 @@ import {
 } from "@starter/shared/core/server";
 import { db } from "../db/index.ts";
 import type * as schema from "../db/schema/index.ts";
+import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import { employees } from "../db/schema/hris.ts";
 import { legalEntities } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -70,6 +78,7 @@ import {
   type HrisEmployeePiiField,
 } from "../lib/hris-pii.ts";
 import { openSecret } from "../lib/secrets.ts";
+import { advisoryLock } from "../services/accounting-ap-fa-shared.ts";
 import { listAllTenantIds } from "./hris-pii-reseal.job.ts";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -83,6 +92,7 @@ export type BlindIndexRebuildResult = {
   tenants: number;
   employees: number;
   legalEntities: number;
+  bankAccounts: number;
   /** Rows left at their old version because the new digest clashes with another row. */
   conflicts: number;
   failedTenants: number;
@@ -92,7 +102,7 @@ export type BlindIndexRebuildResult = {
   aborted: boolean;
   /** True for a verify run (all rows scanned, not only stale ones). */
   verify: boolean;
-  /** Rows rewritten by this run (`employees + legalEntities`); a verify run must end at 0. */
+  /** Rows rewritten by this run (`employees + legalEntities + bankAccounts`); a verify run must end at 0. */
   rewrites: number;
   /** Tenants with stale rows that are not conflicts (locked rows): a retry can finish them. */
   retryableTenants: number;
@@ -114,7 +124,7 @@ export type BlindIndexRebuildOptions = {
   /** Called after each committed batch; a throw fails that tenant's run. */
   afterBatch?: (batch: {
     tenantId: string;
-    table: "employees" | "legal_entities";
+    table: "employees" | "legal_entities" | "bank_accounts";
     count: number;
   }) => void | Promise<void>;
   /** Test hook; defaults to every tenant, whatever its status. */
@@ -147,7 +157,10 @@ type BatchOutcome = {
   conflicts: number;
   /** Conflicts whose row is still on another version (counted by `countStale`). */
   staleConflicts: number;
+  /** Rows inspected under lock (verify skip count). */
   seen: number;
+  /** Rows selected for this batch, locked or not; 0 ends the table's loop. */
+  fetched: number;
 };
 
 function jobContext(tenantId: string): ScopedTenantContext {
@@ -183,7 +196,20 @@ async function countStale(
           ne(legalEntities.npwpHashVersion, active),
         ),
       );
-    return Number(staleEmployees?.n ?? 0) + Number(staleEntities?.n ?? 0);
+    const [staleBanks] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(bankAccounts)
+      .where(
+        and(
+          eq(bankAccounts.tenantId, tenantId),
+          ne(bankAccounts.accountNumberHmacVersion, active),
+        ),
+      );
+    return (
+      Number(staleEmployees?.n ?? 0) +
+      Number(staleEntities?.n ?? 0) +
+      Number(staleBanks?.n ?? 0)
+    );
   });
 }
 
@@ -202,7 +228,15 @@ async function countRows(
       .select({ n: sql<number>`count(*)::int` })
       .from(legalEntities)
       .where(eq(legalEntities.tenantId, tenantId));
-    return Number(rowsEmployees?.n ?? 0) + Number(rowsEntities?.n ?? 0);
+    const [rowsBanks] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(bankAccounts)
+      .where(eq(bankAccounts.tenantId, tenantId));
+    return (
+      Number(rowsEmployees?.n ?? 0) +
+      Number(rowsEntities?.n ?? 0) +
+      Number(rowsBanks?.n ?? 0)
+    );
   });
 }
 
@@ -317,6 +351,7 @@ async function rebuildEmployeeBatch(
       conflicts,
       staleConflicts,
       seen: rows.length,
+      fetched: rows.length,
       lastId: rows.at(-1)?.id ?? null,
     };
   });
@@ -401,7 +436,131 @@ async function rebuildLegalEntityBatch(
       conflicts,
       staleConflicts,
       seen: rows.length,
+      fetched: rows.length,
       lastId: rows.at(-1)?.id ?? null,
+    };
+  });
+}
+
+/**
+ * One batch of bank accounts. Candidate ids are read without a lock, then each
+ * row takes the writer's `acc-cashbank` lock of its legal entity BEFORE its row
+ * lock (the writer's order, so the two cannot deadlock), is re-read FOR UPDATE
+ * SKIP LOCKED, and moves only when no other row of the same entity holds the
+ * number under either version digest. A row locked by another transaction is
+ * not inspected (verify counts it as skipped; a normal run leaves it stale).
+ */
+async function rebuildBankAccountBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: BlindIndexVersion,
+  afterId: string | null,
+  log: Pick<Console, "error">,
+  verify: boolean,
+): Promise<BatchOutcome & { lastId: string | null }> {
+  const tenantId = context.tenant.tenantId;
+  const tenantLower = tenantId.toLowerCase();
+  const purpose = `bank:account_number:${tenantLower}`;
+  return withTenant(database, context, async (tx) => {
+    const candidates = await tx
+      .select({
+        id: bankAccounts.id,
+        legalEntityId: bankAccounts.legalEntityId,
+      })
+      .from(bankAccounts)
+      .where(
+        and(
+          eq(bankAccounts.tenantId, tenantId),
+          ...(verify
+            ? []
+            : [ne(bankAccounts.accountNumberHmacVersion, active)]),
+          ...(afterId === null ? [] : [sql`${bankAccounts.id} > ${afterId}`]),
+        ),
+      )
+      .orderBy(asc(bankAccounts.id))
+      .limit(batchSize);
+    let moved = 0;
+    let conflicts = 0;
+    let staleConflicts = 0;
+    let seen = 0;
+    // Entity locks are taken in one fixed order (entity id, then account id),
+    // so two concurrent runs can never take them crosswise and deadlock. The
+    // paging cursor (`lastId`) still follows account id order.
+    const lockOrder = [...candidates].sort(
+      (a, b) =>
+        a.legalEntityId.localeCompare(b.legalEntityId) ||
+        a.id.localeCompare(b.id),
+    );
+    for (const candidate of lockOrder) {
+      await advisoryLock(
+        tx,
+        `acc-cashbank:${tenantId}:${candidate.legalEntityId}`,
+      );
+      const [row] = await tx
+        .select()
+        .from(bankAccounts)
+        .where(
+          and(
+            eq(bankAccounts.tenantId, tenantId),
+            eq(bankAccounts.id, candidate.id),
+          ),
+        )
+        .for("update", { skipLocked: true });
+      if (!row) continue;
+      seen += 1;
+      const accountNumber = openSecret(
+        Buffer.from(row.accountNumberEncrypted).toString("base64"),
+        `bank:bank_accounts:${tenantLower}:${row.id.toLowerCase()}:account_number:k${row.accountNumberKeyVersion}`,
+      );
+      const digest = blindIndexAt(active, accountNumber, purpose);
+      if (
+        verify &&
+        row.accountNumberHmacVersion === active &&
+        row.accountNumberHmac === digest
+      )
+        continue;
+      const digests = blindIndexCandidates(accountNumber, purpose).map(
+        (candidate) => candidate.digest,
+      );
+      const [hit] = await tx
+        .select({ id: bankAccounts.id })
+        .from(bankAccounts)
+        .where(
+          and(
+            eq(bankAccounts.tenantId, tenantId),
+            eq(bankAccounts.legalEntityId, row.legalEntityId),
+            inArray(bankAccounts.accountNumberHmac, digests),
+            ne(bankAccounts.id, row.id),
+          ),
+        )
+        .limit(1);
+      if (hit) {
+        conflicts += 1;
+        if (row.accountNumberHmacVersion !== active) staleConflicts += 1;
+        log.error(
+          `Blind-index rebuild conflict for tenant ${tenantId}: bank account ${row.id} shares a value in column account_number_hmac with another bank account; left at version ${row.accountNumberHmacVersion}`,
+        );
+        continue;
+      }
+      await tx
+        .update(bankAccounts)
+        .set({
+          accountNumberHmac: digest,
+          accountNumberHmacVersion: active,
+        })
+        .where(
+          and(eq(bankAccounts.tenantId, tenantId), eq(bankAccounts.id, row.id)),
+        );
+      moved += 1;
+    }
+    return {
+      moved,
+      conflicts,
+      staleConflicts,
+      seen,
+      fetched: candidates.length,
+      lastId: candidates.at(-1)?.id ?? null,
     };
   });
 }
@@ -427,6 +586,7 @@ export async function runBlindIndexRebuild(
     tenants: tenantIds.length,
     employees: 0,
     legalEntities: 0,
+    bankAccounts: 0,
     conflicts: 0,
     failedTenants: 0,
     incompleteTenants: 0,
@@ -440,6 +600,7 @@ export async function runBlindIndexRebuild(
   const steps = [
     ["employees", rebuildEmployeeBatch],
     ["legal_entities", rebuildLegalEntityBatch],
+    ["bank_accounts", rebuildBankAccountBatch],
   ] as const;
   for (const tenantId of tenantIds) {
     if (options.signal?.aborted) {
@@ -468,13 +629,15 @@ export async function runBlindIndexRebuild(
               log,
               verify,
             );
-          if (batch.seen === 0) break;
+          if (batch.fetched === 0) break;
           afterId = batch.lastId;
           tenantSeen += batch.seen;
           result.conflicts += batch.conflicts;
           tenantStaleConflicts += batch.staleConflicts;
           if (table === "employees") result.employees += batch.moved;
-          else result.legalEntities += batch.moved;
+          else if (table === "legal_entities")
+            result.legalEntities += batch.moved;
+          else result.bankAccounts += batch.moved;
           if (batch.moved > 0)
             await options.afterBatch?.({ tenantId, table, count: batch.moved });
         }
@@ -508,7 +671,8 @@ export async function runBlindIndexRebuild(
     }
     if (result.aborted) break;
   }
-  result.rewrites = result.employees + result.legalEntities;
+  result.rewrites =
+    result.employees + result.legalEntities + result.bankAccounts;
   return result;
 }
 
