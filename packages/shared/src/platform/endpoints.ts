@@ -29,6 +29,12 @@ import {
   createConfigTemplateInputSchema,
   importConfigInputSchema,
 } from "./config.ts";
+import {
+  listOutboxGapsQuerySchema,
+  outboxGapIdSchema,
+  outboxGapSchema,
+  skipOutboxGapInputSchema,
+} from "./event-gaps.ts";
 import { brandContextSchema } from "./context.ts";
 import { addDomainInputSchema, tenantDomainSchema } from "./domains.ts";
 import {
@@ -195,6 +201,24 @@ export const platformEndpoints = {
     path: "/api/platform/tenants/:tenantId/restore-window",
     params: tenantParams,
     response: dataResponseSchema(tenantRestoreWindowSchema),
+  }),
+  // legend-jcil: open outbox gaps and the audited skip action.
+  listOutboxGaps: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/outbox-gaps",
+    params: tenantParams,
+    query: listOutboxGapsQuerySchema,
+    response: dataResponseSchema(z.array(outboxGapSchema)),
+  }),
+  skipOutboxGap: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/outbox-gaps/:gapId/skip",
+    params: z.strictObject({
+      tenantId: tenantIdSchema,
+      gapId: outboxGapIdSchema,
+    }),
+    body: skipOutboxGapInputSchema,
+    response: dataResponseSchema(outboxGapSchema),
   }),
   restoreOutlet: defineEndpoint({
     method: "POST",

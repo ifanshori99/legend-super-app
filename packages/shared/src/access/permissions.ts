@@ -53,6 +53,8 @@ const entries = [
   ["platform.health.view", ["platform"]],
   ["platform.support_access.request", ["platform"]],
   ["platform.config_template.manage", ["platform"]],
+  // Inspect and skip outbox sequence gaps (legend-jcil); audited, reason required.
+  ["platform.event_gap.manage", ["platform"]],
 
   // Organisation & configuration (§3.1, §3.7, F46)
   ["org.structure.manage", []],

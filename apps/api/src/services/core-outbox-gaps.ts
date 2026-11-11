@@ -14,8 +14,10 @@ type Database = NodePgDatabase<typeof schema>;
 
 /**
  * Record (idempotently) that a destination is missing an outbox sequence.
- * Never skips the sequence: the record feeds a throttled alert and is resolved
- * by `resolveFilledOutboxGaps` once the consumer offset has passed the gap.
+ * Never skips the sequence itself: the record feeds a throttled alert and is
+ * resolved by `resolveFilledOutboxGaps` once the consumer offset has passed the
+ * gap. Only the audited operator action (`skipOutboxGap`, legend-jcil) moves
+ * the offset past a missing sequence.
  */
 export async function recordOutboxGapRequest(
   database: Database,

@@ -162,8 +162,10 @@ export const domainEventReplays = pgTable(
 /**
  * A durable, idempotent record that a destination is missing an outbox
  * sequence. Sequences are allocated in the producer's transaction, so a gap is
- * a producer bug: the record only feeds a throttled alert and is never used to
- * skip the sequence. It is resolved when the consumer offset passes the gap.
+ * a producer bug: the relay never skips it on its own, the record feeds a
+ * throttled alert. It is resolved when the consumer offset passes the gap,
+ * either because the event arrives or because a platform operator skips it
+ * through the audited action (legend-jcil, core-outbox-gap-actions.ts).
  */
 export const domainEventGapRequests = pgTable(
   "domain_event_gap_requests",

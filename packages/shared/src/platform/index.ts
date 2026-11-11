@@ -20,5 +20,6 @@ export * from "./config.ts";
 export * from "./config-codecs.ts";
 export * from "./config-pii.ts";
 export * from "./events.ts";
+export * from "./event-gaps.ts";
 export * from "./endpoints.ts";
 export * from "./fixtures.ts";

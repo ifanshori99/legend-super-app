@@ -60,6 +60,16 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "adminProvisioning",
   ],
   "tenant.status_changed": ["status"],
+  // legend-jcil: an operator skipped an outbox sequence gap. Ids and counters
+  // only; the reason lives in the audit row's `reason`.
+  "outbox_gap.skipped": [
+    "destination",
+    "aggregateType",
+    "aggregateId",
+    "missingSequence",
+    "previousSequence",
+    "requestCount",
+  ],
   // legend-dn4 (AUTH-03): opt-in flag and free-quota ceiling, no PII.
   "wa_login_reply.settings_updated": ["enabled", "freeMonthlyQuota"],
   // Q40 (legend-umzos): platform restore within 30 days.
