@@ -46,3 +46,4 @@ Mockup layar dapur pada lebar 1280 piksel menggunakan data contoh. Keadaan terse
 | `legend-sonf` | [Konfigurasi stasiun](pos-extra-kds-sonf-konfigurasi.html) | Urutan tab, status stasiun, dan cetak cadangan |
 | `legend-v4ht` | [Tab stasiun](pos-extra-kds-v4ht-tabs.html) | Pilihan stasiun dengan jumlah pada setiap tab |
 | `legend-uqfu` | [Aksi scanner](pos-extra-kds-uqfu-scanner.html) | Masukan scanner dan umpan balik hasil |
+| `legend-ijv8` | [Sarapan tiket dan pengingat](pos-extra-ijv8-sarapan.html) | Tiket shower, pesanan sarapan meja/pickup, status ditahan, dan pengingat lima menit |

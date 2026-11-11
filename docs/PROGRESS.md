@@ -1281,3 +1281,19 @@ Langkah berikut CTO baru:
 - 11 Nov 14:20 CTO: G2mm1 batch48g: Opsi A (tahan rat9r+pti5r, kartu legend-bxdhv), hpp_outlet_state diperiksa architect, MAJOR-1 legend-0c5yg P1, OTP mati legend-pyc4t. G1fid SO WS-01: 5 P2 -> docs/briefs/495-findings-fixes.md, dikirim ke G8x04 di akun #1 setelah 14:40. G39cx wwyyk digambar ulang sesuai kontrak (klaim setelah bayar). Review page Q18-Q21 tampil.
 - 11 Nov 14:30 CTO: G3d7o 486 selesai (e916b037, brq1/i5kc/68if, v616 duplikat, architect xhigh 2x), push, resolve. uyk2 diblokir (modul faktur pemasok belum ada). Kartu baru legend-k048r P2, legend-lt0v4 P1. Brief 497 SO ledger -> Codex G8mjq (#2 xhigh). Brief 498 mockup sisa siap, menunggu slot Codex.
 - 11 Nov 13:32 (koreksi jam: entri PROGRESS sejak '13:55' sampai '14:30' hari ini sebenarnya 12:55-13:30; jam CTO salah tulis) CTO: push cadangan sukses (ws/edge-catalog-followups lokal basi di-ff dulu). G8mjq SO ledger: 4 P1 + 3 P2 -> docs/briefs/497-findings-fixes.md, digabung ke brief 500. Thread G1jk7 (499 WS-D HRIS) dan G9g98 (500 WS-E ledger+temuan 497) di #3 (Sonnet), sesuai keputusan founder Q28 laju penuh; slot lain menunggu #1 14:40.
+- 11 Nov 13:37 CTO: G8ose (FAC-07 fy5y + 11 temuan 488) selesai di ws/fac07-outbox-events 4609b448, architect xhigh 3 temuan dibetulkan, 22+279 test, tsc bersih. Keputusan: konsumen status tenant cukup acknowledge (cabut sesi tetap di platform-org) DITERIMA. Kartu baru legend-4mpqc (HRIS flaky fixture tenant bersama) dan legend-gi697 P1 (preflight duplikat langganan sebelum migrasi 0301, wajib di gerbang rilis). G8ose diminta bukti gagal-dulu 4 fix terakhir. G14v7 mockup 498 (ijv8/wjz1/wpqs/rp3fk/s7szu) 20c13cb9, README-extras ditambah ijv8, resolve.
+
+## Serah terima CTO (11 Nov 13:38, sesi G864p compact 2x)
+Sedang jalan (dipindah ke CTO baru):
+- G2mm1 merge train batch48g Opsi A (tanpa rat9r/pti5r; ws/merge-batch48g 24f05e91): tunggu laporan gate penuh + push m1 + cek hpp_outlet_state. Setelah m1: rencanakan batch48h (WS-06 9087d21c, WS-01 a575b1bc + fix 495, public-ratelimit ce080d9d + fix 494, edge-catalog-followups 26234a88, fac07 4609b448, ledger-integrity e916b037 + fix 500, 3jem1), renumber migrasi.
+- G8ose: bukti gagal-dulu 4 fix terakhir; setelah itu resolve atau beri kartu baxdx/5zb6g/6qu47.
+- G1jk7 brief 499 WS-D HRIS (ws/hris-leave-guard, migrasi 0320; 0c5yg cuti di periode tutup = 409).
+- G9g98 brief 500 WS-E (ws/ledger-guards, migrasi 0312-0316; langkah 0 = temuan 497, lalu lt0v4, k048r).
+- G6jk9 Codex #4 xhigh brief 501 second-opinion HRIS cuti/PIN (read-only).
+Antre:
+- 14:40 akun Claude #1 pulih: switch G9nt1 ke #1 lalu kirim docs/briefs/494-findings-fixes.md; switch G8x04 ke #1 lalu kirim docs/briefs/495-findings-fixes.md; isi slot Claude kosong di #1.
+- Bangun satu review page founder untuk mockup 496 (6d3676af), wwyyk (99b00e6d), 498 (20c13cb9) = Q22+.
+- Jawaban founder review Q9-Q21 belum masuk.
+- Cron di sesi CTO baru: push cadangan '17 * * * *' (git push origin --all tanpa --force, lapor hanya bila gagal) dan retro '43 1,4,7,10,13,16,19,22 * * *' (akun Claude 7d terendah, bukan >90%).
+Akun: Claude #1 limit s/d 14:40; #2 hindari s/d 13 Nov 06:00; #3 7d 90% (dipakai, Q28 laju penuh). Codex #2/#4/#5 ada, #3 5h 93%.
+Disk 28,2 GB (< 30). Jangan hapus volume Docker.
