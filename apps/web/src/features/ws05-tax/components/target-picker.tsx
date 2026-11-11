@@ -7,6 +7,7 @@ import { useT } from "@/components/i18n";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "cn";
 
 export type TargetOption = { id: string; name: string };
 
@@ -56,12 +57,7 @@ export function TargetPicker({
 
   return (
     <fieldset className="grid gap-2" aria-describedby={hintId}>
-      <legend className="text-sm font-semibold">
-        {label}{" "}
-        <span className="font-normal text-muted-foreground">
-          ({t("common.optional")})
-        </span>
-      </legend>
+      <legend className="text-sm font-semibold">{label}</legend>
       <p id={hintId} className="text-sm leading-5 text-muted-foreground">
         {hint}
         {value.length > 0 && (
@@ -105,7 +101,10 @@ export function TargetPicker({
             visible.map((option) => (
               <label
                 key={option.id}
-                className="flex min-h-control-sm items-center gap-2"
+                className={cn(
+                  "-mx-1 flex min-h-control-sm items-center gap-2 rounded-control px-1",
+                  value.includes(option.id) && "bg-accent",
+                )}
               >
                 <Checkbox
                   checked={value.includes(option.id)}

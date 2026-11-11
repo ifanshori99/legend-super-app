@@ -191,7 +191,8 @@ const STATES = [
     card: "woc1",
     name: "error",
     path: "/kelola/pajak?mock=error",
-    prepare: (page) => visible(page.getByText("Data tidak dapat dimuat")),
+    prepare: (page) =>
+      visible(page.getByText("Aturan pajak belum bisa dimuat")),
   },
   {
     card: "woc1",
@@ -231,11 +232,7 @@ const STATES = [
       await dialog.getByLabel("Kode aturan").fill("PBJT-KOSONG");
       await dialog.getByLabel("Nama aturan").fill("Tanpa tarif");
       await dialog.getByRole("button", { name: "Simpan draf" }).click();
-      await visible(
-        dialog.getByText(
-          "Tulis angka 0–100, maksimal dua desimal (misalnya 10 atau 5,5).",
-        ),
-      );
+      await visible(dialog.getByText("Masukkan tarif pajak."));
     },
   },
   {
@@ -520,7 +517,9 @@ const STATES = [
       const name = page.getByLabel("Nama item");
       await name.fill(`${await name.inputValue()} 2`);
       await page.getByRole("button", { name: "Simpan item" }).click();
-      await visible(page.getByText("Perubahan item tersimpan.").first());
+      await visible(
+        page.getByText("Pengaturan item berhasil disimpan.").first(),
+      );
     },
   },
 

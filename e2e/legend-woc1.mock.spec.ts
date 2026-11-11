@@ -19,9 +19,8 @@ import { waitForHydration } from "./hydration.ts";
 //   the only active food_beverage rule, a confirm dialog opens with Batal /
 //   Atur tarif 0% / Tetap nonaktifkan. The deactivation is saved as a draft
 //   version (the published version stays "Berlaku sekarang" until published).
-// - "Kategori menu" / "Item menu" are checkbox groups (fieldset legends, with
-//   an "(Opsional)" suffix) fed by the menu fixture: category Kopi, item
-//   Espresso.
+// - "Kategori menu" / "Item menu" are checkbox groups (fieldset legends) fed
+//   by the menu fixture: category Kopi, item Espresso.
 // - The status badge reads "<status> · v<n>" in one chip (e.g. "Diterbitkan · v1",
 //   "Draf · v2"), so status is matched by /^Draf · v\d+$/ rather than exact "Draf".
 const base = process.env.LEGEND_MOCK_WEB_URL ?? "";
@@ -133,11 +132,7 @@ test.describe("legend-woc1 tax rules", () => {
     await dialog.getByLabel("Kode aturan").fill("PBJT-KOSONG");
     await dialog.getByLabel("Nama aturan").fill("Tanpa tarif");
     await dialog.getByRole("button", { name: "Simpan draf" }).click();
-    await expect(
-      dialog.getByText(
-        "Tulis angka 0–100, maksimal dua desimal (misalnya 10 atau 5,5).",
-      ),
-    ).toBeVisible();
+    await expect(dialog.getByText("Masukkan tarif pajak.")).toBeVisible();
     await expect(dialog).toBeVisible();
   });
 
@@ -263,9 +258,12 @@ test.describe("legend-woc1 tax rules", () => {
     ).toBeVisible();
 
     await open(page, "/kelola/pajak?mock=error");
-    await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible({
+    await expect(page.getByText("Aturan pajak belum bisa dimuat")).toBeVisible({
       timeout: 30_000,
     });
+    await expect(
+      page.getByText("Periksa koneksi, lalu coba lagi."),
+    ).toBeVisible();
     await expect(page.getByRole("button", { name: "Coba lagi" })).toBeVisible();
   });
 });

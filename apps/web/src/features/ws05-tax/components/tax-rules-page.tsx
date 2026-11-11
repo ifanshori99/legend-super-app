@@ -234,7 +234,15 @@ export function TaxRulesPage({
     >
       <DataTableShell
         title={t("tax.rules.title")}
-        description={t("tax.rules.description")}
+        description={
+          rulesQuery.isPending
+            ? t("tax.rules.loading")
+            : t("tax.rules.description")
+        }
+        errorCopy={{
+          title: t("tax.rules.loadErrorTitle"),
+          description: t("tax.rules.loadErrorHint"),
+        }}
         state={
           rulesQuery.isPending
             ? "loading"

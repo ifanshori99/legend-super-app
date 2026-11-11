@@ -26,6 +26,8 @@ type Props = {
   onRetry?: () => void;
   /** The query's error; a 403 shows an explaining empty state, not a failure. */
   error?: unknown;
+  /** Screen-specific wording for the error state (default: generic). */
+  errorCopy?: { title?: string; description?: string };
   empty?: { title?: string; description?: string; action?: React.ReactNode };
   /** Shown instead of `children` when `ready` but a search matched nothing. */
   noResults?: boolean;
@@ -45,6 +47,7 @@ function DataTableShell({
   actions,
   onRetry,
   error,
+  errorCopy,
   empty,
   noResults = false,
   page,
@@ -115,7 +118,14 @@ function DataTableShell({
               ))}
             </div>
           )}
-          {state === "error" && <ErrorState onRetry={onRetry} error={error} />}
+          {state === "error" && (
+            <ErrorState
+              onRetry={onRetry}
+              error={error}
+              title={errorCopy?.title}
+              description={errorCopy?.description}
+            />
+          )}
           {state === "empty" && <EmptyState {...empty} />}
           {state === "ready" &&
             (noResults ? (

@@ -259,7 +259,11 @@ export function TaxRuleDialog({
     if (mode === "create" && !CODE_PATTERN.test(code.trim()))
       next.code = t("tax.errors.code");
     if (name.trim() === "") next.name = t("tax.errors.required");
-    if (rateBp === null) next.rate = t("tax.errors.rate");
+    if (rateBp === null)
+      next.rate =
+        rate.trim() === ""
+          ? t("tax.errors.rateRequired")
+          : t("tax.errors.rate");
     if (region !== "" && !REGION_PATTERN.test(region))
       next.region = t("tax.errors.region");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom))
@@ -399,44 +403,8 @@ export function TaxRuleDialog({
             )}
             <div className="grid gap-4 sm:grid-cols-2">
               <FormField
-                label={t("tax.form.code")}
-                required
-                error={errors.code}
-                hint={mode === "create" ? t("tax.form.codeHint") : undefined}
-              >
-                <Input
-                  value={code}
-                  onChange={(event) =>
-                    setCode(event.target.value.toUpperCase())
-                  }
-                  disabled={mode !== "create" || pending}
-                  autoCapitalize="characters"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </FormField>
-              <FormField label={t("tax.form.taxType")} required>
-                <Select
-                  value={taxType}
-                  onValueChange={(value) => setTaxType(value as TaxType)}
-                  disabled={pending}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(Object.keys(TAX_TYPE_KEYS) as TaxType[]).map((type) => (
-                      <SelectItem key={type} value={type}>
-                        {t(TAX_TYPE_KEYS[type])}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </FormField>
-              <FormField
                 label={t("tax.form.name")}
                 required
-                className="sm:col-span-2"
                 error={errors.name}
               >
                 <Input
@@ -446,6 +414,25 @@ export function TaxRuleDialog({
                   maxLength={150}
                 />
               </FormField>
+              {mode === "create" && (
+                <FormField
+                  label={t("tax.form.code")}
+                  required
+                  error={errors.code}
+                  hint={mode === "create" ? t("tax.form.codeHint") : undefined}
+                >
+                  <Input
+                    value={code}
+                    onChange={(event) =>
+                      setCode(event.target.value.toUpperCase())
+                    }
+                    disabled={pending}
+                    autoCapitalize="characters"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </FormField>
+              )}
               <FormField
                 label={t("tax.form.rate")}
                 required
@@ -459,35 +446,6 @@ export function TaxRuleDialog({
                   disabled={pending}
                   placeholder="10"
                   autoComplete="off"
-                />
-              </FormField>
-              <FormField
-                label={t("tax.form.region")}
-                error={errors.region}
-                hint={t("tax.form.regionHint")}
-              >
-                <Input
-                  value={region}
-                  onChange={(event) =>
-                    setRegion(
-                      event.target.value.toUpperCase().replace(/\s/g, ""),
-                    )
-                  }
-                  disabled={pending}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </FormField>
-              <FormField
-                label={t("tax.form.effectiveFrom")}
-                required
-                error={errors.effectiveFrom}
-              >
-                <Input
-                  type="date"
-                  value={effectiveFrom}
-                  onChange={(event) => setEffectiveFrom(event.target.value)}
-                  disabled={pending}
                 />
               </FormField>
               <FormField
@@ -525,6 +483,53 @@ export function TaxRuleDialog({
                       )}
                   </SelectContent>
                 </Select>
+              </FormField>
+              <FormField
+                label={t("tax.form.effectiveFrom")}
+                required
+                error={errors.effectiveFrom}
+              >
+                <Input
+                  type="date"
+                  value={effectiveFrom}
+                  onChange={(event) => setEffectiveFrom(event.target.value)}
+                  disabled={pending}
+                />
+              </FormField>
+              <FormField label={t("tax.form.taxType")} required>
+                <Select
+                  value={taxType}
+                  onValueChange={(value) => setTaxType(value as TaxType)}
+                  disabled={pending}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(TAX_TYPE_KEYS) as TaxType[]).map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {t(TAX_TYPE_KEYS[type])}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+              <FormField
+                label={t("tax.form.region")}
+                error={errors.region}
+                hint={t("tax.form.regionHint")}
+              >
+                <Input
+                  value={region}
+                  onChange={(event) =>
+                    setRegion(
+                      event.target.value.toUpperCase().replace(/\s/g, ""),
+                    )
+                  }
+                  disabled={pending}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
               </FormField>
             </div>
 
@@ -719,9 +724,22 @@ export function TaxRuleDialog({
                 </p>
               </div>
             )}
+            {lastRuleChange === "inactive" && (
+              <div
+                role="note"
+                className="rounded-container border-(length:--border-w) bg-info-subtle p-card"
+              >
+                <p className="text-sm font-semibold">
+                  {t("tax.deactivate.draftTitle")}
+                </p>
+                <p className="text-sm leading-5">
+                  {t("tax.deactivate.draftBody")}
+                </p>
+              </div>
+            )}
             {errors.form && (
               <p
-                className="text-sm leading-5 font-medium text-danger"
+                className="rounded-container border-l-4 border-danger bg-danger-subtle p-3 text-sm leading-5 text-danger"
                 role="alert"
               >
                 {errors.form}

@@ -3358,6 +3358,9 @@ export const id = {
       filterStatus: "Saring status versi",
       filterAll: "Semua status",
       emptyTitle: "Belum ada aturan pajak",
+      loadErrorTitle: "Aturan pajak belum bisa dimuat",
+      loadErrorHint: "Periksa koneksi, lalu coba lagi.",
+      loading: "Memuat aturan pajak…",
       emptyHint:
         "Buat aturan untuk menentukan pajak yang berlaku pada item atau kategori.",
       columns: {
@@ -3396,6 +3399,9 @@ export const id = {
       recommendTitle: "Untuk transaksi bebas pajak",
       recommendBody:
         "Tetapkan aturan aktif dengan tarif 0% agar transaksi tetap dapat dihitung.",
+      draftTitle: "Penonaktifan disimpan sebagai draf",
+      draftBody:
+        "Tetap nonaktifkan menyimpan versi nonaktif sebagai draf. Aturan yang berlaku sekarang tetap berjalan sampai draf itu diterbitkan.",
       setZero: "Atur tarif 0%",
       confirm: "Tetap nonaktifkan",
       saved: "Penonaktifan disimpan sebagai draf. Terbitkan agar berlaku.",
@@ -3605,6 +3611,7 @@ export const id = {
     errors: {
       required: "Wajib diisi.",
       code: "Gunakan 2–40 karakter: huruf besar, angka, _ atau -.",
+      rateRequired: "Masukkan tarif pajak.",
       rate: "Tulis angka 0–100, maksimal dua desimal (misalnya 10 atau 5,5).",
       region: "Format wilayah: ID-XX atau ID-XX-1234.",
       itemClasses: "Pilih minimal satu kelas item.",
