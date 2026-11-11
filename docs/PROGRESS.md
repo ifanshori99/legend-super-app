@@ -3286,3 +3286,9 @@ Langkah berikut CTO baru:
 - legend-uyk2: TIDAK dikerjakan: modul supplier invoice dan AR belum ada, butuh keputusan (WS-06 atau modul baru).
 - Review architect xhigh (K) dua kali: 1 Medium (lock trigger) dan 1 High (daftar run) dibetulkan; bead baru untuk reversal manual jurnal aset dan membership versi terkini.
 - Gerbang: 6 file test terarah 56 lulus; typecheck api dan shared hijau; `db:generate` kosong; eslint+prettier hijau.
+
+## WS-E ledger guards (cabang ws/ledger-guards, 11 Nov 2026)
+
+- Selesai: 7 temuan 497, legend-lt0v4 (akses pemegang saham = versi berlaku hari ini; fiscal_periods hanya transisi sah + version+1, tanpa DELETE), legend-k048r (pembalikan manual jurnal depresiasi ditolak: service + trigger). Migrasi 0312-0314 (nomor sementara).
+- Bukti: 19 berkas test (408 lulus), tsc api + shared, eslint, prettier, db:generate kosong. Review architect xhigh: 1 temuan menengah + 3 kecil, semua dibetulkan.
+- Langkah berikut: second-opinion Codex, renumber migrasi saat merge train, kartu legend-xyy3w (dukungan legal_entity rasio).
