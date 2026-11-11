@@ -495,7 +495,7 @@ for (const width of WIDTHS) {
 
     await expect(page.getByText("Cuti tahunan").first()).toBeVisible();
     await expect(
-      page.getByText(/\d{1,2} \w+ 2026 sampai \d{1,2} \w+ 2026/),
+      page.getByText(/\d{1,2}( \w+)?( 2026)? sampai \d{1,2} \w+ 2026/),
     ).toBeVisible();
     await expect(page.getByText(MULTI_DAY_NOTE)).toBeVisible();
     await expect(cancelButton(page)).toBeEnabled();

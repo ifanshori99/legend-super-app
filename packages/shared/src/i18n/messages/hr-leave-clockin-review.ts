@@ -136,11 +136,6 @@ export const leaveClockinReviewMessages = {
     status: "Status",
     back: "Kembali ke antrean",
   },
-  toast: {
-    kept: "Keputusan tersimpan: tetap cuti.",
-    cancelled: "Keputusan tersimpan: cuti hari ini dibatalkan.",
-    failed: "Keputusan gagal disimpan.",
-  },
   errors: {
     forbidden: "Anda tidak punya akses untuk memutuskan tinjauan ini.",
     notFound:
