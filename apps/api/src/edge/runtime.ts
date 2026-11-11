@@ -115,6 +115,10 @@ import type { LinkScope } from "./link-peer.ts";
 import { LINK_CLOSE, type CatalogStale } from "./protocol.ts";
 import { recordUploaderRejection } from "./selfie-health.ts";
 import { startEdgeSelfieSweep } from "./selfie-retention.ts";
+import {
+  startEdgeAuditRetention,
+  type EdgeAuditRetentionHandle,
+} from "./audit-retention.ts";
 import { createEdgeSelfieUploader } from "./selfie-uploader.ts";
 import { createEdgeLinkServer, type EdgeLinkIdentity } from "./link-server.ts";
 import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
@@ -1061,7 +1065,8 @@ export async function startEdgeRuntime(
     edgeNodeId: local.scope.edgeNodeId,
     drain: config.role === "primary",
   });
-  return {
+  let auditRetention: EdgeAuditRetentionHandle | null = null;
+  const handle: EdgeRuntimeHandle = {
     async stop() {
       clearInterval(sweep);
       await wifiQuotaWorker.stop();
@@ -1076,6 +1081,7 @@ export async function startEdgeRuntime(
         masterSync.stop(),
         selfieUploader.stop(),
         selfieSweep.stop(),
+        auditRetention?.stop(),
         stopWakeups(),
         client.stop(),
       ]);
@@ -1084,6 +1090,19 @@ export async function startEdgeRuntime(
       state = { ...state, link: disconnected };
     },
   };
+  // legend-0cqql: activate audit retention only after runtime initialization.
+  // A refused maintenance login closes every already-started component.
+  try {
+    auditRetention = await startEdgeAuditRetention({ source });
+  } catch (error) {
+    await handle
+      .stop()
+      .catch((stopError: unknown) =>
+        logger.error(safeError(stopError), "Edge runtime cleanup failed"),
+      );
+    throw error;
+  }
+  return handle;
 }
 
 export type EdgeLinkHandle = {
