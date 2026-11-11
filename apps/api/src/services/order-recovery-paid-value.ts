@@ -121,15 +121,50 @@ export type RecoverySwapChain = ReturnType<typeof recoverySwapChain>;
  * (order_issues.refund_rejected_at, legend-wumm8); any other settled issue
  * of the line still blocks a second one (order_issues_resolved_item_once_idx).
  * The same issues give the line totals already refunded (`priorLinesIdr`,
- * cumulative rounding).
+ * cumulative rounding) and (legend-hhm5m 5) the components their
+ * `order.refunded` already reversed (`reversed`, pay-first; an open bill has
+ * none), so a refund never reverses more of a component than the order holds.
  */
 export async function recoveryReleasedOf(
   tx: Tx,
   tenantId: ScopedTenantContext["tenant"]["tenantId"],
   orderId: string,
   issueId: string,
-): Promise<{ releasedIdr: number; priorLinesIdr: number }> {
+): Promise<{
+  releasedIdr: number;
+  priorLinesIdr: number;
+  reversed: {
+    grossSalesIdr: number;
+    discountIdr: number;
+    serviceChargeIdr: number;
+    pbjtIdr: number;
+  };
+}> {
   const orderUuid = ulidToUuid(orderId);
+  const reversedResult = await tx.execute(sql`
+    SELECT coalesce(sum((e.event->'payload'->>'grossSalesIdr')::bigint), 0)::text AS gross,
+           coalesce(sum((e.event->'payload'->>'discountIdr')::bigint), 0)::text AS discount,
+           coalesce(sum((e.event->'payload'->>'serviceChargeIdr')::bigint), 0)::text AS service,
+           coalesce(sum((e.event->'payload'->>'pbjtIdr')::bigint), 0)::text AS pbjt
+      FROM domain_event_outbox e
+     WHERE e.tenant_id = ${tenantId}
+       AND e.aggregate_type = 'order'
+       AND e.event->>'name' = 'order.refunded'
+       AND e.event->'payload'->>'orderId' = ${orderId}
+       AND e.event->'payload'->>'refundId' IN (
+         SELECT r.order_issue_id::text
+           FROM payment_refunds r
+           JOIN order_issues i
+             ON i.tenant_id = r.tenant_id AND i.id = r.order_issue_id
+          WHERE r.tenant_id = ${tenantId}
+            AND i.order_id = ${orderUuid}::uuid
+            AND r.order_issue_id <> ${issueId}::uuid
+          GROUP BY r.order_issue_id
+         HAVING coalesce(bool_or(r.status <> 'failed'), false))
+  `);
+  const reversedRow = reversedResult.rows[0];
+  const reversedPart = (key: string) =>
+    Number(String(reversedRow?.[key] ?? "0"));
   const releasedResult = await tx.execute(sql`
     SELECT coalesce(sum(m.amt), 0)::text AS released,
            coalesce(sum(m.line_total), 0)::text AS prior_lines
@@ -151,6 +186,12 @@ export async function recoveryReleasedOf(
   return {
     releasedIdr: Number(String(released?.released ?? "0")),
     priorLinesIdr: Number(String(released?.prior_lines ?? "0")),
+    reversed: {
+      grossSalesIdr: reversedPart("gross"),
+      discountIdr: reversedPart("discount"),
+      serviceChargeIdr: reversedPart("service"),
+      pbjtIdr: reversedPart("pbjt"),
+    },
   };
 }
 

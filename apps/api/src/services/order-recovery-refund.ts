@@ -90,6 +90,7 @@ import {
 } from "./order-promo-refund.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
+  capPartsToRemaining,
   recoveryRefundGoodsIdr,
   recoveryRefundReplaySplit,
   recoveryRefundSplit,
@@ -569,6 +570,20 @@ export async function deliverOrderRecoveryRefundEvent(
             pbjtIdr: replay.pbjtIdr,
             releasedIdr,
           });
+    // legend-hhm5m 5: the journal reverses what `order.refunded` says, so a
+    // pay-first refund (first filing or replay) never reverses more of a
+    // component than the order still holds after the live refunds of the
+    // other issues: a replay must not reuse a rounding slot a later filing
+    // took over after the final failure.
+    if (payFirst) {
+      const whole = orderRevenueSplit(order);
+      split = capPartsToRemaining(split, {
+        grossSalesIdr: whole.grossSalesIdr - released.reversed.grossSalesIdr,
+        serviceChargeIdr:
+          whole.serviceChargeIdr - released.reversed.serviceChargeIdr,
+        pbjtIdr: whole.pbjtIdr - released.reversed.pbjtIdr,
+      });
+    }
   } catch (error) {
     // Order amounts that fail their tax-mode identity: a retry cannot fix them.
     if (error instanceof OrderRevenueMismatch) {
