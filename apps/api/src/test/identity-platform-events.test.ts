@@ -7,6 +7,11 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import {
+  CONTROL_PLANE_DESTINATION,
+  CONTROL_PLANE_PACKAGE_DESTINATION,
+  CONTROL_PLANE_TENANT_ID,
+} from "@starter/shared/events";
 import type { CreateTenantInput } from "@starter/shared/platform";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -119,6 +124,21 @@ async function tenantOutbox(tenantId: string) {
   return rows;
 }
 
+/** Lifecycle events of a subject tenant live on the control-plane stream. */
+async function controlOutbox(tenantId: string) {
+  const { rows } = await owner.query<{
+    destination: string;
+    sequence: string;
+    event: { name: string; tenantId: string; payload: Record<string, unknown> };
+  }>(
+    `SELECT destination, sequence, event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND aggregate_type = 'tenant' AND aggregate_id = $2
+      ORDER BY destination, sequence`,
+    [CONTROL_PLANE_TENANT_ID, tenantId],
+  );
+  return rows;
+}
+
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
@@ -156,16 +176,22 @@ describe("session.revoked through the outbox (legend-83ll)", () => {
     expect(stored[0].revoked_at).not.toBeNull();
   });
 
-  it("a platform session (no tenant) is revoked without an event", async () => {
+  it("a platform session (no tenant) is revoked with one control-plane event", async () => {
     const userId = await newUser();
     const sessionId = await newSession(userId, null);
     await revokeOwnSession({ userId, sessionId });
-    expect(await sessionOutbox(sessionId)).toHaveLength(0);
-    const { rows } = await owner.query(
+    const rows = await sessionOutbox(sessionId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      destination: CONTROL_PLANE_DESTINATION,
+      sequence: "1",
+    });
+    expect(rows[0]?.event.name).toBe("session.revoked");
+    const { rows: stored } = await owner.query(
       "SELECT revoked_at FROM session WHERE id = $1",
       [sessionId],
     );
-    expect(rows[0].revoked_at).not.toBeNull();
+    expect(stored[0].revoked_at).not.toBeNull();
   });
 
   it("the registered consumer closes the session and acks; replay is a no-op", async () => {
@@ -268,19 +294,29 @@ describe("tenant.status_changed / tenant.package_changed (legend-fy5y)", () => {
       },
       actorUserId,
     );
-    const rows = await tenantOutbox(tenantId);
-    expect(rows.map((row) => [row.sequence, row.event.name])).toEqual([
+    // tenant.created stays on the tenant's own stream; lifecycle events moved
+    // to the control-plane stream (subject tenant in aggregateId).
+    const own = await tenantOutbox(tenantId);
+    expect(own.map((row) => [row.sequence, row.event.name])).toEqual([
       ["1", "tenant.created"],
-      ["2", "tenant.status_changed"],
-      ["3", "tenant.package_changed"],
     ]);
-    expect(rows.every((row) => row.destination === "cloud-sync")).toBe(true);
-    expect(rows[1]?.event.payload).toEqual({
+    expect(own[0]?.destination).toBe("cloud-sync");
+    const rows = await controlOutbox(tenantId);
+    expect(
+      rows.map((row) => [row.destination, row.sequence, row.event.name]),
+    ).toEqual([
+      [CONTROL_PLANE_DESTINATION, "1", "tenant.status_changed"],
+      [CONTROL_PLANE_PACKAGE_DESTINATION, "1", "tenant.package_changed"],
+    ]);
+    expect(
+      rows.every((row) => row.event.tenantId === CONTROL_PLANE_TENANT_ID),
+    ).toBe(true);
+    expect(rows[0]?.event.payload).toEqual({
       from: "active",
       to: "suspended",
       reason: "Tidak membayar tagihan bulan ini.",
     });
-    expect(rows[2]?.event.payload).toEqual({
+    expect(rows[1]?.event.payload).toEqual({
       plan: "outlet-dasar",
       modulesEnabled: [],
       modulesDisabled: ["qr_order"],
@@ -303,7 +339,11 @@ describe("tenant.status_changed / tenant.package_changed (legend-fy5y)", () => {
         actorUserId,
       ),
     ).rejects.toBeDefined();
-    const names = (await tenantOutbox(tenantId)).map((row) => row.event.name);
-    expect(names).toEqual(["tenant.created", "tenant.status_changed"]);
+    expect((await tenantOutbox(tenantId)).map((row) => row.event.name)).toEqual(
+      ["tenant.created"],
+    );
+    expect(
+      (await controlOutbox(tenantId)).map((row) => row.event.name),
+    ).toEqual(["tenant.status_changed"]);
   });
 });

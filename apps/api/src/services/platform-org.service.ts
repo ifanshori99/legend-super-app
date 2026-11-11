@@ -12,6 +12,11 @@
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, ilike, lt, or } from "drizzle-orm";
 import {
+  CONTROL_PLANE_DESTINATION,
+  CONTROL_PLANE_PACKAGE_DESTINATION,
+  CONTROL_PLANE_TENANT_ID,
+} from "@starter/shared/events";
+import {
   PAYMENT_GATEWAY_PROVIDERS,
   PlatformError,
   platformEvents,
@@ -68,7 +73,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { seedTenantRoleTemplates } from "./access.service.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
-import { nextSequence } from "./menu-internals.ts";
+import { appendControlPlaneEvent } from "./control-plane-events.ts";
 import { toOutlet } from "./org.service.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
@@ -197,8 +202,13 @@ type EventTx = Parameters<typeof appendOutbox>[0];
 /**
  * A change of an existing tenant (`tenant.status_changed`,
  * `tenant.package_changed`), appended on the caller's transaction so the
- * change, its audit row and the event commit together. `tenant.created` is
- * sequence 1 of the same aggregate stream, so this takes the next one.
+ * change, its audit row and the event commit together. The event goes to the
+ * control-plane stream (488 items 4 and 9), not the subject tenant's own
+ * `cloud-sync` stream: the relay only sweeps active tenants, so a suspend or
+ * archive event on the tenant's own stream would never be relayed. The subject
+ * tenant is the aggregate id. A status change is routed (`control-plane`); a
+ * package change has no consumer yet, so it is parked on its own destination
+ * and stays pending instead of being marked delivered by a no-op.
  */
 async function appendTenantChangeEvent(
   tx: EventTx,
@@ -208,36 +218,16 @@ async function appendTenantChangeEvent(
   actorUserId: string,
   now: Date,
 ): Promise<void> {
-  const tenantId = context.tenant.tenantId;
-  const definition = platformEvents[name];
-  const sequence = await nextSequence(
-    tx,
-    tenantId,
-    definition.entry.aggregateType,
-    tenantId,
-  );
-  const event = definition.envelopeSchema.parse({
-    id: createUlid(now.getTime()),
-    tenantId,
-    outletId: null,
-    name: definition.name,
-    version: definition.version,
-    aggregateType: definition.entry.aggregateType,
-    aggregateId: tenantId,
-    sequence,
-    occurredAt: now.toISOString(),
-    actor: { type: "user", id: actorUserId },
-    deviceId: null,
-    idempotencyKey: `${definition.name}:${tenantId}:${sequence}`,
-    payloadSchemaRef: definition.payloadSchemaRef,
+  await appendControlPlaneEvent(tx, {
+    definition: platformEvents[name],
+    destination:
+      name === "tenant.status_changed"
+        ? CONTROL_PLANE_DESTINATION
+        : CONTROL_PLANE_PACKAGE_DESTINATION,
+    aggregateId: context.tenant.tenantId,
     payload,
-  });
-  await appendOutbox(tx, context, {
-    id: createUlid(now.getTime()),
-    event,
-    destination: EVENT_DESTINATION,
-    direction: null,
-    peerId: null,
+    actor: { type: "user", id: actorUserId },
+    now,
   });
 }
 
@@ -322,6 +312,9 @@ export async function createTenant(
       }
 
   const tenantId = randomUUID();
+  // The control-plane stream owns this reserved id; it is never a tenant.
+  if (tenantId === CONTROL_PLANE_TENANT_ID)
+    throw new Error("Tenant id is reserved");
   const context = platformTenantScope(tenantId);
   return withTenant(db, context, async (tx) => {
     const [row] = await tx

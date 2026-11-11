@@ -5,7 +5,8 @@
 // consumer for that destination (`deliverIdentityEvent`), so the row is
 // delivered and acked instead of dead-lettering. The sessions table is global
 // (no RLS), so a session without a `tenant_id` (platform login) has no tenant
-// stream and emits nothing.
+// stream: its `session.revoked` is written to the control-plane stream instead
+// (control-plane-events.ts, 488 item 5).
 
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";

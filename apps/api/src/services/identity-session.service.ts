@@ -20,6 +20,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { CONTROL_PLANE_DESTINATION } from "@starter/shared/events";
 import {
   MANAGEMENT_IDLE_MINUTES,
   MINUTE_MS,
@@ -27,6 +28,7 @@ import {
   recordSessionActivity,
   sessionGate,
   sessionIdSchema,
+  sessionRevokedEvent,
   sessionSchema,
   type Session,
   type SessionGate,
@@ -37,6 +39,10 @@ import { session } from "../db/schema";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
 import { withTenant } from "../db/tenant";
+import {
+  appendControlPlaneEvent,
+  controlPlaneContext,
+} from "./control-plane-events";
 import { appendSessionRevoked } from "./identity-events";
 import {
   IMPERSONATION_SESSION_MAX_SECONDS,
@@ -312,11 +318,43 @@ export async function revokeOwnSession(input: {
     return toWireSession({ ...row, revokedAt, expiresAt });
   }
   if (row.tenantId === null) {
-    // Platform session: no tenant stream, so no outbox event.
-    await db
-      .update(session)
-      .set({ revokedAt, expiresAt })
-      .where(eq(session.id, row.id));
+    // Platform session (488 item 5): no tenant stream, so `session.revoked`
+    // goes to the control-plane stream. The revoke and its event commit in one
+    // transaction; the row is re-read under its lock, so two concurrent
+    // revokes emit one event.
+    const revoked = await withTenant(db, controlPlaneContext(), async (tx) => {
+      const [locked] = await tx
+        .select()
+        .from(session)
+        .where(eq(session.id, row.id))
+        .for("update");
+      if (!locked || locked.revokedAt !== null) return false;
+      await tx
+        .update(session)
+        .set({ revokedAt, expiresAt })
+        .where(eq(session.id, row.id));
+      await appendControlPlaneEvent(tx, {
+        definition: sessionRevokedEvent,
+        destination: CONTROL_PLANE_DESTINATION,
+        aggregateId: row.id,
+        payload: {
+          sessionId: row.id,
+          userId: row.userId,
+          cause: "revoked_by_user",
+        },
+        actor: { type: "user", id: row.userId },
+        now,
+      });
+      return true;
+    });
+    if (!revoked) {
+      const [current] = await db
+        .select()
+        .from(session)
+        .where(eq(session.id, row.id))
+        .limit(1);
+      return toWireSession(current ?? row);
+    }
     return toWireSession({ ...row, revokedAt, expiresAt });
   }
   // legend-83ll: the revoke and its `session.revoked` outbox row commit in one

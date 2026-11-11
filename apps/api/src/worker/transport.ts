@@ -5,8 +5,10 @@
 //
 //   `identity` (session events) is a local sink in cloud and edge alike.
 //   cloud: `cloud-sync` is a local sink (the consumption row is the ack, the
-//          transport does nothing). Any other destination, or a row with a
-//          direction, throws so the outbox retries and then dead-letters.
+//          transport does nothing, except that `tenant.status_changed` and
+//          `tenant.package_changed` throw: they belong to the control-plane
+//          stream, which the worker consumes itself and never passes here).
+//          Any other destination, or a row with a direction, throws so the outbox retries and then dead-letters.
 //   edge:  `cloud-sync` rows are queued edge_to_cloud on the consumption
 //          transaction; the link drains them to the cloud.
 //
@@ -75,7 +77,17 @@ export function createBuiltinWorkerTransport(options: {
       if (route.destination === IDENTITY_DESTINATION) return;
       if (route.destination !== SYNC_DESTINATION)
         throw new Error(`Unsupported outbox destination ${route.destination}`);
-      if (!edge) return;
+      if (!edge) {
+        // 488 item 9: tenant lifecycle events travel the control-plane stream.
+        // On `cloud-sync` the no-op sink below would mark them delivered with
+        // no consumer, so refuse (retry, then dead-letter) instead.
+        if (
+          event.name === "tenant.status_changed" ||
+          event.name === "tenant.package_changed"
+        )
+          throw new Error(`${event.name} must use the control-plane stream`);
+        return;
+      }
       if (event.tenantId !== edge.tenantId)
         throw new Error("Event tenant does not match the edge credential");
       if (!event.outletId)
