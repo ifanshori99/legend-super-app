@@ -1,0 +1,8 @@
+# 532b Temuan architect ronde 2 atas a5938048 (ws/pos-refund-ceilings)
+Satu putaran fix, test gagal-dulu. Aturan uang founder: buktikan tidak ada yang dibayar dua kali.
+1. P1 `payment-refund-edge-history.ts:78` hanya membaca event `order.refunded` yang diparkir; `order.voided` dari edge juga diparkir di `edge_deferred_events` (`edge/deferred-event-applier.ts:188-202`). Skenario: edge lama void tunai Rp300rb offline, lalu cloud void lagi (`pos-order-corrections.ts:229,328-338`) atau refund (`:909-920`) -> Rp300rb keluar dua kali. Fix: di `loadDeferredRefundCommitments` (atau helper saudaranya) lempar `REFUND_HISTORY_UNVERIFIED` bila ada `order.voided` diparkir dengan `voidedFinalOrder=true` untuk pesanan itu; panggil dari jalur void, refund, dan `refundCommittedAmount`. Test di `apps/api/src/test/pos-void-refund-ceilings.test.ts`: void edge diparkir lalu void cloud ditolak; void edge diparkir lalu refund cloud ditolak.
+   Catatan rilis (docs/release-notes-pos-refund-ceilings.md): semua edge wajib upgrade sebelum fitur ini dirilis.
+2. P3-a `payment-refund-approval-limits.ts:262-266,312`: pengecualian kelebihan bayar/refund terlambat hanya untuk batas "<= dibayar", bukan batas penyetuju. Tambah opsi mis. `paidCapScope: true`, dipakai hanya dari `pos-order-corrections.ts:313,891`. Test: kelebihan 150rb sudah direfund, Supervisor setujui refund POS 200rb -> ditolak.
+3. P3-b `payment-refund-approval-limits.ts:267-297`: tambahkan jumlah tunai yang di-void (pos_order_voids) untuk grup `order:` ke total kumulatif refund admin.
+File sama dengan cabang ws/ws05-pay-admin (5cb6daf1): jaga agar logika kompatibel; catat bentrok di laporan.
+Selesai: commit lokal, test terarah + tsc api via heavy, satu reviewer sonnet atas diff, laporan singkat.
