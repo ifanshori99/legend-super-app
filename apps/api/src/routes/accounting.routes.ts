@@ -13,8 +13,13 @@ import {
   exportTaxReport,
   finalizeTaxReport,
   generateTaxReport,
+  getBalanceSheet,
+  getCashFlow,
+  getEquityChanges,
   getJournal,
   getPeriodSnapshot,
+  getProfitAndLoss,
+  getTrialBalance,
   listAccountMappings,
   listAccounts,
   listFiscalPeriods,
@@ -58,6 +63,13 @@ import {
   requestPeriodReopen as requestPeriodReopenService,
 } from "../services/accounting-period-close.service";
 import { listFiscalPeriods as listFiscalPeriodsService } from "../services/accounting-period.service";
+import {
+  getBalanceSheet as getBalanceSheetService,
+  getCashFlow as getCashFlowService,
+  getEquityChanges as getEquityChangesService,
+  getProfitAndLoss as getProfitAndLossService,
+  getTrialBalance as getTrialBalanceService,
+} from "../services/accounting-statements.service";
 import {
   downloadTaxReport as downloadTaxReportService,
   exportTaxReport as exportTaxReportService,
@@ -300,6 +312,41 @@ accountingRouter.post(
     });
   },
 );
+
+accountingRouter.get(route(getTrialBalance.path), view, async (req, res) => {
+  const query = getTrialBalance.query.parse(req.query);
+  res.json({
+    data: await getTrialBalanceService(getScopedTenantContext(req), query),
+  });
+});
+
+accountingRouter.get(route(getBalanceSheet.path), view, async (req, res) => {
+  const query = getBalanceSheet.query.parse(req.query);
+  res.json({
+    data: await getBalanceSheetService(getScopedTenantContext(req), query),
+  });
+});
+
+accountingRouter.get(route(getProfitAndLoss.path), view, async (req, res) => {
+  const query = getProfitAndLoss.query.parse(req.query);
+  res.json({
+    data: await getProfitAndLossService(getScopedTenantContext(req), query),
+  });
+});
+
+accountingRouter.get(route(getCashFlow.path), view, async (req, res) => {
+  const query = getCashFlow.query.parse(req.query);
+  res.json({
+    data: await getCashFlowService(getScopedTenantContext(req), query),
+  });
+});
+
+accountingRouter.get(route(getEquityChanges.path), view, async (req, res) => {
+  const query = getEquityChanges.query.parse(req.query);
+  res.json({
+    data: await getEquityChangesService(getScopedTenantContext(req), query),
+  });
+});
 
 accountingRouter.get(route(listTaxReports.path), view, async (req, res) => {
   const query = listTaxReports.query.parse(req.query);

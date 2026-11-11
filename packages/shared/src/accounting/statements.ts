@@ -72,13 +72,21 @@ export function naturalBalance(
   );
 }
 
-type Filter = { from?: string; to: string; outletId?: OutletId | null };
+type Filter = {
+  from?: string;
+  /** Exclusive upper bound, for opening balances (entries before `from`). */
+  before?: string;
+  to: string;
+  outletId?: OutletId | null;
+};
 
 function totalsByAccount(lines: readonly LedgerLine[], filter: Filter) {
   const totals = new Map<string, { debit: bigint; credit: bigint }>();
   for (const line of lines) {
     if (line.entryDate > filter.to) continue;
     if (filter.from !== undefined && line.entryDate < filter.from) continue;
+    if (filter.before !== undefined && line.entryDate >= filter.before)
+      continue;
     if (filter.outletId !== undefined && line.outletId !== filter.outletId)
       continue;
     const row = totals.get(line.accountId) ?? { debit: 0n, credit: 0n };
@@ -489,6 +497,217 @@ export const equityChangesSchema = z
         });
   });
 export type EquityChanges = z.infer<typeof equityChangesSchema>;
+
+/** A ledger line that also says which entry and source document it belongs to. */
+export type EntryLedgerLine = LedgerLine & {
+  entryId: string;
+  sourceType: string;
+};
+
+const CASH_FLOW_ACTIVITIES = ["operating", "investing", "financing"] as const;
+
+/** Where the other side of a cash movement lands: its report group decides. */
+function cashFlowActivityOf(
+  group: ReportGroup,
+): z.infer<typeof cashFlowActivitySchema> {
+  if (group === "non_current_asset") return "investing";
+  if (group === "equity" || group === "non_current_liability")
+    return "financing";
+  return "operating";
+}
+
+/**
+ * Direct-method cash flow for [from, to]. Cash is every account in the
+ * `cash_and_equivalents` group. Each entry that moves cash is split by its
+ * non-cash lines (credit minus debit is the cash they bring in), so the
+ * sections add up to the change in the cash accounts exactly; entries that only
+ * move cash between cash accounts have no non-cash lines and add nothing.
+ */
+export function buildCashFlow(
+  accounts: readonly Account[],
+  lines: readonly EntryLedgerLine[],
+  input: {
+    legalEntityId: string;
+    from: string;
+    to: string;
+    periods?: PeriodRows;
+  },
+): CashFlowStatement {
+  const scoped = new Map(
+    accounts
+      .filter((account) => account.legalEntityId === input.legalEntityId)
+      .map((account) => [account.id, account]),
+  );
+  const isCash = (accountId: string) =>
+    scoped.get(accountId)?.reportGroup === "cash_and_equivalents";
+  let opening = 0n;
+  const cashEntries = new Set<string>();
+  for (const line of lines) {
+    if (!isCash(line.accountId) || line.entryDate > input.to) continue;
+    const net = BigInt(line.debitIdr) - BigInt(line.creditIdr);
+    if (line.entryDate < input.from) opening += net;
+    else cashEntries.add(line.entryId);
+  }
+  const rowsByActivity = new Map<string, Map<string, bigint>>();
+  for (const line of lines) {
+    const account = scoped.get(line.accountId);
+    if (!account || isCash(line.accountId)) continue;
+    if (line.entryDate < input.from || line.entryDate > input.to) continue;
+    if (!cashEntries.has(line.entryId)) continue;
+    const activity = cashFlowActivityOf(account.reportGroup);
+    const rows = rowsByActivity.get(activity) ?? new Map<string, bigint>();
+    rows.set(
+      account.id,
+      (rows.get(account.id) ?? 0n) +
+        BigInt(line.creditIdr) -
+        BigInt(line.debitIdr),
+    );
+    rowsByActivity.set(activity, rows);
+  }
+  const sections = CASH_FLOW_ACTIVITIES.map((activity) => {
+    const rows = [...(rowsByActivity.get(activity) ?? [])]
+      .filter(([, amount]) => amount !== 0n)
+      .map(([accountId, amount]) => ({
+        code: scoped.get(accountId)!.code,
+        label: scoped.get(accountId)!.name,
+        amountIdr: toIdr(amount),
+      }))
+      .sort((a, b) => a.code.localeCompare(b.code))
+      .map(({ label, amountIdr }) => ({ label, amountIdr }));
+    return {
+      activity,
+      rows,
+      totalIdr: toIdr(sumBig(rows.map((row) => row.amountIdr))),
+    };
+  });
+  const netChange = sumBig(sections.map((section) => section.totalIdr));
+  return cashFlowStatementSchema.parse({
+    legalEntityId: input.legalEntityId,
+    from: input.from,
+    to: input.to,
+    method: "direct",
+    ...statementBasisFields(input.periods ?? [], {
+      from: input.from,
+      to: input.to,
+      cumulative: true,
+    }),
+    sections,
+    openingCashIdr: toIdr(opening),
+    netChangeIdr: toIdr(netChange),
+    closingCashIdr: toIdr(opening + netChange),
+  });
+}
+
+/**
+ * Equity changes for [from, to]: one row per equity account that has a balance
+ * or a movement, plus "Laba periode berjalan" (accountId null) for the profit
+ * not yet closed to retained earnings. Distributions are debits to an equity
+ * account from a dividend entry; every other movement is `otherMovementsIdr`.
+ * The closing balances of all rows add up to the balance sheet's total equity.
+ */
+export function buildEquityChanges(
+  accounts: readonly Account[],
+  lines: readonly EntryLedgerLine[],
+  input: {
+    legalEntityId: string;
+    from: string;
+    to: string;
+    periods?: PeriodRows;
+  },
+): EquityChanges {
+  const scoped = accounts.filter(
+    (account) => account.legalEntityId === input.legalEntityId,
+  );
+  const opening = totalsByAccount(lines, {
+    to: input.to,
+    before: input.from,
+  });
+  const closing = totalsByAccount(lines, { to: input.to });
+  const during = totalsByAccount(lines, { from: input.from, to: input.to });
+  const dividends = totalsByAccount(
+    lines.filter((line) => line.sourceType === "dividend"),
+    { from: input.from, to: input.to },
+  );
+  const profitOf = (totals: ReturnType<typeof totalsByAccount>) => {
+    const pl = sectionsFor(PL_GROUPS, scoped, totals);
+    const total = (group: ReportGroup) => sectionTotal(pl, group);
+    return (
+      total("revenue") +
+      total("other_income") -
+      total("cogs") -
+      total("operating_expense") -
+      total("other_expense")
+    );
+  };
+  const balanceOf = (
+    account: Account,
+    totals: ReturnType<typeof totalsByAccount>,
+  ) => {
+    const row = totals.get(account.id);
+    return naturalBalance(
+      account,
+      toIdr(row?.debit ?? 0n),
+      toIdr(row?.credit ?? 0n),
+    );
+  };
+  const rows = [...scoped]
+    .sort((a, b) => a.code.localeCompare(b.code))
+    .filter((account) => account.reportGroup === "equity")
+    .flatMap((account) => {
+      const openingIdr = balanceOf(account, opening);
+      const closingIdr = balanceOf(account, closing);
+      const paid = dividends.get(account.id);
+      const distributionsIdr = toIdr(
+        (paid?.debit ?? 0n) - (paid?.credit ?? 0n),
+      );
+      const moved = during.get(account.id);
+      if (
+        openingIdr === 0 &&
+        closingIdr === 0 &&
+        distributionsIdr === 0 &&
+        !moved
+      )
+        return [];
+      return [
+        {
+          accountId: account.id,
+          label: account.name,
+          openingIdr,
+          profitIdr: 0,
+          distributionsIdr,
+          otherMovementsIdr: toIdr(
+            BigInt(closingIdr) - BigInt(openingIdr) + BigInt(distributionsIdr),
+          ),
+          closingIdr,
+        },
+      ];
+    });
+  const openingEarnings = profitOf(opening);
+  const profit = profitOf(during);
+  const closingEarnings = profitOf(closing);
+  return equityChangesSchema.parse({
+    legalEntityId: input.legalEntityId,
+    from: input.from,
+    to: input.to,
+    ...statementBasisFields(input.periods ?? [], {
+      from: input.from,
+      to: input.to,
+      cumulative: true,
+    }),
+    rows: [
+      ...rows,
+      {
+        accountId: null,
+        label: "Laba periode berjalan",
+        openingIdr: openingEarnings,
+        profitIdr: profit,
+        distributionsIdr: 0,
+        otherMovementsIdr: closingEarnings - openingEarnings - profit,
+        closingIdr: closingEarnings,
+      },
+    ],
+  });
+}
 
 /** Multi-entity view: one P&L per legal entity plus a plain sum (no intercompany elimination in v1). */
 export const multiEntityProfitAndLossSchema = z
