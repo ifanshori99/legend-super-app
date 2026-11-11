@@ -533,10 +533,10 @@ export function buildCashFlow(
     periods?: PeriodRows;
   },
 ): CashFlowStatement {
-  const scoped = new Map(
+  const scoped = new Map<string, (typeof accounts)[number]>(
     accounts
       .filter((account) => account.legalEntityId === input.legalEntityId)
-      .map((account) => [account.id, account]),
+      .map((account) => [account.id as string, account]),
   );
   const isCash = (accountId: string) =>
     scoped.get(accountId)?.reportGroup === "cash_and_equivalents";

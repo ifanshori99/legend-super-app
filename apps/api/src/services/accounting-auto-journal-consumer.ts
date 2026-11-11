@@ -644,12 +644,14 @@ async function postAutoJournal(
   } else if (fact) {
     const rule = resolvePostingRule(defaultPostingRules, {
       eventName: fact.ruleEvent,
+      ...(fact.variant ? { variant: fact.variant } : {}),
     });
     journal = await postJournalFromRuleInTransaction(
       tx,
       context,
       {
         eventName: fact.ruleEvent,
+        ...(fact.variant ? { variant: fact.variant } : {}),
         amounts: fact.amounts,
         legalEntityId,
         // legend-msqvi: a loyalty journal names its own outlet (or none).
@@ -659,6 +661,7 @@ async function postAutoJournal(
             : fact.journalOutletId,
         entryDate: entryDate as typeof naturalDate,
         sourceId: fact.sourceId,
+        orderId: fact.orderId ?? null,
         description: `${rule.description}${lateSuffix}`,
         postedBy: null,
         idempotencyKey: key,

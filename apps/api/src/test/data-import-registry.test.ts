@@ -175,6 +175,10 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills fixed_asset_correction_claims from the existing depreciation reversals (claimed amount and reversed flag per journal); inserts only into the table it creates (FORCE RLS lifted and restored on the three tables it reads), edits no existing row; function bodies also write claims and reversals at runtime",
   "0276_leave_flag_closed_payroll.sql":
     "redefines app.flag_attendance_for_leave (function body UPDATE of attendance_logs, now skipping logs in closed payroll runs); no rows written by the migration",
+  "0355_tax_payable_ppn_other_roles.sql":
+    "backfills accounts 2205 and 2206 and the tax_payable_ppn and tax_payable_other mappings for every already provisioned legal entity that lacks them (legend-xa9bc, 538-G3); idempotent, never updates or deletes, keeps a custom account with the same code, FORCE RLS lifted for those statements and restored",
+  "0356_journal_entry_order_id.sql":
+    "backfills the new journal_entries.order_id of existing sale and refund journals from their source ids (orders, pos_order_refunds, order_issues; legend-knfl6, 538-G3); only rows with order_id NULL, sets that one link column and no amount, date or account; the append-only trigger is disabled for these statements and enabled again, FORCE RLS lifted and restored",
 };
 
 // Entrypoints that open a database pool but import no data.
