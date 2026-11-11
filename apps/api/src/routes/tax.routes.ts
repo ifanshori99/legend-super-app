@@ -15,6 +15,7 @@ import {
   createServiceChargeRuleInputSchema,
   createTaxRuleInputSchema,
   createTaxSettingsInputSchema,
+  exportPbjtMonthlyRecap as exportPbjtMonthlyRecapEndpoint,
   getPbjtMonthlyRecap as getPbjtMonthlyRecapEndpoint,
   listServiceChargeRules as listServiceChargeRulesEndpoint,
   listTaxRuleConflicts as listTaxRuleConflictsEndpoint,
@@ -27,6 +28,7 @@ import {
   updateServiceChargeRule as updateServiceChargeRuleEndpoint,
   updateTaxRule as updateTaxRuleEndpoint,
 } from "@starter/shared/tax";
+import { HttpError } from "../lib/http-error";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -36,6 +38,8 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
+import type { StorageRuntime } from "../services/core-storage-runtime";
+import { exportPbjtMonthlyRecap } from "../services/tax-pbjt-export.service";
 import * as tax from "../services/tax.service";
 
 export const taxRouter = Router();
@@ -263,3 +267,40 @@ taxRouter.get(
     });
   },
 );
+
+/**
+ * The PBJT recap CSV export stores a file, so it needs the object storage that
+ * only createApp knows. Mounted at `/api/tax` by createStorageApiRouter (only
+ * its own path enters); without a runtime it answers 503.
+ */
+export function createTaxFileRouter(options: {
+  runtime: StorageRuntime | null;
+}): Router {
+  const router = Router();
+  router.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+  router.post(
+    exportPbjtMonthlyRecapEndpoint.path.slice("/api/tax".length),
+    jsonBody,
+    requireOutletPermission("accounting.tax_report.manage", (req) =>
+      String(req.body?.outletId ?? ""),
+    ),
+    async (req, res) => {
+      if (!options.runtime)
+        throw new HttpError(
+          503,
+          "SERVICE_UNAVAILABLE",
+          "Penyimpanan berkas belum tersedia.",
+        );
+      const body = exportPbjtMonthlyRecapEndpoint.body.parse(req.body);
+      res.json({
+        data: await exportPbjtMonthlyRecap(
+          options.runtime,
+          getScopedTenantContext(req),
+          getAuth(req).user.id,
+          body,
+        ),
+      });
+    },
+  );
+  return router;
+}

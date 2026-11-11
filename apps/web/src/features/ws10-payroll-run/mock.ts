@@ -11,14 +11,16 @@
 // The mock's signed-in actor comes from the same `legend-mock-role` cookie the
 // area guards read: `finance` and `owner` act as the fixture finance approver,
 // every other role acts as the fixture HR approver. The Playwright spec uses
-// that to prove the second approval fails for the first approver.
+// that to prove the second approval fails for the first approver. Fixture runs
+// are created by a third user (`userIds.runCreator`), so neither actor is the
+// creator; a run the mock creates itself carries the acting user as creator.
 //
 // Authorization is enforced here, server-like, not only in the UI: every
 // handler checks the role template's permissions per the contract's route
 // table (endpoints.ts header; decision legend-t3f5 for reads) and answers 403
-// FORBIDDEN otherwise. The final approver must differ from the HR approver
-// (contract reducer) AND from the run's requester (PRD §3 Matriks Approval;
-// checked here because the reducer does not know the requester rule). During
+// FORBIDDEN otherwise. Both approvers must differ from each other and from the
+// run's creator (PRD §3 Matriks Approval; the contract reducer refuses with
+// PAYROLL_APPROVER_NOT_DISTINCT, 403, and the mock surfaces it). During
 // SSR there is no cookie to read: only the run/pool reads a route loader
 // prefetches are served there (the page guard already checked the visitor);
 // everything else fails closed.
@@ -521,18 +523,15 @@ registerMock(approvePayrollRunHr, ({ params, body }) => {
 registerMock(approvePayrollRunFinal, ({ params, body }) => {
   requirePermission(APPROVE);
   const run = requireRun(params.payrollRunId);
-  const next = onceAction(body.idempotencyKey, run.id, "approve_final", () => {
-    const actorId = currentActor();
-    // PRD §3 Matriks Approval: the final approver is neither the HR approver
-    // (the reducer checks that) nor the person who requested the run.
-    if (actorId === run.createdBy)
-      throw new ApiError(
-        409,
-        "PAYROLL_APPROVER_NOT_DISTINCT",
-        "Penyetuju final harus berbeda dari pembuat payroll run.",
-      );
-    return applyRun(run, { action: "approve_final", actorId, at: now() });
-  });
+  // PAYR-01: the contract reducer refuses a final approver who is the HR
+  // approver or the run creator (PAYROLL_APPROVER_NOT_DISTINCT, 403).
+  const next = onceAction(body.idempotencyKey, run.id, "approve_final", () =>
+    applyRun(run, {
+      action: "approve_final",
+      actorId: currentActor(),
+      at: now(),
+    }),
+  );
   return { data: next };
 });
 

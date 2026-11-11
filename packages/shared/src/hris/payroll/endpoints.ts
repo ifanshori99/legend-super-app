@@ -7,7 +7,8 @@
 // Permission per route (access/permissions.ts, PRD §3 Matriks Approval):
 //   statutory tables, policies, components, THR      payroll.run (write), payroll.view (read)
 //   employee pay components (salary, HR-03)          payroll.view / payroll.run
-//   runs: create, simulate, return, approve_hr       payroll.run
+//   runs: create, simulate, return                   payroll.run
+//   runs: approve_hr                                 payroll.run (≠ run creator)
 //   runs: list + detail (read)                       payroll.view; payroll.approve and
 //                                                    payroll.lock may also read them (legend-t3f5)
 //   runs: /runs/:id/employees (read)                 payroll.view

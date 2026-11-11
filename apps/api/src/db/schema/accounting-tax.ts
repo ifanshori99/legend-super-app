@@ -26,6 +26,11 @@
 //
 // RLS, the filed-report guard and the chain trigger live in
 // accounting-tax.custom.sql (0228, replaced in 0231).
+//
+// `tax_report_exports` (migration 0288, brief in4m-pbjt-export) is the
+// append-only history of PBJT recap CSV exports: one row per export, the
+// same idempotency key replays the same row. It only links to `tax_reports`
+// (nullable) and never changes it.
 
 import { sql } from "drizzle-orm";
 import {
@@ -45,7 +50,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { TaxReportLine } from "@starter/shared/accounting";
 import { idrColumn } from "../columns";
-import { legalEntities, tenants } from "./platform-org";
+import { legalEntities, outlets, tenants } from "./platform-org";
 
 export const taxReports = pgTable(
   "tax_reports",
@@ -197,3 +202,73 @@ export const taxReports = pgTable(
 );
 
 export type TaxReportRow = typeof taxReports.$inferSelect;
+
+export const taxReportExports = pgTable(
+  "tax_report_exports",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    outletId: uuid("outlet_id").notNull(),
+    legalEntityId: uuid("legal_entity_id").notNull(),
+    /** Current non-draft PBJT report of the entity for the period, if any. */
+    taxReportId: uuid("tax_report_id"),
+    type: varchar("type", { length: 10 }).notNull(),
+    /** Calendar month `YYYY-MM`. */
+    period: varchar("period", { length: 7 }).notNull(),
+    format: varchar("format", { length: 10 }).notNull(),
+    /** Equals the recap's totalTaxIdr. */
+    amountIdr: idrColumn("amount_idr").notNull(),
+    rowCount: integer("row_count").notNull(),
+    /** Object storage key of the CSV (tenant-prefixed). */
+    fileKey: varchar("file_key", { length: 500 }).notNull(),
+    fileName: varchar("file_name", { length: 150 }).notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    generatedBy: text("generated_by").notNull(),
+    generatedAt: timestamp("generated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("tax_report_exports_tenant_id_key").on(t.tenantId, t.id),
+    unique("tax_report_exports_idempotency_key").on(
+      t.tenantId,
+      t.idempotencyKey,
+    ),
+    foreignKey({
+      name: "tax_report_exports_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "tax_report_exports_legal_entity_fk",
+      columns: [t.tenantId, t.legalEntityId],
+      foreignColumns: [legalEntities.tenantId, legalEntities.id],
+    }),
+    foreignKey({
+      name: "tax_report_exports_tax_report_fk",
+      columns: [t.tenantId, t.taxReportId],
+      foreignColumns: [taxReports.tenantId, taxReports.id],
+    }),
+    index("tax_report_exports_outlet_period_idx").on(
+      t.tenantId,
+      t.outletId,
+      t.period,
+    ),
+    check("tax_report_exports_type_check", sql`${t.type} = 'pbjt'`),
+    check(
+      "tax_report_exports_period_check",
+      sql`${t.period} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+    check("tax_report_exports_format_check", sql`${t.format} = 'csv'`),
+    check("tax_report_exports_amount_check", sql`${t.amountIdr} >= 0`),
+    check("tax_report_exports_row_count_check", sql`${t.rowCount} >= 0`),
+    check(
+      "tax_report_exports_file_key_check",
+      sql`char_length(${t.fileKey}) >= 1`,
+    ),
+  ],
+);
+
+export type TaxReportExportRow = typeof taxReportExports.$inferSelect;

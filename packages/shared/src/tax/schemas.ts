@@ -20,6 +20,8 @@ import {
   tenantIdSchema,
   outletIdSchema,
   userIdSchema,
+  idempotencyKeySchema,
+  clientInputSchema,
   idrSchema,
   basisPointsSchema,
   businessDateSchema,
@@ -384,6 +386,31 @@ export const pbjtMonthlyRecapSchema = z
     { path: ["totalTaxIdr"], message: "Totals must equal the sum of rows" },
   );
 export type PbjtMonthlyRecap = z.infer<typeof pbjtMonthlyRecapSchema>;
+
+// ---- PBJT recap CSV export (stored file + signed download link) -----------
+
+export const pbjtExportRequestSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  period: taxPeriodSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+export type PbjtExportRequest = z.infer<typeof pbjtExportRequestSchema>;
+
+export const pbjtExportResultSchema = z.strictObject({
+  exportId: uuidIdSchema<"PbjtExportId">(),
+  /** The filed tax_reports row this export links to, if one exists. */
+  taxReportId: uuidSchema.nullable(),
+  outletId: outletIdSchema,
+  period: taxPeriodSchema,
+  /** Equals the recap totalTaxIdr the CSV total row carries. */
+  amountIdr: idrSchema,
+  rowCount: z.number().int().nonnegative(),
+  fileKey: z.string().min(1).max(500),
+  fileName: z.string().min(1).max(150),
+  downloadUrl: z.url(),
+  expiresAt: isoDateTimeSchema,
+});
+export type PbjtExportResult = z.infer<typeof pbjtExportResultSchema>;
 
 // ---- Write inputs (client) -------------------------------------------------
 

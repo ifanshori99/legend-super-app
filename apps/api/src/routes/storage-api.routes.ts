@@ -28,6 +28,7 @@ import type { StorageRuntime } from "../services/core-storage-runtime";
 import type * as schema from "../db/schema";
 import { createEdgeSelfieReceiveRouter } from "./edge-selfie-receive.routes";
 import { createAccountingTaxFileRouter } from "./accounting.routes";
+import { createTaxFileRouter } from "./tax.routes";
 import { createHrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
 import { createHrisAttendanceRouter } from "./hris-attendance.routes";
 import { createHrisLeaveRouter } from "./hris-leave.routes";
@@ -144,6 +145,13 @@ export function createStorageApiRouter(options: {
     /^\/tax-reports\/[^/]+\/(export|download)$/.test(req.path)
       ? taxFiles(req, res, next)
       : next(),
+  );
+
+  // PBJT recap CSV export (in4m) stores a file: only that path enters here, the
+  // rest of /tax stays in apiRouter.
+  const pbjtExport = createTaxFileRouter({ runtime });
+  router.use("/tax", (req, res, next) =>
+    req.path === "/reports/pbjt/export" ? pbjtExport(req, res, next) : next(),
   );
 
   // HRIS employees, contracts, documents, leave, overtime and holidays mint

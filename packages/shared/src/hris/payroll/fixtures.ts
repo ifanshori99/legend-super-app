@@ -110,6 +110,11 @@ const outletManagerUser = userIdSchema.parse(
   cafeLegendHrisFixtures.userIds.outletManager,
 );
 
+// Run creator: a third person, so creator, HR approver and final approver differ (PAYR-01).
+const runCreator = userIdSchema.parse(
+  cafeLegendHrisFixtures.userIds.outletManager,
+);
+
 const hrisEmployees = cafeLegendHrisFixtures.employees;
 const positionById = new Map(
   cafeLegendHrisFixtures.positions.map((position) => [position.id, position]),
@@ -1483,7 +1488,7 @@ const runBase = {
   runType: "regular" as const,
   thrScheduleId: null,
   reversal: null,
-  createdBy: hrApprover,
+  createdBy: runCreator,
 };
 
 const octoberRun = payrollRunSchema.parse({
@@ -1727,5 +1732,6 @@ export const cafeLegendPayrollFixtures = {
   userIds: {
     hrApprover,
     financeApprover,
+    runCreator,
   },
 } as const;

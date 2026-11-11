@@ -16,6 +16,8 @@ import { defineEndpoint } from "../api/endpoint.ts";
 import {
   ruleCodeSchema,
   ruleVersionStatusSchema,
+  pbjtExportRequestSchema,
+  pbjtExportResultSchema,
   pbjtMonthlyRecapSchema,
   serviceChargeRuleFields,
   serviceChargeRuleIdSchema,
@@ -197,6 +199,15 @@ export const getPbjtMonthlyRecap = defineEndpoint({
   response: dataResponseSchema(pbjtMonthlyRecapSchema),
 });
 
+/** Stores the recap as a CSV file and returns a short-lived download link.
+ * The same idempotencyKey replays the same export (no second file). */
+export const exportPbjtMonthlyRecap = defineEndpoint({
+  method: "POST",
+  path: "/api/tax/reports/pbjt/export",
+  body: pbjtExportRequestSchema,
+  response: dataResponseSchema(pbjtExportResultSchema),
+});
+
 export const taxEndpoints = [
   listTaxRules,
   listTaxRuleConflicts,
@@ -212,4 +223,5 @@ export const taxEndpoints = [
   publishTaxSettings,
   previewTaxCalculation,
   getPbjtMonthlyRecap,
+  exportPbjtMonthlyRecap,
 ] as const;

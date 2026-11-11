@@ -15,8 +15,9 @@
 // - PAYR-01: simulate is repeatable and has no side effect (no payslip,
 //   journal, bank file, loan deduction or notification); only a run approved
 //   at both levels, by two different people, can be locked.
-// - The final approver (Finance or Owner) differs from the HR approver; a
-//   reversal approver differs from its requester (PRD §3 Matriks Approval).
+// - Both approvers (HR, then Finance or Owner) differ from each other and
+//   from the person who created the run; a reversal approver differs from
+//   its requester (PRD §3 Matriks Approval).
 // - PAYR-02: from `locked` on, the run is frozen: its config snapshot pins
 //   the statutory table versions it was calculated with, so a newer version
 //   never changes it.
@@ -478,6 +479,11 @@ export const payrollRunSchema = z
     );
     pair(run.lockedBy, run.lockedAt, rank >= 4, "lockedAt");
     pair(run.paidBy, run.paidAt, run.status === "paid", "paidAt");
+    if (run.approvedByHr !== null && run.approvedByHr === run.createdBy)
+      issue(
+        "approvedByHr",
+        "The HR approver is not the person who created the run",
+      );
     if (run.approvedByHr !== null && run.approvedByHr === run.approvedByFinance)
       issue(
         "approvedByFinance",
@@ -561,6 +567,9 @@ export function applyPayrollRunCommand(
         approvedByFinanceAt: null,
       };
     case "approve_hr":
+      // PAYR-01: the person who created the run cannot give HR approval.
+      if (command.actorId === run.createdBy)
+        throw new PayrollError("PAYROLL_APPROVER_NOT_DISTINCT");
       return {
         ...base,
         approvedByHr: command.actorId,
@@ -585,6 +594,7 @@ export function applyPayrollRunCommand(
         run.approvedByHr === null ||
         run.approvedByFinance === null ||
         run.approvedByHr === run.approvedByFinance ||
+        run.approvedByHr === run.createdBy ||
         run.approvedByFinance === run.createdBy ||
         run.totals === null ||
         run.configSnapshot === null

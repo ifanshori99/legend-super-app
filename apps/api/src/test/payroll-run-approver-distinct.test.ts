@@ -1,13 +1,14 @@
 // Payroll run maker-checker proof (money area, PAYR-01). PRD §3 Matriks
 // Approval: "Penyetuju selalu berbeda dari pemohon"; payroll approval is two
-// levels (HR, then Finance/Owner). Rule under test: the FINAL approver must
-// differ from the run's creator as well as from the HR approver, so one person
-// can never create a run and release its money alone.
+// levels (HR, then Finance/Owner). Rule under test (CTO decision 2026-11-11,
+// doubt = restrict): NEITHER approver may be the run's creator, and the two
+// approvers differ from each other, so one person can never create a run and
+// release its money alone.
 //
-// ASSUMPTION: the HR (first-level) approval by the run's creator stays allowed
-// (the shared Cafe Legend fixture itself has createdBy === HR approver); only
-// the final approver is held to "not the creator". Written from the contract
-// and the shared validators, not from the reducer's implementation.
+// The shared Cafe Legend fixture run is created by a third user
+// (`userIds.runCreator`), distinct from the HR and Finance approvers.
+// Written from the contract and the shared validators, not from the
+// reducer's implementation.
 import { describe, expect, it } from "vitest";
 import { userIdSchema } from "@starter/shared/core";
 import {
@@ -18,7 +19,8 @@ import {
 } from "@starter/shared/hris/payroll";
 import type { PayrollRun } from "@starter/shared/hris/payroll";
 
-const { hrApprover, financeApprover } = cafeLegendPayrollFixtures.userIds;
+const { hrApprover, financeApprover, runCreator } =
+  cafeLegendPayrollFixtures.userIds;
 const thirdApprover = userIdSchema.parse(
   "00000000-0000-4000-8000-000000009001",
 );
@@ -53,16 +55,16 @@ function thrown(fn: () => unknown): unknown {
 
 describe("payroll run approvers (PAYR-01 maker-checker)", () => {
   it("refuses the final approval by the run's creator with PAYROLL_APPROVER_NOT_DISTINCT", () => {
-    // Creator = Finance user; HR approval by a different person; then the
+    // Creator = run creator; HR approval by a different person; then the
     // creator tries to give the final approval.
-    const run = hrApprovedRun(financeApprover, hrApprover);
+    const run = hrApprovedRun(runCreator, hrApprover);
     expect(run.status).toBe("hr_approved");
-    expect(run.createdBy).toBe(financeApprover);
+    expect(run.createdBy).toBe(runCreator);
     expect(run.approvedByHr).toBe(hrApprover);
     const error = thrown(() =>
       applyPayrollRunCommand(run, {
         action: "approve_final",
-        actorId: financeApprover,
+        actorId: runCreator,
         at: FINAL_AT,
       }),
     );
@@ -74,7 +76,7 @@ describe("payroll run approvers (PAYR-01 maker-checker)", () => {
   });
 
   it("accepts the final approval by a third person, distinct from creator and HR approver", () => {
-    const run = hrApprovedRun(financeApprover, hrApprover);
+    const run = hrApprovedRun(runCreator, hrApprover);
     const approved = applyPayrollRunCommand(run, {
       action: "approve_final",
       actorId: thirdApprover,
@@ -87,17 +89,50 @@ describe("payroll run approvers (PAYR-01 maker-checker)", () => {
     expect(payrollRunSchema.safeParse(approved).success).toBe(true);
   });
 
-  it("still lets the creator give the first-level HR approval", () => {
-    const approved = hrApprovedRun(hrApprover, hrApprover);
+  it("refuses the first-level HR approval by the run's creator with PAYROLL_APPROVER_NOT_DISTINCT", () => {
+    // Flipped from the earlier rule (HR approval by the creator was allowed).
+    // Creator is the HR approver user, so this fails for the right reason
+    // (missing behavior) even before the fixture creator is rebased.
+    const run = simulatedBy(hrApprover);
+    expect(run.status).toBe("simulated");
+    const error = thrown(() =>
+      applyPayrollRunCommand(run, {
+        action: "approve_hr",
+        actorId: hrApprover,
+        at: HR_AT,
+      }),
+    );
+    expect(error).toBeInstanceOf(PayrollError);
+    expect((error as PayrollError).code).toBe("PAYROLL_APPROVER_NOT_DISTINCT");
+    // Refused approval leaves the run untouched.
+    expect(run.status).toBe("simulated");
+    expect(run.approvedByHr).toBeNull();
+  });
+
+  it("refuses the HR approval by the fixture run creator (runCreator)", () => {
+    const run = simulatedBy(runCreator);
+    const error = thrown(() =>
+      applyPayrollRunCommand(run, {
+        action: "approve_hr",
+        actorId: runCreator,
+        at: HR_AT,
+      }),
+    );
+    expect(error).toBeInstanceOf(PayrollError);
+    expect((error as PayrollError).code).toBe("PAYROLL_APPROVER_NOT_DISTINCT");
+  });
+
+  it("accepts the HR approval by someone other than the creator", () => {
+    const approved = hrApprovedRun(runCreator, hrApprover);
     expect(approved.status).toBe("hr_approved");
-    expect(approved.createdBy).toBe(hrApprover);
+    expect(approved.createdBy).toBe(runCreator);
     expect(approved.approvedByHr).toBe(hrApprover);
   });
 
-  it("accepts the final approval by a distinct Finance user when the creator is the HR approver", () => {
-    // The shared fixture shape: HR admin creates and HR-approves, Finance
+  it("accepts the final approval by a distinct Finance user (creator, HR and Finance all differ)", () => {
+    // The shared fixture shape: run creator creates, HR approves, Finance
     // gives the final approval.
-    const run = hrApprovedRun(hrApprover, hrApprover);
+    const run = hrApprovedRun(runCreator, hrApprover);
     const approved = applyPayrollRunCommand(run, {
       action: "approve_final",
       actorId: financeApprover,
@@ -108,7 +143,7 @@ describe("payroll run approvers (PAYR-01 maker-checker)", () => {
   });
 
   it("keeps the existing rule: the final approver cannot be the HR approver", () => {
-    const run = hrApprovedRun(financeApprover, hrApprover);
+    const run = hrApprovedRun(runCreator, hrApprover);
     const error = thrown(() =>
       applyPayrollRunCommand(run, {
         action: "approve_final",
@@ -143,8 +178,31 @@ describe("payrollRunSchema approver invariants", () => {
     );
   });
 
-  it("accepts an approved run whose creator differs from the final approver", () => {
-    expect(payrollRunSchema.safeParse(approvedRun(hrApprover)).success).toBe(
+  it("rejects an approved run whose HR approver is its creator (issue on approvedByHr)", () => {
+    // Flipped: this shape (creator === HR approver) used to be valid.
+    const parsed = payrollRunSchema.safeParse(approvedRun(hrApprover));
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.map((issue) => issue.path[0])).toContain(
+      "approvedByHr",
+    );
+  });
+
+  it("rejects an HR-approved run whose HR approver is its creator, even before final approval", () => {
+    const hrApproved = hrApprovedRun(thirdApprover, hrApprover);
+    const parsed = payrollRunSchema.safeParse({
+      ...hrApproved,
+      createdBy: hrApprover,
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.map((issue) => issue.path[0])).toContain(
+      "approvedByHr",
+    );
+  });
+
+  it("accepts an approved run whose creator differs from both approvers", () => {
+    expect(payrollRunSchema.safeParse(approvedRun(runCreator)).success).toBe(
       true,
     );
     expect(payrollRunSchema.safeParse(approvedRun(thirdApprover)).success).toBe(
@@ -162,6 +220,23 @@ describe("payrollRunSchema approver invariants", () => {
     );
   });
 
+  it("applies the HR-creator rule to a paid run too", () => {
+    const parsed = payrollRunSchema.safeParse({
+      ...october,
+      createdBy: hrApprover,
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.map((issue) => issue.path[0])).toContain(
+      "approvedByHr",
+    );
+  });
+
+  it("accepts the fixture paid October run (creator, HR and Finance all differ)", () => {
+    expect(october.createdBy).toBe(runCreator);
+    expect(payrollRunSchema.safeParse(october).success).toBe(true);
+  });
+
   it("keeps the existing rule: HR and final approver cannot be the same person", () => {
     const parsed = payrollRunSchema.safeParse({
       ...approvedRun(thirdApprover),
@@ -175,9 +250,9 @@ describe("payrollRunSchema approver invariants", () => {
   });
 
   it("does not constrain a run that has no final approval yet", () => {
-    // HR-approved run created by the HR approver (fixture shape) stays valid.
+    // HR-approved run created by a third user stays valid.
     expect(
-      payrollRunSchema.safeParse(hrApprovedRun(hrApprover, hrApprover)).success,
+      payrollRunSchema.safeParse(hrApprovedRun(runCreator, hrApprover)).success,
     ).toBe(true);
   });
 });
@@ -211,7 +286,30 @@ describe("payroll run lock keeps the creator rule (defense in depth)", () => {
     expect((error as PayrollError).code).toBe("PAYROLL_RUN_NOT_APPROVED");
   });
 
+  it("refuses to lock a run whose HR approver is its creator", () => {
+    const run = approvedBy(hrApprover);
+    expect(run.approvedByHr).toBe(hrApprover);
+    const error = thrown(() =>
+      applyPayrollRunCommand(run, {
+        action: "lock",
+        actorId: thirdApprover,
+        at: FINAL_AT,
+      }),
+    );
+    expect(error).toBeInstanceOf(PayrollError);
+    expect((error as PayrollError).code).toBe("PAYROLL_RUN_NOT_APPROVED");
+  });
+
   it("locks a run approved by two people who both differ from the creator", () => {
+    const locked = applyPayrollRunCommand(approvedBy(runCreator), {
+      action: "lock",
+      actorId: thirdApprover,
+      at: FINAL_AT,
+    });
+    expect(locked.status).toBe("locked");
+  });
+
+  it("locks a run created by yet another user (both approvers differ from the creator)", () => {
     const locked = applyPayrollRunCommand(approvedBy(thirdApprover), {
       action: "lock",
       actorId: thirdApprover,
