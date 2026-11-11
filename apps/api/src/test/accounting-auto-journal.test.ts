@@ -3314,22 +3314,28 @@ describe("Codex 142 fixes", () => {
     ]);
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
 
-    // The fund is empty: a second payout of it would debit money never received.
+    // One live payout per fund (payment_refunds_unallocated_fund_live_uq), so a
+    // payout of more than the fund received sits on a second fund: it would debit
+    // money never received.
+    const otherFundId = await seedFund(world, intentId, 25_000);
+    const otherEvent = fundsUnallocated(world, otherFundId, intentId, 25_000);
+    await seedOutboxEvent(world, otherEvent, otherFundId, "delivered");
+    await post(world, otherEvent);
     const extraId = await seedRefund(
       world,
       intentId,
-      5_000,
-      fundId,
+      30_000,
+      otherFundId,
       hoursAfter(REFUND_DAY, 1),
     );
     expect(
       await deliver(
         world.tenant,
-        paymentRefunded(world, extraId, intentId, 5_000, fundId),
+        paymentRefunded(world, extraId, intentId, 30_000, otherFundId),
       ),
     ).toEqual(MISMATCH);
-    expect(await journalCount(world)).toBe(2);
-    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await journalCount(world)).toBe(3);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
   });
 
   it("AJ-142-F1e a fund payout whose fund receipt is still in the outbox parks AUTO_JOURNAL_RECEIPT_PENDING; the sweep posts it after the fund receipt", async () => {

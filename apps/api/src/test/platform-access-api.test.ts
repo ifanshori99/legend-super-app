@@ -301,6 +301,8 @@ describe("legend-t4y7 GET /api/me/access", () => {
       activeOutletId: null,
       // Not an impersonated support session (legend-cg071).
       supportSession: null,
+      // No assignment, so no right to change an employee's manager (legend-qhqf8).
+      canChangeEmployeeManager: false,
     });
 
     const ownerUser = await signedIn("Owner Access", { mfa: false });

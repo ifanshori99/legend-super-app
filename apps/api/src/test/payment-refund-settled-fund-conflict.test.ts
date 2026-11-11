@@ -307,7 +307,7 @@ async function seedSettledFundRefund() {
 
 async function insertFundRefund(
   intentId: string,
-  fundId: string,
+  fundId: string | null,
   settledByHand: boolean,
 ) {
   const refundId = randomUUID();
@@ -369,9 +369,17 @@ describe("legend-kl46s DOIT reports a fund refund that finance settled by hand",
     expect(await refundRow(refundId)).toEqual(before);
   });
 
-  it("two live fund refunds on p2 are ambiguous: no conflict, nothing changes", async () => {
-    const { refundId, intentId, fundId, p2 } = await seedSettledFundRefund();
-    const otherId = await insertFundRefund(intentId, fundId, false);
+  it("two live refunds on p2 are ambiguous: no conflict, nothing changes", async () => {
+    // One live refund per fund (payment_refunds_unallocated_fund_live_uq), so the
+    // second live refund is an ordinary one on another intent whose own payment
+    // is p2 (a flat event names no intent).
+    const { refundId, p2 } = await seedSettledFundRefund();
+    const { intentId: otherIntentId } = await seedPaidIntent();
+    await owner.query(
+      "UPDATE payment_intents SET provider_ref = $3 WHERE tenant_id = $1 AND id = $2",
+      [tenantId, otherIntentId, p2],
+    );
+    const otherId = await insertFundRefund(otherIntentId, null, false);
     const before = await refundRow(refundId);
     const otherBefore = await refundRow(otherId);
 

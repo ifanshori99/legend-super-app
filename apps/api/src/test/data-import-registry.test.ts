@@ -47,6 +47,8 @@ const NOT_A_WRITER: Record<string, string> = {
     "cloud-side export: only reads and signs the bundle that edge/bootstrap.ts writes",
   "apps/api/src/routes/menu-import.routes.ts":
     "HTTP route only: delegates to menu-import.service.ts, which calls the guard",
+  "apps/api/src/db/backfill-employee-managers.ts":
+    "one-off repair of employees.manager_id on existing rows (legend-qhqf8): dry-run by default, --apply writes only HR-reviewed before/after tuples from a manifest, one audit row each; imports no data",
 };
 
 // Files under apps/api/src/db referenced from scripts/*.mjs that are not
@@ -173,6 +175,12 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "sets period_reopen_requests.consumed_at = decided_at on every already approved request (every old approval reopened its period at once, so it is spent; FORCE RLS lifted for that one statement and restored); edits no other column, never inserts or deletes; the close and reopen function bodies UPDATE fiscal_periods status and version and stamp consumed_at at runtime",
   "0274_depreciation_correction_claim.sql":
     "backfills fixed_asset_correction_claims from the existing depreciation reversals (claimed amount and reversed flag per journal); inserts only into the table it creates (FORCE RLS lifted and restored on the three tables it reads), edits no existing row; function bodies also write claims and reversals at runtime",
+  // legend-xhlbz (ws01-identity)
+  "0283_identity_unlink_permission_backfill.sql":
+    "appends crm.customer.identity.unlink to the stored owner and tenant_admin template role rows of existing tenants (legend-xhlbz); idempotent, never touches a custom role, FORCE RLS on roles lifted and restored",
+  // founder Q63 (ws05-pay-admin)
+  "0286_refund_approval_matrix_data.sql":
+    "gives each tenant that still has the old default refund matrix (no refund row, or one row: floor 0, level 1, supervisor template) the missing default rows for outlet_manager, general_manager and owner; idempotent, never touches a tenant that configured its own refund matrix, FORCE RLS on roles and approval_policies lifted and restored",
   "0276_leave_flag_closed_payroll.sql":
     "redefines app.flag_attendance_for_leave (function body UPDATE of attendance_logs, now skipping logs in closed payroll runs); no rows written by the migration",
 };
@@ -183,6 +191,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
   "apps/api/src/set-role.ts": "single admin UPDATE of one user's role",
   "apps/api/src/db/reset-preswitch-refund-payouts.ts":
     "one-off repair of refunds already in the database (UPDATE of payout state, dry-run by default), imports nothing",
+  "apps/api/src/db/backfill-employee-managers.ts":
+    "one-off repair of employees.manager_id on existing rows from an HR-reviewed manifest (dry-run by default), imports nothing (legend-qhqf8)",
   "apps/api/src/worker-main.ts":
     "job runner: delivery state of its own tenant's work, no imports",
   "apps/api/src/db/role.ts": "runtime role helper, no data writes",
@@ -198,6 +208,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
 const SCRIPT_NAME_ALLOWLIST: Record<string, string> = {
   "package.json#db:backfill-defaults":
     "runs the registered, guarded source backfill.tenant-defaults (root alias)",
+  "apps/api/package.json#db:backfill-employee-managers":
+    "one-off repair of employees.manager_id from an HR-reviewed manifest (dry-run by default); not an importer, listed in POOL_OPENERS_NOT_IMPORTERS",
   "apps/api/package.json#db:backfill-defaults":
     "runs the registered, guarded source backfill.tenant-defaults",
 };

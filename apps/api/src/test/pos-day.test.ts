@@ -576,8 +576,14 @@ beforeAll(async () => {
   for (const [id, tenantId, name, permissions] of roles)
     await owner.query(
       `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
-       VALUES ($1, $2, $3, false, NULL, $4, false, '["tenant"]')`,
-      [id, tenantId, name, JSON.stringify(permissions)],
+       VALUES ($1, $2, $3, ($5::text IS NOT NULL), $5, $4, false, '["tenant"]')`,
+      [
+        id,
+        tenantId,
+        name,
+        JSON.stringify(permissions),
+        id === ids.supervisorRole ? "supervisor" : null,
+      ],
     );
   cashier = await memberOf(tenant.tenantId, ids.cashierRole, "Kasir Hari");
   supervisor = await memberOf(

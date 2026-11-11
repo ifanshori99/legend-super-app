@@ -651,6 +651,18 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
     const second = await staffOfIsolatedTenant(app, tenant);
     await verifySessionMfa(staff.email);
     await verifySessionMfa(second.email);
+    // Q63: a refund approver also needs an amount ceiling. Both approvers hold
+    // the tenant's supervisor template at the outlet (Rp200.000 per bill).
+    await withTenant(db, contextOf(tenant.tenantId), (tx) =>
+      seedTenantRoleTemplates(tx, tenant.tenantId),
+    );
+    for (const approver of [staff, second])
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         SELECT $1, $2, r.id, 'outlet', $3, now() - interval '1 hour', $2
+           FROM roles r WHERE r.tenant_id = $1 AND r.template_key = 'supervisor'`,
+        [tenant.tenantId, approver.userId, tenant.outletId],
+      );
 
     const { intentId, totalIdr, paid } = await lateSettledOrder();
     await filedRefund(intentId, 1000, "approved");

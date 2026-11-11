@@ -614,7 +614,7 @@ beforeAll(async () => {
   // tier BEFORE any late refund is filed (a system refund opens its approval
   // chain at creation, legend-2dnh). Two users: one requests, one approves.
   await owner.query(
-    "UPDATE roles SET permissions = permissions || $2::jsonb WHERE tenant_id = $1 AND id = $3",
+    "UPDATE roles SET permissions = permissions || $2::jsonb, is_template = true, template_key = 'supervisor' WHERE tenant_id = $1 AND id = $3",
     [
       tenant.tenantId,
       JSON.stringify([
