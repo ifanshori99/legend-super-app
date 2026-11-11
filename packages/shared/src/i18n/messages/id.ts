@@ -63,6 +63,7 @@ import { payslipMessages } from "./ws10-payslip.ts";
 import { payslipPinMessages } from "./ws10-payslip-pin.ts";
 import { payslipPinSetupMessages } from "./ws10-payslip-pin-setup.ts";
 import { payslipPinForgotMessages } from "./ws10-payslip-pin-forgot.ts";
+import { payslipWaResetMessages } from "./ws10-payslip-wa-reset.ts";
 import { payslipPinChangeMessages } from "./ws10-payslip-pin-change.ts";
 import { payslipPinListMessages } from "./ws10-payslip-pin-list.ts";
 import { payslipPinGateMessages } from "./ws10-payslip-pin-gate.ts";
@@ -208,6 +209,7 @@ export const id = {
     ...payslipPinGateMessages,
   },
   payslipPinForgot: payslipPinForgotMessages,
+  payslipWaReset: payslipWaResetMessages,
   learning: learningMessages,
   // WS-09/WS-14 ops squad (2026-11-03): one catalog file per bead so the six
   // parallel beads never edit the same lines.

@@ -2,13 +2,14 @@
 // or read how to ask HR / a supervisor. Pure: the container starts the
 // challenge and passes `pending` while the request runs.
 import { MessageCircle } from "lucide-react";
+import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { PinLayout } from "../pin-layout.tsx";
 import {
-  PRIVATE_PIN_SIDE,
   WRAP_BUTTON_CLASS,
   WaBackLink,
   WaNotice,
+  WaPrivatePinSide,
 } from "./parts.tsx";
 
 type WaResetChooseProps = {
@@ -25,18 +26,18 @@ function WaResetChoose({
   pending = false,
   error = false,
 }: WaResetChooseProps) {
+  const t = useT();
   return (
     <PinLayout
       backLink={<WaBackLink />}
-      title="Lupa PIN?"
-      description="Pilih cara untuk membuat PIN baru."
-      side={PRIVATE_PIN_SIDE}
+      title={t("payslipWaReset.choose.title")}
+      description={t("payslipWaReset.choose.description")}
+      side={<WaPrivatePinSide />}
       busy={pending}
     >
       {error && (
-        <WaNotice tone="danger" title="Permintaan belum berhasil">
-          Periksa koneksi, lalu coba lagi lewat WhatsApp atau minta bantuan HR
-          atau supervisor.
+        <WaNotice tone="danger" title={t("payslipWaReset.choose.errorTitle")}>
+          {t("payslipWaReset.choose.errorBody")}
         </WaNotice>
       )}
       <div className="grid gap-2">
@@ -48,20 +49,19 @@ function WaResetChoose({
           onClick={onChooseWhatsApp}
         >
           {!pending && <MessageCircle aria-hidden="true" />}
-          Lewat WhatsApp
+          {t("payslipWaReset.choose.whatsApp")}
         </Button>
         <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
-          Kirim pesan dari nomor yang terdaftar.
+          {t("payslipWaReset.choose.whatsAppHint")}
         </p>
       </div>
 
       <section className="grid gap-2 border-t border-border pt-4">
         <h3 className="font-brand type-title">
-          Minta bantuan HR atau supervisor
+          {t("payslipWaReset.common.hrHelpTitle")}
         </h3>
         <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
-          Tidak bisa pakai nomor terdaftar? Minta reset PIN ke HR atau
-          supervisor di outlet.
+          {t("payslipWaReset.choose.hrBody")}
         </p>
         <Button
           type="button"
@@ -71,7 +71,7 @@ function WaResetChoose({
           disabled={pending}
           onClick={onChooseHrHelp}
         >
-          Lihat cara minta bantuan
+          {t("payslipWaReset.common.hrHelpLink")}
         </Button>
       </section>
     </PinLayout>

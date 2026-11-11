@@ -5,13 +5,14 @@
 // which `kind` applies and what the buttons do.
 import { useEffect, useState } from "react";
 import { Clock } from "lucide-react";
+import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { PinLayout } from "../pin-layout.tsx";
 import {
-  PRIVATE_PIN_SIDE,
   WRAP_BUTTON_CLASS,
   WaBackLink,
   WaNotice,
+  WaPrivatePinSide,
 } from "./parts.tsx";
 
 type WaResetBlockedKind =
@@ -41,11 +42,6 @@ type WaResetBlockedProps = {
   onBack: () => void;
 };
 
-const HR_LABEL = "Lihat cara minta bantuan";
-// Founder's wording, used only where no WhatsApp is registered; every other
-// screen says "HR atau supervisor".
-const HR_CONTACT_NO_WA = "Hubungi HR atau atasan di outlet";
-const HR_CONTACT = "Hubungi HR atau supervisor di outlet";
 const BODY_CLASS =
   "text-base leading-6 text-muted-foreground md:text-sm md:leading-5";
 
@@ -80,6 +76,7 @@ function useCountdown(seconds: number | undefined): number | null {
 }
 
 function RateLimitedWait({ left }: { left: number | null }) {
+  const t = useT();
   return (
     <div
       role={left === null ? "status" : "timer"}
@@ -89,10 +86,10 @@ function RateLimitedWait({ left }: { left: number | null }) {
       <Clock className="size-5 shrink-0 text-danger" aria-hidden="true" />
       <p className="text-base leading-6 font-semibold tabular-nums md:text-sm md:leading-5">
         {left === null
-          ? "Coba lagi nanti"
+          ? t("payslipWaReset.blocked.retryLater")
           : left > 0
-            ? `Coba lagi dalam ${formatWait(left)}`
-            : "Pembatasan sudah selesai"}
+            ? t("payslipWaReset.blocked.retryIn", { time: formatWait(left) })
+            : t("payslipWaReset.blocked.restrictionOver")}
       </p>
     </div>
   );
@@ -109,6 +106,7 @@ function WaResetBlocked({
   onHrHelp,
   onBack,
 }: WaResetBlockedProps) {
+  const t = useT();
   const secondsLeft = useCountdown(
     kind === "rate-limited" ? retryAfterSeconds : undefined,
   );
@@ -128,7 +126,7 @@ function WaResetBlocked({
         loading={retrying}
         onClick={onRetry}
       >
-        {retrying ? "Membuat kode…" : label}
+        {retrying ? t("payslipWaReset.blocked.creatingCode") : label}
       </Button>
     );
 
@@ -141,8 +139,8 @@ function WaResetBlocked({
       onClick={onHrHelp}
     >
       {kind === "expired" || kind === "service-unavailable"
-        ? "Minta bantuan HR atau supervisor"
-        : HR_LABEL}
+        ? t("payslipWaReset.blocked.hrHelpUrgent")
+        : t("payslipWaReset.common.hrHelpLink")}
     </Button>
   );
   const backButton = (
@@ -153,7 +151,7 @@ function WaResetBlocked({
       className={WRAP_BUTTON_CLASS}
       onClick={onBack}
     >
-      Kembali ke slip gaji
+      {t("payslipWaReset.common.backToSlip")}
     </Button>
   );
 
@@ -161,11 +159,14 @@ function WaResetBlocked({
     return (
       <PinLayout
         backLink={<WaBackLink />}
-        title="Kode sudah kedaluwarsa"
-        description="Pesan dengan kode ini tidak bisa dipakai lagi. Buat kode baru, lalu kirim lewat WhatsApp."
+        title={t("payslipWaReset.blocked.expiredTitle")}
+        description={t("payslipWaReset.blocked.expiredDescription")}
       >
         {code && (
-          <WaNotice tone="neutral" title="Kode tidak berlaku">
+          <WaNotice
+            tone="neutral"
+            title={t("payslipWaReset.blocked.expiredNoticeTitle")}
+          >
             <span className="whitespace-nowrap">
               <code
                 translate="no"
@@ -178,7 +179,7 @@ function WaResetBlocked({
             </span>
           </WaNotice>
         )}
-        {retryButton("Buat kode baru")}
+        {retryButton(t("payslipWaReset.blocked.newCode"))}
         {hrButton(false)}
       </PinLayout>
     );
@@ -188,13 +189,18 @@ function WaResetBlocked({
     return (
       <PinLayout
         backLink={<WaBackLink />}
-        title="Belum ada pesan yang cocok"
-        description="Kami belum menerima pesan dengan kode ini dari nomor terdaftar."
+        title={t("payslipWaReset.blocked.mismatchTitle")}
+        description={t("payslipWaReset.blocked.mismatchDescription")}
       >
-        <WaNotice tone="neutral" title="Pastikan nomor yang dipakai">
+        <WaNotice
+          tone="neutral"
+          title={t("payslipWaReset.blocked.mismatchNoticeTitle")}
+        >
           {senderHint
-            ? `Pastikan WhatsApp memakai nomor terdaftar ${registeredNumber(senderHint)}.`
-            : "Pastikan WhatsApp memakai nomor terdaftar."}
+            ? t("payslipWaReset.blocked.mismatchWithNumber", {
+                number: registeredNumber(senderHint),
+              })
+            : t("payslipWaReset.blocked.mismatchNoNumber")}
         </WaNotice>
         {onWaitMore && (
           <Button
@@ -204,15 +210,16 @@ function WaResetBlocked({
             disabled={retrying}
             onClick={onWaitMore}
           >
-            Tunggu lagi
+            {t("payslipWaReset.blocked.waitMore")}
           </Button>
         )}
-        {retryButton("Coba dari nomor terdaftar", !onWaitMore)}
+        {retryButton(t("payslipWaReset.blocked.retryRegistered"), !onWaitMore)}
         <section className="grid gap-2 border-t border-border pt-4">
-          <h3 className="font-brand type-title">Nomor sudah berubah?</h3>
+          <h3 className="font-brand type-title">
+            {t("payslipWaReset.blocked.numberChangedTitle")}
+          </h3>
           <p className={BODY_CLASS}>
-            Minta bantuan HR atau supervisor di outlet untuk memperbarui nomor
-            atau mereset PIN.
+            {t("payslipWaReset.blocked.numberChangedBody")}
           </p>
           {hrButton(false)}
         </section>
@@ -224,15 +231,14 @@ function WaResetBlocked({
     return (
       <PinLayout
         backLink={<WaBackLink />}
-        title="Terlalu banyak percobaan"
-        description="Pemulihan lewat WhatsApp dibatasi sementara. Tunggu sebelum mencoba lagi."
+        title={t("payslipWaReset.blocked.rateLimitedTitle")}
+        description={t("payslipWaReset.blocked.rateLimitedDescription")}
       >
         <RateLimitedWait left={secondsLeft} />
         <p className={BODY_CLASS}>
-          Sambil menunggu, Anda bisa minta reset PIN ke HR atau supervisor di
-          outlet.
+          {t("payslipWaReset.blocked.rateLimitedBody")}
         </p>
-        {canRetryNow && retryButton("Coba lagi")}
+        {canRetryNow && retryButton(t("payslipWaReset.common.retry"))}
         {hrButton(!canRetryNow)}
         {backButton}
       </PinLayout>
@@ -243,12 +249,15 @@ function WaResetBlocked({
     return (
       <PinLayout
         backLink={<WaBackLink />}
-        title="Nomor WhatsApp belum terdaftar"
-        description="Pemulihan lewat WhatsApp belum bisa dipakai. Minta HR atau supervisor di outlet memperbarui nomor atau mereset PIN Anda."
-        side={PRIVATE_PIN_SIDE}
+        title={t("payslipWaReset.blocked.noWaTitle")}
+        description={t("payslipWaReset.blocked.noWaDescription")}
+        side={<WaPrivatePinSide />}
       >
-        <WaNotice tone="neutral" title="Minta bantuan di outlet">
-          {HR_CONTACT_NO_WA} untuk memperbarui nomor atau mereset PIN Anda.
+        <WaNotice
+          tone="neutral"
+          title={t("payslipWaReset.blocked.outletHelpTitle")}
+        >
+          {t("payslipWaReset.blocked.noWaNotice")}
         </WaNotice>
         {hrButton(true)}
         {backButton}
@@ -260,16 +269,15 @@ function WaResetBlocked({
     return (
       <PinLayout
         backLink={<WaBackLink />}
-        title="Nomor WhatsApp belum 3 hari"
-        description="Nomor WhatsApp harus tertaut minimal 3 hari sebelum bisa dipakai untuk memulihkan PIN."
-        side={PRIVATE_PIN_SIDE}
+        title={t("payslipWaReset.blocked.tooNewTitle")}
+        description={t("payslipWaReset.blocked.tooNewDescription")}
+        side={<WaPrivatePinSide />}
       >
         <WaNotice
           tone="neutral"
-          title="Pemulihan lewat WhatsApp belum bisa dipakai"
+          title={t("payslipWaReset.blocked.unavailableNoticeTitle")}
         >
-          {HR_CONTACT} untuk mereset PIN Anda, atau coba lagi setelah nomor
-          tertaut 3 hari.
+          {t("payslipWaReset.blocked.tooNewNotice")}
         </WaNotice>
         {hrButton(true)}
         {backButton}
@@ -281,12 +289,15 @@ function WaResetBlocked({
     return (
       <PinLayout
         backLink={<WaBackLink />}
-        title="Pemulihan lewat WhatsApp belum bisa dipakai"
-        description="Nomor WhatsApp Anda belum terdaftar, atau baru tertaut kurang dari 3 hari."
-        side={PRIVATE_PIN_SIDE}
+        title={t("payslipWaReset.blocked.unavailableNoticeTitle")}
+        description={t("payslipWaReset.blocked.genericDescription")}
+        side={<WaPrivatePinSide />}
       >
-        <WaNotice tone="neutral" title="Minta bantuan di outlet">
-          {HR_CONTACT} untuk memperbarui nomor atau mereset PIN Anda.
+        <WaNotice
+          tone="neutral"
+          title={t("payslipWaReset.blocked.outletHelpTitle")}
+        >
+          {t("payslipWaReset.blocked.genericNotice")}
         </WaNotice>
         {hrButton(true)}
         {backButton}
@@ -298,13 +309,16 @@ function WaResetBlocked({
   return (
     <PinLayout
       backLink={<WaBackLink />}
-      title="Pemulihan lewat WhatsApp belum tersedia"
-      description="Layanan WhatsApp sedang tidak dapat dihubungi saat ini."
+      title={t("payslipWaReset.blocked.serviceTitle")}
+      description={t("payslipWaReset.blocked.serviceDescription")}
     >
-      <WaNotice tone="neutral" title="Coba lagi sebentar lagi">
-        {HR_CONTACT} untuk mereset PIN Anda, atau coba lagi nanti.
+      <WaNotice
+        tone="neutral"
+        title={t("payslipWaReset.blocked.serviceNoticeTitle")}
+      >
+        {t("payslipWaReset.blocked.serviceNotice")}
       </WaNotice>
-      {retryButton("Coba lagi")}
+      {retryButton(t("payslipWaReset.common.retry"))}
       {hrButton(!onRetry)}
       {backButton}
     </PinLayout>

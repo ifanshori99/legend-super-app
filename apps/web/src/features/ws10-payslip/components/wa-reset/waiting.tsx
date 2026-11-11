@@ -58,8 +58,10 @@ type WaResetWaitingProps = {
 type Copied = "code" | "number" | null;
 
 /** The text the employee sends; the server only accepts exactly this shape. */
+const RESET_KEYWORD = "RESET PIN";
+
 function messageFor(code: string): string {
-  return `RESET PIN ${code}`;
+  return `${RESET_KEYWORD} ${code}`;
 }
 
 /** The receiving number out of the wa.me link ("" when it cannot be read). */
@@ -74,11 +76,11 @@ function formatRemaining(ms: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function senderText(hint: string): ReactNode {
+function senderText(hint: string, lead: string): ReactNode {
   const shown = /^\d{1,4}$/.test(hint) ? `•••• ${hint}` : hint;
   return (
     <>
-      Gunakan nomor terdaftar:{" "}
+      {lead}{" "}
       <span translate="no" className="whitespace-nowrap">
         {shown}
       </span>
@@ -162,19 +164,22 @@ function WaResetWaiting({
           </Link>
         </Button>
       }
-      title="Kirim lewat WhatsApp"
-      description={senderText(senderHint)}
+      title={t("payslipWaReset.waiting.title")}
+      description={senderText(
+        senderHint,
+        t("payslipWaReset.waiting.senderLead"),
+      )}
     >
       <div className="grid gap-1 rounded-field border border-border bg-muted p-4">
         <p className="text-xs font-bold tracking-widest text-muted-foreground uppercase">
-          Pesan yang akan dikirim
+          {t("payslipWaReset.waiting.messageLabel")}
         </p>
         <p
           className="text-xl font-bold tracking-wide"
           data-testid="wa-reset-message"
           translate="no"
         >
-          RESET PIN{" "}
+          {RESET_KEYWORD}{" "}
           <code translate="no" className="font-[inherit] whitespace-nowrap">
             {code}
           </code>
@@ -182,12 +187,14 @@ function WaResetWaiting({
         <p className="flex items-center gap-1.5 text-base leading-6 tabular-nums md:text-sm md:leading-5 text-muted-foreground">
           <Clock className="size-4 shrink-0" aria-hidden="true" />
           {remainingMs === null
-            ? "Berlaku sebentar lagi"
+            ? t("payslipWaReset.waiting.soon")
             : expired
-              ? "Kode sudah tidak berlaku"
+              ? t("payslipWaReset.waiting.expiredStatus")
               : checking
-                ? "Memeriksa pesan Anda…"
-                : `Berlaku ${formatRemaining(remainingMs)} lagi`}
+                ? t("payslipWaReset.waiting.checking")
+                : t("payslipWaReset.waiting.remaining", {
+                    time: formatRemaining(remainingMs),
+                  })}
         </p>
       </div>
 
@@ -195,8 +202,8 @@ function WaResetWaiting({
         <div role="alert" className="grid gap-3">
           <p className="text-base leading-6 md:text-sm md:leading-5">
             {expired
-              ? "Pesan dengan kode ini tidak bisa dipakai lagi. Buat kode baru, lalu kirim lewat WhatsApp."
-              : "Tautan WhatsApp tidak dapat dibuka. Buat kode baru, lalu kirim lewat WhatsApp."}
+              ? t("payslipWaReset.waiting.expiredBody")
+              : t("payslipWaReset.waiting.badLinkBody")}
           </p>
           <Button
             type="button"
@@ -205,7 +212,9 @@ function WaResetWaiting({
             onClick={onRegenerate}
             loading={regenerating}
           >
-            {regenerating ? "Membuat kode…" : "Buat kode baru"}
+            {regenerating
+              ? t("payslipWaReset.waiting.creatingCode")
+              : t("payslipWaReset.waiting.newCode")}
           </Button>
         </div>
       ) : (
@@ -217,12 +226,11 @@ function WaResetWaiting({
           >
             <a href={waLink} target="_blank" rel="noopener noreferrer">
               <MessageCircle aria-hidden="true" />
-              Buka WhatsApp
+              {t("payslipWaReset.waiting.openWhatsApp")}
             </a>
           </Button>
           <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
-            Pesan sudah terisi. Tekan Kirim tanpa mengubahnya, lalu kembali ke
-            halaman ini.
+            {t("payslipWaReset.waiting.prefilled")}
           </p>
           {/* A code for another device to scan; a phone already has the button.
               Below the button, never beside it, so no column of buttons shares
@@ -230,12 +238,12 @@ function WaResetWaiting({
           <div className="hidden justify-items-center gap-2 md:grid">
             <QrCode
               value={waLink}
-              label="Kode QR untuk membuka WhatsApp dengan pesan yang sudah terisi"
+              label={t("payslipWaReset.waiting.qrLabel")}
               size={152}
               className="rounded-field border border-border p-2"
             />
             <p className="max-w-xs text-center text-sm leading-5 text-muted-foreground">
-              Pindai dengan HP yang punya WhatsApp.
+              {t("payslipWaReset.waiting.qrHint")}
             </p>
           </div>
           <div className="grid gap-0.5" role="status" aria-live="polite">
@@ -244,10 +252,10 @@ function WaResetWaiting({
                 aria-hidden="true"
                 className="size-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
               />
-              Menunggu pesan Anda…
+              {t("payslipWaReset.waiting.waiting")}
             </p>
             <p className="text-base leading-6 md:text-sm md:leading-5 text-muted-foreground">
-              Verifikasi muncul di sini, tanpa balasan WhatsApp.
+              {t("payslipWaReset.waiting.waitingHint")}
             </p>
           </div>
           {onNotVerified && (
@@ -258,7 +266,7 @@ function WaResetWaiting({
               className="min-h-6 w-fit justify-start py-1"
               onClick={onNotVerified}
             >
-              Sudah kirim tapi belum terverifikasi?
+              {t("payslipWaReset.waiting.notVerified")}
             </Button>
           )}
         </div>
@@ -267,9 +275,11 @@ function WaResetWaiting({
       {!expired && (
         <div className="grid gap-3 border-t border-border pt-4">
           <div className="grid gap-0.5">
-            <p className="text-base font-bold">WhatsApp di perangkat lain?</p>
+            <p className="text-base font-bold">
+              {t("payslipWaReset.waiting.otherDeviceTitle")}
+            </p>
             <p className="text-base leading-6 md:text-sm md:leading-5 text-muted-foreground">
-              Kirim pesan di atas ke nomor WhatsApp layanan
+              {t("payslipWaReset.waiting.otherDeviceBody")}
               {number ? (
                 <>
                   :{" "}
@@ -297,7 +307,7 @@ function WaResetWaiting({
               ) : (
                 <Copy aria-hidden="true" />
               )}
-              Salin pesan
+              {t("payslipWaReset.waiting.copyMessage")}
             </Button>
             {number && (
               <Button
@@ -311,7 +321,7 @@ function WaResetWaiting({
                 ) : (
                   <Copy aria-hidden="true" />
                 )}
-                Salin nomor tujuan
+                {t("payslipWaReset.waiting.copyNumber")}
               </Button>
             )}
           </div>
@@ -320,11 +330,9 @@ function WaResetWaiting({
             aria-live="polite"
             className="text-base leading-6 empty:-mt-3 md:text-sm md:leading-5 text-muted-foreground"
           >
-            {copied === "code" &&
-              "Pesan disalin. Tempel dan kirim lewat WhatsApp."}
-            {copied === "number" && "Nomor tujuan disalin."}
-            {copyFailed &&
-              "Tidak bisa menyalin. Salin teks di atas secara manual."}
+            {copied === "code" && t("payslipWaReset.waiting.copiedMessage")}
+            {copied === "number" && t("payslipWaReset.waiting.copiedNumber")}
+            {copyFailed && t("payslipWaReset.waiting.copyFailed")}
           </p>
         </div>
       )}
@@ -336,7 +344,7 @@ function WaResetWaiting({
           className="h-auto min-h-control whitespace-normal"
           onClick={onHrHelp}
         >
-          Minta bantuan HR atau supervisor
+          {t("payslipWaReset.common.hrHelpTitle")}
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>
           {t("payslipPin.common.cancel")}

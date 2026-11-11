@@ -4,6 +4,7 @@
 // be dismissed by Escape or an outside click, so the success is never missed
 // and never skipped past the new-PIN form.
 import { CircleCheck } from "lucide-react";
+import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,6 +24,7 @@ function WaResetVerifiedDialog({
   open,
   onContinue,
 }: WaResetVerifiedDialogProps) {
+  const t = useT();
   return (
     <Dialog open={open}>
       <DialogContent
@@ -33,14 +35,19 @@ function WaResetVerifiedDialog({
       >
         <DialogHeader className="items-start pr-0">
           <CircleCheck className="size-10 text-primary" aria-hidden="true" />
-          <DialogTitle>Nomor berhasil diverifikasi</DialogTitle>
+          <DialogTitle>{t("payslipWaReset.verified.title")}</DialogTitle>
           <DialogDescription>
-            Sekarang buat PIN slip gaji yang baru.
+            {t("payslipWaReset.verified.description")}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button type="button" size="lg" className="w-full" onClick={onContinue}>
-            Buat PIN baru
+          <Button
+            type="button"
+            size="lg"
+            className="w-full"
+            onClick={onContinue}
+          >
+            {t("payslipWaReset.verified.continue")}
           </Button>
         </DialogFooter>
       </DialogContent>
