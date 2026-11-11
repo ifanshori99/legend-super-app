@@ -606,6 +606,42 @@ describe("legend-10nex a regressed device clock holds sales", () => {
     await start(rig, clocks(T0), { seed: new Date(T0.getTime() + 4 * MIN) });
     expect(getSalesGateState()).toMatchObject({ blocked: false, reason: null });
   });
+
+  // Founder Q2 (2026-11-12): A6 stays as is. A clock set back more than 5
+  // minutes holds sales (CLOCK_REGRESSED) and tells the owner, with no
+  // override. Locks the boundary just above the tolerance.
+  it("holds sales with CLOCK_REGRESSED and raises an owner alarm when the clock is 6 minutes behind", async () => {
+    const rig = await newEdge();
+    const highWater = new Date(T0.getTime() + 6 * MIN);
+    await storeHighWater(rig, highWater);
+    const clock = clocks(T0);
+    const alarms: string[] = [];
+    const handle = await startCatalogGate({
+      context: rig.context,
+      scope: rig.scope,
+      overrides: overrideStub().stub,
+      onOwnerAlarm: (alarm) => {
+        for (const entry of alarm.streams) alarms.push(entry.reason);
+      },
+      seed: async (freshness) => {
+        for (const name of STREAMS) freshness.seedLastSuccess(name, highWater);
+        freshness.snapshot();
+      },
+      persistMs: 24 * HOUR,
+      wall: clock.wall,
+      mono: clock.mono,
+    });
+    handles.push(handle);
+    setSalesGateEdgeModeForTests(() => true);
+
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      reason: "CLOCK_REGRESSED",
+      override: null,
+    });
+    expect(alarms.length).toBeGreaterThan(0);
+    expect(alarms).toContain("CLOCK_ELAPSED_UNPROVEN");
+  });
 });
 
 // F4 (architect): a grant committed after the boot load but before the listener
