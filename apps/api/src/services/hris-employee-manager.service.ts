@@ -178,6 +178,10 @@ export async function changeEmployeeManager(
         );
         const row = await selectEmployee(tx, context, employeeId, "update");
         if (!row) throw notFound();
+        // The pre-lock check used an unlocked read: the home outlet may have
+        // moved since, so authorise again on the locked row.
+        if (access.viewerFor(row) === null) throw notFound();
+        if (!mayChangeEmployeeManager(access, row)) throw forbidden();
         const newManagerId = input.managerId;
         if (newManagerId === row.id)
           throw new HttpError(

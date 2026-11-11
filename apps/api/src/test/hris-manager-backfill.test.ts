@@ -479,6 +479,15 @@ describe("legend-qhqf8 backfill CLI", () => {
       ).toThrow(BackfillUsageError);
   });
 
+  it("accepts a manifest saved with a UTF-8 BOM (Excel/Notepad)", () => {
+    const employeeId = randomUUID();
+    const managerId = randomUUID();
+    const text = `\uFEFFemployee_id,current_manager_id,proposed_manager_id\n${employeeId},,${managerId}\n`;
+    expect(() =>
+      parseArgs(["--apply", "--manifest", tempFile(text)]),
+    ).not.toThrow();
+  });
+
   it("accepts a new output manifest path in dry-run without reading that file", () => {
     const path = join(
       mkdtempSync(join(tmpdir(), "qhqf8-manifest-")),

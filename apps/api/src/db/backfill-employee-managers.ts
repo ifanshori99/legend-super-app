@@ -162,7 +162,9 @@ function normalizeManifest(entries: ManifestEntry[]): ManifestEntry[] {
 
 /** Exact reviewed tuples; no id-only approval or implicit manager recomputation. */
 export function parseManifestFile(text: string): ManifestEntry[] {
+  // Excel and Notepad save CSV with a UTF-8 BOM; it would break the header match.
   const lines = text
+    .replace(/^\uFEFF/, "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
@@ -573,6 +575,18 @@ export async function run(options: {
               sql`, `,
             )})
             ORDER BY id FOR SHARE`,
+      );
+      // Also lock the role assignments of those managers (outlet_manager
+      // eligibility comes from them): a revoke cannot commit between the
+      // state load below and our writes.
+      await tx.execute(
+        sql`SELECT ra.id FROM role_assignments ra
+            JOIN employees e ON e.tenant_id = ra.tenant_id AND e.user_id = ra.user_id
+            WHERE ra.tenant_id = ${tenantId}::uuid AND e.id IN (${sql.join(
+              proposedManagerIds.map((id) => sql`${id}::uuid`),
+              sql`, `,
+            )})
+            ORDER BY ra.id FOR SHARE OF ra`,
       );
       const state = await loadTenantState(tx, tenantId, now);
       const index = buildIndex(state.employees, state.outletManagers);
