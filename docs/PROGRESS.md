@@ -3296,3 +3296,13 @@ Langkah berikut CTO baru:
 - Bukti: vitest terarah 17 file hijau; tsc shared/api/web 0; db:generate kosong; root mjs 2053 lulus, 4 gagal = tes DB yang butuh DB terisolasi (belum dijalankan terpisah).
 - Belum: migrasi backfill baris peran untuk izin baru (batas 0324-0325), keputusan CTO soal profil `active` turun ke `pending_verification` saat unlink, hapus identitas global (step-up pemilik atau support platform).
 - Biaya sesi: total 10949k (utama sonnet 6696k, subagent sonnet 3548k, opus 582k, haiku 123k); 22 subagent tercatat; 13:03-13:56 UTC.
+
+## 2026-11-11: WS-01 ronde 2 (ws/ws01-identity)
+
+- Keputusan CTO: profil `active` turun ke `pending_verification` saat unlink disetujui (perilaku sekarang sudah begitu).
+- legend-xhlbz 06dd859a: migrasi 0331 backfill `crm.customer.identity.unlink` ke template owner dan tenant_admin tenant lama; custom role tidak disentuh; idempoten; ada tes.
+- P1 second-opinion Codex fbcef120: aktivasi faktor (passkey dan TOTP) diserialkan per user (advisory lock `mfa-activate:`), dan bila ada faktor terverifikasi lain wajib MFA segar di sesi penyelesai (MFA_REQUIRED / REAUTH_REQUIRED). Tes dua sesi (3 skenario + 3 kontrol).
+- e518bf1e: tes sesi dukungan read_only ditolak 403 SUPPORT_ACCESS_READ_ONLY di PUT /api/me/active-outlet (tidak ada baris pin); kontrol read_write 200.
+- Gagal-dulu: semua kode produksi 4 kartu dibalik ke basis 8c197789: 7 file tes merah, 92 gagal (mis. passkey 501, codec tidak terdaftar, unlink 200/204 bukan 404). P1 dibalik sendiri: 3 merah. Guard support dimatikan: 1 merah. Dipulihkan, tidak di-commit.
+- tests/database.test.mjs + db-role-provisioning.test.mjs pada Postgres sekali pakai: 41/41 lulus. Catatan: `LEGEND_TEST_DB_NAME` tidak ada di repo; DB sekali pakai dibuat dengan alur scripts/test.mjs.
+- vitest terarah 8 file / 118 tes lulus; tsc api 0; eslint+prettier bersih; db:generate kosong.
