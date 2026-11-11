@@ -1660,6 +1660,13 @@
       "when": 1794331000000,
       "tag": "0250_wa_proof_purpose",
       "breakpoints": true
+    },
+    {
+      "idx": 251,
+      "version": "7",
+      "when": 1794332000000,
+      "tag": "0251_wa_login_confirm",
+      "breakpoints": true
     }
   ]
 }

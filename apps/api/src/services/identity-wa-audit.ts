@@ -28,7 +28,8 @@ export type LoginAuditAction =
   | "login_challenge.cancelled"
   | "login_challenge.rate_limited"
   | "login_challenge.claimed"
-  | "login_challenge.claim_failed";
+  | "login_challenge.claim_failed"
+  | "login_challenge.confirmed";
 
 /** The only `after` keys a login audit row keeps; anything else is redacted. */
 export const LOGIN_AUDIT_SAFE_FIELDS = [
@@ -52,6 +53,29 @@ export function maskSenderForAudit(
 ): string | null {
   const digits = normalizeWhatsAppNumber(number);
   return digits === null ? null : `•••${digits.slice(-3)}`;
+}
+
+/**
+ * Card w8dfz.1: the number as the person sees it when asked to confirm, e.g.
+ * `+62 ****7890`. Keeps ONLY the country code and the last 4 digits (never an
+ * operator prefix). A short number shows just its last 2 digits.
+ */
+export function maskSenderForConfirm(
+  number: string | null | undefined,
+): string | null {
+  const digits = normalizeWhatsAppNumber(number);
+  if (digits === null || digits.length < 5) return null;
+  // Without a phone-number library: Indonesia (the product market) is "62",
+  // the NANP and Russia/Kazakhstan are one digit, everything else two.
+  const ccLength = digits.startsWith("62")
+    ? 2
+    : digits.startsWith("1") || digits.startsWith("7")
+      ? 1
+      : 2;
+  // Country code + last 4 must leave at least 4 hidden digits; otherwise the
+  // number is too short to show that much.
+  if (digits.length < ccLength + 4 + 4) return `****${digits.slice(-2)}`;
+  return `+${digits.slice(0, ccLength)} ****${digits.slice(-4)}`;
 }
 
 export type LoginAuditDetails = {

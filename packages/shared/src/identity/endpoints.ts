@@ -115,6 +115,13 @@ export const cancelLoginChallenge = defineEndpoint({
   params: loginChallengeParamsSchema,
 });
 
+/** Card w8dfz.1: the bound browser confirms the masked sender number. */
+export const confirmLoginChallenge = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/login-challenges/:challengeId/confirm",
+  params: loginChallengeParamsSchema,
+});
+
 /** The clicked email link; the API sets the session cookie and answers with it. */
 export const completeMagicLink = defineEndpoint({
   method: "GET",

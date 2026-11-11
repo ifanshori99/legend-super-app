@@ -154,6 +154,13 @@ export const loginChallenges = pgTable(
      * is verified, so the address lives here. Null for every other channel.
      */
     emailEncrypted: text("email_encrypted"),
+    /**
+     * Card w8dfz.1: opt-in confirmation before a session is issued. The
+     * sender is stored only masked (country code and last 4 digits).
+     */
+    senderMasked: text("sender_masked"),
+    confirmRequired: boolean("confirm_required").notNull().default(false),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     /** Keyed client-IP digest for the AUTH-04 per-IP limit. */
     ipHash: varchar("ip_hash", { length: 64 }),
     userAgent: varchar("user_agent", { length: 255 }),

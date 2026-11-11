@@ -430,6 +430,10 @@ export const loginChallengeViewSchema = z.strictObject({
   session: sessionSchema.nullable(),
   mfaRequired: z.boolean(),
   mfaEnrollmentRequired: z.boolean(),
+  /** Card w8dfz.1: masked sender ("+62 812-****-7890"), only while awaiting. */
+  senderMasked: z.string().max(40).optional(),
+  /** Card w8dfz.1: the message landed; no session until the person confirms. */
+  awaitingConfirmation: z.boolean().optional(),
 });
 export type LoginChallengeView = z.infer<typeof loginChallengeViewSchema>;
 

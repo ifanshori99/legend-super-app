@@ -82,6 +82,7 @@ import {
 import {
   LOGIN_AUDIT_SAFE_FIELDS,
   maskSenderForAudit,
+  maskSenderForConfirm,
   recordLoginAudit,
   type LoginAuditAction,
 } from "./identity-wa-audit.ts";
@@ -488,6 +489,7 @@ export async function processInboundWhatsApp(
         receivingNumber: message.receivingNumber,
         userId: account.userId,
         senderMasked: maskSenderForAudit(message.sender),
+        senderConfirmMask: maskSenderForConfirm(message.sender),
         now,
       });
       const kind: InboundKind =
@@ -729,6 +731,8 @@ async function completeChallenge(
     receivingNumber: string;
     userId: string;
     senderMasked: string | null;
+    /** Card w8dfz.1: stored for the confirm step; never the whole number. */
+    senderConfirmMask: string | null;
     now: Date;
   },
 ): Promise<Completion> {
@@ -769,6 +773,7 @@ async function completeChallenge(
           status: "completed",
           matchedUserId: input.userId,
           completedAt: input.now,
+          senderMasked: input.senderConfirmMask,
         })
         .where(
           and(
