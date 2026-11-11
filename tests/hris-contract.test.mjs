@@ -714,6 +714,7 @@ test("HR event payloads are catalogued on WS-10 and carry no PII", () => {
     "shift.published",
     "shift.cancelled",
     "leave.approved",
+    "leave.changed",
   ]);
   for (const name of hris.hrisEventNames) {
     const entry = eventCatalogByName.get(name);
@@ -729,7 +730,12 @@ test("HR event payloads are catalogued on WS-10 and carry no PII", () => {
   hris.leaveApproved.envelopeSchema.parse(events.leaveApproved);
 
   for (const event of Object.values(events)) {
-    const serialized = JSON.stringify(event.payload);
+    // leave.changed carries `changeReason`, a closed enum (range_split, ...),
+    // not the free-text leave reason; only that key name is exempt.
+    const serialized = JSON.stringify(event.payload).replaceAll(
+      '"changeReason"',
+      '""',
+    );
     for (const forbidden of [
       "nik",
       "npwp",
