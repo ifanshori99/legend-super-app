@@ -44,6 +44,7 @@ import {
   staffWithRole,
   type Staff,
 } from "./floor-test-helpers";
+import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 
 const ADMIN = "/api/payments/admin";
 const BUSINESS_DATE = "2031-03-16";
@@ -213,7 +214,18 @@ async function approval(orderId: string, valueIdr: number) {
         approverUserIds[0],
         valueIdr,
         orderId,
-        randomUUID().replaceAll("-", "").padEnd(64, "0"),
+        // The POS order consumer re-derives the fingerprint from the stored row
+        // (legend-fjwxo), so a raw fixture row needs a real one.
+        pinOverrideFixtureFingerprint({
+          requestedBy: staff.userId,
+          outletId: seededOutletA,
+          action: "refund",
+          valueIdr,
+          reason: "Pelanggan salah pesan",
+          objectType: "order",
+          objectId: orderId,
+          approverUserId: approverUserIds[0]!,
+        }),
       ],
     ),
   );
