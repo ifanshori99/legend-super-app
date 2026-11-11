@@ -46,10 +46,53 @@ screen, because the edge only holds today plus that many day keys.
 
 7. Start the API and Caddy, then confirm `GET /api/edge/health` over HTTPS.
 
+## Local audit retention login
+
+The edge API runs audit retention against its own PostgreSQL database. After
+applying the database migrations, provision a dedicated
+`legend_maint_<16 hex>` login on that local database, with a separate password
+and membership only in `legend_maintenance`. The login must inherit that role,
+own no objects, have no table or sequence privileges, and have neither superuser
+nor `BYPASSRLS`. Its only maintenance operations are
+`app.audit_retention_due_tenants()` and `app.purge_audit_retention_batch()`.
+Do not reuse the application, queue, migration-owner, or cloud database login.
+
+Set `MAINTENANCE_DATABASE_URL` in the private edge API env file, pointing to
+the same local host, port and database as the edge application connection, with
+that maintenance login. Keep its value readable only by the service user and
+never print it in logs or commit it. The cloud single-VM provisioning wrapper
+has a different env-file contract: it forbids this key in the cloud API env
+file. Do not run that wrapper against the edge API env file.
+
+The edge validates a configured URL before starting runtime components, then
+probes the connection and maintenance identity at the end of initialization.
+An invalid URL, connection, or role refuses startup; a failed probe shuts down
+the components already started. If the key is absent or blank, startup
+continues so offline POS remains available. Audit purge is skipped, an error
+is logged locally, and the heartbeat reports the missing configuration for an
+owner alarm once it reaches the cloud. During an outage, the local operator
+must act on the startup error; a cloud alarm cannot arrive while offline.
+Provision the login and restart the edge API to restore the daily purge.
+Until then, expired audit rows stay in the local database.
+
+The host preflight warns without failing when this key is missing. Its
+configured check confirms presence only; the runtime probe verifies the
+connection and restricted permissions.
+
+### Rollout order for maintenance alarms
+
+Deploy the G5b cloud build that accepts the optional maintenance-alarm
+heartbeat field before this edge build. The new cloud accepts older edge
+heartbeats. An edge without `MAINTENANCE_DATABASE_URL` sends the new field;
+an older cloud rejects that heartbeat because its schema is strict. Edges
+with a valid maintenance URL omit the field. Keep local startup-error
+monitoring in place, including during the upgrade and offline operation.
+
 ## Checklist
 
 - [ ] Preflight prints no FAIL.
 - [ ] Phone and edge show the same time (QR scans succeed).
 - [ ] A phone opens the edge URL with no certificate warning and the camera starts.
 - [ ] Env file has no seal private key and is readable only by the service user.
+- [ ] Local audit maintenance login is configured, or its missing-login warning has an owner assigned to restore audit purge.
 - [ ] Theft or loss: follow `docs/runbooks/edge-hilang-dicuri.md`.

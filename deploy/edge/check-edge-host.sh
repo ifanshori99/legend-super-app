@@ -8,7 +8,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: check-edge-host.sh --env-file FILE [--service-user USER] [--cert FILE]
                           [--selfie-dir DIR] [--max-bytes N] [--margin-bytes N]
-  --env-file      edge API environment file (required); checked for the seal private key
+  --env-file      edge API environment file (required); checks seal key and audit maintenance setup
   --service-user  account that runs the edge API (default: legend)
   --cert          HTTPS certificate file served to outlet devices
   --selfie-dir    default: EDGE_SELFIE_DIR in the env file, else /var/lib/legend/edge-selfies
@@ -63,7 +63,8 @@ is_uint() {
 
 # env_value NAME: value of the last uncommented NAME=value line. Quoted values
 # keep their content; unquoted values lose a trailing "# comment" and whitespace.
-# Only used for non-secret settings (directory and size).
+# Non-secret settings (directory and size), or a private pipe that checks only
+# whether the maintenance URL is blank. Never print that URL.
 env_value() {
   v=$(grep -E "^[[:space:]]*(export[[:space:]]+)?$1=" "$env_file" 2>/dev/null | tail -n 1 |
     sed -e 's/^[^=]*=//' -e 's/^[[:space:]]*//')
@@ -94,6 +95,14 @@ else
     fail "seal-key: edge env file sets$leaked; the edge must hold only the public key (arrives by snapshot), remove them"
   else
     pass "seal-key: edge env file holds no seal private key"
+  fi
+  # Presence only: the API validates URL syntax before starting components,
+  # then probes the connection and restricted role during initialization.
+  # Missing configuration must warn without preventing offline POS startup.
+  if env_value MAINTENANCE_DATABASE_URL | grep -q '[^[:space:]]'; then
+    pass "audit-retention: MAINTENANCE_DATABASE_URL is configured; runtime verifies the connection and restricted role"
+  else
+    warn "audit-retention: MAINTENANCE_DATABASE_URL is missing; audit purge is skipped, restore configuration and check the local startup error and owner alarm"
   fi
   [ -n "$selfie_dir" ] || selfie_dir=$(env_value EDGE_SELFIE_DIR)
   [ -n "$max_bytes" ] || max_bytes=$(env_value EDGE_SELFIE_MAX_BYTES)

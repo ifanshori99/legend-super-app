@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { db } from "../db/index.ts";
+import { mintEdgeCredential } from "./credential.ts";
+import { startEdgeRuntime } from "./runtime.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../lib/logger.ts";
 import { startEdgeAuditRetention } from "./audit-retention.ts";
@@ -43,13 +47,55 @@ describe("legend-0cqql edge audit retention lifecycle", () => {
     expect(pool.query).not.toHaveBeenCalled();
   });
 
-  it("requires a configured maintenance connection in production", async () => {
-    await expect(
-      startEdgeAuditRetention({
-        source: { NODE_ENV: "production" },
-        pool: fakePool(),
-      }),
-    ).rejects.toThrow("MAINTENANCE_DATABASE_URL");
+  it.each([undefined, "", "   "])(
+    "keeps production available without a maintenance URL (%j), skips purge and alarms the owner",
+    async (value) => {
+      const pool = fakePool();
+      const onOwnerAlarm = vi.fn(async () => undefined);
+      const log = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+      const handle = await startEdgeAuditRetention({
+        source: { NODE_ENV: "production", MAINTENANCE_DATABASE_URL: value },
+        pool,
+        onOwnerAlarm,
+      });
+      expect(handle).toBeNull();
+      expect(pool.connect).not.toHaveBeenCalled();
+      expect(pool.query).not.toHaveBeenCalled();
+      expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalled();
+      expect(JSON.stringify(log.mock.calls)).toContain(
+        "MAINTENANCE_DATABASE_URL",
+      );
+    },
+  );
+
+  it("rejects a malformed configured URL before the first runtime database/component work", async () => {
+    const execute = vi
+      .spyOn(db, "execute")
+      .mockRejectedValue(
+        new Error(
+          "Runtime database work started before maintenance validation",
+        ),
+      );
+    const credential = mintEdgeCredential({
+      tenantId: randomUUID(),
+      outletId: randomUUID(),
+      edgeNodeId: randomUUID(),
+    }).token;
+    const error = await startEdgeRuntime({
+      EDGE_MODE: "true",
+      EDGE_CLOUD_URL: "wss://cloud.retention-test.invalid/api/edge-link",
+      EDGE_NODE_CREDENTIAL: credential,
+      EDGE_NODE_ROLE: "primary",
+      NODE_ENV: "production",
+      MAINTENANCE_DATABASE_URL: "malformed-url-private-value",
+    }).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("MAINTENANCE_DATABASE_URL");
+    expect((error as Error).message).not.toContain(
+      "malformed-url-private-value",
+    );
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("probes the maintenance login, purges immediately, schedules daily, and closes its pool", async () => {

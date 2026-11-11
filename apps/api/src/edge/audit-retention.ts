@@ -28,11 +28,21 @@ export interface EdgeAuditRetentionHandle {
 
 export interface StartEdgeAuditRetentionOptions {
   source: Record<string, string | undefined>;
+  onOwnerAlarm?: () => void | Promise<void>;
   /** Test seam; production creates a guarded, single-connection pool. */
   pool?: RetentionPool;
   intervalMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
+}
+
+export function resolveEdgeAuditRetentionUrl(
+  source: Record<string, string | undefined>,
+): string | null {
+  // A missing maintenance login disables only housekeeping, never offline
+  // sales. A configured but malformed URL is still a boot configuration error.
+  if (!source.MAINTENANCE_DATABASE_URL?.trim()) return null;
+  return resolveMaintenanceDatabaseUrl({ env: source, cloud: true });
 }
 
 function defaultSetTimer(fn: () => void, ms: number): unknown {
@@ -54,21 +64,34 @@ function errorLabel(error: unknown): string {
 }
 
 /**
- * Probe before starting the edge, sweep now, then daily without overlap.
- * Production requires the local database's maintenance login; development
- * without one skips the job. stop() drains the sweep before closing its pool.
+ * Probe before starting the audit sweep, then run daily without overlap.
+ * A missing local maintenance login skips housekeeping and raises an alarm;
+ * it never takes offline POS down. stop() drains the sweep before pool close.
  */
 export async function startEdgeAuditRetention(
   options: StartEdgeAuditRetentionOptions,
 ): Promise<EdgeAuditRetentionHandle | null> {
-  const url = resolveMaintenanceDatabaseUrl({
-    env: options.source,
-    cloud: true,
-  });
+  const url = resolveEdgeAuditRetentionUrl(options.source);
   if (!url) {
-    logger.info(
-      "Edge audit retention skipped without MAINTENANCE_DATABASE_URL",
-    );
+    try {
+      logger.error(
+        "Edge audit retention skipped without MAINTENANCE_DATABASE_URL; owner action required",
+      );
+    } catch {
+      // Logging must not take offline sales down either.
+    }
+    try {
+      await options.onOwnerAlarm?.();
+    } catch (error) {
+      try {
+        logger.error(
+          { code: errorLabel(error) },
+          "Edge audit retention owner alarm failed",
+        );
+      } catch {
+        // The runtime's heartbeat repeats the owner alarm while missing.
+      }
+    }
     return null;
   }
   const pool =
