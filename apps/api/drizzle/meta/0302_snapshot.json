@@ -35796,6 +35796,10 @@
           "name": "bank_accounts_hmac_check",
           "value": "\"bank_accounts\".\"account_number_hmac\" ~ '^[a-f0-9]{64}$'"
         },
+        "bank_accounts_account_number_hmac_version_check": {
+          "name": "bank_accounts_account_number_hmac_version_check",
+          "value": "\"bank_accounts\".\"account_number_hmac_version\" IN (1, 2)"
+        },
         "bank_accounts_key_version_check": {
           "name": "bank_accounts_key_version_check",
           "value": "\"bank_accounts\".\"account_number_key_version\" >= 1"
