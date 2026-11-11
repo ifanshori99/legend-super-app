@@ -2,18 +2,37 @@
 // "Distribusi Service Charge", §6 H; contract `@starter/shared/hris/payroll`
 // service-charge.ts). Routes: routes/payroll-service-charge.routes.ts.
 //
-// This slice stores a pool in `draft` and reads pools and their allocations.
-// Calculate and approve belong to the payroll engine (bead legend-pf9u7) and
-// are not registered here. Reading needs `payroll.view`, creating `payroll.run`,
-// both tenant-wide (payroll/endpoints.ts header). A pool is outlet owned, so
-// the table also carries the outlet RLS backstop (TEN-03).
+// This slice stores a pool in `draft`, reads pools and their allocations, and
+// (bead legend-pf9u7) calculates the allocations and distributes an approved
+// pool to a payroll run. Approve is not registered here. Reading needs
+// `payroll.view`, creating `payroll.run`, both tenant-wide (payroll/endpoints.ts
+// header). A pool is outlet owned, so the table also carries the outlet RLS
+// backstop (TEN-03).
+//
+// Calculate and distribute repeat the `payroll.run` check inside the tenant
+// transaction (assertPayrollTenantCan), like the route gate does.
+// Money rule: the allocations of a pool always add up to `amount_idr`, checked
+// when they are written and again before the pool is distributed.
 //
 // A new pool may not overlap a live (not cancelled) pool of the same outlet:
 // the unique index only catches an identical period, the service checks the
 // range. Both answer 409 CONFLICT.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, lt, lte, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import {
   businessDateSchema,
@@ -27,13 +46,22 @@ import {
   serviceChargeAllocationSchema,
   serviceChargePoolSchema,
   serviceChargeRuleSchema,
+  distributeServiceChargePool,
+  payrollRunIdSchema,
+  PayrollError,
+  transitionServiceChargePool,
   type ServiceChargeAllocation,
+  type ServiceChargeParticipant,
   type ServiceChargePool,
   type ServiceChargePoolId,
 } from "@starter/shared/hris/payroll";
+import type { EmployeeId } from "@starter/shared/hris";
 import type { z } from "@starter/shared/core";
 import { db } from "../db/index.ts";
+import { attendanceLogs } from "../db/schema/hris-attendance.ts";
+import { employees, positions } from "../db/schema/hris.ts";
 import {
+  payrollRuns,
   serviceChargeAllocations,
   serviceChargePools,
 } from "../db/schema/payroll.ts";
@@ -137,8 +165,9 @@ async function loadPool(
   tx: Tx,
   context: ScopedTenantContext,
   poolId: string,
+  lock = false,
 ): Promise<PoolRow> {
-  const [row] = await tx
+  const query = tx
     .select()
     .from(serviceChargePools)
     .where(
@@ -148,6 +177,8 @@ async function loadPool(
       ),
     )
     .limit(1);
+  // FOR UPDATE: two calculations or distributions of one pool queue here.
+  const [row] = lock ? await query.for("update") : await query;
   if (!row) throw notFound("Pool service charge");
   return row;
 }
@@ -371,5 +402,298 @@ export async function listServiceChargeAllocations(
             : null,
       },
     };
+  });
+}
+
+/** Sum of a pool's allocations and how many there are (bigint: no float drift). */
+async function allocationTotal(
+  tx: Tx,
+  context: ScopedTenantContext,
+  poolId: string,
+): Promise<{ total: bigint; count: number }> {
+  const [row] = await tx
+    .select({
+      total: sql<string>`COALESCE(SUM(${serviceChargeAllocations.amountIdr}), 0)::text`,
+      count: sql<number>`COUNT(*)::int`,
+    })
+    .from(serviceChargeAllocations)
+    .where(
+      and(
+        eq(serviceChargeAllocations.tenantId, context.tenant.tenantId),
+        eq(serviceChargeAllocations.poolId, poolId as ServiceChargePoolId),
+      ),
+    );
+  return { total: BigInt(row?.total ?? "0"), count: row?.count ?? 0 };
+}
+
+/**
+ * Participants of a pool: active employees of the pool outlet whose position
+ * carries points, whose employment type is in the rule and who were employed
+ * in the period. Ordered by id so a recalculation gives the same shares.
+ */
+async function loadParticipants(
+  tx: Tx,
+  context: ScopedTenantContext,
+  pool: PoolRow,
+  rule: z.infer<typeof serviceChargeRuleSchema>,
+): Promise<ServiceChargeParticipant[]> {
+  const rows = await tx
+    .select({
+      employeeId: employees.id,
+      employmentType: employees.employmentType,
+      points: positions.serviceChargePoints,
+    })
+    .from(employees)
+    .innerJoin(
+      positions,
+      and(
+        eq(positions.tenantId, employees.tenantId),
+        eq(positions.id, employees.positionId),
+      ),
+    )
+    .where(
+      and(
+        eq(employees.tenantId, context.tenant.tenantId),
+        eq(employees.homeOutletId, pool.outletId),
+        eq(employees.status, "active"),
+        inArray(employees.employmentType, rule.eligibleEmploymentTypes),
+        sql`${positions.serviceChargePoints} > 0`,
+        lte(employees.joinDate, pool.periodEnd),
+        or(isNull(employees.endDate), gte(employees.endDate, pool.periodStart)),
+      ),
+    )
+    .orderBy(asc(employees.id));
+  if (rows.length === 0) return [];
+
+  // Days present: distinct business days with a valid clock-out in the period.
+  const days = await tx
+    .select({
+      employeeId: attendanceLogs.employeeId,
+      days: sql<number>`COUNT(DISTINCT ${attendanceLogs.businessDate})::int`,
+    })
+    .from(attendanceLogs)
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, context.tenant.tenantId),
+        inArray(
+          attendanceLogs.employeeId,
+          rows.map((row) => row.employeeId),
+        ),
+        eq(attendanceLogs.type, "out"),
+        eq(attendanceLogs.validity, "valid"),
+        gte(attendanceLogs.businessDate, pool.periodStart),
+        lte(attendanceLogs.businessDate, pool.periodEnd),
+      ),
+    )
+    .groupBy(attendanceLogs.employeeId);
+  const daysOf = new Map(days.map((row) => [row.employeeId, row.days]));
+
+  return rows.map((row) => ({
+    employeeId: row.employeeId as EmployeeId,
+    employmentType: row.employmentType,
+    points: row.points,
+    // The column holds 0..31.
+    attendanceDays: Math.min(31, daysOf.get(row.employeeId) ?? 0),
+  }));
+}
+
+/**
+ * Calculates (or recalculates) the allocations of a pool: draft | calculated ->
+ * calculated. The old allocations are replaced in the same transaction, so a
+ * repeat gives the same shares. The shares add up to the pool amount exactly;
+ * a pool with money and nobody to pay is refused and nothing is written.
+ */
+export async function calculateServiceChargePoolAllocations(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  poolId: string,
+  now: Date = new Date(),
+): Promise<ServiceChargePool> {
+  return withTenant(db, context, async (tx) => {
+    await assertPayrollTenantCan(tx, context, actorUserId, "payroll.run");
+    const pool = await loadPool(tx, context, poolId, true);
+    const next = transitionServiceChargePool(
+      pool.status as ServiceChargePool["status"],
+      "calculate",
+    );
+    const rule = serviceChargeRuleSchema.parse(pool.rule);
+    const participants = await loadParticipants(tx, context, pool, rule);
+    // Throws PAYROLL_INVALID_TRANSITION for money without an eligible person.
+    const shares = distributeServiceChargePool(
+      pool.amountIdr,
+      rule,
+      participants,
+    ).filter((share) => share.weight > 0);
+
+    const total = shares.reduce(
+      (sum, share) => sum + BigInt(share.amountIdr),
+      0n,
+    );
+    if (total !== BigInt(pool.amountIdr))
+      throw new PayrollError(
+        "PAYROLL_INVALID_TRANSITION",
+        "Pembagian service charge tidak sama dengan jumlah pool.",
+      );
+
+    await tx
+      .delete(serviceChargeAllocations)
+      .where(
+        and(
+          eq(serviceChargeAllocations.tenantId, context.tenant.tenantId),
+          eq(serviceChargeAllocations.poolId, pool.id),
+        ),
+      );
+    if (shares.length > 0)
+      await tx.insert(serviceChargeAllocations).values(
+        shares.map((share) => ({
+          id: randomUUID() as AllocationRow["id"],
+          tenantId: context.tenant.tenantId,
+          poolId: pool.id,
+          employeeId: share.employeeId,
+          points: share.points,
+          attendanceDays: share.attendanceDays,
+          weight: share.weight,
+          amountIdr: share.amountIdr,
+        })),
+      );
+
+    const [row] = await tx
+      .update(serviceChargePools)
+      .set({ status: next, updatedAt: now })
+      .where(
+        and(
+          eq(serviceChargePools.tenantId, context.tenant.tenantId),
+          eq(serviceChargePools.id, pool.id),
+        ),
+      )
+      .returning();
+    if (!row) throw new Error("Service charge pool was not updated");
+    await recordAudit(
+      tx,
+      context,
+      hrisAuditEntry(context, actorUserId, now, {
+        outletId: row.outletId,
+        action: "payroll.service_charge_pool.calculated",
+        objectType: "service_charge_pool",
+        objectId: row.id,
+        after: {
+          periodStart: row.periodStart,
+          periodEnd: row.periodEnd,
+          status: row.status,
+        },
+      }),
+      AUDIT_SAFE_FIELDS,
+    );
+    return toPool(row);
+  });
+}
+
+/**
+ * Hands an approved pool to a payroll run: approved -> distributed, once. The
+ * pool row is locked, so two distributions queue and the second sees
+ * `distributed`. A locked, paid or reversed run is frozen (PAYR-02) and takes
+ * nothing. The allocations must add up to the pool amount, else nothing moves.
+ * Lock order is always pool first, then run, so two distributions cannot
+ * deadlock. Once both rows are locked the run must be a regular run of the
+ * legal entity that owns the pool's outlet, and its period must cover the
+ * whole pool period; otherwise 409 and nothing moves.
+ */
+export async function distributeServiceChargePoolToRun(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  poolId: string,
+  input: { payrollRunId: string },
+  now: Date = new Date(),
+): Promise<ServiceChargePool> {
+  const payrollRunId = payrollRunIdSchema.parse(input.payrollRunId);
+  return withTenant(db, context, async (tx) => {
+    await assertPayrollTenantCan(tx, context, actorUserId, "payroll.run");
+    const pool = await loadPool(tx, context, poolId, true);
+    const next = transitionServiceChargePool(
+      pool.status as ServiceChargePool["status"],
+      "distribute",
+    );
+
+    const [run] = await tx
+      .select({
+        id: payrollRuns.id,
+        status: payrollRuns.status,
+        runType: payrollRuns.runType,
+        legalEntityId: payrollRuns.legalEntityId,
+        periodStart: payrollRuns.periodStart,
+        periodEnd: payrollRuns.periodEnd,
+      })
+      .from(payrollRuns)
+      .where(
+        and(
+          eq(payrollRuns.tenantId, context.tenant.tenantId),
+          eq(payrollRuns.id, payrollRunId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!run) throw notFound("Payroll run");
+    if (["locked", "paid", "reversed"].includes(run.status))
+      throw new PayrollError("PAYROLL_RUN_FROZEN");
+
+    const [outlet] = await tx
+      .select({ legalEntityId: outlets.legalEntityId })
+      .from(outlets)
+      .where(
+        and(
+          eq(outlets.tenantId, context.tenant.tenantId),
+          eq(outlets.id, pool.outletId),
+        ),
+      )
+      .limit(1);
+    if (!outlet) throw notFound("Outlet");
+    if (
+      run.runType !== "regular" ||
+      run.legalEntityId !== outlet.legalEntityId ||
+      run.periodStart > pool.periodStart ||
+      run.periodEnd < pool.periodEnd
+    )
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "Pool service charge hanya bisa dibagikan ke run reguler badan hukum outlet yang periodenya mencakup seluruh periode pool.",
+      );
+
+    const { total, count } = await allocationTotal(tx, context, pool.id);
+    if (total !== BigInt(pool.amountIdr) || (count === 0 && pool.amountIdr > 0))
+      throw new PayrollError(
+        "PAYROLL_INVALID_TRANSITION",
+        "Pembagian service charge tidak sama dengan jumlah pool; hitung ulang sebelum dibagikan.",
+      );
+
+    const [row] = await tx
+      .update(serviceChargePools)
+      .set({ status: next, payrollRunId: run.id, updatedAt: now })
+      .where(
+        and(
+          eq(serviceChargePools.tenantId, context.tenant.tenantId),
+          eq(serviceChargePools.id, pool.id),
+          eq(serviceChargePools.status, "approved"),
+        ),
+      )
+      .returning();
+    if (!row) throw new PayrollError("PAYROLL_INVALID_TRANSITION");
+    await recordAudit(
+      tx,
+      context,
+      hrisAuditEntry(context, actorUserId, now, {
+        outletId: row.outletId,
+        action: "payroll.service_charge_pool.distributed",
+        objectType: "service_charge_pool",
+        objectId: row.id,
+        after: {
+          periodStart: row.periodStart,
+          periodEnd: row.periodEnd,
+          status: row.status,
+        },
+      }),
+      AUDIT_SAFE_FIELDS,
+    );
+    return toPool(row);
   });
 }
