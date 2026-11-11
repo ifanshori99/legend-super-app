@@ -116,6 +116,7 @@ import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { blindCountHiddenFilter } from "./inventory-count.visibility";
 import { appendOutbox } from "./core-outbox";
+import { enqueueHppRecompute } from "./hpp-recompute.service";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -1122,6 +1123,15 @@ async function applyMovementToLockedBalance(
         eq(stockBalances.inventoryItemId, balance.inventoryItemId),
       ),
     );
+  // HPP menu costs follow the average cost (legend-2qq): queue the item in
+  // this same transaction, only when the average really moved. Receipts post
+  // through here too, so one hook covers every stock-in.
+  if (next.avgCostIdr !== balance.avgCostIdr)
+    await enqueueHppRecompute(tx, {
+      tenantId: balance.tenantId,
+      outletId: balance.outletId,
+      itemIds: [balance.inventoryItemId],
+    });
 }
 
 async function appendStockMovedEvent(
@@ -1634,6 +1644,21 @@ export async function rebuildStockBalances(
       ROUNDING_MODE,
       "posting",
     );
+    const previousAvg = new Map(
+      (
+        await tx
+          .select({
+            locationId: stockBalances.locationId,
+            inventoryItemId: stockBalances.inventoryItemId,
+            avgCostIdr: stockBalances.avgCostIdr,
+          })
+          .from(stockBalances)
+          .where(eq(stockBalances.outletId, outletId))
+      ).map((row) => [
+        `${row.locationId}:${row.inventoryItemId}`,
+        row.avgCostIdr,
+      ]),
+    );
     await tx.delete(stockBalances).where(eq(stockBalances.outletId, outletId));
     if (derived.length > 0)
       await tx.insert(stockBalances).values(
@@ -1647,6 +1672,27 @@ export async function rebuildStockBalances(
           updatedAt: new Date(balance.updatedAt),
         })),
       );
+    // The repair can move average costs (legend-2qq): queue every item whose
+    // average differs from the row it replaced, or that had no row.
+    const changedItems = new Set<string>();
+    for (const balance of derived)
+      if (
+        previousAvg.get(`${balance.locationId}:${balance.inventoryItemId}`) !==
+        balance.avgCostIdr
+      )
+        changedItems.add(balance.inventoryItemId);
+    const derivedKeys = new Set(
+      derived.map(
+        (balance) => `${balance.locationId}:${balance.inventoryItemId}`,
+      ),
+    );
+    for (const key of previousAvg.keys())
+      if (!derivedKeys.has(key)) changedItems.add(key.split(":")[1]!);
+    await enqueueHppRecompute(tx, {
+      tenantId: context.tenant.tenantId,
+      outletId,
+      itemIds: [...changedItems],
+    });
     return { locationsItems: derived.length };
   });
 }

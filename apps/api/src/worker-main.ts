@@ -104,6 +104,7 @@ import {
 } from "./worker/relay";
 import { touchHeartbeat } from "./worker/heartbeat";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
+import { runHppRecomputeJob } from "./worker/hpp-recompute.job.ts";
 import {
   createMaintenancePool,
   probeMaintenanceConnection,
@@ -515,6 +516,13 @@ const relay = createRelayRuntime({
       await runInventoryExpiryJob(context);
     } catch {
       console.error("Inventory expiry sweep failed");
+    }
+    // §17 HPP menu costs follow ingredient cost changes within 5 minutes
+    // (legend-2qq); self-throttled to once a minute per tenant.
+    try {
+      await runHppRecomputeJob(context);
+    } catch {
+      console.error("HPP recompute sweep failed");
     }
     // Parked staff PIN / POS override edge rows of outlets that never send
     // another live access event (legend-0q3r); self-throttled.
