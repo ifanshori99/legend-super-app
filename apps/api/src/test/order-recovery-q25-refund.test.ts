@@ -726,6 +726,57 @@ describe("legend-hhm5m 5 replay tidak memakai ulang slot pembulatan pajak", () =
       expect(await liveRefundTotal(issueIds)).toBeLessThanOrEqual(paid.total);
     },
   );
+
+  // The slot MOVES: line i final-fails BEFORE the later lines are filed, so the next
+  // line takes line i's cumulative slot; then line i replays. With slots 105/106/105
+  // failing line 1 lets line 2 take the 106 slot and the replay ask 106 again: 317 of
+  // a 316 PBJT. Checked on the `order.refunded` components the journal posts as is
+  // (the journal fixture of order-recovery-refund-final-failure.test.ts is a seeded
+  // tenant with synthetic events, not this consumer's events).
+  it.each([0, 1])(
+    "baris ke-%i gagal final sebelum baris berikut diajukan (slot dipakai baris lain): PBJT dan komponen yang berdiri tidak melebihi order",
+    async (failedIndex) => {
+      const items = [bulatA, bulatB, bulatC];
+      const reference = await paidOrder("pay_first", items);
+      const referenceIssues: string[] = [];
+      for (const itemId of items)
+        referenceIssues.push(
+          (await filedRefund(reference.line(itemId).id, BULAT_PRICE)).issueId,
+        );
+      const original = await standingSplit(reference.order.id, referenceIssues);
+      expect(original.pbjtIdr, "reference books PBJT").toBeGreaterThan(0);
+
+      const paid = await paidOrder("pay_first", items);
+      expect(paid.total).toBe(reference.total);
+      const filed = [];
+      for (const itemId of items.slice(0, failedIndex + 1))
+        filed.push(await filedRefund(paid.line(itemId).id, BULAT_PRICE));
+      const failed = filed[failedIndex]!;
+      await failFinally(failed.refund.id, "provider_declined");
+      for (const itemId of items.slice(failedIndex + 1))
+        filed.push(await filedRefund(paid.line(itemId).id, BULAT_PRICE));
+      const again = await reportAgain(
+        paid.line(items[failedIndex]!).id,
+        BULAT_PRICE,
+      );
+      const replay = (await refundedEvents(paid.order.id)).find(
+        (event) => event.refundId === again.issueId,
+      );
+      expect(replay, "the replay booked order.refunded").toBeDefined();
+      expect(
+        sumOf(await issueRefunds(again.issueId)),
+        "replay never above the failed refund",
+      ).toBeLessThanOrEqual(failed.refund.amount_idr);
+
+      const issueIds = [...filed.map((entry) => entry.issueId), again.issueId];
+      const standing = await standingSplit(paid.order.id, issueIds);
+      for (const field of SPLIT_FIELDS)
+        expect(standing[field], `standing ${field}`).toBeLessThanOrEqual(
+          original[field],
+        );
+      expect(await liveRefundTotal(issueIds)).toBeLessThanOrEqual(paid.total);
+    },
+  );
 });
 
 // ---- hhm5m 4: the order of filings follows the refile relation -------------------
