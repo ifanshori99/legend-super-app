@@ -869,7 +869,9 @@ async function qrSaleGatewayOf(
     })
     .from(orders)
     .where(and(eq(orders.tenantId, tenantId), eq(orders.id, p.orderId)));
-  if (!order || order.channel !== "qr") return null;
+  // A facility breakfast order is sold like a QR pay-first one (bead oa0qk).
+  if (!order || (order.channel !== "qr" && order.channel !== "facility"))
+    return null;
   if (
     order.paymentMode !== "pay_first" ||
     order.firedAt === null ||

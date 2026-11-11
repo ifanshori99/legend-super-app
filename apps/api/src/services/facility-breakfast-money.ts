@@ -27,6 +27,7 @@ import { and, eq, inArray, ne } from "drizzle-orm";
 import {
   createUlid,
   idr,
+  ulidToUuid,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -43,9 +44,12 @@ import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
+import { cancelPaymentLinkInTx } from "./payment.service.ts";
 import { pendingRefundIdr } from "./pos-order-late-payment.ts";
 import { QR_SYSTEM_ACTOR } from "./qr-order-late-payment.ts";
+import { appendQrOrderPaid } from "./qr-order-paid.ts";
 import { voidAwaitingPaymentOrderTx } from "./qr-order.service.ts";
+import { recordTaxSnapshots } from "./tax.service.ts";
 
 export type BreakfastOrderRow = typeof orders.$inferSelect;
 export type BreakfastLinkedRow = typeof facilityLinkedOrders.$inferSelect;
@@ -237,6 +241,15 @@ export async function cancelBreakfastOrderTx(
     { reason: input.reason, actorUserId: input.actorUserId },
     input.now,
   );
+  // Every cancel closes the pay link, paid or not: a code the guest still holds
+  // must not take money for a cancelled order (a late payment is refunded in
+  // full by the consumer, but it should not be possible to start one).
+  if (order.paymentLinkId !== null)
+    await cancelPaymentLinkInTx(tx, context, {
+      linkId: order.paymentLinkId,
+      now: input.now,
+      reason: "breakfast_cancelled",
+    });
   let refundIdr = 0;
   if (linked.status === "paid") {
     if (linked.paidIntentId === null || order.paymentLinkId === null)
@@ -377,7 +390,7 @@ export async function fireBreakfastOrderTx(
         eq(orders.status, "awaiting_payment"),
       ),
     )
-    .returning({ id: orders.id });
+    .returning();
   if (!fired)
     throw new Error("Breakfast order is not awaiting payment; not fired again");
   const items = await tx
@@ -413,6 +426,21 @@ export async function fireBreakfastOrderTx(
     now: at,
     // The guest already paid: a missing station must not fail the fire.
     onUnresolved: "skip",
+  });
+  // The sale is made here, with its money verified (like fireQrOrder): WS-07
+  // books it from order.paid at `fired_at`. One fire per order, so one event.
+  if (order.taxResult)
+    await recordTaxSnapshots(tx, context, {
+      sourceType: "order",
+      sourceId: ulidToUuid(order.id),
+      outletId: order.outletId,
+      businessDate: order.businessDate,
+      result: order.taxResult,
+    });
+  await appendQrOrderPaid(tx, context, fired, {
+    now: at,
+    paidIntentId: intent.id,
+    channel: "facility",
   });
   await auditFacility(tx, context, input.actorUserId, at, {
     action: "facility.breakfast.fired",
