@@ -13,10 +13,14 @@
 // - S1 clock skew: B's refund `created_at` is OLDER than A's, B is `rejected`; C must
 //   end `nothing_left` (predecessor B), and no refund is opened for C (pay-first and
 //   open bill).
-// - S2 timestamp tie: A and B have the SAME `created_at`; once with B's refund id
-//   below A's and once above; C must still pick B.
-// - S3 other direction: B's `created_at` is older than A's and B fails finally for a
-//   non-rejected reason; C must replay B (`replayOfIssueId` = B, B's exact amount).
+// - S2 timestamp tie (regression guard): A and B have the SAME `created_at`; once
+//   with B's refund id below A's and once above; C must still pick B. The old code
+//   broke ties on the ISSUE id, which these tests do not force, so S2 is not a
+//   fail-first proof (S1 and S4a are).
+// - S3 other direction (regression guard): B's `created_at` is older than A's and B
+//   fails finally for a non-rejected reason; C replays the chain with B's exact
+//   amount and split. B itself replayed A, and the chain stores its ROOT, so
+//   `replayOfIssueId` of C is A (same as order-recovery-refund-promo-final-failure).
 // - S4 legacy data: filings WITHOUT a sequence rank below every filing with one, and
 //   among themselves keep the old order. Covered as (a) A legacy + B sequenced with B
 //   older by created_at -> B wins, (b) all legacy in normal time -> old behaviour.
@@ -571,7 +575,7 @@ describe("legend-ti19m S2 timestamp seri: refund A dan B created_at sama persis"
 // ---- S3: the other direction --------------------------------------------------
 
 describe("legend-ti19m S3 arah sebaliknya: B gagal final bukan rejected, jamnya lebih tua dari A", () => {
-  it("C me-replay B (bukan A) dengan jumlah dan split B yang persis", async () => {
+  it("C me-replay rantai B (akar A) dengan jumlah dan split B yang persis", async () => {
     const paid = await paidOrder("pay_first", [bulatA, besar]);
     const { a, b } = await failedThenReplayed(paid.line(bulatA).id);
     await forceRefund(b.refund.id, {
@@ -581,7 +585,8 @@ describe("legend-ti19m S3 arah sebaliknya: B gagal final bukan rejected, jamnya 
 
     const c = await reportAgain(paid.line(bulatA).id);
 
-    expect(await replayOf(c.issueId)).toBe(b.issueId);
+    // The chain stores its root: B replayed A, so C records A.
+    expect(await replayOf(c.issueId)).toBe(a.issueId);
     expect(
       (await issueRefunds(c.issueId)).map((row) => row.amount_idr),
     ).toEqual([a.refund.amount_idr]);
@@ -654,7 +659,8 @@ describe("legend-ti19m S5 regresi: rantai A -> B -> C tanpa jam miring", () => {
 
     const c = await reportAgain(paid.line(bulatA).id);
 
-    expect(await replayOf(c.issueId)).toBe(b.issueId);
+    // The chain stores its root: B replayed A, so C records A.
+    expect(await replayOf(c.issueId)).toBe(a.issueId);
     expect(
       (await issueRefunds(c.issueId)).map((row) => row.amount_idr),
     ).toEqual([a.refund.amount_idr]);

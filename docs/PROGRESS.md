@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-ti19m urutan filing monoton refund recovery (engineer Opus, cabang `ws/ti19m-filing-order` dari ws/pti5r-promo-refund 326bfbfa, 2026-11-11)
+
+- Sudah: pendahulu replay dipilih dari `filingSeq` (max seq filing recovery order + 1, dihitung di bawah kunci order dan intent), disimpan di respons idempotensi dan audit `refund_requested`. Data lama tanpa seq di bawah semua yang ber-seq. Refile tidak mengubah seq.
+- Test: `order-recovery-refund-filing-order.test.ts` 10 test. Gagal-dulu di 326bfbfa: 5/10 (S1 pay-first + open bill, S2 id rendah, S4a, S6). S3/S5 penjaga regresi (rantai menyimpan akar A). Area 12 file 203/203 hijau. tsc, eslint, prettier bersih.
+- Architect xhigh: tidak ada bug uang; dua ekspektasi test salah (akar rantai) dibetulkan. Info: rolling deploy bisa membuat filing tanpa seq setelah ber-seq (butuh 3 laporan item sama dalam jendela deploy).
+- Berikut: review CTO.
+
 ## legend-iu91r + legend-8kilj refund recovery: edge, kegagalan final, four-eyes payout, release pin (engineer, cabang `ws/refund-recovery-fix` dari ws/94q2l-impl 3b94e7ad + merge milestone/m1 0f2802e7, 2026-11-10)
 
 - R1: `worker-main.ts` menjalankan `deliverOrderRecoveryRefundEvent` hanya bila `sweepsRefunds` (cloud), seperti refund lain (legend-jm5c).
