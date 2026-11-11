@@ -3,7 +3,7 @@
 // nobody and shows no contact details.
 import { Button } from "@/components/ui/button";
 import { PinLayout } from "../pin-layout.tsx";
-import { WaBackLink } from "./parts.tsx";
+import { WRAP_BUTTON_CLASS, WaBackLink } from "./parts.tsx";
 
 type WaResetHrHelpProps = {
   onBack: () => void;
@@ -39,14 +39,19 @@ function WaResetHrHelp({ onBack }: WaResetHrHelpProps) {
             </span>
             <div className="grid gap-0.5">
               <p className="text-base font-bold">{step.title}</p>
-              <p className="text-sm leading-5 text-muted-foreground">
+              <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
                 {step.body}
               </p>
             </div>
           </li>
         ))}
       </ol>
-      <Button type="button" size="lg" className="w-full" onClick={onBack}>
+      <Button
+        type="button"
+        size="lg"
+        className={WRAP_BUTTON_CLASS}
+        onClick={onBack}
+      >
         Kembali ke slip gaji
       </Button>
     </PinLayout>

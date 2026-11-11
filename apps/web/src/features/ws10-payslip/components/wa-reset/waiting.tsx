@@ -4,12 +4,13 @@
 // device, and a countdown. Pure component: the container polls the server and
 // decides when to leave; the local countdown only informs, it never verifies.
 // Copying or opening WhatsApp is never shown as success of the verification.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { Check, ChevronLeft, Clock, Copy, MessageCircle } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { QrCode } from "@/components/ui/qr-code";
+import { isWaMeLink } from "../../wa-reset-api.ts";
 import { PinLayout } from "../pin-layout.tsx";
 
 type WaResetWaitingProps = {
@@ -32,6 +33,8 @@ type WaResetWaitingProps = {
   onNotVerified?: () => void;
   /** Ask the server for a new code. */
   onRegenerate: () => void;
+  /** True while the new code is being asked for: the button waits. */
+  regenerating?: boolean;
   onCancel: () => void;
   onHrHelp: () => void;
 };
@@ -55,10 +58,17 @@ function formatRemaining(ms: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function senderText(hint: string): string {
-  return /^\d{1,4}$/.test(hint)
-    ? `Gunakan nomor terdaftar: •••• ${hint}.`
-    : `Gunakan nomor terdaftar: ${hint}.`;
+function senderText(hint: string): ReactNode {
+  const shown = /^\d{1,4}$/.test(hint) ? `•••• ${hint}` : hint;
+  return (
+    <>
+      Gunakan nomor terdaftar:{" "}
+      <span translate="no" className="whitespace-nowrap">
+        {shown}
+      </span>
+      .
+    </>
+  );
 }
 
 async function writeClipboard(text: string): Promise<boolean> {
@@ -79,12 +89,15 @@ function WaResetWaiting({
   onCopied,
   onNotVerified,
   onRegenerate,
+  regenerating = false,
   onCancel,
   onHrHelp,
 }: WaResetWaitingProps) {
   const t = useT();
   const message = messageFor(code);
   const number = receivingNumber(waLink);
+  // A link that is not wa.me/<digits> is never opened or turned into a QR.
+  const linkOk = isWaMeLink(waLink);
 
   // null until mounted: the server render has no clock to agree with.
   const [now, setNow] = useState<number | null>(null);
@@ -140,10 +153,16 @@ function WaResetWaiting({
           Pesan yang akan dikirim
         </p>
         <p
-          className="text-xl font-bold tracking-wide break-all"
+          className="text-xl font-bold tracking-wide"
           data-testid="wa-reset-message"
         >
-          {message}
+          RESET PIN{" "}
+          <code
+            translate="no"
+            className="font-[inherit] whitespace-nowrap"
+          >
+            {code}
+          </code>
         </p>
         <p className="flex items-center gap-1.5 text-sm leading-5 text-muted-foreground">
           <Clock className="size-4 shrink-0" aria-hidden="true" />
@@ -157,48 +176,38 @@ function WaResetWaiting({
         </p>
       </div>
 
-      {expired ? (
+      {expired || !linkOk ? (
         <div role="alert" className="grid gap-3">
-          <p className="text-sm leading-5">
-            Pesan dengan kode ini tidak bisa dipakai lagi. Buat kode baru, lalu
-            kirim lewat WhatsApp.
+          <p className="text-base leading-6 md:text-sm md:leading-5">
+            {expired
+              ? "Pesan dengan kode ini tidak bisa dipakai lagi. Buat kode baru, lalu kirim lewat WhatsApp."
+              : "Tautan WhatsApp tidak dapat dibuka. Buat kode baru, lalu kirim lewat WhatsApp."}
           </p>
-          <Button type="button" size="lg" className="w-full" onClick={onRegenerate}>
-            Buat kode baru
+          <Button
+            type="button"
+            size="lg"
+            className="h-auto min-h-control w-full whitespace-normal"
+            onClick={onRegenerate}
+            loading={regenerating}
+          >
+            {regenerating ? "Membuat kode…" : "Buat kode baru"}
           </Button>
         </div>
       ) : (
-        <div className="grid items-start gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
-          <div className="grid gap-3">
-            <Button asChild size="lg" className="w-full">
-              <a href={waLink} target="_blank" rel="noopener noreferrer">
-                <MessageCircle aria-hidden="true" />
-                Buka WhatsApp
-              </a>
-            </Button>
-            <p className="text-sm leading-5 text-muted-foreground">
-              Pesan sudah terisi. Tekan Kirim tanpa mengubahnya, lalu kembali
-              ke halaman ini.
-            </p>
-            <div className="grid gap-0.5" role="status" aria-live="polite">
-              <p className="text-base font-bold">Menunggu pesan Anda…</p>
-              <p className="text-sm leading-5 text-muted-foreground">
-                Verifikasi muncul di sini, tanpa balasan WhatsApp.
-              </p>
-            </div>
-            {onNotVerified && (
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                className="w-fit justify-start"
-                onClick={onNotVerified}
-              >
-                Sudah kirim tapi belum terverifikasi?
-              </Button>
-            )}
-          </div>
-          {/* A code for another device to scan; a phone already has the button. */}
+        <div className="grid gap-3">
+          <Button asChild size="lg" className="h-auto min-h-control w-full whitespace-normal">
+            <a href={waLink} target="_blank" rel="noopener noreferrer">
+              <MessageCircle aria-hidden="true" />
+              Buka WhatsApp
+            </a>
+          </Button>
+          <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
+            Pesan sudah terisi. Tekan Kirim tanpa mengubahnya, lalu kembali ke
+            halaman ini.
+          </p>
+          {/* A code for another device to scan; a phone already has the button.
+              Below the button, never beside it, so no column of buttons shares
+              a row with it at any width. */}
           <div className="hidden justify-items-center gap-2 md:grid">
             <QrCode
               value={waLink}
@@ -206,10 +215,27 @@ function WaResetWaiting({
               size={152}
               className="rounded-field border border-border p-2"
             />
-            <p className="max-w-[10rem] text-center text-xs leading-4 text-muted-foreground">
+            <p className="max-w-xs text-center text-sm leading-5 text-muted-foreground">
               Pindai dengan HP yang punya WhatsApp.
             </p>
           </div>
+          <div className="grid gap-0.5" role="status" aria-live="polite">
+            <p className="text-base font-bold">Menunggu pesan Anda…</p>
+            <p className="text-sm leading-5 text-muted-foreground">
+              Verifikasi muncul di sini, tanpa balasan WhatsApp.
+            </p>
+          </div>
+          {onNotVerified && (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="min-h-6 w-fit justify-start py-1"
+              onClick={onNotVerified}
+            >
+              Sudah kirim tapi belum terverifikasi?
+            </Button>
+          )}
         </div>
       )}
 
@@ -221,7 +247,12 @@ function WaResetWaiting({
               Kirim pesan di atas ke nomor WhatsApp layanan
               {number ? (
                 <>
-                  : <strong className="text-foreground">+{number}</strong>
+                  : <strong
+                    translate="no"
+                    className="whitespace-nowrap text-foreground"
+                  >
+                    +{number}
+                  </strong>
                 </>
               ) : (
                 "."
@@ -232,6 +263,7 @@ function WaResetWaiting({
             <Button
               type="button"
               variant="outline"
+              className="h-auto min-h-control whitespace-normal"
               onClick={() => void copy("code", message)}
             >
               {copied === "code" ? (
@@ -239,12 +271,13 @@ function WaResetWaiting({
               ) : (
                 <Copy aria-hidden="true" />
               )}
-              {copied === "code" ? "Kode disalin" : "Salin kode"}
+              Salin pesan
             </Button>
             {number && (
               <Button
                 type="button"
                 variant="outline"
+                className="h-auto min-h-control whitespace-normal"
                 onClick={() => void copy("number", `+${number}`)}
               >
                 {copied === "number" ? (
@@ -252,7 +285,7 @@ function WaResetWaiting({
                 ) : (
                   <Copy aria-hidden="true" />
                 )}
-                {copied === "number" ? "Nomor disalin" : "Salin nomor tujuan"}
+                Salin nomor tujuan
               </Button>
             )}
           </div>
@@ -261,15 +294,20 @@ function WaResetWaiting({
             aria-live="polite"
             className="min-h-5 text-sm leading-5 text-muted-foreground"
           >
-            {copied === "code" && "Kode disalin. Tempel dan kirim lewat WhatsApp."}
-            {copied === "number" && "Nomor tujuan disalin"}
+            {copied === "code" && "Pesan disalin. Tempel dan kirim lewat WhatsApp."}
+            {copied === "number" && "Nomor tujuan disalin."}
             {copyFailed && "Tidak bisa menyalin. Salin teks di atas secara manual."}
           </p>
         </div>
       )}
 
       <div className="grid gap-2 sm:grid-cols-2">
-        <Button type="button" variant="outline" onClick={onHrHelp}>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-auto min-h-control whitespace-normal"
+          onClick={onHrHelp}
+        >
           Minta bantuan HR atau supervisor
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>

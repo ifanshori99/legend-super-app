@@ -66,7 +66,10 @@ export type WaResetPinFailure = "proof-invalid" | "format" | "generic";
 
 export function classifyWaResetPinError(error: unknown): WaResetPinFailure {
   if (error instanceof ApiError) {
-    if (error.code === "PAYSLIP_PIN_RESET_PROOF_INVALID")
+    if (
+      error.code === "PAYSLIP_PIN_RESET_PROOF_INVALID" ||
+      error.status === 404
+    )
       return "proof-invalid";
     if (error.status === 400 || error.status === 422) return "format";
   }
@@ -113,15 +116,22 @@ export function useWaResetStatus(
  */
 export function useSubmitWaResetPin(challengeId: string | null) {
   const queryClient = useQueryClient();
-  const lastKey = useRef<{ pin: string; key: string } | null>(null);
+  const lastKey = useRef<{
+    challengeId: string | null;
+    pin: string;
+    key: string;
+  } | null>(null);
   return useMutation({
     mutationFn: (pin: string) => {
       if (challengeId === null)
         throw new ApiError(404, "NOT_FOUND", "Permintaan tidak ditemukan.");
       const previous = lastKey.current;
+      // A key never carries over to another challenge.
       const key =
-        previous?.pin === pin ? previous.key : newIdempotencyKey();
-      lastKey.current = { pin, key };
+        previous?.challengeId === challengeId && previous.pin === pin
+          ? previous.key
+          : newIdempotencyKey();
+      lastKey.current = { challengeId, pin, key };
       return submitWaResetPin(challengeId, { pin, idempotencyKey: key });
     },
     gcTime: 0,

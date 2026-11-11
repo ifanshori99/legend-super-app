@@ -30,8 +30,8 @@
 //  - No mockup exists for "nomor belum 3 hari" (too-new) or the combined
 //    "unavailable-plain" screen: asserted only by "3 hari", HR/atasan text and
 //    the absence of an active WhatsApp button (brief "Tambahan").
-//  - 429 without a Retry-After header shows a general "coba lagi dalam ..."
-//    sentence (brief "Tambahan").
+//  - 429 without a Retry-After header shows a general "Coba lagi nanti"
+//    sentence without a number (brief "Tambahan").
 //  - proof-invalid (403 on saving the new PIN) shows an alert, keeps the
 //    new-PIN form, and never reaches "PIN berhasil disimpan".
 //  - The QR (role img) shows from the md breakpoint up (1280 px), not at 390 px.
@@ -168,7 +168,7 @@ test("F30 HR-01 ur82k: the waiting screen shows the code, countdown, sender hint
     page.getByText("Verifikasi muncul di sini, tanpa balasan WhatsApp."),
   ).toBeVisible();
   await expect(page.getByText("WhatsApp di perangkat lain?")).toBeVisible();
-  await expect(action(page, "Salin kode")).toBeVisible();
+  await expect(action(page, "Salin pesan")).toBeVisible();
   await expect(action(page, "Salin nomor tujuan")).toBeVisible();
   await expect(
     action(page, "Minta bantuan HR atau supervisor"),
@@ -271,9 +271,9 @@ test("F30 ur82k: copying the code or the number gives feedback and the status st
   await startWhatsApp(page);
   await expectWaiting(page);
 
-  await action(page, "Salin kode").click();
+  await action(page, "Salin pesan").click();
   await expect(
-    page.getByText("Kode disalin. Tempel dan kirim lewat WhatsApp."),
+    page.getByText("Pesan disalin. Tempel dan kirim lewat WhatsApp."),
   ).toBeVisible();
   await expect(page.getByText(/Menunggu pesan Anda/)).toBeVisible();
 
@@ -386,7 +386,7 @@ test("F30 HR-01 ur82k: a 409 without a reason shows one combined screen that nam
   await openForgot(page, "unavailable-plain");
   await startWhatsApp(page);
   await expect(
-    page.getByText(/Hubungi HR atau atasan di outlet/).first(),
+    page.getByText(/Hubungi HR atau supervisor di outlet/).first(),
   ).toBeVisible({ timeout: COLD });
   await expect(page.getByText(/3 hari/).first()).toBeVisible();
   await expect(action(page, "Kembali ke slip gaji")).toBeVisible();
@@ -407,7 +407,7 @@ test("F30 ur82k: too many attempts shows a wait notice, HR help and no WhatsApp 
       "Pemulihan lewat WhatsApp dibatasi sementara. Tunggu sebelum mencoba lagi.",
     ),
   ).toBeVisible();
-  await expect(page.getByText(/coba lagi dalam/i).first()).toBeVisible();
+  await expect(page.getByText(/Coba lagi nanti/).first()).toBeVisible();
   await expect(
     page.getByText(/minta reset PIN ke HR atau supervisor di outlet/),
   ).toBeVisible();
@@ -426,7 +426,7 @@ test("F30 ur82k: a service that is not set up (503) is a calm state, not a gener
     timeout: COLD,
   });
   await expect(
-    page.getByText(/Hubungi HR atau atasan di outlet/).first(),
+    page.getByText(/Hubungi HR atau supervisor di outlet/).first(),
   ).toBeVisible();
   await expectNoActiveWhatsApp(page);
   await expect(page.getByText("Terjadi kesalahan")).toHaveCount(0);

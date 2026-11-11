@@ -11,7 +11,7 @@ type PinLayoutProps = {
   /** Card heading (h2). */
   title: string;
   /** One sentence under the card heading. */
-  description?: string;
+  description?: ReactNode;
   /** Info panel text; the panel is omitted when empty. */
   side?: ReactNode;
   /** Back link element (a router Link), rendered above the page heading. */
@@ -46,8 +46,17 @@ function PinLayout({
           {t("payslipPin.layout.subtitle")}
         </p>
       </header>
-      <div className="grid items-start gap-4 md:grid-cols-[minmax(0,1fr)_20rem] md:gap-7">
-        <Card aria-busy={busy || undefined} className="gap-4 md:p-8">
+      <div
+        className={
+          side
+            ? "grid items-start gap-4 md:grid-cols-[minmax(0,1fr)_20rem] md:gap-7"
+            : "grid items-start gap-4"
+        }
+      >
+        <Card
+          aria-busy={busy || undefined}
+          className={side ? "gap-4 md:p-8" : "w-full max-w-3xl gap-4 md:p-8"}
+        >
           <div className="grid gap-1">
             <h2 className="font-brand type-title">{title}</h2>
             {description && (

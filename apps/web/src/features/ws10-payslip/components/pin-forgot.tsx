@@ -5,6 +5,7 @@
 // is only the step machine: choose -> waiting -> verified (dialog) -> new-pin
 // -> done, plus HR help and the blocked screens. The screens are the pure
 // components in `wa-reset/`; the calls are in `wa-reset-hooks.ts`.
+import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
@@ -57,11 +58,21 @@ export function PinForgot() {
   );
   const [pinFailure, setPinFailure] = useState<WaResetPinFailure | null>(null);
   const [startFailed, setStartFailed] = useState(false);
+  // The code of a challenge that just expired, shown struck through on the
+  // expired screen (the challenge itself is gone by then).
+  const [expiredCode, setExpiredCode] = useState<string | undefined>();
 
   const challengeId = challenge?.challengeId ?? null;
   const submit = useSubmitWaResetPin(challengeId);
+  // The poll runs while waiting and also behind the "no matching message"
+  // screen: the message may still land, and then the dialog takes over.
+  const watching =
+    step === "waiting" ||
+    (step === "blocked" && blockedKind === "mismatch" && challenge !== null);
   const status = useWaResetStatus(
-    step === "waiting" ? challengeId : null,
+    // Off while a new code is being asked for: the old id must not flip the
+    // screen to "expired" mid-switch.
+    watching && !start.isPending ? challengeId : null,
     challenge?.expiresAt,
   );
   // True once the closing refetch after `expiresAt` found no verified proof.
@@ -73,17 +84,28 @@ export function PinForgot() {
 
   // Leaving the screen (back link, navigation, tab close of the router) stops
   // the code from working.
-  useEffect(
-    () => () => {
+  // `mounted` lets a start that finishes after leaving cancel its own challenge.
+  const mounted = useRef(false);
+  const starting = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       dropChallenge(openChallenge.current);
       openChallenge.current = null;
-    },
-    [],
-  );
+    };
+  }, []);
 
   function closeChallenge() {
     dropChallenge(openChallenge.current);
     openChallenge.current = null;
+  }
+
+  // "No matching message": the challenge stays open and the poll keeps going,
+  // so a late message still ends in the verified dialog.
+  function showMismatch() {
+    setBlockedKind("mismatch");
+    setStep("blocked");
   }
 
   function goToList() {
@@ -92,6 +114,7 @@ export function PinForgot() {
 
   function block(kind: WaResetBlockedKind) {
     closeChallenge();
+    setExpiredCode(kind === "expired" ? challenge?.code : undefined);
     setChallenge(null);
     setBlockedKind(kind);
     setStep("blocked");
@@ -103,7 +126,7 @@ export function PinForgot() {
   const polledGone =
     status.error instanceof ApiError && status.error.status === 404;
   useEffect(() => {
-    if (step !== "waiting") return;
+    if (!watching) return;
     if (polled === "verified") {
       setStep("verified");
     } else if (polled === "expired" || polled === "cancelled") {
@@ -114,9 +137,12 @@ export function PinForgot() {
       setStep("done");
     } else if (polledGone) {
       block("expired");
+    } else if (step === "blocked" && expiryChecked) {
+      // Behind the mismatch screen nothing else shows the clock running out.
+      block("expired");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `block` only closes over refs and setters
-  }, [step, polled, polledGone]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `block` only closes over refs, setters and the code
+  }, [watching, step, polled, polledGone, expiryChecked]);
 
   // The poll stops at `expiresAt`. One last ask decides what the screen says:
   // verified (the message landed in the last seconds) wins over the local
@@ -125,7 +151,9 @@ export function PinForgot() {
   const expiresAt = challenge?.expiresAt;
   useEffect(() => {
     setExpiryChecked(false);
-    if (step !== "waiting" || !expiresAt) return;
+  }, [challengeId, expiresAt]);
+  useEffect(() => {
+    if (!watching || !expiresAt || start.isPending) return;
     let cancelled = false;
     const timer = setTimeout(
       () => {
@@ -139,19 +167,55 @@ export function PinForgot() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [step, challengeId, expiresAt, refetchStatus]);
+  }, [watching, challengeId, expiresAt, refetchStatus, start.isPending]);
+
+  // Focus and announcements. Each new screen puts focus on its heading and a
+  // single live region says what changed (the dialog manages its own focus).
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const screenKey = step === "blocked" ? `blocked:${blockedKind}` : step;
+  const previousScreen = useRef(screenKey);
+  useEffect(() => {
+    if (previousScreen.current === screenKey) return;
+    previousScreen.current = screenKey;
+    if (screenKey === "verified") {
+      setAnnouncement("Nomor terverifikasi");
+      return;
+    }
+    setAnnouncement(screenKey === "blocked:expired" ? "Kode kedaluwarsa" : "");
+    // new-pin focuses its own PIN box; stealing focus would undo that.
+    if (screenKey === "new-pin") return;
+    const heading = containerRef.current?.querySelector("h2");
+    if (heading instanceof HTMLElement) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+  }, [screenKey]);
 
   async function begin() {
-    // A new code replaces the old one: the old message must stop working.
-    closeChallenge();
+    // One start at a time: a second tap must not open a second challenge.
+    if (starting.current) return;
+    starting.current = true;
     setPinFailure(null);
     setStartFailed(false);
+    setExpiredCode(undefined);
     try {
       const next = await start.mutateAsync();
+      if (!mounted.current) {
+        // The employee left meanwhile: this code must never work.
+        dropChallenge(next.challengeId);
+        return;
+      }
+      // A new code replaces the old one, but only once the new one exists.
+      const previous = openChallenge.current;
       openChallenge.current = next.challengeId;
+      dropChallenge(previous);
       setChallenge(next);
       setStep("waiting");
     } catch (error) {
+      if (!mounted.current) return;
+      // The old code (if any) stops working; the screen is leaving it anyway.
+      closeChallenge();
       const kind = classifyWaResetError(error);
       if (kind !== null) {
         block(kind);
@@ -167,6 +231,8 @@ export function PinForgot() {
         setStartFailed(true);
         setStep("choose");
       }
+    } finally {
+      starting.current = false;
     }
   }
 
@@ -198,8 +264,9 @@ export function PinForgot() {
     setStep("choose");
   }
 
+  let content: ReactNode;
   if (step === "done") {
-    return (
+    content = (
       <div className="mx-auto grid w-full max-w-xl gap-6">
         <SuccessCard
           title={t("payslipPin.pinTersimpan.title")}
@@ -209,12 +276,12 @@ export function PinForgot() {
         />
       </div>
     );
-  }
-
-  if (step === "blocked") {
-    return (
+  } else if (step === "blocked") {
+    content = (
       <WaResetBlocked
         kind={blockedKind}
+        senderHint={challenge?.senderHint}
+        code={blockedKind === "expired" ? expiredCode : undefined}
         onRetry={
           blockedKind === "expired" ||
           blockedKind === "service-unavailable" ||
@@ -222,18 +289,27 @@ export function PinForgot() {
             ? () => void begin()
             : undefined
         }
-        onHrHelp={() => setStep("hr-help")}
+        onWaitMore={
+          blockedKind === "mismatch" && challenge
+            ? () => setStep("waiting")
+            : undefined
+        }
+        retrying={start.isPending}
+        onHrHelp={() => {
+          // Leaving for the HR guide ends the open code.
+          if (blockedKind === "mismatch") {
+            closeChallenge();
+            setChallenge(null);
+          }
+          setStep("hr-help");
+        }}
         onBack={goToList}
       />
     );
-  }
-
-  if (step === "hr-help") {
-    return <WaResetHrHelp onBack={goToList} />;
-  }
-
-  if (step === "new-pin" && challenge) {
-    return (
+  } else if (step === "hr-help") {
+    content = <WaResetHrHelp onBack={goToList} />;
+  } else if (step === "new-pin" && challenge) {
+    content = (
       <WaResetNewPin
         onSubmit={(pin) => void savePin(pin)}
         submitting={submit.isPending}
@@ -241,10 +317,8 @@ export function PinForgot() {
         onRestart={restart}
       />
     );
-  }
-
-  if ((step === "waiting" || step === "verified") && challenge) {
-    return (
+  } else if ((step === "waiting" || step === "verified") && challenge) {
+    content = (
       <>
         <WaResetWaiting
           code={challenge.code}
@@ -252,8 +326,9 @@ export function PinForgot() {
           senderHint={challenge.senderHint}
           expiresAt={challenge.expiresAt}
           expired={expiryChecked}
-          onNotVerified={() => block("mismatch")}
+          onNotVerified={showMismatch}
           onRegenerate={() => void begin()}
+          regenerating={start.isPending}
           onCancel={() => {
             leaveWaiting();
             goToList();
@@ -269,14 +344,23 @@ export function PinForgot() {
         />
       </>
     );
+  } else {
+    content = (
+      <WaResetChoose
+        onChooseWhatsApp={() => void begin()}
+        onChooseHrHelp={() => setStep("hr-help")}
+        pending={start.isPending}
+        error={startFailed}
+      />
+    );
   }
 
   return (
-    <WaResetChoose
-      onChooseWhatsApp={() => void begin()}
-      onChooseHrHelp={() => setStep("hr-help")}
-      pending={start.isPending}
-      error={startFailed}
-    />
+    <div ref={containerRef}>
+      {content}
+      <p role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </p>
+    </div>
   );
 }

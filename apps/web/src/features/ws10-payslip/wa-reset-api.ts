@@ -34,12 +34,18 @@ export function isFinalWaResetStatus(status: WaResetStatus): boolean {
   return status !== "pending" && status !== "verified";
 }
 
+/** The only link shape the screen opens or turns into a QR. */
+const WA_ME_LINK = /^https:\/\/wa\.me\/\d+(\?|$)/;
+export function isWaMeLink(link: string): boolean {
+  return WA_ME_LINK.test(link);
+}
+
 const waResetChallengeSchema = z.object({
   challengeId: z.string().min(1),
   /** Recovery code shown on screen and put in the message, e.g. K7Q4-M2XD. */
   code: z.string().min(1),
   /** wa.me link with the message already filled in. */
-  waLink: z.string().min(1),
+  waLink: z.string().regex(WA_ME_LINK, "Tautan WhatsApp tidak valid."),
   /** Last four digits of the registered number. */
   senderHint: z.string().min(1),
   expiresAt: z.string().min(1),

@@ -4,7 +4,12 @@
 import { MessageCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PinLayout } from "../pin-layout.tsx";
-import { PRIVATE_PIN_SIDE, WaBackLink, WaNotice } from "./parts.tsx";
+import {
+  PRIVATE_PIN_SIDE,
+  WRAP_BUTTON_CLASS,
+  WaBackLink,
+  WaNotice,
+} from "./parts.tsx";
 
 type WaResetChooseProps = {
   onChooseWhatsApp: () => void;
@@ -38,14 +43,14 @@ function WaResetChoose({
         <Button
           type="button"
           size="lg"
-          className="w-full"
+          className={WRAP_BUTTON_CLASS}
           loading={pending}
           onClick={onChooseWhatsApp}
         >
           {!pending && <MessageCircle aria-hidden="true" />}
           Lewat WhatsApp
         </Button>
-        <p className="text-sm leading-5 text-muted-foreground">
+        <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
           Kirim pesan dari nomor yang terdaftar.
         </p>
       </div>
@@ -54,7 +59,7 @@ function WaResetChoose({
         <h3 className="font-brand type-title">
           Minta bantuan HR atau supervisor
         </h3>
-        <p className="text-sm leading-5 text-muted-foreground">
+        <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
           Tidak bisa pakai nomor terdaftar? Minta reset PIN ke HR atau
           supervisor di outlet.
         </p>
@@ -62,7 +67,7 @@ function WaResetChoose({
           type="button"
           variant="outline"
           size="lg"
-          className="w-full"
+          className={WRAP_BUTTON_CLASS}
           disabled={pending}
           onClick={onChooseHrHelp}
         >

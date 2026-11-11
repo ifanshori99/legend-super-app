@@ -1,0 +1,24 @@
+{
+  "baseUrl": "http://localhost:3225",
+  "axe": "axe-core bundle",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21aa",
+    "wcag22aa"
+  ],
+  "results": {
+    "unavailable-plain-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "unavailable-plain-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "unavailable-plain-320": {
+      "status": "pass",
+      "violations": []
+    }
+  }
+}

@@ -10,13 +10,21 @@ import { Button } from "@/components/ui/button";
 
 type Tone = "neutral" | "danger" | "success";
 
+// The left stripe is reserved for danger and success; a neutral notice is a
+// plain bordered panel.
 const TONE_CLASS: Record<Tone, string> = {
-  neutral: "border-border bg-muted",
-  danger: "border-danger bg-danger-subtle",
-  success: "border-success bg-success-subtle",
+  neutral: "border border-border bg-muted",
+  danger: "border-l-4 border-danger bg-danger-subtle",
+  success: "border-l-4 border-success bg-success-subtle",
 };
 
-/** Left-ruled notice; `alert` for danger, `status` otherwise. */
+/** Long button labels wrap instead of overflowing; keeps the large height as
+ * a minimum. */
+const WRAP_BUTTON_CLASS =
+  "h-auto min-h-control-lg w-full py-2 whitespace-normal";
+
+/** Left-ruled notice (danger/success) or plain panel; `alert` for danger,
+ * `status` otherwise. */
 function WaNotice({
   tone,
   title,
@@ -29,11 +37,13 @@ function WaNotice({
   return (
     <div
       role={tone === "danger" ? "alert" : "status"}
-      className={`grid gap-0.5 rounded-field border-l-4 p-4 ${TONE_CLASS[tone]}`}
+      className={`grid gap-0.5 rounded-field p-4 ${TONE_CLASS[tone]}`}
     >
       <p className="text-sm leading-5 font-semibold">{title}</p>
       {children && (
-        <p className="text-sm leading-5 text-muted-foreground">{children}</p>
+        <p className="text-base leading-6 text-muted-foreground md:text-sm md:leading-5">
+          {children}
+        </p>
       )}
     </div>
   );
@@ -58,4 +68,4 @@ const PRIVATE_PIN_SIDE = (
   </>
 );
 
-export { PRIVATE_PIN_SIDE, WaBackLink, WaNotice };
+export { PRIVATE_PIN_SIDE, WRAP_BUTTON_CLASS, WaBackLink, WaNotice };

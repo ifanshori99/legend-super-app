@@ -3,9 +3,11 @@
 //
 // For every state below, at 390x844 and 1280x800: open the forgot-PIN page in
 // mock mode with the wanted ?waScenario=, drive it to the state, take a
-// full-page screenshot to docs/qa/ur82k/<state>-<390|1280>.png and run axe
-// (wcag2a, wcag2aa). A short summary of all violations goes to
-// docs/qa/ur82k/axe.json.
+// full-page screenshot to docs/qa/ur82k/<state>-<390|1280|320>.png and run axe
+// (wcag2a, wcag2aa, wcag21aa, wcag22aa). A short summary of all violations goes to
+// docs/qa/ur82k/axe.json. Every state also fails on horizontal overflow
+// (scrollWidth > clientWidth); the waiting state fails when the "Buka WhatsApp"
+// button and the QR overlap. 320x700 only checks overflow and takes a screenshot.
 //
 //   BASE_URL=http://localhost:3225 node scripts/ui-check-ur82k.mjs
 //   BASE_URL=... node scripts/ui-check-ur82k.mjs menunggu sukses   (subset)
@@ -29,11 +31,12 @@ import { chromium } from "@playwright/test";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_DIR = join(ROOT, "docs/qa/ur82k");
-const AXE_TAGS = ["wcag2a", "wcag2aa"];
+const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"];
 const BLOCKING_IMPACTS = new Set(["serious", "critical"]);
 const VIEWPORTS = [
   { label: "390", width: 390, height: 844 },
   { label: "1280", width: 1280, height: 800 },
+  { label: "320", width: 320, height: 700, overflowOnly: true },
 ];
 const ROLE_COOKIE = "legend-mock-role";
 const FORGOT_PATH = "/karyawan/slip-gaji/lupa-pin";
@@ -93,9 +96,11 @@ const STATES = [
     prepare: async (page) => {
       await startWhatsApp(page);
       await waiting(page);
-      await action(page, "Salin kode").click();
+      await action(page, "Salin pesan").click();
       await visible(
-        page.getByText("Kode disalin. Tempel dan kirim lewat WhatsApp."),
+        page
+          .getByText(/Pesan disalin\. Tempel dan kirim lewat WhatsApp\./)
+          .first(),
       );
     },
   },
@@ -131,13 +136,23 @@ const STATES = [
     },
   },
   {
-    name: "mismatch",
+    name: "pin-tidak-sama",
     scenario: "verify",
     prepare: async (page) => {
       await toNewPin(page);
       await fillNewPin(page, OTHER_PIN);
       await page.getByRole("button", { name: "Simpan PIN" }).click();
       await visible(page.getByText("Ulangan PIN tidak sama dengan PIN baru."));
+    },
+  },
+  {
+    name: "mismatch",
+    scenario: "pending",
+    prepare: async (page) => {
+      await startWhatsApp(page);
+      await waiting(page);
+      await action(page, /Sudah kirim tapi belum terverifikasi/).click();
+      await visible(page.getByText(/Belum ada pesan yang cocok/).first());
     },
   },
   {
@@ -170,7 +185,7 @@ const STATES = [
     scenario: "unavailable-plain",
     prepare: async (page) => {
       await startWhatsApp(page);
-      await visible(page.getByText(/Hubungi HR atau atasan di outlet/).first());
+      await visible(page.getByText(/Hubungi HR atau supervisor di outlet/).first());
       await visible(page.getByText(/3 hari/).first());
     },
   },
@@ -244,6 +259,30 @@ async function waitForHydration(page) {
   );
 }
 
+/** Horizontal overflow: the page is wider than the viewport. */
+const overflowOf = (page) =>
+  page.evaluate(() => {
+    const el = document.documentElement;
+    return el.scrollWidth > el.clientWidth
+      ? { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }
+      : null;
+  });
+
+/** Bounding-box overlap of "Buka WhatsApp" and the QR (only when both show). */
+async function waButtonOverlapsQr(page) {
+  const button = action(page, /Buka WhatsApp/);
+  const qr = page.getByRole("img", { name: /Kode QR/ }).first();
+  if (!(await qr.isVisible()) || !(await button.isVisible())) return false;
+  const [a, b] = await Promise.all([button.boundingBox(), qr.boundingBox()]);
+  if (!a || !b) return false;
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
+}
+
 const summarize = (violations) =>
   violations.map((v) => ({
     id: v.id,
@@ -304,7 +343,21 @@ async function main() {
           await waitForHydration(page);
           await visible(heading(page, "Lupa PIN?"));
           await state.prepare(page);
-          const violations = await axe.run(page);
+          const problems = [];
+          const overflow = await overflowOf(page);
+          if (overflow)
+            problems.push(
+              `horizontal overflow (${overflow.scrollWidth} > ${overflow.clientWidth})`,
+            );
+          if (
+            state.name === "menunggu" &&
+            !viewport.overflowOnly &&
+            (await waButtonOverlapsQr(page))
+          )
+            problems.push('"Buka WhatsApp" overlaps the QR');
+          const violations = viewport.overflowOnly
+            ? []
+            : await axe.run(page);
           await page.screenshot({
             path: join(OUT_DIR, `${id}.png`),
             fullPage: true,
@@ -312,19 +365,22 @@ async function main() {
           const blocking = violations.filter((v) =>
             BLOCKING_IMPACTS.has(v.impact ?? ""),
           );
+          const ok = blocking.length === 0 && problems.length === 0;
           report.results[id] = {
-            status: blocking.length === 0 ? "pass" : "fail",
+            status: ok ? "pass" : "fail",
             violations: summarize(violations),
+            ...(problems.length ? { problems } : {}),
           };
           console.log(
-            `${blocking.length === 0 ? "PASS" : "FAIL"} ${id}` +
+            `${ok ? "PASS" : "FAIL"} ${id}` +
               (violations.length ? ` (${violations.length} violation)` : ""),
           );
           for (const v of blocking)
             console.log(
               `  [${v.impact}] ${v.id}: ${v.help} (${v.nodes.length} node)`,
             );
-          if (blocking.length > 0) failures.push(id);
+          for (const problem of problems) console.log(`  [layout] ${problem}`);
+          if (!ok) failures.push(id);
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);

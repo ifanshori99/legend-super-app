@@ -148,7 +148,7 @@ function WaResetNewPin({
             <p className="text-sm leading-5 font-semibold text-danger">
               Verifikasi WhatsApp sudah tidak berlaku
             </p>
-            <p className="text-sm leading-5">
+            <p className="text-base leading-6 md:text-sm md:leading-5">
               Waktu untuk membuat PIN sudah habis. Mulai lagi dari awal untuk
               mengirim kode baru.
             </p>
@@ -159,7 +159,7 @@ function WaResetNewPin({
             <p className="text-sm leading-5 font-semibold text-danger">
               PIN belum dapat disimpan
             </p>
-            <p className="text-sm leading-5">
+            <p className="text-base leading-6 md:text-sm md:leading-5">
               Periksa koneksi Anda, lalu coba lagi.
             </p>
           </div>
@@ -170,7 +170,7 @@ function WaResetNewPin({
             ref={restartRef}
             type="button"
             size="lg"
-            className="w-full"
+            className="h-auto min-h-control w-full whitespace-normal"
             onClick={onRestart}
           >
             Mulai lagi

@@ -7,7 +7,12 @@ import { useEffect, useState } from "react";
 import { Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PinLayout } from "../pin-layout.tsx";
-import { PRIVATE_PIN_SIDE, WaBackLink, WaNotice } from "./parts.tsx";
+import {
+  PRIVATE_PIN_SIDE,
+  WRAP_BUTTON_CLASS,
+  WaBackLink,
+  WaNotice,
+} from "./parts.tsx";
 
 type WaResetBlockedKind =
   | "expired"
@@ -20,15 +25,33 @@ type WaResetBlockedKind =
 
 type WaResetBlockedProps = {
   kind: WaResetBlockedKind;
-  /** Server wait for `rate-limited`; without it a general hour is shown. */
+  /** Server wait for `rate-limited`; without it "Coba lagi nanti" is shown,
+   * with no number. */
   retryAfterSeconds?: number;
+  /** Registered-number hint for `mismatch` (last digits or a masked number). */
+  senderHint?: string;
+  /** The old code for `expired`: shown struck through when present. */
+  code?: string;
+  /** `mismatch`: go back to the waiting screen (polling kept running). */
+  onWaitMore?: () => void;
   onRetry?: () => void;
+  /** True while a new code is being asked for: the retry button spins. */
+  retrying?: boolean;
   onHrHelp: () => void;
   onBack: () => void;
 };
 
 const HR_LABEL = "Lihat cara minta bantuan";
-const HR_CONTACT = "Hubungi HR atau atasan di outlet";
+// Founder's wording, used only where no WhatsApp is registered; every other
+// screen says "HR atau supervisor".
+const HR_CONTACT_NO_WA = "Hubungi HR atau atasan di outlet";
+const HR_CONTACT = "Hubungi HR atau supervisor di outlet";
+const BODY_CLASS =
+  "text-base leading-6 text-muted-foreground md:text-sm md:leading-5";
+
+function registeredNumber(hint: string): string {
+  return /^\d{1,4}$/.test(hint) ? `•••• ${hint}` : hint;
+}
 
 function formatWait(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -59,14 +82,14 @@ function useCountdown(seconds: number | undefined): number | null {
 function RateLimitedWait({ left }: { left: number | null }) {
   return (
     <div
-      role="timer"
+      role={left === null ? "status" : "timer"}
       aria-live="off"
       className="flex items-center gap-3 rounded-field border-l-4 border-danger bg-danger-subtle p-4"
     >
       <Clock className="size-5 shrink-0 text-danger" aria-hidden="true" />
-      <p className="text-sm leading-5 font-semibold">
+      <p className="text-base leading-6 font-semibold md:text-sm md:leading-5">
         {left === null
-          ? "Coba lagi dalam 1 jam"
+          ? "Coba lagi nanti"
           : left > 0
             ? `Coba lagi dalam ${formatWait(left)}`
             : "Pembatasan sudah selesai"}
@@ -78,22 +101,43 @@ function RateLimitedWait({ left }: { left: number | null }) {
 function WaResetBlocked({
   kind,
   retryAfterSeconds,
+  senderHint,
+  code,
+  onWaitMore,
   onRetry,
+  retrying = false,
   onHrHelp,
   onBack,
 }: WaResetBlockedProps) {
   const secondsLeft = useCountdown(
     kind === "rate-limited" ? retryAfterSeconds : undefined,
   );
+  // Without a server wait there is nothing to count down: retry is offered.
   const canRetryNow =
-    kind === "rate-limited" && secondsLeft === 0 && onRetry !== undefined;
+    kind === "rate-limited" &&
+    (secondsLeft === null || secondsLeft === 0) &&
+    onRetry !== undefined;
+
+  const retryButton = (label: string, primary = true) =>
+    onRetry && (
+      <Button
+        type="button"
+        size="lg"
+        variant={primary ? "default" : "outline"}
+        className={WRAP_BUTTON_CLASS}
+        loading={retrying}
+        onClick={onRetry}
+      >
+        {retrying ? "Membuat kode…" : label}
+      </Button>
+    );
 
   const hrButton = (primary: boolean) => (
     <Button
       type="button"
       size="lg"
       variant={primary ? "default" : "outline"}
-      className="w-full"
+      className={WRAP_BUTTON_CLASS}
       onClick={onHrHelp}
     >
       {kind === "expired" || kind === "service-unavailable"
@@ -106,7 +150,7 @@ function WaResetBlocked({
       type="button"
       size="lg"
       variant="outline"
-      className="w-full"
+      className={WRAP_BUTTON_CLASS}
       onClick={onBack}
     >
       Kembali ke slip gaji
@@ -120,12 +164,21 @@ function WaResetBlocked({
         title="Kode sudah kedaluwarsa"
         description="Pesan dengan kode ini tidak bisa dipakai lagi. Buat kode baru, lalu kirim lewat WhatsApp."
       >
-        <WaNotice tone="neutral" title="Kode tidak berlaku" />
-        {onRetry && (
-          <Button type="button" size="lg" className="w-full" onClick={onRetry}>
-            Buat kode baru
-          </Button>
+        {code && (
+          <WaNotice tone="neutral" title="Kode tidak berlaku">
+            <span className="whitespace-nowrap">
+              <code
+                translate="no"
+                className="font-mono font-semibold text-foreground line-through"
+              >
+                {code}
+              </code>
+              {" · "}
+              <span className="tabular-nums">00:00</span>
+            </span>
+          </WaNotice>
         )}
+        {retryButton("Buat kode baru")}
         {hrButton(false)}
       </PinLayout>
     );
@@ -135,20 +188,29 @@ function WaResetBlocked({
     return (
       <PinLayout
         backLink={<WaBackLink />}
-        title="Nomor WhatsApp tidak cocok"
-        description="Pesan dikirim dari nomor yang berbeda. Gunakan nomor yang terdaftar."
+        title="Belum ada pesan yang cocok"
+        description="Kami belum menerima pesan dengan kode ini dari nomor terdaftar."
       >
-        <WaNotice tone="danger" title="Pilih akun WhatsApp yang benar">
-          Pilih akun WhatsApp dengan nomor terdaftar sebelum mengirim pesan.
+        <WaNotice tone="neutral" title="Pastikan nomor yang dipakai">
+          {senderHint
+            ? `Pastikan WhatsApp memakai nomor terdaftar ${registeredNumber(senderHint)}.`
+            : "Pastikan WhatsApp memakai nomor terdaftar."}
         </WaNotice>
-        {onRetry && (
-          <Button type="button" size="lg" className="w-full" onClick={onRetry}>
-            Coba dari nomor terdaftar
+        {onWaitMore && (
+          <Button
+            type="button"
+            size="lg"
+            className={WRAP_BUTTON_CLASS}
+            disabled={retrying}
+            onClick={onWaitMore}
+          >
+            Tunggu lagi
           </Button>
         )}
+        {retryButton("Coba dari nomor terdaftar", !onWaitMore)}
         <section className="grid gap-2 border-t border-border pt-4">
           <h3 className="font-brand type-title">Nomor sudah berubah?</h3>
-          <p className="text-sm leading-5 text-muted-foreground">
+          <p className={BODY_CLASS}>
             Minta bantuan HR atau supervisor di outlet untuk memperbarui nomor
             atau mereset PIN.
           </p>
@@ -171,15 +233,11 @@ function WaResetBlocked({
         }
       >
         <RateLimitedWait left={secondsLeft} />
-        <p className="text-sm leading-5 text-muted-foreground">
+        <p className={BODY_CLASS}>
           Sambil menunggu, Anda bisa minta reset PIN ke HR atau supervisor di
           outlet.
         </p>
-        {canRetryNow && (
-          <Button type="button" size="lg" className="w-full" onClick={onRetry}>
-            Coba lagi
-          </Button>
-        )}
+        {canRetryNow && retryButton("Coba lagi")}
         {hrButton(!canRetryNow)}
         {backButton}
       </PinLayout>
@@ -195,7 +253,7 @@ function WaResetBlocked({
         side={PRIVATE_PIN_SIDE}
       >
         <WaNotice tone="neutral" title="Minta bantuan di outlet">
-          {HR_CONTACT} untuk memperbarui nomor atau mereset PIN Anda.
+          {HR_CONTACT_NO_WA} untuk memperbarui nomor atau mereset PIN Anda.
         </WaNotice>
         {hrButton(true)}
         {backButton}
@@ -251,11 +309,7 @@ function WaResetBlocked({
       <WaNotice tone="neutral" title="Coba lagi sebentar lagi">
         {HR_CONTACT} untuk mereset PIN Anda, atau coba lagi nanti.
       </WaNotice>
-      {onRetry && (
-        <Button type="button" size="lg" className="w-full" onClick={onRetry}>
-          Coba lagi
-        </Button>
-      )}
+      {retryButton("Coba lagi")}
       {hrButton(!onRetry)}
       {backButton}
     </PinLayout>
