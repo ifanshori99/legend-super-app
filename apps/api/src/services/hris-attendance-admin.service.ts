@@ -826,13 +826,9 @@ export async function decideAttendanceReview(
         row.businessDate,
         now,
       );
-    // A log that counted as worked and no longer does (rejected, or flagged
-    // back to pending) takes a day it gave back out again (once, terminal).
-    if (
-      isInLog &&
-      countsAsWorked(row.validity, row.reviewStatus) &&
-      !countsAsWorked(validity, reviewStatus)
-    )
+    // An `in` log that is REJECTED takes a day it gave back out again (once,
+    // terminal). Flagging back to pending writes nothing (founder Q42).
+    if (isInLog && reviewStatus === "rejected")
       await redeductCollectiveLeaveForRejectedDay(
         tx,
         context,
@@ -864,21 +860,6 @@ export async function decideAttendanceReview(
       data: await toReviewItem(tx, context, access, updated, signPhoto, now),
     };
   });
-}
-
-/**
- * Whether an `in` log counts as worked for a collective day: the same rule as
- * `workedLogCondition` in hris-leave-collective.service.ts (valid and not
- * rejected on review, or flagged and accepted).
- */
-function countsAsWorked(
-  validity: LogRow["validity"],
-  reviewStatus: LogRow["reviewStatus"],
-): boolean {
-  return (
-    (validity === "valid" && reviewStatus !== "rejected") ||
-    (validity === "flagged" && reviewStatus === "accepted")
-  );
 }
 
 /** Flag reason of a clock-in on a day of approved leave (bead legend-9y6ri). */

@@ -94,6 +94,14 @@ export type HrisAccess = {
   readonly permissionsAt: (outletId: string) => PermissionCode[];
   /** Union outlet reach of any of `codes` (null = no reach). */
   readonly reach: (codes: readonly PermissionCode[]) => HrisReach | null;
+  /**
+   * Like `reach`, but only through assignments of scope type `brand` or
+   * `tenant` (never `outlet` or `station`). Read from the assignment's scope
+   * type, not from the role name, so custom roles work (Q41).
+   */
+  readonly brandOrWiderReach: (
+    codes: readonly PermissionCode[],
+  ) => HrisReach | null;
   /** Server-resolved viewer of one record, or null (= 404). */
   readonly viewerFor: (subject: HrisSubject) => HrisViewer | null;
 };
@@ -137,14 +145,17 @@ export async function loadHrisAccess(
       snapshot.allows(code, { type: "outlet", id: outletId }),
     );
 
-  const reach = (codes: readonly PermissionCode[]): HrisReach | null => {
+  const reachThrough = (
+    codes: readonly PermissionCode[],
+    assignments: TenantAccessData["assignments"],
+  ): HrisReach | null => {
     const outletIds = new Set<string>();
     for (const code of codes) {
       const scope = outletReachOf({
         principal: {
           tenantId: context.tenant.tenantId,
           userId: actor,
-          assignments: data.assignments,
+          assignments,
         },
         roles: data.roles,
         org: data.org,
@@ -159,6 +170,15 @@ export async function loadHrisAccess(
       ? null
       : { kind: "outlets", outletIds: [...outletIds] };
   };
+  const reach = (codes: readonly PermissionCode[]) =>
+    reachThrough(codes, data.assignments);
+  const brandOrWiderReach = (codes: readonly PermissionCode[]) =>
+    reachThrough(
+      codes,
+      data.assignments.filter(
+        (row) => row.scope.type === "brand" || row.scope.type === "tenant",
+      ),
+    );
 
   const viewerFor = (subject: HrisSubject): HrisViewer | null => {
     const codes = permissionsAt(subject.homeOutletId);
@@ -183,6 +203,7 @@ export async function loadHrisAccess(
     own,
     permissionsAt,
     reach,
+    brandOrWiderReach,
     viewerFor,
   };
 }
@@ -204,21 +225,33 @@ function employeeReachPlan(
   const all = access.reach(codes);
   if (all === null) return { all, hr: null };
   if (all.kind === "tenant") return { all, hr: all };
-  const hrReach = access.reach([HR_REACH_CODE]);
-  if (hrReach === null) return { all, hr: null };
-  if (hrReach.kind === "tenant") return { all, hr: all };
   const allowed = new Set(all.outletIds.map(lower));
-  const outletIds = hrReach.outletIds.filter((id) => allowed.has(lower(id)));
+  const outletIds = new Set<string>();
+  const hrReach = access.reach([HR_REACH_CODE]);
+  if (hrReach?.kind === "tenant") return { all, hr: all };
+  for (const id of hrReach?.outletIds ?? [])
+    if (allowed.has(lower(id))) outletIds.add(lower(id));
+  // Q41: a brand-scoped holder of the checked codes (General Manager) is "HR"
+  // inside the outlets of that brand; outlet-scoped holders stay direct reports.
+  const brandReach = access.brandOrWiderReach(codes);
+  if (brandReach?.kind === "tenant") return { all, hr: all };
+  for (const id of brandReach?.outletIds ?? [])
+    if (allowed.has(lower(id))) outletIds.add(lower(id));
   return {
     all,
-    hr: outletIds.length === 0 ? null : { kind: "outlets", outletIds },
+    hr:
+      outletIds.size === 0
+        ? null
+        : { kind: "outlets", outletIds: [...outletIds] },
   };
 }
 
 /**
  * Rows owned by employees that a holder of `codes` may see. Tenant-wide reach
- * and HR (hr.employee.manage) see every row inside their reach. Any other
- * outlet-scoped holder (the supervisor templates: hr.attendance.manage and
+ * and HR (hr.employee.manage) see every row inside their reach, and so does a
+ * holder of `codes` through a brand-scoped assignment (General Manager, Q41:
+ * the whole brand, never another brand). Any other outlet-scoped holder (the
+ * supervisor templates: hr.attendance.manage and
  * hr.attendance_correction.approve) sees only their direct reports
  * (employees.manager_id = the caller's employee id) inside those outlets; no
  * employee record means no reports (fail closed). Callers add the caller's own

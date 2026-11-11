@@ -88,6 +88,7 @@ const DAY = {
 const F3 = {
   reject: "2049-05-04",
   reflag: "2049-05-05",
+  flagThenReject: "2049-05-03",
   stays: "2049-05-06",
   second: "2049-05-07",
   settle: "2049-05-10",
@@ -916,7 +917,7 @@ describe("F3: an accepted day whose log is later rejected or re-flagged is deduc
     await expectChainConsistent(e.id);
   });
 
-  it("accepted then re-flagged (pending): the same single rededuction", async () => {
+  it("accepted then re-flagged (pending): no rededuction, ledger stays D,R and used is unchanged (Q42)", async () => {
     const e = await employee();
     const logId = await writeLog(e.id, F3.reflag, {
       validity: "flagged",
@@ -929,10 +930,35 @@ describe("F3: an accepted day whose log is later rejected or re-flagged is deduc
 
     await decide(logId, "flag");
 
-    expect(await chain(e.id, F3.reflag)).toEqual(DRX);
-    expect(await usedOf(e.id)).toBe(deducted);
+    expect(await chain(e.id, F3.reflag)).toEqual([DEDUCTED, REVERSED]);
+    expect(await usedOf(e.id)).toBe(deducted - 1);
     await run();
-    expect(await chain(e.id, F3.reflag)).toEqual(DRX);
+    expect(await chain(e.id, F3.reflag)).toEqual([DEDUCTED, REVERSED]);
+    expect(await usedOf(e.id)).toBe(deducted - 1);
+    await expectChainConsistent(e.id);
+  });
+
+  it("accepted, flagged (no X), then rejected: the rededuction is written exactly once (Q42)", async () => {
+    const e = await employee();
+    const logId = await writeLog(e.id, F3.flagThenReject, {
+      validity: "flagged",
+      review: "pending",
+    });
+    await run();
+    const deducted = await usedOf(e.id);
+    await decide(logId, "accept");
+    await decide(logId, "flag");
+    expect(await chain(e.id, F3.flagThenReject)).toEqual([DEDUCTED, REVERSED]);
+    expect(await usedOf(e.id)).toBe(deducted - 1);
+
+    const idem = key();
+    await decide(logId, "reject", idem);
+
+    expect(await chain(e.id, F3.flagThenReject)).toEqual(DRX);
+    expect(await usedOf(e.id)).toBe(deducted);
+    await decide(logId, "reject", idem).catch(() => undefined);
+    await run();
+    expect(await chain(e.id, F3.flagThenReject)).toEqual(DRX);
     expect(await usedOf(e.id)).toBe(deducted);
     await expectChainConsistent(e.id);
   });

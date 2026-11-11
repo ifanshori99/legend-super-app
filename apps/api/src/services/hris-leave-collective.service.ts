@@ -29,7 +29,7 @@
 //   `collective_leave_reversal`, same period, never a delete) and `used` gets
 //   the day back, once (unique partial index). Never below 0 used; a year
 //   whose carry-over ran is not touched.
-// - An accepted log that is LATER rejected or re-flagged (it stops qualifying)
+// - An accepted log that is LATER rejected (flagging it back to pending writes nothing)
 //   takes the day back (CTO decision, doubt restricts payment): a new ledger
 //   row, kind `collective_leave_rededuction`, days -1, once (unique partial
 //   index), `used` + 1 (redeductCollectiveLeaveForRejectedDay, from the
@@ -434,8 +434,8 @@ async function datesWorkedOrUnderReview(
  * Gives one deducted collective day back: a compensating `+1` ledger row (the
  * deduction row stays), then `used` - 1 (never below 0) under the balance
  * lock. The unique partial index makes it once per employee and date, so a
- * replay or a racing worker reverses nothing more; a log rejected or
- * re-flagged later takes the day back through a rededuction row
+ * replay or a racing worker reverses nothing more; a log rejected
+ * later takes the day back through a rededuction row
  * (redeductCollectiveLeaveForRejectedDay), never by touching this one.
  * Past the carry-over expiry date the returned day must not bring forfeited
  * carry back: the carry is clamped to the days still used or pending.
