@@ -25,6 +25,7 @@ import {
   MAGIC_LINK_TTL_MINUTES,
 } from "@starter/shared/identity";
 import { env } from "../config/env";
+import { whatsAppWebhookSecretsOf } from "../lib/whatsapp-webhook-secrets";
 import { jsonBody } from "../middleware/body";
 import { noStore } from "../middleware/no-store";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -91,14 +92,19 @@ loginChallengeRouter.post(
     if (signedIn?.session.impersonatedBy)
       throw new PlatformError("SUPPORT_ACCESS_READ_ONLY");
     const nonce = ensureBindingNonce(req);
-    const issued = await issueWhatsAppChallenge(getTenantContext(req), {
-      bindingNonce: nonce,
-      link: signedIn
-        ? { userId: signedIn.user.id, sessionId: signedIn.session.id }
-        : null,
-      ip: req.ip ?? null,
-      userAgent: req.get("user-agent") ?? null,
-    });
+    const issued = await issueWhatsAppChallenge(
+      getTenantContext(req),
+      {
+        bindingNonce: nonce,
+        link: signedIn
+          ? { userId: signedIn.user.id, sessionId: signedIn.session.id }
+          : null,
+        ip: req.ip ?? null,
+        userAgent: req.get("user-agent") ?? null,
+      },
+      // createApp's test override, else KIRIM_WEBHOOK_SECRET (legend-lgfru).
+      { webhookSecrets: whatsAppWebhookSecretsOf(req) },
+    );
     setBindingCookie(res, nonce, BINDING_COOKIE_SECONDS);
     res.status(201).json({ data: issued });
   },

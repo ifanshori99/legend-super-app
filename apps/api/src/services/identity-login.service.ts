@@ -52,6 +52,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { env } from "../config/env";
 import { db } from "../db";
 import { loginChallenges, tenants, tenantIntegrations } from "../db/schema";
 import { withTenant } from "../db/tenant";
@@ -172,7 +173,7 @@ function challengeContext(row: ChallengeRow): ScopedTenantContext | null {
 }
 
 /** A tenant that is not active cannot hand out sessions (fail closed). */
-async function assertTenantActive(
+export async function assertTenantActive(
   tx: Transaction,
   context: ScopedTenantContext,
 ): Promise<void> {
@@ -207,6 +208,9 @@ async function assertPerDeviceLimit(
     .where(
       and(
         eq(loginChallenges.channel, "whatsapp_inbound"),
+        // legend-lgfru: payslip PIN reset proofs have their own per-user limit
+        // and must not use up a guest's login budget on a shared outlet Wi-Fi.
+        eq(loginChallenges.purpose, "sign_in"),
         gt(loginChallenges.createdAt, windowStart),
         input.ipHash
           ? or(
@@ -227,7 +231,28 @@ export type IssueChallengeDeps = {
   readonly now?: Date;
   /** Test seam for a deterministic code; production uses the CSPRNG. */
   readonly generateCode?: () => string;
+  /**
+   * KirimDev webhook secrets; production reads KIRIM_WEBHOOK_SECRET (the
+   * route passes createApp's override). Empty: the challenge is refused.
+   */
+  readonly webhookSecrets?: readonly string[];
 };
+
+/**
+ * legend-lgfru: a WhatsApp challenge can only be completed by the signed
+ * webhook, and the webhook answers 503 without a secret. Handing out a code
+ * nobody can complete would leave the guest waiting for nothing, so the
+ * challenge is refused the same way (SERVICE_UNAVAILABLE, 503).
+ */
+export function assertWhatsAppWebhookConfigured(
+  secrets: readonly string[] = env.KIRIM_WEBHOOK_SECRET,
+): void {
+  if (secrets.length === 0)
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Verifikasi WhatsApp belum tersedia.",
+    );
+}
 
 /**
  * Issues a challenge for `tenant` and the browser that holds `bindingNonce`.
@@ -243,6 +268,7 @@ export async function issueWhatsAppChallenge(
   },
   deps: IssueChallengeDeps = {},
 ): Promise<LoginChallengeIssued> {
+  assertWhatsAppWebhookConfigured(deps.webhookSecrets);
   const context = establishScopedTenantContext(tenant, { kind: "tenant" });
   const now = deps.now ?? new Date();
   const code = (deps.generateCode ?? generateLoginCode)();
@@ -409,13 +435,23 @@ async function auditClaimFailed(
   }
 }
 
+/**
+ * legend-lgfru (design D-WA1): poll and cancel only ever see sign-in rows. A
+ * payslip PIN reset proof answers NOT_FOUND here, so it can never reach the
+ * session claim (or the absorbed-into-survivor branch) below.
+ */
 async function loadChallenge(
   challengeId: string,
 ): Promise<ChallengeRow | null> {
   const [row] = await db
     .select()
     .from(loginChallenges)
-    .where(eq(loginChallenges.id, challengeId))
+    .where(
+      and(
+        eq(loginChallenges.id, challengeId),
+        eq(loginChallenges.purpose, "sign_in"),
+      ),
+    )
     .limit(1);
   return row ?? null;
 }
