@@ -465,9 +465,7 @@ const STATES = [
       await page.getByRole("combobox", { name: /^Outlet/ }).click();
       // Fixture stations all belong to the default outlet (Bandung).
       await page
-        .getByRole("option")
-        .filter({ hasNotText: "Cafe Legend Bandung" })
-        .first()
+        .getByRole("option", { name: "Cafe Legend Bandung 2 (contoh)" })
         .click();
       await visible(
         page.getByText(
